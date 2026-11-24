@@ -28,6 +28,7 @@ use serde_json::{Value, json};
 use super::super::store::Store;
 use super::super::{Error, route};
 use super::approve::DeviceApproval;
+use crate::cli::Rerun;
 use crate::device::DeviceSigning;
 use crate::image::pin_public;
 
@@ -208,8 +209,8 @@ pub(in crate::handlers) fn sign(
     edits: &[ImageEdit],
     signing: &DeviceSigning,
 ) -> Result<DeviceApproval, Error> {
-    pending(&plan.changes, edits).map_err(|refused| refused.error(matches))?;
-    moves(&plan.regions).map_err(|refused| refused.error(matches))?;
+    pending(&plan.changes, edits).map_err(|refused| refused.error(matches, store.again()))?;
+    moves(&plan.regions).map_err(|refused| refused.error(matches, store.again()))?;
     let named = plan.target.map(|target| {
         target
             .into_iter()
@@ -229,7 +230,7 @@ pub(in crate::handlers) fn sign(
         }
     };
     let children = children((&plan.namespace, &target), &parents, edits)
-        .map_err(|refused| refused.error(matches))?;
+        .map_err(|refused| refused.error(matches, store.again()))?;
     let shown: Vec<RequestedServiceSpec> =
         children.iter().map(|child| child.planned.clone()).collect();
     let pins: BTreeMap<ServiceName, String> = children
@@ -540,7 +541,8 @@ fn first_difference(left: &Value, right: &Value) -> Option<String> {
 }
 
 impl Refused {
-    pub(super) fn error(self, matches: &ArgMatches) -> Error {
+    /// The refusal, with `again`, this deploy's command line, to name what it lacks.
+    pub(super) fn error(self, matches: &ArgMatches, again: Rerun) -> Error {
         let from_terminal = |service: &ServiceName| {
             Hint::Next(super::super::store::next(
                 matches,
@@ -564,10 +566,7 @@ impl Refused {
                 ),
                 json!({ "service": service, "image": image }),
             )
-            .hint(Hint::Retry(super::super::typed_with(&[
-                "--image",
-                &format!("{service}={image}"),
-            ]))),
+            .hint(again.add("image", &format!("{service}={image}"))),
             Self::Pending {
                 node,
                 field,

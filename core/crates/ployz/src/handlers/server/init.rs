@@ -49,16 +49,17 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
     // root's on that Server, ride into every later join approval, and outlive the Server.
     let on_server = matches!(connection.transport(), Transport::Unix(_));
     let requested_name = helpers::requested_name(matches)?;
-    let cluster_name = founding_name(matches)?;
+    let cluster_name = founding_name(root)?;
     let token_request = helpers::token_request(matches)?;
     let pinned = machine::pinned(&token_request);
     let cluster_network = *matches
         .get_one::<ipnet::Ipv4Net>("network")
         .expect("Cluster network has a default");
     let wireguard_mtu = matches.get_one::<u32>("wg-mtu").copied();
-    let yes = matches.get_flag("yes");
+    let reset_asks =
+        (!matches.get_flag("yes")).then(|| crate::cli::Rerun::again(root).switch("yes"));
     let no_install = matches.get_flag("no-install");
-    let storage = super::provision::resolve_storage(matches)?;
+    let storage = super::provision::resolve_storage(root)?;
     let version = &matches
         .get_one::<MachineRelease>("version")
         .expect("version has a default")
@@ -80,7 +81,10 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
         let (details, mut token) =
             machine::inspect_token(&mut target, token_request.clone()).await?;
         if details.phase != LocalMachinePhase::Uninitialized {
-            machine::confirm(yes, "Reset the Server before initialising a new Cluster?")?;
+            machine::confirm(
+                reset_asks.clone(),
+                "Reset the Server before initialising a new Cluster?",
+            )?;
             machine::leave(&mut target, &details).await?;
             target = helpers::reconnect_direct(matches, &connection).await?;
             token = machine::inspect_token(&mut target, token_request).await?.1;
@@ -118,21 +122,16 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
     })?;
     crate::ui::note(format_args!("Switched context to {context_name}."));
     crate::ui::stream(format_args!("Initialised Server {}.", machine.name));
-    let ingress_recovery = super::super::recovery_command(
-        matches,
-        &context_name,
-        &[
-            "server",
-            "set",
-            machine.id.as_str(),
-            "--accepts-ingress=true",
-        ],
-    );
-    let inspect_recovery = super::super::recovery_command(
-        matches,
-        &context_name,
-        &["server", "show", machine.name.as_str()],
-    );
+    let recovery =
+        |args: &[&str]| crate::cli::Rerun::then(matches, args).set("context", &context_name);
+    let ingress_recovery = recovery(&[
+        "server",
+        "set",
+        machine.id.as_str(),
+        "--accepts-ingress=true",
+    ])
+    .line();
+    let inspect_recovery = recovery(&["server", "show", machine.name.as_str()]).line();
     let mut named = None;
     let ingress = runtime.block_on(async {
         let mut ready = helpers::wait_direct_participating(
@@ -147,7 +146,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
                 .hint(Hint::Inspect(inspect_recovery.clone()))
         })?;
         named = crate::enrollment::founding::name_cluster(&ready, cluster_name, |args| {
-            super::super::recovery_command(matches, &context_name, args)
+            recovery(args).line()
         })
         .await;
         if on_server {
@@ -178,9 +177,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
             .map_err(|error| {
                 crate::enrollment::output::ingress_incomplete(
                     "Server initialized",
-                    crate::enrollment::output::ingress_hints(error.into(), |args| {
-                        super::super::recovery_command(matches, &context_name, args)
-                    }),
+                    crate::enrollment::output::ingress_hints(error.into(), recovery),
                     Hint::Next(ingress_recovery.clone()),
                 )
             })
@@ -196,10 +193,11 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
     crate::ui::emit_committed(result, ingress.map(drop).and(named.map(drop)))
 }
 
-fn founding_name(matches: &ArgMatches) -> Result<Option<ClusterName>, Error> {
-    if let Some(name) = super::founding_cluster_name(matches)? {
+fn founding_name(root: &ArgMatches) -> Result<Option<ClusterName>, Error> {
+    if let Some(name) = super::founding_cluster_name(leaf_matches(root))? {
         return Ok(Some(name));
     }
+    let unnamed_founding = || unnamed_founding(root);
     if crate::ui::json() {
         return Err(unnamed_founding());
     }
@@ -215,14 +213,11 @@ fn founding_name(matches: &ArgMatches) -> Result<Option<ClusterName>, Error> {
     .map(Some)
 }
 
-fn unnamed_founding() -> Error {
+fn unnamed_founding(root: &ArgMatches) -> Error {
     Error::detailed(
         RpcErrorCode::InvalidArgument,
         "A new Cluster needs a name. Pass --cluster-name.",
         json!({ "flag": "--cluster-name" }),
     )
-    .hint(Hint::Retry(crate::handlers::typed_with(&[
-        "--cluster-name",
-        "<name>",
-    ])))
+    .hint(crate::cli::Rerun::again(root).set("cluster-name", "<name>"))
 }

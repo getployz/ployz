@@ -158,7 +158,7 @@ pub(crate) fn approve(root: &ArgMatches) -> Result<(), Error> {
     runtime()?.block_on(async {
         let credential = cloud::account::from_env(&store).await?;
         let settled = approve_with(&credential, code, async |request| {
-            confirm_device(leaf, code)?;
+            confirm_device(root, code)?;
             let mut client = route::connect_full(leaf, context(leaf)).await?;
             set_everywhere(&mut client, |client, machine_id| {
                 set_on::<op::SetDevice>(client, machine_id, SET_DEVICE_CAPABILITY, request.clone())
@@ -230,7 +230,8 @@ async fn approve_this_device(leaf: &ArgMatches) -> Result<(), Error> {
 
 /// Say what approving the Device `code` grants, and ask. A code copied from a compromised
 /// Ployz Cloud page could name someone else's Device, so the grant is spelled out first.
-fn confirm_device(leaf: &ArgMatches, code: CheckCode) -> Result<(), Error> {
+fn confirm_device(root: &ArgMatches, code: CheckCode) -> Result<(), Error> {
+    let leaf = leaf_matches(root);
     ui::note(format!(
         "Device {code} gets Full access to every server you approve it on: exec, port-forward, and approving other devices and passkeys."
     ));
@@ -244,7 +245,7 @@ fn confirm_device(leaf: &ArgMatches, code: CheckCode) -> Result<(), Error> {
                 RpcErrorCode::ConfirmationRequired,
                 format!("Approving device {code} needs confirmation. Nothing changed."),
             )
-            .hint(Hint::Retry(super::typed_with(&["--yes"])))
+            .hint(super::Rerun::again(root).switch("yes"))
         },
         "Nothing approved.",
     )

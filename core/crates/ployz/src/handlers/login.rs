@@ -139,19 +139,22 @@ pub(super) fn logout(root: &ArgMatches) -> Result<(), Error> {
     let next = out.as_ref().and_then(|out| {
         let device = out.device.as_deref()?;
         // Run from another signed-in device or with PLOYZ_TOKEN: this one is signed out.
-        super::account::retry_clears(&out.servers, device)
+        super::account::retry_clears(&out.servers, || {
+            crate::cli::Rerun::then(root, &["token", "rm", device])
+        })
     });
+    let line = next.as_ref().map(crate::cli::Rerun::line);
     let report = LogoutReport {
         signed_out: out.is_some(),
         cloud: out.as_ref().map(|out| out.cloud.as_str()),
         device: out.as_ref().and_then(|out| out.device.as_deref()),
         servers: out.as_ref().map(|out| &out.servers),
-        next: next.as_deref(),
+        next: line.as_deref(),
     };
     crate::ui::finish(&report, || match &out {
         Some(out) => {
             crate::ui::stream(format_args!("Signed out of {}.", out.cloud));
-            super::account::say_clears(&out.servers, next.as_deref());
+            super::account::say_clears(&out.servers, next.as_ref());
         }
         None => crate::ui::stream(format_args!("Not signed in.")),
     })?;

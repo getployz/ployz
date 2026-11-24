@@ -290,7 +290,17 @@ fn token_rm_revokes_a_token_by_the_name_token_ls_shows() {
         json!({
             "removed": { "id": "t2", "kind": "token" },
             "servers": { "confirmed": ["1".repeat(32)], "unconfirmed": ["2".repeat(32)] },
-            "next": "ployz token rm t2",
+            "next": shell_words::join([
+                "ployz",
+                "--ployz-config",
+                config.to_str().unwrap(),
+                "--json",
+                "--why",
+                "test",
+                "token",
+                "rm",
+                "t2",
+            ]),
         })
     );
     assert_eq!(
@@ -351,7 +361,14 @@ fn json_login_returns_the_code_at_once_and_finishes_on_the_next_run() {
             "cloud": cloud,
             "device": "d1",
             "servers": { "confirmed": ["1".repeat(32)], "unconfirmed": ["2".repeat(32)] },
-            "next": "ployz token rm d1",
+            "next": shell_words::join([
+                "ployz",
+                "--ployz-config",
+                config.to_str().unwrap(),
+                "token",
+                "rm",
+                "d1",
+            ]),
         })
     );
     let again = ployz(&config, &["logout", "--json"]);

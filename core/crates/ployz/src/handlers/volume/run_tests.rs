@@ -184,7 +184,7 @@ fn a_mirror_name_splits_at_the_one_volume_it_starts_with() {
 }
 
 #[test]
-fn each_ask_names_its_run_and_its_retry_command() {
+fn each_ask_names_its_run_and_its_verb() {
     let data = VolumeName::parse("data").unwrap();
     let web = |name: &str| MachineName::parse(name).unwrap();
     let asks = [
@@ -192,13 +192,11 @@ fn each_ask_names_its_run_and_its_retry_command() {
             RunAsk::Mirror { to: web("web-2") },
             "Mirror of Volume data onto web-2",
             OperationVerb::Mirror,
-            "volume mirror data --to web-2",
         ),
         (
             RunAsk::Sync { full: Full },
             "full Sync of Volume data's Mirror",
             OperationVerb::Sync,
-            "volume sync data --full",
         ),
         (
             RunAsk::DeleteMirror {
@@ -207,7 +205,6 @@ fn each_ask_names_its_run_and_its_retry_command() {
             },
             "deletion of Mirror data-web-2",
             OperationVerb::RemoveMirror,
-            "volume mirror rm data-web-2 --confirm data",
         ),
         (
             RunAsk::DeleteOldCopy {
@@ -216,25 +213,21 @@ fn each_ask_names_its_run_and_its_retry_command() {
             },
             "deletion of Mirror data-web-1",
             OperationVerb::RemoveMirror,
-            "volume mirror rm data-web-1 --if-old-copy",
         ),
         (
             RunAsk::Move { to: web("web-2") },
             "Move of Volume data onto web-2",
             OperationVerb::Move,
-            "volume move data --to web-2",
         ),
         (
             RunAsk::Release,
             "Release of Volume data",
             OperationVerb::Release,
-            "volume release data",
         ),
         (
             RunAsk::Restore { from: web("web-2") },
             "Restore of Volume data from web-2",
             OperationVerb::Restore,
-            "volume restore data --from web-2",
         ),
         (
             RunAsk::Resize {
@@ -242,14 +235,11 @@ fn each_ask_names_its_run_and_its_retry_command() {
             },
             "resize of Volume data to 20 GB",
             OperationVerb::Resize,
-            "volume set data --size 20GB",
         ),
     ];
-    for (ask, started, verb, retry) in asks {
+    for (ask, started, verb) in asks {
         assert_eq!(ask.started(&data), started);
-        let (said, words) = ask.rerun(&data);
-        assert_eq!(said, verb);
-        assert_eq!(words.join(" "), retry);
+        assert_eq!(ask.verb(), verb);
     }
 }
 
@@ -307,7 +297,7 @@ fn a_deployed_volume_resizes_only_with_ployz_cloud() {
         parsed(&["ployz", "volume", "set", "data", "--size", "20", "--wait"])
             .is_ok_and(|root| leaf_matches(&root).get_flag("wait"))
     );
-    let (store, _) = store::store_with_edits(matches);
+    let (store, _) = store::store_with_edits(&root);
     store
         .write(&ployz_store::CreateVolume {
             id: VolumeId::parse(store::mint()).unwrap(),
@@ -450,52 +440,6 @@ async fn each_kind_posts_only_its_own_fields() {
         assert_eq!(started.state, MaybeKnown::Known(VolumeRunState::Requested));
         assert_eq!(serde_json::to_value(started.kind).unwrap(), json!(kind));
     }
-}
-
-#[test]
-fn a_removal_s_retry_line_keeps_if_old_copy() {
-    let volume = VolumeName::parse("data").unwrap();
-    let slot = MachineName::parse("web-1").unwrap();
-    assert_eq!(
-        removal_words(&volume, &slot, true, Some("data")).join(" "),
-        "volume mirror rm data-web-1 --if-old-copy --confirm data"
-    );
-    assert_eq!(
-        removal_words(&volume, &slot, false, None).join(" "),
-        "volume mirror rm data-web-1"
-    );
-}
-
-#[test]
-fn a_resize_s_retry_line_carries_its_size_and_approval() {
-    for size in ["20", "0.5"] {
-        let word = size_word(ProvisionedVolumeMaximumBytes::parse_gb(size).unwrap());
-        assert_eq!(word, format!("{size}GB"));
-        let retry = parsed(&[
-            "ployz",
-            "volume",
-            "set",
-            "data",
-            "--size",
-            &word,
-            "--approval",
-            "apr_1",
-        ])
-        .unwrap();
-        assert_eq!(path(&retry), "volume set");
-    }
-    assert!(
-        parsed(&[
-            "ployz",
-            "volume",
-            "set",
-            "data",
-            "--shared-writes=true",
-            "--approval",
-            "apr_1"
-        ])
-        .is_err()
-    );
 }
 
 /// A Cloud from before `--if-old-copy`: it knows these kinds only, and drops fields it doesn't know.

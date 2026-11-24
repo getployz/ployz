@@ -12,7 +12,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use super::{Error, config_path, leaf_matches, route, runtime};
-use crate::cli::{base, switch};
+use crate::cli::{Rerun, base, switch};
 use crate::cloud::account::Credential;
 use crate::cloud::login::LoginError;
 use crate::connect::{Client, ConnectError};
@@ -70,6 +70,7 @@ fn recover_from(root: &ArgMatches, stdin: impl Read) -> Result<(), Error> {
         "ployz recover",
     ))?;
     let code = read_code(matches, stdin)?;
+    let again = Rerun::again(root);
     let recovered = match runtime.block_on(recover_with(&mut client, &code, None)) {
         Ok(recovered) => recovered,
         Err(refused) => {
@@ -78,7 +79,7 @@ fn recover_from(root: &ArgMatches, stdin: impl Read) -> Result<(), Error> {
                 why,
                 Some(RecoveryRefusal::NoBackup | RecoveryRefusal::WrongCode)
             ) {
-                return Err(recover_failure(refused));
+                return Err(recover_failure(refused, &again));
             }
             // A rotation may have left Cloud a backup under a newer code than the seed's.
             let credential = match route::signed_in(&runtime, matches) {
@@ -90,9 +91,15 @@ fn recover_from(root: &ArgMatches, stdin: impl Read) -> Result<(), Error> {
                 if why == Some(RecoveryRefusal::NoBackup) {
                     return Err(sign_in_for_backup());
                 }
-                return Err(recover_failure(refused));
+                return Err(recover_failure(refused, &again));
             };
-            runtime.block_on(recover_from_cloud(&mut client, &credential, &code, refused))?
+            runtime.block_on(recover_from_cloud(
+                &mut client,
+                &credential,
+                &code,
+                refused,
+                &again,
+            ))?
         }
     };
     ui::fields(
@@ -107,6 +114,7 @@ async fn recover_from_cloud(
     credential: &Credential,
     code: &RecoveryCode,
     refused: ConnectError,
+    again: &Rerun,
 ) -> Result<SealingPublicKey, Error> {
     let organization = cloud::account::acting_in(credential).await?;
     let backup = recovery_row(credential, &organization.id)
@@ -118,11 +126,11 @@ async fn recover_from_cloud(
                 "Nothing to recover from: neither this Server nor Cloud holds a backup.",
             ));
         }
-        return Err(recover_failure(refused));
+        return Err(recover_failure(refused, again));
     };
     recover_with(client, code, Some(backup))
         .await
-        .map_err(recover_failure)
+        .map_err(|refused| recover_failure(refused, again))
 }
 
 fn sign_in_for_backup() -> Error {
@@ -321,7 +329,8 @@ fn refusal(error: &ConnectError) -> Option<RecoveryRefusal> {
     answered.evidence::<RecoveryRefusal>()
 }
 
-fn recover_failure(error: ConnectError) -> Error {
+/// The refusal, naming `again`, this command line, where a corrected code may answer it.
+fn recover_failure(error: ConnectError, again: &Rerun) -> Error {
     let Some(refusal) = refusal(&error) else {
         return error.into();
     };
@@ -330,9 +339,7 @@ fn recover_failure(error: ConnectError) -> Error {
             RpcErrorCode::InvalidArgument,
             "That recovery code is wrong.",
         )
-        .hint(Hint::Retry(
-            "Check the code and run ployz recover again.".to_owned(),
-        )),
+        .hint(again.clone()),
         RecoveryRefusal::OtherKey => Error::coded(
             RpcErrorCode::InvalidArgument,
             "That recovery code opens another Sealing Key, not the one this Cluster awaits.",

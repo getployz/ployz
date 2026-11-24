@@ -27,7 +27,6 @@ use super::teardown::{self, Inventory, Removed, inventory};
 use super::{Error, leaf_matches, required};
 use crate::cli::{base, positional, repeated, switch, value};
 use crate::ui::Tree;
-use ployz_core::Hint;
 
 pub(super) fn group(command: Command) -> Command {
     command.about("Manage Environments and Branches")
@@ -540,13 +539,13 @@ struct Removal<'a> {
 pub(super) fn rm(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let (name, at) = named_environment(matches, "name")?;
-    let store = store(root)?.args([name.as_str()]);
+    let store = store(root)?;
     let inventory = inventory(&store, &at)?;
     // Typed where it is: PROJECT/ENV.
     let typed = format!("{}/{name}", inventory.environment.project);
     // Not removed yet (queued, failed, cancelled, or its outcome unknown): this same
     // command finishes it once the removal applied, or queues it again.
-    let store = store.args(["--confirm", typed.as_str()]);
+    let store = store.retrying("confirm", typed.as_str());
     let environment = inventory.environment.clone();
     let target = (&environment.project, Some(&name));
     let mut shown = None;
@@ -554,10 +553,10 @@ pub(super) fn rm(root: &ArgMatches) -> Result<(), Error> {
         matches,
         typed.as_str(),
         "Environment",
-        store.again(&[]),
+        store.again(),
         || {
             shown = Some(teardown::Shown::of([&inventory]));
-            Ok(unconfirmed(inventory, &store.again(&[])))
+            Ok(unconfirmed(inventory, store.again()))
         },
     )?;
     let events = deploy::open_events(matches)?;
@@ -576,7 +575,7 @@ pub(super) fn rm(root: &ArgMatches) -> Result<(), Error> {
 
 /// Refuse an unconfirmed `env rm`, naming what goes and the exact retry; and
 /// the same as a tree for the prompt.
-fn unconfirmed(inventory: Inventory, retry: &str) -> (Error, Tree) {
+fn unconfirmed(inventory: Inventory, retry: crate::cli::Rerun) -> (Error, Tree) {
     let loss = Tree::new(
         format!(
             "Removing Environment {}/{} deletes, for good:",
@@ -597,7 +596,7 @@ fn unconfirmed(inventory: Inventory, retry: &str) -> (Error, Tree) {
             "volumes": inventory.volumes,
         }),
     )
-    .hint(Hint::Retry(retry.to_owned()));
+    .hint(retry);
     (refusal, loss)
 }
 

@@ -412,6 +412,13 @@ context's name as a positional argument.
 
 A command prints its result on stdout and everything else on stderr: progress, warnings, the
 `next:` line, prompts and errors. `ployz service ls > services.txt` saves only the table.
+
+A `retry:` line is the command you ran, with every flag you typed, such as `--ployz-config`,
+`--json` and `--why`, plus what the retry adds, such as `--confirm` or `--approval`. Flags that
+pick where a command runs, `--context`, `--connect`, `--project` and `--env`, are spelled out
+even when they came from a variable. A retry never repeats a variable's value or a registry token:
+`ployz set web.env.TOKEN=…` retries as `ployz set 'web.env.TOKEN=VALUE'`, and a `--patch` that sets
+either retries as `--patch JSON`. Put the value back before you run it.
 `ployz logs` reading your servers prints each line on the stream your app wrote it to, so add
 `2>&1` to pipe every line; see [Logs](../observe/logs.md#read-logs-from-the-cli).
 
@@ -560,9 +567,9 @@ it exits 1 with `No running Service`.
 Once it starts, `ployz exec` exits with your command's own exit code. When the container stops under it,
 because a deploy replaced it or the service was stopped, it exits 1 with
 `The container for web stopped; exec ended.` A `retry:` line follows when another container of the
-service runs. It is the command you ran: the `-T` you typed, the `--context`, `--connect`,
+service runs. It is the command you ran: `-T` as `--no-tty`, the `--context`, `--connect`,
 `--project` and `--env` you gave as flags or variables, and the `-- command`, like
-`retry: ployz exec -T web -- sleep 120`. Running it attaches there. It names no container, so it
+`retry: ployz exec --no-tty web -- sleep 120`. Running it attaches there. It names no container, so it
 reaches whichever one runs. When `ployz exec` stops before your command does,
 because you pressed Ctrl-C, a script killed it or the connection dropped, the server stops the
 command too: it sends SIGTERM, then SIGKILL after 10 seconds. The signal reaches the command

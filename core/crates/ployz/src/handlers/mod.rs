@@ -44,8 +44,7 @@ pub(crate) mod server;
 pub(crate) mod service;
 mod shared;
 use crate::cli::{
-    command_path, config_path, leaf_matches, recovery_command, rerun, string_values, takes_value,
-    typed_with,
+    Rerun, command_path, config_path, leaf_matches, rerun, string_values, takes_value,
 };
 mod status;
 mod status_servers;
@@ -740,11 +739,12 @@ mod tests {
                 "staging",
             ])
             .unwrap();
-        let recovery = recovery_command(
-            leaf_matches(&matches),
-            "staging",
+        let recovery = Rerun::then(
+            &matches,
             &["server", "set", "edge", "--accepts-ingress=true"],
-        );
+        )
+        .set("context", "staging")
+        .line();
         let args = shell_words::split(&recovery).unwrap();
         let parsed = command().try_get_matches_from(args).unwrap();
         let leaf = leaf_matches(&parsed);
@@ -760,12 +760,12 @@ mod tests {
 
     #[test]
     #[cfg(debug_assertions)]
-    #[should_panic(expected = "recovery hint does not parse")]
+    #[should_panic(expected = "a rerun's words don't parse")]
     fn setup_recovery_refuses_a_command_outside_the_tree() {
         let matches = command()
             .try_get_matches_from(["ployz", "server", "add", "--standalone", "root@host"])
             .unwrap();
-        recovery_command(leaf_matches(&matches), "staging", &["no-such", "command"]);
+        let _ = Rerun::then(&matches, &["no-such", "command"]);
     }
 
     #[test]
@@ -829,16 +829,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(debug_assertions)]
-    #[should_panic(expected = "recovery hint does not parse")]
-    fn context_config_recovery_asserts_dispatch_accepts_the_context() {
-        let matches = command()
-            .try_get_matches_from(["ployz", "server", "ls"])
-            .unwrap();
-        recovery_command(leaf_matches(&matches), "b", &["org", "ls"]);
-    }
-
-    #[test]
     fn direct_recovery_uses_failed_identity_and_actual_scope_before_committed_json() {
         use crate::failure::{Diagnostic, LogTail};
         use ployz_core::{MachineId, QualifiedService};
@@ -872,10 +862,9 @@ mod tests {
                 ..Default::default()
             })
             .interrupted();
-        let error = crate::enrollment::output::ingress_hints(error, |args| {
-            rerun(leaf_matches(&matches), args)
-        })
-        .context("Server updated; the Ingress Proxy did not follow.");
+        let error =
+            crate::enrollment::output::ingress_hints(error, |args| Rerun::then(&matches, args))
+                .context("Server updated; the Ingress Proxy did not follow.");
         assert!(error.is_interrupted());
         let mode = crate::ui::test_mode(true);
         let (result, captured) = crate::ui::captured(|| {

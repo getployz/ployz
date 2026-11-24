@@ -148,7 +148,7 @@ pub(super) fn connect(root: &ArgMatches) -> Result<(), Error> {
                 "No GitHub account connected yet",
                 json!({ "url": before.connect_url }),
             )
-            .hint(Hint::Retry("ployz github connect --wait".into())));
+            .hint(crate::cli::Rerun::again(root).switch("wait")));
         }
         let pending =
             json!({ "status": "pending", "url": before.connect_url, "connection": before });

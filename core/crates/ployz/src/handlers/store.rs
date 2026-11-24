@@ -118,20 +118,22 @@ impl Backend {
 /// failure, and an ambiguous Project names `ployz link --project PROJECT`.
 pub(crate) struct Store<'m> {
     backend: Backend,
+    root: &'m ArgMatches,
     matches: &'m ArgMatches,
-    /// The command's words, then the arguments its retry repeats: never raw input.
-    words: Vec<String>,
+    /// What this command's retry gives beyond its command line, as `--confirm NAME`.
+    retry_sets: Vec<(&'static str, String)>,
     /// This run reads secrets from stdin, so its approval retry asks for a new approval.
     secrets: bool,
 }
 
 impl<'m> Store<'m> {
     #[cfg(test)]
-    pub(super) fn for_test(backend: Backend, matches: &'m ArgMatches) -> Self {
+    pub(super) fn for_test(backend: Backend, root: &'m ArgMatches) -> Self {
         Self {
             backend,
-            matches,
-            words: vec!["deploy".into()],
+            root,
+            matches: leaf_matches(root),
+            retry_sets: Vec::new(),
             secrets: false,
         }
     }
@@ -143,9 +145,10 @@ impl<'m> Store<'m> {
         self
     }
 
-    /// Name the arguments this command's retry repeats.
-    pub(crate) fn args<'a>(mut self, args: impl IntoIterator<Item = &'a str>) -> Self {
-        self.words.extend(args.into_iter().map(str::to_owned));
+    /// Have this command's retry give `id` the value `value`, as a `--confirm` the
+    /// command line may lack.
+    pub(crate) fn retrying(mut self, id: &'static str, value: &str) -> Self {
+        self.retry_sets.push((id, value.to_owned()));
         self
     }
 
@@ -248,8 +251,11 @@ impl<'m> Store<'m> {
             if said_yes {
                 return Err(StoreCallError::Stopped(approval::moved(verb, refused)));
             }
-            let retry = self.approving(asked.digest());
-            approval = Some(approval::settle(verb, &asked, retry)?);
+            approval = Some(approval::settle(
+                verb,
+                &asked,
+                self.approving(asked.digest()),
+            )?);
             said_yes = true;
         }
     }
@@ -569,16 +575,11 @@ pub(crate) fn store(root: &ArgMatches) -> Result<Store<'_>, Error> {
 /// and no `PLOYZ_STORE`.
 pub(crate) fn reachable(root: &ArgMatches) -> Result<Option<Store<'_>>, Error> {
     let matches = leaf_matches(root);
-    let mut words = Vec::new();
-    let mut at = root;
-    while let Some((word, child)) = at.subcommand() {
-        words.push(word.to_owned());
-        at = child;
-    }
     Ok(backend_at(&config_path(matches)?)?.map(|backend| Store {
         backend,
+        root,
         matches,
-        words,
+        retry_sets: Vec::new(),
         secrets: false,
     }))
 }
@@ -613,31 +614,34 @@ pub(crate) fn backend_at(config: &Path) -> Result<Option<Backend>, Error> {
     }
 }
 
-/// Run `read`, several Store reads, again when `torn` finds they came back at
-/// different revisions: an edit landed between them. Torn twice is a conflict.
-pub(crate) fn at_one_revision<T>(
-    command: &str,
-    read: impl Fn() -> Result<T, Error>,
-    torn: impl Fn(&T) -> bool,
-) -> Result<T, Error> {
-    let first = read()?;
-    if !torn(&first) {
-        return Ok(first);
+impl Store<'_> {
+    /// Run `read`, several Store reads, again when `torn` finds they came back at
+    /// different revisions: an edit landed between them. Torn twice is a conflict.
+    pub(crate) fn at_one_revision<T>(
+        &self,
+        command: &str,
+        read: impl Fn() -> Result<T, Error>,
+        torn: impl Fn(&T) -> bool,
+    ) -> Result<T, Error> {
+        let first = read()?;
+        if !torn(&first) {
+            return Ok(first);
+        }
+        let again = read()?;
+        if torn(&again) {
+            return Err(
+                Error::conflict(format!("Working State changed while {command} read it."))
+                    .hint(self.again()),
+            );
+        }
+        Ok(again)
     }
-    let again = read()?;
-    if torn(&again) {
-        return Err(
-            Error::conflict(format!("Working State changed while {command} read it."))
-                .hint(Hint::Retry(super::typed_with(&[]))),
-        );
-    }
-    Ok(again)
 }
 
 #[cfg(test)]
 /// A local Store holding Project `shop`, and a Service `webN` created in it by
 /// each `edit()`: a write between two reads.
-pub(crate) fn store_with_edits(matches: &ArgMatches) -> (Store<'_>, impl Fn()) {
+pub(crate) fn store_with_edits(root: &ArgMatches) -> (Store<'_>, impl Fn()) {
     let who = Actor::system(OrganizationId::parse(LOCAL_ORGANIZATION).unwrap());
     let local = std::sync::Arc::new(
         ConfigStore::open("sqlite::memory:", SealingKey::new(&[7; 32]).unwrap()).unwrap(),
@@ -671,12 +675,7 @@ pub(crate) fn store_with_edits(matches: &ArgMatches) -> (Store<'_>, impl Fn()) {
             )
             .unwrap();
     };
-    let store = Store {
-        backend: Backend::Local(local, who),
-        matches,
-        words: vec!["get".to_owned()],
-        secrets: false,
-    };
+    let store = Store::for_test(Backend::Local(local, who), root);
     (store, edit)
 }
 
@@ -709,7 +708,7 @@ mod tests {
         let root = crate::cli::command()
             .try_get_matches_from(["ployz", "get"])
             .unwrap();
-        let (store, edit) = store_with_edits(leaf_matches(&root));
+        let (store, edit) = store_with_edits(&root);
         let attempts = std::cell::Cell::new(0);
         let read = || {
             attempts.set(attempts.get() + 1);
@@ -719,7 +718,7 @@ mod tests {
                 }
             })
         };
-        let (first, second) = at_one_revision("get", read, |(a, b)| a != b).unwrap();
+        let (first, second) = store.at_one_revision("get", read, |(a, b)| a != b).unwrap();
         assert_eq!(attempts.get(), 2);
         assert_eq!(first, second);
     }
@@ -729,9 +728,10 @@ mod tests {
         let root = crate::cli::command()
             .try_get_matches_from(["ployz", "get"])
             .unwrap();
-        let (store, edit) = store_with_edits(leaf_matches(&root));
-        let error =
-            at_one_revision("get", || two_reads(&store, &edit), |(a, b)| a != b).unwrap_err();
+        let (store, edit) = store_with_edits(&root);
+        let error = store
+            .at_one_revision("get", || two_reads(&store, &edit), |(a, b)| a != b)
+            .unwrap_err();
         assert!(
             error
                 .hints()

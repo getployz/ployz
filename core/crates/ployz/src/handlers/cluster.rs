@@ -45,7 +45,7 @@ pub(crate) fn name(root: &ArgMatches) -> Result<(), Error> {
     if let Some(name) = &given
         && let Some(credential) = route::cloud_runs(&runtime, leaf)?
     {
-        return through_cloud(&runtime, leaf, &credential, name);
+        return through_cloud(&runtime, root, &credential, name);
     }
     runtime.block_on(async {
         let client = route::connect(leaf, context).await?;
@@ -75,15 +75,15 @@ pub(crate) fn name(root: &ArgMatches) -> Result<(), Error> {
 
 fn through_cloud(
     runtime: &tokio::runtime::Runtime,
-    leaf: &ArgMatches,
+    root: &ArgMatches,
     credential: &Credential,
     name: &ClusterName,
 ) -> Result<(), Error> {
     let ran = approval::approved(
         runtime,
         OperationVerb::SetClusterName,
-        leaf.get_one::<String>("approval").cloned(),
-        |id| crate::cli::approved_rerun(leaf, &["cluster", "name", name.as_str()], id),
+        leaf_matches(root).get_one::<String>("approval").cloned(),
+        &crate::cli::Rerun::again(root),
         async |approval| {
             let key = uuid::Uuid::new_v4().to_string();
             let input = json!({ "name": name.as_str() });

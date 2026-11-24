@@ -5,7 +5,9 @@ use crate::{env, handlers, operator::input::TIME_FORMATS};
 
 mod rerun;
 
-pub(crate) use rerun::{approved_rerun, config_flag, recovery_command, rerun};
+#[cfg(test)]
+pub(crate) use rerun::retry_hint;
+pub(crate) use rerun::{Rerun, Withheld, withheld};
 
 #[must_use]
 /// The whole tree: every compiled command plus the ones the signed-in Cloud publishes,
@@ -132,14 +134,10 @@ pub(crate) fn takes_value<'a>(words: impl IntoIterator<Item = &'a str>, id: &str
     inherited || command.get_arguments().any(takes)
 }
 
-/// This command line as typed, then `extra`.
-pub(crate) fn typed_with(extra: &[&str]) -> String {
-    std::iter::once("ployz".to_owned())
-        .chain(std::env::args().skip(1))
-        .chain(extra.iter().map(|arg| (*arg).to_owned()))
-        .map(|arg| crate::ui::shell_word(&arg).into_owned())
-        .collect::<Vec<_>>()
-        .join(" ")
+/// `args` as the same Cluster would run them, under this command line's own arguments:
+/// the line a `next:` or `inspect:` hint names.
+pub(crate) fn rerun(matches: &clap::ArgMatches, args: &[&str]) -> String {
+    Rerun::then(matches, args).line()
 }
 
 /// The values given for `id` on the command line or from the environment, not its default.

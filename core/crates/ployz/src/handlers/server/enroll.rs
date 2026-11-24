@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::super::{Error, config_path, leaf_matches, runtime};
-use crate::cli::{base, positional, switch, value};
+use crate::cli::{Rerun, base, positional, switch, value};
 use crate::cloud;
 use crate::cloud::account::Credential;
 use crate::cloud::enroll::EnrollStage;
@@ -140,7 +140,7 @@ pub(crate) fn add(root: &ArgMatches) -> Result<(), Error> {
         })
     })?;
     if let Some(enrollment) = matches.get_one::<String>("wait") {
-        return runtime.block_on(wait_joined(&acting, enrollment));
+        return runtime.block_on(wait_joined(&acting, enrollment, another(root)));
     }
     // Before Cloud mints a token, so a bad flag costs none.
     let shape = Shaping::from_matches(matches).pasted_args()?;
@@ -149,7 +149,7 @@ pub(crate) fn add(root: &ArgMatches) -> Result<(), Error> {
         let key = ployz_core::first_key::LineKey::Device {
             key: super::super::device::own_key(&config_path(matches)?)?,
         };
-        return runtime.block_on(paste(&acting, &minted, &shape, &key));
+        return runtime.block_on(paste(&acting, &minted, &shape, &key, another(root)));
     }
     drop(runtime);
     enroll(
@@ -397,6 +397,7 @@ async fn paste(
     minted: &Minted,
     shape: &[String],
     key: &ployz_core::first_key::LineKey,
+    another: Rerun,
 ) -> Result<(), Error> {
     let line = pasted_command(acting.credential.cloud(), shape, key);
     if crate::ui::json() {
@@ -415,7 +416,7 @@ async fn paste(
         env::ENROLL_TOKEN,
         minted.token
     ));
-    wait_joined(acting, &minted.id).await
+    wait_joined(acting, &minted.id, another).await
 }
 
 /// One line that installs exactly this CLI's release, so the Server speaks the same
@@ -451,7 +452,12 @@ enum Enrollment {
     },
 }
 
-async fn wait_joined(acting: &Acting, enrollment: &str) -> Result<(), Error> {
+/// `server add --command` as this command line gave it: another enrollment to wait on.
+fn another(root: &ArgMatches) -> Rerun {
+    Rerun::again(root).without("wait").switch("command")
+}
+
+async fn wait_joined(acting: &Acting, enrollment: &str, another: Rerun) -> Result<(), Error> {
     crate::ui::note("Waiting for the Server to join...");
     loop {
         let read = acting
@@ -463,7 +469,7 @@ async fn wait_joined(acting: &Acting, enrollment: &str) -> Result<(), Error> {
                     RpcErrorCode::NotFound,
                     "the enrollment ended before a Server joined: forgetting this Organization's Servers voids its token",
                 )
-                .hint(Hint::Retry("ployz server add --command".into())));
+                .hint(another));
             }
             read => match read? {
                 Enrollment::Pending => tokio::time::sleep(JOIN_POLL).await,
@@ -472,7 +478,7 @@ async fn wait_joined(acting: &Acting, enrollment: &str) -> Result<(), Error> {
                         RpcErrorCode::Conflict,
                         "the enrollment expired before a Server joined",
                     )
-                    .hint(Hint::Retry("ployz server add --command".into())));
+                    .hint(another));
                 }
                 Enrollment::Joined { machine_id } => {
                     crate::ui::stream("The Server joined.");
@@ -616,14 +622,19 @@ mod tests {
                 slug: "acme".to_owned(),
             },
         };
-        let error = wait_joined(&acting, "e1").await.unwrap_err();
+        let waiting = crate::cli::command()
+            .try_get_matches_from(["ployz", "server", "add", "--wait", "e1"])
+            .unwrap();
+        let error = wait_joined(&acting, "e1", another(&waiting))
+            .await
+            .unwrap_err();
         assert_eq!(
             error.to_string(),
             "the enrollment ended before a Server joined: forgetting this Organization's Servers voids its token"
         );
         assert_eq!(
             error.hints(),
-            [Hint::Retry("ployz server add --command".into())]
+            [crate::cli::retry_hint("ployz server add --command")]
         );
     }
 

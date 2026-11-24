@@ -149,8 +149,8 @@ mod tests {
     fn cancellation_survives_context_hints_and_committed_json() {
         let failure = Failure::cancelled()
             .context("Server initialized; ingress deployment incomplete.")
-            .hint(Hint::Retry(
-                "ployz server set alpha --accepts-ingress=true".into(),
+            .hint(crate::cli::retry_hint(
+                "ployz server set alpha --accepts-ingress=true",
             ));
         let mut stdout = Vec::new();
         let mut stderr = anstream::StripStream::new(Vec::new());
@@ -320,7 +320,7 @@ mod tests {
             name: "nope".into(),
             running_in_scope: vec!["web".into()],
         })
-        .hint(Hint::Retry("ployz exec web -- ls".into()))
+        .hint(crate::cli::retry_hint("ployz exec web -- ls"))
         .hint(Hint::Undo("ployz stop web".into()));
         assert_eq!(
             end(&not_running, Mode::Json, false).stdout,

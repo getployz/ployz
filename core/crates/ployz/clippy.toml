@@ -4,5 +4,6 @@ disallowed-methods = [
     { path = "anstream::stdout", reason = "write through crate::ui::stdout, which dies of SIGPIPE when the reader is gone" },
     { path = "tokio::io::stdout", reason = "write through crate::ui::async_stdout, which reports a reader that is gone" },
     { path = "clap::Command::print_help", reason = "print clap's render_help through crate::ui so a closed stdout dies of SIGPIPE" },
+    { path = "ployz_core::RetryCommand::rendered", reason = "build a retry from the command line clap parsed: crate::cli::Rerun, which keeps the flags given and withholds secrets" },
     { path = "clap::Command::print_long_help", reason = "print clap's render_long_help through crate::ui so a closed stdout dies of SIGPIPE" },
 ]

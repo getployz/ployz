@@ -8,6 +8,7 @@ use ployz_store::Stale;
 use super::super::Error;
 use super::{Store, next};
 use crate::approval::Asked;
+use crate::cli::Rerun;
 use crate::cloud::account::StoreCallError;
 
 impl From<StoreCallError> for Error {
@@ -51,21 +52,18 @@ impl Store<'_> {
                     refused.message.trim_end_matches('.')
                 );
             }
-            hint = Some(Hint::Retry(self.approving(asked.digest())));
+            hint = Some(self.approving(asked.digest()).into());
         }
         Error::from(error).hint(hint)
     }
 
-    /// This command again with its [`Self::args`] and `extra`, in the same Project
-    /// and Environment, with the same Ployz config.
-    pub(crate) fn again(&self, extra: &[&str]) -> String {
-        let mut words: Vec<&str> = crate::cli::config_flag(self.matches)
-            .into_iter()
-            .flatten()
-            .collect();
-        words.extend(self.words.iter().map(String::as_str));
-        words.extend(extra);
-        next(self.matches, &words)
+    /// This command line again, with what [`Self::retrying`] gives it.
+    pub(crate) fn again(&self) -> Rerun {
+        self.retry_sets
+            .iter()
+            .fold(Rerun::again(self.root), |again, (id, value)| {
+                again.set(id, value)
+            })
     }
 
     /// This command's failure for a Store error; a refusal to delete Volume data
@@ -93,7 +91,7 @@ impl Store<'_> {
                 });
                 Refusal {
                     error: StoreCallError::Refused(error),
-                    hint: Some(Hint::Retry(retry)),
+                    hint: Some(retry.into()),
                 }
             }
             refusal => refusal,
@@ -169,6 +167,7 @@ impl Store<'_> {
                         version: Some(version),
                         ..carried
                     })
+                    .line()
                 },
             ),
             None => with_refresh_hint(refusal, self.matches, read),
@@ -176,9 +175,11 @@ impl Store<'_> {
     }
 
     /// This command again carrying `digest`, the yes it needs; a run that gives secrets
-    /// on stdin asks again instead, so its retry names each `--value` row and no digest.
-    pub(super) fn approving(&self, digest: &str) -> String {
-        if self.secrets {
+    /// on stdin asks again instead, so its retry names each `--value` row and no digest,
+    /// as does a command that takes no `--approval`.
+    pub(super) fn approving(&self, digest: &str) -> Rerun {
+        let path = super::super::command_path(self.root);
+        if self.secrets || !super::super::takes_value(path.split(' '), "approval") {
             return self.retry(self.carried());
         }
         self.retry(Carried {
@@ -191,8 +192,8 @@ impl Store<'_> {
     /// `history`'s `--version`, or `--expect-version` elsewhere. Read from the
     /// command tree: `ArgMatches` refuses unknown ids only in debug builds.
     fn version_flag(&self) -> (&'static str, &'static str) {
-        let takes_version =
-            super::super::takes_value(self.words.iter().map(String::as_str), "version");
+        let path = super::super::command_path(self.root);
+        let takes_version = super::super::takes_value(path.split(' '), "version");
         if takes_version {
             ("version", "--version")
         } else {
@@ -215,18 +216,14 @@ impl Store<'_> {
         }
     }
 
-    fn retry(&self, carried: Carried) -> String {
-        let mut extra = Vec::new();
-        for name in &carried.accept {
-            extra.extend(["--accept-volume-loss", name.as_str()]);
-        }
-        if let Some(version) = &carried.version {
-            extra.extend([self.version_flag().1, version.as_str()]);
-        }
-        if let Some(approval) = &carried.approval {
-            extra.extend(["--approval", approval.as_str()]);
-        }
-        self.again(&extra)
+    fn retry(&self, carried: Carried) -> Rerun {
+        self.again()
+            .set_all(
+                "accept-volume-loss",
+                carried.accept.iter().map(String::as_str),
+            )
+            .set_all(self.version_flag().0, carried.version.as_deref())
+            .set_all("approval", carried.approval.as_deref())
     }
 }
 
@@ -360,71 +357,25 @@ mod tests {
             .unwrap();
         let key = SealingKey::new(&[7; 32]).unwrap();
         let local = ConfigStore::open("sqlite::memory:", key).unwrap();
-        let store = Store {
-            backend: Backend::Local(
+        let store = Store::for_test(
+            Backend::Local(
                 std::sync::Arc::new(local),
                 Actor::system(OrganizationId::parse(LOCAL_ORGANIZATION).unwrap()),
             ),
-            matches: leaf_matches(&root),
-            words: vec!["deploy".to_owned()],
-            secrets: false,
-        };
+            &root,
+        );
         let refused = ployz_core::RpcError::confirmation_required(
             "This Deploy permanently deletes the data of data",
         )
         .with_details(json!({ "version": "3:1:0.1", "accept": ["data"] }));
         let error = store.accepting(StoreCallError::Refused(refused));
-        let retry = "ployz deploy --accept-volume-loss data --expect-version 3:1:0.1 --approval apr_1 --env staging";
-        assert_eq!(error.hints(), [Hint::Retry(retry.into())]);
+        let retry = "ployz deploy --env staging --approval apr_1 --accept-volume-loss data --expect-version 3:1:0.1";
+        assert_eq!(error.hints(), [crate::cli::retry_hint(retry)]);
         let error = error.report();
         assert_eq!(error.details.get("retry"), Some(&json!(retry)));
         assert_eq!(
             error.message,
             "This Deploy permanently deletes the data of data"
-        );
-    }
-
-    #[test]
-    fn the_same_command_again_keeps_a_typed_ployz_config() {
-        let config = "/home/me/my ployz/config.yaml";
-        let again = |typed: &[&str]| {
-            let root = crate::cli::command().try_get_matches_from(typed).unwrap();
-            let key = SealingKey::new(&[7; 32]).unwrap();
-            Store {
-                backend: Backend::Local(
-                    std::sync::Arc::new(ConfigStore::open("sqlite::memory:", key).unwrap()),
-                    Actor::system(OrganizationId::parse(LOCAL_ORGANIZATION).unwrap()),
-                ),
-                matches: leaf_matches(&root),
-                words: vec!["env".to_owned(), "rm".to_owned(), "staging".to_owned()],
-                secrets: false,
-            }
-            .again(&["--confirm", "shop/staging"])
-        };
-        let typed = again(&[
-            "ployz",
-            "--ployz-config",
-            config,
-            "env",
-            "rm",
-            "staging",
-            "--confirm",
-            "shop/staging",
-        ]);
-        assert_eq!(
-            typed,
-            "ployz --ployz-config '/home/me/my ployz/config.yaml' env rm staging --confirm shop/staging"
-        );
-        let root = crate::cli::command()
-            .try_get_matches_from(shell_words::split(&typed).unwrap())
-            .unwrap();
-        let leaf = leaf_matches(&root);
-        assert_eq!(leaf.get_one::<String>("ployz-config").unwrap(), config);
-        assert_eq!(leaf.get_one::<String>("confirm").unwrap(), "shop/staging");
-        // A default or `PLOYZ_CONFIG` holds for the next command on its own.
-        assert_eq!(
-            again(&["ployz", "env", "rm", "staging", "--confirm", "shop/staging"]),
-            "ployz env rm staging --confirm shop/staging"
         );
     }
 
@@ -445,29 +396,27 @@ mod tests {
         ];
         let root = crate::cli::command().try_get_matches_from(typed).unwrap();
         let key = SealingKey::new(&[7; 32]).unwrap();
-        let store = Store {
-            backend: Backend::Local(
+        let store = Store::for_test(
+            Backend::Local(
                 std::sync::Arc::new(ConfigStore::open("sqlite::memory:", key).unwrap()),
                 Actor::system(OrganizationId::parse(LOCAL_ORGANIZATION).unwrap()),
             ),
-            matches: leaf_matches(&root),
-            words: vec!["deploy".to_owned(), "--skip-deploy".to_owned()],
-            secrets: false,
-        };
+            &root,
+        );
         let refused = ployz_core::RpcError::confirmation_required(
             "Next deploy deletes the data of pg-data, logs. Accept each by name",
         )
         .with_details(json!({ "version": "3:1:0.1:9f2c", "accept": ["pg-data", "logs"] }));
-        let loss = "ployz deploy --skip-deploy --accept-volume-loss pg-data --accept-volume-loss logs \
-                    --expect-version 3:1:0.1:9f2c --approval apr_1 --project shop --env production";
+        let loss = "ployz deploy --skip-deploy --project shop --env production --expect-version 3:1:0.1:9f2c \
+                    --approval apr_1 --accept-volume-loss pg-data --accept-volume-loss logs";
         assert_eq!(
             store.accepting(StoreCallError::Refused(refused)).hints(),
-            [Hint::Retry(loss.into())]
+            [crate::cli::retry_hint(loss)]
         );
-        let approval = store.approving("apr_2");
+        let approval = store.approving("apr_2").line();
         assert_eq!(
             approval,
-            "ployz deploy --skip-deploy --expect-version 3:1:0.1 --approval apr_2 --project shop --env production"
+            "ployz deploy --skip-deploy --project shop --env production --expect-version 3:1:0.1 --approval apr_2"
         );
         let reparsed = |retry: &str| {
             let root = crate::cli::command()
@@ -516,15 +465,13 @@ mod tests {
                 .try_get_matches_from(std::iter::once("ployz").chain(words.iter().copied()))
                 .unwrap();
             let key = SealingKey::new(&[7; 32]).unwrap();
-            let store = Store {
-                backend: Backend::Local(
+            let store = Store::for_test(
+                Backend::Local(
                     std::sync::Arc::new(ConfigStore::open("sqlite::memory:", key).unwrap()),
                     Actor::system(OrganizationId::parse(LOCAL_ORGANIZATION).unwrap()),
                 ),
-                matches: leaf_matches(&root),
-                words: words.iter().map(|word| (*word).to_owned()).collect(),
-                secrets: false,
-            };
+                &root,
+            );
             let refused = ployz_core::RpcError::confirmation_required(
                 "This permanently deletes the data of data",
             )
@@ -534,7 +481,7 @@ mod tests {
                 panic!("{words:?} names no retry");
             };
             let reparsed = crate::cli::command()
-                .try_get_matches_from(shell_words::split(retry).unwrap())
+                .try_get_matches_from(shell_words::split(retry.command()).unwrap())
                 .unwrap_or_else(|error| panic!("{retry}: {error}"));
             assert_eq!(
                 leaf_matches(&reparsed)
@@ -558,23 +505,21 @@ mod tests {
         ];
         let root = crate::cli::command().try_get_matches_from(typed).unwrap();
         let key = SealingKey::new(&[7; 32]).unwrap();
-        let store = Store {
-            backend: Backend::Local(
+        let store = Store::for_test(
+            Backend::Local(
                 std::sync::Arc::new(ConfigStore::open("sqlite::memory:", key).unwrap()),
                 Actor::system(OrganizationId::parse(LOCAL_ORGANIZATION).unwrap()),
             ),
-            matches: leaf_matches(&root),
-            words: vec!["deploy".to_owned()],
-            secrets: false,
-        };
+            &root,
+        );
         let refused = ployz_core::RpcError::confirmation_required(
             "Deploying loses data of data. Accept each by name",
         )
         .with_details(json!({ "version": "5:1:0.1#loss-fzfjky", "accept": ["data"] }));
         let hints = store.accepting(StoreCallError::Refused(refused)).hints();
-        let retry = "ployz deploy --accept-volume-loss data --expect-version '5:1:0.1#loss-fzfjky' \
-                     --project mirrors --env production";
-        assert_eq!(hints, [Hint::Retry(retry.into())]);
+        let retry = "ployz deploy --project mirrors --env production --accept-volume-loss data \
+                     --expect-version '5:1:0.1#loss-fzfjky'";
+        assert_eq!(hints, [crate::cli::retry_hint(retry)]);
         let reparsed = crate::cli::command()
             .try_get_matches_from(shell_words::split(retry).unwrap())
             .unwrap_or_else(|error| panic!("{retry}: {error}"));
@@ -605,15 +550,13 @@ mod tests {
             .unwrap();
         let key = SealingKey::new(&[7; 32]).unwrap();
         let local = ConfigStore::open("sqlite::memory:", key).unwrap();
-        let store = Store {
-            backend: Backend::Local(
+        let store = Store::for_test(
+            Backend::Local(
                 std::sync::Arc::new(local),
                 Actor::system(OrganizationId::parse(LOCAL_ORGANIZATION).unwrap()),
             ),
-            matches: leaf_matches(&root),
-            words: vec!["deploy".to_owned()],
-            secrets: false,
-        };
+            &root,
+        );
         let next_of = |details| {
             let refusal = store.at_review(
                 StoreCallError::Refused(
@@ -629,7 +572,7 @@ mod tests {
         assert_eq!(
             next_of(json!({ "diff": { "version": "3:1:0.1" } })),
             [Hint::Next(
-                "ployz deploy --expect-version 3:1:0.1 --env staging".into()
+                "ployz deploy --env staging --expect-version 3:1:0.1".into()
             )]
         );
         assert_eq!(
@@ -657,15 +600,13 @@ mod tests {
         ];
         let root = crate::cli::command().try_get_matches_from(typed).unwrap();
         let key = SealingKey::new(&[7; 32]).unwrap();
-        let store = Store {
-            backend: Backend::Local(
+        let store = Store::for_test(
+            Backend::Local(
                 std::sync::Arc::new(ConfigStore::open("sqlite::memory:", key).unwrap()),
                 Actor::system(OrganizationId::parse(LOCAL_ORGANIZATION).unwrap()),
             ),
-            matches: leaf_matches(&root),
-            words: vec!["deploy".to_owned()],
-            secrets: false,
-        };
+            &root,
+        );
         let next = |accept: serde_json::Value| {
             let refusal = store.at_review(
                 StoreCallError::Refused(
@@ -726,15 +667,13 @@ mod tests {
         ];
         let root = crate::cli::command().try_get_matches_from(typed).unwrap();
         let key = SealingKey::new(&[7; 32]).unwrap();
-        let store = Store {
-            backend: Backend::Local(
+        let store = Store::for_test(
+            Backend::Local(
                 std::sync::Arc::new(ConfigStore::open("sqlite::memory:", key).unwrap()),
                 Actor::system(OrganizationId::parse(LOCAL_ORGANIZATION).unwrap()),
             ),
-            matches: leaf_matches(&root),
-            words: vec!["deploy".to_owned()],
-            secrets: false,
-        };
+            &root,
+        );
         let refusal = store.at_review(
             StoreCallError::Refused(
                 ployz_core::RpcError::conflict(String::from(
@@ -760,15 +699,13 @@ mod tests {
         let accepting = |typed: &[&str], deploy: bool| {
             let root = crate::cli::command().try_get_matches_from(typed).unwrap();
             let key = SealingKey::new(&[7; 32]).unwrap();
-            let store = Store {
-                backend: Backend::Local(
+            let store = Store::for_test(
+                Backend::Local(
                     std::sync::Arc::new(ConfigStore::open("sqlite::memory:", key).unwrap()),
                     Actor::system(OrganizationId::parse(LOCAL_ORGANIZATION).unwrap()),
                 ),
-                matches: leaf_matches(&root),
-                words: vec!["deploy".to_owned()],
-                secrets: false,
-            };
+                &root,
+            );
             let refused = StoreCallError::Refused(
                 ployz_core::RpcError::confirmation_required(String::from(
                     "This permanently deletes the data of big1, big2. Accept each by name",
@@ -798,7 +735,7 @@ mod tests {
             "33:4:0.4",
         ];
         let (hints, message) = accepting(&all, true);
-        assert_eq!(hints, [Hint::Retry(retry.into())]);
+        assert_eq!(hints, [crate::cli::retry_hint(retry)]);
         assert_eq!(
             message,
             "--expect-version 33:4:0.4 doesn't cover the data this deletes. Retry with the \
@@ -806,7 +743,7 @@ mod tests {
         );
         // A removal's refusal lists more than Volumes; it keeps its message.
         let (hints, message) = accepting(&all, false);
-        assert_eq!(hints, [Hint::Retry(retry.into())]);
+        assert_eq!(hints, [crate::cli::retry_hint(retry)]);
         assert_eq!(
             message,
             "This permanently deletes the data of big1, big2. Accept each by name"
@@ -823,7 +760,7 @@ mod tests {
             ],
             true,
         );
-        assert_eq!(hints, [Hint::Retry(retry.into())]);
+        assert_eq!(hints, [crate::cli::retry_hint(retry)]);
         assert_eq!(
             message,
             "This permanently deletes the data of big1, big2. Accept each by name"

@@ -37,7 +37,7 @@ pub(in crate::handlers) fn drain(root: &ArgMatches) -> Result<(), Error> {
     let runtime = runtime()?;
     if let Some(credential) = super::super::route::cloud_runs(&runtime, matches)? {
         let machine = super::cloud_machine(&runtime, matches, selector)?;
-        let report = through_cloud(&runtime, matches, &credential, &machine, selector)?;
+        let report = through_cloud(&runtime, root, &credential, &machine)?;
         let server = &report.server;
         show(DrainStep::ServicesOff {
             server,
@@ -82,17 +82,16 @@ pub(in crate::handlers) fn drain(root: &ArgMatches) -> Result<(), Error> {
 
 fn through_cloud(
     runtime: &tokio::runtime::Runtime,
-    matches: &ArgMatches,
+    root: &ArgMatches,
     credential: &Credential,
     machine: &Machine,
-    selector: &str,
 ) -> Result<DrainReport, Error> {
     let key = uuid::Uuid::new_v4().to_string();
     let id = approval::approved(
         runtime,
         OperationVerb::Drain,
-        matches.get_one::<String>("approval").cloned(),
-        |id| crate::cli::approved_rerun(matches, &["server", "drain", selector], id),
+        leaf_matches(root).get_one::<String>("approval").cloned(),
+        &crate::cli::Rerun::again(root),
         async |approval| {
             cloud::account::start_run(
                 credential,
@@ -235,12 +234,7 @@ fn unsigned_moves(matches: &ArgMatches, server: &str, services: &[QualifiedServi
         ),
         json!({ "server": server, "services": named }),
     )
-    .hint(Hint::Next(shell_words::join(
-        ["ployz"]
-            .into_iter()
-            .chain(crate::cli::config_flag(matches).into_iter().flatten())
-            .chain(["login"]),
-    )))
+    .hint(Hint::Next(crate::cli::rerun(matches, &["login"])))
 }
 
 fn refusal(error: DrainError) -> Error {

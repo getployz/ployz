@@ -27,6 +27,7 @@ use super::super::key::members::Member;
 use super::super::store::Store;
 use super::super::{Error, route};
 use super::silent::{self, ImageEdit};
+use crate::cli::Rerun;
 use crate::cluster::Call;
 use crate::connect::Client;
 use crate::device::DeviceSigning;
@@ -118,8 +119,10 @@ pub(in crate::handlers) fn sign(
     let unsigned = |plan: Result<PlanView, Error>| -> Result<Option<DeviceApproval>, Error> {
         if silent {
             let plan = plan?;
-            silent::pending(&plan.changes, edits).map_err(|refused| refused.error(matches))?;
-            silent::moves(&plan.regions).map_err(|refused| refused.error(matches))?;
+            silent::pending(&plan.changes, edits)
+                .map_err(|refused| refused.error(matches, store.again()))?;
+            silent::moves(&plan.regions)
+                .map_err(|refused| refused.error(matches, store.again()))?;
         }
         Ok(None)
     };
@@ -241,9 +244,11 @@ pub(in crate::handlers) fn sign(
     if forget_older {
         crate::ui::note(forgetting(&approved));
     }
-    let signed_at = consent((&namespace, &approved), |question, refusal, declined| {
-        crate::ui::confirm(question, || refusal, declined)
-    })?;
+    let signed_at = consent(
+        (&namespace, &approved),
+        store.again(),
+        |question, refusal, declined| crate::ui::confirm(question, || refusal, declined),
+    )?;
     let signer = SignerKey::Device(signing.device_key());
     let versions = approved
         .iter()
@@ -316,6 +321,7 @@ fn forgetting(approved: &[ApprovedChange]) -> String {
 /// before the yes, not only those signed before the prompt.
 fn consent(
     (namespace, approved): (&Namespace, &[ApprovedChange]),
+    again: Rerun,
     mut confirm: impl FnMut(&str, Error, &'static str) -> Result<(), Error>,
 ) -> Result<Timestamp, Error> {
     let services: Vec<&str> = approved
@@ -349,11 +355,7 @@ fn consent(
          terminal, or ship only new images. Nothing deployed.",
         json!({ "services": services }),
     )
-    .hint(Hint::Retry(super::super::typed_with(&[
-        "--image",
-        "SERVICE=IMAGE",
-        "--yes",
-    ])));
+    .hint(again.add("image", "SERVICE=IMAGE").switch("yes"));
     confirm(
         &format!("Approve {} in namespace {namespace}?", services.join(", ")),
         refusal,

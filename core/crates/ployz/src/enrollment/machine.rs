@@ -398,10 +398,11 @@ pub(crate) fn readiness_timeout_message(message: &str) -> String {
     )
 }
 
-pub(crate) fn confirm(yes: bool, question: &str) -> Result<(), Error> {
-    if yes {
+/// Ask `question` before a reset, unless `--yes` was given: `ask` is this command with `--yes`.
+pub(crate) fn confirm(ask: Option<crate::cli::Rerun>, question: &str) -> Result<(), Error> {
+    let Some(yes) = ask else {
         return Ok(());
-    }
+    };
     crate::ui::note(
         "This removes Ployz-managed containers and resets this machine's cluster membership.",
     );
@@ -415,7 +416,7 @@ pub(crate) fn confirm(yes: bool, question: &str) -> Result<(), Error> {
                 RpcErrorCode::ConfirmationRequired,
                 "Resetting the Server needs confirmation. No changes made.",
             )
-            .hint(Hint::Retry(crate::cli::typed_with(&["--yes"])))
+            .hint(yes)
         },
         "Cancelled. The Server was not reset.",
     )

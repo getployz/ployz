@@ -354,12 +354,21 @@ fn the_upgrade_named_keeps_the_cluster_the_deploy_was_given() {
     );
 }
 
+/// `ployz deploy web`, again.
+fn deploying() -> crate::cli::Rerun {
+    let root = crate::cli::command()
+        .try_get_matches_from(["ployz", "deploy", "web"])
+        .unwrap();
+    crate::cli::Rerun::again(&root)
+}
+
 /// Without a terminal nothing is signed: the refusal says to run it at one.
 #[test]
 fn no_terminal_refuses_before_signing() {
     let approved = [approved(&spec(PINNED))];
     let error = consent(
         (&Namespace::parse("app").unwrap(), &approved),
+        deploying(),
         |question, refusal, declined| crate::ui::confirm(question, || refusal, declined),
     )
     .unwrap_err();
@@ -421,6 +430,7 @@ fn declining_signs_nothing_and_fails() {
     let mut asked = None;
     let error = consent(
         (&Namespace::parse("app").unwrap(), &approved),
+        deploying(),
         |question, _, declined| {
             asked = Some((question.to_owned(), declined));
             Err(crate::handlers::Error::cancelled())
@@ -445,6 +455,7 @@ fn a_no_to_the_marked_data_signs_nothing() {
     change.confirm = vec!["mounts managed volume app_vol-1 at /srv, read-write: …".to_owned()];
     let error = consent(
         (&Namespace::parse("app").unwrap(), &[change]),
+        deploying(),
         |question, _, _| match question {
             "Use the data marked above?" => Err(crate::handlers::Error::cancelled()),
             _ => Ok(()),

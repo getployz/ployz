@@ -444,7 +444,7 @@ fn servers(matches: &ArgMatches, config: &Path) -> Result<Servers, Error> {
         match select_connections(None, Some(&config), None, false, &local) {
             Err(ContextError::NoCurrentContext(_)) => none(
                 "no current context",
-                Some(super::context::retry_use(matches)),
+                Some(super::rerun(matches, &["ctx", "use", "CONTEXT"])),
             ),
             Err(ContextError::NoContexts(_)) => {
                 none("no contexts", super::context::no_contexts_next(matches))

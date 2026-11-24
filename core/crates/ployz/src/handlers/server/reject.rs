@@ -11,7 +11,7 @@ use serde_json::json;
 
 use super::waiting::{self, Enrolling, Rejection, Stopped, Waiting};
 use crate::cli::{base, positional};
-use crate::handlers::{Error, leaf_matches, runtime, typed_with};
+use crate::handlers::{Error, Rerun, leaf_matches, runtime};
 use crate::ui::{self, Cell, Table, printable};
 use ployz_core::Hint;
 
@@ -120,7 +120,7 @@ pub(crate) fn reject(root: &ArgMatches) -> Result<(), Error> {
                     format!("Rejecting {described} needs confirmation. Nothing rejected."),
                     json!({ "waiting_servers": listed, "enrolling": listed_enrolling, "joining": listed_joining }),
                 )
-                .hint(Hint::Retry(typed_with(&["--yes"])))
+                .hint(Rerun::again(root).switch("yes"))
             },
             "Nothing rejected.",
         )?;

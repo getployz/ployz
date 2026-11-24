@@ -1640,10 +1640,9 @@ fn removing_a_server_when_cloud_does_not_answer_says_to_retry_not_forget() {
         .as_str()
         .unwrap();
     // The retry keeps the reason this run gave, so an agent can run it as is.
-    assert!(
-        retry.starts_with("ployz '--why=test' server rm web-1 --json"),
-        "{json}"
-    );
+    assert!(retry.starts_with("ployz --ployz-config "), "{json}");
+    assert!(retry.contains(" --json --why test server rm "), "{json}");
+    assert!(retry.ends_with(" server rm web-1"), "{json}");
 }
 
 #[test]

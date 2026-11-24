@@ -337,7 +337,7 @@ fn explicit_config_beats_environment_and_interactive_errors_do_not_mutate() {
     assert!(stderr.contains("needs a terminal"), "{stderr}");
     assert!(
         stderr.contains(&format!(
-            "retry: ployz ctx use --ployz-config {} CONTEXT",
+            "retry: ployz --ployz-config {} --why test ctx use CONTEXT",
             shell_words::quote(flag_path.to_str().unwrap())
         )),
         "{stderr}"

@@ -3,6 +3,7 @@
 pub(crate) mod rows;
 
 use super::super::store::scope_args;
+use crate::cli::Rerun;
 use crate::failure::Failure;
 use crate::failure::{Detail, Diagnostic, LogTail};
 use crate::ui::progress::{Frame, Row, Run, State, Subject, Timing, Work};
@@ -415,7 +416,7 @@ pub(super) fn waiting(view: &DeploymentView) -> Vec<String> {
 /// on a Volume's Server that is in none.
 pub(super) fn beside_volumes(
     view: &DeploymentView,
-    command: impl Fn(&[&str]) -> String,
+    command: impl Fn(&[&str]) -> Rerun,
 ) -> Vec<Hint> {
     let scope = scope_args(&view.environment.project, &view.environment.name);
     view.preview
@@ -434,13 +435,16 @@ pub(super) fn beside_volumes(
             }
             let Some(volume_region) = detail("volume_region") else {
                 let label = format!("region={}", detail("region")?);
-                return Some(Hint::Next(command(&[
-                    "server",
-                    "set",
-                    detail("server")?,
-                    "--label-add",
-                    label.as_str(),
-                ])));
+                return Some(Hint::Next(
+                    command(&[
+                        "server",
+                        "set",
+                        detail("server")?,
+                        "--label-add",
+                        label.as_str(),
+                    ])
+                    .line(),
+                ));
             };
             let replicas = entry.error.details.get("replicas")?.as_u64()?;
             let service = view
@@ -452,9 +456,9 @@ pub(super) fn beside_volumes(
                 "{service}.replicas={}",
                 serde_json::json!({ volume_region: replicas })
             );
-            Some(Hint::Next(command(
-                &[&["set", counts.as_str()][..], &scope].concat(),
-            )))
+            Some(Hint::Next(
+                command(&[&["set", counts.as_str()][..], &scope].concat()).line(),
+            ))
         })
         .collect()
 }
@@ -555,7 +559,7 @@ pub(super) fn completion(
     view: &DeploymentView,
     successor: Option<&DeploymentSummary>,
     named: &[&str],
-    command: impl Fn(&[&str]) -> String,
+    command: impl Fn(&[&str]) -> Rerun,
 ) -> Result<(), Failure> {
     if view.deployment.status == DeploymentStatus::Superseded {
         return Err(superseded(view, successor, command));
@@ -602,7 +606,7 @@ fn target(deployment: &DeploymentSummary) -> String {
 /// A Deploy can't.
 pub(super) fn removal_retry(
     view: &DeploymentView,
-    command: impl Fn(&[&str]) -> String,
+    command: impl Fn(&[&str]) -> Rerun,
 ) -> Option<Hint> {
     // The ended statuses `deployment redeploy` accepts for a removal.
     let ended = matches!(
@@ -612,7 +616,7 @@ pub(super) fn removal_retry(
     (view.deployment.remove && ended).then(|| {
         let deployment = target(&view.deployment);
         let scope = scope_args(&view.environment.project, &view.environment.name);
-        Hint::Retry(command(
+        Hint::from(command(
             &[&["deployment", "redeploy", deployment.as_str()][..], &scope].concat(),
         ))
     })
@@ -622,7 +626,7 @@ pub(super) fn removal_retry(
 fn superseded(
     view: &DeploymentView,
     successor: Option<&DeploymentSummary>,
-    command: impl Fn(&[&str]) -> String,
+    command: impl Fn(&[&str]) -> Rerun,
 ) -> Failure {
     let scope = scope_args(&view.environment.project, &view.environment.name);
     let (message, inspect) = match successor {
@@ -645,7 +649,7 @@ fn superseded(
             command(&[&["deployment", "ls"][..], &scope].concat()),
         ),
     };
-    Failure::from(RpcError::internal(message)).hint(Hint::Inspect(inspect))
+    Failure::from(RpcError::internal(message)).hint(Hint::Inspect(inspect.line()))
 }
 
 /// The Deployment among `candidates` that took `view`'s Environment over: the first
@@ -681,7 +685,7 @@ pub(super) fn taker<'a>(
 pub(super) fn replaced(
     view: &DeploymentView,
     newer: &DeploymentSummary,
-    command: impl Fn(&[&str]) -> String,
+    command: impl Fn(&[&str]) -> Rerun,
 ) -> Failure {
     let shown = target(newer);
     Failure::detailed(
@@ -693,13 +697,16 @@ pub(super) fn replaced(
         ),
         serde_json::json!({ "deployment": view.deployment.id, "replaced_by": newer.id }),
     )
-    .hint(Hint::Inspect(command(
-        &[
-            &["deployment", "show", shown.as_str()][..],
-            &scope_args(&view.environment.project, &view.environment.name),
-        ]
-        .concat(),
-    )))
+    .hint(Hint::Inspect(
+        command(
+            &[
+                &["deployment", "show", shown.as_str()][..],
+                &scope_args(&view.environment.project, &view.environment.name),
+            ]
+            .concat(),
+        )
+        .line(),
+    ))
 }
 
 /// Why the Deployment failed, and what that came from, outermost first: none when it
@@ -719,7 +726,7 @@ pub(super) fn failed_because(deployment: &DeploymentSummary) -> Option<(&str, &[
     }
 }
 
-fn failure(view: &DeploymentView, named: &[&str], command: impl Fn(&[&str]) -> String) -> Failure {
+fn failure(view: &DeploymentView, named: &[&str], command: impl Fn(&[&str]) -> Rerun) -> Failure {
     let (reason, cause) = match failed_because(&view.deployment) {
         Some((reason, cause)) => (reason.to_owned(), cause.to_vec()),
         _ if view.deployment.status == DeploymentStatus::Cancelled => (
@@ -830,9 +837,9 @@ fn failure(view: &DeploymentView, named: &[&str], command: impl Fn(&[&str]) -> S
             if gb < MEM_LIMIT_MAX {
                 let raised = ployz_core::memory_size::memory_size((gb * 2.0).min(MEM_LIMIT_MAX));
                 let setting = format!("{name}.memLimit={}", raised.replace(' ', ""));
-                hints.push(Hint::Next(command(
-                    &[&["set", setting.as_str()][..], &scope].concat(),
-                )));
+                hints.push(Hint::Next(
+                    command(&[&["set", setting.as_str()][..], &scope].concat()).line(),
+                ));
             } else {
                 diagnostic.failures.push(Detail {
                     message: format!(
@@ -848,29 +855,32 @@ fn failure(view: &DeploymentView, named: &[&str], command: impl Fn(&[&str]) -> S
         // would show only the old one's lines, so a failed build names its build log and
         // a failed pull names the image, unless a build made it.
         if build_failed {
-            hints.push(Hint::Inspect(command(
-                &[
+            hints.push(Hint::Inspect(
+                command(
                     &[
-                        "logs",
-                        "--deployment",
-                        deployment.as_str(),
-                        "--build",
-                        name.as_str(),
-                    ][..],
-                    &scope,
-                ]
-                .concat(),
-            )));
+                        &[
+                            "logs",
+                            "--deployment",
+                            deployment.as_str(),
+                            "--build",
+                            name.as_str(),
+                        ][..],
+                        &scope,
+                    ]
+                    .concat(),
+                )
+                .line(),
+            ));
             same_again = true;
         } else if logs {
-            hints.push(Hint::Inspect(command(
-                &[&["logs", name.as_str()][..], &scope].concat(),
-            )));
+            hints.push(Hint::Inspect(
+                command(&[&["logs", name.as_str()][..], &scope].concat()).line(),
+            ));
         } else if pulled && built.is_none() {
             let image = format!("{name}.image");
-            hints.push(Hint::Inspect(command(
-                &[&["get", image.as_str()][..], &scope].concat(),
-            )));
+            hints.push(Hint::Inspect(
+                command(&[&["get", image.as_str()][..], &scope].concat()).line(),
+            ));
         }
         // An image it didn't build that won't pull fails again on any Server, whichever
         // failure the inspect hint above reads.
@@ -905,9 +915,9 @@ fn failure(view: &DeploymentView, named: &[&str], command: impl Fn(&[&str]) -> S
     };
     if bad_image {
         let revision = view.deployment.saved.to_string();
-        failure = failure.hint(Hint::Undo(command(
-            &[&["history", "undo", revision.as_str()][..], &scope].concat(),
-        )));
+        failure = failure.hint(Hint::Undo(
+            command(&[&["history", "undo", revision.as_str()][..], &scope].concat()).line(),
+        ));
     }
     // A refusal that holds until something staged changes gets no retry, not even
     // `up`: its message says what to change, and a build that failed is the one case
@@ -923,7 +933,7 @@ fn failure(view: &DeploymentView, named: &[&str], command: impl Fn(&[&str]) -> S
     }
     // An upload deploys again only from `up`: a Deploy ships the last one that built.
     if view.deployment.upload.is_some() {
-        return failure.hint(Hint::Retry(command(&[&["up"][..], &scope].concat())));
+        return failure.hint(Hint::from(command(&[&["up"][..], &scope].concat())));
     }
     if same_again || bad_image || blocked {
         return failure;
@@ -933,7 +943,7 @@ fn failure(view: &DeploymentView, named: &[&str], command: impl Fn(&[&str]) -> S
         .into_iter()
         .chain(named.iter().copied())
         .chain(scope);
-    failure.hint(Hint::Retry(command(&words.collect::<Vec<_>>())))
+    failure.hint(Hint::from(command(&words.collect::<Vec<_>>())))
 }
 
 #[cfg(test)]
@@ -941,8 +951,8 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn command(args: &[&str]) -> String {
-        shell_words::join(std::iter::once("ployz").chain(args.iter().copied()))
+    fn command(args: &[&str]) -> Rerun {
+        Rerun::plain(args)
     }
 
     pub(super) fn view() -> DeploymentView {
@@ -1701,10 +1711,10 @@ mod tests {
         };
         // As `ployz set` reads its assignments.
         let changes = set
-            .get_many::<String>("assignment")
+            .get_many::<crate::cli::Withheld>("assignment")
             .unwrap()
             .map(|assignment| {
-                let (path, value) = assignment.split_once('=').unwrap();
+                let (path, value) = assignment.typed().split_once('=').unwrap();
                 Change::Set {
                     path: SettingPath::parse(path).unwrap(),
                     value: serde_json::Value::String(value.to_owned()),
@@ -2309,8 +2319,8 @@ mod tests {
         let mut removal = view();
         assert_eq!(removal_retry(&removal, command), None);
         removal.deployment.remove = true;
-        let retry = Some(Hint::Retry(
-            "ployz deployment redeploy 7 --project shop --env production".to_owned(),
+        let retry = Some(crate::cli::retry_hint(
+            "ployz deployment redeploy 7 --project shop --env production",
         ));
         for status in [
             DeploymentStatus::Failed,
@@ -2351,7 +2361,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(hints.len(), 2, "{hints:?}");
         for retry in hints {
-            let words = shell_words::split(&retry).unwrap();
+            let words = shell_words::split(retry.command()).unwrap();
             if let Err(error) = crate::cli::command().try_get_matches_from(&words) {
                 panic!("{retry}: {error}");
             }

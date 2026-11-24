@@ -285,7 +285,8 @@ async fn server_clean_removes_only_a_namespace_no_environment_owns() {
     assert_eq!(
         listed["next"],
         format!(
-            "ployz server clean --connect tcp://{address} --namespace left-over --confirm left-over"
+            "ployz --connect tcp://{address} --json --why test server clean \
+             --namespace left-over --confirm left-over"
         )
     );
     assert_eq!(listed["omitted"], serde_json::json!([]), "{listed}");
@@ -413,10 +414,10 @@ async fn local_deploy_failure_recovery_keeps_explicit_connection_and_context() {
         .collect::<Vec<_>>();
     let prefix = [
         "ployz",
-        "--ployz-config",
-        selected.to_str().unwrap(),
         "--connect",
         &connect,
+        "--ployz-config",
+        selected.to_str().unwrap(),
     ];
     let retry = [
         "deploy",
@@ -487,6 +488,11 @@ async fn publish_reviews_volume_loss_the_servers_hold_and_publishes_once_accepte
         retry,
         [
             "ployz",
+            "--connect",
+            &format!("tcp://{address}"),
+            "--json",
+            "--why",
+            "test",
             "deploy",
             "--skip-deploy",
             "--accept-volume-loss",

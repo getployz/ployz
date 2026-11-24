@@ -703,7 +703,7 @@ fn an_instruction_enrolls_this_host_through_its_socket_without_asking() {
         "a founder takes server add's Cluster network"
     );
     assert!(
-        !plan.reach().rerun(&["status"]).contains(TOKEN),
+        !plan.reach().rerun(&["status"]).line().contains(TOKEN),
         "the token stays out of every command line"
     );
 }
