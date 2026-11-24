@@ -277,6 +277,10 @@ cancelled, finishes first: the removal waits for it there, so once `device rm` r
 device asked for is still changing the server. If the same key also holds another connection slot on
 that server, such as Ployz Cloud's, the command goes on with Operator access only, so it can't start
 a container that only that device approved.
+What that device left running on a server stops there before `device rm` returns, even when its
+key holds another slot: an `exec`, with or without `--detach`, a `port-forward`, and a build. A build
+that doesn't confirm it stopped within about a minute is reported as unknown, and the removal
+returns anyway.
 Every server that answers marks the key removed, including one that never
 trusted it, so an approval of that key still on its way there is refused. If no server can name
 the key in full, for example because every server that trusted or removed it is away, a server that never held

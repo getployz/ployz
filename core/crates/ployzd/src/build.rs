@@ -19,7 +19,7 @@ use tokio::sync::mpsc;
 use tokio_stream::{Stream, StreamExt, wrappers::ReceiverStream};
 use tonic::Status;
 
-const BUILD_ENDED: &str = "Build stopped: this Server no longer gives this device Full access";
+const BUILD_ENDED: &str = "Build stopped: this Device no longer has Full access to this Server.";
 
 #[derive(Default)]
 struct AttemptState {

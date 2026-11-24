@@ -12,8 +12,6 @@ use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use iroh::endpoint::{Connection, VarInt};
 use ployz_core::{ManagementScope, TUNNEL_FAILED, TUNNEL_NEEDS_FULL, TUNNEL_OPEN};
-
-use crate::machine::{Call, Caller, LocalMachineError};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
     net::TcpStream,
@@ -24,7 +22,7 @@ use tokio_util::sync::CancellationToken;
 use super::{REVOKED, refusal, revoked};
 use ipnet::Ipv4Net;
 
-use crate::machine::{LocalMachine, LocalMachineRecord};
+use crate::machine::{Call, Caller, LocalMachine, LocalMachineError, LocalMachineRecord};
 
 /// Bounds the client's header and the Machine's dial, so a stalled open never lingers.
 const OPEN_TIMEOUT: Duration = Duration::from_secs(10);

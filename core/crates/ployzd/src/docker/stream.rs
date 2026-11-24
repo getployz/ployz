@@ -31,7 +31,7 @@ const ABANDONED_EXEC_GRACE: Duration = Duration::from_secs(10);
 /// How often a detached exec a management key started is checked for having exited, so its
 /// watch ends with it.
 const DETACHED_EXEC_POLL: Duration = Duration::from_secs(1);
-const EXEC_ENDED: &str = "This exec stopped: this Server no longer gives this device Full access.";
+const EXEC_ENDED: &str = "Exec stopped: this Device no longer has Full access to this Server.";
 
 impl ContainerRuntime {
     /// Run an exec for the caller `bound` ties it to. A key change that ends `bound` closes
@@ -43,7 +43,7 @@ impl ContainerRuntime {
     ) -> Result<RpcStream, Status> {
         let first = tokio::select! {
             first = requests.message() => first?,
-            () = bound.ended() => return Err(exec_ended()),
+            () = bound.ended() => return Err(Status::unauthenticated(EXEC_ENDED)),
         }
         .ok_or_else(|| Status::invalid_argument("exec stream is empty"))?;
         let ExecRequestFrame::Config(config) =
@@ -171,7 +171,7 @@ impl ContainerRuntime {
                             if let Some(stdin) = stdin {
                                 stdin.abort();
                             }
-                            if let Ok(frame) = ExecResponseFrame::Error(exec_ended_error()).encode() {
+                            if let Ok(frame) = ExecResponseFrame::Error(RpcError::new(RpcErrorCode::Unauthenticated, EXEC_ENDED)).encode() {
                                 let _ = sender.try_send(Ok(frame));
                             }
                             drop(sender);
@@ -429,15 +429,6 @@ async fn send_exec(
         .send(Ok(payload))
         .await
         .map_err(|_| Status::cancelled("exec client disconnected"))
-}
-
-/// Why an exec a key change ended stopped, said to the client that opened it.
-fn exec_ended_error() -> RpcError {
-    RpcError::new(RpcErrorCode::Unauthenticated, EXEC_ENDED)
-}
-
-fn exec_ended() -> Status {
-    Status::unauthenticated(EXEC_ENDED)
 }
 
 async fn send_exec_error(
