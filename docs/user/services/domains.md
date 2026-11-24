@@ -194,6 +194,11 @@ down between the two deploys.
 
 ## Good to know
 
+- **A signed service keeps its domains.** While a service deployed from a
+  [signed deploy](../deploy/deployments.md#deploy-from-an-approved-device) or an automatic
+  deploy rule serves a domain, no container started any other way gets
+  its traffic, even one that claims the domain first. A signed deploy can claim a domain that
+  only such containers serve. Once no signed service serves it, the domain is free again.
 - **No wildcards.** Ployz doesn't support domains like `*.example.com`. Add each hostname.
 - **No variable holds your public address.** If your app needs it, add one, like
   `APP_URL=https://app.example.com`.

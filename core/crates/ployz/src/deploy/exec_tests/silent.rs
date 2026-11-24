@@ -480,6 +480,7 @@ async fn live_and_second(
                             stopped: false,
                             run: None,
                             log_driver: None,
+                            admission: None,
                         })
                         .unwrap();
                     RpcResponse::from(ployz_core::EnsuredContainer::Ensured {

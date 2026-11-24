@@ -553,6 +553,7 @@ impl JoinDaemon {
                         stopped: false,
                         run: None,
                         log_driver: None,
+                        admission: None,
                     })
                     .unwrap();
                 containers.push(container.clone());
@@ -1145,6 +1146,7 @@ impl FakeMachine for JoinDaemon {
                             stopped: false,
                             run: None,
                             log_driver: None,
+                            admission: None,
                         })
                         .unwrap();
                     containers.push(container.clone());
@@ -1357,6 +1359,7 @@ pub fn ingress_on(machine: &Machine) -> ContainerObservation {
         stopped: false,
         run: None,
         log_driver: None,
+        admission: None,
     })
     .unwrap()
 }

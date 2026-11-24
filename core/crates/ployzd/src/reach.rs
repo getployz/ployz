@@ -4,12 +4,17 @@
 
 use std::collections::BTreeSet;
 
-use ployz_core::{MachineId, ProxyRoutes, ServiceContainer, proxy_routes, reachable_routes};
+use ployz_core::{
+    KeptNames, MachineId, ProxyRoutes, ServiceContainer, proxy_routes, reachable_routes,
+    signed_view,
+};
 
 use crate::corrosion::Error as CorrosionError;
 
 /// One pass's routes: the route a proxy carries and acks, and the copies a client can reach now.
 pub(crate) struct ReachPass {
+    /// The observed copies a proxy may route: [`signed_view`] of them.
+    pub(crate) view: Vec<ServiceContainer>,
     /// Every copy [`proxy_routes`] keeps, which the next pass carries.
     pub(crate) routes: ProxyRoutes,
     /// `routes` without the copies seen stopped or withdrawn, for what a proxy dials or answers.
@@ -49,15 +54,37 @@ impl Reach {
     }
 
     /// The routes the observed `containers` give, carrying the route kept by [`Self::keep`].
-    pub(crate) fn pass(&self, containers: &[ServiceContainer]) -> ReachPass {
+    ///
+    /// `kept` narrows both: a copy it doesn't admit is neither routed now nor carried from
+    /// an earlier pass, so a signed copy that is Pending or on a Down Machine never falls
+    /// back to one. A carried route with only such copies counts as never routed, so its
+    /// signed copies on Down Machines still stand in.
+    pub(crate) fn pass(&self, containers: &[ServiceContainer], kept: &KeptNames) -> ReachPass {
+        let view = signed_view(containers, kept);
+        let carried: ProxyRoutes = self
+            .routed
+            .iter()
+            .filter_map(|(service, route)| {
+                let admitted: Vec<_> = route
+                    .iter()
+                    .filter(|serving| kept.admits(serving.as_observation()))
+                    .cloned()
+                    .collect();
+                (route.is_empty() || !admitted.is_empty()).then(|| (service.clone(), admitted))
+            })
+            .collect();
         let is_down = |machine: &MachineId| self.down.contains(machine);
-        let routes = proxy_routes(containers, is_down, &self.routed);
+        let routes = proxy_routes(&view, is_down, &carried);
         let reachable = reachable_routes(
             &routes,
-            containers.iter().map(ServiceContainer::as_observation),
+            view.iter().map(ServiceContainer::as_observation),
             is_down,
         );
-        ReachPass { routes, reachable }
+        ReachPass {
+            view,
+            routes,
+            reachable,
+        }
     }
 
     /// Carry `routes` into the next pass.

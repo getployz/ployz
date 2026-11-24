@@ -14,9 +14,9 @@ use hickory_server::{
     },
 };
 use ployz_core::{
-    ClusterName, ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
-    ContainerRuntimeObservation, CopyRotation, DeploymentLogId, HealthObservation, MachineId,
-    Namespace, ResolvedServiceSpec, ServiceId, ServiceName,
+    Admission, ClusterName, ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
+    ContainerRuntimeObservation, CopyRotation, DeploymentLogId, HealthObservation, KeptNames,
+    MachineId, Namespace, ResolvedServiceSpec, ServiceId, ServiceName,
 };
 use serde_json::json;
 use tokio::{
@@ -27,7 +27,7 @@ use tokio::{
 use super::{
     TCP_REQUEST_TIMEOUT, TCP_RESPONSE_BUFFER,
     forward::{Handler, Upstreams, nameservers_from_resolv_conf},
-    projection::{Answers, CALLER_WAIT, Projection, ProjectionInputs, ResponsePlan},
+    projection::{Answers, CALLER_WAIT, Projection, ProjectionInputs, ResponsePlan, Snapshot},
 };
 use crate::corrosion::Error as CorrosionError;
 
@@ -1035,6 +1035,216 @@ fn only_in_copies_answer() {
     );
 }
 
+#[test]
+fn a_name_that_ran_signed_answers_only_its_signed_copies_in_every_form() {
+    let local = MachineId::parse("a".repeat(32)).unwrap();
+    let remote = MachineId::parse("c".repeat(32)).unwrap();
+    let id = ServiceId::parse("b".repeat(32)).unwrap();
+    let db = ServiceName::parse("db").unwrap();
+    let signed = observation(
+        1,
+        &remote,
+        &id,
+        &db,
+        ContainerKind::ServiceContainer,
+        running(HealthObservation::Healthy),
+        Some([10, 210, 2, 2]),
+    );
+    // Another Operator's copy under the same name and Service ID, on the caller's Machine.
+    let free = admitted(
+        observation(
+            2,
+            &local,
+            &id,
+            &db,
+            ContainerKind::ServiceContainer,
+            running(HealthObservation::Healthy),
+            Some([10, 210, 1, 3]),
+        ),
+        Some(Admission::Free),
+    );
+    let app = observation(
+        3,
+        &local,
+        &ServiceId::parse("d".repeat(32)).unwrap(),
+        &ServiceName::parse("app").unwrap(),
+        ContainerKind::ServiceContainer,
+        running(HealthObservation::Healthy),
+        Some([10, 210, 1, 4]),
+    );
+    let mut inputs = ProjectionInputs::new(local);
+    inputs.load(Snapshot {
+        observations: vec![signed, free, app],
+        cluster: Some(ClusterName::parse("acme").unwrap()),
+        kept: KeptNames::default(),
+    });
+    let projection = inputs.build();
+    let caller = Ipv4Addr::new(10, 210, 1, 4);
+
+    for name in [
+        "db.app.internal.".to_owned(),
+        "db.app.acme.ployz.internal.".to_owned(),
+        "db.app.nearest.internal.".to_owned(),
+        "db.internal.".to_owned(),
+        format!("{id}.id.lookup.internal."),
+    ] {
+        assert_eq!(
+            addresses(plan_from(&projection, &name, RecordType::A, caller)),
+            vec![Ipv4Addr::new(10, 210, 2, 2)],
+            "{name}"
+        );
+    }
+    assert_eq!(
+        addresses(plan_from(
+            &projection,
+            &format!("db.app.{local}.machine.internal."),
+            RecordType::A,
+            caller,
+        )),
+        Vec::<Ipv4Addr>::new()
+    );
+}
+
+#[test]
+fn a_name_stays_kept_after_its_signed_copy_is_gone() {
+    let machine = MachineId::parse("a".repeat(32)).unwrap();
+    let db = ServiceName::parse("db").unwrap();
+    let free = |suffix| {
+        admitted(
+            observation(
+                suffix,
+                &machine,
+                &ServiceId::parse("b".repeat(32)).unwrap(),
+                &db,
+                ContainerKind::ServiceContainer,
+                running(HealthObservation::Healthy),
+                Some([10, 210, 1, suffix]),
+            ),
+            Some(Admission::Free),
+        )
+    };
+
+    // A replica that only has the row, from a copy made and removed before it looked.
+    let mut kept = KeptNames::default();
+    kept.keep_keys(["signed-service:app/db"]);
+    let mut from_row = ProjectionInputs::new(machine);
+    from_row.load(Snapshot {
+        observations: vec![free(2)],
+        cluster: None,
+        kept,
+    });
+    assert_nxdomain(plan(&from_row.build(), "db.app.internal.", RecordType::A));
+
+    // One that saw the signed copy, then a read with neither it nor the row.
+    let mut seen = ProjectionInputs::new(machine);
+    seen.load(Snapshot {
+        observations: vec![observation(
+            1,
+            &machine,
+            &ServiceId::parse("b".repeat(32)).unwrap(),
+            &db,
+            ContainerKind::ServiceContainer,
+            running(HealthObservation::Healthy),
+            Some([10, 210, 1, 1]),
+        )],
+        cluster: None,
+        kept: KeptNames::default(),
+    });
+    seen.load(Snapshot {
+        observations: vec![free(2)],
+        cluster: None,
+        kept: KeptNames::default(),
+    });
+    assert_nxdomain(plan(&seen.build(), "db.app.internal.", RecordType::A));
+}
+
+#[test]
+fn a_route_carried_from_before_a_name_was_kept_drops_its_unsigned_copy() {
+    let machine = MachineId::parse("a".repeat(32)).unwrap();
+    let id = ServiceId::parse("b".repeat(32)).unwrap();
+    let db = ServiceName::parse("db").unwrap();
+    let free = admitted(
+        observation(
+            2,
+            &machine,
+            &id,
+            &db,
+            ContainerKind::ServiceContainer,
+            running(HealthObservation::Healthy),
+            Some([10, 210, 1, 2]),
+        ),
+        Some(Admission::Free),
+    );
+    let mut inputs = ProjectionInputs::new(machine);
+    inputs.load(Snapshot {
+        observations: vec![free.clone()],
+        cluster: None,
+        kept: KeptNames::default(),
+    });
+    assert_eq!(
+        addresses(plan(&inputs.build(), "db.app.internal.", RecordType::A)),
+        vec![Ipv4Addr::new(10, 210, 1, 2)]
+    );
+
+    // The name's row lands with a signed copy that isn't serving yet, so no copy the
+    // filter admits is In and the last pass's route would otherwise stand.
+    let mut pending = observation(
+        1,
+        &machine,
+        &id,
+        &db,
+        ContainerKind::ServiceContainer,
+        running(HealthObservation::Starting),
+        Some([10, 210, 1, 1]),
+    );
+    pending
+        .try_update(|parts| parts.rotation = Some(CopyRotation::Pending))
+        .unwrap();
+    let mut kept = KeptNames::default();
+    kept.keep_keys(["signed-service:app/db"]);
+    inputs.load(Snapshot {
+        observations: vec![free, pending],
+        cluster: None,
+        kept,
+    });
+    assert_nxdomain(plan(&inputs.build(), "db.app.internal.", RecordType::A));
+}
+
+#[test]
+fn a_name_that_never_ran_signed_answers_unsigned_copies_but_not_by_id() {
+    let machine = MachineId::parse("a".repeat(32)).unwrap();
+    let id = ServiceId::parse("b".repeat(32)).unwrap();
+    let db = ServiceName::parse("db").unwrap();
+    let copy = |suffix, admission| {
+        admitted(
+            observation(
+                suffix,
+                &machine,
+                &id,
+                &db,
+                ContainerKind::ServiceContainer,
+                running(HealthObservation::Healthy),
+                Some([10, 210, 1, suffix]),
+            ),
+            admission,
+        )
+    };
+    // A copy from a Machine that doesn't report beside one admitted unsigned.
+    let projection = unfiltered_projection(&[copy(2, None), copy(3, Some(Admission::Free))]);
+
+    let mut answered = addresses(plan(&projection, "db.app.internal.", RecordType::A));
+    answered.sort();
+    assert_eq!(
+        answered,
+        vec![Ipv4Addr::new(10, 210, 1, 2), Ipv4Addr::new(10, 210, 1, 3)]
+    );
+    assert_nxdomain(plan(
+        &projection,
+        &format!("{id}.id.lookup.internal."),
+        RecordType::A,
+    ));
+}
+
 #[tokio::test]
 async fn oversized_internal_udp_sets_tc_and_stays_within_client_limit() {
     let (udp, tcp, mut server) = serve_internal(50).await;
@@ -1232,8 +1442,19 @@ fn observation(
         stopped: false,
         run: None,
         log_driver: None,
+        admission: Some(Admission::Signed),
     })
     .unwrap()
+}
+
+fn admitted(
+    mut observation: ContainerObservation,
+    admission: Option<Admission>,
+) -> ContainerObservation {
+    observation
+        .try_update(|parts| parts.admission = admission)
+        .unwrap();
+    observation
 }
 
 fn in_namespace(mut observation: ContainerObservation, namespace: &str) -> ContainerObservation {

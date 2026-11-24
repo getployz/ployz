@@ -887,11 +887,18 @@ pub(crate) fn unsigned(
 ) -> Result<Vec<crate::Unsigned>, RpcError> {
     use crate::Needs;
     use ployz_core::config::ServiceSource;
-    let kept = crate::auto_rule::stored(tx, environment)?
+    let stored = crate::auto_rule::stored(tx, environment)?
         .as_ref()
         .and_then(crate::auto_rule::opened);
-    let ended = kept.as_ref().is_some_and(|rule| rule.ended);
-    let approved: Vec<ServiceName> = match kept.filter(|rule| !rule.ended) {
+    // A rule names each Service it ever deployed, so one that ended still says which ran
+    // signed.
+    let ruled: Vec<ServiceName> = stored
+        .iter()
+        .flat_map(|rule| &rule.services)
+        .map(|service| service.name.clone())
+        .collect();
+    let ended = stored.as_ref().is_some_and(|rule| rule.ended);
+    let approved: Vec<ServiceName> = match stored.filter(|rule| !rule.ended) {
         Some(rule) => {
             let tracking = crate::auto_rule::branch(&rule).map(|(repository, branch)| {
                 saved
@@ -934,7 +941,12 @@ pub(crate) fn unsigned(
                     .find(|service| service.id == id.as_str())
             });
         let login = service.is_some_and(crate::registry::uses_login);
-        if ployz_core::authority::reach(spec, login).is_none() {
+        // A Service that reaches no data runs unsigned, unless it ran signed before:
+        // every Server then keeps its name for a signed Container, and refuses it unsigned.
+        if ployz_core::authority::reach(spec, login).is_none()
+            && !ruled.contains(&spec.name)
+            && !signed_before(tx, (environment, organization, namespace), &spec.name)?
+        {
             continue;
         }
         let reused = reused(tx, environment.as_str(), (nodes, spec), namespace)?;
@@ -964,6 +976,34 @@ pub(crate) fn unsigned(
         });
     }
     Ok(unsigned)
+}
+
+/// Whether a person signed a version of `service`, or a Server verified a build of it a
+/// rule deployed in this Environment.
+fn signed_before(
+    tx: &mut dyn Tx,
+    (environment, organization, namespace): (&crate::id::EnvironmentId, &str, &Namespace),
+    service: &ServiceName,
+) -> Result<bool, RpcError> {
+    let versions = tx.query(
+        "SELECT 1 AS signed FROM config_service_version \
+         WHERE organization_id = ?1 AND namespace = ?2 AND service = ?3 LIMIT 1",
+        &[
+            organization.into(),
+            namespace.as_str().into(),
+            service.as_str().into(),
+        ],
+    )?;
+    if !versions.is_empty() {
+        return Ok(true);
+    }
+    let verified = tx.query(
+        "SELECT 1 AS signed FROM config_build b \
+         JOIN config_deployment d ON d.id = b.deployment_id \
+         WHERE d.environment_id = ?1 AND b.service = ?2 AND b.verified IS NOT NULL LIMIT 1",
+        &[environment.as_str().into(), service.as_str().into()],
+    )?;
+    Ok(!verified.is_empty())
 }
 
 /// Whether a Server verified, under the rule and generation `environment` keeps now, the

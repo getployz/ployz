@@ -481,7 +481,7 @@ pub const CASES: &[Case] = &[
     case(
         ENSURE_CONTAINER_CAPABILITY,
         "create, reaches no data",
-        "an EnsureContainer creating a Container from a new spec that opens no secret, mounts no Volume and reaches no host",
+        "an EnsureContainer creating a Container from a new spec that opens no secret, mounts no Volume and reaches no host, under a name that never ran signed",
         Expected::Bounded(PULLS_ITS_OWN),
     ),
     case(
@@ -523,7 +523,7 @@ pub const CASES: &[Case] = &[
     case(
         ENSURE_PINNED_CONTAINER_CAPABILITY,
         "create, reaches no data",
-        "an EnsurePinnedContainer creating a Container from a new tag spec that opens no secret, mounts no Volume and reaches no host, pinned to an image ID",
+        "an EnsurePinnedContainer creating a Container from a new tag spec that opens no secret, mounts no Volume and reaches no host, under a name that never ran signed, pinned to an image ID",
         Expected::Bounded(PULLS_ITS_OWN),
     ),
     case(
