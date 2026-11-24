@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { and, eq, lt, ne, or } from "drizzle-orm";
+import { and, eq, lt, ne, or, sql } from "drizzle-orm";
 import { Effect, Option } from "effect";
 import { cloudStore, refusedWith, storeTry } from "#/modules/config-store/store-sdk.server";
 import { deployDialOf } from "#/modules/config-store/store-sdk.server";
@@ -92,7 +92,7 @@ export const closeStaleCleanups = Effect.fn("DeploymentCleanup.closeStale")(func
 ) {
   const { drizzle } = yield* Database;
   const quiet = yield* drizzle.select({ runId: deploymentCleanup.runId, left: deploymentCleanup.left }).from(deploymentCleanup)
-    .where(and(eq(deploymentCleanup.state, "waiting"), lt(deploymentCleanup.updatedAt, new Date(Date.now() - CLEANUP_QUIET_MS))));
+    .where(and(eq(deploymentCleanup.state, "waiting"), lt(deploymentCleanup.updatedAt, sql`now() - make_interval(secs => ${CLEANUP_QUIET_MS / 1000})`)));
   let closed = 0;
   for (const { runId, left } of quiet) {
     const status = yield* runStatus(runId).pipe(Effect.option);
