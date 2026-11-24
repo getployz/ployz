@@ -24,6 +24,10 @@ use crate::drain::{
 use crate::handlers::{Error, leaf_matches, route, runtime, store};
 use ployz_store::OperationVerb;
 
+/// How long `server drain` follows its drain: Cloud lets one run for a day after it
+/// starts, moving Volumes all that time, and one may wait its turn first.
+pub(super) const DRAIN_FOLLOW: std::time::Duration = std::time::Duration::from_secs(25 * 60 * 60);
+
 const NOTHING_MOVES_BACK: &str = "Turning the services role back on does not move anything back.";
 
 pub(in crate::handlers) fn drain(root: &ArgMatches) -> Result<(), Error> {
@@ -104,10 +108,11 @@ fn through_cloud(
     struct Finished {
         report: DrainReport,
     }
-    let settled = runtime.block_on(cloud::account::follow_operation::<Finished>(
+    let settled = runtime.block_on(cloud::account::follow_operation_for::<Finished>(
         credential,
         &format!("server-drains/{id}"),
         &format!("Draining Server {}", machine.name),
+        DRAIN_FOLLOW,
     ))?;
     Ok(settled.finished()?.report)
 }

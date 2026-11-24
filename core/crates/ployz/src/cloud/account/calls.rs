@@ -194,11 +194,23 @@ pub(crate) async fn follow_operation<T: DeserializeOwned>(
     path: &str,
     doing: &str,
 ) -> Result<Settled<T>, StoreCallError> {
+    follow_operation_for(credential, path, doing, CALL_DEADLINE).await
+}
+
+/// [`follow_operation`] for an operation Cloud lets run longer than [`CALL_DEADLINE`]:
+/// it follows for `within`.
+pub(crate) async fn follow_operation_for<T: DeserializeOwned>(
+    credential: &Credential,
+    path: &str,
+    doing: &str,
+    within: std::time::Duration,
+) -> Result<Settled<T>, StoreCallError> {
     follow_operation_until(
         credential,
         path,
         doing,
-        tokio::time::Instant::now() + CALL_DEADLINE,
+        tokio::time::Instant::now() + within,
+        within,
     )
     .await
 }
@@ -208,14 +220,20 @@ async fn follow_operation_until<T: DeserializeOwned>(
     path: &str,
     doing: &str,
     deadline: tokio::time::Instant,
+    within: std::time::Duration,
 ) -> Result<Settled<T>, StoreCallError> {
     follow_run(credential, path, doing, Some(deadline))
         .await?
         .ok_or_else(|| {
+            let minutes = within.as_secs() / 60;
+            let waited = if minutes % 60 == 0 && minutes >= 120 {
+                format!("{} hours", minutes / 60)
+            } else {
+                format!("{minutes} minutes")
+            };
             StoreCallError::Refused(RpcError::unavailable(format!(
-                "Stopped waiting after {} minutes. {doing} keeps running in Ployz Cloud and \
-                     finishes on its own; this command no longer reports it.",
-                CALL_DEADLINE.as_secs() / 60
+                "Stopped waiting after {waited}. {doing} keeps running in Ployz Cloud and \
+                     finishes on its own; this command no longer reports it."
             )))
         })
 }
@@ -394,6 +412,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_longer_wait_names_its_hours() {
+        let cloud = fake_cloud(|route, _| match route {
+            "GET /api/cli/server-drains/drn_1" => (200, serde_json::json!({ "state": "running" })),
+            other => panic!("unexpected {other}"),
+        });
+        let error = follow_operation_until::<serde_json::Value>(
+            &token(&cloud),
+            "server-drains/drn_1",
+            "Draining Server web-1",
+            tokio::time::Instant::now(),
+            std::time::Duration::from_secs(25 * 60 * 60),
+        )
+        .await
+        .unwrap_err();
+        let StoreCallError::Refused(refused) = error else {
+            panic!("{error:?}")
+        };
+        assert!(
+            refused
+                .message
+                .starts_with("Stopped waiting after 25 hours. "),
+            "{}",
+            refused.message
+        );
+    }
+
+    #[tokio::test]
     async fn an_operation_that_outlasts_the_wait_says_it_keeps_running_in_cloud() {
         let cloud = fake_cloud(|route, _| match route {
             "GET /api/cli/server-drains/drn_1" => (200, serde_json::json!({ "state": "running" })),
@@ -405,6 +450,7 @@ mod tests {
             "server-drains/drn_1",
             "Draining Server web-1",
             past,
+            CALL_DEADLINE,
         )
         .await
         .unwrap_err();

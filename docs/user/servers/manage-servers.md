@@ -629,7 +629,8 @@ move anything back.
 
 `ployz server drain web-2` does the same from the CLI, moves volumes too, and exits non-zero if
 anything stayed or failed, apart from that other server's move. A service that moved with its data
-counts as moved. It waits for an approval first when a global service would run on no other server (see
+counts as moved. It follows the drain for as long as Ployz Cloud runs it, up to a day while volumes
+move. It waits for an approval first when a global service would run on no other server (see
 [Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first)).
 
 Under **Web traffic** on a server's page, **Takes web traffic** is a switch. On, the line under it

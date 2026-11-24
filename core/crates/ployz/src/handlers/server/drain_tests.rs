@@ -4,7 +4,7 @@ use ployz_core::{
     Machine, MachineId, MachineName, QualifiedService, RpcErrorCode, WireGuardPublicKey,
 };
 
-use super::{incomplete, line, remaining};
+use super::{DRAIN_FOLLOW, incomplete, line, remaining};
 use crate::drain::{
     DrainOutcome, DrainReport, DrainStop, MachineRef, Move, MoveFailure, OldCopyEnd, Remaining,
     ServiceDrain, ServicesRole, StayReason, Unconfirmed,
@@ -387,4 +387,11 @@ fn a_service_that_stays_with_its_volume_exits_naming_it() {
         (error.report().code, error.to_string()),
         (RpcErrorCode::Conflict, "app/db stays on web-2.".to_owned())
     );
+}
+
+/// Cloud lets a drain run, moving its Volumes, for a day after it starts, so `server
+/// drain` follows it that long rather than giving up while it still runs.
+#[test]
+fn a_drain_is_followed_as_long_as_cloud_runs_it() {
+    assert!(DRAIN_FOLLOW >= std::time::Duration::from_secs(24 * 60 * 60));
 }
