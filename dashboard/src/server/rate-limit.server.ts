@@ -4,7 +4,7 @@ import { Effect, Random } from "effect";
 import ipaddr from "ipaddr.js";
 import { checkinRateLimit, rateLimitEvent } from "#/server/rate-limit.tables";
 import { Database } from "#/server/database.server";
-import { checkedNow } from "#/db/tables";
+import { checkedNow, sweepCutoff } from "#/db/tables";
 
 const thisSecond = sql`date_trunc('second', ${checkedNow()})`;
 const PRUNE_ONE_CALL_IN = 100;
@@ -76,7 +76,7 @@ export const admitWithinWindows = Effect.fn("RateLimit.admitWithinWindows")(func
   }));
   if ((yield* Random.next) * PRUNE_ONE_CALL_IN < 1) {
     // The event is already committed; a failed prune must not lose the admission and strand it.
-    yield* database.drizzle.delete(rateLimitEvent).where(lt(rateLimitEvent.at, sql`${checkedNow()} - make_interval(secs => ${EVENT_RETENTION_SECONDS})`)).pipe(
+    yield* database.drizzle.delete(rateLimitEvent).where(lt(rateLimitEvent.at, sql`${sweepCutoff()} - make_interval(secs => ${EVENT_RETENTION_SECONDS})`)).pipe(
       Effect.catch((error) => Effect.logWarning("Stale rate limit events were not pruned; a later call prunes them.", error)),
     );
   }

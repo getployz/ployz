@@ -1915,6 +1915,28 @@ describe("organization enrollment coordinator", () => {
     expect((await harness.pool.query("select assignments from enrollment_allocation")).rows[0].assignments).toHaveLength(1);
   });
 
+  it("refuses a token that expires while its claim waits on the token's row lock", async () => {
+    const fake = fakeSession(harness.database);
+    const token = tokens[0] ?? "";
+    const holder = await harness.pool.connect();
+    try {
+      await holder.query("begin");
+      await holder.query("select 1 from machine_enrollment_token where token_hash = $1 for update", [hashEnrollmentToken(token)]);
+      const enrolled = fake.coordinator.enroll({ token, identity: identity(0) });
+      await vi.waitFor(async () => {
+        const { rows } = await harness.pool.query(`select 1 from pg_stat_activity
+          where datname = current_database() and wait_event_type = 'Lock' and query like 'update "machine_enrollment_token"%'`);
+        expect(rows).not.toHaveLength(0);
+      }, { timeout: 30_000 });
+      // The token lapses inside the wait: after the claim's statement began, before it holds the row.
+      await holder.query("update machine_enrollment_token set expires_at = clock_timestamp() where token_hash = $1", [hashEnrollmentToken(token)]);
+      await holder.query("commit");
+      expect(await enrolled).toMatchObject({ failure: { _tag: "Unauthorized" } });
+    } finally {
+      holder.release();
+    }
+  }, 60_000);
+
   it("lets the claiming identity resume with its own token", async () => {
     const fake = fakeSession(harness.database);
     const founder = await pendingFounder(fake);
