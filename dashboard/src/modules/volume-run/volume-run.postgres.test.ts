@@ -380,7 +380,7 @@ describe("volume runs", () => {
     resolved_spec: { name: "web", container: { pull_policy: "always", environment: {} }, volumes: [
       { reference: "data", source: { kind: "provisioned", name: dockerVolume } },
       ...(container.binds === undefined ? [] : [{ reference: container.binds, source: { kind: "bind", machine_path: container.binds } }]),
-    ], ...(container.regions === undefined ? {} : { regions: container.regions }) },
+    ], regions: container.regions ?? {} },
     display_name: container.id,
     runtime: { state: container.running ? "running" : "exited" },
     rotation: container.rotation,
