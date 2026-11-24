@@ -26,8 +26,8 @@ pub use crate::docker::TUNNEL_NETWORK_NAME;
 pub(crate) use endpoints::interface_addresses;
 pub use endpoints::{DiscoveredNetwork, discover_network};
 pub use firewall::{
-    BridgeFence, FENCE_FILE, Installed, Restored, apply_firewall_rules, fence_builder,
-    remove_fence, restore_fence,
+    BridgeFence, FENCE_FILE, Installed, Restored, apply_firewall_rules, fence_active,
+    fence_builder, remove_fence, restore_fence,
 };
 pub(crate) use linux::bridge;
 pub use linux::bridge::DOCKER_NETWORK_NAME;

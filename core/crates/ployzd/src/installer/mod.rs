@@ -339,6 +339,16 @@ async fn install_locked(
     let downgrade = installed
         .as_ref()
         .is_some_and(|installed| target < *installed);
+    // Only a running downgrade takes the live fence out, once the older release is up. Staged,
+    // that release would start later under a fence it doesn't know.
+    if downgrade && installation_only && crate::network::fence_active() {
+        return Err(Error::Refused {
+            stage: "stage an older release".into(),
+            message: format!(
+                "this Server's container network fence is in place, and Ployz {target} doesn't know it, so its Containers' traffic would be dropped. Run the downgrade without --install-only, which takes the fence out once {target} is running"
+            ),
+        });
+    }
     let mut restart_required = !paths.systemd_dir.join(Unit::Ployz.name()).is_file();
     restart_required |=
         install_binaries(source, paths, installed.as_ref(), &target, &mut progress).await?;
@@ -674,6 +684,7 @@ mod tests {
             "rejected-executable",
             "hung-executable",
             "busy",
+            "staged-downgrade-fenced",
         ] {
             let fixture = fixture(case);
             create_installation_fixture(fixture.path(), case);
@@ -763,6 +774,7 @@ mod tests {
         let existing = match case {
             "success" | "install-only" | "installed-units" | "failed-units" => None,
             "same-target" => Some(write_existing_daemon(&paths, "1.2.3")),
+            "staged-downgrade-fenced" => Some(write_existing_daemon(&paths, "1.2.4")),
             _ => Some(write_existing_daemon(&paths, "1.2.2")),
         };
         if case == "install-only" {
@@ -839,6 +851,17 @@ mod tests {
                 assert!(!paths.bin_dir.join("ployzd.previous").exists());
             }
             "busy" => assert!(matches!(result, Err(Error::Busy))),
+            "staged-downgrade-fenced" => {
+                assert!(
+                    matches!(&result, Err(Error::Refused { message, .. }) if message.contains("without --install-only")),
+                    "a staged downgrade under a live fence went ahead: {result:?}"
+                );
+                assert_eq!(
+                    fs::read(paths.bin_dir.join("ployzd")).unwrap(),
+                    existing.as_deref().unwrap(),
+                    "a refused downgrade swapped the release"
+                );
+            }
             "missing-tar" => assert!(matches!(
                 result,
                 Err(Error::Command { stage, message })
@@ -904,6 +927,12 @@ mod tests {
                 &format!(
                     "if [ -n \"${{PLOYZ_INSTALLER_CONTRACT_ROOT:-}}\" ]; then echo \"{xtables} $*\" >> \"$PLOYZ_INSTALLER_CONTRACT_ROOT/iptables.log\"; fi\nexit 1"
                 ),
+            );
+        }
+        if case == "staged-downgrade-fenced" {
+            write_script(
+                &commands.join("iptables"),
+                "case \"$*\" in *PLOYZ-FENCE*) exit 0 ;; esac\nexit 1",
             );
         }
         symlink("/usr/bin/tar", commands.join("tar")).unwrap();

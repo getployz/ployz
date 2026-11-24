@@ -824,6 +824,10 @@ sudo systemctl restart docker
 sudo systemctl restart ployz
 ```
 
+After a reboot, Docker doesn't start at all with that setting, so no container runs outside the
+fence, and `journalctl -u ployz-fence` says the same. Remove the setting, then run
+`sudo systemctl start docker ployz`.
+
 ## Virtual machines on another bridge lose their network after you install Ployz
 
 Ployz turns on the Linux setting that sends traffic between containers on one bridge through the

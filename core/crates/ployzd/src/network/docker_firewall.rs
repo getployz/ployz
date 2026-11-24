@@ -187,6 +187,38 @@ pub(super) fn ipv4_off() -> Option<String> {
     ipv4_off_in(&args, &Host)
 }
 
+/// As [`ipv4_off`], for a Docker that isn't running yet, such as at boot: its unit's
+/// command line and the config file it names. A unit systemd can't show runs dockerd
+/// with no flags.
+pub(super) fn configured_ipv4_off() -> Option<String> {
+    let exec_start = std::process::Command::new("systemctl")
+        .args(["show", "--property=ExecStart", "--value", "docker.service"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+        .unwrap_or_default();
+    ipv4_off_in(&unit_command_line(&exec_start), &Host)
+}
+
+/// dockerd's arguments from `systemctl show --property=ExecStart --value`, which prints
+/// `{ path=… ; argv[]=/usr/bin/dockerd -H fd:// ; … }`.
+fn unit_command_line(exec_start: &str) -> Vec<String> {
+    let argv = exec_start
+        .split_once("argv[]=")
+        .map(|(_, rest)| rest.split(" ;").next().unwrap_or_default())
+        .unwrap_or_default();
+    let args = argv
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if args.is_empty() {
+        vec!["dockerd".to_owned()]
+    } else {
+        args
+    }
+}
+
 fn ipv4_off_in(args: &[String], files: &impl Files) -> Option<String> {
     let (flags, config_file) = flag_settings(args.get(1..).unwrap_or_default())?;
     let path = Path::new(config_file.unwrap_or(DEFAULT_CONFIG_FILE));
@@ -620,6 +652,19 @@ mod tests {
         );
         assert_eq!(named(&["dockerd"], r#"{"ip6tables": false}"#), None);
         assert_eq!(named(&["dockerd"], "{}"), None);
+    }
+
+    /// At boot Docker isn't running, so its unit's command line stands in for dockerd's:
+    /// a nftables flag there keeps Docker down as the file's does.
+    #[test]
+    fn a_docker_unit_flag_keeps_ipv4_out_of_iptables_before_docker_starts() {
+        let exec_start = "{ path=/usr/bin/dockerd ; argv[]=/usr/bin/dockerd -H fd:// --firewall-backend=nftables ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }";
+        let fake = Fake::with_pidfile().file(DEFAULT_CONFIG_FILE, "{}", 50);
+        assert_eq!(
+            ipv4_off_in(&unit_command_line(exec_start), &fake).as_deref(),
+            Some("dockerd runs with --firewall-backend=nftables")
+        );
+        assert_eq!(unit_command_line(""), ["dockerd"]);
     }
 
     #[test]
