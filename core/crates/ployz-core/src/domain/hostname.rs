@@ -9,9 +9,9 @@ use crate::{HttpProtocol, IngressHost, QualifiedService, ServiceId};
 ///
 /// Derived from Service Container observations that already replicate. Not a
 /// persisted record. Different observation sets may select different owners;
-/// the same observations always select the same owner. A Container admitted signed
-/// outranks every other, so while one publishes a Hostname, no Container admitted any
-/// other way owns it.
+/// the same observations always select the same owner. A Container its Machine vouched
+/// for, signed or from its own socket, outranks every other, so while one publishes a
+/// Hostname, no Container admitted free owns it.
 #[must_use]
 pub fn hostname_owners<'a>(
     observations: impl IntoIterator<Item = &'a ContainerObservation>,
@@ -23,7 +23,7 @@ pub fn hostname_owners<'a>(
             continue;
         }
         let rank = (
-            !observation.signed(),
+            !observation.vouched(),
             observation.created_at_unix_nanos,
             observation.identity(),
             observation.service_id(),

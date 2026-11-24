@@ -622,7 +622,7 @@ mod plan {
         for (want, now, step) in table {
             let shown = format!("{want:?} / {now:?}");
             assert_eq!(
-                plan_container(want, &now, participating, false),
+                plan_container(want, &now, participating, Admission::Free),
                 step,
                 "{shown}"
             );
@@ -638,7 +638,7 @@ mod plan {
             anonymous_volumes: AnonymousVolumes::Remove,
         };
         let logs_to_read = |want, now: ContainerNow| {
-            let step = plan_container(want, &now, participating, false);
+            let step = plan_container(want, &now, participating, Admission::Free);
             let (ContainerStep::StopThenRemove { logs_to_read, .. }
             | ContainerStep::Remove { logs_to_read, .. }) = step
             else {
@@ -679,14 +679,19 @@ mod plan {
                 run_new("img"),
                 &running("other"),
                 participating,
-                false
+                Admission::Free
             )),
             Some(ContainerRefusalReason::SlotOccupied)
         );
         for want in [run_existing(), stopped()] {
             let shown = format!("{want:?}");
             assert_eq!(
-                refused(&plan_container(want, &absent(), participating, false)),
+                refused(&plan_container(
+                    want,
+                    &absent(),
+                    participating,
+                    Admission::Free
+                )),
                 Some(ContainerRefusalReason::NotFound),
                 "{shown}"
             );
@@ -694,7 +699,7 @@ mod plan {
     }
 
     #[test]
-    fn a_signed_request_never_adopts_a_copy_admitted_unsigned() {
+    fn a_request_never_adopts_a_copy_admitted_with_less_approval() {
         let participating = &LocalMachinePhase::Participating;
         let admitted = |now: ContainerNow, admission| {
             let ContainerNow::Present(mut observed) = now else {
@@ -706,27 +711,26 @@ mod plan {
             ContainerNow::Present(observed)
         };
         for now in [running("img"), exited("img")] {
-            let shown = format!("{now:?}");
-            assert_eq!(
-                refused(&plan_container(
-                    run_new("img"),
-                    &admitted(now.clone(), Admission::Free),
-                    participating,
-                    true,
-                )),
-                Some(ContainerRefusalReason::SlotOccupied),
-                "{shown}"
-            );
-            assert_eq!(
-                refused(&plan_container(
-                    run_new("img"),
-                    &admitted(now, Admission::Signed),
-                    participating,
-                    true,
-                )),
-                None,
-                "{shown}"
-            );
+            for (wanted, held, adopts) in [
+                (Admission::Signed, Admission::Free, false),
+                (Admission::Signed, Admission::Local, false),
+                (Admission::Signed, Admission::Signed, true),
+                (Admission::Local, Admission::Free, false),
+                (Admission::Local, Admission::Local, true),
+                (Admission::Free, Admission::Free, true),
+            ] {
+                let shown = format!("{wanted:?} over {held:?} in {now:?}");
+                assert_eq!(
+                    refused(&plan_container(
+                        run_new("img"),
+                        &admitted(now.clone(), held),
+                        participating,
+                        wanted,
+                    )),
+                    (!adopts).then_some(ContainerRefusalReason::SlotOccupied),
+                    "{shown}"
+                );
+            }
         }
     }
 
@@ -740,13 +744,18 @@ mod plan {
             for want in [run_new("img"), run_existing()] {
                 let shown = format!("{want:?} while {phase:?}");
                 assert_eq!(
-                    refused(&plan_container(want, &running("img"), &phase, false)),
+                    refused(&plan_container(
+                        want,
+                        &running("img"),
+                        &phase,
+                        Admission::Free
+                    )),
                     Some(ContainerRefusalReason::NotParticipating),
                     "{shown}"
                 );
             }
             assert_eq!(
-                plan_container(stopped(), &running("img"), &phase, false),
+                plan_container(stopped(), &running("img"), &phase, Admission::Free),
                 ContainerStep::Stop {
                     id: id('a'),
                     drain: Drain::DEFAULT,
@@ -754,7 +763,7 @@ mod plan {
                 }
             );
             assert_eq!(
-                plan_container(gone(), &exited("img"), &phase, false),
+                plan_container(gone(), &exited("img"), &phase, Admission::Free),
                 ContainerStep::Remove {
                     id: id('a'),
                     anonymous_volumes: AnonymousVolumes::Remove,
@@ -767,7 +776,7 @@ mod plan {
                 run_new("img"),
                 &absent(),
                 &LocalMachinePhase::Joining,
-                false
+                Admission::Free
             ),
             ContainerStep::CreateAndStart(new_container("img"))
         );
@@ -1423,6 +1432,93 @@ mod settled {
                 *method == axum::http::Method::POST && path.ends_with("/start")
             })
             .count()
+    }
+
+    /// A free create whose request read the name before a signed create kept it, then
+    /// waited for its turn: it reads the name again in that turn, and makes nothing.
+    #[tokio::test]
+    async fn a_free_create_reads_the_kept_name_again_in_its_turn() {
+        let Settling {
+            local,
+            fake,
+            data_dir,
+        } = settling().await;
+        let (local, _replica) = with_replica(local).await;
+        fake.images.lock().unwrap().insert(
+            "nginx:1.29-alpine".into(),
+            Some(format!("sha256:{}", "b".repeat(64))),
+        );
+        let mut new = new_container("settled");
+        new.resolved_spec.container.image = "nginx:1.29-alpine".into();
+        let want = run(new);
+        let admitted = local
+            .clone()
+            .at_operator_scope()
+            .admit_spec(&want, None, &[], crate::machine::Admit::Record)
+            .await
+            .unwrap();
+        assert!(admitted.as_ref().is_some_and(|spec| !spec.signed()));
+        let api = ployz_core::QualifiedService::parse("app/api").unwrap();
+        local
+            .replicated()
+            .unwrap()
+            .keep_signed_service(&api)
+            .await
+            .unwrap();
+
+        let reply = local.ensure_container(want, admitted).await;
+
+        assert!(
+            matches!(
+                reply,
+                Err(super::super::Error::DeployRefused(
+                    ployz_core::authority::AuthorityRefusal::SignedName { ref service }
+                )) if *service == api
+            ),
+            "{reply:?}"
+        );
+        assert!(
+            fake.named_containers
+                .as_ref()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .is_empty()
+        );
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    /// Ployz Cloud never learns of a create this Server's own socket admitted, so it keeps
+    /// no name a later Cloud deploy of the Service would be refused under.
+    #[tokio::test]
+    async fn a_create_this_servers_socket_admits_keeps_no_name() {
+        let Settling {
+            local, data_dir, ..
+        } = settling().await;
+        let (local, _replica) = with_replica(local).await;
+        let new = new_container("settled");
+        let admitted =
+            super::super::AdmittedSpec::test_signed(&new.slot.namespace, &new.resolved_spec);
+        assert_eq!(admitted.admission(), ployz_core::Admission::Local);
+
+        let reply = local
+            .ensure_container(run(new), Some(admitted))
+            .await
+            .unwrap();
+
+        assert!(
+            matches!(reply, EnsuredContainer::Ensured { .. }),
+            "{reply:?}"
+        );
+        assert!(
+            !local
+                .replicated()
+                .unwrap()
+                .signed_service_kept(&ployz_core::QualifiedService::parse("app/api").unwrap())
+                .await
+                .unwrap()
+        );
+        std::fs::remove_dir_all(data_dir).unwrap();
     }
 
     #[tokio::test]

@@ -293,15 +293,19 @@ pub struct ContainerObservationParts {
     pub admission: Option<Admission>,
 }
 
-/// How a Machine admitted a Container it made.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+/// How a Machine admitted a Container it made, from the least vouched for.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum Admission {
-    /// A key, an automatic deploy rule or the Machine itself vouched for its spec.
-    Signed,
     /// Admitted because its spec reaches no data, or the Machine kept no record of how it
     /// was admitted.
     Free,
+    /// The Machine's own socket or daemon vouched for its spec. It routes like a signed
+    /// Container while it exists, but keeps no name: Ployz Cloud never learns of it, so a
+    /// kept name would refuse every later deploy Cloud sends of it.
+    Local,
+    /// A key or an automatic deploy rule vouched for its spec, so its name stays kept.
+    Signed,
 }
 
 /// A coherent observation of one managed Container, retaining its historical spec.

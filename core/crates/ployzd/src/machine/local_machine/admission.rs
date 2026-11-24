@@ -58,13 +58,12 @@ pub(crate) enum AdmittedBy {
 }
 
 impl AdmittedBy {
-    /// What the Container's observation reports. A key, a rule or this Machine's own
-    /// caller vouched for every admission but [`Self::Free`].
+    /// What the Container's observation reports. A key or a rule keeps its name signed;
+    /// this Machine's own caller vouches for it only while it exists.
     pub(crate) fn admission(&self) -> ployz_core::Admission {
         match self {
-            Self::Keys { .. } | Self::Rule { .. } | Self::Local { .. } => {
-                ployz_core::Admission::Signed
-            }
+            Self::Keys { .. } | Self::Rule { .. } => ployz_core::Admission::Signed,
+            Self::Local { .. } => ployz_core::Admission::Local,
             Self::Free => ployz_core::Admission::Free,
         }
     }
@@ -296,6 +295,11 @@ impl AdmittedSpec {
 
     pub(crate) fn by(&self) -> &AdmittedBy {
         &self.by
+    }
+
+    /// What the Container it makes reports.
+    pub(crate) fn admission(&self) -> ployz_core::Admission {
+        self.by.admission()
     }
 
     pub(crate) fn verified(&self) -> Option<VerifiedBuild> {

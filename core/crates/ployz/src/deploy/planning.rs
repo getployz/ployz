@@ -1081,10 +1081,16 @@ fn hostname_policy_for(
     namespace: &Namespace,
     requested: &[RequestedServiceSpec],
     snapshot: &DeploySnapshot,
-    retiring: &[QualifiedService],
-    handovers: &[HostnameHandover],
+    (retiring, handovers): (&[QualifiedService], &[HostnameHandover]),
+    options: &PlanOptions,
 ) -> Result<Vec<DeployWarning>, PlanError> {
-    reject_hostname_conflicts(namespace, requested, snapshot, retiring, handovers)?;
+    reject_hostname_conflicts(
+        namespace,
+        requested,
+        snapshot,
+        (retiring, handovers),
+        options,
+    )?;
     let mut warnings = Vec::new();
     if !snapshot.is_observer_complete()
         && requested
@@ -1199,8 +1205,8 @@ fn assemble_plan(
         &intent.namespace,
         &requested,
         snapshot,
-        &retiring,
-        &handovers,
+        (&retiring, &handovers),
+        &intent.options,
     )?);
     warnings.extend(storage_eligibility_warnings(
         &requested,
@@ -1512,14 +1518,17 @@ fn reject_hostname_conflicts(
     namespace: &Namespace,
     requested: &[RequestedServiceSpec],
     snapshot: &DeploySnapshot,
-    retiring: &[QualifiedService],
-    handovers: &[HostnameHandover],
+    (retiring, handovers): (&[QualifiedService], &[HostnameHandover]),
+    options: &PlanOptions,
 ) -> Result<(), PlanError> {
     // A full Deploy may transfer a hostname from a Service it retires after desired work
     // succeeds, and a Service may hand one to another in the same Deploy. Recompute
     // ownership without the copies that give it up so other publishers still block it.
+    // A Service this Deploy signs outranks a publisher no Server vouched for, as every
+    // Ingress Proxy ranks them, so only a vouched publisher blocks it.
     let retiring = retiring.iter().collect::<BTreeSet<_>>();
     let owner_of = |hostname: &IngressHost, claimant: &ServiceName| {
+        let signs = options.signs(claimant);
         let handed_over = |identity: &QualifiedService| {
             identity.namespace == *namespace
                 && handovers.iter().any(|handover| {
@@ -1530,7 +1539,9 @@ fn reject_hostname_conflicts(
         };
         hostname_owners(snapshot.containers.iter().filter(|container| {
             let identity = container.identity();
-            !retiring.contains(&identity) && !handed_over(&identity)
+            !retiring.contains(&identity)
+                && !handed_over(&identity)
+                && (!signs || container.vouched())
         }))
         .remove(hostname)
     };

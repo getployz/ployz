@@ -977,9 +977,6 @@ pub(crate) fn unsigned(
     Ok(unsigned)
 }
 
-/// Whether a Server verified, under the rule and generation `environment` keeps now, the
-/// image a Deploy of `service` reuses: its latest build, the receipt preparation reads
-/// first. The runner carries the same lookup's proof.
 /// Whether a person signed a version of `service`, or a Server verified a build of it a
 /// rule deployed in this Environment.
 fn signed_before(
@@ -1008,6 +1005,9 @@ fn signed_before(
     Ok(!verified.is_empty())
 }
 
+/// Whether a Server verified, under the rule and generation `environment` keeps now, the
+/// image a Deploy of `service` reuses: its latest build, the receipt preparation reads
+/// first. The runner carries the same lookup's proof.
 fn proven(
     tx: &mut dyn Tx,
     (environment, organization, namespace): (&crate::id::EnvironmentId, &str, &Namespace),

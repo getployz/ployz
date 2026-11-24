@@ -485,15 +485,22 @@ fn replaced_on_machine(
         || unsigned_for_signed(observation, requested, options)
 }
 
-/// Whether a signed deploy of `requested` finds a copy its Machine admitted unsigned. That
-/// copy answers for no name a signed copy keeps, so the deploy replaces it. One from a
-/// Machine that doesn't report stays.
+/// Whether a signed deploy of `requested` finds a copy its Machine admitted free or from
+/// its own socket. That copy keeps no name, so the deploy replaces it with one that does.
+/// One from a Machine that doesn't report stays.
 fn unsigned_for_signed(
     observation: &ContainerObservation,
     requested: &RequestedServiceSpec,
     options: &PlanOptions,
 ) -> bool {
-    options.signs(&requested.name) && observation.admission == Some(ployz_core::Admission::Free)
+    options.signs(&requested.name) && unsigned(observation)
+}
+
+fn unsigned(observation: &ContainerObservation) -> bool {
+    matches!(
+        observation.admission,
+        Some(ployz_core::Admission::Free | ployz_core::Admission::Local)
+    )
 }
 
 fn on_machine(
@@ -660,9 +667,9 @@ impl<'a> Spread<'a> {
         if !observation.runtime.may_serve() || !serving_rotation(observation) {
             return Standing::NotServing;
         }
-        // It stays in its region's place until a signed copy replaces it, but no proxy
-        // routes it under a name a signed copy keeps.
-        if self.signed && observation.admission == Some(ployz_core::Admission::Free) {
+        // It stays in its region's place until a signed copy replaces it, which keeps its
+        // name.
+        if self.signed && unsigned(observation) {
             return Standing::Outdated;
         }
         match compare_observed(observation, self.requested) {

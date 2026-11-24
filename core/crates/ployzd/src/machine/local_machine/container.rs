@@ -1400,15 +1400,17 @@ impl LocalMachine {
         let pin = pinned(&want);
         let replan = (!self.in_switch).then(|| want.clone());
         let mut now = self.container_now(&locator).await?;
-        let signed = admitted.as_ref().is_some_and(AdmittedSpec::signed);
-        let mut step = plan_container(want, &now, &self.record().phase(), signed);
+        let admission = admitted
+            .as_ref()
+            .map_or(ployz_core::Admission::Free, AdmittedSpec::admission);
+        let mut step = plan_container(want, &now, &self.record().phase(), admission);
         // Planned again under the switch lock, which the start keeps until it ends, so a
         // start never lands inside a switch of that Volume.
         let switch = match replan {
             Some(want) if starts_provisioned_holder(&step, &now) => {
                 let guard = self.lock_switch().await;
                 now = self.container_now(&locator).await?;
-                step = plan_container(want, &now, &self.record().phase(), signed);
+                step = plan_container(want, &now, &self.record().phase(), admission);
                 Some(guard)
             }
             Some(_) | None => None,
@@ -1724,10 +1726,14 @@ impl LocalMachine {
         let containers = self.docker()?;
         let record = self.record();
         let machine = record.cluster_machine().ok_or(Error::NotParticipating)?;
-        // System Containers are skipped: the replica may be one of them.
-        let keeps_name = admitted.signed()
+        // Only a key or a rule keeps a name: Cloud never learns of a Local admission, so a
+        // name it kept would refuse every later Cloud deploy of a Service that reaches no
+        // data. System Containers are skipped: the replica may be one of them.
+        let keeps_name = admitted.admission() == ployz_core::Admission::Signed
             && kind == ContainerKind::ServiceContainer
             && *namespace != Namespace::system();
+        let free_service = admitted.admission() == ployz_core::Admission::Free
+            && kind == ContainerKind::ServiceContainer;
         containers
             .lifecycle()
             .create_with_admission(
@@ -1778,6 +1784,16 @@ impl LocalMachine {
                         // Internal DNS to keep the name for.
                         if keeps_name && let Ok(replicated) = self.replicated() {
                             replicated.keep_signed_service(&identity).await?;
+                        }
+                        // Read again in this turn: a signed create may have kept the name
+                        // since the request's admission read it.
+                        if free_service && self.replicated()?.signed_service_kept(&identity).await?
+                        {
+                            return Err(Error::DeployRefused(
+                                ployz_core::authority::AuthorityRefusal::SignedName {
+                                    service: identity,
+                                },
+                            ));
                         }
                         Ok(())
                     },
@@ -1991,14 +2007,14 @@ fn starts_provisioned_holder(step: &ContainerStep, now: &ContainerNow) -> bool {
     })
 }
 
-/// `signed` is whether this Machine admitted the request signed. A signed request never
-/// adopts a Container it didn't admit signed: that copy answers for no name a signed one
-/// keeps, and adopting it would skip the write that keeps the name.
+/// `admission` is how this Machine admitted the request. It never adopts a Container
+/// admitted less vouched for: a copy admitted free answers for no name a signed one keeps,
+/// and adopting it would skip the write that keeps the name.
 fn plan_container(
     want: ContainerWant,
     now: &ContainerNow,
     phase: &LocalMachinePhase,
-    signed: bool,
+    admission: ployz_core::Admission,
 ) -> ContainerStep {
     let present = match now {
         ContainerNow::Present(observed) => Some(observed),
@@ -2016,9 +2032,9 @@ fn plan_container(
             ..
         } => match present {
             None => ContainerStep::CreateAndStart(new),
-            Some(observed) if signed && !observed.signed() => ContainerStep::Refuse(refuse(
+            Some(observed) if !observed.admits_as(admission) => ContainerStep::Refuse(refuse(
                 ContainerRefusalReason::SlotOccupied,
-                "the slot holds a Container this server didn't admit from a signed deploy",
+                "the slot holds a Container this server admitted from a deploy with less approval",
             )),
             Some(observed)
                 if same_creation(
