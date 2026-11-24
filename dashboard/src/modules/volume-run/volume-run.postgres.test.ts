@@ -4232,8 +4232,8 @@ describe("volume runs", () => {
     type Lane = { id: string; kind: string; state: string; phase: string; message: string | null; gen: string; inngest_run_id: string | null; args: VolumeRunInput["args"] };
     const lanes = async () => (await harness.pool.query(
       "select id, kind, state, phase, message, gen, inngest_run_id, args from volume_run order by gen")).rows as Lane[];
-    const moving = async (phase: "warm" | "committed" = "warm") => {
-      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+    const moving = async (phase: "warm" | "committed" = "warm", args: Extract<VolumeRunInput, { kind: "move" }>["args"] = { to: "fsn-2" }) => {
+      const run = await requested({ kind: "move", args });
       // An approved Move that committed did so on A's receipt, so what finishes it goes forward to B.
       await harness.pool.query("update volume_run set state = 'running', inngest_run_id = 'run-move', epoch = 1, phase = $2, current = $3, receipt = $4 where id = $1",
         [run.id, phase, phase === "committed" ? idOf("fsn-2") : null, phase === "committed" ? null : null]);
@@ -4282,6 +4282,18 @@ describe("volume runs", () => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({ name: "volume/run.requested" }));
       expect(await finish()).toEqual({ ended: 0, requeued: [], refused: [] });
       expect((await lanes()).filter((lane) => lane.kind === "move")).toHaveLength(2);
+    });
+
+    // Catches a Deploy that queues a drain's move again after the drain stopped waiting on it, outside the drain's checks.
+    it("during a drain's warm move: the move yields and is not requested again", async () => {
+      const taken = await moving("warm", { to: "fsn-2", machine: idOf("fsn-2"), holder: { machine: idOf("fsn-1"), container: "web-fsn-1" as ContainerId } });
+
+      const placed = await place();
+
+      expect(placed).toMatchObject([{ kind: "took", resume: null }]);
+      await fence(placed[0]);
+      expect(await finish()).toEqual({ ended: 1, requeued: [], refused: [] });
+      expect(await lanes()).toMatchObject([{ id: taken.id, state: "yielded" }, { kind: "deploy", state: "done" }]);
     });
 
     it("a dead move after the takeover is stale on A and its commit is refused, so B never starts the app", async () => {
