@@ -394,8 +394,8 @@ async fn a_flip_retires_the_replaced_copy_and_removes_a_draining_one_after_the_s
         DeployOperation::RemoveContainer {
             machine_id: machine,
             container_id: draining,
-            purpose: ployz_core::RemoveContainerPurpose::Rollout,
-            service_stays: false,
+            purpose: ployz_core::RemoveContainerPurpose::Retire,
+            service_stays: true,
         },
     ];
     let client = Scripted::new(vec![
@@ -487,8 +487,8 @@ async fn a_scale_down_retires_the_copy_it_removes_before_removing_it() {
     let plan = vec![DeployOperation::RemoveContainer {
         machine_id: machine,
         container_id: removed,
-        purpose: ployz_core::RemoveContainerPurpose::Rollout,
-        service_stays: false,
+        purpose: ployz_core::RemoveContainerPurpose::Retire,
+        service_stays: true,
     }];
     let client = Scripted::new(vec![
         observed(Call::Inspect(machine, removed), running()),
@@ -519,8 +519,8 @@ async fn a_removal_whose_out_no_proxy_confirms_fails_the_deploy() {
     let plan = vec![DeployOperation::RemoveContainer {
         machine_id: machine,
         container_id: removed,
-        purpose: ployz_core::RemoveContainerPurpose::Rollout,
-        service_stays: false,
+        purpose: ployz_core::RemoveContainerPurpose::Retire,
+        service_stays: true,
     }];
     let client = Scripted {
         withheld: BTreeMap::from([(api(), usize::MAX)]),
@@ -628,8 +628,8 @@ async fn a_removal_of_the_last_in_copy_is_refused() {
     let plan = vec![DeployOperation::RemoveContainer {
         machine_id: machine,
         container_id: removed,
-        purpose: ployz_core::RemoveContainerPurpose::Rollout,
-        service_stays: false,
+        purpose: ployz_core::RemoveContainerPurpose::Retire,
+        service_stays: true,
     }];
     let client = Scripted::new(vec![observed(Call::Inspect(machine, removed), running())])
         .with_copy(&machine, &kept, CopyRotation::Pending)
@@ -698,8 +698,8 @@ async fn a_rollout_removal_waits_until_every_machine_lists_the_new_copy() {
         DeployOperation::RemoveContainer {
             machine_id: machine,
             container_id: draining,
-            purpose: ployz_core::RemoveContainerPurpose::Rollout,
-            service_stays: false,
+            purpose: ployz_core::RemoveContainerPurpose::Retire,
+            service_stays: true,
         },
     ];
     let client = Scripted {
@@ -1783,8 +1783,8 @@ async fn an_undialed_servers_proxy_keeps_a_surplus_copy_the_rollout_would_remove
         DeployOperation::RemoveContainer {
             machine_id: machine,
             container_id: surplus,
-            purpose: ployz_core::RemoveContainerPurpose::Rollout,
-            service_stays: false,
+            purpose: ployz_core::RemoveContainerPurpose::Retire,
+            service_stays: true,
         },
     ];
     let client = Scripted {
@@ -1832,8 +1832,8 @@ async fn an_undialed_servers_proxy_keeps_a_surplus_copy_already_out() {
         DeployOperation::RemoveContainer {
             machine_id: machine,
             container_id: surplus,
-            purpose: ployz_core::RemoveContainerPurpose::Rollout,
-            service_stays: false,
+            purpose: ployz_core::RemoveContainerPurpose::Retire,
+            service_stays: true,
         },
     ];
     let client = Scripted {
@@ -1879,8 +1879,8 @@ fn the_left_copys_removal(machine: &MachineId) -> Vec<DeployOperation> {
     vec![DeployOperation::RemoveContainer {
         machine_id: *machine,
         container_id: container('a'),
-        purpose: ployz_core::RemoveContainerPurpose::Rollout,
-        service_stays: false,
+        purpose: ployz_core::RemoveContainerPurpose::Retire,
+        service_stays: true,
     }]
 }
 
@@ -1944,8 +1944,8 @@ async fn an_undialed_servers_proxy_lets_the_copies_it_never_routed_go_at_the_swi
         DeployOperation::RemoveContainer {
             machine_id: machine,
             container_id: left,
-            purpose: ployz_core::RemoveContainerPurpose::Rollout,
-            service_stays: false,
+            purpose: ployz_core::RemoveContainerPurpose::Retire,
+            service_stays: true,
         },
     ];
     let client = Scripted {
@@ -2023,8 +2023,8 @@ async fn a_gapped_publish_removes_a_surplus_the_undialed_proxy_never_routed() {
         DeployOperation::RemoveContainer {
             machine_id: machine,
             container_id: surplus,
-            purpose: ployz_core::RemoveContainerPurpose::Rollout,
-            service_stays: false,
+            purpose: ployz_core::RemoveContainerPurpose::Retire,
+            service_stays: true,
         },
     ];
     let client = Scripted {
@@ -2078,8 +2078,8 @@ async fn a_gapped_publish_leaves_a_surplus_the_owner_refuses_to_take_out() {
         DeployOperation::RemoveContainer {
             machine_id: machine,
             container_id: surplus,
-            purpose: ployz_core::RemoveContainerPurpose::Rollout,
-            service_stays: false,
+            purpose: ployz_core::RemoveContainerPurpose::Retire,
+            service_stays: true,
         },
     ];
     let client = Scripted {
@@ -2130,8 +2130,8 @@ async fn an_undialed_servers_proxy_that_already_dropped_a_copy_lets_it_go() {
     let plan = vec![DeployOperation::RemoveContainer {
         machine_id: machine,
         container_id: dropped,
-        purpose: ployz_core::RemoveContainerPurpose::Rollout,
-        service_stays: false,
+        purpose: ployz_core::RemoveContainerPurpose::Retire,
+        service_stays: true,
     }];
     let client = Scripted {
         acks: BTreeMap::from([(undialed, Ack::Never)]),
@@ -2775,8 +2775,8 @@ async fn global_with_no_matching_machine_keeps_last_copy_serving() {
     let plan = vec![DeployOperation::RemoveContainer {
         machine_id: machine,
         container_id: last,
-        purpose: ployz_core::RemoveContainerPurpose::Rollout,
-        service_stays: false,
+        purpose: ployz_core::RemoveContainerPurpose::Retire,
+        service_stays: true,
     }];
     let client = Scripted::new(vec![observed(Call::Inspect(machine, last), running())]).with_copy(
         &machine,
@@ -3626,8 +3626,8 @@ async fn a_removal_whose_owner_does_not_answer_names_the_copy_left_running() {
     let plan = vec![DeployOperation::RemoveContainer {
         machine_id: machine,
         container_id: removed,
-        purpose: ployz_core::RemoveContainerPurpose::Rollout,
-        service_stays: false,
+        purpose: ployz_core::RemoveContainerPurpose::Retire,
+        service_stays: true,
     }];
     let client = Scripted::new(
         std::iter::repeat_with(|| {
@@ -3670,8 +3670,8 @@ async fn a_service_that_switched_before_a_sibling_failed_reads_switched() {
         DeployOperation::RemoveContainer {
             machine_id: machine,
             container_id: container('e'),
-            purpose: ployz_core::RemoveContainerPurpose::Rollout,
-            service_stays: false,
+            purpose: ployz_core::RemoveContainerPurpose::Retire,
+            service_stays: true,
         },
     ];
     let client = Scripted::new(vec![
