@@ -1161,3 +1161,83 @@ async fn a_member_given_the_key_takes_the_holders_removals() {
     assert_eq!(record.removed_members(), [gone]);
     server.abort();
 }
+
+/// A Device's Volume step holds the switch, mid-destroy, when a holder shares the Sealing
+/// Key with removals that remove that Device. The install waits for the step to end before
+/// it stops trusting the Device, so once it returns no step the Device asked for still runs.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sealing_key_install_that_removes_a_device_waits_out_its_volume_step() {
+    use ployz_core::authority::{KeyRef, Signer};
+    let (replicated, server) = fake_cluster::store().await;
+    let holder = Peer::participating("ployzd-install-waits-holder", &replicated).await;
+    let mut founder = Peer::needing_access("ployzd-install-waits-founder", &replicated).await;
+    founder
+        .machine
+        .runtime
+        .capabilities
+        .insert(ployz_core::JOIN_TRUST_CAPABILITY.to_owned());
+    replicated
+        .publish_local_machine(&founder.machine)
+        .await
+        .unwrap();
+    let kept = join_signer();
+    let removed = Signer::from_seed(&[2; 32]);
+    for peer in [&holder, &founder] {
+        trust_device(&peer.local, &kept).await;
+        trust_device(&peer.local, &removed).await;
+    }
+    let device = ployz_core::DeviceKey::from(removed.public());
+    let removed_key = KeyRef::Signing { key: device };
+    holder
+        .local
+        .owner()
+        .mutate(move |store| store.remove_key(removed_key).unwrap())
+        .await
+        .unwrap();
+    let sealed = holder.share_to(&founder).await;
+
+    let mut asked = founder.local.switch_asked();
+    let step = founder
+        .local
+        .clone()
+        .with_management_client(device.into())
+        .lock_switch()
+        .await
+        .unwrap();
+    let before = *asked.borrow();
+    let mut installing = tokio::spawn({
+        let local = founder.local.clone();
+        let request = InstallSealingKeyRequest {
+            from: holder.machine.id,
+            sealed,
+            public_key: holder.held(),
+        };
+        async move { local.install_sealing_key(request).await }
+    });
+    let early = tokio::select! {
+        installed = &mut installing => Some(installed.unwrap()),
+        queued = asked.wait_for(|asked| *asked > before) => {
+            queued.unwrap();
+            None
+        }
+    };
+    assert!(
+        early.is_none(),
+        "the install removed the Device while its Volume step held the switch: {early:?}"
+    );
+    assert!(
+        founder
+            .local
+            .record()
+            .accepts_management_client(&device.into())
+    );
+    drop(step);
+    installing.await.unwrap().unwrap();
+    assert!(
+        !founder
+            .local
+            .record()
+            .accepts_management_client(&device.into())
+    );
+    server.abort();
+}

@@ -5139,6 +5139,189 @@ mod set_volume_copy {
             .unwrap()
     }
 
+    /// Approve `device` and a second Device, so removing `device` leaves a key that may
+    /// change keys.
+    async fn approve_with_another(store: &RecordOwner, device: ployz_core::DeviceKey) {
+        let kept = ployz_core::DeviceKey::from(
+            ployz_core::authority::Signer::from_seed(&[9; 32]).public(),
+        );
+        store
+            .mutate(move |store| {
+                store.approve_device(device).unwrap();
+                store.approve_device(kept).unwrap();
+            })
+            .await
+            .unwrap();
+    }
+
+    /// `ployz device rm` of `device`, answered with the floor of the Volume read the moment
+    /// it returns.
+    fn remove_device(
+        service: &MachineService,
+        device: ployz_core::DeviceKey,
+        specs: &std::path::Path,
+    ) -> tokio::task::JoinHandle<(Result<RpcResponse, tonic::Status>, i64)> {
+        let (service, specs) = (service.clone(), specs.to_owned());
+        tokio::spawn(async move {
+            let remove = ployz_core::SetDeviceRequest::Remove {
+                code: device.code(),
+            };
+            let removed = service
+                .set_device(Request::new(
+                    op::SetDevice::into_request(remove).encode().unwrap(),
+                ))
+                .await
+                .map(|reply| reply.into_inner().decode_response().unwrap());
+            (removed, floor_row(&specs))
+        })
+    }
+
+    /// A Device's floor raise, its RPC cancelled once its write began, when `ployz device
+    /// rm` removes that Device. Another connection holds the database, so the write waits.
+    /// Nothing takes the floor lock until the write lands, so the removal returns after it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_device_removal_waits_out_a_cancelled_floor_raise_still_writing() {
+        use futures_util::FutureExt;
+        let (data_dir, store, service, _fake) = fake_docker_service("ployzd-floor-cancelled").await;
+        let device = ployz_core::DeviceKey::from(
+            ployz_core::authority::Signer::from_seed(&[7; 32]).public(),
+        );
+        approve_with_another(&store, device).await;
+        let plugin = FakePlugin::default();
+        plugin.reply(INSPECT_ROUTE, slot(Some(snapshot("f-1", 7))));
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        let containers = service.local().containers().unwrap().clone();
+        let specs = containers.spec_store_path_for_test().to_owned();
+        let blocker = rusqlite::Connection::open(&specs).unwrap();
+        blocker.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let mut begun = containers.floor_writes_for_test();
+        let caller = service.clone().with_management_client(device.into());
+        let raising = tokio::spawn(async move { set_copy(&caller, floor(5)).await });
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            begun.wait_for(|begun| *begun >= 1),
+        )
+        .await
+        .expect("the raise's write begins")
+        .unwrap();
+        raising.abort();
+        assert!(raising.await.unwrap_err().is_cancelled());
+        assert!(
+            containers.lifecycle().floor_turn().now_or_never().is_none(),
+            "the floor lock came free while the cancelled raise's write still waited"
+        );
+        let mut asked = service.local().floor_asked();
+        let before = *asked.borrow();
+        let mut removing = remove_device(&service, device, &specs);
+        let early = tokio::select! {
+            removed = &mut removing => Some(removed.unwrap()),
+            queued = asked.wait_for(|asked| *asked > before) => {
+                queued.unwrap();
+                None
+            }
+        };
+        drop(blocker);
+        let (removed, at_removal) = match early {
+            Some(removed) => removed,
+            None => removing.await.unwrap(),
+        };
+        assert_eq!(
+            at_removal, 5,
+            "the removal returned before the cancelled raise's write landed"
+        );
+        removed
+            .unwrap()
+            .decode::<op::SetDevice>()
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert!(!store.record().accepts_management_client(&device.into()));
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    /// A Device's SetVolumeSize, its RPC cancelled while the plugin resizes, when `ployz
+    /// device rm` removes that Device. The resize keeps the switch until the plugin
+    /// answers, so the removal returns only after the bound changed.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_device_removal_waits_out_a_cancelled_resize_the_plugin_still_runs() {
+        use futures_util::FutureExt;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let (data_dir, store, service, _fake) =
+            fake_docker_service("ployzd-resize-cancelled").await;
+        let device = ployz_core::DeviceKey::from(
+            ployz_core::authority::Signer::from_seed(&[7; 32]).public(),
+        );
+        approve_with_another(&store, device).await;
+        let plugin = FakePlugin::default();
+        let route = crate::volume_copy::VOLUME_SIZE_SET_ROUTE;
+        plugin.reply(route, json!({"Ok": {"bound_bytes": 2_147_483_648_u64}}));
+        let resized = Arc::new(AtomicBool::new(false));
+        plugin.on(route, {
+            let resized = Arc::clone(&resized);
+            move || resized.store(true, Ordering::SeqCst)
+        });
+        let resizing = plugin.hold(route).await;
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        let specs = service
+            .local()
+            .containers()
+            .unwrap()
+            .spec_store_path_for_test()
+            .to_owned();
+        let caller = service.clone().with_management_client(device.into());
+        let sizing = tokio::spawn(async move {
+            let request = json!({"name":VOLUME, "maximum_bytes":2_147_483_648_u64});
+            caller
+                .set_volume_size(Request::new(
+                    op::SetVolumeSize::into_request(serde_json::from_value(request).unwrap())
+                        .encode()
+                        .unwrap(),
+                ))
+                .await
+        });
+        until_called(&plugin, route).await;
+        sizing.abort();
+        assert!(sizing.await.unwrap_err().is_cancelled());
+        let mut asked = service.local().switch_asked();
+        let before = *asked.borrow();
+        assert!(
+            service.local().lock_switch().now_or_never().is_none(),
+            "the switch came free while the plugin still resized"
+        );
+        let mut removing = tokio::spawn({
+            let removing = remove_device(&service, device, &specs);
+            let resized = Arc::clone(&resized);
+            async move {
+                let (removed, _) = removing.await.unwrap();
+                (removed, resized.load(Ordering::SeqCst))
+            }
+        });
+        let early = tokio::select! {
+            removed = &mut removing => Some(removed.unwrap()),
+            queued = asked.wait_for(|asked| *asked >= before + 2) => {
+                queued.unwrap();
+                None
+            }
+        };
+        drop(resizing);
+        let (removed, resized_at_removal) = match early {
+            Some(removed) => removed,
+            None => removing.await.unwrap(),
+        };
+        assert!(
+            resized_at_removal,
+            "the removal returned before the cancelled resize finished"
+        );
+        removed
+            .unwrap()
+            .decode::<op::SetDevice>()
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert!(!store.record().accepts_management_client(&device.into()));
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
     /// A Seed, which only Full access sends, queued on the switch while its Device slot
     /// goes. The key keeps Cloud's slot, an Operator's, and the Seed is refused there
     /// before the plugin hears it.

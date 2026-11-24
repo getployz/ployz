@@ -499,6 +499,11 @@ impl ContainerRuntime {
         self.specs.path_for_test()
     }
 
+    #[cfg(test)]
+    pub(crate) fn floor_writes_for_test(&self) -> tokio::sync::watch::Receiver<usize> {
+        self.specs.floor_writes_for_test()
+    }
+
     #[must_use]
     pub(crate) fn local_docker(&self) -> LocalDocker {
         self.docker.clone()

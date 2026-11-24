@@ -76,6 +76,9 @@ pub struct MachineSpecStore {
     config_operations: Arc<Mutex<()>>,
     floors: Arc<Mutex<()>>,
     rotations: watch::Sender<()>,
+    /// How many floor writes have begun on a blocking thread.
+    #[cfg(test)]
+    floor_writes: watch::Sender<usize>,
     /// Never used: keeps SQLite from checkpointing the WAL each time a call's own
     /// connection closes as the last one.
     _open: Arc<std::sync::Mutex<Connection>>,
@@ -106,6 +109,8 @@ impl MachineSpecStore {
             config_operations: Arc::new(Mutex::new(())),
             floors: Arc::new(Mutex::new(())),
             rotations: watch::Sender::new(()),
+            #[cfg(test)]
+            floor_writes: watch::Sender::new(0),
             _open: Arc::new(std::sync::Mutex::new(open)),
         })
     }
@@ -640,6 +645,11 @@ impl MachineSpecStore {
     pub(crate) fn path_for_test(&self) -> &std::path::Path {
         &self.path
     }
+
+    /// How many floor writes have begun on a blocking thread so far.
+    pub(crate) fn floor_writes_for_test(&self) -> watch::Receiver<usize> {
+        self.floor_writes.subscribe()
+    }
 }
 
 impl FloorTurn<'_> {
@@ -651,8 +661,12 @@ impl FloorTurn<'_> {
         r#gen: VolumeGen,
     ) -> Result<Result<(), VolumeGen>, super::Error> {
         let name = name.to_string();
+        #[cfg(test)]
+        let begun = self.store.floor_writes.clone();
         self.store
             .run(move |connection| {
+            #[cfg(test)]
+            begun.send_modify(|begun| *begun += 1);
             let raised = match ployz_decide::volume_floor::admit(volume_floor(connection, &name)?, r#gen) {
                 Ok(raised) => raised,
                 Err(floor) => return Ok(Err(floor)),

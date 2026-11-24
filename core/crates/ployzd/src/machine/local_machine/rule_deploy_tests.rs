@@ -494,6 +494,34 @@ async fn a_push_runs_its_hook_once() {
     );
 }
 
+/// A hook a rule admitted whose create never ran, as when its caller's key went before the
+/// create's turn, leaves its push's place: a valid retry in another slot is admitted.
+#[tokio::test]
+async fn a_hook_admitted_without_a_create_leaves_its_place() {
+    let fixture = fixture().await;
+    let rule = fixture.deploy_rule(3);
+    let claim = fixture.built(&rule, fixture.attest());
+    let proof = fixture.proof(&rule, &claim, token_for(&claim, "hook"));
+    fixture
+        .deploy(
+            want("pre_deploy_hook", "h1", &spec()),
+            &proof,
+            commit(),
+            now(),
+        )
+        .await
+        .unwrap();
+    fixture
+        .deploy(
+            want("pre_deploy_hook", "h2", &spec()),
+            &proof,
+            commit(),
+            now(),
+        )
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn a_newer_generation_refuses_every_proof_below_it() {
     let fixture = fixture().await;
