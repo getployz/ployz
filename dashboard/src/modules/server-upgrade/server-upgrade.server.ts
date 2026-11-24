@@ -490,14 +490,17 @@ export const observeServerNames = (organizationId: string) =>
 export const closeStaleUpgradeAttempts = () =>
   closeRunningAttempts(lt(serverUpgradeAttempt.startedAt, sql`now() - make_interval(secs => ${UPGRADE_OBSERVATION_LIMIT_MS / 1000})`));
 
-/** The automatic Rollout runs with an attempt that ended `unknown` since `since`, so the sweep can mail them again on retry. */
-export const listUnknownAutomaticRollouts = Effect.fn("ServerUpgrade.listUnknownAutomatic")(function* (since: Date) {
+/**
+ * The automatic Rollout runs with an attempt that ended `unknown` in the last `withinMs`, on Postgres's clock, which
+ * stamps the end, so the sweep can mail them again on retry.
+ */
+export const listUnknownAutomaticRollouts = Effect.fn("ServerUpgrade.listUnknownAutomatic")(function* (withinMs: number) {
   const { drizzle } = yield* Database;
   const rows = yield* drizzle.selectDistinct({ inngestRunId: serverUpgradeAttempt.inngestRunId }).from(serverUpgradeAttempt)
     .where(and(
       eq(serverUpgradeAttempt.trigger, "automatic"),
       eq(serverUpgradeAttempt.outcome, "unknown"),
-      gte(serverUpgradeAttempt.endedAt, since),
+      gte(serverUpgradeAttempt.endedAt, sql`now() - make_interval(secs => ${withinMs / 1000})`),
     ));
   return rows.map(({ inngestRunId }) => inngestRunId);
 });
