@@ -5,6 +5,7 @@ import { Effect, Option } from "effect";
 import type { StoreRefusal } from "#/lib/refusal";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { attemptRows } from "#/modules/inngest/attempt-row.server";
+import { checkedNow } from "#/db/tables";
 import { DRAIN_RUNNING_LIMIT_MS } from "#/modules/machines/server-drain";
 import { candidateServers, copyHolder, dataCheck, type DrainRunRow, finalReport, type FinishedMove, volumeLine, type VolumeLine } from "#/modules/machines/server-drain-volumes";
 import { requirements, serverSupports } from "#/modules/runtime/daemon-compat";
@@ -46,20 +47,23 @@ const rows = attemptRows(serverDrainAttempt, "The drain request was not found.")
 
 /**
  * How long a drain may still wait on its Volumes: from its start, which Postgres stamped, to the run limit less a
- * margin. Read on `clock_timestamp()`, so a read made once its lock is held counts the time it waited for it.
+ * margin, on Postgres's clock as the statement reads it.
  */
 const volumeLeftMs = sql<number>`coalesce(extract(epoch from ${serverDrainAttempt.startedAt}
-  + make_interval(secs => ${(DRAIN_RUNNING_LIMIT_MS - DRAIN_VOLUME_MARGIN_MS) / 1000}) - clock_timestamp()) * 1000, 0)`.mapWith(Number);
+  + make_interval(secs => ${(DRAIN_RUNNING_LIMIT_MS - DRAIN_VOLUME_MARGIN_MS) / 1000}) - ${checkedNow()}) * 1000, 0)`.mapWith(Number);
 
-/** The drain's row while this run owns it running with the Engine's report; null once it ended or another run holds it. */
+/**
+ * The drain's row while this run owns it running with the Engine's report; null once it ended or another run holds it.
+ * With `lock`, it locks the row first and reads it in the next statement, so the time left counts any wait for the lock.
+ */
 const ownedReport = Effect.fn("ServerDrain.ownedReport")(function* (request: Request, runId: string, lock = false) {
   const { drizzle } = yield* Database;
-  const query = drizzle.select({ ...getTableColumns(serverDrainAttempt), leftMs: volumeLeftMs }).from(serverDrainAttempt).where(and(
+  if (lock) yield* drizzle.select({ id: serverDrainAttempt.id }).from(serverDrainAttempt).where(eq(serverDrainAttempt.id, request.attemptId)).for("update");
+  const [row] = yield* drizzle.select({ ...getTableColumns(serverDrainAttempt), leftMs: volumeLeftMs }).from(serverDrainAttempt).where(and(
     rows.owned(request.attemptId, runId),
     eq(serverDrainAttempt.state, "running"),
     isNotNull(serverDrainAttempt.report),
   ));
-  const [row] = lock ? yield* query.for("update") : yield* query;
   return row === undefined || row.report === null ? null : { ...row, report: row.report };
 });
 
