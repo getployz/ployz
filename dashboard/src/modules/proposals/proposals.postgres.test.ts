@@ -209,6 +209,33 @@ it.live("a step with more than one run reads as its newest", () =>
     expect(yield* provided(proposalStatus(owner, id))).toMatchObject({ ok: true, value: { steps: [{ state: "failed" }, { state: "not_run" }] } });
   }));
 
+// Catches a member's approval, given while production was unprotected, still restarting web after an admin protected it.
+it.live("a step whose Environment was protected after a member approved halts for an owner or admin", () =>
+  Effect.gen(function* () {
+    const { call, acts, cluster, provided, owner, ended, approve, protect, agent, write } = yield* shop();
+    yield* write({ command: "set_environment_protected", environment: { project: null, environment: null }, protected: false });
+    const id = idOf(yield* call("proposal_create", {}));
+    yield* call("service_stop", { service: "web", proposal: id });
+    yield* call("service_restart", { service: "web", proposal: id });
+    yield* call("proposal_present", { proposal: id });
+    const bo = yield* provided(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      const [person] = yield* drizzle.insert(user).values({ email: "bo.member@example.test", name: "Bo" }).returning();
+      yield* drizzle.insert(member).values({ userId: person?.id ?? "", organizationId: ORGANIZATION, role: "member" });
+      return { ...owner, userId: person?.id ?? expect.fail("no person"), role: "member" } satisfies Caller;
+    }));
+    expect(yield* cluster(decideProposal(bo, id, approve))).toMatchObject({ ok: true, proposal: { status: "approved" } });
+    const [first] = yield* acts;
+
+    yield* protect;
+    yield* ended(first?.id ?? expect.fail("no act"), "done");
+    yield* cluster(advanceProposal({ actId: first?.id ?? "", organizationId: ORGANIZATION }));
+    expect(yield* acts).toHaveLength(1);
+    expect(yield* provided(proposalStatus(agent, id))).toMatchObject({ ok: true, value: {
+      steps: [{ state: "done" }, { state: "failed", reason: "production is Protected now. An owner or admin approves this." }],
+    } });
+  }));
+
 it.live("a step that fails leaves the ones after it unrun", () =>
   Effect.gen(function* () {
     const { call, staged, acts, cluster, provided, owner, ended, approve } = yield* shop();
