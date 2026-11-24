@@ -187,7 +187,7 @@ export const closeStaleCleanups = Effect.fn("NamespaceCleanup.closeStale")(funct
     running: { limitMs: CLEANUP_RUNNING_LIMIT_MS, end: ended("lost") },
     pending: {
       end: ended("not_started"),
-      when: (now) => lt(namespaceCleanup.requestedAt, new Date(now - CLEANUP_PENDING_LIMIT_MS)),
+      when: lt(namespaceCleanup.requestedAt, sql`now() - make_interval(secs => ${CLEANUP_PENDING_LIMIT_MS / 1000})`),
     },
   });
   return { failed: pending, unknown: running };

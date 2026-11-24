@@ -225,7 +225,7 @@ export const closeStaleWebTraffic = Effect.fn("ServerWebTraffic.closeStale")(fun
     running: { limitMs: 2 * WEB_TRAFFIC_RUNNING_LIMIT_MS, end: failed(RUN_ENDS.failure.running) },
     pending: {
       end: failed(RUN_ENDS.failure.pending),
-      when: (now) => queueWaitedPast(serverWebTrafficAttempt, new Date(now - WEB_TRAFFIC_PENDING_LIMIT_MS), { earlierOnly: true }),
+      when: queueWaitedPast(serverWebTrafficAttempt, WEB_TRAFFIC_PENDING_LIMIT_MS, { earlierOnly: true }),
     },
   });
   return { unstarted: pending, lost: running };

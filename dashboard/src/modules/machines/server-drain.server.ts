@@ -468,7 +468,7 @@ export const closeStaleDrains = Effect.fn("ServerDrain.closeStale")(function* ()
     },
     pending: {
       end: ended("not_started"),
-      when: (now) => queueWaitedPast(serverDrainAttempt, new Date(now - DRAIN_PENDING_LIMIT_MS), { earlierOnly: false }),
+      when: queueWaitedPast(serverDrainAttempt, DRAIN_PENDING_LIMIT_MS, { earlierOnly: false }),
     },
   });
   return { failed: pending, unknown: running };
