@@ -1613,9 +1613,9 @@ fn ensure_container_names_the_want_the_observation_and_the_refusal_on_the_wire()
         ContainerWant::Gone {
             container: ContainerLocator::Key(slot.clone()),
             drain: Drain::NONE,
-            anonymous_volumes: ployz_core::RemoveContainerPurpose::Retire.into(),
+            anonymous_volumes: ployz_core::RemoveContainerPurpose::Rollout.into(),
         },
-        "a Gone that omits what happens to anonymous Volumes keeps them"
+        "a Gone that omits what happens to anonymous Volumes removes them, as v1 always has"
     );
     for (purpose, wire) in [
         (ployz_core::RemoveContainerPurpose::Rollout, "remove"),

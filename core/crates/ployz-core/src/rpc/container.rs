@@ -139,14 +139,15 @@ pub enum RunRotation {
 #[serde(transparent)]
 pub struct AnonymousVolumes(#[ts(inline)] Disposal);
 
+/// The wire values are frozen with `ployz.container.ensure.v1`, whose `Gone` without
+/// the field removes them. Only the type, not the wire, ties the value to a purpose.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 enum Disposal {
     /// They go with the Container.
-    Remove,
-    /// They stay, since deleting data is a Volume decision. A request that omits the
-    /// field keeps them: no client since 0.3.0 omits it, and a guess must not delete.
     #[default]
+    Remove,
+    /// They stay, since deleting data is a Volume decision.
     Keep,
 }
 
