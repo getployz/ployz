@@ -237,6 +237,7 @@ pub(crate) struct AdmittedSpec {
     standing: Option<Standing>,
     /// What this Machine issued for a rule build it checked online to admit the spec.
     verified: Option<VerifiedBuild>,
+    hook: Option<super::rule_deploy::HookPlace>,
 }
 
 impl std::fmt::Debug for AdmittedSpec {
@@ -273,6 +274,7 @@ impl AdmittedSpec {
             },
             standing: None,
             verified: None,
+            hook: None,
         })
     }
 
@@ -287,6 +289,11 @@ impl AdmittedSpec {
 
     pub(crate) fn verified(&self) -> Option<VerifiedBuild> {
         self.verified
+    }
+
+    /// The place a hook's push takes when its create runs, for a hook a rule admitted.
+    pub(crate) fn hook(&self) -> Option<&super::rule_deploy::HookPlace> {
+        self.hook.as_ref()
     }
 
     /// Whether the admission covers opening `value`: a version's signers covered the
@@ -340,6 +347,7 @@ impl AdmittedSpec {
             },
             standing: None,
             verified: None,
+            hook: None,
         }
     }
 
@@ -358,6 +366,7 @@ impl AdmittedSpec {
             },
             standing: None,
             verified: None,
+            hook: None,
         }
     }
 }
@@ -411,12 +420,13 @@ impl LocalMachine {
             Error::DeployRefused(refusal)
         };
         let spec = AdmittedSpec::hash(&new.slot.namespace, &new.resolved_spec).map_err(refused)?;
-        let admitted = |by, verified| {
+        let admitted = |by, verified, hook| {
             Ok(Some(AdmittedSpec {
                 spec,
                 by,
                 standing: Some(self.standing()),
                 verified,
+                hook,
             }))
         };
         // One budget for every signature this attempt opens, whichever proof carries it.
@@ -427,7 +437,7 @@ impl LocalMachine {
             QualifiedService::new(new.slot.namespace.clone(), new.resolved_spec.name.clone());
         if !versions.is_empty() {
             match self.approved_versions(new, &service, versions, &mut budget, admit)? {
-                Ok(by) => return admitted(by, None),
+                Ok(by) => return admitted(by, None, None),
                 // A creation at Full access would hide that the forget failed.
                 Err(refusal) if asks_to_forget(versions, &self.record().trusted_keys()) => {
                     return Err(refused(refusal));
@@ -441,20 +451,20 @@ impl LocalMachine {
                     field: MismatchField::Payload,
                 })
             })?;
-            return admitted(self.full_access(full, service, reach)?, None);
+            return admitted(self.full_access(full, service, reach)?, None, None);
         }
         if let Some(rule) = rule {
             let admitted_rule = self
                 .admit_rule_deploy_online(want, rule, &mut budget, admit)
                 .await?;
-            return admitted(admitted_rule.by, admitted_rule.verified);
+            return admitted(admitted_rule.by, admitted_rule.verified, admitted_rule.hook);
         }
         match needs_signature(creation(new), new.registry_auth.is_some()) {
             Some(reach) => Err(refused(
                 unapproved.unwrap_or(AuthorityRefusal::NeedsSignature { reach }),
             )),
             // A spec that reaches no data runs whatever came with it.
-            None => admitted(AdmittedBy::Free, None),
+            None => admitted(AdmittedBy::Free, None, None),
         }
     }
 

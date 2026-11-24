@@ -954,19 +954,16 @@ mod tests {
             holder: None,
             ..sealed_request(&cluster)
         };
-        let Err(refused) = Mint::check(holderless, Some(&cluster.store()), Tie::for_test())
-        else {
+        let Err(refused) = Mint::check(holderless, Some(&cluster.store()), Tie::for_test()) else {
             panic!("a holderless grant would return its key to Cloud");
         };
         assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
 
         let elsewhere = Cluster::new();
         for sealing in [Some(elsewhere.store()), None] {
-            let Err(refused) = Mint::check(
-                sealed_request(&cluster),
-                sealing.as_ref(),
-                Tie::for_test(),
-            ) else {
+            let Err(refused) =
+                Mint::check(sealed_request(&cluster), sealing.as_ref(), Tie::for_test())
+            else {
                 panic!("another Cluster's key opens nothing");
             };
             assert_eq!(refused.code, RpcErrorCode::Conflict);
@@ -1006,11 +1003,8 @@ mod tests {
     fn a_holder_that_is_not_a_public_key_is_refused() {
         let mut point = [0; 32];
         point[0] = 2;
-        let Err(refused) = Mint::check(
-            request(Some(&hex::encode(point))),
-            None,
-            Tie::for_test(),
-        ) else {
+        let Err(refused) = Mint::check(request(Some(&hex::encode(point))), None, Tie::for_test())
+        else {
             panic!("y = 2 is not on the curve");
         };
         assert_eq!(refused.code, RpcErrorCode::InvalidArgument);

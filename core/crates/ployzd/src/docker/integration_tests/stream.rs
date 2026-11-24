@@ -157,7 +157,7 @@ async fn an_exec_still_writing_when_its_client_goes_away_stops_its_command() {
 /// reads when `noisy`, then drop the client; how the command ended.
 async fn abandoned_exec(noisy: bool) -> std::process::ExitStatus {
     let root = TestDir::new("ployzd-exec-abandoned");
-    let command = ExecCommand::sleep();
+    let command = ExecCommand::spawn();
     let start = if noisy {
         ExecStart::Noisy
     } else {
@@ -224,7 +224,7 @@ async fn a_removed_devices_detached_exec_has_stopped_when_its_removal_returns() 
 async fn removed_devices_exec(detach: bool) {
     {
         let root = TestDir::new("ployzd-exec-removed-device");
-        let command = ExecCommand::sleep();
+        let command = ExecCommand::spawn();
         let start = if detach {
             ExecStart::Detached
         } else {
@@ -300,7 +300,7 @@ async fn removed_devices_exec(detach: bool) {
 struct ExecCommand(std::sync::Arc<std::sync::Mutex<std::process::Child>>);
 
 impl ExecCommand {
-    fn sleep() -> Self {
+    fn spawn() -> Self {
         Self(std::sync::Arc::new(std::sync::Mutex::new(
             std::process::Command::new("sleep")
                 .arg("300")

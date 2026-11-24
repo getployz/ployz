@@ -1386,7 +1386,17 @@ async fn narrowed_tunnel() {
 
     let (_map, relay_url, _relay) = run_relay_server().await.unwrap();
     let (_dir, owner, local) = participating_in("127.0.0.0/16").await;
-    let device = SecretKey::generate();
+    let capability = local
+        .set_management_client(SetManagementClientRequest::Set { label: cloud() })
+        .await
+        .unwrap()
+        .capability
+        .unwrap();
+    let device = SecretKey::from_bytes(capability.client_secret());
+    local
+        .activate_management_client(ClientKey::from_bytes(*device.public().as_bytes()))
+        .await
+        .unwrap();
     let key = DeviceKey::from_bytes(*device.public().as_bytes());
     let kept = DeviceKey::from_bytes(*SecretKey::generate().public().as_bytes());
     for key in [kept, key] {
@@ -1395,17 +1405,6 @@ async fn narrowed_tunnel() {
             .await
             .unwrap();
     }
-    owner
-        .mutate(move |store| {
-            store
-                .stage_management_client(cloud(), ClientKey::from(key))
-                .unwrap();
-            store
-                .activate_management_client(ClientKey::from(key))
-                .unwrap();
-        })
-        .await
-        .unwrap();
     let tunnels = Tunnels::serve(&local, owner, relay_url, &device).await;
     let mut tunnel = tunnels.dial(tunnels.echo.clone()).await.unwrap();
     tunnel.write_all(b"open").await.unwrap();
@@ -1798,8 +1797,12 @@ impl GrantMachine {
         self.grants
             .mint(
                 self.local.record().management_secret().public_key(),
-                ployzd::management::Mint::check(request, None, self.local.bind_full().unwrap().into_tie())
-                    .unwrap(),
+                ployzd::management::Mint::check(
+                    request,
+                    None,
+                    self.local.bind_full().unwrap().into_tie(),
+                )
+                .unwrap(),
                 self.ingest,
             )
             .unwrap()

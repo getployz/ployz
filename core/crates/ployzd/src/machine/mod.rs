@@ -33,12 +33,12 @@ pub use store::{LocalMachineStore, StoreError};
 #[cfg(test)]
 pub(crate) use local_machine::PeerInspect;
 pub(crate) use local_machine::{
-    Admit, AdmittedBy, AdmittedSpec, Call, Caller, RecoveryError, RuntimeWatchTelemetry, Scope,
-    SealingError,
+    Admit, AdmittedBy, AdmittedSpec, Call, Caller, KeyChangeHeld, RecoveryError,
+    RuntimeWatchTelemetry, Scope, SealingError,
 };
+pub use local_machine::{Bound, Error as LocalMachineError, LocalMachine, Tie};
 #[cfg(test)]
 pub(crate) use local_machine::{EnsurePause, EnsurePausePoint};
-pub use local_machine::{Bound, Error as LocalMachineError, LocalMachine, Tie};
 
 /// [`LocalMachineRecord::has_cluster_identity`] for a phase read on its own.
 pub(crate) fn has_cluster_identity(phase: &LocalMachinePhase) -> bool {

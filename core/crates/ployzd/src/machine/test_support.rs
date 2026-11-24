@@ -189,9 +189,16 @@ pub(crate) fn device_in_two_slots(store: &mut super::LocalMachineStore) -> Devic
     store
         .approve_device(DeviceKey::from(Signer::from_seed(&[9; 32]).public()))
         .unwrap();
+    let held = super::KeyChangeHeld::for_test();
     store
-        .stage_management_client(ployz_core::ManagementClientLabel::cloud(), device.into())
+        .stage_management_client(
+            &held,
+            ployz_core::ManagementClientLabel::cloud(),
+            device.into(),
+        )
         .unwrap();
-    store.activate_management_client(device.into()).unwrap();
+    store
+        .activate_management_client(&held, device.into())
+        .unwrap();
     device
 }

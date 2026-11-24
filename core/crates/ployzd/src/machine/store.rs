@@ -19,8 +19,8 @@ use reqwest::Url;
 use thiserror::Error;
 
 use super::{
-    FoundingCluster, LiveSlot, LocalMachineBody, LocalMachineRecord, ManagementClientSlot,
-    ParticipationOrigin, RemovedMember,
+    FoundingCluster, KeyChangeHeld, LiveSlot, LocalMachineBody, LocalMachineRecord,
+    ManagementClientSlot, ParticipationOrigin, RemovedMember,
 };
 use crate::management::ManagementSecret;
 use crate::network::{DiscoveredNetwork, WireGuardPrivateKey, allocate_machine_subnet};
@@ -869,6 +869,7 @@ impl LocalMachineStore {
     /// and a storage error if the updated record cannot be saved atomically.
     pub(crate) fn apply_join_restrictions(
         &mut self,
+        _held: &KeyChangeHeld,
         set: &ployz_core::JoinRestrictionSet,
     ) -> Result<(), StoreError> {
         self.commit_if_changed(|record| {
@@ -960,8 +961,9 @@ impl LocalMachineStore {
     ///
     /// # Errors
     /// Returns a storage error if the updated record cannot be saved atomically.
-    pub fn stage_management_client(
+    pub(crate) fn stage_management_client(
         &mut self,
+        _held: &KeyChangeHeld,
         label: ManagementClientLabel,
         pending: ClientKey,
     ) -> Result<(), StoreError> {
@@ -980,8 +982,9 @@ impl LocalMachineStore {
     ///
     /// # Errors
     /// Returns a storage error if the updated record cannot be saved atomically.
-    pub fn clear_management_client(
+    pub(crate) fn clear_management_client(
         &mut self,
+        _held: &KeyChangeHeld,
         label: &ManagementClientLabel,
     ) -> Result<(), StoreError> {
         let Some(was) = self
@@ -1004,7 +1007,11 @@ impl LocalMachineStore {
     ///
     /// # Errors
     /// Returns a storage error if the updated record cannot be saved atomically.
-    pub fn activate_management_client(&mut self, remote: ClientKey) -> Result<(), StoreError> {
+    pub(crate) fn activate_management_client(
+        &mut self,
+        _held: &KeyChangeHeld,
+        remote: ClientKey,
+    ) -> Result<(), StoreError> {
         let Some(label) = self.record.pending_label(&remote).cloned() else {
             return Ok(());
         };
@@ -1045,7 +1052,11 @@ impl LocalMachineStore {
     /// # Errors
     /// Returns [`StoreError::AmbiguousCode`] when `code` names more than one key here, and
     /// otherwise as [`Self::remove_key`].
-    pub fn remove_by_code(&mut self, code: DeviceCode) -> Result<bool, StoreError> {
+    pub(crate) fn remove_by_code(
+        &mut self,
+        held: &KeyChangeHeld,
+        code: DeviceCode,
+    ) -> Result<bool, StoreError> {
         let device = self
             .record
             .management_clients
@@ -1074,7 +1085,7 @@ impl LocalMachineStore {
         named.dedup();
         match named.as_slice() {
             [] => Ok(false),
-            [key] => self.remove_key(*key),
+            [key] => self.remove_key(held, *key),
             _ => Err(StoreError::AmbiguousCode(code)),
         }
     }
@@ -1088,7 +1099,11 @@ impl LocalMachineStore {
     /// Returns [`StoreError::LastKey`] when `key` is the last person's or full CLI key this
     /// Machine trusts, which alone change keys, and a storage error if the updated record
     /// cannot be saved atomically.
-    pub fn remove_key(&mut self, key: KeyRef) -> Result<bool, StoreError> {
+    pub(crate) fn remove_key(
+        &mut self,
+        _held: &KeyChangeHeld,
+        key: KeyRef,
+    ) -> Result<bool, StoreError> {
         self.remove(key, false)
     }
 
@@ -1102,8 +1117,9 @@ impl LocalMachineStore {
     /// Returns [`StoreError::NotGrant`] when `key` is a Device here,
     /// [`StoreError::GrantMoved`] when either grant `retired` names isn't the one held
     /// here, and what [`Self::remove_key`] returns.
-    pub fn remove_grant(
+    pub(crate) fn remove_grant(
         &mut self,
+        _held: &KeyChangeHeld,
         key: SigningPublicKey,
         retired: Option<Retired>,
     ) -> Result<bool, StoreError> {
@@ -1234,8 +1250,9 @@ impl LocalMachineStore {
     ///
     /// [`Prior::Edit`]: ployz_core::authority::Prior::Edit
     /// [`Prior::Replace`]: ployz_core::authority::Prior::Replace
-    pub fn approve_grant(
+    pub(crate) fn approve_grant(
         &mut self,
+        _held: &KeyChangeHeld,
         trusted: ployz_core::authority::TrustedGrant,
         prior: Option<ployz_core::authority::Prior>,
     ) -> Result<bool, StoreError> {

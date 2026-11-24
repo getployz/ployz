@@ -4,7 +4,8 @@
 //! seed may land between that read and Docker.
 //!
 //! Every change to the keys this Machine trusts takes it too, through
-//! [`LocalMachine::finish_key_change`], so a key change lands only between switch steps:
+//! [`LocalMachine::finish_key_change`], whose [`KeyChangeHeld`] the store's writes that
+//! remove or narrow a key require, so a key change lands only between switch steps:
 //! once `ployz device rm` returns, no step a removed caller asked for is still running,
 //! and every later one checks the keys again under the lock. The order is the switch, then
 //! an admission turn, then the installation guard: switch work takes its turns inside the
@@ -56,6 +57,21 @@ impl Clone for InSwitch {
     }
 }
 
+/// Proof that a write holds the switch, the exclusive admission turn and the floor lock,
+/// which only [`LocalMachine::finish_key_change`] makes. Every store write that stops
+/// trusting a key or narrows one takes it, so none lands while a switch step or a floor
+/// raise a removed key asked for still runs.
+pub(crate) struct KeyChangeHeld(());
+
+#[cfg(test)]
+impl KeyChangeHeld {
+    /// A key change a test writes to the store directly, holding none of the locks, to
+    /// land it at a moment the test picks.
+    pub(crate) fn for_test() -> Self {
+        Self(())
+    }
+}
+
 impl LocalMachine {
     /// Wait out any switch on this Machine and hold it off until the guard drops, with the
     /// caller's access checked once the lock is held. Work inside the guard creates and
@@ -86,7 +102,7 @@ impl LocalMachine {
     pub(super) async fn finish_key_change<T, F, Fut>(&self, work: F) -> Result<T, Error>
     where
         T: Send + 'static,
-        F: FnOnce(Admission) -> Fut + Send + 'static,
+        F: FnOnce(Admission, KeyChangeHeld) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Result<T, Error>> + Send + 'static,
     {
         let switch = self.take_switch().await;
@@ -100,7 +116,7 @@ impl LocalMachine {
                 None => None,
             };
             let bound = local.bound.clone();
-            let changed = work(local).await;
+            let changed = work(local, KeyChangeHeld(())).await;
             bound.end_unheld().await;
             changed
         })

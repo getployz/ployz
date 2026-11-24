@@ -17,10 +17,10 @@ use tokio::{io::AsyncWriteExt, sync::mpsc};
 use tonic::{Status, Streaming};
 
 use super::{ContainerRuntime, docker_error};
-use crate::machine::Bound;
 use crate::logs::{
     JournalError, LogLineStream, LogSource, RawLogEntry, RpcStream, serve_logs, split_at_space,
 };
+use crate::machine::Bound;
 use crate::sealed_env;
 
 const NANOS_PER_SECOND: i64 = 1_000_000_000;
@@ -31,8 +31,7 @@ const ABANDONED_EXEC_GRACE: Duration = Duration::from_secs(10);
 /// How often a detached exec a management key started is checked for having exited, so its
 /// watch ends with it.
 const DETACHED_EXEC_POLL: Duration = Duration::from_secs(1);
-const EXEC_ENDED: &str =
-    "This exec stopped: this Server no longer gives this device Full access.";
+const EXEC_ENDED: &str = "This exec stopped: this Server no longer gives this device Full access.";
 
 impl ContainerRuntime {
     /// Run an exec for the caller `bound` ties it to. A key change that ends `bound` closes

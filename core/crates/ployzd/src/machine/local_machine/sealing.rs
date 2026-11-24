@@ -20,8 +20,8 @@ use ployz_core::{
 };
 use thiserror::Error as ThisError;
 
-use super::LocalMachine;
 use super::join_approval::Entered;
+use super::{KeyChangeHeld, LocalMachine};
 use crate::corrosion::ClusterSealing;
 use crate::sealing_key::{Floors, KeyFile, OpenError, Removals, SealingKey};
 
@@ -281,8 +281,12 @@ impl LocalMachine {
         &self,
         request: InstallSealingKeyRequest,
     ) -> Result<SealingKeyHeld, super::Error> {
-        self.finish_mutation(move |local| async move { local.install_admitted(request).await })
-            .await
+        // The removals it takes stop trusting keys, so it runs as a key change: a Volume
+        // step a removed key asked for ends first.
+        self.finish_key_change(move |local, key_change| async move {
+            local.install_admitted(request, key_change).await
+        })
+        .await
     }
 
     /// Install opens the sealed key and checks it is the one named before it
@@ -308,6 +312,7 @@ impl LocalMachine {
     async fn install_admitted(
         &self,
         request: InstallSealingKeyRequest,
+        key_change: KeyChangeHeld,
     ) -> Result<SealingKeyHeld, super::Error> {
         let record = self.record();
         record.require_participating()?;
@@ -348,7 +353,7 @@ impl LocalMachine {
                         "could not read whether the Cluster awaits recovery of another Sealing Key; publishing the held key"
                     ),
                 }
-                self.take_removals(removals).await?;
+                self.take_removals(key_change, removals).await?;
                 replicated.publish_sealing_public_key(public_key).await?;
                 tracing::info!(
                     machine = %record.id(),
@@ -380,7 +385,7 @@ impl LocalMachine {
         }
         // Removals land before the key, so an Install cut off after either write leaves a
         // Machine that already enforces them, and a retry finds it holding the key.
-        self.take_removals(removals).await?;
+        self.take_removals(key_change, removals).await?;
         self.store_sealing_key(key, &file).await?;
         replicated.publish_sealing_public_key(public_key).await?;
         tracing::info!(
@@ -394,7 +399,11 @@ impl LocalMachine {
 
     /// Stop trusting each key the sender removed and hold each Member it removed. These only
     /// add restrictions, so they go over this Machine's own record and never replace its keys.
-    async fn take_removals(&self, removals: Removals) -> Result<(), super::Error> {
+    async fn take_removals(
+        &self,
+        key_change: KeyChangeHeld,
+        removals: Removals,
+    ) -> Result<(), super::Error> {
         if removals == Removals::default() {
             return Ok(());
         }
@@ -406,7 +415,7 @@ impl LocalMachine {
         };
         self.owner
             .mutate(move |store| {
-                store.apply_join_restrictions(&set)?;
+                store.apply_join_restrictions(&key_change, &set)?;
                 store.hold_removed_grants(&grants)
             })
             .await??;

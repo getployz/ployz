@@ -272,11 +272,11 @@ A removal is for good: a server that removed a key never trusts it again, even w
 approves it later. A command from that device that a server is still working on stops at its next
 step and changes nothing more. That covers a command waiting behind another one, a removal waiting
 for a service's connections to drain, and a volume change waiting behind another volume change. A
-volume step already running on a server, such as a move's switch, finishes first: the removal waits
-for it there, so once `device rm` returns, nothing that device asked for is still changing the
-server. If
-the same key also holds another connection slot on that server, such as Ployz Cloud's, the command
-goes on with Operator access only, so it can't start a container that only that device approved.
+volume step already running on a server, such as a move's switch or a resize whose command was
+cancelled, finishes first: the removal waits for it there, so once `device rm` returns, nothing that
+device asked for is still changing the server. If the same key also holds another connection slot on
+that server, such as Ployz Cloud's, the command goes on with Operator access only, so it can't start
+a container that only that device approved.
 Every server that answers marks the key removed, including one that never
 trusted it, so an approval of that key still on its way there is refused. If no server can name
 the key in full, for example because every server that trusted or removed it is away, a server that never held

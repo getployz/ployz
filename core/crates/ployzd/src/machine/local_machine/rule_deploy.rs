@@ -101,13 +101,39 @@ fn holds(
 pub(crate) struct RuleAdmitted {
     pub(crate) by: AdmittedBy,
     pub(crate) verified: Option<VerifiedBuild>,
+    /// The place a hook's push takes when its create runs.
+    pub(crate) hook: Option<HookPlace>,
+}
+
+/// The place a push's hook takes under its rule. It stays with the hook's admission until
+/// the create takes it, under the turn that checked the caller, so an admission that never
+/// reaches its create, as one whose caller was removed while it waited, leaves the place to
+/// a retry.
+#[derive(Clone, Debug)]
+pub(crate) struct HookPlace {
+    rule: ployz_core::authority::RuleId,
+    claim: BuildClaim,
+    slot: ployz_core::CreationKey,
+}
+
+impl HookPlace {
+    /// Take the place, refusing it when another slot took it for the same push.
+    ///
+    /// # Errors
+    /// Returns [`Error::RuleDeployRefused`] for a place another slot took, and
+    /// [`Error::ApprovalRecord`] when the record cannot be read or written.
+    pub(crate) fn take(&self, approvals: &super::ConsumptionLog) -> Result<(), Error> {
+        approvals.consume_rule_hook(self.rule, &self.claim, &self.slot, |refusal| {
+            Error::RuleDeployRefused(RuleDeployRefusal::Rule(refusal))
+        })
+    }
 }
 
 impl LocalMachine {
     /// Admit an Operator's new Container on `proof`, at `now`, with the rule's signature
     /// charged to `budget`, and name the rule, its generation and its signer. A build
-    /// checked online gets its verified build; a hook takes its place once per push. A
-    /// check marks no generation and takes no hook place.
+    /// checked online gets its verified build; a hook gets the place its create takes,
+    /// once per push. A check marks no generation.
     ///
     /// # Errors
     /// Returns [`Error::RuleDeployRefused`] naming what does not hold, and
@@ -228,10 +254,11 @@ impl LocalMachine {
                 )
             }
         };
-        if new.slot.kind == ContainerKind::PreDeployHook && admit == Admit::Record {
-            self.approvals
-                .consume_rule_hook(rule.rule, claim, &new.slot.creation_key, refused)?;
-        }
+        let hook = (new.slot.kind == ContainerKind::PreDeployHook).then(|| HookPlace {
+            rule: rule.rule,
+            claim: claim.clone(),
+            slot: new.slot.creation_key.clone(),
+        });
         tracing::info!(
             kind = %new.slot.kind,
             admission_us = started.elapsed().as_micros(),
@@ -251,6 +278,7 @@ impl LocalMachine {
                 issued_at: rule.issued_at,
             },
             verified,
+            hook,
         })
     }
 

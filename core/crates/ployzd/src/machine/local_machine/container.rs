@@ -1807,6 +1807,7 @@ impl LocalMachine {
         let containers = self.docker()?;
         let record = self.record();
         let machine = record.cluster_machine().ok_or(Error::NotParticipating)?;
+        let hook = admitted.hook().cloned();
         containers
             .lifecycle()
             .create_with_admission(
@@ -1850,6 +1851,11 @@ impl LocalMachine {
                         )
                         .await?;
                         Box::pin(self.refuse_second_holder(kind, spec)).await?;
+                        // Taken last, under the turn that checked the caller, so neither an
+                        // admission that never got here nor a create refused above keeps it.
+                        if let Some(hook) = &hook {
+                            hook.take(&self.approvals)?;
+                        }
                         Ok(())
                     },
                     storage: self.observe_storage(),

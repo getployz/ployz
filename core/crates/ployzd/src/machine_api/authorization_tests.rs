@@ -1243,7 +1243,13 @@ mod revoked {
         let before = machine.fake.requests.lock().unwrap().len();
         machine
             .store
-            .mutate(move |store| assert!(store.remove_by_code(device.code()).unwrap()))
+            .mutate(move |store| {
+                assert!(
+                    store
+                        .remove_by_code(&crate::machine::KeyChangeHeld::for_test(), device.code())
+                        .unwrap()
+                )
+            })
             .await
             .unwrap();
         drop(turn);
@@ -1322,8 +1328,19 @@ mod revoked {
             .mutate(move |store| {
                 store.approve_device(kept).unwrap();
                 let cloud = ployz_core::ManagementClientLabel::cloud();
-                store.stage_management_client(cloud, device.into()).unwrap();
-                store.activate_management_client(device.into()).unwrap();
+                store
+                    .stage_management_client(
+                        &crate::machine::KeyChangeHeld::for_test(),
+                        cloud,
+                        device.into(),
+                    )
+                    .unwrap();
+                store
+                    .activate_management_client(
+                        &crate::machine::KeyChangeHeld::for_test(),
+                        device.into(),
+                    )
+                    .unwrap();
             })
             .await
             .unwrap();
@@ -1365,7 +1382,13 @@ mod revoked {
         until_sent(&machine, before, http::Method::GET, &format!("{id}/json")).await;
         machine
             .store
-            .mutate(move |store| assert!(store.remove_by_code(device.code()).unwrap()))
+            .mutate(move |store| {
+                assert!(
+                    store
+                        .remove_by_code(&crate::machine::KeyChangeHeld::for_test(), device.code())
+                        .unwrap()
+                )
+            })
             .await
             .unwrap();
         assert!(
@@ -1422,7 +1445,13 @@ mod revoked {
         until_sent(&machine, before, http::Method::POST, "/stop").await;
         machine
             .store
-            .mutate(move |store| assert!(store.remove_by_code(device.code()).unwrap()))
+            .mutate(move |store| {
+                assert!(
+                    store
+                        .remove_by_code(&crate::machine::KeyChangeHeld::for_test(), device.code())
+                        .unwrap()
+                )
+            })
             .await
             .unwrap();
         drop(stopping);
@@ -1449,8 +1478,19 @@ mod revoked {
             .mutate(move |store| {
                 store.approve_device(kept).unwrap();
                 let cloud = ployz_core::ManagementClientLabel::cloud();
-                store.stage_management_client(cloud, device.into()).unwrap();
-                store.activate_management_client(device.into()).unwrap();
+                store
+                    .stage_management_client(
+                        &crate::machine::KeyChangeHeld::for_test(),
+                        cloud,
+                        device.into(),
+                    )
+                    .unwrap();
+                store
+                    .activate_management_client(
+                        &crate::machine::KeyChangeHeld::for_test(),
+                        device.into(),
+                    )
+                    .unwrap();
             })
             .await
             .unwrap();
@@ -1497,7 +1537,13 @@ mod revoked {
         }
         machine
             .store
-            .mutate(move |store| assert!(store.remove_by_code(device.code()).unwrap()))
+            .mutate(move |store| {
+                assert!(
+                    store
+                        .remove_by_code(&crate::machine::KeyChangeHeld::for_test(), device.code())
+                        .unwrap()
+                )
+            })
             .await
             .unwrap();
         drop(held);
@@ -1760,7 +1806,13 @@ mod revoked {
         until_switch_asked(&mut asked, before).await;
         machine
             .store
-            .mutate(move |store| assert!(store.remove_by_code(device.code()).unwrap()))
+            .mutate(move |store| {
+                assert!(
+                    store
+                        .remove_by_code(&crate::machine::KeyChangeHeld::for_test(), device.code())
+                        .unwrap()
+                )
+            })
             .await
             .unwrap();
         drop(held);
@@ -1887,10 +1939,25 @@ mod revoked {
             .mutate(move |store| {
                 let cloud = ployz_core::ManagementClientLabel::cloud();
                 store
-                    .stage_management_client(cloud.clone(), retiring)
+                    .stage_management_client(
+                        &crate::machine::KeyChangeHeld::for_test(),
+                        cloud.clone(),
+                        retiring,
+                    )
                     .unwrap();
-                store.activate_management_client(retiring).unwrap();
-                store.stage_management_client(cloud, next).unwrap();
+                store
+                    .activate_management_client(
+                        &crate::machine::KeyChangeHeld::for_test(),
+                        retiring,
+                    )
+                    .unwrap();
+                store
+                    .stage_management_client(
+                        &crate::machine::KeyChangeHeld::for_test(),
+                        cloud,
+                        next,
+                    )
+                    .unwrap();
             })
             .await
             .unwrap();

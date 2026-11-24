@@ -395,11 +395,14 @@ async fn join_preserves_identity_rejects_wrong_inputs_and_resumes_after_lost_res
     drop(local);
     let mut reopened = LocalMachineStore::open(&data).unwrap();
     reopened
-        .apply_join_restrictions(&JoinRestrictionSet {
-            removed_keys: Vec::new(),
-            removed_members: Vec::new(),
-            floors: Default::default(),
-        })
+        .apply_join_restrictions(
+            &crate::machine::KeyChangeHeld::for_test(),
+            &JoinRestrictionSet {
+                removed_keys: Vec::new(),
+                removed_members: Vec::new(),
+                floors: Default::default(),
+            },
+        )
         .unwrap();
     reopened.complete_catch_up().unwrap();
     let local = LocalMachine::new(RecordOwner::spawn(reopened).unwrap());

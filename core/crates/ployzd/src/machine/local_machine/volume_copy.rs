@@ -115,7 +115,7 @@ impl LocalMachine {
             switch.check_gen(&request.into, r#gen).await?;
         }
         switch
-            .volume_verb("SeedVolume", VOLUME_SEED_ROUTE, request)
+            .finish_verb("SeedVolume", VOLUME_SEED_ROUTE, request.clone())
             .await
     }
 
@@ -180,7 +180,7 @@ impl LocalMachine {
             },
         };
         switch
-            .volume_verb::<VolumeCopyView>("SeedCopy", VOLUME_SEED_COPY_ROUTE, &seed)
+            .finish_verb::<VolumeCopyView, _>("SeedCopy", VOLUME_SEED_COPY_ROUTE, seed)
             .await
     }
 
@@ -195,7 +195,7 @@ impl LocalMachine {
     ) -> Result<SetVolumeSizeReply, Error> {
         let switch = self.lock_switch().await?;
         switch
-            .volume_verb("SetVolumeSize", VOLUME_SIZE_SET_ROUTE, request)
+            .finish_verb("SetVolumeSize", VOLUME_SIZE_SET_ROUTE, request.clone())
             .await
     }
 
@@ -228,6 +228,27 @@ impl LocalMachine {
 }
 
 impl SwitchGuard {
+    /// [`LocalMachine::volume_verb`], detached with this guard as a SetVolumeCopy is: the
+    /// plugin goes on with a resize or a seed its caller hung up on, so the switch stays
+    /// held until the plugin answers, and a key change that takes it next returns only
+    /// after that change lands.
+    ///
+    /// # Errors
+    ///
+    /// As [`LocalMachine::volume_verb`].
+    async fn finish_verb<T, R>(
+        self,
+        verb: &'static str,
+        route: &'static str,
+        request: R,
+    ) -> Result<T, Error>
+    where
+        T: serde::de::DeserializeOwned + Send + 'static,
+        R: serde::Serialize + Send + Sync + 'static,
+    {
+        tokio::spawn(async move { self.volume_verb(verb, route, &request).await }).await?
+    }
+
     async fn set_copy_planned(
         &self,
         request: SetVolumeCopyRequest,
