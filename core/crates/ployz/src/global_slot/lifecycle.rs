@@ -1,7 +1,6 @@
 //! Retiring a Global's copies from one Machine: whether the Machine still takes the slot,
 //! the copies it holds, and the sentence a failed retirement is told in.
 
-use ployz_core::error_chain;
 use ployz_core::{
     AnonymousVolumes, InspectRequest, LocalMachinePhase, Machine, MachineId,
     MachineStorageObservation, MachineTarget, Namespace, QualifiedService, ResolvedServiceSpec,
@@ -15,7 +14,6 @@ use crate::cluster::Call;
 use crate::connect::Client;
 use crate::deploy::CopyLifecycle;
 use crate::deploy::cleanup::{self, ACK_WAIT, Copy, EmptyPolicy, Removal, RotationFailure};
-use crate::failure::Failure;
 
 /// A Machine's own view of itself while it participates.
 pub(crate) struct SelfView {
@@ -70,8 +68,6 @@ pub(crate) enum Sentence<'names> {
     /// A Drain, which names each proxy that did not confirm by its Server's name and stops
     /// before it takes another copy out once cancelled.
     Drain(&'names ServerNames),
-    /// Catch-up, which names each such proxy by id and reports a cancel as internal.
-    CatchUp,
 }
 
 impl Sentence<'_> {
@@ -90,28 +86,10 @@ impl Sentence<'_> {
                         .join(", ")
                 ))
             }
-            (Self::CatchUp, RotationFailure::NotConfirmed(unconfirmed)) => {
-                RpcError::unavailable(format!(
-                    "{} did not confirm the copy left its routes",
-                    unconfirmed
-                        .machines
-                        .iter()
-                        .map(MachineId::to_string)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ))
-            }
             (Self::Drain(_), RotationFailure::Cancelled) => {
                 RpcError::unavailable("the drain was cancelled while it retired")
             }
-            (Self::CatchUp, RotationFailure::Cancelled) => {
-                error_chain::rpc_error(ployz_core::RpcErrorCode::Internal, &Failure::cancelled())
-            }
         }
-    }
-
-    fn stops_between_copies(&self) -> bool {
-        matches!(self, Self::Drain(_))
     }
 }
 
@@ -150,7 +128,7 @@ pub(crate) async fn retire_copies<C: CopyLifecycle>(
     sentence: &Sentence<'_>,
 ) -> Result<(), RpcError> {
     for observed in client.target_copies(machine_id, service).await? {
-        if sentence.stops_between_copies() && cancellation.is_cancelled() {
+        if cancellation.is_cancelled() {
             return Err(sentence.error(RotationFailure::Cancelled));
         }
         cleanup::retire(

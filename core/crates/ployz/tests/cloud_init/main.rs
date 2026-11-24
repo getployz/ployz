@@ -1365,7 +1365,7 @@ async fn partial_peer_observation_reports_incomplete_catch_up_before_placement()
 }
 
 #[tokio::test]
-async fn join_ingress_rejection_is_durable_and_still_places_other_globals() {
+async fn join_ingress_rejection_is_durable_and_skips_a_user_global() {
     let founder = founder_machine();
     let mut registration = registration();
     registration.assigned_machine.accepts_ingress = false;
@@ -1408,8 +1408,12 @@ async fn join_ingress_rejection_is_durable_and_still_places_other_globals() {
         String::from_utf8_lossy(&output.stderr),
         String::from_utf8_lossy(&output.stdout)
     );
-    let ensured = daemon.ensure_requests();
-    assert_eq!(ensure_names(&ensured), [("app", "api")]);
+    assert!(daemon.ensure_requests().is_empty());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("joiner runs no copy of `app/api`"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(daemon.containers().iter().all(|container| {
         container.machine_id == founder.id || container.resolved_spec.name.as_str() != "ingress"
     }));
@@ -1581,18 +1585,6 @@ async fn join_against_founder(
     );
     assert!(daemon.ensure_requests().is_empty());
     daemon.door_requests()
-}
-
-fn ensure_names(requests: &[ployz_core::NewContainer]) -> Vec<(&str, &str)> {
-    requests
-        .iter()
-        .map(|request| {
-            (
-                request.slot.namespace.as_str(),
-                request.resolved_spec.name.as_str(),
-            )
-        })
-        .collect()
 }
 
 async fn connect_daemon(address: std::net::SocketAddr) -> ployz::connect::Client {

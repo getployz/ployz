@@ -179,7 +179,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         Ok::<_, Error>(assigned)
     })?;
     // The Machine joined: everything after is a follow-up that makes the result partial.
-    let mut unarrived = Vec::new();
+    let mut skipped = crate::enrollment::catch_up::Skipped::default();
     let follow_up = (|| {
         connection = connection.with_machine_id(assigned.id);
         config.save_connection(&context_name, connection.clone())?;
@@ -192,7 +192,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         ))?;
 
         let catch_up;
-        (unarrived, catch_up) = runtime.block_on(async {
+        (skipped, catch_up) = runtime.block_on(async {
             let mut entry = super::super::reconnect_client(matches, options.context()).await?;
             Ok::<_, Error>(
                 crate::enrollment::catch_up::follow_globals(&mut entry, &assigned, |args| {
@@ -211,10 +211,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         Ok(())
     })();
     crate::ui::emit_committed(
-        crate::enrollment::catch_up::with_unarrived(
-            json!({ "server": crate::enrollment::output::server_json(&assigned) }),
-            &unarrived,
-        ),
+        skipped.add_to(json!({ "server": crate::enrollment::output::server_json(&assigned) })),
         follow_up,
     )
 }

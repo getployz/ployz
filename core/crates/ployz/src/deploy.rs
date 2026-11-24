@@ -32,7 +32,6 @@ mod progress;
 mod schedule;
 
 pub use pipeline::DeployError;
-pub(crate) use planning::capacity::endpoint_capacity_error;
 pub use planning::{
     DeployPlan, SlotAction, SlotRepair, VolumeFate, data_loss_from_plan, plan_deploy,
     plan_ingress_repairs, plan_namespace_removal, preview_deploy, without_departed,

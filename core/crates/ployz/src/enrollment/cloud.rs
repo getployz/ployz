@@ -348,7 +348,7 @@ where
         progress(EnrollStage::Publishing);
         // Mint a fresh capability; Cloud verifies replacements when enrollment resumes.
         let capability = set_cloud_management_client(plan, &mut ready).await?;
-        let (unarrived, catch_up) =
+        let (skipped, catch_up) =
             super::catch_up::follow_globals(&mut ready, &assigned, |args| plan.reach().rerun(args))
                 .await;
         // Cloud may use the replacement after publication, revoking this key.
@@ -375,9 +375,8 @@ where
         ui::stream(format_args!("Joined Server {}.", assigned.name));
         // The join is committed; a catch-up failure makes it partial.
         let printed = ui::emit_committed(
-            super::catch_up::with_unarrived(
+            skipped.add_to(
                 serde_json::json!({ "server": super::output::server_json(&assigned), "founded": false }),
-                &unarrived,
             ),
             catch_up.map_err(|error| {
                 super::catch_up::joined_catch_up_error(error, &assigned, |args| {

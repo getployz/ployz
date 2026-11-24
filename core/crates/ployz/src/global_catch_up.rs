@@ -1,44 +1,25 @@
-//! Global catch-up: place observed eligible Globals onto this Machine only.
+//! Global catch-up: give a joiner the Globals Ployz runs on every Server.
 //!
-//! It plans from a complete Live Observation, re-observing a partial one a
-//! few times within the run before failing, reads fresh storage evidence,
-//! reports unknown eligibility or incomplete placement per slot, and fails
-//! once at the end; nothing retries it in the background. Deleted slots,
-//! later eligibility changes and transient failures wait for an explicit
-//! redeploy.
-//!
-//! A new copy carries its source's deploy label and gen, starts Pending and
-//! is brought In through the owner, which refuses a copy older than an In
-//! one. The Ingress Proxy is never copied: the joiner's own daemon builds its
-//! holder and Caddy through SetIngressDoors, once, for the observed proxy id. The
-//! Private Access router is never copied either: the joiner's own daemon builds it
-//! through SetPrivateAccess from the sealed auth key an observed router carries.
+//! It plans from a complete Live Observation, re-observing a partial one a few times
+//! within the run before failing, and fails once at the end; nothing retries it in the
+//! background. Nothing is copied: the joiner's own daemon builds the Ingress Proxy through
+//! SetIngressDoors, once, for the observed proxy id, and the Private Access router through
+//! SetPrivateAccess from the sealed auth key an observed router carries. A user Global
+//! left from Compose before 0.1.2-beta.42 is only reported, since no Machine admits one.
 
-use crate::cluster::Call;
 use ployz_core::error_chain;
 use ployz_core::{
-    AnonymousVolumes, BridgeEndpointCapacity, Ciphertext, ContainerKind, ContainerNow,
-    ContainerObservation, ContainerRuntimeObservation, ContainerWant, CopyRotation, CreationKey,
-    EnvironmentValues, HealthFailure, HealthVerdict, IngressDoors, IngressDoorsSet,
-    ListContainersRequest, LiveServices, Machine, MachineId, MachineTarget, NewContainer,
-    PartialResult, PrivateAccessSet, QualifiedService, ResolvedServiceSpec, RpcError, RunRotation,
-    RunTarget, ServiceId, ServiceMode, ServiceObservation, SetIngressDoorsRequest,
-    SetPrivateAccessRequest, SlotKey, op,
+    Ciphertext, EnvironmentValues, IngressDoors, IngressDoorsSet, LiveServices, Machine, MachineId,
+    PartialResult, PrivateAccessSet, QualifiedService, RpcError, ServiceId, ServiceObservation,
+    SetIngressDoorsRequest, SetPrivateAccessRequest,
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::deploy::cleanup::{
-    self, BroughtIn, Copy, EmptyPolicy, NotIn, Removal, Rotated, RotationFailure,
-};
-use crate::global_slot::{
-    Eligibility, Live, Sentence, ServerNames, participating, retire_if_ineligible,
-    retire_ingress_proxy,
-};
+use crate::global_slot::{Live, ServerNames, participating, retire_ingress_proxy};
 use crate::ingress::{ClusterDoors, DoorMachine};
 use crate::private_access::AccessMachine;
 use crate::{
     connect::{Client, unreadable_answer},
-    deploy::endpoint_capacity_error,
     failure::Failure,
 };
 
@@ -71,47 +52,8 @@ pub(crate) struct Observed {
     declared: Option<IngressDoors>,
 }
 
-/// What the policy of one Global slot needs from the joiner: its own listing, its own
-/// record, and the copies it holds.
-pub(crate) trait SlotIo {
-    /// `machine_id`'s Containers, as that Machine lists them.
-    async fn list_target(
-        &mut self,
-        machine_id: &MachineId,
-    ) -> Result<Vec<ContainerObservation>, RpcError>;
-    async fn bridge_capacity(
-        &mut self,
-        machine_id: &MachineId,
-    ) -> Result<Option<BridgeEndpointCapacity>, Failure>;
-    /// Retire the slot's copies on `machine_id` when fresh evidence says it is ineligible
-    /// there, answering whether it was.
-    async fn retire_if_ineligible(
-        &mut self,
-        machine_id: &MachineId,
-        new: &NewContainer,
-        cancel: &CancellationToken,
-    ) -> Result<bool, RpcError>;
-    async fn retire_copy(
-        &mut self,
-        copy: &Copy,
-        cancel: &CancellationToken,
-    ) -> Result<Rotated, RpcError>;
-    /// Ask `container` run Pending on `target`, resending until it answers.
-    async fn ensure_pending(
-        &mut self,
-        target: &MachineTarget,
-        container: RunTarget,
-    ) -> Result<ContainerNow, RpcError>;
-}
-
-pub(crate) trait CatchUpClient: SlotIo {
+pub(crate) trait CatchUpClient {
     async fn live_services(&mut self) -> Result<Observed, Failure>;
-    async fn run_slot(
-        &mut self,
-        machine_id: &MachineId,
-        new: NewContainer,
-        cancel: &CancellationToken,
-    ) -> Result<Option<Copy>, RpcError>;
     /// Set `machine_id`'s Doors to the Cluster's for the Ingress Proxy `proxy_service`,
     /// or remove its Ingress Proxy when it doesn't hold the ingress role, answering `None`.
     async fn run_doors(
@@ -127,155 +69,6 @@ pub(crate) trait CatchUpClient: SlotIo {
         machine_id: &MachineId,
         sealed: Ciphertext,
     ) -> Result<PrivateAccessSet, RpcError>;
-    async fn bring_in(
-        &mut self,
-        copy: &Copy,
-        spec: &ResolvedServiceSpec,
-    ) -> Result<BroughtIn, RpcError>;
-    async fn remove_copy(&mut self, copy: &Copy) -> Result<Removal, RpcError>;
-    async fn target_containers(
-        &mut self,
-        machine_id: &MachineId,
-    ) -> Result<Vec<ContainerObservation>, Failure>;
-}
-
-impl SlotIo for Client {
-    async fn list_target(
-        &mut self,
-        machine_id: &MachineId,
-    ) -> Result<Vec<ContainerObservation>, RpcError> {
-        self.call::<op::ListContainers>(
-            ListContainersRequest {
-                environment: EnvironmentValues::Included,
-            },
-            Call::target_read(&MachineTarget::from(machine_id)),
-        )
-        .await
-        .map(|list| list.containers)
-        .map_err(crate::connect::rpc_error)
-    }
-
-    async fn bridge_capacity(
-        &mut self,
-        machine_id: &MachineId,
-    ) -> Result<Option<BridgeEndpointCapacity>, Failure> {
-        Client::bridge_capacity(self, machine_id)
-            .await
-            .map_err(Failure::from)
-    }
-
-    async fn retire_if_ineligible(
-        &mut self,
-        machine_id: &MachineId,
-        new: &NewContainer,
-        cancel: &CancellationToken,
-    ) -> Result<bool, RpcError> {
-        let retired = retire_if_ineligible(
-            self,
-            machine_id,
-            &new.slot.namespace,
-            &new.resolved_spec,
-            cancel,
-            &Sentence::CatchUp,
-        )
-        .await?;
-        Ok(retired == Eligibility::Retired)
-    }
-
-    async fn retire_copy(
-        &mut self,
-        copy: &Copy,
-        cancel: &CancellationToken,
-    ) -> Result<Rotated, RpcError> {
-        cleanup::retire(
-            &*self,
-            copy,
-            EmptyPolicy::RequireOtherIn,
-            AnonymousVolumes::Remove,
-            cancel,
-        )
-        .await
-    }
-
-    async fn ensure_pending(
-        &mut self,
-        target: &MachineTarget,
-        container: RunTarget,
-    ) -> Result<ContainerNow, RpcError> {
-        let want = ContainerWant::Running {
-            container,
-            rotation: RunRotation::Pending,
-        };
-        self.ensure_retried(target, want).await?.into_result()
-    }
-}
-
-/// Place `new`, the copy of one observed Global, on `machine_id`: nothing when the Machine
-/// rules the slot out, the copy already there when one of the same shape runs, and
-/// otherwise a keyed create.
-async fn place_slot<C: SlotIo>(
-    client: &mut C,
-    machine_id: &MachineId,
-    new: NewContainer,
-    cancel: &CancellationToken,
-) -> Result<Option<Copy>, RpcError> {
-    let target = MachineTarget::from(machine_id);
-    if client
-        .retire_if_ineligible(machine_id, &new, cancel)
-        .await?
-    {
-        return Ok(None);
-    }
-    let existing = client
-        .list_target(machine_id)
-        .await?
-        .into_iter()
-        .find(|observed| {
-            observed.machine_id == *machine_id
-                && observed.kind == ContainerKind::ServiceContainer
-                && observed.namespace == new.slot.namespace
-                && observed.resolved_spec == new.resolved_spec
-        });
-    // The keyed create below answers with a Container that already holds the
-    // creation key's name, so an Out copy must go before a new one is made.
-    let existing = match existing {
-        Some(existing) if matches!(existing.rotation(), CopyRotation::Held(_)) => {
-            return Err(RpcError::conflict(format!(
-                "copy {} is stopped on this Machine by a user; start or remove it there first",
-                existing.container_id.as_str()
-            )));
-        }
-        Some(existing) if *existing.rotation() == CopyRotation::Out => {
-            step_error(
-                client
-                    .retire_copy(&Copy::observed(&existing), cancel)
-                    .await?,
-            )?;
-            None
-        }
-        existing => existing,
-    };
-    if let Some(existing) = existing {
-        let now = client
-            .ensure_pending(
-                &target,
-                RunTarget::Existing(ployz_core::ContainerLocator::Id(existing.container_id)),
-            )
-            .await?;
-        return Ok(Some(
-            now.present()
-                .map_or_else(|| Copy::observed(&existing), Copy::observed),
-        ));
-    }
-    let capacity = client
-        .bridge_capacity(machine_id)
-        .await
-        .map_err(|error| error_chain::rpc_error(ployz_core::RpcErrorCode::Unavailable, &error))?;
-    if let Some(error) = endpoint_capacity_error(1, capacity.as_ref()) {
-        return Err(RpcError::conflict(error.to_string()));
-    }
-    let now = client.ensure_pending(&target, RunTarget::New(new)).await?;
-    Ok(now.present().map(Copy::observed))
 }
 
 impl CatchUpClient for Client {
@@ -295,15 +88,6 @@ impl CatchUpClient for Client {
             unarrived: ServerNames::unarrived(&machines),
             declared,
         })
-    }
-
-    async fn run_slot(
-        &mut self,
-        machine_id: &MachineId,
-        new: NewContainer,
-        cancel: &CancellationToken,
-    ) -> Result<Option<Copy>, RpcError> {
-        place_slot(self, machine_id, new, cancel).await
     }
 
     async fn run_doors(
@@ -348,31 +132,6 @@ impl CatchUpClient for Client {
         )
         .await
     }
-
-    async fn bring_in(
-        &mut self,
-        copy: &Copy,
-        spec: &ResolvedServiceSpec,
-    ) -> Result<BroughtIn, RpcError> {
-        cleanup::bring_in(&*self, copy, spec, None).await
-    }
-
-    async fn remove_copy(&mut self, copy: &Copy) -> Result<Removal, RpcError> {
-        cleanup::remove(&*self, copy, AnonymousVolumes::Remove).await
-    }
-
-    async fn target_containers(
-        &mut self,
-        machine_id: &MachineId,
-    ) -> Result<Vec<ContainerObservation>, Failure> {
-        self.list_target(machine_id).await.map_err(Failure::from)
-    }
-}
-
-fn step_error(rotated: Rotated) -> Result<(), RpcError> {
-    rotated
-        .failure()
-        .map_err(|failure| Sentence::CatchUp.error(failure))
 }
 
 /// A factual stage of target-only catch-up, adapted by the owning command.
@@ -384,12 +143,12 @@ pub(crate) enum CatchUpFact {
     Failed(QualifiedService),
     /// Omitted Unarrived Machines the plan did not wait on.
     NotArrived(ServerNames),
+    /// Globals of user Services, which the joiner gets no copy of.
+    Legacy(Vec<QualifiedService>),
 }
 
 const OBSERVATION_ATTEMPTS: u32 = 3;
 const OBSERVATION_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
-
-const OUTDATED: &str = "a newer deploy replaced it while catching up; redeploy";
 
 struct Source {
     identity: QualifiedService,
@@ -398,8 +157,6 @@ struct Source {
 
 /// What catch-up places for one observed Global.
 enum CatchUpWork {
-    /// A copy of the newest In or Pending copy; none when no copy is either.
-    Service(Option<Box<ContainerObservation>>),
     /// The holder, Caddy and Tunnel Connector, which the joiner's daemon builds for this
     /// Ingress Proxy Service with the Cluster's Doors. No door identity is ever copied.
     Ingress(ServiceId, ClusterDoors),
@@ -408,75 +165,22 @@ enum CatchUpWork {
     PrivateAccess(Ciphertext),
 }
 
-struct Started {
-    identity: QualifiedService,
-    copy: Copy,
-    spec: ResolvedServiceSpec,
-}
-
-/// How long catch-up waits for the copies it started to run before it calls one not
-/// running.
-const STARTING_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
-
-/// Whether `target`, this Machine's Containers, shows `started` running, and a
-/// running copy of its Service in its serving shape.
-fn runs_here(target: &[ContainerObservation], started: &Started, machine: &MachineId) -> bool {
-    let runs = target.iter().any(|observed| {
-        observed.container_id == started.copy.container_id && observed.runtime.is_running()
-    });
-    let shape_runs = target.iter().any(|observed| {
-        observed.identity() == started.identity
-            && observed.machine_id == *machine
-            && observed.resolved_spec.serving_shape() == started.spec.serving_shape()
-            && observed.runtime.is_running()
-    });
-    runs && shape_runs
-}
-
-/// Whether `started` may yet run: its Container is still there and isn't on its way
-/// out. An exited one may, under Docker's restart policy.
-fn may_still_run(target: &[ContainerObservation], started: &Started) -> bool {
-    target.iter().any(|observed| {
-        observed.container_id == started.copy.container_id
-            && !matches!(
-                observed.runtime,
-                ContainerRuntimeObservation::Removing | ContainerRuntimeObservation::Dead
-            )
-    })
-}
-
-/// One source per observed Global, the Ingress Proxy's door identities as one and the
-/// Private Access router as its sealed auth key. A joiner with the ingress role gets the
-/// Ingress Proxy even when none runs anywhere.
+/// One source for the Ingress Proxy's door identities and one for the Private Access
+/// router as its sealed auth key, and the Globals left over from user Services. A joiner
+/// with the ingress role gets the Ingress Proxy even when none runs anywhere.
 fn sources(
     services: &[ServiceObservation],
     takes_ingress: bool,
     declared: Option<IngressDoors>,
-) -> Vec<Source> {
-    let mut sources: Vec<Source> = services
+) -> (Vec<Source>, Vec<QualifiedService>) {
+    let mut sources = Vec::new();
+    // Compose made user Globals until 0.1.2-beta.42. No Machine admits one now, so the
+    // joiner gets no copy and its Deploy with a replica count is the way out.
+    let legacy = services
         .iter()
-        .filter(|service| {
-            !service.identity.is_ingress_door() && !service.identity.is_private_access_router()
-        })
-        .filter_map(|service| {
-            let copies = || service.containers.iter().map(|c| c.as_observation());
-            let newest = service.newest_container()?.as_observation();
-            if newest.resolved_spec.mode != ServiceMode::Global {
-                return None;
-            }
-            let copy = copies()
-                .filter(|observed| {
-                    matches!(
-                        observed.rotation(),
-                        CopyRotation::In | CopyRotation::Pending
-                    )
-                })
-                .max_by_key(|observed| (observed.copy_gen(), observed.recency_key()));
-            Some(Source {
-                identity: service.identity.clone(),
-                work: CatchUpWork::Service(copy.cloned().map(Box::new)),
-            })
-        })
+        .filter(|service| service.identity.reserved().is_none())
+        .filter(|service| service.observed_global_slot_spec().is_some())
+        .map(|service| service.identity.clone())
         .collect();
     let doors_run = services
         .iter()
@@ -496,48 +200,7 @@ fn sources(
             work: CatchUpWork::PrivateAccess(sealed),
         });
     }
-    sources
-}
-
-fn new_copy(source: &ContainerObservation) -> NewContainer {
-    NewContainer {
-        slot: SlotKey {
-            namespace: source.namespace.clone(),
-            service: source.resolved_spec.name.clone(),
-            kind: ContainerKind::ServiceContainer,
-            creation_key: CreationKey::try_from(crate::cluster::global_creation_key(
-                &source.resolved_spec,
-            ))
-            .expect("a Global creation key stays within 512 bytes"),
-        },
-        resolved_spec: source.resolved_spec.clone(),
-        r#gen: source.copy_gen(),
-        deployment_id: source.deploy_label(),
-        registry_auth: None,
-        image_prepared: false,
-        answer: ployz_core::AnswerWhen::Started,
-        image_id: None,
-    }
-}
-
-/// A copy that did not come In is removed; `message` is why, and what the removal did
-/// follows it when it did not finish.
-async fn remove_started<C: CatchUpClient>(client: &mut C, copy: &Copy, message: String) -> String {
-    match client.remove_copy(copy).await {
-        Ok(Removal::Removed) => message,
-        Ok(removal) => format!("{message}; the started copy stays: {removal:?}"),
-        Err(error) => format!("{message}; {}", error_chain::row(&error)),
-    }
-}
-
-fn not_in_message(health: Option<HealthVerdict>) -> String {
-    health
-        .and_then(HealthVerdict::into_failure)
-        .unwrap_or(HealthFailure::TimedOut {
-            deadline_millis: None,
-            last_check: None,
-        })
-        .to_string()
+    (sources, legacy)
 }
 
 /// What fixes a partial listing. An answer this ployz can't read comes from a newer
@@ -681,10 +344,6 @@ impl<F: FnMut(CatchUpFact)> Tally<F> {
         (self.observe)(fact);
     }
 
-    fn error(&self, cause: Failure) -> CatchUpError {
-        CatchUpError::new(cause, self.unresolved.clone())
-    }
-
     fn finish(self, cancel: &CancellationToken) -> Result<(), CatchUpError> {
         if cancel.is_cancelled() {
             return Err(CatchUpError::new(Failure::cancelled(), self.unresolved));
@@ -751,111 +410,6 @@ async fn place_ingress<C: CatchUpClient>(
     failure.map_or(SlotOutcome::Resolved, SlotOutcome::failed)
 }
 
-/// Create `origin`'s copy on this Machine and bring it In, so it is `Started`; the slot's
-/// outcome otherwise.
-async fn start_copy<C: CatchUpClient>(
-    client: &mut C,
-    machine_id: &MachineId,
-    identity: QualifiedService,
-    origin: &ContainerObservation,
-    cancel: &CancellationToken,
-) -> Result<Started, SlotOutcome> {
-    let spec = origin.resolved_spec.clone();
-    let copy = match client.run_slot(machine_id, new_copy(origin), cancel).await {
-        Ok(Some(copy)) => copy,
-        Ok(None) => return Err(SlotOutcome::Excluded),
-        Err(error) => return Err(SlotOutcome::failed(error_chain::row(&error))),
-    };
-    if copy.rotation != CopyRotation::In {
-        let message = match client.bring_in(&copy, &spec).await.map(BroughtIn::not_in) {
-            Ok(Ok(())) => None,
-            Ok(Err(NotIn::Health(health))) => Some(not_in_message(health)),
-            Ok(Err(NotIn::OlderThanIn(_))) => {
-                Some(remove_started(client, &copy, OUTDATED.to_owned()).await)
-            }
-            Ok(Err(NotIn::Refused(refusal))) => {
-                Some(remove_started(client, &copy, refusal.message).await)
-            }
-            Err(error) => Some(error_chain::row(&error)),
-        };
-        if let Some(message) = message {
-            return Err(SlotOutcome::failed(message));
-        }
-    }
-    Ok(Started {
-        identity,
-        copy,
-        spec,
-    })
-}
-
-/// What `target`, this Machine's Containers after the wait, makes of `started`: running,
-/// and with its superseded copies retired.
-async fn settle<C: CatchUpClient>(
-    client: &mut C,
-    machine_id: &MachineId,
-    started: &Started,
-    target: &[ContainerObservation],
-    cancel: &CancellationToken,
-) -> SlotOutcome {
-    let Started { identity, copy, .. } = started;
-    if !runs_here(target, started, machine_id) {
-        let seen = target
-            .iter()
-            .find(|observed| observed.container_id == copy.container_id)
-            .map_or_else(
-                || "gone".to_owned(),
-                |observed| observed.runtime.to_string(),
-            );
-        return SlotOutcome::failed(format!(
-            "copy {} is not running on this Machine after catch-up; it is {seen}",
-            copy.container_id.as_str()
-        ));
-    }
-    let superseded = target.iter().filter(|observed| {
-        observed.machine_id == *machine_id
-            && observed.kind == ContainerKind::ServiceContainer
-            && observed.identity() == *identity
-            && observed.container_id != copy.container_id
-    });
-    let mut chains = Vec::new();
-    for old in superseded {
-        if cancel.is_cancelled() {
-            break;
-        }
-        let left = match client
-            .retire_copy(&Copy::observed(old), cancel)
-            .await
-            .map(Rotated::failure)
-        {
-            Ok(Ok(())) => None,
-            Ok(Err(RotationFailure::Cancelled)) => break,
-            Ok(Err(RotationFailure::Refused(refusal))) => Some(refusal.message),
-            Ok(Err(RotationFailure::NotConfirmed(machines))) => Some(format!(
-                "{} did not confirm it left the routes",
-                machines
-                    .machines
-                    .iter()
-                    .map(MachineId::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )),
-            Err(error) => Some(error_chain::row(&error)),
-        };
-        if let Some(message) = left {
-            chains.push(format!(
-                "superseded copy {} stays: {message}",
-                old.container_id.as_str()
-            ));
-        }
-    }
-    if chains.is_empty() {
-        SlotOutcome::Resolved
-    } else {
-        SlotOutcome::Failed(SlotFailure { chains })
-    }
-}
-
 pub(crate) async fn catch_up_globals<C: CatchUpClient>(
     client: &mut C,
     this_machine: &Machine,
@@ -864,7 +418,10 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
 ) -> Result<(), CatchUpError> {
     let (live, declared) = observe_complete(client, &this_machine.id, cancel, &mut observe).await?;
     let services = live.services();
-    let sources = sources(&services, this_machine.accepts_ingress, declared);
+    let (sources, legacy) = sources(&services, this_machine.accepts_ingress, declared);
+    if !legacy.is_empty() {
+        observe(CatchUpFact::Legacy(legacy));
+    }
     let mut tally = Tally::new(
         sources
             .iter()
@@ -872,67 +429,21 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
             .collect(),
         observe,
     );
-    let mut started: Vec<Started> = Vec::new();
     for source in sources {
         if cancel.is_cancelled() {
             break;
         }
         let identity = source.identity;
+        tally.creating(&identity);
         let outcome = match source.work {
             CatchUpWork::PrivateAccess(sealed) => {
-                tally.creating(&identity);
                 place_private_access(client, this_machine, sealed).await
             }
             CatchUpWork::Ingress(proxy_service, doors) => {
-                tally.creating(&identity);
                 place_ingress(client, this_machine, proxy_service, doors, cancel).await
-            }
-            CatchUpWork::Service(None) => {
-                SlotOutcome::failed(format!("no copy of it is In or Pending; {OUTDATED}"))
-            }
-            CatchUpWork::Service(Some(origin)) => {
-                tally.creating(&identity);
-                match start_copy(client, &this_machine.id, identity.clone(), &origin, cancel).await
-                {
-                    Ok(copy) => {
-                        started.push(copy);
-                        continue;
-                    }
-                    Err(outcome) => outcome,
-                }
             }
         };
         tally.record(identity, outcome);
-    }
-    // A copy that started may have stopped again until Docker's restart policy starts it:
-    // give each a moment to run before calling it not running.
-    let deadline = tokio::time::Instant::now() + STARTING_WAIT;
-    let target = loop {
-        let target = client
-            .target_containers(&this_machine.id)
-            .await
-            .map_err(|error| {
-                tally.error(if cancel.is_cancelled() {
-                    error.interrupted()
-                } else {
-                    error
-                })
-            })?;
-        let starting = started.iter().any(|copy| {
-            !runs_here(&target, copy, &this_machine.id) && may_still_run(&target, copy)
-        });
-        if !starting || tokio::time::Instant::now() >= deadline || cancel.is_cancelled() {
-            break target;
-        }
-        tokio::select! {
-            biased;
-            () = cancel.cancelled() => {}
-            () = tokio::time::sleep(OBSERVATION_RETRY) => {}
-        }
-    };
-    for started in started {
-        let outcome = settle(client, &this_machine.id, &started, &target, cancel).await;
-        tally.record(started.identity, outcome);
     }
     tally.finish(cancel)
 }

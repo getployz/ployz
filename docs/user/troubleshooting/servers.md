@@ -353,7 +353,21 @@ The server has joined and stays joined. To finish:
 
 1. Update `ployz` where the join ran to the release your other servers run, 0.3.4 or later. For
    the new server, [upgrade Ployz on it](../servers/manage-servers.md#upgrade-ployz-on-a-server).
-2. Redeploy, so its global services start on it.
+2. Run the `retry:` command the error printed, so the new server gets the web traffic and
+   Private Access that every server runs.
+
+## A new server joined, but runs no copy of a global service
+
+```text
+Joined Server MY-SERVER.
+warning: MY-SERVER runs no copy of `shop-production/metrics`: only Ployz's own Services run on every Server. Give it a replica count and deploy it again.
+```
+
+That service was deployed from a Compose file with `deploy.mode: global` before 0.1.2-beta.42.
+Servers no longer start a service of yours on every server, so the new one starts none of it.
+The server has joined, and the service keeps running where it ran. Set `deploy.replicas` on it
+instead of `deploy.mode: global`, then run `ployz deploy`. With `--json`, the join's result lists
+the service under `skipped_globals`.
 
 ## A server waits for approval and never shows up
 
