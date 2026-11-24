@@ -106,6 +106,11 @@ pub enum NetworkError {
         "the Docker bridge was fenced from the mesh, but the fence can no longer be kept: {cause}"
     )]
     BridgeUnfenced { cause: String },
+    #[error(
+        "Docker doesn't pass forwarded IPv4 through iptables' DOCKER-USER chain{}, so the fence that keeps unsigned Containers away from signed data can't hold. Ployz needs Docker's iptables firewall backend: fix Docker's settings, then `systemctl restart docker` and `systemctl restart ployz`",
+        cause.as_deref().map(|cause| format!(" ({cause})")).unwrap_or_default()
+    )]
+    DockerFirewallBackend { cause: Option<String> },
     #[error("endpoint discovery request failed")]
     Http(#[from] reqwest::Error),
     #[error("endpoint discovery output is invalid")]

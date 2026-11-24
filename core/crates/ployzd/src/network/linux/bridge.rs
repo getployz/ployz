@@ -91,6 +91,40 @@ pub(super) fn addresses<'a>(
         .collect()
 }
 
+/// Gives each member whose admission record puts it in another part a new address in its
+/// own, noted in `taken`, for the pin pass to move it to: a Container made before the parts,
+/// or before this split, holds one anywhere. A member with no record keeps its address, and
+/// so does one whose part is full. Returns the members it gave one.
+pub(super) fn unplace(
+    members: &mut [BridgeMember],
+    recorded: &BTreeMap<String, AddressPart>,
+    taken: &mut BTreeSet<Ipv4Addr>,
+    subnet: MachineSubnet,
+) -> BTreeSet<String> {
+    let mut handed = Handed::default();
+    let mut unplaced = BTreeSet::new();
+    for member in members {
+        let (Some(ipv4), Some(&part)) = (member.ipv4, recorded.get(&member.id)) else {
+            continue;
+        };
+        if AddressPart::of_last_octet(ipv4.octets()[3]) == part {
+            continue;
+        }
+        match handed.take(subnet, part, taken) {
+            Ok(address) => {
+                taken.insert(address);
+                member.ipv4 = Some(address);
+                unplaced.insert(member.id.clone());
+            }
+            Err(error) => eprintln!(
+                "container {container} stays at {ipv4} on the {DOCKER_NETWORK_NAME} network: {error}",
+                container = member.id,
+            ),
+        }
+    }
+    unplaced
+}
+
 fn report_unjoined(id: &str, error: &NoAddress) {
     eprintln!("container {id} stays off the {DOCKER_NETWORK_NAME} network: {error}");
 }
@@ -792,6 +826,30 @@ impl NetworkPlane {
         }
     }
 
+    /// The part each member's admission record puts it in, for those that have one.
+    async fn recorded_parts(&self, members: &[BridgeMember]) -> BTreeMap<String, AddressPart> {
+        let mut parts = BTreeMap::new();
+        let Some(records) = &self.records else {
+            return parts;
+        };
+        for member in members.iter().filter(|member| member.ipv4.is_some()) {
+            let Ok(id) = ContainerId::parse(member.id.clone()) else {
+                continue;
+            };
+            match records.recorded_part(&id, member.namespace.as_ref()).await {
+                Ok(Some(part)) => {
+                    parts.insert(member.id.clone(), part);
+                }
+                Ok(None) => {}
+                Err(error) => eprintln!(
+                    "container {id} keeps its {DOCKER_NETWORK_NAME} network address: its record could not be read: {error}",
+                    error = ployz_core::error_chain::inline(&error),
+                ),
+            }
+        }
+        parts
+    }
+
     /// The part each member with no address takes a new one in, read from this Server's
     /// Container records.
     async fn parts(
@@ -839,7 +897,9 @@ impl NetworkPlane {
     /// bridge that lost its endpoint, such as one a readdress detached, joins it again.
     /// One Ployz doesn't manage is pinned too, since a dynamic one could take a
     /// pinned address at boot, and it rejoins with its own aliases and options. A
-    /// detached member takes back the address `pins` holds for it, if any.
+    /// detached member takes back the address `pins` holds for it, if any. A member whose
+    /// admission record puts it in another part moves to a new address in its own, noted
+    /// before its detach like any other.
     async fn pin_members(&self, stopped: &mut Stopped, mut pins: Pins) {
         let containers = match self.bridge_containers().await {
             Ok(containers) => containers,
@@ -855,9 +915,12 @@ impl NetworkPlane {
         pins.restore(&mut members);
         let mut taken = address::taken(&containers);
         taken.extend(members.iter().filter_map(|member| member.ipv4));
+        let admitted = self.recorded_parts(&members).await;
+        let unplaced = unplace(&mut members, &admitted, &mut taken, self.machine.subnet);
+        let moves = |member: &BridgeMember| member.needs_pin() || unplaced.contains(&member.id);
         let detaches = members
             .iter()
-            .any(|member| member.attached && member.needs_pin());
+            .any(|member| member.attached && moves(member));
         let recorded = !detaches
             || pins
                 .record(&members)
@@ -869,7 +932,7 @@ impl NetworkPlane {
                 .is_ok();
         let unpinned = members
             .iter()
-            .filter(|member| member.needs_pin())
+            .filter(|member| moves(member))
             .collect::<Vec<_>>();
         let parts = self.parts(&unpinned).await;
         let mut unjoined = BTreeSet::new();

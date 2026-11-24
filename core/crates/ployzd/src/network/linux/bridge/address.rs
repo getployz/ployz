@@ -5,7 +5,7 @@
 //!
 //! Each new address lies in the [`AddressPart`] its Container belongs to, which the fence
 //! reads back from the address alone. A Container keeps the address it holds or is pinned
-//! to, whatever its part.
+//! to, unless its admission record puts it in another part.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -181,9 +181,9 @@ mod tests {
     #[test]
     fn a_freed_address_is_reused_only_after_the_rest_of_its_part() {
         // .2 was just freed; the next Container takes .6, not .2.
-        let taken = BTreeSet::from([address(3), address(4), address(5), address(200)]);
+        let taken = BTreeSet::from([address(3), address(4), address(5), address(150)]);
         assert_eq!(open(&taken, None), Some(address(6)));
-        assert_eq!(open(&taken, Some(address(159))), Some(address(2)));
+        assert_eq!(open(&taken, Some(address(127))), Some(address(2)));
     }
 
     #[test]

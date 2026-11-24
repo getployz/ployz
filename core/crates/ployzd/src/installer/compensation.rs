@@ -56,7 +56,8 @@ pub(super) async fn install_or_compensate(
         .into_iter()
         .filter(|unit| super::systemctl("check unit", ["is-active", "--quiet", unit]).is_ok())
         .collect();
-    let units = UnitSnapshot::take(&paths.systemd_dir).map_err(UpgradeFailure::NotRestored)?;
+    let units = UnitSnapshot::take(&paths.systemd_dir, paths.layout.data_dir())
+        .map_err(UpgradeFailure::NotRestored)?;
     let request = InstallRequest {
         release: MachineRelease::Exact(target.clone()),
         mode: InstallMode::SoftwareOnly,
@@ -101,9 +102,10 @@ async fn soak(paths: &InstallPaths, target: &MachineVersion) -> Result<(), Insta
     super::host::verify_daemon_contract(&paths.socket(), target).await
 }
 
-/// The unit files `install-units` writes, as an attempt found them: `None` for a file that was
-/// not there. Compensation owns these files, because the release that failed rewrote them.
-struct UnitSnapshot(Vec<(PathBuf, Option<Vec<u8>>)>);
+/// The unit files `install-units` writes, and the fence file a downgrade removes, as an attempt
+/// found them, each with its mode: `None` for a file that was not there. Compensation owns these
+/// files, because the release that failed rewrote them.
+struct UnitSnapshot(Vec<(PathBuf, Option<Vec<u8>>, u32)>);
 
 impl UnitSnapshot {
     const WRITTEN: [Unit; 5] = [
@@ -114,17 +116,20 @@ impl UnitSnapshot {
         Unit::Fence,
     ];
 
-    fn take(systemd_dir: &Path) -> Result<Self, InstallError> {
+    fn take(systemd_dir: &Path, data_dir: &Path) -> Result<Self, InstallError> {
         Self::WRITTEN
             .into_iter()
-            .map(|unit| systemd_dir.join(unit.name()))
-            .chain([super::host::docker_fence_drop_in(systemd_dir)])
-            .map(|path| {
+            .map(|unit| (systemd_dir.join(unit.name()), 0o644))
+            .chain([
+                (super::host::docker_fence_drop_in(systemd_dir), 0o644),
+                (data_dir.join(crate::network::FENCE_FILE), 0o600),
+            ])
+            .map(|(path, mode)| {
                 let content = read_unit(&path).map_err(|source| InstallError::Io {
                     stage: "read systemd unit before the upgrade",
                     source,
                 })?;
-                Ok((path, content))
+                Ok((path, content, mode))
             })
             .collect::<Result<_, InstallError>>()
             .map(Self)
@@ -136,7 +141,7 @@ impl UnitSnapshot {
     fn restore(&self) -> (bool, Result<(), InstallError>) {
         let mut changed = false;
         let mut failure = None;
-        for (path, before) in &self.0 {
+        for (path, before, mode) in &self.0 {
             let current = match read_unit(path) {
                 Ok(current) => current,
                 Err(source) => {
@@ -152,7 +157,7 @@ impl UnitSnapshot {
             }
             changed = true;
             if let Err(source) = match before {
-                Some(content) => atomic_write(path, content, 0o644),
+                Some(content) => atomic_write(path, content, *mode),
                 None => fs::remove_file(path),
             } {
                 failure.get_or_insert(InstallError::Io {
@@ -214,6 +219,7 @@ async fn restore(
         super::systemctl("restart unit", ["restart", unit])?;
     }
     super::host::verify_running_daemon(paths, previous).await?;
+    super::host::remove_unknown_fence(paths.layout.data_dir())?;
     units_restored
 }
 
@@ -231,6 +237,7 @@ mod tests {
     #[test]
     fn the_snapshot_covers_every_unit_file_install_units_writes() {
         let root = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
         super::super::host::write_units(
             &root.path().join("bin"),
             &root.path().join("run"),
@@ -249,11 +256,36 @@ mod tests {
                 }
             }
         }
+        written.push(data.path().join(crate::network::FENCE_FILE));
         written.sort();
-        let snapshot = UnitSnapshot::take(root.path()).unwrap();
-        let mut snapshot: Vec<_> = snapshot.0.into_iter().map(|(path, _)| path).collect();
+        let snapshot = UnitSnapshot::take(root.path(), data.path()).unwrap();
+        let mut snapshot: Vec<_> = snapshot.0.into_iter().map(|(path, ..)| path).collect();
         snapshot.sort();
         assert_eq!(written, snapshot);
+    }
+
+    /// A downgrade takes the fence's boot files away once the older binaries are in. When it
+    /// fails after that, the release put back keeps its fence at the next boot.
+    #[test]
+    fn a_failed_downgrade_puts_the_fence_boot_files_back() {
+        let root = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        super::super::host::write_units(
+            &root.path().join("bin"),
+            &root.path().join("run"),
+            root.path(),
+        )
+        .unwrap();
+        let fence = data.path().join(crate::network::FENCE_FILE);
+        fs::write(&fence, "rules").unwrap();
+        let snapshot = UnitSnapshot::take(root.path(), data.path()).unwrap();
+
+        super::super::host::remove_fence_files(root.path(), data.path()).unwrap();
+        let (_, result) = snapshot.restore();
+        result.unwrap();
+        assert_eq!(fs::read_to_string(&fence).unwrap(), "rules");
+        assert!(root.path().join(Unit::Fence.name()).is_file());
+        assert!(super::super::host::docker_fence_drop_in(root.path()).is_file());
     }
 
     #[test]
@@ -264,7 +296,7 @@ mod tests {
         let added = root.path().join(Unit::VolumePluginSocket.name());
         fs::write(&kept, "kept").unwrap();
         fs::write(&changed, "old").unwrap();
-        let snapshot = UnitSnapshot::take(root.path()).unwrap();
+        let snapshot = UnitSnapshot::take(root.path(), root.path()).unwrap();
 
         let (any, result) = snapshot.restore();
         assert!(!any, "nothing changed yet");
@@ -290,7 +322,7 @@ mod tests {
         let last = root.path().join(Unit::VolumePluginSocket.name());
         fs::write(&first, "old").unwrap();
         fs::write(&last, "old").unwrap();
-        let snapshot = UnitSnapshot::take(root.path()).unwrap();
+        let snapshot = UnitSnapshot::take(root.path(), root.path()).unwrap();
 
         fs::write(&first, "new").unwrap();
         fs::create_dir(&stuck).unwrap();

@@ -175,6 +175,27 @@ impl MachineSpecStore {
         ))
     }
 
+    /// The part a Container's admission record puts it in, `None` when it has no spec, no
+    /// admission or no Namespace: a Container from before admission records keeps the
+    /// address it holds.
+    pub(crate) async fn recorded_part(
+        &self,
+        container_id: &ContainerId,
+        namespace: Option<&Namespace>,
+    ) -> Result<Option<AddressPart>, Error> {
+        let (Some(spec), Some(namespace)) = (self.get(container_id).await?, namespace) else {
+            return Ok(None);
+        };
+        let Some(admission) = self.admitted_by(container_id).await? else {
+            return Ok(None);
+        };
+        Ok(Some(ployz_core::part_of(
+            &QualifiedService::new(namespace.clone(), spec.name.clone()),
+            Some(admission.admission()),
+            spec.volume_graph(),
+        )))
+    }
+
     /// This Machine's record of a copy's rotation, `None` when it never left Pending.
     pub async fn rotation(
         &self,

@@ -130,7 +130,7 @@ fn install(
     fence: BridgeFence,
 ) -> Result<Restored, NetworkError> {
     let mut restored = Restored::default();
-    let hooks = hooks(subnet);
+    let hooks: Vec<Hook> = hooks(subnet).into_iter().chain(fence_hooks()).collect();
     let placed = |place| hooks.iter().filter(move |hook: &&Hook| hook.place == place);
     let gateway = subnet.gateway().0;
     let dns_port = dns::PORT;
@@ -145,7 +145,7 @@ fn install(
     ipv4_document.push_str(&Chain::fence().document(
         "iptables",
         &fence_rules(),
-        &[],
+        &[outbound_fence().rule],
         &mut restored.displaced,
     )?);
     for hook in placed(Place::BehindDockerNat) {
@@ -200,6 +200,8 @@ fn install(
         moved,
     )?);
     restore("ip6tables", &ipv6_document)?;
+    docker_forwards_through_user()?;
+    filter_bridged()?;
     Ok(restored)
 }
 
@@ -261,8 +263,26 @@ fn hooks(subnet: MachineSubnet) -> Vec<Hook> {
     }));
     hooks.push(mss_clamp());
     hooks.push(container_mesh_fence());
-    hooks.push(container_ipv6_fence());
     hooks
+}
+
+/// The fence's hooks outside PLOYZ-FENCE's own jump. Only [`remove_fence`] takes them
+/// down, once the bridge they guard is gone or a release that doesn't know them takes over.
+fn fence_hooks() -> [Hook; 2] {
+    [outbound_fence(), container_ipv6_fence()]
+}
+
+/// A Container's traffic to a peer's Container passes the fence here too, before Docker's
+/// MASQUERADE could give it this Server's address while the mesh's nat RETURN is
+/// displaced.
+fn outbound_fence() -> Hook {
+    Hook {
+        program: "iptables",
+        table: "filter",
+        chain: "DOCKER-USER",
+        rule: format!("-i {DOCKER_NETWORK_NAME} -o {WIREGUARD_INTERFACE_NAME} -j {FENCE_CHAIN}"),
+        place: Place::First,
+    }
 }
 
 impl Hook {
@@ -391,9 +411,7 @@ fn container_ipv6_fence() -> Hook {
 /// the bridge reaches only this Server's subnet, and WireGuard binds each peer's traffic
 /// to its own.
 fn part_match(flag: &str, part: AddressPart) -> String {
-    let (value, mask) = part
-        .last_octet_mask()
-        .expect("the fence names only parts that are one mask");
+    let (value, mask) = part.last_octet_mask();
     format!("{flag} 0.0.0.{value}/0.0.0.{mask}")
 }
 
@@ -401,7 +419,8 @@ fn part_match(flag: &str, part: AddressPart) -> String {
 /// part of the source's. A Container on this Server arrives from the bridge and one on
 /// a peer from the mesh; either reaches a signed data Container only from Open or
 /// signed data. Anything else reaches one only through a port its signed spec
-/// publishes. Docker's own rules then decide what passes.
+/// publishes. Docker's own rules then decide what passes. Traffic from the bridge into
+/// the mesh meets the same bridge rules on its way to a peer's Container.
 fn fence_rules() -> Vec<String> {
     let into_data = part_match("-d", AddressPart::SignedData);
     let unsigned = [AddressPart::Preview, AddressPart::Free].map(|part| part_match("-s", part));
@@ -441,7 +460,11 @@ impl FenceFile {
         for rule in fence_rules() {
             iptables.push_str(&format!("-A {FENCE_CHAIN} {rule}\n"));
         }
-        iptables.push_str(&format!("-I {} 1 {}\nCOMMIT\n", chain.hook, chain.jump));
+        let outbound = outbound_fence();
+        iptables.push_str(&format!(
+            "-I {} 1 {}\n-I {} 1 {}\nCOMMIT\n",
+            chain.hook, chain.jump, outbound.chain, outbound.rule
+        ));
         let drop = container_ipv6_fence();
         Self {
             iptables,
@@ -467,12 +490,7 @@ pub(super) fn write_fence_file(data_dir: &Path) -> io::Result<()> {
 /// start then.
 pub fn restore_fence(data_dir: &Path) -> Result<(), NetworkError> {
     let ipv6 = Path::new("/proc/net/if_inet6").exists();
-    super::checked_command("modprobe", &["br_netfilter"])?;
-    for (family, on) in [("iptables", true), ("ip6tables", ipv6)] {
-        if on {
-            std::fs::write(format!("/proc/sys/net/bridge/bridge-nf-call-{family}"), "1")?;
-        }
-    }
+    filter_bridged()?;
     let path = data_dir.join(FENCE_FILE);
     let unreadable = |error: &dyn std::fmt::Display| {
         io::Error::other(format!(
@@ -523,7 +541,63 @@ fn moving_inserts(program: &str, document: &str) -> Result<String, NetworkError>
     Ok(moved)
 }
 
-/// Take the fence out of both families, for a release that doesn't know it.
+/// Bridged traffic between two Containers on this Server reaches iptables only through
+/// `br_netfilter` and its two sysctls. Docker leaves the module unloaded on some hosts, and
+/// a sysctl.d file applied when it loads, or later, can turn a sysctl off, so each install
+/// checks both and says what it had to turn back on. A host without IPv6 may have no
+/// IPv6 sysctl.
+fn filter_bridged() -> Result<(), NetworkError> {
+    let sysctl = |family| format!("/proc/sys/net/bridge/bridge-nf-call-{family}");
+    let mut turned_on = Vec::new();
+    if !Path::new(&sysctl("iptables")).exists() {
+        super::checked_command("modprobe", &["br_netfilter"])?;
+        turned_on.push("loaded br_netfilter".to_owned());
+    }
+    for family in ["iptables", "ip6tables"] {
+        let path = sysctl(family);
+        let value = match std::fs::read_to_string(&path) {
+            Ok(value) => value,
+            Err(error) if error.kind() == io::ErrorKind::NotFound && family == "ip6tables" => {
+                continue;
+            }
+            Err(error) => return Err(error.into()),
+        };
+        if value.trim() != "1" {
+            std::fs::write(&path, "1")?;
+            turned_on.push(format!("set net.bridge.bridge-nf-call-{family}=1"));
+        }
+    }
+    if !turned_on.is_empty() {
+        eprintln!(
+            "traffic between Containers on the {DOCKER_NETWORK_NAME} network skipped the firewall, so Ployz turned it back on: {}",
+            turned_on.join("; "),
+        );
+    }
+    Ok(())
+}
+
+/// Docker sends forwarded IPv4 through DOCKER-USER, where the fence hooks, only with its
+/// iptables firewall backend. Without that jump the fence is a chain nothing reaches.
+fn docker_forwards_through_user() -> Result<(), NetworkError> {
+    let listing = xtables("iptables", &["-t", "filter", "-S", "FORWARD"])?;
+    if forwards_through_user(&String::from_utf8_lossy(&listing.stdout)) {
+        Ok(())
+    } else {
+        Err(NetworkError::DockerFirewallBackend {
+            cause: super::docker_firewall::ipv4_off(),
+        })
+    }
+}
+
+/// Whether `iptables -S FORWARD` jumps to DOCKER-USER.
+fn forwards_through_user(listing: &str) -> bool {
+    listing
+        .lines()
+        .any(|line| line.trim_end() == "-A FORWARD -j DOCKER-USER")
+}
+
+/// Take the fence out of both families: once the bridge it guards is gone, or for a release
+/// that doesn't know it.
 ///
 /// # Errors
 ///
@@ -531,10 +605,12 @@ fn moving_inserts(program: &str, document: &str) -> Result<String, NetworkError>
 pub fn remove_fence() -> Result<(), NetworkError> {
     let _writer = writer();
     let mut failures = Vec::new();
-    for result in [
-        Chain::fence().remove("iptables"),
-        container_ipv6_fence().delete(),
-    ] {
+    let results = fence_hooks()
+        .iter()
+        .map(Hook::delete)
+        .chain([Chain::fence().remove("iptables")])
+        .collect::<Vec<_>>();
+    for result in results {
         if let Err(error) = result {
             failures.push(ployz_core::error_chain::inline(&error));
         }
@@ -925,14 +1001,10 @@ impl Chain {
         }
     }
 
-    /// The chains every install writes, in the order a removal takes them down.
-    fn installed() -> [Self; 4] {
-        [
-            Self::input(),
-            Self::build_forward(),
-            Self::tunnel_forward(),
-            Self::fence(),
-        ]
+    /// The chains every install writes but the fence's, in the order a removal takes them
+    /// down.
+    fn installed() -> [Self; 3] {
+        [Self::input(), Self::build_forward(), Self::tunnel_forward()]
     }
 
     /// Declaring the chain in a `--noflush` restore replaces its rules in the same
@@ -1044,8 +1116,9 @@ fn restore(program: &str, document: &str) -> Result<(), NetworkError> {
     }
 }
 
-/// Remove the firewall, and retire the [`Installed`] one so no re-apply puts it
-/// back.
+/// Remove the firewall but the fence, and retire the [`Installed`] one so no re-apply puts
+/// it back. The fence stays while its bridge may: Docker keeps the bridge's Containers
+/// running. [`remove_fence`] takes it down once the bridge is gone.
 pub(super) fn remove_firewall_rules(subnet: MachineSubnet) -> Result<(), NetworkError> {
     let mut generation = writer();
     *generation += 1;
@@ -1057,7 +1130,7 @@ pub(super) fn remove_firewall_rules(subnet: MachineSubnet) -> Result<(), Network
     };
     for hook in hooks(subnet) {
         // A fence left in a chain Docker abandoned is still ours to remove.
-        if matches!(hook.place, Place::Fence | Place::BehindMeshFence) && !docker_user_chain() {
+        if hook.place == Place::Fence && !docker_user_chain() {
             continue;
         }
         attempt(hook.delete());

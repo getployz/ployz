@@ -810,6 +810,20 @@ Ployz's own iptables rules; Ployz puts them back within a minute, as
 describes. On Ployz 0.3.16 and earlier, run `sudo systemctl restart ployz` after the reload
 instead.
 
+## Ployz stops because Docker uses its nftables firewall
+
+`journalctl -u ployz` says `Docker doesn't pass forwarded IPv4 through iptables' DOCKER-USER chain`
+and Ployz doesn't start its network. Ployz keeps unsigned containers away from services that hold
+a volume with iptables rules that Docker runs only with its default iptables firewall. The line
+names the setting that turns it off when Ployz finds one, such as
+`/etc/docker/daemon.json sets "firewall-backend": "nftables"` or
+`dockerd runs with --iptables=false`. Remove it, then run:
+
+```sh
+sudo systemctl restart docker
+sudo systemctl restart ployz
+```
+
 ## Apps see IPv6 visitors as 10.210.x.1, or services can't reach IPv6 addresses
 
 Through a domain, your app's `X-Forwarded-For` should show each visitor's own address, and a

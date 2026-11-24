@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     net::{IpAddr, Ipv4Addr, SocketAddr},
     process::Command,
     time::{Duration, SystemTime},
@@ -1292,7 +1292,7 @@ fn a_member_keeps_its_address_and_one_without_takes_a_new_one_in_its_part_or_sta
         last(taken.clone()),
         [
             ("running", Ok(5)),
-            ("stopped", Ok(224)),
+            ("stopped", Ok(192)),
             ("detached", Ok(160)),
             ("unmanaged", Ok(9)),
             ("unrecorded", Err(NoAddress::NoRecords)),
@@ -1307,6 +1307,56 @@ fn a_member_keeps_its_address_and_one_without_takes_a_new_one_in_its_part_or_sta
     assert_eq!(
         last(full_free).get(1),
         Some(&("stopped", Err(NoAddress::Full(AddressPart::Free))))
+    );
+}
+
+/// After an upgrade, a Container made before the parts holds an address anywhere, and the
+/// fence reads its part from that address. One whose admission record puts it in another
+/// part moves into its own; one with no record keeps the address it holds.
+#[test]
+fn a_member_whose_record_puts_it_in_another_part_moves_into_its_own() {
+    let member = |id: &str, last: u8| BridgeMember {
+        id: id.into(),
+        ipv4: Some(Ipv4Addr::new(10, 210, 1, last)),
+        attached: true,
+        pinned: true,
+        ipv6: false,
+        namespace: None,
+    };
+    let mut members = [
+        member("web", 200),
+        member("db", 3),
+        member("placed", 161),
+        member("legacy", 201),
+    ];
+    let mut taken = members.iter().filter_map(|member| member.ipv4).collect();
+    let admitted = BTreeMap::from([
+        ("web".to_owned(), AddressPart::Open),
+        ("db".to_owned(), AddressPart::SignedData),
+        ("placed".to_owned(), AddressPart::SignedData),
+    ]);
+    let unplaced = unplace(
+        &mut members,
+        &admitted,
+        &mut taken,
+        MachineSubnet::parse("10.210.1.0/24").unwrap(),
+    );
+    assert_eq!(
+        unplaced,
+        BTreeSet::from(["db".to_owned(), "web".to_owned()])
+    );
+    let addresses = members
+        .iter()
+        .map(|member| (member.id.as_str(), member.ipv4.map(|ipv4| ipv4.octets()[3])))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        addresses,
+        [
+            ("web", Some(4)),
+            ("db", Some(162)),
+            ("placed", Some(161)),
+            ("legacy", Some(201)),
+        ]
     );
 }
 

@@ -95,16 +95,16 @@ including containers on other servers, so don't publish a database's port.
 Containers don't reach each other over IPv6. Private DNS answers only with IPv4 addresses, so
 connect by name.
 
-Each server holds up to 32 containers that mount a volume from a signed deploy, 31 from a deploy
-nobody signed, and 158 others. Stopped containers count, and so does the second copy of a
+Each server holds up to 32 containers that mount a volume from a signed deploy, 63 from a deploy
+nobody signed, and 126 others. Stopped containers count, and so does the second copy of a
 service while a deploy replaces it. When a group is full, a new container in it doesn't start,
 and the deploy says `every signed data address on this Server's ployz network is taken`.
 
-#### After upgrading from 0.4.0-beta.2 or earlier
+#### Right after upgrading
 
-Containers made before the upgrade keep their addresses, and a database among them takes
-connections from every container until it's replaced. Upgrade every server, then deploy each
-environment once with `ployz deploy --recreate`, idle environments too, or delete them:
+Upgrade every server, then run `ployz deploy --recreate` in every environment, idle ones too, or
+delete them. Until then, some traffic from containers made before the upgrade to databases is
+refused, and a database made before the upgrade takes connections from every container.
 
 ```sh
 ployz deploy --recreate

@@ -9,41 +9,55 @@ use crate::{Admission, QualifiedService, RawVolumeSource, ServiceVolumeGraph};
 /// Where in a Machine Subnet a Container's address lies.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum AddressPart {
-    /// Signed workloads with no data Volume mounted, the reserved infrastructure
-    /// Containers whatever they mount, and Containers holding an address from before parts.
+    /// Signed workloads with no data Volume mounted, and the reserved infrastructure
+    /// Containers whatever they mount.
     Open,
-    /// Signed workloads, hooks included, with a data Volume mounted.
-    SignedData,
     /// Kept for preview Containers. Nothing takes an address here yet.
     Preview,
+    /// Signed workloads, hooks included, with a data Volume mounted.
+    SignedData,
     /// Everything else: unsigned workloads, and any Container with no readable admission.
     Free,
 }
 
 impl AddressPart {
-    pub const ALL: [Self; 4] = [Self::Open, Self::SignedData, Self::Preview, Self::Free];
+    /// Every part, in address order.
+    pub const ALL: [Self; 4] = [Self::Open, Self::Preview, Self::SignedData, Self::Free];
 
     /// The last octets of the part's addresses in every Machine Subnet.
     #[must_use]
     pub const fn hosts(self) -> RangeInclusive<u8> {
         match self {
-            Self::Open => 2..=159,
+            Self::Open => 2..=127,
+            Self::Preview => 128..=159,
             Self::SignedData => 160..=191,
-            Self::Preview => 192..=223,
-            Self::Free => 224..=254,
+            Self::Free => 192..=254,
         }
     }
 
     /// The last octet's value and mask every address in the part matches, with the
-    /// broadcast address in Free. Open spans two masks, so it has none.
+    /// network address and gateway in Open and the broadcast address in Free.
     #[must_use]
-    pub const fn last_octet_mask(self) -> Option<(u8, u8)> {
+    pub const fn last_octet_mask(self) -> (u8, u8) {
         match self {
-            Self::Open => None,
-            Self::SignedData => Some((160, 224)),
-            Self::Preview => Some((192, 224)),
-            Self::Free => Some((224, 224)),
+            Self::Open => (0, 128),
+            Self::Preview => (128, 224),
+            Self::SignedData => (160, 224),
+            Self::Free => (192, 192),
         }
+    }
+
+    /// The part `last_octet` lies in, the network address and gateway in Open and the
+    /// broadcast address in Free.
+    #[must_use]
+    pub fn of_last_octet(last_octet: u8) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|part| {
+                let (value, mask) = part.last_octet_mask();
+                last_octet & mask == value
+            })
+            .expect("the parts' masks cover every octet")
     }
 
     #[must_use]
@@ -174,12 +188,20 @@ mod tests {
         for part in AddressPart::ALL {
             assert_eq!(*part.hosts().start(), last + 1, "{part}");
             last = *part.hosts().end();
-            if let Some((value, mask)) = part.last_octet_mask() {
-                for octet in 0..=u8::MAX {
-                    let broadcast = octet == u8::MAX && part == AddressPart::Free;
-                    let expected = part.hosts().contains(&octet) || broadcast;
-                    assert_eq!(octet & mask == value, expected, "{part} {octet}");
-                }
+            let (value, mask) = part.last_octet_mask();
+            for octet in 0..=u8::MAX {
+                let outside_hosts = match octet {
+                    0 | 1 => part == AddressPart::Open,
+                    u8::MAX => part == AddressPart::Free,
+                    _ => false,
+                };
+                let expected = part.hosts().contains(&octet) || outside_hosts;
+                assert_eq!(octet & mask == value, expected, "{part} {octet}");
+                assert_eq!(
+                    AddressPart::of_last_octet(octet) == part,
+                    expected,
+                    "{part} {octet}"
+                );
             }
         }
         assert_eq!(last, 254);

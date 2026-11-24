@@ -336,17 +336,17 @@ async fn install_locked(
         }
     }
 
-    // An older release may not know the fence, and would keep Docker waiting on a unit it
-    // doesn't write, or a fence it never takes down.
-    if installed
+    let downgrade = installed
         .as_ref()
-        .is_some_and(|installed| target < *installed)
-    {
-        host::remove_fence(&paths.systemd_dir, paths.layout.data_dir())?;
-    }
+        .is_some_and(|installed| target < *installed);
     let mut restart_required = !paths.systemd_dir.join(Unit::Ployz.name()).is_file();
     restart_required |=
         install_binaries(source, paths, installed.as_ref(), &target, &mut progress).await?;
+    // An older release may not know the fence, and would keep Docker waiting on a unit it
+    // doesn't write. Its own units go in after, so one that knows the fence writes it back.
+    if downgrade {
+        host::remove_fence_files(&paths.systemd_dir, paths.layout.data_dir())?;
+    }
     install_units(paths).await?;
     if !installation_only {
         activate_units(&paths.systemd_dir)?;
@@ -368,6 +368,9 @@ async fn install_locked(
         }
         progress(MachineUpgradeStage::Readiness)?;
         verify_running_daemon(paths, &target).await?;
+        if downgrade {
+            host::remove_unknown_fence(paths.layout.data_dir())?;
+        }
         Readiness::Running
     };
     Ok(InstallOutcome {
@@ -894,6 +897,15 @@ mod tests {
         fs::create_dir_all(&payload).unwrap();
         write_script(&commands.join("id"), "if [ \"$1\" = -u ]; then echo 0; fi");
         write_script(&commands.join("dockerd"), "exit 0");
+        // Holds no rule and no chain, and says what it was asked.
+        for xtables in ["iptables", "ip6tables"] {
+            write_script(
+                &commands.join(xtables),
+                &format!(
+                    "if [ -n \"${{PLOYZ_INSTALLER_CONTRACT_ROOT:-}}\" ]; then echo \"{xtables} $*\" >> \"$PLOYZ_INSTALLER_CONTRACT_ROOT/iptables.log\"; fi\nexit 1"
+                ),
+            );
+        }
         symlink("/usr/bin/tar", commands.join("tar")).unwrap();
         symlink("/usr/bin/gzip", commands.join("gzip")).unwrap();
         symlink("/usr/bin/sleep", commands.join("sleep")).unwrap();

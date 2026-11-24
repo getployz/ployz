@@ -269,10 +269,10 @@ pub(super) fn docker_fence_drop_in(systemd_dir: &Path) -> std::path::PathBuf {
         .join("ployz-fence.conf")
 }
 
-/// Takes the fence out of systemd and both iptables families, before a release that doesn't
-/// know it replaces this one. Its unit and Docker's requirement go first, so no boot in
-/// between restores a fence nothing keeps.
-pub(super) fn remove_fence(systemd_dir: &Path, data_dir: &Path) -> Result<(), Error> {
+/// Takes the fence's boot files away once a release that may not know the fence is in
+/// place: Docker's requirement, the unit and the fence file. A release that knows the fence
+/// writes them again: the unit with its units, the file at its network start.
+pub(super) fn remove_fence_files(systemd_dir: &Path, data_dir: &Path) -> Result<(), Error> {
     for (path, stage) in [
         (
             docker_fence_drop_in(systemd_dir),
@@ -292,6 +292,16 @@ pub(super) fn remove_fence(systemd_dir: &Path, data_dir: &Path) -> Result<(), Er
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(source) => return Err(Error::Io { stage, source }),
         }
+    }
+    Ok(())
+}
+
+/// Once the release now running is ready: when its daemon wrote no fence file, it doesn't
+/// know the fence, which would drop its own Containers' traffic, so take the fence out of
+/// iptables. Run only after this release's daemon stopped, whose keeper would put it back.
+pub(super) fn remove_unknown_fence(data_dir: &Path) -> Result<(), Error> {
+    if data_dir.join(crate::network::FENCE_FILE).exists() {
+        return Ok(());
     }
     crate::network::remove_fence().map_err(|error| Error::Command {
         stage: "remove container network fence".into(),
@@ -323,15 +333,19 @@ pub(super) fn activate_units(systemd_dir: &Path) -> Result<(), Error> {
     Ok(())
 }
 
+/// The daemon starts after the fence unit, which a restart starts too: an upgrade worker
+/// from before the fence restarts only the daemon. The daemon keeps bridge filtering on
+/// itself, so it may write the bridge's sysctls.
 fn machine_daemon_service_unit(bin_dir: &Path) -> String {
     let bin = bin_dir.display();
     let socket = Unit::PloyzSocket.name();
+    let fence = Unit::Fence.name();
     format!(
         "\
 [Unit]
 Description=Ployz Machine daemon
-After=network-online.target docker.service {socket}
-Wants=network-online.target
+After=network-online.target {fence} docker.service {socket}
+Wants=network-online.target {fence}
 Requires={socket}
 
 [Service]
@@ -349,6 +363,7 @@ ProtectSystem=full
 ProtectControlGroups=true
 ProtectHome=read-only
 ProtectKernelTunables=true
+ReadWritePaths=-/proc/sys/net/bridge
 PrivateTmp=true
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 RestrictNamespaces=true
@@ -811,8 +826,8 @@ WantedBy=sockets.target
             "\
 [Unit]
 Description=Ployz Machine daemon
-After=network-online.target docker.service ployz.socket
-Wants=network-online.target
+After=network-online.target ployz-fence.service docker.service ployz.socket
+Wants=network-online.target ployz-fence.service
 Requires=ployz.socket
 
 [Service]
@@ -830,6 +845,7 @@ ProtectSystem=full
 ProtectControlGroups=true
 ProtectHome=read-only
 ProtectKernelTunables=true
+ReadWritePaths=-/proc/sys/net/bridge
 PrivateTmp=true
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 RestrictNamespaces=true
