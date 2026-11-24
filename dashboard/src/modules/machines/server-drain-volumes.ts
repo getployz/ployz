@@ -94,6 +94,18 @@ export function candidateServers(frame: RuntimeWatchView, input: {
     .map(({ machine }) => ({ id: machine.id, name: machine.name }));
 }
 
+/**
+ * The Engine's answer as the drain keeps it: each Service it left on the drained Server for a Volume reads not tried
+ * until the drain plans its moves, so a drain that ends before then says so.
+ */
+export const untried = (report: DrainReport): DrainReport => ({
+  ...report,
+  services: report.services.map((entry) =>
+    entry.result === "stays" && entry.reason.kind === "volume" && entry.reason.server.id === report.server.id && entry.detail === undefined
+      ? { ...entry, detail: "not tried" }
+      : entry),
+});
+
 /** A Volume Run row as a drain's line reads it. */
 export type DrainRunRow = {
   readonly id: string;

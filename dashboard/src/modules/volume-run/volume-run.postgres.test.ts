@@ -58,6 +58,7 @@ import { makeInngestEffectRunner, type runInngestEffect } from "#/modules/innges
 import { invokeOnFailure } from "#/test/inngest-failure";
 import { executeDrainServer } from "#/modules/machines/server-drain.inngest";
 import { admitDrainVolume, drainMoveId, drainVolumeDeadline, planDrainVolumes, readVolumeLines, volumeRunTargeting } from "#/modules/machines/server-drain-volumes.server";
+import { untried } from "#/modules/machines/server-drain-volumes";
 import { closeDrainRun, readCliServerDrain, requestServerDrain } from "#/modules/machines/server-drain.server";
 import { requestServerPolicyChange } from "#/modules/machines/server-policy.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
@@ -1995,6 +1996,18 @@ describe("volume runs", () => {
       // The Server page shows the same reason the CLI prints.
       const { lines } = await runEffect(readVolumeLines(organizationId, read.report, true));
       expect(lines["shop-production/web"]).toEqual({ tone: "stayed", text: expect.stringMatching(why) });
+    });
+
+    // Catches a Service kept for a folder reading not tried, rather than the Engine's own reason, once the drain planned.
+    it("keeps the Engine's words for a Service that also mounts a folder", async () => {
+      containers = [{ machine: "fsn-1", id: "web-fsn-1", running: true, binds: "/srv/uploads" }];
+      await answered(untried(engineReport));
+
+      await drain();
+
+      expect(await volumeRuns()).toEqual([]);
+      const read = await cli();
+      expect(read?.state === "finished" && first(read.report.services)).toEqual(first(engineReport.services));
     });
 
     // Catches a drain that cuts a Volume another run holds.

@@ -19,6 +19,7 @@ import {
   type DrainState,
 } from "#/modules/machines/server-drain-states";
 import { drainPlan, planDrain } from "#/modules/machines/server-operations.server";
+import { untried } from "#/modules/machines/server-drain-volumes";
 import { readVolumeLines, targetedMessage, volumeRunTargeting } from "#/modules/machines/server-drain-volumes.server";
 import { splitQualifiedService } from "#/modules/machines/server-services";
 import { serverDrainAttempt } from "#/modules/machines/tables";
@@ -408,7 +409,7 @@ export const executeDrainOnce = Effect.fn("ServerDrain.execute")(function* (
         // The answer is kept on the running row while the drain moves its Volumes. A row a cancellation already ended
         // unknown ends finished with it instead, and moves nothing.
         Effect.map((report) => ({
-          report,
+          report: untried(report),
           state: sql<DrainState>`case when ${serverDrainAttempt.state} = 'unknown' then 'finished' else ${serverDrainAttempt.state} end`,
           endCode: null,
           refusalMessage: null,

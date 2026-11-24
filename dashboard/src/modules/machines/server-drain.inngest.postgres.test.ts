@@ -76,6 +76,12 @@ const partialReport = {
   remaining: { kind: "observed", services: ["shop/db", "shop/worker", "shop/web"] },
 } as DrainReport;
 
+/** The partial report as the drain keeps it: it stopped before planning, so the Volume it left reads not tried. */
+const keptReport = {
+  ...partialReport,
+  services: partialReport.services.map((entry) => entry.service === "shop/db" ? { ...entry, detail: "not tried" } : entry),
+} as DrainReport;
+
 describe("drain-server", () => {
   let harness: PostgresTestHarness;
   /** The Namespaces the Config Store says the Organization's Environments own. */
@@ -289,7 +295,13 @@ describe("drain-server", () => {
     expect(drainCalls).toEqual([[machineId, { scope: "services", services: ["shop-production/api"] }]]);
     await harness.pool.query(`update member set role = 'member' where user_id = '${userId}'`);
     expect(await latest()).toEqual({
-      [machineId]: { attemptId: requestId, state: "finished", endedAt: expect.any(String), report: partialReport, lines: {} },
+      [machineId]: {
+        attemptId: requestId,
+        state: "finished",
+        endedAt: expect.any(String),
+        report: keptReport,
+        lines: { "shop/db": { tone: "stayed", text: "not tried" } },
+      },
     });
 
     expect((await drain(requestId, machineId, "run-duplicate")).result).toEqual({ attemptId: requestId, state: "finished" });
@@ -628,7 +640,7 @@ describe("drain-server", () => {
     expect(await runEffect(executeDrainOnce(request0, runId, { waited: false })))
       .toEqual({ attemptId: requestId, state: "finished" });
     expect(drainCalls).toHaveLength(1);
-    expect((await rows())[0]?.report).toEqual(partialReport);
+    expect((await rows())[0]?.report).toEqual(keptReport);
   });
 
   it("a cancel while the Engine works ends the row unknown, and the report that arrives after replaces it", async () => {
@@ -642,6 +654,9 @@ describe("drain-server", () => {
 
     expect((await drain()).result).toEqual({ attemptId: requestId, state: "finished" });
     expect(await rows()).toMatchObject([{ state: "finished", end_code: null, refusal_message: null, report: partialReport }]);
+    // Catches a Volume the drain never got to try read as the Engine's stay.
+    const read = await runEffect(readCliServerDrain(organizationId, requestId));
+    expect(read?.state === "finished" && read.report.services.find((entry) => entry.service === "shop/db")?.detail).toBe("not tried");
   });
 
   // Catches a drain cancelled, failed or swept while its Volumes move losing what the Engine already did.

@@ -108,7 +108,11 @@ export const planDrainVolumes = Effect.fn("ServerDrain.planVolumes")(function* (
   const notes = new Map<QualifiedService, Note>();
   for (const entry of pinned) {
     const check = dataCheck(frame, entry.service, request.machineId);
-    if (check.kind === "engine") continue;
+    // A folder or a Docker volume keeps the Engine's own words.
+    if (check.kind === "engine") {
+      notes.set(entry.service, { volume: undefined, detail: undefined, run: undefined });
+      continue;
+    }
     if (check.kind === "stays") {
       notes.set(entry.service, stay(undefined, check.why));
       continue;
