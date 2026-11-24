@@ -299,8 +299,18 @@ pub(super) fn remove_fence(systemd_dir: &Path, data_dir: &Path) -> Result<(), Er
     })
 }
 
-pub(super) fn activate_units() -> Result<(), Error> {
+pub(super) fn activate_units(systemd_dir: &Path) -> Result<(), Error> {
     systemctl("reload systemd units", ["daemon-reload"])?;
+    // Bridged traffic between two Containers on this Server reaches the fence only once
+    // `br_netfilter` is loaded, which Docker leaves off; the unit loads it. Started, never
+    // restarted: Docker requires the unit, so a restart would restart Docker too. A
+    // release from before the fence writes no unit.
+    if systemd_dir.join(Unit::Fence.name()).is_file() {
+        systemctl(
+            "start the container network fence",
+            ["start", Unit::Fence.name()],
+        )?;
+    }
     systemctl("enable daemon", ["enable", Unit::Ployz.name()])?;
     systemctl(
         "enable Machine API socket",

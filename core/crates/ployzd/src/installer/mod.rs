@@ -349,7 +349,7 @@ async fn install_locked(
         install_binaries(source, paths, installed.as_ref(), &target, &mut progress).await?;
     install_units(paths).await?;
     if !installation_only {
-        activate_units()?;
+        activate_units(&paths.systemd_dir)?;
     }
     if matches!(request.mode, InstallMode::PrepareHost { .. }) {
         install_docker(paths).await?;
