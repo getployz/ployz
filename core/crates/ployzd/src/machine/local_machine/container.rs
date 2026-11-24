@@ -2234,6 +2234,7 @@ fn create_refusal(error: Error) -> Result<ContainerRefusal, Error> {
     let reason = match &error {
         Error::NotParticipating => ContainerRefusalReason::NotParticipating,
         Error::IngressProxyServiceSpec(_) => ContainerRefusalReason::InvalidIngress,
+        Error::GlobalUnreserved => ContainerRefusalReason::GlobalUnreserved,
         Error::Docker(
             Docker::IngressHolderNotRunning
             | Docker::TunnelOriginNotRunning

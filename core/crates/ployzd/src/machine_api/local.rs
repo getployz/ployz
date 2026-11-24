@@ -1221,7 +1221,9 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
         LocalMachineError::IngressProxyServiceSpec(error) => {
             Ok(RpcError::caused(RpcErrorCode::InvalidArgument, &error))
         }
-        LocalMachineError::PrivateAccessRouterSpec | LocalMachineError::PrivateAccessKey(_) => {
+        LocalMachineError::PrivateAccessRouterSpec
+        | LocalMachineError::PrivateAccessKey(_)
+        | LocalMachineError::GlobalUnreserved => {
             Ok(RpcError::invalid_argument(error.to_string()))
         }
         LocalMachineError::PrivateAccessKeyMissing => {
