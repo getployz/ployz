@@ -1148,6 +1148,7 @@ fn history_names_the_draft_it_overwrites_and_holds_the_member_to_it() {
                 version: None,
                 message: None,
                 accept_volume_loss: Vec::new(),
+                rule: None,
             },
             &ployz_store::Trusted {
                 approval: ployz_store::Approval::NotRequired,

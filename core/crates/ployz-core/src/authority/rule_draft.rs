@@ -41,6 +41,13 @@ pub struct RuleSourceView {
     pub branch: Option<String>,
     pub root_dir: String,
     pub build: ServiceBuildConfig,
+    /// Whether a push to its branch deploys it: its Auto-deploy is on.
+    #[serde(default = "pushes")]
+    pub on_push: bool,
+}
+
+const fn pushes() -> bool {
+    true
 }
 
 /// What a rule is drafted from, as the Store's rule view gives it: the Environment's
@@ -85,7 +92,7 @@ pub struct RuleTerms {
     pub signer: SignerKey,
 }
 
-fn default_platform() -> String {
+pub(super) fn default_platform() -> String {
     "linux/amd64".to_owned()
 }
 

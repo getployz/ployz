@@ -1320,6 +1320,7 @@ fn publishing_a_deployed_volumes_removal_needs_evidence_and_acceptance() {
                     .iter()
                     .map(|name| VolumeName::parse(*name).unwrap())
                     .collect(),
+                rule: None,
             },
             &Trusted {
                 volumes: observed,
@@ -1408,6 +1409,7 @@ fn save(
                     .iter()
                     .map(|name| VolumeName::parse(*name).unwrap())
                     .collect(),
+                rule: None,
             },
             &Trusted {
                 volumes: observed.clone(),
@@ -1609,6 +1611,7 @@ fn publishing_two_volumes_removal_needs_each_sought_and_each_accepted() {
                     .iter()
                     .map(|name| VolumeName::parse(*name).unwrap())
                     .collect(),
+                rule: None,
             },
             &Trusted {
                 volumes: Some(observed),
@@ -2355,6 +2358,7 @@ fn a_stale_version_hands_back_the_version_that_binds_the_fresh_loss() {
                     .iter()
                     .map(|name| VolumeName::parse(*name).unwrap())
                     .collect(),
+                rule: None,
             },
             &Trusted {
                 volumes: Some(observed(&['a'])),

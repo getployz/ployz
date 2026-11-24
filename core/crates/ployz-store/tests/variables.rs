@@ -1548,6 +1548,7 @@ fn discard_brings_a_reference_back_on_the_removed_service_it_read() {
                 version: None,
                 message: None,
                 accept_volume_loss: Vec::new(),
+                rule: None,
             },
             &ployz_store::Trusted {
                 approval: ployz_store::Approval::NotRequired,
@@ -1733,6 +1734,7 @@ fn a_service_removed_before_names_were_recorded_shows_by_its_lineage() {
                 version: None,
                 message: None,
                 accept_volume_loss: Vec::new(),
+                rule: None,
             },
             &ployz_store::Trusted {
                 approval: ployz_store::Approval::NotRequired,

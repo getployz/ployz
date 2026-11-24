@@ -91,6 +91,7 @@ fn shop_on(store: ConfigStore) -> (ConfigStore, Actor) {
                 version: None,
                 message: None,
                 accept_volume_loss: Vec::new(),
+                rule: None,
             }),
         )
         .unwrap();
@@ -1266,6 +1267,7 @@ fn a_destinations_count_is_the_rows_its_sync_offers_where_nodes_are_used_live() 
                 version: None,
                 message: None,
                 accept_volume_loss: Vec::new(),
+                rule: None,
             }),
         )
         .unwrap();

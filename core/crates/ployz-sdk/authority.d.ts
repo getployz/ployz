@@ -40,8 +40,10 @@ import type {
   PrivateAccessTerms,
   RequestedServiceSpec,
   RuleDraft,
+  RuleSourceView,
   RuleTerms,
   RuleView,
+  Signed,
   VersionsDraft,
 } from "./generated/payloads";
 
@@ -73,7 +75,8 @@ export function passkeyJoinStep(join: JoinApproval, operation: string, issuedAt:
 /**
  * One version of each of `asked.services` a person's passkey signs in one prompt: the bundle to answer, each step body
  * with the births and image the Store records beside it, and the lines the person reads, each by the ployz-core code the
- * Servers run. `pins` maps each tag image to the `tag@sha256:…` it runs as, which `pinImages` looks up. `seed` is 16
+ * Servers run. With `source`, the bundle's last step is the Environment's automatic deploy rule for `source.target`,
+ * unless the kept rule already approves it or was ended; null when that leaves nothing to sign. `pins` maps each tag image to the `tag@sha256:…` it runs as, which `pinImages` looks up. `seed` is 16
  * random bytes from this browser. `against` is what each mount is compared with, with `parents` as the Store's parent
  * query returns them. `confirm` lists the mounts the person's answer says yes to. Throws an
  * Error, before any bundle, for a tag with no pin, a pin that isn't the tag itself by digest, a Volume from another
@@ -90,7 +93,22 @@ export function versionSteps(asked: {
   expires_at: number;
   seed: readonly number[];
   against: Against;
-}): VersionsDraft;
+  source?: SourceAsked;
+}): VersionsDraft | null;
+
+/**
+ * What a Source step drafts the rule from, as the Store's rule view gives it: the kept rule, where each Service builds
+ * from, the settings a push deploys, every Server of the Cluster by ID, and the repository owner's GitHub ID. The builder
+ * is the kept rule's when absent, else Ployz's own release.
+ */
+export type SourceAsked = {
+  rule: Signed | null;
+  sources: readonly RuleSourceView[];
+  target: readonly RequestedServiceSpec[];
+  machines: readonly string[];
+  owner_id: number;
+  builder?: { ref: string; sha: string };
+};
 
 /**
  * What each mount is compared with: each Service's last approved version, the keys one enforcing Server trusts, the

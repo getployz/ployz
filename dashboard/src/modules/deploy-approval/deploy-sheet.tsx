@@ -182,9 +182,11 @@ export function useDeployTap(organizationSlug: string) {
 export function SignedLines({ draft }: { draft: VersionsDraft }) {
   return (
     <>
-      <ul aria-label="What your passkey signs" className="flex flex-col gap-1 font-mono text-xs whitespace-pre-wrap break-all">
-        {draft.lines.map((line, index) => <li key={index}>{line}</li>)}
-      </ul>
+      {draft.lines.length === 0 ? null : (
+        <ul aria-label="What your passkey signs" className="flex flex-col gap-1 font-mono text-xs whitespace-pre-wrap break-all">
+          {draft.lines.map((line, index) => <li key={index}>{line}</li>)}
+        </ul>
+      )}
       {draft.confirm.length === 0 ? null : (
         <div className="flex flex-col gap-1 text-sm">
           <p className="font-medium">Needs your yes</p>

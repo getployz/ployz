@@ -218,6 +218,7 @@ fn publish(store: &ConfigStore, who: &Actor) {
                 version: None,
                 message: None,
                 accept_volume_loss: Vec::new(),
+                rule: None,
             },
             &Trusted::default(),
         )
@@ -510,6 +511,7 @@ fn a_save_or_deploy_after_a_record_creates_no_revision() {
                 version: None,
                 message: None,
                 accept_volume_loss: Vec::new(),
+                rule: None,
             },
             &Trusted::default(),
         )
@@ -593,6 +595,7 @@ fn a_partial_deploy_after_a_record_needs_no_volume_evidence() {
                 version: None,
                 message: None,
                 accept_volume_loss: Vec::new(),
+                rule: None,
             },
             &Trusted {
                 volumes: Some(VolumeObservation {

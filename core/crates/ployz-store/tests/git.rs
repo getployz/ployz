@@ -267,6 +267,7 @@ fn a_git_service_round_trips_get_edit_publish() {
                 version: Some(diff.version),
                 message: None,
                 accept_volume_loss: Vec::new(),
+                rule: None,
             },
             &Trusted::default(),
         )

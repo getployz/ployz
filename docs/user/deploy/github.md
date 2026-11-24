@@ -107,11 +107,16 @@ Your servers deploy a push only under an automatic deploy rule you approve from 
 [passkey](../servers/manage-servers.md#add-a-passkey) your servers trust. The rule stands for
 every future push, so each approval is its own prompt.
 
-In the dashboard, open the environment's **Settings** and turn on **Deploy every push** under
-**Automatic deploys**. The dialog shows the repository and branch, the builder, the servers and
-each service's settings. **Approve with passkey** asks your passkey once. The rule covers every
-service that builds from GitHub. If they build from different branches, it keeps the services on
-the branch the rule already covers.
+In the dashboard, connect a service to its repository and click **Save**. Save shows the
+repository and branch, the builder, the servers and each service's settings, and **Save with
+passkey** signs the rule with what you save, in one prompt. A later Save asks again only when it
+changes something the rule covers. The rule covers every service that builds from GitHub with
+**Auto-deploy** on. If they build from different branches, it keeps the branch the rule already
+covers, and the other services save without it.
+
+With no rule yet and services on several branches, Save signs nothing. Turn on **Deploy every
+push** under **Automatic deploys** in the environment's **Settings** to approve one. After you turn
+it off, Save never turns it back on: only the switch does.
 
 From the CLI, approve it for the services that build from one branch:
 
@@ -195,11 +200,11 @@ A self-hosted Ployz Cloud sets `PLOYZ_CLOUD` there to its own address, such as
 `https://ployz.example.com`. A repository with this file builds on GitHub only under its rules: a
 deploy of another environment from it builds on your servers.
 
-- **A saved change waits for you.** After you save a change to a service the rule covers, its
-  settings or how it builds, or add a service that builds from the rule's branch, pushes don't
-  deploy it until you approve the rule again. Settings
-  shows **Pushes to main are on hold** with what changed; **Review and approve** names each
-  changed setting and asks your passkey once. From the CLI, `ployz github rule approve web`
+- **A saved change waits for you.** A Save in the dashboard signs the change with the rule. A
+  change saved another way, such as from the CLI, to a service the rule covers, its settings or
+  how it builds, or a new service that builds from the rule's branch, holds pushes until you
+  approve the rule again. Settings shows **Pushes to main are on hold** with what changed;
+  **Review and approve** names each changed setting and asks your passkey once. From the CLI, `ployz github rule approve web`
   names what changed, as `changed     web since the last approval`. A push that changes only
   the code deploys as before, and so does a new replica count.
 - **A new server waits for a service that keeps data there.** The rule names the servers it was

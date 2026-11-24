@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import type { EnvironmentRef, JsonValue, Parent, PlanView } from "@ployz/sdk";
+import type { EnvironmentRef, JsonValue, Parent, PlanView, RuleView } from "@ployz/sdk";
 import type { Against } from "@ployz/sdk/authority";
 import { and, eq } from "drizzle-orm";
 import { Effect } from "effect";
@@ -19,6 +19,9 @@ import { Database } from "#/server/database.server";
 /** What a Server that enforces device approval needs to check a passkey's versions. */
 const SIGNS = ["ployz.container.signed-version.proposal.v1", "ployz.authority.scoped-keys.v1"];
 
+/** What it also needs to take an automatic deploy rule a passkey signed as a step of a bundle. */
+const SIGNS_RULE = [...SIGNS, "ployz.container.deploy-rule.v1"];
+
 const UNREACHED = "Couldn't reach your servers. Try again.";
 
 /**
@@ -36,6 +39,8 @@ export type DeployTap =
     readonly passkeys: readonly { readonly credentialId: string; readonly code: string }[];
     readonly pins: Readonly<Record<string, string>>;
     readonly against: Against;
+    /** Every Server of the Cluster, by ID, which a rule names. */
+    readonly members: readonly string[];
   };
 
 /** The plan Cloud read for a Deploy, with what asking for it needs, or the Store's refusal of the read. */
@@ -80,7 +85,7 @@ export const prepareDeployTap = Effect.fn("DeployTap.prepare")(function* (actor:
     && (yield* environmentProtected(access.organization.id, plan.environment.project, plan.environment.id).pipe(
       Effect.catchTag("StoreRefused", () => Effect.succeed(false)),
     ));
-  const tap: DeployTap = unsigned.length === 0 || asks ? { kind: "off" } : yield* gate(input.classify === true ? null : actor.userId, access.organization.id, tags, { namespace: plan.namespace, parents });
+  const tap: DeployTap = unsigned.length === 0 || asks ? { kind: "off" } : yield* gate(input.classify === true ? null : actor.userId, access.organization.id, tags, { namespace: plan.namespace, parents, needs: SIGNS });
   // Support never signs, and reads a plan only as its own view of it allows.
   if (access.kind === "support") {
     if (tap.kind !== "off") return { kind: "refused", message: "Support can't approve this Deploy. Ask a member to deploy it." } satisfies DeployPlan;
@@ -91,6 +96,34 @@ export const prepareDeployTap = Effect.fn("DeployTap.prepare")(function* (actor:
   return { kind: "plan", plan, tap } satisfies DeployPlan;
 });
 
+/** What a Save's tap reads: the rule view of what the Save saves, and what asking for a passkey needs. */
+export type SaveTap =
+  | { readonly kind: "off" }
+  | { readonly kind: "refused"; readonly message: string }
+  | { readonly kind: "ready"; readonly view: RuleView; readonly tap: Extract<DeployTap, { kind: "ready" }> };
+
+/**
+ * What a person's Save of `environment` needs before it can sign the automatic deploy rule for what it saves: nothing
+ * when no Server enforces device approval or a protector decides the person's writes here, else the staged rule view
+ * and what the Deploy tap reads for a passkey.
+ */
+export const prepareSaveTap = Effect.fn("SaveTap.prepare")(function* (actor: Actor, input: { readonly organizationSlug: string; readonly environment: EnvironmentRef }) {
+  const access = yield* requireAccess(actor, input.organizationSlug, "changes:stage");
+  if (access.kind !== "member") return { kind: "off" } satisfies SaveTap;
+  const read = yield* callStore(access.organization.id, actor.userId, {
+    operation: "read", query: { query: "rule", environment: input.environment, staged: true },
+  }, { approval: "not_required", permissions: access.permissions, environments: access.environments });
+  if (!read.ok) return { kind: "refused", message: read.refusal.message } satisfies SaveTap;
+  const view = read.value;
+  const nothing = view.sources.length === 0 || (!mayProtect(access, view.environment.name)
+    && (yield* environmentProtected(access.organization.id, view.environment.project, view.environment.id).pipe(
+      Effect.catchTag("StoreRefused", () => Effect.succeed(false)),
+    )));
+  if (nothing) return { kind: "off" } satisfies SaveTap;
+  const tap = yield* gate(actor.userId, access.organization.id, [], { namespace: view.namespace, parents: Effect.succeed({}), needs: SIGNS_RULE });
+  return tap.kind === "ready" ? { kind: "ready", view, tap } satisfies SaveTap : tap;
+});
+
 const mayProtect = (access: { readonly permissions: readonly string[]; readonly environments: readonly string[] | undefined }, environment: string) =>
   access.permissions.includes("environments:protect") && beyondEnvironments(access.environments, { environment }) === null;
 
@@ -99,6 +132,8 @@ const gate = Effect.fn("DeployTap.gate")(function* <E, R>(userId: string | null,
   readonly namespace: string;
   /** Read only once the gate would ask. */
   readonly parents: Effect.Effect<Readonly<Record<string, Parent>>, E, R>;
+  /** The capabilities each enforcing Server needs to check what is signed. */
+  readonly needs: readonly string[];
 }) {
   const refused = (message: string): DeployTap => ({ kind: "refused", message });
   // With no Server paired nothing enforces; the first one deploys what is saved.
@@ -113,7 +148,7 @@ const gate = Effect.fn("DeployTap.gate")(function* <E, R>(userId: string | null,
   if (unseen !== undefined) return refused(`Couldn't reach ${unseen.name ?? unseen.id}. Try again.`);
   const enforcing = frame.machines.map(({ machine }) => machine).filter((machine) => machine.runtime.device_enforcement === true);
   if (enforcing.length === 0) return { kind: "off" } satisfies DeployTap;
-  const older = enforcing.find(({ runtime: { capabilities = [] } }) => SIGNS.some((needed) => !capabilities.includes(needed)));
+  const older = enforcing.find(({ runtime: { capabilities = [] } }) => asked.needs.some((needed) => !capabilities.includes(needed)));
   if (older !== undefined) return refused(`Upgrade ${older.name} first. Its ployz can't check your passkey.`);
   const keyed = enforcing.flatMap(({ id, runtime }) => runtime.sealing?.kind === "held" ? [{ id, cluster: runtime.sealing.public_key }] : [])[0];
   if (keyed === undefined) return refused("Your servers didn't report the cluster's key. Try again.");
@@ -147,9 +182,11 @@ const gate = Effect.fn("DeployTap.gate")(function* <E, R>(userId: string | null,
     parents: yield* asked.parents, trusted, containers: listed?.containers ?? [],
     unanswered: [...roster].filter(([id]) => !answered.has(id)).map(([, name]) => name),
   };
-  if (userId === null) return { kind: "ready", cluster, passkeys, pins: {}, against } satisfies DeployTap;
+  const members = frame.machines.filter(({ machine }) => machine.runtime.sealing?.kind === "held" && machine.runtime.sealing.public_key === cluster)
+    .map(({ machine }) => machine.id).sort();
+  if (userId === null) return { kind: "ready", cluster, passkeys, pins: {}, against, members } satisfies DeployTap;
   return yield* pinImageDigests([...new Set(tags)]).pipe(
-    Effect.map((images): DeployTap => ({ kind: "ready", cluster, passkeys, pins: Object.fromEntries(images.map(({ tag, image }) => [tag, image])), against })),
+    Effect.map((images): DeployTap => ({ kind: "ready", cluster, passkeys, pins: Object.fromEntries(images.map(({ tag, image }) => [tag, image])), against, members })),
     Effect.catch((error) => Effect.succeed(refused(error.cause instanceof Error ? error.cause.message : "Couldn't look up an image's digest. Try again."))),
   );
 });

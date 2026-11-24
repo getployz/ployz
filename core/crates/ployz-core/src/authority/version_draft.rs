@@ -7,16 +7,19 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use super::{
-    Against, Approved, ApprovedChange, Before, BirthError, Births, Held, HeldContainer, Mounts,
-    PlannedVolumes, ServiceVersion, SignerKey, TrustedGrant, TrustedKeys, TrustedPasskey, Unknown,
-    birth,
+    Against, Approved, ApprovedChange, AutoDeployRule, Before, BirthError, Births, Held,
+    HeldContainer, Mounts, PlannedVolumes, RuleBasis, RuleDraft, RuleDraftError, RuleTerms,
+    ServiceVersion, SignerKey, TrustedGrant, TrustedKeys, TrustedPasskey, Unknown, birth,
     canonical::{CanonicalError, Timestamp, to_canonical},
-    deploy::content_addressed,
+    deploy::{content_addressed, placement_signed},
     keys::Signed,
     proposal::{ProposalApproval, ProposalRef, ProposalStep, StepDigest, StepKind},
+    rule::{Builder, RuleId},
+    rule_draft::RuleSourceView,
 };
 use crate::{
-    DeviceKey, Namespace, OperationId, RequestedServiceSpec, SealingPublicKey, ServiceName,
+    DeviceKey, MachineId, Namespace, OperationId, RequestedServiceSpec, SealingPublicKey,
+    ServiceName,
 };
 
 /// What a person is asked to sign: the specs of `services` in `namespace`, each tag image
@@ -40,6 +43,113 @@ pub struct VersionsAsked {
     pub seed: [u8; 16],
     /// What each mount is compared with.
     pub against: Relayed,
+    /// What a Source step drafts the Environment's automatic deploy rule from, when the
+    /// signer's tap may sign one.
+    #[serde(default)]
+    pub source: Option<SourceAsked>,
+}
+
+/// What a Source step drafts its rule from, as the Store relays it for the revision the
+/// tap goes with: the rule the Environment keeps, ended or not, where each Service builds
+/// from, the settings a push deploys, and every Server of the Cluster.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceAsked {
+    pub rule: Option<Signed<AutoDeployRule>>,
+    pub sources: Vec<RuleSourceView>,
+    /// Lowered as a push deploys them, each built image left a placeholder.
+    pub target: Vec<RequestedServiceSpec>,
+    pub machines: Vec<MachineId>,
+    /// The repository owner's GitHub ID.
+    pub owner_id: u64,
+    /// The kept rule's builder when absent, else Ployz's own release.
+    #[serde(default)]
+    pub builder: Option<Builder>,
+}
+
+impl SourceAsked {
+    /// The rule the tap signs as its step at `place`, or none when the kept rule still
+    /// approves every Service a push deploys on every Server it may place one on. A rule
+    /// the person ended stays ended: only turning it on again signs one.
+    fn draft(
+        self,
+        (cluster, namespace, volumes): (SealingPublicKey, &Namespace, &PlannedVolumes),
+        (issued_at, seed): (Timestamp, &[u8; 16]),
+        place: ProposalRef,
+    ) -> Result<Option<RuleDraft>, RuleDraftError> {
+        let mut basis = RuleBasis {
+            namespace: namespace.clone(),
+            rule: self.rule,
+            sources: self.sources,
+            target: self.target,
+            volumes: volumes.clone(),
+            minted: Births::new(),
+        };
+        let kept = basis.kept();
+        if kept.as_ref().is_some_and(|kept| kept.ended) {
+            return Ok(None);
+        }
+        let names: Vec<ServiceName> = basis
+            .branch_services()
+            .into_iter()
+            .filter(|name| {
+                (basis.sources.iter()).any(|source| {
+                    source.service == *name && source.on_push && source.branch.is_some()
+                })
+            })
+            .collect();
+        let branches: BTreeSet<_> = (basis.sources.iter())
+            .filter(|source| names.contains(&source.service))
+            .map(|source| (source.repository_id, source.branch.clone()))
+            .collect();
+        // With no rule kept, a person picks which branch deploys on push when they turn
+        // automatic deploys on.
+        if names.is_empty() || (kept.is_none() && branches.len() > 1) {
+            return Ok(None);
+        }
+        let builder = (self.builder)
+            .or_else(|| kept.as_ref().map(|kept| kept.source.builder.clone()))
+            .unwrap_or_else(Builder::pinned);
+        let terms = RuleTerms {
+            cluster,
+            machines: self.machines,
+            owner_id: self.owner_id,
+            builder,
+            platform: super::rule_draft::default_platform(),
+            // The births the Version steps mint come from the same seed, so a Volume both
+            // mount is born once.
+            new_rule: RuleId::from_bytes(*seed),
+            issued_at,
+            signer: SignerKey::Passkey(super::OwnPrompt::Passkey),
+        };
+        let mut rule = AutoDeployRule::draft(&mut basis, &names, terms)?;
+        if kept.is_some_and(|kept| approves(&kept, &rule, &basis.target)) {
+            return Ok(None);
+        }
+        rule.proposal = Some(place);
+        Ok(Some(rule.drafted(&basis)?))
+    }
+}
+
+/// Whether `kept` approves what `next` would: the same rule, branch, builder and Services,
+/// and every Server `next` names unless no Service it covers is placed by its spec.
+fn approves(kept: &AutoDeployRule, next: &AutoDeployRule, target: &[RequestedServiceSpec]) -> bool {
+    let placed = || {
+        (next.services.iter())
+            .filter_map(|service| target.iter().find(|spec| spec.name == service.name))
+            .any(placement_signed)
+    };
+    kept.rule == next.rule
+        && kept.namespace == next.namespace
+        && kept.source.repository_id == next.source.repository_id
+        && kept.source.branch == next.source.branch
+        && kept.source.builder == next.source.builder
+        && kept.services == next.services
+        && (next
+            .machines
+            .iter()
+            .all(|machine| kept.machines.contains(machine))
+            || !placed())
 }
 
 /// What Ployz Cloud relays to compare each mount with: each Service's last approved
@@ -126,6 +236,10 @@ pub struct VersionsDraft {
     /// The lines that use data the person must say yes to, each after its Service. The
     /// passkey's answer is the yes.
     pub confirm: Vec<String>,
+    /// The automatic deploy rule its Source step signs, with what the person reads of it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub source: Option<RuleDraft>,
 }
 
 /// One Service's step, with what the Store records beside it.
@@ -156,18 +270,22 @@ pub enum DraftError {
     Birth(#[from] BirthError),
     #[error("A version has no canonical form. Nothing signed.")]
     Canonical(#[from] CanonicalError),
+    #[error("{0} Nothing signed.")]
+    Rule(#[from] RuleDraftError),
 }
 
 impl VersionsAsked {
     /// One first version of each Service, which forgets nothing, signed at `issued_at` as
-    /// one step of a bundle a passkey answers, in the order the lines show them.
+    /// one step of a bundle a passkey answers, in the order the lines show them, then the
+    /// automatic deploy rule's Source step when `source` asks for one. None when only a
+    /// Source was asked for and the kept rule still approves it.
     ///
     /// # Errors
-    /// Refuses before any bundle: no Service, one listed twice, a tag with no pin, a pin that isn't the tag
-    /// itself `@sha256:` and 64 hex digits, a Volume from another Environment, or a body
-    /// with no canonical form.
-    pub fn draft(self) -> Result<VersionsDraft, DraftError> {
-        if self.services.is_empty() {
+    /// Refuses before any bundle: no Service and no Source, one listed twice, a tag with no
+    /// pin, a pin that isn't the tag itself `@sha256:` and 64 hex digits, a Volume from
+    /// another Environment, a rule that can't be drafted, or a body with no canonical form.
+    pub fn draft(self) -> Result<Option<VersionsDraft>, DraftError> {
+        if self.services.is_empty() && self.source.is_none() {
             return Err(DraftError::Empty);
         }
         let mut pins = BTreeMap::new();
@@ -195,6 +313,7 @@ impl VersionsAsked {
         let Self {
             mut services,
             against,
+            source,
             ..
         } = self;
         let namespace = &self.namespace;
@@ -257,6 +376,27 @@ impl VersionsAsked {
                 tag: change.tag.clone(),
             });
         }
+        let source = match source {
+            Some(asked) => asked.draft(
+                (self.cluster, namespace, &self.volumes),
+                (self.issued_at, &self.seed),
+                ProposalRef {
+                    operation: self.operation,
+                    index: u32::try_from(listed.len()).unwrap_or(u32::MAX),
+                },
+            )?,
+            None => None,
+        };
+        if let Some(rule) = &source {
+            listed.push(ProposalStep {
+                index: u32::try_from(listed.len()).unwrap_or(u32::MAX),
+                kind: StepKind::Source,
+                digest: StepDigest::of(&rule.body),
+            });
+        }
+        if listed.is_empty() {
+            return Ok(None);
+        }
         let bundle = to_canonical(&ProposalApproval {
             cluster: self.cluster,
             environment: namespace.clone(),
@@ -266,12 +406,25 @@ impl VersionsAsked {
             expires_at: self.expires_at,
             signer,
         })?;
-        let confirm = (approved.iter())
+        let mut confirm: Vec<String> = (approved.iter())
             .flat_map(|change| {
                 let service = change.service.as_str();
                 (change.confirm.iter()).map(move |line| format!("{service}: {line}"))
             })
             .collect();
+        if let Some(rule) = &source {
+            let summary = &rule.summary;
+            confirm.extend((summary.services.iter()).flat_map(|service| {
+                let name = service.name.as_str();
+                (service.confirm.iter()).map(move |line| format!("{name}: {line}"))
+            }));
+            if !summary.pinned {
+                confirm.push(format!(
+                    "builder {}, not Ployz's own release",
+                    summary.builder
+                ));
+            }
+        }
         // Cloud chose each pin, so the person reads the whole signed reference, never a
         // short prefix of it.
         let lines = approved
@@ -284,12 +437,13 @@ impl VersionsAsked {
                 .lines()
             })
             .collect();
-        Ok(VersionsDraft {
+        Ok(Some(VersionsDraft {
             bundle,
             steps,
             lines,
             confirm,
-        })
+            source,
+        }))
     }
 }
 

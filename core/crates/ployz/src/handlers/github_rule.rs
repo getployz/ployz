@@ -105,6 +105,7 @@ pub(super) fn approve(root: &ArgMatches) -> Result<(), Error> {
     let enforcing = enforcing(root)?;
     let view = store.read(&RuleQuery {
         environment: environment.clone(),
+        staged: false,
     })?;
     let mut basis = view.basis();
     let terms = RuleTerms {
@@ -148,6 +149,7 @@ pub(super) fn end(root: &ArgMatches) -> Result<(), Error> {
     let environment = store::environment(matches)?;
     let view = store.read(&RuleQuery {
         environment: environment.clone(),
+        staged: false,
     })?;
     let basis = view.basis();
     if basis.kept().is_some_and(|kept| kept.ended) {

@@ -44,6 +44,10 @@ pub struct Publish {
     #[serde(default)]
     #[ts(optional = nullable)]
     pub id: Option<String>,
+    /// The automatic deploy rule the Save's tap signed for what it saves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub rule: Option<crate::auto_rule::SavedRule>,
 }
 
 /// The Saved revision Working State is now in.
@@ -331,6 +335,9 @@ pub(crate) fn publish(
                 &gate,
             )?;
         }
+        if let Some(rule) = &publish.rule {
+            crate::auto_rule::keep_saved(tx, who, &environment, rule)?;
+        }
         let summary = after_ending(tx, trusted, &environment.summary.id, consumed)?
             .unwrap_or(environment.summary);
         return Ok(Published {
@@ -360,6 +367,9 @@ pub(crate) fn publish(
         },
         trusted,
     )?;
+    if let Some(rule) = &publish.rule {
+        crate::auto_rule::keep_saved(tx, who, &environment, rule)?;
+    }
     // Saved State already held it.
     let summary = after_ending(tx, trusted, &environment.summary.id, consumed && !created)?
         .unwrap_or(environment.summary);
