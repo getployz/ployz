@@ -324,8 +324,8 @@ struct Scripted {
     /// What dialing the entry again answers; none when this client can't.
     redial: Option<Result<(), RedialFailure>>,
     redials: Mutex<usize>,
-    /// Each Gone sent through `ensure_unsettled`, and whether it deletes the
-    /// Container's anonymous Volumes.
+    /// Each Gone sent through `ensure_unsettled` by Container id, and whether it
+    /// deletes the Container's anonymous Volumes.
     deleted_volumes: Mutex<Vec<(ContainerId, bool)>>,
 }
 
@@ -1373,10 +1373,12 @@ impl CopyLifecycle for Scripted {
                 anonymous_volumes,
                 ..
             } => {
-                self.deleted_volumes
-                    .lock()
-                    .unwrap()
-                    .push((id_of(container), anonymous_volumes.go_with_container()));
+                if let ContainerLocator::Id(id) = container {
+                    self.deleted_volumes
+                        .lock()
+                        .unwrap()
+                        .push((*id, anonymous_volumes.go_with_container()));
+                }
                 self.converge(machine_id, want).await
             }
             want @ (ContainerWant::Running { .. } | ContainerWant::Stopped { .. }) => {
