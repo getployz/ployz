@@ -72,7 +72,18 @@ impl VolumeStorage {
     /// A slot parent bounded by `refquota_bytes`, read-only like the mirror root it
     /// inherits from.
     pub(super) async fn create_slot(&self, parent: &str, refquota_bytes: u64) -> super::Result<()> {
-        self.zfs(&[
+        self.create_marked_slot(parent, refquota_bytes, &[]).await
+    }
+
+    /// [`Self::create_slot`] with `marks` set as ZFS makes the parent, so no parent of it
+    /// is ever seen without them.
+    pub(super) async fn create_marked_slot(
+        &self,
+        parent: &str,
+        refquota_bytes: u64,
+        marks: &[(Mark, String)],
+    ) -> super::Result<()> {
+        let mut args = [
             "create",
             "-o",
             "canmount=off",
@@ -80,9 +91,15 @@ impl VolumeStorage {
             "readonly=on",
             "-o",
             &format!("refquota={refquota_bytes}"),
-            parent,
-        ])
-        .await?;
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        for (mark, value) in marks {
+            args.extend(["-o".to_owned(), format!("{mark}={value}")]);
+        }
+        args.push(parent.to_owned());
+        self.zfs(&args.iter().map(String::as_str).collect::<Vec<_>>())
+            .await?;
         Ok(())
     }
 
@@ -114,7 +131,11 @@ impl VolumeStorage {
                 return Err(format!("Volume {name}'s slot already holds a copy").into());
             }
             self.marks(&parent)
-                .apply(&[Write::Inherit(Mark::Pull), Write::Inherit(Mark::PullOrigin)])
+                .apply(&[
+                    Write::Inherit(Mark::Pull),
+                    Write::Inherit(Mark::PullOrigin),
+                    Write::Inherit(Mark::CopyStep),
+                ])
                 .await?;
         }
         self.marks(&parent).set_role(SlotRole::OldCopy).await?;

@@ -446,6 +446,7 @@ fn admit(
             prune: false,
             no_prune: false,
             versions: Vec::new(),
+            copies: Vec::new(),
             recreate: Vec::new(),
         })),
         trusted,
@@ -827,6 +828,7 @@ fn a_retry_ships_the_cluster_domain_its_source_froze() {
                 version: None,
                 accept_volume_loss: Vec::new(),
                 versions: Vec::new(),
+                copies: Vec::new(),
             })),
             &Trusted::default(),
         )
@@ -1377,6 +1379,7 @@ fn a_deploy_refuses_a_hostname_another_namespace_publishes_naming_its_owner() {
         prune: false,
         no_prune: false,
         versions: Vec::new(),
+        copies: Vec::new(),
         recreate: Vec::new(),
     }));
     store.write_trusted(&who, &staging, &trusted).unwrap();
@@ -1816,6 +1819,7 @@ fn a_reapply_refuses_a_revision_that_ships_a_referenced_service_otherwise_than_i
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
+                copies: Vec::new(),
                 recreate: Vec::new(),
             })),
             &cloud(),
@@ -1905,6 +1909,7 @@ fn deploy_only(store: &ConfigStore, who: &Actor, n: u8, service: &str) {
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
+                copies: Vec::new(),
                 recreate: Vec::new(),
             })),
             &cloud(),
@@ -2120,6 +2125,7 @@ fn a_deploy_with_generated_domains_and_no_cluster_domain_says_how_to_remove_them
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
+                copies: Vec::new(),
                 recreate: Vec::new(),
             }),
             &Trusted::default(),

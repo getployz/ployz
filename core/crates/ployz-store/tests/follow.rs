@@ -3398,6 +3398,7 @@ fn roll_back(store: &ConfigStore, who: &Actor, n: u8) -> ployz_store::Deployment
                 version: None,
                 accept_volume_loss: Vec::new(),
                 versions: Vec::new(),
+                copies: Vec::new(),
             }),
             &Trusted::default(),
         )
@@ -5314,6 +5315,7 @@ fn a_follow_into_a_branch_ignores_what_the_deployer_may_protect() {
         prune: false,
         no_prune: true,
         versions: Vec::new(),
+        copies: Vec::new(),
         recreate: Vec::new(),
     });
     // Protected, production waits for an admin's yes to exactly this deploy.

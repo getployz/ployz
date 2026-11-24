@@ -44,8 +44,8 @@ use crate::{
     volume_copy::{
         CUT_ROUTE, DESTROY_ROUTE, FORGET_ROUTE, INSPECT_ROUTE, PULL_ROUTE, SEND_POINT_ROUTE,
         SNAPSHOT_ROUTE, STORAGE_DEMOTE_ROUTE, STORAGE_INSPECT_ROUTE, STORAGE_PREPARE_ROUTE,
-        STORAGE_SEAL_ROUTE, VOLUME_INSPECT_ROUTE, VOLUME_SEED_ROUTE, VOLUME_SIZE_SET_ROUTE,
-        WRITER_ROUTE,
+        STORAGE_SEAL_ROUTE, VOLUME_INSPECT_ROUTE, VOLUME_SEED_COPY_ROUTE, VOLUME_SEED_ROUTE,
+        VOLUME_SIZE_SET_ROUTE, WRITER_ROUTE,
     },
 };
 use error::PluginError;
@@ -165,6 +165,7 @@ async fn serve(listener: UnixListener, storage: VolumeStorage) -> io::Result<()>
         .route(&at(STORAGE_SEAL_ROUTE), post(departure::seal))
         .route(&at(VOLUME_INSPECT_ROUTE), post(inspect::inspect))
         .route(&at(VOLUME_SEED_ROUTE), post(seed::seed_volume))
+        .route(&at(VOLUME_SEED_COPY_ROUTE), post(seed::seed_copy))
         .route(&at(VOLUME_SIZE_SET_ROUTE), post(size::set_volume_size))
         .route(&at(INSPECT_ROUTE), post(copy::inspect))
         .route(&at(CUT_ROUTE), post(copy::cut))

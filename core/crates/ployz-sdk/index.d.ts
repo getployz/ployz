@@ -21,6 +21,7 @@ import type {
   RuntimeWatchView,
   LiveLogRecord,
   InspectVolumeCopyRequest,
+  SeedCopyRequest,
   SeedVolumeRequest,
   SetVolumeCopyReply,
   SetVolumeCopyRequest,
@@ -50,6 +51,7 @@ export type { NamesRead } from "./generated/native";
 export type VolumeSwitchRequest =
   | { command: "inspect_volume_copy"; payload: InspectVolumeCopyRequest }
   | { command: "seed_volume"; payload: SeedVolumeRequest }
+  | { command: "seed_copy"; payload: SeedCopyRequest }
   | { command: "set_volume_copy"; payload: SetVolumeCopyRequest }
   | { command: "set_volume_size"; payload: SetVolumeSizeRequest };
 

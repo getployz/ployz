@@ -221,6 +221,8 @@ pub enum Ask<'a> {
     Key,
     Join,
     PrivateAccess,
+    /// A new Volume made from a restore point of another.
+    Copy,
 }
 
 impl Ask<'_> {
@@ -237,6 +239,7 @@ impl Ask<'_> {
             Self::Key => "a key change",
             Self::Join => "a join",
             Self::PrivateAccess => "Private Access",
+            Self::Copy => "a copy of a Volume",
         }
     }
 
@@ -245,7 +248,7 @@ impl Ask<'_> {
             Self::Version {
                 reaches_host: true, ..
             } => CapSet::bit(Cap::Spec) | CapSet::bit(Cap::HostReach),
-            Self::Version { .. } | Self::Rule => CapSet::bit(Cap::Spec),
+            Self::Version { .. } | Self::Rule | Self::Copy => CapSet::bit(Cap::Spec),
             Self::Key => CapSet::bit(Cap::Key),
             Self::Join | Self::PrivateAccess => CapSet::bit(Cap::Join),
         })

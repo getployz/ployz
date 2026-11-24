@@ -122,6 +122,7 @@ fn admit(
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
+                copies: Vec::new(),
                 recreate: Vec::new(),
             }),
         )
@@ -300,6 +301,7 @@ fn a_narrowed_deploy_lists_the_services_it_references_among_those_it_ships() {
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
+                copies: Vec::new(),
                 recreate: Vec::new(),
             }),
         )
@@ -341,6 +343,7 @@ fn a_rollback_reads_back_the_services_it_ships_as_admitted() {
                 version: None,
                 accept_volume_loss: Vec::new(),
                 versions: Vec::new(),
+                copies: Vec::new(),
             }),
         )
         .unwrap();
@@ -657,6 +660,7 @@ fn a_retry_is_refused_for_shared_writes_on_a_volume_a_referenced_service_mounts(
                 version: None,
                 accept_volume_loss: Vec::new(),
                 versions: Vec::new(),
+                copies: Vec::new(),
             }),
         )
         .unwrap_err();

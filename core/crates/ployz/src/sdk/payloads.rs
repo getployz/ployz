@@ -166,6 +166,7 @@ fn typescript_declarations() -> String {
     declarations.add::<super::RetireOutcome>();
     declarations.add::<ployz_core::InspectVolumeCopyRequest>();
     declarations.add::<ployz_core::SeedVolumeRequest>();
+    declarations.add::<ployz_core::SeedCopyRequest>();
     declarations.add::<ployz_core::VolumeCopyView>();
     declarations.add::<ployz_core::SwitchError>();
     declarations.add::<ployz_core::SetVolumeCopyRequest>();

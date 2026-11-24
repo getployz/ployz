@@ -814,6 +814,7 @@ fn redeploy(
             prune: false,
             no_prune: false,
             versions,
+            copies: Vec::new(),
             recreate: carried
                 .services
                 .iter()

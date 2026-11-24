@@ -146,6 +146,10 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
         "gated: a drain sends a cut that needs its holder running only to a Server advertising it, and otherwise leaves the Service where it is, naming the Server to upgrade. An older daemon ignores `running` and cuts a stopped holder",
     ),
     (
+        "ployz.volume.seed-copy.v1",
+        "gated: nothing sends it yet; Cloud must offer a restore into a new Volume only when every Member advertises it. An older daemon refuses the unknown call before any copy starts",
+    ),
+    (
         "ployz.volume.origin.v1",
         "refused legibly: a Server sends a born Volume's data only to a pull that names it, and the refusal names the capability; Legacy data moves between any two daemons as before",
     ),

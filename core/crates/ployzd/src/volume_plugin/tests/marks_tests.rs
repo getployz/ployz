@@ -94,6 +94,7 @@ async fn copy_writer_promotes_a_pulled_slot_in_this_order() {
             "zfs get -H -o value ployz:cut tank/ployz-mirror/data/fs",
             "zfs set ployz:promote=on tank/ployz-mirror/data/fs",
             "zfs rename tank/ployz-mirror/data/fs tank/ployz/data",
+            "zfs get -H -s local -o value ployz:copy-step tank/ployz-mirror/data",
             "zfs get -H -o value ployz:cut tank/ployz/data",
             "zfs get -H -o value ployz:promote tank/ployz/data",
             "zfs get -H -o value ployz:seed tank/ployz/data",
@@ -125,6 +126,7 @@ async fn copy_writer_leaves_a_cut_slot_registered_and_drops_the_cut_after_the_re
             "zfs set ployz:epoch=0 tank/ployz-mirror/data/fs",
             "zfs get -H -o value ployz:cut tank/ployz-mirror/data/fs",
             "zfs rename tank/ployz-mirror/data/fs tank/ployz/data",
+            "zfs get -H -s local -o value ployz:copy-step tank/ployz-mirror/data",
             "zfs get -H -o value ployz:cut tank/ployz/data",
             "zfs inherit ployz:cut tank/ployz/data",
             "zfs get -H -o value ployz:promote tank/ployz/data",
@@ -310,7 +312,7 @@ async fn a_landing_seed_marks_the_slot_before_it_renames_it_the_root() {
             "zfs set ployz:seed=77 tank/ployz-mirror/seed/fs",
             "zfs set ployz:promote=on tank/ployz-mirror/seed/fs",
             "zfs rename tank/ployz-mirror/seed/fs tank/ployz/seed",
-            "zfs get -H -o value ployz:promote tank/ployz/seed",
+            "zfs get -H -s local -o value ployz:copy-step tank/ployz-mirror/seed",
         ],
     );
     server.abort();
@@ -351,6 +353,7 @@ async fn a_departure_reads_the_four_marks_in_order_then_pulled_locally() {
             "zfs get -H -o value ployz:cut tank/ployz-mirror/data/fs",
             "zfs get -H -o value ployz:epoch tank/ployz-mirror/data/fs",
             "zfs get -H -s local -o value ployz:pulled tank/ployz-mirror/data/fs",
+            "zfs get -r -H -s local -o value ployz:copy-step tank/ployz-mirror/data",
         ]
     );
 }
@@ -447,11 +450,11 @@ async fn remove_reads_promote_as_an_effective_value() {
 
         let reply = post(&socket, "/VolumeDriver.Remove", json!({"Name": "data"})).await;
         let log = commands(&test);
-        assert_eq!(
-            trace(&log),
-            ["zfs get -H -o value ployz:promote tank/ployz/data"],
-            "{inherited}"
-        );
+        let mut read = vec!["zfs get -H -o value ployz:promote tank/ployz/data"];
+        if !inherited {
+            read.push("zfs get -r -H -s local -o value ployz:copy-step tank/ployz/data");
+        }
+        assert_eq!(trace(&log), read, "{inherited}");
         assert_eq!(
             log.contains("zfs destroy -r tank/ployz/data"),
             !inherited,
