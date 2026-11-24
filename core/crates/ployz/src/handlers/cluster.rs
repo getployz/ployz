@@ -81,7 +81,6 @@ fn through_cloud(
 ) -> Result<(), Error> {
     let ran = approval::approved(
         runtime,
-        credential,
         OperationVerb::SetClusterName,
         leaf.get_one::<String>("approval").cloned(),
         |id| crate::cli::approved_rerun(leaf, &["cluster", "name", name.as_str()], id),

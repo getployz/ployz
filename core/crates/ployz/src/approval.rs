@@ -1,61 +1,30 @@
-//! A human's approval of a write or an operation that destroys something. Cloud refuses it
-//! with `approval_required`; a person at a terminal types the Environment's or the
-//! operation's name, anyone else waits for a human to approve it in Ployz Cloud. Either way
-//! the request runs again with the approval.
+//! A person's yes to a write or an operation that destroys something. Cloud refuses it
+//! with `approval_required` and the digest of what it would do; the CLI shows that, asks
+//! yes or no, and on a yes sends the request again carrying the digest. Cloud keeps
+//! nothing: it runs the request only while its plan still has that digest.
 
 use std::fmt::Display;
-use std::time::Duration;
 
 use chrono::{Local, SecondsFormat, TimeZone};
 use ployz_core::domain::private_dns;
-use ployz_core::{Hint, RpcError, RpcErrorCode};
+use ployz_core::{Hint, RpcError};
 use ployz_store::{
     ApprovalOperation, ApprovalRequired, ApprovalSubject, DestructiveEffect, DestructiveKind,
     DiffView, OperationVerb, SettingPath,
 };
-use reqwest::Method;
 use serde::Deserialize;
 
-use crate::cloud;
-use crate::cloud::account::{Credential, StoreCallError};
-use crate::cloud::login::{Delivery, LoginError};
+use crate::cloud::account::StoreCallError;
 use crate::failure::Failure;
-
-const POLL: Duration = Duration::from_secs(1);
 
 /// What the approval covers: a Store write, which carries its diff, or an operation on one
 /// named thing.
 pub(crate) type Subject = ApprovalSubject<Box<DiffView>>;
 
 #[derive(Debug, Deserialize)]
-#[serde(try_from = "ApprovalRequired<Box<DiffView>>")]
+#[serde(transparent)]
 pub(crate) struct Asked {
-    pub(crate) id: String,
     pub(crate) required: ApprovalRequired<Box<DiffView>>,
-    /// Cloud's reason for asking, such as that the Environment is Protected.
-    reason: String,
-}
-
-impl TryFrom<ApprovalRequired<Box<DiffView>>> for Asked {
-    type Error = &'static str;
-
-    fn try_from(required: ApprovalRequired<Box<DiffView>>) -> Result<Self, Self::Error> {
-        let id = required.id.clone().ok_or("an approval names its id")?;
-        Ok(Self {
-            id,
-            required,
-            reason: String::new(),
-        })
-    }
-}
-
-impl Asked {
-    fn for_someone_else(&self) -> bool {
-        !matches!(
-            self.required.protected,
-            None | Some(serde_json::Value::Null | serde_json::Value::Bool(false))
-        )
-    }
 }
 
 fn renamed_addresses(operation: &ApprovalOperation) -> String {
@@ -175,11 +144,12 @@ impl Asked {
         if error.code.as_str() != ployz_core::APPROVAL_REQUIRED_CODE {
             return None;
         }
-        let asked: Self = serde_json::from_value(error.details.clone()).ok()?;
-        Some(Self {
-            reason: error.message.clone(),
-            ..asked
-        })
+        serde_json::from_value(error.details.clone()).ok()
+    }
+
+    /// The digest a yes covers, which the request carries when it is sent again.
+    pub(crate) fn digest(&self) -> &str {
+        &self.required.digest
     }
 
     /// The verb Cloud named. A diff names none, so `command`, the Store write that
@@ -194,14 +164,6 @@ impl Asked {
                 OperationVerb::Remove.into()
             }
             (Subject::Diff(_), Some(_) | None) => Verb::Deploy,
-        }
-    }
-
-    /// The name a person types to approve: the Environment's, or the operation's.
-    pub(crate) fn name(&self) -> &str {
-        match &self.required.subject {
-            Subject::Diff(diff) => diff.environment.name.as_str(),
-            Subject::Operation(operation) => &operation.name,
         }
     }
 
@@ -389,150 +351,48 @@ pub(crate) fn line(effect: &DestructiveEffect) -> String {
     }
 }
 
-pub(crate) fn settle(
-    runtime: &tokio::runtime::Runtime,
-    credential: &Credential,
-    verb: Verb,
-    asked: &Asked,
-    retry: String,
-) -> Result<String, StoreCallError> {
+/// Shows what `asked` would do and asks yes or no: the digest to send again on a yes.
+/// Without a terminal nothing asks, and the failure names `retry`.
+pub(crate) fn settle(verb: Verb, asked: &Asked, retry: String) -> Result<String, StoreCallError> {
     for line in asked.review(verb) {
         crate::ui::note(line);
     }
-    if crate::ui::can_prompt() && !asked.for_someone_else() {
-        crate::ui::confirm_name(
-            asked.name(),
-            || Failure::usage("Approving needs a terminal"),
-            &format!(
-                "Nothing {}; the approval stays pending in Ployz Cloud.",
+    crate::ui::confirm(
+        &format!("Go ahead with {}?", asked.what(verb)),
+        || {
+            Failure::usage(format!(
+                "Nothing {}. Saying yes needs a terminal.",
                 verb.past()
-            ),
-        )
-        .map_err(StoreCallError::Stopped)?;
-        let approve = serde_json::json!({ "approve": { "digest": asked.required.digest } });
-        return runtime.block_on(async {
-            match decide(credential, &asked.id, &approve).await {
-                Ok(()) => Ok(asked.id.clone()),
-                Err(StoreCallError::Refused(error)) if error.code == RpcErrorCode::Conflict => {
-                    Ok(asked.id.clone())
-                }
-                Err(error) => Err(error),
-            }
-        });
-    }
-    let interrupted = crate::cancellation::interrupted()
-        .map_err(|error| StoreCallError::Stopped(Failure::from(error)))?;
-    if asked.for_someone_else() {
-        if !asked.reason.is_empty() {
-            crate::ui::note(&asked.reason);
-        }
-        crate::ui::note(for_another_approver(credential, &asked.id));
-        crate::ui::hint(&Hint::Inspect(format!(
-            "ployz org approval show {}",
-            asked.id
-        )));
-    } else {
-        crate::ui::note(where_to_approve(
-            credential,
-            &asked.id,
-            asked.required.organization.as_deref(),
-        ));
-        crate::ui::hint(&Hint::Next(format!(
-            "ployz org approval approve {}",
-            asked.id
-        )));
-    }
-    crate::ui::note_inline("Waiting for approval in Ployz Cloud… ");
-    let settled = runtime.block_on(async {
-        tokio::select! {
-            () = interrupted.cancelled() => None,
-            settled = decided(credential, &asked.id) => Some(settled),
-        }
-    });
-    crate::ui::note(match &settled {
-        Some(Ok(Status::Approved)) => "approved.",
-        Some(Ok(Status::Denied)) => "denied.",
-        Some(Ok(Status::Superseded)) => "superseded; asking again.",
-        Some(Ok(Status::Pending) | Err(_)) | None => "",
-    });
-    // Ctrl-C or losing Cloud ends the wait, not the approval: it is still there to answer.
-    let stopped = match settled {
-        Some(Ok(_)) => return Ok(asked.id.clone()),
-        Some(Err(StoreCallError::Cloud(error))) if unanswered(&error) => Failure::from(error)
-            .context(format!(
-                "Stopped waiting for approval {}; it stays pending in Ployz Cloud.",
-                asked.id
-            )),
-        // Cloud answered, but not with the approval: nothing says it is still pending.
-        Some(Err(StoreCallError::Cloud(error))) => {
-            let transient =
-                matches!(error.delivery(), Some(Delivery::Refused { status }) if status >= 500);
-            let failure =
-                Failure::from(error).context(format!("Couldn't check approval {}.", asked.id));
-            if !transient {
-                return Err(StoreCallError::Stopped(failure));
-            }
-            failure
-        }
-        Some(Err(error)) => return Err(error),
-        None => Failure::coded(
-            RpcErrorCode::Internal,
-            "Stopped waiting; the approval stays pending in Ployz Cloud.",
-        )
-        .interrupted(),
-    };
-    Err(StoreCallError::Stopped(stopped.hint(Hint::Retry(retry))))
-}
-
-/// Where a human answers approval `id`: the Ployz agent's panel, where it waits under
-/// Waiting on you, in the Organization the approval names, else the one this device acts
-/// in. A token's approval that names none points at Cloud itself.
-fn where_to_approve(credential: &Credential, id: &str, organization: Option<&str>) -> String {
-    let origin = credential.origin();
-    let cloud = origin.as_str();
-    let organization = organization.or(match credential {
-        Credential::Device(signed_in) => Some(signed_in.organization.slug.as_str()),
-        Credential::Token { .. } => None,
-    });
-    match organization {
-        Some(organization) => format!(
-            "Approve {id} under Waiting on you in the Ployz agent at {cloud}/cloud/{organization}?chat={}",
-            uuid::Uuid::new_v4()
-        ),
-        None => format!("Approve {id} in Ployz Cloud at {cloud}"),
-    }
-}
-
-/// Who answers approval `id` when its asker can't, and where: Ployz Cloud, or the command
-/// they run. The asker can only follow it, with `org approval show`.
-fn for_another_approver(credential: &Credential, id: &str) -> String {
-    let origin = credential.origin();
-    let cloud = origin.as_str();
-    format!(
-        "An owner or admin who didn't ask must approve {id} in Ployz Cloud at {cloud}, or with ployz org approval approve {id}."
+            ))
+            .hint(Hint::Retry(retry))
+        },
+        &format!("Nothing {}.", verb.past()),
     )
+    .map_err(StoreCallError::Stopped)?;
+    Ok(asked.digest().to_owned())
 }
 
-/// Whether Cloud never answered the approval's read: only then is the approval as it was.
-fn unanswered(error: &LoginError) -> bool {
-    // Any other failure is Cloud refusing the credential, so nothing says the approval is still
-    // pending, and a retry with that credential fails again. The local ones can't follow
-    // `settle()` having a credential, but would mean the same.
-    matches!(error.delivery(), Some(Delivery::Unreached | Delivery::Lost))
+/// Cloud asked again after a yes: what it would do moved since it was shown.
+pub(crate) fn moved(verb: Verb, refused: RpcError) -> Failure {
+    Failure::from(refused).context(format!(
+        "It changed after your yes, so nothing {}. Run it again to see what it does now.",
+        verb.past()
+    ))
 }
 
-/// Run `attempt` with `approval` until Cloud stops asking for one: each time it asks,
-/// [`settle`] gets a human's answer and `attempt` runs again carrying it. Under `--json`
-/// nothing asks; the refusal comes back naming `retry` of the approval's id.
+/// Run `attempt` with `approval`, the digest a person already said yes to, if any. When
+/// Cloud asks, [`settle`] gets a yes and `attempt` runs once more carrying its digest. An
+/// ask after a yes means the plan moved, and nothing runs. Under `--json` nothing asks;
+/// the refusal comes back naming `retry` of the digest.
 pub(crate) fn approved<T>(
     runtime: &tokio::runtime::Runtime,
-    credential: &Credential,
     verb: impl Into<Verb>,
     mut approval: Option<String>,
     retry: impl Fn(&str) -> String,
     mut attempt: impl AsyncFnMut(Option<&str>) -> Result<T, StoreCallError>,
 ) -> Result<T, Failure> {
     let verb = verb.into();
+    let mut said_yes = approval.is_some();
     loop {
         let refused = match runtime.block_on(attempt(approval.as_deref())) {
             Err(StoreCallError::Refused(refused)) => refused,
@@ -542,61 +402,14 @@ pub(crate) fn approved<T>(
             return Err(refused.into());
         };
         if crate::ui::json() {
-            return Err(Failure::from(refused).hint(Hint::Retry(retry(&asked.id))));
+            return Err(Failure::from(refused).hint(Hint::Retry(retry(asked.digest()))));
         }
-        approval = Some(settle(runtime, credential, verb, &asked, retry(&asked.id))?);
-    }
-}
-
-#[derive(Debug, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum Status {
-    Pending,
-    Approved,
-    Denied,
-    Superseded,
-}
-
-/// Wait for a human to answer the approval `id` in Ployz Cloud: its status once no longer pending.
-pub(crate) async fn decided(credential: &Credential, id: &str) -> Result<Status, StoreCallError> {
-    loop {
-        let status = status(credential, id).await?;
-        if status != Status::Pending {
-            return Ok(status);
+        if said_yes {
+            return Err(moved(verb, refused));
         }
-        tokio::time::sleep(POLL).await;
+        approval = Some(settle(verb, &asked, retry(asked.digest()))?);
+        said_yes = true;
     }
-}
-
-async fn status(credential: &Credential, id: &str) -> Result<Status, StoreCallError> {
-    #[derive(Deserialize)]
-    struct Read {
-        approval: Row,
-    }
-    #[derive(Deserialize)]
-    struct Row {
-        status: Status,
-    }
-    let read: Read =
-        cloud::account::refusable(credential, Method::GET, &format!("approvals/{id}"), None)
-            .await?;
-    Ok(read.approval.status)
-}
-
-/// Cloud refuses `conflict` once the approval was decided otherwise or its plan changed.
-pub(crate) async fn decide(
-    credential: &Credential,
-    id: &str,
-    decision: &serde_json::Value,
-) -> Result<(), StoreCallError> {
-    cloud::account::refusable::<serde_json::Value>(
-        credential,
-        Method::POST,
-        &format!("approvals/{id}"),
-        Some(decision),
-    )
-    .await?;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -609,7 +422,6 @@ mod tests {
 
     fn asked(verb: &str, kind: &str) -> Asked {
         serde_json::from_value(serde_json::json!({
-            "approval_id": "a1",
             "approval": "d1",
             "effects": [{ "kind": kind, "name": "bob@example.com", "node": "u1", "path": "members/u1" }],
             "operation": { "verb": verb, "name": "bob@example.com" },
@@ -619,22 +431,9 @@ mod tests {
     }
 
     #[test]
-    fn an_approval_someone_else_answers_names_where_and_how() {
-        let credential = crate::cloud::account::Credential::Token {
-            cloud: "http://cloud.test/".into(),
-            token: crate::cloud::login::Secret::new("ployz_secret".into()),
-            from: crate::cloud::account::TokenFrom::Env,
-        };
-        assert_eq!(
-            super::for_another_approver(&credential, "a1"),
-            "An owner or admin who didn't ask must approve a1 in Ployz Cloud at http://cloud.test, or with ployz org approval approve a1."
-        );
-    }
-
-    #[test]
     fn a_cluster_rename_reads_as_a_rename_to_its_new_name() {
         let asked: Asked = serde_json::from_value(serde_json::json!({
-            "approval_id": "a1", "approval": "d1", "effects": [],
+            "approval": "d1", "effects": [],
             "operation": { "verb": "set_cluster_name", "name": "acme" },
         }))
         .unwrap();
@@ -649,7 +448,7 @@ mod tests {
     fn a_cluster_rename_shows_the_private_addresses_it_moves() {
         let review = |preview: serde_json::Value| {
             let asked: Asked = serde_json::from_value(serde_json::json!({
-                "approval_id": "a1", "approval": "d1", "effects": [], "organization": "ada",
+                "approval": "d1", "effects": [], "organization": "ada",
                 "operation": { "verb": "set_cluster_name", "name": "beta", "preview": preview },
             }))
             .unwrap();
@@ -674,7 +473,7 @@ mod tests {
     #[test]
     fn server_removal_approval_keeps_volume_data_on_disk() {
         let asked: Asked = serde_json::from_value(serde_json::json!({
-            "approval_id": "a1", "approval": "d1",
+            "approval": "d1",
             "effects": [{ "kind": "deletes_volume", "name": "pgdata", "node": "v1", "path": "volumes/v1" }],
             "operation": { "subject": "server:box", "verb": "remove", "name": "box" },
         })).unwrap();
@@ -714,7 +513,7 @@ mod tests {
                     .insert("subject".into(), subject.into());
             }
             let asked: Asked = serde_json::from_value(serde_json::json!({
-                "approval_id": "a1", "approval": "d1",
+                "approval": "d1",
                 "effects": [{ "kind": "deletes_volume", "name": "pgdata", "node": "v1", "path": "volumes/v1" }],
                 "operation": operation,
             })).unwrap();
@@ -766,7 +565,6 @@ mod tests {
     #[test]
     fn a_deploy_that_destroys_nothing_reads_as_the_deploy() {
         let asked: Asked = serde_json::from_value(serde_json::json!({
-            "approval_id": "a1",
             "approval": "d1",
             "effects": [],
             "diff": {
@@ -793,7 +591,6 @@ mod tests {
     #[test]
     fn a_deploy_that_changes_the_region_says_where_the_services_run_next() {
         let asked: Asked = serde_json::from_value(serde_json::json!({
-            "approval_id": "a1",
             "approval": "d1",
             "effects": [],
             "diff": {
@@ -825,7 +622,6 @@ mod tests {
     #[test]
     fn a_deploy_that_prunes_says_it_removes_any_other_service() {
         let asked: Asked = serde_json::from_value(serde_json::json!({
-            "approval_id": "a1",
             "approval": "d1",
             "effects": [],
             "prunes": true,
@@ -857,7 +653,6 @@ mod tests {
     #[test]
     fn a_prune_says_which_servers_drop_large_packets() {
         let asked: Asked = serde_json::from_value(serde_json::json!({
-            "approval_id": "a1",
             "approval": "d1",
             "effects": [],
             "prunes": true,
@@ -890,7 +685,6 @@ mod tests {
     #[test]
     fn a_restores_detach_says_which_changes_it_leaves_behind_in_the_given_zone() {
         let asked: Asked = serde_json::from_value(serde_json::json!({
-            "approval_id": "a1",
             "approval": "d1",
             "effects": [{
                 "kind": "detaches_volume",
@@ -929,14 +723,13 @@ mod tests {
     /// why, rather than an empty `This deploy:` (#3417), and one that replays a
     /// teardown names what it removes (#3471).
     #[test]
-    fn a_protected_redeploy_names_its_deployment_rollback_and_reason() {
+    fn a_redeploy_names_its_deployment_and_what_it_rolls_back() {
         let refusal =
             |rolls_back: serde_json::Value, effects: serde_json::Value| -> ployz_core::RpcError {
                 serde_json::from_value(serde_json::json!({
                     "code": "approval_required",
                     "message": "production is Protected; an admin must approve this deploy.",
                     "details": {
-                        "approval_id": "a1",
                         "approval": "d1",
                         "effects": effects,
                         "diff": {
@@ -960,12 +753,7 @@ mod tests {
             };
         let none = serde_json::json!([]);
         let asked = Asked::of(&refusal(serde_json::json!([]), none.clone())).unwrap();
-        assert!(asked.for_someone_else());
         assert_eq!(asked.review(Verb::Deploy), ["This redeploy of #4:"]);
-        assert_eq!(
-            asked.reason,
-            "production is Protected; an admin must approve this deploy."
-        );
 
         let asked = Asked::of(&refusal(serde_json::json!([5, 6]), none)).unwrap();
         assert_eq!(
@@ -991,35 +779,18 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_protected_ask_waits_for_someone_else_even_at_a_terminal() {
-        let ask = |protected: serde_json::Value| -> Asked {
-            serde_json::from_value(serde_json::json!({
-                "approval_id": "a1",
-                "approval": "d1",
-                "effects": [],
-                "operation": { "verb": "move", "name": "pg-data" },
-                "protected": protected,
-            }))
-            .unwrap()
-        };
-        assert!(ask(serde_json::json!({ "environment": "production" })).for_someone_else());
-        assert!(ask(serde_json::json!(true)).for_someone_else());
-        assert!(!ask(serde_json::Value::Null).for_someone_else());
-    }
-
     /// Cloud names every operation it gates with one of its `OperationVerb`s; one this CLI
     /// cannot read leaves its `approval_required` refusal unasked.
     #[test]
     fn every_operation_verb_cloud_sends_is_a_verb() {
         let approvals = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../dashboard/src/modules/approvals/approvals.ts");
+            .join("../../../dashboard/src/modules/operations/asked.ts");
         let source = std::fs::read_to_string(approvals).unwrap();
         let union = source
             .lines()
             .find_map(|line| line.strip_prefix("export type OperationVerb = "))
             .expect(
-                "wants `export type OperationVerb = ...` on one line in dashboard/src/modules/approvals/approvals.ts",
+                "wants `export type OperationVerb = ...` on one line in dashboard/src/modules/operations/asked.ts",
             );
         let verbs: Vec<&str> = union
             .trim_end_matches(';')
@@ -1043,7 +814,7 @@ mod tests {
                 "code": "approval_required",
                 "message": "A human must approve this.",
                 "details": {
-                    "approval_id": "a1", "approval": "d1", "effects": [],
+                    "approval": "d1", "effects": [],
                     "operation": { "verb": verb, "name": "web" },
                 },
             }))
@@ -1062,7 +833,7 @@ mod tests {
             "code": "approval_required",
             "message": "A human must approve moving pg-data before it runs.",
             "details": {
-                "approval_id": "a1", "approval": "d1",
+                "approval": "d1",
                 "effects": [{ "kind": "deletes_volume", "name": "pg-data", "node": "v1", "path": "volumes/v1" }],
                 "operation": { "verb": "remove", "name": "box", "subject": "server:box", "preview": { "from": "alpha" } },
                 "organization": "ada",
@@ -1071,19 +842,7 @@ mod tests {
         }))
         .unwrap();
         let asked = Asked::of(&operation).unwrap();
-        assert_eq!(
-            (
-                asked.id.as_str(),
-                asked.required.digest.as_str(),
-                asked.name()
-            ),
-            ("a1", "d1", "box")
-        );
-        assert!(asked.for_someone_else());
-        assert_eq!(
-            asked.reason,
-            "A human must approve moving pg-data before it runs."
-        );
+        assert_eq!(asked.digest(), "d1");
         assert_eq!(
             asked.review_in(asked.verb(None), &chrono::Utc),
             [
@@ -1096,7 +855,7 @@ mod tests {
             "code": "approval_required",
             "message": "m",
             "details": {
-                "approval_id": "a2", "approval": "d2",
+                "approval": "d2",
                 "effects": [{ "kind": "removes_service", "name": "web", "node": "s1", "path": "web" }],
                 "diff": {
                     "environment": { "id": "00000000-0000-4000-8000-000000000002", "project": "shop", "name": "production", "revision": 3 },
@@ -1109,8 +868,6 @@ mod tests {
         }))
         .unwrap();
         let asked = Asked::of(&diff).unwrap();
-        assert!(!asked.for_someone_else());
-        assert_eq!(asked.name(), "production");
         assert_eq!(asked.what(Verb::Deploy), "this deploy to shop/production");
         assert_eq!(
             asked.review_in(Verb::Deploy, &chrono::Utc),
@@ -1123,15 +880,5 @@ mod tests {
                 "  + 2 other changes",
             ]
         );
-    }
-
-    #[test]
-    fn an_approval_stays_as_it_was_only_when_cloud_never_answered() {
-        for status in [0, 400, 404, 500, 503] {
-            for (name, error) in crate::cloud::account::testing::every_login_error(status) {
-                let never = ["Unreachable", "Unanswered"].contains(&name);
-                assert_eq!(super::unanswered(&error), never, "{name} {status}");
-            }
-        }
     }
 }

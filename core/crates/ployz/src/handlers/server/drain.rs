@@ -85,7 +85,6 @@ fn through_cloud(
 ) -> Result<DrainReport, Error> {
     let id = approval::approved(
         runtime,
-        credential,
         OperationVerb::Drain,
         matches.get_one::<String>("approval").cloned(),
         |id| crate::cli::approved_rerun(matches, &["server", "drain", selector], id),

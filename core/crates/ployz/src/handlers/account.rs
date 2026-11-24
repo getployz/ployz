@@ -574,7 +574,6 @@ pub(super) fn org_remove(root: &ArgMatches) -> Result<(), Error> {
     let mut approved = None;
     let removal = approval::approved(
         &runtime,
-        &credential,
         ployz_store::OperationVerb::Remove,
         matches.get_one::<String>("approval").cloned(),
         |id| crate::cli::approved_rerun(matches, &again, id),

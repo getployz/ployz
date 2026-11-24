@@ -831,7 +831,6 @@ fn approved(
     };
     approval::approved(
         runtime,
-        credential,
         verb,
         matches.get_one::<String>("approval").cloned(),
         retry,

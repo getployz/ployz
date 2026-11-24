@@ -556,7 +556,6 @@ fn start(
     };
     let started = approval::approved(
         runtime,
-        credential,
         removal.verb(),
         matches.get_one::<String>("approval").cloned(),
         |id| {

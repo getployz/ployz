@@ -387,23 +387,16 @@ fn mcp_offers_a_published_entry_only_when_marked_for_agents_with_the_entry_s_inp
         let tool = tool.unwrap_or_else(|| panic!("mcp lists {}", name(entry)));
         let about = entry["about"].as_str().unwrap();
         if entry["gate"] == "ask" {
-            let said = format!(
-                "{}. May need a person.",
-                about.trim_end_matches('.')
-            );
+            let said = format!("{}. May need a person.", about.trim_end_matches('.'));
             assert_eq!(tool["description"], said.as_str(), "{tool}");
-            assert!(tool["inputSchema"]["properties"]["approval"].is_object());
-            for (property, schema) in entry["input"]["properties"].as_object().unwrap() {
-                assert_eq!(&tool["inputSchema"]["properties"][property], schema);
-            }
         } else {
             assert_eq!(tool["description"], about, "{tool}");
-            assert_eq!(
-                without_intent(&tool["inputSchema"]),
-                without_intent(&entry["input"]),
-                "{tool}"
-            );
         }
+        assert_eq!(
+            without_intent(&tool["inputSchema"]),
+            without_intent(&entry["input"]),
+            "{tool}"
+        );
         assert_eq!(
             tool["inputSchema"]["properties"]["intent"]["type"],
             "string"

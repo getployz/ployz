@@ -94,9 +94,8 @@ pub(crate) fn sync(root: &ArgMatches) -> Result<(), Error> {
     let secrets = !super::super::string_values(matches, "value").is_empty();
     if secrets && matches.get_one::<String>("approval").is_some() {
         return Err(Error::usage(
-            "Expected --approval without --value: an approval can't carry secrets given again \
-             on stdin. Run the sync without --approval and without --json: it waits for a new \
-             approval.",
+            "Expected --approval without --value: a yes can't carry secrets given again on \
+             stdin. Run the sync without --approval and without --json: it asks yes or no.",
         ));
     }
     let query = match named("from")? {

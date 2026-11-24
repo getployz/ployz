@@ -107,7 +107,6 @@ fn forget_through_cloud(
 ) -> Result<(), Error> {
     let forgotten = approval::approved(
         runtime,
-        credential,
         OperationVerb::Forget,
         matches.get_one::<String>("approval").cloned(),
         |id| crate::cli::approved_rerun(matches, confirmed, id),
@@ -165,10 +164,9 @@ async fn unanswered(
     Ok(check.organization)
 }
 
-/// Cloud has no row left for the Server: another forget may have just finished. A missing
-/// approval is `not_found` too, but names its id, and stays Cloud's refusal.
+/// Cloud has no row left for the Server: another forget may have just finished.
 pub(super) fn no_cloud_row(refused: &RpcError) -> bool {
-    refused.code == RpcErrorCode::NotFound && refused.details.get("approval_id").is_none()
+    refused.code == RpcErrorCode::NotFound
 }
 
 /// Cloud refused to forget `selected` as no Server of its own. The entry that listed it
@@ -282,7 +280,6 @@ fn listed(names: impl Iterator<Item = String>) -> String {
 mod tests {
     use super::*;
     use crate::cloud::account::{ObservedServer, Reach};
-    use serde_json::json;
 
     fn cloud_with(servers: &[&str]) -> (Credential, std::sync::mpsc::Receiver<String>) {
         let check = serde_json::json!({
@@ -419,21 +416,6 @@ mod tests {
         assert!(error.message.contains("web-1") && error.message.contains("shop/production/data"));
     }
 
-    /// Cloud's refusal of a forget of a Server it has no row for.
-    fn no_such_server() -> RpcError {
-        RpcError::not_found("No such Server.")
-    }
-
-    #[test]
-    fn only_a_missing_server_reads_as_no_cloud_row() {
-        let approval = no_such_server()
-            .with_message("No such approval.")
-            .with_details(json!({ "approval_id": "087221d0-f16b-441f-9b93-aae6248bcd9c" }));
-
-        assert!(no_cloud_row(&no_such_server()));
-        assert!(!no_cloud_row(&approval));
-    }
-
     /// An entry that lists `machines` and answers nothing else.
     async fn listing(
         machines: Vec<ployz_core::Machine>,
@@ -479,7 +461,12 @@ mod tests {
         let (mut client, server) =
             listing(vec![crate::global_fixtures::machine('a', "machine-1")]).await;
 
-        let forgot = cloud_forgot(&mut client, &selected, no_such_server()).await;
+        let forgot = cloud_forgot(
+            &mut client,
+            &selected,
+            RpcError::not_found("No such Server."),
+        )
+        .await;
 
         assert!(forgot.is_ok(), "{forgot:?}");
         server.abort();
@@ -495,10 +482,14 @@ mod tests {
         ])
         .await;
 
-        let report = cloud_forgot(&mut client, &selected, no_such_server())
-            .await
-            .unwrap_err()
-            .report();
+        let report = cloud_forgot(
+            &mut client,
+            &selected,
+            RpcError::not_found("No such Server."),
+        )
+        .await
+        .unwrap_err()
+        .report();
 
         assert_eq!(report.code, RpcErrorCode::NotFound);
         assert!(

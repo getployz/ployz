@@ -302,7 +302,6 @@ fn through_cloud(
     let body = json!({});
     let id = approval::approved(
         runtime,
-        credential,
         OperationVerb::Clean,
         matches.get_one::<String>("approval").cloned(),
         |id| {

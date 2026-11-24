@@ -346,8 +346,8 @@ async fn forgetting_the_last_cloud_managed_server_names_the_daemon_to_stop() {
 type Asked = std::sync::Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>>;
 type Reads = std::sync::Arc<tokio::sync::Notify>;
 
-const ASKED: &str = r#"{"error":{"code":"approval_required","message":"A human must approve this first: this removal takes Server two out","details":{"approval_id":"apr_9","approval":"remove:abc","effects":[{"kind":"removes_server","name":"two","node":"b","path":"servers/b"}],"operation":{"verb":"remove","name":"two"}}}}"#;
-const ASKED_FORGET: &str = r#"{"error":{"code":"approval_required","message":"A human must approve this first: this forget takes Server two out","details":{"approval_id":"apr_9","approval":"forget:abc","effects":[{"kind":"removes_server","name":"two","node":"b","path":"servers/b"}],"operation":{"verb":"forget","name":"two"}}}}"#;
+const ASKED: &str = r#"{"error":{"code":"approval_required","message":"A human must approve this first: this removal takes Server two out","details":{"approval":"remove:abc","effects":[{"kind":"removes_server","name":"two","node":"b","path":"servers/b"}],"operation":{"verb":"remove","name":"two"}}}}"#;
+const ASKED_FORGET: &str = r#"{"error":{"code":"approval_required","message":"A human must approve this first: this forget takes Server two out","details":{"approval":"forget:abc","effects":[{"kind":"removes_server","name":"two","node":"b","path":"servers/b"}],"operation":{"verb":"forget","name":"two"}}}}"#;
 fn fake_cloud(settled: &'static str, gated: bool) -> (String, Asked, Reads) {
     fake_cloud_settling("200 OK", settled, gated)
 }
@@ -756,7 +756,7 @@ async fn the_last_server_already_gone_from_the_cluster_says_cloud_keeps_its_hold
 }
 
 #[tokio::test]
-async fn an_agent_gets_the_approval_a_cloud_removal_needs() {
+async fn under_json_a_cloud_removal_names_the_retry_that_carries_its_digest() {
     let (cloud, asked, _) = fake_cloud(
         r#"{"state":"succeeded","reset_warning":null,"release":{"kind":"others_remain"}}"#,
         true,
@@ -783,7 +783,7 @@ async fn an_agent_gets_the_approval_a_cloud_removal_needs() {
         .unwrap_or_default();
     assert!(
         retry.starts_with("ployz server forget two --connect tcp://")
-            && retry.ends_with(" --confirm two --approval apr_9"),
+            && retry.ends_with(" --confirm two --approval forget:abc"),
         "{retry}"
     );
     assert_eq!(
@@ -795,7 +795,7 @@ async fn an_agent_gets_the_approval_a_cloud_removal_needs() {
 }
 
 #[tokio::test]
-async fn a_context_still_removes_a_server_cloud_manages_through_cloud_and_its_approval() {
+async fn a_context_still_removes_a_server_cloud_manages_through_cloud_and_its_digest() {
     let (cloud, asked, _) = fake_cloud(
         r#"{"state":"succeeded","reset_warning":null,"release":{"kind":"released"}}"#,
         true,
@@ -822,7 +822,7 @@ async fn a_context_still_removes_a_server_cloud_manages_through_cloud_and_its_ap
         .and_then(serde_json::Value::as_str)
         .unwrap_or_default();
     assert!(
-        retry.contains("--context lab") && retry.ends_with(" --approval apr_9"),
+        retry.contains("--context lab") && retry.ends_with(" --approval remove:abc"),
         "{retry}"
     );
     let asked = asked.lock().unwrap();
