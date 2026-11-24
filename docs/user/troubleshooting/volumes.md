@@ -295,3 +295,15 @@ or older deletes the copy anyway.
 
 A Ployz Cloud from before `--if-old-copy` refuses a `ployz volume mirror rm --if-old-copy` line and
 deletes nothing.
+
+## A move or mirror says the copy may hold writes the writer doesn't have
+
+```
+this Machine's copy of … may hold writes … doesn't have, so the pull keeps it rather than replace it with a full copy; delete it with `ployz volume mirror rm` to take a fresh one
+```
+
+The server you moved or mirrored to already held a copy of the volume that may hold writes no
+other server has, such as the copy a server parks when it learns it was removed while away, and
+the writer can't send changes on top of it. Ployz keeps that copy and stops instead of replacing
+it. Delete it with `ployz volume mirror rm` only once you no longer need what it holds. The next
+move or mirror then copies the volume in full.
