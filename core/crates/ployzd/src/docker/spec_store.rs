@@ -28,6 +28,11 @@ CREATE TABLE IF NOT EXISTS volume_floors (
     name  TEXT NOT NULL PRIMARY KEY,
     floor INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS volume_cut_stops (
+    name   TEXT NOT NULL PRIMARY KEY,
+    floor  INTEGER NOT NULL,
+    holder TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS volume_forgotten (
     name   TEXT NOT NULL PRIMARY KEY,
     origin TEXT NOT NULL
@@ -662,6 +667,52 @@ impl FloorTurn<'_> {
         })
         .await
         .map_err(super::Error::from)
+    }
+
+    /// Record that a cut of `name` at `gen` may stop `holder`, before it does, so a
+    /// resent cut at that `gen` knows the stop as its own.
+    pub async fn note_cut_stop(
+        &mut self,
+        name: &DockerVolumeName,
+        r#gen: VolumeGen,
+        holder: &ContainerId,
+    ) -> Result<(), super::Error> {
+        let (name, holder) = (name.to_string(), holder.to_string());
+        self.store
+            .run(move |connection| {
+                connection.execute(
+                    "INSERT INTO volume_cut_stops (name, floor, holder) VALUES (?1, ?2, ?3) ON CONFLICT (name) DO UPDATE SET floor = excluded.floor, holder = excluded.holder",
+                    params![name, i64::try_from(r#gen.get()).unwrap_or(i64::MAX), holder],
+                )?;
+                Ok(())
+            })
+            .await
+            .map_err(super::Error::from)
+    }
+
+    /// Whether the last cut of `name` [`Self::note_cut_stop`] recorded was at `gen`
+    /// for `holder`.
+    pub async fn cut_stopped(
+        &mut self,
+        name: &DockerVolumeName,
+        r#gen: VolumeGen,
+        holder: &ContainerId,
+    ) -> Result<bool, super::Error> {
+        let (name, holder) = (name.to_string(), holder.to_string());
+        let floor = i64::try_from(r#gen.get()).unwrap_or(i64::MAX);
+        self.store
+            .run(move |connection| {
+                Ok(connection
+                    .query_row(
+                        "SELECT 1 FROM volume_cut_stops WHERE name = ?1 AND floor = ?2 AND holder = ?3",
+                        params![name, floor, holder],
+                        |_| Ok(()),
+                    )
+                    .optional()?
+                    .is_some())
+            })
+            .await
+            .map_err(super::Error::from)
     }
 
     /// Refuse a `gen` below the floor of `name` with that floor, as [`Self::admit`] does,

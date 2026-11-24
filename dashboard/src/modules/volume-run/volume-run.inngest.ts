@@ -176,7 +176,8 @@ async function settle({ step, runEffect, run, runId, attempt }: RunSteps, id: st
       await step.run(`${id}-stale`, () => runEffect(endRun(run, runId, "failed", answer.message)));
       throw new Stale(answer.message);
     }
-    if (answer.ok || answer.reason !== "busy") return answer;
+    // The first send of the step's first attempt: no earlier ask of this step can have acted for it.
+    if (answer.ok || answer.reason !== "busy") return { ...answer, first: check === 0 && answer.at !== undefined };
   }
   throw new NonRetriableError(`${still} after ${BUSY_CHECKS} checks`);
 }
@@ -714,6 +715,19 @@ function holderSwapped(run: RunContext, A: MachineRef, holder: Holder): string |
 }
 
 /**
+ * Why a cut that stopped nothing ends the Move with A's Service as it was, or null when the cut may have stopped it:
+ * its holder no longer runs, which A answers only for a cut it never made, or another Container runs beside it, on
+ * this step's first send, before any earlier send could have stopped the holder. A Release would restart a Service
+ * its operator stopped, so neither queues one.
+ */
+const untouchedCut = (answer: Awaited<ReturnType<typeof settle>>, service: string, A: MachineRef, name: string) => {
+  if (answer.ok) return null;
+  if (answer.reason === "stopped") return `${service} stopped on ${A.name} after the drain chose it, so ${name} stays there`;
+  if (answer.reason === "held" && answer.first) return answer.message;
+  return null;
+};
+
+/**
  * A Move: warm rounds, the image, the cut on A, B's pull of the cut's snapshot G, then the commit that starts B, and
  * A's stopped Container removed. Past the rounds a failure releases: back to A before the commit, forward to B after.
  */
@@ -767,15 +781,25 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, epoch: number
       }
       service = imaged.holder.redactedSpec.name;
       holder = imaged.holder.containerId;
-      // A stops only this Container, and refuses before it stops anything if another runs on the Volume.
+      // A stops only this Container, and refuses before it stops anything if another runs on the Volume. A drain's
+      // Move also needs it still running, so a Service its operator stopped since isn't started on B.
+      const pinned = run.kind === "move" && run.args.holder !== undefined;
       const stopped = await setCopy(steps, "05-cut", A, { kind: "writer", epoch: epochOf(phase.writer) }, {
         kind: "mirror",
         from: null,
         target: `f-${epoch}`,
         drain: DRAIN_MS,
         holder,
+        ...(pinned ? { running: true } : {}),
       }, `${A.name} is still stopping ${name}'s Service`);
-      if (!stopped.ok) throw new NonRetriableError(stopped.message);
+      if (!stopped.ok) {
+        const untouched = untouchedCut(stopped, service, A, name);
+        if (untouched !== null) {
+          await step.run("05-refuse", () => runEffect(refuseRun(run, runId, { code: "invalid", message: untouched })));
+          return { runId: run.id, refused: { code: "invalid", message: untouched } as const };
+        }
+        throw new NonRetriableError(stopped.message);
+      }
       source = stopped.copy;
       // A late cut's time may follow the stop by any amount, which would shorten the downtime, so it has no `at`.
       stoppedAt = stopped.at ?? null;

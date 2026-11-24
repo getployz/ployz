@@ -266,6 +266,7 @@ impl LocalMachine {
                     target,
                     drain,
                     holder,
+                    running,
                     ..
                 },
             ) => {
@@ -276,22 +277,28 @@ impl LocalMachine {
                     r#gen,
                 };
                 let cut = self
-                    .cut_volume_copy(name.clone(), r#gen, drain, holder, move || async move {
-                        // This closure runs only past the Busy re-check, so the line means every
-                        // holder is stopped, whoever signalled it. The verify harness credits that
-                        // moment by this line's Volume, target and gen, after its restart cursor.
-                        tracing::info!(
-                            volume = %request.name,
-                            target = %request.target,
-                            r#gen = %request.r#gen,
-                            "cut: holders stopped"
-                        );
-                        plugin
-                            .call::<Copy>(CUT_ROUTE, &request)
-                            .await
-                            .map(drop)
-                            .map_err(Error::StoragePreparation)
-                    })
+                    .cut_volume_copy(
+                        name.clone(),
+                        r#gen,
+                        drain,
+                        holder.map(|holder| (holder, running)),
+                        move || async move {
+                            // This closure runs only past the Busy re-check, so the line means every
+                            // holder is stopped, whoever signalled it. The verify harness credits that
+                            // moment by this line's Volume, target and gen, after its restart cursor.
+                            tracing::info!(
+                                volume = %request.name,
+                                target = %request.target,
+                                r#gen = %request.r#gen,
+                                "cut: holders stopped"
+                            );
+                            plugin
+                                .call::<Copy>(CUT_ROUTE, &request)
+                                .await
+                                .map(drop)
+                                .map_err(Error::StoragePreparation)
+                        },
+                    )
                     .await?;
                 match cut {
                     Ok(()) => self.inspect_copy(&name).await,
@@ -303,6 +310,11 @@ impl LocalMachine {
                     Err(CutRefusal::Stale(floor)) => {
                         Err(stale(floor, self.inspect_copy(&name).await?, &name))
                     }
+                    Err(CutRefusal::Stopped) => Err(refused(
+                        CopyRefusal::Stopped,
+                        self.inspect_copy(&name).await?,
+                        &name,
+                    )),
                     Err(CutRefusal::Held(holder)) => Err(refusal(
                         SetVolumeCopyRefused {
                             reason: CopyRefusal::Held,
@@ -648,6 +660,11 @@ fn refusal(refused: SetVolumeCopyRefused, name: &DockerVolumeName) -> Error {
             "{} also runs on Volume {name}, so the cut stopped nothing",
             refused.holder.as_deref().unwrap_or("another Container")
         ),
+        CopyRefusal::Stopped => {
+            format!(
+                "the Container the cut would stop no longer runs on Volume {name}, so the cut stopped nothing"
+            )
+        }
         CopyRefusal::Unrecognized => format!("Volume {name} was refused for an unknown reason"),
         CopyRefusal::Stale => format!(
             "a newer move or release owns Volume {name}; this Machine is at lane {}",

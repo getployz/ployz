@@ -203,6 +203,13 @@ pub enum WantedCopy {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         holder: Option<ContainerId>,
+        /// With `holder`, the cut refuses [`CopyRefusal::Stopped`] when that Container
+        /// no longer runs, unless a cut at this `gen` stopped it, so the Service a
+        /// Move starts elsewhere is one that was running. A Machine that predates it
+        /// cuts a stopped holder.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        #[ts(optional, as = "Option<bool>")]
+        running: bool,
     },
     /// A Writer with a run snapshot named `name`, taken only if anything was written
     /// since its newest one.
@@ -287,6 +294,9 @@ pub enum CopyRefusal {
     /// A Container other than the cut's `holder` runs on the root, so the cut stopped
     /// nothing.
     Held,
+    /// The cut's `holder` no longer runs, and no cut at this `gen` stopped it, so the
+    /// cut stopped nothing.
+    Stopped,
     /// A reason introduced after this build. This daemon never sends it.
     #[serde(other)]
     Unrecognized,
@@ -331,7 +341,8 @@ impl CodedRefusal for SetVolumeCopyRefused {
             | CopyRefusal::NoSource
             | CopyRefusal::Stale
             | CopyRefusal::Foreign
-            | CopyRefusal::Held => RpcErrorCode::Conflict,
+            | CopyRefusal::Held
+            | CopyRefusal::Stopped => RpcErrorCode::Conflict,
             CopyRefusal::Unrecognized => RpcErrorCode::Internal,
         }
     }
@@ -611,6 +622,7 @@ mod tests {
             target: target.parse().unwrap(),
             drain: Drain::NONE,
             holder: None,
+            running: false,
         }
     }
 

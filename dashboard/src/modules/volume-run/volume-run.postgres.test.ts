@@ -421,6 +421,9 @@ describe("volume runs", () => {
     }),
     copyContainerImage: (from: string, container: string, to: string) => Effect.sync(() => {
       verbs.push(`copy_image@${machine(from).name}->${machine(to).name}(${container})`);
+      const hook = beforeSet.get(`copy_image@${machine(from).name}`);
+      beforeSet.delete(`copy_image@${machine(from).name}`);
+      void hook?.();
     }),
     removeContainer: (target: string, container: string) => Effect.suspend(() => {
       verbs.push(`remove@${machine(target).name}(${container})`);
@@ -504,6 +507,11 @@ describe("volume runs", () => {
         : undefined;
       if (beside !== undefined) {
         return fail(new RawFault({ code: "conflict", message: `${beside.id} also runs on Volume ${dockerVolume}`, details: { reason: "held", copy: fake.copy, holder: beside.id } }));
+      }
+      // A cut whose holder must run refuses, stopping nothing, once it no longer does.
+      if (want.kind === "mirror" && want.running === true && fake.copy?.kind === "root"
+        && !containers.some((container) => container.id === want.holder && container.running)) {
+        return fail(new RawFault({ code: "conflict", message: `${want.holder} no longer runs on Volume ${dockerVolume}`, details: { reason: "stopped", copy: fake.copy } }));
       }
       if (want.kind === "floor" && fake.capabilities?.includes(requirements.volumeFloor.capability) === false) {
         return Effect.fail(new ServerLacks({ machineId: target, capability: requirements.volumeFloor.capability }));
@@ -1962,6 +1970,32 @@ describe("volume runs", () => {
       expect(await volumeRuns()).toEqual([{ kind: "move", state: "failed" }]);
       expect(verbs.filter((verb) => verb.startsWith("cut@") || verb.startsWith("writer@"))).toEqual([]);
       expect(containers).toEqual([expect.objectContaining({ id: "web-fsn-1-new", running: true })]);
+    });
+
+    // Catches a move that starts on the new Server a Service its operator stopped after the move copied its image.
+    it("ends without a Release, starting nothing, when the Service stopped after its image was copied", async () => {
+      beforeSet.set("copy_image@fsn-1", () => { first(containers).running = false; });
+      await answered();
+
+      await drain();
+
+      expect(await volumeRuns()).toEqual([{ kind: "move", state: "failed" }]);
+      expect(containers).toEqual([expect.objectContaining({ machine: "fsn-1", running: false })]);
+      expect(named("fsn-1").copy?.kind).toBe("root");
+      expect((await entry()).entry).toMatchObject({ result: "stays", detail: "web stopped on fsn-1 after the drain chose it, so data stays there" });
+    });
+
+    // Catches a cut refused for a Container beside the Service, which stopped nothing, queueing a Release that restarts
+    // what the operator left.
+    it("ends without a Release when another Container started beside the Service after its image was copied", async () => {
+      beforeSet.set("copy_image@fsn-1", () => { containers.push({ machine: "fsn-1", id: "web-fsn-1-new", running: true }); });
+      await answered();
+
+      await drain();
+
+      expect(await volumeRuns()).toEqual([{ kind: "move", state: "failed" }]);
+      expect(named("fsn-1").copy?.kind).toBe("root");
+      expect((await entry()).entry).toMatchObject({ result: "stays", detail: expect.stringContaining("web-fsn-1-new also uses data on fsn-1") });
     });
 
     // Catches a retried step admitting a second move of the same Volume.

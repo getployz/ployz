@@ -1288,6 +1288,7 @@ fn wanted(want: Want) -> WantedCopy {
             target: snapshot(target).name,
             drain: Drain::NONE,
             holder: None,
+            running: false,
         },
         Want::Snapshot { at } => WantedCopy::Snapshot {
             name: snapshot(at).name,
@@ -1312,6 +1313,7 @@ fn refusal(reason: CopyRefusal) -> Refusal {
         | CopyRefusal::NoSource
         | CopyRefusal::Foreign
         | CopyRefusal::Held
+        | CopyRefusal::Stopped
         | CopyRefusal::DockerUnavailable
         | CopyRefusal::Unrecognized => Refusal::Other,
     }

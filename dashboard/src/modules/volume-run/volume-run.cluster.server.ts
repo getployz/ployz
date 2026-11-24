@@ -224,7 +224,7 @@ export type SwitchReason = CopyRefusal | SwitchError["reason"];
 
 const SWITCH_REASONS = [
   "mismatch", "no_transition", "busy", "no_capacity", "behind", "written", "no_source",
-  "precondition", "volume_switching", "no_writer", "restore_point_gone", "stale", "foreign", "docker_unavailable", "held",
+  "precondition", "volume_switching", "no_writer", "restore_point_gone", "stale", "foreign", "docker_unavailable", "held", "stopped",
 ] as const satisfies readonly SwitchReason[];
 
 /** Refusals that pass on their own, so they fail only the attempt and the step asks again. Docker comes back by itself. */
@@ -275,6 +275,8 @@ export function switchFailureMessage(
       return `Docker isn't answering on ${machine.name}`;
     case "held":
       return heldMessage(name, machine, null);
+    case "stopped":
+      return `${name}'s Service no longer runs on ${machine.name}, so the move stopped nothing`;
     case "busy":
       return undefined;
   }
