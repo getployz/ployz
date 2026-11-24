@@ -403,10 +403,13 @@ const halted = Effect.fn("Proposals.halted")(function* (row: ProposalRow, index:
 /** The request key that admits step `index` once: a second run of the same step replays the first. */
 const stepKey = (row: Pick<ProposalRow, "id">, index: number) => `proposal-${row.id}-${index}`;
 
+/** `command` without an automatic deploy rule, which no approval page shows, so no proposal admits one. */
+const ruleless = ({ rule: _rule, ...command }: AdmitDeploy): AdmitDeploy => command;
+
 /** A Deploy that can't go is denied, and the passkey's signed versions are dropped with it: nothing is left to admit later. */
 const deniedDeploy = Effect.fn("Proposals.deniedDeploy")(function* (row: ProposalRow, index: number, reason: string) {
   const { drizzle } = yield* Database;
-  const cleared = row.steps.map((step): ProposalStep => isDeploy(step) ? { ...step, deploy: { ...step.deploy, command: { ...step.deploy.command, versions: [] } } } : step);
+  const cleared = row.steps.map((step): ProposalStep => isDeploy(step) ? { ...step, deploy: { ...step.deploy, command: { ...ruleless(step.deploy.command), versions: [] } } } : step);
   yield* drizzle.update(operationProposals).set({ status: "denied", reason: reason.slice(0, 1024), steps: cleared, halt: null, updatedAt: new Date() })
     .where(and(eq(operationProposals.id, row.id), eq(operationProposals.status, "approved")));
   return { index, reason } satisfies ProposalHalt;
@@ -630,7 +633,7 @@ const approvedDeploy = Effect.fn("Proposals.approvedDeploy")(function* (decider:
   const open = (planned.plan.unsigned ?? []).filter(({ service }) => !covered.has(service));
   if (open.length > 0 && planned.tap.kind === "refused") return refuse(planned.tap.message);
   if (open.length > 0 && planned.tap.kind === "ready") return refuse("Sign this deploy with your passkey on its approval page.");
-  return { step: { ...step, deploy: { ...step.deploy, command: { ...command, versions: [...kept, ...versions] } } } satisfies DeployStep };
+  return { step: { ...step, deploy: { ...step.deploy, command: { ...ruleless(command), versions: [...kept, ...versions] } } } satisfies DeployStep };
 });
 
 /**

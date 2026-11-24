@@ -14,7 +14,7 @@ import { useSealing } from "#/modules/sealing/use-sealing";
 import { prepareDeployTapServerFn } from "./deploy-tap.functions";
 import { fillPending } from "./fill-pending";
 import type { AdmitDeploy } from "#/modules/config-store/admit-deploy";
-import { type Answer, type Ask, answered, type Held, type Prepared, prepareDeploy, signVersions } from "./deploy-tap";
+import { type Answer, type Answered, type Ask, deployWith, type DeploySteps, type Held, prepareDeploy, signVersions, withAnswer } from "./deploy-tap";
 import { RuleSummaryList } from "./rule-summary";
 import { ownerLookup } from "./source-step";
 
@@ -26,7 +26,7 @@ class DeployNotSent extends Error {}
  * what the passkey already signed for this ask, which a resend after Cloud didn't answer reuses.
  */
 type Open = {
-  ask: Ask; command: AdmitDeploy; handles: readonly string[]; settle: (failed: Error | null) => void;
+  ask: Ask; handles: readonly string[]; settle: (failed: Error | null) => void;
   problem: string | null; again: boolean; stuck?: boolean; answer?: Answer;
 };
 
@@ -48,7 +48,7 @@ export function useDeployTap(organizationSlug: string) {
   const [open, setOpen] = useState<Open | null>(null);
   const [busy, setBusy] = useState<"passkey" | "deploying" | null>(null);
   // The answer the caller's pending Volume-loss confirm holds, used once by its retry.
-  const pending = useRef<{ plan: string; place: string; answer: Answer } | null>(null);
+  const pending = useRef<Answered | null>(null);
 
   const sealing = useSealing(organizationSlug);
   const read = ({ environment, services }: AdmitDeploy) =>
@@ -68,42 +68,33 @@ export function useDeployTap(organizationSlug: string) {
     await invalidateViews(scope.queryClient, organizationSlug, new Set([environmentKey(command.environment)]));
   }
 
-  async function admit(command: AdmitDeploy, handles: readonly string[] = []): Promise<void> {
-    const held = pending.current;
-    pending.current = null;
-    let prepared: Prepared;
-    try {
-      prepared = await prepare(command);
-    } catch (error) {
-      toast.error(error instanceof Error && error.message ? error.message : "Couldn't plan this deploy. Try again.");
-      throw new DeployNotSent();
-    }
-    if (prepared.kind === "admit") {
-      await writer.commit(prepared.command, handles);
-      return warnHeld(prepared.held);
-    }
-    if (prepared.kind === "stale") {
-      await stale(command);
-      throw new DeployNotSent();
-    }
-    if (prepared.kind === "refused") {
-      toast.error(`${prepared.message} Nothing deployed.`);
-      throw new DeployNotSent();
-    }
-    const { ask } = prepared;
-    if (held?.plan === ask.plan && held.place === environmentKey(command.environment)) {
+  const steps: DeploySteps = {
+    answered: pending,
+    commit: (command, handles) => writer.commit(command, handles).then(() => undefined),
+    prepare: async (command) => {
       try {
-        await writer.commit(answered(ask.command, held.answer), handles);
-        return warnHeld(ask.held);
+        return await prepare(command);
       } catch (error) {
-        // The Store asks again (Servers hold more by now): the next accepted retry still needs no tap.
-        if (error instanceof StoreRefused && handles.includes(error.code)) pending.current = held;
-        throw error;
+        toast.error(error instanceof Error && error.message ? error.message : "Couldn't plan this deploy. Try again.");
+        throw new DeployNotSent();
       }
-    }
-    const failed = await new Promise<Error | null>((settle) => setOpen({ ask, command, handles, settle, problem: null, again: false }));
-    if (failed !== null) throw failed;
-  }
+    },
+    ask: async (ask, handles) => {
+      const failed = await new Promise<Error | null>((settle) => setOpen({ ask, handles, settle, problem: null, again: false }));
+      if (failed !== null) throw failed;
+    },
+    stale: async (command) => {
+      await stale(command);
+      return new DeployNotSent();
+    },
+    refused: (message) => {
+      toast.error(`${message} Nothing deployed.`);
+      return new DeployNotSent();
+    },
+    held: warnHeld,
+  };
+
+  const admit = (command: AdmitDeploy, handles: readonly string[] = []) => deployWith(steps, command, handles);
 
   function close(sheet: Open, failed: Error | null) {
     sheet.settle(failed);
@@ -125,13 +116,15 @@ export function useDeployTap(organizationSlug: string) {
         }
       }
       setBusy("deploying");
-      await writer.commit(answered(current.ask.command, answer), [...current.handles, "conflict"]);
+      await writer.commit(withAnswer(current.ask.command, answer), [...current.handles, "conflict"]);
       close(current, null);
       warnHeld(current.ask.held);
     } catch (error) {
       // The caller asks its own question (a Volume-loss confirm), and its accepted retry reuses this answer.
       if (error instanceof StoreRefused && current.handles.includes(error.code)) {
-        if (answer !== undefined) pending.current = { plan: current.ask.plan, place: environmentKey(current.command.environment), answer };
+        if (answer !== undefined) {
+          pending.current = { plan: current.ask.plan, place: environmentKey(current.ask.command.environment), answer, held: current.ask.held };
+        }
         return close(current, error);
       }
       if (error instanceof StoreRefused) return await replan(current, error.message);
@@ -151,7 +144,7 @@ export function useDeployTap(organizationSlug: string) {
     const prepared = await prepare(current.ask.command).catch(() => null);
     if (prepared?.kind === "ask") return setOpen({ ...current, ask: prepared.ask, answer: undefined, problem: refusal, again: true });
     if (prepared?.kind === "stale") {
-      await stale(current.command);
+      await stale(current.ask.command);
       return close(current, new DeployNotSent());
     }
     if (prepared?.kind !== "admit") return setOpen({ ...current, problem: prepared?.message ?? refusal, stuck: true });

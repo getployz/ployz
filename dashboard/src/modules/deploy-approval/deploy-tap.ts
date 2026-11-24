@@ -8,7 +8,9 @@
 import type { Needs, PostedVersion, SavedRule, Unsigned, VersionsDraft } from "@ployz/sdk";
 import { Option, Schema } from "effect";
 import { versionSteps } from "@ployz/sdk/authority";
+import { StoreRefused } from "#/lib/refusal";
 import type { AdmitDeploy } from "#/modules/config-store/admit-deploy";
+import { environmentKey } from "#/modules/config-store/environment-ref";
 import { type OnlyPasskey, signWithPasskey } from "#/modules/passkeys/passkey-statement";
 import { LOSS_MARK } from "#/modules/volume-placement/volume-placement.review";
 import type { DeployPlan } from "./deploy-tap.server";
@@ -53,12 +55,14 @@ const BLOCKED = {
   rule: (service) => `No automatic deploy rule covers ${service}. Approve one, or run ployz deploy.`,
   rebuild: (service) => `Push to ${service}'s branch first. Its rule hasn't built this version yet.`,
   digest: (service) => `${service} pulls a private tag. Write its image by digest (image@sha256:…).`,
-  ended: (service) => `Automatic deploys are off for ${service}. Turn on Deploy every push to deploy it.`,
 } satisfies Record<Exclude<Needs, "version">, (service: string) => string>;
 
 /** Why a Service no passkey can sign keeps the Deploy from asking, or null when a passkey can sign each of `unsigned`. */
 export function blocked(unsigned: readonly Unsigned[]) {
-  for (const { service, needs } of unsigned) if (needs !== "version") return BLOCKED[needs](service);
+  for (const { service, needs, ended } of unsigned) {
+    if (ended === true) return `Automatic deploys are off for ${service}. Turn on Deploy every push to deploy it.`;
+    if (needs !== "version") return BLOCKED[needs](service);
+  }
   return null;
 }
 
@@ -160,5 +164,55 @@ export async function signVersions(ask: Ask): Promise<Answer> {
 }
 
 /** `command` carrying `answer`. */
-export const answered = (command: AdmitDeploy, answer: Answer): AdmitDeploy =>
+export const withAnswer = (command: AdmitDeploy, answer: Answer): AdmitDeploy =>
   answer.rule === undefined ? { ...command, versions: answer.versions } : { ...command, versions: answer.versions, rule: answer.rule };
+
+/** An answer to plan `plan` in Environment `place` whose Deploy the Store asked to confirm: the confirmed retry carries it. */
+export type Answered = { readonly plan: string; readonly place: string; readonly answer: Answer; readonly held: Held | null };
+
+/** How a Deploy is sent, and where its answer waits for a confirmed retry. */
+export type DeploySteps = {
+  readonly answered: { current: Answered | null };
+  readonly commit: (command: AdmitDeploy, handles: readonly string[]) => Promise<void>;
+  readonly prepare: (command: AdmitDeploy) => Promise<Prepared>;
+  /** Asks the person to sign `ask`; settles once their Deploy was sent, or throws why it wasn't. */
+  readonly ask: (ask: Ask, handles: readonly string[]) => Promise<void>;
+  /** Tells the person their changes moved; the Deploy then throws. */
+  readonly stale: (command: AdmitDeploy) => Promise<Error>;
+  /** Tells the person why nothing deployed; the Deploy then throws. */
+  readonly refused: (message: string) => Error;
+  /** Tells the person the Deploy went without the rule, and why. */
+  readonly held: (held: Held | null) => void;
+};
+
+/** Sends `command` with `answered`'s answer, keeping it when the Store asks to confirm with one of `handles`. */
+export async function sendAnswer(steps: Pick<DeploySteps, "answered" | "commit" | "held">, command: AdmitDeploy, answered: Answered, handles: readonly string[]) {
+  try {
+    await steps.commit(withAnswer(command, answered.answer), handles);
+  } catch (error) {
+    // The Store asks again (Servers hold more by now): the caller's next accepted retry still needs no tap.
+    if (error instanceof StoreRefused && handles.includes(error.code)) steps.answered.current = answered;
+    throw error;
+  }
+  steps.held(answered.held);
+}
+
+/**
+ * Deploys `command`. A confirmed retry of the review an answer was signed for carries that answer, the rule and the
+ * rule it read as kept included, so the Store refuses the whole Deploy if the kept rule moved since, rather than
+ * deploying without it.
+ */
+export async function deployWith(steps: DeploySteps, command: AdmitDeploy, handles: readonly string[] = []): Promise<void> {
+  const answered = steps.answered.current;
+  steps.answered.current = null;
+  if (answered !== null && answered.place === environmentKey(command.environment)
+    && command.version !== null && command.version !== undefined && namesReview(answered.plan, command.version)) {
+    return sendAnswer(steps, command, answered, handles);
+  }
+  const prepared = await steps.prepare(command);
+  if (prepared.kind === "stale") throw await steps.stale(command);
+  if (prepared.kind === "refused") throw steps.refused(prepared.message);
+  if (prepared.kind === "ask") return steps.ask(prepared.ask, handles);
+  await steps.commit(prepared.command, handles);
+  steps.held(prepared.held);
+}

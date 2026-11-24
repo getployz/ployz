@@ -97,6 +97,12 @@ pub struct RuleView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub protected: Option<bool>,
+    /// For a staged read, whether an owner or admin decides the reader's Deploy here, as
+    /// its protection asks of them: their Deploy waits for one, who approves no automatic
+    /// deploy rule with it. Absent from an older Store.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub protector_decides: Option<bool>,
 }
 
 impl RuleView {
@@ -263,15 +269,22 @@ fn view_of(
     let id = &environment.summary.id;
     let rule = stored(tx, id)?;
     let namespace = crate::deployment::namespace(tx, who, &environment.summary)?;
-    let (saved, version, protected) = match staged {
+    let (saved, version, protected, protector_decides) = match staged {
         true => {
             let version = crate::review::review(tx, environment)?.view.version;
             let working = canonicalize_environment_intent(environment.working.clone());
             let protected = scope::protected(tx, id)?;
-            (Some(working), Some(version), Some(protected))
+            let decides = match trusted {
+                Some(trusted) => {
+                    Some(crate::review::approval::Gate::new(tx, id, trusted)?.protected())
+                }
+                None => None,
+            };
+            (Some(working), Some(version), Some(protected), decides)
         }
         false => (
             crate::review::latest_saved(tx, id)?.map(|saved| saved.intent),
+            None,
             None,
             None,
         ),
@@ -313,6 +326,7 @@ fn view_of(
         volumes,
         version,
         protected,
+        protector_decides,
     })
 }
 

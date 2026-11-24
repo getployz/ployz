@@ -1,8 +1,10 @@
-import type { PlanView } from "@ployz/sdk";
-import { describe, expect, it } from "vitest";
+import type { PlanView, SavedRule } from "@ployz/sdk";
+import { describe, expect, it, vi } from "vitest";
+import { StoreRefused } from "#/lib/refusal";
 import { asTestDouble } from "#/lib/test-double";
-import { admitDeploy } from "#/modules/config-store/admit-deploy";
-import { prepareDeploy } from "./deploy-tap";
+import { type AdmitDeploy, admitDeploy } from "#/modules/config-store/admit-deploy";
+import { environmentKey } from "#/modules/config-store/environment-ref";
+import { type Answer, type Ask, type DeploySteps, deployWith, prepareDeploy, sendAnswer } from "./deploy-tap";
 import { ready, view } from "./rule-view.test-fixture";
 
 const here = { project: "shop", environment: "production" };
@@ -42,5 +44,33 @@ describe("prepareDeploy", () => {
     expect(await prepareDeploy(command, read, async () => ({ problem: "Couldn't read acme/web on GitHub." }))).toEqual({
       kind: "admit", command: { ...command, version: "v1" }, held: { reason: "Couldn't read acme/web on GitHub.", unchecked: false },
     });
+  });
+});
+
+describe("deployWith", () => {
+  it("sends a confirmed retry with the rule answered for its review, even once a fresh plan needs none", async () => {
+    const answer: Answer = { versions: [], rule: asTestDouble<SavedRule>()({ prior: { rule: "9".repeat(32), generation: 3 } }) };
+    const command = admitDeploy(here, "d6", { version: "v1" });
+    const ask = asTestDouble<Ask>()({ command, plan: "v1", held: null });
+    const sent: AdmitDeploy[] = [];
+    const steps: DeploySteps = {
+      answered: { current: null },
+      commit: async (deploy) => {
+        sent.push(deploy);
+        if (sent.length === 1) throw new StoreRefused({ code: "confirmation_required", message: "Deletes data", details: null });
+      },
+      // The kept rule ended between the tap and the confirmation: a fresh plan signs nothing.
+      prepare: vi.fn().mockResolvedValueOnce({ kind: "ask", ask }).mockResolvedValue({ kind: "admit", command, held: null }),
+      ask: (asked, handles) => sendAnswer(steps, asked.command, { plan: asked.plan, place: environmentKey(here), answer, held: null }, handles),
+      stale: async () => new Error("stale"),
+      refused: () => new Error("refused"),
+      held: vi.fn(),
+    };
+
+    await expect(deployWith(steps, command, ["confirmation_required"])).rejects.toBeInstanceOf(StoreRefused);
+    const confirmed = admitDeploy(here, "d6", { version: "v1#loss-k3x9", acceptVolumeLoss: ["pg-data"] });
+    await deployWith(steps, confirmed, ["confirmation_required"]);
+
+    expect(sent[1]).toEqual({ ...confirmed, versions: [], rule: answer.rule });
   });
 });

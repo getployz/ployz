@@ -2392,8 +2392,8 @@ fn a_deploy_whose_rule_was_ended_since_its_tap_deploys_nothing_and_leaves_it_end
 }
 
 /// What the plan says a person's Deploy needs for each built Service that reaches data.
-fn unsigned(store: &ConfigStore, who: &Actor) -> Vec<(String, ployz_store::Needs)> {
-    let plan: ployz_store::PlanView = store
+fn plan(store: &ConfigStore, who: &Actor) -> ployz_store::PlanView {
+    store
         .read(
             who,
             &ployz_store::PlanQuery {
@@ -2403,8 +2403,12 @@ fn unsigned(store: &ConfigStore, who: &Actor) -> Vec<(String, ployz_store::Needs
                 deployment: None,
             },
         )
-        .unwrap();
-    plan.unsigned
+        .unwrap()
+}
+
+fn unsigned(store: &ConfigStore, who: &Actor) -> Vec<(String, ployz_store::Needs)> {
+    plan(store, who)
+        .unsigned
         .into_iter()
         .map(|entry| (entry.service.as_str().to_owned(), entry.needs))
         .collect()
@@ -2461,7 +2465,12 @@ fn a_built_service_that_reaches_data_needs_a_build_its_rule_vouches_for() {
     assert_eq!(unsigned(&store, &who), [("web".to_owned(), Needs::Rule)]);
     // Once the person turns automatic deploys off, only the switch turns them on again.
     end_rule(&store, &who, 3);
-    assert_eq!(unsigned(&store, &who), [("web".to_owned(), Needs::Ended)]);
+    assert_eq!(unsigned(&store, &who), [("web".to_owned(), Needs::Rule)]);
+    assert_eq!(
+        serde_json::to_value(&plan(&store, &who).unsigned).unwrap(),
+        json!([{ "service": "web", "needs": "rule", "ended": true }]),
+        "a client that predates `ended` still reads the need"
+    );
 }
 
 #[test]

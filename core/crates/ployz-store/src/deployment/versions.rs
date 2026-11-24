@@ -953,7 +953,6 @@ pub(crate) fn unsigned(
                 continue;
             }
             (true, true) => Needs::Rebuild,
-            (true, false) if ended => Needs::Ended,
             (true, false) => Needs::Rule,
             (false, _) if login && !content_addressed(&spec.container.image) => Needs::Digest,
             (false, _) => Needs::Version,
@@ -961,6 +960,7 @@ pub(crate) fn unsigned(
         unsigned.push(crate::Unsigned {
             service: spec.name.clone(),
             needs,
+            ended: needs == Needs::Rule && ended,
         });
     }
     Ok(unsigned)

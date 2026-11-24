@@ -85,15 +85,16 @@ impl SourceAsked {
             volumes: volumes.clone(),
             minted: Births::new(),
         };
+        let kept = basis.kept();
         let builder = (self.builder)
-            .or_else(|| basis.kept().map(|kept| kept.source.builder))
+            .or_else(|| kept.as_ref().map(|kept| kept.source.builder.clone()))
             .unwrap_or_else(Builder::pinned);
         let terms = RuleTerms {
             cluster,
             machines: self.machines,
             owner_id: self.owner_id,
             builder,
-            platform: super::rule_draft::default_platform(),
+            platform: super::rule_draft::renewed_platform(kept.as_ref()),
             // The births the Version steps mint come from the same seed, so a Volume both
             // mount is born once.
             new_rule: RuleId::from_bytes(*seed),
@@ -158,7 +159,7 @@ pub fn source_need(basis: &RuleBasis) -> SourceNeed {
         machines: kept.machines.clone(),
         owner_id: kept.source.owner_id,
         builder: kept.source.builder.clone(),
-        platform: super::rule_draft::default_platform(),
+        platform: super::rule_draft::renewed_platform(Some(&kept)),
         new_rule: kept.rule,
         issued_at: kept.issued_at,
         signer: SignerKey::Passkey(super::OwnPrompt::Passkey),

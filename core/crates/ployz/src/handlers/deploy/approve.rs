@@ -12,7 +12,7 @@ use ployz_core::authority::{
     RuleSummary, RuleTerms, ServiceVersion, SignerKey, Timestamp, Unknown, birth,
     deploy::{ChangeError, content_addressed},
     rule::Builder,
-    rule_draft::default_platform,
+    rule_draft::renewed_platform,
     version_draft::{SourceNeed, source_need, source_rule},
 };
 use ployz_core::{
@@ -353,6 +353,14 @@ fn source(
     if view.version.as_deref() != Some(version) {
         return None;
     }
+    // An owner or admin decides this Deploy and approves no rule with it, so this Device
+    // signs none. An older Store says only whether the Environment is Protected.
+    if view
+        .protector_decides
+        .unwrap_or(view.protected != Some(false))
+    {
+        return None;
+    }
     let mut basis = view.basis();
     if source_need(&basis) == SourceNeed::None {
         return None;
@@ -363,7 +371,7 @@ fn source(
         machines: enforcing.machines.clone(),
         owner_id: 0,
         builder: (kept.as_ref()).map_or_else(Builder::pinned, |kept| kept.source.builder.clone()),
-        platform: default_platform(),
+        platform: renewed_platform(kept.as_ref()),
         // The births the versions mint come from the same seed, so a Volume both mount is
         // born once.
         new_rule: RuleId::from_bytes(*seed),
@@ -380,8 +388,8 @@ fn source(
     };
     match super::super::github_rule::owner(
         matches,
-        &rule.source.repository,
-        rule.source.repository_id,
+        (&rule.source.repository, rule.source.repository_id),
+        "deploy again",
     ) {
         Ok(owner) => rule.source.owner_id = owner,
         Err(error) => {

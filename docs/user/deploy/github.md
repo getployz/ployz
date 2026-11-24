@@ -116,7 +116,11 @@ covers, and the other services save without it.
 
 **Deploy** does the same: when what it saves isn't what the rule approves, its passkey prompt
 signs the rule with the deploy. From the CLI, `ployz deploy` shows the rule after the services it
-signs, and your yes signs both with this device.
+signs, and your yes signs both with this device. A renewed rule keeps the platform it was approved
+for.
+
+A deploy that waits for an owner or admin in a Protected Environment signs no rule, and approving
+it leaves the rule as it was.
 
 When the services build from several branches and none of them is the rule's, Save signs nothing.
 Turn on **Deploy every push** under **Automatic deploys** in the environment's **Settings** to

@@ -98,6 +98,16 @@ pub fn default_platform() -> String {
     "linux/amd64".to_owned()
 }
 
+/// What a rule renewed from `kept` builds its images for: what `kept` builds for, so a
+/// Deploy or Save that renews it keeps a platform someone approved, else the default.
+#[must_use]
+pub fn renewed_platform(kept: Option<&AutoDeployRule>) -> String {
+    kept.and_then(|kept| {
+        (kept.services.iter()).find_map(|service| service.policy.platforms.first().cloned())
+    })
+    .unwrap_or_else(default_platform)
+}
+
 /// Why a rule can't be drafted. Each says what the person can change.
 #[derive(Debug, thiserror::Error)]
 pub enum RuleDraftError {
