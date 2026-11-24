@@ -1,6 +1,7 @@
 //! Drain: turn a Machine's services role off, retire its chosen Globals there, run
 //! Placement convergence for each chosen replicated Service with a Container on it, then
-//! observe what still runs there. One bounded command.
+//! observe what still runs there. One bounded command. A chosen Global is a user one left
+//! from before 0.1.2-beta.42, and it refuses the Drain in its preflight.
 //!
 //! Each move's old copy retires alongside the moves after it; the report waits for every
 //! retirement and still lists the Services in the order they were handled.
@@ -472,6 +473,10 @@ async fn preflight(
     if cancellation.is_cancelled() {
         return Err(DrainError::Cancelled);
     }
+    let live = client
+        .live_services_from(&machines, EnvironmentValues::Redacted)
+        .await?;
+    refuse_user_globals(&server, chosen_on(&server.id, &live, scope).1)?;
     let services_role = if server.accepts_services {
         turn_services_off(client, &server.id, cancellation).await?;
         ServicesRole::TurnedOff
@@ -490,11 +495,7 @@ async fn preflight(
         server: server.name.clone(),
         detail,
     })?;
-    let replicated = replicated_services_on(&server.id, &live);
-    let (replicated, globals) = services_on(&server.id, &live)
-        .into_iter()
-        .filter(|service| scope.includes(service))
-        .partition(|service| replicated.contains(service));
+    let (replicated, globals) = chosen_on(&server.id, &live, scope);
     Ok(Ready {
         server,
         scope: scope.clone(),
@@ -502,6 +503,47 @@ async fn preflight(
         globals,
         replicated,
     })
+}
+
+/// The Services of `scope` with a Container on `server`: replicated ones, then Globals.
+fn chosen_on(
+    server: &MachineId,
+    live: &LiveServices<RpcError>,
+    scope: &DrainScope,
+) -> (Vec<QualifiedService>, Vec<QualifiedService>) {
+    let replicated = replicated_services_on(server, live);
+    services_on(server, live)
+        .into_iter()
+        .filter(|service| scope.includes(service))
+        .partition(|service| replicated.contains(service))
+}
+
+/// Refuse, before the services role changes, a Drain that would retire a user Global.
+/// Compose made them until 0.1.2-beta.42, and no Machine admits one now. A copy stays In
+/// while it crash-loops, so retiring this one could take the last copy that serves.
+fn refuse_user_globals(server: &Machine, globals: Vec<QualifiedService>) -> Result<(), DrainError> {
+    if globals.is_empty() {
+        return Ok(());
+    }
+    let (each, names) = (
+        if globals.len() == 1 { "it" } else { "each" },
+        globals
+            .iter()
+            .map(|service| format!("`{service}`"))
+            .collect::<Vec<_>>()
+            .join(", "),
+    );
+    Err(DrainError::Refused(
+        RpcError::new(
+            RpcErrorCode::Conflict,
+            format!(
+                "Server {} runs {names} on every Server, which only Ployz's own Services may \
+                 do now. Give {each} a replica count and deploy, then drain {} again.",
+                server.name, server.name
+            ),
+        )
+        .with_hint(ployz_core::Hint::Next("ployz deploy".to_owned())),
+    ))
 }
 
 /// Turn the services role off on `id`, then wait until the entry observes it off.

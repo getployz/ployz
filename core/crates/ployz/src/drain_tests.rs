@@ -1392,3 +1392,103 @@ fn an_outcome_says_whether_it_left_an_old_copy_or_failed() {
         assert_eq!(outcome.failed(), failed, "{label}");
     }
 }
+
+/// A user Global left from Compose before 0.1.2-beta.42 refuses the Drain before its
+/// services role changes, naming the Service: retiring it could take the last copy that
+/// serves.
+#[tokio::test]
+async fn a_user_global_refuses_the_drain_before_the_role_changes() {
+    use crate::global_fixtures::{global_service, machine, qualified, running_on};
+    use ployz_core::{
+        ContainerList, MachineList, MachineObservation, MachineTarget, MembershipObservation,
+        OpaquePayload, Placement, RpcErrorCode, RpcRequestBody, RpcResponse,
+    };
+    use tonic::{Request, Response};
+
+    let drained = machine('1', "web-2");
+    let peer = machine('2', "web-1");
+    let on = |server: &Machine, hex| {
+        global_service(
+            qualified("app", "metrics"),
+            'a',
+            Placement::default(),
+            running_on(server, hex),
+        )
+        .containers
+        .remove(0)
+        .into_observation()
+    };
+    let listings = [(drained.id, on(&drained, 'a')), (peer.id, on(&peer, 'b'))];
+    let changed = Arc::new(Mutex::new(Vec::new()));
+    let (asked, machines) = (
+        changed.clone(),
+        [drained.clone(), peer.clone()]
+            .map(|machine| MachineObservation::new(machine, MembershipObservation::Up)),
+    );
+    let (mut client, server) =
+        crate::connect::test_support::rpc_client(move |rpc: Request<OpaquePayload>| {
+            let (asked, machines, listings) = (asked.clone(), machines.clone(), listings.clone());
+            let selected = rpc
+                .metadata()
+                .get(ployz_core::ONE_TARGET_HEADER)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned);
+            async move {
+                #[expect(
+                    clippy::wildcard_enum_match_arm,
+                    reason = "fixture answers only what a Drain's preflight reads"
+                )]
+                let response = match rpc.into_inner().decode_request().unwrap().body {
+                    RpcRequestBody::ListMachines(_) => RpcResponse::from(MachineList {
+                        enrollment: None,
+                        machines: machines.to_vec(),
+                    }),
+                    RpcRequestBody::ListContainers(_) => RpcResponse::from(ContainerList {
+                        containers: listings
+                            .into_iter()
+                            .filter(|(id, _)| selected.as_deref() == Some(id.as_str()))
+                            .map(|(_, container)| container)
+                            .collect(),
+                    }),
+                    other => {
+                        asked.lock().unwrap().push(format!("{other:?}"));
+                        panic!("the Drain changed something: {other:?}")
+                    }
+                };
+                Ok(Response::new(response.encode().unwrap()))
+            }
+        })
+        .await;
+
+    let refused = client
+        .drain(
+            &MachineTarget::from(&drained.id),
+            &DrainScope::EveryNamespace,
+            crate::deploy::Approvals::default(),
+            &CancellationToken::new(),
+            &mut |_| {},
+        )
+        .await
+        .unwrap_err();
+    server.abort();
+
+    let super::DrainError::Refused(refused) = refused else {
+        panic!("expected a refusal, got {refused:?}");
+    };
+    assert_eq!(refused.code, RpcErrorCode::Conflict);
+    assert!(
+        refused.message.contains("`app/metrics`"),
+        "{}",
+        refused.message
+    );
+    assert!(
+        refused.message.contains("replica count"),
+        "{}",
+        refused.message
+    );
+    assert!(
+        changed.lock().unwrap().is_empty(),
+        "{:?}",
+        changed.lock().unwrap()
+    );
+}

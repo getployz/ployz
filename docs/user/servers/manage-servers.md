@@ -514,12 +514,23 @@ next: ployz login
 To move everything off now, click **Drain** and confirm. The dialog lists what runs on the server and
 badges what won't move as planned: **Moves with data** when its volume moves with it, **Skipped**
 when no project owns it, which draining leaves where it is, **Stays** with the reason when its
-data can't move with it, and **Stops** for a global service that runs on no other server, which
-the drain removes.
-Draining turns services off for the server and stops its global services there. Then it moves
-each replicated service's containers to your other servers one at a time. Each new container runs
+data can't move with it, and **Stops** for a global service that runs on no other server. A
+global service stops the drain before it starts, as below.
+Draining turns services off for the server, then moves each replicated service's containers to
+your other servers one at a time. Each new container runs
 the same image, and each one starts, is healthy and is routed by every server's proxy before the
 old container is taken out of routing and removed.
+
+A service set to run on every server, from a Compose file with `deploy.mode: global` deployed
+before 0.1.2-beta.42, stops the drain before it changes anything. Taking that service off the
+server could take its last working copy:
+
+```text
+error: Server web-2 runs `shop-production/metrics` on every Server, which only Ployz's own Services may do now. Give it a replica count and deploy, then drain web-2 again.
+next: ployz deploy
+```
+
+Set `deploy.replicas` on that service instead of `deploy.mode: global`, deploy, and drain again.
 
 The new container runs exactly the image the old one ran, even when its tag, like `app:v1`, names
 another image on the other server by then. A service whose image is named by a tag therefore moves
