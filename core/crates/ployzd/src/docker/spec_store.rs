@@ -10,8 +10,8 @@ use std::{
 
 use hex::encode as hex_encode;
 use ployz_core::{
-    Admission, ConfigMount, ConfigSpec, ContainerId, ContainerKind, ContainerRun, CopyRotation,
-    DockerVolumeName, Namespace, ResolvedServiceSpec, VolumeGen,
+    AddressPart, Admission, ConfigMount, ConfigSpec, ContainerId, ContainerKind, ContainerRun,
+    CopyRotation, DockerVolumeName, Namespace, QualifiedService, ResolvedServiceSpec, VolumeGen,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::de::DeserializeOwned;
@@ -156,6 +156,46 @@ impl MachineSpecStore {
         Ok(kept.and_then(|kept| serde_json::from_value(kept).ok()))
     }
 
+    /// The part a Container takes a new bridge address in, from its kept spec and
+    /// admission and the Namespace its labels name. One with no spec, no admission or no
+    /// Namespace takes Free.
+    pub(crate) async fn address_part(
+        &self,
+        container_id: &ContainerId,
+        namespace: Option<&Namespace>,
+    ) -> Result<AddressPart, Error> {
+        let (Some(spec), Some(namespace)) = (self.get(container_id).await?, namespace) else {
+            return Ok(AddressPart::Free);
+        };
+        let admission = self.admitted_by(container_id).await?;
+        Ok(ployz_core::part_of(
+            &QualifiedService::new(namespace.clone(), spec.name.clone()),
+            admission.map(|by| by.admission()),
+            spec.volume_graph(),
+        ))
+    }
+
+    /// The part a Container's admission record puts it in, `None` when it has no spec, no
+    /// admission or no Namespace: a Container from before admission records keeps the
+    /// address it holds.
+    pub(crate) async fn recorded_part(
+        &self,
+        container_id: &ContainerId,
+        namespace: Option<&Namespace>,
+    ) -> Result<Option<AddressPart>, Error> {
+        let (Some(spec), Some(namespace)) = (self.get(container_id).await?, namespace) else {
+            return Ok(None);
+        };
+        let Some(admission) = self.admitted_by(container_id).await? else {
+            return Ok(None);
+        };
+        Ok(Some(ployz_core::part_of(
+            &QualifiedService::new(namespace.clone(), spec.name.clone()),
+            Some(admission.admission()),
+            spec.volume_graph(),
+        )))
+    }
+
     /// This Machine's record of a copy's rotation, `None` when it never left Pending.
     pub async fn rotation(
         &self,
@@ -197,7 +237,7 @@ impl MachineSpecStore {
         };
         let admission = admitted
             .and_then(|admitted| serde_json::from_str::<crate::machine::AdmittedBy>(&admitted).ok())
-            .map_or(Admission::Free, |admitted| admitted.admission());
+            .map_or(Admission::Free, |admitted| admitted.name_admission());
         Ok(Some((
             serde_json::from_str(&spec)?,
             rotation

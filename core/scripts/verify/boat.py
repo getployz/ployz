@@ -88,7 +88,8 @@ POOL = REGISTRY / "pool.ledger"
 RETIRING = REGISTRY / "retiring.ledger"
 POOL_SIZE = int(os.environ.get("PLOYZ_VERIFY_BOAT_POOL", 6))
 # The bake's own ployz install, relative to /; a run's install overwrites it, so reset restores it from STASH.
-INSTALLED = ("usr/local/bin/ployz* etc/systemd/system/ployz* etc/systemd/system/*.wants/ployz* etc/docker/daemon.json "
+INSTALLED = ("usr/local/bin/ployz* etc/systemd/system/ployz* etc/systemd/system/*.wants/ployz* "
+             "etc/systemd/system/docker.service.d/ployz* etc/docker/daemon.json "
              "etc/modprobe.d/ployz* etc/modules-load.d/ployz* etc/default/ployz*")
 # Files a run replaces outside INSTALLED: a check may swap runc for a wrapper and keeps runc.<tag>-original.
 REPLACED = "usr/bin/runc"
@@ -207,7 +208,8 @@ stash=$1 key=$2
 tar -tf "$stash" """ + REPLACED + r""" >/dev/null || { echo "the bake's install keeps no runc" >&2; exit 1; }
 systemctl unmask docker.service docker.socket containerd.service >/dev/null
 # Docker asks the volume plugin about each `ployz` Volume it removes, so the plugin outlives the volume removal.
-units=$(systemctl list-units --all --plain --no-legend 'ployz*' | awk '$1 !~ /^ployz-volume-plugin\./ {print $1}')
+# Docker requires the fence unit, so stopping it would stop Docker; the reboot after reset ends it.
+units=$(systemctl list-units --all --plain --no-legend 'ployz*' | awk '$1 !~ /^ployz-(volume-plugin|fence)\./ {print $1}')
 if [ -n "$units" ]; then systemctl stop $units; fi
 systemctl start docker
 plugin=$([ ! -e /etc/systemd/system/ployz-volume-plugin.socket ] || echo ployz-volume-plugin.socket)

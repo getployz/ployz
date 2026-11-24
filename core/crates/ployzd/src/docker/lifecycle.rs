@@ -2,16 +2,15 @@ use ployz_core::labels::{self, ServiceLabels};
 use std::future::Future;
 
 use bollard::{
-    errors::Error as DockerError,
     models::{ContainerCreateBody, Mount, MountType, NetworkConnectRequest},
     query_parameters::{
         CreateContainerOptionsBuilder, RemoveContainerOptionsBuilder, StopContainerOptionsBuilder,
     },
 };
 use ployz_core::{
-    ContainerId, ContainerKind, ContainerObservation, Gen, Machine, MachineId,
-    MachineStorageObservation, Namespace, PullPolicy, ResolvedServiceSpec, ServiceName,
-    ServiceNetwork, ServicePlacementEligibility, ServicePlacementIneligibleReason,
+    AddressPart, ContainerId, ContainerKind, ContainerObservation, Gen, Machine, MachineId,
+    MachineStorageObservation, Namespace, PullPolicy, QualifiedService, ResolvedServiceSpec,
+    ServiceName, ServiceNetwork, ServicePlacementEligibility, ServicePlacementIneligibleReason,
     ServicePlacementUnknownReason, SlotKey,
 };
 
@@ -663,7 +662,16 @@ impl Lifecycle {
         let options = CreateContainerOptionsBuilder::default()
             .name(&display_name)
             .build();
-        let created = match self.docker.create_container(Some(options), body).await {
+        let part = ployz_core::part_of(
+            &QualifiedService::new(namespace.clone(), spec.name.clone()),
+            Some(creating.admitted.by().admission()),
+            spec.volume_graph(),
+        );
+        let created = match self
+            .docker
+            .create_container(Some(options), body, Some(part))
+            .await
+        {
             Ok(created) => created,
             Err(Error::Docker(ref error)) if classify(error) == Status::Conflict => {
                 return self
@@ -982,23 +990,30 @@ impl Lifecycle {
         network: &str,
         inspected: &Inspected,
     ) -> Result<(), Error> {
-        let joined = if network == DOCKER_NETWORK_NAME {
+        if network == DOCKER_NETWORK_NAME {
             let ipv6 = inspected.labels().is_some_and(bridge::takes_ipv6);
-            self.docker.join_bridge(container_id, ipv6).await
-        } else {
-            self.docker.ensure_tunnel_network().await?;
-            self.docker
-                .client
-                .connect_network(
-                    network,
-                    NetworkConnectRequest {
-                        container: container_id.to_string(),
-                        endpoint_config: None,
-                    },
-                )
-                .await
-        };
-        joined.map_err(|error| docker_error(container_id, error))
+            let namespace = inspected
+                .labels()
+                .and_then(|labels| labels.get(labels::NAMESPACE))
+                .and_then(|namespace| Namespace::parse(namespace).ok());
+            let part = self
+                .specs
+                .address_part(container_id, namespace.as_ref())
+                .await?;
+            return self.docker.join_bridge(container_id, ipv6, part).await;
+        }
+        self.docker.ensure_tunnel_network().await?;
+        self.docker
+            .client
+            .connect_network(
+                network,
+                NetworkConnectRequest {
+                    container: container_id.to_string(),
+                    endpoint_config: None,
+                },
+            )
+            .await
+            .map_err(|error| docker_error(container_id, error))
     }
 
     pub async fn stop(
@@ -1186,19 +1201,16 @@ impl Lifecycle {
 }
 
 impl super::LocalDocker {
-    /// Connects a Container that lost its bridge endpoint at the next free address,
+    /// Connects a Container that lost its bridge endpoint at a new address in `part`,
     /// holding the gate until Docker records it so no create takes the same one.
-    async fn join_bridge(&self, container_id: &ContainerId, ipv6: bool) -> Result<(), DockerError> {
-        let mut last = self.endpoint_creates.lock().await;
-        let address = match self.bridge().await {
-            Ok(bridge) => bridge
-                .subnet
-                .and_then(|subnet| bridge::address::next(subnet, &bridge.taken, *last)),
-            Err(_) => None,
-        };
-        if address.is_some() {
-            *last = address;
-        }
+    async fn join_bridge(
+        &self,
+        container_id: &ContainerId,
+        ipv6: bool,
+        part: AddressPart,
+    ) -> Result<(), Error> {
+        let mut handed = self.endpoint_creates.lock().await;
+        let address = self.bridge().await?.take(&mut handed, part)?;
         self.client
             .connect_network(
                 DOCKER_NETWORK_NAME,
@@ -1208,35 +1220,37 @@ impl super::LocalDocker {
                 },
             )
             .await
+            .map_err(|error| docker_error(container_id, error))
     }
 
+    /// Creates a Container, at a new address in `part` when it joins the bridge. A
+    /// Container in another's network, or on the host's, takes no address and no part.
     pub(super) async fn create_container(
         &self,
         options: Option<bollard::query_parameters::CreateContainerOptions>,
         mut body: ContainerCreateBody,
+        part: Option<AddressPart>,
     ) -> Result<bollard::models::ContainerCreateResponse, Error> {
-        let mut last = self.endpoint_creates.lock().await;
-        let bridge = self.bridge().await?;
+        let mut handed = self.endpoint_creates.lock().await;
         let on_bridge = body
             .host_config
             .as_ref()
             .and_then(|host| host.network_mode.as_deref())
             == Some(DOCKER_NETWORK_NAME);
-        // A Container in another's network takes no endpoint of its own.
-        if on_bridge && bridge.capacity.free_endpoints() == 0 {
-            return Err(Error::EndpointCapacity);
-        }
-        if on_bridge && let Some(subnet) = bridge.subnet {
-            let address = bridge::address::next(subnet, &bridge.taken, *last)
-                .ok_or(Error::EndpointCapacity)?;
+        if on_bridge {
+            let part = part.ok_or(bridge::address::NoAddress::NoRecords)?;
+            let bridge = self.bridge().await?;
+            if bridge.capacity.free_endpoints() == 0 {
+                return Err(Error::EndpointCapacity);
+            }
+            let address = bridge.take(&mut handed, part)?;
             let endpoints = body
                 .networking_config
                 .get_or_insert_default()
                 .endpoints_config
                 .get_or_insert_default();
             let endpoint = endpoints.entry(DOCKER_NETWORK_NAME.to_owned()).or_default();
-            endpoint.ipam_config = bridge::address::endpoint(false, Some(address)).ipam_config;
-            *last = Some(address);
+            endpoint.ipam_config = bridge::address::endpoint(false, address).ipam_config;
         }
         let _creating = super::Creating::new(&self.creates);
         Ok(self.client.create_container(options, body).await?)
@@ -1417,41 +1431,48 @@ mod tests {
         );
     }
 
+    /// A signed Container takes an Open address, and a signed hook that mounts its
+    /// Service's Volume a signed data one, which the fence closes to unsigned ones.
     #[tokio::test]
-    async fn a_container_joins_the_bridge_at_a_static_address() {
-        let (runtime, fake) = fake_runtime_with(FakeDocker {
-            create_barrier: Some(std::sync::Arc::new(tokio::sync::Barrier::new(1))),
-            ..FakeDocker::default()
-        })
-        .await;
+    async fn a_container_joins_the_bridge_at_a_static_address_in_its_part() {
         let namespace = Namespace::parse("app").unwrap();
-        let spec = spec_with_sources(Vec::new());
-        runtime
-            .lifecycle()
-            .create_with_admission::<_, _, Error>(
-                &machine(),
-                container_request(
-                    ContainerKind::ServiceContainer,
-                    &namespace,
-                    &spec,
-                    std::future::ready(None),
-                ),
-            )
-            .await
-            .unwrap();
-        let body = fake
-            .request_bodies
-            .lock()
-            .unwrap()
-            .iter()
-            .find(|(path, _)| path.ends_with("/containers/create"))
-            .unwrap()
-            .1
-            .clone();
-        assert_eq!(
-            body.pointer("/NetworkingConfig/EndpointsConfig/ployz/IPAMConfig/IPv4Address"),
-            Some(&serde_json::json!("10.210.0.2")),
-        );
+        for (kind, sources, address) in [
+            (ContainerKind::ServiceContainer, Vec::new(), "10.210.0.2"),
+            (
+                ContainerKind::PreDeployHook,
+                vec![crate::docker::test_support::ordinary_source("data")],
+                "10.210.0.160",
+            ),
+        ] {
+            let (runtime, fake) = fake_runtime_with(FakeDocker {
+                create_barrier: Some(std::sync::Arc::new(tokio::sync::Barrier::new(1))),
+                ..FakeDocker::default()
+            })
+            .await;
+            let spec = spec_with_sources(sources);
+            runtime
+                .lifecycle()
+                .create_with_admission::<_, _, Error>(
+                    &machine(),
+                    container_request(kind, &namespace, &spec, std::future::ready(None)),
+                )
+                .await
+                .unwrap();
+            let body = fake
+                .request_bodies
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|(path, _)| path.ends_with("/containers/create"))
+                .unwrap()
+                .1
+                .clone();
+            assert_eq!(
+                body.pointer("/NetworkingConfig/EndpointsConfig/ployz/IPAMConfig/IPv4Address"),
+                Some(&serde_json::json!(address)),
+                "{kind:?}",
+            );
+        }
     }
 
     async fn stamped_labels(

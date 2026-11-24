@@ -64,6 +64,15 @@ pub(super) fn deploy_command(command: Command) -> Command {
                      every Service removes them by default",
                 ),
         )
+        .arg(
+            switch("recreate", None)
+                .conflicts_with_all(["plan", "skip-deploy", "upload"])
+                .help(
+                    "Replace every running container of the Services this deploy ships, even \
+                     one whose settings are unchanged, so each Server admits and addresses it \
+                     again",
+                ),
+        )
         // Hidden: kept so older scripts still run; a deploy of every Service prunes
         // without them.
         .arg(
@@ -268,10 +277,38 @@ fn switches(matches: &ArgMatches) -> impl Iterator<Item = &'static str> {
         ("skip-deploy", "--skip-deploy"),
         ("no-prune", "--no-prune"),
         ("forget-older", "--forget-older"),
+        ("recreate", "--recreate"),
     ]
     .into_iter()
     .filter(|(id, _)| approve::flag(matches, id))
     .map(|(_, typed)| typed)
+}
+
+/// The Services whose running Containers `deploy --recreate` replaces: those it names,
+/// or every Service it ships.
+fn recreates(
+    matches: &ArgMatches,
+    store: &Store,
+    (environment, services): (&EnvironmentRef, &[ServiceName]),
+) -> Result<Vec<ServiceName>, Error> {
+    if !approve::flag(matches, "recreate") {
+        return Ok(Vec::new());
+    }
+    if !services.is_empty() {
+        return Ok(services.to_vec());
+    }
+    let plan = store.read(&PlanQuery {
+        environment: environment.clone(),
+        services: Vec::new(),
+        target: true,
+        deployment: None,
+    })?;
+    Ok(plan
+        .target
+        .unwrap_or_default()
+        .into_iter()
+        .map(|spec| spec.name)
+        .collect())
 }
 
 /// `deploy --skip-deploy`: save everything staged for the next deploy.
@@ -380,6 +417,8 @@ pub(super) fn upload_and_ship(
             .map_err(|error| staged.unstage(store, error))?;
     }
     let approval = linked::Approval::of(ui::json(), detaches(matches), approve::keyed(matches));
+    let recreate = recreates(matches, store, (&environment, &services))
+        .map_err(|error| staged.unstage(store, error))?;
     let admitted = store
         .admit(&Admit::Deploy(Deploy {
             copies: Vec::new(),
@@ -396,7 +435,7 @@ pub(super) fn upload_and_ship(
                 .as_ref()
                 .map(|device| device.versions.clone())
                 .unwrap_or_default(),
-            recreate: Vec::new(),
+            recreate,
             rule: (device.as_ref())
                 .and_then(|device| device.rule.clone())
                 .map(Box::new),

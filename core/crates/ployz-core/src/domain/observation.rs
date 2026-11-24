@@ -293,14 +293,16 @@ pub struct ContainerObservationParts {
     pub admission: Option<Admission>,
 }
 
-/// How a Machine admitted a Container it made.
+/// How a Machine admitted a Container it made. An observation reports a create through
+/// the Machine's own socket as [`Self::Free`], since no Device signed it, while the
+/// Container's address part counts that create as [`Self::Signed`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum Admission {
-    /// A key or an automatic deploy rule vouched for its spec, so its name stays kept.
+    /// A key or an automatic deploy rule vouched for its spec.
     Signed,
-    /// Admitted because its spec reaches no data, by this Machine's own socket with no
-    /// Device's signature, or the Machine kept no record of how it was admitted.
+    /// Admitted because its spec reaches no data, or the Machine kept no record of how it
+    /// was admitted.
     Free,
 }
 

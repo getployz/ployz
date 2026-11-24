@@ -58,9 +58,21 @@ pub(crate) enum AdmittedBy {
 }
 
 impl AdmittedBy {
-    /// What the Container's observation reports. A key or a rule keeps its name signed.
-    /// This Machine's own socket counts as free for names, since no Device signed it.
+    /// What the Container's address part counts. A key, a rule or this Machine's own
+    /// caller vouched for every admission but [`Self::Free`].
     pub(crate) fn admission(&self) -> ployz_core::Admission {
+        match self {
+            Self::Keys { .. } | Self::Rule { .. } | Self::Local { .. } => {
+                ployz_core::Admission::Signed
+            }
+            Self::Free => ployz_core::Admission::Free,
+        }
+    }
+
+    /// What the Container's observation reports, which names and hostnames read. A key or
+    /// a rule keeps its name signed. This Machine's own socket counts as free for names,
+    /// since no Device signed it.
+    pub(crate) fn name_admission(&self) -> ployz_core::Admission {
         match self {
             Self::Keys { .. } | Self::Rule { .. } => ployz_core::Admission::Signed,
             Self::Local { .. } | Self::Free => ployz_core::Admission::Free,
@@ -296,9 +308,9 @@ impl AdmittedSpec {
         &self.by
     }
 
-    /// What the Container it makes reports.
+    /// What the Container it makes reports, which names and hostnames read.
     pub(crate) fn admission(&self) -> ployz_core::Admission {
-        self.by.admission()
+        self.by.name_admission()
     }
 
     pub(crate) fn verified(&self) -> Option<VerifiedBuild> {
