@@ -300,9 +300,9 @@ fn through_cloud(
     namespace: &Namespace,
 ) -> Result<(), Error> {
     let body = json!({});
+    let key = uuid::Uuid::new_v4().to_string();
     let id = approval::approved(
         runtime,
-        credential,
         OperationVerb::Clean,
         matches.get_one::<String>("approval").cloned(),
         |id| {
@@ -324,6 +324,7 @@ fn through_cloud(
                 &format!("namespaces/{namespace}/clean"),
                 &body,
                 approval,
+                Some(&key),
             )
             .await
         },

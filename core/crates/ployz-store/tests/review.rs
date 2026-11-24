@@ -4540,6 +4540,27 @@ fn an_approval_of_an_older_review_is_refused_with_the_fresh_one() {
 }
 
 #[test]
+fn a_yes_to_a_removal_saves_nothing_once_the_plan_destroys_nothing_else() {
+    let (store, who) = shop();
+    apply_all(&store, &who, &Trusted::default());
+    remove_service(&store, &who, "web");
+    let asked = publish_as(&store, &who, None, Approval::Required).unwrap_err();
+    let old = asked.details["approval"].as_str().unwrap().to_owned();
+    discard(&store, &who, Some("web"), None).unwrap();
+    set(&store, &who, "api.replicas", json!(2));
+    let before = diff(&store, &who);
+    assert!(before.effects.is_empty());
+    let stale = Approval::Approved(ApprovalDigest::parse(&old).unwrap());
+    let refused = publish_as(&store, &who, None, stale).unwrap_err();
+    assert_eq!(refused.code.as_str(), "approval_required", "{refused:?}");
+    assert_eq!(refused.details["effects"], json!([]));
+    assert_eq!(diff(&store, &who).saved, before.saved);
+    let fresh = refused.details["approval"].as_str().unwrap();
+    let approved = Approval::Approved(ApprovalDigest::parse(fresh).unwrap());
+    assert!(publish_as(&store, &who, None, approved).unwrap().created);
+}
+
+#[test]
 fn a_published_removal_not_yet_deployed_asks_again_on_the_next_publication() {
     let (store, who) = shop();
     apply_all(&store, &who, &Trusted::default());

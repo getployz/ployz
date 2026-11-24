@@ -47,6 +47,17 @@ const storedRequest = (organizationId: string, key: string) =>
       .where(and(eq(operationRequest.organizationId, organizationId), eq(operationRequest.requestKey, key)))
       .pipe(Effect.map(([row]) => row)));
 
+/**
+ * The answer a request key already admitted gives, checked against `request`'s body, or undefined for an unseen key. An
+ * operation whose success can remove what it plans from asks this before it reads live state, so a retry of a lost reply
+ * replays the stored answer rather than finding nothing.
+ */
+export const replayed = <B>(organizationId: string, request: OperationRequest<B>) =>
+  request.key === null
+    ? Effect.succeed(undefined)
+    : Effect.map(storedRequest(organizationId, request.key), (stored) =>
+      stored === undefined ? undefined : replay(stored, request.tool, bodyDigest(request.tool, request.body)));
+
 /** When request `key` was first admitted, so a replay answers the time the first one did. Null for an unseen key. */
 export const admittedAt = (organizationId: string, key: string) =>
   Effect.map(storedRequest(organizationId, key), (row) => row?.createdAt ?? null);

@@ -201,8 +201,7 @@ fn a_device_key_beside_the_config_is_never_read_and_the_first_line_says_so() {
     stderr.read_line(&mut first).unwrap();
     assert_eq!(
         first.trim_end(),
-        "ployz mcp: tools run with your Cloud credential, never this computer's Device key. \
-         You approve in the dashboard or your agent's prompt."
+        "ployz mcp: tools run with your Cloud credential, never this computer's Device key."
     );
     initialize(&mut stdin, &mut stdout);
     send(

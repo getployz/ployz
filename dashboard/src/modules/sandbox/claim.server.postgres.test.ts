@@ -4,7 +4,8 @@ import { Deferred, Effect, Exit, Redacted } from "effect";
 import { Client } from "pg";
 import { expect, vi } from "vitest";
 import { organizationBillingState } from "#/modules/billing/tables";
-import { gateOperation, type OperationAsked } from "#/modules/approvals/approvals.server";
+import type { OperationAsked } from "#/modules/operations/asked";
+import { gateOperation } from "#/modules/operations/gate.server";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { githubInstallation, organizationGithubInstallation } from "#/modules/github/tables";
@@ -118,7 +119,7 @@ it.live("a person who claims the sandbox becomes its sole owner and the agent's 
     expect(yield* isAnonymousOrganization(agent.organization.id)).toBe(false);
     for (const action of ACTIONS) yield* requireClaimed(agent.organization.id, action);
     const gated = yield* gateOperation({ ...caller, via: "agent" }, null, DRAIN);
-    expect(gated).toMatchObject({ ok: false, refusal: { code: "approval_required" } });
+    expect(gated).toMatchObject({ ok: false, refusal: { code: "forbidden", message: expect.stringContaining("needs a person") } });
   })));
 
 it.live("the claim removes the empty Organization sign-in made and moves the person's session onto the sandbox", () =>

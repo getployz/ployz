@@ -1,7 +1,7 @@
 /** @data-source remote: approvals waiting on a human, and each one a chat names, polled every 2s while pending: any CLI, tab or device can ask or answer, and no change stream carries them */
 import { queryOptions } from "@tanstack/react-query";
 import type { ApprovalDecision } from "#/modules/approvals/approvals";
-import { decidable, DECIDABLE_POLL_MS } from "./decidable";
+import { decidable, DECIDABLE_POLL_MS } from "#/modules/proposals/decidable";
 import {
   decideApprovalServerFn,
   getApprovalServerFn,

@@ -194,6 +194,7 @@ pub(crate) async fn start_removal(
     machine: &ployz_core::Machine,
     confirmation: &ployz_core::DataLossConfirmation,
     approval: Option<&str>,
+    request_key: &str,
 ) -> Result<String, StoreCallError> {
     start_run(
         credential,
@@ -201,6 +202,7 @@ pub(crate) async fn start_removal(
         &format!("servers/{}", machine.id),
         &serde_json::json!({ "confirm_data_loss": confirmation, "server_name": machine.name }),
         approval,
+        Some(request_key),
     )
     .await
 }
@@ -218,6 +220,7 @@ pub(crate) async fn start_forget(
     credential: &Credential,
     machine: &ployz_core::Machine,
     approval: Option<&str>,
+    request_key: &str,
 ) -> Result<String, StoreCallError> {
     start_run(
         credential,
@@ -225,6 +228,7 @@ pub(crate) async fn start_forget(
         &format!("servers/{}/forget", machine.id),
         &serde_json::json!({ "server_name": machine.name }),
         approval,
+        Some(request_key),
     )
     .await
 }

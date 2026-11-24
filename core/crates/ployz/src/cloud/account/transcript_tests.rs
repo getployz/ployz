@@ -273,9 +273,17 @@ async fn run(entry: Entry, credential: &Credential, store: &CredentialStore) -> 
             .await;
             format!("{} | revision {revision:?}", shown(result))
         }
-        Entry::StartRun => {
-            shown(start_run(credential, Method::DELETE, "servers/x", &body, Some("ap1")).await)
-        }
+        Entry::StartRun => shown(
+            start_run(
+                credential,
+                Method::DELETE,
+                "servers/x",
+                &body,
+                Some("ap1"),
+                None,
+            )
+            .await,
+        ),
         Entry::FollowRun => shown(
             follow_run::<Settled<serde_json::Value>>(
                 credential,

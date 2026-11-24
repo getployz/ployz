@@ -99,7 +99,7 @@ it.each([
 it("a call refused for lacking a reason is a failed call of type validation, with no intent", async () => {
   const caller = asTestDouble<AgentCaller>()({ userId: "user-1", organization: { id: "org-1", slug: "shop" } });
   const origin = { surface: "cloud", session: sessionIdOf("x"), client: { name: null, version: null }, serverVersion: null, userAgent: null, protocolVersion: null } as const;
-  const answer = await withPostHog(runAgentCall(caller, { tool: "environment_show", input: { intent: "  " }, key: "k", approvalId: null, page: { at: "organization" }, origin }) as Effect.Effect<unknown>);
+  const answer = await withPostHog(runAgentCall(caller, { tool: "environment_show", input: { intent: "  " }, key: "k", page: { at: "organization" }, origin }) as Effect.Effect<unknown>);
   expect(answer).toEqual({ outcome: { ok: false, refusal: { code: "invalid_argument", message: INTENT_REFUSAL, details: null } } });
   const events = await flushed();
   expect(events).toHaveLength(1);
@@ -110,7 +110,7 @@ it("a call refused for lacking a reason is a failed call of type validation, wit
 it("a tool the catalog does not have is an $mcp_unknown_tool, never a $mcp_tool_call", async () => {
   const caller = asTestDouble<AgentCaller>()({ userId: "user-1", organization: { id: "org-1", slug: "shop" } });
   const origin = { surface: "cloud", session: sessionIdOf("x"), client: { name: null, version: null }, serverVersion: null, userAgent: null, protocolVersion: null } as const;
-  await withPostHog(runAgentCall(caller, { tool: "my password is hunter2", input: { intent: "Try it." }, key: "k", approvalId: null, page: { at: "organization" }, origin }) as Effect.Effect<unknown>);
+  await withPostHog(runAgentCall(caller, { tool: "my password is hunter2", input: { intent: "Try it." }, key: "k", page: { at: "organization" }, origin }) as Effect.Effect<unknown>);
   const events = await flushed();
   expect(events.map(({ event }) => event)).toEqual(["$mcp_unknown_tool"]);
   expect(JSON.stringify(events)).not.toContain("hunter2");

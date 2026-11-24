@@ -225,6 +225,7 @@ impl<'m> Store<'m> {
             .ok()
             .flatten()
             .cloned();
+        let mut said_yes = approval.is_some();
         loop {
             let refused = match self.backend.write(command, trusted, approval.as_deref()) {
                 Err(StoreCallError::Refused(refused)) => refused,
@@ -234,7 +235,7 @@ impl<'m> Store<'m> {
                 }
                 written => return written,
             };
-            let (Backend::Cloud(runtime, credential), Some(asked), false) =
+            let (Backend::Cloud(..), Some(asked), false) =
                 (&self.backend, Asked::of(&refused), crate::ui::json())
             else {
                 return Err(StoreCallError::Refused(refused));
@@ -244,8 +245,12 @@ impl<'m> Store<'m> {
                     .ok()
                     .as_ref(),
             );
-            let retry = self.approving(&asked.id);
-            approval = Some(approval::settle(runtime, credential, verb, &asked, retry)?);
+            if said_yes {
+                return Err(StoreCallError::Stopped(approval::moved(verb, refused)));
+            }
+            let retry = self.approving(asked.digest());
+            approval = Some(approval::settle(verb, &asked, retry)?);
+            said_yes = true;
         }
     }
 

@@ -45,8 +45,9 @@ const PROGRESS = {
 function DecidedProposal({ proposal, onDismiss }: { proposal: ProposalView; onDismiss?: () => void }) {
   const place = `${proposal.project}/${proposal.environment}`;
   const approved = proposal.status === "approved";
+  const outcome = approved ? "Approved" : proposal.withdrawn ? "Withdrawn" : "Denied";
   return (
-    <Card size="sm" aria-label={`${titleOf(proposal, place)} ${approved ? "approved" : "denied"}`}>
+    <Card size="sm" aria-label={`${titleOf(proposal, place)} ${outcome.toLowerCase()}`}>
       <CardHeader className="flex items-center justify-between gap-2">
         <div className="flex min-w-0 flex-col gap-0.5">
           <CardTitle>{titleOf(proposal, place)}</CardTitle>
@@ -55,7 +56,7 @@ function DecidedProposal({ proposal, onDismiss }: { proposal: ProposalView; onDi
           </CardDescription>
         </div>
         <div className="flex items-center gap-1">
-          <Badge variant={approved ? "secondary" : "outline"}>{approved ? "Approved" : "Denied"}</Badge>
+          <Badge variant={approved ? "secondary" : "outline"}>{outcome}</Badge>
           {onDismiss && <Button size="icon-sm" variant="ghost" aria-label="Dismiss" onClick={onDismiss}><XIcon /></Button>}
         </div>
       </CardHeader>
@@ -112,6 +113,8 @@ function PendingProposal({ organizationSlug, proposal }: { organizationSlug: str
   };
   const approve = () => begin() && decide({ approve: {} });
   const deny = () => begin() && decide(denial(reason));
+  // The one who asked, waiting on an owner or admin, can only take it back.
+  const withdraws = proposal.mine && !proposal.decides;
 
   return (
     <Card state={destroys ? "destructive" : undefined} size="sm" aria-label={`${titleOf(proposal, place)} need approval`}>
@@ -144,9 +147,15 @@ function PendingProposal({ organizationSlug, proposal }: { organizationSlug: str
         {reason !== null && (
           <DenyReason value={reason} onChange={setReason} />
         )}
+        {withdraws && <p className="text-xs text-muted-foreground">Waiting on an owner or admin.</p>}
         {refused && <p role="alert" className="text-xs text-destructive">{refused}</p>}
       </CardContent>
       <CardFooter className="gap-1.5">
+        {withdraws ? (
+          <Button size="sm" variant="outline" disabled={sending} onClick={() => void (begin() && decide({ reject: {} }))}>
+            Withdraw
+          </Button>
+        ) : <>
         {proposal.steps.some(isDeploy) ? (
           <Button size="sm" disabled={sending} render={<Link to="/cloud/$organizationSlug/approve/$proposalId" params={{ organizationSlug, proposalId: proposal.id }} />}>
             Review and approve
@@ -160,6 +169,7 @@ function PendingProposal({ organizationSlug, proposal }: { organizationSlug: str
           Deny
         </Button>
         {reason === null && <DenyWithReasonButton onClick={() => setReason("")} />}
+        </>}
       </CardFooter>
     </Card>
   );

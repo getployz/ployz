@@ -1,7 +1,8 @@
 import "@tanstack/react-start/server-only";
 import { Effect } from "effect";
 import { releaseClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
-import type { Gate, OperationAsked } from "#/modules/approvals/approvals.server";
+import type { OperationAsked } from "#/modules/operations/asked";
+import type { Gate } from "#/modules/operations/gate.server";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import type { StoreResult } from "#/modules/config-store/store.contract";
 import type { StoreRefusal } from "#/lib/refusal";
@@ -27,8 +28,7 @@ export const organizationRemovalAsked = ({ id, slug }: { id: string; slug: strin
   name: slug,
   preview: { organization: slug },
   effects: [{ kind: "removes_organization", name: slug, node: id, path: `organizations/${id}` }],
-  // Carrying its approval again finishes the removal it began, once a Server that was offline confirms.
-  recorded: true,
+  ployz: `ployz org rm ${slug}`,
 });
 
 /**

@@ -43,10 +43,8 @@ export const resizeVolumeServerFn = createServerFn({ method: "POST" })
     const admission = yield* runVolume(
       context.caller,
       { volumeId: data.volumeId, environment: data.environment, kind: "resize", args: { maximum_bytes: data.maximumBytes } },
-      { key: data.requestId, approvalId: null },
+      { key: data.requestId, approved: null },
     );
-    // A grow in a Protected Environment its asker can't protect waits for someone who can.
-    if (!admission.ok && admission.refusal.code === "approval_required") return { requested: true as const };
     if (!admission.ok) return yield* new Conflict({ message: admission.refusal.message, userFacing: true });
     return { id: admission.id };
   })));

@@ -135,7 +135,6 @@ export const requestMachineRemoveAttempt = Effect.fn(
   machineId: MachineId;
   confirmDataLoss: DataLossIdentity[];
   noReset?: boolean;
-  approvalId?: string | null;
   id?: string;
   /** The name the caller showed for the Server, which its run keeps; null when it showed none. */
   serverName: MachineName | null;
@@ -151,7 +150,6 @@ export const requestMachineRemoveAttempt = Effect.fn(
       serverName: input.serverName || null,
       confirmDataLoss: input.confirmDataLoss,
       noReset: input.noReset ?? false,
-      approvalId: input.approvalId ?? null,
       state: "pending",
     })
     .returning()
@@ -166,30 +164,6 @@ export const requestMachineRemoveAttempt = Effect.fn(
     );
   }
   return toMachineRemoveAttemptView(attempt);
-});
-
-export const machineRemoveAttemptConsuming = Effect.fn(
-  "MachineRemovalRepository.consuming",
-)(function* (
-  organizationId: string,
-  approvalId: string,
-  machineId: MachineId,
-  noReset: boolean,
-) {
-  const { drizzle } = yield* Database;
-  const [attempt] = yield* drizzle
-    .select({ id: schemaMachineRemoveAttempt.id })
-    .from(schemaMachineRemoveAttempt)
-    .where(
-      and(
-        eq(schemaMachineRemoveAttempt.organizationId, organizationId),
-        eq(schemaMachineRemoveAttempt.approvalId, approvalId),
-        eq(schemaMachineRemoveAttempt.machineId, machineId),
-        eq(schemaMachineRemoveAttempt.noReset, noReset),
-      ),
-    )
-    .limit(1);
-  return attempt?.id ?? null;
 });
 
 /**

@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { it } from "@effect/vitest";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
-import { and, asc, desc, eq, sql, type Table } from "drizzle-orm";
+import { and, desc, eq, sql, type Table } from "drizzle-orm";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { PgAsyncSelectBuilder, PgTable, SelectedFields } from "drizzle-orm/pg-core";
 import { Effect, Fiber, Layer, Option, Schema } from "effect";
@@ -14,9 +14,8 @@ import { CATALOG } from "#/modules/agent/agent-tools";
 import { asTestDouble } from "#/lib/test-double";
 import { McpAnalytics, type McpAnalyticsService, type McpCapture } from "#/modules/agent/agent-calls.server";
 import { serveAuth, serveMcpMetadata, serveRegistryProof, serveRemoteMcp } from "#/modules/agent/remote-mcp.server";
-import { decideApproval, pendingApprovals } from "#/modules/approvals/approvals.server";
+import { pendingApprovals } from "#/modules/approvals/approvals.server";
 import { decideProposal } from "#/modules/proposals/proposals.server";
-import { operationApprovals } from "#/modules/approvals/tables";
 import type { PolarService } from "#/modules/billing/polar-provider.server";
 import type { Caller } from "#/modules/identity/actor";
 import type { JsonObject } from "#/db/tables";
@@ -368,7 +367,7 @@ it.live("a connected agent lists the tools, reads Shop, and a refused call leave
     });
     const { tools } = yield* Effect.promise(() => agent.client.listTools());
     expect(tools.map((tool) => tool.name)).toEqual(expect.arrayContaining(["environment_show", "service_add", "deploy"]));
-    expect(tools.find((tool) => tool.name === "deploy")?.inputSchema.properties).toHaveProperty("approval");
+    expect(tools.find((tool) => tool.name === "deploy")?.inputSchema.properties).not.toHaveProperty("approval");
     // Every tool asks why it is called, and the feedback tool, which is not a call into Ployz, does not.
     for (const tool of tools.filter(({ name }) => name !== "send_feedback")) expect(tool.inputSchema, tool.name).toMatchObject({ properties: { intent: { type: "string" } }, required: expect.arrayContaining(["intent"]) });
     expect(tools.map((tool) => tool.name)).toContain("send_feedback");
@@ -527,7 +526,7 @@ it.live("a destroying Deploy waits on one approval link, and the person's approv
 /** A JSON key a person's approval would leave behind: the signed bundle, a grant, a signature or the browser's key. */
 const SECRET_KEY = /"(bundle|grant|signature|browserKey|approvals)":/;
 
-it.live("a remote agent reaches a restart through one Approval card or a proposal's card, and no answer holds a bundle, grant, signature or key", () =>
+it.live("a remote agent reaches a restart through a proposal's link, alone or staged, and no answer holds a bundle, grant, signature or key", () =>
   Effect.gen(function* () {
     const shop = yield* hostedShop();
     const agent = yield* agentWith(shop, yield* connect(shop, yield* registerAgent(shop)));
@@ -544,8 +543,7 @@ it.live("a remote agent reaches a restart through one Approval card or a proposa
     const call = (name: string, args: JsonObject) => agent.call(name, args).pipe(Effect.tap((answer) => Effect.sync(() => answers.push(answer))));
 
     const single = yield* call("service_restart", { ...SHOP, service: "web" });
-    expect(single).toMatchObject({ isError: true, body: { ok: false, approval_required: { url: expect.stringMatching(/^http:\/\/localhost:3000\/cloud\/shop\?chat=/) } } });
-    expect(single.body.approval_required?.approval_id).toEqual(expect.any(String));
+    expect(single).toMatchObject({ isError: false, body: { ok: true, value: { status: "presented", url: expect.stringMatching(/^http:\/\/localhost:3000\/cloud\/shop\/approve\//) } } });
 
     const created = yield* call("proposal_create", SHOP);
     const proposal = Schema.decodeUnknownSync(Schema.Struct({ value: Schema.Struct({ proposal_id: Schema.String }) }))(created.body).value.proposal_id;
@@ -556,49 +554,6 @@ it.live("a remote agent reaches a restart through one Approval card or a proposa
     expect(yield* call("proposal_status", { proposal })).toMatchObject({ isError: false, body: { ok: true, value: { id: proposal, status: "presented" } } });
 
     expect(JSON.stringify(answers)).not.toMatch(SECRET_KEY);
-  }).pipe(Effect.scoped), 30_000);
-
-// Bo asks to make Ada an admin. Once it's approved, another owner makes Bo a member while his call waits on the member
-// rows, so the run's locked recheck refuses what the unlocked check let in.
-it.live("an approved Cloud command that refused once it ran hands back a retry naming its approval, which repeats without asking again", () =>
-  Effect.gen(function* () {
-    const shop = yield* hostedShop();
-    const agent = yield* agentWith(shop, yield* connect(shop, yield* registerAgent(shop)));
-    const promote = { member: "ada@example.test", role: "admin" };
-    const asked = yield* agent.call("org_member_role", promote);
-    const approvalId = asked.body.approval_required?.approval_id ?? expect.fail("the role change did not ask for approval");
-    const [approval] = yield* shop.provided(pendingApprovals(ORGANIZATION));
-    const bo: Caller = { ...shop.ada, userId: shop.boId, credential: { kind: "session", id: "session-bo" } };
-    yield* shop.provided(decideApproval(bo, approvalId, { approve: { digest: approval?.digest ?? "" } }));
-
-    const lockWaiter = Effect.promise(() => vi.waitFor(async () => {
-      const waiting = await Effect.runPromise(shop.provided(Effect.gen(function* () {
-        const { drizzle } = yield* Database;
-        return yield* drizzle.execute(sql`select 1 from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'`, "objects");
-      }).pipe(Effect.orDie)));
-      expect(waiting.length).toBeGreaterThan(0);
-    }, { timeout: 10_000 }));
-    const running = yield* shop.provided(Effect.gen(function* () {
-      const database = yield* Database;
-      return yield* database.transaction(Effect.gen(function* () {
-        const { drizzle } = yield* Database;
-        yield* drizzle.select({ userId: member.userId }).from(member).where(eq(member.organizationId, ORGANIZATION)).orderBy(asc(member.userId)).for("update");
-        yield* drizzle.update(member).set({ role: "member" }).where(and(eq(member.userId, shop.boId), eq(member.organizationId, ORGANIZATION)));
-        const running = yield* Effect.forkDetach(agent.call("org_member_role", { ...promote, approval: approvalId }));
-        yield* lockWaiter;
-        return running;
-      }));
-    }));
-    const refused = yield* Fiber.join(running);
-    const retry = { tool: "org_member_role", input: { ...promote, approval: approvalId } };
-    expect(refused).toMatchObject({ isError: true, body: { ok: false, refusal: { message: "Only an owner or admin of this Organization can do this.", writes: "unknown", retry } } });
-    const [handedBack] = yield* shop.provided(Effect.gen(function* () {
-      const { drizzle } = yield* Database;
-      return yield* drizzle.select({ usedAt: operationApprovals.usedAt }).from(operationApprovals).where(eq(operationApprovals.id, approvalId));
-    }));
-    expect(handedBack).toEqual({ usedAt: null });
-    expect(yield* agent.call("org_member_role", retry.input)).toMatchObject({ isError: true, body: { ok: false, refusal: { retry } } });
-    expect(yield* shop.provided(pendingApprovals(ORGANIZATION))).toEqual([]);
   }).pipe(Effect.scoped), 30_000);
 
 it.live("a keyed create replays under the same request key, which the result and the response header name", () =>

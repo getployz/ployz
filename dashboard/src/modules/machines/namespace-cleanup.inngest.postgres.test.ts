@@ -55,8 +55,8 @@ describe("clean-namespace", () => {
       }),
     ))) as typeof runInngestEffect;
 
-  const request = (approvalId: string | null = null, attemptId: string = crypto.randomUUID()) =>
-    runEffect(requestNamespaceCleanup(caller, { attemptId, namespace: "left-behind", confirmDataLoss: [data, cache], approvalId }));
+  const request = (attemptId: string = crypto.randomUUID()) =>
+    runEffect(requestNamespaceCleanup(caller, { attemptId, namespace: "left-behind", confirmDataLoss: [data, cache] }));
   const clean = (cleanupId: string, runId = "run-clean") => new InngestTestEngine({
     function: createCleanNamespace(new Inngest({ id: "test" }), runEffect),
     events: [{ name: "namespace/cleanup.requested", data: { cleanupId, organizationId } }],
@@ -108,15 +108,6 @@ describe("clean-namespace", () => {
 
     expect((await clean(cleanupId, "run-duplicate")).result).toEqual({ cleanupId, state: "finished" });
     expect(destroyCalls).toHaveLength(1);
-  });
-
-  it("answers a retry carrying the consumed approval with the same clean", async () => {
-    const approvalId = "00000000-0000-4000-8000-000000000ca1";
-    const cleanupId = await request(approvalId);
-    await clean(cleanupId);
-
-    expect(await request(approvalId)).toBe(cleanupId);
-    expect((await rows()).map(({ id }) => id)).toEqual([cleanupId]);
   });
 
   it("leaves the row pending while the Cluster is unreachable, so the retried step cleans it", async () => {

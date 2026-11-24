@@ -10,6 +10,7 @@ Cloudflare in front of every request.
 
 Both ways work with the same services and domains. Ployz runs the tunnel on every server that
 takes web traffic, so a request reaches your app whichever server Cloudflare picks.
+The tunnel carries TCP and UDP. It doesn't carry `ping`, so a WARP client can't ping through it.
 
 A new organization can choose Cloudflare Tunnel before its first server, on the card that
 gives the install line; see

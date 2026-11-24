@@ -707,6 +707,13 @@ fn a_save_into_protected_production_asks_an_admin_even_when_cloud_requires_nothi
 
     let refused = publish(&store, &who, "production", false).unwrap_err();
     let approved = admin_approved(refused, "deploy");
+    // The member's own CLI carrying the same digest is not an admin's yes.
+    let own = Trusted {
+        from_cli: true,
+        ..approved.clone()
+    };
+    let asked = publish_as(&store, &who, "production", &own).unwrap_err();
+    assert_eq!(asked.details["protected"], json!(true), "{asked:?}");
     assert!(
         publish_as(&store, &who, "production", &approved)
             .unwrap()
@@ -726,6 +733,58 @@ fn a_save_into_protected_production_asks_an_admin_even_when_cloud_requires_nothi
     )
     .unwrap();
     assert!(publish(&store, &who, "production", true).unwrap().created);
+}
+
+#[test]
+fn a_yes_to_a_first_save_asks_again_once_its_draft_is_discarded() {
+    let (store, system) = shop();
+    store.write(&system, &set("staging", true)).unwrap();
+    let who = person(&system);
+    store
+        .write_trusted(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse(uuid(6)).unwrap(),
+                environment: at("staging"),
+                name: ServiceName::parse("api").unwrap(),
+                image: Some("api:1".into()),
+                template: None,
+            },
+            &acme_as(false),
+        )
+        .unwrap();
+    let asked = publish(&store, &who, "staging", false).unwrap_err();
+    assert_eq!(asked.code, RpcErrorCode::from("approval_required"));
+    store
+        .write_trusted(
+            &who,
+            &ployz_store::Discard {
+                environment: at("staging"),
+                target: None,
+                path: None,
+                version: None,
+            },
+            &acme_as(false),
+        )
+        .unwrap();
+
+    let carrying = |refused: &RpcError| Trusted {
+        approval: Approval::Approved(
+            ApprovalDigest::parse(refused.details["approval"].as_str().unwrap()).unwrap(),
+        ),
+        ..acme_as(false)
+    };
+    let stale = publish_as(&store, &who, "staging", &carrying(&asked)).unwrap_err();
+    assert_eq!(
+        stale.code,
+        RpcErrorCode::from("approval_required"),
+        "{stale:?}"
+    );
+    assert_ne!(stale.details["approval"], asked.details["approval"]);
+    // A yes to the Save as it stands, or none, saves nothing, as before.
+    let matching = publish_as(&store, &who, "staging", &carrying(&stale)).unwrap();
+    assert_eq!(matching.saved, None);
+    assert_eq!(publish(&store, &who, "staging", false).unwrap().saved, None);
 }
 
 /// Cloud's evidence for a token of someone who can protect, whose grant leaves
@@ -1056,4 +1115,29 @@ fn removing_a_project_with_a_protected_environment_needs_environments_protect() 
     let (store, system) = shop();
     let admin = remove(&store, &person(&system), true);
     assert!(passed(&admin), "{admin:?}");
+}
+
+#[test]
+fn a_yes_to_a_sync_asks_again_once_production_is_unprotected() {
+    let (store, system) = shop();
+    let who = person(&system);
+    fix_web(&store, &who);
+    edit(
+        &store,
+        &who,
+        "fix-web",
+        &[("web.env.FLAG", Some(json!("on")))],
+        false,
+    )
+    .unwrap();
+    let approved = admin_approved(sync_up(&store, &who, false).unwrap_err(), "sync");
+    store.write(&system, &set("production", false)).unwrap();
+
+    let stale = sync_as(&store, &who, &approved).unwrap_err();
+    assert_eq!(stale.code, RpcErrorCode::from("approval_required"));
+    assert_eq!(stale.message, "A human must approve this sync first.");
+    assert!(production_env(&store, &who).is_none());
+    // Without a yes, nothing asks there now.
+    sync_up(&store, &who, false).unwrap();
+    assert_eq!(production_env(&store, &who), Some(json!("on")));
 }

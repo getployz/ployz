@@ -2,7 +2,6 @@ import { it } from "@effect/vitest";
 import type { ConfigCommand, JsonValue } from "@ployz/sdk";
 import { Effect } from "effect";
 import { describe, expect } from "vitest";
-import { actDenial } from "#/modules/agent/agent-runner.server";
 import type { AgentCaller } from "#/modules/identity/actor";
 import { runAsAgent } from "#/test/agent-call";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
@@ -204,7 +203,7 @@ const tools = Effect.fn(function* (seed: boolean) {
   const caller: AgentCaller = { userId, organization: { id: ORGANIZATION, slug: "shop" }, credential: { kind: "session", id: "session-1" }, role: "owner", support: null, via: "agent" };
   let calls = 0;
   return ({ tool, input, callKey = `call-${++calls}` }: Step) =>
-    runAsAgent(caller, { tool, input, key: `run-1:${callKey}`, approvalId: null, page: { at: "here", project: "shop", environment: "production" } }).pipe(
+    runAsAgent(caller, { tool, input, key: `run-1:${callKey}`, page: { at: "here", project: "shop", environment: "production" } }).pipe(
       Effect.map((result) => "asking" in result ? result : result.outcome),
       Effect.provide(services),
     );
@@ -223,13 +222,3 @@ describe("agent runner", () => {
   }
 });
 
-it("a denied Volume run names the Volume its approval named", () => {
-  const denied = (verb: string) => ({
-    code: "approval_denied",
-    message: `A human denied the request to ${verb} db: not now`,
-    details: { approval: { reason: "not now", review: { effects: [], operation: { verb, name: "db", preview: {} } } } },
-  });
-  const volume = (run: { run: "release" | "remove_mirror"; loss: null }) => ({ action: "volume", volume: "v".repeat(32), run }) as const;
-  expect(actDenial(volume({ run: "release", loss: null }), denied("release")).message).toBe("A human denied this release of db: not now");
-  expect(actDenial(volume({ run: "remove_mirror", loss: null }), denied("remove_mirror")).message).toBe("A human denied this mirror removal of db: not now");
-});

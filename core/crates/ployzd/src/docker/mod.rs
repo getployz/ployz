@@ -1944,7 +1944,9 @@ mod tests {
             );
             let host = body.host_config.unwrap();
             assert_eq!(host.log_config, Some(container_log_config()));
-            host.sysctls
+            let mut sysctls = host.sysctls.unwrap_or_default();
+            sysctls.remove("net.ipv4.ping_group_range");
+            (!sysctls.is_empty()).then_some(sysctls)
         };
         let ingress_name = ingress.name.to_string();
         assert_eq!(

@@ -133,8 +133,7 @@ export const serversCliRoutes = {
           details: { next: `ployz org use ${input.organization}` },
         });
       }
-      // Nothing to forget skips the gate, so an approval it carries is checked first.
-      const carried = yield* approvalCarried(caller, request, { command: "forget", subject: `servers:${caller.organization.id}` });
+      const carried = approvalCarried(request);
       if (carried !== null) return carried;
       const forgotten = yield* forgetServers(forgetter(caller), (checked) => gated(caller, request)(forgetServersAsked(caller.organization, checked)));
       return forgotten.ok ? { organization: caller.organization.slug, ...forgotten.value } : cliRefusalResponse(forgotten.refusal);

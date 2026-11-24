@@ -9,7 +9,7 @@ export const Route = createFileRoute("/_protected/cloud/$organizationSlug/approv
 function RouteComponent() {
   const { organizationSlug, proposalId } = Route.useParams();
   return (
-    <DashboardPage width="content" title="Approve a deploy">
+    <DashboardPage width="content" title="Approve">
       <ApproveDeploy organizationSlug={organizationSlug} id={proposalId} />
     </DashboardPage>
   );

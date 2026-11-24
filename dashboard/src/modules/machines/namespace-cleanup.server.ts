@@ -95,7 +95,7 @@ const enqueueCleanup = (row: CleanupRow) =>
 
 /**
  * A clean the signed-in CLI asked for, deleting exactly the Volumes it previewed, under the attempt its request admits.
- * Answers the clean that consumed the same approval, or the one already active on the Namespace, instead of a second.
+ * Answers the clean already active on the Namespace instead of a second.
  */
 export const requestNamespaceCleanup = Effect.fn("NamespaceCleanup.request")(function* (
   caller: { readonly organizationId: string; readonly userId: string },
@@ -103,7 +103,6 @@ export const requestNamespaceCleanup = Effect.fn("NamespaceCleanup.request")(fun
     readonly attemptId: string;
     readonly namespace: string;
     readonly confirmDataLoss: readonly DataLossIdentity[];
-    readonly approvalId: string | null;
   },
 ) {
   const { drizzle } = yield* Database;
@@ -112,18 +111,13 @@ export const requestNamespaceCleanup = Effect.fn("NamespaceCleanup.request")(fun
     organizationId: caller.organizationId,
     namespace: input.namespace,
     requestedByUserId: caller.userId,
-    approvalId: input.approvalId,
     confirmDataLoss: [...input.confirmDataLoss],
   }).onConflictDoNothing().returning();
   if (inserted !== undefined) {
     yield* enqueueCleanup(inserted);
     return inserted.id;
   }
-  const consumed = input.approvalId === null ? [] : yield* drizzle.select().from(namespaceCleanup).where(and(
-    eq(namespaceCleanup.organizationId, caller.organizationId),
-    eq(namespaceCleanup.approvalId, input.approvalId),
-  ));
-  const [active] = consumed.length > 0 ? consumed : yield* drizzle.select().from(namespaceCleanup).where(and(
+  const [active] = yield* drizzle.select().from(namespaceCleanup).where(and(
     eq(namespaceCleanup.organizationId, caller.organizationId),
     eq(namespaceCleanup.namespace, input.namespace),
     rows.active,

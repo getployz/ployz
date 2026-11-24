@@ -57,16 +57,16 @@ as below.
 Before Ployz Cloud queues a whole-environment deploy that prunes, it asks your servers what runs
 there. A prune that removes a service is destructive, like `ployz service rm`:
 
-- Where destructive actions ask first, and for every deploy an agent makes, the approval lists
-  each service the prune removes, such as **Removes service extra2**.
+- Where destructive actions ask first, and for every deploy an agent makes, what you review before
+  you say yes lists each service the prune removes, such as **Removes service extra2**.
 - A [Deploy token](../account/permissions.md) can't remove one. Its deploy is refused with
   `Needs changes:destroy: this deploy removes extra2, running in this environment but not part of it. Deploy with --no-prune to keep them.`
   When nothing else runs, it deploys as usual.
 - When Cloud can't ask every server that should answer, a Deploy token's deploy is refused the same
-  way. Any other deploy asks first where destructive actions do, and its approval says it also
+  way. Any other deploy asks first where destructive actions do, and what it shows says it also
   removes any other service running in the environment. A server Ployz already knows is down isn't
   asked. When a server didn't answer because large packets to it are dropped, the refusal and the
-  approval say so, such as
+  review say so, such as
   `Couldn't check every server: large packets to web-3 are dropped on the mesh path`. See
   [Large packets to a server are dropped](../troubleshooting/servers.md#large-packets-to-a-server-are-dropped).
 - A redeploy of a deploy that pruned prunes again, and asks or is refused the same way, by what runs

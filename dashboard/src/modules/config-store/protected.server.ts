@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import type { ConfigCommand } from "@ployz/sdk";
 import { Effect } from "effect";
-import type { OperationAsked } from "#/modules/approvals/approvals.server";
+import type { OperationAsked } from "#/modules/operations/asked";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import { gitSourceEnvironment } from "#/modules/config-store/git-evidence.server";
 import { type Caller, callerEnvironments } from "#/modules/identity/actor";

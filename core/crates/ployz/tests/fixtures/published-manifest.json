@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "revision": "9ca37b6905c9",
+  "revision": "a869b13a3594",
   "permissions": [
     "org:read",
     "org:settings",
@@ -270,15 +270,14 @@
         "cluster",
         "private-access"
       ],
-      "about": "Turn Private Access over Tailscale on or off. Never pass an auth key: whoever approves pastes it.",
+      "about": "Turn Private Access on or off in Ployz Cloud, under Integrations.",
       "title": "Turn Private Access on or off",
       "examples": [
-        "ployz cluster private-access on",
         "ployz cluster private-access off"
       ],
       "requires": "servers:operate",
-      "kind": "write",
-      "gate": "ask",
+      "kind": "read",
+      "gate": "never",
       "removes": false,
       "idempotent": true,
       "open_world": false,
@@ -296,7 +295,7 @@
               "on",
               "off"
             ],
-            "description": "on or off. Turning it on waits for an owner or admin to approve and paste the Tailscale auth key in Ployz Cloud."
+            "description": "Turn Private Access on or off in Ployz Cloud, under Integrations."
           }
         },
         "required": [
@@ -313,7 +312,7 @@
               "on",
               "off"
             ],
-            "description": "on or off. Turning it on waits for an owner or admin to approve and paste the Tailscale auth key in Ployz Cloud."
+            "description": "Turn Private Access on or off in Ployz Cloud, under Integrations."
           },
           "routers": {
             "anyOf": [

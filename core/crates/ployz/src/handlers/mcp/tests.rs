@@ -1,5 +1,5 @@
 use std::io::{BufRead, Read, Write as _};
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Receiver, channel};
 
 use ployz_agent_tools::{Answer as Answered, RequestKey};
 use ployz_store::{
@@ -104,8 +104,6 @@ struct Seen {
 struct Fake {
     url: String,
     seen: Receiver<Seen>,
-    /// A human's decision on `apr_1` in the Ployz Cloud sidebar.
-    human: Sender<Value>,
 }
 
 impl Fake {
@@ -166,21 +164,14 @@ fn incoming(stream: &std::net::TcpStream) -> Seen {
     }
 }
 
-/// A Ployz Cloud that answers `script` and records each decision on an approval. With
-/// `asking`, a write without an approval gets that `approval_required` refusal.
+/// A Ployz Cloud that answers `script`. With `asking`, a write without an approval gets
+/// that `approval_required` refusal.
 fn fake_cloud(mut script: Vec<Scripted>, asking: Option<Value>) -> Fake {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let (saw, seen) = channel();
-    let (human, sidebar) = channel();
     std::thread::spawn(move || {
-        let mut decided = HashMap::new();
         for stream in listener.incoming() {
-            decided.extend(
-                sidebar
-                    .try_iter()
-                    .map(|decision| ("/api/cli/approvals/apr_1".to_owned(), decision)),
-            );
             let mut stream = stream.unwrap();
             let Seen {
                 path,
@@ -190,11 +181,9 @@ fn fake_cloud(mut script: Vec<Scripted>, asking: Option<Value>) -> Fake {
                 via,
                 body,
             } = incoming(&stream);
-            let (status, reply) = if path.starts_with("/api/cli/approvals/") && body.is_null() {
-                standing(&decided, &path)
-            } else if path.starts_with("/api/cli/approvals/") {
-                decide(&mut decided, &path, &body)
-            } else if let (Some(asking), true, None) = (&asking, is_write(&path), &approval) {
+            let (status, reply) = if let (Some(asking), true, None) =
+                (&asking, is_write(&path), &approval)
+            {
                 ("409 Conflict", asking.to_string())
             } else if let Some(at) = script
                 .iter()
@@ -231,68 +220,8 @@ fn fake_cloud(mut script: Vec<Scripted>, asking: Option<Value>) -> Fake {
             .unwrap();
         }
     });
-    Fake { url, seen, human }
+    Fake { url, seen }
 }
-
-fn standing(decided: &HashMap<String, Value>, path: &str) -> (&'static str, String) {
-    let status = match decided.get(path) {
-        None => "pending",
-        Some(decision) if decision.get("approve").is_some() => "approved",
-        Some(_) => "denied",
-    };
-    (
-        "200 OK",
-        json!({ "approval": { "status": status } }).to_string(),
-    )
-}
-
-fn decide(
-    decided: &mut HashMap<String, Value>,
-    path: &str,
-    decision: &Value,
-) -> (&'static str, String) {
-    if !cloud_takes(decision) {
-        return (
-            "422 Unprocessable Entity",
-            r#"{"error":{"code":"invalid_request","message":"not a decision"}}"#.to_owned(),
-        );
-    }
-    if decided
-        .get(path)
-        .is_some_and(|first: &Value| first.get("approve") != decision.get("approve"))
-    {
-        return (
-            "409 Conflict",
-            r#"{"error":{"code":"conflict","message":"This approval was already decided elsewhere (approved)."}}"#
-                .to_owned(),
-        );
-    }
-    decided.insert(path.to_owned(), decision.clone());
-    ("200 OK", "{}".to_owned())
-}
-
-/// Cloud's `ApprovalDecision`: an approval names a digest, and a rejection's reason is
-/// a string or absent.
-fn cloud_takes(decision: &Value) -> bool {
-    match (decision.get("approve"), decision.get("reject")) {
-        (Some(approve), None) => approve
-            .get("digest")
-            .and_then(Value::as_str)
-            .is_some_and(|digest| !digest.is_empty()),
-        (None, Some(reject)) => reject
-            .as_object()
-            .is_some_and(|reject| reject.get("reason").is_none_or(Value::is_string)),
-        _ => false,
-    }
-}
-
-fn decisions(seen: &[Seen]) -> Vec<Value> {
-    seen.iter()
-        .filter(|seen| seen.path.starts_with("/api/cli/approvals/") && !seen.body.is_null())
-        .map(|seen| seen.body.clone())
-        .collect()
-}
-
 fn writes(seen: &[Seen]) -> Vec<&Seen> {
     seen.iter().filter(|seen| is_write(&seen.path)).collect()
 }
@@ -692,9 +621,9 @@ async fn tools_list_serves_the_catalog_with_its_hints_and_schemas() {
         }
         assert_eq!(tool["outputSchema"], def.output_schema, "{tool}");
         assert_eq!(
-            tool["inputSchema"]["properties"]["approval"]["type"] == "string",
-            def.gate != Gate::Never,
-            "{tool}"
+            tool["inputSchema"]["properties"]["approval"],
+            Value::Null,
+            "an agent never carries a yes: {tool}"
         );
     }
     let hints = |name: &str| {
@@ -792,21 +721,6 @@ async fn an_unknown_tool_is_an_invalid_params_error() {
     assert_eq!(unknown["error"]["message"], "no tool named kubectl");
 }
 
-#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
-#[tokio::test]
-async fn a_gated_compiled_tool_takes_its_approval_as_one_string() {
-    let place = transcript("deploy", in_org()).place;
-    let mut client = Client::initialized(on_local(place), json!({})).await;
-    let refused = client
-        .call(2, "deploy", json!({ "services": ["web"], "approval": 5 }))
-        .await;
-    assert_eq!(refused["error"]["code"], -32602, "{refused}");
-    assert_eq!(
-        refused["error"]["message"], "`approval` takes one string",
-        "{refused}"
-    );
-}
-
 #[tokio::test]
 async fn a_replayed_request_without_a_key_writes_under_the_same_id() {
     let transcript = transcript("service_add", in_org());
@@ -840,7 +754,6 @@ fn deploy_asks() -> Value {
         "code": "approval_required",
         "message": "A human must approve this first: this deploy removes Service worker",
         "details": {
-            "approval_id": "apr_1",
             "approval": "3:abc",
             "effects": [
                 { "kind": "removes_service", "name": "worker", "node": "svc_1", "path": "worker" },
@@ -862,47 +775,22 @@ fn deploy_asks() -> Value {
     }})
 }
 
-const REVIEW: &str =
-    "This deploy destroys 1 thing:\n  \u{2715} removes Service worker\n  + 2 other changes";
-
 struct Approving {
     fake: Fake,
     server: Server,
     deploy: Transcript,
 }
 
-fn approving_with() -> Approving {
-    approving_as(Vec::new())
-}
-
-/// [`approving_with`], with Cloud also answering `also`.
-fn approving_as(also: Vec<Scripted>) -> Approving {
+/// A deploy Cloud asks about, as it asks a person: `approval_required` with its digest.
+fn approving() -> Approving {
     let deploy = transcript("deploy", in_org());
-    // A second call on the same server reads again before it writes.
-    let mut twice = script(&deploy);
-    twice.extend(script(&deploy));
-    twice.extend(also);
-    let fake = fake_cloud(twice, Some(deploy_asks()));
+    let fake = fake_cloud(script(&deploy), Some(deploy_asks()));
     let server = on_cloud(&fake, deploy.place.clone());
     Approving {
         fake,
         server,
         deploy,
     }
-}
-
-fn approving() -> Approving {
-    approving_with()
-}
-
-/// The deploy wrote twice, the second time with the approval and the same command.
-fn resent(seen: &[Seen]) {
-    let [first, second] = writes(seen)[..] else {
-        panic!("expected two writes: {seen:?}");
-    };
-    assert_eq!(first.approval, None, "{seen:?}");
-    assert_eq!(second.approval.as_deref(), Some("apr_1"), "{seen:?}");
-    assert_eq!(first.body, second.body, "{seen:?}");
 }
 
 /// The deploy wrote once, without an approval.
@@ -913,83 +801,33 @@ fn wrote_once(seen: &[Seen]) {
     assert_eq!(write.approval, None, "{seen:?}");
 }
 
-async fn eliciting(server: Server) -> Client {
-    Client::initialized(server, json!({ "elicitation": {} })).await
-}
-
-async fn reply_to(client: &mut Client, asking: &Value, result: Value) -> Value {
-    client
-        .send(&json!({ "jsonrpc": "2.0", "id": asking.get("id"), "result": result }))
-        .await;
-    client.reply().await
-}
-
+/// Cloud's ask reaches the agent as the call's refusal. `ployz mcp` never answers it for a
+/// person: the write goes once, with no yes and the agent's own token, and no host prompt
+/// opens even when the host could show one.
 #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
 #[tokio::test]
-async fn a_host_that_elicits_asks_the_human_and_an_approval_resends_the_write() {
+async fn an_ask_from_cloud_is_the_agent_s_refusal_and_is_never_answered() {
     let Approving {
         fake,
         server,
         deploy,
     } = approving();
-    let mut client = eliciting(server).await;
-    client
-        .send(&request(
-            2,
-            "tools/call",
-            json!({ "name": "deploy", "arguments": deploy.input }),
-        ))
-        .await;
-    let asking = client.reply().await;
-    assert_eq!(asking["method"], "elicitation/create", "{asking}");
-    assert_eq!(
-        asking["params"]["message"],
-        format!("Approve this deploy to shop/production?\n{REVIEW}")
-    );
-    let schema = &asking["params"]["requestedSchema"];
-    assert_eq!(
-        schema["properties"]["approve"]["type"], "boolean",
-        "{schema}"
-    );
-    assert_eq!(schema["properties"]["reason"]["type"], "string", "{schema}");
-    assert_eq!(
-        schema["properties"]["reason"]["maxLength"], 1024,
-        "{schema}"
-    );
-    assert_eq!(schema["properties"]["name"], Value::Null, "{schema}");
-    assert_eq!(schema["required"], json!(["approve"]), "{schema}");
-    let done = reply_to(
-        &mut client,
-        &asking,
-        json!({ "action": "accept", "content": { "approve": true } }),
-    )
-    .await;
+    let home = signed_in_home(&fake, true);
+    let mut client =
+        Client::initialized(without_token(server, &home), json!({ "elicitation": {} })).await;
+    let done = at_once(client.call(2, "deploy", deploy.input.clone())).await;
     assert_eq!(done["id"], 2, "{done}");
-    let (result, refused) = outcome(&deploy);
-    assert_eq!(done["result"]["structuredContent"], result, "{done}");
-    assert_eq!(done["result"]["isError"], refused, "{done}");
-    let seen = fake.requests();
-    resent(&seen);
+    assert_eq!(done["result"]["isError"], true, "{done}");
     assert_eq!(
-        decisions(&seen),
-        [json!({ "approve": { "digest": "3:abc" } })]
+        done["result"]["structuredContent"]["code"], "approval_required",
+        "{done}"
     );
-    let decided = seen
-        .iter()
-        .find(|seen| seen.path.starts_with("/api/cli/approvals/"))
-        .unwrap();
-    assert_eq!(decided.path, "/api/cli/approvals/apr_1");
-    assert_eq!(decided.bearer, "ployz_acme");
-    assert_eq!(decided.via, None, "the human's answer is not the agent's");
-    let store = seen
-        .iter()
-        .filter(|seen| seen.path.starts_with("/api/config/"));
+    let seen = fake.requests();
+    wrote_once(&seen);
     assert!(
-        store.clone().count() >= 2
-            && store
-                .clone()
-                .all(|each| each.via.as_deref() == Some("agent")),
-        "the agent's Store calls speak for an agent: {seen:?}"
+        seen.iter()
+            .all(|each| each.bearer == "ployz_agent" && each.via.as_deref() == Some("agent")),
+        "every call carries the agent token: {seen:?}"
     );
 }
 
@@ -1027,55 +865,6 @@ fn without_token(server: Server, home: &tempfile::TempDir) -> Server {
         },
         ..server
     }
-}
-
-#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
-#[tokio::test]
-async fn ployz_mcp_sends_the_agent_credential_and_the_human_answers_with_their_own() {
-    let Approving {
-        fake,
-        server,
-        deploy,
-    } = approving_as(vec![acts_in("org", "acme")]);
-    let home = signed_in_home(&fake, true);
-    let mut client = eliciting(without_token(server, &home)).await;
-    client
-        .send(&request(
-            2,
-            "tools/call",
-            json!({ "name": "deploy", "arguments": deploy.input }),
-        ))
-        .await;
-    let asking = client.reply().await;
-    assert_eq!(asking["method"], "elicitation/create", "{asking}");
-    let done = reply_to(
-        &mut client,
-        &asking,
-        json!({ "action": "accept", "content": { "approve": true } }),
-    )
-    .await;
-    assert_eq!(done["id"], 2, "{done}");
-    let seen = fake.requests();
-    resent(&seen);
-    let (decided, agent): (Vec<_>, Vec<_>) = seen
-        .iter()
-        .filter(|seen| seen.path != "/api/cli/organizations")
-        .partition(|seen| seen.path.starts_with("/api/cli/approvals/"));
-    let [decided] = decided[..] else {
-        panic!("expected one decision: {seen:?}");
-    };
-    assert_eq!(
-        decided.bearer, "ployz_device",
-        "the human answers as themself"
-    );
-    assert_eq!(decided.via, None, "{seen:?}");
-    assert!(
-        !agent.is_empty()
-            && agent
-                .iter()
-                .all(|each| each.bearer == "ployz_agent" && each.via.as_deref() == Some("agent")),
-        "every agent call carries the agent token: {seen:?}"
-    );
 }
 
 #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
@@ -1164,102 +953,6 @@ async fn a_refused_token_names_where_it_came_from_and_its_fix() {
     );
 }
 
-/// `server` keeps its `PLOYZ_TOKEN` but finds this device's sign-in in `home`.
-fn signed_in_beside(server: Server, home: &tempfile::TempDir) -> Server {
-    Server {
-        account: Account {
-            config: home.path().join("config.toml"),
-            ..server.account
-        },
-        ..server
-    }
-}
-
-#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
-#[tokio::test]
-async fn the_device_s_sign_in_answers_even_when_ployz_token_is_the_agent_s() {
-    let Approving {
-        fake,
-        server,
-        deploy,
-    } = approving_as(vec![acts_in("org", "acme")]);
-    let home = signed_in_home(&fake, false);
-    let mut client = eliciting(signed_in_beside(server, &home)).await;
-    client
-        .send(&request(
-            2,
-            "tools/call",
-            json!({ "name": "deploy", "arguments": deploy.input }),
-        ))
-        .await;
-    let asking = client.reply().await;
-    assert_eq!(asking["method"], "elicitation/create", "{asking}");
-    let done = reply_to(
-        &mut client,
-        &asking,
-        json!({ "action": "accept", "content": { "approve": true } }),
-    )
-    .await;
-    assert_eq!(done["id"], 2, "{done}");
-    let seen = fake.requests();
-    resent(&seen);
-    let (decided, agent): (Vec<_>, Vec<_>) = seen
-        .iter()
-        .filter(|seen| seen.path != "/api/cli/organizations")
-        .partition(|seen| seen.path.starts_with("/api/cli/approvals/"));
-    let [decided] = decided[..] else {
-        panic!("expected one decision: {seen:?}");
-    };
-    assert_eq!(decided.bearer, "ployz_device", "{seen:?}");
-    assert!(
-        agent.iter().all(|each| each.bearer == "ployz_acme"),
-        "the agent keeps acting with PLOYZ_TOKEN: {seen:?}"
-    );
-}
-
-#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
-#[tokio::test]
-async fn an_approval_in_another_organization_is_not_answered_and_names_the_switch() {
-    // Cloud moved the device to globex; its cloud.json still says acme.
-    let device_acts_in = acts_in("org_globex", "globex");
-    let agent_acts_in = acts_in("org", "acme");
-    let Approving {
-        fake,
-        server,
-        deploy,
-    } = approving_as(vec![device_acts_in, agent_acts_in]);
-    let home = signed_in_home(&fake, true);
-    let mut client = eliciting(without_token(server, &home)).await;
-    client
-        .send(&request(
-            2,
-            "tools/call",
-            json!({ "name": "deploy", "arguments": deploy.input }),
-        ))
-        .await;
-    let asking = client.reply().await;
-    let done = reply_to(
-        &mut client,
-        &asking,
-        json!({ "action": "accept", "content": { "approve": true } }),
-    )
-    .await;
-    assert_eq!(done["result"]["isError"], true, "{done}");
-    assert!(
-        done.to_string().contains("this device acts in globex")
-            && done.to_string().contains("ployz org use acme"),
-        "names the switch: {done}"
-    );
-    let seen = fake.requests();
-    assert!(
-        seen.iter()
-            .any(|seen| seen.path == "/api/cli/organizations" && seen.bearer == "ployz_device"),
-        "asks Cloud where the device acts: {seen:?}"
-    );
-    assert!(decisions(&seen).is_empty(), "{seen:?}");
-    wrote_once(&seen);
-}
-
 #[test]
 fn published_commands_come_from_the_cloud_the_agent_acts_in() {
     let home = tempfile::tempdir().unwrap();
@@ -1315,401 +1008,11 @@ async fn an_unreadable_login_file_is_named_to_the_agent_and_ignored_when_publish
         Setup::beside(&config, None).cloud
     );
 }
-
-fn removal_asks() -> Value {
-    json!({ "error": {
-        "code": "approval_required",
-        "message": "A human must approve this first: this removes Project trial",
-        "details": {
-            "approval_id": "apr_1",
-            "approval": "7:def",
-            "effects": [],
-            "operation": { "verb": "remove", "name": "trial" },
-        },
-    }})
-}
-
-async fn remove_trial(content: Value) -> (Value, Value, Vec<Seen>) {
-    let removal = transcript("project_remove", in_org());
-    let fake = fake_cloud(script(&removal), Some(removal_asks()));
-    let mut client = eliciting(on_cloud(&fake, removal.place.clone())).await;
-    client
-        .send(&request(
-            2,
-            "tools/call",
-            json!({ "name": "project_remove", "arguments": removal.input }),
-        ))
-        .await;
-    let asking = client.reply().await;
-    let done = reply_to(
-        &mut client,
-        &asking,
-        json!({ "action": "accept", "content": content }),
-    )
-    .await;
-    (asking, done, fake.requests())
-}
-
-#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
-#[tokio::test]
-async fn a_removal_asks_the_human_to_type_its_name() {
-    let (asking, done, seen) = remove_trial(json!({ "approve": true, "name": " trial " })).await;
-    assert_eq!(
-        asking["params"]["message"],
-        "Approve this removal of trial?\nThis removal:"
-    );
-    let name = &asking["params"]["requestedSchema"]["properties"]["name"];
-    assert_eq!(name["type"], "string", "{asking}");
-    assert_eq!(name["description"], "Type trial to approve", "{asking}");
-    assert_eq!(
-        done["result"]["structuredContent"]["code"], "not_found",
-        "{done}"
-    );
-    resent(&seen);
-    assert_eq!(
-        decisions(&seen),
-        [json!({ "approve": { "digest": "7:def" } })]
-    );
-}
-
-#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
-#[tokio::test]
-async fn a_removal_with_the_wrong_name_typed_decides_nothing_and_writes_nothing() {
-    let (_, done, seen) = remove_trial(json!({ "approve": true, "name": "shop" })).await;
-    assert_eq!(done["result"]["isError"], true, "{done}");
-    assert_eq!(
-        done["result"]["content"][0]["text"],
-        "The human did not type `trial`, so the answer was not recorded and nothing was \
-         removed. The approval of this removal of trial stays pending in Ployz Cloud; call \
-         the tool again to ask again."
-    );
-    assert!(decisions(&seen).is_empty(), "{seen:?}");
-    wrote_once(&seen);
-}
-
-async fn unticked(content: Value) -> (Value, Vec<Value>) {
-    let Approving {
-        fake,
-        server,
-        deploy,
-    } = approving();
-    let mut client = eliciting(server).await;
-    client
-        .send(&request(
-            2,
-            "tools/call",
-            json!({ "name": "deploy", "arguments": deploy.input }),
-        ))
-        .await;
-    let asking = client.reply().await;
-    let denied = reply_to(
-        &mut client,
-        &asking,
-        json!({ "action": "accept", "content": content }),
-    )
-    .await;
-    let seen = fake.requests();
-    wrote_once(&seen);
-    (denied, decisions(&seen))
-}
-
-#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
-#[tokio::test]
-async fn a_human_who_unticks_approve_denies_it_in_cloud_with_their_reason() {
-    let (denied, decided) =
-        unticked(json!({ "approve": false, "reason": "  the worker still drains " })).await;
-    assert_eq!(denied["result"]["isError"], true, "{denied}");
-    assert_eq!(
-        denied["result"]["content"][0]["text"],
-        "The human denied this deploy: the worker still drains. Nothing was deployed; do \
-         not retry it unless they ask."
-    );
-    assert_eq!(
-        decided,
-        [json!({ "reject": { "reason": "the worker still drains" } })]
-    );
-}
-
-#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
-#[tokio::test]
-async fn a_denial_reason_that_ends_its_sentence_is_not_ended_twice() {
-    let (denied, _) =
-        unticked(json!({ "approve": false, "reason": "the worker still drains." })).await;
-    assert_eq!(
-        denied["result"]["content"][0]["text"],
-        "The human denied this deploy: the worker still drains. Nothing was deployed; do \
-         not retry it unless they ask."
-    );
-}
-
-#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
-#[tokio::test]
-async fn a_human_who_unticks_approve_without_a_reason_denies_it_in_cloud() {
-    let (denied, decided) = unticked(json!({ "approve": false, "reason": " " })).await;
-    assert_eq!(
-        denied["result"]["content"][0]["text"],
-        "The human denied this deploy. Nothing was deployed; do not retry it unless they ask."
-    );
-    assert_eq!(decided, [json!({ "reject": {} })]);
-}
-
-#[tokio::test]
-async fn a_reason_is_cut_to_what_cloud_keeps() {
-    let (_, decided) =
-        unticked(json!({ "approve": false, "reason": "\u{1F600}".repeat(600) })).await;
-    let reason = decided
-        .first()
-        .and_then(|decided| decided.pointer("/reject/reason"))
-        .and_then(Value::as_str)
-        .unwrap();
-    assert_eq!(reason.encode_utf16().count(), 1024);
-}
-
-/// The `_meta` Claude Code 2.1.294 puts on every request: it speaks 2026-07-28, which
-/// has no `initialize`, so its capabilities arrive per request.
-fn claude_code() -> Value {
-    json!({
-        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
-        "io.modelcontextprotocol/clientInfo": { "name": "claude-code", "version": "2.1.294" },
-        "io.modelcontextprotocol/clientCapabilities": {
-            "roots": { "listChanged": true },
-            "elicitation": { "form": {}, "url": {} },
-        },
-    })
-}
-
-async fn ask_as_claude_code(client: &mut Client, arguments: &Value) -> Value {
-    client
-        .send(&request(
-            1,
-            "server/discover",
-            json!({ "_meta": claude_code() }),
-        ))
-        .await;
-    let discovered = client.reply().await;
-    assert!(
-        discovered
-            .pointer("/result/supportedVersions")
-            .and_then(Value::as_array)
-            .unwrap()
-            .contains(&json!("2026-07-28")),
-        "{discovered}"
-    );
-    client
-        .send(&request(
-            2,
-            "tools/call",
-            json!({ "_meta": claude_code(), "name": "deploy", "arguments": arguments }),
-        ))
-        .await;
-    client.reply().await
-}
-
-async fn answer_on(
-    client: &mut Client,
-    tool: &str,
-    arguments: &Value,
-    asking: &Value,
-    answer: Value,
-) -> Value {
-    client
-        .send(&request(
-            3,
-            "tools/call",
-            json!({
-                "_meta": claude_code(),
-                "name": tool,
-                "arguments": arguments,
-                "inputResponses": { "approval": answer },
-                "requestState": asking.pointer("/result/requestState"),
-            }),
-        ))
-        .await;
-    client.reply().await
-}
-
-fn approve() -> Value {
-    json!({ "action": "accept", "content": { "approve": true } })
-}
-
-/// The link a refusal names, checked to open Organization acme's agent sidebar.
-fn waiting_on_you(fake: &Fake, refused: &Value) -> String {
-    let url = refused
-        .pointer("/result/structuredContent/approval_required/url")
-        .and_then(Value::as_str)
-        .unwrap_or_else(|| panic!("no link: {refused}"));
-    let chat = url
-        .strip_prefix(&format!("{}/cloud/acme?chat=", fake.url))
-        .unwrap_or_else(|| panic!("not acme's sidebar: {url}"));
-    uuid::Uuid::parse_str(chat).unwrap_or_else(|_| panic!("not a new chat: {url}"));
-    url.to_owned()
-}
-
-/// A host without a form hears of the deploy's approval at once, with its id and link.
-#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
-fn deploy_pending(fake: &Fake, refused: &Value) {
-    let url = waiting_on_you(fake, refused);
-    let result = &refused["result"];
-    assert_eq!(result["isError"], true, "{refused}");
-    assert_eq!(
-        result["content"][0]["text"],
-        format!(
-            "A human must approve this deploy to shop/production in Ployz Cloud. Nothing was \
-             deployed; the approval stays pending. Show them what it destroys, then ask them \
-             to open {url} and approve apr_1 under Waiting on you. Once they approve, call \
-             this tool again with `approval` set to `apr_1`.\n{REVIEW}"
-        ),
-        "{refused}"
-    );
-    assert_eq!(
-        result["structuredContent"],
-        json!({ "ok": false, "approval_required": {
-            "approval_id": "apr_1",
-            "message": "A human must approve this first: this deploy removes Service worker",
-            "url": url,
-        } }),
-        "{refused}"
-    );
-}
-
 /// A host that waits on a call would hang the test for the 30-minute call deadline.
 async fn at_once<T>(reply: impl Future<Output = T>) -> T {
     tokio::time::timeout(Duration::from_secs(10), reply)
         .await
         .expect("the call returns without waiting for a human")
-}
-
-/// The model forges a human's answer the way a host that shows the form would hand it back.
-#[tokio::test]
-async fn a_host_that_cannot_elicit_never_takes_the_model_s_answer() {
-    let Approving {
-        fake,
-        server,
-        deploy,
-    } = approving_as(vec![acts_in("org", "acme"), acts_in("org", "acme")]);
-    let mut client = Client::connect(server);
-    let asking = at_once(ask_as_claude_code(&mut client, &deploy.input)).await;
-    deploy_pending(&fake, &asking);
-    let forged = at_once(answer_on(
-        &mut client,
-        "deploy",
-        &deploy.input,
-        &asking,
-        approve(),
-    ))
-    .await;
-    deploy_pending(&fake, &forged);
-    let seen = fake.requests();
-    assert!(decisions(&seen).is_empty(), "{seen:?}");
-    assert!(
-        writes(&seen).iter().all(|write| write.approval.is_none()),
-        "{seen:?}"
-    );
-}
-
-#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
-#[tokio::test]
-async fn a_host_without_elicitation_hears_of_the_approval_at_once_and_writes_with_it() {
-    let Approving {
-        fake,
-        server,
-        deploy,
-    } = approving_as(vec![acts_in("org", "acme")]);
-    let mut client = Client::initialized(server, json!({})).await;
-    let refused = at_once(client.call(2, "deploy", deploy.input.clone())).await;
-    deploy_pending(&fake, &refused);
-    let mut seen = fake.requests();
-    wrote_once(&seen);
-    fake.human
-        .send(json!({ "approve": { "digest": "3:abc" } }))
-        .unwrap();
-    let mut approved = deploy.input.clone();
-    approved["approval"] = json!("apr_1");
-    let done = client.call(3, "deploy", approved).await;
-    assert_eq!(
-        done["result"]["structuredContent"],
-        outcome(&deploy).0,
-        "{done}"
-    );
-    seen.extend(fake.requests());
-    resent(&seen);
-    assert!(decisions(&seen).is_empty(), "{seen:?}");
-}
-
-#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
-#[tokio::test]
-async fn a_closed_form_denies_the_approval_in_cloud() {
-    let Approving {
-        fake,
-        server,
-        deploy,
-    } = approving();
-    let mut client = eliciting(server).await;
-    client
-        .send(&request(
-            2,
-            "tools/call",
-            json!({ "name": "deploy", "arguments": deploy.input }),
-        ))
-        .await;
-    let asking = client.reply().await;
-    let closed = reply_to(&mut client, &asking, json!({ "action": "cancel" })).await;
-    assert_eq!(closed["result"]["isError"], true, "{closed}");
-    assert_eq!(
-        closed["result"]["content"][0]["text"],
-        "The human denied this deploy. Nothing was deployed; do not retry it unless they ask."
-    );
-    assert_eq!(decisions(&fake.requests()), [json!({ "reject": {} })]);
-}
-
-#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
-#[tokio::test]
-async fn a_denial_after_someone_else_approved_says_so_and_claims_nothing() {
-    let Approving {
-        fake,
-        server,
-        deploy,
-    } = approving();
-    let mut client = eliciting(server).await;
-    let mut answers = Vec::new();
-    for (id, approve) in [(2, true), (3, false)] {
-        client
-            .send(&request(
-                id,
-                "tools/call",
-                json!({ "name": "deploy", "arguments": deploy.input }),
-            ))
-            .await;
-        let asking = client.reply().await;
-        answers.push(
-            reply_to(
-                &mut client,
-                &asking,
-                json!({ "action": "accept", "content": { "approve": approve } }),
-            )
-            .await,
-        );
-    }
-    let refused = &answers[1];
-    assert_eq!(refused["result"]["isError"], true, "{refused}");
-    assert_eq!(
-        refused["result"]["content"][0]["text"],
-        "This approval was already decided elsewhere (approved). This answer was not \
-         recorded, and nothing was deployed by this call."
-    );
-    let seen = fake.requests();
-    assert_eq!(
-        decisions(&seen),
-        [
-            json!({ "approve": { "digest": "3:abc" } }),
-            json!({ "reject": {} })
-        ]
-    );
-    let approved: Vec<_> = writes(&seen)
-        .into_iter()
-        .filter(|write| write.approval.is_some())
-        .collect();
-    assert_eq!(approved.len(), 1, "{seen:?}");
 }
 
 /// How Cloud loses a reply after taking the request.
@@ -1753,11 +1056,7 @@ fn lossy_cloud(answers: HashMap<&'static str, Value>, lost: Lost) -> Fake {
             }
         }
     });
-    Fake {
-        url,
-        seen,
-        human: channel().0,
-    }
+    Fake { url, seen }
 }
 
 /// `tool` called once as request 2 of session `s` against `cloud`, with no `request_key`.
@@ -1786,86 +1085,6 @@ fn servers_answer() -> Value {
             "from": "server", "unanswered": [],
         },
     })
-}
-
-/// Cloud's refusal of turning web traffic off on `web-2`, the last Server that serves
-/// `shop.example.com`, as its operation gate words it.
-fn set_asks() -> Value {
-    json!({ "error": {
-        "code": "approval_required",
-        "message": "A human must approve this set of web-2 before it runs.",
-        "details": {
-            "effects": [{
-                "kind": "removes_domain", "name": "shop.example.com",
-                "node": "shop.example.com", "path": "domains/shop.example.com",
-            }],
-            "approval": "set:5c6f2b1d8e0a47f39b3c6d2e8f1a0b4c7d9e2f5a8b1c4d7e0f3a6b9c2d5e8f1a",
-            "approval_id": "apr_1",
-            "operation": { "verb": "set", "name": "web-2" },
-        },
-    }})
-}
-
-/// `server_set` turning web traffic off, with Cloud also answering `also`.
-async fn web_traffic_off(capabilities: Value, also: Vec<Scripted>) -> (Value, Fake) {
-    let read = Scripted {
-        path: "/api/cli/agent/ask".to_owned(),
-        body: json!({ "ask": { "query": "servers", "only": null } }),
-        answer: Answered::Value(servers_answer()),
-    };
-    let mut script = vec![read];
-    script.extend(also);
-    let fake = fake_cloud(script, Some(set_asks()));
-    let place = transcript("server_set", in_org()).place;
-    let mut client = Client::initialized(on_cloud(&fake, place), capabilities).await;
-    client
-        .send(&request(
-            2,
-            "tools/call",
-            json!({ "name": "server_set", "arguments": { "server": "web-2", "accepts_ingress": false } }),
-        ))
-        .await;
-    (at_once(client.reply()).await, fake)
-}
-
-#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
-#[tokio::test]
-async fn turning_web_traffic_off_asks_the_human_or_names_the_approval() {
-    let (asking, _) = web_traffic_off(json!({ "elicitation": {} }), Vec::new()).await;
-    assert_eq!(
-        asking["params"]["message"],
-        "Approve this change to web-2?\nThis change destroys 1 thing:\n  ✕ removes domain shop.example.com",
-        "{asking}"
-    );
-    let (refused, fake) = web_traffic_off(json!({}), vec![acts_in("org", "acme")]).await;
-    let url = waiting_on_you(&fake, &refused);
-    assert_eq!(refused["result"]["isError"], true, "{refused}");
-    assert_eq!(
-        refused["result"]["content"][0]["text"],
-        format!(
-            "A human must approve this change to web-2 in Ployz Cloud. Nothing was changed; \
-             the approval stays pending. Show them what it destroys, then ask them to open \
-             {url} and approve apr_1 under Waiting on you. Once they approve, call this tool \
-             again with `approval` set to `apr_1`.\n\
-             This change destroys 1 thing:\n  ✕ removes domain shop.example.com"
-        ),
-        "{refused}"
-    );
-    assert_eq!(
-        refused["result"]["structuredContent"]["approval_required"]["approval_id"], "apr_1",
-        "{refused}"
-    );
-}
-
-#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
-#[tokio::test]
-async fn a_refusal_whose_organization_cannot_be_read_links_to_cloud() {
-    // Cloud answers no list of Organizations.
-    let (refused, fake) = web_traffic_off(json!({}), Vec::new()).await;
-    assert_eq!(
-        refused["result"]["structuredContent"]["approval_required"]["url"], fake.url,
-        "{refused}"
-    );
 }
 
 #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
@@ -2246,11 +1465,7 @@ mod published {
                 .unwrap();
             }
         });
-        Fake {
-            url,
-            seen,
-            human: channel().0,
-        }
+        Fake { url, seen }
     }
 
     async fn on_published(fake: &Fake, home: &Path) -> Server {
@@ -2357,11 +1572,6 @@ mod published {
             };
             assert_eq!(tool["description"], said.as_str());
             let mut input = entry["input"].clone();
-            if entry["gate"] == "ask" {
-                input["properties"]["approval"] =
-                    tool["inputSchema"]["properties"]["approval"].clone();
-                assert_eq!(input["properties"]["approval"]["type"], "string", "{tool}");
-            }
             // Every tool takes `intent`, required.
             input["properties"]["intent"] = tool["inputSchema"]["properties"]["intent"].clone();
             assert_eq!(input["properties"]["intent"]["type"], "string", "{tool}");
@@ -2696,35 +1906,32 @@ mod published {
         (fake, refused)
     }
 
+    /// The published path relays Cloud's ask the same way: one run, no yes.
     #[tokio::test]
-    async fn a_gated_published_command_names_the_approval_and_where_to_approve_it() {
-        let message = "A human must approve this role change of ada before it runs.";
+    async fn a_published_ask_is_the_agent_s_refusal_and_is_never_answered() {
         let (fake, refused) = gated_refused_with(json!({
             "code": "approval_required",
-            "message": message,
-            "details": { "approval_id": "apr_7", "approval": "digest", "effects": [],
+            "message": "A human must approve this role change of ada before it runs.",
+            "details": { "approval": "digest", "effects": [],
                 "operation": { "verb": "role_change", "name": "ada" }, "organization": "acme" },
         }))
         .await;
-        let url = waiting_on_you(&fake, &refused);
+        assert_eq!(refused["id"], 2, "{refused}");
         let result = &refused["result"];
         assert_eq!(result["isError"], true, "{refused}");
         assert_eq!(
-            result["structuredContent"],
-            json!({ "ok": false, "approval_required": {
-                "approval_id": "apr_7", "message": message, "url": url,
-            } }),
+            result["structuredContent"]["code"], "approval_required",
             "{refused}"
         );
-        assert_eq!(
-            result["content"][0]["text"],
-            format!(
-                "{message} Nothing ran; the approval stays pending. Ask a human to open {url} \
-                 and approve apr_7 under Waiting on you. Once they approve, call this tool \
-                 again with `approval` set to `apr_7`."
-            ),
-            "{refused}"
-        );
+        let seen = fake.requests();
+        let runs: Vec<_> = seen
+            .iter()
+            .filter(|seen| seen.path.starts_with("/api/cli/run/"))
+            .collect();
+        let [run] = runs[..] else {
+            panic!("one run: {seen:?}");
+        };
+        assert_eq!(run.approval, None, "{seen:?}");
     }
 
     fn org_member_role() -> Value {
@@ -2763,8 +1970,7 @@ mod published {
     }
 
     #[tokio::test]
-    async fn an_approved_call_that_refused_keeps_its_approval_in_the_retry_and_drops_keys_it_does_not_take()
-     {
+    async fn a_refused_call_s_retry_drops_keys_it_does_not_take() {
         let publisher = publisher();
         publisher.lock().unwrap().run = (
             "409 Conflict",
@@ -2781,14 +1987,11 @@ mod published {
             Client::initialized(on_published(&fake, home.path()).await, json!({})).await;
         let entry = org_member_role();
         let mut sent = arguments(&entry);
-        sent["approval"] = json!("apr_7");
         sent["ghp_s3cr3tTokenThatMustNotEcho"] = json!(true);
         let refused = at_once(client.call(2, name(&entry), sent)).await;
-        let mut repeated = arguments(&entry);
-        repeated["approval"] = json!("apr_7");
         assert_eq!(
             refused["result"]["structuredContent"]["retry"],
-            json!({ "tool": "org_member_role", "input": repeated }),
+            json!({ "tool": "org_member_role", "input": arguments(&entry) }),
             "{refused}"
         );
         assert!(
@@ -2796,12 +1999,6 @@ mod published {
                 .to_string()
                 .contains("ghp_s3cr3tTokenThatMustNotEcho"),
             "{refused}"
-        );
-        assert!(
-            fake.requests()
-                .iter()
-                .any(|seen| seen.approval.as_deref() == Some("apr_7")),
-            "the call carried its approval"
         );
     }
 
@@ -2821,54 +2018,6 @@ mod published {
             "{refused}"
         );
         assert_eq!(content["retry"]["tool"], "org_member_role", "{refused}");
-    }
-
-    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
-    #[tokio::test]
-    async fn a_gated_published_command_takes_its_approval_as_one_string() {
-        let fake = fake_publisher(publisher());
-        let home = tempfile::tempdir().unwrap();
-        let mut client =
-            Client::initialized(on_published(&fake, home.path()).await, json!({})).await;
-        let entry = org_member_role();
-        let mut sent = arguments(&entry);
-        sent["approval"] = json!(5);
-        let refused = client.call(2, name(&entry), sent).await;
-        assert_eq!(refused["error"]["code"], -32602, "{refused}");
-        assert_eq!(
-            refused["error"]["message"], "`approval` takes one string",
-            "{refused}"
-        );
-        assert!(
-            fake.requests()
-                .iter()
-                .all(|seen| seen.path == "/api/cli/manifest"),
-            "nothing ran"
-        );
-    }
-
-    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
-    #[tokio::test]
-    async fn an_ungated_published_command_keeps_an_approval_field_as_its_input() {
-        let fake = fake_publisher(publisher());
-        let home = tempfile::tempdir().unwrap();
-        let mut client =
-            Client::initialized(on_published(&fake, home.path()).await, json!({})).await;
-        let entry = agent_facing()
-            .into_iter()
-            .find(|entry| entry["gate"] != "ask")
-            .expect("the fixture has an agent-facing command that never asks");
-        let mut sent = arguments(&entry);
-        sent["approval"] = json!("kept");
-        let done = client.call(2, name(&entry), sent.clone()).await;
-        assert_eq!(done["id"], 2, "{done}");
-        let seen = fake.requests();
-        let run = seen
-            .iter()
-            .find(|seen| seen.path.starts_with("/api/cli/run/"))
-            .expect("one run");
-        assert_eq!(run.body, json!({ "input": sent }));
-        assert_eq!(run.approval, None);
     }
 
     #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]

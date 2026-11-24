@@ -319,7 +319,18 @@ pub(crate) fn publish(
         && canonicalize_environment_intent(environment.working.clone())
             == canonicalize_environment_intent(review.head.intent.clone())
     {
-        // Nothing staged: Head already is Working State.
+        // Nothing staged: Head already is Working State. A carried yes must still
+        // match what this Save does now: one given to a discarded draft asks again.
+        if trusted.approval.carried() {
+            let target = canonicalize_environment_intent(environment.working.clone());
+            let gate = review::Gate::new(tx, &environment.summary.id, trusted)?;
+            review::approve(
+                who,
+                &review,
+                (&target, review::Shipping::Publish, &review::Pruning::Off),
+                &gate,
+            )?;
+        }
         let summary = after_ending(tx, trusted, &environment.summary.id, consumed)?
             .unwrap_or(environment.summary);
         return Ok(Published {

@@ -34,7 +34,7 @@ export const setServerUpgradeSettingsServerFn = createServerFn({ method: "POST" 
   .middleware([callerMiddleware(SetServerUpgradeSettingsInput)])
   .handler(({ context, data: { organizationSlug: _, ...change } }) => runActor(context, Effect.gen(function* () {
     const { caller } = context;
-    const ran = yield* runCommand(caller, "server_upgrade_policy_set", change, { approvalId: null, key: null });
+    const ran = yield* runCommand(caller, "server_upgrade_policy_set", change, { approved: null, key: null });
     if (!ran.ok) return yield* new Validation({ message: ran.refusal.message, userFacing: true });
     return { id: caller.organization.id, ...ran.output };
   })));

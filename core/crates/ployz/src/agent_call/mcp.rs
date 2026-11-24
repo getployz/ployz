@@ -162,7 +162,7 @@ impl Reporter {
     }
 
     /// A call that ended. A refusal for a missing intent carries no intent; an answer
-    /// that only asks for an approval is not a call yet.
+    /// that only asks the host for input is not a call yet.
     pub(crate) fn called(
         &self,
         started: Started,
@@ -259,7 +259,7 @@ impl Live {
 }
 
 enum Outcome {
-    /// The answer only asks a human for an approval; the retry that completes counts.
+    /// The answer only asks the host for input; the call that completes counts.
     Asking,
     Ended(Option<CallError>),
 }
@@ -277,13 +277,6 @@ fn outcome(result: &Result<CallToolResponse, McpError>) -> Outcome {
         // A host that fills in a form mid-call: not a call that ended.
         Ok(CallToolResponse::InputRequired(_)) => Outcome::Asking,
         Ok(CallToolResponse::Complete(answer)) if answer.is_error == Some(true) => {
-            if answer
-                .structured_content
-                .as_ref()
-                .is_some_and(|content| content.get("approval_required").is_some())
-            {
-                return Outcome::Asking;
-            }
             Outcome::Ended(Some(CallError::new(
                 ErrorType::Validation,
                 refusal_message(answer),
@@ -356,24 +349,5 @@ mod tests {
             panic!("a refusal ends the call with an error");
         };
         assert_eq!(error.message, "This input does not fit: unknown field");
-    }
-
-    #[test]
-    fn an_approval_ask_is_not_an_ended_call() {
-        let mut asking = CallToolResult::error(vec![ContentBlock::text("approve it")]);
-        asking.structured_content =
-            Some(json!({ "ok": false, "approval_required": { "approval_id": "apr_1" } }));
-        assert!(matches!(outcome(&Ok(asking.into())), Outcome::Asking));
-        let refused = CallToolResult::error(vec![ContentBlock::text("no such Service")]);
-        assert!(matches!(
-            outcome(&Ok(refused.into())),
-            Outcome::Ended(Some(_))
-        ));
-        assert!(matches!(
-            outcome(&Ok(
-                CallToolResult::success(vec![ContentBlock::text("ok")]).into()
-            )),
-            Outcome::Ended(None)
-        ));
     }
 }

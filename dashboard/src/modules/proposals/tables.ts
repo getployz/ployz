@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { check, index, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { boolean, check, index, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 import { createdAt, sqlStringLiterals, updatedAt } from "#/db/tables";
 import type { CredentialKind } from "#/modules/identity/actor";
 import { user } from "#/modules/identity/tables";
@@ -32,6 +32,8 @@ export const operationProposals = pgTable(
     approvals: jsonb("approvals"),
     halt: jsonb("halt").$type<ProposalHalt | null>(),
     reason: text("reason"),
+    /** The one who asked took it back by rejecting it; any other denial leaves this false. */
+    withdrawn: boolean("withdrawn").default(false).notNull(),
     decidedByUserId: uuid("decided_by_user_id").references(() => user.id, { onDelete: "set null" }),
     decidedAt: timestamp("decided_at", { mode: "date", withTimezone: true }),
     createdAt,

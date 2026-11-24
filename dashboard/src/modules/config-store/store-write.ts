@@ -130,8 +130,12 @@ function writtenRevision(written: ConfigWritten): number | null {
 const isStaleRevision = Schema.is(Schema.Struct({ revision: Schema.Number }));
 const isStale = (error: Error) => error instanceof StoreRefused && error.code === "conflict" && isStaleRevision(error.details);
 
-/** A write into a Protected Environment that now waits for an owner or admin to approve it. */
+/** A Deploy into a Protected Environment that now waits for an owner or admin to approve it. */
 export const isRequested = (error: Error) => error instanceof StoreRefused && isProtectedAsk(error.refusal);
+
+const linked = Schema.is(Schema.Struct({ url: Schema.String }));
+/** Where an owner or admin approves a requested Deploy; null when the refusal names no page. */
+const approvalPage = (error: Error) => (error instanceof StoreRefused && linked(error.details) ? error.details.url : null);
 
 const CONFLICT = "Changed elsewhere, so this edit was undone. You're seeing the latest now.";
 /** A write that never got an answer (offline, Cloud restarting): the browser's words ("Failed to fetch") mean nothing here. */
@@ -220,7 +224,8 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
         // `conflict` (a taken name, a referenced variable) says its own.
         // A refusal the caller says it handles (`confirmation_required`, a question it puts to the user) is its to show.
         if (isRequested(error)) {
-          toast.success("Requested");
+          const page = approvalPage(error);
+          toast.success("Waiting on an owner or admin.", page === null ? undefined : { action: { label: "Open", onClick: () => window.open(page, "_blank", "noopener") } });
         } else if (isUnauthorized(error)) {
           toast.error("You're signed out. Nothing was saved.", { action: { label: "Sign in", onClick: () => window.location.assign(signInHere()) } });
         } else if (!(promise && shownInline.has(promise)) && !(error instanceof StoreRefused && handled.includes(error.code))) {

@@ -3,7 +3,6 @@ import { toast } from "sonner";
 import type { ServiceVerb } from "@ployz/sdk";
 import { usePendingAttempt } from "#/hooks/use-pending-attempt";
 import { toErrorMessage } from "#/lib/error-message";
-import { refetchApprovals } from "#/modules/approvals/approvals.queries";
 import { actAlert, actBadge } from "./service-act-view";
 import { actServiceServerFn } from "./service-act.functions";
 import { serviceActKeys, useLatestServiceAct } from "./service-act.queries";
@@ -12,7 +11,7 @@ type Subject = {
   readonly organizationSlug: string;
   readonly environmentId: string;
   readonly service: string;
-  /** The Environment is Protected and the person can't protect it: an owner or admin approves, from their own browser. */
+  /** The Environment is Protected and the person can't protect it: an owner or admin approves the stop or restart. */
   readonly asks: boolean;
 };
 
@@ -35,8 +34,7 @@ export function useServiceAct(subject: Subject) {
       (result) => {
         if ("requested" in result) {
           setRequested((current) => (current?.id === requestId ? null : current));
-          toast("Requested");
-          void refetchApprovals(queryClient, subject.organizationSlug);
+          toast("Waiting on an owner or admin.", { action: { label: "Open", onClick: () => window.open(result.url, "_blank", "noopener") } });
           return;
         }
         setRequested((current) => (current?.id === requestId ? { verb, id: result.id } : current));

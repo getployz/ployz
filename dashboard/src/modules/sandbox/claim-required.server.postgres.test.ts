@@ -6,7 +6,7 @@ import { expect } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { callCloud } from "#/modules/agent/call-cloud.server";
 import { startFakeHostedDns } from "#/modules/cluster-domain/hosted-dns.test-fixture";
-import { hasApprover } from "#/modules/approvals/approvals.server";
+import { hasApprover } from "#/modules/operations/gate.server";
 import { createCustomerPortal } from "#/modules/billing/billing.server";
 import { gatherDomainEvidence } from "#/modules/config-store/domain-evidence.server";
 import { cliRefusalResponse } from "#/server/public-error";

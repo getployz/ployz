@@ -134,11 +134,10 @@ on this computer. Until you run it, every tool call fails and names the command.
 as you in that organization, expires after 365 days, and shows as `agent` under KIND in
 `ployz token ls`. Running `ployz mcp login` again makes a new one and revokes the old. Once the
 token is revoked or expired, each tool call fails with `Cloud refused the agent token` and names
-`ployz mcp login`; run it again. An agent token can't answer an approval, so the agent can't approve its own calls through `ployz mcp`.
+`ployz mcp login`; run it again. An agent token can't say yes to anything, so the agent can't approve its own calls through `ployz mcp`.
 `ployz mcp` never reads this computer's [device key](../servers/manage-servers.md#what-needs-an-approved-device), and says so on its first line of stderr.
-When `ployz mcp` asks you, your answer goes with your own sign-in. An agent that can run commands
-in your terminal still acts with your sign-in there, so don't let it run `ployz org approval`
-for you. With `PLOYZ_TOKEN` set, `ployz mcp` uses that token instead, and Ployz still treats its
+An agent that can run commands in your terminal still acts with your sign-in there, so don't let
+it run `ployz` with `--approval` for you. With `PLOYZ_TOKEN` set, `ployz mcp` uses that token instead, and Ployz still treats its
 calls as the agent's.
 
 The tools create
@@ -174,21 +173,12 @@ Tools that can delete something when they run are marked destructive: `deploy`,
 server commands that drain, clean, forget or remove a server, the Volume commands that move,
 mirror, release or restore a copy or remove a mirror, and removing an organization member or
 invite. Staging a removal, such as `service_remove`, deletes nothing until the next deploy, so it
-isn't marked. When one of them needs your approval (see
-[Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first)),
-the agent's app shows you what it would remove and asks you to approve or deny it. Your answer
-goes to Ployz Cloud with your own sign-in, not the agent's token. Removing a
-Project, an Environment or a Server also asks you to type its name. Approve and the call goes
-ahead. Leave Approve unticked and Ployz denies the approval; any reason you type goes back to the
-agent, which is told nothing changed. Declining or closing the dialog denies it too, without a
-reason. Answer within 30 minutes of the agent's call; a later answer isn't recorded and the
-approval stays pending in Ployz Cloud.
-
-In an app that can't show this dialog, the call fails right away with `approval_required`,
-what it would remove, the approval's ID and a link to your organization. Open the link,
-approve or deny it under **Waiting on you** in the Ployz agent, then tell the agent to try
-again. It calls the tool again with that approval: an approved call goes ahead, and a denied
-one fails, with your reason if you gave one. The agent can never answer the approval itself.
+isn't marked. When one of them would remove something (see
+[Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first)), the
+agent never gets to say yes. A deploy comes back with a link where you review and approve it, and
+a stop or restart with a link you approve or deny. Anything else is refused with where a person
+does it, such as ``This drain of fra-1 needs a person. Do it in Ployz Cloud (or run
+`ployz server drain fra-1`).`` No tool takes an approval.
 
 `ployz mcp` stops a call that runs for more than 30 minutes. A deployment or Volume run it
 started keeps going in Cloud, and the error names the tool that shows where it stands. A call
@@ -228,9 +218,8 @@ If Cloud no longer has a command, it fails with `unknown_command`; `ployz --help
 current list.
 
 Your coding agent gets the ones meant for agents as tools from `ployz mcp`, and its tool list
-follows Ployz Cloud without a restart. Commands that ask you to type a name, such as
-`ployz org approval approve`, run only in a terminal. Without Ployz Cloud, none of these commands
-exist.
+follows Ployz Cloud without a restart. Commands that ask you to type a name run only in a terminal.
+Without Ployz Cloud, none of these commands exist.
 
 ## Manage your team
 
@@ -279,11 +268,10 @@ even before anything is deployed to production. See
 Pick a member by email or by name. When two members share a name, the command refuses with
 `ambiguous`, lists both emails and exits 2, so name the one you mean by email.
 
-`role`, `rm` and `revoke` show what they will change, and in which Organization, and ask before
-they run. In a terminal you type the email it names, or the invite id for a link with no email, to
-go ahead. Without a terminal they wait until someone approves them in Ployz Cloud. Through
-`ployz mcp`, your agent gets back an approval to show you and changes nothing until you approve it. The dashboard's
-Members page never asks. `ployz org member ls` and `ployz org invite ls` never ask.
+`role`, `rm` and `revoke` show what they will change, and in which Organization, and ask yes or no
+before they run. Without a terminal they change nothing and name the command to run again with
+`--approval`. Through `ployz mcp`, your agent is refused and told to do it in Ployz Cloud. The
+dashboard's Members page never asks. `ployz org member ls` and `ployz org invite ls` never ask.
 
 `ployz org leave` takes you out of the Organization this device acts in, after you confirm. It
 leaves that Organization even if you switched to another one in the dashboard since.
@@ -561,7 +549,7 @@ Scripts can tell failures apart by exit code:
 | 1 | It failed: something wasn't found, a server couldn't be reached, a deploy failed, Ployz refused, the server or Cloud doesn't support what you asked, or the output couldn't be written, as with `> /dev/full`. |
 | 2 | Fix the command: a bad argument, a flag the command doesn't take, a missing `--confirm`, or a name that matches more than one thing. |
 | 3 | You got a result, but part of it is missing or didn't happen: some servers didn't answer, the output stopped partway, or some work couldn't be done. Examples: a `ployz server drain` that leaves a service where it is because no other server can take it, a `ployz env rm`, `ployz project rm` or `ployz env shutdown` whose removal didn't finish, a deploy that applied but couldn't see every server, left an old container running or left a service waiting, a `ployz status` with a server that joined down or not answering, or a deploy a newer one replaced or someone cancelled. A deploy that failed exits 1. The output says what's left. Run it again once the servers are back, or once there's somewhere for the work to go. |
-| 130 | You cancelled: pressed Ctrl-C, didn't confirm a prompt, or stopped waiting for an approval. Before the work starts, nothing changes. A `ployz deploy` following its Deployment also cancels this way on SIGTERM, which CI runners, `timeout` and container stops send, and on Linux on SIGHUP, which closing its terminal or losing its SSH session sends. Under `nohup` it ignores SIGHUP and goes on. A `ployz deploy` cancelled after its services applied keeps them, and its `--json` says `applied`. Once Ployz Cloud runs it, as with a `server rm` or `server upgrade` it's following, Ctrl-C only stops the following: the work goes on in Cloud and finishes on its own. A `server upgrade` run from your computer works the same way: the server goes on with the upgrade it took, and `ployz server show` says how it ended. |
+| 130 | You cancelled: pressed Ctrl-C, didn't confirm a prompt, or said no. Before the work starts, nothing changes. A `ployz deploy` following its Deployment also cancels this way on SIGTERM, which CI runners, `timeout` and container stops send, and on Linux on SIGHUP, which closing its terminal or losing its SSH session sends. Under `nohup` it ignores SIGHUP and goes on. A `ployz deploy` cancelled after its services applied keeps them, and its `--json` says `applied`. Once Ployz Cloud runs it, as with a `server rm` or `server upgrade` it's following, Ctrl-C only stops the following: the work goes on in Cloud and finishes on its own. A `server upgrade` run from your computer works the same way: the server goes on with the upgrade it took, and `ployz server show` says how it ended. |
 
 If `ployz exec -T db -- true` finds no running container on the servers that answered,
 and another server did not answer, it names the missing servers and exits 3, like `ployz ps`
@@ -596,8 +584,9 @@ to type its name. Anything else, or Ctrl-C, cancels. Without a terminal, in CI, 
 `--json` it never asks: it exits 2 and prints the command to run instead, which passes the name
 with `--confirm`. Commands that would otherwise ask you to choose, such as `ployz ctx use` without
 a name or the storage choice in `ployz server add`, work the same way. A `deploy`, with or without
-`--skip-deploy`, that needs an approval asks the same way in a terminal. Without one it waits for the approval in
-Ployz Cloud, and with `--json` it exits 1 with `approval_required`. See
+`--skip-deploy`, that removes something asks yes or no in a terminal. Without one it changes
+nothing and names the command to run again with `--approval`, and with `--json` it exits 1 with
+`approval_required`. See
 [Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first).
 
 Ployz reviews a `ployz env rm` or `ployz project rm` before it runs when it takes a deployed
@@ -612,8 +601,8 @@ project, doesn't compare it, so it goes ahead even when the version you pass is 
 doesn't answer, the command returns with the environment still being removed, names the server,
 and exits 3. Ployz Cloud tries again each hour, so it finishes within the hour after the server
 answers or you remove it with `ployz server rm`. To finish it sooner, run the same `ployz env rm`
-or `ployz project rm` again: it needs no new `--expect-version`, but still asks for approval as
-the first run did. With `--json` it reports `removal: removed` only once the environment is gone
+or `ployz project rm` again: it needs no new `--expect-version`, but still asks yes or no as the
+first run did. With `--json` it reports `removal: removed` only once the environment is gone
 from `ployz env ls`, or for `project rm` the project from `ployz project ls`. Until then it reports
 `removal: removing`, with the removal's `id` and the removal deployments it ran in `deployments`.
 When one of them didn't apply, it also reports that deployment in full under `deployment` (its

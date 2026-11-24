@@ -1610,7 +1610,7 @@
       "title": "Restore or undo a Saved revision"
     },
     {
-      "description": "Deploy an Environment: save everything staged and queue a Deployment of every Service, or only the ones named. Returns once the Deployment is queued, so check progress with `deployment_show`. Deploying every Service removes running Services that are not in the Environment, unless no_prune. With skip_deploy it only saves. Where approval is asked, every deploy waits for it; a save alone waits only if deploying it would destroy something. May stop to ask a human to approve.",
+      "description": "Deploy an Environment: save everything staged and queue a Deployment of every Service, or only the ones named. Returns once the Deployment is queued, so check progress with `deployment_show`. Deploying every Service removes running Services that are not in the Environment, unless no_prune. With skip_deploy it only saves. Where approval is asked, every deploy waits for it; a save alone waits only if deploying it would destroy something. May need a person.",
       "destructive": true,
       "gate": "store",
       "idempotent": false,
@@ -1756,7 +1756,7 @@
       "title": "Show a Deployment"
     },
     {
-      "description": "Redeploy an ended Deployment. A new Deployment ships its Saved revision and pinned commits again, whatever was saved since. Redeploying an older one rolls back the newer ones, and fails until you accept the loss of any Volume data it would delete. Check progress with `deployment_show`. May stop to ask a human to approve.",
+      "description": "Redeploy an ended Deployment. A new Deployment ships its Saved revision and pinned commits again, whatever was saved since. Redeploying an older one rolls back the newer ones, and fails until you accept the loss of any Volume data it would delete. Check progress with `deployment_show`. May need a person.",
       "destructive": true,
       "gate": "store",
       "idempotent": false,
@@ -1920,7 +1920,7 @@
       "title": "Turn PR Environments on or off"
     },
     {
-      "description": "Protect an Environment so it can't be removed, or unprotect it. Takes effect right away. Unprotecting asks a human to approve, and Branches and PR Environments can't be Protected. May stop to ask a human to approve.",
+      "description": "Protect an Environment so it can't be removed, or unprotect it. Takes effect right away. Unprotecting asks a human to approve, and Branches and PR Environments can't be Protected. May need a person.",
       "destructive": false,
       "gate": "cloud",
       "idempotent": true,
@@ -2403,7 +2403,7 @@
       "title": "Show where a Volume's data is"
     },
     {
-      "description": "Restart a Service's containers one at a time, so the rest keep serving. If one does not serve again, the rest are left untouched. May stop to ask a human to approve.",
+      "description": "Restart a Service's containers one at a time, so the rest keep serving. If one does not serve again, the rest are left untouched. May need a person.",
       "destructive": false,
       "gate": "cloud",
       "idempotent": false,
@@ -2509,7 +2509,7 @@
       "title": "Start a Service"
     },
     {
-      "description": "Stop a Service's containers. Nothing is deleted, and they stay stopped until you start them again with `service_start`. May stop to ask a human to approve.",
+      "description": "Stop a Service's containers. Nothing is deleted, and they stay stopped until you start them again with `service_start`. May need a person.",
       "destructive": false,
       "gate": "cloud",
       "idempotent": true,
@@ -2562,7 +2562,7 @@
       "title": "Stop a Service"
     },
     {
-      "description": "Change what a Server accepts right away: builds and how many at once, Services and web traffic. Turning web traffic off on the last Server serving your domains asks a human to approve. May stop to ask a human to approve.",
+      "description": "Change what a Server accepts right away: builds and how many at once, Services and web traffic. Turning web traffic off on the last Server serving your domains asks a human to approve. May need a person.",
       "destructive": false,
       "gate": "cloud",
       "idempotent": true,
@@ -2651,7 +2651,7 @@
       "title": "Rename a region"
     },
     {
-      "description": "Move Services off a Server right away and stop it accepting new ones. A Service with a Volume there stays. A Service that runs on every Server stops running there, which asks a human to approve when no other Server runs it. Returns the run and what stayed. May stop to ask a human to approve.",
+      "description": "Move Services off a Server right away and stop it accepting new ones. A Service with a Volume there stays. A Service that runs on every Server stops running there, which asks a human to approve when no other Server runs it. Returns the run and what stayed. May need a person.",
       "destructive": true,
       "gate": "cloud",
       "idempotent": true,
@@ -2727,7 +2727,7 @@
       "title": "Upgrade a Server"
     },
     {
-      "description": "Delete a leftover no Environment owns, right away: its containers on every Server and its volumes with their data. This cannot be undone. May stop to ask a human to approve.",
+      "description": "Delete a leftover no Environment owns, right away: its containers on every Server and its volumes with their data. This cannot be undone. May need a person.",
       "destructive": true,
       "gate": "cloud",
       "idempotent": true,
@@ -2769,7 +2769,7 @@
       "title": "Clean a leftover"
     },
     {
-      "description": "Give a Volume its one Mirror on another Server, or bring that Mirror up to date. A new Mirror is copied as a run. An existing one is sent what changed since its last sync, and the call returns before the download ends. Check the run with `volume_show`. May stop to ask a human to approve.",
+      "description": "Give a Volume its one Mirror on another Server, or bring that Mirror up to date. A new Mirror is copied as a run. An existing one is sent what changed since its last sync, and the call returns before the download ends. Check the run with `volume_show`. May need a person.",
       "destructive": true,
       "gate": "cloud",
       "idempotent": false,
@@ -2826,7 +2826,7 @@
       "title": "Mirror or sync a Volume"
     },
     {
-      "description": "Delete every read-only copy of a Volume: its Mirror and any old copy a move left, on every Server that holds one, right away. This cannot be undone. If no Server has a writable copy, the Volume's data goes with them. Returns the run. May stop to ask a human to approve.",
+      "description": "Delete every read-only copy of a Volume: its Mirror and any old copy a move left, on every Server that holds one, right away. This cannot be undone. If no Server has a writable copy, the Volume's data goes with them. Returns the run. May need a person.",
       "destructive": true,
       "gate": "cloud",
       "idempotent": true,
@@ -2879,7 +2879,7 @@
       "title": "Remove a Volume's read-only copies"
     },
     {
-      "description": "Move a Volume and the Service using it to another Server, right away. The Service is down only for the final copy. The old Server keeps a read-only old copy that never refreshes, which `volume_mirror_remove` deletes. Make the same call again to continue a move that stopped. Returns the run. May stop to ask a human to approve.",
+      "description": "Move a Volume and the Service using it to another Server, right away. The Service is down only for the final copy. The old Server keeps a read-only old copy that never refreshes, which `volume_mirror_remove` deletes. Make the same call again to continue a move that stopped. Returns the run. May need a person.",
       "destructive": true,
       "gate": "cloud",
       "idempotent": true,
@@ -2933,7 +2933,7 @@
       "title": "Move a Volume to another Server"
     },
     {
-      "description": "Stop the run under way on a Volume and start its Service again on the old Server with its data, right away. A move already past its handover finishes on the new Server instead: continue it with `volume_move`. Returns the run. May stop to ask a human to approve.",
+      "description": "Stop the run under way on a Volume and start its Service again on the old Server with its data, right away. A move already past its handover finishes on the new Server instead: continue it with `volume_move`. Returns the run. May need a person.",
       "destructive": true,
       "gate": "cloud",
       "idempotent": false,
@@ -2992,7 +2992,7 @@
       "title": "Release a Volume from its run"
     },
     {
-      "description": "Make one Server's copy the Volume's writable copy when no Server has one, right away. It must be the only copy left, and a Mirror's copy lacks anything written after its last sync. The Service stays down until the next deploy. Returns the run. May stop to ask a human to approve.",
+      "description": "Make one Server's copy the Volume's writable copy when no Server has one, right away. It must be the only copy left, and a Mirror's copy lacks anything written after its last sync. The Service stays down until the next deploy. Returns the run. May need a person.",
       "destructive": true,
       "gate": "cloud",
       "idempotent": true,
@@ -3046,7 +3046,7 @@
       "title": "Restore a Volume from a Server's copy"
     },
     {
-      "description": "Remove an Environment right away. Its Services come off the Servers, then it is deleted with its Volumes and their data, which cannot be undone. A Server that doesn't answer holds up its part until it answers or is removed. Returns removed or removing, with what is left and the Servers it waits on. May stop to ask a human to approve.",
+      "description": "Remove an Environment right away. Its Services come off the Servers, then it is deleted with its Volumes and their data, which cannot be undone. A Server that doesn't answer holds up its part until it answers or is removed. Returns removed or removing, with what is left and the Servers it waits on. May need a person.",
       "destructive": true,
       "gate": "store",
       "idempotent": true,
@@ -3102,7 +3102,7 @@
       "title": "Remove an Environment"
     },
     {
-      "description": "Remove a Project right away. Its Services come off the Servers, then it is deleted with every Environment, Volume and their data, which cannot be undone. A Server that doesn't answer holds up its part until it answers or is removed. Returns removed or removing, with what is left and the Servers it waits on. May stop to ask a human to approve.",
+      "description": "Remove a Project right away. Its Services come off the Servers, then it is deleted with every Environment, Volume and their data, which cannot be undone. A Server that doesn't answer holds up its part until it answers or is removed. Returns removed or removing, with what is left and the Servers it waits on. May need a person.",
       "destructive": true,
       "gate": "store",
       "idempotent": true,
@@ -3153,7 +3153,7 @@
       "title": "Remove a Project"
     },
     {
-      "description": "Remove a Server from the Organization right away and reset it. This deletes its containers and volumes with their data, and cannot be undone. Services there stop, and the next deploy places them on other Servers, except those whose Volume was there. May stop to ask a human to approve.",
+      "description": "Remove a Server from the Organization right away and reset it. This deletes its containers and volumes with their data, and cannot be undone. Services there stop, and the next deploy places them on other Servers, except those whose Volume was there. May need a person.",
       "destructive": true,
       "gate": "cloud",
       "idempotent": true,
@@ -3196,7 +3196,7 @@
       "title": "Remove a Server"
     },
     {
-      "description": "Drop a gone Server from the Organization right away, without resetting it. Volumes whose only copy was there are lost, which cannot be undone. Refused while the Server answers and holds a Volume copy. To reset it too, use `server_remove`. May stop to ask a human to approve.",
+      "description": "Drop a gone Server from the Organization right away, without resetting it. Volumes whose only copy was there are lost, which cannot be undone. Refused while the Server answers and holds a Volume copy. To reset it too, use `server_remove`. May need a person.",
       "destructive": true,
       "gate": "cloud",
       "idempotent": true,

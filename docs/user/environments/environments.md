@@ -237,21 +237,21 @@ unprotected.
 To change it, open the environment's **Settings → Environment** and flip **Protected**, or run
 `ployz env protect production --off` and `ployz env protect production`. Members see the switch
 disabled. `ployz env ls` shows which are Protected. Branches and preview environments can't be
-Protected. Turning protection off from the CLI or an agent waits for you to approve.
+Protected. Turning protection off from the CLI shows what it changes and asks yes or no. An agent
+can't turn it off.
 
-A member can still ask for changes in a Protected environment. Their buttons read **Request
-deploy**, **Request sync**, **Request restart** and **Request stop**, and a volume's **Storage
-limit** confirms with **Request grow**. Clicking one shows
-**Requested**. The request waits under **Waiting on you** in the [Agent panel](../account/agent-sidebar.md#approve-or-deny-a-deploy)
-of every owner or admin, with the name of who asked. Once one approves it, it runs as the member
-who asked. The member sees their own request under **Requested**, marked **Waiting on an owner or
-admin.**, and can't approve or deny it. Neither can an owner or admin decide a request they made. A deploy, sync or take from `ployz` or an agent asks
-the same way, and so do `ployz env shutdown` and cancelling a deploy someone else started. So does
-anything from `ployz` or an agent that stops or takes off what a volume serves:
-`ployz volume move`, `restore`, `release` and `mirror rm`, and any resize with `ployz volume set
---size`. The approval covers only the server it moves to or restores from, or the size it resizes
-from and to, so a resize asks again if the volume's size changed meanwhile. Adding a mirror or
-syncing doesn't ask.
+A member can still deploy, stop and restart in a Protected environment. Their buttons read
+**Request deploy**, **Request stop** and **Request restart**, and clicking one shows **Waiting on
+an owner or admin.** with a link to the request. Any owner or admin who didn't ask opens that
+link, or finds it under **Waiting on you** in the
+[Agent panel](../account/agent-sidebar.md#approve-or-deny-a-deploy), and approves or denies it.
+Once approved, it runs as the member who asked. `ployz deploy` from a member waits the same way
+and prints the link.
+
+Anything else only an owner or admin can do there is refused with **An owner or admin does
+this.** That covers syncing or taking changes, growing a volume, `ployz env shutdown`, cancelling
+a deploy someone else started, and `ployz volume move`, `restore`, `release`, `mirror rm` and
+`ployz volume set --size`. A member sees **Sync** and the volume's **Storage limit** disabled.
 
 A merge into a Protected environment's deploy branch still deploys. To control who can merge, use
 [GitHub branch protection](../deploy/github.md#protected-environments).
@@ -264,9 +264,9 @@ when an admin already saved the removal. The refusal names what it would remove 
 `Needs changes:destroy: this deploy would remove Service extra. Have an owner or admin deploy it.`
 A redeploy that destroys nothing, such as `ployz deployment redeploy` of a deploy that only changed
 an image or variables, runs as its deploy did. A rollback, or a redeploy that removes again what
-its deploy removed (a service, a domain, a volume mount, or a volume and its data), waits for an
-admin, and so does every deploy an agent makes with it: the admin's approval lists each one, such
-as `✕ removes Service extra`, and approving lets it remove them. A rollback that would remove
+its deploy removed (a service, a domain, a volume mount, or a volume and its data), is refused
+with `An owner or admin does this.`, so an owner or admin redeploys it from their own login. A
+rollback that would remove
 more, such as a service added since or a volume and its data, is refused like a deploy, naming the
 deploy to hand over, such as
 `Needs changes:destroy: rolling back to #1 would remove Service extra. Have an owner or admin redeploy #1.`
@@ -314,8 +314,8 @@ goes too.
 Only an owner or admin can delete a project. Like an environment, it stays listed until every
 server that ran it has taken it off.
 
-Deleting with `ployz env rm` or `ployz project rm`, or through an agent, asks for approval first
-when it would take something off your servers. See
+Deleting with `ployz env rm` or `ployz project rm` asks yes or no first when it would take
+something off your servers. An agent can't delete one. See
 [Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first).
 
 **Next:** [give every pull request its own copy of your app](preview-environments.md).

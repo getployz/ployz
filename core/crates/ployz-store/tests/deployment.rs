@@ -10407,6 +10407,155 @@ fn a_deployment_that_failed_in_a_service_never_becomes_its_parent() {
     );
 }
 
+#[test]
+fn a_yes_to_a_redeploy_whose_prune_target_left_queues_nothing_and_asks_again() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    let cli = |approval, running| Trusted {
+        approval,
+        running,
+        from_cli: true,
+        ..Trusted::default()
+    };
+    let asked = retry_as(
+        &store,
+        &who,
+        (2, 1),
+        &cli(Approval::Required, running(&["web", "api", "extra2"])),
+    )
+    .unwrap_err();
+    assert_eq!(effects(&asked), removes(&["extra2"]), "{asked:?}");
+    // extra2 stops before the person says yes: the redeploy now prunes nothing.
+    let stale = retry_as(
+        &store,
+        &who,
+        (2, 1),
+        &cli(approved(&asked), running(&["web", "api"])),
+    )
+    .unwrap_err();
+    assert_eq!(stale.code.as_str(), "approval_required", "{stale:?}");
+    assert_eq!(stale.message, "A human must approve this redeploy first.");
+    assert_eq!(stale.details["effects"], json!([]));
+    assert!(
+        store
+            .read(&who, &ployz_store::DeploymentQuery { id: id(2) })
+            .is_err()
+    );
+    let fresh = cli(approved(&stale), running(&["web", "api"]));
+    assert!(retry_as(&store, &who, (2, 1), &fresh).unwrap().prune);
+}
+
+#[test]
+fn a_protectors_yes_to_a_retry_whose_prune_target_left_asks_again() {
+    let (store, who) = shop();
+    apply_both(&store, &who, 1);
+    set_replicas(&store, &who, "api", 2);
+    deploy_as(&store, &who, 2, Approval::NotRequired).unwrap();
+    cancel(&store, &who, 2).unwrap();
+    let asked = retry_as(
+        &store,
+        &who,
+        (3, 2),
+        &admins_token(running(&["web", "api", "extra2"])),
+    )
+    .unwrap_err();
+    assert_admin_asked(&asked);
+    let carried = Trusted {
+        approval: approved(&asked),
+        ..admins_token(running(&["web", "api"]))
+    };
+    let stale = retry_as(&store, &who, (3, 2), &carried).unwrap_err();
+    assert_admin_asked(&stale);
+    assert_eq!(stale.details["effects"], json!([]));
+    let fresh = Trusted {
+        approval: approved(&stale),
+        ..carried
+    };
+    assert_eq!(
+        retry_as(&store, &who, (3, 2), &fresh).unwrap().status,
+        DeploymentStatus::Queued
+    );
+}
+
+#[test]
+fn a_yes_to_cancel_someone_elses_deployment_asks_again_once_production_is_unprotected() {
+    let (store, system) = shop();
+    let (grace, linus) = (as_person(&system, "grace"), as_person(&system, "linus"));
+    let cancel_as =
+        |trusted: &Trusted| store.write_trusted(&linus, &Cancel { deployment: id(1) }, trusted);
+    deploy_trusted(
+        &store,
+        &grace,
+        1,
+        &protector(Approval::NotRequired, Asks::Destroys),
+    )
+    .unwrap();
+    let asked = cancel_as(&member(Approval::Required, Asks::Destroys)).unwrap_err();
+    store
+        .write(
+            &system,
+            &ployz_store::SetEnvironmentProtected {
+                environment: EnvironmentRef::default(),
+                protected: false,
+                seen: None,
+            },
+        )
+        .unwrap();
+    let stale = cancel_as(&member(approved(&asked), Asks::Destroys)).unwrap_err();
+    assert_eq!(stale.code.as_str(), "approval_required", "{stale:?}");
+    assert_eq!(stale.message, "A human must approve this cancel first.");
+    assert_eq!(status(&store, &system, 1), DeploymentStatus::Queued);
+    let cancelled = cancel_as(&member(approved(&stale), Asks::Destroys)).unwrap();
+    assert_eq!(cancelled.status, DeploymentStatus::Cancelled);
+    // Without a yes, nothing asks there now.
+    deploy_trusted(
+        &store,
+        &grace,
+        2,
+        &protector(Approval::NotRequired, Asks::Destroys),
+    )
+    .unwrap();
+    store
+        .write_trusted(
+            &linus,
+            &Cancel { deployment: id(2) },
+            &member(Approval::Required, Asks::Destroys),
+        )
+        .unwrap();
+}
+
+#[test]
+fn a_yes_to_cancel_someone_elses_deployment_cancels_no_other() {
+    let (store, system) = shop();
+    let (grace, linus) = (as_person(&system, "grace"), as_person(&system, "linus"));
+    let cancel_as = |n: u8, trusted: &Trusted| {
+        store.write_trusted(&linus, &Cancel { deployment: id(n) }, trusted)
+    };
+    deploy_trusted(
+        &store,
+        &grace,
+        1,
+        &protector(Approval::NotRequired, Asks::Destroys),
+    )
+    .unwrap();
+    let asked = cancel_as(1, &member(Approval::Required, Asks::Destroys)).unwrap_err();
+    deploy_trusted(
+        &store,
+        &linus,
+        2,
+        &signed_in("u-linus", protector(Approval::NotRequired, Asks::Destroys)),
+    )
+    .unwrap();
+    let mine = |approval| signed_in("u-linus", member(approval, Asks::Destroys));
+    let stale = cancel_as(2, &mine(approved(&asked))).unwrap_err();
+    assert_eq!(stale.code.as_str(), "approval_required", "{stale:?}");
+    assert_ne!(stale.details["approval"], asked.details["approval"]);
+    assert_eq!(status(&store, &system, 2), DeploymentStatus::Queued);
+    // Without a yes, cancelling his own asks nothing, as before.
+    let cancelled = cancel_as(2, &mine(Approval::Required)).unwrap();
+    assert_eq!(cancelled.status, DeploymentStatus::Cancelled);
+}
+
 const RESTORED: &str = "00000000-0000-4000-8000-000000000006";
 
 /// Stage `restored`, a new Volume restored from `data`'s point taken at `at` seconds, as
