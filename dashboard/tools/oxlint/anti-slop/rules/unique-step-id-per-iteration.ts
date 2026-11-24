@@ -78,9 +78,11 @@ function alwaysLeaves(statement: ESTree.Node, breakLeaves: boolean): boolean {
 
 /**
  * A step the iteration cannot outlive runs once per run, however many times the loop turned before it: it is returned,
- * or a later statement on its way out of the loop returns, throws or breaks before anything can continue.
+ * or a later statement on its way out of the loop returns, throws or breaks before anything can continue. Only a loop
+ * statement can be left this way: a return in an iterator callback ends one call, and the next element runs the step.
  */
 function endsIteration(call: ESTree.Node, loop: ESTree.Node, visitorKeys: VisitorKeys): boolean {
+  if (isFunctionNode(loop)) return false;
   let breakLeaves = true;
   let child: ESTree.Node = call;
   for (let current = call.parent; current !== null && current !== loop; current = current.parent) {

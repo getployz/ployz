@@ -50,5 +50,18 @@ tester.run("unique-step-id-per-iteration", uniqueStepIdPerIterationRule, {
       code: `await Promise.all(machines.map((machine) => steps.step.run(\`stop-\${run.id}\`, () => stop(machine))));`,
       errors: [{ messageId: "sharedId" }],
     },
+    // A return in an iterator callback ends one invocation; every machine still runs the step.
+    {
+      code: `await Promise.all(machines.map((m) => { return step.run("stop", () => stop(m)); }));`,
+      errors: [{ messageId: "sharedId" }],
+    },
+    {
+      code: `machines.forEach(async (m) => {
+        if (m.gone) return;
+        await step.run("stop", () => stop(m));
+        return;
+      });`,
+      errors: [{ messageId: "sharedId" }],
+    },
   ],
 });
