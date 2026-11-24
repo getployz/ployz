@@ -129,11 +129,13 @@ it("relays the key the browser sealed and approved to the Servers as it came, an
   expect(await keyKept()).toEqual({ stored: false, events: false });
 });
 
-// Catches a turn-on from outside Ployz Cloud, which has no sealed key to send and nowhere a person approves one.
-it("refuses turning it on from the CLI or an agent, and hands nothing to the Servers", async () => {
+// Catches a turn-on from outside Ployz Cloud, which has no sealed key to send, or a turn-off that disconnects every router.
+it("refuses turning it on or off from the CLI or an agent, and hands nothing to the Servers", async () => {
   for (const caller of [agent, { ...agent, via: "cli" as const }]) {
-    const asked = await run(privateAccessUse.invoke(caller, { to: "on" }, { approved: null, key: null }));
-    expect(asked).toMatchObject({ ok: false, refusal: { code: "failed_precondition", message: "Turn it on in Ployz Cloud." } });
+    for (const to of ["on", "off"] as const) {
+      const asked = await run(privateAccessUse.invoke(caller, { to }, { approved: null, key: null }));
+      expect(asked).toMatchObject({ ok: false, refusal: { code: "failed_precondition", message: "Turn Private Access on or off in Ployz Cloud, under Integrations." } });
+    }
   }
   expect(handed).toEqual([]);
 });

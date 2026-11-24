@@ -171,8 +171,8 @@ your services at their private addresses, on any port and protocol.
    their own.
 
 **Integrations** lists each server's router. **Approve routes** links to the Tailscale admin
-console, and the Linux command is there to copy. `ployz cluster private-access on` and agents are
-refused with **Turn it on in Ployz Cloud.** If Tailscale refuses
+console, and the Linux command is there to copy. `ployz cluster private-access` and agents
+can't turn Private Access on or off. They point you to **Integrations**. If Tailscale refuses
 the key, try another key, or turn Private Access off, in **Integrations**.
 
 `ployz private-access` shows which servers run a router, meaning one whose node joined your
