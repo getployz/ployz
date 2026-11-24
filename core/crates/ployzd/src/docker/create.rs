@@ -212,7 +212,7 @@ pub(super) fn container_create_body(
         })),
         mounts: (!mounts.is_empty()).then_some(mounts),
         cap_add: (!container.cap_add.is_empty()).then(|| container.cap_add.clone()),
-        cap_drop: (!container.cap_drop.is_empty()).then(|| container.cap_drop.clone()),
+        cap_drop: Some(cap_drop(container)).filter(|drop| !drop.is_empty()),
         pid_mode: container.pid_mode.as_ref().map(ToString::to_string),
         extra_hosts: (on_bridge && !container.extra_hosts.is_empty()).then(|| {
             container
@@ -225,13 +225,7 @@ pub(super) fn container_create_body(
             hook.and_then(|hook| hook.privileged)
                 .unwrap_or(container.privileged),
         ),
-        sysctls: (!container.sysctls.is_empty()).then(|| {
-            container
-                .sysctls
-                .iter()
-                .map(|(key, value)| (key.clone(), value.clone()))
-                .collect()
-        }),
+        sysctls: Some(sysctls(container, network)).filter(|sysctls| !sysctls.is_empty()),
         ..docker_resources(resources)
     };
     Ok(ContainerCreateBody {
@@ -290,6 +284,49 @@ pub(super) fn container_create_body(
         host_config: Some(host_config),
         ..Default::default()
     })
+}
+
+const NET_RAW: &str = "NET_RAW";
+const PING_GROUP_RANGE: &str = "net.ipv4.ping_group_range";
+
+/// Whether a capability Docker reads names `cap`: either case, with or without `CAP_`.
+fn names(capability: &str, cap: &str) -> bool {
+    let capability = capability.to_ascii_uppercase();
+    capability.strip_prefix("CAP_").unwrap_or(&capability) == cap
+}
+
+/// The spec's drops, and `NET_RAW` unless the signed spec adds it, so a root process can't
+/// open a raw socket to forge packets on the bridge.
+fn cap_drop(container: &ployz_core::ServiceContainerSpec) -> Vec<String> {
+    let mut drop = container.cap_drop.clone();
+    let keeps_raw = container
+        .cap_add
+        .iter()
+        .any(|cap| names(cap, NET_RAW) || names(cap, "ALL"));
+    if !keeps_raw && !drop.iter().any(|cap| names(cap, NET_RAW)) {
+        drop.push(NET_RAW.into());
+    }
+    drop
+}
+
+/// The spec's sysctls, and ping sockets closed to every group in a namespace this Container
+/// owns, where Docker would open them. A Container in `container:` mode inherits the
+/// owner's, and Docker refuses netns sysctls there. A signed spec's own range wins.
+fn sysctls(
+    container: &ployz_core::ServiceContainerSpec,
+    network: &CreationNetwork,
+) -> HashMap<String, String> {
+    let mut sysctls: HashMap<_, _> = container
+        .sysctls
+        .iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    if !matches!(network, CreationNetwork::Holder(_)) {
+        sysctls
+            .entry(PING_GROUP_RANGE.into())
+            .or_insert_with(|| "1 0".into());
+    }
+    sysctls
 }
 
 fn docker_restart(policy: ployz_core::RestartPolicy) -> RestartPolicy {

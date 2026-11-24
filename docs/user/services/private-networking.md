@@ -197,6 +197,8 @@ that isn't approved is refused. Turning Private Access off needs no approval.
 
 If the router a device uses stops, the device moves to another in about 16 seconds. It stays
 there when the first one returns. Services see the router's private address as the client.
+`ping` from a tailnet device to a service's private address gets no answer. Check a service with
+a TCP connection to its port instead.
 
 Ployz doesn't set up Tailscale DNS, so use a service's private address.
 
@@ -223,3 +225,5 @@ and running `off` again finishes the removal.
   have one). Run anything that must be walled off in its own organization, on its own servers.
 - **Servers must reach each other on UDP port 51820.** Without it, services on different
   servers can't reach each other.
+- **`ping` and raw sockets don't work inside a service,** even as root. To check that another
+  service answers, connect to its port, for example with `curl` or `nc -z`.

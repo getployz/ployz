@@ -118,6 +118,7 @@ fn an_app_body_is_pinned() {
             "Env": [MACHINE],
             "Healthcheck": {"Interval": 1_500_000_000_i64, "Retries": 3, "Test": ["CMD", "true"]},
             "HostConfig": {
+                "CapDrop": ["NET_RAW"],
                 "Dns": ["10.210.0.1"],
                 "DnsOptions": ["ndots:1"],
                 "DnsSearch": ["app.internal"],
@@ -125,6 +126,7 @@ fn an_app_body_is_pinned() {
                 "NetworkMode": "ployz",
                 "Privileged": false,
                 "RestartPolicy": {"Name": "unless-stopped"},
+                "Sysctls": {"net.ipv4.ping_group_range": "1 0"},
             },
             "Image": "example.test/api",
             "Labels": {
@@ -156,6 +158,7 @@ fn a_hook_body_disables_the_healthcheck_and_never_restarts() {
             "Env": ["PLOYZ_HOOK_PRE_DEPLOY=true", MACHINE],
             "Healthcheck": {"Test": ["NONE"]},
             "HostConfig": {
+                "CapDrop": ["NET_RAW"],
                 "Dns": ["10.210.0.1"],
                 "DnsOptions": ["ndots:1"],
                 "DnsSearch": ["app.internal"],
@@ -163,6 +166,7 @@ fn a_hook_body_disables_the_healthcheck_and_never_restarts() {
                 "NetworkMode": "ployz",
                 "Privileged": false,
                 "RestartPolicy": {"Name": "no"},
+                "Sysctls": {"net.ipv4.ping_group_range": "1 0"},
             },
             "Image": "example.test/api",
             "Labels": {
@@ -197,6 +201,7 @@ fn the_holder_gets_its_sysctls_and_the_proxy_joins_its_network() {
             "Cmd": [],
             "Env": [MACHINE],
             "HostConfig": {
+                "CapDrop": ["NET_RAW"],
                 "Dns": ["10.210.0.1"],
                 "DnsOptions": ["ndots:1"],
                 "DnsSearch": ["ployz-system.internal"],
@@ -204,7 +209,11 @@ fn the_holder_gets_its_sysctls_and_the_proxy_joins_its_network() {
                 "NetworkMode": "ployz",
                 "Privileged": false,
                 "RestartPolicy": {"Name": "unless-stopped"},
-                "Sysctls": {"net.ipv4.tcp_migrate_req": "1", "net.ipv4.tcp_retries2": "5"},
+                "Sysctls": {
+                    "net.ipv4.ping_group_range": "1 0",
+                    "net.ipv4.tcp_migrate_req": "1",
+                    "net.ipv4.tcp_retries2": "5",
+                },
             },
             "Image": "example.test/holder",
             "Labels": {
@@ -239,6 +248,7 @@ fn the_holder_gets_its_sysctls_and_the_proxy_joins_its_network() {
             "Cmd": [],
             "Env": [MACHINE],
             "HostConfig": {
+                "CapDrop": ["NET_RAW"],
                 "LogConfig": log_config(),
                 "NetworkMode": format!("container:{}", "b".repeat(64)),
                 "Privileged": false,
@@ -258,6 +268,43 @@ fn the_holder_gets_its_sysctls_and_the_proxy_joins_its_network() {
     );
 }
 
+#[test]
+fn a_signed_spec_that_asks_for_raw_sockets_keeps_them() {
+    let pinger = spec(
+        "pinger",
+        serde_json::json!({
+            "image": "example.test/pinger",
+            "pull_policy": "missing",
+            "cap_add": ["cap_net_raw"],
+            "cap_drop": ["MKNOD"],
+            "sysctls": { "net.ipv4.ping_group_range": "0 2147483647" },
+        }),
+    );
+    for kind in [
+        ContainerKind::ServiceContainer,
+        ContainerKind::PreDeployHook,
+    ] {
+        let body = body_of(
+            kind,
+            &Namespace::parse("app").unwrap(),
+            &pinger,
+            &create::CreationNetwork::Bridge,
+        );
+        assert_eq!(
+            body.pointer("/HostConfig/CapAdd"),
+            Some(&serde_json::json!(["cap_net_raw"]))
+        );
+        assert_eq!(
+            body.pointer("/HostConfig/CapDrop"),
+            Some(&serde_json::json!(["MKNOD"]))
+        );
+        assert_eq!(
+            body.pointer("/HostConfig/Sysctls"),
+            Some(&serde_json::json!({ "net.ipv4.ping_group_range": "0 2147483647" }))
+        );
+    }
+}
+
 #[tokio::test]
 async fn a_keyed_service_create_sends_docker_its_name_and_run_labels() {
     let (name, config) = keyed_config(ContainerKind::ServiceContainer, "golden-key").await;
@@ -269,6 +316,7 @@ async fn a_keyed_service_create_sends_docker_its_name_and_run_labels() {
             "Env": [MACHINE],
             "Healthcheck": {"Interval": 1_500_000_000_i64, "Retries": 3, "Test": ["CMD", "true"]},
             "HostConfig": {
+                "CapDrop": ["NET_RAW"],
                 "Dns": ["10.210.0.1"],
                 "DnsOptions": ["ndots:1"],
                 "DnsSearch": ["app.internal"],
@@ -277,6 +325,7 @@ async fn a_keyed_service_create_sends_docker_its_name_and_run_labels() {
                 "NetworkMode": "ployz",
                 "Privileged": false,
                 "RestartPolicy": {"Name": "unless-stopped"},
+                "Sysctls": {"net.ipv4.ping_group_range": "1 0"},
             },
             "Image": "example.test/api",
             "Labels": {
@@ -307,6 +356,7 @@ async fn a_keyed_hook_create_sends_docker_its_name_and_run_labels() {
             "Env": ["PLOYZ_HOOK_PRE_DEPLOY=true", MACHINE],
             "Healthcheck": {"Test": ["NONE"]},
             "HostConfig": {
+                "CapDrop": ["NET_RAW"],
                 "Dns": ["10.210.0.1"],
                 "DnsOptions": ["ndots:1"],
                 "DnsSearch": ["app.internal"],
@@ -315,6 +365,7 @@ async fn a_keyed_hook_create_sends_docker_its_name_and_run_labels() {
                 "NetworkMode": "ployz",
                 "Privileged": false,
                 "RestartPolicy": {"Name": "no"},
+                "Sysctls": {"net.ipv4.ping_group_range": "1 0"},
             },
             "Image": "example.test/api",
             "Labels": {
