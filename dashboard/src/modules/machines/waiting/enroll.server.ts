@@ -542,7 +542,7 @@ export const readServerEnrollmentStatus = Effect.fn("ServerEnrollment.status")(f
     .where(and(
       eq(serverEnrollment.organizationId, organization.id),
       input.id === undefined ? and(
-        or(isNull(serverEnrollment.endedAt), gte(serverEnrollment.endedAt, new Date(Date.now() - RECENT_ENROLLMENT_MS))),
+        or(isNull(serverEnrollment.endedAt), gte(serverEnrollment.endedAt, sql`now() - make_interval(secs => ${RECENT_ENROLLMENT_MS / 1000})`)),
         // Reject spares the join it found committed, so that attempt stays in view like any other.
         or(isNull(waitingServer.rejectedAt), and(
           or(isNull(serverEnrollment.endedAt), gte(serverEnrollment.endedAt, waitingServer.rejectedAt)),

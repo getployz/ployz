@@ -128,6 +128,7 @@ export const disableOrganizationPairing = Effect.fn("PairingRemoval.disable")(
         if (release && removalEndpoints.some((endpoint) => endpoint.status === "unknown")) return "unconfirmable" as const;
         if (release) yield* endFoundingClaim(pairing);
         const removalStartedAt = new Date();
+        // oxlint-disable-next-line anti-slop/postgres-clock-in-queries -- a fence, not a time: the finish matches this exact value, which a microsecond now() would not survive the round trip
         yield* drizzle.update(organizationPairing).set({ removalStartedAt, removalEndpoints })
           .where(eq(organizationPairing.organizationId, organizationId));
         // This also retires the old generation's preferred-entry flag.
@@ -158,7 +159,7 @@ const endFoundingClaim = Effect.fn("PairingRemoval.endFoundingClaim")(function* 
   const founding = yield* openFounderAttempt(pairing.organizationId);
   if (founding !== undefined) yield* cancelServerEnrollments(pairing.organizationId, [founding.id]);
   const { drizzle } = yield* Database;
-  yield* drizzle.update(machineEnrollmentToken).set({ expiresAt: sql`now()`, updatedAt: new Date() }).where(and(
+  yield* drizzle.update(machineEnrollmentToken).set({ expiresAt: sql`now()`, updatedAt: sql`now()` }).where(and(
     eq(machineEnrollmentToken.organizationId, pairing.organizationId),
     eq(machineEnrollmentToken.claimedMachineId, pairing.founderClaimMachineId),
     sql`${machineEnrollmentToken.enrollmentRole} is distinct from 'joiner'`,

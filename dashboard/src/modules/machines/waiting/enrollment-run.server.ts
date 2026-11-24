@@ -119,13 +119,12 @@ const endAndRevokeTokensNow = Effect.fn("ServerEnrollment.end")(function* (where
     .orderBy(serverEnrollment.id)
     .for("update");
   if (locked.length === 0) return [];
-  const now = new Date();
   const ended = yield* drizzle.update(serverEnrollment).set({
     state: ending.state,
     machineId: ending.state === "joined" ? ending.machineId : null,
     failure: ending.state === "failed" ? ending.failure : null,
     encryptedToken: null,
-    endedAt: now,
+    endedAt: sql`now()`,
   }).where(and(inArray(serverEnrollment.id, locked.map((row) => row.id)), where)).returning({ id: serverEnrollment.id, enrollTokenId: serverEnrollment.enrollTokenId, fleetTokenId: serverEnrollment.fleetTokenId });
   if (ending.state === "joined" && ended.length > 0) {
     yield* drizzle.insert(fleetTokenJoin).values(ended.map((row) => ({ attemptId: row.id, fleetTokenId: row.fleetTokenId })));
@@ -249,7 +248,7 @@ export const closeStaleServerEnrollments = Effect.fn("ServerEnrollment.closeStal
     const keptLongEnough = exists(drizzle.select({ id: serverEnrollment.id }).from(serverEnrollment).where(and(
       eq(serverEnrollment.waitingServerId, waitingServer.id),
       eq(serverEnrollment.state, "joined"),
-      lt(serverEnrollment.endedAt, new Date(now - JOINED_WAITING_KEEP_MS)),
+      lt(serverEnrollment.endedAt, sql`now() - make_interval(secs => ${JOINED_WAITING_KEEP_MS / 1000})`),
     )));
     const locked = yield* drizzle.select({ id: waitingServer.id }).from(waitingServer).where(keptLongEnough).orderBy(waitingServer.id).for("update");
     if (locked.length === 0) return [];

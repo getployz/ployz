@@ -19,7 +19,6 @@ import { stillWaiting } from "#/modules/machines/waiting/waiting-servers.server"
 import { requireAccess } from "#/modules/organization/access.server";
 import { Database, isUniqueViolation } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
-import { DAY_MS } from "#/lib/time-range";
 
 const LIFETIME_DAYS = { "1d": 1, "7d": 7, "30d": 30 } satisfies Record<FleetTokenLifetime, number>;
 const NAME_ATTEMPTS = 5;
@@ -36,7 +35,6 @@ export const createFleetToken = Effect.fn("FleetToken.create")(function* (
 ) {
   const { organization } = yield* requireAccess(actor, input.organizationSlug, "servers:add");
   const database = yield* Database;
-  const expiresAt = new Date(Date.now() + LIFETIME_DAYS[input.expiresIn] * DAY_MS);
   const insert = (name: string) => {
     const token = `${FLEET_TOKEN_PREFIX}${randomBytes(32).toString("base64url")}`;
     // Organization removal holds this lock while it locks the tokens and then their hosts, so no token appears between.
@@ -49,16 +47,16 @@ export const createFleetToken = Effect.fn("FleetToken.create")(function* (
           organizationId: organization.id,
           name,
           tokenHash: hashFleetToken(token),
-          expiresAt,
+          expiresAt: sql`now() + make_interval(days => ${LIFETIME_DAYS[input.expiresIn]})`,
           autoEnrollMax: input.autoEnroll?.maxServers ?? null,
           foundsClosed: input.foundsClosed ?? false,
           createdByUserId: actor.userId,
         })
-        .returning({ id: fleetToken.id });
+        .returning({ id: fleetToken.id, expiresAt: fleetToken.expiresAt });
     })).pipe(
       Effect.flatMap(([row]) => row === undefined
         ? Effect.die("Fleet Token insert returned no row")
-        : Effect.succeed(Option.some({ token, id: row.id, name, expiresAt: expiresAt.toISOString() }))),
+        : Effect.succeed(Option.some({ token, id: row.id, name, expiresAt: row.expiresAt.toISOString() }))),
       Effect.catchIf(isUniqueViolation, () => Effect.succeed(Option.none())),
     );
   };
@@ -126,7 +124,7 @@ export const revokeFleetToken = Effect.fn("FleetToken.revoke")(function* (
     if (found === undefined) return yield* new NotFound({ message: "No such Fleet Token." });
     yield* drizzle
       .update(fleetToken)
-      .set({ revokedAt: new Date() })
+      .set({ revokedAt: sql`now()` })
       .where(and(eq(fleetToken.id, found.id), isNull(fleetToken.revokedAt)));
     // Locked first so the delete below starts after any Enroll on these rows commits, and sees its attempt.
     yield* drizzle.select({ id: waitingServer.id }).from(waitingServer)
@@ -160,7 +158,7 @@ export const loadFleetToken = Effect.fn("FleetToken.load")(function* (token: str
     .where(and(
       eq(fleetToken.tokenHash, hashFleetToken(token)),
       isNull(fleetToken.revokedAt),
-      gt(fleetToken.expiresAt, new Date()),
+      gt(fleetToken.expiresAt, sql`now()`),
     ))
     .limit(1);
   return row ?? null;
