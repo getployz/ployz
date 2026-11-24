@@ -563,7 +563,7 @@ fn filter_bridged() -> Result<(), NetworkError> {
             Err(error) => return Err(error.into()),
         };
         if value.trim() != "1" {
-            std::fs::write(&path, "1")?;
+            turn_on(family, &path)?;
             turned_on.push(format!("set net.bridge.bridge-nf-call-{family}=1"));
         }
     }
@@ -574,6 +574,22 @@ fn filter_bridged() -> Result<(), NetworkError> {
         );
     }
     Ok(())
+}
+
+/// Under an older release's `ployz.service`, which an older upgrade worker leaves in place,
+/// /proc/sys is read-only to the daemon, so systemd sets the sysctl from outside the sandbox.
+fn turn_on(family: &str, path: &str) -> Result<(), NetworkError> {
+    match std::fs::write(path, "1") {
+        Err(error) if error.kind() == io::ErrorKind::ReadOnlyFilesystem => {
+            let setting = format!("net.bridge.bridge-nf-call-{family}=1");
+            super::checked_command(
+                "systemd-run",
+                &["--wait", "--collect", "--quiet", "sysctl", "-w", &setting],
+            )
+            .map(drop)
+        }
+        written => Ok(written?),
+    }
 }
 
 /// Docker sends forwarded IPv4 through DOCKER-USER, where the fence hooks, only with its
