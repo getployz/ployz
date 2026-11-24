@@ -73,6 +73,7 @@ pub(crate) mod test_support {
         pub(crate) calls: Arc<Mutex<Vec<(String, Value)>>>,
         pub(crate) replies: Arc<Mutex<BTreeMap<String, Value>>>,
         effects: Arc<Mutex<BTreeMap<String, Effect>>>,
+        gates: Arc<Mutex<BTreeMap<String, Arc<tokio::sync::RwLock<()>>>>>,
     }
 
     impl FakePlugin {
@@ -86,6 +87,18 @@ pub(crate) mod test_support {
                 .lock()
                 .unwrap()
                 .insert(route.to_owned(), Arc::new(effect));
+        }
+
+        /// Holds every call to `route` after it is recorded, until the guard drops.
+        pub(crate) async fn hold(&self, route: &str) -> tokio::sync::OwnedRwLockWriteGuard<()> {
+            let gate = Arc::clone(
+                self.gates
+                    .lock()
+                    .unwrap()
+                    .entry(route.to_owned())
+                    .or_default(),
+            );
+            gate.write_owned().await
         }
 
         pub(crate) fn routes_called(&self) -> Vec<String> {
@@ -118,6 +131,10 @@ pub(crate) mod test_support {
     ) -> axum::response::Response {
         let route = uri.path().trim_start_matches('/').to_owned();
         fake.calls.lock().unwrap().push((route.clone(), request));
+        let gate = fake.gates.lock().unwrap().get(&route).cloned();
+        if let Some(gate) = gate {
+            drop(gate.read().await);
+        }
         let effect = fake.effects.lock().unwrap().get(&route).cloned();
         if let Some(effect) = effect {
             effect();

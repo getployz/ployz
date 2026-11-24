@@ -38,6 +38,8 @@ impl LocalMachine {
     /// Returns [`Error::ManagementRevoked`] when this Machine no longer accepts the
     /// caller's key.
     pub(crate) async fn lock_switch(&self) -> Result<SwitchGuard, Error> {
+        #[cfg(test)]
+        self.switch_asked.send_modify(|asked| *asked += 1);
         let held = Arc::clone(&self.switch).lock_owned().await;
         Ok(SwitchGuard {
             local: Self {
@@ -46,6 +48,12 @@ impl LocalMachine {
             },
             _held: held,
         })
+    }
+
+    /// How many calls have asked for the switch lock so far.
+    #[cfg(test)]
+    pub(crate) fn switch_asked(&self) -> tokio::sync::watch::Receiver<usize> {
+        self.switch_asked.subscribe()
     }
 
     /// The switch guard a create or start of a Provisioned Volume's holder takes, or

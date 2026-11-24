@@ -2353,6 +2353,53 @@ mod private_access {
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 
+    /// A Device's turn on, sent at Full access with no approval, whose Device slot goes
+    /// while it waits for its turn. The key keeps Cloud's slot, an Operator's, so the turn
+    /// on needs the approval an Operator's does: no router is placed and the unapproved key
+    /// never reaches the router's file.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_turn_on_queued_while_its_device_slot_goes_needs_an_operators_approval() {
+        use ployz_core::authority::Signer;
+        let (data_dir, store, service, _fake, runtime, cluster) =
+            fake_docker_service_sealing("ployzd-access-downgraded").await;
+        let device = ployz_core::DeviceKey::from(Signer::from_seed(&[7; 32]).public());
+        let kept = ployz_core::DeviceKey::from(Signer::from_seed(&[9; 32]).public());
+        store
+            .mutate(move |store| {
+                store.approve_device(device).unwrap();
+                store.approve_device(kept).unwrap();
+                let cloud = ployz_core::ManagementClientLabel::cloud();
+                store.stage_management_client(cloud, device.into()).unwrap();
+                store.activate_management_client(device.into()).unwrap();
+            })
+            .await
+            .unwrap();
+        let sealed = cluster.seal_platform(PlatformPurpose::PrivateAccess, b"tskey-auth-planted");
+        let caller = service.clone().with_management_client(device.into());
+        let turn = store.admission_lock().write_owned().await;
+        let call = set_access(&caller, json!({"enabled": true, "sealed_auth_key": sealed}));
+        tokio::pin!(call);
+        if let std::task::Poll::Ready(answered) = futures_util::poll!(&mut call) {
+            panic!("answered before its turn: {answered:?}");
+        }
+        store
+            .mutate(move |store| assert!(store.remove_by_code(device.code()).unwrap()))
+            .await
+            .unwrap();
+        assert!(store.record().accepts_management_client(&device.into()));
+        drop(turn);
+        let answer = call.await;
+        let machine = service.local.record().id();
+        assert!(
+            runtime.routers(&machine).await.unwrap().is_empty(),
+            "{answer:?}"
+        );
+        assert!(!key_file(&data_dir).exists(), "{answer:?}");
+        let refused = answer.unwrap_err();
+        assert_eq!(refused.code(), Code::PermissionDenied, "{refused:?}");
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
     #[tokio::test]
     async fn a_reboot_leaves_the_router_at_rest_and_the_router_held_starts_again() {
         let (data_dir, _store, service, _fake, runtime, cluster) =
@@ -4835,6 +4882,167 @@ mod set_volume_copy {
         assert_eq!(
             answer.map(drop).unwrap_err().code(),
             tonic::Code::Unauthenticated
+        );
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    /// Until `plugin` has heard a call on `route`.
+    async fn until_called(plugin: &FakePlugin, route: &str) {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while !plugin.routes_called().iter().any(|called| called == route) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("the plugin never heard {route}"));
+    }
+
+    fn destroys(plugin: &FakePlugin) -> usize {
+        plugin
+            .routes_called()
+            .iter()
+            .filter(|route| *route == crate::volume_copy::DESTROY_ROUTE)
+            .count()
+    }
+
+    /// A Device's forget holds the switch, its read waiting on the plugin, when `ployz
+    /// device rm` removes that Device. The removal waits for the switch, so the forget's
+    /// destroy lands while the Device is still trusted, and none lands after the removal
+    /// returns.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_device_removal_waits_out_the_forget_that_holds_the_switch() {
+        use ployz_core::authority::Signer;
+        let (data_dir, store, service, _fake) =
+            fake_docker_service("ployzd-copy-removal-waits").await;
+        let device = ployz_core::DeviceKey::from(Signer::from_seed(&[7; 32]).public());
+        let kept = ployz_core::DeviceKey::from(Signer::from_seed(&[9; 32]).public());
+        store
+            .mutate(move |store| {
+                store.approve_device(device).unwrap();
+                store.approve_device(kept).unwrap();
+            })
+            .await
+            .unwrap();
+        let plugin = FakePlugin::default();
+        plugin.reply(INSPECT_ROUTE, slot(Some(snapshot("f-1", 7))));
+        plugin.reply(crate::volume_copy::DESTROY_ROUTE, json!({"Ok": null}));
+        // Whether the Device was still trusted at each destroy.
+        let trusted = Arc::new(std::sync::Mutex::new(Vec::new()));
+        plugin.on(crate::volume_copy::DESTROY_ROUTE, {
+            let (store, trusted) = (store.clone(), Arc::clone(&trusted));
+            move || {
+                let held = store.record().accepts_management_client(&device.into());
+                trusted.lock().unwrap().push(held);
+            }
+        });
+        let reading = plugin.hold(INSPECT_ROUTE).await;
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        let mut asked = service.local().switch_asked();
+        let caller = service.clone().with_management_client(device.into());
+        let mirror = json!({"kind":"mirror", "newest":"7", "slot":"1"});
+        let forgetting =
+            tokio::spawn(async move { set_copy(&caller, at_gen(forget(mirror), 3)).await });
+        until_called(&plugin, INSPECT_ROUTE).await;
+        let mut removing = tokio::spawn({
+            let service = service.clone();
+            async move {
+                let remove = ployz_core::SetDeviceRequest::Remove {
+                    code: device.code(),
+                };
+                service
+                    .set_device(Request::new(
+                        op::SetDevice::into_request(remove).encode().unwrap(),
+                    ))
+                    .await
+                    .map(|reply| reply.into_inner().decode_response().unwrap())
+            }
+        });
+        let early = tokio::select! {
+            removed = &mut removing => Some(removed.unwrap()),
+            queued = asked.wait_for(|asked| *asked >= 2) => {
+                queued.unwrap();
+                None
+            }
+        };
+        drop(reading);
+        let removed = match early {
+            Some(removed) => removed,
+            None => removing.await.unwrap(),
+        };
+        let at_removal = destroys(&plugin);
+        let forgot = forgetting.await.unwrap();
+        assert_eq!(
+            destroys(&plugin),
+            at_removal,
+            "a destroy landed after the removal returned: {forgot:?}"
+        );
+        assert_eq!(*trusted.lock().unwrap(), [true], "{removed:?}");
+        reply(&forgot);
+        removed
+            .unwrap()
+            .decode::<op::SetDevice>()
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert!(!store.record().accepts_management_client(&device.into()));
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    /// A Seed, which only Full access sends, queued on the switch while its Device slot
+    /// goes. The key keeps Cloud's slot, an Operator's, and the Seed is refused there
+    /// before the plugin hears it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_seed_queued_while_its_device_slot_goes_is_refused_before_the_plugin_hears_it() {
+        use ployz_core::authority::Signer;
+        let (data_dir, store, service, _fake) = fake_docker_service("ployzd-seed-downgraded").await;
+        let plugin = pulled_mirror_plugin();
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        let device = ployz_core::DeviceKey::from(Signer::from_seed(&[7; 32]).public());
+        let kept = ployz_core::DeviceKey::from(Signer::from_seed(&[9; 32]).public());
+        store
+            .mutate(move |store| {
+                store.approve_device(device).unwrap();
+                store.approve_device(kept).unwrap();
+                let cloud = ployz_core::ManagementClientLabel::cloud();
+                store.stage_management_client(cloud, device.into()).unwrap();
+                store.activate_management_client(device.into()).unwrap();
+            })
+            .await
+            .unwrap();
+        let mut asked = service.local().switch_asked();
+        let switch = service.local().lock_switch().await.unwrap();
+        let caller = service.clone().with_management_client(device.into());
+        let seeding = tokio::spawn(async move {
+            let request = json!({"name":"source", "into":VOLUME, "guid":"77", "gen":4});
+            caller
+                .seed_volume(Request::new(
+                    op::SeedVolume::into_request(serde_json::from_value(request).unwrap())
+                        .encode()
+                        .unwrap(),
+                ))
+                .await
+                .map(|reply| reply.into_inner().decode_response().unwrap())
+        });
+        asked.wait_for(|asked| *asked >= 2).await.unwrap();
+        store
+            .mutate(move |store| assert!(store.remove_by_code(device.code()).unwrap()))
+            .await
+            .unwrap();
+        assert!(store.record().accepts_management_client(&device.into()));
+        drop(switch);
+        let answer = seeding.await.unwrap();
+        assert!(
+            !plugin
+                .routes_called()
+                .iter()
+                .any(|route| route == SEED_ROUTE),
+            "{answer:?}"
+        );
+        assert_eq!(
+            answer.map(drop).unwrap_err().code(),
+            tonic::Code::PermissionDenied
         );
         server.abort();
         std::fs::remove_dir_all(data_dir).unwrap();

@@ -1436,4 +1436,203 @@ mod revoked {
         );
         machine.remove();
     }
+
+    /// The Device key `Enforcing` approves, held in Cloud's slot too, as a key Cloud also
+    /// connects with is: losing its Device slot leaves it an Operator's.
+    async fn device_in_two_slots(machine: &Enforcing) -> DeviceKey {
+        let device = DeviceKey::from(Signer::from_seed(&[7; 32]).public());
+        let kept = DeviceKey::from(Signer::from_seed(&[9; 32]).public());
+        machine
+            .store
+            .mutate(move |store| {
+                store.approve_device(kept).unwrap();
+                let cloud = ployz_core::ManagementClientLabel::cloud();
+                store.stage_management_client(cloud, device.into()).unwrap();
+                store.activate_management_client(device.into()).unwrap();
+            })
+            .await
+            .unwrap();
+        device
+    }
+
+    /// What `call` answers when it arrived at Full access from `device`'s own connection
+    /// and its Device slot went before it took its turn. The key keeps Cloud's slot.
+    async fn downgraded_before_its_turn(
+        machine: &Enforcing,
+        device: DeviceKey,
+        call: impl std::future::Future<Output = Result<tonic::Response<OpaquePayload>, Status>>,
+    ) -> Answer {
+        let turn = machine.store.admission_lock().write_owned().await;
+        tokio::pin!(call);
+        if let std::task::Poll::Ready(answered) = futures_util::poll!(&mut call) {
+            panic!(
+                "answered before its turn: {:?}",
+                Answer::of(answered.map(|reply| reply.into_inner().decode_response().unwrap()))
+            );
+        }
+        machine
+            .store
+            .mutate(move |store| assert!(store.remove_by_code(device.code()).unwrap()))
+            .await
+            .unwrap();
+        assert!(
+            machine
+                .store
+                .record()
+                .accepts_management_client(&device.into())
+        );
+        drop(turn);
+        Answer::of(
+            call.await
+                .map(|reply| reply.into_inner().decode_response().unwrap()),
+        )
+    }
+
+    fn request<T: Rpc>(payload: Value) -> Request<OpaquePayload>
+    where
+        T::Request: serde::de::DeserializeOwned,
+    {
+        Request::new(
+            T::into_request(serde_json::from_value(payload).unwrap())
+                .encode()
+                .unwrap(),
+        )
+    }
+
+    /// Whether Docker holds an image under `tag`, which a tag pull writes.
+    fn tagged(machine: &Enforcing, tag: &str) -> bool {
+        machine.fake.images.lock().unwrap().contains_key(tag)
+    }
+
+    #[track_caller]
+    fn refused_naming(answer: &Answer, capability: &str) {
+        assert!(
+            matches!(answer, Answer::Refused { capability: Some(named), .. } if named == capability),
+            "{answer:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_tag_pull_queued_while_its_device_slot_goes_writes_no_tag() {
+        use ployz_core::MachineRpc;
+        let machine = Enforcing::new().await;
+        let device = device_in_two_slots(&machine).await;
+        let caller = machine
+            .service
+            .clone()
+            .with_management_client(device.into());
+        let pull = request::<op::PullImage>(json!({
+            "image": "redis:7-alpine", "policy": "always", "registry_auth": null,
+        }));
+        let answer = downgraded_before_its_turn(&machine, device, caller.pull_image(pull)).await;
+        assert!(!tagged(&machine, "redis:7-alpine"), "{answer:?}");
+        refused_naming(&answer, ployz_core::PULL_IMAGE_CAPABILITY);
+        machine.remove();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_free_pull_queued_while_its_device_slot_goes_pulls_as_an_operator() {
+        use ployz_core::MachineRpc;
+        let machine = Enforcing::new().await;
+        let device = device_in_two_slots(&machine).await;
+        let caller = machine
+            .service
+            .clone()
+            .with_management_client(device.into());
+        let pull = request::<op::PullFreeImage>(json!({
+            "image": "redis:7-alpine", "policy": "always",
+        }));
+        let answer =
+            downgraded_before_its_turn(&machine, device, caller.pull_free_image(pull)).await;
+        assert!(!tagged(&machine, "redis:7-alpine"), "{answer:?}");
+        machine.remove();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_peer_tag_pull_queued_while_its_device_slot_goes_is_refused() {
+        use ployz_core::MachineRpc;
+        let machine = Enforcing::new().await;
+        let device = device_in_two_slots(&machine).await;
+        let caller = machine
+            .service
+            .clone()
+            .with_management_client(device.into());
+        let pull = request::<op::PullImageFromMachine>(json!({
+            "pull": {"mode": "reference", "image": "redis:7-alpine"},
+            "source": {"management_address": "fd00::1", "port": 7570},
+            "platform": "linux/amd64",
+        }));
+        let answer =
+            downgraded_before_its_turn(&machine, device, caller.pull_image_from_machine(pull))
+                .await;
+        refused_naming(&answer, ployz_core::PULL_IMAGE_FROM_MACHINE_CAPABILITY);
+        machine.remove();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_hook_start_queued_while_its_device_slot_goes_runs_no_hook_again() {
+        use ployz_core::MachineRpc;
+        let machine = Enforcing::new().await;
+        let mut hooked = spec("migrate", "nginx:1.29-alpine");
+        hooked["pre_deploy"] = json!({ "command": ["migrate"] });
+        let spec: ployz_core::ResolvedServiceSpec = serde_json::from_value(hooked).unwrap();
+        let hook = machine
+            .service
+            .local
+            .create_container(
+                ployz_core::ContainerKind::PreDeployHook,
+                &ployz_core::Namespace::parse("app").unwrap(),
+                &spec,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap()
+            .container_id;
+        let device = device_in_two_slots(&machine).await;
+        let caller = machine
+            .service
+            .clone()
+            .with_management_client(device.into());
+        let before = machine.fake.requests.lock().unwrap().len();
+        let start = request::<op::EnsureContainer>(json!({"want": {
+            "state": "running", "rotation": "pending",
+            "container": {"existing": {"id": hook}},
+        }}));
+        let answer =
+            downgraded_before_its_turn(&machine, device, caller.ensure_container(start)).await;
+        assert_eq!(
+            sent(&machine, before, http::Method::POST, "/start"),
+            0,
+            "{answer:?}"
+        );
+        refused_naming(&answer, ployz_core::SIGNED_VERSION_CAPABILITY);
+        machine.remove();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_full_create_queued_while_its_device_slot_goes_pulls_nothing() {
+        use ployz_core::MachineRpc;
+        let machine = Enforcing::new().await;
+        let device = device_in_two_slots(&machine).await;
+        let caller = machine
+            .service
+            .clone()
+            .with_management_client(device.into());
+        let mut resolved = spec("cache", "redis:7-alpine");
+        resolved["container"]["pull_policy"] = json!("always");
+        let create =
+            request::<op::EnsureContainer>(json!({ "want": want_of("cache", resolved, false) }));
+        let before = machine.fake.requests.lock().unwrap().len();
+        let answer =
+            downgraded_before_its_turn(&machine, device, caller.ensure_container(create)).await;
+        assert_eq!(
+            sent(&machine, before, http::Method::POST, "/images/create"),
+            0,
+            "{answer:?}"
+        );
+        assert!(answer.for_authority(), "{answer:?}");
+        machine.remove();
+    }
 }

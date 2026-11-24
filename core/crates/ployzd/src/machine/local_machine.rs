@@ -48,6 +48,10 @@ pub struct LocalMachine {
     /// This handle runs inside a switch whose guard its caller holds, so it takes no
     /// switch lock of its own. Only [`LocalMachine::lock_switch`] sets it.
     in_switch: bool,
+    /// How many calls have asked for the switch lock, which a test awaits to know a call
+    /// queued behind it.
+    #[cfg(test)]
+    switch_asked: Arc<tokio::sync::watch::Sender<usize>>,
     #[cfg(test)]
     peers: Option<PeerInspect>,
     #[cfg(test)]
@@ -307,6 +311,8 @@ impl LocalMachine {
             pacing: private_access::Pacing::default(),
             switch: Arc::default(),
             in_switch: false,
+            #[cfg(test)]
+            switch_asked: Arc::new(tokio::sync::watch::channel(0).0),
             #[cfg(test)]
             peers: None,
             #[cfg(test)]
