@@ -776,9 +776,13 @@ export const admitRun = Effect.fn("VolumeRun.admit")(function* (
   );
 });
 
+class GuardRefused extends Data.TaggedError("GuardRefused")<{ readonly refusal: StoreRefusal }> {}
+
 /**
- * A run admitted under `guard`, both in one transaction: `guard` reads and locks whatever the caller's own row needs, and
- * a refusal from it inserts nothing. A drain admits its moves this way, under its own row. Takes no lane.
+ * A run admitted under `guard`, both in one transaction: `guard` reads and locks whatever the caller's own row needs.
+ * It runs again once the insert holds the lane, since the insert may wait on another lane's commit, and a refusal
+ * either time, or the lane's, rolls the insert and its event back. A drain admits its moves this way, under its own
+ * row. Takes no lane.
  */
 export const admitGuardedRun = Effect.fn("VolumeRun.admitGuarded")(function* <E, R>(
   caller: Caller,
@@ -788,14 +792,16 @@ export const admitGuardedRun = Effect.fn("VolumeRun.admitGuarded")(function* <E,
   guard: Effect.Effect<StoreRefusal | null, E, R>,
 ) {
   const database = yield* Database;
+  const guarded = guard.pipe(Effect.flatMap((refusal) => refusal === null ? Effect.void : Effect.fail(new GuardRefused({ refusal }))));
   return yield* database.transaction(Effect.gen(function* () {
-    const refused = yield* guard;
-    if (refused !== null) return { ok: false, refusal: refused, owed: null } as const;
-    return yield* takeLane(caller, { input, volume, id }, null).pipe(
-      Effect.map(({ run }) => ({ ok: true, run } as const)),
-      Effect.catchTag("LaneRefused", ({ refusal, owed }) => Effect.succeed({ ok: false, refusal, owed: owed ?? null } as const)),
-    );
-  }));
+    yield* guarded;
+    const { run } = yield* takeLane(caller, { input, volume, id }, null);
+    yield* guarded;
+    return { ok: true, run } as const;
+  })).pipe(
+    Effect.catchIf((error): error is LaneRefused | GuardRefused => error instanceof LaneRefused || error instanceof GuardRefused, (error) =>
+      Effect.succeed({ ok: false, refusal: error.refusal, owed: error instanceof LaneRefused ? error.owed ?? null : null } as const)),
+  );
 });
 
 /** Names the Server an owed refusal finishes on as the Cluster names it now. Call it with no row locked. */

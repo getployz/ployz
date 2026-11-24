@@ -57,7 +57,7 @@ import type { Database } from "#/server/database.server";
 import { makeInngestEffectRunner, type runInngestEffect } from "#/modules/inngest/run.server";
 import { invokeOnFailure } from "#/test/inngest-failure";
 import { executeDrainServer } from "#/modules/machines/server-drain.inngest";
-import { admitDrainVolume, drainMoveId, planDrainVolumes, readVolumeLines } from "#/modules/machines/server-drain-volumes.server";
+import { admitDrainVolume, drainMoveId, drainVolumeDeadline, planDrainVolumes, readVolumeLines } from "#/modules/machines/server-drain-volumes.server";
 import { closeDrainRun, readCliServerDrain, requestServerDrain } from "#/modules/machines/server-drain.server";
 import { requestServerPolicyChange } from "#/modules/machines/server-policy.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
@@ -1996,6 +1996,50 @@ describe("volume runs", () => {
       expect(await volumeRuns()).toEqual([{ kind: "move", state: "failed" }]);
       expect(named("fsn-1").copy?.kind).toBe("root");
       expect((await entry()).entry).toMatchObject({ result: "stays", detail: expect.stringContaining("web-fsn-1-new also uses data on fsn-1") });
+    });
+
+    // Catches a move row committed without the event that runs it, holding the Volume's lane until the sweep.
+    it("inserts no move when the lane refuses after its insert", async () => {
+      await answered();
+      const item = first(await runEffect(planDrainVolumes(request, "run-drain")));
+      const held = await requested({ kind: "sync", args: { full: false } });
+      await harness.pool.query("update volume_run set state = 'done', finished_at = now(), held_by = 'deploy-x' where id = $1", [held.id]);
+      send.mockClear();
+
+      expect(await runEffect(admitDrainVolume(request, "run-drain", item))).toEqual({ admitted: false });
+
+      expect((await rows()).map(({ id }) => id)).toEqual([held.id]);
+      expect(send).not.toHaveBeenCalled();
+    });
+
+    // Catches a move admitted after the drain's deadline because its insert waited on another lane past it.
+    it("inserts no move when the deadline passed while its insert waited", async () => {
+      await answered();
+      const item = first(await runEffect(planDrainVolumes(request, "run-drain")));
+      const startedAt = first((await harness.pool.query<{ started_at: Date }>("select started_at from server_drain_attempt where id = $1", [DRAIN])).rows).started_at;
+      const real = Date.now.bind(Date);
+      let late = false;
+      const clock = vi.spyOn(Date, "now").mockImplementation(() => late ? drainVolumeDeadline({ startedAt }) + 1 : real());
+      const other = await harness.pool.connect();
+      try {
+        await other.query("begin");
+        await other.query(
+          `insert into volume_run (organization_id, environment_id, volume_id, volume_name, docker_volume, refquota_bytes, kind, args, state)
+           values ($1, 'env-1', $2, 'data', $3, 0, 'sync', '{"full":false}', 'requested')`,
+          [organizationId, volumeId, dockerVolume]);
+        const admitting = runEffect(admitDrainVolume(request, "run-drain", item));
+        await waitingOnLock();
+        late = true;
+        await other.query("rollback");
+
+        expect(await admitting).toEqual({ admitted: false });
+      } finally {
+        other.release(true);
+        clock.mockRestore();
+      }
+      expect(await rows()).toEqual([]);
+      const row = (await harness.pool.query("select report from server_drain_attempt where id = $1", [DRAIN])).rows[0];
+      expect(row.report.services[0].detail).toBe("the drain ran out of time before it moved this volume");
     });
 
     // Catches a retried step admitting a second move of the same Volume.
