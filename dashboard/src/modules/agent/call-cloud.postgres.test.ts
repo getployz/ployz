@@ -17,7 +17,7 @@ import { dropRemovedServer } from "#/modules/machines/pairing-release.server";
 import { requestMachineRemoveAttempt } from "#/modules/machines/machine-removal.repository";
 import { enqueueMachineRemove } from "#/modules/machines/machine-removal.server";
 import { requestCliServerDrain } from "#/modules/machines/server-drain.server";
-import { forgetServerFromDashboard } from "#/modules/operations/operations.server";
+import { drainServer, forgetServer, forgetServerFromDashboard } from "#/modules/operations/operations.server";
 import { machineEnrollmentToken, machineRemoveAttempt, organizationMachine, serverDrainAttempt } from "#/modules/machines/tables";
 import { attemptIdOf, bodyDigest } from "#/modules/operations/keyed.server";
 import { OPERATIONS } from "#/modules/operations/operations";
@@ -370,6 +370,38 @@ describe("callCloud", () => {
         expect(polled).toEqual({ ok: true, value: { operations: [expect.objectContaining({ run: `${verb} new` })] } });
       }));
   }
+
+  // Catches a retry of a lost reply hearing "No such Server" after the Forget or Drain it sent succeeded and the Server left.
+  it.live("a retry with the key a Forget or Drain was admitted under replays it once the Server is gone", () =>
+    Effect.gen(function* () {
+      const services = yield* storeTestCloud();
+      const userId = yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
+      const { drizzle } = yield* Database.pipe(Effect.provide(services));
+      const [removal] = yield* drizzle.insert(machineRemoveAttempt).values({
+        organizationId: ORGANIZATION, machineId: MACHINE, requestedByUserId: userId, confirmDataLoss: [], noReset: true,
+      }).returning();
+      yield* drizzle.insert(serverDrainAttempt).values({ id: DRAIN, organizationId: ORGANIZATION, machineId: MACHINE, requestedByUserId: userId });
+      const stored = (requestKey: string, tool: (typeof OPERATIONS)["server.forget" | "server.drain"]["idempotency"], attemptId: string) =>
+        drizzle.insert(operationRequest).values({ organizationId: ORGANIZATION, requestKey, tool, digest: bodyDigest(tool, { machineId: MACHINE }), attemptId });
+      yield* stored("forget-key-1", OPERATIONS["server.forget"].idempotency, removal?.id ?? expect.fail("no removal"));
+      yield* stored("drain-key-1", OPERATIONS["server.drain"].idempotency, DRAIN);
+      // The Server left the Cluster: nothing in the frame has its id.
+      const gone = runtime({
+        status: "connected",
+        connected: asTestDouble<PloyzSession>()({
+          watchFirstFrame: () => Effect.succeed(asTestDouble<RuntimeWatchView>()({ unanswered: [], machines: [], services: [], volumes: [] })),
+          dataLossIfMachineRemoved: () => Effect.succeed({ data_loss: [] }),
+        }),
+      }, []);
+      const caller: Caller = { ...member, userId, via: "cli" };
+
+      expect(yield* forgetServer(caller, MACHINE, { key: "forget-key-1", approved: null }).pipe(gone, Effect.provide(services)))
+        .toEqual({ ok: true, id: removal?.id });
+      expect(yield* drainServer(caller, MACHINE, { key: "drain-key-1", approved: null }).pipe(gone, Effect.provide(services)))
+        .toEqual({ ok: true, id: DRAIN });
+      expect(yield* forgetServer(caller, OTHER_MACHINE, { key: "forget-key-1", approved: null }).pipe(gone, Effect.provide(services)))
+        .toMatchObject({ ok: false, refusal: { code: "conflict" } });
+    }));
 
   const dashboardRuns = [
     ["remove", (caller: Caller) => enqueueMachineRemove(caller, { organizationSlug: "shop", machineId: MACHINE, confirmDataLoss: [] })],

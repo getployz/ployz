@@ -12,7 +12,7 @@ import { requestCliServerDrain } from "#/modules/machines/server-drain.server";
 import type { ServerPolicyChange } from "#/modules/machines/server-policy";
 import { planKeyedServerPolicyChange } from "#/modules/machines/server-policy.server";
 import { planClean, planDrain, planIngressOff, planRemove } from "#/modules/machines/server-operations.server";
-import { admitOperation, type Admission } from "#/modules/operations/keyed.server";
+import { admitOperation, type Admission, replayed } from "#/modules/operations/keyed.server";
 import { OPERATIONS, VOLUME_OPERATIONS } from "#/modules/operations/operations";
 import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
 import { beyondEnvironments, lacksPermission } from "#/modules/organization/access.server";
@@ -96,9 +96,12 @@ const holding = <A, E, R>(caller: Caller, call: OperationCall, requires: Permiss
  */
 export const drainServer = (caller: Caller, machineId: MachineId, call: OperationCall, serverName?: MachineName) =>
   holding(caller, call, OPERATIONS["server.drain"].requires, undefined, Effect.gen(function* () {
+    const request = { tool: OPERATIONS["server.drain"].idempotency, key: call.key, body: { machineId } };
+    const answered = yield* replayed(caller.organization.id, request);
+    if (answered !== undefined) return answered;
     const plan = yield* planDrain(caller.organization.id, machineId);
     if (plan === null) return null;
-    return yield* admitOperation(caller.organization.id, { tool: OPERATIONS["server.drain"].idempotency, key: call.key, body: { machineId } }, Effect.gen(function* () {
+    return yield* admitOperation(caller.organization.id, request, Effect.gen(function* () {
       const gated = yield* gate(caller, call, { ...plan, ployz: `ployz server drain ${plan.name}` });
       if (!gated.ok) return refused(gated.refusal);
       return (attemptId: string) => requestCliServerDrain(actor(caller), {
@@ -163,10 +166,13 @@ export const removeServer = (
 ) =>
   holding(caller, call, OPERATIONS[confirmed === null ? "server.forget" : "server.remove"].requires, undefined, Effect.gen(function* () {
     const noReset = confirmed === null;
-    const plan = yield* planRemove(caller.organization.id, machineId, confirmed);
-    if (plan === null) return null;
     const tool = noReset ? OPERATIONS["server.forget"].idempotency : OPERATIONS["server.remove"].idempotency;
     const body = noReset ? { machineId } : { machineId, confirmed };
+    // A removal's success takes the Server away, so a retry of its lost reply replays before looking for it.
+    const answered = yield* replayed(caller.organization.id, { tool, key: call.key, body });
+    if (answered !== undefined) return answered;
+    const plan = yield* planRemove(caller.organization.id, machineId, confirmed);
+    if (plan === null) return null;
     return yield* admitOperation(caller.organization.id, { tool, key: call.key, body }, Effect.gen(function* () {
       const gated = yield* gate(caller, call, { ...plan, ployz: `ployz server ${noReset ? "forget" : "rm"} ${plan.name}` });
       if (!gated.ok) return refused(gated.refusal);
