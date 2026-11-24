@@ -5,9 +5,9 @@
 use ployz_core::{
     ContainerKind, ContainerLocator, ContainerNow, ContainerObservation, ContainerRefusalReason,
     ContainerWant, CopyPlan, CopyRefusal, CopyRotation, CopyTransition, DockerVolumeName,
-    EnsuredContainer, HealthVerdict, RpcError, RunRotation, RunTarget, SeedVolumeRequest,
-    SetVolumeCopyRefused, SetVolumeCopyRequest, SetVolumeSizeReply, SetVolumeSizeRequest, Start,
-    VolumeCopy, VolumeCopyView, VolumeGen, WantedCopy,
+    EnsuredContainer, HealthVerdict, QualifiedService, RpcError, RunRotation, RunTarget,
+    SeedVolumeRequest, SetVolumeCopyRefused, SetVolumeCopyRequest, SetVolumeSizeReply,
+    SetVolumeSizeRequest, Start, VolumeCopy, VolumeCopyView, VolumeGen, WantedCopy,
 };
 
 use super::{AdmittedSpec, CutRefusal, Error, LocalMachine};
@@ -419,9 +419,9 @@ impl LocalMachine {
     }
 
     /// Whether the Writer's start already runs. It runs when Docker runs the Container
-    /// `start` names, or any other holder of the Volume: a Service that moved on to a
-    /// new Container after the start landed has the start's effect already. A Kept
-    /// Container Docker no longer has is gone, and nothing can start it again.
+    /// `start` names, or a [`Self::replacement_running`]. Another holder of the Volume
+    /// is not the Service, so its run is no start. A Kept Container Docker no longer
+    /// has is gone, and nothing can start it again.
     async fn start_state(
         &self,
         start: &Start,
@@ -431,7 +431,9 @@ impl LocalMachine {
         if observed
             .as_ref()
             .is_some_and(|observed| observed.runtime.is_running())
-            || self.volume_holder_running(name).await?
+            || self
+                .replacement_running(start, observed.as_ref(), name)
+                .await?
         {
             return Ok(StartState::Running);
         }
@@ -439,6 +441,46 @@ impl LocalMachine {
             (Start::Kept { .. }, None) => StartState::Gone,
             _ => StartState::Stopped,
         })
+    }
+
+    /// Whether Docker runs another Service Container of the Service `start` starts on
+    /// the Volume `name`: a Service that moved on to a new Container after the start
+    /// landed has the start's effect already. A helper Ployz didn't make, a hook, or
+    /// another Service is not that Service. A Kept Container Docker no longer has names
+    /// no Service, so any Service Container on the Volume counts for it.
+    async fn replacement_running(
+        &self,
+        start: &Start,
+        observed: Option<&ContainerObservation>,
+        name: &DockerVolumeName,
+    ) -> Result<bool, Error> {
+        let service = match (start, observed) {
+            (
+                Start::Create {
+                    namespace,
+                    resolved_spec,
+                    ..
+                },
+                _,
+            ) => Some(QualifiedService::new(
+                namespace.clone(),
+                resolved_spec.name.clone(),
+            )),
+            (Start::Kept { .. }, Some(observed)) => Some(QualifiedService::new(
+                observed.namespace.clone(),
+                observed.resolved_spec.name.clone(),
+            )),
+            (Start::Kept { .. }, None) => None,
+        };
+        Ok(self
+            .docker()?
+            .volumes()
+            .service_beside(
+                name,
+                observed.map(|observed| &observed.container_id),
+                service.as_ref(),
+            )
+            .await?)
     }
 
     async fn start_observed(&self, start: &Start) -> Result<Option<ContainerObservation>, Error> {
@@ -497,9 +539,14 @@ impl LocalMachine {
         let running = created
             .as_ref()
             .is_some_and(|created| created.runtime.is_running());
-        // A resend lands here too when another holder runs; only this Create's own copy is
-        // routed. A copy that exited is started again by its In want, which reports health.
-        if !running && self.volume_holder_running(name).await? {
+        // A resend lands here too when a replacement of the Service runs; only this
+        // Create's own copy is routed. A copy that exited is started again by its In want,
+        // which reports health.
+        if !running
+            && self
+                .replacement_running(start, created.as_ref(), name)
+                .await?
+        {
             return Ok(());
         }
         let Some(created) = created else {

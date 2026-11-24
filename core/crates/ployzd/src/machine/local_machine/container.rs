@@ -634,7 +634,13 @@ impl LocalMachine {
                 }
             }
             let _turn = local.exclusive_turn().await;
-            if local.volume_holder_running(&name).await? {
+            // Every holder, whatever made it: the cut needs the Volume idle.
+            if containers
+                .volumes()
+                .running_beside(&name, None)
+                .await?
+                .is_some()
+            {
                 return Ok(Err(CutRefusal::Busy));
             }
             let mut floor = containers.lifecycle().floor_turn().await;
@@ -685,20 +691,6 @@ impl LocalMachine {
                 field: MismatchField::SourceServer,
             },
         ))
-    }
-
-    /// Whether Docker runs any Container that mounts the Volume `name`, whatever made
-    /// it. A holder gone between the list and its inspect does not run.
-    pub(crate) async fn volume_holder_running(
-        &self,
-        name: &DockerVolumeName,
-    ) -> Result<bool, Error> {
-        Ok(self
-            .docker()?
-            .volumes()
-            .running_beside(name, None)
-            .await?
-            .is_some())
     }
 
     /// Refuse to create a Service Container on a Provisioned Volume root another

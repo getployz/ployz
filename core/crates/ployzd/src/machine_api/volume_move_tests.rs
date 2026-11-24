@@ -266,23 +266,63 @@ async fn a_release_after_the_cut_routes_the_kept_copy_again() {
     assert_eq!(fleet.node(0).rotation(source).await, CopyRotation::In);
 }
 
-/// A Container `docker run` made on the Volume, with no Ployz labels, beside the
-/// Service on Machine 0.
-fn add_stray(fleet: &Fleet, status: &str) {
-    let mut named = fleet
-        .node(0)
-        .fake
-        .named_containers
-        .as_ref()
-        .unwrap()
-        .lock()
-        .unwrap();
-    let mut stray = named.values().next().unwrap().clone();
+/// A Container `docker run` made on the Volume, with no Ployz labels, on Machine
+/// `index`, shaped like the Service on Machine 0.
+fn add_stray(fleet: &Fleet, index: usize, status: &str) {
+    let named = |node: usize| {
+        fleet
+            .node(node)
+            .fake
+            .named_containers
+            .as_ref()
+            .unwrap()
+            .clone()
+    };
+    let mut stray = named(0).lock().unwrap().values().next().unwrap().clone();
     stray["Id"] = json!(format!("{}{}", MachineId::random(), MachineId::random()));
     stray["Name"] = json!("/stray");
     stray["Config"]["Labels"] = json!({});
     stray["State"] = json!({"Status":status});
-    named.insert("stray".into(), stray);
+    named(index).lock().unwrap().insert("stray".into(), stray);
+}
+
+/// A Release resent after A became the Writer again, while a helper Ployz didn't make
+/// runs on the Volume: the helper is not the kept Service, so the resend starts it.
+#[tokio::test]
+async fn a_release_resent_beside_a_running_stray_starts_the_kept_copy() {
+    let fleet = Fleet::start().await;
+    let source = fleet.routed(0, "a", "api", 1).await;
+    cut(&fleet, 0).await;
+    add_stray(&fleet, 0, "running");
+    let released = fleet.with_plugin(
+        0,
+        &plugin(
+            writer_root(1, Some(snapshot())),
+            WRITER_ROUTE,
+            writer_root(1, Some(snapshot())),
+        ),
+    );
+
+    set_copy(
+        &released,
+        json!({"name":VOLUME, "expect":{"kind":"mirror", "newest":"7", "slot":"1"},
+            "want":{"kind":"writer", "at":"7", "epoch":1,
+                "start":{"kind":"kept", "container_id":source}}}),
+    )
+    .await;
+
+    assert!(fleet.node(0).running(source));
+}
+
+/// `name` mounting the Provisioned Volume the Move copies.
+fn on_volume(name: &str) -> ResolvedServiceSpec {
+    let mut on_volume = spec_with_sources(vec![crate::docker::test_support::provisioned_source(
+        "data",
+        1_073_741_824,
+    )]);
+    on_volume.name = spec(name).name;
+    on_volume.update.monitor_millis = Some(0);
+    on_volume
 }
 
 fn cut_naming(holder: ContainerId) -> Value {
@@ -296,7 +336,7 @@ fn cut_naming(holder: ContainerId) -> Value {
 async fn a_cut_naming_its_holder_passes_a_stopped_stray() {
     let fleet = Fleet::start().await;
     let source = fleet.routed(0, "a", "api", 2).await;
-    add_stray(&fleet, "exited");
+    add_stray(&fleet, 0, "exited");
     let plugin = plugin(writer_root(0, None), CUT_ROUTE, slot(Some(snapshot())));
     let machine = fleet.with_plugin(0, &plugin);
 
@@ -314,7 +354,7 @@ async fn a_cut_naming_its_holder_passes_a_stopped_stray() {
 async fn a_cut_naming_its_holder_refuses_a_running_stray() {
     let fleet = Fleet::start().await;
     let source = fleet.routed(0, "a", "api", 2).await;
-    add_stray(&fleet, "running");
+    add_stray(&fleet, 0, "running");
     let plugin = plugin(writer_root(0, None), CUT_ROUTE, slot(Some(snapshot())));
     let machine = fleet.with_plugin(0, &plugin);
 
@@ -325,6 +365,42 @@ async fn a_cut_naming_its_holder_refuses_a_running_stray() {
     assert!(refused.contains("stray"), "{refused}");
     assert!(refused.contains("\"held\""), "{refused}");
     assert!(fleet.node(0).running(source), "the cut stopped nothing");
+}
+
+/// A start resent after B became the Writer, its Container not yet made, while a
+/// helper Ployz didn't make runs on the Volume: the helper is not the Service, so the
+/// start is no success, and Cloud keeps A's Container for the retry.
+#[tokio::test]
+async fn a_start_resent_beside_a_running_stray_is_no_success() {
+    let fleet = Fleet::start().await;
+    let source = fleet.routed(0, "a", "api", 2).await;
+    cut(&fleet, 0).await;
+    add_stray(&fleet, 1, "running");
+    let destination = fleet.with_plugin(
+        1,
+        &plugin(
+            writer_root(1, Some(snapshot())),
+            WRITER_ROUTE,
+            writer_root(1, Some(snapshot())),
+        ),
+    );
+
+    let refused = try_set_copy(
+        &destination,
+        json!({"name":VOLUME, "expect":{"kind":"mirror", "newest":"7", "slot":"1"},
+            "want":{"kind":"writer", "at":"7", "epoch":1, "start":{
+                "kind":"create", "namespace":"app", "resolved_spec":on_volume("api"),
+                "creation_key":"move-1", "gen":2,
+                "rotation":{"in":{"run":null, "expect":"pending"}}}}}),
+    )
+    .await
+    .expect_err("a running stray is not the moved Service");
+
+    assert!(refused.contains("stray"), "{refused}");
+    assert!(
+        fleet.node(0).container(source).is_some(),
+        "the source is kept"
+    );
 }
 
 /// A Move's cut names the Service it counted. Another Container running on the Volume,

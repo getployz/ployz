@@ -484,6 +484,23 @@ impl Volumes {
         .await
     }
 
+    /// Whether a Service Container of `service` other than `me` runs on the Docker
+    /// Volume `name`. See [`super::holder::service_beside`].
+    pub(crate) async fn service_beside(
+        &self,
+        name: &DockerVolumeName,
+        me: Option<&ContainerId>,
+        service: Option<&QualifiedService>,
+    ) -> Result<bool, Error> {
+        super::holder::service_beside(
+            &self.docker.client,
+            me.map(ContainerId::as_str),
+            name.as_str(),
+            service,
+        )
+        .await
+    }
+
     /// Every Container, running or not, that mounts the Docker Volume `name`.
     pub(crate) async fn volume_holder_ids(
         &self,
