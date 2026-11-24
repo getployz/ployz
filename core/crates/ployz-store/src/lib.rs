@@ -56,7 +56,7 @@ use std::collections::BTreeSet;
 
 use ployz_core::RpcError;
 
-pub use auto_rule::{ApproveRule, RuleQuery, RuleView};
+pub use auto_rule::{ApproveRule, RulePrior, RuleQuery, RuleView, SavedRule};
 pub use automation::{
     Automated, BranchHead, CheckConclusion, CheckStatus, CheckSuite, Skipped, SystemEvent,
 };

@@ -101,7 +101,7 @@ export async function prepareDeploy(
   if (refused !== null) return { kind: "refused", message: refused };
   const names = new Set(unsigned.map((entry) => entry.service));
   const specs = (plan.target ?? []).filter((spec) => names.has(spec.name));
-  let draft: VersionsDraft;
+  let draft: VersionsDraft | null;
   try {
     draft = versionSteps({
       cluster: gate.cluster, namespace: plan.namespace, volumes: plan.volumes, services: specs, pins: gate.pins,
@@ -111,6 +111,7 @@ export async function prepareDeploy(
   } catch (error) {
     return { kind: "refused", message: error instanceof Error ? error.message : "This browser couldn't draft the deploy." };
   }
+  if (draft === null) return { kind: "admit", command: bound };
   return {
     kind: "ask",
     ask: { namespace: plan.namespace, services: draft.steps.map((step) => step.service), draft, passkeys: gate.passkeys, command: bound, plan: plan.version },

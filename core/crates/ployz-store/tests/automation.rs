@@ -241,6 +241,7 @@ fn saved_loss_of(orphaned: bool) -> (ConfigStore, Actor) {
                 version,
                 message: None,
                 accept_volume_loss: vec![data()],
+                rule: None,
             },
             &Trusted {
                 volumes: Some(held_on_a()),
@@ -436,6 +437,7 @@ fn a_push_never_deletes_data_no_save_accepted() {
                 version: None,
                 message: None,
                 accept_volume_loss: Vec::new(),
+                rule: None,
             },
             &Trusted {
                 volumes: Some(empty),
@@ -489,6 +491,7 @@ fn a_push_removes_a_volume_the_servers_still_show_empty() {
                 version: None,
                 message: None,
                 accept_volume_loss: Vec::new(),
+                rule: None,
             },
             &Trusted {
                 volumes: Some(empty.clone()),
@@ -577,6 +580,7 @@ fn save_dropping_data(
             version,
             message: None,
             accept_volume_loss: vec![ployz_store::VolumeName::parse("data").unwrap()],
+            rule: None,
         },
         &Trusted {
             volumes: Some(held_on_a()),
@@ -1253,6 +1257,7 @@ fn another_repositorys_push_never_ships_a_build_of_a_pull_request_whose_author_l
                 version: None,
                 message: None,
                 accept_volume_loss: Vec::new(),
+                rule: None,
             }),
         )
         .unwrap();
@@ -2056,6 +2061,36 @@ fn keep_rule(
     generation: u64,
     ended: bool,
 ) -> Result<ployz_store::RuleView, ployz_core::RpcError> {
+    store.write(
+        who,
+        &ployz_store::ApproveRule {
+            environment: EnvironmentRef::default(),
+            rule: rule_of(store, who, (9, generation, "main"), (false, ended)),
+            births: Default::default(),
+        },
+    )
+}
+
+type SignedRule = Box<ployz_core::authority::Signed<ployz_core::authority::AutoDeployRule>>;
+
+/// `generation` of rule `id` on `branch` over web's and api's settings: the latest Saved
+/// revision's, or with `staged` what a Save would save.
+fn signed_rule(
+    store: &ConfigStore,
+    who: &Actor,
+    rule: (u8, u64, &str),
+    staged: bool,
+) -> SignedRule {
+    rule_of(store, who, rule, (staged, false))
+}
+
+/// As [`signed_rule`], ending the rule when `ended`.
+fn rule_of(
+    store: &ConfigStore,
+    who: &Actor,
+    (id, generation, branch): (u8, u64, &str),
+    (staged, ended): (bool, bool),
+) -> SignedRule {
     use ployz_core::authority::rule::{
         BuildPolicy, Builder, PolicyCache, RuleEvent, RuleService, RuleSource, Runner, template,
     };
@@ -2065,6 +2100,7 @@ fn keep_rule(
             who,
             &ployz_store::RuleQuery {
                 environment: EnvironmentRef::default(),
+                staged,
             },
         )
         .unwrap();
@@ -2101,7 +2137,7 @@ fn keep_rule(
     let rule = AutoDeployRule {
         proposal: None,
         cluster: ployz_core::SealingPublicKey::from_bytes([3; 32]),
-        rule: RuleId::from_bytes([9; 16]),
+        rule: RuleId::from_bytes([id; 16]),
         generation,
         namespace: view.namespace,
         machines: Vec::new(),
@@ -2109,7 +2145,7 @@ fn keep_rule(
             repository_id: 11,
             owner_id: 1,
             repository: "acme/web".into(),
-            branch: "main".into(),
+            branch: branch.into(),
             workflow: ".github/workflows/ployz-build.yml".into(),
             events: vec![RuleEvent::Push],
             builder: Builder::pinned(),
@@ -2122,14 +2158,155 @@ fn keep_rule(
             *signer.public().as_bytes(),
         )),
     };
-    store.write(
+    Box::new(Signed::sign(&rule, &signer).unwrap())
+}
+
+/// Save what is staged at review `version` with `rule`, which the Save's tap signed
+/// when `prior` was kept.
+fn save_with_rule(
+    store: &ConfigStore,
+    who: &Actor,
+    version: &str,
+    rule: (SignedRule, Option<(u8, u64)>),
+) -> Result<Written, ployz_core::RpcError> {
+    save_with_rule_as(store, who, Some(version), rule, &Trusted::default())
+}
+
+/// As [`save_with_rule`], at review `version` if any, by a caller `trusted` describes.
+fn save_with_rule_as(
+    store: &ConfigStore,
+    who: &Actor,
+    version: Option<&str>,
+    (rule, prior): (SignedRule, Option<(u8, u64)>),
+    trusted: &Trusted,
+) -> Result<Written, ployz_core::RpcError> {
+    store.write_trusted(
         who,
-        &ployz_store::ApproveRule {
+        &Command::Publish(Publish {
+            id: None,
             environment: EnvironmentRef::default(),
-            rule: Box::new(Signed::sign(&rule, &signer).unwrap()),
-            births: Default::default(),
-        },
+            version: version.map(str::to_owned),
+            message: None,
+            accept_volume_loss: Vec::new(),
+            rule: Some(ployz_store::SavedRule {
+                rule,
+                births: Default::default(),
+                prior: prior.map(|(id, generation)| ployz_store::RulePrior {
+                    rule: ployz_core::authority::RuleId::from_bytes([id; 16]),
+                    generation,
+                }),
+            }),
+        }),
+        trusted,
     )
+}
+
+fn staged_version(store: &ConfigStore, who: &Actor) -> String {
+    let view: ployz_store::RuleView = store
+        .read(
+            who,
+            &ployz_store::RuleQuery {
+                environment: EnvironmentRef::default(),
+                staged: true,
+            },
+        )
+        .unwrap();
+    view.version.unwrap()
+}
+
+/// The rule the Environment keeps: its ID's first byte, generation and branch.
+fn kept_rule(store: &ConfigStore, who: &Actor) -> Option<(u8, u64, String)> {
+    let view: ployz_store::RuleView = store
+        .read(
+            who,
+            &ployz_store::RuleQuery {
+                environment: EnvironmentRef::default(),
+                staged: false,
+            },
+        )
+        .unwrap();
+    let rule = view.rule?.open().unwrap();
+    Some((rule.rule.as_bytes()[0], rule.generation, rule.source.branch))
+}
+
+#[test]
+fn of_two_saves_from_one_review_only_the_first_keeps_its_rule_and_its_push_deploys() {
+    let (store, who) = shop();
+    set(&store, &who, "web.env.GREETING", json!("hello"));
+    let version = staged_version(&store, &who);
+    let main = signed_rule(&store, &who, (9, 1, "main"), true);
+    let dev = signed_rule(&store, &who, (8, 1, "dev"), true);
+
+    save_with_rule(&store, &who, &version, (main, None)).unwrap();
+    let late = save_with_rule(&store, &who, &version, (dev, None)).unwrap_err();
+
+    assert_eq!(late.code, RpcErrorCode::Conflict, "{late:?}");
+    assert_eq!(kept_rule(&store, &who), Some((9, 1, "main".to_owned())));
+    let pushed = system(&store, &push(None, Some(H1), None));
+    assert_eq!(pushed.admitted.len(), 1, "{pushed:?}");
+}
+
+#[test]
+fn a_save_whose_rule_moved_since_its_tap_saves_nothing() {
+    let (store, who) = shop();
+    publish(&store, &who);
+    set(&store, &who, "web.env.GREETING", json!("hello"));
+    let version = staged_version(&store, &who);
+    let tapped = signed_rule(&store, &who, (8, 1, "main"), true);
+    approve_rule(&store, &who, 1).unwrap();
+
+    let refused = save_with_rule(&store, &who, &version, (tapped, None)).unwrap_err();
+
+    assert_eq!(refused.code, RpcErrorCode::Conflict, "{refused:?}");
+    assert_eq!(kept_rule(&store, &who), Some((9, 1, "main".to_owned())));
+    assert_eq!(
+        staged_version(&store, &who),
+        version,
+        "the staged change is still waiting to be saved"
+    );
+}
+
+#[test]
+fn a_saver_who_cant_deploy_keeps_no_rule_and_saves_nothing() {
+    let (store, who) = shop();
+    set(&store, &who, "web.env.GREETING", json!("hello"));
+    let version = staged_version(&store, &who);
+    let rule = signed_rule(&store, &who, (9, 1, "main"), true);
+    let no_deploy = Trusted {
+        permissions: Some(
+            (ployz_store::Permission::ALL.iter().copied())
+                .filter(|held| *held != ployz_store::Permission::ChangesDeploy)
+                .collect(),
+        ),
+        ..Trusted::default()
+    };
+
+    let refused =
+        save_with_rule_as(&store, &who, Some(&version), (rule, None), &no_deploy).unwrap_err();
+
+    assert_eq!(
+        refused.code,
+        RpcErrorCode::from(ployz_core::FORBIDDEN_CODE),
+        "{refused:?}"
+    );
+    assert_eq!(kept_rule(&store, &who), None);
+    assert_eq!(staged_version(&store, &who), version, "nothing was saved");
+}
+
+#[test]
+fn a_save_that_keeps_a_rule_without_its_review_saves_nothing_staged_after_the_tap() {
+    let (store, who) = shop();
+    set(&store, &who, "web.env.GREETING", json!("hello"));
+    let rule = signed_rule(&store, &who, (9, 1, "main"), true);
+    set(&store, &who, "web.env.GREETING", json!("goodbye"));
+    let moved = staged_version(&store, &who);
+
+    let refused =
+        save_with_rule_as(&store, &who, None, (rule, None), &Trusted::default()).unwrap_err();
+
+    assert_eq!(refused.code, RpcErrorCode::InvalidArgument, "{refused:?}");
+    assert_eq!(kept_rule(&store, &who), None);
+    assert_eq!(staged_version(&store, &who), moved, "nothing was saved");
 }
 
 /// What the plan says a person's Deploy needs for each built Service that reaches data.
@@ -2327,6 +2504,7 @@ fn a_new_service_on_the_rules_branch_holds_the_push_and_shows_in_the_rule_view()
             &who,
             &ployz_store::RuleQuery {
                 environment: EnvironmentRef::default(),
+                staged: false,
             },
         )
         .unwrap();

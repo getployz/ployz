@@ -123,6 +123,7 @@ fn publish_as(
             version: version.map(Into::into),
             message: None,
             accept_volume_loss: Vec::new(),
+            rule: None,
         },
         &Trusted {
             approval,
@@ -4403,6 +4404,7 @@ fn removing_a_deployed_domain_is_destructive() {
                 version: None,
                 message: None,
                 accept_volume_loss: Vec::new(),
+                rule: None,
             },
             &Trusted {
                 approval: Approval::Required,
@@ -4507,6 +4509,7 @@ fn approving_a_removal_needs_changes_destroy_but_a_plain_deploy_does_not() {
                 version: None,
                 message: None,
                 accept_volume_loss: Vec::new(),
+                rule: None,
             },
             &holding(permissions, Approval::Required, Asks::Destroys),
         )
@@ -4683,6 +4686,7 @@ fn publish_review_perf() {
                     version: None,
                     message: None,
                     accept_volume_loss: Vec::new(),
+                    rule: None,
                 },
                 &Trusted::default(),
             )

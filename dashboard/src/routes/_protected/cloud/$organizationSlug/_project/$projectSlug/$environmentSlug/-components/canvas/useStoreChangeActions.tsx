@@ -10,6 +10,7 @@ import type { PlacementLoss } from "#/modules/volume-placement/volume-placement.
 import { environmentKey } from "#/modules/config-store/environment-ref";
 import { admitDeploy } from "#/modules/config-store/admit-deploy";
 import { useDeployTap } from "#/modules/deploy-approval/deploy-sheet";
+import { useSaveTap } from "#/modules/deploy-approval/save-sheet";
 type Action = "deploy" | "publish";
 const NO_PLACEMENT_LOSS: PlacementLoss = { items: [], losesWrites: false, accept: [], version: (version) => version };
 /** A Deploy's own words: what it ships (optional; the Store trims it). */
@@ -43,6 +44,7 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
   version: string, onAdmitted: (deploymentId: string) => void, placementLoss: PlacementLoss = NO_PLACEMENT_LOSS) {
   const writer = useStoreWriter(organizationSlug);
   const tap = useDeployTap(organizationSlug);
+  const saveTap = useSaveTap(organizationSlug);
   const { queryClient } = useCollectionScope();
   const lossOf = useVolumeLossCheck(organizationSlug);
   // What the user types to confirm: where the data goes from.
@@ -86,7 +88,7 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
     if (command.command === "admit" && command.admit === "deploy" && choice.noPrune) command.no_prune = true;
     try {
       if (command.command === "admit" && command.admit === "deploy") await tap.admit(command, ["confirmation_required"]);
-      else await writer.commit(command, ["confirmation_required"]);
+      else if (command.command === "publish") await saveTap.save(command, ["confirmation_required"]);
       if (action === "deploy") onAdmitted(id);
       return { status: "done" };
     } catch (error) {
@@ -145,6 +147,7 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
     neverSync,
     dialog: (<>
       {tap.sheet}
+      {saveTap.sheet}
       <DeletionDialog
         open={loss !== null}
         onOpenChange={(open) => {
@@ -152,6 +155,7 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
           setLoss(null);
           settleSave(false);
           tap.drop();
+          saveTap.drop();
         }}
         title={loss?.action === "publish" ? "Next deploy deletes data" : loss?.check.losesWrites ? "Data loss" : "Deletes data"}
         place={place}

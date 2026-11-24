@@ -6084,6 +6084,7 @@ fn an_agent_save_that_destroys_nothing_asks_nothing() {
                 version: None,
                 message: None,
                 accept_volume_loss: Vec::new(),
+                rule: None,
             }),
             &Trusted {
                 approval: Approval::Required,
@@ -6107,6 +6108,7 @@ fn publish_asking(
             version: None,
             message: None,
             accept_volume_loss: Vec::new(),
+            rule: None,
         }),
         &Trusted {
             approval,
@@ -6878,6 +6880,7 @@ fn save(store: &ConfigStore, who: &Actor) -> Revision {
                 version: None,
                 message: None,
                 accept_volume_loss: Vec::new(),
+                rule: None,
             },
             &Trusted::default(),
         )
