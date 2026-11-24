@@ -196,6 +196,7 @@ fn every_root_mark_combination_parses_to_one_copy() {
             target: "f-2".parse().unwrap(),
             drain: Drain::NONE,
             holder: None,
+            running: false,
         },
         WantedCopy::Snapshot {
             name: "f-2".parse().unwrap(),

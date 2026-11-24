@@ -98,25 +98,21 @@ export const OPERATION_PARITY = {
     },
   }),
   "server.drain": operation({
-    options: Schema.Struct({ server: Name, wait: Seconds, stageOff: Schema.Boolean }),
+    options: Schema.Struct({ server: Name, wait: Seconds }),
     surfaces: {
       cli: {
         route: "POST servers/:id/drain",
         body: DrainServer,
-        options: { server: { via: ":id" }, wait: CLI_FOLLOWS, stageOff: { omitted: "The CLI drains only; `volume move` moves a Volume off." } },
+        options: { server: { via: ":id" }, wait: CLI_FOLLOWS },
       },
       agent: {
         tool: "server_drain",
-        options: { server: { via: "server" }, wait: { via: "wait_seconds" }, stageOff: { omitted: "The agent drains only; volume_move moves a Volume off." } },
+        options: { server: { via: "server" }, wait: { via: "wait_seconds" } },
       },
       ui: {
         fn: "requestServerDrainServerFn",
         input: RequestServerDrainInput,
-        options: {
-          server: { via: "machineId" },
-          wait: UI_FOLLOWS,
-          stageOff: { omitted: "Drain stages the Volumes off in a second call, stageOffServerServerFn." },
-        },
+        options: { server: { via: "machineId" }, wait: UI_FOLLOWS },
       },
     },
   }),

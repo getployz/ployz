@@ -25,6 +25,7 @@ const finished = (services: ServiceDrain[], stopped: DrainReport["stopped"] = nu
   state: "finished",
   endedAt: at,
   report: { server: runtimeWatchMachineFixture(web2.id, web2.name), services_role: "turned_off", services, stopped, remaining: { kind: "observed", services: [], unchosen: [] }, complete },
+  lines: {},
 });
 const view = (latest: LatestDrain | null, requested: string | null = null) => drainView({
   server: web2,
@@ -125,12 +126,12 @@ describe("Services section", () => {
 
   it("lists what a running Drain still has to move, and counts it", () => {
     const left: DrainRow = { key: "shop/postgres", name: "postgres", namespace: "shop", global: false, tone: "neutral", label: "Pending", reason: null, pinned: false };
-    rows({ view: view({ attemptId: "a1", state: "running", startedAt: at }), left: [left] });
+    rows({ view: view({ attemptId: "a1", state: "running", startedAt: at, report: null, lines: {} }), left: [left] });
     expect(screen.getByText(/Draining · 1 left · Started/)).toBeTruthy();
     expect(within(screen.getByLabelText("Left to move")).getByText("postgres")).toBeTruthy();
     expect(screen.queryByLabelText("Drain result")).toBeNull();
     cleanup();
-    rows({ view: view({ attemptId: "a1", state: "running", startedAt: at }) });
+    rows({ view: view({ attemptId: "a1", state: "running", startedAt: at, report: null, lines: {} }) });
     expect(screen.getByText(/Draining · Finishing up · Started/)).toBeTruthy();
   });
 
@@ -173,8 +174,8 @@ describe("Drain dialog", () => {
   };
 
   const LEAD = "Moves its services to your other servers, one at a time. Nothing moves back on its own.";
-  const VOLUMES = "Services with a volume on web-2 stay.";
-  const row = (name: string, stays: DrainDialogRow["stays"] = null): DrainDialogRow => ({ key: `shop/${name}`, name, namespace: "shop", stays });
+  const VOLUMES = "A service whose data can't move with it stays on web-2.";
+  const row = (name: string, stays: DrainDialogRow["stays"] = null): DrainDialogRow => ({ key: `shop/${name}`, name, namespace: "shop", stays, why: null, withData: false });
   const dialog = (rows: DrainDialogRow[], onConfirm = () => {}) =>
     render(<DrainDialog serverName="web-2" rows={rows} open onOpenChange={() => {}} onConfirm={onConfirm} />);
   const listed = (key: string) => document.querySelector(`[data-row="${key}"]`) as HTMLElement;

@@ -86,7 +86,7 @@ export function ServerServicesRows({ acceptsServices, lastToRunServices, onAccep
         ) : null}
         {staged > 0 ? <p className="text-sm text-muted-foreground">Next deploy moves {plural(staged, "volume")}</p> : null}
       </SettingsRow>
-      {busy ? <DrainRows rows={left} label="Left to move" /> : view.kind === "finished" ? <DrainRows rows={view.rows} label="Drain result" /> : null}
+      {busy ? <DrainRows rows={leftWithVolumes(view, left)} label="Left to move" /> : view.kind === "finished" ? <DrainRows rows={view.rows} label="Drain result" /> : null}
     </SettingsSection>
   );
 }
@@ -105,6 +105,13 @@ const TONE_ICON = {
   failed: CircleXIcon,
   neutral: CircleDashedIcon,
 } satisfies Record<DrainTone, LucideIcon>;
+
+/** What a running Drain still has to move, each Service moving with its data shown by its Volume's line instead. */
+function leftWithVolumes(view: DrainView, left: readonly DrainRow[]): readonly DrainRow[] {
+  if (view.kind !== "running" || view.volumes.length === 0) return left;
+  const lines = new Map(view.volumes.map((row) => [row.key, row]));
+  return [...left.map((row) => lines.get(row.key) ?? row), ...view.volumes.filter((row) => !left.some((other) => other.key === row.key))];
+}
 
 /** Each Service and what the latest Drain did with it, or what the one under way still has to move. */
 function DrainRows({ rows, label }: { rows: readonly DrainRow[]; label: string }) {
@@ -145,7 +152,12 @@ function DrainLine({ view, left }: { view: DrainView; left: number }) {
     case "waiting":
       return <>Waiting for your servers to answer</>;
     case "running":
-      return <>Draining · {left === 0 ? "Finishing up" : `${left} left`} · Started <RelativeTime date={new Date(view.since)} /></>;
+      return (
+        <>
+          Draining · {view.moving !== null ? `Moving data to ${view.moving}` : left === 0 ? "Finishing up" : `${left} left`} · Started{" "}
+          <RelativeTime date={new Date(view.since)} />
+        </>
+      );
     case "finished":
       return <>Drained <RelativeTime date={new Date(view.at)} /> · {view.summary}</>;
     case "failed":

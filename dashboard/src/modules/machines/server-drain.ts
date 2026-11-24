@@ -2,6 +2,10 @@ import type { DrainReport } from "@ployz/sdk";
 import { Schema } from "effect";
 import { rustMachineIdSchema } from "#/lib/schema";
 import { DRAIN_END_CODES, type DrainEndCode } from "#/modules/machines/server-drain-states";
+import type { VolumeLine } from "#/modules/machines/server-drain-volumes";
+
+/** Each Volume line the Drain's moves give now, by the Service that moves with it. */
+export type VolumeLines = Readonly<Record<string, VolumeLine>>;
 
 /** A request no run picked up in this long never starts; the hourly sweep closes it. */
 export const DRAIN_PENDING_LIMIT_MS = 15 * 60_000;
@@ -31,8 +35,15 @@ export type EndedDrain = {
 /** One Server's latest Drain as the page reads it: each state with exactly its evidence. */
 export type LatestDrain =
   | { readonly attemptId: string; readonly state: "pending"; readonly requestedAt: string; readonly serversSilent: boolean }
-  | { readonly attemptId: string; readonly state: "running"; readonly startedAt: string }
-  | { readonly attemptId: string; readonly state: "finished"; readonly endedAt: string; readonly report: DrainReport }
+  | {
+    readonly attemptId: string;
+    readonly state: "running";
+    readonly startedAt: string;
+    /** The Engine's answer once it came, while the Drain moves Volumes; null while the Engine works. */
+    readonly report: DrainReport | null;
+    readonly lines: VolumeLines;
+  }
+  | { readonly attemptId: string; readonly state: "finished"; readonly endedAt: string; readonly report: DrainReport; readonly lines: VolumeLines }
   | EndedDrain;
 
 export type RequestedServerDrain = { readonly drain: LatestDrain };

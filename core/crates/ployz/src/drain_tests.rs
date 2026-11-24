@@ -86,9 +86,9 @@ fn an_outcome_is_flat_on_result() {
         id: MachineId::parse(hex.to_string().repeat(32)).unwrap(),
         name: MachineName::parse(name).unwrap(),
     };
-    let entry = ServiceDrain {
-        service: QualifiedService::parse("shop/web").unwrap(),
-        outcome: DrainOutcome::Failed {
+    let entry = ServiceDrain::of(
+        QualifiedService::parse("shop/web").unwrap(),
+        DrainOutcome::Failed {
             moves: vec![Move {
                 from: server('b', "web-2"),
                 to: server('a', "web-1"),
@@ -99,7 +99,7 @@ fn an_outcome_is_flat_on_result() {
                 reason: StayReason::MidRollout,
             },
         },
-    };
+    );
     assert_eq!(
         serde_json::to_value(&entry).unwrap(),
         json!({

@@ -13,9 +13,9 @@ import { type RecordAnswer, recordVolumeSize, resizeCopy } from "#/modules/volum
 import { fenceTaken } from "#/modules/volume-run/volume-run.deploy.server";
 import { alreadyOn, committedWriter, epochOf, expectOf, holdingNewest, observedEpoch, type Planned, planForwardRelease, planFromCopies, type Refusal, ROLE_NOUN, withdrawnMessage } from "#/modules/volume-run/plan";
 import { type AnsweredMember, copyName, type MachineRef, type Member, type ReleasePlan } from "#/modules/volume-run/volume-run";
-import { claimVolumeRun, closeStaleVolumeRuns, closeVolumeRun, endRun, failAndRelease, failRun, laneTarget, noteRun, refuseRun, releaseChangedMessage, runDeploymentsSeen, type RunContext, takeEpoch } from "#/modules/volume-run/volume-run.rows.server";
+import { claimVolumeRun, closeStaleVolumeRuns, closeVolumeRun, endRun, failAndRelease, failRun, laneTarget, noteRun, pinDestination, recordRestarted, refuseRun, releaseChangedMessage, runDeploymentsSeen, type RunContext, takeEpoch } from "#/modules/volume-run/volume-run.rows.server";
 import { cleanOrphans, organizationsWithMachines } from "#/modules/volume-run/volume-run.orphans.server";
-import { commitAndStart, type CopyAnswer, copyImage, DRAIN_MS, findHolder, findKept, inspectCopy, observeMembers, observeReachable, removeContainer, removeKept, sendSwitch, setVolumeCopy, startRefusal, SwitchAttemptError } from "#/modules/volume-run/volume-run.cluster.server";
+import { commitAndStart, type CopyAnswer, copyImage, DRAIN_MS, findHolder, findKept, type Holder, inspectCopy, observeMembers, observeReachable, removeContainer, removeKept, sendSwitch, setVolumeCopy, startRefusal, SwitchAttemptError } from "#/modules/volume-run/volume-run.cluster.server";
 import { type EffectRunner, runInngestEffect } from "#/modules/inngest/run.server";
 import { formatDuration } from "#/utils/relative-time";
 import type { AppServices } from "#/server/runtime.server";
@@ -64,6 +64,11 @@ export async function runVolume(
     return { runId: run.id, refused: plan.refusal };
   }
   const { phase } = plan;
+  // A Move admitted before moves recorded their Server's id names it only by name; once it resolved, it pins the id.
+  if (run.kind === "move" && run.args.machine === undefined && (phase.kind === "move" || phase.kind === "landed")) {
+    const machine = phase.target.machine.id;
+    await step.run("02-pin", () => runEffect(pinDestination(run, runId, machine)));
+  }
   if (phase.kind === "resize" && phase.unheld !== undefined) return resizeUnheld(steps, deployments);
   if (phase.kind === "seed") return seedVolume(steps, phase);
   if (phase.kind === "delete_mirror") return deleteMirror(steps, phase);
@@ -176,7 +181,8 @@ async function settle({ step, runEffect, run, runId, attempt }: RunSteps, id: st
       await step.run(`${id}-stale`, () => runEffect(endRun(run, runId, "failed", answer.message)));
       throw new Stale(answer.message);
     }
-    if (answer.ok || answer.reason !== "busy") return answer;
+    // The first send of the step's first attempt: no earlier ask of this step can have acted for it.
+    if (answer.ok || answer.reason !== "busy") return { ...answer, first: check === 0 && answer.at !== undefined };
   }
   throw new NonRetriableError(`${still} after ${BUSY_CHECKS} checks`);
 }
@@ -562,6 +568,7 @@ async function releaseVolume(steps: RunSteps, phase: PhaseOf<"release">, epoch: 
       start: containerId === null ? null : { kind: "kept", container_id: containerId },
     });
     if (!answer.ok) throw new NonRetriableError(answer.message);
+    if (containerId !== null) await steps.step.run(`${id}-restarted`, () => steps.runEffect(recordRestarted(run, steps.runId, member.machine.id)));
   };
   try {
     if (from.kind === "cut" || from.kind === "writer") {
@@ -616,6 +623,7 @@ async function releaseVolume(steps: RunSteps, phase: PhaseOf<"release">, epoch: 
     }
     const resumed = await resumeA("05-resume");
     if (!resumed.ok) throw new NonRetriableError(resumed.message);
+    await steps.step.run("05-restarted", () => steps.runEffect(recordRestarted(run, steps.runId, A.id)));
     await finish(steps, "06-finish");
     return { runId: run.id, released: A.name };
   } catch (error) {
@@ -700,6 +708,33 @@ async function landVolume(steps: RunSteps, phase: PhaseOf<"landed">) {
 }
 
 /**
+ * Why a drain's move must not take `holder`: the drain pinned another Server or Container, or that Container no longer
+ * runs. Null for a move nobody pinned.
+ */
+function holderSwapped(run: RunContext, A: MachineRef, holder: Holder): string | null {
+  if (run.kind !== "move" || run.args.holder === undefined) return null;
+  const pinned = run.args.holder;
+  const service = holder.redactedSpec.name;
+  if (pinned.machine !== A.id) return `${run.volumeName}'s writer is no longer on the server the drain moved it from`;
+  if (pinned.container !== holder.containerId) return `${service} was replaced on ${A.name} after the drain chose it, so ${run.volumeName} stays there`;
+  if (holder.running === false) return `${service} stopped on ${A.name} after the drain chose it, so ${run.volumeName} stays there`;
+  return null;
+}
+
+/**
+ * Why a cut that stopped nothing ends the Move with A's Service as it was, or null when the cut may have stopped it:
+ * its holder no longer runs, which A answers only for a cut it never made, or another Container runs beside it, on
+ * this step's first send, before any earlier send could have stopped the holder. A Release would restart a Service
+ * its operator stopped, so neither queues one.
+ */
+const untouchedCut = (answer: Awaited<ReturnType<typeof settle>>, service: string, A: MachineRef, name: string) => {
+  if (answer.ok) return null;
+  if (answer.reason === "stopped") return `${service} stopped on ${A.name} after the drain chose it, so ${name} stays there`;
+  if (answer.reason === "held" && answer.first) return answer.message;
+  return null;
+};
+
+/**
  * A Move: warm rounds, the image, the cut on A, B's pull of the cut's snapshot G, then the commit that starts B, and
  * A's stopped Container removed. Past the rounds a failure releases: back to A before the commit, forward to B after.
  */
@@ -724,9 +759,11 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, epoch: number
         Effect.map((refusal) => (refusal === null ? found : { ok: false, refusal: { code: "invalid", message: refusal } } as const)),
       )),
     )));
-    if (!found.ok) {
-      await step.run("02-refuse", () => runEffect(refuseRun(run, runId, found.refusal)));
-      return { runId: run.id, refused: found.refusal };
+    const swapped = found.ok ? holderSwapped(run, A, found.holder) : null;
+    if (!found.ok || swapped !== null) {
+      const refusal = found.ok ? { code: "invalid", message: swapped ?? "" } as const : found.refusal;
+      await step.run("02-refuse", () => runEffect(refuseRun(run, runId, refusal)));
+      return { runId: run.id, refused: refusal };
     }
     service = found.holder.redactedSpec.name;
     await note("02-copying", `Copying to ${B.name}`);
@@ -743,17 +780,33 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, epoch: number
         Effect.tap((found) => (found.ok ? copyImage(run, runId, A, found.holder, B) : Effect.void)),
       )));
       if (!imaged.ok) throw new NonRetriableError(imaged.refusal.message);
+      // Nothing is stopped yet, so a drain's move whose Container changed ends here and leaves the Service on A.
+      const swapped = phase.start === "rounds" ? holderSwapped(run, A, imaged.holder) : null;
+      if (swapped !== null) {
+        await step.run("04-refuse", () => runEffect(refuseRun(run, runId, { code: "invalid", message: swapped })));
+        return { runId: run.id, refused: { code: "invalid", message: swapped } as const };
+      }
       service = imaged.holder.redactedSpec.name;
       holder = imaged.holder.containerId;
-      // A stops only this Container, and refuses before it stops anything if another runs on the Volume.
+      // A stops only this Container, and refuses before it stops anything if another runs on the Volume. A drain's
+      // Move also needs it still running, so a Service its operator stopped since isn't started on B.
+      const pinned = run.kind === "move" && run.args.holder !== undefined;
       const stopped = await setCopy(steps, "05-cut", A, { kind: "writer", epoch: epochOf(phase.writer) }, {
         kind: "mirror",
         from: null,
         target: `f-${epoch}`,
         drain: DRAIN_MS,
         holder,
+        running: pinned,
       }, `${A.name} is still stopping ${name}'s Service`);
-      if (!stopped.ok) throw new NonRetriableError(stopped.message);
+      if (!stopped.ok) {
+        const untouched = untouchedCut(stopped, service, A, name);
+        if (untouched !== null) {
+          await step.run("05-refuse", () => runEffect(refuseRun(run, runId, { code: "invalid", message: untouched })));
+          return { runId: run.id, refused: { code: "invalid", message: untouched } as const };
+        }
+        throw new NonRetriableError(stopped.message);
+      }
       source = stopped.copy;
       // A late cut's time may follow the stop by any amount, which would shorten the downtime, so it has no `at`.
       stoppedAt = stopped.at ?? null;

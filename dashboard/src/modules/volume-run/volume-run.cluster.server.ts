@@ -23,7 +23,7 @@ import { Database } from "#/server/database.server";
 import { listNames } from "#/lib/plural";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import { REGION_LABEL } from "#/modules/runtime/runtime-watch-frame";
-import { type ClusterPlan, type LaneTaker, OBSERVE_TIMEOUT, type Owed, PROTECTED_VERBS, type PlanRequest, type ResolvedVolume, type RunContext, VERBS, type VolumeRunPlan, activeLane, answered, commitment, committedTo, deletesCopy, deploymentsSeen, ended, failRun, keepsLane, laneInputOf, laneRefusal, machineNamed, namedOwedRefusal, newestFirst, openSession, originRefusal, owedTarget, pastReturn, phaseEffects, planForward, readRow, refusedWhileOwed, releasePlan, requestName, requestPreview, requireOwner, resolveVolume, seedLandingRefusal, shrinkWhileDeploying, storeRefusal, takeLane, unanswered, unreachable, withSlotMachine } from "#/modules/volume-run/volume-run.rows.server";
+import { type ClusterPlan, type LaneTaker, OBSERVE_TIMEOUT, type Owed, PROTECTED_VERBS, type PlanRequest, type ResolvedVolume, type RunContext, VERBS, type VolumeRunPlan, activeLane, answered, commitment, committedTo, deletesCopy, deploymentsSeen, ended, failRun, keepsLane, laneInputOf, laneRefusal, machineNamed, namedOwedRefusal, newestFirst, openSession, originRefusal, owedTarget, pastReturn, phaseEffects, planForward, readRow, recordRemoved, refusedWhileOwed, releasePlan, requestName, requestPreview, requireOwner, resolveVolume, seedLandingRefusal, shrinkWhileDeploying, storeRefusal, takeLane, unanswered, unreachable, withSlotMachine } from "#/modules/volume-run/volume-run.rows.server";
 
 /**
  * A requested run planned against the copies the Servers hold now, so a refusal reaches the caller before any row
@@ -117,7 +117,12 @@ export const planOnCluster = Effect.fn("VolumeRun.planOnCluster")(function* (
   const guarding = PROTECTED_VERBS[input.kind];
   const guard = asked ?? (guarding === null ? null : askedAs(guarding));
   const ids = (members: readonly AnsweredMember[]) => members.map((member) => member.machine.id);
-  const pinned = input.kind === "release" ? { ...input, args: { plan: { sources: ids(release.sources), forgets: ids(release.forgets) } } } : resolved;
+  // A move records its Server's id, so what guards that Server finds it by id whatever the Server is called later.
+  const pinned = input.kind === "release"
+    ? { ...input, args: { plan: { sources: ids(release.sources), forgets: ids(release.forgets) } } }
+    : resolved.kind === "move" && (phase.kind === "move" || phase.kind === "landed")
+      ? { ...resolved, args: { ...resolved.args, machine: phase.target.machine.id } }
+      : resolved;
   return { ok: true, volume, asked, guard, input: pinned } satisfies ClusterPlan;
 }, Effect.catchTag("ClusterOutOfTime", () => Effect.succeed({ ok: false, refusal: unanswered } satisfies ClusterPlan)), withClusterBudget(PLAN_CLUSTER_BUDGET_MS));
 
@@ -224,7 +229,7 @@ export type SwitchReason = CopyRefusal | SwitchError["reason"];
 
 const SWITCH_REASONS = [
   "mismatch", "no_transition", "busy", "no_capacity", "behind", "written", "no_source",
-  "precondition", "volume_switching", "no_writer", "restore_point_gone", "stale", "foreign", "docker_unavailable", "held",
+  "precondition", "volume_switching", "no_writer", "restore_point_gone", "stale", "foreign", "docker_unavailable", "held", "stopped",
 ] as const satisfies readonly SwitchReason[];
 
 /** Refusals that pass on their own, so they fail only the attempt and the step asks again. Docker comes back by itself. */
@@ -275,6 +280,8 @@ export function switchFailureMessage(
       return `Docker isn't answering on ${machine.name}`;
     case "held":
       return heldMessage(name, machine, null);
+    case "stopped":
+      return `${name}'s Service no longer runs on ${machine.name}, so the move stopped nothing`;
     case "busy":
       return undefined;
   }
@@ -390,7 +397,7 @@ export const inspectCopy = (ctx: RunContext, inngestRunId: string, machine: Mach
     Effect.map((view) => view.copy),
   );
 
-export type Holder = ServiceSpec & { readonly containerId: ContainerId };
+export type Holder = ServiceSpec & { readonly containerId: ContainerId; readonly running?: boolean };
 
 /** Drain::DEFAULT: how long the cut lets requests in flight finish once the Container is out of ingress. */
 export const DRAIN_MS = 3_000;
@@ -447,14 +454,27 @@ const holderOn = (
   return { ok: true, holder } as const;
 };
 
-/** The one Service container on `machine` that mounts this Volume, whose image B needs before the cut. */
-export const findHolder = Effect.fn("VolumeRun.findHolder")(function* (ctx: RunContext, inngestRunId: string, machine: MachineRef) {
-  yield* requireOwner(ctx.id, inngestRunId);
+/** The one Service container on `machine` that mounts this Volume, read without a run: a drain asks before it admits one. */
+export const readHolder = Effect.fn("VolumeRun.readHolder")(function* (
+  ctx: Pick<RunContext, "organizationId" | "dockerVolume" | "volumeName">,
+  machine: MachineRef,
+) {
   const found = holderOn(ctx, (yield* volumeFrame(ctx.organizationId, ctx.dockerVolume)).containers, machine);
   if (!found.ok) return found;
   const { holder } = found;
-  const holderOf: Holder = { containerId: holder.container_id, namespace: holder.namespace, redactedSpec: holder.resolved_spec };
+  const holderOf: Holder = {
+    containerId: holder.container_id,
+    namespace: holder.namespace,
+    redactedSpec: holder.resolved_spec,
+    running: holder.runtime.state === "running",
+  };
   return { ok: true, holder: holderOf } as const;
+});
+
+/** The one Service container on `machine` that mounts this Volume, whose image B needs before the cut. */
+export const findHolder = Effect.fn("VolumeRun.findHolder")(function* (ctx: RunContext, inngestRunId: string, machine: MachineRef) {
+  yield* requireOwner(ctx.id, inngestRunId);
+  return yield* readHolder(ctx, machine);
 });
 
 type CreateStart = Extract<CopyStart, { kind: "create" }>;
@@ -709,16 +729,19 @@ const keptWithoutSpec = (error: PloyzSdkError) =>
   "cause" in error && Option.isSome(Schema.decodeUnknownOption(KeptWithoutSpec)(error.cause));
 
 /**
- * Removes one Container, or returns the sentence saying it stays, when its Server holds no spec for it.
+ * Removes one Container, recording on the run that its Server acknowledged the removal, or returns the sentence saying
+ * it stays, when its Server holds no spec for it.
  */
 export const removeContainer = Effect.fn("VolumeRun.removeContainer")(function* (ctx: RunContext, inngestRunId: string, machine: MachineRef, containerId: ContainerId) {
   yield* requireOwner(ctx.id, inngestRunId);
   const session = yield* openSession(ctx.organizationId);
-  return yield* session.removeContainer(machine.id, containerId).pipe(
+  const stay = yield* session.removeContainer(machine.id, containerId).pipe(
     Effect.as(null),
     Effect.catchIf(keptWithoutSpec, () => Effect.succeed(`${containerId} stays on ${machine.name}, not removed`)),
     Effect.mapError((error) => new Error(`removing ${ctx.volumeName}'s old Container on ${machine.name}: ${sdkFailureMessage(error, [machine])}`)),
   );
+  if (stay === null) yield* recordRemoved(ctx, inngestRunId, containerId);
+  return stay;
 }, Effect.scoped);
 
 /** A run as the observe step reads it: a resize carries the size the Store records, which decides its direction. */

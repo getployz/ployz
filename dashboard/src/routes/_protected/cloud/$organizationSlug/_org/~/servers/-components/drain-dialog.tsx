@@ -9,6 +9,11 @@ const STAYS = {
   unowned: { badge: "Skipped", variant: "secondary", why: "No project owns it" },
 } as const satisfies Record<NonNullable<DrainDialogRow["stays"]>, { badge: string; variant: "destructive" | "warning" | "secondary"; why: string }>;
 
+const WITH_DATA = { badge: "Moves with data", variant: "secondary", why: "Its volume moves with it" } as const;
+
+/** "it mounts data and cache" as the dialog's line: "Stays: it mounts data and cache". */
+const staysWhy = (why: string) => `Stays: ${why}`;
+
 /** The plain confirm: what runs here, and which of it won't move or stops. No dry run. */
 export function DrainDialog({ serverName, rows, open, onOpenChange, onConfirm }: {
   serverName: string;
@@ -20,6 +25,7 @@ export function DrainDialog({ serverName, rows, open, onOpenChange, onConfirm }:
   onConfirm: (stops: readonly string[]) => void;
 }) {
   const moves = rows.some((row) => row.stays === null);
+  const withData = rows.some((row) => row.withData);
   return (
     <ConfirmDialog
       open={open}
@@ -34,14 +40,15 @@ export function DrainDialog({ serverName, rows, open, onOpenChange, onConfirm }:
             <>
               <ItemGroup aria-label={`Running on ${serverName}`} className="max-h-72 overflow-y-auto text-foreground">
                 {rows.map((row) => {
-                  const stays = row.stays === null ? null : STAYS[row.stays];
+                  const badge = row.withData ? WITH_DATA : row.stays === null ? null : STAYS[row.stays];
+                  const why = row.why === null ? badge?.why : staysWhy(row.why);
                   return (
                     <Item key={row.key} variant="outline" size="xs" data-row={row.key}>
                       <ItemContent className="min-w-0">
                         <ItemTitle>{row.name}</ItemTitle>
-                        <ItemDescription>{stays?.why ?? row.namespace}</ItemDescription>
+                        <ItemDescription>{why ?? row.namespace}</ItemDescription>
                       </ItemContent>
-                      {stays === null ? null : <ItemActions><Badge variant={stays.variant}>{stays.badge}</Badge></ItemActions>}
+                      {badge === null ? null : <ItemActions><Badge variant={badge.variant}>{badge.badge}</Badge></ItemActions>}
                     </Item>
                   );
                 })}
@@ -49,7 +56,11 @@ export function DrainDialog({ serverName, rows, open, onOpenChange, onConfirm }:
               {moves ? null : <p>Nothing to move.</p>}
             </>
           )}
-          <p>Services with a volume on {serverName} stay.</p>
+          <p>
+            {withData
+              ? `A service with a volume here moves with its data, one at a time. It stops while its last changes copy.`
+              : `A service whose data can't move with it stays on ${serverName}.`}
+          </p>
         </div>
       }
       actionLabel="Drain"

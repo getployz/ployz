@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import type { EnvironmentRef, ExpectedCopy, MachineId, Snapshot, VolumeCopy, WantedCopy } from "@ployz/sdk";
-import { and, eq, inArray, max, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { Effect, Option, Semaphore } from "effect";
 import { ClusterOutOfTime } from "#/modules/runtime/organization-runtime.server";
 import { originUpgradeMessage } from "#/modules/runtime/daemon-release";
@@ -12,7 +12,7 @@ import { volumeMirrorStatus } from "#/modules/volume-copies/mirror-sync/tables";
 import { volumeRun } from "#/modules/volume-run/tables";
 import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, copyName, type MachineRef, type Member, unheardOf } from "#/modules/volume-run/volume-run";
 import { type CopyAnswer, DRAIN_MS, SwitchAttemptError, VolumeCluster } from "#/modules/volume-run/volume-run.cluster.server";
-import { requestVolumeRun } from "#/modules/volume-run/volume-run.rows.server";
+import { requestVolumeRun, rowlessGen } from "#/modules/volume-run/volume-run.rows.server";
 import { whileLocked } from "#/server/advisory-lock.server";
 import { Database } from "#/server/database.server";
 
@@ -166,19 +166,6 @@ const recordSuccess = Effect.fn("MirrorSync.recordSuccess")(function* (
     });
 });
 
-/**
- * The gen a rowless SetVolumeCopy carries: the Volume's newest lane's. With no lane open, every floor Cloud raised on
- * this Volume is at most that, and a lane opened since raises the floor past it, so the Machine refuses the sync Stale.
- * A Deploy's hold floors no Machine and its row goes when the Deploy ends, so a sync carrying its gen would raise a
- * floor no later sync reaches.
- */
-const newestGen = Effect.fn("MirrorSync.newestGen")(function* (volumeId: string) {
-  const { drizzle } = yield* Database;
-  const [row] = yield* drizzle.select({ gen: max(volumeRun.gen) }).from(volumeRun)
-    .where(and(eq(volumeRun.volumeId, volumeId), sql`${volumeRun.args}->>'hold' is distinct from 'true'`));
-  return row?.gen ?? 0;
-});
-
 /** Answers with `sync`'s lines, logging each. */
 const answerFor = (organizationId: string, volume: SyncedVolume) => (reported: readonly PullFailure[], sync: MirrorSync) => {
   const lines = syncLines(volume.name, { reported, sync });
@@ -228,7 +215,7 @@ const syncOnce = Effect.fn("MirrorSync.sync")(function* (organizationId: string,
     }
 
     // Read before the lane check, so a lane opened after that check carries a higher gen and fences this sync.
-    const gen = yield* newestGen(volume.volumeId);
+    const gen = yield* rowlessGen(volume.volumeId);
     const [lane] = yield* drizzle.select({ id: volumeRun.id, kind: volumeRun.kind }).from(volumeRun)
       .where(and(eq(volumeRun.volumeId, volume.volumeId), inArray(volumeRun.state, [...ACTIVE_VOLUME_RUN_STATES]))).limit(1);
     if (lane !== undefined) return yield* answer(reported, { kind: "covered", run: lane });

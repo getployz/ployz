@@ -4,7 +4,6 @@ import type { EnvironmentRef, MachineId, NodeOutcome, OwnedNamespace } from "@pl
 import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { readStore } from "#/modules/config-store/config-store.server";
-import { owners as allOwners, unreadable, unreadableEnvironment } from "#/modules/config-store/store-lookup.server";
 import { refusedWith } from "#/modules/config-store/store-sdk.server";
 import type { Actor } from "#/modules/identity/actor";
 import { requireAccess } from "#/modules/organization/access.server";
@@ -20,7 +19,6 @@ import { dockerVolumeName } from "#/modules/runtime/naming";
 import { type VolumeRunState } from "#/modules/volume-run/volume-run-states";
 import { VolumeCluster } from "#/modules/volume-run/volume-run.cluster.server";
 import { getVolumeRun, requestVolumeRun } from "#/modules/volume-run/volume-run.rows.server";
-import { type CopyObserver, observeOrganizationCopies } from "#/modules/volume-run/volume-run.orphans.server";
 import { Database } from "#/server/database.server";
 
 /** A run of the Deploy's own, the one it started for `step`. `fenced`: it took over a lane, so it fences before it plans. */
@@ -318,23 +316,4 @@ export const ownedVolumes = Effect.fn("VolumePlacement.ownedVolumes")(function* 
   return volumes.map((volume): EnvironmentVolume => ({
     volumeId: volume.id, name: volume.name, environment, dockerVolume: dockerVolumeName(owned.namespace, volume.id), born: volume.born === true,
   }));
-});
-
-/**
- * The Volumes whose primary is on `server`, by name. A Drain leaves them there: only a Volume Move takes a Volume to
- * another Server, with the Service that mounts it, so the Drain names them for the user to move.
- */
-export const stageOffServer = Effect.fn("VolumePlacement.stageOffServer")(function* (
-  organizationId: string, server: MachineId, observe: CopyObserver = observeOrganizationCopies,
-) {
-  const copies = yield* observe(organizationId);
-  const volumes: EnvironmentVolume[] = [];
-  // A Drain fails while any Environment is unreadable: one skipped would hide a Volume left on the Server.
-  for (const owned of yield* allOwners(organizationId)) {
-    volumes.push(...yield* ownedVolumes(organizationId, owned).pipe(Effect.catchIf(unreadable, () => Effect.fail(unreadableEnvironment(owned)))));
-  }
-  const stuck = volumes
-    .filter((volume) => copies.some((copy) => copy.name === volume.dockerVolume && copy.machine_id === server && copy.role === "writer"))
-    .map((volume) => volume.name);
-  return { stuck };
 });

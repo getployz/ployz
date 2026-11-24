@@ -191,6 +191,33 @@ pub struct ServiceDrain {
     #[serde(flatten)]
     #[ts(flatten)]
     pub outcome: DrainOutcome,
+    /// The Managed volume Cloud moves, or tried to move, with this Service, by name. The
+    /// Engine never sets it; Cloud adds it to the report it keeps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub volume: Option<String>,
+    /// Cloud's line for that Volume as last read: where it went, or why it stays.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub detail: Option<String>,
+    /// The Volume Run Cloud admitted for that Volume, by id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub run: Option<String>,
+}
+
+impl ServiceDrain {
+    /// The Engine's own entry, before Cloud says anything about a Volume.
+    #[must_use]
+    pub fn of(service: QualifiedService, outcome: DrainOutcome) -> Self {
+        Self {
+            service,
+            outcome,
+            volume: None,
+            detail: None,
+            run: None,
+        }
+    }
 }
 
 /// One Service's outcome, flat on `result`.
@@ -953,7 +980,7 @@ struct Record<'progress> {
 
 impl Record<'_> {
     fn push(&mut self, service: QualifiedService, outcome: DrainOutcome) {
-        self.services.push(ServiceDrain { service, outcome });
+        self.services.push(ServiceDrain::of(service, outcome));
         let entry = self.services.last().expect("just pushed");
         (self.progress)(DrainStep::Service {
             server: self.server,

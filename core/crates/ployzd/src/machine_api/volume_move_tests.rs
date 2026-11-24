@@ -486,3 +486,98 @@ async fn a_cut_naming_its_holder_stops_nothing_beside_another() {
     assert!(refused.contains("\"held\""), "{refused}");
     assert!(fleet.node(0).running(source), "the cut stopped nothing");
 }
+
+fn cut_running(holder: ContainerId) -> Value {
+    json!({"name":VOLUME, "expect":{"kind":"writer", "epoch":0}, "gen":3,
+        "want":{"kind":"mirror", "from":null, "target":"f-1", "drain":0, "holder":holder, "running":true}})
+}
+
+/// A drain's Move names the Service it saw running. Stopped since, by its operator,
+/// it refuses the cut, so no other Server starts a Service someone stopped.
+#[tokio::test]
+async fn a_cut_whose_holder_must_run_refuses_a_stopped_one() {
+    let fleet = Fleet::start().await;
+    let source = fleet.routed(0, "a", "api", 2).await;
+    fleet.node(0).set_state(source, json!({"Status":"exited"}));
+    let plugin = plugin(writer_root(0, None), CUT_ROUTE, slot(Some(snapshot())));
+    let machine = fleet.with_plugin(0, &plugin);
+
+    let refused = try_set_copy(&machine, cut_running(source))
+        .await
+        .expect_err("a stopped holder refuses the cut");
+
+    assert!(refused.contains("\"stopped\""), "{refused}");
+    assert!(
+        !plugin
+            .routes_called()
+            .iter()
+            .any(|route| route == CUT_ROUTE),
+        "the root stays a writer"
+    );
+}
+
+/// A cut that stopped its holder and then failed is resent at the same gen: the stop
+/// was its own, so the resend goes on to the snapshot rather than refusing the holder
+/// it stopped, and a Container started beside it since reads busy, not held.
+#[tokio::test]
+async fn a_resent_cut_knows_the_stop_it_made() {
+    let fleet = Fleet::start().await;
+    let source = fleet.routed(0, "a", "api", 2).await;
+    // No answer to the snapshot yet, so the first cut fails past its stop.
+    let plugin = FakePlugin::default();
+    plugin.reply(INSPECT_ROUTE, writer_root(0, None));
+    let machine = fleet.with_plugin(0, &plugin);
+
+    try_set_copy(&machine, cut_running(source))
+        .await
+        .expect_err("the snapshot fails after the stop");
+    assert!(!fleet.node(0).running(source), "the first cut stopped it");
+
+    add_stray(&fleet, 0, "running");
+    let busy = try_set_copy(&machine, cut_running(source))
+        .await
+        .expect_err("a Container beside the resend refuses it");
+    assert!(busy.contains("\"busy\""), "{busy}");
+    fleet
+        .node(0)
+        .fake
+        .named_containers
+        .as_ref()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .remove("stray");
+
+    plugin.reply(CUT_ROUTE, slot(Some(snapshot())));
+    plugin.reply(INSPECT_ROUTE, slot(Some(snapshot())));
+    let cut = set_copy(&machine, cut_running(source)).await;
+    assert!(
+        matches!(cut.copy, Some(ployz_core::VolumeCopy::Slot { .. })),
+        "{cut:?}"
+    );
+}
+
+/// A cut that names its holder without `running` is one a caller sent before the
+/// capability, or one that isn't a drain's: it keeps no record of its stop, so a
+/// Container beside its resend reads held, as it always has.
+#[tokio::test]
+async fn a_cut_naming_only_its_holder_keeps_no_record_of_its_stop() {
+    let fleet = Fleet::start().await;
+    let source = fleet.routed(0, "a", "api", 2).await;
+    let plugin = FakePlugin::default();
+    plugin.reply(INSPECT_ROUTE, writer_root(0, None));
+    let machine = fleet.with_plugin(0, &plugin);
+    let cut = json!({"name":VOLUME, "expect":{"kind":"writer", "epoch":0}, "gen":3,
+        "want":{"kind":"mirror", "from":null, "target":"f-1", "drain":0, "holder":source}});
+
+    try_set_copy(&machine, cut.clone())
+        .await
+        .expect_err("the snapshot fails after the stop");
+    assert!(!fleet.node(0).running(source), "the first cut stopped it");
+
+    add_stray(&fleet, 0, "running");
+    let held = try_set_copy(&machine, cut)
+        .await
+        .expect_err("a Container beside the resend refuses it");
+    assert!(held.contains("\"held\""), "{held}");
+}

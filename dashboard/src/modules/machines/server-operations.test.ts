@@ -20,27 +20,37 @@ type Slot = {
   at?: number;
 };
 
-const frame = (services: Record<string, Slot[]>) => asTestDouble<RuntimeWatchView>()({
-  machines: [{ machine: { id: here, name: "fra-1" } }, { machine: { id: there, name: "fra-2" } }],
-  services: Object.entries(services).map(([identity, slots]) => ({
-    identity,
-    service_id: identity.split("/")[1],
-    containers: slots.map((slot) => ({
-      kind: "service_container",
-      machine_id: slot.machine,
-      runtime: { state: slot.state ?? "running" },
-      created_at_unix_nanos: slot.at ?? 1,
-      resolved_spec: {
-        mode: { mode: slot.mode ?? "replicated" },
-        volumes: [
-          ...Array.from({ length: slot.volumes ?? 0 }, () => ({ reference: "v", source: { kind: "bind" } })),
-          ...Object.keys(slot.mounts ?? {}).map((docker, index) => ({ reference: `r${index}`, source: { kind: "ordinary", name: docker } })),
-        ],
-        mounts: Object.values(slot.mounts ?? {}).map((target, index) => ({ volume: `r${index}`, target })),
-      },
-    })),
-  })),
-});
+const frame = (services: Record<string, Slot[]>) => {
+  const listed = Object.entries(services).map(([identity, slots]) => {
+    const [namespace, name] = identity.split("/");
+    return {
+      identity,
+      service_id: name,
+      containers: slots.map((slot, index) => ({
+        kind: "service_container",
+        container_id: `${identity}-${index}`,
+        namespace,
+        machine_id: slot.machine,
+        runtime: { state: slot.state ?? "running" },
+        created_at_unix_nanos: slot.at ?? 1,
+        resolved_spec: {
+          name,
+          mode: { mode: slot.mode ?? "replicated" },
+          volumes: [
+            ...Array.from({ length: slot.volumes ?? 0 }, () => ({ reference: "v", source: { kind: "bind" } })),
+            ...Object.keys(slot.mounts ?? {}).map((docker, index) => ({ reference: `r${index}`, source: { kind: "ordinary", name: docker } })),
+          ],
+          mounts: Object.values(slot.mounts ?? {}).map((target, index) => ({ volume: `r${index}`, target })),
+        },
+      })),
+    };
+  });
+  return asTestDouble<RuntimeWatchView>()({
+    machines: [{ machine: { id: here, name: "fra-1" } }, { machine: { id: there, name: "fra-2" } }],
+    services: listed,
+    containers: listed.flatMap((service) => service.containers),
+  });
+};
 
 describe("drainPlan", () => {
   it("moves stateless Services, keeps ones a Volume holds, retires Globals, and destroys only a Global with no other slot", () => {
@@ -63,6 +73,7 @@ describe("drainPlan", () => {
       effects: [{ kind: "removes_service", name: "shop/metrics", node: "metrics", path: "services/shop/metrics" }],
       targets: ["shop/db", "shop/edge", "shop/metrics", "shop/web"],
       moves: ["shop/web"],
+      data: { "shop/db": { kind: "stays", why: "it uses a folder or a Docker volume here" } },
     });
   });
 

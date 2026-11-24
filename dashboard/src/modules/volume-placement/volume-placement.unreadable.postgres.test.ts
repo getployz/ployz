@@ -7,7 +7,6 @@ import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { findService, ownerOf } from "#/modules/config-store/store-lookup.server";
 import { refreshMirrors } from "#/modules/volume-copies/mirror-sync/mirror-sync.round.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
-import { stageOffServer } from "#/modules/volume-placement/volume-placement.deploy.server";
 import { type CopyAnswer, VolumeCluster } from "#/modules/volume-run/volume-run.cluster.server";
 import { answeringWith, clusterShowing, COPIES, member } from "#/modules/volume-run/volume-run.test-fixture";
 import { Database } from "#/server/database.server";
@@ -74,16 +73,4 @@ it.live("finds a Service while another Environment is unreadable", () => Effect.
   expect(yield* ownerOf(ORGANIZATION, SHOP).pipe(Effect.provide(services))).toMatchObject({ project: "shop", environment: "production" });
   // Admitted but never run, so shop's web has no runtime yet: the lookup answers rather than failing over blog.
   expect(yield* findService(ORGANIZATION, SHOP, "web").pipe(Effect.provide(services))).toBeNull();
-}));
-
-it.live("a Drain refuses naming the Environment it can't read and the way out", () => Effect.gen(function* () {
-  const { services, blog } = yield* setup();
-  const copies = [{ machine_id: web("web-1"), name: blog, role: "writer" as const }];
-  const refused = yield* stageOffServer(ORGANIZATION, web("web-1"), () => Effect.succeed(copies))
-    .pipe(answeringRuntime, Effect.provide(services), Effect.flip);
-  expect(refused).toMatchObject({
-    _tag: "Conflict",
-    userFacing: true,
-    message: expect.stringMatching(/can't read blog\/production .*roll it forward/),
-  });
 }));

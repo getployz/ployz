@@ -24,8 +24,8 @@ mod transcript_tests;
 
 pub use calls::CloudCall;
 pub(crate) use calls::{
-    Settled, agent_call, approved_answer, call, follow_operation, follow_run, keyed_reply,
-    read_answer, refusable, refusable_operation, start_run,
+    Settled, agent_call, approved_answer, call, follow_operation, follow_operation_for, follow_run,
+    keyed_reply, read_answer, refusable, refusable_operation, start_run,
 };
 pub(crate) use credential::{
     Credential, TokenFrom, acting_as, acting_in, credential, env_token, from_env, named_cloud,

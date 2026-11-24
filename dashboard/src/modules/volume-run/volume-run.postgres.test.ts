@@ -1,6 +1,7 @@
 import type {
   ConfigStore,
   ContainerId,
+  DrainReport,
   CopyObservation,
   CopyRefusal,
   CopyRotation,
@@ -26,7 +27,7 @@ import { RpcError } from "@ployz/sdk";
 import { InngestTestEngine, mockCtx } from "@inngest/test";
 import { Effect, Exit } from "effect";
 import { Inngest, NonRetriableError } from "inngest";
-import type { PoolClient } from "pg";
+import { Client, type PoolClient, type QueryResult } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { CloudStore } from "#/modules/config-store/store-sdk.server";
@@ -55,6 +56,11 @@ import { FULL_GRANT } from "#/modules/identity/token-grant";
 import type { Database } from "#/server/database.server";
 import { makeInngestEffectRunner, type runInngestEffect } from "#/modules/inngest/run.server";
 import { invokeOnFailure } from "#/test/inngest-failure";
+import { executeDrainServer } from "#/modules/machines/server-drain.inngest";
+import { admitDrainVolume, drainMoveId, drainVolumeDeadline, planDrainVolumes, readVolumeLines, targetedMessage, volumeRunTargeting } from "#/modules/machines/server-drain-volumes.server";
+import { untried } from "#/modules/machines/server-drain-volumes";
+import { closeDrainRun, readCliServerDrain, requestServerDrain } from "#/modules/machines/server-drain.server";
+import { requestServerPolicyChange } from "#/modules/machines/server-policy.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 
 const organizationId = "00000000-0000-4000-8000-000000000e01";
@@ -93,6 +99,8 @@ type FakeMachine = {
   needs?: number;
   /** Size requests it answers `switching` to before it holds the size. */
   switching?: number;
+  /** Its Server Policy turned services off. */
+  closed?: true;
 };
 
 type FakeContainer = {
@@ -103,6 +111,8 @@ type FakeContainer = {
   binds?: string;
   /** Docker runs it, but the frame Cloud reads missed it. */
   unframed?: true;
+  /** The regions its signed spec runs in; none names any region. */
+  regions?: Record<string, number>;
 };
 
 /**
@@ -166,6 +176,7 @@ const ON_PLOYZ_04 = [
   requirements.volumeFloor.capability,
   requirements.volumeSize.capability,
   requirements.volumeShrink.capability,
+  requirements.volumeCutRunning.capability,
 ];
 describe("volume runs", () => {
   let harness: PostgresTestHarness;
@@ -202,7 +213,7 @@ describe("volume runs", () => {
   let storeProject: string;
   /** Runs once after the Store answers a namespaces read, as a write committed between that read and the next. */
   let afterNamespaces: (() => void) | null;
-  let storeVolumes: Array<{ id: string; name: string; storage: { kind: "provisioned"; maximumBytes: number } | { kind: "docker" }; change?: "delete"; recorded_storage?: number; born?: boolean }>;
+  let storeVolumes: Array<{ id: string; name: string; storage: { kind: "provisioned"; maximumBytes: number } | { kind: "docker" }; change?: "delete"; recorded_storage?: number; born?: boolean; shared_writes?: boolean }>;
   /** Every system event the Store recorded, and how it refuses the next one, if it does. */
   let storeEvents: SystemEvent[];
   /** What admits a moved Service's start on the Server a query names: an approval of its spec, unless a test says not. */
@@ -363,28 +374,32 @@ describe("volume runs", () => {
     return { copy: fake.copy };
   };
 
+  const framedContainers = () => containers.filter((container) => container.unframed !== true).map((container) => ({
+    machine_id: machines.find((fake) => fake.name === container.machine)?.id ?? idOf(container.machine),
+    kind: "service_container",
+    container_id: container.id,
+    namespace: "shop-production",
+    resolved_spec: { name: "web", container: { pull_policy: "always", environment: {} }, volumes: [
+      { reference: dockerVolume, source: { kind: "provisioned", name: dockerVolume } },
+      ...(container.binds === undefined ? [] : [{ reference: container.binds, source: { kind: "bind", machine_path: container.binds } }]),
+    ], regions: container.regions ?? {} },
+    display_name: container.id,
+    runtime: { state: container.running ? "running" : "exited" },
+    rotation: container.rotation,
+    created_at_unix_nanos: container.created ?? 0,
+  }));
+
   const session = asTestDouble<PloyzSession>()({
     watchFirstFrame: (timeoutMs: number) => {
       const fault = frameFault?.(++frames) ?? false;
       return fault !== false ? firstFrame(() => answering(fault), fault === true ? 1 : timeoutMs) : Effect.succeed({
       machines: machines.map((fake) => ({
-        machine: { id: fake.id ?? idOf(fake.name), name: fake.name, labels: fake.region === undefined ? {} : { region: fake.region }, public_key: Array.from({ length: 32 }, (_, index) => index), runtime: { daemon_version: fake.lacks ?? "", capabilities: fake.capabilities ?? ON_PLOYZ_04 } },
+        machine: { id: fake.id ?? idOf(fake.name), name: fake.name, labels: fake.region === undefined ? {} : { region: fake.region }, public_key: Array.from({ length: 32 }, (_, index) => index), accepts_services: fake.closed !== true, runtime: { daemon_version: fake.lacks ?? "", capabilities: fake.capabilities ?? ON_PLOYZ_04 } },
         storage: fake.stateless === true ? { state: "stateless" } : fake.pool ? { state: "pool", size_bytes: 1, used_bytes: 0, free_bytes: 1 } : { state: "ready" },
       })),
-      containers: containers.filter((container) => container.unframed !== true).map((container) => ({
-        machine_id: idOf(container.machine),
-        kind: "service_container",
-        container_id: container.id,
-        namespace: "shop-production",
-        resolved_spec: { name: "web", container: { pull_policy: "always", environment: {} }, volumes: [
-          { reference: "data", source: { kind: "provisioned", name: dockerVolume } },
-          ...(container.binds === undefined ? [] : [{ reference: container.binds, source: { kind: "bind", machine_path: container.binds } }]),
-        ] },
-        display_name: container.id,
-        runtime: { state: container.running ? "running" : "exited" },
-        rotation: container.rotation,
-        created_at_unix_nanos: container.created ?? 0,
-      })),
+      containers: framedContainers(),
+      services: [{ identity: "shop-production/web", containers: framedContainers() }],
+      unanswered: [],
       volumes: machines.flatMap((fake) => fake.copy === null || fake.bound === undefined ? [] : [{
         id: { machine_id: fake.id ?? idOf(fake.name), name: dockerVolume },
         options: {},
@@ -408,6 +423,9 @@ describe("volume runs", () => {
     }),
     copyContainerImage: (from: string, container: string, to: string) => Effect.sync(() => {
       verbs.push(`copy_image@${machine(from).name}->${machine(to).name}(${container})`);
+      const hook = beforeSet.get(`copy_image@${machine(from).name}`);
+      beforeSet.delete(`copy_image@${machine(from).name}`);
+      void hook?.();
     }),
     removeContainer: (target: string, container: string) => Effect.suspend(() => {
       verbs.push(`remove@${machine(target).name}(${container})`);
@@ -492,6 +510,11 @@ describe("volume runs", () => {
         : undefined;
       if (beside !== undefined) {
         return fail(new RawFault({ code: "conflict", message: `${beside.id} also runs on Volume ${dockerVolume}`, details: { reason: "held", copy: fake.copy, holder: beside.id } }));
+      }
+      // A cut whose holder must run refuses, stopping nothing, once it no longer does.
+      if (want.kind === "mirror" && want.running === true && fake.copy?.kind === "root"
+        && !containers.some((container) => container.id === want.holder && container.running)) {
+        return fail(new RawFault({ code: "conflict", message: `${want.holder} no longer runs on Volume ${dockerVolume}`, details: { reason: "stopped", copy: fake.copy } }));
       }
       if (want.kind === "floor" && fake.capabilities?.includes(requirements.volumeFloor.capability) === false) {
         return Effect.fail(new ServerLacks({ machineId: target, capability: requirements.volumeFloor.capability }));
@@ -1770,6 +1793,550 @@ describe("volume runs", () => {
         expect(ended).toMatchObject({ state: "failed", message: expect.stringMatching(/^fsn-1 holds data again, but its Service didn't start there: .*approved device signed.*\. Deploy it again to start it$/) });
       });
 
+    });
+  });
+
+  describe("a drain moves a Service with its data", () => {
+    const DRAIN = "00000000-0000-4000-8000-0000000000d1";
+    /** A drain's row checks its Server's id as hex, so these Servers carry hex ids. */
+    const hex = (prefix: string) => prefix.padEnd(32, "0") as MachineId;
+    const fsn1 = { id: hex("f1"), name: "fsn-1" };
+    const fsn2 = { id: hex("f2"), name: "fsn-2" };
+    const request = { attemptId: DRAIN, organizationId, machineId: fsn1.id };
+    const moveId = drainMoveId(DRAIN, volumeId);
+    /** What the Engine answers a drain of fsn-1 with: web stays for its volume there. */
+    const engineReport: DrainReport = {
+      server: asTestDouble<DrainReport["server"]>()(fsn1),
+      services_role: "turned_off",
+      services: [{ service: "shop-production/web", result: "stays", reason: { kind: "volume", server: fsn1 } }],
+      stopped: null,
+      remaining: { kind: "observed", services: ["shop-production/web"], unchosen: [] },
+      complete: false,
+    };
+    /** The drain's row as its run leaves it once the Engine answered: running, holding the report. */
+    const answered = (report: DrainReport = engineReport) => harness.pool.query(
+      `insert into server_drain_attempt (id, organization_id, requested_by_user_id, machine_id, state, inngest_run_id, started_at, report)
+       values ($1, $2, $3, $4, 'running', 'run-drain', now(), $5)`,
+      [DRAIN, organizationId, userId, fsn1.id, JSON.stringify(report)]);
+    /** Runs every Volume Run still active to its end, as Inngest would while the drain waits. */
+    const runEveryActive = async () => {
+      const { rows: active } = await harness.pool.query<{ id: string }>(
+        "select id from volume_run where state in ('requested', 'running') order by created_at, id");
+      for (const row of active) await execute(row.id, `run-${row.id}`);
+      return null;
+    };
+    /**
+     * The drain's run from where the Engine's answer left it: bind-run memoized as it bound, each later step run for
+     * real, and each wait for a Volume Run running it.
+     */
+    const drain = () => executeDrainServer({
+      event: { data: request },
+      runId: "run-drain",
+      step: asTestDouble<Parameters<typeof executeDrainServer>[0]["step"]>()({
+        run: async <A>(name: string, fn: () => Promise<A>) => name === "bind-run" ? { kind: "bound" } : fn(),
+        sleep: async () => undefined,
+        waitForEvent: () => runActive(),
+      }),
+    }, runEffect);
+    const cli = () => runEffect(readCliServerDrain(organizationId, DRAIN));
+    const entry = async () => {
+      const read = await cli();
+      if (read?.state !== "finished") throw new Error(`the drain reads ${read?.state}`);
+      return { entry: first(read.report.services), complete: read.report.complete };
+    };
+    const volumeRuns = async () => (await rows()).map(({ kind, state }) => ({ kind, state }));
+    /** What each wait for a Volume Run does; a test may wrap it. */
+    let runActive: () => Promise<null>;
+
+    beforeEach(() => {
+      runActive = runEveryActive;
+      machines = [
+        { name: "fsn-1", id: fsn1.id, region: "fsn", pool: true, copy: writerCopy() },
+        { name: "ams-1", id: hex("a1"), region: "ams", pool: true, copy: null },
+        // Never held a Managed volume, so it has made no Machine Pool yet.
+        { name: "fsn-2", id: fsn2.id, region: "fsn", pool: false, copy: null },
+      ];
+    });
+
+    // Catches a drain that leaves a one-Volume Service behind, or sends it to the first Server by name over one in its region.
+    it("moves the Service and its data to a Server in the drained Server's region, and reads complete", async () => {
+      await answered();
+
+      expect(await drain()).toEqual({ attemptId: DRAIN, state: "finished" });
+
+      expect(await volumeRuns()).toEqual([{ kind: "move", state: "done" }]);
+      expect(containers).toEqual([expect.objectContaining({ machine: "fsn-2", running: true })]);
+      expect(await entry()).toEqual({
+        entry: expect.objectContaining({ service: "shop-production/web", result: "moved", moves: [expect.objectContaining({ from: fsn1, to: fsn2 })] }),
+        complete: true,
+      });
+    });
+
+    // Catches a drain that reads a frame taken just after the move, still listing the removed Container, as the move
+    // having left the Service on the drained Server: the report reads incomplete and the CLI exits non-zero.
+    it("reads complete when the frame still lists the Container the move removed", async () => {
+      await answered();
+      const runMoves = runActive;
+      runActive = async () => {
+        await runMoves();
+        containers.push({ machine: "fsn-1", id: "web-fsn-1", running: false });
+        return null;
+      };
+
+      await drain();
+
+      expect(await entry()).toEqual({
+        entry: expect.objectContaining({ result: "moved", moves: [expect.objectContaining({ from: fsn1, to: fsn2, old: { kind: "stopped" } })] }),
+        complete: true,
+      });
+    });
+
+    // Catches a drain that reads complete while another Container of the Service still sits on the drained Server.
+    it("keeps the Service in what remains when another of its Containers is still on the drained Server", async () => {
+      await answered();
+      const runMoves = runActive;
+      runActive = async () => {
+        await runMoves();
+        containers.push({ machine: "fsn-1", id: "web-fsn-1-old", running: false });
+        return null;
+      };
+
+      await drain();
+
+      expect(await entry()).toEqual({ entry: expect.objectContaining({ result: "moved" }), complete: false });
+      const read = await cli();
+      expect(read?.state === "finished" && read.report.remaining).toEqual({ kind: "observed", services: ["shop-production/web"], unchosen: [] });
+    });
+
+    // Catches a drain that reads nothing left on the drained Server when that Server didn't answer.
+    it("observes nothing left when the drained Server didn't answer after the move", async () => {
+      await answered();
+      const runMoves = runActive;
+      runActive = async () => {
+        await runMoves();
+        machines = machines.filter((fake) => fake.name !== "fsn-1");
+        return null;
+      };
+
+      await drain();
+
+      const read = await cli();
+      expect(read?.state === "finished" && read.report).toMatchObject({ complete: false, remaining: { kind: "unobserved" } });
+    });
+
+    // Catches a drain cancelled mid-move that reads its finished move as a stay, so the CLI exits as if it stayed.
+    it("reads a move that finished after its drain was cancelled as moved, and complete", async () => {
+      await answered();
+      const runMoves = runActive;
+      runActive = async () => {
+        await runEffect(closeDrainRun("run-drain", "cancellation", DRAIN));
+        return runMoves();
+      };
+
+      await drain();
+
+      expect(await volumeRuns()).toEqual([{ kind: "move", state: "done" }]);
+      expect(await entry()).toEqual({
+        entry: expect.objectContaining({ result: "moved", detail: "moved to fsn-2", moves: [expect.objectContaining({ from: fsn1, to: fsn2 })] }),
+        complete: true,
+      });
+    });
+
+    // Catches a drain that gives up on the Service when its first Server refuses, or admits a second move.
+    it("skips a Server that would refuse the start and moves to the next with one run", async () => {
+      checkRefusals.set("fsn-2", new RpcError({ code: "permission_denied", message: "The deploy rule that built web doesn't list fsn-2.", details: null }));
+      await answered();
+
+      await drain();
+
+      expect(await volumeRuns()).toEqual([{ kind: "move", state: "done" }]);
+      expect(containers).toEqual([expect.objectContaining({ machine: "ams-1", running: true })]);
+    });
+
+    // Catches a move outside the regions the Service's signed spec runs in.
+    it("keeps the Service, admitting nothing, when its only Server in the signed region would refuse", async () => {
+      containers = [{ machine: "fsn-1", id: "web-fsn-1", running: true, regions: { fsn: 1 } }];
+      checkRefusals.set("fsn-2", new RpcError({ code: "permission_denied", message: "No approved version of web runs on fsn-2.", details: null }));
+      await answered();
+
+      await drain();
+
+      expect(await volumeRuns()).toEqual([]);
+      expect(await entry()).toEqual({
+        entry: expect.objectContaining({ result: "stays", detail: expect.stringContaining("fsn-2: ") }),
+        complete: false,
+      });
+      expect(containers).toEqual([expect.objectContaining({ machine: "fsn-1", running: true })]);
+    });
+
+    // Catches a drain that moves onto one Server while another holds a copy of the Volume the move can't go to.
+    it("keeps the Service, admitting nothing, while a mirror sits outside its signed region", async () => {
+      machines.push({ name: "syd-1", id: hex("5d"), region: "syd", pool: true, copy: slotCopy(base) });
+      containers = [{ machine: "fsn-1", id: "web-fsn-1", running: true, regions: { fsn: 1 } }];
+      await answered();
+
+      await drain();
+
+      expect(await volumeRuns()).toEqual([]);
+      expect((await entry()).entry).toMatchObject({ result: "stays", volume: "data", detail: expect.stringMatching(/^fsn-2: /) });
+    });
+
+    it.each([
+      ["two of its Containers run on the Volume", () => { containers.push({ machine: "fsn-1", id: "web-fsn-1-b", running: true }); }, /2 of its containers run on its volume/],
+      ["another Server runs a Container on the Volume", () => { containers.push({ machine: "fsn-2", id: "web-fsn-2", running: false }); }, /shares its volume with web-fsn-2/],
+      ["the Volume allows shared writes", () => { storeVolumes = [{ ...first(storeVolumes), shared_writes: true }]; }, /data allows shared writes/],
+    ])("names the stay, admitting nothing, when %s", async (_, arrange, why) => {
+      arrange();
+      await answered();
+
+      await drain();
+
+      expect(await volumeRuns()).toEqual([]);
+      const read = await cli();
+      if (read?.state !== "finished") throw new Error(`the drain reads ${read?.state}`);
+      expect(first(read.report.services)).toMatchObject({ result: "stays", detail: expect.stringMatching(why) });
+      // The Server page shows the same reason the CLI prints.
+      const { lines } = await runEffect(readVolumeLines(organizationId, read.report, true));
+      expect(lines["shop-production/web"]).toEqual({ tone: "stayed", text: expect.stringMatching(why) });
+    });
+
+    // Catches a Service kept for a folder reading not tried, rather than the Engine's own reason, once the drain planned.
+    it("keeps the Engine's words for a Service that also mounts a folder", async () => {
+      containers = [{ machine: "fsn-1", id: "web-fsn-1", running: true, binds: "/srv/uploads" }];
+      await answered(untried(engineReport));
+
+      await drain();
+
+      expect(await volumeRuns()).toEqual([]);
+      const read = await cli();
+      expect(read?.state === "finished" && first(read.report.services)).toEqual(first(engineReport.services));
+    });
+
+    // Catches a drain that cuts a Volume another run holds.
+    it("names the stay, admitting nothing, while another run holds the Volume", async () => {
+      const busy = await requested({ kind: "sync", args: { full: false } });
+      await answered();
+
+      await runEffect(planDrainVolumes(request, "run-drain"));
+
+      expect(await volumeRuns()).toEqual([{ kind: "sync", state: "requested" }]);
+      const row = (await harness.pool.query("select report from server_drain_attempt where id = $1", [DRAIN])).rows[0];
+      expect(row.report.services[0]).toMatchObject({ volume: "data", detail: `data is already busy, run ${busy.id}` });
+    });
+
+    // Catches a move that cuts a Service whose Container changed since the drain admitted it.
+    it("ends without a Release, cutting nothing, when the Service's Container was replaced after the drain admitted the move", async () => {
+      await answered();
+      const item = first(await runEffect(planDrainVolumes(request, "run-drain")));
+      expect(await runEffect(admitDrainVolume(request, "run-drain", item))).toEqual({ admitted: true });
+      containers = [{ machine: "fsn-1", id: "web-fsn-1-new", running: true }];
+
+      await execute(moveId);
+
+      expect(await volumeRuns()).toEqual([{ kind: "move", state: "failed" }]);
+      expect(verbs.filter((verb) => verb.startsWith("cut@") || verb.startsWith("writer@"))).toEqual([]);
+      expect(containers).toEqual([expect.objectContaining({ id: "web-fsn-1-new", running: true })]);
+    });
+
+    // Catches a move that starts on the new Server a Service its operator stopped after the move copied its image.
+    it("ends without a Release, starting nothing, when the Service stopped after its image was copied", async () => {
+      beforeSet.set("copy_image@fsn-1", () => { first(containers).running = false; });
+      await answered();
+
+      await drain();
+
+      expect(await volumeRuns()).toEqual([{ kind: "move", state: "failed" }]);
+      expect(containers).toEqual([expect.objectContaining({ machine: "fsn-1", running: false })]);
+      expect(named("fsn-1").copy?.kind).toBe("root");
+      expect((await entry()).entry).toMatchObject({ result: "stays", detail: "web stopped on fsn-1 after the drain chose it, so data stays there" });
+    });
+
+    // Catches a cut refused for a Container beside the Service, which stopped nothing, queueing a Release that restarts
+    // what the operator left.
+    it("ends without a Release when another Container started beside the Service after its image was copied", async () => {
+      beforeSet.set("copy_image@fsn-1", () => { containers.push({ machine: "fsn-1", id: "web-fsn-1-new", running: true }); });
+      await answered();
+
+      await drain();
+
+      expect(await volumeRuns()).toEqual([{ kind: "move", state: "failed" }]);
+      expect(named("fsn-1").copy?.kind).toBe("root");
+      expect((await entry()).entry).toMatchObject({ result: "stays", detail: expect.stringContaining("web-fsn-1-new also uses data on fsn-1") });
+    });
+
+    // Catches a move row committed without the event that runs it, holding the Volume's lane until the sweep.
+    it("inserts no move when the lane refuses after its insert", async () => {
+      await answered();
+      const item = first(await runEffect(planDrainVolumes(request, "run-drain")));
+      const held = await requested({ kind: "sync", args: { full: false } });
+      await harness.pool.query("update volume_run set state = 'done', finished_at = now(), held_by = 'deploy-x' where id = $1", [held.id]);
+      send.mockClear();
+
+      expect(await runEffect(admitDrainVolume(request, "run-drain", item))).toEqual({ admitted: false });
+
+      expect((await rows()).map(({ id }) => id)).toEqual([held.id]);
+      expect(send).not.toHaveBeenCalled();
+    });
+
+    // Catches a move admitted after the drain's deadline because its insert waited on another lane past it.
+    it("inserts no move when the deadline passed while its insert waited", async () => {
+      await answered();
+      const item = first(await runEffect(planDrainVolumes(request, "run-drain")));
+      const startedAt = first((await harness.pool.query<{ started_at: Date }>("select started_at from server_drain_attempt where id = $1", [DRAIN])).rows).started_at;
+      const real = Date.now.bind(Date);
+      let late = false;
+      const clock = vi.spyOn(Date, "now").mockImplementation(() => late ? drainVolumeDeadline({ startedAt }) + 1 : real());
+      const other = await harness.pool.connect();
+      try {
+        await other.query("begin");
+        await other.query(
+          `insert into volume_run (organization_id, environment_id, volume_id, volume_name, docker_volume, refquota_bytes, kind, args, state)
+           values ($1, 'env-1', $2, 'data', $3, 0, 'sync', '{"full":false}', 'requested')`,
+          [organizationId, volumeId, dockerVolume]);
+        const admitting = runEffect(admitDrainVolume(request, "run-drain", item));
+        await waitingOnLock();
+        late = true;
+        await other.query("rollback");
+
+        expect(await admitting).toEqual({ admitted: false });
+      } finally {
+        other.release(true);
+        clock.mockRestore();
+      }
+      expect(await rows()).toEqual([]);
+      const row = (await harness.pool.query("select report from server_drain_attempt where id = $1", [DRAIN])).rows[0];
+      expect(row.report.services[0].detail).toBe("the drain ran out of time before it moved this volume");
+    });
+
+    // Catches a retried step admitting a second move of the same Volume.
+    it("admits one move however often its step runs", async () => {
+      await answered();
+      const item = first(await runEffect(planDrainVolumes(request, "run-drain")));
+
+      await runEffect(admitDrainVolume(request, "run-drain", item));
+      await runEffect(admitDrainVolume(request, "run-drain", item));
+
+      expect(await rows()).toEqual([expect.objectContaining({ id: moveId, kind: "move" })]);
+    });
+
+    // Catches a move admitted after its drain was cancelled or ended.
+    it("admits no move once the drain's row ended", async () => {
+      await answered();
+      const item = first(await runEffect(planDrainVolumes(request, "run-drain")));
+      await runEffect(closeDrainRun("run-drain", "cancellation", DRAIN));
+
+      expect(await runEffect(admitDrainVolume(request, "run-drain", item))).toEqual({ admitted: false });
+
+      expect(await rows()).toEqual([]);
+      expect(await harness.pool.query("select state, end_code from server_drain_attempt").then((read) => read.rows)).toEqual([{ state: "finished", end_code: null }]);
+    });
+
+    // Catches a move onto a Server that stopped taking services, or started draining, after the drain planned.
+    it.each([
+      ["stopped taking services", async () => { named("fsn-2").closed = true; }, "fsn-2 stopped taking services"],
+      ["started draining", async () => {
+        await harness.pool.query(
+          `insert into server_drain_attempt (id, organization_id, machine_id, state) values ('00000000-0000-4000-8000-0000000000d2', $1, $2, 'pending')`,
+          [organizationId, fsn2.id]);
+      }, "fsn-2 is being drained"],
+    ])("admits no move onto a Server that %s after the drain planned", async (_, arrange, why) => {
+      machines = machines.filter((fake) => fake.name !== "ams-1");
+      await answered();
+      const item = first(await runEffect(planDrainVolumes(request, "run-drain")));
+      await arrange();
+
+      expect(await runEffect(admitDrainVolume(request, "run-drain", item))).toEqual({ admitted: false });
+
+      expect(await rows()).toEqual([]);
+      const row = (await harness.pool.query("select report from server_drain_attempt where id = $1", [DRAIN])).rows[0];
+      expect(row.report.services[0].detail).toBe(why);
+    });
+
+    // Catches a move onto a Server whose services role Cloud couldn't read again right before the move.
+    it("admits no move when the Server it picked doesn't answer whether it takes services", async () => {
+      machines = machines.filter((fake) => fake.name !== "ams-1");
+      await answered();
+      const item = first(await runEffect(planDrainVolumes(request, "run-drain")));
+      // Every frame read after fsn-2 checked the start goes unanswered.
+      frameFault = () => checks.length > 0;
+
+      expect(await runEffect(admitDrainVolume(request, "run-drain", item))).toEqual({ admitted: false });
+
+      expect(await rows()).toEqual([]);
+      const row = (await harness.pool.query("select report from server_drain_attempt where id = $1", [DRAIN])).rows[0];
+      expect(row.report.services[0].detail).toBe("fsn-2 didn't answer whether it takes services");
+    });
+
+    // Catches turning services off, or draining, the Server a Volume is moving to, which would strand the moved Service.
+    it("refuses to drain or turn services off for the Server a move targets", async () => {
+      machines = machines.filter((fake) => fake.name !== "ams-1");
+      await harness.pool.query(`insert into member (id, organization_id, user_id, role, created_at) values (gen_random_uuid(), $1, $2, 'owner', now())`, [organizationId, userId]);
+      await answered();
+      const item = first(await runEffect(planDrainVolumes(request, "run-drain")));
+      await runEffect(admitDrainVolume(request, "run-drain", item));
+      const why = `data is moving to this server. Wait for run ${moveId} to finish.`;
+
+      await expect(runEffect(requestServerPolicyChange({ userId }, { organizationSlug: "acme", machineId: fsn2.id, change: { acceptsServices: false } })))
+        .rejects.toMatchObject({ message: why });
+      const caller: Caller = { userId, organization: { id: organizationId, slug: "acme" }, credential: { kind: "session", id: "session-1" }, role: "owner", support: null, via: "dashboard" };
+      await expect(runEffect(requestServerDrain(caller, { organizationSlug: "acme", machineId: fsn2.id, requestId: "00000000-0000-4000-8000-0000000000d3", stops: [] })))
+        .rejects.toMatchObject({ message: why });
+    });
+
+    // Catches a move the CLI asked for by Server name that what guards that Server can't find by its id.
+    it("records the Server's id on a move the CLI asked for by name", async () => {
+      const planned = await runEffect(planVolumeRun(organizationId, { volumeId, environment, kind: "move", args: { to: "fsn-2" } }));
+
+      expect(planned).toMatchObject({ ok: true, input: { kind: "move", args: { to: "fsn-2", machine: fsn2.id } } });
+    });
+
+    // Catches draining, or turning services off on, the Server a move admitted before moves recorded ids is headed to.
+    it.each([
+      ["Cloud knows the Server by that name", "fsn-2", true],
+      ["Cloud never learned the Server's name", null, true],
+      // Cloud's name may be one the Server dropped since, or one it took since: until the run pins it, the move's
+      // Server is uncertain.
+      ["Cloud knows the Server by another name", "fsn-9", true],
+    ])("guards the Server a move names only by name when %s", async (_, name, guarded) => {
+      await harness.pool.query(
+        `insert into organization_machine (organization_id, machine_id, cluster_key, encrypted_capability, machine_name) values ($1, $2, $3, '{}', $4)`,
+        [organizationId, fsn2.id, "a".repeat(64), name]);
+      const move = await requested({ kind: "move", args: { to: "fsn-2" } });
+
+      const targeted = await runEffect(volumeRunTargeting(organizationId, fsn2.id));
+      expect(targeted?.id ?? null).toBe(guarded ? move.id : null);
+      if (targeted !== null) expect(targetedMessage(targeted)).toBe(`data is moving to fsn-2, which may be this server. Wait for run ${move.id} to finish.`);
+    });
+
+    // Catches a move asked for by name before moves recorded ids that, once its run resolved the name, still guards
+    // only by Cloud's name for that Server: renamed since, the Server it moves to could be drained mid-move.
+    it("pins the Server a move named only by name once its run resolves it", async () => {
+      await harness.pool.query(
+        `insert into organization_machine (organization_id, machine_id, cluster_key, encrypted_capability, machine_name) values ($1, $2, $3, '{}', 'fsn-9')`,
+        [organizationId, fsn2.id, "a".repeat(64)]);
+      const move = await requested({ kind: "move", args: { to: "fsn-2" } });
+      const guards: Array<{ readonly id: string } | null> = [];
+      beforeSet.set("pull@fsn-2", async () => {
+        guards.push(await runEffect(volumeRunTargeting(organizationId, fsn2.id)), await runEffect(volumeRunTargeting(organizationId, hex("a1"))));
+      });
+
+      await execute(move.id);
+
+      expect(guards.map((row) => row?.id ?? null)).toEqual([move.id, null]);
+    });
+
+    // Catches an older Server receiving a cut that needs its Service running, which it ignores: an operator's stop after
+    // the drain chose the Service would be cut and started on the new Server.
+    it("names the upgrade, admitting nothing, when the drained Server can't check its Service still runs", async () => {
+      named("fsn-1").capabilities = ON_PLOYZ_04.filter((capability) => capability !== requirements.volumeCutRunning.capability);
+      await answered();
+
+      await drain();
+
+      expect(await volumeRuns()).toEqual([]);
+      expect(containers).toEqual([expect.objectContaining({ machine: "fsn-1", running: true })]);
+      expect((await entry()).entry).toMatchObject({ result: "stays", volume: "data", detail: "Upgrade fsn-1 to move data with the drain" });
+    });
+
+    // Catches a drain that reads its Service gone from the drained Server because the move picked its Container, when
+    // the frame the move cleaned up from missed it and it was never removed.
+    it("keeps in what remains a Container the move never removed", async () => {
+      await answered();
+      beforeSet.set("writer@fsn-2", () => {
+        const kept = containers.find((container) => container.id === "web-fsn-1");
+        if (kept !== undefined) kept.unframed = true;
+      });
+      const runMoves = runActive;
+      runActive = async () => {
+        await runMoves();
+        for (const container of containers) delete container.unframed;
+        return null;
+      };
+
+      await drain();
+
+      expect(containers).toEqual(expect.arrayContaining([expect.objectContaining({ machine: "fsn-1", id: "web-fsn-1", running: false })]));
+      expect(await entry()).toEqual({ entry: expect.objectContaining({ result: "moved" }), complete: false });
+      const read = await cli();
+      expect(read?.state === "finished" && read.report.remaining).toEqual({ kind: "observed", services: ["shop-production/web"], unchosen: [] });
+    });
+
+    // Catches a read of an ended drain that sees its move running for the report and done for its line, and answers a
+    // stay whose line says it moved.
+    it("reads a move's outcome and its line from one look at its row", async () => {
+      await answered();
+      runActive = async () => {
+        await runEffect(closeDrainRun("run-drain", "cancellation", DRAIN));
+        return null;
+      };
+      await drain();
+      let finished = false;
+      type Answer = (error: Error, result: QueryResult) => void;
+      // A read reaches pg as `query(config, answer)`; every other call passes through as it came.
+      type Query = (this: Client, asked: { readonly text: string }, answer: Answer, rest?: Answer) => Promise<QueryResult> | undefined;
+      const send = asTestDouble<Query>()(Client.prototype.query);
+      // The move finishes right after the first read of the drain's runs, before that read's answer comes back.
+      const spy = vi.spyOn(Client.prototype, "query").mockImplementation(asTestDouble<typeof Client.prototype.query>()(function (this: Client, asked: { readonly text: string }, answer: Answer, rest?: Answer) {
+        if (finished || !String(asked.text).includes('from "volume_run" where "volume_run"."id" in')) return send.call(this, asked, answer, rest);
+        finished = true;
+        return send.call(this, asked, (error, result) => {
+          void harness.pool.query("update volume_run set state = 'done', finished_at = now() where id = $1", [moveId]).then(() => answer(error, result));
+        });
+      }));
+      try {
+        const { entry: read } = await entry();
+        expect(finished).toBe(true);
+        expect(read).toMatchObject({ result: "stays", detail: expect.stringMatching(/^moving to fsn-2, run /) });
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    // Catches a Release before the commit read as having started the Service again on the drained Server when it had no
+    // Container there to start.
+    it("reads a Release that had no Container to start as finished, claiming no restart", async () => {
+      machines = machines.filter((fake) => fake.name !== "ams-1");
+      // Its operator removes the Service on fsn-1 as the cut fails, leaving fsn-1 the writer with nothing to start.
+      beforeSet.set("cut@fsn-1", () => { containers = containers.filter((container) => container.id !== "web-fsn-1"); });
+      failNext.set("cut@fsn-1", "mismatch");
+      await answered();
+
+      await drain();
+
+      expect(await volumeRuns()).toEqual([{ kind: "move", state: "failed" }, { kind: "release", state: "done" }]);
+      expect((await entry()).entry).toMatchObject({ result: "stays", detail: expect.stringMatching(/^didn't move: .*; release run [-0-9a-f]+ finished$/) });
+    });
+
+    // Catches a move its Release finished on the new Server read as both moved and didn't move, and as a stay by the CLI.
+    it("reads a committed move its Release finished as moved, naming the Release", async () => {
+      machines = machines.filter((fake) => fake.name !== "ams-1");
+      failNext.set("writer@fsn-2", "mismatch");
+      await answered();
+
+      await drain();
+
+      expect(await volumeRuns()).toEqual([{ kind: "move", state: "failed" }, { kind: "release", state: "done" }]);
+      const release = await releaseRow();
+      const { entry: read, complete } = await entry();
+      expect(read).toMatchObject({ result: "moved", detail: expect.stringMatching(new RegExp(`^moved to fsn-2 by release run ${release.id} after the move failed: `)) });
+      expect(read.detail).not.toContain("didn't move");
+      expect(complete).toBe(true);
+    });
+
+    // Catches a failed move read as moved, or as stuck, when its Release put the Service back.
+    it("reads a failed move by its Release: the Service runs again on the drained Server", async () => {
+      machines = machines.filter((fake) => fake.name !== "ams-1");
+      beforeSet.set("cut@fsn-1", () => { checkRefusals.set("fsn-2", new RpcError({ code: "permission_denied", message: "No approved version of web runs on fsn-2.", details: null })); });
+      await answered();
+
+      await drain();
+
+      expect(await volumeRuns()).toEqual([{ kind: "move", state: "failed" }, { kind: "release", state: "done" }]);
+      expect(containers.filter((container) => container.running)).toEqual([expect.objectContaining({ machine: "fsn-1" })]);
+      expect(await entry()).toEqual({
+        entry: expect.objectContaining({ result: "stays", detail: expect.stringMatching(/^didn't move: .*; release run [-0-9a-f]+ finished and started it again on fsn-1$/) }),
+        complete: false,
+      });
     });
   });
 
@@ -3930,8 +4497,8 @@ describe("volume runs", () => {
     type Lane = { id: string; kind: string; state: string; phase: string; message: string | null; gen: string; inngest_run_id: string | null; args: VolumeRunInput["args"] };
     const lanes = async () => (await harness.pool.query(
       "select id, kind, state, phase, message, gen, inngest_run_id, args from volume_run order by gen")).rows as Lane[];
-    const moving = async (phase: "warm" | "committed" = "warm") => {
-      const run = await requested({ kind: "move", args: { to: "fsn-2" } });
+    const moving = async (phase: "warm" | "committed" = "warm", args: Extract<VolumeRunInput, { kind: "move" }>["args"] = { to: "fsn-2" }) => {
+      const run = await requested({ kind: "move", args });
       // An approved Move that committed did so on A's receipt, so what finishes it goes forward to B.
       await harness.pool.query("update volume_run set state = 'running', inngest_run_id = 'run-move', epoch = 1, phase = $2, current = $3, receipt = $4 where id = $1",
         [run.id, phase, phase === "committed" ? idOf("fsn-2") : null, phase === "committed" ? null : null]);
@@ -3980,6 +4547,18 @@ describe("volume runs", () => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({ name: "volume/run.requested" }));
       expect(await finish()).toEqual({ ended: 0, requeued: [], refused: [] });
       expect((await lanes()).filter((lane) => lane.kind === "move")).toHaveLength(2);
+    });
+
+    // Catches a Deploy that queues a drain's move again after the drain stopped waiting on it, outside the drain's checks.
+    it("during a drain's warm move: the move yields and is not requested again", async () => {
+      const taken = await moving("warm", { to: "fsn-2", machine: idOf("fsn-2"), holder: { machine: idOf("fsn-1"), container: "web-fsn-1" as ContainerId } });
+
+      const placed = await place();
+
+      expect(placed).toMatchObject([{ kind: "took", resume: null }]);
+      await fence(placed[0]);
+      expect(await finish()).toEqual({ ended: 1, requeued: [], refused: [] });
+      expect(await lanes()).toMatchObject([{ id: taken.id, state: "yielded" }, { kind: "deploy", state: "done" }]);
     });
 
     it("a dead move after the takeover is stale on A and its commit is refused, so B never starts the app", async () => {

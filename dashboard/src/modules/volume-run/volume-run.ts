@@ -1,4 +1,4 @@
-import type { MachineId, MachineName, Namespace, ResolvedServiceSpec, SlotRole, VolumeCopyView } from "@ployz/sdk";
+import type { ContainerId, MachineId, MachineName, Namespace, ResolvedServiceSpec, SlotRole, VolumeCopyView } from "@ployz/sdk";
 import { Schema } from "effect";
 import type { VolumeRunState, VolumeRunRequestKind, VolumeRunKind } from "#/modules/volume-run/volume-run-states";
 
@@ -25,6 +25,12 @@ export const RUN_FEATURES = {
 type Destination = { readonly to: MachineName; readonly machine?: MachineId };
 
 /**
+ * What a run's Servers confirmed it did, recorded as each answers: the Containers a Server acknowledged removing, and
+ * the Server a Release started the Service on again. A row from before runs recorded it has none.
+ */
+export type VolumeRunResult = { readonly removed?: readonly ContainerId[]; readonly restarted?: MachineId };
+
+/**
  * What a requested Release's plan showed: the slots it may resume from and the slots it may forget. The run refuses to
  * resume or forget anywhere else, so it never deletes a copy the plan did not name. Cloud's own Release of a Move
  * it ended carries none. `forward` pins a release that finishes a committed Move: the commitment it follows, the
@@ -45,7 +51,11 @@ export type VolumeRunArgs = {
    * row without one was admitted before runs recorded it, and is refused rather than guessed.
    */
   delete_mirror: { readonly slot: MachineName | null; readonly confirmed_name: string | null; readonly machine?: MachineId; readonly role?: SlotRole | "any" };
-  move: Destination;
+  /**
+   * `holder` is a drain's: the Server it drains and the Container it saw run the Service there. The move takes only that
+   * Container, so one replaced or stopped before the cut ends the move before anything stops.
+   */
+  move: Destination & { readonly holder?: { readonly machine: MachineId; readonly container: ContainerId } };
   /**
    * `follows` marks a Deploy's release: it is admitted only while the Volume still finishes on that Machine.
    */

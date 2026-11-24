@@ -5,7 +5,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { asTestDouble } from "#/lib/test-double";
 import { CloudStore } from "#/modules/config-store/store-sdk.server";
 import { InngestClient } from "#/modules/inngest/client";
-import { advancePlacement, releasePlacementClaims, stageOffServer } from "#/modules/volume-placement/volume-placement.deploy.server";
+import { advancePlacement, releasePlacementClaims } from "#/modules/volume-placement/volume-placement.deploy.server";
 import { listPlacements, stagePlacement, stampPlacements, writeAdmitted, writePlacement } from "#/modules/volume-placement/volume-placement.server";
 import { placementTargets } from "#/modules/volume-placement/volume-placement";
 import type { Member } from "#/modules/volume-run/volume-run";
@@ -559,18 +559,6 @@ describe("deploying a Volume placement", () => {
     it("stages a Legacy Volume onto the same Servers", async () => {
       born = false;
       expect(await stage(["web-3"])).toMatchObject({ ok: true, placement: { staged: { primary: web("web-2") } } });
-    });
-  });
-
-  describe("draining a Server", () => {
-    const copy = (server: string, role: "writer" | "slot") => ({ machine_id: web(server), name: "shop-production_vol-vol1", role });
-    const drain = (copies: CopyObservation["copies"]) => run(stageOffServer(organizationId, web("web-1"), () => Effect.succeed(copies)));
-
-    it("keeps a Volume on the drained Server, though another Server could take it, and names it", async () => {
-      members = [member("web-1", "writer"), member("web-2", "empty")];
-      expect(await drain([copy("web-1", "writer"), copy("web-2", "slot")])).toEqual({ stuck: ["data"] });
-      expect(await drain([copy("web-2", "writer")])).toEqual({ stuck: [] });
-      expect(await run(listPlacements(organizationId))).toEqual([]);
     });
   });
 });

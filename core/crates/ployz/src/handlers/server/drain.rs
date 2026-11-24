@@ -24,6 +24,10 @@ use crate::drain::{
 use crate::handlers::{Error, leaf_matches, route, runtime, store};
 use ployz_store::OperationVerb;
 
+/// How long `server drain` follows its drain: Cloud lets one run for a day after it
+/// starts, moving Volumes all that time, and one may wait its turn first.
+pub(super) const DRAIN_FOLLOW: std::time::Duration = std::time::Duration::from_secs(25 * 60 * 60);
+
 const NOTHING_MOVES_BACK: &str = "Turning the services role back on does not move anything back.";
 
 pub(in crate::handlers) fn drain(root: &ArgMatches) -> Result<(), Error> {
@@ -104,10 +108,11 @@ fn through_cloud(
     struct Finished {
         report: DrainReport,
     }
-    let settled = runtime.block_on(cloud::account::follow_operation::<Finished>(
+    let settled = runtime.block_on(cloud::account::follow_operation_for::<Finished>(
         credential,
         &format!("server-drains/{id}"),
         &format!("Draining Server {}", machine.name),
+        DRAIN_FOLLOW,
     ))?;
     Ok(settled.finished()?.report)
 }
@@ -165,10 +170,10 @@ fn incomplete(report: &DrainReport) -> Error {
                     },
                 ..
             }
-            | DrainOutcome::Held => stays.push(entry.service.to_string()),
+            | DrainOutcome::Held
+            | DrainOutcome::Stays { .. } => stays.push(entry.service.to_string()),
             outcome if outcome.left_old_copy() => left.push(entry.service.to_string()),
-            DrainOutcome::Stays { .. }
-            | DrainOutcome::Moved { .. }
+            DrainOutcome::Moved { .. }
             | DrainOutcome::OldCopies { .. }
             | DrainOutcome::NothingToMove
             | DrainOutcome::Retired
@@ -271,7 +276,18 @@ fn went_wrong(step: DrainStep<'_>) -> bool {
     }
 }
 
+/// The Engine's line for `entry`, then Cloud's line for the Volume it moved with it, if any.
 fn line(entry: &ServiceDrain, server: &MachineName) -> String {
+    let outcome = outcome_line(entry, server);
+    match (&entry.outcome, &entry.volume, &entry.detail) {
+        (DrainOutcome::Stays { .. }, _, _) | (_, None, _) | (_, _, None) => outcome,
+        (_, Some(volume), Some(detail)) => {
+            format!("{outcome}\n{}  {volume}: {detail}", entry.service)
+        }
+    }
+}
+
+fn outcome_line(entry: &ServiceDrain, server: &MachineName) -> String {
     let service = &entry.service;
     let (moves, ending) = match &entry.outcome {
         DrainOutcome::Retired => return format!("{service}: global, retired on {server}"),
@@ -279,7 +295,12 @@ fn line(entry: &ServiceDrain, server: &MachineName) -> String {
             return format!("{service}: global, failed to retire on {server}: {error}");
         }
         DrainOutcome::Stays { reason } => {
-            return format!("{service}  stays on {server} ({})", stay(service, reason));
+            let why = match (&entry.volume, &entry.detail) {
+                (Some(volume), Some(detail)) => format!("{volume}: {detail}"),
+                (None, Some(detail)) => detail.clone(),
+                (_, None) => stay(service, reason),
+            };
+            return format!("{service}  stays on {server} ({why})");
         }
         DrainOutcome::Held => {
             return format!(
