@@ -611,10 +611,9 @@ export const decideProposal = Effect.fn("Proposals.decide")(function* (decider: 
   const deny = (reason: string | null) => drizzle.update(operationProposals).set({ status: "denied", reason, ...decided })
     .where(and(eq(operationProposals.id, row.id), eq(operationProposals.status, "presented"))).returning();
   // Each step runs as the asker, so in a Protected Environment only someone who can protect it decides a Deploy, stop
-  // or restart: approves it, or rejects it, which ends the ask for good. The asker may still withdraw their own.
+  // or restart: approves it, or rejects it, which ends the ask for good.
   const guarded = row.steps.some((step) => isDeploy(step) || step.verb !== "start");
-  const withdrawn = "reject" in decision && decider.userId === row.requestedByUserId;
-  if (guarded && !withdrawn && !(yield* protects(decider.userId, row))) {
+  if (guarded && !(yield* protects(decider.userId, row))) {
     // A Deploy's approval says it in the Deploy's own words.
     const [first] = row.steps;
     if ("reject" in decision || first === undefined || !isDeploy(first)) return { ok: false, message: OWNER_OR_ADMIN } satisfies Decided;

@@ -110,8 +110,8 @@ owner or admin approves a deploy from someone who can't protect it.
 
 Anything else the agent would do that removes something, it doesn't do. That covers a save that
 removes a running service, deletes or detaches a volume or removes a domain, a redeploy, removing,
-forgetting, draining or cleaning up a server, a volume command that deletes data, taking an
-environment or a project off your servers, and unprotecting an environment. The agent says it needs
+forgetting, draining or cleaning up a server, a volume command that deletes data, restoring a
+volume, taking an environment or a project off your servers, and unprotecting an environment. The agent says it needs
 a person and where, like **This drain of fra-1 needs a person. Do it in Ployz Cloud.** Do it
 yourself in the dashboard or with `ployz`.
 

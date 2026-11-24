@@ -136,8 +136,8 @@ How you say yes depends on where the change starts:
 - **In the dashboard**, confirming a dialog is your yes.
 - **From an agent**, a deploy comes back as a link where you review it and approve it with your
   passkey. A stop or restart comes back as a link you approve or deny. Anything else that removes
-  something is refused with where to do it: `needs a person. Do it in Ployz Cloud`, plus the
-  `ployz` command when there is one. This holds for the [Ployz agent](agent-sidebar.md),
+  something, and any volume restore, is refused with where to do it: `needs a person. Do it in
+  Ployz Cloud`, plus the `ployz` command when there is one. An agent can't send a yes. This holds for the [Ployz agent](agent-sidebar.md),
   `ployz mcp` and an agent you [connected to Ployz Cloud](connect-an-agent.md).
 
 The digest names exactly what you saw. If the change moved on before it runs, such as another
@@ -159,8 +159,9 @@ Which commands ask:
   volume data. `ployz server upgrade` never asks.
 - `ployz service stop`, `ployz service restart` and starting a service don't ask.
 - In a [Protected environment](../environments/environments.md#protect-an-environment), a
-  member's deploy, stop and restart wait for an owner or admin, and anything else only they can
-  do is refused. See [Permissions](permissions.md#protect-production).
+  member's deploy, and their stop or restart from the dashboard or an agent, wait for an owner or
+  admin, and anything else only they can do is refused. See
+  [Permissions](permissions.md#protect-production).
 
 A yes runs its command once. The CLI sends the same request again with the same request key, so
 a resend that crosses a lost reply runs nothing new.

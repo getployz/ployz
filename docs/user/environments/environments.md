@@ -245,8 +245,8 @@ A member can still deploy, stop and restart in a Protected environment. Their bu
 an owner or admin.** with a link to the request. Any owner or admin who didn't ask opens that
 link, or finds it under **Waiting on you** in the
 [Agent panel](../account/agent-sidebar.md#approve-or-deny-a-deploy), and approves or denies it.
-Once approved, it runs as the member who asked. `ployz deploy`, `ployz service stop` and
-`ployz service restart` from a member wait the same way and print the link.
+Once approved, it runs as the member who asked. `ployz deploy` from a member waits the same way
+and prints the link.
 
 Anything else only an owner or admin can do there is refused with **An owner or admin does
 this.** That covers syncing or taking changes, growing a volume, `ployz env shutdown`, cancelling
