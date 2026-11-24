@@ -16,6 +16,8 @@
 #[cfg(test)]
 mod acme_issuance;
 #[cfg(test)]
+mod approval_binding;
+#[cfg(test)]
 mod bridge_notes;
 #[cfg(test)]
 mod build_handoff;
