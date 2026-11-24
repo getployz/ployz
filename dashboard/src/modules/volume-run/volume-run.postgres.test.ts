@@ -55,7 +55,7 @@ import type { Database } from "#/server/database.server";
 import { makeInngestEffectRunner, type runInngestEffect } from "#/modules/inngest/run.server";
 import { invokeOnFailure } from "#/test/inngest-failure";
 import { executeDrainServer } from "#/modules/machines/server-drain.inngest";
-import { admitDrainVolume, drainMoveId, drainVolumeDeadline, planDrainVolumes, readVolumeLines, targetedMessage, volumeRunTargeting } from "#/modules/machines/server-drain-volumes.server";
+import { admitDrainVolume, drainMoveId, drainMoveState, planDrainVolumes, readVolumeLines, targetedMessage, volumeRunTargeting } from "#/modules/machines/server-drain-volumes.server";
 import { untried } from "#/modules/machines/server-drain-volumes";
 import { closeDrainRun, readCliServerDrain, requestServerDrain } from "#/modules/machines/server-drain.server";
 import { requestServerPolicyChange } from "#/modules/machines/server-policy.server";
@@ -2080,10 +2080,9 @@ describe("volume runs", () => {
     it("inserts no move when the deadline passed while its insert waited", async () => {
       await answered();
       const item = first(await runEffect(planDrainVolumes(request, "run-drain")));
-      const startedAt = first((await harness.pool.query<{ started_at: Date }>("select started_at from server_drain_attempt where id = $1", [DRAIN])).rows).started_at;
-      const real = Date.now.bind(Date);
-      let late = false;
-      const clock = vi.spyOn(Date, "now").mockImplementation(() => late ? drainVolumeDeadline({ startedAt }) + 1 : real());
+      // Moves the drain's start back until its deadline is a second off, on Postgres's clock, which stamped the start.
+      const { leftMs } = await runEffect(drainMoveState(request, "run-drain", item));
+      await harness.pool.query("update server_drain_attempt set started_at = started_at - make_interval(secs => $2::float8 / 1000) where id = $1", [DRAIN, leftMs - 1000]);
       const other = await harness.pool.connect();
       try {
         await other.query("begin");
@@ -2093,13 +2092,12 @@ describe("volume runs", () => {
           [organizationId, volumeId, dockerVolume]);
         const admitting = runEffect(admitDrainVolume(request, "run-drain", item));
         await waitingOnLock();
-        late = true;
+        await other.query("select pg_sleep(1.1)");
         await other.query("rollback");
 
         expect(await admitting).toEqual({ admitted: false });
       } finally {
         other.release(true);
-        clock.mockRestore();
       }
       expect(await rows()).toEqual([]);
       const row = (await harness.pool.query("select report from server_drain_attempt where id = $1", [DRAIN])).rows[0];

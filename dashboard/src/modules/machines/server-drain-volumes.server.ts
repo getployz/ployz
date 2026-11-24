@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import type { ContainerId, DrainReport, EnvironmentRef, MachineId, MachineRef, QualifiedService, RuntimeWatchView, ServiceDrain } from "@ployz/sdk";
-import { and, eq, inArray, isNotNull, ne, or } from "drizzle-orm";
+import { and, eq, getTableColumns, inArray, isNotNull, ne, or, sql } from "drizzle-orm";
 import { Effect, Option } from "effect";
 import type { StoreRefusal } from "#/lib/refusal";
 import { readStore } from "#/modules/config-store/config-store.server";
@@ -39,16 +39,22 @@ export type DrainVolume = {
   readonly run: string;
 };
 
-type DrainRow = typeof serverDrainAttempt.$inferSelect;
 type Request = { readonly attemptId: string; readonly organizationId: string; readonly machineId: MachineId };
 type Note = Pick<ServiceDrain, "volume" | "detail" | "run">;
 
 const rows = attemptRows(serverDrainAttempt, "The drain request was not found.");
 
+/**
+ * How long a drain may still wait on its Volumes: from its start, which Postgres stamped, to the run limit less a
+ * margin. Read on `clock_timestamp()`, so a read made once its lock is held counts the time it waited for it.
+ */
+const volumeLeftMs = sql<number>`coalesce(extract(epoch from ${serverDrainAttempt.startedAt}
+  + make_interval(secs => ${(DRAIN_RUNNING_LIMIT_MS - DRAIN_VOLUME_MARGIN_MS) / 1000}) - clock_timestamp()) * 1000, 0)`.mapWith(Number);
+
 /** The drain's row while this run owns it running with the Engine's report; null once it ended or another run holds it. */
 const ownedReport = Effect.fn("ServerDrain.ownedReport")(function* (request: Request, runId: string, lock = false) {
   const { drizzle } = yield* Database;
-  const query = drizzle.select().from(serverDrainAttempt).where(and(
+  const query = drizzle.select({ ...getTableColumns(serverDrainAttempt), leftMs: volumeLeftMs }).from(serverDrainAttempt).where(and(
     rows.owned(request.attemptId, runId),
     eq(serverDrainAttempt.state, "running"),
     isNotNull(serverDrainAttempt.report),
@@ -56,10 +62,6 @@ const ownedReport = Effect.fn("ServerDrain.ownedReport")(function* (request: Req
   const [row] = lock ? yield* query.for("update") : yield* query;
   return row === undefined || row.report === null ? null : { ...row, report: row.report };
 });
-
-/** When a drain stops waiting on its Volumes. */
-export const drainVolumeDeadline = (row: Pick<DrainRow, "startedAt">) =>
-  (row.startedAt?.getTime() ?? 0) + DRAIN_RUNNING_LIMIT_MS - DRAIN_VOLUME_MARGIN_MS;
 
 /** Writes `notes` onto the report's entries, while this run still owns the row running. */
 const noteReport = Effect.fn("ServerDrain.noteReport")(function* (request: Request, runId: string, notes: ReadonlyMap<QualifiedService, Note>) {
@@ -213,7 +215,7 @@ const drainStillOwns = (request: Request, runId: string, to: MachineRef) => Effe
   const row = yield* ownedReport(request, runId, true);
   const refuse = (message: string): StoreRefusal => ({ code: "conflict", message, details: null });
   if (row === null) return refuse("the drain ended before it moved this volume");
-  if (Date.now() >= drainVolumeDeadline(row)) return refuse("the drain ran out of time before it moved this volume");
+  if (row.leftMs <= 0) return refuse("the drain ran out of time before it moved this volume");
   const { drizzle } = yield* Database;
   const [other] = yield* drizzle.select({ id: serverDrainAttempt.id }).from(serverDrainAttempt).where(and(
     eq(serverDrainAttempt.organizationId, request.organizationId),
@@ -294,7 +296,7 @@ const runRows = Effect.fn("ServerDrain.runRows")(function* (moves: readonly stri
  */
 export const drainMoveState = Effect.fn("ServerDrain.moveState")(function* (request: Request, runId: string, item: DrainVolume) {
   const row = yield* ownedReport(request, runId);
-  const leftMs = row === null ? 0 : drainVolumeDeadline(row) - Date.now();
+  const leftMs = row?.leftMs ?? 0;
   const found = yield* runRows([item.run]);
   const active = (id: string) => {
     const run = found.get(id);
