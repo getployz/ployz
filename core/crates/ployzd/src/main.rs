@@ -79,6 +79,9 @@ enum Command {
         #[arg(long)]
         attempt: MachineUpgradeAttemptId,
     },
+    /// Put the container network's fence back before Docker starts, from ployz-fence.service.
+    #[command(hide = true)]
+    Fence,
     /// Write this release's systemd unit files for an installer running another release.
     ///
     /// Other releases' installers call these flags; renaming one makes them exit 2 and write their own units.
@@ -258,6 +261,10 @@ async fn run(args: Args) -> Result<ExitCode, Error> {
     }) = &args.command
     {
         ployzd::installer::write_units(bin_dir, run_dir, systemd_dir).map_err(io::Error::other)?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    if matches!(args.command, Some(Command::Fence)) {
+        ployzd::network::restore_fence(&args.data_dir).map_err(io::Error::other)?;
         return Ok(ExitCode::SUCCESS);
     }
     if let Some(Command::Install(install)) = args.command {
