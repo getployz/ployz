@@ -97,11 +97,7 @@ impl CatchUpClient for Client {
         doors: ClusterDoors,
         cancel: &CancellationToken,
     ) -> Result<Option<IngressDoorsSet>, RpcError> {
-        if !participating(self, machine_id, false)
-            .await?
-            .machine
-            .accepts_ingress
-        {
+        if !participating(self, machine_id).await?.accepts_ingress {
             retire_ingress_proxy(&*self, machine_id, cancel).await?;
             return Ok(None);
         }

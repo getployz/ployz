@@ -1,6 +1,6 @@
-//! A Global's copies on one Machine and the refusal for an eligibility that can't be told.
+//! A Service's copies on one Machine.
 
-use ployz_core::{MachineId, QualifiedService, RpcError, ServicePlacementUnknownReason};
+use ployz_core::{MachineId, QualifiedService, RpcError};
 
 use crate::deploy::CopyLifecycle;
 use crate::deploy::cleanup::Copy;
@@ -18,14 +18,4 @@ pub(crate) async fn copies_on<C: CopyLifecycle>(
         .filter(|observation| observation.machine_id == *machine_id)
         .map(Copy::observed)
         .collect())
-}
-
-/// The refusal for a slot whose eligibility on the Server can't be told.
-pub(crate) fn unknown_eligibility(reason: ServicePlacementUnknownReason) -> RpcError {
-    let why = match reason {
-        ServicePlacementUnknownReason::MissingStorageEvidence => {
-            "its storage support was not observed"
-        }
-    };
-    RpcError::conflict(format!("eligibility on the Server is unknown: {why}"))
 }

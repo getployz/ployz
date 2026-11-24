@@ -530,7 +530,9 @@ error: Server web-2 runs `shop-production/metrics` on every Server, which only P
 next: ployz deploy
 ```
 
-Set `deploy.replicas` on that service instead of `deploy.mode: global`, deploy, and drain again.
+[Give that service a replica count](../troubleshooting/servers.md#move-a-service-off-deploymode-global),
+deploy, and drain again. A drain that turned the server's services off before it found such a
+service says so, and the server takes no new services until you turn them on again.
 
 The new container runs exactly the image the old one ran, even when its tag, like `app:v1`, names
 another image on the other server by then. A service whose image is named by a tag therefore moves

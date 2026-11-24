@@ -1,7 +1,7 @@
-//! Drain: turn a Machine's services role off, retire its chosen Globals there, run
-//! Placement convergence for each chosen replicated Service with a Container on it, then
-//! observe what still runs there. One bounded command. A chosen Global is a user one left
-//! from before 0.1.2-beta.42, and it refuses the Drain in its preflight.
+//! Drain: turn a Machine's services role off, run Placement convergence for each chosen
+//! replicated Service with a Container on it, then observe what still runs there. One
+//! bounded command. A chosen Global is a user one left from before 0.1.2-beta.42, and it
+//! refuses the Drain in its preflight wherever it is seen: a Drain retires no Global.
 //!
 //! Each move's old copy retires alongside the moves after it; the report waits for every
 //! retirement and still lists the Services in the order they were handled.
@@ -39,7 +39,7 @@ pub(crate) mod retirement;
 
 use crate::global_slot::copies_on;
 use placement::{Converged, LastIn, Moving, can_move, converge, named};
-use retirement::{Retirement, let_go, retire_globals};
+use retirement::let_go;
 
 pub use placement::{
     DrainStop, MachineRef, Move, MoveFailure, OldCopyEnd, StayReason, Unconfirmed,
@@ -89,9 +89,8 @@ pub enum DrainStep<'a> {
 /// What one Drain observed and did, in order.
 ///
 /// `services` lists each chosen Service that had a Container on `server` when the Drain
-/// looked: Globals first, then replicated Services, in the order handled. When `stopped` is
-/// set, the Service it stopped at reads `interrupted` or `not_attempted`, and every one
-/// after it reads `not_attempted`.
+/// looked, in the order handled. When `stopped` is set, the Service it stopped at reads
+/// `interrupted` or `not_attempted`, and every one after it reads `not_attempted`.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(into = "DrainReportWire")]
 #[ts(as = "DrainReportWire")]
@@ -243,8 +242,9 @@ pub enum DrainOutcome {
     /// by every live proxy and then removed. Never empty.
     OldCopies { ends: Vec<OldCopyEnd> },
     /// Global: its removal from the Server was acknowledged, or none of it was left there.
+    /// Only a Drain from before user Globals refused it made one; Cloud keeps their reports.
     Retired,
-    /// Global: it may still run on the Server, and why.
+    /// Global: it may still run on the Server, and why. Only made as `Retired` is.
     NotRetired { error: String },
     /// Replicated: the Drain stopped while handling it, after `moves`. The report's
     /// `stopped` says why.
@@ -453,11 +453,12 @@ struct Ready {
     server: Machine,
     scope: DrainScope,
     services_role: ServicesRole,
-    globals: Vec<QualifiedService>,
     replicated: Vec<QualifiedService>,
 }
 
 /// Select, turn the role off, wait until the entry observes it, list the chosen Services.
+/// Each listing must answer for the Server, and each refuses a user Global it finds, so no
+/// Drain retires one.
 async fn preflight(
     client: &mut Client,
     target: &MachineTarget,
@@ -476,7 +477,7 @@ async fn preflight(
     let live = client
         .live_services_from(&machines, EnvironmentValues::Redacted)
         .await?;
-    refuse_user_globals(&server, chosen_on(&server.id, &live, scope).1)?;
+    chosen_on(&server, &live, scope, None)?;
     let services_role = if server.accepts_services {
         turn_services_off(client, &server.id, cancellation).await?;
         ServicesRole::TurnedOff
@@ -491,40 +492,47 @@ async fn preflight(
     let live = client
         .live_services_from(&machines, EnvironmentValues::Redacted)
         .await?;
-    observed(&live, &server.id).map_err(|detail| DrainError::Unobservable {
-        server: server.name.clone(),
-        detail,
-    })?;
-    let (replicated, globals) = chosen_on(&server.id, &live, scope);
+    let replicated = chosen_on(&server, &live, scope, Some(services_role))?;
     Ok(Ready {
         server,
         scope: scope.clone(),
         services_role,
-        globals,
         replicated,
     })
 }
 
-/// The Services of `scope` with a Container on `server`: replicated ones, then Globals.
+/// The Services of `scope` with a Container on `server`, all replicated. Refuses when
+/// `server` did not answer the listing, or runs a user Global; `role` is what this Drain
+/// already did to its services role.
 fn chosen_on(
-    server: &MachineId,
+    server: &Machine,
     live: &LiveServices<RpcError>,
     scope: &DrainScope,
-) -> (Vec<QualifiedService>, Vec<QualifiedService>) {
-    let replicated = replicated_services_on(server, live);
-    services_on(server, live)
+    role: Option<ServicesRole>,
+) -> Result<Vec<QualifiedService>, DrainError> {
+    observed(live, &server.id).map_err(|detail| DrainError::Unobservable {
+        server: server.name.clone(),
+        detail,
+    })?;
+    let replicated = replicated_services_on(&server.id, live);
+    let (replicated, globals): (Vec<_>, Vec<_>) = services_on(&server.id, live)
         .into_iter()
         .filter(|service| scope.includes(service))
-        .partition(|service| replicated.contains(service))
+        .partition(|service| replicated.contains(service));
+    if globals.is_empty() {
+        return Ok(replicated);
+    }
+    Err(user_globals(server, &globals, role))
 }
 
-/// Refuse, before the services role changes, a Drain that would retire a user Global.
-/// Compose made them until 0.1.2-beta.42, and no Machine admits one now. A copy stays In
-/// while it crash-loops, so retiring this one could take the last copy that serves.
-fn refuse_user_globals(server: &Machine, globals: Vec<QualifiedService>) -> Result<(), DrainError> {
-    if globals.is_empty() {
-        return Ok(());
-    }
+/// The refusal of a Drain that would retire `globals`, user Globals. Compose made them
+/// until 0.1.2-beta.42, and no Machine admits one now. A copy stays In while it
+/// crash-loops, so retiring this one could take the last copy that serves.
+fn user_globals(
+    server: &Machine,
+    globals: &[QualifiedService],
+    role: Option<ServicesRole>,
+) -> DrainError {
     let (each, names) = (
         if globals.len() == 1 { "it" } else { "each" },
         globals
@@ -533,17 +541,21 @@ fn refuse_user_globals(server: &Machine, globals: Vec<QualifiedService>) -> Resu
             .collect::<Vec<_>>()
             .join(", "),
     );
-    Err(DrainError::Refused(
+    let role = match role {
+        Some(ServicesRole::TurnedOff) => " This Drain turned its services role off.",
+        Some(ServicesRole::AlreadyOff) | None => "",
+    };
+    DrainError::Refused(
         RpcError::new(
             RpcErrorCode::Conflict,
             format!(
                 "Server {} runs {names} on every Server, which only Ployz's own Services may \
-                 do now. Give {each} a replica count and deploy, then drain {} again.",
+                 do now.{role} Give {each} a replica count and deploy, then drain {} again.",
                 server.name, server.name
             ),
         )
         .with_hint(ployz_core::Hint::Next("ployz deploy".to_owned())),
-    ))
+    )
 }
 
 /// Turn the services role off on `id`, then wait until the entry observes it off.
@@ -584,12 +596,6 @@ async fn turn_services_off(
 trait DrainClient {
     /// The Services with a Container on `id`, from a fresh observation.
     async fn still_on(&mut self, id: &MachineId) -> Result<Vec<QualifiedService>, Lost>;
-    async fn retire(
-        &mut self,
-        server: &Machine,
-        globals: &[QualifiedService],
-        cancellation: &CancellationToken,
-    ) -> Vec<(QualifiedService, Retirement)>;
     async fn converge(
         &mut self,
         service: &QualifiedService,
@@ -617,15 +623,6 @@ impl DrainClient for Approved {
             .map_err(|error| Lost::Entry(error_chain::row(&error)))?;
         observed(&live, id).map_err(Lost::Server)?;
         Ok(services_on(id, &live))
-    }
-
-    async fn retire(
-        &mut self,
-        server: &Machine,
-        globals: &[QualifiedService],
-        cancellation: &CancellationToken,
-    ) -> Vec<(QualifiedService, Retirement)> {
-        retire_globals(&mut self.client, server, globals, cancellation).await
     }
 
     async fn converge(
@@ -658,8 +655,8 @@ impl DrainClient for Approved {
     }
 }
 
-/// Globals, then each replicated Service, then what remains. Infallible: every problem
-/// here is recorded, never propagated.
+/// Each replicated Service, then what remains. Infallible: every problem here is recorded,
+/// never propagated.
 async fn execute<C: DrainClient>(
     client: &mut C,
     ready: Ready,
@@ -670,7 +667,6 @@ async fn execute<C: DrainClient>(
         server,
         scope,
         services_role,
-        globals,
         replicated,
     } = ready;
     let mut record = Record {
@@ -681,40 +677,6 @@ async fn execute<C: DrainClient>(
     };
     let mut behind = Behind::default();
     'work: {
-        if !globals.is_empty() {
-            if cancellation.is_cancelled() {
-                record.stop(DrainStop::Cancelled, globals.iter().chain(&replicated));
-                break 'work;
-            }
-            let retirements = client.retire(&server, &globals, cancellation).await;
-            let still = client.still_on(&server.id).await;
-            let cancelled = retirements
-                .iter()
-                .any(|(_, retirement)| *retirement == Retirement::NotAttempted);
-            for (global, retirement) in retirements {
-                let outcome = match retirement {
-                    // Only a fresh observation that still finds it undoes an acknowledged
-                    // retirement; a lost one leaves that to `remaining`.
-                    Retirement::Retired => match &still {
-                        Ok(still) if still.contains(&global) => DrainOutcome::NotRetired {
-                            error: format!("still running on {}", server.name),
-                        },
-                        Ok(_) | Err(_) => DrainOutcome::Retired,
-                    },
-                    Retirement::NotRetired(error) => DrainOutcome::NotRetired { error },
-                    Retirement::NotAttempted => DrainOutcome::NotAttempted,
-                };
-                record.push(global, outcome);
-            }
-            if cancelled {
-                record.stop(DrainStop::Cancelled, &replicated);
-                break 'work;
-            }
-            if let Err(Lost::Entry(detail)) = still {
-                record.stop(DrainStop::EntryUnreachable { detail }, &replicated);
-                break 'work;
-            }
-        }
         let mut rest = replicated.as_slice();
         while let Some((service, after)) = rest.split_first() {
             if cancellation.is_cancelled() {
