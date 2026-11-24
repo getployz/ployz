@@ -232,7 +232,7 @@ export const readCliServerDrain = Effect.fn("ServerDrain.readCli")(function* (or
     case "running":
       return { state: drain.state } satisfies CliServerDrain;
     case "finished":
-      return { state: "finished", report: (yield* readVolumeLines(drain.report, true)).report } satisfies CliServerDrain;
+      return { state: "finished", report: (yield* readVolumeLines(organizationId, drain.report, true)).report } satisfies CliServerDrain;
     default:
       return {
         state: "ended",
@@ -252,7 +252,7 @@ export const listLatestServerDrains = Effect.fn("ServerDrain.listLatest")(functi
   const latest = yield* Effect.forEach(latestRows, (row) => Effect.gen(function* () {
     const drain = yield* latestDrainOf(row);
     if ((drain.state !== "running" && drain.state !== "finished") || drain.report === null) return [row.machineId, drain] as const;
-    const { report, lines } = yield* readVolumeLines(drain.report, drain.state === "finished");
+    const { report, lines } = yield* readVolumeLines(organization.id, drain.report, drain.state === "finished");
     return [row.machineId, { ...drain, report, lines }] as const;
   }));
   return { servers: Object.fromEntries(latest) };

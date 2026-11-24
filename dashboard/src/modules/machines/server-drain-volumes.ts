@@ -184,6 +184,37 @@ const cleanElsewhere = (entry: ServiceDrain, server: MachineId) => {
   }
 };
 
+/** A drain's move that finished: the Server it started the Service on, and the Container it removed from the drained one. */
+export type FinishedMove = { readonly to: MachineRef; readonly removed: ContainerId | null };
+
+/**
+ * The report once its moves finished: each Service a finished move took rewritten as moved from the drained Server,
+ * what remains there read from `frame`, and `complete` worked out again by the Engine's rule. A move's record says only
+ * what it did to the Container it stopped, so only that Container is left out of what remains; a frame in which the
+ * drained Server didn't answer observes nothing there.
+ */
+export function finalReport(report: DrainReport, finished: ReadonlyMap<string, FinishedMove>, frame: RuntimeWatchView | null): DrainReport {
+  const from: MachineRef = { id: report.server.id, name: report.server.name };
+  const services = report.services.map((entry): ServiceDrain => {
+    const move = entry.run === undefined ? undefined : finished.get(entry.run);
+    if (move === undefined) return entry;
+    return { service: entry.service, volume: entry.volume, run: entry.run, result: "moved", moves: [{ from, to: move.to, old: { kind: "stopped" } }] };
+  });
+  const removed = new Set([...finished.values()].flatMap((move) => move.removed ?? []));
+  const answered = frame !== null && !frame.unanswered.includes(from.id) && frame.machines.some(({ machine }) => machine.id === from.id);
+  const remaining: DrainReport["remaining"] = !answered
+    ? { kind: "unobserved", error: `Cloud couldn't read ${from.name} after the drain's volumes moved` }
+    : (() => {
+      const left = frame.services
+        .filter((service) => service.containers.some((container) => container.machine_id === from.id && !removed.has(container.container_id)))
+        .map((service) => service.identity);
+      const unchosen = report.remaining.kind === "observed" ? report.remaining.unchosen.filter((service) => left.includes(service)) : [];
+      return { kind: "observed", services: left, unchosen };
+    })();
+  const rewritten = { ...report, services, remaining };
+  return { ...rewritten, complete: reportComplete(rewritten) };
+}
+
 /** `DrainReport::complete` over a report Cloud rewrote: the Engine's rule, so the CLI reads the same answer back. */
 export function reportComplete(report: Omit<DrainReport, "complete">): boolean {
   const { remaining } = report;

@@ -790,7 +790,7 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, epoch: number
         target: `f-${epoch}`,
         drain: DRAIN_MS,
         holder,
-        ...(pinned ? { running: true } : {}),
+        running: pinned,
       }, `${A.name} is still stopping ${name}'s Service`);
       if (!stopped.ok) {
         const untouched = untouchedCut(stopped, service, A, name);

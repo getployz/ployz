@@ -1888,6 +1888,57 @@ describe("volume runs", () => {
       });
     });
 
+    // Catches a drain that reads complete while another Container of the Service still sits on the drained Server.
+    it("keeps the Service in what remains when another of its Containers is still on the drained Server", async () => {
+      await answered();
+      const runMoves = runActive;
+      runActive = async () => {
+        await runMoves();
+        containers.push({ machine: "fsn-1", id: "web-fsn-1-old", running: false });
+        return null;
+      };
+
+      await drain();
+
+      expect(await entry()).toEqual({ entry: expect.objectContaining({ result: "moved" }), complete: false });
+      const read = await cli();
+      expect(read?.state === "finished" && read.report.remaining).toEqual({ kind: "observed", services: ["shop-production/web"], unchosen: [] });
+    });
+
+    // Catches a drain that reads nothing left on the drained Server when that Server didn't answer.
+    it("observes nothing left when the drained Server didn't answer after the move", async () => {
+      await answered();
+      const runMoves = runActive;
+      runActive = async () => {
+        await runMoves();
+        machines = machines.filter((fake) => fake.name !== "fsn-1");
+        return null;
+      };
+
+      await drain();
+
+      const read = await cli();
+      expect(read?.state === "finished" && read.report).toMatchObject({ complete: false, remaining: { kind: "unobserved" } });
+    });
+
+    // Catches a drain cancelled mid-move that reads its finished move as a stay, so the CLI exits as if it stayed.
+    it("reads a move that finished after its drain was cancelled as moved, and complete", async () => {
+      await answered();
+      const runMoves = runActive;
+      runActive = async () => {
+        await runEffect(closeDrainRun("run-drain", "cancellation", DRAIN));
+        return runMoves();
+      };
+
+      await drain();
+
+      expect(await volumeRuns()).toEqual([{ kind: "move", state: "done" }]);
+      expect(await entry()).toEqual({
+        entry: expect.objectContaining({ result: "moved", detail: "moved to fsn-2", moves: [expect.objectContaining({ from: fsn1, to: fsn2 })] }),
+        complete: true,
+      });
+    });
+
     // Catches a drain that gives up on the Service when its first Server refuses, or admits a second move.
     it("skips a Server that would refuse the start and moves to the next with one run", async () => {
       checkRefusals.set("fsn-2", new RpcError({ code: "permission_denied", message: "The deploy rule that built web doesn't list fsn-2.", details: null }));
@@ -1942,7 +1993,7 @@ describe("volume runs", () => {
       if (read?.state !== "finished") throw new Error(`the drain reads ${read?.state}`);
       expect(first(read.report.services)).toMatchObject({ result: "stays", detail: expect.stringMatching(why) });
       // The Server page shows the same reason the CLI prints.
-      const { lines } = await runEffect(readVolumeLines(read.report, true));
+      const { lines } = await runEffect(readVolumeLines(organizationId, read.report, true));
       expect(lines["shop-production/web"]).toEqual({ tone: "stayed", text: expect.stringMatching(why) });
     });
 
