@@ -37,7 +37,7 @@ async fn fresh_service_revocation_preserves_management_and_trusted_ingress() {
     .await;
     let local = LocalMachine::new(owner.clone()).with_containers(Some(runtime.clone()));
     let spec: ResolvedServiceSpec = serde_json::from_value(json!({
-        "service_id": ServiceId::random(), "name": "api", "mode": {"mode": "replicated", "replicas": 1},
+        "service_id": ServiceId::random(), "name": "api", "mode": serde_json::to_value(ServiceMode::Global).unwrap(),
         "container": {"image":"example.test/api", "pull_policy":"missing"}
     })).unwrap();
     let namespace = Namespace::parse("app").unwrap();
@@ -107,7 +107,6 @@ async fn fresh_service_revocation_preserves_management_and_trusted_ingress() {
     let ingress = crate::images::legacy_caddy_for_tests("caddy:test")
         .to_resolved(ServiceId::random(), Default::default())
         .unwrap();
-    // Outside ployz-system the Ingress Proxy's spec is a user Global, refused as one.
     let error = local
         .create_container(
             ContainerKind::ServiceContainer,
@@ -119,10 +118,7 @@ async fn fresh_service_revocation_preserves_management_and_trusted_ingress() {
         )
         .await
         .unwrap_err();
-    assert!(
-        matches!(error, LocalMachineError::GlobalUnreserved),
-        "{error}"
-    );
+    assert!(error.to_string().contains("accept"), "{error}");
     let error = local
         .create_container(
             ContainerKind::ServiceContainer,
@@ -267,7 +263,7 @@ async fn joining_admits_direct_create() {
     .await;
     let local = LocalMachine::new(owner.clone()).with_containers(Some(runtime));
     let spec: ResolvedServiceSpec = serde_json::from_value(json!({
-        "service_id": ServiceId::random(), "name": "api", "mode": {"mode": "replicated", "replicas": 1},
+        "service_id": ServiceId::random(), "name": "api", "mode": serde_json::to_value(ServiceMode::Global).unwrap(),
         "container": {"image":"example.test/api", "pull_policy":"missing"}
     })).unwrap();
     let namespace = Namespace::parse("app").unwrap();
@@ -369,7 +365,7 @@ async fn removal_warning_restarts_and_keeps_recovery_available_without_container
         "historical Machine remains available for recovery"
     );
     let spec: ResolvedServiceSpec = serde_json::from_value(json!({
-        "service_id": ServiceId::random(), "name":"api", "mode": {"mode": "replicated", "replicas": 1},
+        "service_id": ServiceId::random(), "name":"api", "mode": serde_json::to_value(ServiceMode::Global).unwrap(),
         "container":{"image":"example.test/api", "pull_policy":"missing"}
     })).unwrap();
     let namespace = Namespace::parse("app").unwrap();

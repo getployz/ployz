@@ -406,8 +406,7 @@ impl ContainerRefusal {
             ContainerRefusalReason::NotParticipating
             | ContainerRefusalReason::SealingKeyMissing => RpcErrorCode::Unavailable,
             ContainerRefusalReason::InvalidIngress
-            | ContainerRefusalReason::SealedValueUnopenable
-            | ContainerRefusalReason::GlobalUnreserved => RpcErrorCode::InvalidArgument,
+            | ContainerRefusalReason::SealedValueUnopenable => RpcErrorCode::InvalidArgument,
             ContainerRefusalReason::NotEligible
             | ContainerRefusalReason::SlotOccupied
             | ContainerRefusalReason::VolumesNotPrepared
@@ -458,9 +457,6 @@ pub enum ContainerRefusalReason {
     ImageDiffers,
     /// A Volume on this Machine carries data of another origin than the spec expects.
     ForeignVolume,
-    /// The spec is Global outside the reserved identities. Only Ployz's own Services run
-    /// on every Server.
-    GlobalUnreserved,
     #[serde(other)]
     Unrecognized,
 }

@@ -2,7 +2,7 @@
 //! boundary.
 
 use ipnet::Ipv4Net;
-use ployz_core::{IngressProxyServiceSpecError, Namespace, ResolvedServiceSpec, ServiceMode};
+use ployz_core::{IngressProxyServiceSpecError, Namespace, ResolvedServiceSpec};
 
 use super::LocalMachineError;
 use crate::images::{DoorSpecs, private_access_built_here};
@@ -41,18 +41,14 @@ pub(crate) fn admit_door(
     }
 }
 
-/// Admit a spec at any identity that is not reserved: it may not join a network, and it
-/// may not be Global. Only the reserved identities, whose specs this daemon builds, run on
-/// every Machine.
+/// Admit a spec at any identity that is not reserved: it may not join a network.
 ///
 /// # Errors
 ///
-/// Returns when the spec joins a network from outside the reserved doors, or is Global.
+/// Returns when the spec joins a network from outside the reserved doors.
 pub(crate) fn admit_unreserved(spec: &ResolvedServiceSpec) -> Result<(), LocalMachineError> {
     if spec.container.network.is_some() {
         Err(IngressProxyServiceSpecError.into())
-    } else if spec.mode == ServiceMode::Global {
-        Err(LocalMachineError::GlobalUnreserved)
     } else {
         Ok(())
     }
@@ -164,9 +160,6 @@ mod tests {
     fn an_app_spec_may_not_join_the_holders_network() {
         let mut app = specs().proxy;
         app.name = "web".parse().unwrap();
-        app.mode = ServiceMode::Replicated {
-            replicas: 1.try_into().unwrap(),
-        };
         assert!(admit_unreserved(&app).is_err());
         app.container.network = None;
         assert!(admit_unreserved(&app).is_ok());

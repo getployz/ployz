@@ -223,8 +223,6 @@ pub enum Error {
     IngressProxyServiceSpec(#[from] ployz_core::IngressProxyServiceSpecError),
     #[error("This isn't a router spec Ployz builds.")]
     PrivateAccessRouterSpec,
-    #[error("Only Ployz's own Services run on every Server; deploy this one with a replica count.")]
-    GlobalUnreserved,
     #[error("Private Access needs a Tailscale auth key.")]
     PrivateAccessKeyMissing,
     #[error(transparent)]

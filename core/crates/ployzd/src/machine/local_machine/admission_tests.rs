@@ -642,39 +642,3 @@ async fn a_checked_start_answers_as_a_start_and_keeps_nothing() {
     assert!(start_on(&machine, "app_data", &start).await.is_ok());
     assert!(floor().is_some(), "the start itself keeps the forget");
 }
-
-/// A Volume start refuses a Global outside the reserved identities before its transition,
-/// as the Create after the promote would. Cloud promotes a Move's destination only once a
-/// check answers, and an unchecked start promotes in the same request, so a start the
-/// Create refuses would leave the Volume promoted with no workload a resend can bring up.
-#[tokio::test]
-#[expect(clippy::indexing_slicing, reason = "JSON fixture")]
-async fn a_start_refuses_a_global_before_its_transition_in_both_forms() {
-    let fixture = fixture().await;
-    let machine = fixture.machine.clone().with_zpool("true");
-    let mut spec = mounting_data();
-    spec["mode"] = json!({"mode": "global"});
-    let start = create(
-        &resolved(&spec, &app()),
-        &[version(
-            &fixture,
-            &spec,
-            &fixture.signer,
-            Timestamp::now(),
-            false,
-        )],
-    );
-
-    for start in [start.clone(), checking(start)] {
-        let refused = machine
-            .clone()
-            .at_operator_scope()
-            .admit_volume_start(&"app_data".parse().unwrap(), &start)
-            .await;
-
-        assert!(
-            matches!(refused, Err(Error::GlobalUnreserved)),
-            "{start:?}: {refused:?}"
-        );
-    }
-}

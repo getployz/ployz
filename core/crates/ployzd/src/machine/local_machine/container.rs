@@ -1706,28 +1706,6 @@ impl LocalMachine {
         Ok(outcome)
     }
 
-    /// Admit `spec` at its identity: a reserved one takes only the spec this daemon builds
-    /// there, and any other neither joins a reserved network nor runs Global.
-    ///
-    /// # Errors
-    ///
-    /// Returns the refusal of a spec its identity doesn't take, or the Cluster network's
-    /// error for the router.
-    pub(super) async fn admit_identity(
-        &self,
-        namespace: &Namespace,
-        spec: &ResolvedServiceSpec,
-    ) -> Result<(), Error> {
-        match QualifiedService::new(namespace.clone(), spec.name.clone()).reserved() {
-            Some(ReservedKind::Router) => {
-                let network = Box::pin(self.cluster_network()).await?;
-                admit_router(namespace, spec, network)
-            }
-            Some(_) => admit_door(namespace, spec),
-            None => admit_unreserved(spec),
-        }
-    }
-
     pub(super) async fn create_container_admitted(
         &self,
         facts: CreationFacts<'_>,
@@ -1745,8 +1723,6 @@ impl LocalMachine {
         let containers = self.docker()?;
         let record = self.record();
         let machine = record.cluster_machine().ok_or(Error::NotParticipating)?;
-        // Before the create makes this spec's Volumes, which a refused spec would leave.
-        self.admit_identity(namespace, spec).await?;
         containers
             .lifecycle()
             .create_with_admission(
@@ -1761,6 +1737,15 @@ impl LocalMachine {
                     spec,
                     admitted,
                     admission: async {
+                        let identity = QualifiedService::new(namespace.clone(), spec.name.clone());
+                        match identity.reserved() {
+                            Some(ReservedKind::Router) => {
+                                let network = Box::pin(self.cluster_network()).await?;
+                                admit_router(namespace, spec, network)?;
+                            }
+                            Some(_) => admit_door(namespace, spec)?,
+                            None => admit_unreserved(spec)?,
+                        }
                         // A deploy's hook runs once: a slot whose hook was made and
                         // is now gone is never made again, so it never reruns.
                         if kind == ContainerKind::PreDeployHook
@@ -2249,7 +2234,6 @@ fn create_refusal(error: Error) -> Result<ContainerRefusal, Error> {
     let reason = match &error {
         Error::NotParticipating => ContainerRefusalReason::NotParticipating,
         Error::IngressProxyServiceSpec(_) => ContainerRefusalReason::InvalidIngress,
-        Error::GlobalUnreserved => ContainerRefusalReason::GlobalUnreserved,
         Error::Docker(
             Docker::IngressHolderNotRunning
             | Docker::TunnelOriginNotRunning
