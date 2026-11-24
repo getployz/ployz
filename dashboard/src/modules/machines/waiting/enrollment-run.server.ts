@@ -147,7 +147,7 @@ export const checkServerEnrollment = Effect.fn("ServerEnrollment.check")(functio
   const [row] = yield* drizzle.select({
     tokenId: machineEnrollmentToken.id,
     joined: machineEnrollmentToken.joinedMachineId,
-    lastCheckInAt: waitingServer.lastCheckInAt,
+    silent: sql<boolean>`${waitingServer.lastCheckInAt} < now() - make_interval(secs => ${CHECKIN_SILENCE_MS / 1000})`,
   })
     .from(serverEnrollment)
     .leftJoin(machineEnrollmentToken, eq(machineEnrollmentToken.id, serverEnrollment.enrollTokenId))
@@ -156,7 +156,7 @@ export const checkServerEnrollment = Effect.fn("ServerEnrollment.check")(functio
   if (row === undefined) return { kind: "gone" } as const;
   if (row.tokenId === null) return { kind: "removed" } as const;
   if (row.joined !== null) return { kind: "joined", machineId: row.joined } as const;
-  if (Date.now() - row.lastCheckInAt.getTime() > CHECKIN_SILENCE_MS) return { kind: "silent" } as const;
+  if (row.silent) return { kind: "silent" } as const;
   return { kind: "waiting" } as const;
 });
 
@@ -238,9 +238,8 @@ export const cancelOpenServerEnrollments = Effect.fn("ServerEnrollment.cancelOpe
 
 export const closeStaleServerEnrollments = Effect.fn("ServerEnrollment.closeStale")(function* () {
   const database = yield* Database;
-  const now = Date.now();
   const failed = yield* endAndRevokeTokens(
-    and(open, lt(serverEnrollment.requestedAt, new Date(now - ENROLLMENT_STALE_MS))),
+    and(open, lt(serverEnrollment.requestedAt, sql`now() - make_interval(secs => ${ENROLLMENT_STALE_MS / 1000})`)),
     { state: "failed", failure: { stage: null, message: "Enrollment stopped" } },
   );
   const removed = yield* database.transaction(Effect.gen(function* () {

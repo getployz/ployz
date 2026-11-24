@@ -81,6 +81,7 @@ export const listFleetTokens = Effect.fn("FleetToken.list")(function* (actor: Ac
       id: fleetToken.id,
       name: fleetToken.name,
       expiresAt: fleetToken.expiresAt,
+      expired: sql<boolean>`${fleetToken.expiresAt} <= now()`,
       autoEnrollMax: fleetToken.autoEnrollMax,
       lastUsedAt: fleetToken.lastUsedAt,
       createdAt: fleetToken.createdAt,
@@ -93,12 +94,11 @@ export const listFleetTokens = Effect.fn("FleetToken.list")(function* (actor: Ac
     .innerJoin(user, eq(user.id, fleetToken.createdByUserId))
     .where(and(eq(fleetToken.organizationId, organization.id), isNull(fleetToken.revokedAt)))
     .orderBy(asc(fleetToken.createdAt), asc(fleetToken.id));
-  const now = new Date();
   return rows.map((row): FleetTokenView => ({
     id: row.id,
     name: row.name,
     expiresAt: row.expiresAt.toISOString(),
-    expired: row.expiresAt <= now,
+    expired: row.expired,
     autoEnrollMax: row.autoEnrollMax,
     lastUsedAt: row.lastUsedAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
@@ -152,6 +152,7 @@ export const loadFleetToken = Effect.fn("FleetToken.load")(function* (token: str
       organizationId: fleetToken.organizationId,
       name: fleetToken.name,
       expiresAt: fleetToken.expiresAt,
+      expired: sql<boolean>`${fleetToken.expiresAt} <= now()`,
       autoEnrollMax: fleetToken.autoEnrollMax,
     })
     .from(fleetToken)

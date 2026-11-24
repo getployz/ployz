@@ -53,7 +53,6 @@ export const takeClaimSignInOrganization = Effect.fn("Identity.takeClaimSignInOr
   const { drizzle } = yield* Database;
   const bindings = yield* drizzle.delete(verification)
     .where(eq(verification.identifier, bindingIdentifier(userId, hashClaimSecret(secret))))
-    .returning({ organizationId: verification.value, expiresAt: verification.expiresAt });
-  const now = new Date();
-  return bindings.find(({ expiresAt }) => expiresAt > now)?.organizationId ?? null;
+    .returning({ organizationId: verification.value, live: sql<boolean>`${verification.expiresAt} > now()` });
+  return bindings.find(({ live }) => live)?.organizationId ?? null;
 });

@@ -280,6 +280,9 @@ export const dropUpgradeAttempt = Effect.fn("ServerUpgrade.drop")(function* (org
   yield* drizzle.delete(serverUpgradeAttempt).where(attemptWhere(organizationId, attemptId));
 });
 
+/** Postgres's clock, which stamps `startedAt`, so an attempt's age never mixes it with a web instance's. */
+const postgresNow = sql`now()`.mapWith(serverUpgradeAttempt.startedAt);
+
 const attemptWhere = (organizationId: string, attemptId: string) =>
   and(eq(serverUpgradeAttempt.organizationId, organizationId), eq(serverUpgradeAttempt.attemptId, attemptId));
 
@@ -344,9 +347,9 @@ const resendUpgradeOnServer = Effect.fn("ServerUpgrade.resendOnServer")(function
  */
 export const pollUpgradeOnServer = Effect.fn("ServerUpgrade.poll")(function* (input: AttemptOnServer) {
   const { drizzle } = yield* Database;
-  const [row] = yield* drizzle.select({ startedAt: serverUpgradeAttempt.startedAt }).from(serverUpgradeAttempt)
+  const [row] = yield* drizzle.select({ startedAt: serverUpgradeAttempt.startedAt, now: postgresNow }).from(serverUpgradeAttempt)
     .where(attemptWhere(input.organizationId, input.attemptId));
-  if (row === undefined || attemptState({ outcome: "running", startedAt: row.startedAt }, Date.now()) !== "running") return { kind: "expired" } as const;
+  if (row === undefined || attemptState({ outcome: "running", startedAt: row.startedAt }, row.now.getTime()) !== "running") return { kind: "expired" } as const;
   const attempt = yield* resendUpgradeOnServer(input);
   return attempt === null ? { kind: "unreadable" } as const : { kind: "read", attempt } as const;
 });
@@ -485,7 +488,7 @@ export const observeServerNames = (organizationId: string) =>
 
 /** The hourly sweep: an attempt still `running` after the observation limit lost its Rollout run, so it reads `unknown`. */
 export const closeStaleUpgradeAttempts = () =>
-  closeRunningAttempts(lt(serverUpgradeAttempt.startedAt, new Date(Date.now() - UPGRADE_OBSERVATION_LIMIT_MS)));
+  closeRunningAttempts(lt(serverUpgradeAttempt.startedAt, sql`now() - make_interval(secs => ${UPGRADE_OBSERVATION_LIMIT_MS / 1000})`));
 
 /** The automatic Rollout runs with an attempt that ended `unknown` since `since`, so the sweep can mail them again on retry. */
 export const listUnknownAutomaticRollouts = Effect.fn("ServerUpgrade.listUnknownAutomatic")(function* (since: Date) {
@@ -556,7 +559,7 @@ export const planCliServerUpgrade = Effect.fn("ServerUpgrade.planCli")(function*
     } as const satisfies { ok: false; refusal: StoreRefusal };
   }
   const { drizzle } = yield* Database;
-  const [running] = yield* drizzle.select({ attemptId: serverUpgradeAttempt.attemptId, outcome: serverUpgradeAttempt.outcome, startedAt: serverUpgradeAttempt.startedAt })
+  const [running] = yield* drizzle.select({ attemptId: serverUpgradeAttempt.attemptId, outcome: serverUpgradeAttempt.outcome, startedAt: serverUpgradeAttempt.startedAt, now: postgresNow })
     .from(serverUpgradeAttempt)
     .where(and(
       eq(serverUpgradeAttempt.organizationId, caller.organizationId),
@@ -565,7 +568,7 @@ export const planCliServerUpgrade = Effect.fn("ServerUpgrade.planCli")(function*
     ))
     .orderBy(desc(serverUpgradeAttempt.startedAt))
     .limit(1);
-  if (running !== undefined && attemptState(running, Date.now()) === "running") {
+  if (running !== undefined && attemptState(running, running.now.getTime()) === "running") {
     return () => Effect.succeed({ ok: true, id: running.attemptId } as const);
   }
   const unavailable = (message: string) =>
@@ -592,6 +595,7 @@ export const readCliServerUpgrade = Effect.fn("ServerUpgrade.readCli")(function*
     targetVersion: serverUpgradeAttempt.targetVersion,
     stage: serverUpgradeAttempt.stage,
     error: serverUpgradeAttempt.error,
+    now: postgresNow,
   }).from(serverUpgradeAttempt).where(attemptWhere(organizationId, attemptId));
   if (row === undefined) {
     return {
@@ -600,7 +604,7 @@ export const readCliServerUpgrade = Effect.fn("ServerUpgrade.readCli")(function*
       message: "The Server was busy with a build or another Upgrade, or went offline, so it took no Upgrade.",
     } as const;
   }
-  const outcome = attemptState(row, Date.now());
+  const outcome = attemptState(row, row.now.getTime());
   if (outcome === "running") return { state: "running" } as const;
   return {
     state: "finished",

@@ -18,7 +18,7 @@ import { requireAccess, requireAccessById } from "#/modules/organization/access.
 import { Ployz, type PloyzProviderError, type PloyzSdkError, type PloyzSession, predatesSealing, RpcError } from "#/modules/runtime/ployz.server";
 import { ClusterOutOfTime, clusterRead, OrganizationRuntime, SESSION_CLOSE_CLUSTER_MS, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
 import { PostHog } from "#/modules/analytics/posthog.server";
-import { JoinApprovalRequired, enrollmentExpiry, MANAGEMENT_CAPABILITY_LENGTH, registerRequestFromEnrollmentIdentity, setupReportAccepted, setupReportProperties, type SetupReport, waitForFounder, waitForJoinSlot, type EnrollmentIdentity, type EnrollmentCallback, type EnrollmentCallbackSealing, type CliMintMachineEnrollmentInput, type CliResetPendingEnrollmentInput, type EnrollResponse, type ReadMachineEnrollmentInput, type ResetPendingEnrollmentInput } from "#/modules/machines/enrollment";
+import { ENROLLMENT_TOKEN_TTL_MS, JoinApprovalRequired, MANAGEMENT_CAPABILITY_LENGTH, registerRequestFromEnrollmentIdentity, setupReportAccepted, setupReportProperties, type SetupReport, waitForFounder, waitForJoinSlot, type EnrollmentIdentity, type EnrollmentCallback, type EnrollmentCallbackSealing, type CliMintMachineEnrollmentInput, type CliResetPendingEnrollmentInput, type EnrollResponse, type ReadMachineEnrollmentInput, type ResetPendingEnrollmentInput } from "#/modules/machines/enrollment";
 import { rustMachineIdSchema } from "#/lib/schema";
 import { joinCode } from "#/modules/machines/join-code.server";
 import { readOrganizationSealingKey, recordFirstRecoveryBackup, recordReportedSealingPublicKey } from "#/modules/sealing/sealing-key.server";
@@ -116,20 +116,17 @@ export const insertEnrollmentToken = Effect.fn("MachineEnrollment.insertToken")(
     readonly attempt?: { readonly role: EnrollmentRole; readonly serverEnrollmentId: string };
   }) {
     const { drizzle } = yield* Database;
-    const { expiresAt, token } = yield* Effect.sync(() => ({
-      expiresAt: enrollmentExpiry(new Date()),
-      token: randomSecret(TOKEN_PREFIX),
-    }));
+    const token = yield* Effect.sync(() => randomSecret(TOKEN_PREFIX));
     const [issued] = yield* drizzle.insert(schemaMachineEnrollmentToken).values({
       organizationId: input.organizationId,
       createdByUserId: input.userId,
       tokenHash: hashEnrollmentToken(token),
-      expiresAt,
+      expiresAt: sql`now() + make_interval(secs => ${ENROLLMENT_TOKEN_TTL_MS / 1000})`,
       enrollmentRole: input.attempt?.role ?? null,
       serverEnrollmentId: input.attempt?.serverEnrollmentId ?? null,
-    }).returning({ id: schemaMachineEnrollmentToken.id });
+    }).returning({ id: schemaMachineEnrollmentToken.id, expiresAt: schemaMachineEnrollmentToken.expiresAt });
     if (!issued) return yield* Effect.die("Enrollment token insert returned no row");
-    return { id: issued.id, token, expiresAt };
+    return { id: issued.id, token, expiresAt: issued.expiresAt };
   },
 );
 
@@ -166,7 +163,7 @@ export const readMachineEnrollment = Effect.fn("MachineEnrollment.read")(
     const [row] = yield* drizzle
       .select({
         joinedMachineId: schemaMachineEnrollmentToken.joinedMachineId,
-        expiresAt: schemaMachineEnrollmentToken.expiresAt,
+        expired: sql<boolean>`${schemaMachineEnrollmentToken.expiresAt} <= now()`,
       })
       .from(schemaMachineEnrollmentToken)
       .where(and(
@@ -176,7 +173,7 @@ export const readMachineEnrollment = Effect.fn("MachineEnrollment.read")(
       .limit(1);
     if (!row) return yield* new NotFound({ message: "Enrollment not found." });
     if (row.joinedMachineId !== null) return { status: "joined" as const, machineId: row.joinedMachineId };
-    return { status: row.expiresAt.getTime() <= Date.now() ? "expired" as const : "pending" as const };
+    return { status: row.expired ? "expired" as const : "pending" as const };
   },
 );
 
@@ -215,11 +212,12 @@ export const recordMachineSetupReport = Effect.fn("MachineEnrollment.recordSetup
         organizationId: schemaMachineEnrollmentToken.organizationId,
         joinedMachineId: schemaMachineEnrollmentToken.joinedMachineId,
         expiresAt: schemaMachineEnrollmentToken.expiresAt,
+        now: sql`now()`.mapWith(schemaMachineEnrollmentToken.expiresAt),
       })
       .from(schemaMachineEnrollmentToken)
       .where(eq(schemaMachineEnrollmentToken.tokenHash, hashEnrollmentToken(input.token)))
       .limit(1);
-    if (!setupReportAccepted(row, input.report.outcome, new Date())) {
+    if (row === undefined || !setupReportAccepted(row, input.report.outcome, row.now)) {
       return yield* new NotFound({ message: "Enrollment not found." });
     }
     // Every CLI since reports began (0.2.2) moves to `storage` only once Cloud answered its enroll,
