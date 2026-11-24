@@ -841,3 +841,69 @@ async fn a_global_whose_newest_container_is_not_global_is_reported_not_retired()
     );
     assert!(client.retire_calls.is_empty());
 }
+
+/// What each Gone a Drain sent asks of the Container's anonymous Volumes.
+fn anonymous_volumes(cluster: &Cluster) -> Vec<AnonymousVolumes> {
+    cluster
+        .wants()
+        .into_iter()
+        .filter_map(|want| match want {
+            ContainerWant::Gone {
+                anonymous_volumes, ..
+            } => Some(anonymous_volumes),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A global run without a Volume, such as postgres, keeps its data in the anonymous
+/// Volume its image declares. Draining the Server takes the Service off it, so that
+/// data stays: deleting it is a Volume decision.
+#[tokio::test]
+async fn a_drain_keeps_the_anonymous_volumes_of_a_global_it_retires() {
+    let (drained, other) = (machine('1', "drained"), machine('2', "other"));
+    let cluster = Cluster::of(
+        &[&drained, &other],
+        vec![
+            copy_on(&drained, 'a', CopyRotation::In),
+            copy_on(&drained, 'b', CopyRotation::Pending),
+            copy_on(&other, 'c', CopyRotation::In),
+        ],
+    );
+    retire_copies(
+        &cluster,
+        &drained.id,
+        &qualified("app", "api"),
+        &CancellationToken::new(),
+        &Sentence::Drain(&ServerNames::default()),
+    )
+    .await
+    .expect("another In copy lets the drained one go Out");
+    assert_eq!(
+        anonymous_volumes(&cluster),
+        [AnonymousVolumes::Keep, AnonymousVolumes::Keep]
+    );
+}
+
+/// A copy a move left Out on the drained Server leaves that Server for good too.
+#[tokio::test]
+async fn a_drain_keeps_the_anonymous_volumes_of_a_copy_it_lets_go() {
+    let (drained, other) = (machine('1', "drained"), machine('2', "other"));
+    let cluster = Cluster::of(
+        &[&drained, &other],
+        vec![
+            copy_on(&drained, 'a', CopyRotation::Out),
+            copy_on(&other, 'b', CopyRotation::In),
+        ],
+    );
+    let copy = Copy::observed(&copy_on(&drained, 'a', CopyRotation::Out));
+    let end = let_go(
+        &cluster,
+        &copy,
+        &names(vec![drained.clone(), other.clone()]),
+        &CancellationToken::new(),
+    )
+    .await;
+    assert_eq!(end, OldCopyEnd::Stopped);
+    assert_eq!(anonymous_volumes(&cluster), [AnonymousVolumes::Keep]);
+}
