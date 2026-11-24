@@ -41,7 +41,7 @@ export const createInvite = Effect.fn("Invitation.create")(function* (
       .where(and(eq(member.organizationId, organizationId), sql`lower(${user.email}) = ${email}`)).limit(1);
     if (joined !== undefined) return yield* new Conflict({ message: `${email} is already a member.`, userFacing: true });
     const [waiting] = yield* drizzle.select({ id: invitation.id }).from(invitation)
-      .where(and(eq(invitation.organizationId, organizationId), eq(invitation.email, email), eq(invitation.status, "pending"), gt(invitation.expiresAt, new Date()), fromManager))
+      .where(and(eq(invitation.organizationId, organizationId), eq(invitation.email, email), eq(invitation.status, "pending"), gt(invitation.expiresAt, sql`now()`), fromManager))
       .limit(1);
     if (waiting !== undefined) return yield* new Conflict({ message: `${email} has a pending invite. Revoke it to send a new one.`, userFacing: true });
   }
@@ -52,7 +52,7 @@ export const createInvite = Effect.fn("Invitation.create")(function* (
     email,
     role: input.role,
     tokenHash: hashInviteToken(token),
-    expiresAt: new Date(Date.now() + INVITE_DAYS * DAY_MS),
+    expiresAt: sql`now() + make_interval(secs => ${INVITE_DAYS * DAY_MS / 1000})`,
   }).returning({ id: invitation.id, expiresAt: invitation.expiresAt });
   if (created === undefined) return yield* Effect.die("insert returned no row");
   return { id: created.id, email, role: input.role, expiresAt: created.expiresAt, token };
@@ -69,7 +69,7 @@ export const listPendingInvites = Effect.fn("Invitation.listPending")(function* 
     expiresAt: invitation.expiresAt,
   }).from(invitation)
     .innerJoin(user, eq(user.id, invitation.inviterId))
-    .where(and(eq(invitation.organizationId, organizationId), eq(invitation.status, "pending"), gt(invitation.expiresAt, new Date()), fromManager))
+    .where(and(eq(invitation.organizationId, organizationId), eq(invitation.status, "pending"), gt(invitation.expiresAt, sql`now()`), fromManager))
     .orderBy(asc(invitation.createdAt));
 });
 
