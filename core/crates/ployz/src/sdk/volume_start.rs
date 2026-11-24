@@ -7,7 +7,7 @@ use ployz_core::{
     MachineId, Namespace, Region, ResolvedServiceSpec, RpcError,
     authority::{RuleProof, ServiceVersion, Signed},
 };
-use ployz_store::{ConfigStore, OrganizationId};
+use ployz_store::{ConfigStore, OrganizationId, VersionsView};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -83,7 +83,7 @@ pub async fn volume_start_proof(
         machine,
         region,
     } = query;
-    let mut found = None;
+    let mut found = Vec::new();
     for spec in starting_specs(spec, region.as_ref()) {
         let read = crate::deploy::kept_query(&namespace, &spec).ok_or_else(|| {
             RpcError::invalid_argument("This Service's spec has no digest to look up.")
@@ -91,31 +91,42 @@ pub async fn volume_start_proof(
         let organization = organization.clone();
         let view =
             super::store_call(store, move |store| store.versions(&organization, &read)).await?;
-        let signed = !view.versions.is_empty() || view.rule.is_some();
-        found = Some((spec, view));
-        if signed {
-            break;
-        }
+        found.push((spec, view));
     }
-    let Some((spec, view)) = found else {
-        return Ok(VolumeStartProof::Unsigned);
-    };
+    Ok(admitting(found, &machine))
+}
+
+/// The first of `found`, in lookup order, whose signed versions admit it, or whose rule
+/// lists `machine` at its current generation. The rule is looked up by image and Service,
+/// so every spec reads the same one: one that omits `machine` doesn't end the search
+/// before a spec the user signed for it.
+fn admitting(
+    found: Vec<(ResolvedServiceSpec, VersionsView)>,
+    machine: &MachineId,
+) -> VolumeStartProof {
     let lists = |proof: &RuleProof| {
         proof.rule.open().is_ok_and(|rule| {
             !rule.ended
                 && rule.generation == proof.claim.generation
-                && rule.machines.contains(&machine)
+                && rule.machines.contains(machine)
         })
     };
-    Ok(match (view.versions.is_empty(), view.rule) {
-        (true, None) => VolumeStartProof::Unsigned,
-        (true, Some(rule)) if !lists(&rule) => VolumeStartProof::OffRule,
-        (_, rule) => VolumeStartProof::Admits {
-            spec: Box::new(spec),
-            versions: view.versions,
-            rule,
-        },
-    })
+    let mut off_rule = false;
+    for (spec, view) in found {
+        if !view.versions.is_empty() || view.rule.as_deref().is_some_and(lists) {
+            return VolumeStartProof::Admits {
+                spec: Box::new(spec),
+                versions: view.versions,
+                rule: view.rule,
+            };
+        }
+        off_rule |= view.rule.is_some();
+    }
+    if off_rule {
+        VolumeStartProof::OffRule
+    } else {
+        VolumeStartProof::Unsigned
+    }
 }
 
 #[cfg(test)]
@@ -211,5 +222,108 @@ mod tests {
             .collect();
 
         assert!(looked_up.contains(&digest(&signed)), "{looked_up:?}");
+    }
+
+    /// A verified build of `web` under a rule whose Machine list is empty.
+    fn rule_omitting_every_machine() -> RuleProof {
+        use ployz_core::authority::rule::{Builder, RuleEvent, Runner};
+        use ployz_core::authority::{
+            AttestKey, AutoDeployRule, BuildClaim, BuildStage, BuiltImageDigest, CommitAuthority,
+            CommitSha, PolicyDigest, RuleEvidence, RuleId, RuleSource, Signer, SignerKey,
+            Timestamp,
+        };
+        let cluster = ployz_core::SealingPublicKey::from_bytes([3; 32]);
+        let signer = Signer::from_seed(&[1; 32]);
+        let rule = AutoDeployRule {
+            proposal: None,
+            cluster,
+            rule: RuleId::from_bytes([9; 16]),
+            generation: 1,
+            namespace: namespace(),
+            machines: Vec::new(),
+            source: RuleSource {
+                repository_id: 11,
+                owner_id: 1,
+                repository: "acme/web".into(),
+                branch: "main".into(),
+                workflow: ".github/workflows/ployz-build.yml".into(),
+                events: vec![RuleEvent::Push],
+                builder: Builder::pinned(),
+                runner: Runner::GithubHosted,
+            },
+            services: Vec::new(),
+            issued_at: Timestamp::from_millis(1_800_000_000_000).unwrap(),
+            ended: false,
+            signer: SignerKey::Device(signer.public().into()),
+        };
+        RuleProof {
+            rule: Signed::sign(&rule, &signer).unwrap(),
+            evidence: RuleEvidence::Online(ployz_core::GithubToken::new("image-token".to_owned())),
+            claim: BuildClaim {
+                cluster,
+                rule: rule.rule,
+                generation: 1,
+                service: ployz_core::ServiceName::parse("web").unwrap(),
+                policy: PolicyDigest::from_bytes([0; 32]),
+                commit: CommitSha::parse("fedcba9876543210fedcba9876543210fedcba98").unwrap(),
+                authority: CommitAuthority::Head,
+                stage: BuildStage::Built {
+                    image: BuiltImageDigest::parse(&format!("sha256:{}", "d".repeat(64))).unwrap(),
+                    attest: AttestKey::from_bytes([0x55; 32]),
+                },
+            },
+            reader: None,
+        }
+    }
+
+    fn signed_version(spec: &ResolvedServiceSpec) -> Signed<ServiceVersion> {
+        use ployz_core::authority::{Signer, SignerKey, Timestamp};
+        let signer = Signer::from_seed(&[2; 32]);
+        Signed::sign(
+            &ServiceVersion {
+                forget_older: false,
+                parent: None,
+                cluster: ployz_core::SealingPublicKey::from_bytes([3; 32]),
+                digest: digest(spec),
+                namespace: namespace(),
+                service: spec.name.clone(),
+                signed_at: Timestamp::from_millis(1_800_000_000_000).unwrap(),
+                signer: SignerKey::Device(signer.public().into()),
+                proposal: None,
+            },
+            &signer,
+        )
+        .unwrap()
+    }
+
+    /// A rule-built Service whose rule doesn't list the Server in the new region, where
+    /// the user signed the Scale edit's spec: the Store returns the same rule for both
+    /// specs, by image and Service, and the signature only for the one it signed.
+    #[test]
+    fn a_signed_region_edit_admits_past_a_rule_that_omits_the_server() {
+        let running = lowered(&Replicas::Count(1));
+        let syd = RegionReplicas::new([(region("syd"), std::num::NonZeroU8::MIN)]).unwrap();
+        let signed = lowered(&Replicas::PerRegion(syd));
+        let version = signed_version(&signed);
+        let found = starting_specs(running, Some(&region("syd")))
+            .into_iter()
+            .map(|spec| {
+                let versions = if digest(&spec) == digest(&signed) {
+                    vec![version.clone()]
+                } else {
+                    Vec::new()
+                };
+                let rule = Some(Box::new(rule_omitting_every_machine()));
+                (spec, VersionsView { versions, rule })
+            })
+            .collect();
+
+        let proof = admitting(found, &MachineId::parse("b".repeat(32)).unwrap());
+
+        let VolumeStartProof::Admits { spec, versions, .. } = proof else {
+            panic!("{proof:?}");
+        };
+        assert_eq!(digest(&spec), digest(&signed));
+        assert_eq!(versions, vec![version]);
     }
 }
