@@ -473,6 +473,7 @@ describe("volume runs", () => {
         failNext.delete(`seed@${fake.name}`);
         return fault === undefined ? Effect.succeed({ copy: seedCopy }) : fail(fault);
       }
+      if (request.command === "seed_copy") return Effect.die(new Error("Cloud sends no Copy step yet"));
       const { expect: expected, want } = request.payload;
       // A Server parses a Writer's snapshot as a number before anything else, a check's included.
       if (want.kind === "writer" && !/^\d+$/.test(want.at)) return fail(new RawFault({ code: "invalid_argument", message: "invalid digit found in string", details: null }));
