@@ -958,9 +958,10 @@ fn proven(
 }
 
 /// What the Deployment that last applied `spec`'s Service node ran, when `spec` with
-/// that pin has the digest it ran: the same tag, and only run fields changed. A change of
-/// region alone keeps the pin too, at the new digest, so the Deploy that lets a Volume's
-/// Service run in another region signs the image a move there starts.
+/// that pin has the digest it ran: the same tag, and only run fields changed. For a Service
+/// that mounts a Provisioned Volume, a change of region alone keeps the pin too, at the new
+/// digest, so the Deploy that lets it run in another region signs the image a move of its
+/// Volume there starts.
 fn reused(
     tx: &mut dyn Tx,
     environment: &str,
@@ -991,6 +992,14 @@ fn reused(
     };
     if digest == last.digest {
         return Ok(Some(last));
+    }
+    if pinned
+        .volume_graph()
+        .mounted_provisioned_volumes()
+        .next()
+        .is_none()
+    {
+        return Ok(None);
     }
     let unplaced = |spec: &RequestedServiceSpec| {
         let mut spec = spec.clone();

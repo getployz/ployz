@@ -366,7 +366,10 @@ impl Mounts<'_> {
             .unwrap_or(name.as_str());
         let region = |spec: &RequestedServiceSpec| Region::kept_in(&spec.placement, &spec.regions);
         let now = region(spec);
-        let was = match self.against?.before.get(&spec.name) {
+        let was = match self
+            .against
+            .and_then(|against| against.before.get(&spec.name))
+        {
             Some(Before::Approved(base)) => Some(region(&base.spec)),
             _ => None,
         };

@@ -4,7 +4,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { NonRetriableError } from "inngest";
 import { readStore } from "#/modules/config-store/config-store.server";
-import { expectOf, observedEpoch, oldCopy, restoreLine, restoreSource } from "#/modules/volume-run/plan";
+import { committedWriter, expectOf, observedEpoch, oldCopy, restoreLine, restoreSource } from "#/modules/volume-run/plan";
 import { volumeRun } from "#/modules/volume-run/tables";
 import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, copyName, type MachineRef, type Member, type VolumeRunArgs } from "#/modules/volume-run/volume-run";
 import { dockerVolumeName } from "#/modules/runtime/naming";
@@ -258,11 +258,11 @@ const fenceFollowed = Effect.fn("VolumeRun.fenceFollowed")(function* (lane: Foll
     return yield* Effect.fail(new NonRetriableError(`${run.volumeName} finishes on ${machine.name}, which holds no copy to start. Remove it with ployz server rm ${machine.name}` + restore()));
   }
   if (writes(copy)) return { on: machine.name };
-  const epoch = copy.kind === "root" ? copy.epoch : owedEpoch;
-  if (epoch === null) return yield* Effect.fail(new Error(`${run.volumeName}'s run on ${machine.name} has not chosen an epoch yet`));
+  if (owedEpoch === null && copy.kind !== "root") return yield* Effect.fail(new Error(`${run.volumeName}'s run on ${machine.name} has not chosen an epoch yet`));
   // B becomes the writer at the committed snapshot and stays stopped: the Deploy's own Create starts the Service from
   // the spec it carries, so a start B refused after the commit is repaired by a newly approved Deploy.
-  const started = yield* askCopy(run, machine, expectOf(copy), { kind: "writer", at: copy.newest.guid, epoch, start: null });
+  const { at, epoch } = committedWriter(run, { ...copy, newest: copy.newest }, owedEpoch ?? 0);
+  const started = yield* askCopy(run, machine, expectOf(copy), { kind: "writer", at, epoch, start: null });
   if (started.ok) return { on: machine.name };
   if (started.reason === "stale" && successor) {
     // The successor floored B above this Deploy's gen, so only B's copy says whether it started the writer.

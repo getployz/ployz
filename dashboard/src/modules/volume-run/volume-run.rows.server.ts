@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import type { DestructiveEffect, EnvironmentRef, MachineId, VolumeKind } from "@ployz/sdk";
+import type { DestructiveEffect, EnvironmentRef, MachineId, SnapshotGuid, VolumeKind } from "@ployz/sdk";
 import { and, desc, eq, inArray, isNotNull, isNull, lt, max, ne, or, type SQL, sql } from "drizzle-orm";
 import { Clock, Data, Effect, Option, Schema } from "effect";
 import { NonRetriableError } from "inngest";
@@ -42,6 +42,8 @@ type RunBase = {
   readonly gen: number;
   readonly phase: VolumeRunPhase;
   readonly current: MachineId | null;
+  /** The snapshot the commit made `current` the writer at. Absent from a context a step memoized before Cloud kept it. */
+  readonly at?: SnapshotGuid | null;
 };
 
 /** Plain JSON: Inngest memoizes step output as JSON. */
@@ -89,6 +91,7 @@ export const contextOf = (row: VolumeRunRow): RunContext => ({
   gen: row.gen,
   phase: row.phase,
   current: row.current,
+  at: row.at,
 });
 
 export const ended = (state: Exclude<VolumeRunState, "requested" | "running">, message: string | null) =>
@@ -742,7 +745,7 @@ const admitOwed = Effect.fn("VolumeRun.admitOwed")(function* (inserted: VolumeRu
     return yield* new LaneRefused({ refusal: releaseChanged(inserted.volumeName), busy: volumeRunView(pending) });
   }
   const { drizzle } = yield* Database;
-  const [inherited] = yield* drizzle.update(volumeRun).set({ phase: "committed", current: pending.current, epoch: pending.epoch })
+  const [inherited] = yield* drizzle.update(volumeRun).set({ phase: "committed", current: pending.current, at: pending.at, epoch: pending.epoch })
     .where(eq(volumeRun.id, inserted.id)).returning();
   return inherited ?? inserted;
 });
@@ -1005,6 +1008,7 @@ const endAndRelease = Effect.fn("VolumeRun.endAndRelease")(function* (owned: SQL
         args: {},
         phase: row.phase,
         current: row.current,
+        at: row.phase === "committed" ? row.at : null,
         epoch: row.phase === "committed" ? row.epoch : null,
       }).onConflictDoNothing().returning();
       if (release !== undefined) yield* enqueueRun(release);

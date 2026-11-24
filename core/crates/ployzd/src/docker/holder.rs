@@ -127,6 +127,44 @@ pub(crate) async fn refuse_beside(
     Ok(())
 }
 
+/// The Docker name of a Container other than `me` that runs on Docker Volume `volume`:
+/// running, restarting or paused, a hook or the Ingress Proxy included.
+///
+/// # Errors
+/// The error of a read that failed.
+pub(crate) async fn running_beside(
+    client: &Docker,
+    me: &str,
+    volume: &str,
+) -> Result<Option<String>, Error> {
+    let filters = std::collections::HashMap::from([("volume", vec![volume])]);
+    let listed = client
+        .list_containers(Some(
+            ListContainersOptionsBuilder::default()
+                .all(true)
+                .filters(&filters)
+                .build(),
+        ))
+        .await?;
+    for id in listed.into_iter().filter_map(|container| container.id) {
+        if id == me {
+            continue;
+        }
+        let Some(holder) = inspect(client, &id).await.map_err(inspect::failed)? else {
+            continue;
+        };
+        if active(&holder) {
+            let name = holder
+                .name
+                .as_deref()
+                .unwrap_or(&id)
+                .trim_start_matches('/');
+            return Ok(Some(name.to_owned()));
+        }
+    }
+    Ok(None)
+}
+
 /// The Docker name of each Provisioned Volume `spec` mounts.
 pub(crate) fn provisioned(spec: &ResolvedServiceSpec) -> Vec<String> {
     spec.volume_graph()

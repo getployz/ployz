@@ -265,3 +265,40 @@ async fn a_release_after_the_cut_routes_the_kept_copy_again() {
     assert!(fleet.node(0).running(source));
     assert_eq!(fleet.node(0).rotation(source).await, CopyRotation::In);
 }
+
+/// A Move's cut names the Service it counted. Another Container running on the Volume,
+/// one Cloud's frame never showed, refuses the cut before anything stops.
+#[tokio::test]
+async fn a_cut_naming_its_holder_stops_nothing_beside_another() {
+    let fleet = Fleet::start().await;
+    let source = fleet.routed(0, "a", "api", 2).await;
+    {
+        let mut named = fleet
+            .node(0)
+            .fake
+            .named_containers
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap();
+        let mut hook = named.values().next().unwrap().clone();
+        hook["Id"] = json!(format!("{}{}", MachineId::random(), MachineId::random()));
+        hook["Name"] = json!("/api-hook");
+        hook["State"] = json!({"Status":"running"});
+        named.insert("api-hook".into(), hook);
+    }
+    let plugin = plugin(writer_root(0, None), CUT_ROUTE, slot(Some(snapshot())));
+    let machine = fleet.with_plugin(0, &plugin);
+
+    let refused = try_set_copy(
+        &machine,
+        json!({"name":VOLUME, "expect":{"kind":"writer", "epoch":0},
+            "want":{"kind":"mirror", "from":null, "target":"f-1", "drain":0, "holder":source}}),
+    )
+    .await
+    .expect_err("a second running holder refuses the cut");
+
+    assert!(refused.contains("api-hook"), "{refused}");
+    assert!(refused.contains("\"held\""), "{refused}");
+    assert!(fleet.node(0).running(source), "the cut stopped nothing");
+}

@@ -1,4 +1,4 @@
-import type { MachineId } from "@ployz/sdk";
+import type { MachineId, SnapshotGuid } from "@ployz/sdk";
 import { sql } from "drizzle-orm";
 import { VOLUME_RUN_MESSAGE_LIMIT } from "#/modules/volume-run/volume-run";
 import {
@@ -48,6 +48,8 @@ export const volumeRun = pgTable(
     phase: text("phase").default("warm").notNull().$type<VolumeRunPhase>(),
     /** The Machine a committed Move made the writer. */
     current: text("current").$type<MachineId>(),
+    /** The snapshot a committed Move made `current` the writer at; null on a row committed before Cloud recorded it. */
+    at: text("at").$type<SnapshotGuid>(),
     /** Unused: the handoff receipt of a Move, and each Server's answer to an approved step. */
     receipt: jsonb("receipt"),
     answers: jsonb("answers"),

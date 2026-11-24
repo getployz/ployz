@@ -3134,6 +3134,7 @@ async fn set_mirror(machine: &Machine, expect: &ployz_core::ExpectedCopy, target
         from: Some(ployz_core::ManagementAddress("::1".parse().unwrap())),
         target: target.parse().unwrap(),
         drain: ployz_core::Drain::NONE,
+        holder: None,
     };
     match ployz_core::plan(copy.as_ref(), false, expect, &want) {
         ployz_core::CopyPlan::AtWant => json!({"AtWant": copy}),
@@ -3435,6 +3436,7 @@ fn mirror_want(from: Option<&str>) -> ployz_core::WantedCopy {
         from: from.map(|_| ployz_core::ManagementAddress("::1".parse().unwrap())),
         target: from.unwrap_or("f-1").parse().unwrap(),
         drain: ployz_core::Drain::NONE,
+        holder: None,
     }
 }
 

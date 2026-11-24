@@ -66,4 +66,3 @@ describe("restoreOpen", () => {
     expect(restoreOpen([server("primary", "serves")], null)).toBe(false);
   });
 });
-

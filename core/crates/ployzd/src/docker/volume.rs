@@ -469,6 +469,16 @@ impl Volumes {
         super::holder::refuse_beside(&self.docker.client, None, name).await
     }
 
+    /// The Docker name of a Container other than `me` that runs on the Docker Volume
+    /// `name`, whatever made it, or `None`.
+    pub(crate) async fn running_beside(
+        &self,
+        name: &DockerVolumeName,
+        me: &ContainerId,
+    ) -> Result<Option<String>, Error> {
+        super::holder::running_beside(&self.docker.client, me.as_str(), name.as_str()).await
+    }
+
     /// Every Container, running or not, that mounts the Docker Volume `name`.
     pub(crate) async fn volume_holder_ids(
         &self,

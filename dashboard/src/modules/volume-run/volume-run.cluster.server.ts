@@ -224,7 +224,7 @@ export type SwitchReason = CopyRefusal | SwitchError["reason"];
 
 const SWITCH_REASONS = [
   "mismatch", "no_transition", "busy", "no_capacity", "behind", "written", "no_source",
-  "precondition", "volume_switching", "no_writer", "restore_point_gone", "stale", "foreign", "docker_unavailable",
+  "precondition", "volume_switching", "no_writer", "restore_point_gone", "stale", "foreign", "docker_unavailable", "held",
 ] as const satisfies readonly SwitchReason[];
 
 /** Refusals that pass on their own, so they fail only the attempt and the step asks again. Docker comes back by itself. */
@@ -273,10 +273,16 @@ export function switchFailureMessage(
       return `${fenced} on ${machine.name} is mounted by a Service approved for other data`;
     case "docker_unavailable":
       return `Docker isn't answering on ${machine.name}`;
+    case "held":
+      return heldMessage(name, machine, null);
     case "busy":
       return undefined;
   }
 }
+
+/** A cut refused before it stopped anything, since `holder` runs on the Volume beside the Service the run counted. */
+const heldMessage = (name: string, machine: MachineRef, holder: string | null) =>
+  `${holder ?? "another Container"} also uses ${name} on ${machine.name}. A move takes one Service, so stop it first`;
 
 /**
  * Whether the Machine got a failed request: `answered` when it sent the failure, `unanswered` when no reply came back, so
@@ -359,7 +365,9 @@ export const askCopy = Effect.fn("VolumeRun.askCopy")(function* (
         return Effect.fail(new SwitchAttemptError(null, message, switchReach("cause" in error ? error.cause : undefined)));
       }
       const { reason, copy } = refused;
-      const message = switchFailureMessage(reason, asker, machine) ?? `${machine.name} is busy with ${asker.volumeName}`;
+      const message = reason === "held"
+        ? heldMessage(asker.volumeName, machine, refused.holder ?? null)
+        : switchFailureMessage(reason, asker, machine) ?? `${machine.name} is busy with ${asker.volumeName}`;
       if (passing(reason)) return Effect.fail(new SwitchAttemptError(reason, message));
       return Effect.succeed<CopyAnswer>({ ok: false, reason, copy, message });
     }),
@@ -405,15 +413,23 @@ type Refused = { readonly ok: false; readonly refusal: { readonly code: "invalid
 const refused = (message: string): Refused => ({ ok: false, refusal: { code: "invalid", message } });
 
 /**
- * The one Container on `machine` that mounts this Volume, whose Service B starts. A running one wins over stopped ones:
- * a Server that enforces device approval keeps the Container an earlier Move's cut stopped. It must be a Service's, the
- * only one running on the Volume, and mount no other data, since only this Volume moves with it.
+ * The one Container on `machine` that mounts this Volume, whose Service B starts: `chosen`, the one the run picked
+ * before its cut, else a running one over stopped ones, since a Server that enforces device approval keeps the
+ * Container an earlier Move's cut stopped. It must be a Service's, the only one running on the Volume, and mount no
+ * other data, since only this Volume moves with it.
  */
-const holderOn = (ctx: Pick<RunContext, "volumeName" | "dockerVolume">, containers: readonly ContainerObservation[], machine: MachineRef) => {
+const holderOn = (
+  ctx: Pick<RunContext, "volumeName" | "dockerVolume">,
+  containers: readonly ContainerObservation[],
+  machine: MachineRef,
+  chosen: ContainerId | null = null,
+) => {
   const on = containers.filter((container) => container.machine_id === machine.id);
   const running = on.filter((container) => container.runtime.state === "running");
   // Once the cut stopped it, the newest stopped one is the Service's: older ones are what earlier Moves kept.
-  const [holder] = running.length > 0 ? running : newestFirst(on.filter((container) => container.kind === "service_container"));
+  const [holder] = chosen !== null
+    ? on.filter((container) => container.container_id === chosen)
+    : running.length > 0 ? running : newestFirst(on.filter((container) => container.kind === "service_container"));
   if (holder === undefined) return refused(`${ctx.volumeName} has no Service on ${machine.name} to move`);
   if (running.length > 1) {
     const named = listNames(running.map((container) => container.display_name));
@@ -446,6 +462,7 @@ type CreateStart = Extract<CopyStart, { kind: "create" }>;
 /**
  * The Create that starts `holder`'s Service on `to`: its spec, in `to`'s region when the Service is kept in one, with the
  * signed versions or rule build that admit it there. Read from the Store each time, so a step result never holds the spec.
+ * `moved` once the Volume's writer is `to`, when a refusal asks for a Deploy and no other move.
  */
 const createOn = Effect.fn("VolumeRun.createOn")(function* (
   ctx: Pick<RunContext, "organizationId" | "volumeId" | "volumeName" | "dockerVolume" | "recordedBytes">,
@@ -453,6 +470,7 @@ const createOn = Effect.fn("VolumeRun.createOn")(function* (
   to: MachineRef,
   region: string | null,
   at: SnapshotGuid,
+  moved: boolean,
 ) {
   const session = yield* openSession(ctx.organizationId);
   const { container } = yield* session.inspectContainer(holder.machine_id, holder.container_id).pipe(
@@ -465,9 +483,10 @@ const createOn = Effect.fn("VolumeRun.createOn")(function* (
   );
   if (proof.kind !== "admits") {
     const service = holder.resolved_spec.name;
+    const then = moved ? ` to start it on ${to.name}` : `, then move ${ctx.volumeName}`;
     return refused(proof.kind === "off_rule"
-      ? `${to.name} can't start ${service}: the deploy rule that built it doesn't list ${to.name}. Add ${to.name} to the rule or deploy ${service} again, then move ${ctx.volumeName}`
-      : `${to.name} can't start ${service}: no approved version of ${service} runs there. Deploy ${service} so it can, then move ${ctx.volumeName}`);
+      ? `${to.name} can't start ${service}: the deploy rule that built it doesn't list ${to.name}. Add ${to.name} to the rule or deploy ${service} again${then}`
+      : `${to.name} can't start ${service}: no approved version of ${service} runs there. Deploy ${service}${moved ? then : ` so it can${then}`}`);
   }
   const start: CreateStart = {
     kind: "create",
@@ -484,20 +503,21 @@ const createOn = Effect.fn("VolumeRun.createOn")(function* (
 
 /**
  * Why `to` can't take the Service `from` runs on this Volume, or null when it can. Asked before the run stops anything
- * and again just before the commit: `from` runs one Service on the Volume and nothing else, an approval admits its spec
- * on `to`, and `to` checks that start as its Create would, changing nothing.
+ * and again just before the commit, on `chosen` once the run picked it: `from` runs one Service on the Volume and
+ * nothing else, an approval admits its spec on `to`, and `to` checks that start as its Create would, changing nothing.
  */
 export const startRefusal = Effect.fn("VolumeRun.startRefusal")(function* (
   ctx: CopyAsker & Pick<RunContext, "volumeId" | "recordedBytes">,
   from: MachineRef,
   to: MachineRef,
   expect: ExpectedCopy,
+  chosen: ContainerId | null = null,
 ) {
   const { containers, regionOf } = yield* volumeFrame(ctx.organizationId, ctx.dockerVolume);
-  const found = holderOn(ctx, containers, from);
+  const found = holderOn(ctx, containers, from, chosen);
   if (!found.ok) return found.refusal.message;
   // A check changes nothing, so the snapshot and epoch it names are never used; a Server still parses the snapshot's number.
-  const created = yield* createOn(ctx, found.holder, to, regionOf(to.id), "check");
+  const created = yield* createOn(ctx, found.holder, to, regionOf(to.id), "check", false);
   if (!created.ok) return created.refusal.message;
   const checked = yield* askCopy(ctx, to, expect, { kind: "writer", at: "0", epoch: 0, start: { ...created.start, check: true } }).pipe(
     Effect.catchIf((error) => error instanceof SwitchAttemptError && error.reach === "answered" && error.reason === null, (error) => Effect.succeed<CopyAnswer>({
@@ -543,17 +563,20 @@ export const copyImage = Effect.fn("VolumeRun.copyImage")(function* (ctx: RunCon
 export const creationKey = (ctx: Pick<RunContext, "volumeId">, at: SnapshotGuid) => `${ctx.volumeId}-${at}`;
 
 /**
- * The commit: this run makes `to` the writer. It wins once, and again for the run that already won it or a release that
- * inherited it; a row taken over or committed elsewhere loses.
+ * The commit: this run makes `to` the writer at snapshot `at` and `epoch`, which every later finish of it asks for. It
+ * wins once, and again for the run that already won it or a release that inherited it; a row taken over or committed
+ * elsewhere loses.
  */
 export const commitMove = Effect.fn("VolumeRun.commit")(function* (
   ctx: Pick<RunContext, "id">,
   inngestRunId: string,
   to: MachineId,
+  at: SnapshotGuid,
+  epoch: number,
 ) {
   const { drizzle } = yield* Database;
   const rows = yield* drizzle.update(volumeRun)
-    .set({ phase: "committed", current: to, updatedAt: new Date() })
+    .set({ phase: "committed", current: to, at, epoch, updatedAt: new Date() })
     .where(and(
       eq(volumeRun.id, ctx.id),
       eq(volumeRun.inngestRunId, inngestRunId),
@@ -566,11 +589,12 @@ export const commitMove = Effect.fn("VolumeRun.commit")(function* (
 
 /**
  * Where B starts: `from` is the Machine whose stopped Container B copies, or null when the run does not know it, so the
- * one stopped Container on any other Machine.
+ * one stopped Container on any other Machine. `holder` is the Container the run chose on `from` before its cut, if any.
  */
 type WriterStart = {
   readonly to: MachineRef;
   readonly from: MachineRef | null;
+  readonly holder?: ContainerId | null;
   readonly expect: ExpectedCopy;
   readonly at: SnapshotGuid;
   readonly epoch: number;
@@ -591,10 +615,10 @@ export const commitAndStart = Effect.fn("VolumeRun.commitAndStart")(function* (
   const { to, from } = start;
   const row = yield* readRow(ctx.id);
   if (from !== null && row?.phase !== "committed") {
-    const refusal = yield* startRefusal(ctx, from, to, start.expect);
+    const refusal = yield* startRefusal(ctx, from, to, start.expect, start.holder ?? null);
     if (refusal !== null) return { ok: false, reason: "refused", copy: null, message: refusal } satisfies CopyAnswer;
   }
-  if (!(yield* commitMove(ctx, inngestRunId, to.id))) {
+  if (!(yield* commitMove(ctx, inngestRunId, to.id, start.at, start.epoch))) {
     const lost: CopyAnswer = { ok: false, reason: "stale", copy: null, message: `a newer run took ${ctx.volumeName} before ${to.name} started it` };
     return lost;
   }
@@ -620,7 +644,8 @@ export const startWriter = Effect.fn("VolumeRun.startWriter")(function* (ctx: Ru
     const running: CopyAnswer = { ok: true, copy: null };
     return running;
   }
-  const [holder] = from === null ? stopped : newestFirst(stopped);
+  const chosen = start.holder ?? null;
+  const [holder] = chosen !== null ? stopped.filter((container) => container.container_id === chosen) : from === null ? stopped : newestFirst(stopped);
   if (holder === undefined && containers.some((container) => container.machine_id === to.id)) {
     yield* requireOwner(ctx.id, ownedBy);
     return yield* askCopy(ctx, to, start.expect, { kind: "writer", at: start.at, epoch: start.epoch, start: null });
@@ -633,7 +658,7 @@ export const startWriter = Effect.fn("VolumeRun.startWriter")(function* (ctx: Ru
     const on = named.map((machine) => machine.name ?? machine.id).join(" and ");
     return yield* Effect.fail(new NonRetriableError(`${ctx.volumeName} has ${stopped.length} stopped Service containers on ${on}; starting it on ${to.name} needs exactly one`));
   }
-  const created = yield* createOn(ctx, holder, to, regionOf(to.id), start.at);
+  const created = yield* createOn(ctx, holder, to, regionOf(to.id), start.at, true);
   if (!created.ok) return yield* Effect.fail(new NonRetriableError(created.refusal.message));
   yield* requireOwner(ctx.id, ownedBy);
   return yield* askCopy(ctx, to, start.expect, { kind: "writer", at: start.at, epoch: start.epoch, start: created.start });
@@ -738,8 +763,9 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
       ? resizeRequirements(run.recordedBytes, run.args.maximum_bytes).find((requirement) => serverSupports(capabilities, requirement) !== true)
       : undefined;
     const sized = run?.kind === "resize" ? { boundBytes: boundOf(frame.volumes, machine.id, dockerVolume) } : {};
-    // A destination starts the moved Service from the proof its Service's approval left.
-    if (run?.kind === "move" && isDestination(run, ref) && serverSupports(capabilities, requirements.volumeStart) === false) {
+    // A destination starts the moved Service from the proof its Service's approval left, so it must list the verb:
+    // one that lists nothing predates it.
+    if (run?.kind === "move" && isDestination(run, ref) && serverSupports(capabilities, requirements.volumeStart) !== true) {
       return lacks(requirements.volumeStart.capability, run.kind);
     }
     return session.volumeSwitch(machine.id, { command: "inspect_volume_copy", payload: { name: dockerVolume } }).pipe(

@@ -112,11 +112,13 @@ impl SettledCreations {
 }
 
 /// Why the cut's Container half left the root a writer.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum CutRefusal {
     Busy,
     /// A newer lane raised the floor above the cut's `gen`.
     Stale(VolumeGen),
+    /// The named Container runs on the root beside the one the cut may stop.
+    Held(String),
 }
 
 impl LocalMachine {
@@ -577,6 +579,9 @@ impl LocalMachine {
     /// writer and stops no holder after the raise, since the raiser may have kept that
     /// holder or started it.
     ///
+    /// With `only`, another running holder, a hook's included, refuses the cut `Held`
+    /// before it stops anything, so a Move never interrupts a Container it didn't count.
+    ///
     /// Detached from the RPC with the installation held, so a caller that hangs up
     /// does not abandon a half-stopped Container.
     pub(crate) async fn cut_volume_copy<Z, Fut>(
@@ -584,6 +589,7 @@ impl LocalMachine {
         name: DockerVolumeName,
         r#gen: VolumeGen,
         drain: Drain,
+        only: Option<ContainerId>,
         zfs: Z,
     ) -> Result<Result<(), CutRefusal>, Error>
     where
@@ -594,6 +600,11 @@ impl LocalMachine {
             let containers = local.docker()?;
             let stop = StopOptions::default();
             let holders = containers.volumes().volume_holder_ids(&name).await?;
+            if let Some(only) = &only
+                && let Some(other) = containers.volumes().running_beside(&name, only).await?
+            {
+                return Ok(Err(CutRefusal::Held(other)));
+            }
             for holder in holders {
                 if let Err(floor) = containers
                     .lifecycle()

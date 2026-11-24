@@ -260,7 +260,15 @@ impl LocalMachine {
                 }
                 Ok(copy)
             }
-            (CopyTransition::WriterToMirror, WantedCopy::Mirror { target, drain, .. }) => {
+            (
+                CopyTransition::WriterToMirror,
+                WantedCopy::Mirror {
+                    target,
+                    drain,
+                    holder,
+                    ..
+                },
+            ) => {
                 let plugin = self.plugin().clone();
                 let request = CutRequest {
                     name: name.clone(),
@@ -268,7 +276,7 @@ impl LocalMachine {
                     r#gen,
                 };
                 let cut = self
-                    .cut_volume_copy(name.clone(), r#gen, drain, move || async move {
+                    .cut_volume_copy(name.clone(), r#gen, drain, holder, move || async move {
                         // This closure runs only past the Busy re-check, so the line means every
                         // holder is stopped, whoever signalled it. The verify harness credits that
                         // moment by this line's Volume, target and gen, after its restart cursor.
@@ -295,6 +303,15 @@ impl LocalMachine {
                     Err(CutRefusal::Stale(floor)) => {
                         Err(stale(floor, self.inspect_copy(&name).await?, &name))
                     }
+                    Err(CutRefusal::Held(holder)) => Err(refusal(
+                        SetVolumeCopyRefused {
+                            reason: CopyRefusal::Held,
+                            copy: self.inspect_copy(&name).await?,
+                            floor: None,
+                            holder: Some(holder),
+                        },
+                        &name,
+                    )),
                 }
             }
             (CopyTransition::WriterToSnapshot, WantedCopy::Snapshot { name: snapshot }) => {
@@ -547,6 +564,7 @@ fn refused(reason: CopyRefusal, copy: Copy, name: &DockerVolumeName) -> Error {
             reason,
             copy,
             floor: None,
+            holder: None,
         },
         name,
     )
@@ -558,6 +576,7 @@ fn stale(floor: VolumeGen, copy: Copy, name: &DockerVolumeName) -> Error {
             reason: CopyRefusal::Stale,
             copy,
             floor: Some(floor),
+            holder: None,
         },
         name,
     )
@@ -578,6 +597,10 @@ fn refusal(refused: SetVolumeCopyRefused, name: &DockerVolumeName) -> Error {
         CopyRefusal::DockerUnavailable => {
             format!("Docker is not answering on this Machine, so Volume {name} stays as it is")
         }
+        CopyRefusal::Held => format!(
+            "{} also runs on Volume {name}, so the cut stopped nothing",
+            refused.holder.as_deref().unwrap_or("another Container")
+        ),
         CopyRefusal::Unrecognized => format!("Volume {name} was refused for an unknown reason"),
         CopyRefusal::Stale => format!(
             "a newer move or release owns Volume {name}; this Machine is at lane {}",

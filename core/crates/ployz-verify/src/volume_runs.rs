@@ -1287,6 +1287,7 @@ fn wanted(want: Want) -> WantedCopy {
             }),
             target: snapshot(target).name,
             drain: Drain::NONE,
+            holder: None,
         },
         Want::Snapshot { at } => WantedCopy::Snapshot {
             name: snapshot(at).name,
@@ -1310,6 +1311,7 @@ fn refusal(reason: CopyRefusal) -> Refusal {
         CopyRefusal::Written
         | CopyRefusal::NoSource
         | CopyRefusal::Foreign
+        | CopyRefusal::Held
         | CopyRefusal::DockerUnavailable
         | CopyRefusal::Unrecognized => Refusal::Other,
     }
@@ -2006,12 +2008,10 @@ impl VolumeRuns {
         }
     }
 
-    /// `failAndRelease` and the cancel handler: end Move `k`'s running row and request
-    /// the Release, back to `from` while warm and forward to `to` once committed.
     /// `fenceFollowed` on a committed Move whose forward Release failed on a refused start:
     /// B, already writable at the committed epoch, needs no promote; otherwise it becomes
-    /// the Writer at the committed snapshot with no start. Then the Deploy's Create, which
-    /// carries its own approved spec, starts the Service on B's Writer.
+    /// the Writer at the snapshot the commit recorded, with no start. Then the Deploy's
+    /// Create, which carries its own approved spec, starts the Service on B's Writer.
     fn repair_step(state: &mut State) {
         let plan = state.first().plan;
         let to = plan.to;
@@ -2019,17 +2019,17 @@ impl VolumeRuns {
         let writes =
             matches!(copy, Held::Root { readonly: false, epoch, .. } if epoch == plan.epoch);
         if state.repair.is_none() && !writes {
-            let Some(at) = copy.newest() else {
+            if copy.newest().is_none() {
                 state.repaired = true;
                 return;
-            };
+            }
             let sent = state.send(
                 Lane::Deploy,
                 plan.release_gen(),
                 to,
                 expect_of(copy),
                 Want::Writer {
-                    at,
+                    at: plan.last,
                     epoch: plan.epoch,
                     start: None,
                 },
@@ -2046,6 +2046,8 @@ impl VolumeRuns {
         state.repaired = true;
     }
 
+    /// `failAndRelease` and the cancel handler: end Move `k`'s running row and request
+    /// the Release, back to `from` while warm and forward to `to` once committed.
     fn end_move(&self, state: &mut State, k: usize) {
         let run = &mut state.run_mut(k);
         if !run.row.running() {
@@ -2439,15 +2441,15 @@ impl VolumeRuns {
             (ReleaseStep::StartForward, None) => {
                 // `commitAndStart` on the inherited commit, then `startWriter` to `to`.
                 let copy = state.host(plan.to).copy;
-                let Some(at) = copy.newest() else {
+                let Some(newest) = copy.newest() else {
                     return fail(state);
                 };
-                // A committed Move's Release inherits the Move's epoch (`endAndRelease`), and
-                // `takeEpoch` keeps it.
-                let epoch = match copy {
-                    Held::Root { epoch, .. } => epoch,
-                    Held::Slot { .. } | Held::None => plan.epoch,
-                };
+                // A committed Move's Release inherits its snapshot and epoch (`endAndRelease`),
+                // and `takeEpoch` keeps the epoch. A `to` already writing at that epoch keeps its
+                // own newest (`committedWriter`).
+                let epoch = plan.epoch;
+                let writes = matches!(copy, Held::Root { readonly: false, epoch: held, .. } if held == epoch);
+                let at = if writes { newest } else { plan.last };
                 let start = if state.host(plan.to).holder == Holder::Running {
                     return next(state, ReleaseStep::RemoveForward);
                 } else if state.host(plan.from).holder == Holder::Stopped {

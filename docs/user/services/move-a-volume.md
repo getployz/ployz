@@ -32,8 +32,9 @@ just before the switch. The move is refused, and your service keeps running on `
 
 A move needs no approval of its own when the service may run in any region, as its last deploy's
 approval showed. When the service is kept in a region, a move to a server in another region needs
-a deploy that puts the service there first. Its approval reads "moves data to syd", and the deploy
-waits for the move with the line that runs it. See
+a deploy that puts the service there first. Where an approval has an approved version to compare
+with, such as the Deploy sheet in Ployz Cloud, it reads "moves data to syd". The deploy waits for
+the move with the line that runs it. See
 [When a volume is outside the region](regions.md#when-a-volume-is-outside-the-region).
 
 [Drain](../servers/manage-servers.md#change-what-a-server-does) doesn't move a volume. It names

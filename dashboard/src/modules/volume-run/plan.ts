@@ -97,6 +97,22 @@ export function expectOf(copy: VolumeCopy | null): ExpectedCopy {
   return copy.newest === null ? { kind: "none" } : { kind: "mirror", newest: copy.newest.guid, slot: copy.slot };
 }
 
+/**
+ * The snapshot and epoch a committed Move's finish makes B the writer at: the ones the commit recorded, so B never
+ * becomes the writer at a snapshot older than the cut's. A B already writing at the committed epoch keeps its own
+ * newest, so a retry never rewinds what it wrote since. A commitment Cloud recorded no snapshot for takes B's own.
+ */
+export function committedWriter(
+  commit: { readonly at?: SnapshotGuid | null },
+  copy: VolumeCopy & { readonly newest: Snapshot },
+  epoch: number,
+) {
+  const at = commit.at ?? null;
+  if (at === null) return { at: copy.newest.guid, epoch: copy.kind === "root" ? copy.epoch : epoch };
+  const writes = copy.kind === "root" && !copy.readonly && copy.epoch === epoch;
+  return { at: writes ? copy.newest.guid : at, epoch };
+}
+
 const SNAPSHOT_EPOCH = /^[wf]-(\d+)/;
 
 /** The highest epoch any answered copy shows, in its root or in the run that named its newest snapshot. */

@@ -167,8 +167,9 @@ service doesn't start. The deployment reads
 and `ployz deploy` exits 3. In Ployz Cloud the Deployment page says the same under the
 deployment's title, and **Details** says it before you deploy.
 
-The approval of that deploy reads "moves pg-data to syd". Once it's approved, move the volume to a
-server in `syd`. The move needs no approval of its own, and starts `postgres` there:
+Where the approval has an approved version to compare with, such as the Deploy sheet in Ployz
+Cloud, it reads "moves pg-data to syd". Once the deploy is approved, move the volume to a server in
+`syd`. The move needs no approval of its own, and starts `postgres` there:
 
 ```sh
 ployz volume move pg-data --to db-syd-1
