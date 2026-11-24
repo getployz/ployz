@@ -23,6 +23,7 @@ import { dockerVolumeName, parseDockerVolumeName } from "#/modules/runtime/namin
 import { type VolumeRunKind, type VolumeRunPhase, type VolumeRunState } from "#/modules/volume-run/volume-run-states";
 import { Database } from "#/server/database.server";
 import { NotFound } from "#/server/public-error";
+import { uuidFrom } from "#/server/uuid-from";
 import { frameServers } from "#/modules/runtime/daemon-compat";
 
 type VolumeRunRow = typeof volumeRun.$inferSelect;
@@ -51,6 +52,19 @@ export type RunContext = RunBase & VolumeLaneInput;
 
 
 export const OBSERVE_TIMEOUT = "10 seconds";
+
+/**
+ * The gen a rowless SetVolumeCopy carries: the Volume's newest lane's. With no lane open, every floor Cloud raised on
+ * this Volume is at most that, and a lane opened since raises the floor past it, so the Machine refuses the ask Stale.
+ * A Deploy's hold floors no Machine and its row goes when the Deploy ends, so an ask carrying its gen would raise a
+ * floor no later ask reaches.
+ */
+export const rowlessGen = Effect.fn("VolumeRun.rowlessGen")(function* (volumeId: string) {
+  const { drizzle } = yield* Database;
+  const [row] = yield* drizzle.select({ gen: max(volumeRun.gen) }).from(volumeRun)
+    .where(and(eq(volumeRun.volumeId, volumeId), sql`${volumeRun.args}->>'hold' is distinct from 'true'`));
+  return row?.gen ?? 0;
+});
 
 const clip = (text: string) =>
   text.length > VOLUME_RUN_MESSAGE_LIMIT ? `${text.slice(0, VOLUME_RUN_MESSAGE_LIMIT - 1)}…` : text;
@@ -762,6 +776,28 @@ export const admitRun = Effect.fn("VolumeRun.admit")(function* (
   );
 });
 
+/**
+ * A run admitted under `guard`, both in one transaction: `guard` reads and locks whatever the caller's own row needs, and
+ * a refusal from it inserts nothing. A drain admits its moves this way, under its own row. Takes no lane.
+ */
+export const admitGuardedRun = Effect.fn("VolumeRun.admitGuarded")(function* <E, R>(
+  caller: Caller,
+  input: { readonly volumeId: string } & VolumeRunInput,
+  volume: ResolvedVolume,
+  id: string,
+  guard: Effect.Effect<StoreRefusal | null, E, R>,
+) {
+  const database = yield* Database;
+  return yield* database.transaction(Effect.gen(function* () {
+    const refused = yield* guard;
+    if (refused !== null) return { ok: false, refusal: refused, owed: null } as const;
+    return yield* takeLane(caller, { input, volume, id }, null).pipe(
+      Effect.map(({ run }) => ({ ok: true, run } as const)),
+      Effect.catchTag("LaneRefused", ({ refusal, owed }) => Effect.succeed({ ok: false, refusal, owed: owed ?? null } as const)),
+    );
+  }));
+});
+
 /** Names the Server an owed refusal finishes on as the Cluster names it now. Call it with no row locked. */
 export const nameRefusal = Effect.fn("VolumeRun.nameRefusal")(function* (
   { refusal, busy, owed }: { readonly refusal: StoreRefusal; readonly busy: VolumeRunView; readonly owed: Owed | null },
@@ -985,6 +1021,9 @@ export const requeueTakenMoves = Effect.fn("VolumeRun.requeueTakenMoves")(functi
   return { requeued, refused };
 });
 
+/** The Release a Move's end queues, by the Move's id, so whoever started the Move finds it without a column. */
+export const releaseOfMove = (moveId: string) => uuidFrom(`ployz.move-release:${moveId}`);
+
 /**
  * Ends the running row `owned` picks. A Move it ended hands the Volume to a release run: back to A while warm, forward
  * to B once committed. A release never starts another. A Deploy it ended requests the move it took over again.
@@ -997,6 +1036,7 @@ const endAndRelease = Effect.fn("VolumeRun.endAndRelease")(function* (owned: SQL
     yield* requeueTakenMoves(rows);
     for (const row of rows.filter((ended) => ended.kind === "move")) {
       const [release] = yield* drizzle.insert(volumeRun).values({
+        id: releaseOfMove(row.id),
         organizationId: row.organizationId,
         environmentId: row.environmentId,
         volumeId: row.volumeId,

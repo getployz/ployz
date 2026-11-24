@@ -51,7 +51,7 @@ const serviceComplete = (entry: ServiceDrain) => {
   }
 };
 const finished = (services: ServiceDrain[], stopped: DrainReport["stopped"] = null): LatestDrain => ({
-  attemptId: "a1", state: "finished", endedAt: "2026-10-04T10:00:00.000Z", report: report(services, stopped),
+  attemptId: "a1", state: "finished", endedAt: "2026-10-04T10:00:00.000Z", report: report(services, stopped), lines: {},
 });
 const view = (latest: LatestDrains, requested: string | null = null) => drainView({ server, latest, serverNames, requested });
 
@@ -98,7 +98,7 @@ describe("Drain result", () => {
     const unobserved = { kind: "unobserved", error: "timeout" } as const;
     expect(drainSummary(report([], null, unobserved), "web-2")).toBe("Couldn't check what's left on web-2");
     expect(drainSummary(report([moved], null, unobserved), "web-2")).toBe("1 moved, but couldn't check what's left");
-    const own: LatestDrain = { attemptId: "a1", state: "finished", endedAt: "2026-10-04T10:00:00.000Z", report: report([moved], null, unobserved) };
+    const own: LatestDrain = { attemptId: "a1", state: "finished", endedAt: "2026-10-04T10:00:00.000Z", report: report([moved], null, unobserved), lines: {} };
     expect(drainButtonLabel(view({ [web2.id]: own }))).toBe("Drain again");
   });
 
@@ -182,7 +182,7 @@ describe("Drain view", () => {
   it("names the Server whose running Drain a queued one waits behind", () => {
     expect(view({
       [web2.id]: { attemptId: "a2", state: "pending", requestedAt: "2026-10-04T10:00:00.000Z", serversSilent: false },
-      [web1.id]: { attemptId: "a1", state: "running", startedAt: "2026-10-04T09:59:00.000Z" },
+      [web1.id]: { attemptId: "a1", state: "running", startedAt: "2026-10-04T09:59:00.000Z", report: null, lines: {} },
     })).toEqual({ kind: "queued", behind: "web-1" });
   });
 
@@ -191,7 +191,7 @@ describe("Drain view", () => {
     expect(view({ [web2.id]: waiting })).toEqual({ kind: "waiting" });
     expect(view({
       [web2.id]: waiting,
-      [web1.id]: { attemptId: "a1", state: "running", startedAt: "2026-10-04T09:59:00.000Z" },
+      [web1.id]: { attemptId: "a1", state: "running", startedAt: "2026-10-04T09:59:00.000Z", report: null, lines: {} },
     })).toEqual({ kind: "waiting" });
   });
 

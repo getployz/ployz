@@ -165,10 +165,10 @@ fn incomplete(report: &DrainReport) -> Error {
                     },
                 ..
             }
-            | DrainOutcome::Held => stays.push(entry.service.to_string()),
+            | DrainOutcome::Held
+            | DrainOutcome::Stays { .. } => stays.push(entry.service.to_string()),
             outcome if outcome.left_old_copy() => left.push(entry.service.to_string()),
-            DrainOutcome::Stays { .. }
-            | DrainOutcome::Moved { .. }
+            DrainOutcome::Moved { .. }
             | DrainOutcome::OldCopies { .. }
             | DrainOutcome::NothingToMove
             | DrainOutcome::Retired
@@ -271,7 +271,18 @@ fn went_wrong(step: DrainStep<'_>) -> bool {
     }
 }
 
+/// The Engine's line for `entry`, then Cloud's line for the Volume it moved with it, if any.
 fn line(entry: &ServiceDrain, server: &MachineName) -> String {
+    let outcome = outcome_line(entry, server);
+    match (&entry.outcome, &entry.volume, &entry.detail) {
+        (DrainOutcome::Stays { .. }, _, _) | (_, None, _) | (_, _, None) => outcome,
+        (_, Some(volume), Some(detail)) => {
+            format!("{outcome}\n{}  {volume}: {detail}", entry.service)
+        }
+    }
+}
+
+fn outcome_line(entry: &ServiceDrain, server: &MachineName) -> String {
     let service = &entry.service;
     let (moves, ending) = match &entry.outcome {
         DrainOutcome::Retired => return format!("{service}: global, retired on {server}"),
@@ -279,7 +290,12 @@ fn line(entry: &ServiceDrain, server: &MachineName) -> String {
             return format!("{service}: global, failed to retire on {server}: {error}");
         }
         DrainOutcome::Stays { reason } => {
-            return format!("{service}  stays on {server} ({})", stay(service, reason));
+            let why = match (&entry.volume, &entry.detail) {
+                (Some(volume), Some(detail)) => format!("{volume}: {detail}"),
+                (None, Some(detail)) => detail.clone(),
+                (_, None) => stay(service, reason),
+            };
+            return format!("{service}  stays on {server} ({why})");
         }
         DrainOutcome::Held => {
             return format!(

@@ -390,7 +390,7 @@ export const inspectCopy = (ctx: RunContext, inngestRunId: string, machine: Mach
     Effect.map((view) => view.copy),
   );
 
-export type Holder = ServiceSpec & { readonly containerId: ContainerId };
+export type Holder = ServiceSpec & { readonly containerId: ContainerId; readonly running?: boolean };
 
 /** Drain::DEFAULT: how long the cut lets requests in flight finish once the Container is out of ingress. */
 export const DRAIN_MS = 3_000;
@@ -447,14 +447,27 @@ const holderOn = (
   return { ok: true, holder } as const;
 };
 
-/** The one Service container on `machine` that mounts this Volume, whose image B needs before the cut. */
-export const findHolder = Effect.fn("VolumeRun.findHolder")(function* (ctx: RunContext, inngestRunId: string, machine: MachineRef) {
-  yield* requireOwner(ctx.id, inngestRunId);
+/** The one Service container on `machine` that mounts this Volume, read without a run: a drain asks before it admits one. */
+export const readHolder = Effect.fn("VolumeRun.readHolder")(function* (
+  ctx: Pick<RunContext, "organizationId" | "dockerVolume" | "volumeName">,
+  machine: MachineRef,
+) {
   const found = holderOn(ctx, (yield* volumeFrame(ctx.organizationId, ctx.dockerVolume)).containers, machine);
   if (!found.ok) return found;
   const { holder } = found;
-  const holderOf: Holder = { containerId: holder.container_id, namespace: holder.namespace, redactedSpec: holder.resolved_spec };
+  const holderOf: Holder = {
+    containerId: holder.container_id,
+    namespace: holder.namespace,
+    redactedSpec: holder.resolved_spec,
+    running: holder.runtime.state === "running",
+  };
   return { ok: true, holder: holderOf } as const;
+});
+
+/** The one Service container on `machine` that mounts this Volume, whose image B needs before the cut. */
+export const findHolder = Effect.fn("VolumeRun.findHolder")(function* (ctx: RunContext, inngestRunId: string, machine: MachineRef) {
+  yield* requireOwner(ctx.id, inngestRunId);
+  return yield* readHolder(ctx, machine);
 });
 
 type CreateStart = Extract<CopyStart, { kind: "create" }>;

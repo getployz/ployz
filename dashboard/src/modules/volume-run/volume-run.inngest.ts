@@ -15,7 +15,7 @@ import { alreadyOn, committedWriter, epochOf, expectOf, holdingNewest, observedE
 import { type AnsweredMember, copyName, type MachineRef, type Member, type ReleasePlan } from "#/modules/volume-run/volume-run";
 import { claimVolumeRun, closeStaleVolumeRuns, closeVolumeRun, endRun, failAndRelease, failRun, laneTarget, noteRun, refuseRun, releaseChangedMessage, runDeploymentsSeen, type RunContext, takeEpoch } from "#/modules/volume-run/volume-run.rows.server";
 import { cleanOrphans, organizationsWithMachines } from "#/modules/volume-run/volume-run.orphans.server";
-import { commitAndStart, type CopyAnswer, copyImage, DRAIN_MS, findHolder, findKept, inspectCopy, observeMembers, observeReachable, removeContainer, removeKept, sendSwitch, setVolumeCopy, startRefusal, SwitchAttemptError } from "#/modules/volume-run/volume-run.cluster.server";
+import { commitAndStart, type CopyAnswer, copyImage, DRAIN_MS, findHolder, findKept, type Holder, inspectCopy, observeMembers, observeReachable, removeContainer, removeKept, sendSwitch, setVolumeCopy, startRefusal, SwitchAttemptError } from "#/modules/volume-run/volume-run.cluster.server";
 import { type EffectRunner, runInngestEffect } from "#/modules/inngest/run.server";
 import { formatDuration } from "#/utils/relative-time";
 import type { AppServices } from "#/server/runtime.server";
@@ -700,6 +700,20 @@ async function landVolume(steps: RunSteps, phase: PhaseOf<"landed">) {
 }
 
 /**
+ * Why a drain's move must not take `holder`: the drain pinned another Server or Container, or that Container no longer
+ * runs. Null for a move nobody pinned.
+ */
+function holderSwapped(run: RunContext, A: MachineRef, holder: Holder): string | null {
+  if (run.kind !== "move" || run.args.holder === undefined) return null;
+  const pinned = run.args.holder;
+  const service = holder.redactedSpec.name;
+  if (pinned.machine !== A.id) return `${run.volumeName}'s writer is no longer on the server the drain moved it from`;
+  if (pinned.container !== holder.containerId) return `${service} was replaced on ${A.name} after the drain chose it, so ${run.volumeName} stays there`;
+  if (holder.running === false) return `${service} stopped on ${A.name} after the drain chose it, so ${run.volumeName} stays there`;
+  return null;
+}
+
+/**
  * A Move: warm rounds, the image, the cut on A, B's pull of the cut's snapshot G, then the commit that starts B, and
  * A's stopped Container removed. Past the rounds a failure releases: back to A before the commit, forward to B after.
  */
@@ -724,9 +738,11 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, epoch: number
         Effect.map((refusal) => (refusal === null ? found : { ok: false, refusal: { code: "invalid", message: refusal } } as const)),
       )),
     )));
-    if (!found.ok) {
-      await step.run("02-refuse", () => runEffect(refuseRun(run, runId, found.refusal)));
-      return { runId: run.id, refused: found.refusal };
+    const swapped = found.ok ? holderSwapped(run, A, found.holder) : null;
+    if (!found.ok || swapped !== null) {
+      const refusal = found.ok ? { code: "invalid", message: swapped ?? "" } as const : found.refusal;
+      await step.run("02-refuse", () => runEffect(refuseRun(run, runId, refusal)));
+      return { runId: run.id, refused: refusal };
     }
     service = found.holder.redactedSpec.name;
     await note("02-copying", `Copying to ${B.name}`);
@@ -743,6 +759,12 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, epoch: number
         Effect.tap((found) => (found.ok ? copyImage(run, runId, A, found.holder, B) : Effect.void)),
       )));
       if (!imaged.ok) throw new NonRetriableError(imaged.refusal.message);
+      // Nothing is stopped yet, so a drain's move whose Container changed ends here and leaves the Service on A.
+      const swapped = phase.start === "rounds" ? holderSwapped(run, A, imaged.holder) : null;
+      if (swapped !== null) {
+        await step.run("04-refuse", () => runEffect(refuseRun(run, runId, { code: "invalid", message: swapped })));
+        return { runId: run.id, refused: { code: "invalid", message: swapped } as const };
+      }
       service = imaged.holder.redactedSpec.name;
       holder = imaged.holder.containerId;
       // A stops only this Container, and refuses before it stops anything if another runs on the Volume.

@@ -147,7 +147,10 @@ export const serverDrainAttempt = pgTable(
     machineId: text("machine_id").notNull().$type<MachineId>(),
     /** The name the run's caller showed for the Server, kept after a rename or removal; null when it showed none, and on older rows. */
     serverName: text("server_name").$type<MachineName>(),
-    /** The Engine's DrainReport, verbatim, partial or not. Only `finished` has one. */
+    /**
+     * The Engine's DrainReport, partial or not, with Cloud's notes on the Volumes it moves. `finished` has one, and so
+     * does a `running` Drain whose Engine call returned while its Volumes move.
+     */
     report: jsonb("report").$type<DrainReport | null>(),
     /** How it ended without a report; null until then, and for `finished`. */
     endCode: text("end_code").$type<DrainEndCode | null>(),
@@ -182,7 +185,8 @@ export const serverDrainAttempt = pgTable(
         (${table.state} = 'pending'
           and ${table.startedAt} is null and ${table.endedAt} is null and ${table.report} is null and ${table.endCode} is null)
         or (${table.state} = 'running' and ${table.inngestRunId} is not null
-          and ${table.startedAt} is not null and ${table.endedAt} is null and ${table.report} is null and ${table.endCode} is null)
+          and ${table.startedAt} is not null and ${table.endedAt} is null
+          and (${table.report} is null or jsonb_typeof(${table.report}) = 'object') and ${table.endCode} is null)
         or (${table.state} = 'finished' and ${table.inngestRunId} is not null
           and ${table.startedAt} is not null and ${table.endedAt} is not null
           and jsonb_typeof(${table.report}) = 'object' and ${table.endCode} is null)

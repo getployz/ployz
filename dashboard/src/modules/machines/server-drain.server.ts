@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import type { DrainReport, DrainScope, MachineId, MachineName, QualifiedService, RuntimeWatchView } from "@ployz/sdk";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { Clock, Data, Effect, Option } from "effect";
 import { SERVERS_UNANSWERED_MESSAGE } from "#/lib/refusal";
 import { listNames } from "#/lib/plural";
@@ -19,6 +19,7 @@ import {
   type DrainState,
 } from "#/modules/machines/server-drain-states";
 import { drainPlan, planDrain } from "#/modules/machines/server-operations.server";
+import { readVolumeLines, targetedMessage, volumeRunTargeting } from "#/modules/machines/server-drain-volumes.server";
 import { splitQualifiedService } from "#/modules/machines/server-services";
 import { serverDrainAttempt } from "#/modules/machines/tables";
 import { lackingEnsure } from "#/modules/runtime/daemon-compat.server";
@@ -51,11 +52,11 @@ export function latestDrainOf(row: DrainAttemptRow): Effect.Effect<LatestDrain> 
     case "running":
       return row.startedAt === null
         ? missing("start time")
-        : Effect.succeed({ attemptId, state: "running", startedAt: row.startedAt.toISOString() });
+        : Effect.succeed({ attemptId, state: "running", startedAt: row.startedAt.toISOString(), report: row.report, lines: {} });
     case "finished":
       return row.endedAt === null || row.report === null
         ? missing("report")
-        : Effect.succeed({ attemptId, state: "finished", endedAt: row.endedAt.toISOString(), report: row.report });
+        : Effect.succeed({ attemptId, state: "finished", endedAt: row.endedAt.toISOString(), report: row.report, lines: {} });
     case "failed":
     case "cancelled":
     case "unknown": {
@@ -81,6 +82,9 @@ export function latestDrainOf(row: DrainAttemptRow): Effect.Effect<LatestDrain> 
   }
 }
 
+/** A row whose Engine call already answered ends finished, keeping that answer, whatever ends it. */
+const keepsReport = sql`${serverDrainAttempt.report} is not null`;
+
 /** The columns that end a row under `code`; its state follows from the code. */
 const ended = (code: DrainEndCodeWithoutMessage) =>
   ({ state: DRAIN_END_CODES[code], endCode: code, refusalMessage: null, endedAt: new Date() }) as const;
@@ -90,6 +94,15 @@ const refused = (message: string) =>
 /** Asks for the row's run in the caller's transaction; the outbox sends it once that commits. */
 const enqueueDrain = (row: DrainAttemptRow) =>
   enqueueEvent(serverDrainRequested.create({ attemptId: row.id, organizationId: row.organizationId, machineId: row.machineId }));
+
+/**
+ * A Volume moving onto the Server would start its Service there, which a Drain would then have to move again, so a
+ * Drain is refused while one targets it. Checked at the request and again right before the Engine is asked.
+ */
+const refuseWhileTargeted = Effect.fn("ServerDrain.refuseWhileTargeted")(function* (organizationId: string, machineId: MachineId) {
+  const targeted = yield* volumeRunTargeting(organizationId, machineId);
+  if (targeted !== null) return yield* new Conflict({ userFacing: true, message: targetedMessage(targeted) });
+});
 
 /**
  * Drain on a Server page: an owner or admin may, and confirming it is their approval, so a plan that now stops a Service
@@ -119,6 +132,7 @@ export const requestServerDrain = Effect.fn("ServerDrain.request")(function* (ca
   });
   const existing = yield* sameOrActive();
   if (existing !== null) return existing;
+  yield* refuseWhileTargeted(organizationId, input.machineId);
   const plan = yield* planDrain(organizationId, input.machineId);
   if (plan === null) return yield* new NotFound({ message: "The server was not found." });
   const unseen = plan.effects.flatMap(({ kind, name }) =>
@@ -168,6 +182,8 @@ export const requestCliServerDrain = Effect.fn("ServerDrain.requestCli")(functio
   },
 ) {
   const { drizzle } = yield* Database;
+  const [same] = yield* drizzle.select({ id: serverDrainAttempt.id }).from(serverDrainAttempt).where(eq(serverDrainAttempt.id, input.attemptId));
+  if (same === undefined) yield* refuseWhileTargeted(caller.organizationId, input.machineId);
   const [inserted] = yield* drizzle.insert(serverDrainAttempt).values({
     id: input.attemptId,
     organizationId: caller.organizationId,
@@ -216,7 +232,7 @@ export const readCliServerDrain = Effect.fn("ServerDrain.readCli")(function* (or
     case "running":
       return { state: drain.state } satisfies CliServerDrain;
     case "finished":
-      return { state: "finished", report: drain.report } satisfies CliServerDrain;
+      return { state: "finished", report: (yield* readVolumeLines(drain.report, true)).report } satisfies CliServerDrain;
     default:
       return {
         state: "ended",
@@ -233,7 +249,12 @@ export const listLatestServerDrains = Effect.fn("ServerDrain.listLatest")(functi
 ) {
   const { organization } = yield* requireAccess(actor, input.organizationSlug, "servers:read");
   const latestRows = yield* latestPerMachine(serverDrainAttempt, organization.id);
-  const latest = yield* Effect.forEach(latestRows, (row) => Effect.map(latestDrainOf(row), (drain) => [row.machineId, drain] as const));
+  const latest = yield* Effect.forEach(latestRows, (row) => Effect.gen(function* () {
+    const drain = yield* latestDrainOf(row);
+    if ((drain.state !== "running" && drain.state !== "finished") || drain.report === null) return [row.machineId, drain] as const;
+    const { report, lines } = yield* readVolumeLines(drain.report, drain.state === "finished");
+    return [row.machineId, { ...drain, report, lines }] as const;
+  }));
   return { servers: Object.fromEntries(latest) };
 });
 
@@ -314,6 +335,10 @@ export const executeDrainOnce = Effect.fn("ServerDrain.execute")(function* (
   const { drizzle } = yield* Database;
   const id = request.attemptId;
   const owned = rows.owned(id, runId);
+  // A retry after the Engine answered resumes the Volume moves from the answer it kept, never asking again.
+  const [answered] = yield* drizzle.select({ id: serverDrainAttempt.id }).from(serverDrainAttempt)
+    .where(and(owned, eq(serverDrainAttempt.state, "running"), sql`${serverDrainAttempt.report} is not null`));
+  if (answered !== undefined) return { attemptId: id, state: "running" } satisfies DrainRunReply;
   const state = yield* rows.executeOnce({
     id,
     runId,
@@ -353,6 +378,8 @@ export const executeDrainOnce = Effect.fn("ServerDrain.execute")(function* (
       // anything, on every other Server taking services, since a move may land on any of them.
       const lacking = lackingEnsure(frame, (machine) => machine.id === request.machineId || moves && machine.accepts_services);
       if (lacking.length > 0) return yield* endPending(refused(`Drains need a newer Ployz on ${lacking.join(", ")}.`));
+      const targeted = yield* volumeRunTargeting(request.organizationId, request.machineId);
+      if (targeted !== null) return yield* endPending(refused(targetedMessage(targeted)));
       const targets = row?.targets ?? null;
       const scope: DrainScope = targets === null
         ? { scope: "owned", namespaces: yield* ownedNamespaces(request.organizationId) }
@@ -365,7 +392,14 @@ export const executeDrainOnce = Effect.fn("ServerDrain.execute")(function* (
     }),
     call: ({ scope, store, connections, expect }) =>
       storeTry(() => store.drainMachine(request.organizationId, request.machineId, scope, connections, expect)).pipe(
-        Effect.map((report) => ({ state: "finished", report, endedAt: new Date(), endCode: null, refusalMessage: null }) as const),
+        // The answer is kept on the running row while the drain moves its Volumes. A row a cancellation already ended
+        // unknown ends finished with it instead, and moves nothing.
+        Effect.map((report) => ({
+          report,
+          state: sql<DrainState>`case when ${serverDrainAttempt.state} = 'unknown' then 'finished' else ${serverDrainAttempt.state} end`,
+          endCode: null,
+          refusalMessage: null,
+        })),
         // The Engine's own error comes from its input checks, the dial or its preflight, before anything moved. Anything
         // else may come after copies moved, so what the drain did is unknown.
         Effect.catch((refusal) => Effect.succeed(refused(refusalMessage(refusal)))),
@@ -385,25 +419,35 @@ const RUN_ENDS = {
 /**
  * A run that failed for good or was cancelled must not leave its row active. A pending row never asked the Engine
  * (`not_started`, `cancelled`); a running one may have, so it ends `lost` or `interrupted`, both unknown: Cloud can't
- * undo what the Engine did, and Running here shows it. A run cancelled before it bound its row names the row by
- * `attemptId` from its event. How many rows this call ended.
+ * undo what the Engine did, and Running here shows it. A running row that kept the Engine's answer ends finished with
+ * it: a Volume move it admitted runs on, and the read gives each Volume's line from that move. A run cancelled before
+ * it bound its row names the row by `attemptId` from its event. How many rows this call ended.
  */
 export const closeDrainRun = (runId: string, reason: keyof typeof RUN_ENDS, attemptId?: string) => {
   const { pending, running } = RUN_ENDS[reason];
   return rows.closeRun(runId, attemptId, (whenPending) => ({
-    state: whenPending(DRAIN_END_CODES[pending], DRAIN_END_CODES[running]),
-    endCode: whenPending(pending, running),
+    state: sql<DrainState>`case when ${keepsReport} then 'finished' else ${whenPending(DRAIN_END_CODES[pending], DRAIN_END_CODES[running])} end`,
+    endCode: sql<DrainEndCode | null>`case when ${keepsReport} then null else ${whenPending(pending, running)} end`,
   }));
 };
 
 /**
- * The hourly sweep: a request no run picked up in time never starts; a Drain running for a day lost its run. Drains in
- * an Organization run one at a time, so a request waits its turn while one runs there or an earlier request is ahead
- * of it, and its time runs from when the Drain before it ended.
+ * The hourly sweep: a request no run picked up in time never starts; a Drain running for a day lost its run, and ends
+ * finished when it kept the Engine's answer. A request waits its turn while a Drain runs in its Organization or an
+ * earlier request is ahead of it, and its time runs from when the Drain before it ended. A Drain gives its turn back
+ * while it waits on a Volume move, so another may run then, and that one plans again before it asks the Engine.
  */
 export const closeStaleDrains = Effect.fn("ServerDrain.closeStale")(function* () {
   const { running, pending } = yield* rows.closeStale({
-    running: { limitMs: DRAIN_RUNNING_LIMIT_MS, end: ended("lost") },
+    running: {
+      limitMs: DRAIN_RUNNING_LIMIT_MS,
+      end: {
+        state: sql<DrainState>`case when ${keepsReport} then 'finished' else 'unknown' end`,
+        endCode: sql<DrainEndCode | null>`case when ${keepsReport} then null else 'lost' end`,
+        refusalMessage: null,
+        endedAt: new Date(),
+      },
+    },
     pending: {
       end: ended("not_started"),
       when: (now) => queueWaitedPast(serverDrainAttempt, new Date(now - DRAIN_PENDING_LIMIT_MS), { earlierOnly: false }),

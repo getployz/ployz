@@ -25,6 +25,7 @@ const finished = (services: ServiceDrain[], stopped: DrainReport["stopped"] = nu
   state: "finished",
   endedAt: at,
   report: { server: runtimeWatchMachineFixture(web2.id, web2.name), services_role: "turned_off", services, stopped, remaining: { kind: "observed", services: [], unchosen: [] }, complete },
+  lines: {},
 });
 const view = (latest: LatestDrain | null, requested: string | null = null) => drainView({
   server: web2,
@@ -125,12 +126,12 @@ describe("Services section", () => {
 
   it("lists what a running Drain still has to move, and counts it", () => {
     const left: DrainRow = { key: "shop/postgres", name: "postgres", namespace: "shop", global: false, tone: "neutral", label: "Pending", reason: null, pinned: false };
-    rows({ view: view({ attemptId: "a1", state: "running", startedAt: at }), left: [left] });
+    rows({ view: view({ attemptId: "a1", state: "running", startedAt: at, report: null, lines: {} }), left: [left] });
     expect(screen.getByText(/Draining · 1 left · Started/)).toBeTruthy();
     expect(within(screen.getByLabelText("Left to move")).getByText("postgres")).toBeTruthy();
     expect(screen.queryByLabelText("Drain result")).toBeNull();
     cleanup();
-    rows({ view: view({ attemptId: "a1", state: "running", startedAt: at }) });
+    rows({ view: view({ attemptId: "a1", state: "running", startedAt: at, report: null, lines: {} }) });
     expect(screen.getByText(/Draining · Finishing up · Started/)).toBeTruthy();
   });
 
