@@ -78,11 +78,15 @@
 //! answers In and not leaving, and the proxies drop A when they read B Running and In. A
 //! B that stops answering while it still reads Running, from before the ask (a crash loop)
 //! or after Cloud's compare (an exit not yet replicated, #4556), leaves G with no serving
-//! copy once A is removed. A stop the proxies do read keeps A routed, so `wait_unlisted`
-//! times out and the Drain reports `NotRetired`; the shipped check holds it. No user can
-//! reach these today: a Service always lowers to `ServiceMode::Replicated`
-//! (`ployz-core/src/config/lowering.rs`), and a Drain never retires a system Global
-//! (`DrainScope::includes`). They stand as design-level counterexamples for when it can.
+//! copy once A is removed. A stop the proxies do read keeps A routed only while they hold
+//! the route they had: then `wait_unlisted` times out and the Drain reports `NotRetired`,
+//! which the shipped check holds. A proxy that restarts after A went Out holds no route,
+//! so `next_route` routes only what serves now, never A, and `wait_unlisted` passes beside
+//! a B it reads stopped or Down (#4556). A Full caller reaches these through a Global spec:
+//! the Machine API admits one (`admission.rs`, `Scope::Full`), the Drain classifies a
+//! Container by its observed spec (`observed_global_slot`), and Compose accepted
+//! `deploy.mode: global` up to v0.1.2-beta.41. A Drain never retires a system Global
+//! (`DrainScope::includes`).
 //!
 //! Out of scope: a yes the dashboard gives itself (a dashboard confirm, including the Drain
 //! dialog's Volume forecast, `previewServerDrain`), a Deploy that waits
@@ -431,13 +435,16 @@ impl OtherCopy {
     /// Whether the proxies drop A once A is Out (`proxy_routes`' `next_route`): B is a
     /// Serving Container they route instead (In, read Running, its Machine not Down), or
     /// every copy in view is Out, so the route empties. A B read stopped, or on a Down
-    /// Machine, keeps the route they have, A included.
-    const fn unlists_beside(self) -> bool {
-        match self.rotation {
-            Rotation::In => self.running,
-            Rotation::Out => true,
-            Rotation::Down => false,
-        }
+    /// Machine, keeps the route they have, A included, unless they `restarted` since A went
+    /// Out: with no route to keep, they route what serves now or on a Down Machine, never
+    /// the Out A.
+    const fn unlists_beside(self, restarted: bool) -> bool {
+        restarted
+            || match self.rotation {
+                Rotation::In => self.running,
+                Rotation::Out => true,
+                Rotation::Down => false,
+            }
     }
 }
 
@@ -493,6 +500,9 @@ struct State {
     left: Option<Before>,
     /// The Drain step B stopped answering before while it still read Running.
     failed: Option<Before>,
+    /// The proxies restarted after A went Out, before `wait_unlisted` read them, so they
+    /// hold no route from before (`Reach::new`).
+    restarted: bool,
     retirement: Option<Retirement>,
     data: Data,
     /// The frame changed `data` after Cloud's last compare.
@@ -604,9 +614,9 @@ struct Broken {
 struct ApprovalBinding {
     command: Command,
     broken: Broken,
-    /// The changes the shipped code lets through: a Cancel's Deployment starts; or B stops
-    /// answering while what Cloud and the proxies read of it still says Running. Each
-    /// breaks the property; see the module doc.
+    /// The changes the shipped code lets through: a Cancel's Deployment starts; B stops
+    /// answering while what Cloud and the proxies read of it still says Running; or the
+    /// proxies restart once A is Out. Each breaks the property; see the module doc.
     open_paths: bool,
 }
 
@@ -623,6 +633,10 @@ enum Action {
     /// B's copy stops answering while what Cloud and the proxies read of it still says
     /// Running and In.
     CopyFails,
+    /// The proxies restart once A is Out and before `wait_unlisted` reads them, dropping
+    /// the route they kept. A restart before A went Out reroutes A while it is In, and
+    /// changes nothing.
+    ProxiesRestart,
     /// The remover revokes the caller's management access.
     Revoke,
     /// The executor sends its request.
@@ -963,9 +977,10 @@ impl ApprovalBinding {
         }
     }
 
-    /// `wait_unlisted`, which reads the routes the proxies ack, never B itself.
+    /// `wait_unlisted`, which reads the routes the proxies ack, never B itself, nor whether
+    /// a proxy restarted.
     fn engine_unlist(&self, state: &mut State) {
-        if self.broken.retire_skips_unlisting || state.other.unlists_beside() {
+        if self.broken.retire_skips_unlisting || state.other.unlists_beside(state.restarted) {
             state.exec = Exec::Removing;
         } else {
             state.retirement = Some(Retirement::NotUnlisted);
@@ -1054,6 +1069,7 @@ impl Model for ApprovalBinding {
                         stopped: None,
                         left: None,
                         failed: None,
+                        restarted: false,
                         retirement: None,
                         data: Data::Stays,
                         data_late: false,
@@ -1099,7 +1115,12 @@ impl Model for ApprovalBinding {
                 }
             }
             Exec::Retiring => actions.push(Action::Out),
-            Exec::Unlisting => actions.push(Action::Unlist),
+            Exec::Unlisting => {
+                actions.push(Action::Unlist);
+                if self.open_paths && !state.restarted {
+                    actions.push(Action::ProxiesRestart);
+                }
+            }
             Exec::Removing => actions.push(Action::Remove),
             Exec::Moving => actions.push(Action::Volumes),
             Exec::Admitting { .. } => {
@@ -1136,6 +1157,7 @@ impl Model for ApprovalBinding {
                 state.failed = Some(state.window());
                 state.other.serving = false;
             }
+            Action::ProxiesRestart => state.restarted = true,
             Action::Revoke => state.trusted = false,
             Action::Send => match self.command {
                 Command::Store(write) => self.send_store(&mut state, write),
@@ -1414,7 +1436,7 @@ fn story(model: &ApprovalBinding, path: &[(State, Option<Action>)]) -> String {
         );
         let volume = if model.command == Command::Drain {
             format!(
-                " B=(reads {}, {:?}, {}, stopped {:?}, left {:?}, failed silently {:?}) retirement={:?} data={:?} admission={:?}",
+                " B=(reads {}, {:?}, {}, stopped {:?}, left {:?}, failed silently {:?}) proxies={} retirement={:?} data={:?} admission={:?}",
                 if state.other.running {
                     "running"
                 } else {
@@ -1429,6 +1451,11 @@ fn story(model: &ApprovalBinding, path: &[(State, Option<Action>)]) -> String {
                 state.stopped,
                 state.left,
                 state.failed,
+                if state.restarted {
+                    "restarted"
+                } else {
+                    "keep their route"
+                },
                 state.retirement,
                 state.data,
                 state.admission
@@ -1480,6 +1507,10 @@ fn reads_as(model: &ApprovalBinding, action: Action, after: &State) -> String {
             "B: G's copy there stops answering while what Cloud and the proxies read still says Running and In (a crash loop with no healthcheck, or an exit not yet replicated)"
                 .to_owned()
         }
+        Action::ProxiesRestart => {
+            "proxies: they restart, and Reach::new holds no route, so next_route routes only what serves now, never the Out copy here"
+                .to_owned()
+        }
         Action::Revoke => {
             "remover: set_device removes the Device and its slot under its own exclusive turn"
                 .to_owned()
@@ -1512,6 +1543,9 @@ fn reads_as(model: &ApprovalBinding, action: Action, after: &State) -> String {
         ),
         Action::Unlist if broken.retire_skips_unlisting => format!(
             "Engine: retire goes on without waiting for the proxies (under Broken), {outcome}"
+        ),
+        Action::Unlist if after.restarted => format!(
+            "Engine: wait_unlisted reads every proxy's route without G's copy here, since they restarted with no route to keep, {outcome}"
         ),
         Action::Unlist => format!(
             "Engine: wait_unlisted reads every proxy's route without G's copy here, since they read B Running and In or every copy Out, {outcome}"
@@ -2112,17 +2146,18 @@ mod tests {
         path
     }
 
-    /// Open at design level, unreachable for user Services today. B crash-loops under
+    /// Open, F1 pending Unit K: reachable through a Full caller's Global spec. B crash-loops under
     /// `unless-stopped` with no healthcheck from before the ask. Cloud's `drainPlan`, at the
     /// gate and at `stillCovered`, lands on a moment its Container reads Running, so the yes
     /// names G kept on B. `last_in` counts B In, the proxies read B Running and drop A, and
-    /// `retire` removes A. B exits again before it serves, and G stays down.
+    /// `retire` removes A. B exits again before it serves, and G stays down. S9, so Unit K
+    /// is fixing it in production.
     #[test]
     fn a_retirement_removes_a_global_s_copy_beside_a_crash_looping_copy_read_running() {
         unlisted_beside_a_silent_copy(|exec| matches!(exec, Exec::Ready));
     }
 
-    /// Open at design level, #4556, unreachable for user Services today. B's Container exits
+    /// Open, #4556, F1 pending Unit K: reachable through a Full caller's Global spec. B's Container exits
     /// after Cloud's compare and before the guard reads, and its exit has not replicated when
     /// the proxies drop A. `last_in` counts B, which its daemon still answers In, and the
     /// proxies route B alone. Had they read the exit, they would have kept A and the Drain
@@ -2132,11 +2167,43 @@ mod tests {
         unlisted_beside_a_silent_copy(|exec| matches!(exec, Exec::Covered { .. }));
     }
 
-    /// Open at design level, #4556, unreachable for user Services today. `last_in` counted
+    /// Open, #4556, F1 pending Unit K: reachable through a Full caller's Global spec. `last_in` counted
     /// B. B's Container exits before the proxies drop A, and its exit has not replicated by
     /// then, so they route B alone and `retire` removes A.
     #[test]
     fn a_retirement_removes_a_global_s_copy_beside_one_that_stopped_unseen_after_its_guard() {
         unlisted_beside_a_silent_copy(|exec| matches!(exec, Exec::Retiring | Exec::Unlisting));
+    }
+
+    /// Open, #4556, F1 pending Unit K: reachable through a Full caller's Global spec.
+    /// `last_in` counted B and A went Out. B stops, and its owner publishes it, or B's
+    /// Machine goes Down. The proxies restart before `wait_unlisted` reads them: with no
+    /// route to keep, `next_route` routes only what serves now, or B on its Down Machine,
+    /// never the Out A. `wait_unlisted` passes and `retire` removes A, though the proxies
+    /// saw B stopped or Down. Without the restart the same path ends `NotUnlisted`
+    /// (`UNLISTING_KEEPS`).
+    #[test]
+    fn a_retirement_removes_a_global_s_copy_once_a_restarted_proxy_drops_its_route() {
+        for change in [Action::CopyStops, Action::CopyDown] {
+            let path = breaks_where(open(Command::Drain), BOUND, move |path| {
+                taken_from(path, Action::ProxiesRestart).is_some()
+                    && taken_from(path, change).is_some()
+                    && taken_from(path, Action::CopyFails).is_none()
+            });
+            let ran = last(&path);
+            assert!(taken_from(&path, Action::Remove).is_some(), "A was removed");
+            assert_eq!(ran.retirement, Some(Retirement::Retired), "{change:?}");
+            assert!(
+                !ran.other.running || ran.other.rotation == Rotation::Down,
+                "the proxies read B stopped or Down"
+            );
+            assert_eq!(
+                ran.wrote,
+                Some(Wrote {
+                    plan: Plan::LastCopy,
+                    valid: true,
+                })
+            );
+        }
     }
 }
