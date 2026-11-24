@@ -10509,6 +10509,38 @@ fn a_yes_to_cancel_someone_elses_deployment_asks_again_once_production_is_unprot
         .unwrap();
 }
 
+#[test]
+fn a_yes_to_cancel_someone_elses_deployment_cancels_no_other() {
+    let (store, system) = shop();
+    let (grace, linus) = (as_person(&system, "grace"), as_person(&system, "linus"));
+    let cancel_as = |n: u8, trusted: &Trusted| {
+        store.write_trusted(&linus, &Cancel { deployment: id(n) }, trusted)
+    };
+    deploy_trusted(
+        &store,
+        &grace,
+        1,
+        &protector(Approval::NotRequired, Asks::Destroys),
+    )
+    .unwrap();
+    let asked = cancel_as(1, &member(Approval::Required, Asks::Destroys)).unwrap_err();
+    deploy_trusted(
+        &store,
+        &linus,
+        2,
+        &signed_in("u-linus", protector(Approval::NotRequired, Asks::Destroys)),
+    )
+    .unwrap();
+    let mine = |approval| signed_in("u-linus", member(approval, Asks::Destroys));
+    let stale = cancel_as(2, &mine(approved(&asked))).unwrap_err();
+    assert_eq!(stale.code.as_str(), "approval_required", "{stale:?}");
+    assert_ne!(stale.details["approval"], asked.details["approval"]);
+    assert_eq!(status(&store, &system, 2), DeploymentStatus::Queued);
+    // Without a yes, cancelling his own asks nothing, as before.
+    let cancelled = cancel_as(2, &mine(Approval::Required)).unwrap();
+    assert_eq!(cancelled.status, DeploymentStatus::Cancelled);
+}
+
 const RESTORED: &str = "00000000-0000-4000-8000-000000000006";
 
 /// Stage `restored`, a new Volume restored from `data`'s point taken at `at` seconds, as

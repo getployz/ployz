@@ -42,6 +42,10 @@ pub(crate) enum Verb {
     Publish,
     Deploy,
     Retry,
+    Cancel,
+    Sync,
+    Take,
+    ShutDown,
     Operation(OperationVerb),
 }
 
@@ -57,6 +61,10 @@ impl Verb {
             Self::Publish => "save",
             Self::Deploy => "deploy",
             Self::Retry => "redeploy",
+            Self::Cancel => "cancel",
+            Self::Sync => "sync",
+            Self::Take => "take",
+            Self::ShutDown => "shutdown",
             Self::Operation(verb) => match verb {
                 OperationVerb::Drain => "drain",
                 OperationVerb::Set => "change",
@@ -85,6 +93,10 @@ impl Verb {
             Self::Publish => "saved",
             Self::Deploy => "deployed",
             Self::Retry => "retried",
+            Self::Cancel => "cancelled",
+            Self::Sync => "synced",
+            Self::Take => "taken",
+            Self::ShutDown => "shut down",
             Self::Operation(verb) => match verb {
                 OperationVerb::Drain => "drained",
                 OperationVerb::Set => "changed",
@@ -119,6 +131,10 @@ impl Verb {
             Self::Publish
             | Self::Deploy
             | Self::Retry
+            | Self::Cancel
+            | Self::Sync
+            | Self::Take
+            | Self::ShutDown
             | Self::Operation(
                 OperationVerb::Drain
                 | OperationVerb::Clean
@@ -135,6 +151,16 @@ impl Verb {
                 | OperationVerb::Restore
                 | OperationVerb::Resize,
             ) => "of",
+        }
+    }
+
+    /// `this deploy to shop/production`, but `this sync into shop/fix`.
+    fn toward(self) -> &'static str {
+        match self {
+            Self::Sync | Self::Take => "into",
+            Self::Cancel => "in",
+            Self::ShutDown => "of",
+            Self::Publish | Self::Deploy | Self::Retry | Self::Operation(_) => "to",
         }
     }
 }
@@ -160,6 +186,10 @@ impl Asked {
             (Subject::Operation(operation), _) => Verb::Operation(operation.verb),
             (Subject::Diff(_), Some(Command::Publish(_))) => Verb::Publish,
             (Subject::Diff(_), Some(Command::Admit(Admit::Retry(_)))) => Verb::Retry,
+            (Subject::Diff(_), Some(Command::Admit(Admit::ShutDown(_)))) => Verb::ShutDown,
+            (Subject::Diff(_), Some(Command::Cancel(_))) => Verb::Cancel,
+            (Subject::Diff(_), Some(Command::Sync(_))) => Verb::Sync,
+            (Subject::Diff(_), Some(Command::Take(_))) => Verb::Take,
             (Subject::Diff(_), Some(Command::Remove(_) | Command::Admit(Admit::Remove(_)))) => {
                 OperationVerb::Remove.into()
             }
@@ -172,8 +202,10 @@ impl Asked {
         let noun = verb.noun();
         match &self.required.subject {
             Subject::Diff(diff) => format!(
-                "this {noun} to {}/{}",
-                diff.environment.project, diff.environment.name
+                "this {noun} {} {}/{}",
+                verb.toward(),
+                diff.environment.project,
+                diff.environment.name
             ),
             Subject::Operation(operation) => {
                 format!("this {noun} {} {}", verb.preposition(), operation.name)
@@ -586,6 +618,65 @@ mod tests {
             asked.review(Verb::Deploy),
             ["This deploy:", "  + 2 other changes"]
         );
+    }
+
+    #[test]
+    fn a_cancel_sync_take_or_shutdown_ask_names_itself_not_a_deploy() {
+        let asked: Asked = serde_json::from_value(serde_json::json!({
+            "approval": "d1",
+            "effects": [],
+            "diff": {
+                "environment": {
+                    "id": "00000000-0000-4000-8000-000000000002",
+                    "project": "shop",
+                    "name": "production",
+                    "revision": 3,
+                },
+                "version": "3:2:0.1",
+                "saved": 2,
+                "holds_staged": false,
+                "changes": [],
+                "total_count": 0,
+            },
+        }))
+        .unwrap();
+        let production = serde_json::json!({ "environment": "production" });
+        for (command, what, past) in [
+            (
+                serde_json::json!({
+                    "command": "cancel",
+                    "deployment": "00000000-0000-4000-8000-000000000009",
+                }),
+                "this cancel in shop/production",
+                "cancelled",
+            ),
+            (
+                serde_json::json!({
+                    "command": "sync", "from": { "environment": "fix" }, "into": production,
+                    "version": "1", "close_after": false,
+                }),
+                "this sync into shop/production",
+                "synced",
+            ),
+            (
+                serde_json::json!({ "command": "take", "from": "main", "version": "1" }),
+                "this take into shop/production",
+                "taken",
+            ),
+            (
+                serde_json::json!({
+                    "command": "admit", "admit": "shut_down",
+                    "id": "00000000-0000-4000-8000-000000000009", "environment": production,
+                }),
+                "this shutdown of shop/production",
+                "shut down",
+            ),
+        ] {
+            let command = ployz_store::Command::decode(command).unwrap();
+            let verb = asked.verb(Some(&command));
+            assert_eq!(asked.what(verb), what);
+            assert_eq!(verb.past(), past);
+        }
     }
 
     #[test]

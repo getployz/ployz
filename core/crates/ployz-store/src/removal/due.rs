@@ -686,12 +686,13 @@ fn unobserved(
 }
 
 /// Ask a human, for `taking_off`, before `environment` comes off the Servers as
-/// `review` saw it, as a Deploy that removes the same would ask.
+/// `review` saw it, as a Deploy that removes the same would ask, or before the Store
+/// only forgets what ran when no Server is left.
 pub(crate) fn ask_taking_off(
     tx: &mut dyn Tx,
     who: &Actor,
     (environment, review): (&Environment, &crate::review::Review),
-    taking_off: approval::TakingOff<'_>,
+    taking_off: (approval::TakingOff<'_>, bool),
     trusted: &Trusted,
 ) -> Result<(), RpcError> {
     let id = &environment.summary.id;
@@ -748,7 +749,10 @@ pub(crate) fn shut_down(
             tx,
             who,
             (&environment, &review),
-            approval::TakingOff::ShutDown,
+            (
+                approval::TakingOff::ShutDown,
+                forget == Some(Outcome::Forgotten),
+            ),
             trusted,
         )?;
     }

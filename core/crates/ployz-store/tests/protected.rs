@@ -735,6 +735,58 @@ fn a_save_into_protected_production_asks_an_admin_even_when_cloud_requires_nothi
     assert!(publish(&store, &who, "production", true).unwrap().created);
 }
 
+#[test]
+fn a_yes_to_a_first_save_asks_again_once_its_draft_is_discarded() {
+    let (store, system) = shop();
+    store.write(&system, &set("staging", true)).unwrap();
+    let who = person(&system);
+    store
+        .write_trusted(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse(uuid(6)).unwrap(),
+                environment: at("staging"),
+                name: ServiceName::parse("api").unwrap(),
+                image: Some("api:1".into()),
+                template: None,
+            },
+            &acme_as(false),
+        )
+        .unwrap();
+    let asked = publish(&store, &who, "staging", false).unwrap_err();
+    assert_eq!(asked.code, RpcErrorCode::from("approval_required"));
+    store
+        .write_trusted(
+            &who,
+            &ployz_store::Discard {
+                environment: at("staging"),
+                target: None,
+                path: None,
+                version: None,
+            },
+            &acme_as(false),
+        )
+        .unwrap();
+
+    let carrying = |refused: &RpcError| Trusted {
+        approval: Approval::Approved(
+            ApprovalDigest::parse(refused.details["approval"].as_str().unwrap()).unwrap(),
+        ),
+        ..acme_as(false)
+    };
+    let stale = publish_as(&store, &who, "staging", &carrying(&asked)).unwrap_err();
+    assert_eq!(
+        stale.code,
+        RpcErrorCode::from("approval_required"),
+        "{stale:?}"
+    );
+    assert_ne!(stale.details["approval"], asked.details["approval"]);
+    // A yes to the Save as it stands, or none, saves nothing, as before.
+    let matching = publish_as(&store, &who, "staging", &carrying(&stale)).unwrap();
+    assert_eq!(matching.saved, None);
+    assert_eq!(publish(&store, &who, "staging", false).unwrap().saved, None);
+}
+
 /// Cloud's evidence for a token of someone who can protect, whose grant leaves
 /// `environments:protect` out: an owner's or admin's Deploy token.
 fn protectors_token() -> Trusted {

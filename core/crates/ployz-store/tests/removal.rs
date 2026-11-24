@@ -2601,6 +2601,96 @@ fn a_yes_to_a_shutdown_is_weighed_even_once_no_server_is_left_to_take_it_off() {
 }
 
 #[test]
+fn a_yes_to_taking_services_off_asks_again_once_no_server_is_left_to_take_them_off() {
+    let (store, who) = branched();
+    let required = Trusted {
+        approval: Approval::Required,
+        ..observing(observed())
+    };
+    let asked = refusal(shut_down(&store, &who, ("fix", 3), &[], &required));
+    assert_eq!(
+        asked.message,
+        "A human must approve this first: remove Service web"
+    );
+    // Every Server leaves before the yes: the Store would only forget what ran.
+    let serverless = |trusted: Trusted| Trusted {
+        servers: Some(0),
+        ..trusted
+    };
+    let stale = refusal(shut_down(
+        &store,
+        &who,
+        ("fix", 3),
+        &[],
+        &serverless(approving(&asked, observing(observed()))),
+    ));
+    assert_eq!(stale.code, RpcErrorCode::from("approval_required"));
+    assert_eq!(
+        stale.message,
+        "No Server is left, so this only forgets what ran. A human must approve this first: \
+         remove Service web"
+    );
+    assert_ne!(stale.details["approval"], asked.details["approval"]);
+    let forgotten = shut_down(
+        &store,
+        &who,
+        ("fix", 3),
+        &[],
+        &serverless(approving(&stale, observing(observed()))),
+    )
+    .unwrap();
+    assert_eq!(forgotten.outcome, Some(ployz_store::Outcome::Forgotten));
+}
+
+#[test]
+fn a_yes_to_retrying_a_removal_asks_again_once_no_server_is_left_to_take_it_off() {
+    let (store, system) = branched();
+    let (owner, trusted) = person(&system, true, Approval::Required);
+    let asked = refusal(shut_down(&store, &owner, ("fix", 3), &[], &trusted));
+    let shutdown = shut_down(
+        &store,
+        &owner,
+        ("fix", 3),
+        &[],
+        &approving(&asked, trusted.clone()),
+    )
+    .unwrap();
+    fail(&store, &shutdown.id, &["web"]);
+
+    let retry = |trusted: &Trusted| {
+        store.write_trusted(
+            &owner,
+            &Admit::Retry(ployz_store::Retry {
+                id: id(4),
+                deployment: shutdown.id.clone(),
+                rolls_back: None,
+                version: None,
+                accept_volume_loss: Vec::new(),
+                versions: Vec::new(),
+                copies: Vec::new(),
+            }),
+            trusted,
+        )
+    };
+    let again = refusal(retry(&trusted));
+    let serverless = |trusted: Trusted| Trusted {
+        servers: Some(0),
+        ..trusted
+    };
+    let stale = refusal(retry(&serverless(approving(&again, trusted.clone()))));
+    assert_eq!(stale.code, RpcErrorCode::from("approval_required"));
+    assert!(
+        stale
+            .message
+            .starts_with("No Server is left, so this only forgets what ran."),
+        "{stale:?}"
+    );
+    assert_ne!(stale.details["approval"], again.details["approval"]);
+    let forgotten = retry(&serverless(approving(&stale, trusted))).unwrap();
+    assert_eq!(forgotten.outcome, Some(ployz_store::Outcome::Forgotten));
+}
+
+#[test]
 fn a_yes_to_a_removal_whose_servers_left_asks_again() {
     let (store, who) = branched();
     let trusted = |approval| Trusted {
@@ -2630,6 +2720,10 @@ fn a_yes_to_a_removal_whose_servers_left_asks_again() {
     assert_eq!(stale.code, RpcErrorCode::from("approval_required"));
     assert_eq!(stale.message, "A human must approve this removal first.");
     assert_eq!(stale.details["effects"], json!([]));
+    // The CLI reads its diff, to say the plan changed after the yes.
+    let read: ployz_store::ApprovalRequired<Box<ployz_store::DiffView>> =
+        serde_json::from_value(stale.details.clone()).unwrap();
+    assert_eq!(read.digest, stale.details["approval"].as_str().unwrap());
     // Without a yes, nothing asks, as before.
     confirmed(
         &store,

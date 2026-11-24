@@ -380,6 +380,15 @@ pub(crate) fn remove(
     if !held {
         confirm(remove, &reviews, &version)?;
     }
+    // A carried yes is weighed even when nothing is left to take off; its ask still
+    // carries the Environment's diff, as every other removal ask does.
+    let unreviewed = match (&target, reviews.is_empty() && trusted.approval.carried()) {
+        (Target::Environment(id), true) => {
+            let environment = scope::load_by_id(tx, id)?;
+            Some(crate::review::review(tx, &environment)?.view)
+        }
+        _ => None,
+    };
     gate(
         who,
         "remove",
@@ -396,7 +405,9 @@ pub(crate) fn remove(
                 .map(|reviewed| (&reviewed.environment.summary.name, &reviewed.diff))
                 .collect();
             match &target {
-                Target::Environment(_) => json!(diffs.values().next()),
+                Target::Environment(_) => {
+                    json!(diffs.values().next().copied().or(unreviewed.as_ref()))
+                }
                 Target::Project(_) => json!(diffs),
             }
         },
@@ -871,8 +882,8 @@ pub(crate) fn cancel(
         DeploymentStatus::WaitingForCi | DeploymentStatus::Queued | DeploymentStatus::Running
     );
     // Cancelling a removal keeps what runs, as `cancel_removal` does, so only a
-    // Deployment that ships asks.
-    if theirs && stops && !summary.remove {
+    // Deployment that ships asks. A carried yes must match this cancel whatever it stops.
+    if stops && ((theirs && !summary.remove) || trusted.approval.carried()) {
         approval::approve_cancel(tx, who, &summary, trusted)?;
     }
     let cancelled = deployment::cancel(tx, who, id)?;

@@ -818,14 +818,15 @@ fn dropped_sentence(dropped: &[MachineName]) -> String {
 /// no approval is required or Cloud holds a human's approval of exactly this. Into a
 /// Protected Environment, a caller who asks there asks even when Cloud requires
 /// nothing, as a Deploy does; an agent asks even when nothing is left to take off,
-/// as its every retry does, and so does a carried yes, which must match.
+/// as its every retry does, and so does a carried yes, which must match. When no
+/// Server is left and the Store only `forgets` what ran, the approval binds that too.
 ///
 /// # Errors
 /// `approval_required`, naming the effects, the `version:digest` to approve and the
 /// fresh `diff`, and `protected` when the Environment's protection asked.
 pub(crate) fn approve_shut_down(
     who: &Actor,
-    taking_off: TakingOff<'_>,
+    (taking_off, forgets): (TakingOff<'_>, bool),
     review: &Review,
     effects: &BTreeSet<DestructiveEffect>,
     gate: &Gate<'_>,
@@ -850,9 +851,17 @@ pub(crate) fn approve_shut_down(
             .join(", ");
         format!("A human must approve this first: {asked}")
     });
+    let message = match forgets {
+        true => format!("No Server is left, so this only forgets what ran. {message}"),
+        false => message,
+    };
     let mut bound = bound(who, taking_off.command(), &diff.environment.id, effects);
     if let (TakingOff::Retry(source), Some(bound)) = (taking_off, bound.as_object_mut()) {
         bound.insert("retry".to_owned(), json!(source));
+    }
+    // A yes to taking Services off doesn't cover forgetting them once every Server left.
+    if forgets && let Some(bound) = bound.as_object_mut() {
+        bound.insert("forgets".to_owned(), json!(true));
     }
     gate.require(bound, message, (effects, diff))
 }

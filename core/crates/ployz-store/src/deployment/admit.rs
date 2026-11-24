@@ -245,7 +245,10 @@ pub(crate) fn admit(
                             tx,
                             who,
                             (&environment, &review),
-                            review::TakingOff::Retry(&retry.deployment),
+                            (
+                                review::TakingOff::Retry(&retry.deployment),
+                                forget == Some(crate::Outcome::Forgotten),
+                            ),
                             trusted,
                         )?;
                     }
