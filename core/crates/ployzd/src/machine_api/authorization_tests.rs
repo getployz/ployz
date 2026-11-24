@@ -1263,4 +1263,177 @@ mod revoked {
         );
         machine.remove();
     }
+
+    /// The Docker calls since `before` that `method` sent to a path ending in `suffix`.
+    fn sent(machine: &Enforcing, before: usize, method: http::Method, suffix: &str) -> usize {
+        machine
+            .fake
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .skip(before)
+            .filter(|(sent, path)| *sent == method && path.ends_with(suffix))
+            .count()
+    }
+
+    /// Until Docker has seen a call since `before` that `method` sent to a path ending in
+    /// `suffix`.
+    async fn until_sent(machine: &Enforcing, before: usize, method: http::Method, suffix: &str) {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while sent(machine, before, method.clone(), suffix) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("Docker never saw {method} {suffix}"));
+    }
+
+    fn ensure(want: Value) -> RpcRequest {
+        op::EnsureContainer::into_request(serde_json::from_value(json!({ "want": want })).unwrap())
+    }
+
+    /// What this Machine answers `want` with when the management connection `key`
+    /// authenticated asks at Full access, as a Device's own connection does.
+    async fn ensure_from(
+        machine: &Enforcing,
+        key: ployz_core::ClientKey,
+        want: Value,
+    ) -> Result<RpcResponse, Status> {
+        use ployz_core::MachineRpc;
+        machine
+            .service
+            .clone()
+            .with_management_client(key)
+            .ensure_container(Request::new(ensure(want).encode().unwrap()))
+            .await
+            .map(|reply| reply.into_inner().decode_response().unwrap())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_full_start_queued_while_its_device_slot_goes_is_held_to_the_operator_slot_left() {
+        let machine = Enforcing::new().await;
+        let device = DeviceKey::from(Signer::from_seed(&[7; 32]).public());
+        let kept = DeviceKey::from(Signer::from_seed(&[9; 32]).public());
+        machine
+            .store
+            .mutate(move |store| {
+                store.approve_device(kept).unwrap();
+                let cloud = ployz_core::ManagementClientLabel::cloud();
+                store.stage_management_client(cloud, device.into()).unwrap();
+                store.activate_management_client(device.into()).unwrap();
+            })
+            .await
+            .unwrap();
+        // Created at Full access, so the Container is kept under the Device's own key.
+        let created = ensure_from(
+            &machine,
+            device.into(),
+            new_want("api", "nginx:1.29-alpine"),
+        )
+        .await
+        .unwrap();
+        let ployz_core::EnsuredContainer::Ensured {
+            now: ployz_core::ContainerNow::Present(observed),
+            ..
+        } = created.decode::<op::EnsureContainer>().unwrap()
+        else {
+            panic!("the Device's create made no Container");
+        };
+        let id = observed.container_id;
+        let containers = machine.service.local.docker().unwrap();
+        containers.lifecycle().stop(&id, None, None).await.unwrap();
+        let before = machine.fake.requests.lock().unwrap().len();
+        let turn = machine.store.admission_lock().write_owned().await;
+        let call = tokio::spawn({
+            let service = machine.service.clone();
+            async move {
+                use ployz_core::MachineRpc;
+                let start = ensure(json!({
+                    "state": "running", "rotation": "pending",
+                    "container": {"existing": {"id": id}},
+                }));
+                service
+                    .with_management_client(device.into())
+                    .ensure_container(Request::new(start.encode().unwrap()))
+                    .await
+                    .map(|reply| reply.into_inner().decode_response().unwrap())
+            }
+        });
+        until_sent(&machine, before, http::Method::GET, &format!("{id}/json")).await;
+        machine
+            .store
+            .mutate(move |store| assert!(store.remove_by_code(device.code()).unwrap()))
+            .await
+            .unwrap();
+        assert!(
+            machine
+                .store
+                .record()
+                .accepts_management_client(&device.into())
+        );
+        drop(turn);
+        let answer = call.await.unwrap();
+        assert_eq!(
+            sent(&machine, before, http::Method::POST, "/start"),
+            0,
+            "{answer:?}"
+        );
+        assert!(
+            matches!(&answer, Ok(response) if matches!(response.body, RpcResponseBody::Error(_)))
+                || answer.is_err(),
+            "{answer:?}"
+        );
+        machine.remove();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_device_removed_between_its_stop_and_its_removal_deletes_nothing() {
+        let machine = Enforcing::new().await;
+        let id = running_container(&machine).await;
+        machine
+            .service
+            .local
+            .docker()
+            .unwrap()
+            .lifecycle()
+            .start(&id)
+            .await
+            .unwrap();
+        let device = DeviceKey::from(Signer::from_seed(&[7; 32]).public());
+        let kept = DeviceKey::from(Signer::from_seed(&[9; 32]).public());
+        machine
+            .store
+            .mutate(move |store| store.approve_device(kept).unwrap())
+            .await
+            .unwrap();
+        let address = served_to(&machine, device.into()).await;
+        let before = machine.fake.requests.lock().unwrap().len();
+        let stopping = machine.fake.stop_gate.clone().write_owned().await;
+        let removal = ensure(json!({
+            "state": "gone", "container": {"id": id}, "drain": 0,
+            "anonymous_volumes": "remove",
+        }));
+        let call = tokio::spawn(async move {
+            unary_at(address, op::EnsureContainer::PATH, &removal, false).await
+        });
+        until_sent(&machine, before, http::Method::POST, "/stop").await;
+        machine
+            .store
+            .mutate(move |store| assert!(store.remove_by_code(device.code()).unwrap()))
+            .await
+            .unwrap();
+        drop(stopping);
+        let answer = call.await.unwrap();
+        assert_eq!(
+            sent(&machine, before, http::Method::DELETE, ""),
+            0,
+            "{answer:?}"
+        );
+        assert!(
+            matches!(&answer, Answer::Refused { code, .. } if code == "Unauthenticated"),
+            "{answer:?}"
+        );
+        machine.remove();
+    }
 }

@@ -4773,6 +4773,73 @@ mod set_volume_copy {
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 
+    #[tokio::test]
+    async fn a_forget_queued_on_the_switch_while_its_device_goes_destroys_nothing() {
+        use ployz_core::authority::Signer;
+        let (data_dir, store, service, _fake) = fake_docker_service("ployzd-copy-revoked").await;
+        let plugin = FakePlugin::default();
+        plugin.reply(INSPECT_ROUTE, slot(Some(snapshot("f-1", 7))));
+        plugin.reply(crate::volume_copy::DESTROY_ROUTE, json!({"Ok": null}));
+        let (socket, server) = plugin.serve(&data_dir);
+        let service = service.with_volume_plugin(socket);
+        let device = ployz_core::DeviceKey::from(Signer::from_seed(&[7; 32]).public());
+        let kept = ployz_core::DeviceKey::from(Signer::from_seed(&[9; 32]).public());
+        store
+            .mutate(move |store| {
+                store.approve_device(device).unwrap();
+                store.approve_device(kept).unwrap();
+            })
+            .await
+            .unwrap();
+        let caller = service.clone().with_management_client(device.into());
+        let switch = service.local().lock_switch().await;
+        let forgetting = tokio::spawn(async move {
+            let mirror = json!({"kind":"mirror", "newest":"7", "slot":"1"});
+            let request = at_gen(forget(mirror), 3);
+            caller
+                .set_volume_copy(Request::new(
+                    op::SetVolumeCopy::into_request(serde_json::from_value(request).unwrap())
+                        .encode()
+                        .unwrap(),
+                ))
+                .await
+                .map(|reply| reply.into_inner().decode_response().unwrap())
+        });
+        // The forget raises the floor to its gen just before it waits for the switch.
+        let name = VOLUME.parse().unwrap();
+        let containers = service.local().docker().unwrap().clone();
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let mut floor = containers.lifecycle().floor_turn().await;
+                if floor
+                    .check(&name, ployz_core::VolumeGen::new(2))
+                    .await
+                    .unwrap()
+                    .is_err()
+                {
+                    break;
+                }
+                drop(floor);
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the forget queued on the switch");
+        store
+            .mutate(move |store| assert!(store.remove_by_code(device.code()).unwrap()))
+            .await
+            .unwrap();
+        drop(switch);
+        let answer = forgetting.await.unwrap();
+        assert_eq!(effects(&plugin), Vec::<String>::new(), "{answer:?}");
+        assert_eq!(
+            answer.map(drop).unwrap_err().code(),
+            tonic::Code::Unauthenticated
+        );
+        server.abort();
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
     /// Each child re-runs this binary armed through its own fault file, since a kill aborts
     /// the whole process.
     #[cfg(feature = "verify-faults")]
