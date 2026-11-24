@@ -82,7 +82,7 @@ export function drainView(input: {
   switch (own.state) {
     case "pending": {
       if (own.serversSilent) return { kind: "waiting" };
-      // Drains in one Organization run one at a time.
+      // A Drain in the Organization holds the slot this one waits for, except while it waits on a Volume it moves.
       const behind = Object.entries(latest).find(([id, other]) => id !== server.id && other.state === "running");
       return { kind: "queued", behind: behind === undefined ? null : input.serverNames.get(behind[0]) ?? null };
     }
