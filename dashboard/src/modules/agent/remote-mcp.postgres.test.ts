@@ -15,6 +15,7 @@ import { asTestDouble } from "#/lib/test-double";
 import { McpAnalytics, type McpAnalyticsService, type McpCapture } from "#/modules/agent/agent-calls.server";
 import { serveAuth, serveMcpMetadata, serveRegistryProof, serveRemoteMcp } from "#/modules/agent/remote-mcp.server";
 import { decideApproval, pendingApprovals } from "#/modules/approvals/approvals.server";
+import { decideProposal } from "#/modules/proposals/proposals.server";
 import { operationApprovals } from "#/modules/approvals/tables";
 import type { PolarService } from "#/modules/billing/polar-provider.server";
 import type { Caller } from "#/modules/identity/actor";
@@ -506,30 +507,21 @@ it.live("an anonymous Organization's agent hears the claim URL when it adds a cu
     expect(refused.body.claim_required?.url).toMatch(/^http:\/\/localhost:3000\/claim\/[\w-]{43}$/);
   }).pipe(Effect.scoped), 30_000);
 
-it.live("a destroying Deploy waits on a person; an early retry only asks again, and the retry after approval deploys once", () =>
+it.live("a destroying Deploy waits on one approval link, and the person's approval deploys it once", () =>
   Effect.gen(function* () {
     const shop = yield* hostedShop();
     const agent = yield* agentWith(shop, yield* connect(shop, yield* registerAgent(shop)));
     const writes = vi.spyOn(shop.store, "write");
 
     const asked = yield* agent.call("deploy", SHOP);
-    const approvalId = asked.body.approval_required?.approval_id ?? expect.fail("the Deploy did not ask for approval");
-    expect(asked.isError).toBe(true);
-    expect(asked.body.approval_required?.url).toMatch(/^http:\/\/localhost:3000\/cloud\/shop\?chat=/);
-    const [approval, ...others] = yield* shop.provided(pendingApprovals(ORGANIZATION));
-    expect(others).toEqual([]);
-    expect(approval?.id).toBe(approvalId);
+    expect(asked).toMatchObject({ isError: false, body: { ok: true, value: { status: "presented", url: expect.stringMatching(/^http:\/\/localhost:3000\/cloud\/shop\/approve\//) } } });
+    const id = Schema.decodeUnknownSync(Schema.Struct({ value: Schema.Struct({ proposal_id: Schema.String }) }))(asked.body).value.proposal_id;
+    expect(yield* shop.provided(pendingApprovals(ORGANIZATION))).toEqual([]);
+    expect(admitted(writes).filter((approval) => approval !== "required")).toEqual([]);
     writes.mockClear();
 
-    const early = yield* agent.call("deploy", { ...SHOP, approval: approvalId });
-    expect(early.isError).toBe(true);
-    expect(admitted(writes)).toEqual(["required"]);
-    writes.mockClear();
-
-    yield* shop.provided(decideApproval(shop.ada, approvalId, { approve: { digest: approval?.digest ?? "" } }));
-    const approved = yield* agent.call("deploy", { ...SHOP, approval: approvalId });
-    expect(approved).toMatchObject({ isError: false, body: { ok: true } });
-    expect(admitted(writes)).toEqual([{ approved: approval?.digest }]);
+    expect(yield* shop.provided(decideProposal(shop.ada, id, { approve: {} }))).toMatchObject({ ok: true, proposal: { status: "approved" } });
+    expect(admitted(writes)).toEqual([{ approved: expect.any(String) }]);
   }).pipe(Effect.scoped), 30_000);
 
 /** A JSON key a person's approval would leave behind: the signed bundle, a grant, a signature or the browser's key. */

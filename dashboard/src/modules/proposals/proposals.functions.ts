@@ -56,11 +56,11 @@ export const decideProposalServerFn = createServerFn({ method: "POST" })
 const isMade = Schema.is(Schema.Struct({ op: Schema.Literal("set"), path: Schema.String, value: Schema.Struct({ secret: Schema.Struct({}) }) }));
 const Made = Schema.declare<Change>((value): value is Change => isMade(value));
 
-/** The approval page's one edit: each Pending value its Deploy needs, made and sealed in this browser. */
+/** The approval page's one edit: each Pending value its Deploy needs, made and sealed in this browser, at the version the page loaded. */
 export const fillDeployServerFn = createServerFn({ method: "POST" })
   .middleware(authenticated)
-  .validator(strictValidator(Schema.Struct({ organizationSlug: Schema.String, id: Schema.String, changes: Schema.Array(Made).check(Schema.isMaxLength(256)) })))
+  .validator(strictValidator(Schema.Struct({ organizationSlug: Schema.String, id: Schema.String, version: Schema.NullOr(Schema.String), changes: Schema.Array(Made).check(Schema.isMaxLength(256)) })))
   .handler(({ context, data }) => runActor(context, Effect.gen(function* () {
     const access = yield* requireAccess(context.actor, data.organizationSlug, "changes:deploy");
-    return yield* fillDeploy({ ...access, credential: context.actor.credential }, data.id, data.changes);
+    return yield* fillDeploy({ ...access, credential: context.actor.credential }, data.id, data.version, data.changes);
   })));

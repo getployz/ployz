@@ -26,7 +26,8 @@ import {
 } from "#/modules/proposals/proposals.server";
 import { DEPLOY_MOVED } from "#/modules/proposals/proposal";
 import { operationProposals } from "#/modules/proposals/tables";
-import { type Change, type ConfigCommand, type ConfigQuery, type ConfigStore, type ConfigTrusted, type DiffView, type MachineId, RpcError } from "@ployz/sdk";
+import type { Change, ConfigCommand, ConfigQuery, ConfigStore, ConfigTrusted, DiffView, MachineId } from "@ployz/sdk";
+import { RpcError } from "#/modules/runtime/ployz.server";
 import { admitDeploy } from "#/modules/config-store/admit-deploy";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { RunningObserver } from "#/modules/config-store/running-evidence.server";
@@ -407,6 +408,14 @@ const memberAgent = Effect.gen(function* () {
 
 const madePassword: Change[] = [{ op: "set", path: envPath("web", "PASSWORD"), value: "made" }];
 
+/** An approval page's fill of `changes`, sent at `seen`, the version the page loaded: by default the one the proposal holds now. */
+const filledBy = (decider: Caller, id: string, seen?: string | null, changes = madePassword) => Effect.gen(function* () {
+  return yield* fillDeploy(decider, id, seen === undefined ? (yield* deployStep(id)).command.version ?? null : seen, changes);
+});
+
+/** The revision a review version names. */
+const revisionOf = (version: string | null | undefined) => Number(/^(\d+):/u.exec(version ?? "")?.[1]);
+
 /**
  * The Store as it answers a copy whose password has no value yet: it refuses to plan until an edit sets it. With `loss`,
  * a Deploy then deletes the data in `data`, which it asks to accept by name and a person to approve, and admits once both
@@ -475,7 +484,7 @@ it.live("a member's Deploy to a Protected Environment that only the page can fin
     pendingCopy(store, yield* provided(readStore(ORGANIZATION, { query: "diff", environment: production })));
     const ada = yield* provided(memberAgent);
     const id = linkedId(yield* cluster(linkDeploy(ada, admitDeploy(production, ASKED))));
-    expect(yield* cluster(fillDeploy(owner, id, madePassword))).toMatchObject({ ok: true });
+    expect(yield* cluster(filledBy(owner, id))).toMatchObject({ ok: true });
     expect(yield* provided(deployStep(id))).toMatchObject({ review: { review: { protected: { environment: "production" } } } });
     expect(yield* cluster(decideProposal(ada, id, approve))).toMatchObject({ ok: false, message: expect.stringContaining("Only an owner or admin") });
     expect(yield* admitted(id)).toBe(0);
@@ -501,7 +510,7 @@ it.live("a copy whose password has no value yet and whose Deploy loses data take
     answers.loss = true;
     const id = linkedId(yield* cluster(linkDeploy(agent, admitDeploy(production, ASKED))));
     expect((yield* provided(deployStep(id))).review).toBeUndefined();
-    expect(yield* cluster(fillDeploy(owner, id, madePassword))).toMatchObject({ ok: true });
+    expect(yield* cluster(filledBy(owner, id))).toMatchObject({ ok: true });
     expect(yield* provided(deployStep(id))).toMatchObject({
       command: { accept_volume_loss: ["data"], version: expect.stringMatching(/#loss-0$/) },
       review: { review: { effects: [{ kind: "deletes_volume", name: "data" }] } },
@@ -510,23 +519,60 @@ it.live("a copy whose password has no value yet and whose Deploy loses data take
     expect(yield* admitted(id)).toBe(1);
   }));
 
-it.live("a fill another edit beat denies the proposal; one another approver's same fill beat goes on", () =>
+it.live("a fill another edit beat denies the proposal, even an edit that made the same password", () =>
   Effect.gen(function* () {
     const { cluster, provided, owner, agent, store, write } = yield* deployable();
     const answers = pendingCopy(store, yield* provided(readStore(ORGANIZATION, { query: "diff", environment: production })));
-    const revisionOf = (version: string | null | undefined) => Number(/^(\d+):/u.exec(version ?? "")?.[1]);
 
     const id = linkedId(yield* cluster(linkDeploy(agent, admitDeploy(production, ASKED))));
-    // Another approver's page made the same value first, and hasn't recorded it on the proposal yet.
-    yield* write({ command: "edit", environment: production, expect: revisionOf((yield* provided(deployStep(id))).command.version), changes: madePassword });
-    expect(yield* cluster(fillDeploy(owner, id, madePassword))).toMatchObject({ ok: true });
-    expect(yield* provided(deployStep(id))).toMatchObject({ status: "presented", review: { digest: expect.any(String) } });
+    // One edit made the password and changed the replicas. No fill of this proposal wrote it.
+    yield* write({ command: "edit", environment: production, expect: revisionOf((yield* provided(deployStep(id))).command.version), changes: [...madePassword, { op: "set", path: "web.replicas", value: 2 }] });
+    expect(yield* cluster(filledBy(owner, id))).toMatchObject({ ok: false, message: DEPLOY_MOVED });
+    expect(yield* provided(deployStep(id))).toMatchObject({ status: "denied" });
 
     answers.pending = true;
     const stale = linkedId(yield* cluster(linkDeploy(agent, admitDeploy(production, ASKED_AGAIN))));
-    yield* write({ command: "edit", environment: production, expect: null, changes: [{ op: "set", path: "web.replicas", value: 2 }] });
-    expect(yield* cluster(fillDeploy(owner, stale, madePassword))).toMatchObject({ ok: false, message: DEPLOY_MOVED });
+    yield* write({ command: "edit", environment: production, expect: null, changes: [{ op: "set", path: "web.replicas", value: 3 }] });
+    expect(yield* cluster(filledBy(owner, stale))).toMatchObject({ ok: false, message: DEPLOY_MOVED });
     expect(yield* provided(deployStep(stale))).toMatchObject({ status: "denied" });
+  }));
+
+it.live("a second approval page that loaded before the first page's fill resumes that fill and makes no password of its own", () =>
+  Effect.gen(function* () {
+    const { cluster, provided, owner, agent, approve, admitted, store } = yield* deployable();
+    pendingCopy(store, yield* provided(readStore(ORGANIZATION, { query: "diff", environment: production })));
+    const id = linkedId(yield* cluster(linkDeploy(agent, admitDeploy(production, ASKED))));
+    const loaded = (yield* provided(deployStep(id))).command.version ?? null;
+    const first = yield* cluster(filledBy(owner, id, loaded));
+    expect(first).toMatchObject({ ok: true });
+    const bound = (yield* provided(deployStep(id))).command.version;
+    expect(yield* cluster(filledBy(owner, id, loaded, [{ op: "set", path: envPath("web", "PASSWORD"), value: "made again" }]))).toEqual(first);
+    expect((yield* provided(deployStep(id))).command.version).toBe(bound);
+    expect(revisionOf((yield* provided(readStore(ORGANIZATION, { query: "diff", environment: production }))).version)).toBe(revisionOf(bound));
+    expect(yield* cluster(decideProposal(owner, id, approve))).toMatchObject({ ok: true, proposal: { status: "approved" } });
+    expect(yield* admitted(id)).toBe(1);
+  }));
+
+it.live("the same Deploy asked again after its approval finds that proposal; another body under its id is refused", () =>
+  Effect.gen(function* () {
+    const { cluster, owner, agent, approve, admitted } = yield* deployable();
+    const command = admitDeploy(production, ASKED);
+    const id = linkedId(yield* cluster(linkDeploy(agent, command)));
+    expect(yield* cluster(decideProposal(owner, id, approve))).toMatchObject({ ok: true, proposal: { status: "approved" } });
+    expect(yield* cluster(linkDeploy(agent, command))).toMatchObject({ linked: { proposal_id: id, status: "approved" } });
+    expect(yield* cluster(linkDeploy(agent, { ...command, no_prune: true }))).toMatchObject({ refused: { code: "conflict" } });
+    expect(yield* admitted(id)).toBe(1);
+  }));
+
+it.live("a full Deploy whose only reviewed prune target is gone by the tap is refused, not run", () =>
+  Effect.gen(function* () {
+    const { call, cluster, provided, owner, approve, admitted, runs } = yield* deployable();
+    runs(["old"]);
+    const { proposal_id: id } = linkOf(yield* call("deploy", {}));
+    expect(yield* provided(deployStep(id))).toMatchObject({ review: { review: { effects: [{ kind: "removes_service", name: "old" }] } } });
+    runs([]);
+    expect(yield* cluster(decideProposal(owner, id, approve))).toMatchObject({ ok: false });
+    expect(yield* admitted(id)).toBe(0);
   }));
 
 it.live("a CLI that signs with its device key gets no link for a Pending value or a Volume loss", () =>

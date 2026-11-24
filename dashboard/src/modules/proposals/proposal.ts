@@ -27,11 +27,13 @@ export type DeployReview = { readonly digest: string; readonly review: Extract<A
  * A Deploy a caller that can't sign asked for, held whole as the Store will admit it: its Environment, Services, flags,
  * upload and the review version it is bound to, and once a person approved it, the versions their passkey signed.
  * `asked` digests the request as it came, so the same Deployment id asked with another body is refused. `review` is
- * missing only while a Pending value waits for the approval page to make it.
+ * missing only while a Pending value waits for the approval page to make it. `filled` is the revision the approval
+ * page's edit of those values wrote, recorded as soon as it lands, so a later page resumes that fill rather than make
+ * them again, and only that edit counts as this proposal's.
  */
 export type DeployStep = {
   readonly verb: "deploy";
-  readonly deploy: { readonly command: AdmitDeploy; readonly asked: string; readonly review?: DeployReview };
+  readonly deploy: { readonly command: AdmitDeploy; readonly asked: string; readonly review?: DeployReview; readonly filled?: number };
 };
 
 export type ProposalStep = ServiceStep | DeployStep;

@@ -198,6 +198,24 @@ export const presentProposal = Effect.fn("Proposals.present")(function* (caller:
 const askedDigest = (command: AdmitDeploy) => createHash("sha256").update(canonicalJson(projectJsonValue(command) ?? null)).digest("hex");
 
 /**
+ * The proposal still waiting or approved under the Deployment id `asked` names: this person's same request finds it
+ * again, and any other body under that id is refused. Null when there is none.
+ */
+export const askedDeployProposal = Effect.fn("Proposals.askedDeploy")(function* (caller: Caller, asked: AdmitDeploy) {
+  const { drizzle } = yield* Database;
+  const [again] = yield* drizzle.select({ id: operationProposals.id, status: operationProposals.status, by: operationProposals.requestedByUserId, steps: operationProposals.steps }).from(operationProposals).where(and(
+    eq(operationProposals.organizationId, caller.organization.id),
+    inArray(operationProposals.status, ["presented", "approved"]),
+    sql`${operationProposals.steps}->0->'deploy'->'command'->>'id' = ${asked.id}`,
+  )).limit(1);
+  if (again === undefined) return null;
+  const [step] = again.steps;
+  const same = again.by === caller.userId && step !== undefined && isDeploy(step) && step.deploy.asked === askedDigest(asked);
+  if (!same) return { refused: refusal("conflict", "A different deploy already asked for approval under this ID. Nothing deployed.") };
+  return { id: again.id, status: again.status === "approved" ? "approved" as const : "presented" as const };
+});
+
+/**
  * A Deploy an agent or a caller without a key asked for, presented to people at once with its whole command as the
  * Store will admit it and the review it was asked against. The same request asked again by the same person finds the
  * proposal still waiting or running, under a lock so two retries at once make one. The Deployment id asked with
@@ -213,16 +231,8 @@ export const presentDeployProposal = Effect.fn("Proposals.presentDeploy")(functi
   return yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     yield* drizzle.execute(sql`select pg_advisory_xact_lock(hashtext(${`deploy-proposal:${caller.organization.id}:${deploy.asked.id}`}))`);
-    const [again] = yield* drizzle.select({ id: operationProposals.id, by: operationProposals.requestedByUserId, steps: operationProposals.steps }).from(operationProposals).where(and(
-      eq(operationProposals.organizationId, caller.organization.id),
-      inArray(operationProposals.status, ["presented", "approved"]),
-      sql`${operationProposals.steps}->0->'deploy'->'command'->>'id' = ${deploy.asked.id}`,
-    )).limit(1);
-    if (again !== undefined) {
-      const [step] = again.steps;
-      const same = again.by === caller.userId && step !== undefined && isDeploy(step) && step.deploy.asked === asked;
-      return same ? { id: again.id } : { refused: refusal("conflict", "A different deploy already waits for approval under this ID. Nothing deployed.") };
-    }
+    const again = yield* askedDeployProposal(caller, deploy.asked);
+    if (again !== null) return again;
     const step: DeployStep = { verb: "deploy", deploy: deploy.review === undefined ? { command: deploy.bound, asked } : { command: deploy.bound, asked, review: deploy.review } };
     const [row] = yield* drizzle.insert(operationProposals).values({
       organizationId: caller.organization.id,
@@ -237,7 +247,7 @@ export const presentDeployProposal = Effect.fn("Proposals.presentDeploy")(functi
       steps: [step],
       status: "presented",
     }).returning({ id: operationProposals.id });
-    return row ?? (yield* Effect.die("an insert returned no row"));
+    return row === undefined ? yield* Effect.die("an insert returned no row") : { id: row.id, status: "presented" as const };
   }));
 });
 
@@ -395,14 +405,15 @@ const askerNow = Effect.fn("Proposals.askerNow")(function* (row: ProposalRow, as
 
 /**
  * Admit a Deploy step's stored command as the asker, with what they hold now, through the credential they asked with,
- * redeeming the review the person approved: a Deploy that would destroy anything else by now is refused, not run. A
+ * redeeming the review the person approved as the Store asked it, at every Deploy: a Deploy that would destroy
+ * anything else by now, or no longer destroys what was shown, is refused, not run. A
  * second run sends the same command, which the Store replays by its Deployment id.
  */
 const runDeploy = Effect.fn("Proposals.runDeploy")(function* (row: ProposalRow, step: DeployStep, asker: string) {
   const now = yield* askerNow(row, asker);
   if (now.refusal !== undefined) return { refusal: now.refusal };
   const { command, review } = step.deploy;
-  const result = yield* callStore(row.organizationId, asker, { operation: "write", command }, { ...now.gate, approval: review === undefined ? "required" : { approved: review.digest } });
+  const result = yield* callStore(row.organizationId, asker, { operation: "write", command }, review === undefined ? { ...now.gate, approval: "required" } : { ...now.gate, approval: { approved: review.digest }, asks: "every_deploy" });
   return result.ok ? started : { refusal: result.refusal.message };
 });
 
@@ -583,40 +594,61 @@ const denyWaiting = Effect.fn("Proposals.denyWaiting")(function* (decider: Decid
 
 /**
  * Make a Deploy's Pending values. The approval page sealed each one; they land in one edit at exactly the revision the
- * proposal is bound to, so no other edit slips in. The Store's review is read again as the asker, so a Volume loss the
- * filled plan names is bound and shown before the tap, and the proposal is bound one revision on, so a refresh resumes
- * at the signing. An edit made since denies it, unless it was another approver's fill of these same values.
+ * page saw the proposal bound to, so no other edit slips in, and the revision it wrote is recorded on the proposal at
+ * once. Then the Store's review is read again as the asker, so a Volume loss the filled plan names is bound and shown
+ * before the tap, and the proposal is bound one revision on, so a refresh resumes at the signing. A page whose fill
+ * this proposal already recorded resumes it and makes nothing. Any other edit since denies the proposal.
  */
-export const fillDeploy = Effect.fn("Proposals.fillDeploy")(function* (decider: Decider, id: string, changes: readonly Change[]) {
+export const fillDeploy = Effect.fn("Proposals.fillDeploy")(function* (decider: Decider, id: string, seen: string | null, changes: readonly Change[]) {
   const row = yield* readRow(decider.organization.id, id);
   const [step] = row?.steps ?? [];
   if (row === undefined || row.status !== "presented" || step === undefined || !isDeploy(step) || row.requestedByUserId === null) return { ok: false, message: "This deploy isn't waiting for approval." } as const;
-  const { command } = step.deploy;
+  const { command, filled } = step.deploy;
+  if (filled !== undefined) return yield* rebindFill(decider, row, step, filled);
   const bound = /^(\d+):/u.exec(command.version ?? "")?.[1];
   if (bound === undefined) return yield* denyWaiting(decider, row, command.version, DEPLOY_MOVED);
+  if (seen !== command.version) return { ok: false, message: "This deploy changed since this page loaded. Reload it." } as const;
   const written = yield* writeStoreAsMember(decider, decider.organization.slug, { command: "edit", environment: command.environment, expect: Number(bound), changes: [...changes] });
   if (!written.ok && written.refusal.code !== "conflict") return { ok: false, message: written.refusal.message } as const;
-  const revision = written.ok && written.value.written === "edited" ? written.value.environment.revision : Number(bound) + 1;
-  const filled: AdmitDeploy = { ...command, version: moved(command.version, revision) };
-  if (!written.ok || written.value.written !== "edited") {
-    // Another approver's fill of these values moved the revision by exactly that one edit, and nothing is Pending now.
-    const planned = yield* prepareDeployTap(decider, { organizationSlug: decider.organization.slug, environment: command.environment, services: command.services ?? [], classify: true });
-    if (planned.kind !== "plan" || !namesReview(planned.plan.version, filled.version ?? "")) return yield* denyWaiting(decider, row, command.version, DEPLOY_MOVED);
+  const { drizzle } = yield* Database;
+  if (written.ok && written.value.written === "edited") {
+    const revision = written.value.environment.revision;
+    const [recorded] = yield* drizzle.update(operationProposals).set({ steps: sql`jsonb_set(${operationProposals.steps}, '{0,deploy,filled}', to_jsonb(${revision}::int))`, updatedAt: new Date() }).where(and(
+      eq(operationProposals.id, row.id), eq(operationProposals.status, "presented"),
+      sql`${operationProposals.steps}->0->'deploy'->'command'->>'version' = ${seen}`, sql`${operationProposals.steps}->0->'deploy'->'filled' is null`,
+    )).returning();
+    const [now] = recorded?.steps ?? [];
+    return recorded !== undefined && now !== undefined && isDeploy(now) ? yield* rebindFill(decider, recorded, now, revision) : { ok: false, message: DEPLOY_MOVED } as const;
   }
+  // The revision moved first. Only this proposal's own fill, recorded by the page that made it, lets this page go on.
+  const after = yield* readRow(decider.organization.id, id);
+  const [now] = after?.steps ?? [];
+  if (after?.status === "presented" && now !== undefined && isDeploy(now) && now.deploy.filled === Number(bound) + 1) return yield* rebindFill(decider, after, now, now.deploy.filled);
+  return yield* denyWaiting(decider, row, command.version, DEPLOY_MOVED);
+});
+
+/**
+ * Bind a Deploy whose Pending values this proposal's fill wrote at `revision` to the Store's review of the filled plan,
+ * read as the asker. Once bound, a page that comes back finds it bound and goes on to the signing.
+ */
+const rebindFill = Effect.fn("Proposals.rebindFill")(function* (decider: Decider, row: ProposalRow, step: DeployStep, revision: number) {
+  const { command } = step.deploy;
+  if (/^(\d+):/u.exec(command.version ?? "")?.[1] === String(revision)) return { ok: true, revision } as const;
+  if (row.requestedByUserId === null) return yield* denyWaiting(decider, row, command.version, "Whoever asked is no longer in the Organization.");
   const asker = yield* askerNow(row, row.requestedByUserId).pipe(
     Effect.catchIf((error) => error instanceof NotFound || error instanceof Forbidden, (error) => Effect.succeed({ refusal: error.message })),
   );
   if (asker.refusal !== undefined) return yield* denyWaiting(decider, row, command.version, asker.refusal);
-  const reviewed = yield* reviewDeploy(row.organizationId, row.requestedByUserId, asker.gate, filled);
+  const reviewed = yield* reviewDeploy(row.organizationId, row.requestedByUserId, asker.gate, { ...command, version: moved(command.version, revision) });
   if (reviewed === null || reviewed.refused !== undefined) return yield* denyWaiting(decider, row, command.version, reviewed?.refused?.message ?? DEPLOY_MOVED);
-  const next: DeployStep = { ...step, deploy: { ...step.deploy, command: reviewed.command, review: reviewed.review } };
+  const next: DeployStep = { ...step, deploy: { ...step.deploy, command: reviewed.command, review: reviewed.review, filled: revision } };
   const { drizzle } = yield* Database;
   const [saved] = yield* drizzle.update(operationProposals).set({ steps: [next], updatedAt: new Date() }).where(and(
     eq(operationProposals.id, row.id), eq(operationProposals.status, "presented"),
     sql`${operationProposals.steps}->0->'deploy'->'command'->>'version' = ${command.version ?? ""}`,
   )).returning({ id: operationProposals.id });
   if (saved !== undefined) return { ok: true, revision } as const;
-  // Another approver saved the same fill first: this page resumes on theirs.
-  const [now] = (yield* readRow(decider.organization.id, id))?.steps ?? [];
+  // Another page bound the same fill first: this one resumes on theirs.
+  const [now] = (yield* readRow(row.organizationId, row.id))?.steps ?? [];
   return now !== undefined && isDeploy(now) && now.deploy.command.version === reviewed.command.version ? { ok: true, revision } as const : { ok: false, message: DEPLOY_MOVED } as const;
 });

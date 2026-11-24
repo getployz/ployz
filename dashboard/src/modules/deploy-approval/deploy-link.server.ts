@@ -10,7 +10,7 @@ import { blocked, isPending, namesReview, versionService } from "#/modules/deplo
 import { prepareDeployTap } from "#/modules/deploy-approval/deploy-tap.server";
 import { type Caller, callerEnvironments, callerPermissions } from "#/modules/identity/actor";
 import type { DeployReview } from "#/modules/proposals/proposal";
-import { presentDeployProposal, reviewDeploy } from "#/modules/proposals/proposals.server";
+import { askedDeployProposal, presentDeployProposal, reviewDeploy } from "#/modules/proposals/proposals.server";
 import { AppConfig } from "#/server/config.server";
 import { Forbidden, NotFound } from "#/server/public-error";
 
@@ -19,7 +19,7 @@ export const approvalUrl = (appUrl: URL, organizationSlug: string, proposalId: s
   new URL(`/cloud/${organizationSlug}/approve/${proposalId}`, appUrl).href;
 
 /** What a Deploy that became a proposal answers: the link a person opens. */
-export type DeployLinked = { readonly proposal_id: string; readonly status: "presented"; readonly url: string; readonly message: string };
+export type DeployLinked = { readonly proposal_id: string; readonly status: "presented" | "approved"; readonly url: string; readonly message: string };
 
 /** `null`: the Deploy goes on as it always did. A refusal: why it can't ask a person. Linked: it waits for one. */
 export type DeployLink = null | { readonly refused: StoreRefusal } | { readonly linked: DeployLinked };
@@ -32,6 +32,10 @@ export type DeployLink = null | { readonly refused: StoreRefusal } | { readonly 
  */
 export const linkDeploy = Effect.fn("DeployLink.link")(function* (caller: Caller, command: AdmitDeploy) {
   if (caller.role === null || caller.via === "dashboard" || !(yield* hasApprover(caller.organization.id))) return null;
+  // A retry of a request already asked finds its proposal before anything is planned: once approved, its Deployment
+  // holds this id, and a plan or a probe would read the retry as another Deploy.
+  const again = yield* askedDeployProposal(caller, command);
+  if (again !== null) return again.refused === undefined ? yield* linked(caller, again) : { refused: again.refused };
   const agent = caller.via === "agent";
   const covered = new Set((command.versions ?? []).map(versionService));
   const planned = yield* prepareDeployTap(caller, {
@@ -85,8 +89,12 @@ export const linkDeploy = Effect.fn("DeployLink.link")(function* (caller: Caller
     ({ command: bound, review } = reviewed);
   }
   const presented = yield* presentDeployProposal(caller, { ...place.environment, namespace: place.namespace }, { asked: command, bound, review });
-  if ("refused" in presented) return presented;
+  return presented.refused === undefined ? yield* linked(caller, presented) : { refused: presented.refused };
+});
+
+const linked = Effect.fn("DeployLink.linked")(function* (caller: Caller, proposal: { readonly id: string; readonly status: DeployLinked["status"] }) {
   const { app } = yield* AppConfig;
-  const url = approvalUrl(app.url, caller.organization.slug, presented.id);
-  return { linked: { proposal_id: presented.id, status: "presented", url, message: `Waiting for approval at ${url}. Nothing deployed yet.` } } satisfies DeployLink;
+  const url = approvalUrl(app.url, caller.organization.slug, proposal.id);
+  const message = proposal.status === "approved" ? `Approved at ${url}. Follow proposal ${proposal.id} for the deploy.` : `Waiting for approval at ${url}. Nothing deployed yet.`;
+  return { linked: { proposal_id: proposal.id, status: proposal.status, url, message } } satisfies DeployLink;
 });

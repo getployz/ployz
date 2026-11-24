@@ -50,7 +50,7 @@ export function ApproveDeploy({ organizationSlug, id }: { organizationSlug: stri
       // Each Pending value is made and sealed here, and lands only on the revision this Deploy was asked at. Cloud binds
       // the filled Deploy to the Store's review then, so the page reads the proposal again and plans that.
       const filled = await fillPending(command, planned, sealer.current, async (changes) => {
-        const made = await fillDeployServerFn({ data: { organizationSlug, id, changes } });
+        const made = await fillDeployServerFn({ data: { organizationSlug, id, version: command.version ?? null, changes } });
         if (!made.ok) throw new Error(made.message);
         return made.revision;
       });
