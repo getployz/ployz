@@ -132,23 +132,38 @@ pub enum RunRotation {
     },
 }
 
-/// What `Gone` does with the Container's anonymous Volumes.
+/// What `Gone` does with the Container's anonymous Volumes. Only a
+/// [`crate::RemoveContainerPurpose`] makes one, so a caller says why it removes the
+/// Container and never picks what happens to the data.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(transparent)]
+pub struct AnonymousVolumes(#[ts(inline)] Disposal);
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
-pub enum AnonymousVolumes {
+enum Disposal {
     /// They go with the Container.
-    #[default]
     Remove,
-    /// They stay, since deleting data is a Volume decision.
+    /// They stay, since deleting data is a Volume decision. A request that omits the
+    /// field keeps them: no client since 0.3.0 omits it, and a guess must not delete.
+    #[default]
     Keep,
+}
+
+impl AnonymousVolumes {
+    /// Whether they go with the Container.
+    #[must_use]
+    pub fn go_with_container(self) -> bool {
+        self.0 == Disposal::Remove
+    }
 }
 
 impl From<crate::RemoveContainerPurpose> for AnonymousVolumes {
     fn from(purpose: crate::RemoveContainerPurpose) -> Self {
-        match purpose {
-            crate::RemoveContainerPurpose::Rollout => Self::Remove,
-            crate::RemoveContainerPurpose::Retire => Self::Keep,
-        }
+        Self(match purpose {
+            crate::RemoveContainerPurpose::Rollout => Disposal::Remove,
+            crate::RemoveContainerPurpose::Retire => Disposal::Keep,
+        })
     }
 }
 

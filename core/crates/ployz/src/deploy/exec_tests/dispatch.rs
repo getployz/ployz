@@ -706,9 +706,9 @@ async fn retiring_a_container_keeps_its_anonymous_volumes() {
         matches!(
             wants.as_slice(),
             [ContainerWant::Gone {
-                anonymous_volumes: ployz_core::AnonymousVolumes::Keep,
+                anonymous_volumes,
                 ..
-            }]
+            }] if !anonymous_volumes.go_with_container()
         ),
         "{wants:?}"
     );
@@ -721,9 +721,9 @@ async fn a_rollout_removes_a_containers_anonymous_volumes_with_it() {
         matches!(
             wants.as_slice(),
             [ContainerWant::Gone {
-                anonymous_volumes: ployz_core::AnonymousVolumes::Remove,
+                anonymous_volumes,
                 ..
-            }]
+            }] if anonymous_volumes.go_with_container()
         ),
         "{wants:?}"
     );

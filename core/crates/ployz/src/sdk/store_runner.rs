@@ -493,7 +493,7 @@ async fn retire_copy<C: CopyLifecycle>(
         client,
         &Copy::observed(&observed),
         copy.purpose.into(),
-        copy.purpose.into(),
+        copy.purpose,
         &CancellationToken::new(),
     )
     .await;

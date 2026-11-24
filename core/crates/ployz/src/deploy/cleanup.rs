@@ -2,10 +2,10 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use ployz_core::{
-    AnonymousVolumes, ContainerId, ContainerKind, ContainerLocator, ContainerNotFoundReason,
-    ContainerNow, ContainerObservation, ContainerRefusal, ContainerRefusalReason, ContainerWant,
-    CopyRotation, DeploymentLogId, Drain, EnsuredContainer, HealthVerdict, MachineId,
-    QualifiedService, ResolvedServiceSpec, RoutesRead, RpcError, RpcErrorCode, RunRotation,
+    ContainerId, ContainerKind, ContainerLocator, ContainerNotFoundReason, ContainerNow,
+    ContainerObservation, ContainerRefusal, ContainerRefusalReason, ContainerWant, CopyRotation,
+    DeploymentLogId, Drain, EnsuredContainer, HealthVerdict, MachineId, QualifiedService,
+    RemoveContainerPurpose, ResolvedServiceSpec, RoutesRead, RpcError, RpcErrorCode, RunRotation,
     RunTarget, StopOptions, Unacked,
 };
 use tokio::time::Instant;
@@ -417,11 +417,11 @@ pub(crate) enum EmptyPolicy {
     MayEmpty,
 }
 
-impl From<ployz_core::RemoveContainerPurpose> for EmptyPolicy {
-    fn from(purpose: ployz_core::RemoveContainerPurpose) -> Self {
+impl From<RemoveContainerPurpose> for EmptyPolicy {
+    fn from(purpose: RemoveContainerPurpose) -> Self {
         match purpose {
-            ployz_core::RemoveContainerPurpose::Rollout => Self::RequireOtherIn,
-            ployz_core::RemoveContainerPurpose::Retire => Self::MayEmpty,
+            RemoveContainerPurpose::Rollout => Self::RequireOtherIn,
+            RemoveContainerPurpose::Retire => Self::MayEmpty,
         }
     }
 }
@@ -473,18 +473,14 @@ pub(crate) async fn retire<C: CopyLifecycle>(
     client: &C,
     copy: &Copy,
     empty: EmptyPolicy,
-    anonymous_volumes: AnonymousVolumes,
+    purpose: RemoveContainerPurpose,
     cancellation: &CancellationToken,
 ) -> Result<Rotated, RpcError> {
     if !copy.drains() {
-        return remove(client, copy, anonymous_volumes)
-            .await
-            .map(Rotated::from);
+        return remove(client, copy, purpose).await.map(Rotated::from);
     }
     match take_out(client, copy, empty, cancellation).await? {
-        Rotated::Done => remove(client, copy, anonymous_volumes)
-            .await
-            .map(Rotated::from),
+        Rotated::Done => remove(client, copy, purpose).await.map(Rotated::from),
         rotated @ (Rotated::Refused(_) | Rotated::NotConfirmed(_) | Rotated::Cancelled) => {
             Ok(rotated)
         }
@@ -498,12 +494,10 @@ pub(crate) async fn retire_unconfirmed<C: CopyLifecycle>(
     client: &C,
     copy: &Copy,
     empty: EmptyPolicy,
-    anonymous_volumes: AnonymousVolumes,
+    purpose: RemoveContainerPurpose,
 ) -> Result<Rotated, RpcError> {
     match send_out(client, copy, empty).await? {
-        None => remove(client, copy, anonymous_volumes)
-            .await
-            .map(Rotated::from),
+        None => remove(client, copy, purpose).await.map(Rotated::from),
         Some(refusal) => Ok(Rotated::Refused(refusal)),
     }
 }
@@ -534,14 +528,14 @@ impl From<Removal> for Rotated {
 pub(crate) async fn remove<C: CopyLifecycle>(
     client: &C,
     copy: &Copy,
-    anonymous_volumes: AnonymousVolumes,
+    purpose: RemoveContainerPurpose,
 ) -> Result<Removal, RpcError> {
     match gone(
         client,
         &copy.machine_id,
         copy.locator(),
         Drain::DEFAULT,
-        anonymous_volumes,
+        purpose,
         None,
     )
     .await?
@@ -568,13 +562,13 @@ pub(crate) async fn gone<C: CopyLifecycle>(
     machine_id: &MachineId,
     container: ContainerLocator,
     drain: Drain,
-    anonymous_volumes: AnonymousVolumes,
+    purpose: RemoveContainerPurpose,
     budget: Option<Duration>,
 ) -> Result<Gone, RpcError> {
     let want = ContainerWant::Gone {
         container,
         drain,
-        anonymous_volumes,
+        anonymous_volumes: purpose.into(),
     };
     Ok(
         match client.ensure_unsettled(machine_id, want, budget).await? {
@@ -766,12 +760,12 @@ pub(crate) async fn user_remove<C: CopyLifecycle>(
             client,
             &copy,
             EmptyPolicy::MayEmpty,
-            AnonymousVolumes::Remove,
+            RemoveContainerPurpose::Retire,
             cancellation,
         )
         .await?
     } else {
-        remove(client, &copy, AnonymousVolumes::Remove)
+        remove(client, &copy, RemoveContainerPurpose::Retire)
             .await?
             .into()
     };

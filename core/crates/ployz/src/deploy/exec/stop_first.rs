@@ -15,7 +15,7 @@ use crate::deploy::progress::Progress;
 use crate::deploy::schedule::ServiceGroup;
 use futures_util::future::join_all;
 use ployz_core::{
-    AnonymousVolumes, ContainerId, ContainerLocator, ContainerObservation, ContainerRefusalReason,
+    ContainerId, ContainerLocator, ContainerObservation, ContainerRefusalReason,
     ContainerRuntimeObservation, ContainerWant, CopyRotation, Drain, ExecutionError, MachineAction,
     MachineId, OperationPhase, QualifiedService, RemoveContainerPurpose, ResolvedServiceSpec,
     RpcError, RpcErrorCode, RunRotation, RunTarget,
@@ -124,7 +124,7 @@ pub(super) async fn restore_group<C: MachineOperations>(
                 client,
                 &copy,
                 EmptyPolicy::RequireOtherIn,
-                AnonymousVolumes::Remove,
+                RemoveContainerPurpose::Rollout,
                 &cleanup,
             )
             .await
@@ -330,9 +330,9 @@ pub(super) async fn remove_container<C: MachineOperations>(
         .unreached(client, &copy.service, cancellation)
         .await?;
     let retired = if copy.drains() && unreached.may_keep_route() {
-        cleanup::retire_unconfirmed(client, &copy, empty, purpose.into()).await
+        cleanup::retire_unconfirmed(client, &copy, empty, purpose).await
     } else {
-        cleanup::retire(client, &copy, empty, purpose.into(), cancellation).await
+        cleanup::retire(client, &copy, empty, purpose, cancellation).await
     };
     match retired.map(cleanup::Rotated::failure) {
         Ok(Ok(())) => {
@@ -497,7 +497,7 @@ pub(super) async fn retire_older<C: MachineOperations>(
         client,
         copy,
         EmptyPolicy::RequireOtherIn,
-        AnonymousVolumes::Remove,
+        RemoveContainerPurpose::Rollout,
         &CancellationToken::new(),
     )
     .await;
@@ -835,7 +835,7 @@ async fn withdraw_step<C: MachineOperations>(
             })
             .map(|(task, observed)| async move {
                 let copy = cleanup::Copy::observed(observed);
-                let removed = cleanup::remove(client, &copy, AnonymousVolumes::Remove).await;
+                let removed = cleanup::remove(client, &copy, RemoveContainerPurpose::Rollout).await;
                 (task, removed)
             }),
     )

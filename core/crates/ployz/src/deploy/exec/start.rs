@@ -10,12 +10,12 @@ use crate::deploy::machine_calls::SlotPolicy;
 use crate::deploy::machine_calls::{Outstanding, RESTART_WAIT, RestartTolerant};
 use crate::deploy::progress::Progress;
 use ployz_core::{
-    AnonymousVolumes, AnswerWhen, ContainerId, ContainerKind, ContainerLocator, ContainerNow,
-    ContainerRefusalReason, ContainerWant, CopyRotation, CreationKey, DeploymentLogId, Drain,
+    AnswerWhen, ContainerId, ContainerKind, ContainerLocator, ContainerNow, ContainerRefusalReason,
+    ContainerWant, CopyRotation, CreationKey, DeploymentLogId, Drain,
     ENSURE_PINNED_CONTAINER_CAPABILITY, EnsuredContainer, ExecutionError, Gen, HealthVerdict,
     ImageDigest, LastRun, MachineAction, MachineId, Namespace, NewContainer, OperationPhase,
-    OutOfMemory, QualifiedService, ResolvedServiceSpec, RpcError, RpcErrorCode, RunRotation,
-    RunTarget, SlotKey, error_chain,
+    OutOfMemory, QualifiedService, RemoveContainerPurpose, ResolvedServiceSpec, RpcError,
+    RpcErrorCode, RunRotation, RunTarget, SlotKey, error_chain,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -36,7 +36,7 @@ pub(super) async fn discard_new<C: MachineOperations>(
         machine_id,
         ContainerLocator::Id(container_id),
         Drain::NONE,
-        AnonymousVolumes::Remove,
+        RemoveContainerPurpose::Rollout,
         None,
     )
     .await;
@@ -64,7 +64,7 @@ pub(super) async fn discard_new<C: MachineOperations>(
                 client,
                 &copy,
                 EmptyPolicy::MayEmpty,
-                AnonymousVolumes::Remove,
+                RemoveContainerPurpose::Rollout,
                 cancellation,
             )
             .await
@@ -118,7 +118,7 @@ pub(super) async fn remove_stray<C: MachineOperations>(
             machine_id,
             ContainerLocator::Id(container_id),
             Drain::NONE,
-            AnonymousVolumes::Remove,
+            RemoveContainerPurpose::Rollout,
             Some(RESTART_WAIT),
         ),
     );
@@ -336,7 +336,7 @@ async fn emptied<C: CopyLifecycle>(
     let want = ContainerWant::Gone {
         container: ContainerLocator::Key(slot),
         drain: Drain::NONE,
-        anonymous_volumes: AnonymousVolumes::Remove,
+        anonymous_volumes: RemoveContainerPurpose::Rollout.into(),
     };
     let gone = client.ensure_unsettled(machine_id, want, Some(RESTART_WAIT));
     match tokio::time::timeout(RESTART_WAIT, gone).await {
@@ -457,7 +457,7 @@ pub(super) async fn discard_attempt<C: MachineOperations>(
         ContainerWant::Gone {
             container: ContainerLocator::Key(slot),
             drain: Drain::NONE,
-            anonymous_volumes: AnonymousVolumes::Remove,
+            anonymous_volumes: RemoveContainerPurpose::Rollout.into(),
         },
     );
     within_restart(machine_id, discarded).await.map(|_| ())

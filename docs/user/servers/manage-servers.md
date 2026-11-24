@@ -519,7 +519,9 @@ the drain removes.
 Draining turns services off for the server and stops its global services there. Then it moves
 each replicated service's containers to your other servers one at a time. Each new container runs
 the same image, and each one starts, is healthy and is routed by every server's proxy before the
-old container is taken out of routing and removed.
+old container is taken out of routing and removed. Anonymous volumes of the containers a drain
+removes, such as the one a `postgres` image makes when no volume in Ployz is mounted at its data
+directory, stay on the drained server.
 
 The new container runs exactly the image the old one ran, even when its tag, like `app:v1`, names
 another image on the other server by then. A service whose image is named by a tag therefore moves

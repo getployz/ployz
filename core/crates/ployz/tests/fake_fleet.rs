@@ -283,7 +283,7 @@ async fn an_unmodeled_command_is_recorded_and_answers_unimplemented() {
                 want: ContainerWant::Gone {
                     container: ContainerLocator::Id(container_id("app-staging-web-1")),
                     drain: Drain::NONE,
-                    anonymous_volumes: ployz_core::AnonymousVolumes::Remove,
+                    anonymous_volumes: ployz_core::RemoveContainerPurpose::Rollout.into(),
                 },
             },
             Call::keyed(),

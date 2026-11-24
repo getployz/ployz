@@ -1,10 +1,10 @@
 use std::time::Duration;
 
 use ployz_core::{
-    AnonymousVolumes, ContainerDetails, ContainerLocator, ContainerNow, ContainerObservation,
-    ContainerWant, CopyRotation, DeploymentLogId, DockerVolumeId, Drain, EnsuredContainer,
-    HealthVerdict, ImagePulled, MachineId, QualifiedService, ResolvedServiceSpec, RoutesRead,
-    RpcError, RpcErrorCode, RunRotation, RunTarget, SlotKey, StopOptions,
+    ContainerDetails, ContainerLocator, ContainerNow, ContainerObservation, ContainerWant,
+    CopyRotation, DeploymentLogId, DockerVolumeId, Drain, EnsuredContainer, HealthVerdict,
+    ImagePulled, MachineId, QualifiedService, ResolvedServiceSpec, RoutesRead, RpcError,
+    RpcErrorCode, RunRotation, RunTarget, SlotKey, StopOptions,
 };
 
 use super::*;
@@ -277,7 +277,7 @@ fn gone() -> ContainerWant {
     ContainerWant::Gone {
         container: id(),
         drain: Drain::DEFAULT,
-        anonymous_volumes: AnonymousVolumes::Remove,
+        anonymous_volumes: ployz_core::RemoveContainerPurpose::Retire.into(),
     }
 }
 

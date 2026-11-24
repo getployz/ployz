@@ -3,8 +3,8 @@
 
 use ployz_core::error_chain;
 use ployz_core::{
-    AnonymousVolumes, EnvironmentValues, Machine, MachineId, ObservedGlobalSlotSpec,
-    QualifiedService, RpcError,
+    EnvironmentValues, Machine, MachineId, ObservedGlobalSlotSpec, QualifiedService,
+    RemoveContainerPurpose, RpcError,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -92,7 +92,7 @@ pub(crate) async fn let_go<C: CopyLifecycle>(
     .await
     .map(cleanup::Waited::failure);
     let ended = match unlisted {
-        Ok(Ok(())) => cleanup::remove(client, copy, AnonymousVolumes::Remove)
+        Ok(Ok(())) => cleanup::remove(client, copy, RemoveContainerPurpose::Retire)
             .await
             .map(cleanup::Removal::failure),
         unlisted => unlisted,

@@ -7,8 +7,8 @@ use crate::deploy::progress::Progress;
 use crate::deploy::schedule::{ServiceGroup, Stage};
 use futures_util::future::join_all;
 use ployz_core::{
-    AnonymousVolumes, ContainerId, CopyRotation, ExecutionError, MachineAction, MachineId,
-    QualifiedService, RpcError, RpcErrorCode, ServiceName, UpdateOrder,
+    ContainerId, CopyRotation, ExecutionError, MachineAction, MachineId, QualifiedService,
+    RemoveContainerPurpose, RpcError, RpcErrorCode, ServiceName, UpdateOrder,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use tokio::time::Instant;
@@ -240,7 +240,7 @@ pub(super) async fn publish_group<C: MachineOperations>(
     // Each Gone drains on its own Machine; they overlap and are all reported.
     let removed = join_all(
         gone.iter()
-            .map(|copy| cleanup::remove(client, copy, AnonymousVolumes::Remove)),
+            .map(|copy| cleanup::remove(client, copy, RemoveContainerPurpose::Rollout)),
     )
     .await;
     for (copy, removed) in gone.iter().zip(removed) {

@@ -1515,7 +1515,7 @@ impl LocalMachine {
                         remove_out_of_rotation(
                             containers,
                             &id,
-                            anonymous_volumes == AnonymousVolumes::Remove,
+                            anonymous_volumes.go_with_container(),
                         )
                         .await,
                     )
@@ -1535,7 +1535,7 @@ impl LocalMachine {
                         remove_out_of_rotation(
                             containers,
                             &id,
-                            anonymous_volumes == AnonymousVolumes::Remove,
+                            anonymous_volumes.go_with_container(),
                         )
                         .await,
                     )

@@ -304,7 +304,7 @@ fn gone(hex: char) -> ContainerWant {
     ContainerWant::Gone {
         container: ContainerLocator::Id(container(hex)),
         drain: ployz_core::Drain::DEFAULT,
-        anonymous_volumes: AnonymousVolumes::Remove,
+        anonymous_volumes: ployz_core::RemoveContainerPurpose::Retire.into(),
     }
 }
 
@@ -842,16 +842,19 @@ async fn a_global_whose_newest_container_is_not_global_is_reported_not_retired()
     assert!(client.retire_calls.is_empty());
 }
 
-/// What each Gone a Drain sent asks of the Container's anonymous Volumes.
-fn anonymous_volumes(cluster: &Cluster) -> Vec<AnonymousVolumes> {
+/// Whether each Gone a Drain sent deletes the Container's anonymous Volumes.
+fn anonymous_volumes_deleted(cluster: &Cluster) -> Vec<bool> {
     cluster
         .wants()
         .into_iter()
         .filter_map(|want| match want {
             ContainerWant::Gone {
                 anonymous_volumes, ..
-            } => Some(anonymous_volumes),
-            _ => None,
+            } => Some(anonymous_volumes.go_with_container()),
+            ContainerWant::Running { .. }
+            | ContainerWant::Stopped { .. }
+            | ContainerWant::Out { .. }
+            | ContainerWant::Held { .. } => None,
         })
         .collect()
 }
@@ -879,10 +882,7 @@ async fn a_drain_keeps_the_anonymous_volumes_of_a_global_it_retires() {
     )
     .await
     .expect("another In copy lets the drained one go Out");
-    assert_eq!(
-        anonymous_volumes(&cluster),
-        [AnonymousVolumes::Keep, AnonymousVolumes::Keep]
-    );
+    assert_eq!(anonymous_volumes_deleted(&cluster), [false, false]);
 }
 
 /// A copy a move left Out on the drained Server leaves that Server for good too.
@@ -905,5 +905,5 @@ async fn a_drain_keeps_the_anonymous_volumes_of_a_copy_it_lets_go() {
     )
     .await;
     assert_eq!(end, OldCopyEnd::Stopped);
-    assert_eq!(anonymous_volumes(&cluster), [AnonymousVolumes::Keep]);
+    assert_eq!(anonymous_volumes_deleted(&cluster), [false]);
 }

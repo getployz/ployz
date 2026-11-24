@@ -1666,17 +1666,9 @@ async fn a_failed_services_left_copy_is_kept_on_every_try_without_a_retry() {
 #[tokio::test]
 async fn only_a_removed_services_left_copy_may_leave_it_empty_and_keeps_its_anonymous_volumes() {
     let (run, actor) = run();
-    for (outcome, allow_empty, anonymous_volumes) in [
-        (
-            NodeStatus::Removed,
-            true,
-            ployz_core::AnonymousVolumes::Keep,
-        ),
-        (
-            NodeStatus::Deployed,
-            false,
-            ployz_core::AnonymousVolumes::Remove,
-        ),
+    for (outcome, allow_empty, volumes_deleted) in [
+        (NodeStatus::Removed, true, false),
+        (NodeStatus::Deployed, false, true),
     ] {
         let view = left_running(&run, &actor, &[("web", outcome, 'c')]);
         let retired = retire(&view, holding_c()).await;
@@ -1692,7 +1684,7 @@ async fn only_a_removed_services_left_copy_may_leave_it_empty_and_keeps_its_anon
         assert!(
             matches!(
                 retired.wants.last(),
-                Some(ployz_core::ContainerWant::Gone { anonymous_volumes: sent, .. }) if *sent == anonymous_volumes
+                Some(ployz_core::ContainerWant::Gone { anonymous_volumes: sent, .. }) if sent.go_with_container() == volumes_deleted
             ),
             "{outcome:?}: {:?}",
             retired.wants

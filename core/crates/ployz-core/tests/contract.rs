@@ -1613,9 +1613,24 @@ fn ensure_container_names_the_want_the_observation_and_the_refusal_on_the_wire()
         ContainerWant::Gone {
             container: ContainerLocator::Key(slot.clone()),
             drain: Drain::NONE,
-            anonymous_volumes: ployz_core::AnonymousVolumes::Remove,
-        }
+            anonymous_volumes: ployz_core::RemoveContainerPurpose::Retire.into(),
+        },
+        "a Gone that omits what happens to anonymous Volumes keeps them"
     );
+    for (purpose, wire) in [
+        (ployz_core::RemoveContainerPurpose::Rollout, "remove"),
+        (ployz_core::RemoveContainerPurpose::Retire, "keep"),
+    ] {
+        let anonymous_volumes = ployz_core::AnonymousVolumes::from(purpose);
+        assert_eq!(
+            serde_json::to_value(anonymous_volumes).unwrap(),
+            json!(wire)
+        );
+        assert_eq!(
+            serde_json::from_value::<ployz_core::AnonymousVolumes>(json!(wire)).unwrap(),
+            anonymous_volumes
+        );
+    }
     assert!(
         serde_json::from_value::<EnsureContainerRequest>(json!({
             "want": { "state": "stopped", "container": { "id": id } }

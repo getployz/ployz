@@ -6,13 +6,13 @@ use futures_util::{
     stream::FuturesUnordered,
 };
 use ployz_core::{
-    AnonymousVolumes, ContainerDetails, ContainerId, ContainerKind, ContainerLocator,
-    ContainerUpdateOperation, ContainerWant, CopyRotation, CreationKey, DependencyHealthFailure,
-    DeployEvent, DeployWarning, DeploymentLogId, Drain, ExecutionError, ExposedPort,
-    FailedOperation, HealthFailure, HealthVerdict, InPlaceChange, MachineAction, MachineId,
-    Namespace, OperationPhase, PortPublication, PullPolicy, QualifiedService, RegistryAuth,
-    RemoveContainerPurpose, ResolvedServiceSpec, RpcError, RpcErrorCode, ServiceId, ServiceName,
-    ServiceOutcome, SlotKey, StopOptions, TransportProtocol,
+    ContainerDetails, ContainerId, ContainerKind, ContainerLocator, ContainerUpdateOperation,
+    ContainerWant, CopyRotation, CreationKey, DependencyHealthFailure, DeployEvent, DeployWarning,
+    DeploymentLogId, Drain, ExecutionError, ExposedPort, FailedOperation, HealthFailure,
+    HealthVerdict, InPlaceChange, MachineAction, MachineId, Namespace, OperationPhase,
+    PortPublication, PullPolicy, QualifiedService, RegistryAuth, RemoveContainerPurpose,
+    ResolvedServiceSpec, RpcError, RpcErrorCode, ServiceId, ServiceName, ServiceOutcome, SlotKey,
+    StopOptions, TransportProtocol,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc::UnboundedSender;
@@ -1088,7 +1088,8 @@ async fn stop<C: MachineOperations>(
     .map_err(|error| machine_error(MachineAction::StopContainer, error))
 }
 
-/// Remove a Container by its id, with its anonymous Volumes.
+/// Remove a Container by its id, with its anonymous Volumes: an old hook, or a new
+/// copy that failed its health.
 async fn remove_by_id<C: MachineOperations>(
     client: &C,
     machine_id: &MachineId,
@@ -1101,7 +1102,7 @@ async fn remove_by_id<C: MachineOperations>(
             ContainerWant::Gone {
                 container: ContainerLocator::Id(*container_id),
                 drain,
-                anonymous_volumes: AnonymousVolumes::Remove,
+                anonymous_volumes: RemoveContainerPurpose::Rollout.into(),
             },
         )
         .await

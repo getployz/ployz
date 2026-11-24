@@ -71,7 +71,8 @@ Deleting a database's service also deletes its volume and data, unless another s
 it. The deploy asks you to confirm first: see
 [Confirm a deploy that deletes data](../deploy/deployments.md#confirm-a-deploy-that-deletes-data).
 Anonymous volumes the service's image created, which no volume in Ployz names, stay on the
-server after the service is deleted.
+server after the service is deleted, after a drain moves it off that server, and after you remove
+one of its containers.
 
 ## Restart, stop or open a shell
 

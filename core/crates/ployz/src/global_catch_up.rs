@@ -17,11 +17,11 @@
 use crate::cluster::Call;
 use ployz_core::error_chain;
 use ployz_core::{
-    AnonymousVolumes, BridgeEndpointCapacity, Ciphertext, ContainerKind, ContainerNow,
-    ContainerObservation, ContainerRuntimeObservation, ContainerWant, CopyRotation, CreationKey,
-    EnvironmentValues, HealthFailure, HealthVerdict, IngressDoors, IngressDoorsSet,
-    ListContainersRequest, LiveServices, Machine, MachineId, MachineTarget, NewContainer,
-    PartialResult, PrivateAccessSet, QualifiedService, ResolvedServiceSpec, RpcError, RunRotation,
+    BridgeEndpointCapacity, Ciphertext, ContainerKind, ContainerNow, ContainerObservation,
+    ContainerRuntimeObservation, ContainerWant, CopyRotation, CreationKey, EnvironmentValues,
+    HealthFailure, HealthVerdict, IngressDoors, IngressDoorsSet, ListContainersRequest,
+    LiveServices, Machine, MachineId, MachineTarget, NewContainer, PartialResult, PrivateAccessSet,
+    QualifiedService, RemoveContainerPurpose, ResolvedServiceSpec, RpcError, RunRotation,
     RunTarget, ServiceId, ServiceMode, ServiceObservation, SetIngressDoorsRequest,
     SetPrivateAccessRequest, SlotKey, op,
 };
@@ -191,7 +191,7 @@ impl SlotIo for Client {
             &*self,
             copy,
             EmptyPolicy::RequireOtherIn,
-            AnonymousVolumes::Remove,
+            RemoveContainerPurpose::Rollout,
             cancel,
         )
         .await
@@ -358,7 +358,7 @@ impl CatchUpClient for Client {
     }
 
     async fn remove_copy(&mut self, copy: &Copy) -> Result<Removal, RpcError> {
-        cleanup::remove(&*self, copy, AnonymousVolumes::Remove).await
+        cleanup::remove(&*self, copy, RemoveContainerPurpose::Rollout).await
     }
 
     async fn target_containers(

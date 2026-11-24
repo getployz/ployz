@@ -706,15 +706,18 @@ pub enum StopContainerPurpose {
     FreeHostPorts,
 }
 
-/// Why a Deploy removes a Container.
+/// Why Ployz removes a Container. It alone decides what happens to the Container's
+/// anonymous Volumes.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum RemoveContainerPurpose {
-    /// Roll a Service out: its anonymous Volumes go with the Container.
+    /// Replace the copy in its slot, or undo a copy the same run made: its anonymous
+    /// Volumes go with the Container.
     #[default]
     Rollout,
-    /// Retire a Service the Deploy removes: its anonymous Volumes stay, since deleting
-    /// data is a Volume decision.
+    /// Take the copy off its Server with nothing in its slot after it: a removed
+    /// Service, a Drain, a Server that no longer accepts the Service, or a user's
+    /// remove. Its anonymous Volumes stay, since deleting data is a Volume decision.
     Retire,
 }
 

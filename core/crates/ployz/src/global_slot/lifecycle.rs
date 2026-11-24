@@ -3,8 +3,8 @@
 
 use ployz_core::error_chain;
 use ployz_core::{
-    AnonymousVolumes, InspectRequest, LocalMachinePhase, Machine, MachineId,
-    MachineStorageObservation, MachineTarget, Namespace, QualifiedService, ResolvedServiceSpec,
+    InspectRequest, LocalMachinePhase, Machine, MachineId, MachineStorageObservation,
+    MachineTarget, Namespace, QualifiedService, RemoveContainerPurpose, ResolvedServiceSpec,
     RpcError, ServicePlacementEligibility, op,
 };
 use tokio_util::sync::CancellationToken;
@@ -157,7 +157,7 @@ pub(crate) async fn retire_copies<C: CopyLifecycle>(
             client,
             &Copy::observed(&observed),
             EmptyPolicy::RequireOtherIn,
-            AnonymousVolumes::Remove,
+            RemoveContainerPurpose::Retire,
             cancellation,
         )
         .await?
@@ -186,9 +186,12 @@ pub(crate) async fn retire_ingress_proxy<C: CopyLifecycle>(
                     "the Ingress Proxy's removal was cancelled",
                 ));
             }
-            if let Removal::Refused(refusal) =
-                cleanup::remove(client, &Copy::observed(&observed), AnonymousVolumes::Remove)
-                    .await?
+            if let Removal::Refused(refusal) = cleanup::remove(
+                client,
+                &Copy::observed(&observed),
+                RemoveContainerPurpose::Retire,
+            )
+            .await?
             {
                 return Err(refusal.into_error());
             }

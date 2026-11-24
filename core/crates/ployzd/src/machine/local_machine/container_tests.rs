@@ -389,8 +389,8 @@ mod plan {
     use std::collections::BTreeMap;
 
     use ployz_core::{
-        AnonymousVolumes, ContainerAddress, ContainerId, ContainerKind, ContainerLocator,
-        ContainerNow, ContainerObservation, ContainerObservationParts, ContainerRefusalReason,
+        ContainerAddress, ContainerId, ContainerKind, ContainerLocator, ContainerNow,
+        ContainerObservation, ContainerObservationParts, ContainerRefusalReason,
         ContainerRuntimeObservation, ContainerWant, CreationKey, Drain, HealthObservation,
         LocalMachinePhase, MachineId, Namespace, NewContainer, ResolvedServiceSpec, RunRotation,
         RunTarget, ServiceName, SlotKey, StopOptions,
@@ -534,7 +534,7 @@ mod plan {
         ContainerWant::Gone {
             container: ContainerLocator::Key(slot()),
             drain: Drain::DEFAULT,
-            anonymous_volumes: AnonymousVolumes::Remove,
+            anonymous_volumes: ployz_core::RemoveContainerPurpose::Rollout.into(),
         }
     }
 
@@ -573,14 +573,14 @@ mod plan {
                 ContainerWant::Gone {
                     container: ContainerLocator::Id(id('a')),
                     drain: Drain::DEFAULT,
-                    anonymous_volumes: AnonymousVolumes::Keep,
+                    anonymous_volumes: ployz_core::RemoveContainerPurpose::Retire.into(),
                 },
                 ContainerNow::Absent {
                     of: ContainerLocator::Id(id('a')),
                 },
                 ContainerStep::Remove {
                     id: id('a'),
-                    anonymous_volumes: AnonymousVolumes::Keep,
+                    anonymous_volumes: ployz_core::RemoveContainerPurpose::Retire.into(),
                     logs_to_read: false,
                 },
             ),
@@ -590,7 +590,7 @@ mod plan {
                 ContainerStep::StopThenRemove {
                     id: id('a'),
                     drain: Drain::DEFAULT,
-                    anonymous_volumes: AnonymousVolumes::Remove,
+                    anonymous_volumes: ployz_core::RemoveContainerPurpose::Rollout.into(),
                     logs_to_read: true,
                 },
             ),
@@ -599,7 +599,7 @@ mod plan {
                 exited("img"),
                 ContainerStep::Remove {
                     id: id('a'),
-                    anonymous_volumes: AnonymousVolumes::Remove,
+                    anonymous_volumes: ployz_core::RemoveContainerPurpose::Rollout.into(),
                     logs_to_read: true,
                 },
             ),
@@ -630,7 +630,7 @@ mod plan {
         let discarded = |drain| ContainerWant::Gone {
             container: ContainerLocator::Key(slot()),
             drain,
-            anonymous_volumes: AnonymousVolumes::Remove,
+            anonymous_volumes: ployz_core::RemoveContainerPurpose::Rollout.into(),
         };
         let logs_to_read = |want, now: ContainerNow| {
             let step = plan_container(want, &now, participating);
@@ -714,7 +714,7 @@ mod plan {
                 plan_container(gone(), &exited("img"), &phase),
                 ContainerStep::Remove {
                     id: id('a'),
-                    anonymous_volumes: AnonymousVolumes::Remove,
+                    anonymous_volumes: ployz_core::RemoveContainerPurpose::Rollout.into(),
                     logs_to_read: true,
                 }
             );
@@ -1092,7 +1092,7 @@ mod settled {
                     .ensure_full_access(ContainerWant::Gone {
                         container: ployz_core::ContainerLocator::Key(new.slot),
                         drain: ployz_core::Drain::NONE,
-                        anonymous_volumes: ployz_core::AnonymousVolumes::Remove,
+                        anonymous_volumes: ployz_core::RemoveContainerPurpose::Rollout.into(),
                     })
                     .await
             }
@@ -1161,7 +1161,7 @@ mod settled {
                     .ensure_full_access(ContainerWant::Gone {
                         container: ployz_core::ContainerLocator::Key(new.slot),
                         drain: ployz_core::Drain::NONE,
-                        anonymous_volumes: ployz_core::AnonymousVolumes::Remove,
+                        anonymous_volumes: ployz_core::RemoveContainerPurpose::Rollout.into(),
                     })
                     .await
             }
@@ -1899,7 +1899,7 @@ mod stopped_on_request {
             ContainerWant::Gone {
                 container: ContainerLocator::Id(fixture.id),
                 drain,
-                anonymous_volumes: ployz_core::AnonymousVolumes::Remove,
+                anonymous_volumes: ployz_core::RemoveContainerPurpose::Rollout.into(),
             }
         }
 
@@ -2304,8 +2304,8 @@ mod reserved_lifecycle {
     use std::{collections::BTreeMap, sync::Mutex, time::Duration};
 
     use ployz_core::{
-        AnonymousVolumes, ContainerKind, ContainerLocator, ContainerNow, ContainerWant, Drain,
-        EnsuredContainer, MachineName, QualifiedService, StopOptions,
+        ContainerKind, ContainerLocator, ContainerNow, ContainerWant, Drain, EnsuredContainer,
+        MachineName, QualifiedService, StopOptions,
     };
 
     use super::*;
@@ -2404,7 +2404,7 @@ mod reserved_lifecycle {
         ContainerWant::Gone {
             container: ContainerLocator::Id(id),
             drain: Drain::NONE,
-            anonymous_volumes: AnonymousVolumes::Remove,
+            anonymous_volumes: ployz_core::RemoveContainerPurpose::Rollout.into(),
         }
     }
 
