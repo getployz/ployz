@@ -838,3 +838,19 @@ fn a_failed_move_reads_as_its_cancel_or_the_text_of_what_went_wrong() {
         assert_eq!(MoveEnd::from(error), expected);
     }
 }
+
+/// A Drain moves a replicated Service's copy to another Server. A Service run without a
+/// Volume, such as postgres, keeps its data in the anonymous Volume its image declares;
+/// the old copy's Server loses the Service, so that data stays there.
+#[tokio::test]
+async fn a_moved_copys_old_container_keeps_its_anonymous_volumes() {
+    let mut steps = served();
+    steps.push(ok(Call::Remove(machine(FROM), container('a'))));
+    let client = moving(steps).with_copy(&machine(FROM), &container('a'), CopyRotation::In);
+    let end = relocate_with(&client, &CancellationToken::new())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(end, OldCopyEnd::Stopped);
+    assert_eq!(*client.deleted_volumes.lock().unwrap(), [false]);
+}

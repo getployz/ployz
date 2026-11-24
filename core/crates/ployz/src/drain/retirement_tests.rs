@@ -859,33 +859,9 @@ fn anonymous_volumes_deleted(cluster: &Cluster) -> Vec<bool> {
         .collect()
 }
 
-/// A global run without a Volume, such as postgres, keeps its data in the anonymous
-/// Volume its image declares. Draining the Server takes the Service off it, so that
-/// data stays: deleting it is a Volume decision.
-#[tokio::test]
-async fn a_drain_keeps_the_anonymous_volumes_of_a_global_it_retires() {
-    let (drained, other) = (machine('1', "drained"), machine('2', "other"));
-    let cluster = Cluster::of(
-        &[&drained, &other],
-        vec![
-            copy_on(&drained, 'a', CopyRotation::In),
-            copy_on(&drained, 'b', CopyRotation::Pending),
-            copy_on(&other, 'c', CopyRotation::In),
-        ],
-    );
-    retire_copies(
-        &cluster,
-        &drained.id,
-        &qualified("app", "api"),
-        &CancellationToken::new(),
-        &Sentence::Drain(&ServerNames::default()),
-    )
-    .await
-    .expect("another In copy lets the drained one go Out");
-    assert_eq!(anonymous_volumes_deleted(&cluster), [false, false]);
-}
-
-/// A copy a move left Out on the drained Server leaves that Server for good too.
+/// A copy a Drain's move left Out on the drained Server leaves that Server for good: a
+/// Service run without a Volume, such as postgres, keeps its data in the anonymous
+/// Volume its image declares, so that data stays.
 #[tokio::test]
 async fn a_drain_keeps_the_anonymous_volumes_of_a_copy_it_lets_go() {
     let (drained, other) = (machine('1', "drained"), machine('2', "other"));
