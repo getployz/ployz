@@ -2037,6 +2037,25 @@ describe("volume runs", () => {
       expect(await releaseRow()).toMatchObject({ state: "failed", message: expect.stringContaining("lacks the snapshot") });
     });
 
+    it("on a committed row whose frame shows B running the Service while B holds an older snapshot keeps A's stopped Container and doesn't end done", async () => {
+      const older = newSnap("w-4-0");
+      const G = newSnap("f-4");
+      named("fsn-1").copy = slotCopy(G);
+      for (const container of containers) container.running = false;
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(older, null, "2") };
+      containers.push({ machine: "fsn-2", id: "created-1", running: true });
+      const moved = await owned("committed");
+      await harness.pool.query("update volume_run set at = $2 where id = $1", [moved.id, G.guid]);
+
+      await runEffect(closeVolumeRun("run-1", "failure"));
+      await execute((await releaseRow()).id, "run-2");
+
+      expect(verbs).toEqual([]);
+      expect(containers).toContainEqual({ machine: "fsn-1", id: "web-fsn-1", running: false });
+      expect(named("fsn-2").copy).toMatchObject({ kind: "slot", newest: older });
+      expect(await releaseRow()).toMatchObject({ state: "failed", message: expect.stringContaining("doesn't write data at this Move's snapshot") });
+    });
+
     it("on a committed row whose A's stopped Container has no spec on its Server finishes on B, says the Container stays, and owes nothing", async () => {
       const G = newSnap("f-1");
       named("fsn-1").copy = slotCopy(G);

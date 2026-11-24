@@ -641,8 +641,14 @@ export const startWriter = Effect.fn("VolumeRun.startWriter")(function* (ctx: Ru
   const routed = stopped.some((container) => container.rotation === "in");
   if (containers.some((container) =>
     container.machine_id === to.id && container.runtime.state === "running" && (container.rotation === "in" || !routed))) {
-    const running: CopyAnswer = { ok: true, copy: null };
-    return running;
+    // The frame may be stale, so B itself says it writes at this commitment's epoch, which it took at the committed snapshot.
+    const copy = yield* inspectCopy(ctx, ownedBy, to);
+    if (copy?.kind === "root" && !copy.readonly && copy.epoch === start.epoch) {
+      const running: CopyAnswer = { ok: true, copy };
+      return running;
+    }
+    const message = `${to.name} runs ${ctx.volumeName}'s Service but doesn't write ${ctx.volumeName} at this Move's snapshot`;
+    return { ok: false, reason: "refused", copy, message } satisfies CopyAnswer;
   }
   const chosen = start.holder ?? null;
   const [holder] = chosen !== null ? stopped.filter((container) => container.container_id === chosen) : from === null ? stopped : newestFirst(stopped);
