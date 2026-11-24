@@ -288,7 +288,7 @@ export const drainMoveState = Effect.fn("ServerDrain.moveState")(function* (requ
 export const readVolumeLines = Effect.fn("ServerDrain.readVolumeLines")(function* (report: DrainReport, drainEnded: boolean) {
   const moves = report.services.flatMap((entry) => entry.run ?? []);
   const lines: Record<string, VolumeLine> = {};
-  if (!report.services.some((entry) => entry.volume !== undefined)) return { report, lines };
+  if (!report.services.some((entry) => entry.volume !== undefined || entry.detail !== undefined)) return { report, lines };
   const found = yield* runRows(moves);
   const services = report.services.map((entry) => {
     const run = entry.run;

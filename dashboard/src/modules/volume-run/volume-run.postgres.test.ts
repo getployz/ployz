@@ -57,7 +57,7 @@ import type { Database } from "#/server/database.server";
 import { makeInngestEffectRunner, type runInngestEffect } from "#/modules/inngest/run.server";
 import { invokeOnFailure } from "#/test/inngest-failure";
 import { executeDrainServer } from "#/modules/machines/server-drain.inngest";
-import { admitDrainVolume, drainMoveId, planDrainVolumes } from "#/modules/machines/server-drain-volumes.server";
+import { admitDrainVolume, drainMoveId, planDrainVolumes, readVolumeLines } from "#/modules/machines/server-drain-volumes.server";
 import { closeDrainRun, readCliServerDrain, requestServerDrain } from "#/modules/machines/server-drain.server";
 import { requestServerPolicyChange } from "#/modules/machines/server-policy.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
@@ -1930,7 +1930,12 @@ describe("volume runs", () => {
       await drain();
 
       expect(await volumeRuns()).toEqual([]);
-      expect((await entry()).entry).toMatchObject({ result: "stays", detail: expect.stringMatching(why) });
+      const read = await cli();
+      if (read?.state !== "finished") throw new Error(`the drain reads ${read?.state}`);
+      expect(first(read.report.services)).toMatchObject({ result: "stays", detail: expect.stringMatching(why) });
+      // The Server page shows the same reason the CLI prints.
+      const { lines } = await runEffect(readVolumeLines(read.report, true));
+      expect(lines["shop-production/web"]).toEqual({ tone: "stayed", text: expect.stringMatching(why) });
     });
 
     // Catches a drain that cuts a Volume another run holds.

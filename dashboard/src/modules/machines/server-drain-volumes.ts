@@ -125,13 +125,13 @@ export function volumeLine(input: {
   readonly drainEnded: boolean;
 }): VolumeLine | null {
   const { entry, server, move, release } = input;
-  if (entry.volume === undefined) return null;
-  const volume = entry.volume;
   if (move === undefined) {
+    // A Service Cloud kept for its data has a reason even when it has no one Volume to name.
     if (entry.detail !== undefined) return { tone: "stayed", text: entry.detail };
     if (entry.run === undefined) return null;
     return input.drainEnded ? { tone: "stayed", text: "not tried" } : { tone: "waiting", text: "waiting its turn to move" };
   }
+  const volume = entry.volume ?? "the volume";
   const to = move.to ?? "its new server";
   if (move.state === "done") return { tone: "moved", text: `moved to ${to}`, to };
   if (ACTIVE.includes(move.state)) {
