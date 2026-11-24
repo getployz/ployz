@@ -32,26 +32,31 @@ function unwrapped(node: ESTree.Node): ESTree.Node {
 }
 
 /**
- * SQL text that orders times: `<`, `>`, `<=`, `>=` or `between`, once `=>` (named arguments) and the JSON arrows are
- * taken out. A bare `=` does not count: in `update … set updated_at = now()` it writes the time.
+ * SQL text that compares: `<`, `>`, `!=` or `between`, once `=>` (named arguments) and the JSON arrows are taken out,
+ * and `=` unless the text is a value a write assigns, as in `.set({ endedAt: sql\`case when … = … then now() end\` })`.
  */
-function compares(text: string): boolean {
-  return /<|>|\bbetween\b/iu.test(text.replaceAll(/=>|->>?|#>>?|@>|<@/gu, " "));
-}
-
-/** The literal text of a sql template, a placeholder standing for each interpolated value. */
-function templateText(node: ESTree.TaggedTemplateExpression): string {
-  return node.quasi.quasis.map((quasi) => quasi.value.cooked ?? quasi.value.raw).join(" $ ");
+function compares(text: string, written: boolean): boolean {
+  const operators = text.replaceAll(/=>|->>?|#>>?|@>|<@/gu, " ");
+  return /<|>|!=|\bbetween\b/iu.test(operators) || (!written && operators.includes("="));
 }
 
 function isSqlTemplate(node: ESTree.Node): node is ESTree.TaggedTemplateExpression {
   return node.type === "TaggedTemplateExpression" && node.tag.type === "Identifier" && node.tag.name === "sql";
 }
 
-/** Which clock a sql template reads that a check must not: `now()`, or a bare `clock_timestamp()`. */
-function checkClock(text: string): "staleNow" | "volatileClock" | null {
-  if (/\bnow\(\)/iu.test(text)) return "staleNow";
-  if (/\bclock_timestamp\(\)/iu.test(text.replaceAll(/\(\s*select\s+clock_timestamp\(\)\s*\)/giu, " "))) return "volatileClock";
+function isSqlRaw(node: ESTree.Node): node is ESTree.CallExpression {
+  return node.type === "CallExpression" && isMember(node.callee, "sql", "raw") && node.arguments.length === 1;
+}
+
+/** The literal text of a template, a placeholder standing for each interpolated value. */
+function quasiText(node: ESTree.TemplateLiteral): string {
+  return node.quasis.map((quasi) => quasi.value.cooked ?? quasi.value.raw).join(" $ ");
+}
+
+/** Which clock SQL text reads that a check must not name directly: the transaction's start, or `clock_timestamp()`. */
+function checkClock(text: string): "staleNow" | "rawClock" | null {
+  if (/\b(?:now|transaction_timestamp|statement_timestamp)\s*\(\s*\)|\bcurrent_timestamp\b/iu.test(text)) return "staleNow";
+  if (/\bclock_timestamp\s*\(\s*\)/iu.test(text)) return "rawClock";
   return null;
 }
 
@@ -118,11 +123,14 @@ function queryValues(call: ESTree.CallExpression, first: ESTree.Node): Array<EST
 export const postgresClockInQueriesRule = defineRule({
   meta: {
     type: "problem",
-    docs: { description: "Disallow the web instance's clock in Postgres, and a check on Postgres's transaction-start clock." },
+    docs: { description: "Disallow the web instance's clock in Postgres, and a check that reads Postgres's clock other than through checkedNow() or sweepCutoff()." },
     messages: {
-      staleNow: "A check reads the time it runs at; now() is the transaction start, stale after any lock wait. Use checkedNow().",
-      volatileClock:
-        "clock_timestamp() is volatile, so Postgres reads it per row and no index can serve this check. Use checkedNow(), which reads it once per statement.",
+      staleNow:
+        "now() and current_timestamp are when the transaction began, and a recheck after a lock wait reuses it, so a deadline that passed during the wait still passes. "
+        + "Use checkedNow(). Use sweepCutoff() only in a sweep that needs an index on the time column and can act on a just-expired row one run late.",
+      rawClock:
+        "A check names its clock through a helper. Use checkedNow() for clock_timestamp(). "
+        + "Use sweepCutoff() only in a sweep that needs an index on the time column and can act on a just-expired row one run late.",
       webClock:
         "Postgres stamps and checks stored times on its own clock; a web instance's clock drifts from it. Write sql`now()` (plus an interval), and check against checkedNow().",
     },
@@ -223,15 +231,81 @@ export const postgresClockInQueriesRule = defineRule({
       });
     }
 
-    /** A `const` anywhere stands for its initializer: a check against `cutoff` reads what `cutoff` was built from. */
-    function constValue(node: ESTree.Node): ESTree.Node {
-      if (node.type !== "Identifier") return node;
-      const definition = resolveVariable(sourceCode, node as ESTree.IdentifierReference)?.defs[0];
+    /** The `const` an identifier names, with its initializer. */
+    function constOf(node: ESTree.Node) {
+      if (node.type !== "Identifier") return null;
+      const variable = resolveVariable(sourceCode, node as ESTree.IdentifierReference);
+      const definition = variable?.defs[0];
       const declarator = definition?.node;
       const declaration = definition?.parent;
       if (declarator?.type !== "VariableDeclarator" || declarator.init === null || declaration?.type !== "VariableDeclaration"
-        || declaration.kind !== "const") return node;
-      return unwrapped(declarator.init);
+        || declaration.kind !== "const") return null;
+      return { variable, init: declarator.init };
+    }
+
+    /** A `const` anywhere stands for its initializer, through any chain of aliases: `limit` reads what `cutoff` was built from. */
+    function constValue(node: ESTree.Node): ESTree.Node {
+      let current = node;
+      const seen = new Set<ESTree.Node>();
+      for (let found = constOf(current); found !== null && !seen.has(current); found = constOf(current)) {
+        seen.add(current);
+        current = unwrapped(found.init);
+      }
+      return current;
+    }
+
+    /** The SQL text of a sql template, or of `sql.raw` given a string or a `const` holding one. */
+    function sqlText(node: ESTree.Node): string | null {
+      if (isSqlTemplate(node)) return quasiText(node.quasi);
+      if (!isSqlRaw(node)) return null;
+      const [argument] = node.arguments;
+      const text = argument === undefined ? null : constValue(unwrapped(argument));
+      if (text?.type === "Literal" && typeof text.value === "string") return text.value;
+      if (text?.type === "TemplateLiteral") return quasiText(text);
+      return null;
+    }
+
+    /**
+     * Whether an expression is only ever a value a row write assigns: in the object `.set` or `.values` takes, an
+     * upsert's `set`, through spreads, arrays and `const`s. There an `=` assigns; everywhere else it compares.
+     */
+    function isWritten(node: ESTree.Node, seen = new Set<ESTree.Node>()): boolean {
+      if (seen.has(node)) return false;
+      seen.add(node);
+      let current = node;
+      let parent = current.parent;
+      while (parent !== null && parent !== undefined && (parent.type === "TSAsExpression" || parent.type === "TSSatisfiesExpression"
+        || parent.type === "TSNonNullExpression" || parent.type === "ParenthesizedExpression")) {
+        current = parent;
+        parent = parent.parent;
+      }
+      if (parent === null || parent === undefined) return false;
+      switch (parent.type) {
+        case "Property": {
+          const object = parent.parent;
+          if (parent.value !== current || object?.type !== "ObjectExpression") return false;
+          const call = object.parent;
+          if (propertyName(parent.key) === "set" && call?.type === "CallExpression" && call.arguments[0] === object
+            && call.callee.type === "MemberExpression" && propertyName(call.callee.property) === "onConflictDoUpdate") return true;
+          return isWritten(object, seen);
+        }
+        case "ArrayExpression":
+        case "SpreadElement":
+          return isWritten(parent, seen);
+        case "CallExpression": {
+          const callee = parent.callee;
+          return parent.arguments.length === 1 && parent.arguments[0] === current && callee.type === "MemberExpression"
+            && !callee.computed && rowWrites.has(propertyName(callee.property) ?? "");
+        }
+        case "VariableDeclarator": {
+          if (parent.init !== current || parent.id.type !== "Identifier") return false;
+          const found = constOf(parent.id);
+          const reads = found?.variable?.references.filter((reference) => reference.identifier !== parent.id) ?? [];
+          return reads.length > 0 && reads.every((reference) => isWritten(reference.identifier, seen));
+        }
+        default:
+          return false;
+      }
     }
 
     /**
@@ -242,13 +316,14 @@ export const postgresClockInQueriesRule = defineRule({
       const node = constValue(unwrapped(wrapped));
       if (seen.has(node)) return;
       seen.add(node);
-      if (isSqlTemplate(node)) {
-        const clock = checkClock(templateText(node));
+      const text = sqlText(node);
+      if (text !== null) {
+        const clock = checkClock(text);
         if (clock !== null && !reported.has(node)) {
           reported.add(node);
           context.report({ node, messageId: clock });
         }
-        for (const expression of node.quasi.expressions) checkClocks(expression, seen);
+        if (isSqlTemplate(node)) for (const expression of node.quasi.expressions) checkClocks(expression, seen);
         return;
       }
       if (!buildsSql(node)) return;
@@ -261,9 +336,11 @@ export const postgresClockInQueriesRule = defineRule({
 
     return {
       TaggedTemplateExpression(node) {
-        if (isSqlTemplate(node) && compares(templateText(node))) checkClocks(node, new Set());
+        if (isSqlTemplate(node) && compares(quasiText(node.quasi), isWritten(node))) checkClocks(node, new Set());
       },
       CallExpression(node) {
+        const raw = isSqlRaw(node) ? sqlText(node) : null;
+        if (raw !== null && compares(raw, isWritten(node))) checkClocks(node, new Set());
         for (const condition of queryChecks(node)) checkClocks(condition, new Set());
         if (isComparison(node.callee)) {
           for (const argument of node.arguments) {

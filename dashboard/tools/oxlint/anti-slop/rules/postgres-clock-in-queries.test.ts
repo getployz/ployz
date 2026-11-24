@@ -40,20 +40,25 @@ tester.run("postgres-clock-in-queries", postgresClockInQueriesRule, {
       const row = { at: new Date() };
       function later() { return drizzle.insert(log).values(row); }`,
     },
-    // A written time stays now(), with or without an interval.
+    // A written time stays now(), with or without an interval, and an \`=\` in what .set, .values or an upsert's set
+    // writes assigns.
     {
       filename,
       code: `yield* drizzle.insert(verification).values({ identifier, value, expiresAt: sql\`now() + make_interval(secs => \${MAX_AGE_SECONDS})\` });
       yield* drizzle.update(serviceAct).set({ endedAt: sql\`now()\` }).where(eq(serviceAct.id, id));
       const age = sql<number>\`extract(epoch from now() - \${serviceAct.startedAt})\`;
-      const edit = sql\`update uptime_check set revision = revision + 1, updated_at = now() where id = \${id}\`;`,
+      const stamp = sql\`case when \${serviceAct.state} = 'running' then now() end\`;
+      yield* drizzle.update(serviceAct).set({ endedAt: stamp });
+      yield* drizzle.insert(serviceAct).values([{ id, endedAt: sql\`case when \${state} = 'done' then now() end\` }])
+        .onConflictDoUpdate({ target: serviceAct.id, set: { endedAt: sql\`case when excluded.state = 'done' then now() end\` } });`,
     },
-    // A check reads checkedNow(), once per statement.
+    // A check reads checkedNow(); a sweep that needs its time index reads sweepCutoff().
     {
       filename,
-      code: `import { and, eq, gt } from "drizzle-orm";
+      code: `import { and, eq, gt, lt } from "drizzle-orm";
       const live = sql<boolean>\`\${verification.expiresAt} > \${checkedNow()}\`;
-      await drizzle.select().from(invitation).where(and(eq(invitation.id, id), gt(invitation.expiresAt, checkedNow())));`,
+      await drizzle.select().from(invitation).where(and(eq(invitation.id, id), gt(invitation.expiresAt, checkedNow())));
+      await drizzle.delete(rateLimitEvent).where(lt(rateLimitEvent.at, sql\`\${sweepCutoff()} - make_interval(secs => 86400)\`));`,
     },
     { filename: "feature.postgres.test.ts", code: `yield* drizzle.update(session).set({ expiresAt: new Date(Date.now() - 1_000) });` },
   ],
@@ -86,11 +91,47 @@ tester.run("postgres-clock-in-queries", postgresClockInQueriesRule, {
       yield* drizzle.insert(serverAccess).values(row).onConflictDoUpdate({ target, set: { updatedAt: sql\`now()\` }, setWhere: sql\`\${serverAccess.claim} is null or \${serverAccess.updatedAt} < now() - make_interval(secs => 90)\` });`,
       errors: Array.from({ length: 4 }, () => ({ messageId: "staleNow" })),
     },
-    // clock_timestamp() is volatile: Postgres reads it for every row and no index can serve the comparison.
+    // A raw clock in a check names neither helper, so nothing says which clock it meant.
     {
       filename,
-      code: `export const tokenRuns = sql\`\${organizationToken.expiresAt} > clock_timestamp()\`;`,
-      errors: [{ messageId: "volatileClock" }],
+      code: `export const tokenRuns = sql\`\${organizationToken.expiresAt} > clock_timestamp()\`;
+      export const ended = sql\`\${organizationToken.expiresAt} <= (select clock_timestamp())\`;`,
+      errors: [{ messageId: "rawClock" }, { messageId: "rawClock" }],
+    },
+    // Through two const aliases.
+    {
+      filename,
+      code: `import { lt } from "drizzle-orm";
+      const cutoff = sql\`now() - interval '1 minute'\`;
+      const limit = cutoff;
+      await drizzle.delete(change).where(lt(change.createdAt, limit));`,
+      errors: [{ messageId: "staleNow" }],
+    },
+    // A predicate built with sql.raw, directly or through a const string.
+    {
+      filename,
+      code: `import { lt } from "drizzle-orm";
+      const raw = "expires_at > now()";
+      await drizzle.select().from(session).where(sql.raw("expires_at > now()"));
+      await drizzle.select().from(session).where(sql.raw(raw));
+      await drizzle.select().from(session).where(lt(session.expiresAt, sql.raw(\`clock_timestamp()\`)));
+      const live = sql.raw("expires_at > current_timestamp");`,
+      errors: [{ messageId: "staleNow" }, { messageId: "staleNow" }, { messageId: "rawClock" }, { messageId: "staleNow" }],
+    },
+    // Whitespace inside the call.
+    {
+      filename,
+      code: `yield* drizzle.select().from(session).where(sql\`\${session.expiresAt} > now ()\`);
+      const live = sql\`\${session.expiresAt} > clock_timestamp ( )\`;`,
+      errors: [{ messageId: "staleNow" }, { messageId: "rawClock" }],
+    },
+    // An \`=\` outside what a write assigns compares: a returned flag, a select, and a raw statement.
+    {
+      filename,
+      code: `yield* drizzle.update(session).set({ seen: true }).returning({ due: sql<boolean>\`\${session.expiresAt} = now()\` });
+      yield* drizzle.select({ due: sql<boolean>\`\${session.expiresAt} = clock_timestamp()\` }).from(session);
+      const edit = sql\`update uptime_check set revision = revision + 1, updated_at = now() where id = \${id}\`;`,
+      errors: [{ messageId: "staleNow" }, { messageId: "rawClock" }, { messageId: "staleNow" }],
     },
     {
       filename,
