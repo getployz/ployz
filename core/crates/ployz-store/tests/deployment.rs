@@ -10418,14 +10418,55 @@ fn stage_restore(store: &ConfigStore, who: &Actor, at: u64) {
 }
 
 /// A person's Copy of `data`'s point taken at `taken` seconds into `restored`, with a birth
-/// whose nonce is `nonce`.
+/// whose nonce is `nonce`, as step 0 of a bundle the person signed.
 fn copy_into_restored(
     store: &ConfigStore,
     who: &Actor,
     taken: u64,
     nonce: u8,
 ) -> ployz_core::authority::Signed<ployz_core::authority::CopyStep> {
-    use ployz_core::authority::{CopyStep, ProposalRef, Signed, Signer, SignerKey, Timestamp};
+    use ployz_core::authority::{
+        ProposalApproval, ProposalStep, Signed, StepDigest, StepKind, Timestamp,
+    };
+    let (step, signer) = copy_step(store, who, taken, nonce);
+    let unsigned = Signed::unsigned(&step).unwrap();
+    let plan = ProposalApproval {
+        cluster: step.cluster,
+        environment: step.namespace.clone(),
+        operation: step.proposal.operation,
+        steps: vec![ProposalStep {
+            index: 0,
+            kind: StepKind::Copy,
+            digest: StepDigest::of(&unsigned.body),
+        }],
+        issued_at: Timestamp::now(),
+        expires_at: Timestamp::now().plus(600_000),
+        signer: step.signer,
+    };
+    Signed::proposed(&step, Signed::sign(&plan, &signer).unwrap()).unwrap()
+}
+
+/// The Copy [`copy_into_restored`] makes, signed alone, as no Server takes it.
+fn copy_alone(
+    store: &ConfigStore,
+    who: &Actor,
+    taken: u64,
+    nonce: u8,
+) -> ployz_core::authority::Signed<ployz_core::authority::CopyStep> {
+    let (step, signer) = copy_step(store, who, taken, nonce);
+    ployz_core::authority::Signed::sign(&step, &signer).unwrap()
+}
+
+fn copy_step(
+    store: &ConfigStore,
+    who: &Actor,
+    taken: u64,
+    nonce: u8,
+) -> (
+    ployz_core::authority::CopyStep,
+    ployz_core::authority::Signer,
+) {
+    use ployz_core::authority::{CopyStep, ProposalRef, Signer, SignerKey, Timestamp};
     use ployz_core::{
         BirthNonce, DockerVolumeName, MachineId, OperationId, SealingPublicKey, SnapshotGuid,
         VolumeBirth, VolumeOrigin,
@@ -10455,7 +10496,7 @@ fn copy_into_restored(
             nonce: BirthNonce::from_bytes([nonce; 16]),
         },
     };
-    Signed::sign(&step, &signer).unwrap()
+    (step, signer)
 }
 
 fn admit_copies(
@@ -10509,4 +10550,41 @@ fn a_copy_records_the_birth_of_the_restore_it_matches_and_only_that_one() {
         code(admit_copies(&store, &who, 3, vec![another])),
         RpcErrorCode::Conflict
     );
+}
+
+/// A Copy signed alone is no step of any approval, and no Server takes it: refused, it
+/// claims no birth, so the restore the person approved in a bundle is admitted after it.
+#[test]
+fn a_copy_outside_an_approval_claims_no_birth_before_the_approved_one() {
+    let (store, who) = shop();
+    data_volume(&store, &who);
+    stage_restore(&store, &who, 1_700_000_000);
+
+    let alone = copy_alone(&store, &who, 1_700_000_000, 9);
+    assert_eq!(
+        code(admit_copies(&store, &who, 1, vec![alone])),
+        RpcErrorCode::InvalidArgument
+    );
+
+    let approved = copy_into_restored(&store, &who, 1_700_000_000, 3);
+    admit_copies(&store, &who, 1, vec![approved]).unwrap();
+}
+
+/// Two Copies into one Volume in one Deploy: the same birth twice is one birth, and two
+/// births conflict as they would across Deploys.
+#[test]
+fn a_deploy_restoring_one_volume_twice_replays_its_birth_or_conflicts() {
+    let (store, who) = shop();
+    data_volume(&store, &who);
+    stage_restore(&store, &who, 1_700_000_000);
+    let copy = copy_into_restored(&store, &who, 1_700_000_000, 3);
+    let other = copy_into_restored(&store, &who, 1_700_000_000, 4);
+
+    let conflict = admit_copies(&store, &who, 1, vec![copy.clone(), other]).unwrap_err();
+    assert_eq!(conflict.code, RpcErrorCode::Conflict, "{conflict:?}");
+    assert!(
+        conflict.message.contains("already made"),
+        "the second birth conflicts with the first, not with the row: {conflict:?}"
+    );
+    admit_copies(&store, &who, 1, vec![copy.clone(), copy]).unwrap();
 }

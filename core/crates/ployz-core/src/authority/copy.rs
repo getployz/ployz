@@ -16,7 +16,7 @@ use super::{
     canonical::Timestamp,
     keys::{Purpose, Signed, SignerKey, Statement},
     open::{bundle_window, open_approval},
-    proposal::{ProposalRef, StepBody, StepDigest, StepKind},
+    proposal::{ProposalRef, StepBody, StepDigest, StepKind, listed_step},
     refusal::{AuthorityRefusal, MismatchField, first_mismatch},
     scope::Ask,
     trusted_key::TrustedKeys,
@@ -167,6 +167,24 @@ pub fn verify(
         digest,
         window,
     })
+}
+
+/// Open `step` as the step of its bundle it names, as [`verify`] does on a Machine, but
+/// with no key to check a signature against: a step that rides alone, carries its own
+/// signature, or isn't the bundle's step at the place it names is refused. The Store
+/// records a Copy's birth only from a step that opens this way, so a Copy no Server would
+/// take never claims a new Volume first.
+///
+/// # Errors
+/// Returns [`AuthorityRefusal::Mismatch`] naming the proposal, the signer, the step, the
+/// Cluster or the Environment, or a malformed bundle or body.
+pub fn open_listed(step: &Signed<CopyStep>) -> Result<CopyStep, AuthorityRefusal> {
+    let Some(bundle) = step.proposal.as_deref() else {
+        return Err(AuthorityRefusal::Mismatch {
+            field: MismatchField::Proposal,
+        });
+    };
+    listed_step(bundle, step)
 }
 
 /// Whether `physical` is a Volume's physical name in `namespace`.

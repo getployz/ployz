@@ -138,7 +138,7 @@ pub(crate) fn record_copies(
     if copies.is_empty() {
         return Ok(());
     }
-    let held = Held::read(tx, environment, intent)?;
+    let mut held = Held::read(tx, environment, intent)?;
     let physical = |resource: &str| declared(resource).map(|name| namespace.volume_name(&name));
     for copy in copies {
         let volume = intent
@@ -203,6 +203,9 @@ pub(crate) fn record_copies(
             None => {}
         }
         insert(tx, environment, &volume.resource_id, &copy.birth)?;
+        // A second Copy into the same Volume in this Deploy replays this birth or conflicts.
+        held.born
+            .insert(volume.resource_id.clone(), copy.birth.clone());
     }
     Ok(())
 }

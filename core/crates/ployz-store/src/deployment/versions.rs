@@ -129,8 +129,14 @@ pub(crate) fn post(
         let copies = copies
             .iter()
             .map(|copy| {
-                copy.open().map_err(|refusal| {
-                    error::invalid(format!("A signed copy doesn't read: {refusal}"), json!({}))
+                ployz_core::authority::copy::open_listed(copy).map_err(|refusal| {
+                    error::invalid(
+                        format!(
+                            "A copy isn't a step of the approval it rides in: {refusal}. \
+                             Approve the restore again."
+                        ),
+                        json!({}),
+                    )
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;

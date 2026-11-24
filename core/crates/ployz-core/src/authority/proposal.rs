@@ -155,15 +155,46 @@ pub(super) fn open_step<T: StepBody>(
     let by = approvers
         .into_iter()
         .find(|approver| approver.signs_as(plan.signer));
+    first_mismatch([(MismatchField::Signer, by.is_some())])?;
+    placed(&plan, step, &body)?;
+    let by = by.expect("the signer check passed");
+    Ok((body, by, cluster))
+}
+
+/// `step`, an unsigned step body, as the step of `bundle` it names, checked as
+/// [`open_step`] checks it but with no key: what holds without knowing who may sign.
+///
+/// # Errors
+/// As [`open_step`], less every signature check.
+pub(super) fn listed_step<T: StepBody>(
+    bundle: &Signed<ProposalApproval>,
+    step: &Signed<T>,
+) -> Result<T, AuthorityRefusal> {
+    if !step.signatures.is_empty() || bundle.proposal.is_some() {
+        return Err(AuthorityRefusal::Mismatch {
+            field: MismatchField::Proposal,
+        });
+    }
+    let plan = bundle.open()?;
+    let body = step.open()?;
+    placed(&plan, step, &body)?;
+    Ok(body)
+}
+
+/// Whether `body`, the body of `step`, is signed by `plan`'s signer and sits in `plan` as
+/// the step at the place it names, of its kind and digest, in `plan`'s Cluster and
+/// Environment.
+fn placed<T: StepBody>(
+    plan: &ProposalApproval,
+    step: &Signed<T>,
+    body: &T,
+) -> Result<(), AuthorityRefusal> {
     let place = body
         .place()
         .filter(|place| place.operation == plan.operation);
     let listed = place.and_then(|place| plan.steps.get(place.index as usize));
     first_mismatch([
-        (
-            MismatchField::Signer,
-            by.is_some() && body.signer() == plan.signer,
-        ),
+        (MismatchField::Signer, body.signer() == plan.signer),
         (MismatchField::Proposal, place.is_some()),
         (
             MismatchField::Step,
@@ -177,9 +208,7 @@ pub(super) fn open_step<T: StepBody>(
             body.namespace()
                 .is_none_or(|namespace| &plan.environment == namespace),
         ),
-    ])?;
-    let by = by.expect("the signer check passed");
-    Ok((body, by, cluster))
+    ])
 }
 
 /// A bundle for a test that needs only an envelope to ride one.
