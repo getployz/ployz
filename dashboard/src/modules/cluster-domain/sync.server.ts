@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import { X509Certificate } from "node:crypto";
 import { isIPv6 } from "node:net";
 import type { PublishCertificateMaterialRequest } from "@ployz/sdk";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { Data, Effect } from "effect";
 import { loadClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
 import { type IngressAnswer, probeIngress } from "#/modules/cluster-domain/ingress-probe.server";
@@ -129,11 +129,10 @@ export const recordClusterDomainCheck = Effect.fn("ClusterDomain.recordCheck")(f
   probe: IngressProbe,
 ) {
   const { drizzle } = yield* Database;
-  const now = new Date();
   yield* drizzle.update(organizationClusterDomain).set({
     traffic: probe.kind === "unknown" ? null : probe,
-    checkedAt: now,
-    updatedAt: now,
+    checkedAt: sql`now()`,
+    updatedAt: sql`now()`,
   }).where(eq(organizationClusterDomain.organizationId, organizationId));
 });
 
@@ -148,21 +147,19 @@ export const publishClusterDomainRecords = Effect.fn("ClusterDomain.publishRecor
     a: addresses.filter((address) => !isIPv6(address)),
     aaaa: addresses.filter((address) => isIPv6(address)),
   }));
-  const now = new Date();
   const { drizzle } = yield* Database;
   yield* drizzle.update(organizationClusterDomain).set({
-    recordsSyncedAt: now,
-    leaseRenewedAt: now,
-    updatedAt: now,
+    recordsSyncedAt: sql`now()`,
+    leaseRenewedAt: sql`now()`,
+    updatedAt: sql`now()`,
   }).where(eq(organizationClusterDomain.organizationId, organizationId));
 });
 
 /** Renews the lease when no records were PUT, so an Organization with no reachable Cluster keeps its name. */
 export const renewClusterDomainLease = Effect.fn("ClusterDomain.renewLease")(function* (organizationId: string) {
   yield* withClusterDomain(organizationId, renewHostedDomainLease);
-  const now = new Date();
   const { drizzle } = yield* Database;
-  yield* drizzle.update(organizationClusterDomain).set({ leaseRenewedAt: now, updatedAt: now })
+  yield* drizzle.update(organizationClusterDomain).set({ leaseRenewedAt: sql`now()`, updatedAt: sql`now()` })
     .where(eq(organizationClusterDomain.organizationId, organizationId));
 });
 
@@ -198,7 +195,7 @@ export const ensureClusterDomainCertificate = Effect.fn("ClusterDomain.ensureCer
     encryptedCertificatePrivateKey: (yield* SecretEncryption).encrypt(issued.privateKeyPem),
     certificateChain: issued.chain,
     certificateNotAfter: issued.notAfter,
-    updatedAt: new Date(),
+    updatedAt: sql`now()`,
   }).where(and(eq(organizationClusterDomain.organizationId, organizationId), eq(organizationClusterDomain.name, issued.name)));
   return true;
 });

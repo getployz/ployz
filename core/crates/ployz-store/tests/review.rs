@@ -123,6 +123,7 @@ fn publish_as(
             version: version.map(Into::into),
             message: None,
             accept_volume_loss: Vec::new(),
+            rule: None,
         },
         &Trusted {
             approval,
@@ -1973,6 +1974,7 @@ fn history_brings_a_made_password_deleted_since_back_for_the_dashboard_to_make()
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
             &ployz_store::Trusted::default(),
         )
@@ -4115,6 +4117,7 @@ fn apply_all(store: &ConfigStore, who: &Actor, trusted: &Trusted) {
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
             trusted,
         )
@@ -4403,6 +4406,7 @@ fn removing_a_deployed_domain_is_destructive() {
                 version: None,
                 message: None,
                 accept_volume_loss: Vec::new(),
+                rule: None,
             },
             &Trusted {
                 approval: Approval::Required,
@@ -4492,6 +4496,7 @@ fn approving_a_removal_needs_changes_destroy_but_a_plain_deploy_does_not() {
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
             &holding(&stages, Approval::Required, Asks::EveryDeploy),
         )
@@ -4507,6 +4512,7 @@ fn approving_a_removal_needs_changes_destroy_but_a_plain_deploy_does_not() {
                 version: None,
                 message: None,
                 accept_volume_loss: Vec::new(),
+                rule: None,
             },
             &holding(permissions, Approval::Required, Asks::Destroys),
         )
@@ -4597,6 +4603,7 @@ fn a_new_publication_asks_again_for_a_removal_still_queued() {
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
             &Trusted {
                 approval,
@@ -4683,6 +4690,7 @@ fn publish_review_perf() {
                     version: None,
                     message: None,
                     accept_volume_loss: Vec::new(),
+                    rule: None,
                 },
                 &Trusted::default(),
             )

@@ -105,6 +105,7 @@ pub(super) fn approve(root: &ArgMatches) -> Result<(), Error> {
     let enforcing = enforcing(root)?;
     let view = store.read(&RuleQuery {
         environment: environment.clone(),
+        staged: false,
     })?;
     let mut basis = view.basis();
     let terms = RuleTerms {
@@ -118,7 +119,11 @@ pub(super) fn approve(root: &ArgMatches) -> Result<(), Error> {
         signer: SignerKey::Device(signer.public().into()),
     };
     let mut rule = AutoDeployRule::draft(&mut basis, &names, terms).map_err(drafting)?;
-    rule.source.owner_id = owner(root, &rule.source.repository, rule.source.repository_id)?;
+    rule.source.owner_id = owner(
+        root,
+        (&rule.source.repository, rule.source.repository_id),
+        "approve",
+    )?;
     let repository = rule.source.repository.clone();
     let branch = rule.source.branch.clone();
     let summary = rule.summary(&basis);
@@ -148,6 +153,7 @@ pub(super) fn end(root: &ArgMatches) -> Result<(), Error> {
     let environment = store::environment(matches)?;
     let view = store.read(&RuleQuery {
         environment: environment.clone(),
+        staged: false,
     })?;
     let basis = view.basis();
     if basis.kept().is_some_and(|kept| kept.ended) {
@@ -247,14 +253,19 @@ struct Repository {
 }
 
 /// The repository owner's GitHub ID, which each GitHub token the rule takes must name.
-pub(super) fn owner(root: &ArgMatches, repository: &str, repository_id: u64) -> Result<u64, Error> {
+/// `then` is what the person runs once they reconnect, such as `approve`.
+pub(super) fn owner(
+    root: &ArgMatches,
+    (repository, repository_id): (&str, u64),
+    then: &str,
+) -> Result<u64, Error> {
     let found: Repository =
         super::github::read_repository(root, "branches", &json!({ "repository": repository }))?;
     if found.repository_id != repository_id {
         return Err(Error::coded(
             RpcErrorCode::Conflict,
             format!(
-                "{repository} now names another repository. Connect your services to it again, then approve."
+                "{repository} now names another repository. Connect your services to it again, then {then}."
             ),
         ));
     }
@@ -292,7 +303,7 @@ fn drafting(error: RuleDraftError) -> Error {
 
 /// What the person approves, before it is signed. The summary's strings came through
 /// [`Shown`] already.
-fn show(environment: &str, summary: &RuleSummary) {
+pub(super) fn show(environment: &str, summary: &RuleSummary) {
     crate::ui::stream(format_args!(
         "Approving automatic deploys for {}:",
         Shown::text(environment)

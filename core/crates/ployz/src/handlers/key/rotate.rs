@@ -820,6 +820,7 @@ fn redeploy(
                 .iter()
                 .map(|service| service.version.service.clone())
                 .collect(),
+            rule: None,
         }))
         .map_err(|error| store.fail(error))?;
     let shipped = deploy::execute(leaf, store, &admitted, None, events)?;

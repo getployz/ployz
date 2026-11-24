@@ -10,6 +10,7 @@ import { type InviteRole, MANAGING_ROLES } from "#/modules/organization/permissi
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
 import { DAY_MS } from "#/lib/time-range";
+import { checkedNow } from "#/db/tables";
 
 export const INVITE_DAYS = 7;
 
@@ -20,10 +21,13 @@ type InviteState = "pending" | "accepted" | "revoked" | "expired";
 const fromManager = sql<boolean>`exists (select 1 from ${member} where ${member.organizationId} = ${invitation.organizationId}
   and ${member.userId} = ${invitation.inviterId} and ${inArray(member.role, [...MANAGING_ROLES])})`;
 
-const stateOf = (row: { status: typeof invitation.$inferSelect.status; expiresAt: Date; fromManager: boolean }, now: Date): InviteState => {
+/** Whether an invite has lapsed, on Postgres's clock, which also set its expiry. */
+const expired = sql<boolean>`${invitation.expiresAt} <= ${checkedNow()}`;
+
+const stateOf = (row: { status: typeof invitation.$inferSelect.status; expired: boolean; fromManager: boolean }): InviteState => {
   if (row.status !== "pending") return row.status;
   if (!row.fromManager) return "revoked";
-  return row.expiresAt <= now ? "expired" : "pending";
+  return row.expired ? "expired" : "pending";
 };
 
 /** Makes an invite link. The token is returned here and never again; only its hash is kept. */
@@ -41,7 +45,7 @@ export const createInvite = Effect.fn("Invitation.create")(function* (
       .where(and(eq(member.organizationId, organizationId), sql`lower(${user.email}) = ${email}`)).limit(1);
     if (joined !== undefined) return yield* new Conflict({ message: `${email} is already a member.`, userFacing: true });
     const [waiting] = yield* drizzle.select({ id: invitation.id }).from(invitation)
-      .where(and(eq(invitation.organizationId, organizationId), eq(invitation.email, email), eq(invitation.status, "pending"), gt(invitation.expiresAt, new Date()), fromManager))
+      .where(and(eq(invitation.organizationId, organizationId), eq(invitation.email, email), eq(invitation.status, "pending"), gt(invitation.expiresAt, checkedNow()), fromManager))
       .limit(1);
     if (waiting !== undefined) return yield* new Conflict({ message: `${email} has a pending invite. Revoke it to send a new one.`, userFacing: true });
   }
@@ -52,7 +56,7 @@ export const createInvite = Effect.fn("Invitation.create")(function* (
     email,
     role: input.role,
     tokenHash: hashInviteToken(token),
-    expiresAt: new Date(Date.now() + INVITE_DAYS * DAY_MS),
+    expiresAt: sql`now() + make_interval(secs => ${INVITE_DAYS * DAY_MS / 1000})`,
   }).returning({ id: invitation.id, expiresAt: invitation.expiresAt });
   if (created === undefined) return yield* Effect.die("insert returned no row");
   return { id: created.id, email, role: input.role, expiresAt: created.expiresAt, token };
@@ -69,7 +73,7 @@ export const listPendingInvites = Effect.fn("Invitation.listPending")(function* 
     expiresAt: invitation.expiresAt,
   }).from(invitation)
     .innerJoin(user, eq(user.id, invitation.inviterId))
-    .where(and(eq(invitation.organizationId, organizationId), eq(invitation.status, "pending"), gt(invitation.expiresAt, new Date()), fromManager))
+    .where(and(eq(invitation.organizationId, organizationId), eq(invitation.status, "pending"), gt(invitation.expiresAt, checkedNow()), fromManager))
     .orderBy(asc(invitation.createdAt));
 });
 
@@ -80,11 +84,10 @@ export const listPendingInvites = Effect.fn("Invitation.listPending")(function* 
 export const revokeInvite = Effect.fn("Invitation.revoke")(function* (organizationId: string, selector: string) {
   const { drizzle } = yield* Database;
   const wanted = selector.trim().toLowerCase();
-  const rows = yield* drizzle.select({ id: invitation.id, email: invitation.email, status: invitation.status, expiresAt: invitation.expiresAt, fromManager })
+  const rows = yield* drizzle.select({ id: invitation.id, email: invitation.email, status: invitation.status, expired, fromManager })
     .from(invitation).where(eq(invitation.organizationId, organizationId));
-  const now = new Date();
   const byId = rows.find((row) => row.id === selector.trim());
-  const found = byId ?? rows.find((row) => row.email === wanted && stateOf(row, now) === "pending");
+  const found = byId ?? rows.find((row) => row.email === wanted && stateOf(row) === "pending");
   if (found === undefined) return yield* new NotFound({ message: `No pending invite matches ${selector}.` });
   const used = new Conflict({ message: "That invite was used already. Remove the member instead.", userFacing: true });
   if (found.status === "accepted") return yield* used;
@@ -105,7 +108,7 @@ export const readInvite = Effect.fn("Invitation.read")(function* (token: string,
     invitedBy: user.name,
     role: invitation.role,
     status: invitation.status,
-    expiresAt: invitation.expiresAt,
+    expired,
     acceptedBy: invitation.acceptedByUserId,
     fromManager,
     member: userId === null ? sql<boolean>`false` : sql<boolean>`exists (select 1 from ${member} where ${member.organizationId} = ${invitation.organizationId}
@@ -115,7 +118,7 @@ export const readInvite = Effect.fn("Invitation.read")(function* (token: string,
     .innerJoin(user, eq(user.id, invitation.inviterId))
     .where(byToken(token)).limit(1);
   if (row === undefined) return null;
-  const state = stateOf(row, new Date());
+  const state = stateOf(row);
   // Whoever joined through this link and has since left or been removed.
   const membershipEnded = state === "accepted" && userId !== null && row.acceptedBy === userId && !row.member;
   return { organization: row.organization, slug: row.slug, invitedBy: row.invitedBy, role: row.role, state, member: row.member, membershipEnded };
@@ -142,7 +145,6 @@ export const acceptInvite = Effect.fn("Invitation.accept")(function* (token: str
       slug: organization.slug,
       role: invitation.role,
       status: invitation.status,
-      expiresAt: invitation.expiresAt,
     }).from(invitation)
       .innerJoin(organization, eq(organization.id, invitation.organizationId))
       .where(byToken(token)).for("update", { of: invitation }).limit(1);
@@ -152,10 +154,12 @@ export const acceptInvite = Effect.fn("Invitation.accept")(function* (token: str
     if (already !== undefined) return { slug: row.slug };
     const [manager] = yield* drizzle.select({ id: member.id }).from(member)
       .where(and(eq(member.organizationId, row.organizationId), eq(member.userId, row.inviterId), inArray(member.role, [...MANAGING_ROLES]))).for("share");
-    const state = stateOf({ ...row, fromManager: manager !== undefined }, new Date());
+    // The reads above may have waited on locks: the expiry is read once they are all held.
+    const [lapse] = yield* drizzle.select({ expired }).from(invitation).where(eq(invitation.id, row.id));
+    const state = stateOf({ ...row, expired: lapse?.expired ?? true, fromManager: manager !== undefined });
     if (state !== "pending") return yield* new Conflict({ message: UNUSABLE[state], userFacing: true });
-    yield* drizzle.insert(member).values({ organizationId: row.organizationId, userId, role: row.role });
     yield* drizzle.update(invitation).set({ status: "accepted", acceptedByUserId: userId }).where(eq(invitation.id, row.id));
+    yield* drizzle.insert(member).values({ organizationId: row.organizationId, userId, role: row.role });
     return { slug: row.slug };
   }));
 });

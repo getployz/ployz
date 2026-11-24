@@ -8,6 +8,7 @@ import { endSession, grantStands, grantUsable, transactionWithAgentGrants } from
 import { account, session } from "#/modules/identity/tables";
 import { member, organization } from "#/modules/organization/tables";
 import { Database } from "#/server/database.server";
+import { checkedNow } from "#/db/tables";
 
 /** better-auth stores an IPv6 address as its /64 written out in full. A mapped IPv4 keeps its dotted form. */
 const shortIp = (ip: string) => ip.includes(":") && !ip.includes(".") ? URL.parse(`http://[${ip}]`)?.hostname.slice(1, -1) ?? ip : ip;
@@ -18,7 +19,7 @@ export const listAccountSessions = Effect.fn("Account.listSessions")(function* (
   const rows = yield* drizzle
     .select({ id: session.id, userAgent: session.userAgent, ipAddress: session.ipAddress, createdAt: session.createdAt, updatedAt: session.updatedAt })
     .from(session)
-    .where(and(eq(session.userId, actor.userId), gt(session.expiresAt, new Date())))
+    .where(and(eq(session.userId, actor.userId), gt(session.expiresAt, checkedNow())))
     .orderBy(desc(session.updatedAt));
   return rows.map((row) => ({
     id: row.id,

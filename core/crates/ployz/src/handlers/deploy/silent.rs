@@ -248,10 +248,12 @@ pub(in crate::handlers) fn sign(
         crate::ui::note(format_args!("{line}"));
     }
     let versions = posted(children, signing, now)?;
+    // Only a person signs a rule: it stands for every future push.
     Ok(DeviceApproval {
         versions,
         version: plan.version,
         approved,
+        rule: None,
     })
 }
 

@@ -173,6 +173,7 @@ fn admit_named(
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
             &Trusted {
                 volumes: observed,
@@ -1320,6 +1321,7 @@ fn publishing_a_deployed_volumes_removal_needs_evidence_and_acceptance() {
                     .iter()
                     .map(|name| VolumeName::parse(*name).unwrap())
                     .collect(),
+                rule: None,
             },
             &Trusted {
                 volumes: observed,
@@ -1408,6 +1410,7 @@ fn save(
                     .iter()
                     .map(|name| VolumeName::parse(*name).unwrap())
                     .collect(),
+                rule: None,
             },
             &Trusted {
                 volumes: observed.clone(),
@@ -1525,6 +1528,7 @@ fn a_deploy_that_leaves_out_the_volume_keeps_the_saved_consent() {
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
             &Trusted {
                 volumes: Some(observed(&['a'])),
@@ -1609,6 +1613,7 @@ fn publishing_two_volumes_removal_needs_each_sought_and_each_accepted() {
                     .iter()
                     .map(|name| VolumeName::parse(*name).unwrap())
                     .collect(),
+                rule: None,
             },
             &Trusted {
                 volumes: Some(observed),
@@ -2355,6 +2360,7 @@ fn a_stale_version_hands_back_the_version_that_binds_the_fresh_loss() {
                     .iter()
                     .map(|name| VolumeName::parse(*name).unwrap())
                     .collect(),
+                rule: None,
             },
             &Trusted {
                 volumes: Some(observed(&['a'])),

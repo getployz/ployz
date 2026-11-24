@@ -129,6 +129,7 @@ fn publish(store: &ConfigStore, who: &Actor) {
                 version: None,
                 message: None,
                 accept_volume_loss: Vec::new(),
+                rule: None,
             }),
         )
         .unwrap();
@@ -164,6 +165,7 @@ fn admit(
         versions: Vec::new(),
         copies: Vec::new(),
         recreate: Vec::new(),
+        rule: None,
     };
     choose(&mut deploy);
     store.write(who, &Admit::Deploy(deploy))

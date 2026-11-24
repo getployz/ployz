@@ -146,7 +146,7 @@ const recordOrganizationSealingKey = Effect.fn("SealingKey.recordOrganizationKey
   const { drizzle } = yield* Database;
   yield* drizzle.insert(organizationSealingKey).values({ organizationId, publicKey }).onConflictDoUpdate({
     target: organizationSealingKey.organizationId,
-    set: { publicKey, updatedAt: new Date() },
+    set: { publicKey, updatedAt: sql`now()` },
     setWhere: and(isNull(organizationSealingKey.recoveryBlob), ne(organizationSealingKey.publicKey, publicKey)),
   });
   const recorded = (yield* readOrganizationSealingKey(organizationId))?.publicKey;
@@ -164,7 +164,7 @@ export const recordFirstRecoveryBackup = Effect.fn("SealingKey.recordFirstRecove
 ) {
   const { drizzle } = yield* Database;
   yield* drizzle.insert(organizationSealingKey).values({ organizationId, publicKey, recoveryBlob: backup }).onConflictDoNothing();
-  yield* drizzle.update(organizationSealingKey).set({ recoveryBlob: backup, updatedAt: new Date() })
+  yield* drizzle.update(organizationSealingKey).set({ recoveryBlob: backup, updatedAt: sql`now()` })
     .where(and(organizationKeyOf(organizationId), eq(organizationSealingKey.publicKey, publicKey), isNull(organizationSealingKey.recoveryBlob)));
   const stored = yield* readOrganizationSealingKey(organizationId);
   if (stored?.publicKey !== publicKey || stored.recoveryBlob !== backup) return yield* backupConflict();
@@ -203,7 +203,7 @@ export const rotateRecoveryBackup = Effect.fn("SealingKey.rotateRecoveryBackup")
     const storedDigest = stored.recoveryBlob === null ? null : recoveryDigest(stored.recoveryBlob);
     if (storedDigest === digest) return { digest };
     if (storedDigest !== currentDigest) return yield* backupConflict();
-    yield* drizzle.update(organizationSealingKey).set({ recoveryBlob: backup, updatedAt: new Date() })
+    yield* drizzle.update(organizationSealingKey).set({ recoveryBlob: backup, updatedAt: sql`now()` })
       .where(organizationKeyOf(organizationId));
     return { digest };
   }));

@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import { requireAccess } from "#/modules/organization/access.server";
@@ -18,15 +18,14 @@ export const updateCanvasPosition = Effect.fn("Canvas.updatePosition")(function*
     const database = yield* Database;
     const x = Math.round(input.x);
     const y = Math.round(input.y);
-    const now = new Date();
     const [row] = yield* database.drizzle
       .insert(environmentCanvasNodePosition)
       .values({ organizationId: organization.id, environmentId: input.environmentId, resourceType: input.resourceType,
-        resourceId: input.resourceId, x, y, updatedAt: now })
+        resourceId: input.resourceId, x, y, updatedAt: sql`now()` })
       .onConflictDoUpdate({
         target: [environmentCanvasNodePosition.environmentId, environmentCanvasNodePosition.resourceType, environmentCanvasNodePosition.resourceId],
         setWhere: eq(environmentCanvasNodePosition.organizationId, organization.id),
-        set: { x, y, updatedAt: now },
+        set: { x, y, updatedAt: sql`now()` },
       })
       .returning();
     if (!row) return yield* Effect.die("PostgreSQL did not return the canvas position.");

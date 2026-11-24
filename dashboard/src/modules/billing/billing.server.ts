@@ -70,7 +70,6 @@ export const persistOrganizationBillingStateSnapshot = Effect.fn(
   sourceUpdatedAt: Date | null = null,
 ) {
   const database = yield* Database;
-  const syncedAt = new Date();
   const sourceOrdering = sourceUpdatedAt === null ? {} : { sourceUpdatedAt };
   const updateOrdering =
     sourceUpdatedAt === null
@@ -83,7 +82,7 @@ export const persistOrganizationBillingStateSnapshot = Effect.fn(
     currentPeriodEnd: snapshot.currentPeriodEnd,
     cancelAtPeriodEnd: snapshot.cancelAtPeriodEnd,
     hasActiveSubscription: snapshot.hasActiveSubscription,
-    syncedAt,
+    syncedAt: sql`now()`,
     ...sourceOrdering,
   };
 

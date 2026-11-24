@@ -1,3 +1,5 @@
+#![expect(clippy::indexing_slicing, reason = "JSON fixtures")]
+
 use serde_json::json;
 
 use super::*;
@@ -7,7 +9,10 @@ use crate::authority::{
     trusted_key::tests::{Answer, Authenticator, HONEST, trusting},
     version::{Budget, VersionFacts, verify},
 };
-use crate::{ContainerKind, ResolvedUpdateConfig, ServiceId};
+use crate::authority::{
+    canonical::from_canonical, keys::Signer, rule::verify_signature, rule_draft::tests::view_json,
+};
+use crate::{ContainerKind, MachineId, ResolvedUpdateConfig, ServiceId};
 
 const DIGEST: &str = "sha256:1111111111111111111111111111111111111111111111111111111111111111";
 const CLUSTER: [u8; 32] = [9; 32];
@@ -41,6 +46,7 @@ fn asked(pins: BTreeMap<String, String>) -> VersionsAsked {
             containers: Vec::new(),
             unanswered: Vec::new(),
         },
+        source: None,
     }
 }
 
@@ -101,7 +107,7 @@ fn admit(
 #[test]
 fn one_passkey_answer_admits_every_service_of_the_draft_with_its_pinned_image() {
     let pin = format!("postgres:17@{DIGEST}");
-    let draft = asked(pinned(&pin)).draft().unwrap();
+    let draft = asked(pinned(&pin)).draft().unwrap().unwrap();
     let passkey = Authenticator::es256(4);
     let versions = answered(&draft, &passkey);
 
@@ -176,5 +182,206 @@ fn data_from_before_births_that_no_server_lists_in_use_refuses_before_any_bundle
     assert!(
         refused.contains("no server lists a container using it; no answer from web-2"),
         "{refused}"
+    );
+}
+
+/// A Save's tap: no version, only the Source step drafted from `view_json`'s Git Service.
+fn saving(rule: Option<&AutoDeployRule>, sources: serde_json::Value) -> VersionsAsked {
+    let view = view_json();
+    let mut asked = asked(BTreeMap::new());
+    asked.services.clear();
+    asked.source = Some(SourceAsked {
+        rule: rule.map(|rule| Signed::sign(rule, &Signer::from_seed(&[7; 32])).unwrap()),
+        sources: serde_json::from_value(sources).unwrap(),
+        target: serde_json::from_value(view["target"].clone()).unwrap(),
+        machines: vec![MachineId::parse("1".repeat(32)).unwrap()],
+        owner_id: 278_111_222,
+        builder: None,
+    });
+    asked
+}
+
+fn first_rule() -> (VersionsDraft, AutoDeployRule) {
+    let draft = saving(None, view_json()["sources"].clone())
+        .draft()
+        .unwrap()
+        .unwrap();
+    let rule = from_canonical(&draft.source.as_ref().unwrap().body).unwrap();
+    (draft, rule)
+}
+
+#[test]
+fn a_save_signs_the_rule_as_a_source_step_the_servers_accept() {
+    let (draft, rule) = first_rule();
+    let passkey = Authenticator::es256(4);
+    let plan: ProposalApproval = serde_json::from_str(&draft.bundle).unwrap();
+    let bundle = Signed::unsigned(&plan).unwrap();
+    let bundle = bundle.clone().answered(passkey.answer(&Answer {
+        challenge: &bundle.challenge(),
+        ..HONEST
+    }));
+    let step = Signed::proposed(&rule, bundle).unwrap();
+    let cluster = SealingPublicKey::from_bytes(CLUSTER);
+
+    let (opened, _) = verify_signature(&step, &trusting(&passkey), Some(cluster)).unwrap();
+    assert_eq!(opened.source.branch, "main");
+    assert!(draft.steps.is_empty(), "a Save signs no version");
+    let summary = &draft.source.unwrap().summary;
+    assert_eq!(
+        (summary.repository.as_str(), summary.branch.as_str()),
+        ("Ployz-test/lab-service", "main"),
+        "the person reads the branch the body signs"
+    );
+}
+
+#[test]
+fn a_second_branch_saved_beside_a_kept_rule_leaves_the_rule_alone() {
+    let (_, kept) = first_rule();
+    let mut sources = view_json()["sources"].clone();
+    let mut worker = sources[0].clone();
+    worker["service"] = json!("cache");
+    worker["branch"] = json!("dev");
+    sources.as_array_mut().unwrap().push(worker);
+
+    assert_eq!(
+        saving(Some(&kept), sources).draft().unwrap(),
+        None,
+        "pushes to main keep deploying under the kept rule"
+    );
+}
+
+#[test]
+fn a_changed_setting_signs_the_kept_rules_next_generation() {
+    let (_, mut kept) = first_rule();
+    kept.services[0].policy.context = "elsewhere".to_owned();
+
+    let draft = saving(Some(&kept), view_json()["sources"].clone())
+        .draft()
+        .unwrap()
+        .unwrap();
+    let next: AutoDeployRule = from_canonical(&draft.source.unwrap().body).unwrap();
+    assert_eq!((next.rule, next.generation), (kept.rule, 2));
+}
+
+#[test]
+fn an_ended_rule_stays_ended() {
+    let (_, mut kept) = first_rule();
+    kept.ended = true;
+    kept.services[0].policy.context = "elsewhere".to_owned();
+
+    assert_eq!(
+        saving(Some(&kept), view_json()["sources"].clone())
+            .draft()
+            .unwrap(),
+        None
+    );
+}
+
+/// What a Save of `sources` beside `rule` needs, read from the view alone.
+fn need(rule: Option<&AutoDeployRule>, sources: serde_json::Value) -> SourceNeed {
+    let asked = saving(rule, sources).source.unwrap();
+    source_need(&RuleBasis {
+        namespace: Namespace::parse("shop").unwrap(),
+        rule: asked.rule,
+        sources: asked.sources,
+        target: asked.target,
+        volumes: PlannedVolumes::new(),
+        minted: Births::new(),
+    })
+}
+
+#[test]
+fn a_save_knows_from_the_view_alone_whether_its_tap_signs_a_rule() {
+    let sources = view_json()["sources"].clone();
+    let (_, kept) = first_rule();
+    let mut changed = kept.clone();
+    changed.services[0].policy.context = "elsewhere".to_owned();
+    let mut ended = changed.clone();
+    ended.ended = true;
+
+    for (rule, wanted) in [
+        (None, SourceNeed::Rule),
+        (Some(&kept), SourceNeed::None),
+        (Some(&changed), SourceNeed::Rule),
+        (Some(&ended), SourceNeed::None),
+    ] {
+        assert_eq!(need(rule, sources.clone()), wanted, "{rule:?}");
+        let signs = saving(rule, sources.clone()).draft().unwrap().is_some();
+        assert_eq!(
+            signs,
+            wanted == SourceNeed::Rule,
+            "the tap agrees: {rule:?}"
+        );
+    }
+}
+
+// Catches a Deploy of another Service asking again for a rule approved for ARM, and the
+// yes swapping its builds to amd64.
+#[test]
+fn a_rule_approved_for_another_platform_keeps_it() {
+    let sources = view_json()["sources"].clone();
+    let (_, mut kept) = first_rule();
+    kept.services[0].policy.platforms = ["linux/arm64".to_owned()].into();
+
+    assert_eq!(need(Some(&kept), sources.clone()), SourceNeed::None);
+    assert_eq!(saving(Some(&kept), sources.clone()).draft().unwrap(), None);
+    kept.services[0].policy.context = "elsewhere".to_owned();
+    let draft = saving(Some(&kept), sources).draft().unwrap().unwrap();
+    let next: AutoDeployRule = from_canonical(&draft.source.unwrap().body).unwrap();
+    assert_eq!(
+        next.services[0].policy.platforms,
+        ["linux/arm64".to_owned()].into()
+    );
+}
+
+#[test]
+fn services_that_moved_off_the_kept_branch_onto_two_others_sign_nothing() {
+    let (_, kept) = first_rule();
+    let mut sources = view_json()["sources"].clone();
+    sources[0]["branch"] = json!("dev");
+    let mut cache = sources[0].clone();
+    cache["service"] = json!("cache");
+    cache["branch"] = json!("release");
+    sources.as_array_mut().unwrap().push(cache);
+
+    assert_eq!(saving(Some(&kept), sources.clone()).draft().unwrap(), None);
+    assert_eq!(need(Some(&kept), sources), SourceNeed::None);
+}
+
+#[test]
+fn a_service_whose_pushes_dont_deploy_leaves_the_rule_to_the_others() {
+    let mut sources = view_json()["sources"].clone();
+    let mut cache = sources[0].clone();
+    cache["service"] = json!("cache");
+    cache["branch"] = json!("dev");
+    cache["on_push"] = json!(false);
+    sources.as_array_mut().unwrap().push(cache);
+    let mut view = view_json();
+    view["sources"] = sources.clone();
+    let basis: RuleBasis = serde_json::from_value(view).unwrap();
+
+    assert_eq!(
+        basis.branch_services(),
+        vec![ServiceName::parse("web").unwrap()]
+    );
+    let draft = saving(None, sources).draft().unwrap().unwrap();
+    let rule: AutoDeployRule = from_canonical(&draft.source.unwrap().body).unwrap();
+    assert_eq!(rule.source.branch, "main");
+}
+
+#[test]
+fn a_builder_other_than_ployzs_release_needs_a_yes() {
+    let mut asked = saving(None, view_json()["sources"].clone());
+    let fork = Builder {
+        r#ref: format!("evil/build/.github/workflows/build.yml@{}", "a".repeat(40)),
+        sha: crate::authority::CommitSha::parse(&"a".repeat(40)).unwrap(),
+    };
+    asked.source.as_mut().unwrap().builder = Some(fork);
+
+    let draft = asked.draft().unwrap().unwrap();
+    assert!(
+        draft.confirm.iter().any(|line| line.contains("evil/build")),
+        "{:?}",
+        draft.confirm
     );
 }
