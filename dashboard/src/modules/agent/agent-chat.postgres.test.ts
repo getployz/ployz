@@ -461,7 +461,7 @@ const olderCard = (persistence: Effect.Success<ReturnType<typeof agentPersistenc
   const card = defineChatMiddleware<unknown, readonly [], readonly [], typeof approvalInterrupt>({
     name: "older-approval-gate",
     onInterruptBoundary: (ctx) => {
-      const call = ctx.messages.findLast((message) => message.role === "assistant")?.toolCalls?.[0];
+      const call = ctx.messages.filter((message) => message.role === "assistant").at(-1)?.toolCalls?.[0];
       if (ctx.phase !== "beforeTools" || call === undefined) return undefined;
       return { interrupts: [approvalInterrupt.interrupt({ key: call.id, reason: "approval_required", message: "Approve the save.", payload: { approvalId: "00000000-0000-4000-8000-00000000a6ff" } })] };
     },
