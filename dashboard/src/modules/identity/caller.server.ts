@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { and, eq, exists, gt, isNull, notExists, or, type SQL } from "drizzle-orm";
+import { and, eq, exists, gt, isNull, notExists, or, type SQL, sql } from "drizzle-orm";
 import { Cause, Effect, Exit, Option, Schema } from "effect";
 import { VIA_HEADER } from "@ployz/sdk/cloud-contract";
 import { Uuid } from "#/lib/schema";
@@ -182,7 +182,7 @@ export const oauthCaller = Effect.fn("Identity.oauthCaller")(function* (claims: 
       and(
         notExists(links(eq(oauthConsentSession.sessionId, sid))),
         exists(database.drizzle.select({ id: session.id }).from(session)
-          .where(and(eq(session.id, sid), eq(session.userId, sub), gt(session.expiresAt, new Date())))),
+          .where(and(eq(session.id, sid), eq(session.userId, sub), gt(session.expiresAt, sql`now()`)))),
       ),
     );
   const rows = yield* database.drizzle

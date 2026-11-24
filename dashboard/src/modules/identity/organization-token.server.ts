@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { randomBytes } from "node:crypto";
 import { sha256Hex } from "#/lib/hash.server";
-import { and, asc, eq, gt, isNull, like, notLike, or } from "drizzle-orm";
+import { and, asc, eq, gt, isNull, like, notLike, or, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { type Caller, callerCan, type TokenKind } from "#/modules/identity/actor";
 import { readStore } from "#/modules/config-store/config-store.server";
@@ -147,7 +147,7 @@ export const listCredentials = Effect.fn("OrganizationToken.list")(function* (ca
     .where(and(
       eq(session.userId, caller.userId),
       isCliSession,
-      gt(session.expiresAt, now),
+      gt(session.expiresAt, sql`now()`),
     ))
     .orderBy(asc(session.createdAt), asc(session.id));
   return {
