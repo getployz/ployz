@@ -2,7 +2,8 @@
 //! A rerun keeps every argument the command line gave, in the order given, spelled as the
 //! command tree spells it; a hint adds, replaces or drops arguments by their id, never by
 //! text. An argument whose values parse to [`Withheld`] shows its placeholder instead of
-//! what was typed, so no hint repeats a secret.
+//! what was typed, and a trailing command line shows as its name (`COMMAND`), so no hint
+//! repeats a secret.
 
 use std::collections::BTreeSet;
 
@@ -379,7 +380,14 @@ impl Given {
         ) {
             return None;
         }
-        let values = if action.takes_values() {
+        let values = if arg.is_trailing_var_arg_set() {
+            // A command line that runs elsewhere, such as exec's, may hold a secret in any
+            // word (`env TOKEN=…`, `-p…`), so a rerun names it and repeats none of it.
+            let typed = matches
+                .get_raw(id)
+                .is_some_and(|mut raw| raw.next().is_some());
+            Values::Text(typed.then(|| id.to_ascii_uppercase()).into_iter().collect())
+        } else if action.takes_values() {
             Values::Text(match matches.try_get_many::<Withheld>(id) {
                 Ok(Some(withheld)) => withheld.map(|value| value.shown.clone()).collect(),
                 Ok(None) | Err(_) => matches

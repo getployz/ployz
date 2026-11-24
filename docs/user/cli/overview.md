@@ -418,7 +418,8 @@ A `retry:` line is the command you ran, with every flag you typed, such as `--pl
 pick where a command runs, `--context`, `--connect`, `--project` and `--env`, are spelled out
 even when they came from a variable. A retry never repeats a variable's value or a registry token:
 `ployz set web.env.TOKEN=…` retries as `ployz set 'web.env.TOKEN=VALUE'`, and a `--patch` that sets
-either retries as `--patch JSON`. Put the value back before you run it.
+either retries as `--patch JSON`. Nor does it repeat the command `ployz exec` runs, which shows as
+`-- COMMAND`, or a password in `--connect`. Put them back before you run it.
 `ployz logs` reading your servers prints each line on the stream your app wrote it to, so add
 `2>&1` to pipe every line; see [Logs](../observe/logs.md#read-logs-from-the-cli).
 
@@ -568,9 +569,9 @@ Once it starts, `ployz exec` exits with your command's own exit code. When the c
 because a deploy replaced it or the service was stopped, it exits 1 with
 `The container for web stopped; exec ended.` A `retry:` line follows when another container of the
 service runs. It is the command you ran: `-T` as `--no-tty`, the `--context`, `--connect`,
-`--project` and `--env` you gave as flags or variables, and the `-- command`, like
-`retry: ployz exec --no-tty web -- sleep 120`. Running it attaches there. It names no container, so it
-reaches whichever one runs. When `ployz exec` stops before your command does,
+`--project` and `--env` you gave as flags or variables, and your command as `COMMAND`, since any word
+of it may be a secret, like `retry: ployz exec --no-tty web -- COMMAND`. Put your command back and
+run it to attach there. It names no container, so it reaches whichever one runs. When `ployz exec` stops before your command does,
 because you pressed Ctrl-C, a script killed it or the connection dropped, the server stops the
 command too: it sends SIGTERM, then SIGKILL after 10 seconds. The signal reaches the command
 you ran, not processes it started, so a shell like `sh -c 'a | b'` can leave `a` and `b` running.

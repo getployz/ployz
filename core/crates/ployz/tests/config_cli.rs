@@ -1375,6 +1375,66 @@ fn an_env_value_prints_on_one_escaped_line_for_humans() {
     }
 }
 
+/// A variable that types another Service's address names the reference to set instead,
+/// and neither the hint nor `--json` repeats a secret the value carried: only a value with
+/// nothing to withhold gets a line that runs as printed.
+#[test]
+fn a_typed_address_names_its_reference_without_the_values_secrets() {
+    for store in &targets() {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "db", "--image", "postgres:16"]);
+        ok(store, &["service", "add", "web", "--image", "nginx:1"]);
+        let set = ok(
+            store,
+            &[
+                "set",
+                "web.env.DATABASE_URL=postgres://app:EXAMPLE@db.internal:5432/shop",
+            ],
+        );
+        assert_eq!(
+            set.pointer("/typed_addresses/0/instead"),
+            Some(&json!({
+                "kind": "reference",
+                "value": "postgres://USER:PASSWORD@${{ db.PLOYZ_PRIVATE_DOMAIN }}:5432/shop",
+                "withheld": ["USER", "PASSWORD"],
+            }))
+        );
+        assert!(!set.to_string().contains("EXAMPLE"), "{set}");
+
+        let home = tempfile::tempdir().unwrap();
+        let (code, said) = person(
+            store,
+            home.path(),
+            &["set", "web.env.API_URL=http://db.internal/?token=EXAMPLE"],
+        );
+        assert_eq!(code, Some(0), "{said}");
+        assert!(
+            said.contains(
+                "where it says QUERY: web.env.API_URL=http://${{ db.PLOYZ_PRIVATE_DOMAIN }}/?QUERY"
+            ),
+            "{said}"
+        );
+        assert!(!said.contains("EXAMPLE"), "{said}");
+
+        let (code, said) = person(
+            store,
+            home.path(),
+            &["set", "web.env.API_URL=http://db.internal:8080"],
+        );
+        assert_eq!(code, Some(0), "{said}");
+        let retry = said
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("retry: "))
+            .unwrap_or_else(|| panic!("no retry in {said}"));
+        let (code, json) = retried(store, &format!("{retry} --why=test --json"));
+        assert_eq!(code, Some(0), "{json}");
+        assert_eq!(
+            setting(store, "web.env.API_URL"),
+            json!("http://${{ db.PLOYZ_PRIVATE_DOMAIN }}:8080")
+        );
+    }
+}
+
 #[test]
 fn get_lists_the_region_above_the_settings() {
     for store in &targets() {

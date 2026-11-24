@@ -74,14 +74,14 @@ fn an_agent_is_refused_until_it_says_why() {
     );
 }
 
+/// The command a refusal prints names exec's command line, which may carry a secret in
+/// any word, instead of repeating it, in the terminal and under `--json`.
 #[test]
-fn the_line_a_refusal_prints_runs_as_printed_for_a_command_with_trailing_words() {
+#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+fn a_refusal_names_a_trailing_command_without_repeating_it() {
     let home = tempfile::tempdir().unwrap();
-    let refused = ployz(
-        home.path(),
-        "some-agent",
-        &["exec", "web", "--", "echo", "hi"],
-    );
+    let command = ["exec", "web", "--", "env", "AUTH_TOKEN=EXAMPLE", "true"];
+    let refused = ployz(home.path(), "some-agent", &command);
     let stderr = text(&refused.stderr);
     let line = stderr
         .lines()
@@ -89,8 +89,20 @@ fn the_line_a_refusal_prints_runs_as_printed_for_a_command_with_trailing_words()
         .unwrap_or_else(|| panic!("no next line in {stderr}"));
     assert_eq!(
         line,
-        "ployz --why '<the goal this command serves>' exec web -- echo hi"
+        "ployz --why '<the goal this command serves>' exec web -- COMMAND"
     );
+    assert!(!stderr.contains("EXAMPLE"), "{stderr}");
+    let json = ployz(
+        home.path(),
+        "some-agent",
+        &[&["--json"][..], &command].concat(),
+    );
+    let error: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(
+        error["error"]["details"]["next"],
+        "ployz --json --why '<the goal this command serves>' exec web -- COMMAND"
+    );
+    assert!(!text(&json.stdout).contains("EXAMPLE"), "{error}");
 
     let ran = ployz(
         home.path(),

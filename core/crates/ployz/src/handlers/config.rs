@@ -15,7 +15,7 @@ use std::io::{IsTerminal as _, Read};
 use ployz_core::{MachineId, MachineObservation, MachineTarget, RpcError, RpcErrorCode};
 use ployz_store::{
     Change, DomainRow, DomainsQuery, DomainsView, Edit, Edited, EnvironmentQuery, EnvironmentView,
-    Instead, NodeName, Revision, SecretCell, SecretInput, SettingPath, SettingRow, TypedAddresses,
+    NodeName, Revision, SecretCell, SecretInput, SettingPath, SettingRow,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -24,7 +24,9 @@ use super::input::{self, InputError, Source};
 use super::shared::staged::{StagedReport, Then};
 use super::store::{Store, environment, scoped, store, with_refresh_hint};
 use super::{Error, leaf_matches};
-use crate::cli::{Rerun, Withheld, positional, switch, value, withheld};
+use crate::cli::{Withheld, positional, switch, value, withheld};
+
+mod typed_address;
 
 pub(super) fn get_command(command: Command) -> Command {
     scoped(command.about("Show Settings: every Service, one Service, or one Setting"))
@@ -651,6 +653,7 @@ pub(super) fn edit_or_discard(
     } else {
         ("Staged", Then::Deploy)
     };
+    let shown = typed_address::Shown::of(&edited);
     let followed = StagedReport::of(
         matches,
         &edited,
@@ -658,6 +661,7 @@ pub(super) fn edit_or_discard(
         unchanged,
         then,
     )
+    .shown(&shown)
     .print(|| {
         if !edited.immediate.is_empty() {
             crate::ui::stream(format_args!(
@@ -667,7 +671,7 @@ pub(super) fn edit_or_discard(
             ));
         }
         for typed in &edited.typed_addresses {
-            say_typed_addresses(matches, &edited.environment, typed);
+            typed_address::say(matches, &edited.environment, typed);
         }
         for note in noted(edited.notes.iter().map(|noted| &noted.note)) {
             ui::note(note);
@@ -703,49 +707,6 @@ fn unchanged(changes: &[Change]) -> String {
     }
 }
 
-/// What a variable's Typed Addresses cost, and what to set instead in `environment`.
-fn say_typed_addresses(
-    matches: &ArgMatches,
-    environment: &ployz_store::EnvironmentSummary,
-    typed: &TypedAddresses,
-) {
-    let (path, services) = (&typed.path, super::joined(&typed.services));
-    let them = if typed.services.len() == 1 {
-        "it"
-    } else {
-        "them"
-    };
-    let Some(consumer) = path.node() else {
-        return;
-    };
-    ui::warn(format!(
-        "{path} types the private address of {services}, so Ployz can't see that {consumer} uses {them}: a Branch that doesn't copy {them} can't reach {them}, and a Deploy won't start {them} first."
-    ));
-    let Instead::Reference { value } = &typed.instead;
-    let scope = super::store::scope_args(&environment.project, &environment.name);
-    match set_instead(matches, &format!("{path}={value}"), &scope) {
-        Ok(retry) => ui::hint(&retry.into()),
-        Err(by_hand) => ui::note(format!(
-            "Set the reference instead, typing its password where it says PASSWORD: {by_hand}"
-        )),
-    }
-}
-
-/// `set` of `assignment`, the value Ployz wrote referencing each address, in `scope`; when
-/// a URL in it carries a password, the assignment to type by hand with `PASSWORD` in its
-/// place, since no hint repeats one.
-fn set_instead(matches: &ArgMatches, assignment: &str, scope: &[&str]) -> Result<Rerun, String> {
-    if let Some(by_hand) = crate::cli::without_passwords(assignment, ":PASSWORD") {
-        return Err(by_hand);
-    }
-    // Parsed, the assignment shows as VALUE: a value typed may be a secret. This one Ployz
-    // wrote, and it holds none.
-    Ok(
-        Rerun::then(matches, &[&["set", assignment][..], scope].concat())
-            .set("assignment", assignment),
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -769,7 +730,7 @@ mod tests {
             ])
             .unwrap();
         let refusal = Error::usage("Working State moved on.")
-            .hint(Rerun::again(&root).set("expect", "7"))
+            .hint(crate::cli::Rerun::again(&root).set("expect", "7"))
             .report();
         assert_eq!(
             refusal
@@ -780,37 +741,6 @@ mod tests {
                 "ployz --ployz-config '/tmp/a b.yaml' set 'web.env.TOKEN=VALUE' 'web.replicas=3' \
                  --env staging --expect 7"
             )
-        );
-    }
-
-    /// The reference a variable should hold survives into the line that sets it, and a
-    /// password in it never does.
-    #[test]
-    fn a_typed_address_names_the_set_of_its_reference_without_any_password() {
-        let root = crate::cli::command()
-            .try_get_matches_from(["ployz", "set", "web.env.API_URL=http://db.internal:8080"])
-            .unwrap();
-        let scope = ["--project", "shop", "--env", "staging"];
-        let retry = set_instead(
-            &root,
-            "web.env.API_URL=http://${{ db.PLOYZ_PRIVATE_DOMAIN }}:8080",
-            &scope,
-        )
-        .unwrap();
-        assert_eq!(
-            retry.line(),
-            "ployz set 'web.env.API_URL=http://${{ db.PLOYZ_PRIVATE_DOMAIN }}:8080' \
-             --project shop --env staging"
-        );
-        let by_hand = set_instead(
-            &root,
-            "web.env.DATABASE_URL=postgres://app:hunter2@${{ db.PLOYZ_PRIVATE_DOMAIN }}:5432/shop",
-            &scope,
-        )
-        .unwrap_err();
-        assert_eq!(
-            by_hand,
-            "web.env.DATABASE_URL=postgres://app:PASSWORD@${{ db.PLOYZ_PRIVATE_DOMAIN }}:5432/shop"
         );
     }
 

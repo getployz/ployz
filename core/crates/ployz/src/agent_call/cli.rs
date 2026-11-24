@@ -174,8 +174,16 @@ mod tests {
             "ployz --connect ssh://root@203.0.113.7 --why '<the goal this command serves>' status"
         );
         assert_eq!(
-            refused(&["exec", "web", "--", "echo", "it's ready", "--why", "x"]),
-            "ployz --why '<the goal this command serves>' exec web -- echo 'it'\\''s ready' --why x"
+            refused(&[
+                "exec",
+                "web",
+                "--",
+                "env",
+                "AUTH_TOKEN=hunter2",
+                "--why",
+                "x"
+            ]),
+            "ployz --why '<the goal this command serves>' exec web -- COMMAND"
         );
     }
 }

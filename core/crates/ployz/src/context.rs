@@ -650,6 +650,41 @@ impl fmt::Display for Connection {
     }
 }
 
+/// A connection as typed, the way an error or a hint repeats it: a Management
+/// Capability as `CAPABILITY`, and a destination without its password.
+#[derive(Clone, Eq, PartialEq)]
+pub struct Shown(String);
+
+impl Shown {
+    pub(crate) fn of(typed: &str) -> Self {
+        if typed.starts_with("management:") || is_management_capability(typed) {
+            return Self("CAPABILITY".to_owned());
+        }
+        if typed.contains("://") {
+            return Self(
+                crate::cli::without_passwords(typed, "").unwrap_or_else(|| typed.to_owned()),
+            );
+        }
+        Self(match crate::cli::password_in(typed) {
+            Some(password) => [typed.get(..password.start), typed.get(password.end..)]
+                .into_iter()
+                .flatten()
+                .collect(),
+            None => typed.to_owned(),
+        })
+    }
+
+    pub(crate) fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl fmt::Debug for Shown {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.0, formatter)
+    }
+}
+
 // Management Capabilities are `ployz1:`-prefixed secrets, not SSH destinations.
 // Recognize even malformed pastes here so parse errors never echo their secret.
 pub(crate) fn is_management_capability(value: &str) -> bool {
@@ -667,16 +702,16 @@ impl FromStr for Connection {
             return address
                 .parse()
                 .map(Self::tcp)
-                .map_err(|_| ConnectionError::TcpAddress(value.to_owned()));
+                .map_err(|_| ConnectionError::TcpAddress(Shown::of(value)));
         }
         if let Some(path) = value.strip_prefix("unix://") {
             return Self::unix(path);
         }
         if value.starts_with("ssh+go://") || value.starts_with("ssh+cli://") {
-            return Err(ConnectionError::RemovedScheme(value.to_owned()));
+            return Err(ConnectionError::RemovedScheme(Shown::of(value)));
         }
         if value.contains("://") && !value.starts_with("ssh://") {
-            return Err(ConnectionError::UnsupportedScheme(value.to_owned()));
+            return Err(ConnectionError::UnsupportedScheme(Shown::of(value)));
         }
         SshDestination::parse(value.strip_prefix("ssh://").unwrap_or(value)).map(Self::ssh)
     }
@@ -750,19 +785,19 @@ impl SshDestination {
             return Err(ConnectionError::ManagementConfigOnly);
         }
         let Some((user, destination)) = value.split_once('@') else {
-            return Err(ConnectionError::SshDestination(value));
+            return Err(ConnectionError::SshDestination(Shown::of(&value)));
         };
         if !valid_ssh_user(user)
             || destination.is_empty()
             || destination.contains('@')
             || value.chars().any(char::is_whitespace)
         {
-            return Err(ConnectionError::SshDestination(value));
+            return Err(ConnectionError::SshDestination(Shown::of(&value)));
         }
         let (host, port) = split_ssh_port(destination)
-            .ok_or_else(|| ConnectionError::SshDestination(value.clone()))?;
+            .ok_or_else(|| ConnectionError::SshDestination(Shown::of(&value)))?;
         if !valid_ssh_host(host) {
-            return Err(ConnectionError::SshDestination(value));
+            return Err(ConnectionError::SshDestination(Shown::of(&value)));
         }
         let target = format!("{user}@{host}");
         let copy_target = if host.contains(':') {
@@ -910,17 +945,17 @@ pub enum ConnectionError {
     )]
     ManagementConfigOnly,
     #[error("invalid SSH destination {0:?}")]
-    SshDestination(String),
+    SshDestination(Shown),
     #[error("invalid TCP address {0:?}")]
-    TcpAddress(String),
+    TcpAddress(Shown),
     #[error("Unix connection path must be absolute: {0}")]
     UnixPath(PathBuf),
     #[error("connection scheme was removed: {0:?}")]
-    RemovedScheme(String),
+    RemovedScheme(Shown),
     #[error("ssh_key_file requires the SSH transport")]
     SshKeyTransport,
     #[error("unsupported connection scheme: {0:?}")]
-    UnsupportedScheme(String),
+    UnsupportedScheme(Shown),
 }
 
 impl Coded for ConnectionError {

@@ -7,7 +7,7 @@ mod rerun;
 
 #[cfg(test)]
 pub(crate) use rerun::retry_hint;
-pub(crate) use rerun::{Rerun, Withheld, withheld, without_passwords};
+pub(crate) use rerun::{Rerun, Withheld, password_in, withheld, without_passwords};
 
 #[must_use]
 /// The whole tree: every compiled command plus the ones the signed-in Cloud publishes,
@@ -61,7 +61,8 @@ fn connection_args() -> [Arg; 4] {
     [
         value("connect", None)
             .env(env::CONNECT)
-            .value_parser(withheld(shown_connection))
+            .hide_env_values(true)
+            .value_parser(withheld(|typed| crate::context::Shown::of(typed).into_string()))
             .help("Reach the Servers through this connection instead of Cloud or a context")
             .global(true),
         value("ssh-timeout", None)
@@ -83,24 +84,6 @@ fn connection_args() -> [Arg; 4] {
             .env(env::CONTEXT)
             .help("Act through this local context instead of the current one"),
     ]
-}
-
-/// A `--connect` as a hint repeats it: a Management Capability as `CAPABILITY`, and a
-/// destination without its password.
-fn shown_connection(typed: &str) -> String {
-    if typed.starts_with("management:") || crate::context::is_management_capability(typed) {
-        return "CAPABILITY".to_owned();
-    }
-    if typed.contains("://") {
-        return rerun::without_passwords(typed, "").unwrap_or_else(|| typed.to_owned());
-    }
-    match rerun::password_in(typed) {
-        Some(password) => [typed.get(..password.start), typed.get(password.end..)]
-            .into_iter()
-            .flatten()
-            .collect(),
-        None => typed.to_owned(),
-    }
 }
 
 /// The connection `--connect` or `PLOYZ_CONNECT` names, as typed.
