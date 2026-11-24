@@ -428,6 +428,52 @@ async fn a_full_callers_pull_leaves_the_tag_its_creation_runs() {
     }
 }
 
+/// Only Ployz's reserved Services run on every Server, so a Full caller's Global in a
+/// user Namespace is refused before Docker makes anything.
+#[tokio::test]
+async fn a_full_callers_global_in_a_user_namespace_is_refused() {
+    use ployz_core::{ContainerRefusalReason, EnsuredContainer};
+    use serde_json::json;
+    let (data_dir, _store, service, fake) = fake_docker_service("ployzd-user-global").await;
+    let spec: ResolvedServiceSpec = serde_json::from_value(json!({
+        "service_id": ServiceId::parse("a".repeat(32)).unwrap(), "name": "api",
+        "mode": {"mode": "global"},
+        "container": {"image": "example.test/api", "pull_policy": "missing"}
+    }))
+    .unwrap();
+    let want = json!({"want": {"state": "running", "rotation": "pending", "container": {"new": {
+        "slot": {"namespace": "app", "service": "api", "kind": "service_container",
+                 "creation_key": ployz_core::global_creation_key(&spec)},
+        "resolved_spec": spec, "gen": 1}}}});
+    let reply = service
+        .ensure_container(Request::new(
+            op::EnsureContainer::into_request(serde_json::from_value(want).unwrap())
+                .encode()
+                .unwrap(),
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .decode_response()
+        .unwrap()
+        .decode::<op::EnsureContainer>()
+        .unwrap();
+    let EnsuredContainer::Refused { refusal, .. } = &reply else {
+        panic!("expected a refusal, got {reply:?}");
+    };
+    assert_eq!(
+        refusal.reason,
+        ContainerRefusalReason::GlobalUnreserved,
+        "{}",
+        refusal.message
+    );
+    assert!(
+        fake.named_containers.unwrap().lock().unwrap().is_empty(),
+        "a refused Global reaches no Docker create"
+    );
+    std::fs::remove_dir_all(data_dir).unwrap();
+}
+
 #[tokio::test]
 async fn keyed_creation_replays_conflicts_and_obeys_new_work_admission() {
     use serde_json::json;
