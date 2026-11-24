@@ -13,6 +13,7 @@ export const editUptimeCheckStatement = (input: {
   readonly intervalSeconds: number;
   readonly timeoutMs: number;
   readonly enabled: boolean;
+  // oxlint-disable-next-line anti-slop/postgres-clock-in-queries -- writes, not a check: now() is only ever assigned in SET, and no WHERE compares a time
 }) => sql`
   WITH edited AS (
     UPDATE uptime_check SET url = ${input.url}, expect = ${input.expect}, interval_seconds = ${input.intervalSeconds}, timeout_ms = ${input.timeoutMs}, enabled = ${input.enabled},

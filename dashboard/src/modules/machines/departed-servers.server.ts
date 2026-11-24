@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import type { RuntimeWatchView } from "@ployz/sdk";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { departedServers } from "#/modules/machines/departed-servers";
 import { dropRemovedServer } from "#/modules/machines/pairing-release.server";
@@ -19,12 +19,15 @@ export const recordDepartedServers = Effect.fn("Machines.recordDeparted")(functi
   frame: Pick<RuntimeWatchView, "machines" | "incomplete_ids">,
 ) {
   const { drizzle } = yield* Database;
-  const rows = yield* drizzle.select({ machineId: organizationMachine.machineId, updatedAt: organizationMachine.updatedAt })
+  // Postgres stamps `updatedAt`, so the grace runs on its clock: each row carries its `now()`.
+  const rows = yield* drizzle.select({ machineId: organizationMachine.machineId, updatedAt: organizationMachine.updatedAt, now: sql`now()`.mapWith(organizationMachine.updatedAt) })
     .from(organizationMachine)
     .where(and(eq(organizationMachine.organizationId, organizationId), eq(organizationMachine.clusterKey, generation)));
+  const now = rows[0]?.now;
+  if (now === undefined) return "settled" as const;
   const removing = yield* drizzle.select({ machineId: machineRemoveAttempt.machineId }).from(machineRemoveAttempt)
     .where(and(eq(machineRemoveAttempt.organizationId, organizationId), inArray(machineRemoveAttempt.state, ["pending", "running"])));
-  const { departed, held } = departedServers(rows, frame, new Date(), new Set(removing.map(({ machineId }) => machineId)));
+  const { departed, held } = departedServers(rows, frame, now, new Set(removing.map(({ machineId }) => machineId)));
   for (const machineId of departed) {
     const dropped = yield* dropRemovedServer({ organizationId, machineId, generation, removal: "unconfirmed" });
     yield* Effect.logInfo("The Cluster no longer lists this Server; Cloud let go of its row.", { organizationId, machineId, dropped: dropped.kind });

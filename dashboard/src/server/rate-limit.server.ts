@@ -4,8 +4,9 @@ import { Effect, Random } from "effect";
 import ipaddr from "ipaddr.js";
 import { checkinRateLimit, rateLimitEvent } from "#/server/rate-limit.tables";
 import { Database } from "#/server/database.server";
+import { checkedNow, sweepCutoff } from "#/db/tables";
 
-const thisSecond = sql`date_trunc('second', now())`;
+const thisSecond = sql`date_trunc('second', ${checkedNow()})`;
 const PRUNE_ONE_CALL_IN = 100;
 
 export const countWithinRateLimit = Effect.fn("Checkin.rateLimit")(function* (key: string, limit: number) {
@@ -53,9 +54,9 @@ export const admitWithinWindows = Effect.fn("RateLimit.admitWithinWindows")(func
     return yield* Effect.die(`a rate window may not outlast the ${EVENT_RETENTION_SECONDS}s event retention`);
   }
   const waits = windows.map(({ seconds, limit }) => {
-    const within = sql`${rateLimitEvent.at} > now() - make_interval(secs => ${seconds})`;
+    const within = sql`${rateLimitEvent.at} > ${checkedNow()} - make_interval(secs => ${seconds})`;
     return sql`case when count(*) filter (where ${within}) >= ${limit}
-      then greatest(1, ceil(extract(epoch from min(${rateLimitEvent.at}) filter (where ${within}) + make_interval(secs => ${seconds}) - now())))
+      then greatest(1, ceil(extract(epoch from min(${rateLimitEvent.at}) filter (where ${within}) + make_interval(secs => ${seconds}) - ${checkedNow()})))
       else 0 end`;
   });
   const longest = Math.max(...windows.map((window) => window.seconds));
@@ -66,7 +67,7 @@ export const admitWithinWindows = Effect.fn("RateLimit.admitWithinWindows")(func
     const [row] = yield* drizzle
       .select({ retryAfterSeconds: sql<number>`greatest(0, ${sql.join(waits, sql`, `)})::int` })
       .from(rateLimitEvent)
-      .where(and(eq(rateLimitEvent.key, key), gt(rateLimitEvent.at, sql`now() - make_interval(secs => ${longest})`)));
+      .where(and(eq(rateLimitEvent.key, key), gt(rateLimitEvent.at, sql`${checkedNow()} - make_interval(secs => ${longest})`)));
     const retryAfterSeconds = row?.retryAfterSeconds ?? 0;
     if (retryAfterSeconds > 0) return { admitted: false as const, retryAfterSeconds };
     const [event] = yield* drizzle.insert(rateLimitEvent).values({ key }).returning({ id: rateLimitEvent.id });
@@ -75,7 +76,7 @@ export const admitWithinWindows = Effect.fn("RateLimit.admitWithinWindows")(func
   }));
   if ((yield* Random.next) * PRUNE_ONE_CALL_IN < 1) {
     // The event is already committed; a failed prune must not lose the admission and strand it.
-    yield* database.drizzle.delete(rateLimitEvent).where(lt(rateLimitEvent.at, sql`now() - make_interval(secs => ${EVENT_RETENTION_SECONDS})`)).pipe(
+    yield* database.drizzle.delete(rateLimitEvent).where(lt(rateLimitEvent.at, sql`${sweepCutoff()} - make_interval(secs => ${EVENT_RETENTION_SECONDS})`)).pipe(
       Effect.catch((error) => Effect.logWarning("Stale rate limit events were not pruned; a later call prunes them.", error)),
     );
   }
