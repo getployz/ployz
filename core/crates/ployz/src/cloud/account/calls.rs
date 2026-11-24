@@ -226,7 +226,7 @@ async fn follow_operation_until<T: DeserializeOwned>(
         .await?
         .ok_or_else(|| {
             let minutes = within.as_secs() / 60;
-            let waited = if minutes % 60 == 0 && minutes >= 120 {
+            let waited = if minutes.is_multiple_of(60) && minutes >= 120 {
                 format!("{} hours", minutes / 60)
             } else {
                 format!("{minutes} minutes")
