@@ -103,8 +103,7 @@ function proposalView(row: ProposalRow, acts: readonly StepAct[] = []) {
     halt: row.halt,
     reason: row.reason,
     requested_by: row.requestedByUserId,
-    // The one who asked took it back: they rejected their own request.
-    withdrawn: row.status === "denied" && row.decidedByUserId !== null && row.decidedByUserId === row.requestedByUserId,
+    withdrawn: row.withdrawn,
     created_at: row.createdAt.toISOString(),
     decided_at: row.decidedAt?.toISOString() ?? null,
   };
@@ -477,29 +476,51 @@ type StepStart = { readonly started: true } | { readonly later: true } | { reado
 const started: StepStart = { started: true };
 const later: StepStart = { later: true };
 
-/** Whether `userId` may decide `row` as its Environment stands now: anyone outside a Protected one, else an owner or admin. */
-const protects = Effect.fn("Proposals.protects")(function* (userId: string | null, row: ProposalRow) {
-  const isProtected = yield* environmentProtected(row.organizationId, row.project, row.environmentId).pipe(Effect.catchTag("StoreRefused", () => Effect.succeed(true)));
-  if (!isProtected) return true;
+/** Whether `userId` is an owner or admin of the Organization now, who may decide in a Protected Environment. */
+const protectorNow = Effect.fn("Proposals.protectorNow")(function* (userId: string | null, organizationId: string) {
   if (userId === null) return false;
-  return yield* requireAccessById({ userId }, row.organizationId, "changes:deploy").pipe(
+  return yield* requireAccessById({ userId }, organizationId, "changes:deploy").pipe(
     Effect.map((access) => access.kind === "member" && protector(access)),
     Effect.catchIf((error) => error instanceof NotFound || error instanceof Forbidden, () => Effect.succeed(false)),
   );
 });
 
-/** Whether `userId` may approve `row`: anyone who answers, unless a Deploy, stop or restart waits in a Protected Environment. */
-const decides = Effect.fn("Proposals.decides")(function* (userId: string | null, row: ProposalRow) {
-  const guarded = row.steps.some((step) => isDeploy(step) || step.verb !== "start");
-  return !guarded || (yield* protects(userId, row));
+/** Whether `userId` may decide `row` as its Environment stands now: anyone outside a Protected one, else an owner or admin. */
+const protects = Effect.fn("Proposals.protects")(function* (userId: string | null, row: ProposalRow) {
+  const isProtected = yield* environmentProtected(row.organizationId, row.project, row.environmentId).pipe(Effect.catchTag("StoreRefused", () => Effect.succeed(true)));
+  return !isProtected || (yield* protectorNow(userId, row.organizationId));
 });
 
-/** `views` as `userId` sees them: which they asked for, and which they may approve. */
+/** Whether `steps` hold a Deploy, stop or restart, which a Protected Environment leaves to an owner or admin. */
+const guarded = (steps: readonly ProposalStep[]) => steps.some((step) => isDeploy(step) || step.verb !== "start");
+
+/** Whether `userId` may approve `row`: anyone who answers, unless a Deploy, stop or restart waits in a Protected Environment. */
+const decides = Effect.fn("Proposals.decides")(function* (userId: string | null, row: ProposalRow) {
+  return !guarded(row.steps) || (yield* protects(userId, row));
+});
+
+/** The Environments of `project` that are Protected now, by id; null when the Store can't say, which reads as every one. */
+const protectedIn = Effect.fn("Proposals.protectedIn")(function* (organizationId: string, project: string) {
+  return yield* readStore(organizationId, { query: "environments", project }).pipe(
+    Effect.map(({ environments }) => new Set(environments.flatMap(({ id, protected: isProtected }) => isProtected ? [id] : []))),
+    Effect.catchTag("StoreRefused", () => Effect.succeed(null)),
+  );
+});
+
+/**
+ * `views` as `userId` sees them: which they asked for, and which they may approve. The sidebar polls this, so it reads
+ * each Project's Environments once and the viewer once, however many proposals wait. Deciding checks again, live.
+ */
 export const asSeenBy = Effect.fn("Proposals.asSeenBy")(function* (organizationId: string, userId: string, views: readonly ProposalView[]) {
-  return yield* Effect.forEach(views, (view) => Effect.gen(function* () {
-    const row = yield* readRow(organizationId, view.id);
-    return { ...view, mine: view.requested_by === userId, decides: row !== undefined && (yield* decides(userId, row)) };
-  }));
+  const projects = [...new Set(views.filter((view) => guarded(view.steps)).map((view) => view.project))];
+  const held = new Map(yield* Effect.forEach(projects, (project) => Effect.map(protectedIn(organizationId, project), (ids) => [project, ids] as const)));
+  const isProtected = (view: ProposalView) => {
+    const ids = held.get(view.project);
+    return ids === undefined || ids === null || ids.has(view.environment_id);
+  };
+  const asksProtector = views.some((view) => guarded(view.steps) && isProtected(view));
+  const protects = asksProtector && (yield* protectorNow(userId, organizationId));
+  return views.map((view) => ({ ...view, mine: view.requested_by === userId, decides: !guarded(view.steps) || !isProtected(view) || protects }));
 });
 
 /**
@@ -624,7 +645,7 @@ export const decideProposal = Effect.fn("Proposals.decide")(function* (decider: 
   const { drizzle } = yield* Database;
   const now = new Date();
   const decided = { decidedByUserId: decider.userId, decidedAt: now, updatedAt: now };
-  const deny = (reason: string | null) => drizzle.update(operationProposals).set({ status: "denied", reason, ...decided })
+  const deny = (reason: string | null, withdrawn = false) => drizzle.update(operationProposals).set({ status: "denied", reason, withdrawn, ...decided })
     .where(and(eq(operationProposals.id, row.id), eq(operationProposals.status, "presented"))).returning();
   // Each step runs as the asker, so in a Protected Environment only someone who can protect it decides a Deploy, stop
   // or restart: approves it, or rejects another member's request, which ends the ask for good. The one who asked may
@@ -636,7 +657,7 @@ export const decideProposal = Effect.fn("Proposals.decide")(function* (decider: 
     if ("reject" in decision || first === undefined || !isDeploy(first)) return { ok: false, message: OWNER_OR_ADMIN } satisfies Decided;
   }
   if ("reject" in decision) {
-    const [denied] = yield* deny(decision.reject.reason?.trim() || null);
+    const [denied] = yield* deny(decision.reject.reason?.trim() || null, withdraws);
     return denied === undefined ? settled((yield* readRow(decider.organization.id, id)) ?? row) : { ok: true, proposal: proposalView(denied) } satisfies Decided;
   }
   const [first] = row.steps;

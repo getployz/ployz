@@ -435,7 +435,8 @@ it.live("an Environment edited after the link was made is denied at the tap and 
     const { proposal_id: id } = linkOf(yield* call("deploy", {}));
     yield* write({ command: "edit", environment: production, expect: null, changes: [{ op: "set", path: "web.replicas", value: 2 }] });
     expect(yield* cluster(decideProposal(owner, id, approve))).toMatchObject({ ok: false, message: DEPLOY_MOVED });
-    expect(yield* provided(proposalStatus(owner, id))).toMatchObject({ ok: true, value: { status: "denied" } });
+    // The one who asked said yes: a plan that moved under them is denied, not withdrawn.
+    expect(yield* provided(proposalStatus(owner, id))).toMatchObject({ ok: true, value: { status: "denied", withdrawn: false } });
     expect(yield* admitted(id)).toBe(0);
   }));
 
@@ -446,7 +447,7 @@ it.live("a session that signed out before the tap leaves the Deploy unrun, thoug
     yield* provided(Effect.flatMap(Database, ({ drizzle }) => drizzle.delete(session).where(eq(session.id, BROWSER))));
     expect(yield* cluster(decideProposal(owner, id, approve))).toMatchObject({ ok: false, message: expect.stringContaining("is gone") });
     expect(yield* admitted(id)).toBe(0);
-    expect(yield* provided(proposalStatus(owner, id))).toMatchObject({ ok: true, value: { status: "denied" } });
+    expect(yield* provided(proposalStatus(owner, id))).toMatchObject({ ok: true, value: { status: "denied", withdrawn: false } });
   }));
 
 it.live("a Deploy asked with no_prune is admitted with no_prune, not as a Deploy that removes what else runs", () =>

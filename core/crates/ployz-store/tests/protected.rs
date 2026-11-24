@@ -1064,3 +1064,28 @@ fn removing_a_project_with_a_protected_environment_needs_environments_protect() 
     let admin = remove(&store, &person(&system), true);
     assert!(passed(&admin), "{admin:?}");
 }
+
+#[test]
+fn a_yes_to_a_sync_asks_again_once_production_is_unprotected() {
+    let (store, system) = shop();
+    let who = person(&system);
+    fix_web(&store, &who);
+    edit(
+        &store,
+        &who,
+        "fix-web",
+        &[("web.env.FLAG", Some(json!("on")))],
+        false,
+    )
+    .unwrap();
+    let approved = admin_approved(sync_up(&store, &who, false).unwrap_err(), "sync");
+    store.write(&system, &set("production", false)).unwrap();
+
+    let stale = sync_as(&store, &who, &approved).unwrap_err();
+    assert_eq!(stale.code, RpcErrorCode::from("approval_required"));
+    assert_eq!(stale.message, "A human must approve this sync first.");
+    assert!(production_env(&store, &who).is_none());
+    // Without a yes, nothing asks there now.
+    sync_up(&store, &who, false).unwrap();
+    assert_eq!(production_env(&store, &who), Some(json!("on")));
+}

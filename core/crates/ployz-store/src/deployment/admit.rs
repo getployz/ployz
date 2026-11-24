@@ -229,7 +229,7 @@ pub(crate) fn admit(
             match asked {
                 Asked::Removal(environment, review, asks) => {
                     trusted.writes(&environment.summary.name)?;
-                    if forget.is_none() || asks {
+                    if forget.is_none() || asks || trusted.approval.carried() {
                         crate::removal::ask_taking_off(
                             tx,
                             who,

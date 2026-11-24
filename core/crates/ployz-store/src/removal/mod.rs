@@ -748,7 +748,7 @@ pub(crate) fn gate(
     approval: &Approval,
     diff: impl FnOnce() -> Value,
 ) -> Result<(), RpcError> {
-    if matches!(approval, Approval::NotRequired) || effects.is_empty() {
+    if matches!(approval, Approval::NotRequired) || (effects.is_empty() && !approval.carried()) {
         return Ok(());
     }
     let digest = match target {
@@ -763,8 +763,12 @@ pub(crate) fn gate(
         .map(DestructiveEffect::describe)
         .collect::<Vec<_>>()
         .join(", ");
+    let message = match asked.is_empty() {
+        true => "A human must approve this removal first.".to_owned(),
+        false => format!("A human must approve this first: {asked}"),
+    };
     Err(error::approval_required(
-        format!("A human must approve this first: {asked}"),
+        message,
         &ApprovalRequired {
             id: None,
             digest: digest.to_string(),

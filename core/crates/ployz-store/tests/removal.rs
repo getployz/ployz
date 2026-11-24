@@ -2509,3 +2509,126 @@ fn a_sweep_queued_behind_a_cancel_keeps_the_environment_whose_queued_removal_it_
         admit_removal(store, who, "production", 2, &Trusted::default()).unwrap();
     });
 }
+
+/// Remove `web` from `fix` and deploy that as Deployment `n`, so nothing of `fix`
+/// runs on the Servers.
+fn drop_fix_web(store: &ConfigStore, who: &Actor, n: u8) {
+    store
+        .write(
+            who,
+            &ployz_store::RemoveService {
+                environment: at("fix"),
+                service: ServiceName::parse("web").unwrap(),
+            },
+        )
+        .unwrap();
+    deploy(store, who, "fix", n, &["web"]);
+}
+
+#[test]
+fn a_yes_to_a_shutdown_that_now_takes_nothing_off_queues_nothing_and_asks_again() {
+    let (store, who) = branched();
+    let required = Trusted {
+        approval: Approval::Required,
+        ..observing(observed())
+    };
+    let asked = refusal(shut_down(&store, &who, ("fix", 4), &[], &required));
+    assert_eq!(asked.code, RpcErrorCode::from("approval_required"));
+    drop_fix_web(&store, &who, 3);
+
+    let stale = refusal(shut_down(
+        &store,
+        &who,
+        ("fix", 4),
+        &[],
+        &approving(&asked, observing(observed())),
+    ));
+    assert_eq!(stale.code, RpcErrorCode::from("approval_required"));
+    assert_eq!(stale.message, "A human must approve this shutdown first.");
+    assert_eq!(stale.details["effects"], json!([]));
+    assert!(
+        store
+            .read(&who, &ployz_store::DeploymentQuery { id: id(4) })
+            .is_err()
+    );
+    // Without a yes, a shutdown that takes nothing off asks nothing, as before.
+    assert!(
+        shut_down(&store, &who, ("fix", 4), &[], &required)
+            .unwrap()
+            .remove
+    );
+}
+
+#[test]
+fn a_yes_to_a_shutdown_is_weighed_even_once_no_server_is_left_to_take_it_off() {
+    let (store, who) = branched();
+    let required = Trusted {
+        approval: Approval::Required,
+        ..observing(observed())
+    };
+    let asked = refusal(shut_down(&store, &who, ("fix", 4), &[], &required));
+    drop_fix_web(&store, &who, 3);
+    let serverless = |trusted: Trusted| Trusted {
+        servers: Some(0),
+        ..trusted
+    };
+
+    let stale = refusal(shut_down(
+        &store,
+        &who,
+        ("fix", 4),
+        &[],
+        &serverless(approving(&asked, observing(observed()))),
+    ));
+    assert_eq!(stale.code, RpcErrorCode::from("approval_required"));
+    assert_eq!(stale.details["effects"], json!([]));
+    let forgotten = shut_down(
+        &store,
+        &who,
+        ("fix", 4),
+        &[],
+        &serverless(approving(&stale, observing(observed()))),
+    )
+    .unwrap();
+    assert_eq!(forgotten.status, DeploymentStatus::Applied);
+}
+
+#[test]
+fn a_yes_to_a_removal_whose_servers_left_asks_again() {
+    let (store, who) = branched();
+    let trusted = |approval| Trusted {
+        approval,
+        ..Trusted::default()
+    };
+    let asked = refusal(confirmed(
+        &store,
+        &who,
+        request(Some("fix")),
+        &trusted(Approval::Required),
+    ));
+    assert_eq!(asked.code, RpcErrorCode::from("approval_required"));
+    // Every Server leaves before the yes: nothing of fix is left to take off.
+    let serverless = |approval| Trusted {
+        servers: Some(0),
+        ..trusted(approval)
+    };
+    let carried =
+        Approval::Approved(serde_json::from_value(asked.details["approval"].clone()).unwrap());
+    let stale = refusal(confirmed(
+        &store,
+        &who,
+        request(Some("fix")),
+        &serverless(carried),
+    ));
+    assert_eq!(stale.code, RpcErrorCode::from("approval_required"));
+    assert_eq!(stale.message, "A human must approve this removal first.");
+    assert_eq!(stale.details["effects"], json!([]));
+    // Without a yes, nothing asks, as before.
+    confirmed(
+        &store,
+        &who,
+        request(Some("fix")),
+        &serverless(Approval::Required),
+    )
+    .unwrap();
+}

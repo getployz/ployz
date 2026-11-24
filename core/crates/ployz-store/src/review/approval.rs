@@ -459,6 +459,12 @@ impl<'a> Gate<'a> {
         self.protection == Protection::Asks && self.trusted.from_cli
     }
 
+    /// Whether the caller carried a person's yes: then no shortcut lets the write
+    /// through unasked, and the yes passes only if it matches the plan as it stands.
+    pub(crate) const fn carried(&self) -> bool {
+        self.trusted.approval.carried()
+    }
+
     /// Whether a retry asks a human at all.
     pub(crate) fn asks_retry(&self) -> bool {
         self.protected()
@@ -593,11 +599,8 @@ pub(crate) fn approve(
         refuse_destroying(gate, effects, what, then)?;
     }
     // A prune's removals, named or not, are new to every Deploy, even one that resaves.
-    // A yes is always weighed against the plan as it stands, so a yes to a plan that
-    // has since changed asks again even when the plan now destroys nothing.
-    let carried = matches!(gate.trusted.approval, Approval::Approved(_));
     if asks == Asks::Destroys
-        && !carried
+        && !gate.carried()
         && (diff.effects.is_empty() || resaves)
         && pruned.is_empty()
         && !pruning.unseen()
@@ -815,7 +818,7 @@ fn dropped_sentence(dropped: &[MachineName]) -> String {
 /// no approval is required or Cloud holds a human's approval of exactly this. Into a
 /// Protected Environment, a caller who asks there asks even when Cloud requires
 /// nothing, as a Deploy does; an agent asks even when nothing is left to take off,
-/// as its every retry does.
+/// as its every retry does, and so does a carried yes, which must match.
 ///
 /// # Errors
 /// `approval_required`, naming the effects, the `version:digest` to approve and the
@@ -827,7 +830,7 @@ pub(crate) fn approve_shut_down(
     effects: &BTreeSet<DestructiveEffect>,
     gate: &Gate<'_>,
 ) -> Result<(), RpcError> {
-    if effects.is_empty() && !gate.asks_retry() {
+    if effects.is_empty() && !gate.asks_retry() && !gate.carried() {
         return Ok(());
     }
     let what = match taking_off {
@@ -837,6 +840,9 @@ pub(crate) fn approve_shut_down(
     refuse_destroying(gate, effects, what, "run it")?;
     let diff = &review.view;
     let message = gate.message(diff, "shutdown", || {
+        if effects.is_empty() {
+            return format!("A human must approve {what} first.");
+        }
         let asked = effects
             .iter()
             .map(DestructiveEffect::describe)
@@ -870,8 +876,8 @@ impl TakingOff<'_> {
 
 /// Refuse cancelling Deployment `deployment`, which someone else admitted, into an
 /// Environment that is Protected for the caller, unless Cloud holds an admin's
-/// approval of exactly this cancel: it stops what they shipped partway. The caller
-/// holds the Environment's lock.
+/// approval of exactly this cancel: it stops what they shipped partway. A carried
+/// yes must match even where nothing asks. The caller holds the Environment's lock.
 ///
 /// # Errors
 /// `approval_required`, naming the `version:digest` to approve, the fresh `diff`
@@ -883,7 +889,7 @@ pub(crate) fn approve_cancel(
     trusted: &Trusted,
 ) -> Result<(), RpcError> {
     let gate = Gate::new(tx, &deployment.environment_id, trusted)?;
-    if !gate.protected() {
+    if !gate.protected() && !gate.carried() {
         return Ok(());
     }
     let environment = crate::scope::load_by_id(tx, &deployment.environment_id)?;
@@ -893,7 +899,9 @@ pub(crate) fn approve_cancel(
     if let Some(bound) = bound.as_object_mut() {
         bound.insert("deployment".to_owned(), json!(deployment.id));
     }
-    let message = gate.message(&review.view, "cancel", String::new);
+    let message = gate.message(&review.view, "cancel", || {
+        "A human must approve this cancel first.".to_owned()
+    });
     gate.require(bound, message, (&effects, &review.view))
 }
 
@@ -950,7 +958,7 @@ pub(crate) fn approve_retry(
     let effects: BTreeSet<DestructiveEffect> =
         effects.into_iter().chain(pruning.removes()).collect();
     // Beyond where every retry asks, a retry asks only when it takes something off.
-    if !gate.asks_retry() && effects.is_empty() && !pruning.unseen() {
+    if !gate.asks_retry() && effects.is_empty() && !pruning.unseen() && !gate.carried() {
         return Ok(());
     }
     // A protector's retry that destroys nothing, nor replays anything its source's
@@ -961,6 +969,7 @@ pub(crate) fn approve_retry(
         && rollback.rolls_back.is_empty()
         && !rollback.replays_destruction
         && retry.accept_volume_loss.is_empty()
+        && !gate.carried()
     {
         return Ok(());
     }
@@ -1037,15 +1046,16 @@ pub(crate) enum Moving<'a> {
     Take(&'a EnvironmentSummary, &'a serde_json::Value),
 }
 
-/// A Sync or Take into an Environment that is Protected for the caller, read before
-/// it writes: the version Cloud's approval stays fresh against is the one the
+/// A Sync or Take into an Environment that is Protected for the caller, or that
+/// carries a yes, read before it writes: the version Cloud's approval stays fresh against is the one the
 /// refusal rolls back to.
 pub(crate) struct MoveAsks<'a> {
     gate: Gate<'a>,
     version: String,
 }
 
-/// Whether a Sync or Take into `into` asks, read before it writes anything.
+/// Whether a Sync or Take into `into` asks, or weighs a carried yes, read before it
+/// writes anything.
 ///
 /// # Errors
 /// When the caller's grant can't write `into`.
@@ -1055,7 +1065,7 @@ pub(crate) fn move_asks<'a>(
     trusted: &'a Trusted,
 ) -> Result<Option<MoveAsks<'a>>, RpcError> {
     let gate = Gate::new(tx, &into.summary.id, trusted)?;
-    if !gate.protected() {
+    if !gate.protected() && !gate.carried() {
         return Ok(None);
     }
     trusted.writes(&into.summary.name)?;
@@ -1094,7 +1104,9 @@ pub(crate) fn approve_move(
     });
     let mut diff = crate::review::review(tx, into)?.view;
     diff.version = version;
-    let message = gate.message(&diff, what, String::new);
+    let message = gate.message(&diff, what, || {
+        format!("A human must approve this {what} first.")
+    });
     gate.require(bound, message, (&diff.effects, &diff))
 }
 
