@@ -17,18 +17,22 @@
 //! - **The editor** changes the plan once, at any step before the request ends: a
 //!   collaborator edits or discards the draft, a Deployment lands so a retry or a cancel
 //!   reads another version, every Server leaves, or the drained Server leaves the frame
-//!   (`ApprovalBinding::edits`). With `open_paths` it also makes the changes the code's
-//!   digest doesn't bind: the cancelled Deployment's runner claims it (`Plan::Started`), or
-//!   a Volume the Drain's dialog showed staying can now move (`Plan::VolumeMoves`), and it
-//!   may change a Drain's plan after Cloud's last compare.
+//!   (`ApprovalBinding::edits`). After Cloud's last compare of a Drain it may still fail a
+//!   global's last other copy, which the Engine's `LastIn` guard reads (`Plan::LastCopy`).
+//!   With `open_paths` it also makes the changes the code doesn't bind: the cancelled
+//!   Deployment's runner claims it (`Plan::Started`), or a global's other copy fails after
+//!   the guard counted it and before its copy here goes Out.
+//! - **The frame** changes what `dataCheck` reads of a Service the Engine leaves on the
+//!   drained Server for its Volume, once (`Data`): the Volume's reason to stay clears, or
+//!   the Service now mounts another managed Volume.
 //! - **The remover** revokes the caller's management access on a Machine once
 //!   (`Action::Revoke`): a Full caller's `set_device` removes the Device and its slot under
 //!   its own exclusive turn (`machine/local_machine/management_client.rs`).
 //! - **The executor** sends the request (`Action::Send`), and where the code splits it, takes
 //!   its later steps: Cloud's second Store call before f06d2a6351 (`Action::Resend`), a
 //!   Drain's compare and Inngest's retry of it (`Action::Run`, `Action::Crash`), then its
-//!   Engine call (`Action::Engine`) and its Volume moves (`Action::Volumes`), a Machine's
-//!   admitted turn (`Action::Run`).
+//!   Engine call (`Action::Engine`, `Action::Retire`), its Volume plan (`Action::Volumes`)
+//!   and each move's admission (`Action::Admit`), a Machine's admitted turn (`Action::Run`).
 //!
 //! Each gate is restated by hand from the function it copies, with each shortcut that once
 //! skipped the digest comparison as a `Broken` flag that restores it:
@@ -44,9 +48,13 @@
 //!   (`dashboard/src/modules/machines/server-drain.server.ts`) plans again each time
 //!   `executeDrainOnce` runs. It hands the Engine only the Services in scope:
 //!   `drain_machine` (`ployz/src/drain.rs`, `preflight`) reads the Cluster again and drains
-//!   them as it finds them, and `planDrainVolumes`
+//!   them as it finds them, retiring each global copy only past the drained Server's
+//!   `LastIn` guard (`ployzd/src/machine/local_machine/rotation.rs`, `last_in`). Later
+//!   still, `planDrainVolumes`
 //!   (`dashboard/src/modules/machines/server-drain-volumes.server.ts`) plans each Volume
-//!   move later still, from a new frame (`Command::Drain`).
+//!   move from a new frame, and `admitDrainVolume` admits or refuses it (`Command::Drain`).
+//!   The carried yes's ask shows the Drain's effects and no preview (`yesRequired`'s
+//!   `previewed`), so it names no Volume forecast, and the model checks no move against one.
 //! - A Machine checks the caller's management access, `require_management_access`
 //!   (`ployzd/src/machine/local_machine.rs`), in `admit_installation`
 //!   (`ployzd/src/machine/local_machine/turns.rs`). `finish_mutation` and `finish_shared`
@@ -57,11 +65,12 @@
 //! Open paths, which `open_paths` adds and the shipped check leaves out: a Cancel's digest
 //! binds the Deployment and the review version, which stay put when its runner claims it,
 //! so a yes to taking a queued Deployment out of the queue stops one already running
-//! (#4555); a Drain's digest binds no Volume forecast (`drainPlan`'s `data`), so a Volume
-//! the dialog showed staying moves when the frame `planDrainVolumes` reads lets it, and the
-//! Engine drains what it reads after Cloud's compare (#4556).
+//! (#4555); and `last_in` counts a global's other copy In when its owner answers, but
+//! nothing reads it again before the Out write, so a copy that fails in between leaves the
+//! global with none (#4556).
 //!
-//! Out of scope: a yes the dashboard gives itself (a dashboard confirm), a Deploy that waits
+//! Out of scope: a yes the dashboard gives itself (a dashboard confirm, including the Drain
+//! dialog's Volume forecast, `previewServerDrain`), a Deploy that waits
 //! at an approval link, the proposal decision that answers a Protected ask, an Organization
 //! with no approver (Cloud then sends `not_required`), what a yes or its absence lets
 //! through when it is not carried, a Project-wide removal, Cloud's other planned
@@ -156,7 +165,7 @@ impl Command {
                 &[Plan::Other, Plan::Harmless, Plan::Forgets]
             }
             Self::Store(Write::Cancel | Write::Move) => &[Plan::Other],
-            Self::Drain => &[Plan::Other, Plan::Harmless, Plan::Gone],
+            Self::Drain => &[Plan::Other, Plan::Harmless, Plan::Gone, Plan::LastCopy],
             Self::Machine(_) => &[],
         }
     }
@@ -189,35 +198,34 @@ enum Plan {
     /// Head's token counts only Deployments that ended (`history::head`), so the review
     /// version, and with it the digest, stays the asked one's.
     Started,
-    /// A Volume the Drain's dialog showed staying (`dataPlan`'s `stays`) can move now: the
-    /// Service sharing it stopped, or its one Container started. `operationDigest` binds the
-    /// preview's `moves`, `stays` and `retires` and the effects, not `data`, so the digest
-    /// stays the asked one's.
-    VolumeMoves,
+    /// A global the Drain retires lost its last other running copy, so `drainPlan` now
+    /// names `removes_service` for it and retiring it here leaves it no copy.
+    LastCopy,
 }
 
 impl Plan {
     /// Whether the plan names a destructive effect.
     const fn destroys(self) -> bool {
         match self {
-            Self::Asked | Self::Other | Self::Forgets | Self::Started | Self::VolumeMoves => true,
+            Self::Asked | Self::Other | Self::Forgets | Self::Started | Self::LastCopy => true,
             Self::Harmless | Self::Discarded | Self::Gone => false,
         }
     }
 
     /// The digest the code binds for this plan, written as the plan it names.
     /// `approve_shut_down` binds `forgets`; without it, forgetting reads as taking the
-    /// same Services off. Nothing binds a Deployment's start or a Drain's Volume forecast.
+    /// same Services off. Nothing binds a Deployment's start.
     const fn digest(self, broken: Broken) -> Self {
         match self {
             Self::Forgets if broken.forget_unbound => Self::Asked,
-            Self::Started | Self::VolumeMoves => Self::Asked,
+            Self::Started => Self::Asked,
             Self::Asked
             | Self::Other
             | Self::Harmless
             | Self::Discarded
             | Self::Forgets
-            | Self::Gone => self,
+            | Self::Gone
+            | Self::LastCopy => self,
         }
     }
 }
@@ -329,8 +337,16 @@ enum Exec {
     Covered {
         digest: Plan,
     },
+    /// The Engine's preflight read the Cluster and each global's `LastIn` guard decided; the
+    /// copies it let go are still to go Out and be removed.
+    Retiring,
     /// The Engine drained and answered; the Volume moves are still to be planned.
     Moving,
+    /// `planDrainVolumes` planned a move from what `dataCheck` read; `admitDrainVolume` is
+    /// still to admit or refuse it.
+    Admitting {
+        read: Data,
+    },
     Ran,
     /// Refused, `waited` once admitted, at the run.
     Refused {
@@ -348,6 +364,31 @@ struct Wrote {
     valid: bool,
 }
 
+/// What `dataCheck` reads of a Service the Engine left on the drained Server for its one
+/// managed Volume. `operationDigest` binds none of it, and the carried yes's ask shows none.
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+enum Data {
+    /// It stays, as when the yes was asked: it shares its Volume, or no single Container runs
+    /// on it.
+    Stays,
+    /// The reason cleared: the sharer stopped, or its one Container started.
+    Frees,
+    /// The Service now mounts another managed Volume no one shares, deployed onto the
+    /// drained Server before the Engine turned its services role off (`dataCheck` reads the
+    /// newest Container).
+    Switched,
+}
+
+/// What `admitDrainVolume` did with a planned move.
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+enum Admission {
+    /// It admitted the move of the Volume `planDrainVolumes` read.
+    Moved(Data),
+    /// Every candidate refused, the target stopped taking services, or the drain no longer
+    /// owns its row: the Volume stays, with that reason on the report.
+    Stayed,
+}
+
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 struct State {
     facts: Facts,
@@ -361,8 +402,12 @@ struct State {
     trusted: bool,
     /// The Drain's step died once before its effect, and Inngest ran it again.
     crashed: bool,
+    /// The Engine's `LastIn` guard kept a global's last copy on the drained Server.
+    kept: bool,
+    data: Data,
     exec: Exec,
     wrote: Option<Wrote>,
+    admission: Option<Admission>,
 }
 
 impl State {
@@ -372,7 +417,14 @@ impl State {
 
     /// Cloud compared the Drain's plan for the last time.
     const fn compared(&self) -> bool {
-        matches!(self.exec, Exec::Covered { .. } | Exec::Moving | Exec::Ran)
+        matches!(
+            self.exec,
+            Exec::Covered { .. }
+                | Exec::Retiring
+                | Exec::Moving
+                | Exec::Admitting { .. }
+                | Exec::Ran
+        )
     }
 
     fn refuse(&mut self, why: Why) {
@@ -429,6 +481,9 @@ struct Broken {
     /// A guard f06d2a6351 needed, not a past bug: `Gate::ask` takes a member's own CLI yes
     /// for what a Protected Environment asks of an owner or admin.
     member_yes_answers_protected: bool,
+    /// A guard, not a past bug: the drained Server's `last_in` refuses taking a global's only
+    /// In copy Out (`EmptyPolicy::RequireOtherIn` in `retire_copies`).
+    retire_skips_last_in: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -436,8 +491,8 @@ struct ApprovalBinding {
     command: Command,
     broken: Broken,
     /// The editor may also make the changes the shipped code lets through: a Cancel's
-    /// Deployment starts, a Drain's Volume forecast flips, or a Drain's plan changes after
-    /// Cloud's last compare. Each breaks the property; see the module doc.
+    /// Deployment starts, or a global's other copy fails after the Drain's `LastIn` guard
+    /// counted it. Each breaks the property; see the module doc.
     open_paths: bool,
 }
 
@@ -455,22 +510,48 @@ enum Action {
     Run,
     /// The Drain's step dies before the Engine is asked; Inngest runs it again from the top.
     Crash,
-    /// `executeDrainOnce` calls `drainMachine` with the Services in scope, and the Engine
-    /// drains them as its own read finds them.
+    /// The frame changes what `dataCheck` reads of the Service left for its Volume.
+    Data(Data),
+    /// `executeDrainOnce` calls `drainMachine` with the Services in scope; its `preflight`
+    /// reads the Cluster again and each global's `LastIn` guard decides.
     Engine,
-    /// `planDrainVolumes` reads a new frame and moves each Volume it can.
+    /// The copies the guard let go go Out and are removed, and the Engine answers.
+    Retire,
+    /// `planDrainVolumes` reads a new frame and plans each move `dataCheck` allows.
     Volumes,
+    /// `admitDrainVolume` admits the planned move (true) or refuses it (false).
+    Admit(bool),
 }
 
 impl ApprovalBinding {
     /// The plans the editor may move the plan to from `state`.
     const fn edits(&self, state: &State) -> &'static [Plan] {
-        match (self.command, self.open_paths) {
-            (Command::Store(Write::Cancel), true) => &[Plan::Other, Plan::Started],
-            (Command::Drain, true) => &[Plan::Other, Plan::Harmless, Plan::Gone, Plan::VolumeMoves],
-            // The shipped check holds the world still from Cloud's last compare.
-            (Command::Drain, false) if state.compared() => &[],
+        match (self.command, state.exec) {
+            (Command::Store(Write::Cancel), _) if self.open_paths => &[Plan::Other, Plan::Started],
+            // After Cloud's last compare the Engine reads what it drains itself. The change
+            // that read can meet is a global losing its last other copy, which `LastIn`
+            // reads before its copy here goes Out.
+            (Command::Drain, Exec::Covered { .. }) => &[Plan::LastCopy],
+            // The guard counted the other copy; it fails before the Out write.
+            (Command::Drain, Exec::Retiring) if self.open_paths => &[Plan::LastCopy],
+            (Command::Drain, _) if state.compared() => &[],
             (command, _) => command.edits(),
+        }
+    }
+
+    /// What the frame may change `dataCheck`'s read to from `state`: a reason to stay
+    /// clears until `planDrainVolumes` reads, and a Service's Volume switches only while the
+    /// drained Server still takes services, before the Engine's preflight turns that off.
+    fn data_changes(&self, state: &State) -> &'static [Data] {
+        if self.command != Command::Drain || state.data != Data::Stays {
+            return &[];
+        }
+        match state.exec {
+            Exec::Ready | Exec::Resending | Exec::Waiting { .. } | Exec::Covered { .. } => {
+                &[Data::Frees, Data::Switched]
+            }
+            Exec::Retiring | Exec::Moving => &[Data::Frees],
+            Exec::Admitting { .. } | Exec::Ran | Exec::Refused { .. } => &[],
         }
     }
 
@@ -679,16 +760,20 @@ impl ApprovalBinding {
         }
     }
 
-    /// `drainMachine`: the Engine's `preflight` reads the Cluster again and drains the
-    /// Services in scope as it finds them. It leaves a Service with a Volume where it is, so
-    /// a Volume forecast reads as the asked plan here. A Server Cloud's frame lost may still
-    /// be one the Engine sees, so the Engine drains it too.
+    /// `drainMachine`'s `preflight` reads the Cluster again, and `retire_copies` asks each
+    /// global copy Out. The drained Server's `last_in` refuses the only In copy, so a global
+    /// whose last other copy failed before it read stays (`StayReason::LastIn`).
     fn engine_drain(&self, state: &mut State) {
-        let plan = if state.live == Plan::VolumeMoves {
-            Plan::Asked
-        } else {
-            state.live
-        };
+        state.kept = state.live == Plan::LastCopy && !self.broken.retire_skips_last_in;
+        state.exec = Exec::Retiring;
+    }
+
+    /// `retire_copies`' Out write and removal, then the rest of `execute`. Nothing reads the
+    /// other copies again here. A global the guard kept leaves the asked plan less its
+    /// retirement. A Server Cloud's frame lost may still be one the Engine sees, so the
+    /// Engine drains it too.
+    fn engine_retire(&self, state: &mut State) {
+        let plan = if state.kept { Plan::Asked } else { state.live };
         state.wrote = Some(Wrote {
             plan,
             valid: self.valid(state),
@@ -696,15 +781,13 @@ impl ApprovalBinding {
         state.exec = Exec::Moving;
     }
 
-    /// `planDrainVolumes`: each Service the Engine left for its Volume moves when the new
-    /// frame's `dataCheck` and `candidateServers` let it.
+    /// `planDrainVolumes`: the Service the Engine left for its Volume gets a move when the
+    /// new frame's `dataCheck` allows one.
     fn drain_volumes(state: &mut State) {
-        if state.live == Plan::VolumeMoves
-            && let Some(wrote) = &mut state.wrote
-        {
-            wrote.plan = Plan::VolumeMoves;
-        }
-        state.exec = Exec::Ran;
+        state.exec = match state.data {
+            Data::Stays => Exec::Ran,
+            read @ (Data::Frees | Data::Switched) => Exec::Admitting { read },
+        };
     }
 }
 
@@ -762,8 +845,11 @@ impl Model for ApprovalBinding {
                         late: false,
                         trusted: true,
                         crashed: false,
+                        kept: false,
+                        data: Data::Stays,
                         exec: Exec::Ready,
                         wrote: None,
+                        admission: None,
                     });
                 }
             }
@@ -778,6 +864,11 @@ impl Model for ApprovalBinding {
         if !state.edited {
             actions.extend(self.edits(state).iter().map(|plan| Action::Edit(*plan)));
         }
+        actions.extend(
+            self.data_changes(state)
+                .iter()
+                .map(|data| Action::Data(*data)),
+        );
         if self.command.machine() && state.trusted {
             actions.push(Action::Revoke);
         }
@@ -796,7 +887,12 @@ impl Model for ApprovalBinding {
                     actions.push(Action::Crash);
                 }
             }
+            Exec::Retiring => actions.push(Action::Retire),
             Exec::Moving => actions.push(Action::Volumes),
+            Exec::Admitting { .. } => {
+                actions.push(Action::Admit(true));
+                actions.push(Action::Admit(false));
+            }
             Exec::Ran | Exec::Refused { .. } => {}
         }
     }
@@ -855,8 +951,21 @@ impl Model for ApprovalBinding {
                 state.exec = Exec::Waiting { digest };
                 state.crashed = true;
             }
+            Action::Data(data) => state.data = data,
             Action::Engine => self.engine_drain(&mut state),
+            Action::Retire => self.engine_retire(&mut state),
             Action::Volumes => Self::drain_volumes(&mut state),
+            Action::Admit(admitted) => {
+                let Exec::Admitting { read } = state.exec else {
+                    return None;
+                };
+                state.admission = Some(if admitted {
+                    Admission::Moved(read)
+                } else {
+                    Admission::Stayed
+                });
+                state.exec = Exec::Ran;
+            }
         }
         Some(state)
     }
@@ -942,6 +1051,16 @@ impl Model for ApprovalBinding {
                 properties.push(Property::sometimes(DRAIN_RETRIED, |_, state: &State| {
                     state.crashed && state.wrote.is_some()
                 }));
+                properties.push(Property::sometimes(LAST_IN_KEEPS, |_, state: &State| {
+                    state.late && state.kept && state.wrote.is_some()
+                }));
+                properties.push(Property::sometimes(SWITCHED_MOVES, |_, state: &State| {
+                    state.admission == Some(Admission::Moved(Data::Switched))
+                }));
+                properties.push(Property::sometimes(
+                    ADMISSION_REFUSES,
+                    |_, state: &State| state.admission == Some(Admission::Stayed),
+                ));
             }
             Command::Machine(Route::Turned) => {
                 properties.push(Property::sometimes(
@@ -969,6 +1088,11 @@ const MEMBER_ASKS: &str = "a member's own yes reaches the Store and asks an owne
 const DRAIN_CHANGED: &str = "a Drain whose plan changed after its gate is refused when it runs";
 const DRAIN_RETRIED: &str = "a Drain runs after Inngest ran its step again";
 const REVOKED_UNDER_TURN: &str = "a key revoked while its call waited is refused under the turn";
+const LAST_IN_KEEPS: &str =
+    "a global whose last other copy failed after Cloud's compare stays: LastIn refuses it";
+const SWITCHED_MOVES: &str =
+    "a Volume the Service switched to moves once admitted, which the carried yes never named";
+const ADMISSION_REFUSES: &str = "admission refuses a planned Volume move, and the Volume stays";
 
 /// `path` under `model` in the code's words: each step, and what stands once it ran.
 fn story(model: &ApprovalBinding, path: &[(State, Option<Action>)]) -> String {
@@ -1011,9 +1135,14 @@ fn story(model: &ApprovalBinding, path: &[(State, Option<Action>)]) -> String {
                 )
             },
         );
+        let volume = if model.command == Command::Drain {
+            format!(" data={:?} admission={:?}", state.data, state.admission)
+        } else {
+            String::new()
+        };
         let _ = writeln!(
             story,
-            "{n:2}. {what}\n    plan={:?} key={} exec={:?} wrote={wrote}",
+            "{n:2}. {what}\n    plan={:?} key={} exec={:?} wrote={wrote}{volume}",
             state.live,
             if state.trusted { "accepted" } else { "revoked" },
             state.exec,
@@ -1031,7 +1160,9 @@ fn reads_as(model: &ApprovalBinding, action: Action, after: &State) -> String {
         Exec::Resending => "and Cloud's first call asks for the yes's digest".to_owned(),
         Exec::Waiting { digest } => format!("and it waits, holding digest {digest:?}"),
         Exec::Covered { digest } => format!("and it matches digest {digest:?}"),
+        Exec::Retiring => "and the guard lets the copies go".to_owned(),
         Exec::Moving => "and the Engine answers".to_owned(),
+        Exec::Admitting { read } => format!("and it plans a move from what it read: {read:?}"),
         Exec::Ready => String::new(),
     };
     match action {
@@ -1044,12 +1175,29 @@ fn reads_as(model: &ApprovalBinding, action: Action, after: &State) -> String {
             "Inngest: executeDrainOnce's step dies before the Engine is asked, to run again"
                 .to_owned()
         }
+        Action::Data(data) => format!("frame: {}", data_words(data)),
         Action::Engine => format!(
-            "Engine: drainMachine's preflight reads the Cluster again and drains the Services in scope, {outcome}"
+            "Engine: drainMachine's preflight reads the Cluster again, and the drained Server's last_in {} each global copy, {outcome}",
+            if after.kept {
+                "refuses the only In copy of"
+            } else if broken.retire_skips_last_in {
+                "lets go (under Broken)"
+            } else {
+                "weighs"
+            }
         ),
-        Action::Volumes => format!(
-            "Cloud: planDrainVolumes reads a new frame and moves each Volume it can, {outcome}"
+        Action::Retire => format!(
+            "Engine: retire_copies takes the copies Out and removes them, reading no other copy again, {outcome}"
         ),
+        Action::Volumes => {
+            format!("Cloud: planDrainVolumes reads a new frame through dataCheck, {outcome}")
+        }
+        Action::Admit(true) => {
+            "Cloud: admitDrainVolume admits the move, and the Volume moves".to_owned()
+        }
+        Action::Admit(false) => {
+            "Cloud: admitDrainVolume refuses the move, and the Volume stays".to_owned()
+        }
         Action::Send => match model.command {
             Command::Store(write) if broken.cloud_calls_twice => format!(
                 "executor: handleConfigRequest's first Store call carries no yes (under Broken), {} weighs `required`, {outcome}",
@@ -1112,8 +1260,20 @@ const fn edit_words(plan: Plan) -> &'static str {
         Plan::Started => {
             "the runner claims the queued Deployment: it is running now, at the same review version"
         }
-        Plan::VolumeMoves => {
-            "a Volume the dialog showed staying can move now: its sharer stopped or its Container started"
+        Plan::LastCopy => {
+            "a global's last other running copy fails: retiring it here now leaves it no copy"
+        }
+    }
+}
+
+const fn data_words(data: Data) -> &'static str {
+    match data {
+        Data::Stays => "the Service's Volume stays put",
+        Data::Frees => {
+            "the Volume's reason to stay clears: its sharer stopped or its Container started"
+        }
+        Data::Switched => {
+            "a Deploy switches the Service from its shared Volume V1 to V2, onto the drained Server"
         }
     }
 }
@@ -1535,38 +1695,47 @@ mod tests {
         }
     }
 
-    /// Open, #4556. `stillCovered` compares the plan; the Engine then drains what its own
-    /// read finds, and `planDrainVolumes` later moves each Volume a new frame lets it. A
-    /// Volume the dialog showed staying moves under the same digest, here with the change
-    /// landing after Cloud's last compare.
+    /// A guard, not a past bug: between Cloud's compare and the Engine's read, a global's
+    /// last other copy fails. The drained Server's `last_in` refuses taking its copy Out, so
+    /// the global keeps it. Without the guard the Drain removes the Service's last copy.
     #[test]
-    fn a_drain_moves_a_volume_its_dialog_showed_staying() {
-        let path = breaks_where(open(Command::Drain), BOUND, |path| {
+    fn a_retirement_keeps_a_global_s_last_copy() {
+        let broken = Broken {
+            retire_skips_last_in: true,
+            ..Broken::default()
+        };
+        let path = breaks_where(without(Command::Drain, broken), BOUND, |path| {
             last(path).late
                 && last(path).wrote
                     == Some(Wrote {
-                        plan: Plan::VolumeMoves,
+                        plan: Plan::LastCopy,
                         valid: true,
                     })
         });
         assert!(
             path.iter()
-                .any(|(_, action)| *action == Some(Action::Volumes))
+                .any(|(_, action)| *action == Some(Action::Retire))
         );
     }
 
-    /// Open, #4556. Between `stillCovered` and the Engine's `preflight`, a global Service's
-    /// last other copy stops, and the Engine retires it: the Drain removes a Service its
-    /// yes didn't name.
+    /// Open, #4556. `last_in` counts the other copy In when its owner answers, and nothing
+    /// reads it again before `retire_copies` takes the copy here Out and removes it. A copy
+    /// that fails in between leaves the global with none, until it comes back.
     #[test]
-    fn the_engine_drains_what_it_reads_after_cloud_compared() {
-        breaks_where(open(Command::Drain), BOUND, |path| {
-            last(path).late
-                && last(path).wrote
-                    == Some(Wrote {
-                        plan: Plan::Other,
-                        valid: true,
-                    })
+    fn a_retirement_takes_out_a_global_whose_other_copy_failed_after_its_guard() {
+        let path = breaks_where(open(Command::Drain), BOUND, |path| {
+            last(path).wrote
+                == Some(Wrote {
+                    plan: Plan::LastCopy,
+                    valid: true,
+                })
         });
+        let step = |wanted: Action| {
+            path.iter()
+                .position(|(_, action)| *action == Some(wanted))
+                .expect("the path takes the step")
+        };
+        assert!(step(Action::Engine) < step(Action::Edit(Plan::LastCopy)));
+        assert!(step(Action::Edit(Plan::LastCopy)) < step(Action::Retire));
     }
 }
