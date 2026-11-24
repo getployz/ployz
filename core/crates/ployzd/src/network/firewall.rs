@@ -200,7 +200,7 @@ fn install(
         moved,
     )?);
     restore("ip6tables", &ipv6_document)?;
-    docker_forwards_through_user(moved)?;
+    docker_forwards_through_user()?;
     filter_bridged()?;
     Ok(restored)
 }
@@ -504,11 +504,6 @@ pub fn restore_fence(data_dir: &Path) -> Result<(), NetworkError> {
         Err(error) => return Err(unreadable(&error).into()),
     };
     let file: FenceFile = serde_json::from_slice(&body).map_err(|error| unreadable(&error))?;
-    // Docker's nftables backend never sends forwarded IPv4 through DOCKER-USER, and Docker
-    // restores its Containers the moment it starts, so it must not start at all.
-    if let Some(cause) = super::docker_firewall::configured_ipv4_off() {
-        return Err(NetworkError::DockerFirewallBackend { cause: Some(cause) });
-    }
     let _writer = writer();
     for (program, document, on) in [
         ("iptables", &file.iptables, true),
@@ -521,11 +516,6 @@ pub fn restore_fence(data_dir: &Path) -> Result<(), NetworkError> {
             xtables(program, &["-t", "filter", "-N", "DOCKER-USER"])?;
         }
         restore(program, &moving_inserts(program, document)?)?;
-    }
-    // Docker puts its own jump first when it starts; until then, this one sends forwarded
-    // IPv4 through the fence ahead of anything a host firewall accepts.
-    if !matches!(user_jump(&forward_listing()?), UserJump::Ahead) {
-        put_user_jump_first()?;
     }
     Ok(())
 }
@@ -603,105 +593,43 @@ fn turn_on(family: &str, path: &str) -> Result<(), NetworkError> {
 }
 
 /// Docker sends forwarded IPv4 through DOCKER-USER, where the fence hooks, only with its
-/// iptables firewall backend. Without that jump the fence is a chain nothing reaches, and
-/// behind a rule that accepts bridge traffic it is one that traffic skips, so the jump goes
-/// back first, noted in `moved`.
-fn docker_forwards_through_user(moved: &mut Vec<String>) -> Result<(), NetworkError> {
+/// iptables firewall backend. Without that jump the fence is a chain nothing reaches.
+fn docker_forwards_through_user() -> Result<(), NetworkError> {
     // Docker keeps the old jump when it moves to nftables, so the jump alone proves nothing.
     if let Some(cause) = super::docker_firewall::ipv4_off() {
         return Err(NetworkError::DockerFirewallBackend { cause: Some(cause) });
     }
-    match user_jump(&forward_listing()?) {
-        UserJump::Ahead => Ok(()),
-        UserJump::Missing => Err(NetworkError::DockerFirewallBackend { cause: None }),
-        UserJump::Shadowed => {
-            put_user_jump_first()?;
-            moved.push(format!("-A FORWARD {USER_JUMP}"));
-            Ok(())
-        }
-    }
-}
-
-const USER_JUMP: &str = "-j DOCKER-USER";
-
-fn forward_listing() -> Result<String, NetworkError> {
     let listing = xtables("iptables", &["-t", "filter", "-S", "FORWARD"])?;
-    Ok(String::from_utf8_lossy(&listing.stdout).into_owned())
-}
-
-/// One restore, so forwarded traffic never passes FORWARD with no jump.
-fn put_user_jump_first() -> Result<(), NetworkError> {
-    let delete = if rule_exists("iptables", "filter", "FORWARD", &["-j", "DOCKER-USER"])? {
-        format!("-D FORWARD {USER_JUMP}\n")
+    if forwards_through_user(&String::from_utf8_lossy(&listing.stdout)) {
+        Ok(())
     } else {
-        String::new()
-    };
-    restore(
-        "iptables",
-        &format!("*filter\n{delete}-I FORWARD 1 {USER_JUMP}\nCOMMIT\n"),
-    )
+        Err(NetworkError::DockerFirewallBackend { cause: None })
+    }
 }
 
-/// Where FORWARD jumps to DOCKER-USER, by `iptables -S FORWARD`.
-#[derive(Debug, PartialEq)]
-enum UserJump {
-    /// Ahead of every rule that could accept traffic into the bridge.
-    Ahead,
-    /// Behind such a rule, which that traffic takes instead.
-    Shadowed,
-    Missing,
-}
-
-fn user_jump(listing: &str) -> UserJump {
-    let mut shadowed = false;
-    for rule in listing
+/// Whether `iptables -S FORWARD` jumps to DOCKER-USER.
+fn forwards_through_user(listing: &str) -> bool {
+    listing
         .lines()
-        .filter_map(|line| line.trim_end().strip_prefix("-A FORWARD "))
-    {
-        if rule == USER_JUMP {
-            return if shadowed {
-                UserJump::Shadowed
-            } else {
-                UserJump::Ahead
-            };
-        }
-        shadowed |= may_accept_into_bridge(rule);
-    }
-    UserJump::Missing
-}
-
-/// Whether a FORWARD rule can accept traffic out to the bridge, or hand it to a chain that
-/// may: any target but a drop, a reject or a log, unless it matches only another output
-/// interface.
-fn may_accept_into_bridge(rule: &str) -> bool {
-    let words = rule.split_whitespace().collect::<Vec<_>>();
-    let after = |flag: &str| {
-        words
-            .iter()
-            .position(|word| *word == flag)
-            .and_then(|at| Some((at, *words.get(at + 1)?)))
-    };
-    let target = after("-j")
-        .or_else(|| after("-g"))
-        .map(|(_, target)| target);
-    if matches!(target, None | Some("DROP" | "REJECT" | "LOG")) {
-        return false;
-    }
-    let Some((at, out)) = after("-o") else {
-        return true;
-    };
-    let negated = at.checked_sub(1).and_then(|before| words.get(before)) == Some(&"!");
-    let names_bridge = match out.strip_suffix('+') {
-        Some(prefix) => DOCKER_NETWORK_NAME.starts_with(prefix),
-        None => out == DOCKER_NETWORK_NAME,
-    };
-    names_bridge != negated
+        .any(|line| line.trim_end() == "-A FORWARD -j DOCKER-USER")
 }
 
 /// Whether PLOYZ-FENCE is in iptables now.
-#[must_use]
-pub fn fence_active() -> bool {
-    command_succeeds("iptables", &["-t", "filter", "-S", FENCE_CHAIN])
+///
+/// # Errors
+///
+/// Returns why iptables couldn't list its filter table, such as a lock held through a
+/// firewall reload, when the fence may be there or not.
+pub fn fence_active() -> Result<bool, NetworkError> {
+    let listing = xtables("iptables", &["-t", "filter", "-S"])?;
+    Ok(declares_fence(&String::from_utf8_lossy(&listing.stdout)))
+}
+
+/// Whether `iptables -S` declares PLOYZ-FENCE.
+fn declares_fence(listing: &str) -> bool {
+    listing
+        .lines()
+        .any(|line| line.trim_end() == format!("-N {FENCE_CHAIN}"))
 }
 
 /// Take the fence out of both families: once the bridge it guards is gone, or for a release
@@ -1358,40 +1286,6 @@ mod tests {
             slot: 2,
             cgroup: ployz_build::CgroupPath::new("/system.slice/docker-abc.scope").unwrap(),
             image_ports,
-        }
-    }
-
-    /// A host firewall reload can put a bridge ACCEPT ahead of Docker's jump, and then
-    /// same-bridge traffic reaches a Volume holder without passing the fence.
-    #[test]
-    fn a_jump_behind_a_rule_that_accepts_bridge_traffic_is_shadowed() {
-        let docker = "-P FORWARD DROP\n-A FORWARD -j DOCKER-USER\n-A FORWARD -j DOCKER-FORWARD\n";
-        assert_eq!(user_jump(docker), UserJump::Ahead);
-        assert_eq!(user_jump("-P FORWARD ACCEPT\n"), UserJump::Missing);
-        for ahead in [
-            "-A FORWARD -o ployz -j ACCEPT",
-            "-A FORWARD -i ployz -j ACCEPT",
-            "-A FORWARD -o ploy+ -j ACCEPT",
-            "-A FORWARD ! -o eth0 -j ACCEPT",
-            "-A FORWARD -j ufw-before-forward",
-        ] {
-            assert_eq!(
-                user_jump(&format!("{ahead}\n{docker}")),
-                UserJump::Shadowed,
-                "{ahead}"
-            );
-        }
-        for harmless in [
-            "-A FORWARD -o eth0 -j ACCEPT",
-            "-A FORWARD ! -o ployz -j ACCEPT",
-            "-A FORWARD -o ployz -j DROP",
-            "-A FORWARD -m conntrack --ctstate INVALID -j DROP",
-        ] {
-            assert_eq!(
-                user_jump(&format!("{harmless}\n{docker}")),
-                UserJump::Ahead,
-                "{harmless}"
-            );
         }
     }
 

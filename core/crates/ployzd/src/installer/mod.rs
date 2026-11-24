@@ -340,14 +340,29 @@ async fn install_locked(
         .as_ref()
         .is_some_and(|installed| target < *installed);
     // Only a running downgrade takes the live fence out, once the older release is up. Staged,
-    // that release would start later under a fence it doesn't know.
-    if downgrade && installation_only && crate::network::fence_active() {
-        return Err(Error::Refused {
+    // that release would start later under a fence it doesn't know, so it goes ahead only
+    // once iptables shows no fence.
+    if downgrade && installation_only {
+        let refused = |why: String| Error::Refused {
             stage: "stage an older release".into(),
             message: format!(
-                "this Server's container network fence is in place, and Ployz {target} may not know it, which would drop its Containers' traffic. Run the downgrade without --install-only, which takes the fence out once {target} is running"
+                "{why}, and Ployz {target} may not know it, which would drop its Containers' traffic. Run the downgrade without --install-only, which takes the fence out once {target} is running"
             ),
-        });
+        };
+        match crate::network::fence_active() {
+            Ok(false) => {}
+            Ok(true) => {
+                return Err(refused(
+                    "this Server's container network fence is in place".into(),
+                ));
+            }
+            Err(error) => {
+                return Err(refused(format!(
+                    "Ployz can't tell whether this Server's container network fence is in place ({})",
+                    ployz_core::error_chain::inline(&error),
+                )));
+            }
+        }
     }
     let mut restart_required = !paths.systemd_dir.join(Unit::Ployz.name()).is_file();
     restart_required |=
@@ -685,6 +700,7 @@ mod tests {
             "hung-executable",
             "busy",
             "staged-downgrade-fenced",
+            "staged-downgrade-unread-fence",
         ] {
             let fixture = fixture(case);
             create_installation_fixture(fixture.path(), case);
@@ -774,7 +790,9 @@ mod tests {
         let existing = match case {
             "success" | "install-only" | "installed-units" | "failed-units" => None,
             "same-target" => Some(write_existing_daemon(&paths, "1.2.3")),
-            "staged-downgrade-fenced" => Some(write_existing_daemon(&paths, "1.2.4")),
+            "staged-downgrade-fenced" | "staged-downgrade-unread-fence" => {
+                Some(write_existing_daemon(&paths, "1.2.4"))
+            }
             _ => Some(write_existing_daemon(&paths, "1.2.2")),
         };
         if case == "install-only" {
@@ -851,10 +869,10 @@ mod tests {
                 assert!(!paths.bin_dir.join("ployzd.previous").exists());
             }
             "busy" => assert!(matches!(result, Err(Error::Busy))),
-            "staged-downgrade-fenced" => {
+            "staged-downgrade-fenced" | "staged-downgrade-unread-fence" => {
                 assert!(
                     matches!(&result, Err(Error::Refused { message, .. }) if message.contains("without --install-only")),
-                    "a staged downgrade under a live fence went ahead: {result:?}"
+                    "a staged downgrade went ahead without iptables showing no fence: {result:?}"
                 );
                 assert_eq!(
                     fs::read(paths.bin_dir.join("ployzd")).unwrap(),
@@ -929,11 +947,15 @@ mod tests {
                 ),
             );
         }
-        if case == "staged-downgrade-fenced" {
-            write_script(
+        match case {
+            "staged-downgrade-fenced" => write_script(
                 &commands.join("iptables"),
-                "case \"$*\" in *PLOYZ-FENCE*) exit 0 ;; esac\nexit 1",
-            );
+                "echo -P FORWARD DROP\necho -N PLOYZ-FENCE",
+            ),
+            // iptables exits 4 when another writer holds its lock past the wait, as through
+            // a firewall reload.
+            "staged-downgrade-unread-fence" => write_script(&commands.join("iptables"), "exit 4"),
+            _ => {}
         }
         symlink("/usr/bin/tar", commands.join("tar")).unwrap();
         symlink("/usr/bin/gzip", commands.join("gzip")).unwrap();

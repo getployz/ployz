@@ -93,15 +93,16 @@ pub(super) fn addresses<'a>(
 
 /// Gives each member whose admission record puts it in another part a new address in its
 /// own, noted in `taken`, for the pin pass to move it to: a Container made before the parts,
-/// or before this split, holds one anywhere. A member with no record keeps its address.
+/// or before this split, holds one anywhere. A member with no record keeps its address, and
+/// so does one whose part is full. Returns the members it gave one.
 pub(super) fn unplace(
     members: &mut [BridgeMember],
     recorded: &BTreeMap<String, AddressPart>,
     taken: &mut BTreeSet<Ipv4Addr>,
     subnet: MachineSubnet,
-) -> Unplaced {
+) -> BTreeSet<String> {
     let mut handed = Handed::default();
-    let mut unplaced = Unplaced::default();
+    let mut unplaced = BTreeSet::new();
     for member in members {
         let (Some(ipv4), Some(&part)) = (member.ipv4, recorded.get(&member.id)) else {
             continue;
@@ -113,29 +114,15 @@ pub(super) fn unplace(
             Ok(address) => {
                 taken.insert(address);
                 member.ipv4 = Some(address);
-                unplaced.moved.insert(member.id.clone());
+                unplaced.insert(member.id.clone());
             }
-            Err(error) => {
-                eprintln!(
-                    "container {container} leaves the {DOCKER_NETWORK_NAME} network until it can rejoin in its own part: {error}",
-                    container = member.id,
-                );
-                member.ipv4 = None;
-                unplaced.full.insert(member.id.clone());
-            }
+            Err(error) => eprintln!(
+                "container {container} stays at {ipv4} on the {DOCKER_NETWORK_NAME} network, outside its {part} addresses, until a later start finds one free: {error}",
+                container = member.id,
+            ),
         }
     }
     unplaced
-}
-
-/// The members [`unplace`] found outside their part.
-#[derive(Debug, Default, PartialEq)]
-pub(super) struct Unplaced {
-    /// Given a new address in their own part.
-    pub(super) moved: BTreeSet<String>,
-    /// Their part is full, so they stay off the bridge, its old address dropped: a member
-    /// created on the bridge stays a member with no address, which each start tries again.
-    pub(super) full: BTreeSet<String>,
 }
 
 fn report_unjoined(id: &str, error: &NoAddress) {
@@ -930,16 +917,7 @@ impl NetworkPlane {
         taken.extend(members.iter().filter_map(|member| member.ipv4));
         let admitted = self.recorded_parts(&members).await;
         let unplaced = unplace(&mut members, &admitted, &mut taken, self.machine.subnet);
-        for member in members
-            .iter()
-            .filter(|member| member.attached && unplaced.full.contains(&member.id))
-        {
-            self.keep_off(&member.id, stopped).await;
-        }
-        let moves = |member: &BridgeMember| {
-            !unplaced.full.contains(&member.id)
-                && (member.needs_pin() || unplaced.moved.contains(&member.id))
-        };
+        let moves = |member: &BridgeMember| member.needs_pin() || unplaced.contains(&member.id);
         let detaches = members
             .iter()
             .any(|member| member.attached && moves(member));
@@ -1014,24 +992,6 @@ impl NetworkPlane {
             }
         }
         pins.finish(&unjoined);
-    }
-
-    /// Takes `id` off the bridge, where it holds an address outside its part, or stops it
-    /// when Docker won't detach it, so it never serves from there.
-    async fn keep_off(&self, id: &str, stopped: &mut Stopped) {
-        let Err(error) = self.detach(id, stopped).await else {
-            return;
-        };
-        eprintln!(
-            "container {id} is stopped, since it could not leave the {DOCKER_NETWORK_NAME} network: {error}",
-            error = ployz_core::error_chain::inline(&error),
-        );
-        let options = StopContainerOptionsBuilder::default().t(0).build();
-        if let Err(error) = self.docker.stop_container(id, Some(options)).await
-            && !is_not_found(&error)
-        {
-            report_stop(id, &error);
-        }
     }
 
     /// Detaches `id` from the bridge, stopping it first when Docker holds it between

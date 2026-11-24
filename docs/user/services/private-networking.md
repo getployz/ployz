@@ -89,6 +89,12 @@ Its next deploy is signed, and it connects.
 Services that don't mount a volume take connections from every container, as before. Your
 domains, Cloudflare Tunnel and Tailscale reach every service.
 
+This needs Docker's default iptables firewall. With `"firewall-backend": "nftables"` or
+`--iptables=false`, Ployz doesn't start its network; see
+[Ployz stops because Docker uses its nftables firewall](../troubleshooting/servers.md#ployz-stops-because-docker-uses-its-nftables-firewall).
+Don't add your own iptables rules that accept traffic to or from the `ployz` bridge in `FORWARD`
+ahead of Docker's `DOCKER-USER` jump. Traffic those rules accept skips this check.
+
 A port a service publishes on the server answers anyone who reaches the server,
 including containers on other servers, so don't publish a database's port.
 
@@ -114,7 +120,8 @@ It replaces every service's containers once, including ones that hold a volume, 
 new address. `--recreate` with service names replaces only those.
 
 When Ployz starts, a container made before the upgrade moves to its group's addresses. If that
-group is full, the container leaves the private network until Ployz starts again with room in it.
+group is full, the container keeps its old address, and takes connections as it did before the
+upgrade, until Ployz starts again with room in the group.
 
 ## Connect to another service
 
