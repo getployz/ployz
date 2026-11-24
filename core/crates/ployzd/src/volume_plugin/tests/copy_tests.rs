@@ -1353,6 +1353,7 @@ async fn a_pull_whose_base_the_writer_lost_starts_over_from_a_full_send() {
     let test = test_dir();
     let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
     set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
+    set_property(&test, SLOT_FS, "ployz:pulled", "11");
 
     post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
     let copy = landed(&socket, "w-1-2").await;
@@ -1423,6 +1424,7 @@ async fn a_pull_whose_token_the_writer_cannot_send_starts_over_from_a_full_send(
     let test = test_dir();
     let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
     set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
+    set_property(&test, SLOT_FS, "ployz:pulled", "11");
     set_property(&test, SLOT_FS, "receive_resume_token", "token-1");
 
     post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
@@ -1458,6 +1460,7 @@ async fn a_pull_resent_with_its_first_expect_continues_a_full_send_that_emptied_
     let test = test_dir();
     let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
     set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
+    set_property(&test, SLOT_FS, "ployz:pulled", "11");
     let machine = Machine { test, socket };
     let expect = mirror_expect(&machine.copy().await);
 

@@ -702,7 +702,9 @@ impl VolumeStorage {
     /// One receive of `stream`. When the writer no longer has the base or the token the
     /// stream names, the slot's copy starts over from a full send. The copy is dropped
     /// only once the writer answers the full send, so a writer without the target leaves
-    /// the slot's newest snapshot in place.
+    /// the slot's newest snapshot in place. A copy this Machine may alone hold
+    /// ([`Self::written_here`]), such as one a departure parked, is never dropped: the
+    /// pull fails and the copy stays.
     async fn pull_stream(
         &self,
         from: ployz_core::ManagementAddress,
@@ -732,6 +734,16 @@ impl VolumeStorage {
             SendSource::Resume { target, .. } => (target.clone(), true),
             SendSource::Incremental { target, .. } => (target.clone(), false),
         };
+        if self
+            .written_here(fs)
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            return Err(format!(
+                "this Machine's copy of {} may hold writes {} doesn't have, so the pull keeps it rather than replace it with a full copy; delete it with `ployz volume mirror rm` to take a fresh one",
+                stream.name, from.0
+            ));
+        }
         let full = SendStream {
             name: stream.name,
             source: SendSource::Full { target },
