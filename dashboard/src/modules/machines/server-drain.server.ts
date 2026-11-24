@@ -161,6 +161,8 @@ export const requestCliServerDrain = Effect.fn("ServerDrain.requestCli")(functio
     readonly machineId: MachineId;
     readonly targets: readonly QualifiedService[];
     readonly planDigest: string;
+    /** A person said yes to `planDigest`: the Drain runs only while its plan is exactly that one. */
+    readonly approved: boolean;
     /** The name the caller showed for the Server, which its run keeps; null when it showed none. */
     readonly serverName: MachineName | null;
   },
@@ -174,6 +176,7 @@ export const requestCliServerDrain = Effect.fn("ServerDrain.requestCli")(functio
     requestedByUserId: caller.userId,
     targets: [...input.targets],
     planDigest: input.planDigest,
+    approved: input.approved,
   }).onConflictDoNothing().returning();
   if (inserted !== undefined) {
     yield* enqueueDrain(inserted);
@@ -274,17 +277,18 @@ function refusalMessage(cause: Error) {
 
 /**
  * A Drain waits its turn after its gate, and an earlier Drain can leave this one retiring a last copy. So it plans
- * again before it runs, and runs only if what it would destroy now is what its gate admitted. Also whether the plan
- * moves anything, which decides the Servers it may land on.
+ * again before it runs, and runs only if what it would destroy now is what its gate admitted. One a person said yes to
+ * runs only its exact plan, as its gate did. Also whether the plan moves anything, which decides the Servers it may land on.
  */
 const stillCovered = Effect.fn("ServerDrain.stillCovered")(function* (
   request: DrainRequest,
   frame: RuntimeWatchView,
-  planDigest: string | null,
+  admitted: { readonly planDigest: string | null; readonly approved: boolean },
 ) {
   const plan = drainPlan(frame, new Set(yield* ownedNamespaces(request.organizationId)), request.machineId);
   const moves = plan === null || plan.moves.length > 0;
-  return { covered: plan === null || plan.effects.length === 0 || planDigest === operationDigest(plan), moves };
+  const harmless = plan === null || (plan.effects.length === 0 && !admitted.approved);
+  return { covered: harmless || admitted.planDigest === operationDigest(plan), moves };
 });
 
 /**
@@ -316,6 +320,7 @@ export const executeDrainOnce = Effect.fn("ServerDrain.execute")(function* (
       const [row] = yield* drizzle.select({
         targets: serverDrainAttempt.targets,
         planDigest: serverDrainAttempt.planDigest,
+        approved: serverDrainAttempt.approved,
         requestedAt: serverDrainAttempt.requestedAt,
       }).from(serverDrainAttempt).where(eq(serverDrainAttempt.id, id));
       const deadline = row === undefined ? 0 : row.requestedAt.getTime() + DRAIN_PENDING_LIMIT_MS;
@@ -338,9 +343,10 @@ export const executeDrainOnce = Effect.fn("ServerDrain.execute")(function* (
       const { frame } = reached.value;
       yield* drizzle.update(serverDrainAttempt).set({ serversSilent: false })
         .where(and(owned, eq(serverDrainAttempt.state, "pending"), eq(serverDrainAttempt.serversSilent, true)));
-      const { covered, moves } = yield* stillCovered(request, frame, row?.planDigest ?? null);
+      const { covered, moves } = yield* stillCovered(request, frame, { planDigest: row?.planDigest ?? null, approved: row?.approved ?? false });
       if (!covered) {
-        return yield* endPending(refused("The drain now destroys something nobody approved. Drain the server again to review it."));
+        const changed = row?.approved === true ? "The drain changed since you said yes." : "The drain now destroys something nobody approved.";
+        return yield* endPending(refused(`${changed} Drain the server again to review it.`));
       }
       // The Drain's Container steps run on the drained Server, which retires its Globals, and, when the Drain moves
       // anything, on every other Server taking services, since a move may land on any of them.

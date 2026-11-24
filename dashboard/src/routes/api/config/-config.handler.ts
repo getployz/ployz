@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import type { ConfigTrusted } from "@ployz/sdk";
 import { Effect, Option, Schema } from "effect";
 import { approvalAsks, asksApproval } from "#/modules/config-store/store-asks";
-import { APPROVAL_HEADER, gateOperation, hasApprover, olderApproval, OWNER_OR_ADMIN } from "#/modules/operations/gate.server";
+import { APPROVAL_HEADER, askedOfCli, gateOperation, hasApprover, needsPerson, olderApproval, OWNER_OR_ADMIN } from "#/modules/operations/gate.server";
 import { linkDeploy } from "#/modules/deploy-approval/deploy-link.server";
 import { callStore } from "#/modules/config-store/config-store.server";
 import { asRecord, asString } from "#/lib/json";
@@ -18,6 +18,9 @@ import { lacks } from "#/modules/organization/access.server";
 import { readClusterSealingToSeal } from "#/modules/sealing/cluster-sealing.server";
 import { readCappedBody } from "#/server/capped-body";
 import { NotFound, Validation } from "#/server/public-error";
+
+/** An agent carrying a person's yes: it can't give one, so nothing it sends runs on it. */
+const AGENT_YES = "An agent can't say yes. Do it in Ployz Cloud (or with ployz).";
 
 /** Room for one whole Config file (256 KiB), however JSON escapes it. */
 const MAX_REQUEST_BYTES = 4 * 1024 * 1024;
@@ -72,13 +75,16 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
   const named = request.headers.get(APPROVAL_HEADER);
   const older = olderApproval(named);
   if (older !== null) return cliRefusalResponse(older);
+  const byAgent = caller.via === "agent";
   // A Deploy this caller can't sign, or a member's into a Protected Environment, waits at a link. A CLI that predates links reads the link in the refusal.
-  if (named === null && call.operation === "write" && call.command.command === "admit" && call.command.admit === "deploy") {
+  // An agent's Deploy reaches its link whatever it carries: only a person says yes.
+  if ((named === null || byAgent) && call.operation === "write" && call.command.command === "admit" && call.command.admit === "deploy") {
     const link = yield* linkDeploy(caller, call.command);
     if (link !== null) {
       return cliRefusalResponse("refused" in link ? link.refused : refusal("conflict", link.linked.message, { proposal_id: link.linked.proposal_id, url: link.linked.url }));
     }
   }
+  if (byAgent && named !== null) return cliRefusalResponse(refusal("forbidden", AGENT_YES));
   const asks = call.operation === "write" && asksApproval(caller.via, call.command);
   // Unprotecting an Environment from `ployz` or `ployz mcp` waits for a person's yes.
   const unprotect = call.operation === "write"
@@ -104,6 +110,7 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
   // The Store asks again for the plan as it stands now. A yes runs only that plan, and never a member's own yes to an ask
   // a Protected Environment makes of an owner or admin, which the Store would take.
   if (!result.ok && result.refusal.code === "approval_required") {
+    if (byAgent && call.operation === "write") return cliRefusalResponse(needsPerson(call.command, result.refusal));
     if (isProtectedAsk(result.refusal)) return cliRefusalResponse(refusal("forbidden", OWNER_OR_ADMIN, { protected: true }));
     const asked = asString(asRecord(result.refusal.details)?.["approval"] ?? null);
     if (named !== null && named === asked) result = yield* callStore(caller.organization.id, caller.userId, sent, gate({ approved: named }));
@@ -112,6 +119,6 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
     const answer = sealing === undefined ? result.value : { state: "ready", publicKey: sealing.publicKey, targets: result.value };
     return Response.json(answer, { headers: { "cache-control": "no-store" } });
   }
-  return cliRefusalResponse(result.refusal);
+  return cliRefusalResponse(askedOfCli(result.refusal));
 });
 

@@ -6,15 +6,15 @@ import { agentResume, agentStart, CATALOG, finish, GATED, untilWrite } from "#/m
 import { callCloud } from "#/modules/agent/call-cloud.server";
 import { type PagePlace, placeForCall } from "#/modules/agent/page-context";
 import { approvalAsks } from "#/modules/config-store/store-asks";
-import { gateOperation, hasApprover, OWNER_OR_ADMIN } from "#/modules/operations/gate.server";
+import { gateOperation, hasApprover, needsPerson } from "#/modules/operations/gate.server";
 import { type Called, type Command, inputSchema } from "#/modules/commands/define";
 import { findCommand, runCommand } from "#/modules/commands/commands.server";
 import { COMMANDS } from "#/modules/commands/registry.server";
 import { callStore } from "#/modules/config-store/config-store.server";
 import { agentSecretRefusal, holdsSecretText } from "#/modules/agent/agent-secrets";
 import { protectorOnly, unprotectAsked } from "#/modules/config-store/protected.server";
-import { isProtectedAsk, type StoreAnswer, type StoreCall, type StoreResult } from "#/modules/config-store/store.contract";
-import { refusal, refused, type StoreRefusal } from "#/lib/refusal";
+import type { StoreAnswer, StoreCall, StoreResult } from "#/modules/config-store/store.contract";
+import { refused } from "#/lib/refusal";
 import type { JsonObject } from "#/db/tables";
 import { type AgentCaller, callerEnvironments, callerPermissions } from "#/modules/identity/actor";
 import { type DeployLinked, linkDeploy } from "#/modules/deploy-approval/deploy-link.server";
@@ -172,34 +172,6 @@ export const stagesInto = (input: JsonValue): string | null => asString(asRecord
 /** A Store answer as `caller` may read it: support sees it under the Organization's rules. */
 const shownTo = <C extends StoreCall>(caller: AgentCaller, call: C, result: StoreResult<StoreAnswer<C>>) =>
   caller.support === null ? result : answerForSupport(call, result, caller.support);
-
-/** What an agent's Store write is called when it needs a person. */
-const storeWriteWord = (command: ConfigCommand) => {
-  switch (command.command) {
-    case "admit":
-      return command.admit === "shut_down" ? "shutdown" : command.admit;
-    case "publish":
-      return "save";
-    case "remove":
-      return "removal";
-    case "cancel":
-    case "sync":
-    case "take":
-      return command.command;
-    default:
-      return "change";
-  }
-};
-
-/**
- * A Store write that needs a person's yes, refused to an agent with where a person does it: an owner or admin, in a
- * Protected Environment the agent's member can't protect.
- */
-const needsPerson = (command: ConfigCommand, asked: StoreRefusal): StoreRefusal => {
-  if (isProtectedAsk(asked)) return refusal("forbidden", OWNER_OR_ADMIN, { protected: true });
-  const what = storeWriteWord(command);
-  return refusal("forbidden", `This ${what} needs a person. Do it in Ployz Cloud (or with ployz).`);
-};
 
 type Gated = { linked: DeployLinked } | { result: StoreResult<ConfigWritten>; nothingDestroyed: boolean };
 

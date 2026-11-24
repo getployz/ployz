@@ -74,7 +74,7 @@ it("renames from the dashboard at once, asks the CLI for a yes, and sends an age
 
   expect(await as("cli", { name: "beta" })).toMatchObject({ ok: false, refusal: {
     code: "approval_required",
-    message: "Renaming the Cluster to beta needs your yes. Nothing ran.",
+    message: "Renaming the Cluster to beta needs your yes. Nothing ran. If ployz didn't ask yes or no, update it.",
     details: { operation: { verb: "set_cluster_name", name: "beta", preview: { from: "acme", to: "beta" } } },
     writes: "none",
   } });

@@ -102,7 +102,7 @@ export const drainServer = (caller: Caller, machineId: MachineId, call: Operatio
       const gated = yield* gate(caller, call, { ...plan, ployz: `ployz server drain ${plan.name}` });
       if (!gated.ok) return refused(gated.refusal);
       return (attemptId: string) => requestCliServerDrain(actor(caller), {
-        attemptId, machineId, targets: plan.targets, planDigest: operationDigest(plan), serverName: serverName || plan.name,
+        attemptId, machineId, targets: plan.targets, planDigest: operationDigest(plan), approved: call.approved !== null, serverName: serverName || plan.name,
       })
         .pipe(Effect.map((id) => ({ ok: true, id }) as const));
     }));

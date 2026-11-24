@@ -2701,6 +2701,30 @@ it.live(
   60_000,
 );
 
+// Catches a yes to a drain that would retire a Global's last copy running a different drain once another copy started.
+it.live(
+  "a CLI drain resent with a yes after its plan stopped destroying anything asks again and starts nothing",
+  () =>
+    Effect.gen(function* () {
+      const inngest = new Inngest({ id: "cli-drain-harmless-test" });
+      const sent = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
+      const plan: FraRunsGlobal = { destroys: true, namespace: "left-behind" };
+      const layer = yield* cliLayer(fakeServers().layer, { runtime: operationClusterOf(plan), inngest });
+      yield* Effect.gen(function* () {
+        const alice = yield* signUp("alice");
+        plan.namespace = yield* ownNamespace(alice.organization.id, yield* ownerOf(alice.organization.id));
+        const drain = operations[2];
+        const earlier = yesTo(yield* cli(drain.method, drain.path, alice));
+        plan.destroys = false;
+
+        const resent = yield* cli(drain.method, drain.path, { ...alice, approval: earlier });
+        assert.deepStrictEqual([resent.status, resent.json.error?.code, resent.json.error?.details?.effects], [409, "approval_required", []], resent.text);
+        assert.lengthOf(sent.mock.calls, 0);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
 it.live(
   "a CLI drain that loses no Global's last copy goes ahead without asking",
   () =>

@@ -261,7 +261,7 @@ describe("callCloud", () => {
   /** Starts a drain, a removal and an upgrade of `MACHINE` the way Cloud starts them, each from a caller that showed `serverName`. */
   const startServerRuns = (userId: string, serverName: MachineName) => Effect.gen(function* () {
     yield* requestCliServerDrain({ organizationId: ORGANIZATION, userId }, {
-      attemptId: DRAIN, machineId: MACHINE, targets: [], planDigest: "p", serverName,
+      attemptId: DRAIN, machineId: MACHINE, targets: [], planDigest: "p", approved: false, serverName,
     });
     yield* requestMachineRemoveAttempt({ organizationId: ORGANIZATION, requestedByUserId: userId, machineId: MACHINE, confirmDataLoss: [], serverName });
     yield* recordUpgradeAttempt({

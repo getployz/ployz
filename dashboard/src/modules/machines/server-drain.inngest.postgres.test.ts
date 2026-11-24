@@ -311,11 +311,29 @@ describe("drain-server", () => {
       machineId,
       targets: ["shop-production/api", "shop-production/db"],
       planDigest: "",
+      approved: false,
       serverName: null,
     }));
     await drain(attemptId);
 
     expect(drainCalls).toEqual([[machineId, { scope: "services", services: ["shop-production/api", "shop-production/db"] }]]);
+  });
+
+  // Catches a CLI yes to retiring a Global's last copy draining a plan nobody saw once that copy no longer was the last.
+  it("refuses a CLI Drain a person said yes to once its plan changed, even to one that destroys nothing", async () => {
+    frame = frameOf("replicated");
+    const yesTo = (approved: boolean) => runEffect(requestCliServerDrain({ organizationId, userId }, {
+      attemptId: approved ? requestId : secondTab, machineId, targets: ["shop-production/api"], planDigest: "drain:the-plan-said-yes-to", approved, serverName: null,
+    }));
+
+    await drain(await yesTo(true));
+    expect(drainCalls).toEqual([]);
+    expect(await rows()).toMatchObject([{
+      end_code: "refused", refusal_message: "The drain changed since you said yes. Drain the server again to review it.",
+    }]);
+
+    await drain(await yesTo(false), machineId, "run-unasked");
+    expect(drainCalls).toEqual([[machineId, { scope: "services", services: ["shop-production/api"] }]]);
   });
 
   it("a dashboard Drain that destroys nothing records no approval and drains only the services it planned", async () => {

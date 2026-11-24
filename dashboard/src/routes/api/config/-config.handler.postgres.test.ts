@@ -1,20 +1,23 @@
 import { assert, it } from "@effect/vitest";
 import type { ConfigCommand, JsonValue, SealingTargetsQuery } from "@ployz/sdk";
 import { createHash, generateKeyPairSync } from "node:crypto";
+import { sql } from "drizzle-orm";
 import { Effect, Schema } from "effect";
 import { viewOf } from "#/modules/config-store/store.contract";
 import { mintOrganizationTokenUnchecked } from "#/modules/identity/organization-token.server";
 import { recordSealingPublicKey } from "#/modules/sealing/sealing-key.server";
 import { handleConfigRequest } from "#/routes/api/config/-config.handler";
 import { AuthLive } from "#/modules/identity/auth.server";
+import { Database } from "#/server/database.server";
 import { sealedSecret } from "#/test/sealed-secret";
-import { enrollStoreServer, seedStoreGitService, seedStoreOrganization, storeTestCloudWith } from "#/test/store-cloud";
+import { acmeWeb, enrollStoreServer, seedStoreGitService, seedStoreOrganization, storeTestCloudWith } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-000000005e01";
 const PROJECT = "00000000-0000-4000-8000-000000005e02";
 const ENVIRONMENT = "00000000-0000-4000-8000-000000005e03";
 const SERVICE = "00000000-0000-4000-8000-000000005e04";
 const here = { project: null, environment: null };
+const DEPLOYMENT = "00000000-0000-4000-8000-000000005e05";
 const PAIRING_SECRET = "ppair_fixture_store";
 const PUBLIC_KEY = `${"A".repeat(43)}=`;
 const UPDATE = "curl -fsSL https://ployz.sh | sh";
@@ -46,16 +49,18 @@ const set = (key: string, value: JsonValue): ConfigCommand => ({
   command: "edit", environment: here, expect: null, changes: [{ op: "set", path: `web.env.${key}`, value }],
 });
 
-/** Shop with Git Service `web`, reached as a CLI token of its owner. */
-const shop = Effect.fn(function* () {
+/** Shop with Git Service `web`, reached as a CLI token of its owner, or with `kind` an agent token. */
+const shop = Effect.fn(function* (kind: "cli" | "agent" = "cli") {
   const userId = yield* seedStoreOrganization(ORGANIZATION);
   const store = yield* seedStoreGitService(ORGANIZATION, { project: PROJECT, environment: ENVIRONMENT, service: SERVICE });
   const { secret } = yield* mintOrganizationTokenUnchecked({
-    organizationId: ORGANIZATION, userId, name: "t", kind: "cli", expiresAt: new Date(Date.now() + 86_400_000),
+    organizationId: ORGANIZATION, userId, name: "t", kind, expiresAt: new Date(Date.now() + 86_400_000),
   });
-  const send = Effect.fn(function* (operation: string, body: Body) {
+  const send = Effect.fn(function* (operation: string, body: Body, approval?: string) {
+    const headers = new Headers({ authorization: `Bearer ${secret}`, "content-type": "application/json" });
+    if (approval !== undefined) headers.set("x-ployz-approval", approval);
     const response = yield* handleConfigRequest(new Request(`http://localhost:3000/api/config/${operation}`, {
-      method: "POST", headers: { authorization: `Bearer ${secret}`, "content-type": "application/json" }, body: JSON.stringify(body),
+      method: "POST", headers, body: JSON.stringify(body),
     }));
     const text = yield* Effect.promise(() => response.text());
     return { status: response.status, cache: response.headers.get("cache-control"), json: decodeAnswer(text) };
@@ -70,7 +75,28 @@ const shop = Effect.fn(function* () {
     const view = viewOf(await store.read(ORGANIZATION, query), query) ?? assert.fail("no environment view");
     return Object.fromEntries(view.settings.map((setting) => [setting.path, setting.value]));
   });
-  return { send, serverReported, settings };
+  /** `web` deployed, then removed from the Config, so the next Save stops it. */
+  const webDeployedThenRemoved = Effect.gen(function* () {
+    yield* enrollStoreServer(ORGANIZATION);
+    yield* Effect.promise(() => store.write(ORGANIZATION, {
+      command: "admit", admit: "deploy", id: DEPLOYMENT, environment: here, services: [], version: null, accept_volume_loss: [],
+    }, acmeWeb()));
+    const { drizzle } = yield* Database;
+    yield* drizzle.execute(sql`update config_deployment set status = 'applied' where id = ${DEPLOYMENT}`);
+    yield* drizzle.execute(sql`insert into config_applied (environment_id, node_id, organization_id, deployment_id, node_type, node)
+      select environment_id, service->>'id', organization_id, ${DEPLOYMENT}, 'service', service::text
+      from config_saved, lateral jsonb_array_elements(intent::jsonb->'services') service where environment_id = ${ENVIRONMENT}`);
+    yield* Effect.promise(() => store.write(ORGANIZATION, { command: "remove_service", environment: here, service: "web" }));
+  });
+  /** The ids of the Services the Environment's last Save holds. */
+  const saved = Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    const rows = yield* drizzle.execute<{ id: string }>(sql`select service->>'id' as id
+      from config_saved s, lateral jsonb_array_elements(s.intent::jsonb->'services') service
+      where s.environment_id = ${ENVIRONMENT} and s.revision = (select max(revision) from config_saved where environment_id = ${ENVIRONMENT})`, "objects");
+    return rows.map((row) => row.id);
+  });
+  return { send, serverReported, settings, webDeployedThenRemoved, saved, userId };
 });
 
 const cloud = storeTestCloudWith(AuthLive);
@@ -130,5 +156,43 @@ it.live("a generated secret waits for a Server, then is sealed to the Cluster's 
       const saved = yield* send("write", generate);
       assert.deepStrictEqual([saved.status, "staged" in saved.json && saved.json.staged], [200, ["web.env.PASSWORD"]]);
       assert.deepStrictEqual((yield* settings)["web.env.PASSWORD"], { secret: true });
+    }).pipe(Effect.provide(yield* cloud));
+  }), 60_000);
+
+const save: ConfigCommand = { command: "publish", environment: here, version: null, accept_volume_loss: [] };
+
+// Catches an agent token running a Save that stops web by resending the digest the Store asked a `ployz` user to say yes to.
+it.live("an agent's Save that stops a Service is refused with where a person does it, and a person's digest changes nothing", () =>
+  Effect.gen(function* () {
+    yield* Effect.gen(function* () {
+      const { send, webDeployedThenRemoved, saved, userId } = yield* shop("agent");
+      yield* webDeployedThenRemoved;
+      const remedy = { error: { code: "forbidden", message: "This save needs a person. Do it in Ployz Cloud (or with ployz).", details: null } };
+      const asked = yield* send("write", save);
+      assert.deepStrictEqual([asked.status, asked.json], [403, remedy]);
+
+      const { secret } = yield* mintOrganizationTokenUnchecked({
+        organizationId: ORGANIZATION, userId, name: "person", kind: "cli", expiresAt: new Date(Date.now() + 86_400_000),
+      });
+      const person = (approval?: string) => Effect.gen(function* () {
+        const headers = new Headers({ authorization: `Bearer ${secret}`, "content-type": "application/json" });
+        if (approval !== undefined) headers.set("x-ployz-approval", approval);
+        const response = yield* handleConfigRequest(new Request("http://localhost:3000/api/config/write", { method: "POST", headers, body: JSON.stringify(save) }));
+        return { status: response.status, text: yield* Effect.promise(() => response.text()) };
+      });
+      const ask = yield* person().pipe(Effect.map(({ text }) => ({ json: decodeAnswer(text) })));
+      if (!("error" in ask.json) || ask.json.error.code !== "approval_required") assert.fail(`no ask: ${JSON.stringify(ask.json)}`);
+      assert.isTrue(ask.json.error.message.endsWith("If ployz didn't ask yes or no, update it."), ask.json.error.message);
+      const digest = Schema.decodeUnknownSync(Schema.Struct({ approval: Schema.String }))(ask.json.error.details).approval;
+
+      const resent = yield* send("write", save, digest);
+      assert.deepStrictEqual([resent.status, resent.json], [403, {
+        error: { code: "forbidden", message: "An agent can't say yes. Do it in Ployz Cloud (or with ployz).", details: null },
+      }]);
+      assert.deepStrictEqual(yield* saved, [SERVICE], "nothing the agent sent was saved");
+
+      const yes = yield* person(digest);
+      assert.strictEqual(yes.status, 200, yes.text);
+      assert.deepStrictEqual(yield* saved, [], "the person's yes saves it");
     }).pipe(Effect.provide(yield* cloud));
   }), 60_000);
