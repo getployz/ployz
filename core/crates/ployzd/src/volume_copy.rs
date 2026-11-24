@@ -34,6 +34,8 @@ pub const STORAGE_SEAL_ROUTE: &str = "Storage.Seal";
 pub const VOLUME_INSPECT_ROUTE: &str = "Volume.Inspect";
 /// A Volume created from a seed.
 pub const VOLUME_SEED_ROUTE: &str = "Volume.Seed";
+/// A Volume created from a seed a person's Copy step approved, carrying the step's birth.
+pub const VOLUME_SEED_COPY_ROUTE: &str = "Volume.SeedCopy";
 /// A Volume's bound set to a new size.
 pub const VOLUME_SIZE_SET_ROUTE: &str = "Volume.Size.Set";
 /// The copy as it is now, with no effect.
@@ -53,6 +55,51 @@ pub const DESTROY_ROUTE: &str = "Volume.Copy.Destroy";
 /// The dataset a send of `target` reads, with the snapshot's GUID and origin, observed in
 /// one answer under the plugin's mutation, so no receive replaces the copy between them.
 pub const SEND_POINT_ROUTE: &str = "Volume.SendPoint";
+
+/// A seed the daemon admitted under a Copy step, and what the step binds it to.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct SeedCopy {
+    pub seed: ployz_core::SeedVolumeRequest,
+    pub copy: CopyBinding,
+}
+
+/// What a Copy step holds a seed to on the plugin.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+pub struct CopyBinding {
+    /// The origin of the step's birth: the slot records it, and the new Volume carries it
+    /// once it lands. A slot or root of the new Volume that carries any other is not this
+    /// copy's.
+    pub birth: VolumeOrigin,
+    /// The origin the source's point must carry, Legacy as its own value.
+    pub source: VolumeOrigin,
+    /// When the point was taken, as the source's snapshot records it to the second.
+    pub taken_at: ployz_core::authority::Timestamp,
+    /// The step's digest. The slot the copy makes carries it, and so does the root it
+    /// lands as, so only that slot is this step's, and destroying either leaves the step's
+    /// tombstone: a new Volume gone with its step's tombstone was deleted.
+    pub step: ployz_core::authority::StepDigest,
+    /// Whether the call may make a new copy into an absent Volume. A copy starting over in
+    /// the slot the step made, which carries the step and its birth, does not read it.
+    pub window: StartWindow,
+}
+
+/// Whether a Copy may still make its new Volume's slot, as the daemon found its window when
+/// it took the call. The window bounds when an approval may make a new destination. A copy
+/// whose slot the step already made is underway, so starting its receive over in that slot,
+/// like landing it, takes no window.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StartWindow {
+    /// The window holds until `closes`, the last instant on the plugin's clock a new copy
+    /// may start. The plugin reads its clock right before making the slot and right before
+    /// starting the receive into the slot it just made.
+    Open {
+        closes: ployz_core::authority::Timestamp,
+    },
+    /// The window had closed: the call makes no slot, whatever the plugin's clock reads,
+    /// and only finishes a copy underway in the slot the step made.
+    Closed,
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SendPointRequest {

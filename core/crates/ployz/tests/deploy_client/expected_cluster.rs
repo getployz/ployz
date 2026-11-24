@@ -168,6 +168,7 @@ fn pinned() -> (Arc<ConfigStore>, Actor, GithubBuildId) {
         prune: false,
         no_prune: false,
         versions: Vec::new(),
+        copies: Vec::new(),
         recreate: Vec::new(),
     });
     store

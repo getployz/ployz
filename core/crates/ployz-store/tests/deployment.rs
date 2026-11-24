@@ -98,6 +98,7 @@ fn admit(
             prune: false,
             no_prune: false,
             versions: Vec::new(),
+            copies: Vec::new(),
             recreate: Vec::new(),
         }),
         &Trusted::default(),
@@ -3113,6 +3114,7 @@ fn retry(
             version: None,
             accept_volume_loss: Vec::new(),
             versions: Vec::new(),
+            copies: Vec::new(),
         }),
         &ployz_store::Trusted::default(),
     )
@@ -3320,6 +3322,7 @@ fn rollback(
             version: None,
             accept_volume_loss: Vec::new(),
             versions: Vec::new(),
+            copies: Vec::new(),
         }),
         &ployz_store::Trusted::default(),
     )
@@ -4264,6 +4267,7 @@ fn each_service_builds_from_its_own_upload_and_cloud_keeps_it() {
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
+                copies: Vec::new(),
                 recreate: Vec::new(),
             }),
             &Trusted::default(),
@@ -4369,6 +4373,7 @@ fn deploy_sent(store: &ConfigStore, who: &Actor, n: u8, upload: Option<char>) ->
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
+                copies: Vec::new(),
                 recreate: Vec::new(),
             }),
             &Trusted::default(),
@@ -4488,6 +4493,7 @@ fn a_reupload_stays_kept_whether_a_retry_of_an_older_upload_comes_before_or_afte
                         prune: false,
                         no_prune: false,
                         versions: Vec::new(),
+                        copies: Vec::new(),
                         recreate: Vec::new(),
                     }),
                     &Trusted::default(),
@@ -4577,6 +4583,7 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
+                copies: Vec::new(),
                 recreate: Vec::new(),
             }),
             &ployz_store::Trusted::default(),
@@ -4709,6 +4716,7 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
+                copies: Vec::new(),
                 recreate: Vec::new(),
             }),
             &ployz_store::Trusted::default(),
@@ -4754,6 +4762,7 @@ fn cloud_names_the_uploader_and_uploaded_builds_report_like_git_ones() {
             prune: false,
             no_prune: false,
             versions: Vec::new(),
+            copies: Vec::new(),
             recreate: Vec::new(),
         }));
         // Cloud names who acts and what they hold; the Deployment records them as its
@@ -4839,6 +4848,7 @@ fn a_deploy_message_shows_on_the_deployment_and_its_retry() {
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
+                copies: Vec::new(),
                 recreate: Vec::new(),
             }),
         )
@@ -4860,6 +4870,7 @@ fn a_deploy_message_shows_on_the_deployment_and_its_retry() {
                 version: None,
                 accept_volume_loss: Vec::new(),
                 versions: Vec::new(),
+                copies: Vec::new(),
             }),
         )
         .unwrap();
@@ -5359,6 +5370,7 @@ fn deploy_choosing(
         prune: false,
         no_prune: false,
         versions: Vec::new(),
+        copies: Vec::new(),
         recreate: Vec::new(),
     };
     choose(&mut deploy);
@@ -5661,6 +5673,7 @@ fn a_deploy_token_cant_redeploy_a_prune_that_removes_what_runs_now() {
                 version: None,
                 accept_volume_loss: Vec::new(),
                 versions: Vec::new(),
+                copies: Vec::new(),
             }),
             &Trusted {
                 running,
@@ -5704,6 +5717,7 @@ fn an_approval_given_while_every_server_answered_doesnt_admit_an_unseen_prune() 
                 version: None,
                 accept_volume_loss: Vec::new(),
                 versions: Vec::new(),
+                copies: Vec::new(),
             }),
             &agent(approval, running),
         )
@@ -5802,6 +5816,7 @@ fn deploying_or_retrying_saved_state_asks_nothing_again() {
                 version: None,
                 accept_volume_loss: Vec::new(),
                 versions: Vec::new(),
+                copies: Vec::new(),
             }),
             &Trusted {
                 approval: Approval::Required,
@@ -5875,6 +5890,7 @@ fn agent_deploys_only(
             prune: false,
             no_prune: false,
             versions: Vec::new(),
+            copies: Vec::new(),
             recreate: Vec::new(),
         }),
         &Trusted {
@@ -5922,6 +5938,7 @@ fn agent_deploys_upload(
             prune: false,
             no_prune: false,
             versions: Vec::new(),
+            copies: Vec::new(),
             recreate: Vec::new(),
         }),
         &Trusted {
@@ -5962,6 +5979,7 @@ fn agent_retries(
             version: None,
             accept_volume_loss: Vec::new(),
             versions: Vec::new(),
+            copies: Vec::new(),
         }),
         &Trusted {
             approval,
@@ -5996,6 +6014,7 @@ fn a_token_outside_its_environments_is_refused_before_a_human_is_asked() {
                 version: None,
                 accept_volume_loss: Vec::new(),
                 versions: Vec::new(),
+                copies: Vec::new(),
             }),
             &staging,
         )
@@ -6153,6 +6172,7 @@ fn a_queued_retry_keeps_a_running_deployments_creates_deployed() {
                 version: None,
                 accept_volume_loss: Vec::new(),
                 versions: Vec::new(),
+                copies: Vec::new(),
             }),
         )
         .unwrap();
@@ -6451,6 +6471,7 @@ fn a_retry_into_a_protected_environment_asks_an_admin() {
                 version: None,
                 accept_volume_loss: Vec::new(),
                 versions: Vec::new(),
+                copies: Vec::new(),
             }),
             &unprotecting(approval),
         )
@@ -6534,6 +6555,7 @@ fn retry_as(
             version: None,
             accept_volume_loss: Vec::new(),
             versions: Vec::new(),
+            copies: Vec::new(),
         }),
         trusted,
     )
@@ -7263,6 +7285,7 @@ fn cloud_keeps_every_upload_a_queued_deploy_may_start_from_until_it_ends() {
                     prune: false,
                     no_prune: false,
                     versions: Vec::new(),
+                    copies: Vec::new(),
                     recreate: Vec::new(),
                 }),
                 &Trusted::default(),
@@ -7338,6 +7361,7 @@ fn verifier_a_failed_upload_keeps_the_upload_a_partial_retry_applied() {
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
+                copies: Vec::new(),
                 recreate: Vec::new(),
             }),
             &Trusted::default(),
@@ -7382,6 +7406,7 @@ fn verifier_a_successful_no_op_retry_keeps_the_service_on_the_retried_upload() {
                     prune: false,
                     no_prune: false,
                     versions: Vec::new(),
+                    copies: Vec::new(),
                     recreate: Vec::new(),
                 }),
                 &Trusted::default(),
@@ -7516,6 +7541,7 @@ fn a_rollback_that_takes_a_service_off_asks_and_names_it() {
                 version: None,
                 accept_volume_loss: Vec::new(),
                 versions: Vec::new(),
+                copies: Vec::new(),
             }),
             trusted,
         )
@@ -7563,6 +7589,7 @@ fn a_retry_that_takes_nothing_off_still_asks_nothing() {
                 version: None,
                 accept_volume_loss: Vec::new(),
                 versions: Vec::new(),
+                copies: Vec::new(),
             }),
             &protector(Approval::Required, Asks::Destroys),
         )
@@ -7739,6 +7766,7 @@ fn a_rollback_asks_about_a_service_a_deployment_of_unknown_outcome_may_have_star
                 version: None,
                 accept_volume_loss: Vec::new(),
                 versions: Vec::new(),
+                copies: Vec::new(),
             }),
             &protector(Approval::Required, Asks::Destroys),
         )
@@ -7837,6 +7865,7 @@ fn rollback_to(
             version: None,
             accept_volume_loss: Vec::new(),
             versions: Vec::new(),
+            copies: Vec::new(),
         }),
         &protector(Approval::Required, Asks::Destroys),
     )
@@ -8198,6 +8227,7 @@ fn a_deploy_plan_lowers_exactly_what_its_runner_is_handed() {
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
+                copies: Vec::new(),
                 recreate: Vec::new(),
             }),
             &Trusted::default(),
@@ -8222,6 +8252,7 @@ fn retry_of(
             version: None,
             accept_volume_loss: Vec::new(),
             versions: Vec::new(),
+            copies: Vec::new(),
         }),
         &Trusted::default(),
     )
@@ -8304,6 +8335,7 @@ fn a_rollback_plan_lowers_what_its_runner_is_handed() {
                 version: None,
                 accept_volume_loss: Vec::new(),
                 versions: Vec::new(),
+                copies: Vec::new(),
             }),
             &Trusted::default(),
         )
@@ -9128,6 +9160,7 @@ fn admit_with(
             prune: false,
             no_prune: false,
             versions,
+            copies: Vec::new(),
             recreate: Vec::new(),
         }),
         &Trusted::default(),
@@ -9464,6 +9497,7 @@ fn admit_services(
             prune: false,
             no_prune: false,
             versions,
+            copies: Vec::new(),
             recreate: Vec::new(),
         }),
         &Trusted::default(),
@@ -9529,6 +9563,7 @@ fn a_key_that_signs_only_the_service_it_deploys_ships_a_service_it_references_un
                     prune: false,
                     no_prune: false,
                     versions: vec![version],
+                    copies: Vec::new(),
                     recreate,
                 }),
                 &Trusted::default(),
@@ -9560,6 +9595,7 @@ fn a_retry_of_a_rotation_recreates_what_the_rotation_did() {
         .write_trusted(
             &who,
             &Admit::Deploy(Deploy {
+                copies: Vec::new(),
                 id: id(2),
                 environment: EnvironmentRef::default(),
                 services: vec![web.clone()],
@@ -10354,4 +10390,235 @@ fn a_deployment_that_failed_in_a_service_never_becomes_its_parent() {
         (first[1].statement.clone(), P1.to_owned()),
         "api never ran the version Deployment 2 failed to start"
     );
+}
+
+const RESTORED: &str = "00000000-0000-4000-8000-000000000006";
+
+/// Stage `restored`, a new Volume restored from `data`'s point taken at `at` seconds, as
+/// staging a restore does: its storage is fixed from the start.
+fn stage_restore(store: &ConfigStore, who: &Actor, at: u64) {
+    store
+        .write(
+            who,
+            &ployz_store::CreateVolume {
+                id: ployz_store::VolumeId::parse(RESTORED).unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ployz_store::VolumeName::parse("restored").unwrap(),
+                storage: ployz_core::config::VolumeKind::Docker {},
+                shared_writes: false,
+                storage_locked: true,
+                restored_from: Some(ployz_core::config::RestoredFrom {
+                    volume: DATA.to_owned(),
+                    at,
+                }),
+                mounts: Vec::new(),
+            },
+        )
+        .unwrap();
+}
+
+/// A person's Copy of `data`'s point taken at `taken` seconds into `restored`, with a birth
+/// whose nonce is `nonce`, as step 0 of a bundle the person signed.
+fn copy_into_restored(
+    store: &ConfigStore,
+    who: &Actor,
+    taken: u64,
+    nonce: u8,
+) -> ployz_core::authority::Signed<ployz_core::authority::CopyStep> {
+    copy_in_bundle(store, who, (taken, nonce), true)
+}
+
+/// [`copy_into_restored`], in a bundle the person signed when `signed`, and otherwise in
+/// the same bundle carrying no signature and no passkey's answer.
+fn copy_in_bundle(
+    store: &ConfigStore,
+    who: &Actor,
+    (taken, nonce): (u64, u8),
+    signed: bool,
+) -> ployz_core::authority::Signed<ployz_core::authority::CopyStep> {
+    use ployz_core::authority::{
+        ProposalApproval, ProposalStep, Signed, StepDigest, StepKind, Timestamp,
+    };
+    let (step, signer) = copy_step(store, who, taken, nonce);
+    let unsigned = Signed::unsigned(&step).unwrap();
+    let plan = ProposalApproval {
+        cluster: step.cluster,
+        environment: step.namespace.clone(),
+        operation: step.proposal.operation,
+        steps: vec![ProposalStep {
+            index: 0,
+            kind: StepKind::Copy,
+            digest: StepDigest::of(&unsigned.body),
+        }],
+        issued_at: Timestamp::now(),
+        expires_at: Timestamp::now().plus(600_000),
+        signer: step.signer,
+    };
+    let bundle = if signed {
+        Signed::sign(&plan, &signer).unwrap()
+    } else {
+        Signed::unsigned(&plan).unwrap()
+    };
+    Signed::proposed(&step, bundle).unwrap()
+}
+
+/// The Copy [`copy_into_restored`] makes, signed alone, as no Server takes it.
+fn copy_alone(
+    store: &ConfigStore,
+    who: &Actor,
+    taken: u64,
+    nonce: u8,
+) -> ployz_core::authority::Signed<ployz_core::authority::CopyStep> {
+    let (step, signer) = copy_step(store, who, taken, nonce);
+    ployz_core::authority::Signed::sign(&step, &signer).unwrap()
+}
+
+fn copy_step(
+    store: &ConfigStore,
+    who: &Actor,
+    taken: u64,
+    nonce: u8,
+) -> (
+    ployz_core::authority::CopyStep,
+    ployz_core::authority::Signer,
+) {
+    use ployz_core::authority::{CopyStep, ProposalRef, Signer, SignerKey, Timestamp};
+    use ployz_core::{
+        BirthNonce, DockerVolumeName, MachineId, OperationId, SealingPublicKey, SnapshotGuid,
+        VolumeBirth, VolumeOrigin,
+    };
+    let namespace = plan_at(store, who, EnvironmentRef::default()).namespace;
+    let physical =
+        |resource: &str| namespace.volume_name(&DockerVolumeName::for_resource(resource).unwrap());
+    let signer = Signer::from_seed(&[1; 32]);
+    let step = CopyStep {
+        cluster: SealingPublicKey::from_bytes([5; 32]),
+        namespace: namespace.clone(),
+        proposal: ProposalRef {
+            operation: OperationId::parse("0f8fad5bd9cb469fa16570867728950e").unwrap(),
+            index: 0,
+        },
+        signer: SignerKey::Device(signer.public().into()),
+        machine: MachineId::parse("a".repeat(32)).unwrap(),
+        source: physical(DATA),
+        origin: VolumeOrigin::legacy(&physical(DATA)),
+        point: SnapshotGuid::new(42),
+        taken_at: Timestamp::from_millis(taken * 1000).unwrap(),
+        into: physical(RESTORED),
+        birth: VolumeBirth {
+            namespace,
+            name: "restored".to_owned(),
+            made_at: Timestamp::now(),
+            nonce: BirthNonce::from_bytes([nonce; 16]),
+        },
+    };
+    (step, signer)
+}
+
+fn admit_copies(
+    store: &ConfigStore,
+    who: &Actor,
+    n: u8,
+    copies: Vec<ployz_core::authority::Signed<ployz_core::authority::CopyStep>>,
+) -> Result<DeploymentSummary, RpcError> {
+    store.write_trusted(
+        who,
+        &Admit::Deploy(Deploy {
+            id: id(n),
+            environment: EnvironmentRef::default(),
+            services: Vec::new(),
+            version: None,
+            upload: None,
+            accept_volume_loss: Vec::new(),
+            message: None,
+            prune: false,
+            no_prune: false,
+            versions: Vec::new(),
+            copies,
+            recreate: Vec::new(),
+        }),
+        &Trusted::default(),
+    )
+}
+
+/// A staged restore's storage is fixed, yet nothing holds its data: the Copy a person
+/// approved for exactly that restore records its birth with no Version mounting it, once.
+/// A Copy of another point, or a second birth for the same Volume, is refused.
+#[test]
+fn a_copy_records_the_birth_of_the_restore_it_matches_and_only_that_one() {
+    let (store, who) = shop();
+    data_volume(&store, &who);
+    stage_restore(&store, &who, 1_700_000_000);
+
+    // Refused, it records nothing: the matching Copy's other birth is admitted after it.
+    let other_point = copy_into_restored(&store, &who, 1_700_000_001, 9);
+    assert_eq!(
+        code(admit_copies(&store, &who, 1, vec![other_point])),
+        RpcErrorCode::InvalidArgument
+    );
+
+    let copy = copy_into_restored(&store, &who, 1_700_000_000, 3);
+    admit_copies(&store, &who, 1, vec![copy.clone()]).unwrap();
+    // The same Copy again, as a retry sends it, is admitted.
+    admit_copies(&store, &who, 2, vec![copy]).unwrap();
+    let another = copy_into_restored(&store, &who, 1_700_000_000, 4);
+    assert_eq!(
+        code(admit_copies(&store, &who, 3, vec![another])),
+        RpcErrorCode::Conflict
+    );
+}
+
+/// A Copy signed alone is no step of any approval, and no Server takes it: refused, it
+/// claims no birth, so the restore the person approved in a bundle is admitted after it.
+#[test]
+fn a_copy_outside_an_approval_claims_no_birth_before_the_approved_one() {
+    let (store, who) = shop();
+    data_volume(&store, &who);
+    stage_restore(&store, &who, 1_700_000_000);
+
+    let alone = copy_alone(&store, &who, 1_700_000_000, 9);
+    assert_eq!(
+        code(admit_copies(&store, &who, 1, vec![alone])),
+        RpcErrorCode::InvalidArgument
+    );
+
+    let approved = copy_into_restored(&store, &who, 1_700_000_000, 3);
+    admit_copies(&store, &who, 1, vec![approved]).unwrap();
+}
+
+/// A Copy in a bundle nobody signed, an approval left unfinished, is refused as no Server
+/// takes it, and claims no birth: the signed restore with another birth is admitted after.
+#[test]
+fn a_copy_in_an_unsigned_approval_claims_no_birth_before_the_signed_one() {
+    let (store, who) = shop();
+    data_volume(&store, &who);
+    stage_restore(&store, &who, 1_700_000_000);
+
+    let unsigned = copy_in_bundle(&store, &who, (1_700_000_000, 9), false);
+    assert_eq!(
+        code(admit_copies(&store, &who, 1, vec![unsigned])),
+        RpcErrorCode::InvalidArgument
+    );
+
+    let approved = copy_into_restored(&store, &who, 1_700_000_000, 3);
+    admit_copies(&store, &who, 1, vec![approved]).unwrap();
+}
+
+/// Two Copies into one Volume in one Deploy: the same birth twice is one birth, and two
+/// births conflict as they would across Deploys.
+#[test]
+fn a_deploy_restoring_one_volume_twice_replays_its_birth_or_conflicts() {
+    let (store, who) = shop();
+    data_volume(&store, &who);
+    stage_restore(&store, &who, 1_700_000_000);
+    let copy = copy_into_restored(&store, &who, 1_700_000_000, 3);
+    let other = copy_into_restored(&store, &who, 1_700_000_000, 4);
+
+    let conflict = admit_copies(&store, &who, 1, vec![copy.clone(), other]).unwrap_err();
+    assert_eq!(conflict.code, RpcErrorCode::Conflict, "{conflict:?}");
+    assert!(
+        conflict.message.contains("already made"),
+        "the second birth conflicts with the first, not with the row: {conflict:?}"
+    );
+    admit_copies(&store, &who, 1, vec![copy.clone(), copy]).unwrap();
 }

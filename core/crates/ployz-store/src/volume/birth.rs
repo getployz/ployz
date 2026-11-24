@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ployz_core::authority::{Births, PlannedVolume, PlannedVolumes};
+use ployz_core::authority::{Births, CopyStep, PlannedVolume, PlannedVolumes};
 use ployz_core::config::SavedEnvironmentIntent;
 use ployz_core::{DockerVolumeName, Namespace, RpcError, VolumeBirth};
 use serde_json::json;
@@ -112,17 +112,120 @@ pub(crate) fn record(
             }
             None => {}
         }
-        let text = serde_json::to_string(birth).map_err(|_| error::corrupt("Volume birth"))?;
-        tx.execute(
-            "INSERT INTO config_volume_birth (environment_id, volume_id, birth) \
-             VALUES (?1, ?2, ?3)",
-            &[
-                environment.as_str().into(),
-                volume.resource_id.as_str().into(),
-                text.as_str().into(),
-            ],
-        )?;
+        insert(tx, environment, &volume.resource_id, birth)?;
     }
+    Ok(())
+}
+
+/// Record the birth each of `copies` mints for the new Volume it restores into, in
+/// `namespace`. Staging a restore fixes the new Volume's storage, so here that lock is no
+/// sign of data; instead the Copy must make the restore staging reviewed: the new Volume
+/// restores from the Copy's source, at the Copy's point time. A birth already recorded
+/// stays, so a retry posting it again changes nothing, and a Version that mounts the new
+/// Volume later records the same birth.
+///
+/// # Errors
+/// Returns `invalid_argument` for a Copy made in another Namespace, into a Volume
+/// `intent` doesn't hold, one that doesn't restore from the Copy's source at its point,
+/// or one whose data a Server may already hold; `conflict` when another approval recorded
+/// a different birth first.
+pub(crate) fn record_copies(
+    tx: &mut dyn Tx,
+    (environment, namespace): (&EnvironmentId, &Namespace),
+    intent: &SavedEnvironmentIntent,
+    copies: &[CopyStep],
+) -> Result<(), RpcError> {
+    if copies.is_empty() {
+        return Ok(());
+    }
+    let mut held = Held::read(tx, environment, intent)?;
+    let physical = |resource: &str| declared(resource).map(|name| namespace.volume_name(&name));
+    for copy in copies {
+        let volume = intent
+            .volumes
+            .iter()
+            .find(|volume| physical(&volume.resource_id).ok().as_ref() == Some(&copy.into))
+            .ok_or_else(|| {
+                error::invalid(
+                    format!(
+                        "{} isn't a volume this environment saved. Approve again.",
+                        copy.into
+                    ),
+                    json!({ "volume": copy.into }),
+                )
+            })?;
+        if copy.namespace != *namespace || copy.birth.namespace != *namespace {
+            return Err(error::invalid(
+                format!(
+                    "The copy into {} began in another environment. Approve again.",
+                    volume.name
+                ),
+                json!({ "volume": volume.name }),
+            ));
+        }
+        let restores = volume.restored_from.as_ref().is_some_and(|from| {
+            from.at.checked_mul(1000) == Some(copy.taken_at.as_millis())
+                && intent.volumes.iter().any(|source| {
+                    source.resource_id == from.volume
+                        && physical(&source.resource_id).ok().as_ref() == Some(&copy.source)
+                })
+        });
+        if !restores {
+            return Err(error::invalid(
+                format!(
+                    "The copy into {} isn't the restore this environment staged. Approve again.",
+                    volume.name
+                ),
+                json!({ "volume": volume.name }),
+            ));
+        }
+        match held.born.get(&volume.resource_id) {
+            Some(recorded) if *recorded == copy.birth => continue,
+            Some(_) => {
+                return Err(error::conflict(
+                    format!(
+                        "Another approval already made {} a new volume. Approve again.",
+                        volume.name
+                    ),
+                    json!({ "volume": volume.name }),
+                ));
+            }
+            None if held.applied.contains(&volume.resource_id) => {
+                return Err(error::invalid(
+                    format!(
+                        "{} already holds data, so this copy can't make it a new volume. \
+                         Approve again.",
+                        volume.name
+                    ),
+                    json!({ "volume": volume.name }),
+                ));
+            }
+            None => {}
+        }
+        insert(tx, environment, &volume.resource_id, &copy.birth)?;
+        // A second Copy into the same Volume in this Deploy replays this birth or conflicts.
+        held.born
+            .insert(volume.resource_id.clone(), copy.birth.clone());
+    }
+    Ok(())
+}
+
+fn insert(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    volume: &str,
+    birth: &VolumeBirth,
+) -> Result<(), RpcError> {
+    let text = serde_json::to_string(birth).map_err(|_| error::corrupt("Volume birth"))?;
+    tx.execute(
+        "INSERT INTO config_volume_birth (environment_id, volume_id, birth) \
+         VALUES (?1, ?2, ?3)",
+        &[
+            environment.as_str().into(),
+            volume.into(),
+            text.as_str().into(),
+        ],
+    )?;
     Ok(())
 }
 

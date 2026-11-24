@@ -381,6 +381,7 @@ pub(super) fn upload_and_ship(
     let approval = linked::Approval::of(ui::json(), detaches(matches), approve::keyed(matches));
     let admitted = store
         .admit(&Admit::Deploy(Deploy {
+            copies: Vec::new(),
             id: id.clone(),
             environment,
             services,
@@ -1735,6 +1736,7 @@ pub(super) fn redeploy(root: &ArgMatches) -> Result<(), Error> {
             version: matches.get_one::<String>("expect-version").cloned(),
             accept_volume_loss: accept,
             versions: Vec::new(),
+            copies: Vec::new(),
         }))
         .map_err(|error| {
             let asks = matches!(&error, StoreCallError::Refused(refusal)

@@ -445,6 +445,7 @@ impl Tool for DeploymentRetry {
             version: self.version,
             accept_volume_loss: self.accept_volume_loss,
             versions: Vec::new(),
+            copies: Vec::new(),
         });
         let summary = cx.write(&retry)?;
         let retries = source.deployment.number;
