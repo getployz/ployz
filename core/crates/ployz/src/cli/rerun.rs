@@ -163,6 +163,12 @@ impl Rerun {
         self
     }
 
+    /// Whether the command line parses: a change clap's rules refuse, such as a flag that
+    /// conflicts with one given, leaves a line no one can run.
+    pub(crate) fn parses(&self) -> bool {
+        self.tree.clone().try_get_matches_from(self.words()).is_ok()
+    }
+
     /// The command line, quoted to paste into a shell.
     pub(crate) fn line(&self) -> String {
         let words = self.words();
@@ -242,7 +248,7 @@ impl Rerun {
                 (Some(flag), Values::Text(values)) if values.is_empty() => bare.push(flag),
                 (Some(flag), Values::Text(values)) => {
                     for value in values {
-                        if value.starts_with('-') {
+                        if value.starts_with('-') || arg.is_require_equals_set() {
                             into.push(format!("{flag}={value}"));
                         } else {
                             into.extend([flag.clone(), value.clone()]);
@@ -430,10 +436,44 @@ pub(crate) fn withheld(
     })
 }
 
+/// `text` with the password of each URL in it, the `:SECRET` of `scheme://user:SECRET@host`,
+/// replaced by `with`; none when no URL in it carries one.
+pub(crate) fn without_passwords(text: &str, with: &str) -> Option<String> {
+    let mut kept = String::with_capacity(text.len());
+    let mut from = 0;
+    for (scheme_end, _) in text.match_indices("://") {
+        let start = scheme_end + 3;
+        if start < from {
+            continue;
+        }
+        let Some(authority) = text.get(start..) else {
+            continue;
+        };
+        if let Some(password) = password_in(authority) {
+            kept.push_str(text.get(from..start + password.start).unwrap_or_default());
+            kept.push_str(with);
+            from = start + password.end;
+        }
+    }
+    (from > 0).then(|| kept + text.get(from..).unwrap_or_default())
+}
+
+/// Where the authority that starts `text` holds a password: the `:SECRET` of
+/// `user:SECRET@host`, up to the `@`.
+pub(crate) fn password_in(text: &str) -> Option<std::ops::Range<usize>> {
+    let end = text
+        .find(|c: char| matches!(c, '/' | '?' | '#') || c.is_whitespace())
+        .unwrap_or(text.len());
+    let userinfo = text.get(..end)?.rsplit_once('@')?.0;
+    userinfo.find(':').map(|colon| colon..userinfo.len())
+}
+
 /// The retry hint `line` renders as, to compare a hint against in tests.
 #[cfg(test)]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "a test's expected retry, written out to compare a rendered one against"
+)]
 pub(crate) fn retry_hint(line: &str) -> Hint {
-    Hint::from_details(&serde_json::json!({ "retry": line }))
-        .pop()
-        .expect("a retry reads back")
+    Hint::Retry(RetryCommand::rendered(line.to_owned()))
 }

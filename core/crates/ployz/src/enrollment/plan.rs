@@ -395,7 +395,9 @@ impl Reach {
     /// The connection asked for, which wins over the current context and the local socket.
     pub(crate) fn connect(&self) -> Option<String> {
         match self {
-            Self::CommandLine(root) => leaf_matches(root).get_one::<String>("connect").cloned(),
+            Self::CommandLine(root) => {
+                crate::cli::connection(leaf_matches(root)).map(str::to_owned)
+            }
             Self::ThisHost { .. } => Some(this_host()),
         }
     }

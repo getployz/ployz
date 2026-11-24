@@ -16,7 +16,7 @@ use serde_json::json;
 pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let policy = super::enrollment_policy(matches)?;
-    if matches.get_one::<String>("connect").is_some() {
+    if crate::cli::connection(matches).is_some() {
         return Err(Error::usage(
             "server add --standalone founds a new context; do not use --connect",
         ));

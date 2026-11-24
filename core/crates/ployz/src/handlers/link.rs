@@ -417,7 +417,7 @@ fn servers(matches: &ArgMatches, config: &Path) -> Result<Servers, Error> {
         local_socket_status: None,
         none: Some((why, next)),
     };
-    if matches.get_one::<String>("connect").is_some() {
+    if crate::cli::connection(matches).is_some() {
         return Ok(via("connect", None));
     }
     if let Some(context) = matches.get_one::<String>("context") {

@@ -60,6 +60,7 @@ pub(super) fn protect_command(command: Command) -> Command {
         .arg(positional("name", true).help("The Environment to protect"))
         .arg(switch("off", None).help("Unprotect it, so it can be removed and anyone who can stage can change its repository or deploy branch"))
         .arg(project_arg())
+        .arg(crate::cli::approval().requires("off"))
 }
 
 pub(super) fn region_command(command: Command) -> Command {

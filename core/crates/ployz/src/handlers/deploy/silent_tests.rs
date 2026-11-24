@@ -559,16 +559,28 @@ fn a_staged_change_in_the_named_service_beyond_its_image_refuses() {
     );
 }
 
+/// The refusal names the same deploy for a terminal, keeping every flag but `--yes`: a
+/// line that dropped `--no-prune` would remove the Services it kept.
 #[test]
 fn a_silent_deploy_never_forgets() {
-    let error = refuse_forget(crate::handlers::leaf_matches(&deploy_matches(&[
-        "--yes",
-        "--forget-older",
-    ])))
-    .unwrap_err();
+    let refused = |args: &[&str]| {
+        let root = deploy_matches(args);
+        refuse_forget(
+            crate::handlers::leaf_matches(&root),
+            crate::cli::Rerun::again(&root),
+        )
+    };
+    let error =
+        refused(&["--no-prune", "--yes", "--forget-older", "--env", "staging"]).unwrap_err();
 
     assert_eq!(error.report().code, RpcErrorCode::ConfirmationRequired);
-    assert!(refuse_forget(crate::handlers::leaf_matches(&deploy_matches(&["--yes"]))).is_ok());
+    assert_eq!(
+        error.hints(),
+        [crate::cli::retry_hint(
+            "ployz deploy --no-prune --forget-older --env staging"
+        )]
+    );
+    assert!(refused(&["--yes"]).is_ok());
 }
 
 /// A staged region moves a Service no silent signer reviewed, so the deploy waits for a

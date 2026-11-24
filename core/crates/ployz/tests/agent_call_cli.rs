@@ -46,7 +46,7 @@ fn an_agent_is_refused_until_it_says_why() {
         let stderr = text(&refused.stderr);
         assert!(stderr.contains(REASON_REQUIRED), "{args:?}: {stderr}");
         assert!(
-            stderr.contains("next: ployz --why \"<the goal this command serves>\" status"),
+            stderr.contains("next: ployz --why '<the goal this command serves>' status"),
             "{args:?}: {stderr}"
         );
         assert!(refused.stdout.is_empty(), "{args:?}: nothing ran");
@@ -57,7 +57,7 @@ fn an_agent_is_refused_until_it_says_why() {
     assert_eq!(error["error"]["code"], "invalid_argument", "{error}");
     assert_eq!(
         error["error"]["details"]["next"],
-        "ployz --why \"<the goal this command serves>\" status --json",
+        "ployz --json --why '<the goal this command serves>' status",
         "{error}"
     );
 
@@ -89,7 +89,7 @@ fn the_line_a_refusal_prints_runs_as_printed_for_a_command_with_trailing_words()
         .unwrap_or_else(|| panic!("no next line in {stderr}"));
     assert_eq!(
         line,
-        "ployz --why \"<the goal this command serves>\" exec web -- echo hi"
+        "ployz --why '<the goal this command serves>' exec web -- echo hi"
     );
 
     let ran = ployz(

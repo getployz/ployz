@@ -723,14 +723,27 @@ fn say_typed_addresses(
     ));
     let Instead::Reference { value } = &typed.instead;
     let scope = super::store::scope_args(&environment.project, &environment.name);
-    let assignment = format!("{path}={value}");
-    ui::hint(
-        &Rerun::then(
-            matches,
-            &[&["set", assignment.as_str()][..], &scope].concat(),
-        )
-        .into(),
-    );
+    match set_instead(matches, &format!("{path}={value}"), &scope) {
+        Ok(retry) => ui::hint(&retry.into()),
+        Err(by_hand) => ui::note(format!(
+            "Set the reference instead, typing its password where it says PASSWORD: {by_hand}"
+        )),
+    }
+}
+
+/// `set` of `assignment`, the value Ployz wrote referencing each address, in `scope`; when
+/// a URL in it carries a password, the assignment to type by hand with `PASSWORD` in its
+/// place, since no hint repeats one.
+fn set_instead(matches: &ArgMatches, assignment: &str, scope: &[&str]) -> Result<Rerun, String> {
+    if let Some(by_hand) = crate::cli::without_passwords(assignment, ":PASSWORD") {
+        return Err(by_hand);
+    }
+    // Parsed, the assignment shows as VALUE: a value typed may be a secret. This one Ployz
+    // wrote, and it holds none.
+    Ok(
+        Rerun::then(matches, &[&["set", assignment][..], scope].concat())
+            .set("assignment", assignment),
+    )
 }
 
 #[cfg(test)]
@@ -767,6 +780,37 @@ mod tests {
                 "ployz --ployz-config '/tmp/a b.yaml' set 'web.env.TOKEN=VALUE' 'web.replicas=3' \
                  --env staging --expect 7"
             )
+        );
+    }
+
+    /// The reference a variable should hold survives into the line that sets it, and a
+    /// password in it never does.
+    #[test]
+    fn a_typed_address_names_the_set_of_its_reference_without_any_password() {
+        let root = crate::cli::command()
+            .try_get_matches_from(["ployz", "set", "web.env.API_URL=http://db.internal:8080"])
+            .unwrap();
+        let scope = ["--project", "shop", "--env", "staging"];
+        let retry = set_instead(
+            &root,
+            "web.env.API_URL=http://${{ db.PLOYZ_PRIVATE_DOMAIN }}:8080",
+            &scope,
+        )
+        .unwrap();
+        assert_eq!(
+            retry.line(),
+            "ployz set 'web.env.API_URL=http://${{ db.PLOYZ_PRIVATE_DOMAIN }}:8080' \
+             --project shop --env staging"
+        );
+        let by_hand = set_instead(
+            &root,
+            "web.env.DATABASE_URL=postgres://app:hunter2@${{ db.PLOYZ_PRIVATE_DOMAIN }}:5432/shop",
+            &scope,
+        )
+        .unwrap_err();
+        assert_eq!(
+            by_hand,
+            "web.env.DATABASE_URL=postgres://app:PASSWORD@${{ db.PLOYZ_PRIVATE_DOMAIN }}:5432/shop"
         );
     }
 

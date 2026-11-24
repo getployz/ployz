@@ -522,7 +522,7 @@ mod tests {
         assert_eq!(crate::cli::command_path(&parsed), "server forget", "{line}");
         assert_eq!(string_values(leaf, "server"), ["edge"]);
         assert_eq!(
-            leaf.get_one::<String>("connect").unwrap(),
+            crate::cli::connection(leaf).unwrap(),
             "unix:///tmp/socket name"
         );
         assert_eq!(

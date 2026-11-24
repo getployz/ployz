@@ -554,7 +554,7 @@ fn engine_view(root: &ArgMatches) -> String {
             Some(shaping.network()),
             Some(shaping.version()),
             text("ployz-config"),
-            text("connect"),
+            crate::cli::connection(reach).map(str::to_owned),
             crate::cli::ssh_timeout(reach).as_secs(),
             text("context"),
         )

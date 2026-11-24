@@ -139,7 +139,7 @@ pub(in crate::handlers) fn key() -> Result<Option<DeviceSigning>, Error> {
 ///
 /// # Errors
 /// Returns `confirmation_required` when `--forget-older` was given.
-pub(in crate::handlers) fn refuse_forget(matches: &ArgMatches) -> Result<(), Error> {
+pub(in crate::handlers) fn refuse_forget(matches: &ArgMatches, again: Rerun) -> Result<(), Error> {
     if !super::approve::flag(matches, "forget-older") {
         return Ok(());
     }
@@ -148,10 +148,7 @@ pub(in crate::handlers) fn refuse_forget(matches: &ArgMatches) -> Result<(), Err
         "--forget-older needs a terminal: --yes and CI or agent keys never forget. Run it \
          from a terminal. Nothing signed or deployed.",
     )
-    .hint(Hint::Next(super::super::store::next(
-        matches,
-        &["deploy", "--forget-older"],
-    ))))
+    .hint(again.without("yes")))
 }
 
 /// Check every Server can admit a CI or agent key's edit, as Cloud's list of them says.

@@ -258,7 +258,7 @@ async fn approve_waiting_join(leaf: &ArgMatches, code: &str) -> Result<(), Error
         Error::conflict("Approving a Server join needs this computer's approved Device key.")
     })?;
     let mut matching = Vec::new();
-    let asked = if leaf.get_one::<String>("connect").is_some() {
+    let asked = if crate::cli::connection(leaf).is_some() {
         reach.entry.into_iter().collect()
     } else {
         reach.asked

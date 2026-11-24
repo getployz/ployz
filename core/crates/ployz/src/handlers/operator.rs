@@ -180,9 +180,8 @@ pub(super) fn scope(root: &ArgMatches) -> Result<Option<Scoped>, Error> {
     let leaf = leaf_matches(root);
     let environment = super::store::environment(leaf)?;
     let asked = environment.project.is_some() || environment.environment.is_some();
-    let direct = ["connect", "context"]
-        .into_iter()
-        .any(|id| matches!(leaf.try_get_one::<String>(id), Ok(Some(_))));
+    let direct = crate::cli::connection(leaf).is_some()
+        || matches!(leaf.try_get_one::<String>("context"), Ok(Some(_)));
     if !asked && direct && !super::store::local_mode() {
         return Ok(None);
     }

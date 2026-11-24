@@ -138,6 +138,11 @@ impl<'m> Store<'m> {
         }
     }
 
+    /// The subcommand words of this command, `deploy`.
+    pub(crate) fn command_path(&self) -> String {
+        crate::cli::command_path(self.root)
+    }
+
     /// Mark this run as reading secrets from stdin (`env sync --value`): a retry can't
     /// repeat them, so its approval retry names no approval and asks for a new one.
     pub(crate) const fn reads_secrets(mut self, secrets: bool) -> Self {
@@ -418,12 +423,7 @@ impl<'m> Store<'m> {
         }
         let runtime = runtime().map_err(StoreCallError::Stopped)?;
         // The endpoint names the refusal only while no Server is known.
-        let endpoint = self
-            .matches
-            .try_get_one::<String>("connect")
-            .ok()
-            .flatten()
-            .cloned();
+        let endpoint = crate::cli::connection(self.matches).map(str::to_owned);
         runtime.block_on(async {
             let mut client = match self.cluster().await {
                 Ok(client) => client,

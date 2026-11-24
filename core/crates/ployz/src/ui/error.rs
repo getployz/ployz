@@ -333,6 +333,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "renders hints as an error from the wire carries them"
+    )]
     fn the_closest_name_shows_even_when_the_list_is_cut() {
         let details = serde_json::json!({
             "did_you_mean": "s11",

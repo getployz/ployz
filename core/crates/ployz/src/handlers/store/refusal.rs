@@ -176,16 +176,18 @@ impl Store<'_> {
 
     /// This command again carrying `digest`, the yes it needs; a run that gives secrets
     /// on stdin asks again instead, so its retry names each `--value` row and no digest,
-    /// as does a command that takes no `--approval`.
+    /// as does a command that takes no `--approval`, or none beside the flags it was given.
     pub(super) fn approving(&self, digest: &str) -> Rerun {
         let path = super::super::command_path(self.root);
-        if self.secrets || !super::super::takes_value(path.split(' '), "approval") {
-            return self.retry(self.carried());
-        }
-        self.retry(Carried {
-            approval: Some(digest.to_owned()),
-            ..self.carried()
-        })
+        (!self.secrets && super::super::takes_value(path.split(' '), "approval"))
+            .then(|| {
+                self.retry(Carried {
+                    approval: Some(digest.to_owned()),
+                    ..self.carried()
+                })
+            })
+            .filter(Rerun::parses)
+            .unwrap_or_else(|| self.retry(self.carried()))
     }
 
     /// The flag this command passes a reviewed version with: `discard`'s and
@@ -452,6 +454,35 @@ mod tests {
             reparsed(&approval),
             ["deploy", "true", "shop", "production", "3:1:0.1", "apr_2"]
         );
+    }
+
+    /// An approval retry carries the yes only where the command takes it beside the flags
+    /// typed; a line clap would refuse is no retry.
+    #[test]
+    fn an_approval_retry_carries_the_yes_only_where_it_parses() {
+        for (words, retry) in [
+            (
+                &["env", "protect", "production", "--off"][..],
+                "ployz env protect production --off --approval apr_2",
+            ),
+            (
+                &["volume", "set", "data", "--shared-writes=false"],
+                "ployz volume set data '--shared-writes=false'",
+            ),
+        ] {
+            let root = crate::cli::command()
+                .try_get_matches_from(std::iter::once("ployz").chain(words.iter().copied()))
+                .unwrap();
+            let key = SealingKey::new(&[7; 32]).unwrap();
+            let store = Store::for_test(
+                Backend::Local(
+                    std::sync::Arc::new(ConfigStore::open("sqlite::memory:", key).unwrap()),
+                    Actor::system(OrganizationId::parse(LOCAL_ORGANIZATION).unwrap()),
+                ),
+                &root,
+            );
+            assert_eq!(store.approving("apr_2").line(), retry, "{words:?}");
+        }
     }
 
     #[test]

@@ -7,7 +7,7 @@ mod rerun;
 
 #[cfg(test)]
 pub(crate) use rerun::retry_hint;
-pub(crate) use rerun::{Rerun, Withheld, withheld};
+pub(crate) use rerun::{Rerun, Withheld, withheld, without_passwords};
 
 #[must_use]
 /// The whole tree: every compiled command plus the ones the signed-in Cloud publishes,
@@ -61,6 +61,7 @@ fn connection_args() -> [Arg; 4] {
     [
         value("connect", None)
             .env(env::CONNECT)
+            .value_parser(withheld(shown_connection))
             .help("Reach the Servers through this connection instead of Cloud or a context")
             .global(true),
         value("ssh-timeout", None)
@@ -82,6 +83,33 @@ fn connection_args() -> [Arg; 4] {
             .env(env::CONTEXT)
             .help("Act through this local context instead of the current one"),
     ]
+}
+
+/// A `--connect` as a hint repeats it: a Management Capability as `CAPABILITY`, and a
+/// destination without its password.
+fn shown_connection(typed: &str) -> String {
+    if typed.starts_with("management:") || crate::context::is_management_capability(typed) {
+        return "CAPABILITY".to_owned();
+    }
+    if typed.contains("://") {
+        return rerun::without_passwords(typed, "").unwrap_or_else(|| typed.to_owned());
+    }
+    match rerun::password_in(typed) {
+        Some(password) => [typed.get(..password.start), typed.get(password.end..)]
+            .into_iter()
+            .flatten()
+            .collect(),
+        None => typed.to_owned(),
+    }
+}
+
+/// The connection `--connect` or `PLOYZ_CONNECT` names, as typed.
+pub(crate) fn connection(matches: &clap::ArgMatches) -> Option<&str> {
+    matches
+        .try_get_one::<Withheld>("connect")
+        .ok()
+        .flatten()
+        .map(Withheld::typed)
 }
 
 /// The subcommand words of `matches`, `server add`.
@@ -434,6 +462,43 @@ mod tests {
         ] {
             assert!(super::review_version(bad).is_err(), "{bad}");
         }
+    }
+
+    fn again(words: &[&str]) -> (clap::ArgMatches, String) {
+        let root = super::command()
+            .try_get_matches_from(std::iter::once("ployz").chain(words.iter().copied()))
+            .unwrap();
+        let line = super::Rerun::again(&root).line();
+        (root, line)
+    }
+
+    /// A retry shows where a command runs without the secret that reaches it: a Management
+    /// Capability, or a password in the destination. The command still reads it as typed.
+    #[test]
+    fn a_retry_never_repeats_a_connections_secret() {
+        for (typed, shown) in [
+            ("ployz1:SENTINEL-4564", "CAPABILITY"),
+            ("management:SENTINEL-4564", "CAPABILITY"),
+            (
+                "ssh://root:SENTINEL-4564@203.0.113.7:22",
+                "ssh://root@203.0.113.7:22",
+            ),
+            ("root:SENTINEL-4564@203.0.113.7", "root@203.0.113.7"),
+            ("root@203.0.113.7", "root@203.0.113.7"),
+            ("unix:///run/ployz.sock", "unix:///run/ployz.sock"),
+        ] {
+            let (root, line) = again(&["--connect", typed, "status"]);
+            assert_eq!(line, format!("ployz --connect {shown} status"), "{typed}");
+            assert_eq!(super::connection(super::leaf_matches(&root)), Some(typed));
+        }
+    }
+
+    /// A flag that takes its value only after `=` gets it that way, or clap reads the value
+    /// as a word of its own.
+    #[test]
+    fn a_retry_joins_a_value_to_a_flag_that_requires_equals() {
+        let (_, line) = again(&["volume", "set", "data", "--shared-writes=false"]);
+        assert_eq!(line, "ployz volume set data '--shared-writes=false'");
     }
 
     #[test]

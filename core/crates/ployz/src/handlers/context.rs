@@ -51,10 +51,7 @@ pub(super) fn with_context_next(failure: Error, leaf: &ArgMatches) -> Error {
 }
 
 fn config(matches: &ArgMatches) -> Result<Config, Error> {
-    if matches
-        .get_one::<String>("connect")
-        .is_some_and(|value| !value.is_empty())
-    {
+    if crate::cli::connection(matches).is_some_and(|value| !value.is_empty()) {
         return Err(Error::usage(
             "context management is unavailable with a direct connection",
         ));

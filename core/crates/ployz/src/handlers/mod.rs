@@ -112,7 +112,7 @@ pub fn run() -> Result<(), Error> {
     let internal = verbs::find(&command_path(&matches))
         .is_some_and(|verb| verb.surface == verbs::Surface::Internal);
     let run = crate::agent_call::cli::Run::begin(&matches, &command, internal);
-    let result = match run.refusal(&args) {
+    let result = match run.refusal(&matches, &command) {
         Some(refusal) => Err(refusal),
         None => dispatch(&matches, &mut command),
     };
@@ -447,7 +447,7 @@ async fn connect_context(
 ) -> Result<crate::connect::Client, Error> {
     Ok(crate::connect::connect_with_ssh_timeout(
         &config_path(matches)?,
-        matches.get_one::<String>("connect").map(String::as_str),
+        crate::cli::connection(matches),
         context,
         crate::cli::ssh_timeout(matches),
     )
@@ -460,7 +460,7 @@ async fn connect_context_chosen(
     matches: &ArgMatches,
     context: Option<&str>,
 ) -> Result<crate::connect::Client, Error> {
-    let direct = matches.get_one::<String>("connect").map(String::as_str);
+    let direct = crate::cli::connection(matches);
     let selected = crate::connect::resolve_connections(
         &config_path(matches)?,
         direct,
@@ -483,7 +483,7 @@ async fn reconnect_client(
     context: Option<&str>,
 ) -> Result<crate::connect::Client, Error> {
     let config = config_path(matches)?;
-    let connect = matches.get_one::<String>("connect").map(String::as_str);
+    let connect = crate::cli::connection(matches);
     crate::setup_retry::run(
         &mut (),
         &crate::ui::WaitNotices,
@@ -896,10 +896,7 @@ mod tests {
                 leaf.get_one::<String>("ployz-config").map(String::as_str),
                 Some("/tmp/a config.yaml")
             );
-            assert_eq!(
-                leaf.get_one::<String>("connect").map(String::as_str),
-                Some("ssh://root@entry")
-            );
+            assert_eq!(crate::cli::connection(leaf), Some("ssh://root@entry"));
             assert_eq!(
                 leaf.get_one::<String>("context").map(String::as_str),
                 Some("staging")

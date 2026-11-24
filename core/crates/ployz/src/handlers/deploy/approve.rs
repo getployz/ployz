@@ -108,7 +108,7 @@ pub(in crate::handlers) fn sign(
         deployment: None,
     };
     if let Some(key) = silent::key()? {
-        silent::refuse_forget(matches)?;
+        silent::refuse_forget(matches, store.again())?;
         silent::servers_ready(matches)?;
         let plan = store.read(&plan_query)?;
         return silent::sign(matches, store, (environment, plan), edits, &key).map(Some);
@@ -131,7 +131,7 @@ pub(in crate::handlers) fn sign(
         return Ok(None);
     };
     if silent {
-        silent::refuse_forget(matches)?;
+        silent::refuse_forget(matches, store.again())?;
     }
     let needs = match silent {
         true => Needs::Silent,
@@ -246,7 +246,7 @@ pub(in crate::handlers) fn sign(
     }
     let signed_at = consent(
         (&namespace, &approved),
-        store.again(),
+        without_terminal(matches, store.again()),
         |question, refusal, declined| crate::ui::confirm(question, || refusal, declined),
     )?;
     let signer = SignerKey::Device(signing.device_key());
@@ -313,6 +313,22 @@ fn forgetting(approved: &[ApprovedChange]) -> String {
     )
 }
 
+/// What a deploy that can't ask runs as without a terminal: itself with `--yes`, which
+/// ships only the images `--image` names. With `--forget-older` nothing does: `--yes`
+/// never forgets.
+fn without_terminal(matches: &ArgMatches, again: Rerun) -> Option<Rerun> {
+    if flag(matches, "forget-older") {
+        return None;
+    }
+    let images = matches!(matches.try_get_many::<String>("image"), Ok(Some(_)));
+    let again = if images {
+        again
+    } else {
+        again.add("image", "SERVICE=IMAGE")
+    };
+    Some(again.switch("yes"))
+}
+
 /// What a person says to signing `approved` in `namespace`, asked after its lines show:
 /// Cloud relays the plan, so a setting it planted, or another Environment's Namespace, must
 /// be refusable before this Device signs it. A run that can't ask refuses before signing,
@@ -321,7 +337,7 @@ fn forgetting(approved: &[ApprovedChange]) -> String {
 /// before the yes, not only those signed before the prompt.
 fn consent(
     (namespace, approved): (&Namespace, &[ApprovedChange]),
-    again: Rerun,
+    silent: Option<Rerun>,
     mut confirm: impl FnMut(&str, Error, &'static str) -> Result<(), Error>,
 ) -> Result<Timestamp, Error> {
     let services: Vec<&str> = approved
@@ -355,7 +371,7 @@ fn consent(
          terminal, or ship only new images. Nothing deployed.",
         json!({ "services": services }),
     )
-    .hint(again.add("image", "SERVICE=IMAGE").switch("yes"));
+    .hint(silent.map(Hint::from));
     confirm(
         &format!("Approve {} in namespace {namespace}?", services.join(", ")),
         refusal,

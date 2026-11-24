@@ -224,7 +224,7 @@ pub(crate) fn print_code(
 pub(super) async fn dial(matches: &ArgMatches, verb: &str) -> Result<Client, Error> {
     let selected = crate::connect::resolve_connections(
         &config_path(matches)?,
-        matches.get_one::<String>("connect").map(String::as_str),
+        crate::cli::connection(matches),
         matches.get_one::<String>("context").map(String::as_str),
         &MachineLayout::production().socket(),
     )?;

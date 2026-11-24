@@ -621,6 +621,17 @@ impl Shipped {
     }
 }
 
+/// What a Deploy that failed names to run again: `deploy` as typed, without the yes it
+/// carried, which Cloud weighs against the plan as it stands now; another command that
+/// deployed names `deploy` of the Services it named.
+fn again<'a>(store: &Store, named: &'a [&'a str]) -> progress::Again<'a> {
+    if store.command_path() == "deploy" {
+        progress::Again::Typed(Box::new(store.again().without("approval")))
+    } else {
+        progress::Again::Services(named)
+    }
+}
+
 pub(super) fn execute(
     matches: &ArgMatches,
     store: &Store,
@@ -780,7 +791,7 @@ pub(super) fn execute(
             .flatten()
             .map(String::as_str)
             .collect();
-        progress::completion(&view, successor.as_ref(), &named, |args| {
+        progress::completion(&view, successor.as_ref(), again(store, &named), |args| {
             Rerun::then(matches, args)
         })
     };
@@ -814,7 +825,7 @@ fn run_here(
     source: Option<&Path>,
     ended: tokio_util::sync::CancellationToken,
 ) -> Result<std::thread::JoinHandle<Result<DeploymentSummary, Error>>, Error> {
-    let direct = matches.get_one::<String>("connect").map(String::as_str);
+    let direct = crate::cli::connection(matches);
     let context = matches.get_one::<String>("context").map(String::as_str);
     let connections = match crate::connect::resolve_connections(
         &super::config_path(matches)?,
