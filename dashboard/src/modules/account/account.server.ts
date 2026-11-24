@@ -18,7 +18,7 @@ export const listAccountSessions = Effect.fn("Account.listSessions")(function* (
   const rows = yield* drizzle
     .select({ id: session.id, userAgent: session.userAgent, ipAddress: session.ipAddress, createdAt: session.createdAt, updatedAt: session.updatedAt })
     .from(session)
-    .where(and(eq(session.userId, actor.userId), gt(session.expiresAt, new Date())))
+    .where(and(eq(session.userId, actor.userId), gt(session.expiresAt, sql`now()`)))
     .orderBy(desc(session.updatedAt));
   return rows.map((row) => ({
     id: row.id,
