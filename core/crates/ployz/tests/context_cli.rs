@@ -1369,6 +1369,10 @@ fn a_connections_secret_never_reaches_an_error_or_help() {
         "tcp://root:EXAMPLE@example.invalid",
         "ssh+go://root:EXAMPLE@example.invalid",
         "postgres://root:EXAMPLE@example.invalid",
+        "ssh://EXAMPLE@example.invalid",
+        "EXAMPLE@example.invalid",
+        "tcp://example.invalid:7/EXAMPLE?token=EXAMPLE#EXAMPLE",
+        "https://EXAMPLE@example.invalid/?token=EXAMPLE",
     ] {
         let refused = ployz()
             .args([

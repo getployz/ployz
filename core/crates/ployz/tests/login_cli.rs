@@ -611,3 +611,27 @@ fn org_leave_without_yes_and_no_terminal_refuses_before_cloud_hears_of_it() {
             .any(|route| route.contains("org_leave"))
     );
 }
+
+/// `--help` names `PLOYZ_CLOUD_URL` without its value, which may carry a token in its user
+/// info, path or query.
+#[test]
+fn help_never_prints_the_cloud_urls_value() {
+    let home = tempfile::tempdir().unwrap();
+    for command in [&["login"][..], &["server", "checkin"], &["server", "enroll"]] {
+        let help = Command::new(env!("CARGO_BIN_EXE_ployz"))
+            .env("HOME", home.path())
+            .env("PLOYZ_CONFIG", home.path().join("config.yaml"))
+            .env(
+                "PLOYZ_CLOUD_URL",
+                "https://EXAMPLE:EXAMPLE@cloud.invalid/EXAMPLE?token=EXAMPLE",
+            )
+            .env("NO_COLOR", "1")
+            .args(command)
+            .arg("--help")
+            .output()
+            .unwrap();
+        let help = String::from_utf8_lossy(&help.stdout);
+        assert!(help.contains("PLOYZ_CLOUD_URL"), "{command:?}: {help}");
+        assert!(!help.contains("EXAMPLE"), "{command:?}: {help}");
+    }
+}

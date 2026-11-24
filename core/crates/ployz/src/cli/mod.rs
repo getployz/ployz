@@ -455,8 +455,9 @@ mod tests {
         (root, line)
     }
 
-    /// A retry shows where a command runs without the secret that reaches it: a Management
-    /// Capability, or a password in the destination. The command still reads it as typed.
+    /// A retry shows where a command runs without what may reach it with a secret: a
+    /// Management Capability, and a destination's user info, path and query. The command
+    /// still reads it as typed.
     #[test]
     fn a_retry_never_repeats_a_connections_secret() {
         for (typed, shown) in [
@@ -464,10 +465,16 @@ mod tests {
             ("management:SENTINEL-4564", "CAPABILITY"),
             (
                 "ssh://root:SENTINEL-4564@203.0.113.7:22",
-                "ssh://root@203.0.113.7:22",
+                "ssh://USER:PASSWORD@203.0.113.7:22",
             ),
-            ("root:SENTINEL-4564@203.0.113.7", "root@203.0.113.7"),
-            ("root@203.0.113.7", "root@203.0.113.7"),
+            ("root:SENTINEL-4564@203.0.113.7", "USER:PASSWORD@203.0.113.7"),
+            ("SENTINEL-4564@203.0.113.7", "USER@203.0.113.7"),
+            ("ssh://SENTINEL-4564@203.0.113.7", "ssh://USER@203.0.113.7"),
+            (
+                "tcp://203.0.113.7:7/SENTINEL-4564?t=SENTINEL-4564#SENTINEL-4564",
+                "tcp://203.0.113.7:7",
+            ),
+            ("SENTINEL-4564://203.0.113.7", "SCHEME://203.0.113.7"),
             ("unix:///run/ployz.sock", "unix:///run/ployz.sock"),
         ] {
             let (root, line) = again(&["--connect", typed, "status"]);

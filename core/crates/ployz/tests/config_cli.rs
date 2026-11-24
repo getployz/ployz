@@ -1375,52 +1375,57 @@ fn an_env_value_prints_on_one_escaped_line_for_humans() {
     }
 }
 
-/// A variable that types another Service's address names the reference to set instead,
-/// and neither the hint nor `--json` repeats a secret the value carried: only a value with
-/// nothing to withhold gets a line that runs as printed.
+/// A variable that types another Service's address names the reference to set in its
+/// place, and neither the hint nor `--json` repeats any text typed around it, wherever a
+/// secret hides in it. Only a value that is the address alone gets a line that runs.
 #[test]
-fn a_typed_address_names_its_reference_without_the_values_secrets() {
+fn a_typed_address_names_its_reference_and_repeats_nothing_typed_around_it() {
     for store in &targets() {
         ok(store, &["project", "new", "shop"]);
         ok(store, &["service", "add", "db", "--image", "postgres:16"]);
         ok(store, &["service", "add", "web", "--image", "nginx:1"]);
-        let set = ok(
-            store,
-            &[
-                "set",
-                "web.env.DATABASE_URL=postgres://app:EXAMPLE@db.internal:5432/shop",
-            ],
-        );
-        assert_eq!(
-            set.pointer("/typed_addresses/0/instead"),
-            Some(&json!({
-                "kind": "reference",
-                "value": "postgres://USER:PASSWORD@${{ db.PLOYZ_PRIVATE_DOMAIN }}:5432/shop",
-                "withheld": ["USER", "PASSWORD"],
-            }))
-        );
-        assert!(!set.to_string().contains("EXAMPLE"), "{set}");
-
         let home = tempfile::tempdir().unwrap();
-        let (code, said) = person(
-            store,
-            home.path(),
-            &["set", "web.env.API_URL=http://db.internal/?token=EXAMPLE"],
-        );
-        assert_eq!(code, Some(0), "{said}");
-        assert!(
-            said.contains(
-                "where it says QUERY: web.env.API_URL=http://${{ db.PLOYZ_PRIVATE_DOMAIN }}/?QUERY"
-            ),
-            "{said}"
-        );
-        assert!(!said.contains("EXAMPLE"), "{said}");
+        for hostile in [
+            // A password that reads as a URL.
+            "web.env.DSN=host=db.internal password=x://EXAMPLE",
+            // A token in the path.
+            "web.env.API_URL=http://db.internal/EXAMPLE/v1",
+            // A token as the user.
+            "web.env.REPO=https://EXAMPLE@db.internal/repo.git",
+            // A secret as the key before the address.
+            "web.env.PAIR=EXAMPLE=db.internal:5432",
+            // A URL in the query.
+            "web.env.NEXT=http://db.internal/?next=https://EXAMPLE@example.com/",
+            "web.env.DATABASE_URL=postgres://app:EXAMPLE@db.internal:5432/shop",
+        ] {
+            let set = ok(store, &["set", hostile]);
+            let path = hostile.split_once('=').unwrap().0;
+            assert_eq!(
+                set.pointer("/typed_addresses/0"),
+                Some(&json!({
+                    "path": path,
+                    "services": ["db"],
+                    "instead": {
+                        "kind": "reference",
+                        "references": ["${{ db.PLOYZ_PRIVATE_DOMAIN }}"],
+                    },
+                })),
+                "{hostile}"
+            );
+            assert!(!set.to_string().contains("EXAMPLE"), "{hostile}: {set}");
+            let (code, said) = person(store, home.path(), &["set", hostile]);
+            assert_eq!(code, Some(0), "{said}");
+            assert!(
+                said.contains(&format!(
+                    "Set {path} again with ${{{{ db.PLOYZ_PRIVATE_DOMAIN }}}} in place of db's address."
+                )),
+                "{hostile}: {said}"
+            );
+            assert!(!said.contains("retry:"), "{hostile}: {said}");
+            assert!(!said.contains("EXAMPLE"), "{hostile}: {said}");
+        }
 
-        let (code, said) = person(
-            store,
-            home.path(),
-            &["set", "web.env.API_URL=http://db.internal:8080"],
-        );
+        let (code, said) = person(store, home.path(), &["set", "web.env.DB_HOST=db.internal"]);
         assert_eq!(code, Some(0), "{said}");
         let retry = said
             .lines()
@@ -1429,8 +1434,8 @@ fn a_typed_address_names_its_reference_without_the_values_secrets() {
         let (code, json) = retried(store, &format!("{retry} --why=test --json"));
         assert_eq!(code, Some(0), "{json}");
         assert_eq!(
-            setting(store, "web.env.API_URL"),
-            json!("http://${{ db.PLOYZ_PRIVATE_DOMAIN }}:8080")
+            setting(store, "web.env.DB_HOST"),
+            json!("${{ db.PLOYZ_PRIVATE_DOMAIN }}")
         );
     }
 }
