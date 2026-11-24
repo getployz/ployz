@@ -381,9 +381,7 @@ pub(super) fn plan_global(
         }
 
         if let Some(container) = on_machine(current, machine_id)
-            .filter(|container| {
-                super::super::is_active_runtime(&container.as_observation().runtime)
-            })
+            .filter(|container| replaced_on_machine(container, requested, options))
             .min_by_key(|container| !container.as_observation().runtime.may_serve())
         {
             let observation = container.as_observation();
@@ -435,6 +433,7 @@ fn reusable_global(
 ) -> bool {
     let observation = container.as_observation();
     !options.recreates(&requested.name)
+        && !unsigned_for_signed(observation, requested, options)
         && !super::super::is_active_runtime(&observation.runtime)
         && observation.creation_key().is_some()
         && observation.resolved_spec
@@ -465,12 +464,36 @@ fn global_endpoint_operation(
     }) {
         EndpointOperation::Update
     } else if on_machine(current, machine_id)
-        .any(|container| super::super::is_active_runtime(&container.as_observation().runtime))
+        .any(|container| replaced_on_machine(container, requested, options))
     {
         EndpointOperation::Replace
     } else {
         EndpointOperation::Create
     }
+}
+
+/// Whether a Global deploy replaces `container` on its Machine rather than create beside
+/// it: it runs, or it is a copy a signed deploy must not reuse, whose slot a create of the
+/// same spec would find taken.
+fn replaced_on_machine(
+    container: &ServiceContainer,
+    requested: &RequestedServiceSpec,
+    options: &PlanOptions,
+) -> bool {
+    let observation = container.as_observation();
+    super::super::is_active_runtime(&observation.runtime)
+        || unsigned_for_signed(observation, requested, options)
+}
+
+/// Whether a signed deploy of `requested` finds a copy its Machine admitted unsigned. That
+/// copy answers for no name a signed copy keeps, so the deploy replaces it. One from a
+/// Machine that doesn't report stays.
+fn unsigned_for_signed(
+    observation: &ContainerObservation,
+    requested: &RequestedServiceSpec,
+    options: &PlanOptions,
+) -> bool {
+    options.signs(&requested.name) && observation.admission == Some(ployz_core::Admission::Free)
 }
 
 fn on_machine(
@@ -497,6 +520,8 @@ pub(super) type Shortfall = BTreeMap<Region, RegionWait>;
 /// region starts its own.
 pub(super) struct Spread<'a> {
     requested: &'a RequestedServiceSpec,
+    /// Whether this Deploy signs the Service, so a copy admitted unsigned is outdated.
+    signed: bool,
     regions: Vec<RegionShare>,
     waiting: Vec<RegionShare>,
 }
@@ -521,6 +546,7 @@ impl<'a> Spread<'a> {
     pub(super) fn of(
         requested: &'a RequestedServiceSpec,
         snapshot: &super::DeploySnapshot,
+        options: &PlanOptions,
     ) -> Self {
         let regions = requested
             .regions
@@ -540,14 +566,16 @@ impl<'a> Spread<'a> {
             .collect();
         Self {
             requested,
+            signed: options.signs(&requested.name),
             regions,
             waiting: Vec::new(),
         }
     }
 
-    fn anywhere(requested: &'a RequestedServiceSpec) -> Self {
+    fn anywhere(requested: &'a RequestedServiceSpec, options: &PlanOptions) -> Self {
         Self {
             requested,
+            signed: options.signs(&requested.name),
             regions: Vec::new(),
             waiting: Vec::new(),
         }
@@ -631,6 +659,11 @@ impl<'a> Spread<'a> {
     fn standing(&self, observation: &ContainerObservation) -> Standing {
         if !observation.runtime.may_serve() || !serving_rotation(observation) {
             return Standing::NotServing;
+        }
+        // It stays in its region's place until a signed copy replaces it, but no proxy
+        // routes it under a name a signed copy keeps.
+        if self.signed && observation.admission == Some(ployz_core::Admission::Free) {
+            return Standing::Outdated;
         }
         match compare_observed(observation, self.requested) {
             SpecChange::UpToDate | SpecChange::NeedsPlacementUpdate => Standing::Settled,
@@ -1343,12 +1376,8 @@ fn container_fate(
     landing: Landing,
 ) -> ContainerFate {
     let observation = container.as_observation();
-    // A copy its Machine admitted unsigned answers for no name a signed copy keeps, so a
-    // signed Deploy replaces it. One from a Machine that doesn't report stays.
-    let unsigned = options.signs(&requested.name)
-        && observation.admission == Some(ployz_core::Admission::Free);
     if options.recreates(&requested.name)
-        || unsigned
+        || unsigned_for_signed(observation, requested, options)
         || !observation.runtime.may_serve()
         || !serving_rotation(observation)
     {
@@ -1415,7 +1444,7 @@ fn reserve_replicated_service_demand(
         }
         let error = capacity.error_for([&machine_id]);
         let mut reservation = select_replicated(
-            &Spread::anywhere(requested),
+            &Spread::anywhere(requested, options),
             current,
             vec![machine_id],
             &BTreeMap::new(),

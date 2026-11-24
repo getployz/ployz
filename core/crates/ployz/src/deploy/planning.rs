@@ -1816,7 +1816,7 @@ fn plan_one_service<'snapshot>(
 ) -> Result<(Vec<DeployOperation>, Option<WaitingReplicas>), PlanError> {
     refuse_volume_in_several_regions(requested)?;
     budget.volumes.refuse_kept_apart(requested)?;
-    let mut spread = Spread::of(requested, snapshot);
+    let mut spread = Spread::of(requested, snapshot, options);
     let (mut machines, away) = spread_machines(&spread, namespace, snapshot, options)?;
     spread.wait_for(&away);
     let identity = QualifiedService::new(namespace.clone(), requested.name.clone());

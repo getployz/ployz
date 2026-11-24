@@ -1400,14 +1400,15 @@ impl LocalMachine {
         let pin = pinned(&want);
         let replan = (!self.in_switch).then(|| want.clone());
         let mut now = self.container_now(&locator).await?;
-        let mut step = plan_container(want, &now, &self.record().phase());
+        let signed = admitted.as_ref().is_some_and(AdmittedSpec::signed);
+        let mut step = plan_container(want, &now, &self.record().phase(), signed);
         // Planned again under the switch lock, which the start keeps until it ends, so a
         // start never lands inside a switch of that Volume.
         let switch = match replan {
             Some(want) if starts_provisioned_holder(&step, &now) => {
                 let guard = self.lock_switch().await;
                 now = self.container_now(&locator).await?;
-                step = plan_container(want, &now, &self.record().phase());
+                step = plan_container(want, &now, &self.record().phase(), signed);
                 Some(guard)
             }
             Some(_) | None => None,
@@ -1990,10 +1991,14 @@ fn starts_provisioned_holder(step: &ContainerStep, now: &ContainerNow) -> bool {
     })
 }
 
+/// `signed` is whether this Machine admitted the request signed. A signed request never
+/// adopts a Container it didn't admit signed: that copy answers for no name a signed one
+/// keeps, and adopting it would skip the write that keeps the name.
 fn plan_container(
     want: ContainerWant,
     now: &ContainerNow,
     phase: &LocalMachinePhase,
+    signed: bool,
 ) -> ContainerStep {
     let present = match now {
         ContainerNow::Present(observed) => Some(observed),
@@ -2011,6 +2016,10 @@ fn plan_container(
             ..
         } => match present {
             None => ContainerStep::CreateAndStart(new),
+            Some(observed) if signed && !observed.signed() => ContainerStep::Refuse(refuse(
+                ContainerRefusalReason::SlotOccupied,
+                "the slot holds a Container this server didn't admit from a signed deploy",
+            )),
             Some(observed)
                 if same_creation(
                     observed,

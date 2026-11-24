@@ -1876,6 +1876,77 @@ fn a_replica_on_a_server_that_takes_no_services_is_reported_on_the_old_version()
     assert!(unchanged.noop(), "{:?}", operations(&unchanged));
 }
 
+#[test]
+fn a_waiting_region_counts_a_copy_admitted_unsigned_as_outdated_in_a_signed_deploy() {
+    let api = by_region(replicated("api", 1), &[("fsn", 1), ("syd", 1)]);
+    let mut drained = in_region(machine('1', "first"), "syd");
+    drained.machine.accepts_services = false;
+    let mut free = container('b', '1', &api, &service_id('a'));
+    free.try_update(|parts| parts.admission = Some(ployz_core::Admission::Free))
+        .unwrap();
+    let snapshot = DeploySnapshot {
+        machines: vec![drained, in_region(machine('2', "second"), "fsn")],
+        containers: vec![free, container('c', '2', &api, &service_id('a'))],
+        ..Default::default()
+    };
+    let signing = PlanOptions::default().as_runner(ployz_core::RunnerOptions {
+        operator: ployz_core::Operator::Cloud,
+        ended_runs: BTreeSet::new(),
+        recreate: BTreeSet::new(),
+        signed: BTreeSet::from([api.name.clone()]),
+    });
+
+    let preview = plan_deploy([&api], &snapshot, signing).unwrap();
+
+    let [waiting] = preview.waiting.as_slice() else {
+        panic!("{:?}", preview.waiting)
+    };
+    assert_eq!(
+        waiting.regions,
+        BTreeMap::from([(
+            Region::parse("syd").unwrap(),
+            RegionWait {
+                waiting: 0,
+                outdated: 1
+            }
+        )])
+    );
+}
+
+#[test]
+fn a_signed_global_deploy_replaces_a_stopped_copy_admitted_unsigned() {
+    let requested = requested(ServiceMode::Global);
+    let mut free = container('b', '1', &requested, &service_id('a'));
+    free.try_update(|parts| {
+        parts.runtime = ContainerRuntimeObservation::Exited { code: 0 };
+        parts.admission = Some(ployz_core::Admission::Free);
+    })
+    .unwrap();
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "first")],
+        containers: vec![free],
+        ..Default::default()
+    };
+    let signing = PlanOptions::default().as_runner(ployz_core::RunnerOptions {
+        operator: ployz_core::Operator::Cloud,
+        ended_runs: BTreeSet::new(),
+        recreate: BTreeSet::new(),
+        signed: BTreeSet::from([requested.name.clone()]),
+    });
+
+    let plan = plan_deploy([&requested], &snapshot, signing).unwrap();
+
+    assert!(
+        matches!(
+            operations(&plan).as_slice(),
+            [DeployOperation::ReplaceContainer(ReplacementOperation { old_container_id, .. })]
+                if old_container_id == &container_id('b')
+        ),
+        "{:?}",
+        operations(&plan)
+    );
+}
+
 /// A Server that takes no services starts nothing new. It still gives up a replica its
 /// region no longer counts.
 #[test]

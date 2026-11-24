@@ -389,11 +389,11 @@ mod plan {
     use std::collections::BTreeMap;
 
     use ployz_core::{
-        AnonymousVolumes, ContainerAddress, ContainerId, ContainerKind, ContainerLocator,
-        ContainerNow, ContainerObservation, ContainerObservationParts, ContainerRefusalReason,
-        ContainerRuntimeObservation, ContainerWant, CreationKey, Drain, HealthObservation,
-        LocalMachinePhase, MachineId, Namespace, NewContainer, ResolvedServiceSpec, RunRotation,
-        RunTarget, ServiceName, SlotKey, StopOptions,
+        Admission, AnonymousVolumes, ContainerAddress, ContainerId, ContainerKind,
+        ContainerLocator, ContainerNow, ContainerObservation, ContainerObservationParts,
+        ContainerRefusalReason, ContainerRuntimeObservation, ContainerWant, CreationKey, Drain,
+        HealthObservation, LocalMachinePhase, MachineId, Namespace, NewContainer,
+        ResolvedServiceSpec, RunRotation, RunTarget, ServiceName, SlotKey, StopOptions,
     };
     use serde_json::json;
 
@@ -621,7 +621,11 @@ mod plan {
         ];
         for (want, now, step) in table {
             let shown = format!("{want:?} / {now:?}");
-            assert_eq!(plan_container(want, &now, participating), step, "{shown}");
+            assert_eq!(
+                plan_container(want, &now, participating, false),
+                step,
+                "{shown}"
+            );
         }
     }
 
@@ -634,7 +638,7 @@ mod plan {
             anonymous_volumes: AnonymousVolumes::Remove,
         };
         let logs_to_read = |want, now: ContainerNow| {
-            let step = plan_container(want, &now, participating);
+            let step = plan_container(want, &now, participating, false);
             let (ContainerStep::StopThenRemove { logs_to_read, .. }
             | ContainerStep::Remove { logs_to_read, .. }) = step
             else {
@@ -674,15 +678,53 @@ mod plan {
             refused(&plan_container(
                 run_new("img"),
                 &running("other"),
-                participating
+                participating,
+                false
             )),
             Some(ContainerRefusalReason::SlotOccupied)
         );
         for want in [run_existing(), stopped()] {
             let shown = format!("{want:?}");
             assert_eq!(
-                refused(&plan_container(want, &absent(), participating)),
+                refused(&plan_container(want, &absent(), participating, false)),
                 Some(ContainerRefusalReason::NotFound),
+                "{shown}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_signed_request_never_adopts_a_copy_admitted_unsigned() {
+        let participating = &LocalMachinePhase::Participating;
+        let admitted = |now: ContainerNow, admission| {
+            let ContainerNow::Present(mut observed) = now else {
+                unreachable!()
+            };
+            observed
+                .try_update(|parts| parts.admission = Some(admission))
+                .unwrap();
+            ContainerNow::Present(observed)
+        };
+        for now in [running("img"), exited("img")] {
+            let shown = format!("{now:?}");
+            assert_eq!(
+                refused(&plan_container(
+                    run_new("img"),
+                    &admitted(now.clone(), Admission::Free),
+                    participating,
+                    true,
+                )),
+                Some(ContainerRefusalReason::SlotOccupied),
+                "{shown}"
+            );
+            assert_eq!(
+                refused(&plan_container(
+                    run_new("img"),
+                    &admitted(now, Admission::Signed),
+                    participating,
+                    true,
+                )),
+                None,
                 "{shown}"
             );
         }
@@ -698,13 +740,13 @@ mod plan {
             for want in [run_new("img"), run_existing()] {
                 let shown = format!("{want:?} while {phase:?}");
                 assert_eq!(
-                    refused(&plan_container(want, &running("img"), &phase)),
+                    refused(&plan_container(want, &running("img"), &phase, false)),
                     Some(ContainerRefusalReason::NotParticipating),
                     "{shown}"
                 );
             }
             assert_eq!(
-                plan_container(stopped(), &running("img"), &phase),
+                plan_container(stopped(), &running("img"), &phase, false),
                 ContainerStep::Stop {
                     id: id('a'),
                     drain: Drain::DEFAULT,
@@ -712,7 +754,7 @@ mod plan {
                 }
             );
             assert_eq!(
-                plan_container(gone(), &exited("img"), &phase),
+                plan_container(gone(), &exited("img"), &phase, false),
                 ContainerStep::Remove {
                     id: id('a'),
                     anonymous_volumes: AnonymousVolumes::Remove,
@@ -721,7 +763,12 @@ mod plan {
             );
         }
         assert_eq!(
-            plan_container(run_new("img"), &absent(), &LocalMachinePhase::Joining),
+            plan_container(
+                run_new("img"),
+                &absent(),
+                &LocalMachinePhase::Joining,
+                false
+            ),
             ContainerStep::CreateAndStart(new_container("img"))
         );
     }
