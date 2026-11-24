@@ -67,7 +67,9 @@ impl Clone for InSwitch {
 /// Outside this module it exists only behind a borrow that ends before the locks drop:
 /// the key change's work gets `&KeyChangeHeld` and returns a `'static` value, and a record
 /// write gets its own through [`Self::mutate`], so keeping one past the locks is a compile
-/// error.
+/// error. The compiler does not see a dropped `mutate` future: the owner may still run a
+/// write it already queued, so every caller awaits `mutate` to completion, with no timeout
+/// or select around it.
 pub(crate) struct KeyChangeHeld(());
 
 impl KeyChangeHeld {
