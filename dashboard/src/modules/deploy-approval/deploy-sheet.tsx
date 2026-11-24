@@ -176,7 +176,8 @@ export function useDeployTap(organizationSlug: string) {
       <DialogContent className="flex max-h-[85dvh] flex-col sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>
-            {open.ask.services.length > 0 ? `Approve ${open.ask.services.join(", ")} in ${open.ask.namespace}?` : `Deploy every push to ${summary?.branch ?? ""}?`}
+            {open.ask.services.length === 0 ? `Deploy every push to ${summary?.branch ?? ""}?`
+              : `Approve ${open.ask.services.join(", ")} in ${open.ask.namespace}${summary === undefined ? "" : `, and deploy every push to ${summary.branch}`}?`}
           </DialogTitle>
           <DialogDescription>
             {summary === undefined ? "Check each line. Your passkey signs exactly this." : `Check each line. Then each push to ${summary.branch} deploys these settings with no prompt.`}
