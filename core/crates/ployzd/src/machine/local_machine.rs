@@ -46,7 +46,7 @@ pub struct LocalMachine {
     /// switch, and every create or start of a Provisioned Volume's holder waits out.
     switch: Arc<tokio::sync::Mutex<()>>,
     /// This handle runs inside a switch whose guard its caller holds, so it takes no
-    /// switch lock of its own.
+    /// switch lock of its own. Only [`LocalMachine::lock_switch`] sets it.
     in_switch: bool,
     #[cfg(test)]
     peers: Option<PeerInspect>,
@@ -85,11 +85,12 @@ pub(crate) use admission::{Admit, AdmittedBy, AdmittedSpec};
 pub use call::FullCaller;
 pub(crate) use call::{Call, Caller, Scope};
 pub(crate) use consumption::ConsumptionLog;
-pub(crate) use container::{CutRefusal, SwitchGuard};
+pub(crate) use container::CutRefusal;
 #[cfg(test)]
 pub(crate) use container::{EnsurePause, EnsurePausePoint};
 #[cfg(test)]
 pub(crate) use private_access::Pacing;
+pub(crate) use switch::SwitchGuard;
 mod join_approval;
 mod management_client;
 mod push_target;
@@ -98,6 +99,7 @@ pub(crate) mod rule_grant;
 mod sealing;
 pub(crate) use sealing::Error as SealingError;
 mod sealing_recovery;
+mod switch;
 pub(crate) use sealing_recovery::Error as RecoveryError;
 #[cfg(test)]
 pub(crate) use sealing_recovery::back_up;
@@ -357,36 +359,6 @@ impl LocalMachine {
 
     pub(crate) fn plugin(&self) -> &crate::storage::Plugin {
         &self.plugin
-    }
-
-    /// Wait out any switch on this Machine and hold it off until the guard drops. The lock
-    /// is one for the Machine, not one per Volume: a create reads each Volume's origin,
-    /// and no promote or seed may land between that read and Docker.
-    pub(crate) async fn lock_switch(&self) -> SwitchGuard {
-        Arc::clone(&self.switch).lock_owned().await
-    }
-
-    /// This handle for work inside the switch `held` keeps, whose creates and starts of a
-    /// Provisioned Volume's holder take no lock of their own.
-    #[must_use]
-    fn inside_switch(&self, held: &SwitchGuard) -> Self {
-        debug_assert!(Arc::ptr_eq(
-            tokio::sync::OwnedMutexGuard::mutex(held),
-            &self.switch
-        ));
-        Self {
-            in_switch: true,
-            ..self.clone()
-        }
-    }
-
-    /// The switch guard a create or start of a Provisioned Volume's holder takes, or
-    /// `None` inside a switch its caller holds.
-    async fn wait_out_switch(&self) -> Option<SwitchGuard> {
-        if self.in_switch {
-            return None;
-        }
-        Some(self.lock_switch().await)
     }
 
     #[must_use]

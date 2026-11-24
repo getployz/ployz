@@ -15,7 +15,7 @@ use ployz_core::authority::{
     AuthorityRefusal, CopyFacts, CopyVerified, CopyWindow, Purpose, Timestamp, copy,
 };
 
-use super::{AdmittedSpec, CutRefusal, Error, LocalMachine};
+use super::{AdmittedSpec, CutRefusal, Error, LocalMachine, SwitchGuard};
 use crate::{
     docker::FloorTurn,
     faults::{Identity, Point, Want},
@@ -81,22 +81,31 @@ impl LocalMachine {
             return self.floor_copy(&request.name, request.r#gen).await;
         }
         self.admit_gen(&request.name, request.r#gen).await?;
-        let guard = self.lock_switch().await;
+        let switch = self.lock_switch().await?;
         crate::faults::apply(
             Point::Verb("SetVolumeCopy"),
             Some(Identity::new(&request.name, &request.want, request.r#gen)),
         )
         .await;
+        // A start admitted at a scope its caller lost while this queued is admitted again
+        // at the scope left.
+        let admitted = match &request.want {
+            WantedCopy::Writer {
+                start: Some(start), ..
+            } if switch.call() != self.call() => {
+                switch.admit_volume_start(&request.name, start).await?
+            }
+            WantedCopy::Writer { .. }
+            | WantedCopy::Mirror { .. }
+            | WantedCopy::Snapshot { .. }
+            | WantedCopy::Forget
+            | WantedCopy::Floor => admitted,
+        };
         // Detached with the switch guard, so a caller that hangs up mid-drain does not
         // free the next request to plan against a cut still running. The task runs this
         // one transition and ends when ZFS or Docker answers; it never retries or starts
         // other work.
-        let local = self.inside_switch(&guard);
-        tokio::spawn(async move {
-            let _guard = guard;
-            local.set_copy_planned(request, admitted).await
-        })
-        .await?
+        tokio::spawn(async move { switch.set_copy_planned(request, admitted).await }).await?
     }
 
     /// Volume.Seed, under the switch lock.
@@ -108,14 +117,15 @@ impl LocalMachine {
         &self,
         request: &SeedVolumeRequest,
     ) -> Result<VolumeCopyView, Error> {
-        let _guard = self.lock_switch().await;
+        let switch = self.lock_switch().await?;
         // Checked under the switch lock, which a mirror pull of `into` takes too: a check
         // before it would let a Seed admitted at the old floor run after a later run
         // raised the floor and pulled a Mirror of `into` here, and replace that Mirror.
         if let Some(r#gen) = request.r#gen {
-            self.check_gen(&request.into, r#gen).await?;
+            switch.check_gen(&request.into, r#gen).await?;
         }
-        self.volume_verb("SeedVolume", VOLUME_SEED_ROUTE, request)
+        switch
+            .volume_verb("SeedVolume", VOLUME_SEED_ROUTE, request)
             .await
     }
 
@@ -137,11 +147,11 @@ impl LocalMachine {
         &self,
         request: SeedCopyRequest,
     ) -> Result<VolumeCopyView, Error> {
-        let _guard = self.lock_switch().await;
+        let switch = self.lock_switch().await?;
         if let Some(r#gen) = request.seed.r#gen {
-            self.check_gen(&request.seed.into, r#gen).await?;
+            switch.check_gen(&request.seed.into, r#gen).await?;
         }
-        let record = self.record();
+        let record = switch.record();
         if !record.has_cluster_identity() {
             return Err(Error::NotParticipating);
         }
@@ -179,7 +189,8 @@ impl LocalMachine {
                 },
             },
         };
-        self.volume_verb::<VolumeCopyView>("SeedCopy", VOLUME_SEED_COPY_ROUTE, &seed)
+        switch
+            .volume_verb::<VolumeCopyView>("SeedCopy", VOLUME_SEED_COPY_ROUTE, &seed)
             .await
     }
 
@@ -192,8 +203,9 @@ impl LocalMachine {
         &self,
         request: &SetVolumeSizeRequest,
     ) -> Result<SetVolumeSizeReply, Error> {
-        let _guard = self.lock_switch().await;
-        self.volume_verb("SetVolumeSize", VOLUME_SIZE_SET_ROUTE, request)
+        let switch = self.lock_switch().await?;
+        switch
+            .volume_verb("SetVolumeSize", VOLUME_SIZE_SET_ROUTE, request)
             .await
     }
 
@@ -223,7 +235,9 @@ impl LocalMachine {
             Err(Error::NotParticipating)
         }
     }
+}
 
+impl SwitchGuard {
     async fn set_copy_planned(
         &self,
         request: SetVolumeCopyRequest,
@@ -447,7 +461,9 @@ impl LocalMachine {
             }
         }
     }
+}
 
+impl LocalMachine {
     async fn admit_gen(&self, name: &DockerVolumeName, r#gen: VolumeGen) -> Result<(), Error> {
         let admitted = self.joined_floor_turn().await?.admit(name, r#gen).await?;
         match admitted {

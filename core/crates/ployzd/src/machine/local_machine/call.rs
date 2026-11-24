@@ -89,6 +89,38 @@ impl LocalMachine {
         self.call
     }
 
+    /// This Machine serving its call at the access its caller holds now: a management key
+    /// no slot accepts any more is refused, and one that lost its Device slot but keeps
+    /// another acts at Operator scope. A call never widens past the scope it arrived with.
+    ///
+    /// # Errors
+    /// Returns [`Error::ManagementRevoked`] when this Machine no longer accepts the
+    /// caller's key.
+    pub(super) fn as_it_stands(&self) -> Result<Self, Error> {
+        let Caller::Management(remote) = self.call.caller else {
+            return Ok(self.clone());
+        };
+        let record = self.record();
+        if !record.accepts_management_client(&remote) {
+            return Err(Error::ManagementRevoked);
+        }
+        let scope = match (self.call.scope, record.management_scope(&remote)) {
+            (ManagementScope::Full, Some(ManagementScope::Full)) => ManagementScope::Full,
+            _ => ManagementScope::Operator,
+        };
+        Ok(self.clone().at(Call { scope, ..self.call }))
+    }
+
+    /// This Machine serving its call at Operator scope, for work that has not yet
+    /// checked what its caller holds now.
+    #[must_use]
+    pub(super) fn narrowest(&self) -> Self {
+        self.clone().at(Call {
+            scope: ManagementScope::Operator,
+            ..self.call
+        })
+    }
+
     pub(crate) fn scope(&self) -> Scope {
         match self.call.scope {
             ManagementScope::Full => Scope::Full(FullCaller(self.call)),

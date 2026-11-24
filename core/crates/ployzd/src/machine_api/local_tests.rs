@@ -4792,7 +4792,7 @@ mod set_volume_copy {
             .await
             .unwrap();
         let caller = service.clone().with_management_client(device.into());
-        let switch = service.local().lock_switch().await;
+        let switch = service.local().lock_switch().await.unwrap();
         let forgetting = tokio::spawn(async move {
             let mirror = json!({"kind":"mirror", "newest":"7", "slot":"1"});
             let request = at_gen(forget(mirror), 3);

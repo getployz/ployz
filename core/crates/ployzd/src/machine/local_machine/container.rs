@@ -27,7 +27,7 @@ use ployz_core::{
 
 use super::super::ingress::{admit_door, admit_router, admit_unreserved};
 use super::{
-    AdmittedSpec, Error, LocalMachine,
+    AdmittedSpec, Error, LocalMachine, SwitchGuard,
     turns::{ExclusiveTurn, Installed},
 };
 use crate::docker::{
@@ -143,7 +143,7 @@ impl LocalMachine {
         specs: Vec<ployz_core::ServiceStorageSpec>,
     ) -> Result<ployz_core::PreparedVolumes, Error> {
         use ployz_core::RawVolumeSource;
-        let switch = self.wait_out_switch().await;
+        let switch = self.wait_out_switch().await?;
         self.finish_mutation(move |local| async move {
             let _switch = switch;
             let containers = local.docker()?;
@@ -572,7 +572,9 @@ impl LocalMachine {
             tokio::time::sleep(DRAIN_POLL).await;
         }
     }
+}
 
+impl SwitchGuard {
     /// The cut's Container half: drain and stop every holder of the Volume, then run
     /// `zfs` under the exclusive turn once no holder runs. The holders are listed again
     /// under the turn, so one started during the drain is `Busy` too, as is one the
@@ -594,7 +596,8 @@ impl LocalMachine {
     /// on, and a holder beside it then is `Busy`, not `Held`: the cut stopped something.
     ///
     /// Detached from the RPC with the installation held, so a caller that hangs up
-    /// does not abandon a half-stopped Container.
+    /// does not abandon a half-stopped Container. Only a request inside the switch cuts,
+    /// with its caller checked when it took the switch and again under each turn.
     pub(crate) async fn cut_volume_copy<Z, Fut>(
         &self,
         name: DockerVolumeName,
@@ -692,7 +695,9 @@ impl LocalMachine {
         })
         .await
     }
+}
 
+impl LocalMachine {
     /// The Machine this one accepts whose management address is `address`. Volume sends
     /// and pulls go only to and from one, so a Mirror holds only data another Machine of
     /// this Cluster sent.
@@ -1408,7 +1413,7 @@ impl LocalMachine {
         // start never lands inside a switch of that Volume.
         let switch = match replan {
             Some(want) if starts_provisioned_holder(&step, &now) => {
-                let guard = self.lock_switch().await;
+                let guard = self.lock_switch().await?;
                 now = self.container_now(&locator).await?;
                 step = plan_container(want, &now, &self.record().phase());
                 Some(guard)
@@ -1961,9 +1966,6 @@ enum ContainerStep {
         logs_to_read: bool,
     },
 }
-
-/// What [`LocalMachine::lock_switch`] holds of the switch lock.
-pub(crate) type SwitchGuard = tokio::sync::OwnedMutexGuard<()>;
 
 /// Whether `step` starts a Container, the one `now` observes, that mounts a Provisioned
 /// Volume.
