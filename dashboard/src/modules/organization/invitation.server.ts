@@ -156,8 +156,12 @@ export const acceptInvite = Effect.fn("Invitation.accept")(function* (token: str
       .where(and(eq(member.organizationId, row.organizationId), eq(member.userId, row.inviterId), inArray(member.role, [...MANAGING_ROLES]))).for("share");
     const state = stateOf({ ...row, fromManager: manager !== undefined });
     if (state !== "pending") return yield* new Conflict({ message: UNUSABLE[state], userFacing: true });
+    // now() is when this transaction began, before it waited on the locks above: the expiry is checked again on the
+    // clock as it reads once they are held.
+    const [spent] = yield* drizzle.update(invitation).set({ status: "accepted", acceptedByUserId: userId })
+      .where(and(eq(invitation.id, row.id), sql`${invitation.expiresAt} > clock_timestamp()`)).returning({ id: invitation.id });
+    if (spent === undefined) return yield* new Conflict({ message: UNUSABLE.expired, userFacing: true });
     yield* drizzle.insert(member).values({ organizationId: row.organizationId, userId, role: row.role });
-    yield* drizzle.update(invitation).set({ status: "accepted", acceptedByUserId: userId }).where(eq(invitation.id, row.id));
     return { slug: row.slug };
   }));
 });
