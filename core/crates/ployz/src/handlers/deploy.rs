@@ -397,6 +397,9 @@ pub(super) fn upload_and_ship(
                 .map(|device| device.versions.clone())
                 .unwrap_or_default(),
             recreate: Vec::new(),
+            rule: (device.as_ref())
+                .and_then(|device| device.rule.clone())
+                .map(Box::new),
         }))
         .or_else(|refused| linked::admitted(store, refused, &id, approval))
         .map_err(|error| store.accepting(store.at_review(error, "diff")))?;

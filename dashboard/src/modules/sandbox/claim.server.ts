@@ -122,7 +122,7 @@ export const claimOrganization = Effect.fn("Identity.claimOrganization")(functio
     yield* drizzle.insert(member).values({ userId: actor.userId, organizationId: id, role: "owner" })
       .onConflictDoUpdate({ target: [member.userId, member.organizationId], set: { role: "owner" } });
     yield* drizzle.update(organizationToken)
-      .set({ userId: actor.userId, expiresAt: new Date(Date.now() + CLAIMED_TOKEN_TTL_MS) })
+      .set({ userId: actor.userId, expiresAt: sql`now() + make_interval(secs => ${CLAIMED_TOKEN_TTL_MS / 1000})` })
       .where(and(eq(organizationToken.organizationId, id), inArray(organizationToken.userId, anonymousIds)));
     yield* reassignUserMachines(id, anonymousIds, actor.userId);
     yield* drizzle.delete(user).where(inArray(user.id, anonymousIds));

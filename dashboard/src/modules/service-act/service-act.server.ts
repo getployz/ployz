@@ -27,6 +27,7 @@ import {
 import { serviceAct } from "#/modules/service-act/tables";
 import { Database } from "#/server/database.server";
 import { NotFound } from "#/server/public-error";
+import { checkedNow } from "#/db/tables";
 
 type ActRow = typeof serviceAct.$inferSelect;
 type ActRequest = ServiceActRequestedEventData;
@@ -149,7 +150,7 @@ export const claimServiceAct = Effect.fn("ServiceAct.claim")(function* (request:
   if (session.status !== "connected") return yield* new ServiceActUnreachable({ cause: session.status });
   const before: ServiceActBefore = yield* session.connected.observeService(row.namespace, row.runtime);
   const legs = legsOf(before, row.only, row.verb);
-  const [claimed] = yield* drizzle.update(serviceAct).set({ state: "running", before, legs, startedAt: new Date() })
+  const [claimed] = yield* drizzle.update(serviceAct).set({ state: "running", before, legs, startedAt: sql`now()` })
     .where(and(owned(request, runId), eq(serviceAct.state, "accepted"))).returning();
   if (claimed === undefined) return { kind: "settled", state: (yield* readAct(request.actId)).state } satisfies ClaimedAct;
   return { kind: "claimed", verb: claimed.verb, legs: claimed.legs } satisfies ClaimedAct;
@@ -232,7 +233,7 @@ export const recordServiceAct = Effect.fn("ServiceAct.record")(function* (reques
   const row = yield* readAct(request.actId);
   if (row.state !== "running" || row.inngestRunId !== runId || row.before === null) return { actId: row.id, state: row.state };
   const end = endOf(row.verb, row.before, row.legs, row.only);
-  const [written] = yield* drizzle.update(serviceAct).set({ ...end, endedAt: new Date() })
+  const [written] = yield* drizzle.update(serviceAct).set({ ...end, endedAt: sql`now()` })
     .where(and(owned(request, runId), eq(serviceAct.state, "running"))).returning({ state: serviceAct.state });
   return { actId: row.id, state: written?.state ?? (yield* readAct(request.actId)).state };
 });
@@ -257,7 +258,7 @@ export const closeServiceActRun = Effect.fn("ServiceAct.closeRun")(function* (
   const rows = yield* drizzle.update(serviceAct).set({
     state: sql<ServiceActState>`case when ${accepted} then 'failed' else 'unknown' end`,
     reason: sql<string>`case when ${accepted} then ${RUN_ENDS[reason].accepted} else ${RUN_ENDS[reason].running} end`,
-    endedAt: new Date(),
+    endedAt: sql`now()`,
   })
     .where(or(and(eq(serviceAct.inngestRunId, runId), inArray(serviceAct.state, ACTIVE_STATES)), unbound))
     .returning({ id: serviceAct.id });
@@ -266,12 +267,11 @@ export const closeServiceActRun = Effect.fn("ServiceAct.closeRun")(function* (
 
 export const closeStaleServiceActs = Effect.fn("ServiceAct.closeStale")(function* () {
   const { drizzle } = yield* Database;
-  const now = Date.now();
-  const unknown = yield* drizzle.update(serviceAct).set({ state: "unknown", reason: RUN_ENDS.failure.running, endedAt: new Date() })
-    .where(and(eq(serviceAct.state, "running"), lt(serviceAct.startedAt, new Date(now - SERVICE_ACT_RUNNING_LIMIT_MS))))
+  const unknown = yield* drizzle.update(serviceAct).set({ state: "unknown", reason: RUN_ENDS.failure.running, endedAt: sql`now()` })
+    .where(and(eq(serviceAct.state, "running"), lt(serviceAct.startedAt, sql`${checkedNow()} - make_interval(secs => ${SERVICE_ACT_RUNNING_LIMIT_MS / 1000})`)))
     .returning({ id: serviceAct.id });
-  const failed = yield* drizzle.update(serviceAct).set({ state: "failed", reason: RUN_ENDS.failure.accepted, endedAt: new Date() })
-    .where(and(eq(serviceAct.state, "accepted"), lt(serviceAct.requestedAt, new Date(now - SERVICE_ACT_PENDING_LIMIT_MS))))
+  const failed = yield* drizzle.update(serviceAct).set({ state: "failed", reason: RUN_ENDS.failure.accepted, endedAt: sql`now()` })
+    .where(and(eq(serviceAct.state, "accepted"), lt(serviceAct.requestedAt, sql`${checkedNow()} - make_interval(secs => ${SERVICE_ACT_PENDING_LIMIT_MS / 1000})`)))
     .returning({ id: serviceAct.id });
   return { failed: failed.length, unknown: unknown.length };
 });

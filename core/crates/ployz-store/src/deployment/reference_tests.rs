@@ -124,6 +124,7 @@ fn admit(
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
         )
         .unwrap()
@@ -304,6 +305,7 @@ fn a_narrowed_deploy_lists_the_services_it_references_among_those_it_ships() {
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
         )
         .unwrap();

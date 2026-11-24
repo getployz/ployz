@@ -315,6 +315,25 @@ fn a_save_knows_from_the_view_alone_whether_its_tap_signs_a_rule() {
     }
 }
 
+// Catches a Deploy of another Service asking again for a rule approved for ARM, and the
+// yes swapping its builds to amd64.
+#[test]
+fn a_rule_approved_for_another_platform_keeps_it() {
+    let sources = view_json()["sources"].clone();
+    let (_, mut kept) = first_rule();
+    kept.services[0].policy.platforms = ["linux/arm64".to_owned()].into();
+
+    assert_eq!(need(Some(&kept), sources.clone()), SourceNeed::None);
+    assert_eq!(saving(Some(&kept), sources.clone()).draft().unwrap(), None);
+    kept.services[0].policy.context = "elsewhere".to_owned();
+    let draft = saving(Some(&kept), sources).draft().unwrap().unwrap();
+    let next: AutoDeployRule = from_canonical(&draft.source.unwrap().body).unwrap();
+    assert_eq!(
+        next.services[0].policy.platforms,
+        ["linux/arm64".to_owned()].into()
+    );
+}
+
 #[test]
 fn services_that_moved_off_the_kept_branch_onto_two_others_sign_nothing() {
     let (_, kept) = first_rule();

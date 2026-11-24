@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { Effect, Schema } from "effect";
 import { Uuid } from "#/lib/schema";
 import type { ApprovalDecision, ApprovalReview } from "#/modules/approvals/approvals";
@@ -54,7 +54,7 @@ const readRow = Effect.fn("Approvals.readRow")(function* (organizationId: string
 const settle = Effect.fn("Approvals.settle")(function* (row: ApprovalRow) {
   if (row.status !== "pending") return row;
   const { drizzle } = yield* Database;
-  const [superseded] = yield* drizzle.update(operationApprovals).set({ status: "superseded", updatedAt: new Date() })
+  const [superseded] = yield* drizzle.update(operationApprovals).set({ status: "superseded", updatedAt: sql`now()` })
     .where(and(eq(operationApprovals.id, row.id), eq(operationApprovals.status, "pending"))).returning();
   return superseded ?? (yield* readRow(row.organizationId, row.id)) ?? row;
 });

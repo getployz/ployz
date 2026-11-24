@@ -56,6 +56,7 @@ fn admitted_view() -> (DeploymentSummary, Value) {
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
         )
         .unwrap();

@@ -8,6 +8,7 @@ const PrepareInput = Schema.Struct({
   organizationSlug: Schema.String.check(Schema.isTrimmed(), Schema.isNonEmpty()),
   environment: EnvironmentRef,
   services: Schema.Array(Schema.String.check(Schema.isMaxLength(256))).check(Schema.isMaxLength(256)),
+  rule: Schema.optional(Schema.Literal(true)),
 });
 
 /** A Deploy's plan as Cloud reads it, with who enforces, which passkeys they trust, and each signed tag's digest. */

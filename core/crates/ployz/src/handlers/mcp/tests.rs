@@ -1263,6 +1263,7 @@ fn removed_but_unswept() -> ConfigStore {
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
         )
         .unwrap();

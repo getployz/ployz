@@ -897,8 +897,8 @@ pub(crate) fn unsigned(
         .flat_map(|rule| &rule.services)
         .map(|service| service.name.clone())
         .collect();
-    let rule = stored.filter(|rule| !rule.ended);
-    let approved: Vec<ServiceName> = match rule {
+    let ended = stored.as_ref().is_some_and(|rule| rule.ended);
+    let approved: Vec<ServiceName> = match stored.filter(|rule| !rule.ended) {
         Some(rule) => {
             let tracking = crate::auto_rule::branch(&rule).map(|(repository, branch)| {
                 saved
@@ -972,6 +972,7 @@ pub(crate) fn unsigned(
         unsigned.push(crate::Unsigned {
             service: spec.name.clone(),
             needs,
+            ended: needs == Needs::Rule && ended,
         });
     }
     Ok(unsigned)

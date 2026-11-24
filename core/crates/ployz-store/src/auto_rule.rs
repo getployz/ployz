@@ -35,8 +35,8 @@ pub struct ApproveRule {
     pub births: Births,
 }
 
-/// The rule a Save's tap signed, kept in the Save's own transaction once it saved.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+/// The rule a Save's or Deploy's tap signed, kept in its own transaction once it saved.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct SavedRule {
     #[ts(as = "Signed<AutoDeployRule>")]
@@ -97,6 +97,12 @@ pub struct RuleView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub protected: Option<bool>,
+    /// For a staged read, whether an owner or admin decides the reader's Deploy here, as
+    /// its protection asks of them: their Deploy waits for one, who approves no automatic
+    /// deploy rule with it. Absent from an older Store.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub protector_decides: Option<bool>,
 }
 
 impl RuleView {
@@ -142,8 +148,9 @@ pub(crate) fn approve(tx: &mut dyn Tx, who: &Actor, c: &ApproveRule) -> Result<R
     view_of(tx, who, &environment, None, false)
 }
 
-/// Keep the rule a Save's tap signed, once the Save saved under `environment`'s lock,
-/// unless the rule kept moved since the tap read it.
+/// Keep the rule a Save's or Deploy's tap signed, once it saved under `environment`'s
+/// lock, unless the rule kept moved since the tap read it. A rule the person ended since
+/// stays ended: only the Deploy every push switch turns it on again.
 pub(crate) fn keep_saved(
     tx: &mut dyn Tx,
     who: &Actor,
@@ -152,16 +159,28 @@ pub(crate) fn keep_saved(
 ) -> Result<(), RpcError> {
     let kept = stored(tx, &environment.summary.id)?
         .as_ref()
-        .and_then(opened)
-        .map(|kept| RulePrior {
-            rule: kept.rule,
-            generation: kept.generation,
-        });
-    if kept != saved.prior {
-        return Err(error::conflict(
-            "Automatic deploys changed since you looked. Save again.",
-            json!({}),
-        ));
+        .and_then(opened);
+    let prior = kept.as_ref().map(|kept| RulePrior {
+        rule: kept.rule,
+        generation: kept.generation,
+    });
+    if prior != saved.prior {
+        let message = match (&kept, opened(&saved.rule)) {
+            (Some(kept), Some(signed)) if kept.ended => {
+                let names: Vec<&str> = (signed.services.iter())
+                    .map(|service| service.name.as_str())
+                    .collect();
+                let them = if names.len() == 1 { "it" } else { "them" };
+                format!(
+                    "Automatic deploys are off for {}. Turn on Deploy every push to deploy {them}.",
+                    names.join(", ")
+                )
+            }
+            _ => {
+                "Automatic deploys changed since you looked. Check them, then try again.".to_owned()
+            }
+        };
+        return Err(error::conflict(message, json!({})));
     }
     keep(tx, who, environment, (&saved.rule, &saved.births))
 }
@@ -250,15 +269,22 @@ fn view_of(
     let id = &environment.summary.id;
     let rule = stored(tx, id)?;
     let namespace = crate::deployment::namespace(tx, who, &environment.summary)?;
-    let (saved, version, protected) = match staged {
+    let (saved, version, protected, protector_decides) = match staged {
         true => {
             let version = crate::review::review(tx, environment)?.view.version;
             let working = canonicalize_environment_intent(environment.working.clone());
             let protected = scope::protected(tx, id)?;
-            (Some(working), Some(version), Some(protected))
+            let decides = match trusted {
+                Some(trusted) => {
+                    Some(crate::review::approval::Gate::new(tx, id, trusted)?.protected())
+                }
+                None => None,
+            };
+            (Some(working), Some(version), Some(protected), decides)
         }
         false => (
             crate::review::latest_saved(tx, id)?.map(|saved| saved.intent),
+            None,
             None,
             None,
         ),
@@ -300,6 +326,7 @@ fn view_of(
         volumes,
         version,
         protected,
+        protector_decides,
     })
 }
 

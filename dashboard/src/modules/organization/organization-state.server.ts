@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import type { Actor, SessionActor } from "#/modules/identity/actor";
 import { session, user } from "#/modules/identity/tables";
@@ -125,7 +125,7 @@ export const renameOrganization = Effect.fn("Organization.rename")(function* (ac
 const actInOrganization = Effect.fn("Organization.actIn")(function* (userId: string, sessionId: string, target: { readonly id: string; readonly slug: string }) {
   const { drizzle } = yield* Database;
   return yield* drizzle.update(session)
-    .set({ activeOrganizationId: target.id, activeOrganizationSlug: target.slug, updatedAt: new Date() })
+    .set({ activeOrganizationId: target.id, activeOrganizationSlug: target.slug, updatedAt: sql`now()` })
     .where(and(eq(session.id, sessionId), eq(session.userId, userId)))
     .returning({ id: session.id });
 });

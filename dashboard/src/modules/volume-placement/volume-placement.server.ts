@@ -148,7 +148,7 @@ export const writePlacement = Effect.fn("VolumePlacement.stage")(function* (
     staged: input.staged,
   }).onConflictDoUpdate({
     target: volumePlacement.volumeId,
-    set: { staged: input.staged, deploymentId: null, updatedAt: new Date() },
+    set: { staged: input.staged, deploymentId: null, updatedAt: sql`now()` },
     setWhere: and(eq(volumePlacement.organizationId, organizationId), unclaimedSince(current)),
   }).returning();
   if (row === undefined) {
@@ -271,7 +271,7 @@ export const discardPlacement = Effect.fn("VolumePlacement.discard")(function* (
   }
   const { drizzle } = database;
   const [row] = yield* drizzle.update(volumePlacement)
-    .set({ staged: null, deploymentId: null, updatedAt: new Date() })
+    .set({ staged: null, deploymentId: null, updatedAt: sql`now()` })
     .where(unchanged)
     .returning();
   if (row === undefined) return { ok: false, refusal: DEPLOYING } satisfies PlacementDiscard;
@@ -391,7 +391,7 @@ export const stampPlacements = Effect.fn("VolumePlacement.stamp")(function* (
   if (volumeIds.length === 0) return;
   const { drizzle } = yield* Database;
   yield* drizzle.update(volumePlacement)
-    .set({ deploymentId, staged: sql`${volumePlacement.staged} - 'unreached'`, updatedAt: new Date() })
+    .set({ deploymentId, staged: sql`${volumePlacement.staged} - 'unreached'`, updatedAt: sql`now()` })
     .where(and(
       eq(volumePlacement.organizationId, organizationId),
       inArray(volumePlacement.volumeId, [...volumeIds]),

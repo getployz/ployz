@@ -1,10 +1,11 @@
 import "@tanstack/react-start/server-only";
-import { and, asc, eq, inArray, isNull, lt } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, lt, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { InngestClient, InngestEventSendError, type InngestSendableEvent, type PloyzInngest } from "#/modules/inngest/client";
 import { operationOutbox } from "#/modules/inngest/outbox.tables";
 import { afterDatabaseCommit, Database } from "#/server/database.server";
 import { runInngestEffect } from "#/modules/inngest/run.server";
+import { checkedNow } from "#/db/tables";
 
 /** An event Inngest dedupes by its id, so sending it twice starts one run. */
 export type OutboxEvent = InngestSendableEvent & { readonly id: string };
@@ -25,7 +26,7 @@ const send = Effect.fn("Outbox.send")(function* (rows: readonly OutboxRow[]) {
     catch: (cause) => new InngestEventSendError({ cause }),
   });
   const { drizzle } = yield* Database;
-  yield* drizzle.update(operationOutbox).set({ sentAt: new Date() })
+  yield* drizzle.update(operationOutbox).set({ sentAt: sql`now()` })
     .where(inArray(operationOutbox.eventId, rows.map((row) => row.eventId)));
 });
 
@@ -48,10 +49,10 @@ export const enqueueEvent = Effect.fn("Outbox.enqueue")(function* (event: Outbox
 });
 
 /** Sends the events whose own delivery failed; returns how many went. */
-export const sweepOutbox = Effect.fn("Outbox.sweep")(function* (now: Date) {
+export const sweepOutbox = Effect.fn("Outbox.sweep")(function* () {
   const { drizzle } = yield* Database;
   const rows = yield* drizzle.select().from(operationOutbox)
-    .where(and(isNull(operationOutbox.sentAt), lt(operationOutbox.createdAt, new Date(now.getTime() - SWEEP_AFTER_MS))))
+    .where(and(isNull(operationOutbox.sentAt), lt(operationOutbox.createdAt, sql`${checkedNow()} - make_interval(secs => ${SWEEP_AFTER_MS / 1000})`)))
     .orderBy(asc(operationOutbox.createdAt))
     .limit(BATCH);
   yield* send(rows);
@@ -61,5 +62,5 @@ export const sweepOutbox = Effect.fn("Outbox.sweep")(function* (now: Date) {
 export const createSweepOperationOutbox = (inngest: PloyzInngest) =>
   inngest.createFunction(
     { id: "sweep-operation-outbox", retries: 1, triggers: [{ cron: "* * * * *" }], concurrency: [{ limit: 1 }] },
-    async ({ step }) => ({ sent: await step.run("send-unsent", () => runInngestEffect(sweepOutbox(new Date()))) }),
+    async ({ step }) => ({ sent: await step.run("send-unsent", () => runInngestEffect(sweepOutbox())) }),
   );

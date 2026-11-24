@@ -1,11 +1,12 @@
 import "@tanstack/react-start/server-only";
 import type { EnvironmentRef, JsonValue, Parent, PlanView, RuleView } from "@ployz/sdk";
-import type { Against } from "@ployz/sdk/authority";
+import { type Against, sourceNeed } from "@ployz/sdk/authority";
 import { and, eq } from "drizzle-orm";
 import { Effect } from "effect";
 import { callStore } from "#/modules/config-store/config-store.server";
 import type { Actor } from "#/modules/identity/actor";
 import { beyondEnvironments, requireAccess } from "#/modules/organization/access.server";
+import type { Permission } from "#/modules/organization/permissions";
 import { environmentProtected } from "#/modules/config-store/store-lookup.server";
 import { answerForSupport } from "#/modules/support-access/support-view";
 import { trustedPasskeys } from "#/modules/passkeys/passkeys.server";
@@ -43,9 +44,18 @@ export type DeployTap =
     readonly members: readonly string[];
   };
 
+/**
+ * The automatic deploy rule a Deploy may sign with its tap when the kept rule doesn't approve what it saves: the staged
+ * rule view to draft it from, or why the tap can't sign it, so the Deploy goes without it and pushes wait. `unchecked`
+ * marks a rule only the Servers it names may leave behind, or one Cloud couldn't check: a push may not wait.
+ */
+export type DeploySource =
+  | { readonly kind: "sign"; readonly view: RuleView; readonly unchecked: boolean }
+  | { readonly kind: "held"; readonly reason: string; readonly unchecked: boolean };
+
 /** The plan Cloud read for a Deploy, with what asking for it needs, or the Store's refusal of the read. */
 export type DeployPlan =
-  | { readonly kind: "plan"; readonly plan: PlanView; readonly tap: DeployTap }
+  | { readonly kind: "plan"; readonly plan: PlanView; readonly tap: DeployTap; readonly source?: DeploySource }
   | { readonly kind: "refused"; readonly message: string; readonly details?: JsonValue };
 
 /**
@@ -58,6 +68,8 @@ type TapInput = {
   readonly services: readonly string[];
   /** Classify a Deploy someone else will sign: the gate checks the Servers, not `actor`'s passkeys. */
   readonly classify?: true;
+  /** Read whether the Deploy's own tap signs the automatic deploy rule with it. */
+  readonly rule?: true;
 };
 
 export const prepareDeployTap = Effect.fn("DeployTap.prepare")(function* (actor: Actor, input: TapInput) {
@@ -85,7 +97,21 @@ export const prepareDeployTap = Effect.fn("DeployTap.prepare")(function* (actor:
     && (yield* environmentProtected(access.organization.id, plan.environment.project, plan.environment.id).pipe(
       Effect.catchTag("StoreRefused", () => Effect.succeed(false)),
     ));
-  const tap: DeployTap = unsigned.length === 0 || asks ? { kind: "off" } : yield* gate(input.classify === true ? null : actor.userId, access.organization.id, tags, { namespace: plan.namespace, parents, needs: SIGNS });
+  const signer = input.classify === true ? null : actor.userId;
+  const versions = unsigned.length === 0 || asks ? Effect.succeed<DeployTap>({ kind: "off" })
+    : gate(signer, access.organization.id, tags, { namespace: plan.namespace, parents, needs: SIGNS });
+  // Only a member who signs here may sign the rule with the Deploy.
+  let source = input.rule !== true || signer === null || access.kind !== "member" ? null : yield* sourceOf(access, input.environment, plan.version, signer);
+  let tap: DeployTap;
+  if (source?.kind === "sign") {
+    const ruled = yield* gate(signer, access.organization.id, tags, { namespace: plan.namespace, parents, needs: SIGNS_RULE });
+    // A Deploy that can't sign the rule still deploys what it can.
+    if (ruled.kind === "refused") source = { kind: "held", reason: ruled.message, unchecked: source.unchecked };
+    if (ruled.kind === "off") source = null;
+    tap = ruled.kind === "refused" ? yield* versions : ruled;
+  } else {
+    tap = yield* versions;
+  }
   // Support never signs, and reads a plan only as its own view of it allows.
   if (access.kind === "support") {
     if (tap.kind !== "off") return { kind: "refused", message: "Support can't approve this Deploy. Ask a member to deploy it." } satisfies DeployPlan;
@@ -93,8 +119,39 @@ export const prepareDeployTap = Effect.fn("DeployTap.prepare")(function* (actor:
     if (!shown.ok) return { kind: "refused", message: shown.refusal.message } satisfies DeployPlan;
     return { kind: "plan", plan: shown.value, tap } satisfies DeployPlan;
   }
-  return { kind: "plan", plan, tap } satisfies DeployPlan;
+  const planned: DeployPlan = { kind: "plan", plan, tap };
+  return source === null ? planned : { ...planned, source };
 });
+
+/**
+ * What a Deploy at review `version` of `environment` needs for its Source step, read from the staged rule view alone,
+ * before any Server or passkey is reached: null when it needs none, when nothing builds from GitHub, when the review
+ * moved, or when a protector decides the member's writes here.
+ */
+const sourceOf = Effect.fn("DeployTap.source")(function* (access: Access, environment: EnvironmentRef, version: string, userId: string) {
+  const read = yield* callStore(access.organization.id, userId, {
+    operation: "read", query: { query: "rule", environment, staged: true },
+  }, { approval: "not_required", permissions: access.permissions, environments: access.environments });
+  const unread: DeploySource = { kind: "held", reason: "Couldn't check automatic deploys.", unchecked: true };
+  if (!read.ok) return unread;
+  const view = read.value;
+  // Read with the view: a protection Cloud couldn't read never reads as none.
+  if (view.sources.length === 0 || view.version !== version || (view.protected !== false && !mayProtect(access, view.environment.name))) return null;
+  let need: ReturnType<typeof sourceNeed>;
+  try {
+    need = sourceNeed(view);
+  } catch {
+    return unread;
+  }
+  if (need === "none") return null;
+  return { kind: "sign", view, unchecked: need === "servers" } satisfies DeploySource;
+});
+
+type Access = {
+  readonly organization: { readonly id: string };
+  readonly permissions: Permission[];
+  readonly environments: string[] | undefined;
+};
 
 /** What a Save's tap reads: the rule view of what the Save saves and, once asked, what asking for a passkey needs. */
 export type SaveTap =
@@ -133,7 +190,7 @@ export const prepareSaveTap = Effect.fn("SaveTap.prepare")(function* (actor: Act
   return { kind: "view", view, tap } satisfies SaveTap;
 });
 
-const mayProtect = (access: { readonly permissions: readonly string[]; readonly environments: readonly string[] | undefined }, environment: string) =>
+const mayProtect = (access: Omit<Access, "organization">, environment: string) =>
   access.permissions.includes("environments:protect") && beyondEnvironments(access.environments, { environment }) === null;
 
 /** `userId` null only classifies a Deploy someone else signs: no one's passkeys, and no digest lookups. */

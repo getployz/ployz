@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import type { PostedVersion, VersionsDraft } from "@ployz/sdk";
+import type { VersionsDraft } from "@ployz/sdk";
 import { KeyRoundIcon } from "lucide-react";
 import { toast } from "sonner";
 import { useCollectionScope } from "#/collections/use-collection-scope";
@@ -14,19 +14,27 @@ import { useSealing } from "#/modules/sealing/use-sealing";
 import { prepareDeployTapServerFn } from "./deploy-tap.functions";
 import { fillPending } from "./fill-pending";
 import type { AdmitDeploy } from "#/modules/config-store/admit-deploy";
-import { type Ask, type Prepared, prepareDeploy, signVersions } from "./deploy-tap";
+import { type Answer, type Answered, type Ask, deployWith, type DeploySteps, type Held, prepareDeploy, signVersions, withAnswer } from "./deploy-tap";
+import { RuleSummaryList } from "./rule-summary";
+import { ownerLookup } from "./source-step";
 
 /** A Deploy that was not sent: refused before any prompt, stale, or cancelled. Whoever said why already showed it. */
 class DeployNotSent extends Error {}
 
 /**
  * The sheet: what it asks, the caller's own Deploy and refusals, how the caller hears back (null once admitted), and
- * the versions the passkey already signed for this ask, which a resend after Cloud didn't answer reuses.
+ * what the passkey already signed for this ask, which a resend after Cloud didn't answer reuses.
  */
 type Open = {
-  ask: Ask; command: AdmitDeploy; handles: readonly string[]; settle: (failed: Error | null) => void;
-  problem: string | null; again: boolean; stuck?: boolean; versions?: PostedVersion[];
+  ask: Ask; handles: readonly string[]; settle: (failed: Error | null) => void;
+  problem: string | null; again: boolean; stuck?: boolean; answer?: Answer;
 };
+
+/** Tells the person their Deploy went without the automatic deploy rule, and why. */
+function warnHeld(held: Held | null) {
+  if (held === null) return;
+  toast.warning(held.unchecked ? "Deployed. Pushes may wait for approval." : "Deployed. Pushes wait for approval.", { description: held.reason });
+}
 
 /**
  * Admits a person's Deploy from this tab. When its Servers run a Service only signed, the sheet shows what the person's
@@ -36,14 +44,15 @@ type Open = {
 export function useDeployTap(organizationSlug: string) {
   const writer = useStoreWriter(organizationSlug);
   const scope = useCollectionScope();
+  const ownerOf = ownerLookup(scope.queryClient, organizationSlug);
   const [open, setOpen] = useState<Open | null>(null);
   const [busy, setBusy] = useState<"passkey" | "deploying" | null>(null);
   // The answer the caller's pending Volume-loss confirm holds, used once by its retry.
-  const pending = useRef<{ plan: string; place: string; versions: PostedVersion[] } | null>(null);
+  const pending = useRef<Answered | null>(null);
 
   const sealing = useSealing(organizationSlug);
   const read = ({ environment, services }: AdmitDeploy) =>
-    prepareDeployTapServerFn({ data: { organizationSlug, environment, services: [...services ?? []] } });
+    prepareDeployTapServerFn({ data: { organizationSlug, environment, services: [...services ?? []], rule: true } });
   /** The plan, once this browser fills each Pending value the Store names. */
   const prepare = async (command: AdmitDeploy) => {
     const planned = await read(command);
@@ -51,7 +60,7 @@ export function useDeployTap(organizationSlug: string) {
       const written = await writer.edit({ environment: command.environment, changes });
       return written.written === "edited" ? written.environment.revision : null;
     });
-    return filled === null ? prepareDeploy(command, async () => planned) : prepareDeploy(filled, read);
+    return filled === null ? prepareDeploy(command, async () => planned, ownerOf) : prepareDeploy(filled, read, ownerOf);
   };
 
   async function stale(command: AdmitDeploy) {
@@ -59,38 +68,33 @@ export function useDeployTap(organizationSlug: string) {
     await invalidateViews(scope.queryClient, organizationSlug, new Set([environmentKey(command.environment)]));
   }
 
-  async function admit(command: AdmitDeploy, handles: readonly string[] = []): Promise<void> {
-    const held = pending.current;
-    pending.current = null;
-    let prepared: Prepared;
-    try {
-      prepared = await prepare(command);
-    } catch (error) {
-      toast.error(error instanceof Error && error.message ? error.message : "Couldn't plan this deploy. Try again.");
-      throw new DeployNotSent();
-    }
-    if (prepared.kind === "admit") return void await writer.commit(prepared.command, handles);
-    if (prepared.kind === "stale") {
-      await stale(command);
-      throw new DeployNotSent();
-    }
-    if (prepared.kind === "refused") {
-      toast.error(`${prepared.message} Nothing deployed.`);
-      throw new DeployNotSent();
-    }
-    const { ask } = prepared;
-    if (held?.plan === ask.plan && held.place === environmentKey(command.environment)) {
+  const steps: DeploySteps = {
+    answered: pending,
+    commit: (command, handles) => writer.commit(command, handles).then(() => undefined),
+    prepare: async (command) => {
       try {
-        return void await writer.commit({ ...ask.command, versions: held.versions }, handles);
+        return await prepare(command);
       } catch (error) {
-        // The Store asks again (Servers hold more by now): the next accepted retry still needs no tap.
-        if (error instanceof StoreRefused && handles.includes(error.code)) pending.current = held;
-        throw error;
+        toast.error(error instanceof Error && error.message ? error.message : "Couldn't plan this deploy. Try again.");
+        throw new DeployNotSent();
       }
-    }
-    const failed = await new Promise<Error | null>((settle) => setOpen({ ask, command, handles, settle, problem: null, again: false }));
-    if (failed !== null) throw failed;
-  }
+    },
+    ask: async (ask, handles) => {
+      const failed = await new Promise<Error | null>((settle) => setOpen({ ask, handles, settle, problem: null, again: false }));
+      if (failed !== null) throw failed;
+    },
+    stale: async (command) => {
+      await stale(command);
+      return new DeployNotSent();
+    },
+    refused: (message) => {
+      toast.error(`${message} Nothing deployed.`);
+      return new DeployNotSent();
+    },
+    held: warnHeld,
+  };
+
+  const admit = (command: AdmitDeploy, handles: readonly string[] = []) => deployWith(steps, command, handles);
 
   function close(sheet: Open, failed: Error | null) {
     sheet.settle(failed);
@@ -98,12 +102,12 @@ export function useDeployTap(organizationSlug: string) {
   }
 
   async function approve(current: Open) {
-    let versions = current.versions;
+    let answer = current.answer;
     try {
-      if (versions === undefined) {
+      if (answer === undefined) {
         setBusy("passkey");
         try {
-          versions = await signVersions(current.ask);
+          answer = await signVersions(current.ask);
         } catch (error) {
           const problem = error instanceof PasskeyDeclined ? error.message
             : error instanceof Error && error.name === "NotAllowedError" ? "Your passkey didn't answer. Try again."
@@ -112,17 +116,20 @@ export function useDeployTap(organizationSlug: string) {
         }
       }
       setBusy("deploying");
-      await writer.commit({ ...current.ask.command, versions }, [...current.handles, "conflict"]);
+      await writer.commit(withAnswer(current.ask.command, answer), [...current.handles, "conflict"]);
       close(current, null);
+      warnHeld(current.ask.held);
     } catch (error) {
       // The caller asks its own question (a Volume-loss confirm), and its accepted retry reuses this answer.
       if (error instanceof StoreRefused && current.handles.includes(error.code)) {
-        if (versions !== undefined) pending.current = { plan: current.ask.plan, place: environmentKey(current.command.environment), versions };
+        if (answer !== undefined) {
+          pending.current = { plan: current.ask.plan, place: environmentKey(current.ask.command.environment), answer, held: current.ask.held };
+        }
         return close(current, error);
       }
       if (error instanceof StoreRefused) return await replan(current, error.message);
       // The Store may have admitted it: a resend carries the same Deploy and versions, so it can't admit twice.
-      setOpen({ ...current, versions, problem: "Couldn't reach Ployz Cloud. Try again." });
+      setOpen({ ...current, answer, problem: "Couldn't reach Ployz Cloud. Try again." });
     } finally {
       setBusy(null);
     }
@@ -135,15 +142,18 @@ export function useDeployTap(organizationSlug: string) {
   async function replan(current: Open, refusal: string) {
     // The reviewed version, so a plan that moved since takes the review path, never a direct admit.
     const prepared = await prepare(current.ask.command).catch(() => null);
-    if (prepared?.kind === "ask") return setOpen({ ...current, ask: prepared.ask, versions: undefined, problem: refusal, again: true });
+    if (prepared?.kind === "ask") return setOpen({ ...current, ask: prepared.ask, answer: undefined, problem: refusal, again: true });
     if (prepared?.kind === "stale") {
-      await stale(current.command);
+      await stale(current.ask.command);
       return close(current, new DeployNotSent());
     }
     if (prepared?.kind !== "admit") return setOpen({ ...current, problem: prepared?.message ?? refusal, stuck: true });
+    // A Deploy asked to sign the rule never goes on without it unseen: the person reads why and cancels.
+    if (current.ask.draft.source !== undefined) return setOpen({ ...current, problem: refusal, stuck: true });
     try {
       await writer.commit(prepared.command, current.handles);
       close(current, null);
+      warnHeld(prepared.held);
     } catch (error) {
       close(current, error instanceof Error ? error : new DeployNotSent());
     }
@@ -153,14 +163,21 @@ export function useDeployTap(organizationSlug: string) {
     pending.current = null;
   }
 
+  const summary = open?.ask.draft.source?.summary;
   const sheet = open === null ? null : (
     <Dialog open onOpenChange={(next) => { if (!next && busy === null) close(open, new DeployNotSent()); }}>
       <DialogContent className="flex max-h-[85dvh] flex-col sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>Approve {open.ask.services.join(", ")} in {open.ask.namespace}?</DialogTitle>
-          <DialogDescription>Check each line. Your passkey signs exactly this.</DialogDescription>
+          <DialogTitle>
+            {open.ask.services.length === 0 ? `Deploy every push to ${summary?.branch ?? ""}?`
+              : `Approve ${open.ask.services.join(", ")} in ${open.ask.namespace}${summary === undefined ? "" : `, and deploy every push to ${summary.branch}`}?`}
+          </DialogTitle>
+          <DialogDescription>
+            {summary === undefined ? "Check each line. Your passkey signs exactly this." : `Check each line. Then each push to ${summary.branch} deploys these settings with no prompt.`}
+          </DialogDescription>
         </DialogHeader>
         <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
+          {summary === undefined ? null : <RuleSummaryList summary={summary} />}
           <SignedLines draft={open.ask.draft} />
         </div>
         {open.problem === null ? null : <p role="alert" className="text-sm text-destructive">{open.problem}</p>}
@@ -168,7 +185,7 @@ export function useDeployTap(organizationSlug: string) {
           <DialogClose render={<Button variant="outline" disabled={busy !== null} />}>Cancel</DialogClose>
           <Button disabled={busy !== null || open.stuck === true} onClick={() => void approve(open)}>
             <KeyRoundIcon data-icon="inline-start" />
-            {busy === "passkey" ? "Waiting for your passkey…" : busy === "deploying" ? "Deploying…" : open.versions !== undefined ? "Try again" : open.again ? "Sign and deploy again" : "Approve with passkey"}
+            {busy === "passkey" ? "Waiting for your passkey…" : busy === "deploying" ? "Deploying…" : open.answer !== undefined ? "Try again" : open.again ? "Sign and deploy again" : "Approve with passkey"}
           </Button>
         </DialogFooter>
       </DialogContent>

@@ -103,7 +103,7 @@ export const dropRemovedServer = Effect.fn("PairingRelease.dropRemoved")(
         eq(organizationMachine.clusterKey, generation),
         eq(organizationMachine.machineId, input.machineId),
       ));
-      yield* drizzle.update(machineEnrollmentToken).set({ expiresAt: sql`now()`, updatedAt: new Date() }).where(and(
+      yield* drizzle.update(machineEnrollmentToken).set({ expiresAt: sql`now()`, updatedAt: sql`now()` }).where(and(
         eq(machineEnrollmentToken.organizationId, organizationId),
         or(eq(machineEnrollmentToken.claimedMachineId, input.machineId), eq(machineEnrollmentToken.joinedMachineId, input.machineId)),
       ));

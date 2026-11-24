@@ -793,6 +793,7 @@ fn a_deploy_asks_to_delete_a_volume_a_deploy_in_flight_creates() {
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
             &Trusted {
                 volumes: Some(held_on_a()),
@@ -1314,6 +1315,7 @@ fn deploy_pr_5(store: &ConfigStore, who: &Actor, n: u8) -> ployz_store::Deployme
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
             &Trusted::default(),
         )
@@ -1458,6 +1460,7 @@ fn a_manual_deploy_never_pins_a_head_the_pull_request_has_not_approved() {
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
             &Trusted::default(),
         )
@@ -2309,9 +2312,108 @@ fn a_save_that_keeps_a_rule_without_its_review_saves_nothing_staged_after_the_ta
     assert_eq!(staged_version(&store, &who), moved, "nothing was saved");
 }
 
+/// End rule 9 at `generation`, as turning off Deploy every push does.
+fn end_rule(store: &ConfigStore, who: &Actor, generation: u64) {
+    use ployz_core::authority::{Signed, Signer};
+    let mut rule = signed_rule(store, who, (9, generation, "main"), false)
+        .open()
+        .unwrap();
+    rule.ended = true;
+    store
+        .write(
+            who,
+            &ployz_store::ApproveRule {
+                environment: EnvironmentRef::default(),
+                rule: Box::new(Signed::sign(&rule, &Signer::from_seed(&[7; 32])).unwrap()),
+                births: Default::default(),
+            },
+        )
+        .unwrap();
+}
+
+/// Deploy what is staged at review `version` with `rule`, which the Deploy's tap signed
+/// when `prior` was kept.
+fn deploy_with_rule(
+    store: &ConfigStore,
+    who: &Actor,
+    version: &str,
+    (rule, prior): (SignedRule, Option<(u8, u64)>),
+) -> Result<ployz_store::DeploymentSummary, ployz_core::RpcError> {
+    store.write(
+        who,
+        &ployz_store::Admit::Deploy(ployz_store::Deploy {
+            id: ployz_store::DeploymentId::parse("00000000-0000-4000-8000-000000000141").unwrap(),
+            environment: EnvironmentRef::default(),
+            services: Vec::new(),
+            version: Some(version.to_owned()),
+            upload: None,
+            accept_volume_loss: Vec::new(),
+            message: None,
+            prune: false,
+            no_prune: false,
+            versions: Vec::new(),
+            copies: Vec::new(),
+            recreate: Vec::new(),
+            rule: Some(Box::new(ployz_store::SavedRule {
+                rule,
+                births: Default::default(),
+                prior: prior.map(|(id, generation)| ployz_store::RulePrior {
+                    rule: ployz_core::authority::RuleId::from_bytes([id; 16]),
+                    generation,
+                }),
+            })),
+        }),
+    )
+}
+
+#[test]
+fn a_deploy_keeps_the_rule_its_tap_signed_and_the_next_push_deploys() {
+    let (store, who) = shop();
+    set(&store, &who, "web.env.GREETING", json!("hello"));
+    let version = staged_version(&store, &who);
+    let rule = signed_rule(&store, &who, (9, 1, "main"), true);
+
+    deploy_with_rule(&store, &who, &version, (rule, None)).unwrap();
+
+    assert_eq!(kept_rule(&store, &who), Some((9, 1, "main".to_owned())));
+    let pushed = system(&store, &push(None, Some(H1), None));
+    assert_eq!(pushed.admitted.len(), 1, "{pushed:?}");
+}
+
+#[test]
+fn a_deploy_whose_rule_was_ended_since_its_tap_deploys_nothing_and_leaves_it_ended() {
+    let (store, who) = shop();
+    publish(&store, &who);
+    approve_rule(&store, &who, 1).unwrap();
+    set(&store, &who, "web.env.GREETING", json!("hello"));
+    let version = staged_version(&store, &who);
+    let tapped = signed_rule(&store, &who, (9, 2, "main"), true);
+    end_rule(&store, &who, 2);
+
+    let refused = deploy_with_rule(&store, &who, &version, (tapped, Some((9, 1)))).unwrap_err();
+
+    assert_eq!(refused.code, RpcErrorCode::Conflict, "{refused:?}");
+    assert_eq!(
+        refused.message,
+        "Automatic deploys are off for api, web. Turn on Deploy every push to deploy them."
+    );
+    assert_eq!(staged_version(&store, &who), version, "nothing was saved");
+    let kept: ployz_store::RuleView = store
+        .read(
+            &who,
+            &ployz_store::RuleQuery {
+                environment: EnvironmentRef::default(),
+                staged: false,
+            },
+        )
+        .unwrap();
+    let kept = kept.rule.unwrap().open().unwrap();
+    assert!(kept.ended && kept.generation == 2, "{kept:?}");
+}
+
 /// What the plan says a person's Deploy needs for each built Service that reaches data.
-fn unsigned(store: &ConfigStore, who: &Actor) -> Vec<(String, ployz_store::Needs)> {
-    let plan: ployz_store::PlanView = store
+fn plan(store: &ConfigStore, who: &Actor) -> ployz_store::PlanView {
+    store
         .read(
             who,
             &ployz_store::PlanQuery {
@@ -2321,8 +2423,12 @@ fn unsigned(store: &ConfigStore, who: &Actor) -> Vec<(String, ployz_store::Needs
                 deployment: None,
             },
         )
-        .unwrap();
-    plan.unsigned
+        .unwrap()
+}
+
+fn unsigned(store: &ConfigStore, who: &Actor) -> Vec<(String, ployz_store::Needs)> {
+    plan(store, who)
+        .unsigned
         .into_iter()
         .map(|entry| (entry.service.as_str().to_owned(), entry.needs))
         .collect()
@@ -2396,6 +2502,23 @@ fn a_built_service_that_reaches_data_needs_a_build_its_rule_vouches_for() {
             ("web".to_owned(), Needs::Rule),
             ("api".to_owned(), Needs::Rebuild)
         ]
+    );
+    // Once the person turns automatic deploys off, only the switch turns them on again.
+    end_rule(&store, &who, 3);
+    assert_eq!(
+        unsigned(&store, &who),
+        [
+            ("web".to_owned(), Needs::Rule),
+            ("api".to_owned(), Needs::Rule)
+        ]
+    );
+    assert_eq!(
+        serde_json::to_value(&plan(&store, &who).unsigned).unwrap(),
+        json!([
+            { "service": "web", "needs": "rule", "ended": true },
+            { "service": "api", "needs": "rule", "ended": true }
+        ]),
+        "a client that predates `ended` still reads the need"
     );
 }
 

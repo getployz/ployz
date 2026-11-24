@@ -134,12 +134,11 @@ function outcomeLines(name: string, sync: MirrorSync): string[] {
 
 const recordFailure = Effect.fn("MirrorSync.recordFailure")(function* (organizationId: string, volumeId: string, machineId: MachineId, target: string, failure: string) {
   const { drizzle } = yield* Database;
-  const now = new Date();
   yield* drizzle.insert(volumeMirrorStatus)
-    .values({ organizationId, volumeId, machineId, failedAt: now, failedSnapshot: target, failure, updatedAt: now })
+    .values({ organizationId, volumeId, machineId, failedAt: sql`now()`, failedSnapshot: target, failure, updatedAt: sql`now()` })
     .onConflictDoUpdate({
       target: [volumeMirrorStatus.volumeId, volumeMirrorStatus.machineId],
-      set: { failedAt: now, failedSnapshot: target, failure, updatedAt: now },
+      set: { failedAt: sql`now()`, failedSnapshot: target, failure, updatedAt: sql`now()` },
     });
 });
 
@@ -151,17 +150,16 @@ const recordSuccess = Effect.fn("MirrorSync.recordSuccess")(function* (
   organizationId: string, volumeId: string, machineId: MachineId, snapshot: Snapshot, matched: boolean,
 ) {
   const { drizzle } = yield* Database;
-  const now = new Date();
-  const matchedAt = matched ? now : new Date(snapshot.created_unix_seconds * 1000);
+  const matchedAt = matched ? sql`now()` : new Date(snapshot.created_unix_seconds * 1000);
   yield* drizzle.insert(volumeMirrorStatus)
-    .values({ organizationId, volumeId, machineId, okAt: now, okSnapshot: snapshot.name, matchedAt, updatedAt: now })
+    .values({ organizationId, volumeId, machineId, okAt: sql`now()`, okSnapshot: snapshot.name, matchedAt, updatedAt: sql`now()` })
     .onConflictDoUpdate({
       target: [volumeMirrorStatus.volumeId, volumeMirrorStatus.machineId],
       set: {
-        okAt: now,
+        okAt: sql`now()`,
         okSnapshot: snapshot.name,
         matchedAt: sql`greatest(${volumeMirrorStatus.matchedAt}, ${matchedAt})`,
-        updatedAt: now,
+        updatedAt: sql`now()`,
       },
     });
 });
