@@ -671,7 +671,11 @@ impl Run {
                 Ok(mut receipts) => {
                     receipts.extend(built);
                     rules = rule_proofs(session, &claimed, &receipts, self).await;
-                    claimed.intent.options.signed.extend(rules.services().cloned());
+                    claimed
+                        .intent
+                        .options
+                        .signed
+                        .extend(rules.services().cloned());
                     self.prepare(session, claimed, targets, (receipts, pins))
                         .await
                 }

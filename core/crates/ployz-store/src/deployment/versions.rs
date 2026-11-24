@@ -892,7 +892,11 @@ pub(crate) fn unsigned(
         .and_then(crate::auto_rule::opened);
     // A rule names each Service it ever deployed, so one that ended still says which ran
     // signed.
-    let ruled: Vec<ServiceName> = stored.iter().flat_map(|rule| &rule.services).map(|service| service.name.clone()).collect();
+    let ruled: Vec<ServiceName> = stored
+        .iter()
+        .flat_map(|rule| &rule.services)
+        .map(|service| service.name.clone())
+        .collect();
     let rule = stored.filter(|rule| !rule.ended);
     let approved: Vec<ServiceName> = match rule {
         Some(rule) => {

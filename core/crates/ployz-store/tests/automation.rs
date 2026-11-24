@@ -2046,6 +2046,16 @@ fn approve_rule(
     who: &Actor,
     generation: u64,
 ) -> Result<ployz_store::RuleView, ployz_core::RpcError> {
+    keep_rule(store, who, generation, false)
+}
+
+/// As [`approve_rule`], or ending the rule when `ended`.
+fn keep_rule(
+    store: &ConfigStore,
+    who: &Actor,
+    generation: u64,
+    ended: bool,
+) -> Result<ployz_store::RuleView, ployz_core::RpcError> {
     use ployz_core::authority::rule::{
         BuildPolicy, Builder, PolicyCache, RuleEvent, RuleService, RuleSource, Runner, template,
     };
@@ -2107,7 +2117,7 @@ fn approve_rule(
         },
         services,
         issued_at: Timestamp::from_millis(1_800_000_000_000).unwrap(),
-        ended: false,
+        ended,
         signer: SignerKey::Device(ployz_core::DeviceKey::from_bytes(
             *signer.public().as_bytes(),
         )),
@@ -2167,7 +2177,14 @@ fn a_built_service_that_reaches_data_needs_a_build_its_rule_vouches_for() {
     publish(&store, &who);
     approve_rule(&store, &who, 1).unwrap();
     // The rule approves web as it stands, but a person's Deploy builds nothing under it.
-    assert_eq!(unsigned(&store, &who), [("web".to_owned(), Needs::Rebuild)]);
+    // It lists api too, which then runs only from its builds.
+    assert_eq!(
+        unsigned(&store, &who),
+        [
+            ("web".to_owned(), Needs::Rebuild),
+            ("api".to_owned(), Needs::Rebuild)
+        ]
+    );
     // Once a push built and deployed it, a person's Deploy of the same settings reuses
     // that build, and its Servers take the build's proof.
     let pushed = system(&store, &push(None, Some(H1), None)).admitted[0]
@@ -2184,12 +2201,45 @@ fn a_built_service_that_reaches_data_needs_a_build_its_rule_vouches_for() {
         .keep_verified(&pushed, &runner, &[(web, verified_web(1))].into())
         .unwrap();
     backend::finish(&store, &pushed, claimed);
-    assert_eq!(unsigned(&store, &who), []);
+    // No Server verified a build of api.
+    assert_eq!(unsigned(&store, &who), [("api".to_owned(), Needs::Rebuild)]);
     // A new generation of the rule refuses the proof the build kept under the last one.
     approve_rule(&store, &who, 2).unwrap();
-    assert_eq!(unsigned(&store, &who), [("web".to_owned(), Needs::Rebuild)]);
+    assert_eq!(
+        unsigned(&store, &who),
+        [
+            ("web".to_owned(), Needs::Rebuild),
+            ("api".to_owned(), Needs::Rebuild)
+        ]
+    );
     set(&store, &who, "web.env.GREETING", json!("hello"));
-    assert_eq!(unsigned(&store, &who), [("web".to_owned(), Needs::Rule)]);
+    assert_eq!(
+        unsigned(&store, &who),
+        [
+            ("web".to_owned(), Needs::Rule),
+            ("api".to_owned(), Needs::Rebuild)
+        ]
+    );
+}
+
+/// A Service a rule deployed ran signed, so every Server keeps its name for a signed
+/// Container. Once the rule ends, a person's Deploy of it needs approval even though it
+/// reaches no data.
+#[test]
+fn a_service_a_rule_deployed_needs_approval_once_the_rule_ends() {
+    use ployz_store::Needs;
+    let (store, who) = shop();
+    publish(&store, &who);
+    assert_eq!(unsigned(&store, &who), []);
+    approve_rule(&store, &who, 1).unwrap();
+    keep_rule(&store, &who, 2, true).unwrap();
+    assert_eq!(
+        unsigned(&store, &who),
+        [
+            ("web".to_owned(), Needs::Rule),
+            ("api".to_owned(), Needs::Rule)
+        ]
+    );
 }
 
 #[test]

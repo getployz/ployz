@@ -95,6 +95,24 @@ mod tests {
     };
 
     #[test]
+    fn a_signed_publisher_owns_its_hostname_until_it_is_gone() {
+        let hostname = host("shop.example.com");
+        // Older, and first by name, but nothing signed it.
+        let squatter = observation("app", "evil", '1', 'a', 1, hostname.as_str());
+        let mut web = observation("app", "web", '2', 'b', 9, hostname.as_str());
+        web.try_update(|parts| parts.admission = Some(crate::Admission::Signed))
+            .unwrap();
+        assert_eq!(
+            hostname_owners([&squatter, &web]).get(&hostname),
+            Some(&QualifiedService::parse("app/web").unwrap())
+        );
+        assert_eq!(
+            hostname_owners([&squatter]).get(&hostname),
+            Some(&QualifiedService::parse("app/evil").unwrap())
+        );
+    }
+
+    #[test]
     fn oldest_container_timestamp_wins_before_qualified_name() {
         let shop = observation("shop", "web", '1', 'a', 10, "api.example.com");
         let blog = observation("blog", "web", '2', 'b', 5, "api.example.com");

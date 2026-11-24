@@ -18,9 +18,10 @@ use futures_util::Stream;
 use ipnet::Ipv4Net;
 use ployz_core::{
     CERTIFICATE_POLICY_CLUSTER_KEY, CertificateHost, ClusterName, ClusterRoute, ContainerId,
-    ContainerKind, ContainerObservation, KeptNames, SIGNED_SERVICE_KEY_PREFIX, DockerVolume, DockerVolumeId, DockerVolumeName, ForgottenAnswer,
-    IngressDoors, IngressHost, IssuanceClock, Machine, MachineId, ManagementIdentity,
-    QualifiedService, RecoverySeed, SealingPublicKey, signed_service_key,
+    ContainerKind, ContainerObservation, DockerVolume, DockerVolumeId, DockerVolumeName,
+    ForgottenAnswer, IngressDoors, IngressHost, IssuanceClock, KeptNames, Machine, MachineId,
+    ManagementIdentity, QualifiedService, RecoverySeed, SIGNED_SERVICE_KEY_PREFIX,
+    SealingPublicKey, signed_service_key,
 };
 use serde_json::json;
 
@@ -704,7 +705,10 @@ impl ReplicatedStore {
     ///
     /// # Errors
     /// Returns an error when the Corrosion write fails.
-    pub(crate) async fn keep_signed_service(&self, service: &QualifiedService) -> Result<(), Error> {
+    pub(crate) async fn keep_signed_service(
+        &self,
+        service: &QualifiedService,
+    ) -> Result<(), Error> {
         self.api.execute([signed_service_insert(service)]).await
     }
 
@@ -712,7 +716,10 @@ impl ReplicatedStore {
     ///
     /// # Errors
     /// Returns an error when the Corrosion query fails.
-    pub(crate) async fn signed_service_kept(&self, service: &QualifiedService) -> Result<bool, Error> {
+    pub(crate) async fn signed_service_kept(
+        &self,
+        service: &QualifiedService,
+    ) -> Result<bool, Error> {
         let query = self
             .api
             .query(Statement::new(
@@ -731,13 +738,13 @@ impl ReplicatedStore {
         let query = self
             .api
             .query(Statement::new(
-                "SELECT key FROM cluster WHERE key LIKE ?",
+                "SELECT key AS name FROM cluster WHERE key LIKE ?",
                 [json!(format!("{SIGNED_SERVICE_KEY_PREFIX}%"))],
             ))
             .await?;
-        let rows = query.rows(["key"])?;
+        let rows = query.rows(["name"])?;
         let mut kept = KeptNames::default();
-        kept.keep_keys(rows.iter().filter_map(|[key]| key.as_str()));
+        kept.keep_keys(rows.iter().filter_map(|[name]| name.as_str()));
         Ok(kept)
     }
 
@@ -988,7 +995,9 @@ impl ReplicatedStore {
     pub(crate) async fn subscribe_signed_service_changes(&self) -> Result<Subscription, Error> {
         self.api
             .subscribe(Statement::new(
-                format!("SELECT key FROM cluster WHERE key LIKE '{SIGNED_SERVICE_KEY_PREFIX}%'"),
+                format!(
+                    "SELECT key AS name FROM cluster WHERE key LIKE '{SIGNED_SERVICE_KEY_PREFIX}%'"
+                ),
                 [],
             ))
             .await

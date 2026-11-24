@@ -867,6 +867,14 @@ mod settled {
         }
     }
 
+    /// `local` with a replica of its own, where an Operator's unsigned create looks up
+    /// the names kept signed.
+    async fn with_replica(local: LocalMachine) -> (LocalMachine, tokio::task::JoinHandle<()>) {
+        let (replicated, server) = crate::corrosion::fake_cluster::store().await;
+        let admin = crate::corrosion::AdminClient::new("/no/such/admin.sock");
+        (local.with_cluster(Some((replicated, admin))), server)
+    }
+
     fn new_container(answer: &str) -> NewContainer {
         serde_json::from_value(json!({
             "slot": {"namespace":"app", "service":"api", "kind":"service_container", "creation_key":"s1"},
@@ -1377,6 +1385,7 @@ mod settled {
             fake,
             data_dir,
         } = settling().await;
+        let (local, _replica) = with_replica(local).await;
         let (want, pin) = pinned_run();
         // The tag names another public image here by now.
         fake.images.lock().unwrap().insert(
@@ -1431,6 +1440,7 @@ mod settled {
                 fake,
                 data_dir,
             } = settling().await;
+            let (local, _replica) = with_replica(local).await;
             let built = Some(format!("sha256:{}", "b".repeat(64)));
             let served = format!("sha256:{}", "e".repeat(64));
             fake.images
