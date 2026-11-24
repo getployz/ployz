@@ -8,6 +8,7 @@ import { type CleanupLeft, deploymentCleanup, type DeploymentCleanupState } from
 import type { InngestRunStatus } from "#/modules/inngest/client";
 import type { ConfigDeploymentRetireRequestedEventData } from "#/modules/config-store/config-store.events";
 import { Database } from "#/server/database.server";
+import { checkedNow } from "#/db/tables";
 
 type RetireOutcome = { left: CleanupLeft[]; kept: CleanupLeft[] };
 
@@ -92,7 +93,7 @@ export const closeStaleCleanups = Effect.fn("DeploymentCleanup.closeStale")(func
 ) {
   const { drizzle } = yield* Database;
   const quiet = yield* drizzle.select({ runId: deploymentCleanup.runId, left: deploymentCleanup.left }).from(deploymentCleanup)
-    .where(and(eq(deploymentCleanup.state, "waiting"), lt(deploymentCleanup.updatedAt, sql`now() - make_interval(secs => ${CLEANUP_QUIET_MS / 1000})`)));
+    .where(and(eq(deploymentCleanup.state, "waiting"), lt(deploymentCleanup.updatedAt, sql`${checkedNow()} - make_interval(secs => ${CLEANUP_QUIET_MS / 1000})`)));
   let closed = 0;
   for (const { runId, left } of quiet) {
     const status = yield* runStatus(runId).pipe(Effect.option);

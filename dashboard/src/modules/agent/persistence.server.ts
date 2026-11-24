@@ -7,6 +7,7 @@ import { Effect } from "effect";
 import { agentInterrupts, agentRuns, agentThreads } from "#/modules/agent/tables";
 import { threadTitle } from "#/modules/agent/thread-title";
 import { Database } from "#/server/database.server";
+import { checkedNow } from "#/db/tables";
 
 /** Whose sidebar a store reads and writes: one member in one Organization. Nothing outside it is visible. */
 export type AgentScope = { readonly organizationId: string; readonly userId: string };
@@ -41,7 +42,7 @@ const displaced = and(eq(agentRuns.status, "failed"), sql`${agentRuns.record}->'
 /** How long a resuming request holds its interrupts unrenewed before another may take them over: one that died mid-turn. */
 export const CLAIM_LEASE_MS = 5 * 60 * 1000;
 /** An interrupt's claim still holds: renewed within the lease, on Postgres's clock, which also stamps `claimedAt`. */
-const claimLive = sql<boolean>`coalesce(${agentInterrupts.claimedAt} > now() - make_interval(secs => ${CLAIM_LEASE_MS / 1000}), false)`;
+const claimLive = sql<boolean>`coalesce(${agentInterrupts.claimedAt} > ${checkedNow()} - make_interval(secs => ${CLAIM_LEASE_MS / 1000}), false)`;
 
 /**
  * TanStack AI's messages, runs and interrupts stores over Postgres, confined to `scope`. With `claim`, the stores serve

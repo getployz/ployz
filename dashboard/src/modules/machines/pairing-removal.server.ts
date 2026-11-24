@@ -22,6 +22,7 @@ import {
   decrypt, lockOrganizationEnrollment, lockWitnessedPairing, othersRemain, replaced,
 } from "#/modules/machines/pairing-release.server";
 import type { ServerRelease } from "#/modules/machines/machine-removal-states";
+import { checkedNow } from "#/db/tables";
 
 type Pairing = typeof organizationPairing.$inferSelect;
 type RemovalAttempt = Pairing & {
@@ -53,7 +54,7 @@ const foundingClaimLive = Effect.fn("PairingRemoval.foundingClaimLive")(function
     pairing.founderPublicKey === null ? undefined : eq(machineEnrollmentToken.claimedPublicKey, pairing.founderPublicKey),
     sql`${machineEnrollmentToken.enrollmentRole} is distinct from 'joiner'`,
     isNull(machineEnrollmentToken.joinedMachineId),
-    gt(machineEnrollmentToken.expiresAt, sql`now()`),
+    gt(machineEnrollmentToken.expiresAt, checkedNow()),
   )).limit(1);
   return live !== undefined;
 });
@@ -164,7 +165,7 @@ const endFoundingClaim = Effect.fn("PairingRemoval.endFoundingClaim")(function* 
     eq(machineEnrollmentToken.claimedMachineId, pairing.founderClaimMachineId),
     sql`${machineEnrollmentToken.enrollmentRole} is distinct from 'joiner'`,
     isNull(machineEnrollmentToken.joinedMachineId),
-    gt(machineEnrollmentToken.expiresAt, sql`now()`),
+    gt(machineEnrollmentToken.expiresAt, checkedNow()),
   ));
 });
 

@@ -18,6 +18,7 @@ import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { Unauthorized } from "#/server/public-error";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
+import { checkedNow } from "#/db/tables";
 
 /** One dial or Clear per Server; a Server that doesn't answer in time is unreachable or unconfirmed. */
 const SERVER_TIMEOUT_MS = 10_000;
@@ -59,7 +60,7 @@ const CLAIM_LEASE_MS = SERVER_TIMEOUT_MS * 3;
 const STORED_CHECK_TIMEOUT_MS = 2_000;
 const CLAIM_POLL = "200 millis";
 /** Timestamps the lease compares come from one clock, the database's, whatever instance wrote them. */
-const now = sql`clock_timestamp()`;
+const now = checkedNow();
 /** Nobody acts on the row's slot now, or whoever did has outlived the lease. */
 const unheld = sql`(${serverAccess.claim} is null
   or ${serverAccess.updatedAt} < ${now} - make_interval(secs => ${sql.raw(String(CLAIM_LEASE_MS / 1000))}))`;

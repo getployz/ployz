@@ -14,6 +14,7 @@ import { fleetToken, fleetTokenJoin, serverEnrollment, waitingServer } from "#/m
 import { enqueueEvent } from "#/modules/inngest/outbox.server";
 import { organizationPairing } from "#/modules/runtime/tables";
 import { Database } from "#/server/database.server";
+import { checkedNow } from "#/db/tables";
 
 export const CHECKIN_SILENCE_MS = 5 * 60_000;
 export const ENROLLMENT_STALE_MS = 9 * 60 * 60_000;
@@ -147,7 +148,7 @@ export const checkServerEnrollment = Effect.fn("ServerEnrollment.check")(functio
   const [row] = yield* drizzle.select({
     tokenId: machineEnrollmentToken.id,
     joined: machineEnrollmentToken.joinedMachineId,
-    silent: sql<boolean>`${waitingServer.lastCheckInAt} < now() - make_interval(secs => ${CHECKIN_SILENCE_MS / 1000})`,
+    silent: sql<boolean>`${waitingServer.lastCheckInAt} < ${checkedNow()} - make_interval(secs => ${CHECKIN_SILENCE_MS / 1000})`,
   })
     .from(serverEnrollment)
     .leftJoin(machineEnrollmentToken, eq(machineEnrollmentToken.id, serverEnrollment.enrollTokenId))
@@ -239,7 +240,7 @@ export const cancelOpenServerEnrollments = Effect.fn("ServerEnrollment.cancelOpe
 export const closeStaleServerEnrollments = Effect.fn("ServerEnrollment.closeStale")(function* () {
   const database = yield* Database;
   const failed = yield* endAndRevokeTokens(
-    and(open, lt(serverEnrollment.requestedAt, sql`now() - make_interval(secs => ${ENROLLMENT_STALE_MS / 1000})`)),
+    and(open, lt(serverEnrollment.requestedAt, sql`${checkedNow()} - make_interval(secs => ${ENROLLMENT_STALE_MS / 1000})`)),
     { state: "failed", failure: { stage: null, message: "Enrollment stopped" } },
   );
   const removed = yield* database.transaction(Effect.gen(function* () {
@@ -247,7 +248,7 @@ export const closeStaleServerEnrollments = Effect.fn("ServerEnrollment.closeStal
     const keptLongEnough = exists(drizzle.select({ id: serverEnrollment.id }).from(serverEnrollment).where(and(
       eq(serverEnrollment.waitingServerId, waitingServer.id),
       eq(serverEnrollment.state, "joined"),
-      lt(serverEnrollment.endedAt, sql`now() - make_interval(secs => ${JOINED_WAITING_KEEP_MS / 1000})`),
+      lt(serverEnrollment.endedAt, sql`${checkedNow()} - make_interval(secs => ${JOINED_WAITING_KEEP_MS / 1000})`),
     )));
     const locked = yield* drizzle.select({ id: waitingServer.id }).from(waitingServer).where(keptLongEnough).orderBy(waitingServer.id).for("update");
     if (locked.length === 0) return [];

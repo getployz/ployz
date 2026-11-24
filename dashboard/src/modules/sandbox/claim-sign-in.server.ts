@@ -4,6 +4,7 @@ import { Effect } from "effect";
 import { hashClaimSecret } from "#/modules/sandbox/claim-required.server";
 import { verification } from "#/modules/identity/tables";
 import { Database } from "#/server/database.server";
+import { checkedNow } from "#/db/tables";
 
 export const CLAIM_SIGN_IN_COOKIE = "ployz_claim_sign_in";
 const MAX_AGE_SECONDS = 10 * 60;
@@ -43,7 +44,7 @@ export const bindClaimSignInOrganization = Effect.fn("Identity.bindClaimSignInOr
     yield* drizzle.insert(verification).values({
       identifier: bindingIdentifier(userId, claimSecretHash),
       value: organizationId,
-      expiresAt: sql`now() + make_interval(secs => ${MAX_AGE_SECONDS * 1000 / 1000})`,
+      expiresAt: sql`now() + make_interval(secs => ${MAX_AGE_SECONDS})`,
     });
   },
 );
@@ -53,6 +54,6 @@ export const takeClaimSignInOrganization = Effect.fn("Identity.takeClaimSignInOr
   const { drizzle } = yield* Database;
   const bindings = yield* drizzle.delete(verification)
     .where(eq(verification.identifier, bindingIdentifier(userId, hashClaimSecret(secret))))
-    .returning({ organizationId: verification.value, live: sql<boolean>`${verification.expiresAt} > now()` });
+    .returning({ organizationId: verification.value, live: sql<boolean>`${verification.expiresAt} > ${checkedNow()}` });
   return bindings.find(({ live }) => live)?.organizationId ?? null;
 });

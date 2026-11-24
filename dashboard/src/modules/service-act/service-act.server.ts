@@ -27,6 +27,7 @@ import {
 import { serviceAct } from "#/modules/service-act/tables";
 import { Database } from "#/server/database.server";
 import { NotFound } from "#/server/public-error";
+import { checkedNow } from "#/db/tables";
 
 type ActRow = typeof serviceAct.$inferSelect;
 type ActRequest = ServiceActRequestedEventData;
@@ -267,10 +268,10 @@ export const closeServiceActRun = Effect.fn("ServiceAct.closeRun")(function* (
 export const closeStaleServiceActs = Effect.fn("ServiceAct.closeStale")(function* () {
   const { drizzle } = yield* Database;
   const unknown = yield* drizzle.update(serviceAct).set({ state: "unknown", reason: RUN_ENDS.failure.running, endedAt: sql`now()` })
-    .where(and(eq(serviceAct.state, "running"), lt(serviceAct.startedAt, sql`now() - make_interval(secs => ${SERVICE_ACT_RUNNING_LIMIT_MS / 1000})`)))
+    .where(and(eq(serviceAct.state, "running"), lt(serviceAct.startedAt, sql`${checkedNow()} - make_interval(secs => ${SERVICE_ACT_RUNNING_LIMIT_MS / 1000})`)))
     .returning({ id: serviceAct.id });
   const failed = yield* drizzle.update(serviceAct).set({ state: "failed", reason: RUN_ENDS.failure.accepted, endedAt: sql`now()` })
-    .where(and(eq(serviceAct.state, "accepted"), lt(serviceAct.requestedAt, sql`now() - make_interval(secs => ${SERVICE_ACT_PENDING_LIMIT_MS / 1000})`)))
+    .where(and(eq(serviceAct.state, "accepted"), lt(serviceAct.requestedAt, sql`${checkedNow()} - make_interval(secs => ${SERVICE_ACT_PENDING_LIMIT_MS / 1000})`)))
     .returning({ id: serviceAct.id });
   return { failed: failed.length, unknown: unknown.length };
 });

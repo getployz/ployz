@@ -19,6 +19,7 @@ import { stillWaiting } from "#/modules/machines/waiting/waiting-servers.server"
 import { requireAccess } from "#/modules/organization/access.server";
 import { Database, isUniqueViolation } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
+import { checkedNow } from "#/db/tables";
 
 const LIFETIME_DAYS = { "1d": 1, "7d": 7, "30d": 30 } satisfies Record<FleetTokenLifetime, number>;
 const NAME_ATTEMPTS = 5;
@@ -81,7 +82,7 @@ export const listFleetTokens = Effect.fn("FleetToken.list")(function* (actor: Ac
       id: fleetToken.id,
       name: fleetToken.name,
       expiresAt: fleetToken.expiresAt,
-      expired: sql<boolean>`${fleetToken.expiresAt} <= now()`,
+      expired: sql<boolean>`${fleetToken.expiresAt} <= ${checkedNow()}`,
       autoEnrollMax: fleetToken.autoEnrollMax,
       lastUsedAt: fleetToken.lastUsedAt,
       createdAt: fleetToken.createdAt,
@@ -152,14 +153,14 @@ export const loadFleetToken = Effect.fn("FleetToken.load")(function* (token: str
       organizationId: fleetToken.organizationId,
       name: fleetToken.name,
       expiresAt: fleetToken.expiresAt,
-      expired: sql<boolean>`${fleetToken.expiresAt} <= now()`,
+      expired: sql<boolean>`${fleetToken.expiresAt} <= ${checkedNow()}`,
       autoEnrollMax: fleetToken.autoEnrollMax,
     })
     .from(fleetToken)
     .where(and(
       eq(fleetToken.tokenHash, hashFleetToken(token)),
       isNull(fleetToken.revokedAt),
-      gt(fleetToken.expiresAt, sql`now()`),
+      gt(fleetToken.expiresAt, checkedNow()),
     ))
     .limit(1);
   return row ?? null;

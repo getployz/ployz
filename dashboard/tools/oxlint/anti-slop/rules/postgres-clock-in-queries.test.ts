@@ -22,9 +22,8 @@ tester.run("postgres-clock-in-queries", postgresClockInQueriesRule, {
     // 03981fa91f, fixed.
     {
       filename,
-      code: `const now = sql\`clock_timestamp()\`;
-      const unheld = sql\`(\${serverAccess.claim} is null or \${serverAccess.updatedAt} < \${now} - make_interval(secs => 90))\`;
-      const leased = yield* drizzle.update(serverAccess).set({ claim: token, updatedAt: now })
+      code: `const unheld = sql\`(\${serverAccess.claim} is null or \${serverAccess.updatedAt} < \${checkedNow()} - make_interval(secs => 90))\`;
+      const leased = yield* drizzle.update(serverAccess).set({ claim: token, updatedAt: sql\`now()\` })
         .where(and(holder, isNotNull(serverAccess.revokedAt), unheld)).returning({ machineId: serverAccess.machineId });`,
     },
     {
@@ -41,9 +40,58 @@ tester.run("postgres-clock-in-queries", postgresClockInQueriesRule, {
       const row = { at: new Date() };
       function later() { return drizzle.insert(log).values(row); }`,
     },
+    // A written time stays now(), with or without an interval.
+    {
+      filename,
+      code: `yield* drizzle.insert(verification).values({ identifier, value, expiresAt: sql\`now() + make_interval(secs => \${MAX_AGE_SECONDS})\` });
+      yield* drizzle.update(serviceAct).set({ endedAt: sql\`now()\` }).where(eq(serviceAct.id, id));
+      const age = sql<number>\`extract(epoch from now() - \${serviceAct.startedAt})\`;
+      const edit = sql\`update uptime_check set revision = revision + 1, updated_at = now() where id = \${id}\`;`,
+    },
+    // A check reads checkedNow(), once per statement.
+    {
+      filename,
+      code: `import { and, eq, gt } from "drizzle-orm";
+      const live = sql<boolean>\`\${verification.expiresAt} > \${checkedNow()}\`;
+      await drizzle.select().from(invitation).where(and(eq(invitation.id, id), gt(invitation.expiresAt, checkedNow())));`,
+    },
     { filename: "feature.postgres.test.ts", code: `yield* drizzle.update(session).set({ expiresAt: new Date(Date.now() - 1_000) });` },
   ],
   invalid: [
+    // The sandbox claim before round 3: it waited on the Sandbox's row lock past the binding's deadline, then still
+    // removed the sign-in's Organization, since now() is when its transaction began.
+    {
+      filename,
+      code: `const bindings = yield* drizzle.delete(verification)
+        .where(eq(verification.identifier, bindingIdentifier(userId, hashClaimSecret(secret))))
+        .returning({ organizationId: verification.value, live: sql<boolean>\`\${verification.expiresAt} > now()\` });`,
+      errors: [{ messageId: "staleNow" }],
+    },
+    // Invite acceptance before round 2: the accept read the expiry with the invite row it waited to lock.
+    {
+      filename,
+      code: `import { and, eq, gt } from "drizzle-orm";
+      const expired = sql<boolean>\`\${invitation.expiresAt} <= now()\`;
+      const [row] = await drizzle.select({ id: invitation.id, expired }).from(invitation).where(byToken(token)).for("update");
+      await drizzle.select({ id: invitation.id }).from(invitation).where(and(eq(invitation.status, "pending"), gt(invitation.expiresAt, sql\`now()\`)));`,
+      errors: [{ messageId: "staleNow" }, { messageId: "staleNow" }],
+    },
+    // Through a const, a where, a having, an upsert's setWhere and a nested fragment.
+    {
+      filename,
+      code: `const cutoff = sql\`now() - make_interval(secs => 90)\`;
+      yield* drizzle.update(serviceAct).set({ state: "unknown" }).where(sql\`\${serviceAct.startedAt} < \${cutoff}\`);
+      yield* drizzle.select().from(serviceAct).where(sql\`\${serviceAct.endedAt} is null and now() is not null\`);
+      yield* drizzle.select().from(serviceAct).groupBy(serviceAct.id).having(sql\`max(\${serviceAct.startedAt}) < now()\`);
+      yield* drizzle.insert(serverAccess).values(row).onConflictDoUpdate({ target, set: { updatedAt: sql\`now()\` }, setWhere: sql\`\${serverAccess.claim} is null or \${serverAccess.updatedAt} < now() - make_interval(secs => 90)\` });`,
+      errors: Array.from({ length: 4 }, () => ({ messageId: "staleNow" })),
+    },
+    // clock_timestamp() is volatile: Postgres reads it for every row and no index can serve the comparison.
+    {
+      filename,
+      code: `export const tokenRuns = sql\`\${organizationToken.expiresAt} > clock_timestamp()\`;`,
+      errors: [{ messageId: "volatileClock" }],
+    },
     {
       filename,
       code: `import { and, gt } from "drizzle-orm";

@@ -23,6 +23,7 @@ import { fleetToken, serverEnrollment, waitingServer } from "#/modules/machines/
 import { afterDatabaseCommit, Database } from "#/server/database.server";
 import { Unauthorized } from "#/server/public-error";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
+import { checkedNow } from "#/db/tables";
 
 export const WAITING_PER_TOKEN = 1000;
 const LAST_SLOTS = 100;
@@ -88,7 +89,7 @@ const lockTokenAgainstRevoke = Effect.fn("Checkin.lockToken")(function* (id: str
   const [live] = yield* drizzle
     .select({
       revoked: sql<boolean>`${fleetToken.revokedAt} is not null`,
-      expired: sql<boolean>`${fleetToken.expiresAt} <= now()`,
+      expired: sql<boolean>`${fleetToken.expiresAt} <= ${checkedNow()}`,
     })
     .from(fleetToken)
     .where(eq(fleetToken.id, id))
@@ -304,7 +305,7 @@ export const checkIn = Effect.fn("Checkin.checkIn")(function* (input: {
       organizationId: fleetToken.organizationId,
       autoEnrollMax: fleetToken.autoEnrollMax,
       revoked: sql<boolean>`${fleetToken.revokedAt} is not null`,
-      expired: sql<boolean>`${fleetToken.expiresAt} <= now()`,
+      expired: sql<boolean>`${fleetToken.expiresAt} <= ${checkedNow()}`,
     })
     .from(fleetToken)
     .where(eq(fleetToken.tokenHash, hashFleetToken(bearer)))
@@ -331,7 +332,7 @@ export const checkIn = Effect.fn("Checkin.checkIn")(function* (input: {
       .set({ lastUsedAt: sql`now()` })
       .where(and(
         eq(fleetToken.id, token.id),
-        or(isNull(fleetToken.lastUsedAt), lt(fleetToken.lastUsedAt, sql`now() - interval '1 minute'`)),
+        or(isNull(fleetToken.lastUsedAt), lt(fleetToken.lastUsedAt, sql`${checkedNow()} - interval '1 minute'`)),
       ));
   }
 

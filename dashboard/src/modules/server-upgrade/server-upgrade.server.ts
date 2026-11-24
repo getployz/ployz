@@ -35,6 +35,7 @@ import { organizationServerUpgrades, serverUpgradeAttempt } from "#/modules/serv
 import { SERVERS_UNANSWERED_MESSAGE, type StoreRefusal } from "#/lib/refusal";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
+import { checkedNow } from "#/db/tables";
 
 const POINTER_CACHE_MS = 5 * 60_000;
 // ponytail: one process-wide cache of a public, tiny pointer per path; a handful of paths, nothing to evict.
@@ -488,7 +489,7 @@ export const observeServerNames = (organizationId: string) =>
 
 /** The hourly sweep: an attempt still `running` after the observation limit lost its Rollout run, so it reads `unknown`. */
 export const closeStaleUpgradeAttempts = () =>
-  closeRunningAttempts(lt(serverUpgradeAttempt.startedAt, sql`now() - make_interval(secs => ${UPGRADE_OBSERVATION_LIMIT_MS / 1000})`));
+  closeRunningAttempts(lt(serverUpgradeAttempt.startedAt, sql`${checkedNow()} - make_interval(secs => ${UPGRADE_OBSERVATION_LIMIT_MS / 1000})`));
 
 /**
  * The automatic Rollout runs with an attempt that ended `unknown` in the last `withinMs`, on Postgres's clock, which
@@ -500,7 +501,7 @@ export const listUnknownAutomaticRollouts = Effect.fn("ServerUpgrade.listUnknown
     .where(and(
       eq(serverUpgradeAttempt.trigger, "automatic"),
       eq(serverUpgradeAttempt.outcome, "unknown"),
-      gte(serverUpgradeAttempt.endedAt, sql`now() - make_interval(secs => ${withinMs / 1000})`),
+      gte(serverUpgradeAttempt.endedAt, sql`${checkedNow()} - make_interval(secs => ${withinMs / 1000})`),
     ));
   return rows.map(({ inngestRunId }) => inngestRunId);
 });

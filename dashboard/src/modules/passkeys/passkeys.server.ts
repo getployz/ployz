@@ -18,6 +18,7 @@ import { clusterRead, firstRuntimeFrame } from "#/modules/runtime/organization-r
 import { Ployz } from "#/modules/runtime/ployz.server";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
+import { checkedNow } from "#/db/tables";
 
 /** Why a registration did not produce a passkey request. The browser shows the message as it is. */
 export class PasskeyRefused extends Data.TaggedError("PasskeyRefused")<{ readonly message: string }> {
@@ -76,7 +77,7 @@ export const finishPasskeyRegistration = Effect.fn("Passkeys.finish")(function* 
   const rp = relyingPartyOf((yield* AppConfig).app.url);
   const { drizzle } = yield* Database;
   const [challenge] = yield* drizzle.delete(verification)
-    .where(and(eq(verification.identifier, challengeKey(actor.userId)), gt(verification.expiresAt, sql`now()`)))
+    .where(and(eq(verification.identifier, challengeKey(actor.userId)), gt(verification.expiresAt, checkedNow())))
     .returning({ value: verification.value });
   if (challenge === undefined) return yield* new PasskeyRefused({ message: "That took too long. Add the passkey again." });
   // SAFETY: the verifier reads every field it needs from the parsed answer and throws on any it can't use.
@@ -109,7 +110,7 @@ export const finishPasskeyRegistration = Effect.fn("Passkeys.finish")(function* 
 export const readPasskeyRequest = Effect.fn("Passkeys.readRequest")(function* (organizationId: string, code: string) {
   const { drizzle } = yield* Database;
   const [row] = yield* drizzle.select().from(passkeyRequest)
-    .where(and(eq(passkeyRequest.organizationId, organizationId), eq(passkeyRequest.code, code), gt(passkeyRequest.expiresAt, sql`now()`)))
+    .where(and(eq(passkeyRequest.organizationId, organizationId), eq(passkeyRequest.code, code), gt(passkeyRequest.expiresAt, checkedNow())))
     .limit(1);
   if (row === undefined) return null;
   // SAFETY: the passkey_request_algorithm check admits only these two names.

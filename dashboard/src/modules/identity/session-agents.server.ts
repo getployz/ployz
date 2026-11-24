@@ -6,6 +6,7 @@ import { session } from "#/modules/identity/tables";
 import { member } from "#/modules/organization/tables";
 import { whileLocked } from "#/server/advisory-lock.server";
 import { Database } from "#/server/database.server";
+import { checkedNow } from "#/db/tables";
 
 // Holding a member's grants pins a connection while its work takes more, so this bounds how many hold or wait at once.
 const grantHolders = Semaphore.makeUnsafe(4);
@@ -53,7 +54,7 @@ export const linkConsentSession = Effect.fn("Identity.linkConsentSession")(funct
   const link = and(eq(oauthConsentSession.consentId, consent.id), eq(oauthConsentSession.sessionId, sessionId));
   yield* drizzle.insert(oauthConsentSession).values({ consentId: consent.id, sessionId }).onConflictDoNothing();
   const [live] = yield* drizzle.select({ id: session.id }).from(session)
-    .where(and(eq(session.id, sessionId), gt(session.expiresAt, sql`now()`)))
+    .where(and(eq(session.id, sessionId), gt(session.expiresAt, checkedNow())))
     .for("share");
   if (live !== undefined) return true;
   yield* drizzle.update(oauthConsentSession).set({ signedOutAt: sql`now()` }).where(link);
@@ -108,7 +109,7 @@ export const grantActs = Effect.fn("Identity.grantActs")(function* (consentId: s
 export const signOutSessionAgents = Effect.fn("Identity.signOutSessionAgents")(function* (userId: string, sessionId: string) {
   const { drizzle } = yield* Database;
   const consents = drizzle.select({ id: oauthConsent.id }).from(oauthConsent).where(eq(oauthConsent.userId, userId));
-  const signedIn = drizzle.select({ id: session.id }).from(session).where(and(eq(session.userId, userId), gt(session.expiresAt, sql`now()`)));
+  const signedIn = drizzle.select({ id: session.id }).from(session).where(and(eq(session.userId, userId), gt(session.expiresAt, checkedNow())));
   yield* drizzle.update(oauthConsentSession)
     .set({ signedOutAt: sql`now()` })
     .where(and(

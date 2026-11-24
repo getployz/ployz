@@ -24,6 +24,7 @@ import { Database } from "#/server/database.server";
 import { NotFound } from "#/server/public-error";
 import { uuidFrom } from "#/server/uuid-from";
 import { frameServers } from "#/modules/runtime/daemon-compat";
+import { checkedNow } from "#/db/tables";
 
 type VolumeRunRow = typeof volumeRun.$inferSelect;
 
@@ -1122,10 +1123,10 @@ export const closeStaleVolumeRuns = <R>(lookup: InngestRunLookup<R>) => Effect.g
   const { drizzle } = yield* Database;
   const unclaimed = yield* drizzle.update(volumeRun)
     .set(ended("not_started", "event never delivered"))
-    .where(and(eq(volumeRun.state, "requested"), lt(volumeRun.createdAt, sql`now() - make_interval(secs => ${VOLUME_RUN_UNCLAIMED_LIMIT_MS / 1000})`)))
+    .where(and(eq(volumeRun.state, "requested"), lt(volumeRun.createdAt, sql`${checkedNow()} - make_interval(secs => ${VOLUME_RUN_UNCLAIMED_LIMIT_MS / 1000})`)))
     .returning({ id: volumeRun.id });
   const running = yield* drizzle.select({ id: volumeRun.id, inngestRunId: volumeRun.inngestRunId }).from(volumeRun)
-    .where(and(eq(volumeRun.state, "running"), lt(volumeRun.updatedAt, sql`now() - make_interval(secs => ${VOLUME_RUN_RUNNING_CHECK_MS / 1000})`)));
+    .where(and(eq(volumeRun.state, "running"), lt(volumeRun.updatedAt, sql`${checkedNow()} - make_interval(secs => ${VOLUME_RUN_RUNNING_CHECK_MS / 1000})`)));
   let unheld = 0;
   const holders = yield* drizzle.selectDistinct({ heldBy: volumeRun.heldBy }).from(volumeRun).where(isNotNull(volumeRun.heldBy));
   for (const { heldBy } of holders) {

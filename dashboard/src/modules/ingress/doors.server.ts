@@ -47,6 +47,7 @@ import { ServerLacks } from "#/modules/runtime/daemon-compat";
 import { PloyzProviderError, type PloyzSession } from "#/modules/runtime/ployz.server";
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
+import { checkedNow } from "#/db/tables";
 
 type AttemptRow = typeof ingressDoorsAttempt.$inferSelect;
 type DoorsRequest = IngressDoorsRequestedEventData;
@@ -460,10 +461,10 @@ export const closeDoorsRun = Effect.fn("IngressDoors.closeRun")(function* (runId
 export const closeStaleDoors = Effect.fn("IngressDoors.closeStale")(function* () {
   const { drizzle } = yield* Database;
   const lost = yield* drizzle.update(ingressDoorsAttempt).set(failed(RUN_ENDS.failure.running))
-    .where(and(eq(ingressDoorsAttempt.state, "running"), lt(ingressDoorsAttempt.startedAt, sql`now() - make_interval(secs => ${2 * DOORS_RUNNING_LIMIT_MS / 1000})`)))
+    .where(and(eq(ingressDoorsAttempt.state, "running"), lt(ingressDoorsAttempt.startedAt, sql`${checkedNow()} - make_interval(secs => ${2 * DOORS_RUNNING_LIMIT_MS / 1000})`)))
     .returning({ id: ingressDoorsAttempt.id });
   const unstarted = yield* drizzle.update(ingressDoorsAttempt).set(failed(RUN_ENDS.failure.pending))
-    .where(and(eq(ingressDoorsAttempt.state, "pending"), lt(ingressDoorsAttempt.requestedAt, sql`now() - make_interval(secs => ${DOORS_PENDING_LIMIT_MS / 1000})`)))
+    .where(and(eq(ingressDoorsAttempt.state, "pending"), lt(ingressDoorsAttempt.requestedAt, sql`${checkedNow()} - make_interval(secs => ${DOORS_PENDING_LIMIT_MS / 1000})`)))
     .returning({ id: ingressDoorsAttempt.id });
   return { unstarted: unstarted.length, lost: lost.length };
 });

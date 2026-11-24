@@ -9,6 +9,8 @@ const clockConversions = new Set(["getTime", "valueOf", "toISOString"]);
 const rowWrites = new Set(["set", "values"]);
 const conflictClauses = new Set(["onConflictDoUpdate", "onConflictDoNothing"]);
 const conflictFilters = new Set(["set", "where", "setWhere", "targetWhere"]);
+const checks = new Set(["where", "having"]);
+const conflictChecks = new Set(["where", "setWhere", "targetWhere"]);
 const comparisons = new Set(["eq", "ne", "gt", "gte", "lt", "lte", "between", "notBetween", "inArray", "notInArray"]);
 
 function isMember(node: ESTree.Node, object: string, property: string): boolean {
@@ -27,6 +29,61 @@ function unwrapped(node: ESTree.Node): ESTree.Node {
   while (current.type === "TSAsExpression" || current.type === "TSSatisfiesExpression" || current.type === "TSNonNullExpression"
     || current.type === "ParenthesizedExpression") current = current.expression;
   return current;
+}
+
+/**
+ * SQL text that orders times: `<`, `>`, `<=`, `>=` or `between`, once `=>` (named arguments) and the JSON arrows are
+ * taken out. A bare `=` does not count: in `update … set updated_at = now()` it writes the time.
+ */
+function compares(text: string): boolean {
+  return /<|>|\bbetween\b/iu.test(text.replaceAll(/=>|->>?|#>>?|@>|<@/gu, " "));
+}
+
+/** The literal text of a sql template, a placeholder standing for each interpolated value. */
+function templateText(node: ESTree.TaggedTemplateExpression): string {
+  return node.quasi.quasis.map((quasi) => quasi.value.cooked ?? quasi.value.raw).join(" $ ");
+}
+
+function isSqlTemplate(node: ESTree.Node): node is ESTree.TaggedTemplateExpression {
+  return node.type === "TaggedTemplateExpression" && node.tag.type === "Identifier" && node.tag.name === "sql";
+}
+
+/** Which clock a sql template reads that a check must not: `now()`, or a bare `clock_timestamp()`. */
+function checkClock(text: string): "staleNow" | "volatileClock" | null {
+  if (/\bnow\(\)/iu.test(text)) return "staleNow";
+  if (/\bclock_timestamp\(\)/iu.test(text.replaceAll(/\(\s*select\s+clock_timestamp\(\)\s*\)/giu, " "))) return "volatileClock";
+  return null;
+}
+
+/** Whether an expression can contain SQL a condition evaluates: not a function, an awaited query, or a method chain off anything but `sql`. */
+function buildsSql(node: ESTree.Node): boolean {
+  switch (node.type) {
+    case "ArrowFunctionExpression":
+    case "FunctionExpression":
+    case "AwaitExpression":
+    case "YieldExpression":
+      return false;
+    case "CallExpression":
+      return node.callee.type !== "MemberExpression" || (node.callee.object.type === "Identifier" && node.callee.object.name === "sql");
+    default:
+      return true;
+  }
+}
+
+/** The parts of a drizzle call that Postgres evaluates as a condition: `.where`, `.having` and an upsert's filters. */
+function queryChecks(call: ESTree.CallExpression): Array<ESTree.Node> {
+  const callee = call.callee;
+  if (callee.type !== "MemberExpression" || callee.computed || call.arguments.length !== 1) return [];
+  const method = propertyName(callee.property) ?? "";
+  const [first] = call.arguments;
+  if (first === undefined || first.type === "ArrowFunctionExpression" || first.type === "FunctionExpression") return [];
+  if (checks.has(method)) return [first];
+  if (conflictClauses.has(method) && first.type === "ObjectExpression") {
+    return first.properties.flatMap((property) =>
+      property.type === "Property" && conflictChecks.has(propertyName(property.key) ?? "") ? [property.value] : [],
+    );
+  }
+  return [];
 }
 
 function enclosingFunction(node: ESTree.Node): ESTree.Node | null {
@@ -61,10 +118,13 @@ function queryValues(call: ESTree.CallExpression, first: ESTree.Node): Array<EST
 export const postgresClockInQueriesRule = defineRule({
   meta: {
     type: "problem",
-    docs: { description: "Disallow the web instance's clock as a value written to or compared in Postgres." },
+    docs: { description: "Disallow the web instance's clock in Postgres, and a check on Postgres's transaction-start clock." },
     messages: {
+      staleNow: "A check reads the time it runs at; now() is the transaction start, stale after any lock wait. Use checkedNow().",
+      volatileClock:
+        "clock_timestamp() is volatile, so Postgres reads it per row and no index can serve this check. Use checkedNow(), which reads it once per statement.",
       webClock:
-        "Readers compare this against Postgres's now(); a web instance's clock drifts from it. Use sql`now()` (plus an interval) instead, or sql`clock_timestamp()` for a check made after a lock: now() is when the transaction began, before any wait.",
+        "Postgres stamps and checks stored times on its own clock; a web instance's clock drifts from it. Write sql`now()` (plus an interval), and check against checkedNow().",
     },
   },
   create(context) {
@@ -163,10 +223,53 @@ export const postgresClockInQueriesRule = defineRule({
       });
     }
 
+    /** A `const` anywhere stands for its initializer: a check against `cutoff` reads what `cutoff` was built from. */
+    function constValue(node: ESTree.Node): ESTree.Node {
+      if (node.type !== "Identifier") return node;
+      const definition = resolveVariable(sourceCode, node as ESTree.IdentifierReference)?.defs[0];
+      const declarator = definition?.node;
+      const declaration = definition?.parent;
+      if (declarator?.type !== "VariableDeclarator" || declarator.init === null || declaration?.type !== "VariableDeclaration"
+        || declaration.kind !== "const") return node;
+      return unwrapped(declarator.init);
+    }
+
+    /**
+     * Every sql template a condition reads, through consts and nested templates. A query's result, a method chain and
+     * a nested function are not SQL the condition contains: `inArray(id, ended.map(...))` reads rows, not `ended`'s set.
+     */
+    function checkClocks(wrapped: ESTree.Node, seen: Set<ESTree.Node>) {
+      const node = constValue(unwrapped(wrapped));
+      if (seen.has(node)) return;
+      seen.add(node);
+      if (isSqlTemplate(node)) {
+        const clock = checkClock(templateText(node));
+        if (clock !== null && !reported.has(node)) {
+          reported.add(node);
+          context.report({ node, messageId: clock });
+        }
+        for (const expression of node.quasi.expressions) checkClocks(expression, seen);
+        return;
+      }
+      if (!buildsSql(node)) return;
+      for (const child of childNodes(node, visitorKeys)) {
+        if (node.type === "MemberExpression" && child === node.property && !node.computed) continue;
+        if (node.type === "Property" && child === node.key && !node.computed) continue;
+        checkClocks(child, seen);
+      }
+    }
+
     return {
+      TaggedTemplateExpression(node) {
+        if (isSqlTemplate(node) && compares(templateText(node))) checkClocks(node, new Set());
+      },
       CallExpression(node) {
+        for (const condition of queryChecks(node)) checkClocks(condition, new Set());
         if (isComparison(node.callee)) {
-          for (const argument of node.arguments) report(argument);
+          for (const argument of node.arguments) {
+            report(argument);
+            checkClocks(argument, new Set());
+          }
           return;
         }
         const [first] = node.arguments;

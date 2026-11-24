@@ -5,6 +5,7 @@ import { InngestClient, InngestEventSendError, type InngestSendableEvent, type P
 import { operationOutbox } from "#/modules/inngest/outbox.tables";
 import { afterDatabaseCommit, Database } from "#/server/database.server";
 import { runInngestEffect } from "#/modules/inngest/run.server";
+import { checkedNow } from "#/db/tables";
 
 /** An event Inngest dedupes by its id, so sending it twice starts one run. */
 export type OutboxEvent = InngestSendableEvent & { readonly id: string };
@@ -51,7 +52,7 @@ export const enqueueEvent = Effect.fn("Outbox.enqueue")(function* (event: Outbox
 export const sweepOutbox = Effect.fn("Outbox.sweep")(function* () {
   const { drizzle } = yield* Database;
   const rows = yield* drizzle.select().from(operationOutbox)
-    .where(and(isNull(operationOutbox.sentAt), lt(operationOutbox.createdAt, sql`now() - make_interval(secs => ${SWEEP_AFTER_MS / 1000})`)))
+    .where(and(isNull(operationOutbox.sentAt), lt(operationOutbox.createdAt, sql`${checkedNow()} - make_interval(secs => ${SWEEP_AFTER_MS / 1000})`)))
     .orderBy(asc(operationOutbox.createdAt))
     .limit(BATCH);
   yield* send(rows);

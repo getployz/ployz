@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { randomBytes } from "node:crypto";
 import { sha256Hex } from "#/lib/hash.server";
-import { and, asc, eq, gt, isNull, like, notLike, or, sql } from "drizzle-orm";
+import { and, asc, eq, gt, isNull, like, notLike, or } from "drizzle-orm";
 import { Effect } from "effect";
 import { type Caller, callerCan, type TokenKind } from "#/modules/identity/actor";
 import { readStore } from "#/modules/config-store/config-store.server";
@@ -12,6 +12,7 @@ import { FULL_GRANT, grantLabel, presetGrant, type TokenGrant, type TokenPreset 
 import { Database } from "#/server/database.server";
 import { NotFound, Validation } from "#/server/public-error";
 import { DAY_MS } from "#/lib/time-range";
+import { checkedNow } from "#/db/tables";
 
 /** Marks a bearer as an Organization Token rather than a session token. */
 export const ORGANIZATION_TOKEN_PREFIX = "ployz_";
@@ -147,7 +148,7 @@ export const listCredentials = Effect.fn("OrganizationToken.list")(function* (ca
     .where(and(
       eq(session.userId, caller.userId),
       isCliSession,
-      gt(session.expiresAt, sql`now()`),
+      gt(session.expiresAt, checkedNow()),
     ))
     .orderBy(asc(session.createdAt), asc(session.id));
   return {

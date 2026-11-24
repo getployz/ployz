@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { and, eq, exists, gt, isNull, notExists, or, type SQL, sql } from "drizzle-orm";
+import { and, eq, exists, gt, isNull, notExists, or, type SQL } from "drizzle-orm";
 import { Cause, Effect, Exit, Option, Schema } from "effect";
 import { VIA_HEADER } from "@ployz/sdk/cloud-contract";
 import { Uuid } from "#/lib/schema";
@@ -22,6 +22,7 @@ import {
   type RateWindow,
 } from "#/server/rate-limit.server";
 import { ClientAddress } from "#/server/client-ip";
+import { checkedNow } from "#/db/tables";
 
 /** How many failed authentications one address gets before it waits. Successes never count. */
 export const FAILED_AUTHENTICATION_WINDOWS: ReadonlyArray<RateWindow> = [
@@ -182,7 +183,7 @@ export const oauthCaller = Effect.fn("Identity.oauthCaller")(function* (claims: 
       and(
         notExists(links(eq(oauthConsentSession.sessionId, sid))),
         exists(database.drizzle.select({ id: session.id }).from(session)
-          .where(and(eq(session.id, sid), eq(session.userId, sub), gt(session.expiresAt, sql`now()`)))),
+          .where(and(eq(session.id, sid), eq(session.userId, sub), gt(session.expiresAt, checkedNow())))),
       ),
     );
   const rows = yield* database.drizzle

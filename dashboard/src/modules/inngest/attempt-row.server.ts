@@ -4,6 +4,7 @@ import type { PgColumn, PgTable } from "drizzle-orm/pg-core";
 import { Effect, Schedule } from "effect";
 import { Database } from "#/server/database.server";
 import { NotFound } from "#/server/public-error";
+import { checkedNow } from "#/db/tables";
 
 /**
  * A row-backed attempt (a Drain, a web traffic change, a Namespace clean): one Cloud-owned row, written `pending` by the
@@ -57,7 +58,7 @@ export function queueWaitedPast(table: AttemptTable, limitMs: number, { earlierO
         select max(before.ended_at) from ${name} as before
         where before.organization_id = ${name}.organization_id${earlierOnly ? sql`
           and before.requested_at < ${name}.requested_at` : sql``}
-      )) < now() - make_interval(secs => ${limitMs / 1000})`,
+      )) < ${checkedNow()} - make_interval(secs => ${limitMs / 1000})`,
   ];
 }
 
@@ -190,7 +191,7 @@ export function attemptRows<T extends AttemptTable>(concrete: T, notFound: strin
   }) {
     const { drizzle } = yield* Database;
     const running = yield* drizzle.update(table).set(input.running.end)
-      .where(and(eq(table.state, "running"), lt(table.startedAt, sql`now() - make_interval(secs => ${input.running.limitMs / 1000})`)))
+      .where(and(eq(table.state, "running"), lt(table.startedAt, sql`${checkedNow()} - make_interval(secs => ${input.running.limitMs / 1000})`)))
       .returning({ id: table.id });
     const when = input.pending.when;
     const pending = yield* drizzle.update(table).set(input.pending.end)

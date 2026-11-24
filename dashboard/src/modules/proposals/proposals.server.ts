@@ -41,6 +41,7 @@ import type { ServiceActLeg, ServiceActState } from "#/modules/service-act/servi
 import { serviceAct } from "#/modules/service-act/tables";
 import { Database } from "#/server/database.server";
 import { Forbidden, NotFound } from "#/server/public-error";
+import { checkedNow } from "#/db/tables";
 
 type ProposalRow = typeof operationProposals.$inferSelect;
 
@@ -433,7 +434,7 @@ const liveCredential = Effect.fn("Proposals.liveCredential")(function* (row: Pro
     return live?.credential ?? null;
   }
   const [live] = yield* drizzle.select({ id: session.id }).from(session)
-    .where(and(eq(session.id, row.credentialId), eq(session.userId, asker), gt(session.expiresAt, sql`now()`))).limit(1);
+    .where(and(eq(session.id, row.credentialId), eq(session.userId, asker), gt(session.expiresAt, checkedNow()))).limit(1);
   return live === undefined ? null : { kind: "session", id: live.id } satisfies Credential;
 });
 
@@ -593,7 +594,7 @@ const SWEEP_WINDOW_MS = 60 * 60_000;
 export const sweepProposals = Effect.fn("Proposals.sweep")(function* () {
   const { drizzle } = yield* Database;
   const rows = yield* drizzle.select().from(operationProposals)
-    .where(and(eq(operationProposals.status, "approved"), isNull(operationProposals.halt), gt(operationProposals.decidedAt, sql`now() - make_interval(secs => ${SWEEP_WINDOW_MS / 1000})`)));
+    .where(and(eq(operationProposals.status, "approved"), isNull(operationProposals.halt), gt(operationProposals.decidedAt, sql`${checkedNow()} - make_interval(secs => ${SWEEP_WINDOW_MS / 1000})`)));
   yield* Effect.forEach(rows, continueProposal, { discard: true });
   return rows.map((row) => row.id);
 });

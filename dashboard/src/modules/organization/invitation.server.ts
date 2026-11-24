@@ -10,6 +10,7 @@ import { type InviteRole, MANAGING_ROLES } from "#/modules/organization/permissi
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
 import { DAY_MS } from "#/lib/time-range";
+import { checkedNow } from "#/db/tables";
 
 export const INVITE_DAYS = 7;
 
@@ -21,7 +22,7 @@ const fromManager = sql<boolean>`exists (select 1 from ${member} where ${member.
   and ${member.userId} = ${invitation.inviterId} and ${inArray(member.role, [...MANAGING_ROLES])})`;
 
 /** Whether an invite has lapsed, on Postgres's clock, which also set its expiry. */
-const expired = sql<boolean>`${invitation.expiresAt} <= now()`;
+const expired = sql<boolean>`${invitation.expiresAt} <= ${checkedNow()}`;
 
 const stateOf = (row: { status: typeof invitation.$inferSelect.status; expired: boolean; fromManager: boolean }): InviteState => {
   if (row.status !== "pending") return row.status;
@@ -44,7 +45,7 @@ export const createInvite = Effect.fn("Invitation.create")(function* (
       .where(and(eq(member.organizationId, organizationId), sql`lower(${user.email}) = ${email}`)).limit(1);
     if (joined !== undefined) return yield* new Conflict({ message: `${email} is already a member.`, userFacing: true });
     const [waiting] = yield* drizzle.select({ id: invitation.id }).from(invitation)
-      .where(and(eq(invitation.organizationId, organizationId), eq(invitation.email, email), eq(invitation.status, "pending"), gt(invitation.expiresAt, sql`now()`), fromManager))
+      .where(and(eq(invitation.organizationId, organizationId), eq(invitation.email, email), eq(invitation.status, "pending"), gt(invitation.expiresAt, checkedNow()), fromManager))
       .limit(1);
     if (waiting !== undefined) return yield* new Conflict({ message: `${email} has a pending invite. Revoke it to send a new one.`, userFacing: true });
   }
@@ -72,7 +73,7 @@ export const listPendingInvites = Effect.fn("Invitation.listPending")(function* 
     expiresAt: invitation.expiresAt,
   }).from(invitation)
     .innerJoin(user, eq(user.id, invitation.inviterId))
-    .where(and(eq(invitation.organizationId, organizationId), eq(invitation.status, "pending"), gt(invitation.expiresAt, sql`now()`), fromManager))
+    .where(and(eq(invitation.organizationId, organizationId), eq(invitation.status, "pending"), gt(invitation.expiresAt, checkedNow()), fromManager))
     .orderBy(asc(invitation.createdAt));
 });
 
@@ -156,10 +157,9 @@ export const acceptInvite = Effect.fn("Invitation.accept")(function* (token: str
       .where(and(eq(member.organizationId, row.organizationId), eq(member.userId, row.inviterId), inArray(member.role, [...MANAGING_ROLES]))).for("share");
     const state = stateOf({ ...row, fromManager: manager !== undefined });
     if (state !== "pending") return yield* new Conflict({ message: UNUSABLE[state], userFacing: true });
-    // now() is when this transaction began, before it waited on the locks above: the expiry is checked again on the
-    // clock as it reads once they are held.
+    // The member and manager reads above may have waited on locks: spend the invite only if it is still live once they are held.
     const [spent] = yield* drizzle.update(invitation).set({ status: "accepted", acceptedByUserId: userId })
-      .where(and(eq(invitation.id, row.id), sql`${invitation.expiresAt} > clock_timestamp()`)).returning({ id: invitation.id });
+      .where(and(eq(invitation.id, row.id), sql`${invitation.expiresAt} > ${checkedNow()}`)).returning({ id: invitation.id });
     if (spent === undefined) return yield* new Conflict({ message: UNUSABLE.expired, userFacing: true });
     yield* drizzle.insert(member).values({ organizationId: row.organizationId, userId, role: row.role });
     return { slug: row.slug };

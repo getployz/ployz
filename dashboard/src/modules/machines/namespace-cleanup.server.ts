@@ -22,6 +22,7 @@ import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
 import { Database } from "#/server/database.server";
 import { Conflict } from "#/server/public-error";
 import { SYSTEM_NAMESPACE } from "./server-services";
+import { checkedNow } from "#/db/tables";
 
 /** Which of `namespaces`, seen on the Organization's Servers, no Environment owns: the Servers page offers to remove them. */
 export const listStrayNamespaces = Effect.fn("NamespaceCleanup.strays")(function* (
@@ -187,7 +188,7 @@ export const closeStaleCleanups = Effect.fn("NamespaceCleanup.closeStale")(funct
     running: { limitMs: CLEANUP_RUNNING_LIMIT_MS, end: ended("lost") },
     pending: {
       end: ended("not_started"),
-      when: lt(namespaceCleanup.requestedAt, sql`now() - make_interval(secs => ${CLEANUP_PENDING_LIMIT_MS / 1000})`),
+      when: lt(namespaceCleanup.requestedAt, sql`${checkedNow()} - make_interval(secs => ${CLEANUP_PENDING_LIMIT_MS / 1000})`),
     },
   });
   return { failed: pending, unknown: running };

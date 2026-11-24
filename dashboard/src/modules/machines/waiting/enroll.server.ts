@@ -26,6 +26,7 @@ import { isBehind } from "#/modules/server-upgrade/server-upgrade";
 import { Database, isUniqueViolation } from "#/server/database.server";
 import { Conflict, NotFound, Validation } from "#/server/public-error";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
+import { checkedNow } from "#/db/tables";
 
 export type EnrollCandidate = {
   readonly id: string;
@@ -204,7 +205,7 @@ const candidatesOf = Effect.fn("ServerEnrollment.candidates")(function* (organiz
       rejected: sql<boolean>`${waitingServer.rejectedAt} is not null`,
       enrolling: sql<boolean>`exists (select 1 from ${serverEnrollment} where ${serverEnrollment.waitingServerId} = ${waitingServer.id} and ${serverEnrollment.endedAt} is null)`,
       joined: sql<boolean>`exists (select 1 from ${serverEnrollment} where ${serverEnrollment.waitingServerId} = ${waitingServer.id} and ${serverEnrollment.state} = 'joined')`,
-      tokenEnded: sql<"expired" | "revoked" | null>`case when ${fleetToken.revokedAt} is not null then 'revoked' when ${fleetToken.expiresAt} <= now() then 'expired' end`,
+      tokenEnded: sql<"expired" | "revoked" | null>`case when ${fleetToken.revokedAt} is not null then 'revoked' when ${fleetToken.expiresAt} <= ${checkedNow()} then 'expired' end`,
       foundsClosed: fleetToken.foundsClosed,
     })
     .from(waitingServer)
@@ -445,7 +446,7 @@ export const startArrivalEnrollment = Effect.fn("ServerEnrollment.startArrival")
       .from(organizationPairing).where(eq(organizationPairing.organizationId, token.organizationId));
     if (pairing === undefined || pairing.founder === null || pairing.removal !== null) return false;
     const [live] = yield* drizzle.select({ max: fleetToken.autoEnrollMax, userId: fleetToken.createdByUserId })
-      .from(fleetToken).where(and(eq(fleetToken.id, token.id), isNull(fleetToken.revokedAt), gt(fleetToken.expiresAt, sql`now()`))).for("no key update");
+      .from(fleetToken).where(and(eq(fleetToken.id, token.id), isNull(fleetToken.revokedAt), gt(fleetToken.expiresAt, checkedNow()))).for("no key update");
     if (live === undefined || live.max === null) return false;
     const [host] = yield* drizzle.select({
       id: waitingServer.id, report: waitingServer.report, observedIp: waitingServer.observedIp,
@@ -542,7 +543,7 @@ export const readServerEnrollmentStatus = Effect.fn("ServerEnrollment.status")(f
     .where(and(
       eq(serverEnrollment.organizationId, organization.id),
       input.id === undefined ? and(
-        or(isNull(serverEnrollment.endedAt), gte(serverEnrollment.endedAt, sql`now() - make_interval(secs => ${RECENT_ENROLLMENT_MS / 1000})`)),
+        or(isNull(serverEnrollment.endedAt), gte(serverEnrollment.endedAt, sql`${checkedNow()} - make_interval(secs => ${RECENT_ENROLLMENT_MS / 1000})`)),
         // Reject spares the join it found committed, so that attempt stays in view like any other.
         or(isNull(waitingServer.rejectedAt), and(
           or(isNull(serverEnrollment.endedAt), gte(serverEnrollment.endedAt, waitingServer.rejectedAt)),
