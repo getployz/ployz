@@ -1159,6 +1159,58 @@ fn a_name_stays_kept_after_its_signed_copy_is_gone() {
 }
 
 #[test]
+fn a_route_carried_from_before_a_name_was_kept_drops_its_unsigned_copy() {
+    let machine = MachineId::parse("a".repeat(32)).unwrap();
+    let id = ServiceId::parse("b".repeat(32)).unwrap();
+    let db = ServiceName::parse("db").unwrap();
+    let free = admitted(
+        observation(
+            2,
+            &machine,
+            &id,
+            &db,
+            ContainerKind::ServiceContainer,
+            running(HealthObservation::Healthy),
+            Some([10, 210, 1, 2]),
+        ),
+        Some(Admission::Free),
+    );
+    let mut inputs = ProjectionInputs::new(machine);
+    inputs.load(Snapshot {
+        observations: vec![free.clone()],
+        cluster: None,
+        kept: KeptNames::default(),
+    });
+    assert_eq!(
+        addresses(plan(&inputs.build(), "db.app.internal.", RecordType::A)),
+        vec![Ipv4Addr::new(10, 210, 1, 2)]
+    );
+
+    // The name's row lands with a signed copy that isn't serving yet, so no copy the
+    // filter admits is In and the last pass's route would otherwise stand.
+    let mut pending = observation(
+        1,
+        &machine,
+        &id,
+        &db,
+        ContainerKind::ServiceContainer,
+        running(HealthObservation::Starting),
+        Some([10, 210, 1, 1]),
+    );
+    pending
+        .try_update(|parts| parts.rotation = Some(CopyRotation::Pending))
+        .unwrap();
+    let mut kept = KeptNames::default();
+    kept.keep_keys(["signed-service:app/db"]);
+    inputs.load(Snapshot {
+        observations: vec![free, pending],
+        cluster: None,
+        kept,
+    });
+    assert_nxdomain(plan(&inputs.build(), "db.app.internal.", RecordType::A));
+}
+
+#[test]
 fn a_name_that_never_ran_signed_answers_unsigned_copies_but_not_by_id() {
     let machine = MachineId::parse("a".repeat(32)).unwrap();
     let id = ServiceId::parse("b".repeat(32)).unwrap();

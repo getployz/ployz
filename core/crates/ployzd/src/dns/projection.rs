@@ -19,7 +19,7 @@ use hickory_server::proto::{
 use ipnet::Ipv4Net;
 use ployz_core::{
     ClusterName, ContainerObservation, KeptNames, MachineId, Namespace, ProxyRoutes,
-    QualifiedService, ServiceId, service_containers, signed_view,
+    QualifiedService, ServiceId, service_containers,
 };
 use tokio::sync::watch;
 
@@ -84,13 +84,8 @@ impl ProjectionInputs {
     }
 
     pub(super) fn build(&mut self) -> Projection {
-        // Before routing, so a copy left out never stands in a route a signed copy on a
-        // Down Machine would otherwise keep.
-        let containers = signed_view(
-            &service_containers(self.observations.iter().cloned()),
-            &self.kept,
-        );
-        let pass = self.reach.pass(&containers);
+        let containers = service_containers(self.observations.iter().cloned());
+        let pass = self.reach.pass(&containers, &self.kept);
         let mut projection = Projection::from_routes(&self.observations, &pass.reachable);
         projection.cluster.clone_from(&self.cluster);
         self.reach.keep(pass.routes);

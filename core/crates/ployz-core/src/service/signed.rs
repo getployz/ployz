@@ -58,6 +58,13 @@ impl KeptNames {
     pub fn contains(&self, service: &QualifiedService) -> bool {
         self.0.contains(service)
     }
+
+    /// Whether a proxy may route `observation`: it was admitted signed, or its name was
+    /// never kept.
+    #[must_use]
+    pub fn admits(&self, observation: &ContainerObservation) -> bool {
+        observation.signed() || !self.contains(&observation.identity())
+    }
 }
 
 /// The Service Containers a proxy may route: all of `containers`, less each one not
@@ -67,10 +74,7 @@ impl KeptNames {
 pub fn signed_view(containers: &[ServiceContainer], kept: &KeptNames) -> Vec<ServiceContainer> {
     containers
         .iter()
-        .filter(|container| {
-            let observation = container.as_observation();
-            observation.signed() || !kept.contains(&observation.identity())
-        })
+        .filter(|container| kept.admits(container.as_observation()))
         .cloned()
         .collect()
 }
