@@ -366,6 +366,52 @@ pub(super) enum FailedStart {
     Retain,
 }
 
+/// Who made the Container a start answered with.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Origin {
+    /// This run made it, so undoing the start removes it with its anonymous Volumes.
+    Made,
+    /// A Global start found a running Container of its spec in the slot, or could not
+    /// rule one out, and took it over. It may predate this run, so undoing the start
+    /// leaves it.
+    Adopted,
+}
+
+/// A Container a start answered with.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct NewCopy {
+    pub(super) container_id: ContainerId,
+    pub(super) origin: Origin,
+}
+
+impl NewCopy {
+    /// Its id when this run made it, so undoing the start removes it.
+    pub(super) fn made(self) -> Option<ContainerId> {
+        (self.origin == Origin::Made).then_some(self.container_id)
+    }
+}
+
+/// A start that failed with `error`.
+#[derive(Clone, Debug)]
+pub(super) struct Unstarted {
+    pub(super) error: ExecutionError,
+    origin: Origin,
+}
+
+impl Unstarted {
+    /// The copy that failed its health and still runs, which the start leaves to its
+    /// Service's cleanup.
+    pub(super) fn unhealthy(&self) -> Option<NewCopy> {
+        let ExecutionError::Health { container_id, .. } = &self.error else {
+            return None;
+        };
+        Some(NewCopy {
+            container_id: *container_id,
+            origin: self.origin,
+        })
+    }
+}
+
 /// One creation of a Container: the client that sends it, the row that shows it
 /// (none when no row of the Deploy does) and the Deploy's cancel.
 pub(super) struct Attempt<'a, C> {
@@ -409,7 +455,7 @@ pub(super) async fn start<C: MachineOperations>(
     attempt: &Attempt<'_, C>,
     run: SlotRun<'_>,
     failed: FailedStart,
-) -> Result<ContainerId, ExecutionError> {
+) -> Result<NewCopy, Unstarted> {
     let Attempt {
         client,
         cancellation,
@@ -437,7 +483,17 @@ pub(super) async fn start<C: MachineOperations>(
             "couldn't remove a failed start's Container"
         );
     }
+    let origin = if adopts {
+        Origin::Adopted
+    } else {
+        Origin::Made
+    };
     started_container(started, spec, cancellation)
+        .map(|container_id| NewCopy {
+            container_id,
+            origin,
+        })
+        .map_err(|error| Unstarted { error, origin })
 }
 
 /// A Global start adopts a running Container of its spec, which a cancel must keep.

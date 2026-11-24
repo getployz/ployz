@@ -1,6 +1,6 @@
 use super::publish::{gaps_still_routing, left_unless_done};
 use super::report::{Left, left_by};
-use super::start::{Attempt, FailedStart, Row, SlotRun, discard_new, start};
+use super::start::{Attempt, FailedStart, NewCopy, Row, SlotRun, Unstarted, discard_new, start};
 use super::{
     DeployOperation, ReplacementCompensation, ReplacementOperation, RestoreAttempt, StopAttempt,
     cleanup,
@@ -40,22 +40,23 @@ pub(super) async fn restore_group<C: MachineOperations>(
         unread,
         ..
     } = record;
-    let started: Vec<_> = started
+    // A copy a start adopted may predate this run, so it stays and blocks its Machine.
+    let started: Vec<(MachineId, Option<ContainerId>)> = started
         .into_iter()
-        .map(|(_, machine, id)| (machine, id))
+        .map(|(_, machine, copy)| (machine, copy.made()))
         .collect();
     let cleanup = CancellationToken::new();
     if stopped.is_empty() {
         if !unread {
-            join_all(started.iter().map(|(machine, id)| {
-                discard_new(
+            join_all(started.iter().filter_map(|(machine, made)| {
+                Some(discard_new(
                     client,
                     progress,
                     shared,
-                    (service, machine, *id),
+                    (service, machine, (*made)?),
                     None,
                     &cleanup,
-                )
+                ))
             }))
             .await;
         }
@@ -68,15 +69,22 @@ pub(super) async fn restore_group<C: MachineOperations>(
             .map(|(machine, _)| Withdrawn::Running(*machine))
             .collect()
     } else {
-        join_all(started.iter().map(|(machine, id)| {
-            discard_new(
-                client,
-                progress,
-                shared,
-                (service, machine, *id),
-                Some(shared.plan.run()),
-                &cleanup,
-            )
+        let cleanup = &cleanup;
+        join_all(started.iter().map(|(machine, made)| async move {
+            match made {
+                Some(id) => {
+                    discard_new(
+                        client,
+                        progress,
+                        shared,
+                        (service, machine, *id),
+                        Some(shared.plan.run()),
+                        cleanup,
+                    )
+                    .await
+                }
+                None => Withdrawn::Running(*machine),
+            }
         }))
         .await
     };
@@ -201,18 +209,18 @@ pub(super) async fn replace_stop_first<C: MachineOperations>(
     };
     let started = start(&attempt, run, FailedStart::Retain).await;
     match started {
-        Ok(new_container) => Ok(Ran {
-            started: Some(new_container),
+        Ok(new_copy) => Ok(Ran {
+            started: Some(new_copy),
             held_old: held_old.map(Box::new),
         }),
-        Err(error) => Err(compensate(
+        Err(unstarted) => Err(compensate(
             client,
             row,
             operation,
             held_old,
             shared,
             cancellation,
-            error,
+            unstarted,
         )
         .await),
     }
@@ -535,16 +543,14 @@ pub(super) async fn compensate<C: MachineOperations>(
     held_old: Option<(ResolvedServiceSpec, cleanup::Copy)>,
     shared: &Shared<'_>,
     cancellation: &CancellationToken,
-    error: ExecutionError,
+    unstarted: Unstarted,
 ) -> OperationFailure {
-    let new_container = if let ExecutionError::Health { container_id, .. } = &error {
-        Some(*container_id)
-    } else {
-        None
-    };
+    // A copy the start adopted may predate this run, so it stays.
+    let new_container = unstarted.unhealthy().and_then(NewCopy::made);
     if held_old.is_none() && new_container.is_none() {
-        return error.into();
+        return unstarted.into();
     }
+    let error = unstarted.error;
     let Row { progress, .. } = row;
     row.running(OperationPhase::Compensating);
     let stop_new_container = match new_container {
