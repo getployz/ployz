@@ -378,7 +378,7 @@ describe("volume runs", () => {
     container_id: container.id,
     namespace: "shop-production",
     resolved_spec: { name: "web", container: { pull_policy: "always", environment: {} }, volumes: [
-      { reference: "data", source: { kind: "provisioned", name: dockerVolume } },
+      { reference: dockerVolume, source: { kind: "provisioned", name: dockerVolume } },
       ...(container.binds === undefined ? [] : [{ reference: container.binds, source: { kind: "bind", machine_path: container.binds } }]),
     ], regions: container.regions ?? {} },
     display_name: container.id,
@@ -1920,8 +1920,8 @@ describe("volume runs", () => {
     });
 
     it.each([
-      ["two of its Containers run on the Volume", () => { containers.push({ machine: "fsn-1", id: "web-fsn-1-b", running: true }); }, /2 of its containers run on data/],
-      ["another Server runs a Container on the Volume", () => { containers.push({ machine: "fsn-2", id: "web-fsn-2", running: false }); }, /shares data with web-fsn-2/],
+      ["two of its Containers run on the Volume", () => { containers.push({ machine: "fsn-1", id: "web-fsn-1-b", running: true }); }, /2 of its containers run on its volume/],
+      ["another Server runs a Container on the Volume", () => { containers.push({ machine: "fsn-2", id: "web-fsn-2", running: false }); }, /shares its volume with web-fsn-2/],
       ["the Volume allows shared writes", () => { storeVolumes = [{ ...first(storeVolumes), shared_writes: true }]; }, /data allows shared writes/],
     ])("names the stay, admitting nothing, when %s", async (_, arrange, why) => {
       arrange();

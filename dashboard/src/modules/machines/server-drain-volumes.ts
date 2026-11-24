@@ -36,18 +36,19 @@ export function dataCheck(frame: RuntimeWatchView, service: QualifiedService, ma
   if (lasting.some(({ source }) => source.kind !== "provisioned")) return { kind: "engine" };
   const [one, ...more] = lasting;
   if (one === undefined || one.source.kind !== "provisioned") return { kind: "engine" };
-  if (more.length > 0) return { kind: "stays", why: `it mounts ${listNames(lasting.map((volume) => volume.reference))}, and a move takes one volume` };
+  // A Volume's reference is its id, not the name its user gave it, so a reason counts Volumes rather than naming one.
+  if (more.length > 0) return { kind: "stays", why: `it mounts ${lasting.length} volumes, and a move takes one` };
   const dockerVolume = one.source.name;
   const users = frame.containers.filter((container) => mountsVolume(container, dockerVolume));
   const others = users.filter((container) => !own(container) || container.machine_id !== machineId);
   if (others.length > 0) {
     const named = [...new Set(others.map((container) => container.machine_id === machineId ? serviceName(container) : container.display_name))];
-    return { kind: "stays", why: `it shares ${one.reference} with ${listNames(named)}` };
+    return { kind: "stays", why: `it shares its volume with ${listNames(named)}` };
   }
   const running = users.filter((container) => container.machine_id === machineId && container.runtime.state === "running");
   const [holder, second] = running;
   if (holder === undefined) return { kind: "stays", why: "it isn't running here, so nothing would start it elsewhere" };
-  if (second !== undefined) return { kind: "stays", why: `${running.length} of its containers run on ${one.reference}, and a move takes one` };
+  if (second !== undefined) return { kind: "stays", why: `${running.length} of its containers run on its volume, and a move takes one` };
   return { kind: "moves", dockerVolume, holder: holder.container_id };
 }
 
