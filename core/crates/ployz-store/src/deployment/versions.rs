@@ -9,8 +9,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::authority::{
-    Births, BuiltImageDigest, PayloadDigest, ProposalRef, Purpose, RuleProof, ServiceVersion,
-    Signed, SignerKey, Statement, Timestamp, deploy::content_addressed, version::MAX_PRESENTED,
+    Births, BuiltImageDigest, CopyStep, PayloadDigest, ProposalRef, Purpose, RuleProof,
+    ServiceVersion, Signed, SignerKey, Statement, Timestamp, deploy::content_addressed,
+    version::MAX_PRESENTED,
 };
 use ployz_core::{
     MachineId, Namespace, OperationId, RequestedServiceSpec, RpcError, SealingPublicKey,
@@ -104,9 +105,11 @@ enum Origin {
     Replay { source: DeploymentId },
 }
 
-/// Keep each of `posted` and record it as what its Service of Deployment `id` runs, over
-/// what `id` already records for that Service, and record the births it minted. A
-/// statement already kept stays as it is.
+/// Record the birth each of `copies` mints for the Volume it restores into, then keep
+/// each of `posted` and record it as what its Service of Deployment `id` runs, over what
+/// `id` already records for that Service, and record the births it minted. The Copies
+/// come first, so a version that mounts a restored Volume records the Copy's birth again.
+/// A statement already kept stays as it is.
 ///
 /// # Errors
 /// Returns `invalid_argument` for a statement whose body doesn't parse, names another
@@ -116,12 +119,32 @@ enum Origin {
 pub(crate) fn post(
     tx: &mut dyn Tx,
     id: &DeploymentId,
-    posted: &[PostedVersion],
+    (posted, copies): (&[PostedVersion], &[Signed<CopyStep>]),
 ) -> Result<(), RpcError> {
-    if posted.is_empty() {
+    if posted.is_empty() && copies.is_empty() {
         return Ok(());
     }
     let stored = super::load(tx, id)?;
+    if !copies.is_empty() {
+        let copies = copies
+            .iter()
+            .map(|copy| {
+                copy.open().map_err(|refusal| {
+                    error::invalid(format!("A signed copy doesn't read: {refusal}"), json!({}))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let saved = super::held_revision(tx, &stored)?;
+        crate::volume::birth::record_copies(
+            tx,
+            (&stored.summary.environment_id, stored.namespace()),
+            &saved,
+            &copies,
+        )?;
+    }
+    if posted.is_empty() {
+        return Ok(());
+    }
     let services: BTreeSet<&ServiceName> = stored
         .nodes
         .iter()
