@@ -1824,11 +1824,14 @@ fn plan_one_service<'snapshot>(
     let (service_id, current, hooks) = match existing {
         None => (ServiceId::random(), &[][..], &[][..]),
         Some(service) => {
+            // A user Global, from Compose before 0.1.2-beta.42, may only leave: no Machine
+            // admits it Global any more, so its copies are recreated Replicated.
+            let leaves_global =
+                !namespace.is_system() && matches!(requested.mode, ServiceMode::Replicated { .. });
             if service.members().any(|container| {
-                !same_service_mode_kind(
-                    &container.as_observation().resolved_spec.mode,
-                    &requested.mode,
-                )
+                let mode = &container.as_observation().resolved_spec.mode;
+                !same_service_mode_kind(mode, &requested.mode)
+                    && !(leaves_global && *mode == ServiceMode::Global)
             }) {
                 return Err(PlanError::ServiceModeCannotChange);
             }

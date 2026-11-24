@@ -468,12 +468,70 @@ fn a_changed_pre_deploy_hook_alone_runs_it_and_replaces_the_container() {
     ));
 }
 
+/// A Global outside Ployz's own Services, left from Compose `deploy.mode: global` before
+/// 0.1.2-beta.42, leaves by a Deploy with a replica count: its copies are recreated
+/// Replicated, since no Machine admits it Global any more.
 #[test]
-fn existing_service_mode_cannot_change() {
+fn a_legacy_global_redeploys_replicated() {
     let current = requested(ServiceMode::Global);
     let requested = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(1).unwrap(),
     });
+    let current_service_id = service_id('a');
+
+    let plan = plan_deploy(
+        [&requested],
+        &DeploySnapshot {
+            machines: vec![machine('1', "first"), machine('2', "second")],
+            containers: vec![
+                container('b', '1', &current, &current_service_id),
+                container('c', '2', &current, &current_service_id),
+            ],
+            ..Default::default()
+        },
+        PlanOptions::default(),
+    )
+    .unwrap();
+
+    let operations = operations(&plan);
+    let started = operations
+        .iter()
+        .filter_map(|operation| match operation {
+            DeployOperation::RunContainer { spec, .. } => Some(spec),
+            DeployOperation::ReplaceContainer(replacement) => Some(&replacement.spec),
+            DeployOperation::PrepareVolumes { .. }
+            | DeployOperation::WaitHealthy { .. }
+            | DeployOperation::StopContainer { .. }
+            | DeployOperation::RemoveContainer { .. }
+            | DeployOperation::UpdateContainer(_)
+            | DeployOperation::StopHook { .. }
+            | DeployOperation::RunHook { .. }
+            | DeployOperation::RemoveVolume { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    let [started] = started.as_slice() else {
+        panic!("one Replicated copy starts: {operations:?}");
+    };
+    assert_eq!(started.mode, requested.mode);
+    assert_eq!(started.service_id, current_service_id);
+    let retired = operations
+        .iter()
+        .filter(|operation| {
+            matches!(
+                operation,
+                DeployOperation::RemoveContainer { .. } | DeployOperation::ReplaceContainer(..)
+            )
+        })
+        .count();
+    assert_eq!(retired, 2, "both Global copies go: {operations:?}");
+}
+
+#[test]
+fn a_replicated_service_cannot_become_global() {
+    let current = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    let requested = requested(ServiceMode::Global);
     let current_service_id = service_id('a');
 
     assert_eq!(
