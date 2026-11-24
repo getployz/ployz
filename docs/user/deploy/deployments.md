@@ -391,6 +391,19 @@ service no person approved. Every server needs the current version of Ployz for 
 version stops CI deploys built on it, and stops scaling and moving the services that run it, until
 a person deploys from a terminal again.
 
+### Deploy with no key
+
+On servers that enforce device approval, a deploy from a computer with no device key or
+`PLOYZ_KEY` doesn't queue unsigned. When your passkey can sign every service it leaves unsigned,
+`ployz deploy` stops with a link to an approval page, and so does a coding agent's deploy. Open
+it, check what it destroys and the lines your passkey signs, and tap once. The deploy then starts
+as whoever asked.
+
+Otherwise it's refused with what to do. A service built from source, as `ployz up` builds one,
+needs an automatic deploy rule, and a private tag needs its image written by digest. When Ployz
+Cloud can't reach every server, the deploy queues as before and each server checks it. A coding
+agent's deploy is refused instead.
+
 ### Upgrade servers before you sign
 
 A server on 0.4.0-beta.2 or earlier that enforces device approval reads only the older kind

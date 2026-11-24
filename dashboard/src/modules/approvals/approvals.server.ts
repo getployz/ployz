@@ -355,7 +355,7 @@ const isDiff = Schema.is(Schema.Struct({
 }));
 
 /** The review an `approval_required` refusal carries: the Store's `DestructiveEffect[]` and `DiffView`, by the fields Cloud reads. */
-const RefusedReview = Schema.Struct({
+export const RefusedReview = Schema.Struct({
   approval: Schema.String,
   effects: Schema.mutable(Schema.Array(Schema.declare<DestructiveEffect>((value): value is DestructiveEffect => isEffect(value)))),
   diff: Schema.declare<DiffView>((value): value is DiffView => isDiff(value)),

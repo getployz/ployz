@@ -38,6 +38,7 @@ import type { Caller } from "#/modules/identity/actor";
 import { createOrganizationToken } from "#/modules/identity/organization-token.server";
 import { user } from "#/modules/identity/tables";
 import { member, organization } from "#/modules/organization/tables";
+import { pendingProposals } from "#/modules/proposals/proposals.server";
 import { handleConfigRequest } from "#/routes/api/config/-config.handler";
 import { AuthLive } from "#/modules/identity/auth.server";
 import { RunningObserver } from "#/modules/config-store/running-evidence.server";
@@ -132,7 +133,7 @@ const dashboardMember = Effect.gen(function* () {
   } satisfies Caller;
 });
 
-type Asked = { approval: string; approval_id: string; effects: unknown[] };
+type Asked = { approval: string; approval_id: string; effects: unknown[]; proposal_id: string; url: string };
 const asked = (refused: { details: unknown }) => refused.details as Asked;
 type Reply = { written?: string; error?: { code: string; message: string; details: Partial<Asked> | null } };
 
@@ -640,28 +641,21 @@ it.live("`ployz mcp`'s Publish asks as an agent, which its person's `ployz` appr
 
 it.live("every Deploy `ployz mcp` asks for waits on a human, even one that destroys nothing; the CLI's doesn't", () =>
   Effect.gen(function* () {
-    const { provided, caller, cli, store } = yield* shopRemovingWeb(false);
+    const { provided, cli, store } = yield* shopRemovingWeb(false);
     const write = vi.spyOn(store, "write");
     yield* provided(enrollStoreServer(ORGANIZATION));
     expect(yield* cli(deploy(1))).toMatchObject({ status: 200 });
     expect(yield* cli(addService(1), undefined, "agent")).toMatchObject({ status: 200 });
 
+    // `ployz mcp` can't sign, so its Deploy becomes one proposal with a link, and the one probe write admits nothing.
     const asked = yield* cli(deploy(2), undefined, "agent");
-    expect(asked.status).toBe(409);
-    expect(asked.json.error).toMatchObject({ code: "approval_required", details: { effects: [] } });
+    expect(asked).toMatchObject({ status: 409, json: { error: { code: "conflict", details: { proposal_id: expect.any(String), url: expect.stringContaining("/cloud/shop/approve/") } } } });
+    expect(asked.json.error?.message).toContain(String(asked.json.error?.details?.url));
     expect(write.mock.calls.map(([, command, trusted]) => [command.command, trusted?.asks]))
       .toEqual([["admit", "destroys"], ["create_service", "destroys"], ["admit", "every_deploy"]]);
-
-    const id = asked.json.error?.details?.approval_id ?? expect.fail("no approval_id");
-    const digest = asked.json.error?.details?.approval ?? expect.fail("no digest");
-    const person: Caller = { ...caller, credential: { kind: "session", id: "browser" }, via: "dashboard" };
-    expect(yield* provided(decideApproval(person, id, { approve: { digest } }))).toMatchObject({ ok: true });
-    expect(yield* cli(deploy(2), id, "agent")).toMatchObject({ status: 200 });
-
-    // The Store binds the version a Deploy reviewed, which moves once it queues: another Deploy under it asks again.
-    const again = yield* cli(deploy(3), id, "agent");
-    expect(again).toMatchObject({ status: 409, json: { error: { code: "approval_required" } } });
-    expect(again.json.error?.details?.approval_id).not.toBe(id);
+    expect((yield* provided(pendingProposals(ORGANIZATION)))).toMatchObject([{ id: asked.json.error?.details?.proposal_id, steps: [{ verb: "deploy" }] }]);
+    // The same Deploy asked again is the same proposal.
+    expect((yield* cli(deploy(2), undefined, "agent")).json.error?.details?.proposal_id).toBe(asked.json.error?.details?.proposal_id);
   }));
 
 it.live("a Deploy token for staging is refused a production Deploy before anyone is asked", () =>

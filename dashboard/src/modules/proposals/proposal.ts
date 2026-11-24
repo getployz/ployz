@@ -1,5 +1,6 @@
-import type { ServerRef, ServiceVerb } from "@ployz/sdk";
-import { destroyedLine } from "#/modules/approvals/approvals";
+import type { DiffView, ServerRef, ServiceVerb } from "@ployz/sdk";
+import { type ApprovalReview, destroyedLine } from "#/modules/approvals/approvals";
+import type { AdmitDeploy } from "#/modules/config-store/admit-deploy";
 
 export const PROPOSAL_STATUSES = ["draft", "presented", "approved", "denied"] as const;
 export type ProposalStatus = (typeof PROPOSAL_STATUSES)[number];
@@ -8,13 +9,39 @@ export type ProposalStatus = (typeof PROPOSAL_STATUSES)[number];
 export const PROPOSAL_STEP_LIMIT = 10;
 
 /** One staged restart, stop or start, naming the Service as the Servers know it when it was staged. */
-export type ProposalStep = {
+export type ServiceStep = {
   readonly verb: ServiceVerb;
   readonly service: string;
   readonly only: ServerRef | null;
   readonly namespace: string;
   readonly runtime: string;
 };
+
+/**
+ * What the Store asks a person to approve before a Deploy runs: what it destroys, a full Deploy's prune included, and
+ * the digest admission redeems, so a Deploy that would destroy anything else by then is refused, not run.
+ */
+export type DeployReview = { readonly digest: string; readonly review: Extract<ApprovalReview, { diff: DiffView }> };
+
+/**
+ * A Deploy a caller that can't sign asked for, held whole as the Store will admit it: its Environment, Services, flags,
+ * upload and the review version it is bound to, and once a person approved it, the versions their passkey signed.
+ * `asked` digests the request as it came, so the same Deployment id asked with another body is refused. `review` is
+ * missing only while a Pending value waits for the approval page to make it. `filled` is the revision the approval
+ * page's edit of those values wrote, recorded as soon as it lands, so a later page resumes that fill rather than make
+ * them again, and only that edit counts as this proposal's.
+ */
+export type DeployStep = {
+  readonly verb: "deploy";
+  readonly deploy: { readonly command: AdmitDeploy; readonly asked: string; readonly review?: DeployReview; readonly filled?: number };
+};
+
+export type ProposalStep = ServiceStep | DeployStep;
+
+export const isDeploy = (step: ProposalStep): step is DeployStep => step.verb === "deploy";
+
+/** Why a Deploy's proposal was denied when its Environment moved after it was asked for. */
+export const DEPLOY_MOVED = "This deploy changed since it was asked for. Ask again.";
 
 /** Why a proposal's steps stopped before they all ran: the step that didn't start, and why. */
 export type ProposalHalt = { readonly index: number; readonly reason: string };
@@ -28,14 +55,20 @@ const VERBS = { restart: "Restart", stop: "Stop", start: "Start" } as const sati
  * The name the card shows for a step's Service: the runtime name the approval signs and the Servers act on, with the
  * name the Service has now beside it when a rename left them apart: `web`, or `web-old (web)`.
  */
-export const stepName = (step: Pick<ProposalStep, "service" | "runtime">) =>
+export const stepName = (step: Pick<ServiceStep, "service" | "runtime">) =>
   step.runtime === step.service ? step.runtime : `${step.runtime} (${step.service})`;
 
-/** A step as its card line reads: `Stop web`, or `Stop web on fra-1`. */
-export const stepTitle = (step: Pick<ProposalStep, "verb" | "service" | "runtime" | "only">) =>
-  `${VERBS[step.verb]} ${stepName(step)}${step.only === null ? "" : ` on ${step.only.name}`}`;
+/** What a step's Deploy ships: the Services it names, or every one. */
+const shipped = ({ deploy }: DeployStep) => (deploy.command.services ?? []).join(", ") || "all services";
 
-/** What a step takes away while it runs, as the card's Destroys list words it; null for a start. */
-export const stepLoss = (step: Pick<ProposalStep, "verb" | "service" | "runtime">) =>
-  step.verb === "start" ? null
+/** A step as its card line reads: `Stop web`, `Stop web on fra-1`, or `Deploy web, api`. */
+export const stepTitle = (step: ProposalStep) =>
+  isDeploy(step) ? `Deploy ${shipped(step)}` : `${VERBS[step.verb]} ${stepName(step)}${step.only === null ? "" : ` on ${step.only.name}`}`;
+
+/** The Service a step acts on, for the lines that list it: a Deploy names what it ships. */
+export const stepService = (step: ProposalStep) => (isDeploy(step) ? shipped(step) : step.service);
+
+/** What a step takes away while it runs, as the card's Destroys list words it; null for a start, and for a Deploy, whose page lists it. */
+export const stepLoss = (step: ProposalStep) =>
+  isDeploy(step) || step.verb === "start" ? null
   : destroyedLine({ kind: step.verb === "stop" ? "stops_service" : "restarts_service", name: stepName(step), node: "", path: "" });

@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import type { PostedVersion } from "@ployz/sdk";
+import type { PostedVersion, VersionsDraft } from "@ployz/sdk";
 import { KeyRoundIcon } from "lucide-react";
 import { toast } from "sonner";
 import { useCollectionScope } from "#/collections/use-collection-scope";
@@ -161,18 +161,7 @@ export function useDeployTap(organizationSlug: string) {
           <DialogDescription>Check each line. Your passkey signs exactly this.</DialogDescription>
         </DialogHeader>
         <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
-          <ul aria-label="What your passkey signs" className="flex flex-col gap-1 font-mono text-xs whitespace-pre-wrap break-all">
-            {open.ask.draft.lines.map((line, index) => <li key={index}>{line}</li>)}
-          </ul>
-          {open.ask.draft.confirm.length === 0 ? null : (
-            <div className="flex flex-col gap-1 text-sm">
-              <p className="font-medium">Needs your yes</p>
-              <ul aria-label="Data your passkey says yes to" className="flex flex-col gap-1 font-mono text-xs whitespace-pre-wrap break-all">
-                {open.ask.draft.confirm.map((line, index) => <li key={index}>{line}</li>)}
-              </ul>
-              <p className="text-muted-foreground">Approving says yes to this data.</p>
-            </div>
-          )}
+          <SignedLines draft={open.ask.draft} />
         </div>
         {open.problem === null ? null : <p role="alert" className="text-sm text-destructive">{open.problem}</p>}
         <DialogFooter>
@@ -187,4 +176,24 @@ export function useDeployTap(organizationSlug: string) {
   );
 
   return { admit, drop, sheet };
+}
+
+/** The lines a passkey signs for a Deploy, and the data it says yes to, as Rust renders them from the signed body. */
+export function SignedLines({ draft }: { draft: VersionsDraft }) {
+  return (
+    <>
+      <ul aria-label="What your passkey signs" className="flex flex-col gap-1 font-mono text-xs whitespace-pre-wrap break-all">
+        {draft.lines.map((line, index) => <li key={index}>{line}</li>)}
+      </ul>
+      {draft.confirm.length === 0 ? null : (
+        <div className="flex flex-col gap-1 text-sm">
+          <p className="font-medium">Needs your yes</p>
+          <ul aria-label="Data your passkey says yes to" className="flex flex-col gap-1 font-mono text-xs whitespace-pre-wrap break-all">
+            {draft.confirm.map((line, index) => <li key={index}>{line}</li>)}
+          </ul>
+          <p className="text-muted-foreground">Approving says yes to this data.</p>
+        </div>
+      )}
+    </>
+  );
 }

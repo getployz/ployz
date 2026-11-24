@@ -4,18 +4,12 @@
  * value, seals it, and writes them in one edit, so Cloud never sees one.
  */
 import type { Change } from "@ployz/sdk";
-import { Schema } from "effect";
 import type { AdmitDeploy } from "#/modules/config-store/admit-deploy";
 import { envPath } from "#/modules/config-store/setting-paths";
 import type { Sealer } from "#/modules/sealing/use-sealing";
 import { madeSecret } from "#/modules/sealing/made-secret";
+import { isPending, moved } from "./deploy-tap";
 import type { DeployPlan } from "./deploy-tap.server";
-
-const Pending = Schema.Struct({
-  environment: Schema.String,
-  pending: Schema.NonEmptyArray(Schema.Struct({ service: Schema.String, id: Schema.String, key: Schema.String, generated: Schema.String })),
-});
-const isPending = Schema.is(Pending);
 
 /**
  * `command` once each Pending value `planned` names is made, sealed and written by `edit`, which answers the revision
@@ -36,14 +30,4 @@ export async function fillPending(
   }));
   const written = await edit(changes);
   return { ...command, version: moved(command.version, written) };
-}
-
-/**
- * `version` past the one edit that wrote `written`: a review version is `REVISION:SAVED:TOKEN…`, and the edit moved only
- * the Working revision, by one. Anything else stays as it was, and the plan calls it stale.
- */
-function moved(version: string | null | undefined, written: number | null) {
-  const revision = /^(\d+):/u.exec(version ?? "")?.[1];
-  if (version === null || version === undefined || revision === undefined || written !== Number(revision) + 1) return version;
-  return `${written}${version.slice(revision.length)}`;
 }

@@ -45,11 +45,15 @@ export type DeployPlan =
  * The plan of a Deploy of `services` in `environment` with its targets, read here so Cloud looks up only the tags of
  * the specs it read itself, never ones the browser names.
  */
-export const prepareDeployTap = Effect.fn("DeployTap.prepare")(function* (actor: Actor, input: {
+type TapInput = {
   readonly organizationSlug: string;
   readonly environment: EnvironmentRef;
   readonly services: readonly string[];
-}) {
+  /** Classify a Deploy someone else will sign: the gate checks the Servers, not `actor`'s passkeys. */
+  readonly classify?: true;
+};
+
+export const prepareDeployTap = Effect.fn("DeployTap.prepare")(function* (actor: Actor, input: TapInput) {
   const access = yield* requireAccess(actor, input.organizationSlug, "changes:deploy");
   const read = yield* callStore(access.organization.id, actor.userId, {
     operation: "read",
@@ -68,7 +72,7 @@ export const prepareDeployTap = Effect.fn("DeployTap.prepare")(function* (actor:
     operation: "read", query: { query: "parent", environment: input.environment, services: [...signs] },
   }, { approval: "not_required", permissions: access.permissions, environments: access.environments })
     .pipe(Effect.map((read): Readonly<Record<string, Parent>> => read.ok ? read.value.services : {}));
-  const tap: DeployTap = unsigned.length === 0 ? { kind: "off" } : yield* gate(actor.userId, access.organization.id, tags, { namespace: plan.namespace, parents });
+  const tap: DeployTap = unsigned.length === 0 ? { kind: "off" } : yield* gate(input.classify === true ? null : actor.userId, access.organization.id, tags, { namespace: plan.namespace, parents });
   // Support never signs, and reads a plan only as its own view of it allows.
   if (access.kind === "support") {
     if (tap.kind !== "off") return { kind: "refused", message: "Support can't approve this Deploy. Ask a member to deploy it." } satisfies DeployPlan;
@@ -79,7 +83,8 @@ export const prepareDeployTap = Effect.fn("DeployTap.prepare")(function* (actor:
   return { kind: "plan", plan, tap } satisfies DeployPlan;
 });
 
-const gate = Effect.fn("DeployTap.gate")(function* <E, R>(userId: string, organizationId: string, tags: readonly string[], asked: {
+/** `userId` null only classifies a Deploy someone else signs: no one's passkeys, and no digest lookups. */
+const gate = Effect.fn("DeployTap.gate")(function* <E, R>(userId: string | null, organizationId: string, tags: readonly string[], asked: {
   readonly namespace: string;
   /** Read only once the gate would ask. */
   readonly parents: Effect.Effect<Readonly<Record<string, Parent>>, E, R>;
@@ -112,12 +117,12 @@ const gate = Effect.fn("DeployTap.gate")(function* <E, R>(userId: string, organi
     lists.push(held);
   }
   const { drizzle } = yield* Database;
-  const own = yield* drizzle.select({ code: passkeyRequest.code, credentialId: passkeyRequest.credentialId }).from(passkeyRequest)
+  const own = userId === null ? null : yield* drizzle.select({ code: passkeyRequest.code, credentialId: passkeyRequest.credentialId }).from(passkeyRequest)
     .where(and(eq(passkeyRequest.organizationId, organizationId), eq(passkeyRequest.userId, userId)));
   const trusted = answers.find(({ id }) => id === keyed.id)?.keys;
   if (trusted === null || trusted === undefined) return refused(UNREACHED);
-  const passkeys = own.filter((row) => lists.every((held) => held?.some(({ trusted }) => codeOfPasskeyKey(trusted.passkey.public_key) === row.code)));
-  if (passkeys.length === 0) return refused("Your servers don't trust your passkey. Add it under Account, Passkeys, or run ployz deploy.");
+  const passkeys = (own ?? []).filter((row) => lists.every((held) => held?.some(({ trusted }) => codeOfPasskeyKey(trusted.passkey.public_key) === row.code)));
+  if (own !== null && passkeys.length === 0) return refused("Your servers don't trust your passkey. Add it under Account, Passkeys, or run ployz deploy.");
   // Every paired Server, and any the frame, the trust read or the listing knew of, by name, that didn't list its own
   // Containers. A later source's name wins; a paired Server no source named reads as its ID.
   const answered = new Set(listed?.answered);
@@ -131,6 +136,7 @@ const gate = Effect.fn("DeployTap.gate")(function* <E, R>(userId: string, organi
     parents: yield* asked.parents, trusted, containers: listed?.containers ?? [],
     unanswered: [...roster].filter(([id]) => !answered.has(id)).map(([, name]) => name),
   };
+  if (userId === null) return { kind: "ready", cluster, passkeys, pins: {}, against } satisfies DeployTap;
   return yield* pinImageDigests([...new Set(tags)]).pipe(
     Effect.map((images): DeployTap => ({ kind: "ready", cluster, passkeys, pins: Object.fromEntries(images.map(({ tag, image }) => [tag, image])), against })),
     Effect.catch((error) => Effect.succeed(refused(error.cause instanceof Error ? error.cause.message : "Couldn't look up an image's digest. Try again."))),
