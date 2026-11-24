@@ -77,10 +77,10 @@ const partialReport = {
 } as DrainReport;
 
 /** The partial report as the drain keeps it: it stopped before planning, so the Volume it left reads not tried. */
-const keptReport = {
+const keptReport: DrainReport = {
   ...partialReport,
   services: partialReport.services.map((entry) => entry.service === "shop/db" ? { ...entry, detail: "not tried" } : entry),
-} as DrainReport;
+};
 
 describe("drain-server", () => {
   let harness: PostgresTestHarness;
