@@ -5,6 +5,7 @@
 
 use std::collections::BTreeSet;
 
+use ployz_core::authority::{CopyStep, Signed};
 use ployz_core::config::canonicalize_environment_intent;
 use ployz_core::config::{SavedEnvironmentIntent, SavedServiceIntent};
 use ployz_core::{Namespace, RpcError, ServiceName};
@@ -103,6 +104,12 @@ pub struct Deploy {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(optional, as = "Option<Vec<PostedVersion>>")]
     pub versions: Vec<PostedVersion>,
+    /// The Copy step a person signed for each Volume this Deploy restores into a new one.
+    /// The Store records the birth each mints, so every spec that mounts the new Volume
+    /// carries it, even when this Deploy posts no version.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<Vec<Signed<CopyStep>>>")]
+    pub copies: Vec<Signed<CopyStep>>,
     /// Services whose running Containers it replaces even when their spec is unchanged,
     /// so each Server admits them again under the versions this Deploy posts. A key
     /// rotation names the Services it carries, so no Container stays kept under the key
@@ -141,6 +148,10 @@ pub struct Retry {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(optional, as = "Option<Vec<PostedVersion>>")]
     pub versions: Vec<PostedVersion>,
+    /// As [`Deploy::copies`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<Vec<Signed<CopyStep>>>")]
+    pub copies: Vec<Signed<CopyStep>>,
 }
 
 /// Take an Environment off the Servers under the `remove` that marked it, or its
@@ -221,7 +232,7 @@ pub(crate) fn admit(
             let pruning = retry_pruning(tx, &retried, trusted)?;
             pruning.admit(trusted, Some(rollback.number))?;
             deployment::admitted_by_user(tx, &retried.id, trusted)?;
-            deployment::versions::post(tx, &retried.id, &retry.versions)?;
+            deployment::versions::post(tx, &retried.id, (&retry.versions, &retry.copies))?;
             let forget = match retried.remove {
                 true => deployment::forgettable(tx, &retried.environment_id, trusted)?,
                 false => None,
@@ -593,7 +604,7 @@ fn deploy(
         &frozen,
     )?;
     deployment::admitted_by_user(tx, &summary.id, trusted)?;
-    deployment::versions::post(tx, &summary.id, &admit.versions)?;
+    deployment::versions::post(tx, &summary.id, (&admit.versions, &admit.copies))?;
     deployment::versions::recreate(tx, &summary.id, &admit.recreate)?;
     // What merges landed and this Deploy ships no longer waits for a push.
     let shipped = frozen.targeting.as_ref().map(|_| {

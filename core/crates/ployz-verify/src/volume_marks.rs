@@ -50,6 +50,8 @@ use stateright::{Model, Property};
 
 use crate::harness::{self, everywhere};
 
+mod copy_step;
+
 /// A snapshot point.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Point {

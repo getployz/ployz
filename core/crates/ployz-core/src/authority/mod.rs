@@ -2,14 +2,15 @@
 //!
 //! Cloud carries these but cannot mint them: a Machine checks the signature against the
 //! keys it trusts, checks every bound field against the request in hand, and keeps
-//! its own record of what it already acted on. Joins, key changes, signed versions and
-//! automatic deploy rules each have a statement type here, and [`TrustedKeys::covers`] says
-//! which trusted key may sign each. A proposal signs an ordered plan
+//! its own record of what it already acted on. Joins, key changes, signed versions,
+//! automatic deploy rules and copies of a Volume each have a statement type here, and
+//! [`TrustedKeys::covers`] says which trusted key may sign each. A proposal signs an ordered plan
 //! of steps once, and each step travels unsigned with the bundle in its envelope.
 
 pub mod admission;
 pub mod birth;
 pub mod canonical;
+pub mod copy;
 pub mod coverage;
 pub mod deploy;
 pub mod join;
@@ -34,6 +35,7 @@ pub use birth::{
     PlannedVolume, PlannedVolumes, Unknown,
 };
 pub use canonical::{CanonicalError, Timestamp};
+pub use copy::{CopyFacts, CopyStep, CopyVerified, CopyWindow};
 pub use deploy::{ApprovedChange, PayloadDigest};
 pub use join::{JoinApproval, Member, PasskeyJoinDraft};
 pub use key::{

@@ -1,6 +1,6 @@
 //! The record of what this Machine has consumed, kept in `restart-approvals.json`: joins,
-//! GitHub tokens, rule marks, the hook each rule's Service last ran, and each Service's
-//! floor.
+//! GitHub tokens, rule marks, the hook each rule's Service last ran, each Service's
+//! floor, and each Copy step taken.
 //! Every verb goes through [`ConsumptionLog::transact`] or [`ConsumptionLog::read`], so the
 //! lock, the lazy load, the write and the cache reset after a failed write are one piece
 //! of code.
@@ -16,8 +16,8 @@ use std::{
 use ployz_core::{
     QualifiedService, SealingPublicKey, ServiceName,
     authority::{
-        AuthorityRefusal, AutoDeployRule, BuildClaim, RuleId, RuleIdentity, Signed, Timestamp,
-        version::Forget,
+        AuthorityRefusal, AutoDeployRule, BuildClaim, CopyVerified, CopyWindow, ProposalRef,
+        RuleId, RuleIdentity, Signed, StepDigest, Timestamp, version::Forget,
     },
 };
 use ployz_decide::service_floor::{self, Raise, Refused, Signature};
@@ -57,6 +57,20 @@ struct Consumption {
     /// Machine. It only rises.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     floors: BTreeMap<String, Timestamp>,
+    /// Each Copy step taken here, by its operation and index.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    copies: BTreeMap<String, CopyTaken>,
+}
+
+/// A Copy step this Machine took, as its bundle listed it.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct CopyTaken {
+    digest: StepDigest,
+}
+
+/// Where a Copy step is kept: the operation and index its bundle lists it at.
+fn copy_key(place: ProposalRef) -> String {
+    format!("{}/{}", place.operation, place.index)
 }
 
 /// Where a Service's floor is kept: its Cluster's Sealing public key and the Service, so a
@@ -489,6 +503,36 @@ impl ConsumptionLog {
                     Ok(Edit::Write(()))
                 }
                 _ => Err(Error::JoinConsumed(machine)),
+            }
+        })
+    }
+
+    /// Take `copy`, a Copy step verified at the floored clock. A step taken before is taken
+    /// again whatever its window, so a resend finishes the copy it started; a step not taken
+    /// yet is taken only while its window holds.
+    ///
+    /// # Errors
+    /// Returns [`Error::CopyRefused`] for a step past its window that was never taken, or
+    /// for another step at the same place, and [`Error::ApprovalRecord`] when the record
+    /// cannot be read or written.
+    pub(crate) fn take_copy(&self, copy: &CopyVerified) -> Result<(), Error> {
+        let key = copy_key(copy.step.proposal);
+        self.transact(Error::ApprovalRecord, |log| match log.copies.get(&key) {
+            Some(taken) if taken.digest == copy.digest => Ok(Edit::Keep(())),
+            Some(_) => Err(Error::CopyRefused(AuthorityRefusal::Mismatch {
+                field: MismatchField::Step,
+            })),
+            None if copy.window == CopyWindow::Closed => {
+                Err(Error::CopyRefused(AuthorityRefusal::Expired))
+            }
+            None => {
+                log.copies.insert(
+                    key,
+                    CopyTaken {
+                        digest: copy.digest,
+                    },
+                );
+                Ok(Edit::Write(()))
             }
         })
     }

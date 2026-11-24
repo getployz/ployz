@@ -1,4 +1,4 @@
-import type { DrainReport, MachineRef, Move, MoveFailure, ServiceDrain } from "@ployz/sdk";
+import type { DrainReport, MachineId, MachineRef, Move, MoveFailure, ServiceDrain } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
 import type { LatestDrain, LatestDrains } from "#/modules/machines/server-drain";
 import {
@@ -10,6 +10,7 @@ import {
   drainView,
   removeHint,
 } from "#/modules/machines/server-drain-view";
+import { volumeLine } from "#/modules/machines/server-drain-volumes";
 import { runtimeWatchMachineFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
 
 const ref = (digit: string, name: string): MachineRef => {
@@ -51,7 +52,7 @@ const serviceComplete = (entry: ServiceDrain) => {
   }
 };
 const finished = (services: ServiceDrain[], stopped: DrainReport["stopped"] = null): LatestDrain => ({
-  attemptId: "a1", state: "finished", endedAt: "2026-10-04T10:00:00.000Z", report: report(services, stopped),
+  attemptId: "a1", state: "finished", endedAt: "2026-10-04T10:00:00.000Z", report: report(services, stopped), lines: {},
 });
 const view = (latest: LatestDrains, requested: string | null = null) => drainView({ server, latest, serverNames, requested });
 
@@ -61,6 +62,14 @@ const volume: ServiceDrain = { service: "shop/postgres", result: "stays", reason
 const rollout: ServiceDrain = { service: "shop/redis", result: "stays", reason: { kind: "mid_rollout" } };
 
 describe("Drain result", () => {
+  // Catches a drain cancelled mid-move whose summary still counts the Service it went on to move as stayed.
+  it("counts a Service the Engine left for its data by its Volume's line", () => {
+    expect(drainSummary(report([moved, volume]), "web-2", { "shop/postgres": { tone: "moved", text: "moved to web-1", to: "web-1" } }))
+      .toBe("2 moved");
+    expect(drainSummary(report([moved, volume]), "web-2", { "shop/postgres": { tone: "moving", text: "moving to web-1, run r", to: "web-1" } }))
+      .toBe("1 moved, 1 moving");
+  });
+
   it("counts what moved, stopped, stayed and failed, in that order", () => {
     const failed: ServiceDrain = { service: "shop/worker", result: "failed", moves: [], failure: { stage: "no_destination", from: web2, detail: "no room" } };
     expect(drainSummary(report([moved, retired, volume, rollout, failed]), "web-2")).toBe("1 moved, 1 stopped, 2 stayed, 1 failed");
@@ -98,7 +107,7 @@ describe("Drain result", () => {
     const unobserved = { kind: "unobserved", error: "timeout" } as const;
     expect(drainSummary(report([], null, unobserved), "web-2")).toBe("Couldn't check what's left on web-2");
     expect(drainSummary(report([moved], null, unobserved), "web-2")).toBe("1 moved, but couldn't check what's left");
-    const own: LatestDrain = { attemptId: "a1", state: "finished", endedAt: "2026-10-04T10:00:00.000Z", report: report([moved], null, unobserved) };
+    const own: LatestDrain = { attemptId: "a1", state: "finished", endedAt: "2026-10-04T10:00:00.000Z", report: report([moved], null, unobserved), lines: {} };
     expect(drainButtonLabel(view({ [web2.id]: own }))).toBe("Drain again");
   });
 
@@ -182,7 +191,7 @@ describe("Drain view", () => {
   it("names the Server whose running Drain a queued one waits behind", () => {
     expect(view({
       [web2.id]: { attemptId: "a2", state: "pending", requestedAt: "2026-10-04T10:00:00.000Z", serversSilent: false },
-      [web1.id]: { attemptId: "a1", state: "running", startedAt: "2026-10-04T09:59:00.000Z" },
+      [web1.id]: { attemptId: "a1", state: "running", startedAt: "2026-10-04T09:59:00.000Z", report: null, lines: {} },
     })).toEqual({ kind: "queued", behind: "web-1" });
   });
 
@@ -191,7 +200,7 @@ describe("Drain view", () => {
     expect(view({ [web2.id]: waiting })).toEqual({ kind: "waiting" });
     expect(view({
       [web2.id]: waiting,
-      [web1.id]: { attemptId: "a1", state: "running", startedAt: "2026-10-04T09:59:00.000Z" },
+      [web1.id]: { attemptId: "a1", state: "running", startedAt: "2026-10-04T09:59:00.000Z", report: null, lines: {} },
     })).toEqual({ kind: "waiting" });
   });
 
@@ -263,9 +272,9 @@ describe("Drain hints", () => {
     const api = { identity: "shop/api", name: "api", namespace: "shop" };
     const rows = drainDialogRows(view({ [web2.id]: finished([moved, volume]) }), web2.id, [postgres, stray, api], strays);
     expect(rows).toEqual([
-      { key: "shop/api", name: "api", namespace: "shop", stays: null },
-      { key: "shop/postgres", name: "postgres", namespace: "shop", stays: "data" },
-      { key: "left-behind/old", name: "old", namespace: "left-behind", stays: "unowned" },
+      { key: "shop/api", name: "api", namespace: "shop", stays: null, why: null, withData: false },
+      { key: "shop/postgres", name: "postgres", namespace: "shop", stays: "data", why: null, withData: false },
+      { key: "left-behind/old", name: "old", namespace: "left-behind", stays: "unowned", why: null, withData: false },
     ]);
     expect(drainDialogRows(view({}), web2.id, [postgres], none).map((row) => row.stays)).toEqual([null]);
   });
@@ -293,5 +302,34 @@ describe("A leftover still running here", () => {
   it("counts as stayed, not stopped", () => {
     const value = report([leftover], null, { kind: "observed", services: ["shop/web"], unchosen: [] });
     expect(drainSummary(value, "web-2")).toBe("1 stayed");
+  });
+});
+
+describe("A drained Volume's line", () => {
+  const server = { id: "f1", name: "fsn-1" } as MachineRef;
+  const entry: ServiceDrain = { service: "shop-production/web", result: "stays", reason: { kind: "volume", server }, volume: "data", run: "m1" };
+  const move = { id: "m1", kind: "move", state: "failed", phase: "warm", message: "fsn-2 refused the start", to: "fsn-2", restarted: null } as const;
+  const release = (message: string) => ({ id: "r1", kind: "release", state: "failed", phase: "warm", message, to: null, restarted: null }) as const;
+
+  // Catches a Release that already says to Deploy getting a second, contradicting next step appended.
+  it("keeps a failed Release's own next step", () => {
+    const line = volumeLine({ entry, server, move, release: release("fsn-1 holds data again, but its Service didn't start there: refused. Deploy it again to start it"), drainEnded: true });
+
+    expect(line).toEqual({ tone: "failed", text: "didn't move: fsn-2 refused the start; release run r1 ended: fsn-1 holds data again, but its Service didn't start there: refused. Deploy it again to start it" });
+  });
+
+  it("adds the next step to a failed Release that names none", () => {
+    expect(volumeLine({ entry, server, move, release: release("the run failed"), drainEnded: true })?.text)
+      .toBe("didn't move: fsn-2 refused the start; release run r1 ended: the run failed. Where it runs now is unknown; ployz volume release data finishes it");
+  });
+
+  // Catches a Release before the commit read as having put the Service back on the drained Server when it had no
+  // Container there to start, as when its operator removed it.
+  it("claims a restart on the drained Server only when the Release confirmed one", () => {
+    const finished = (restarted: MachineId | null) =>
+      volumeLine({ entry, server, move, release: { id: "r1", kind: "release", state: "done", phase: "warm", message: null, to: null, restarted }, drainEnded: true })?.text;
+
+    expect(finished(null)).toBe("didn't move: fsn-2 refused the start; release run r1 finished");
+    expect(finished(server.id)).toBe("didn't move: fsn-2 refused the start; release run r1 finished and started it again on fsn-1");
   });
 });

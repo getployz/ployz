@@ -159,6 +159,7 @@ fn admit_only(store: &ConfigStore, who: &Actor, n: u8, services: &[&str]) -> Res
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
+                copies: Vec::new(),
                 recreate: Vec::new(),
             }),
             &Trusted::default(),
@@ -398,6 +399,7 @@ fn redeploy(store: &ConfigStore, who: &Actor, source: u8, n: u8) -> Result<(), R
                 version: None,
                 accept_volume_loss: Vec::new(),
                 versions: Vec::new(),
+                copies: Vec::new(),
             }),
             &Trusted::default(),
         )

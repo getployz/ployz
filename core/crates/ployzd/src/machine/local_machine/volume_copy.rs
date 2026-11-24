@@ -6,8 +6,13 @@ use ployz_core::{
     ContainerKind, ContainerLocator, ContainerNow, ContainerObservation, ContainerRefusalReason,
     ContainerWant, CopyPlan, CopyRefusal, CopyRotation, CopyTransition, DockerVolumeName,
     EnsuredContainer, HealthVerdict, QualifiedService, RpcError, RunRotation, RunTarget,
-    SeedVolumeRequest, SetVolumeCopyRefused, SetVolumeCopyRequest, SetVolumeSizeReply,
-    SetVolumeSizeRequest, Start, VolumeCopy, VolumeCopyView, VolumeGen, WantedCopy,
+    SeedCopyRequest, SeedVolumeRequest, SetVolumeCopyRefused, SetVolumeCopyRequest,
+    SetVolumeSizeReply, SetVolumeSizeRequest, Start, VolumeCopy, VolumeCopyView, VolumeGen,
+    WantedCopy,
+};
+
+use ployz_core::authority::{
+    AuthorityRefusal, CopyFacts, CopyVerified, CopyWindow, Purpose, Timestamp, copy,
 };
 
 use super::{AdmittedSpec, CutRefusal, Error, LocalMachine};
@@ -16,8 +21,9 @@ use crate::{
     faults::{Identity, Point, Want},
     machine::has_cluster_identity,
     volume_copy::{
-        CUT_ROUTE, CopyRequest, CutRequest, DESTROY_ROUTE, FORGET_ROUTE, ForgetRequest,
-        INSPECT_ROUTE, PULL_ROUTE, PullRequest, SNAPSHOT_ROUTE, SnapshotRequest, VOLUME_SEED_ROUTE,
+        CUT_ROUTE, CopyBinding, CopyRequest, CutRequest, DESTROY_ROUTE, FORGET_ROUTE,
+        ForgetRequest, INSPECT_ROUTE, PULL_ROUTE, PullRequest, SNAPSHOT_ROUTE, SeedCopy,
+        SnapshotRequest, StartWindow, VOLUME_SEED_COPY_ROUTE, VOLUME_SEED_ROUTE,
         VOLUME_SIZE_SET_ROUTE, WRITER_ROUTE, WriterRequest,
     },
 };
@@ -110,6 +116,70 @@ impl LocalMachine {
             self.check_gen(&request.into, r#gen).await?;
         }
         self.volume_verb("SeedVolume", VOLUME_SEED_ROUTE, request)
+            .await
+    }
+
+    /// SeedCopy: a Volume.Seed an Operator sends under a person's Copy step, under the
+    /// switch lock. The step must open here for exactly this seed, and is taken in the
+    /// approvals record only while its window holds. A step taken before is taken again
+    /// past its window, and the plugin then hears the window closed, so a resend only
+    /// finishes a copy underway, starting its receive over in the slot the step made if a
+    /// restart killed it. Otherwise the plugin makes a new copy's slot only while the
+    /// window still holds on its own clock. It leaves the step's tombstone
+    /// whenever it destroys what the step made, so a resend never makes a deleted new
+    /// Volume again.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::CopyRefused`] for a step that does not open here, a Stale refusal
+    /// for a gen below the floor of `into`, or the plugin's error.
+    pub(crate) async fn seed_copy(
+        &self,
+        request: SeedCopyRequest,
+    ) -> Result<VolumeCopyView, Error> {
+        let _guard = self.lock_switch().await;
+        if let Some(r#gen) = request.seed.r#gen {
+            self.check_gen(&request.seed.into, r#gen).await?;
+        }
+        let record = self.record();
+        if !record.has_cluster_identity() {
+            return Err(Error::NotParticipating);
+        }
+        let trusted = record.trusted_keys();
+        let read = Timestamp::now();
+        let now = self.approvals.observed_now(read)?;
+        let facts = CopyFacts {
+            trusted: &trusted,
+            cluster: self.cluster_key(record.phase()),
+            machine: record.id(),
+            now,
+        };
+        let verified =
+            copy::verify(&request.step, &request.seed, &facts).map_err(Error::CopyRefused)?;
+        let birth = verified.origin().map_err(|error| {
+            Error::CopyRefused(AuthorityRefusal::Malformed {
+                purpose: Purpose::Workflow,
+                problem: error.to_string(),
+            })
+        })?;
+        self.approvals.take_copy(&verified)?;
+        let step = &verified.step;
+        let seed = SeedCopy {
+            seed: request.seed,
+            copy: CopyBinding {
+                birth,
+                source: step.origin,
+                taken_at: step.taken_at,
+                step: verified.digest,
+                window: match verified.window {
+                    CopyWindow::Open => StartWindow::Open {
+                        closes: plugin_closes(&verified, (read, now)),
+                    },
+                    CopyWindow::Closed => StartWindow::Closed,
+                },
+            },
+        };
+        self.volume_verb::<VolumeCopyView>("SeedCopy", VOLUME_SEED_COPY_ROUTE, &seed)
             .await
     }
 
@@ -266,6 +336,7 @@ impl LocalMachine {
                     target,
                     drain,
                     holder,
+                    running,
                     ..
                 },
             ) => {
@@ -276,22 +347,28 @@ impl LocalMachine {
                     r#gen,
                 };
                 let cut = self
-                    .cut_volume_copy(name.clone(), r#gen, drain, holder, move || async move {
-                        // This closure runs only past the Busy re-check, so the line means every
-                        // holder is stopped, whoever signalled it. The verify harness credits that
-                        // moment by this line's Volume, target and gen, after its restart cursor.
-                        tracing::info!(
-                            volume = %request.name,
-                            target = %request.target,
-                            r#gen = %request.r#gen,
-                            "cut: holders stopped"
-                        );
-                        plugin
-                            .call::<Copy>(CUT_ROUTE, &request)
-                            .await
-                            .map(drop)
-                            .map_err(Error::StoragePreparation)
-                    })
+                    .cut_volume_copy(
+                        name.clone(),
+                        r#gen,
+                        drain,
+                        holder.map(|holder| (holder, running)),
+                        move || async move {
+                            // This closure runs only past the Busy re-check, so the line means every
+                            // holder is stopped, whoever signalled it. The verify harness credits that
+                            // moment by this line's Volume, target and gen, after its restart cursor.
+                            tracing::info!(
+                                volume = %request.name,
+                                target = %request.target,
+                                r#gen = %request.r#gen,
+                                "cut: holders stopped"
+                            );
+                            plugin
+                                .call::<Copy>(CUT_ROUTE, &request)
+                                .await
+                                .map(drop)
+                                .map_err(Error::StoragePreparation)
+                        },
+                    )
                     .await?;
                 match cut {
                     Ok(()) => self.inspect_copy(&name).await,
@@ -303,6 +380,11 @@ impl LocalMachine {
                     Err(CutRefusal::Stale(floor)) => {
                         Err(stale(floor, self.inspect_copy(&name).await?, &name))
                     }
+                    Err(CutRefusal::Stopped) => Err(refused(
+                        CopyRefusal::Stopped,
+                        self.inspect_copy(&name).await?,
+                        &name,
+                    )),
                     Err(CutRefusal::Held(holder)) => Err(refusal(
                         SetVolumeCopyRefused {
                             reason: CopyRefusal::Held,
@@ -648,6 +730,11 @@ fn refusal(refused: SetVolumeCopyRefused, name: &DockerVolumeName) -> Error {
             "{} also runs on Volume {name}, so the cut stopped nothing",
             refused.holder.as_deref().unwrap_or("another Container")
         ),
+        CopyRefusal::Stopped => {
+            format!(
+                "the Container the cut would stop no longer runs on Volume {name}, so the cut stopped nothing"
+            )
+        }
         CopyRefusal::Unrecognized => format!("Volume {name} was refused for an unknown reason"),
         CopyRefusal::Stale => format!(
             "a newer move or release owns Volume {name}; this Machine is at lane {}",
@@ -659,4 +746,12 @@ fn refusal(refused: SetVolumeCopyRefused, name: &DockerVolumeName) -> Error {
 
 fn not_routed(message: String) -> RpcError {
     RpcError::conflict(message)
+}
+
+/// When `verified`'s window closes on the plugin's clock, which reads the wall clock
+/// unfloored: earlier by as much as the floored `now` runs ahead of the wall clock `read`.
+fn plugin_closes(verified: &CopyVerified, (read, now): (Timestamp, Timestamp)) -> Timestamp {
+    let ahead = now.as_millis().saturating_sub(read.as_millis());
+    Timestamp::from_millis(verified.closes.as_millis().saturating_sub(ahead))
+        .unwrap_or(verified.closes)
 }

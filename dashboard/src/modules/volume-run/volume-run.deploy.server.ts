@@ -88,7 +88,8 @@ export const placeDeployVolumes = Effect.fn("VolumeRun.placeDeploy")(function* (
         continue;
       }
       const hold = deploy?.hold === true;
-      const resume = input.kind === "move" ? input.args : (deploy?.resume ?? null);
+      // A drain's move isn't requested again: the drain admitted it under its own checks, and may have stopped waiting.
+      const resume = input.kind === "move" ? (input.args.holder === undefined ? input.args : null) : (deploy?.resume ?? null);
       const { run } = yield* takeDeployLane(CLOUD(organizationId), {
         input: {
           volumeId: lane.volumeId,

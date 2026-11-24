@@ -4,7 +4,7 @@ use ployz_core::{
     Machine, MachineId, MachineName, QualifiedService, RpcErrorCode, WireGuardPublicKey,
 };
 
-use super::{incomplete, line, remaining};
+use super::{DRAIN_FOLLOW, incomplete, line, remaining};
 use crate::drain::{
     DrainOutcome, DrainReport, DrainStop, MachineRef, Move, MoveFailure, OldCopyEnd, Remaining,
     ServiceDrain, ServicesRole, StayReason, Unconfirmed,
@@ -43,10 +43,7 @@ fn step(to: &Machine, old: OldCopyEnd) -> Move {
 }
 
 fn entry(name: &str, outcome: DrainOutcome) -> ServiceDrain {
-    ServiceDrain {
-        service: service(name),
-        outcome,
-    }
+    ServiceDrain::of(service(name), outcome)
 }
 
 fn proxies(servers: &[&Machine]) -> Unconfirmed {
@@ -341,10 +338,7 @@ fn a_stopped_drain_leaves_what_remains_unchecked() {
     let report = DrainReport {
         server: drained,
         services_role: ServicesRole::TurnedOff,
-        services: vec![ServiceDrain {
-            service: service("web"),
-            outcome: DrainOutcome::NotAttempted,
-        }],
+        services: vec![ServiceDrain::of(service("web"), DrainOutcome::NotAttempted)],
         stopped: Some(DrainStop::Cancelled),
         remaining: Remaining::Unobserved {
             error: "no terminal response".into(),
@@ -373,4 +367,31 @@ fn an_old_copy_refused_out_as_the_last_in_is_a_conflict() {
         observed(&["web"]),
     );
     assert_eq!(incomplete(&value).report().code, RpcErrorCode::Conflict);
+}
+
+#[test]
+fn a_service_that_stays_with_its_volume_exits_naming_it() {
+    let drained = server('b', "web-2");
+    let mut db = entry(
+        "db",
+        DrainOutcome::Stays {
+            reason: StayReason::Volume {
+                server: MachineRef::from(&drained),
+            },
+        },
+    );
+    db.volume = Some("data".into());
+    db.detail = Some("mounts data and cache".into());
+    let error = incomplete(&report(vec![db], observed(&["db"])));
+    assert_eq!(
+        (error.report().code, error.to_string()),
+        (RpcErrorCode::Conflict, "app/db stays on web-2.".to_owned())
+    );
+}
+
+/// Cloud lets a drain run, moving its Volumes, for a day after it starts, so `server
+/// drain` follows it that long rather than giving up while it still runs.
+#[test]
+fn a_drain_is_followed_as_long_as_cloud_runs_it() {
+    assert!(DRAIN_FOLLOW >= std::time::Duration::from_secs(24 * 60 * 60));
 }

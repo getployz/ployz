@@ -161,6 +161,12 @@ pub enum MismatchField {
     FirstKey,
     JoinRestrictions,
     SealedTrust,
+    /// A Copy step's source Volume.
+    CopySource,
+    /// A Copy step's restore point.
+    RestorePoint,
+    /// A Copy step's new Volume.
+    CopyDestination,
 }
 
 impl MismatchField {
@@ -246,6 +252,9 @@ impl MismatchField {
             Self::FirstKey => "the joiner's First Key",
             Self::JoinRestrictions => "join restrictions",
             Self::SealedTrust => "sealed trust",
+            Self::CopySource => "the Volume to copy",
+            Self::RestorePoint => "a restore point",
+            Self::CopyDestination => "the new Volume",
         }
     }
 
@@ -351,7 +360,10 @@ impl MismatchField {
             | Self::BootstrapPeers
             | Self::FirstKey
             | Self::JoinRestrictions
-            | Self::SealedTrust => return None,
+            | Self::SealedTrust
+            | Self::CopySource
+            | Self::RestorePoint
+            | Self::CopyDestination => return None,
         })
     }
 
@@ -451,7 +463,10 @@ impl MismatchField {
             | Self::BootstrapPeers
             | Self::FirstKey
             | Self::JoinRestrictions
-            | Self::SealedTrust => return None,
+            | Self::SealedTrust
+            | Self::CopySource
+            | Self::RestorePoint
+            | Self::CopyDestination => return None,
         })
     }
 }

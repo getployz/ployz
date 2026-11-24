@@ -7,6 +7,7 @@ import type { Actor, Caller } from "#/modules/identity/actor";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { type ServerPolicyChangeRequestedEventData, createKeyedServerPolicyChangeRequestedEvent, serverPolicyChangeRequested } from "#/modules/machines/machines.events";
 import { drainActiveOn } from "#/modules/machines/server-drain.server";
+import { targetedMessage, volumeRunTargeting } from "#/modules/machines/server-drain-volumes.server";
 import {
   isEmptyPolicyChange,
   machineUpdateForPolicyChange,
@@ -35,12 +36,29 @@ const DRAINING = "A drain is running on this server. Wait for it to finish.";
 const undoesDrain = (organizationId: string, machineId: MachineId, change: ServerPolicyChange) =>
   change.acceptsServices === true ? drainActiveOn(organizationId, machineId) : Effect.succeed(false);
 
+/**
+ * A Volume moving onto the Server starts its Service there once it lands, and that start doesn't ask whether the
+ * Server takes services, so turning them off waits until no Volume Run targets it.
+ */
+const strandsMove = Effect.fn("ServerPolicy.strandsMove")(function* (organizationId: string, machineId: MachineId, change: ServerPolicyChange) {
+  if (change.acceptsServices !== false) return null;
+  const targeted = yield* volumeRunTargeting(organizationId, machineId);
+  return targeted === null ? null : targetedMessage(targeted);
+});
+
+/** Why the change can't apply now: it would undo a Drain, or turn services off under a Volume moving there. */
+const changeRefusal = Effect.fn("ServerPolicy.changeRefusal")(function* (
+  organizationId: string, machineId: MachineId, change: ServerPolicyChange,
+) {
+  if (yield* undoesDrain(organizationId, machineId, change)) return DRAINING;
+  return yield* strandsMove(organizationId, machineId, change);
+});
+
 const refuseWhileDraining = Effect.fn("ServerPolicy.refuseWhileDraining")(function* (
   organizationId: string, machineId: MachineId, change: ServerPolicyChange,
 ) {
-  if (yield* undoesDrain(organizationId, machineId, change)) {
-    return yield* new Conflict({ userFacing: true, message: DRAINING });
-  }
+  const refusal = yield* changeRefusal(organizationId, machineId, change);
+  if (refusal !== null) return yield* new Conflict({ userFacing: true, message: refusal });
 });
 
 /**
@@ -70,7 +88,8 @@ export const planKeyedServerPolicyChange = Effect.fn("ServerPolicy.planKeyed")(f
     ({ ok: false, refusal: { code, message, details: null } }) as const satisfies { ok: false; refusal: StoreRefusal };
   if (isEmptyPolicyChange(change)) return refused("invalid_argument", "A Server Policy change must set at least one value.");
   const { organization } = yield* requireAccess(caller, caller.organization.slug, "servers:operate");
-  if (yield* undoesDrain(organization.id, machineId, change)) return refused("conflict", DRAINING);
+  const refusal = yield* changeRefusal(organization.id, machineId, change);
+  if (refusal !== null) return refused("conflict", refusal);
   return (attemptId: string) =>
     enqueueEvent(createKeyedServerPolicyChangeRequestedEvent({ organizationId: organization.id, machineId, change }, attemptId))
       .pipe(Effect.as({ ok: true, id: attemptId } as const));

@@ -1261,6 +1261,7 @@ fn removed_but_unswept() -> ConfigStore {
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
+                copies: Vec::new(),
                 recreate: Vec::new(),
             }),
         )

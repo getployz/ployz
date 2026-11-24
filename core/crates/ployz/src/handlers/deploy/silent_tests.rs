@@ -413,6 +413,7 @@ fn staged_by_store(edits: &[(&str, Value)]) -> Vec<ployz_store::NodeChange> {
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
+                copies: Vec::new(),
                 recreate: Vec::new(),
             }),
             &Trusted::default(),

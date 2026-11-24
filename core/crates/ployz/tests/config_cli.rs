@@ -6051,6 +6051,7 @@ fn applied(store: &Target, environment: &str) {
                 prune: false,
                 no_prune: false,
                 versions: Vec::new(),
+                copies: Vec::new(),
                 recreate: Vec::new(),
             });
             local

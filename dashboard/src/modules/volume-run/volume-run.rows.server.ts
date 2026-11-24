@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import type { DestructiveEffect, EnvironmentRef, MachineId, SnapshotGuid, VolumeKind } from "@ployz/sdk";
+import type { ContainerId, DestructiveEffect, EnvironmentRef, MachineId, SnapshotGuid, VolumeKind } from "@ployz/sdk";
 import { and, desc, eq, inArray, isNotNull, isNull, lt, max, ne, or, type SQL, sql } from "drizzle-orm";
 import { Clock, Data, Effect, Option, Schema } from "effect";
 import { NonRetriableError } from "inngest";
@@ -22,6 +22,7 @@ import { dockerVolumeName, parseDockerVolumeName } from "#/modules/runtime/namin
 import { type VolumeRunKind, type VolumeRunPhase, type VolumeRunState } from "#/modules/volume-run/volume-run-states";
 import { Database } from "#/server/database.server";
 import { NotFound } from "#/server/public-error";
+import { uuidFrom } from "#/server/uuid-from";
 import { frameServers } from "#/modules/runtime/daemon-compat";
 
 type VolumeRunRow = typeof volumeRun.$inferSelect;
@@ -50,6 +51,19 @@ export type RunContext = RunBase & VolumeLaneInput;
 
 
 export const OBSERVE_TIMEOUT = "10 seconds";
+
+/**
+ * The gen a rowless SetVolumeCopy carries: the Volume's newest lane's. With no lane open, every floor Cloud raised on
+ * this Volume is at most that, and a lane opened since raises the floor past it, so the Machine refuses the ask Stale.
+ * A Deploy's hold floors no Machine and its row goes when the Deploy ends, so an ask carrying its gen would raise a
+ * floor no later ask reaches.
+ */
+export const rowlessGen = Effect.fn("VolumeRun.rowlessGen")(function* (volumeId: string) {
+  const { drizzle } = yield* Database;
+  const [row] = yield* drizzle.select({ gen: max(volumeRun.gen) }).from(volumeRun)
+    .where(and(eq(volumeRun.volumeId, volumeId), sql`${volumeRun.args}->>'hold' is distinct from 'true'`));
+  return row?.gen ?? 0;
+});
 
 const clip = (text: string) =>
   text.length > VOLUME_RUN_MESSAGE_LIMIT ? `${text.slice(0, VOLUME_RUN_MESSAGE_LIMIT - 1)}…` : text;
@@ -761,6 +775,34 @@ export const admitRun = Effect.fn("VolumeRun.admit")(function* (
   );
 });
 
+class GuardRefused extends Data.TaggedError("GuardRefused")<{ readonly refusal: StoreRefusal }> {}
+
+/**
+ * A run admitted under `guard`, both in one transaction: `guard` reads and locks whatever the caller's own row needs.
+ * It runs again once the insert holds the lane, since the insert may wait on another lane's commit, and a refusal
+ * either time, or the lane's, rolls the insert and its event back. A drain admits its moves this way, under its own
+ * row. Takes no lane.
+ */
+export const admitGuardedRun = Effect.fn("VolumeRun.admitGuarded")(function* <E, R>(
+  caller: Caller,
+  input: { readonly volumeId: string } & VolumeRunInput,
+  volume: ResolvedVolume,
+  id: string,
+  guard: Effect.Effect<StoreRefusal | null, E, R>,
+) {
+  const database = yield* Database;
+  const guarded = guard.pipe(Effect.flatMap((refusal) => refusal === null ? Effect.void : Effect.fail(new GuardRefused({ refusal }))));
+  return yield* database.transaction(Effect.gen(function* () {
+    yield* guarded;
+    const { run } = yield* takeLane(caller, { input, volume, id }, null);
+    yield* guarded;
+    return { ok: true, run } as const;
+  })).pipe(
+    Effect.catchIf((error): error is LaneRefused | GuardRefused => error instanceof LaneRefused || error instanceof GuardRefused, (error) =>
+      Effect.succeed({ ok: false, refusal: error.refusal, owed: error instanceof LaneRefused ? error.owed ?? null : null } as const)),
+  );
+});
+
 /** Names the Server an owed refusal finishes on as the Cluster names it now. Call it with no row locked. */
 export const nameRefusal = Effect.fn("VolumeRun.nameRefusal")(function* (
   { refusal, busy, owed }: { readonly refusal: StoreRefusal; readonly busy: VolumeRunView; readonly owed: Owed | null },
@@ -909,6 +951,35 @@ export const noteRun = Effect.fn("VolumeRun.note")(function* (ctx: Pick<RunConte
     .where(and(eq(volumeRun.id, ctx.id), eq(volumeRun.inngestRunId, inngestRunId), eq(volumeRun.state, "running")));
 });
 
+const ownedRunning = (ctx: Pick<RunContext, "id">, inngestRunId: string) =>
+  and(eq(volumeRun.id, ctx.id), eq(volumeRun.inngestRunId, inngestRunId), eq(volumeRun.state, "running"));
+
+/** Records a Container its Server acknowledged removing, while this run owns its row. */
+export const recordRemoved = Effect.fn("VolumeRun.recordRemoved")(function* (ctx: Pick<RunContext, "id">, inngestRunId: string, containerId: ContainerId) {
+  const { drizzle } = yield* Database;
+  yield* drizzle.update(volumeRun).set({
+    result: sql`jsonb_set(coalesce(${volumeRun.result}, '{}'::jsonb), '{removed}', coalesce(${volumeRun.result} -> 'removed', '[]'::jsonb) || jsonb_build_array(${containerId}::text))`,
+  }).where(ownedRunning(ctx, inngestRunId));
+});
+
+/** Records the Server a Release started the Service on again, once it answered the start, while this run owns its row. */
+export const recordRestarted = Effect.fn("VolumeRun.recordRestarted")(function* (ctx: Pick<RunContext, "id">, inngestRunId: string, machine: MachineId) {
+  const { drizzle } = yield* Database;
+  yield* drizzle.update(volumeRun).set({
+    result: sql`coalesce(${volumeRun.result}, '{}'::jsonb) || jsonb_build_object('restarted', ${machine}::text)`,
+  }).where(ownedRunning(ctx, inngestRunId));
+});
+
+/**
+ * Pins the Server a Move admitted by name alone resolved to, so what guards that Server finds the Move by its id
+ * whatever Cloud later calls it.
+ */
+export const pinDestination = Effect.fn("VolumeRun.pinDestination")(function* (ctx: Pick<RunContext, "id">, inngestRunId: string, machine: MachineId) {
+  const { drizzle } = yield* Database;
+  yield* drizzle.update(volumeRun).set({ args: sql`jsonb_set(${volumeRun.args}, '{machine}', to_jsonb(${machine}::text))` })
+    .where(and(ownedRunning(ctx, inngestRunId), eq(volumeRun.kind, "move"), sql`${volumeRun.args} ->> 'machine' is null`));
+});
+
 export const refuseRun = (ctx: Pick<RunContext, "id">, inngestRunId: string, refusal: Refusal) =>
   endRun(ctx, inngestRunId, "failed", refusal.message);
 
@@ -984,6 +1055,9 @@ export const requeueTakenMoves = Effect.fn("VolumeRun.requeueTakenMoves")(functi
   return { requeued, refused };
 });
 
+/** The Release a Move's end queues, by the Move's id, so whoever started the Move finds it without a column. */
+export const releaseOfMove = (moveId: string) => uuidFrom(`ployz.move-release:${moveId}`);
+
 /**
  * Ends the running row `owned` picks. A Move it ended hands the Volume to a release run: back to A while warm, forward
  * to B once committed. A release never starts another. A Deploy it ended requests the move it took over again.
@@ -996,6 +1070,7 @@ const endAndRelease = Effect.fn("VolumeRun.endAndRelease")(function* (owned: SQL
     yield* requeueTakenMoves(rows);
     for (const row of rows.filter((ended) => ended.kind === "move")) {
       const [release] = yield* drizzle.insert(volumeRun).values({
+        id: releaseOfMove(row.id),
         organizationId: row.organizationId,
         environmentId: row.environmentId,
         volumeId: row.volumeId,

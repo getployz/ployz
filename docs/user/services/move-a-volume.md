@@ -37,8 +37,8 @@ with, such as the Deploy sheet in Ployz Cloud, it reads "moves data to syd". The
 the move with the line that runs it. See
 [When a volume is outside the region](regions.md#when-a-volume-is-outside-the-region).
 
-[Drain](../servers/manage-servers.md#change-what-a-server-does) doesn't move a volume. It names
-each volume it leaves on the server, so you can move them with `ployz volume move`.
+A [drain](../servers/manage-servers.md#services-with-a-volume) moves each service with its volume
+the same way, one at a time, and names each one it can't move, with the reason.
 
 If you staged a mirror change before the move, the next deploy refuses it: the change was made for
 the server the volume left. Discard it, edit the volume's mirrors again and deploy.

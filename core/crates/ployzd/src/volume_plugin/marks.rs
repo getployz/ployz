@@ -64,6 +64,9 @@ pub(super) enum Mark {
     /// On a slot parent: the origin the pull's stream proved, until completion stamps it on
     /// `fs` ([`super::origin`]).
     PullOrigin,
+    /// On a slot parent a Copy step's seed made: the step's digest, set as ZFS makes the
+    /// parent. Only a slot carrying it is that step's copy ([`super::seed`]).
+    CopyStep,
 }
 
 impl Mark {
@@ -79,6 +82,7 @@ impl Mark {
             Self::ResumeToken => "receive_resume_token",
             Self::Origin => "ployz:origin",
             Self::PullOrigin => "ployz:pull-origin",
+            Self::CopyStep => "ployz:copy-step",
         }
     }
 }

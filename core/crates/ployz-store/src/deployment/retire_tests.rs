@@ -162,6 +162,7 @@ fn admit(
         prune: false,
         no_prune: false,
         versions: Vec::new(),
+        copies: Vec::new(),
         recreate: Vec::new(),
     };
     choose(&mut deploy);
@@ -269,6 +270,7 @@ fn redeploy(store: &ConfigStore, who: &Actor, n: u8, source: &DeploymentId) {
                 version: None,
                 accept_volume_loss: Vec::new(),
                 versions: Vec::new(),
+                copies: Vec::new(),
             }),
         )
         .unwrap();

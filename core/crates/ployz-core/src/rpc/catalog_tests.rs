@@ -303,6 +303,14 @@ const ROWS: &[(&str, &str, &str, &str, &str, &str)] = &[
         "Unary",
     ),
     (
+        "SeedCopy",
+        "seed_copy",
+        "ployz.volume.seed-copy.v1",
+        "Container",
+        "Operator",
+        "Unary",
+    ),
+    (
         "SetVolumeCopy",
         "set_volume_copy",
         "ployz.volume.copy.set.v1",
@@ -496,6 +504,7 @@ const EXTRAS: &[(&str, &str)] = &[
     ("ployz.volume.size.shrink.v1", "Container"),
     ("ployz.volume.origin.v1", "Container"),
     ("ployz.volume.start.v1", "Container"),
+    ("ployz.volume.cut.running.v1", "Container"),
     ("ployz.certificates.policy.v1", "Always"),
     ("ployz.machine.storage-observation.v1", "Always"),
     ("ployz.management.scope.v1", "Always"),
