@@ -319,10 +319,13 @@ const claimHoldsSlot = sql`${schemaMachineEnrollmentToken.claimedAt} > ${checked
  * Binds the token to one Machine identity before it hands out the Pairing secret. The same identity
  * may claim again to resume until enrollment completes; a failed enrollment keeps the token spent.
  * Claiming takes a join slot, and renews a claim whose slot lapsed.
+ * It locks the token first, so the expiry check follows any wait, even behind a release that locked it and changed nothing.
  */
 const claimEnrollmentToken = Effect.fn("MachineEnrollment.claimToken")(
   function* (token: string, identity: { readonly machineId: MachineId; readonly publicKey: string; readonly name: MachineName }) {
     const { drizzle } = yield* Database;
+    const scope = eq(schemaMachineEnrollmentToken.tokenHash, hashEnrollmentToken(token));
+    yield* drizzle.select({ tokenHash: schemaMachineEnrollmentToken.tokenHash }).from(schemaMachineEnrollmentToken).where(scope).for("update");
     const [claimed] = yield* drizzle.update(schemaMachineEnrollmentToken)
       .set({
         claimedMachineId: identity.machineId,
@@ -332,7 +335,7 @@ const claimEnrollmentToken = Effect.fn("MachineEnrollment.claimToken")(
         updatedAt: sql`now()`,
       })
       .where(and(
-        eq(schemaMachineEnrollmentToken.tokenHash, hashEnrollmentToken(token)),
+        scope,
         gt(schemaMachineEnrollmentToken.expiresAt, checkedNow()),
         isNull(schemaMachineEnrollmentToken.joinedMachineId),
         or(
