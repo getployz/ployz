@@ -473,12 +473,19 @@ pub fn restore_fence(data_dir: &Path) -> Result<(), NetworkError> {
             std::fs::write(format!("/proc/sys/net/bridge/bridge-nf-call-{family}"), "1")?;
         }
     }
-    let body = match std::fs::read(data_dir.join(FENCE_FILE)) {
+    let path = data_dir.join(FENCE_FILE);
+    let unreadable = |error: &dyn std::fmt::Display| {
+        io::Error::other(format!(
+            "the fence file {} can't be read: {error}",
+            path.display()
+        ))
+    };
+    let body = match std::fs::read(&path) {
         Ok(body) => body,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error.into()),
+        Err(error) => return Err(unreadable(&error).into()),
     };
-    let file: FenceFile = serde_json::from_slice(&body).map_err(io::Error::other)?;
+    let file: FenceFile = serde_json::from_slice(&body).map_err(|error| unreadable(&error))?;
     let _writer = writer();
     for (program, document, on) in [
         ("iptables", &file.iptables, true),
