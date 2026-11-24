@@ -369,9 +369,7 @@ impl CatchUpClient for Client {
 }
 
 fn step_error(rotated: Rotated) -> Result<(), RpcError> {
-    rotated
-        .failure()
-        .map_err(retirement_error)
+    rotated.failure().map_err(retirement_error)
 }
 
 /// A factual stage of target-only catch-up, adapted by the owning command.

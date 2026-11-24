@@ -1,7 +1,7 @@
 //! Drain: turn a Machine's services role off, run Placement convergence for each chosen
 //! replicated Service with a Container on it, then observe what still runs there. One
-//! bounded command. A chosen Global is a user one left from before 0.1.2-beta.42, and it
-//! refuses the Drain in its preflight wherever it is seen: a Drain retires no Global.
+//! bounded command. A chosen Service with a Global copy anywhere refuses the Drain in its
+//! preflight: a Drain retires no Global, and lets go of no Global's copy.
 //!
 //! Each move's old copy retires alongside the moves after it; the report waits for every
 //! retirement and still lists the Services in the order they were handled.
@@ -32,12 +32,11 @@ use ts_rs::TS;
 use crate::cluster::{Call, Deadline, RoleSetting, RoleWaitError, visible_machine, wait_for_role};
 use crate::connect::{Client, ConnectError, TARGET_RPC_TIMEOUT};
 use crate::deploy::cleanup::Copy;
-use crate::deploy::{Approvals, Approved, DeploySnapshot};
+use crate::deploy::{Approvals, Approved, CopyLifecycle, DeploySnapshot};
 
 pub(crate) mod placement;
 pub(crate) mod retirement;
 
-use crate::global_slot::copies_on;
 use placement::{Converged, LastIn, Moving, can_move, converge, named};
 use retirement::let_go;
 
@@ -457,8 +456,8 @@ struct Ready {
 }
 
 /// Select, turn the role off, wait until the entry observes it, list the chosen Services.
-/// Each listing must answer for the Server, and each refuses a user Global it finds, so no
-/// Drain retires one.
+/// Each listing must answer for the Server, and each refuses a chosen Service with a Global
+/// copy, so no Drain retires one.
 async fn preflight(
     client: &mut Client,
     target: &MachineTarget,
@@ -501,9 +500,10 @@ async fn preflight(
     })
 }
 
-/// The Services of `scope` with a Container on `server`, all replicated. Refuses when
-/// `server` did not answer the listing, or runs a user Global; `role` is what this Drain
-/// already did to its services role.
+/// The Services of `scope` with a Container on `server`. Refuses when `server` did not
+/// answer the listing, or when any of them has a Global copy anywhere: a copy stays In while
+/// it crash-loops, so the copy on `server` could be the last that serves, and one left Out
+/// there would be let go. `role` is what this Drain already did to its services role.
 fn chosen_on(
     server: &Machine,
     live: &LiveServices<RpcError>,
@@ -514,48 +514,62 @@ fn chosen_on(
         server: server.name.clone(),
         detail,
     })?;
-    let replicated = replicated_services_on(&server.id, live);
-    let (replicated, globals): (Vec<_>, Vec<_>) = services_on(&server.id, live)
+    let (globals, replicated): (Vec<_>, Vec<_>) = live
+        .services()
         .into_iter()
-        .filter(|service| scope.includes(service))
-        .partition(|service| replicated.contains(service));
+        .filter(|service| {
+            scope.includes(&service.identity)
+                && service
+                    .containers
+                    .iter()
+                    .any(|container| container.as_observation().machine_id == server.id)
+        })
+        .partition(|service| {
+            service
+                .members()
+                .any(|member| member.as_observation().resolved_spec.mode == ServiceMode::Global)
+        });
+    let identities = |services: Vec<ployz_core::ServiceObservation>| {
+        services
+            .into_iter()
+            .map(|service| service.identity)
+            .collect::<Vec<_>>()
+    };
     if globals.is_empty() {
-        return Ok(replicated);
+        return Ok(identities(replicated));
     }
-    Err(user_globals(server, &globals, role))
+    Err(user_globals(server, &identities(globals), role))
 }
 
-/// The refusal of a Drain that would retire `globals`, user Globals. Compose made them
-/// until 0.1.2-beta.42, and no Machine admits one now. A copy stays In while it
-/// crash-loops, so retiring this one could take the last copy that serves.
+/// The refusal of a Drain whose Server runs `globals`. Compose made a user Global until
+/// 0.1.2-beta.42.
 fn user_globals(
     server: &Machine,
     globals: &[QualifiedService],
     role: Option<ServicesRole>,
 ) -> DrainError {
-    let (each, names) = (
-        if globals.len() == 1 { "it" } else { "each" },
-        globals
-            .iter()
-            .map(|service| format!("`{service}`"))
-            .collect::<Vec<_>>()
-            .join(", "),
-    );
-    let role = match role {
-        Some(ServicesRole::TurnedOff) => " This Drain turned its services role off.",
-        Some(ServicesRole::AlreadyOff) | None => "",
+    let names = globals
+        .iter()
+        .map(|service| format!("`{service}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let (copies, each, them) = if globals.len() == 1 {
+        ("its last working copy", "it", "it")
+    } else {
+        ("their last working copies", "each", "them")
     };
-    DrainError::Refused(
-        RpcError::new(
-            RpcErrorCode::Conflict,
-            format!(
-                "Server {} runs {names} on every Server, which only Ployz's own Services may \
-                 do now.{role} Give {each} a replica count and deploy, then drain {} again.",
-                server.name, server.name
-            ),
-        )
-        .with_hint(ployz_core::Hint::Next("ployz deploy".to_owned())),
-    )
+    let role = match role {
+        Some(ServicesRole::TurnedOff) => format!(" Services are now off on {}.", server.name),
+        Some(ServicesRole::AlreadyOff) | None => String::new(),
+    };
+    DrainError::Refused(RpcError::new(
+        RpcErrorCode::Conflict,
+        format!(
+            "Server {} runs {names} on every Server, and draining could stop {copies}.{role} \
+             Remove {each}, deploy, then add {them} back with a replica count.",
+            server.name
+        ),
+    ))
 }
 
 /// Turn the services role off on `id`, then wait until the entry observes it off.
@@ -601,6 +615,8 @@ trait DrainClient {
         service: &QualifiedService,
         cancellation: &CancellationToken,
     ) -> Converged<Moving>;
+    /// `service`'s copies on `server`, leaving out any Global copy, which may be the last
+    /// that serves.
     async fn copies_on(
         &mut self,
         server: &MachineId,
@@ -638,7 +654,16 @@ impl DrainClient for Approved {
         server: &MachineId,
         service: &QualifiedService,
     ) -> Result<Vec<Copy>, RpcError> {
-        copies_on(self, server, service).await
+        Ok(self
+            .service_containers(service)
+            .await?
+            .iter()
+            .filter(|observation| {
+                observation.machine_id == *server
+                    && observation.resolved_spec.mode != ServiceMode::Global
+            })
+            .map(Copy::observed)
+            .collect())
     }
 
     async fn let_go(&mut self, copy: &Copy, cancellation: &CancellationToken) -> OldCopyEnd {
@@ -1011,8 +1036,17 @@ enum Lost {
     Server(String),
 }
 
-/// Whether `id` answered the Container listing; the detail when it didn't.
+/// Whether `id` answered the Container listing; the detail when it didn't. A listing that
+/// never asked `id`, because the Machine list left it out, has no answer from it either.
 fn observed(live: &LiveServices<RpcError>, id: &MachineId) -> Result<(), String> {
+    if live
+        .containers
+        .successes
+        .iter()
+        .any(|success| success.machine_id == *id)
+    {
+        return Ok(());
+    }
     if let Some(failure) = live
         .containers
         .failures
@@ -1024,7 +1058,7 @@ fn observed(live: &LiveServices<RpcError>, id: &MachineId) -> Result<(), String>
     if live.containers.omissions.contains(id) {
         return Err("no terminal response".into());
     }
-    Ok(())
+    Err("not in the Machine list".into())
 }
 
 pub(crate) fn services_on(

@@ -1209,22 +1209,39 @@ fn an_outcome_says_whether_it_left_an_old_copy_or_failed() {
     }
 }
 
+/// What Server `web-2` answers at one look of a Drain.
+enum Look {
+    Lists(Vec<ployz_core::ContainerObservation>),
+    /// Its Container listing fails, as a Server that doesn't answer.
+    Fails,
+    /// The Machine list leaves it out, so nothing asks it.
+    Unlisted,
+}
+
+/// Copies of `app/metrics` that `web-2` may list.
+struct Metrics {
+    /// A Global copy, In, as Compose made one before 0.1.2-beta.42.
+    global: ployz_core::ContainerObservation,
+    /// A Global copy rotated Out.
+    out_global: ployz_core::ContainerObservation,
+    /// A replicated copy.
+    replicated: ployz_core::ContainerObservation,
+}
+
 /// The Drain of Server `web-2` against a Cluster that answers only reads, and every other
 /// call it sent. Its peer `web-1` runs a copy of `app/metrics`, a user Global left from
-/// Compose before 0.1.2-beta.42. `listing` answers `web-2`'s Container listing by how many
-/// Server listings came before it: `None` fails it, as a Server that doesn't answer.
+/// Compose before 0.1.2-beta.42. `look` answers for `web-2` by how many Machine listings
+/// came before it.
 async fn drain_reading_only(
     accepts_services: bool,
-    listing: fn(
-        usize,
-        ployz_core::ContainerObservation,
-    ) -> Option<Vec<ployz_core::ContainerObservation>>,
+    look: fn(usize, &Metrics) -> Look,
 ) -> (Result<DrainReport, super::DrainError>, Vec<String>) {
     use crate::global_fixtures::{global_service, machine, qualified, running_on};
     use ployz_core::{
         ContainerList, MachineList, MachineObservation, MachineTarget, MembershipObservation,
         OpaquePayload, Placement, RpcRequestBody, RpcResponse,
     };
+    use std::num::NonZeroU32;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tonic::{Request, Response};
 
@@ -1244,7 +1261,24 @@ async fn drain_reading_only(
         .remove(0)
         .into_observation()
     };
-    let (global, elsewhere) = (on(&drained, 'a'), on(&peer, 'b'));
+    let mut out_global = on(&drained, 'c');
+    out_global
+        .try_update(|parts| parts.rotation = Some(CopyRotation::Out))
+        .unwrap();
+    let mut replicated = on(&drained, 'd');
+    replicated
+        .try_update(|parts| {
+            parts.resolved_spec.mode = ployz_core::ServiceMode::Replicated {
+                replicas: NonZeroU32::new(2).unwrap(),
+            };
+        })
+        .unwrap();
+    let metrics = Arc::new(Metrics {
+        global: on(&drained, 'a'),
+        out_global,
+        replicated,
+    });
+    let elsewhere = on(&peer, 'b');
     let (drained_id, peer_id) = (drained.id, peer.id);
     let asked = Arc::new(Mutex::new(Vec::new()));
     let listings = Arc::new(AtomicUsize::new(0));
@@ -1254,7 +1288,7 @@ async fn drain_reading_only(
         let asked = asked.clone();
         move |rpc: Request<OpaquePayload>| {
             let (asked, listings, machines) = (asked.clone(), listings.clone(), machines.clone());
-            let (global, elsewhere) = (global.clone(), elsewhere.clone());
+            let (metrics, elsewhere) = (metrics.clone(), elsewhere.clone());
             let selected = rpc
                 .metadata()
                 .get(ployz_core::ONE_TARGET_HEADER)
@@ -1267,10 +1301,14 @@ async fn drain_reading_only(
                 )]
                 let response = match rpc.into_inner().decode_request().unwrap().body {
                     RpcRequestBody::ListMachines(_) => {
-                        listings.fetch_add(1, Ordering::SeqCst);
+                        let before = listings.fetch_add(1, Ordering::SeqCst) + 1;
+                        let unlisted = matches!(look(before, &metrics), Look::Unlisted);
                         RpcResponse::from(MachineList {
                             enrollment: None,
-                            machines: machines.to_vec(),
+                            machines: machines
+                                .into_iter()
+                                .filter(|seen| !(unlisted && seen.machine.id == drained_id))
+                                .collect(),
                         })
                     }
                     RpcRequestBody::ListContainers(_)
@@ -1283,9 +1321,11 @@ async fn drain_reading_only(
                     RpcRequestBody::ListContainers(_)
                         if selected.as_deref() == Some(drained_id.as_str()) =>
                     {
-                        match listing(listings.load(Ordering::SeqCst), global) {
-                            Some(containers) => RpcResponse::from(ContainerList { containers }),
-                            None => RpcResponse::from(RpcError::new(
+                        match look(listings.load(Ordering::SeqCst), &metrics) {
+                            Look::Lists(containers) => {
+                                RpcResponse::from(ContainerList { containers })
+                            }
+                            Look::Fails | Look::Unlisted => RpcResponse::from(RpcError::new(
                                 ployz_core::RpcErrorCode::Internal,
                                 "the Server did not list its Containers",
                             )),
@@ -1339,7 +1379,8 @@ fn assert_refused_for_metrics(drained: Result<DrainReport, super::DrainError>) {
 /// A user Global refuses the Drain before its services role changes.
 #[tokio::test]
 async fn a_user_global_refuses_the_drain_before_the_role_changes() {
-    let (drained, asked) = drain_reading_only(true, |_, global| Some(vec![global])).await;
+    let (drained, asked) =
+        drain_reading_only(true, |_, metrics| Look::Lists(vec![metrics.global.clone()])).await;
 
     assert_refused_for_metrics(drained);
     assert!(asked.is_empty(), "{asked:?}");
@@ -1351,8 +1392,12 @@ async fn a_user_global_refuses_the_drain_before_the_role_changes() {
 #[tokio::test]
 async fn a_drain_that_cannot_list_the_server_changes_nothing() {
     for accepts_services in [true, false] {
-        let (drained, asked) = drain_reading_only(accepts_services, |before, global| {
-            (before > 1).then(|| vec![global])
+        let (drained, asked) = drain_reading_only(accepts_services, |before, metrics| {
+            if before > 1 {
+                Look::Lists(vec![metrics.global.clone()])
+            } else {
+                Look::Fails
+            }
         })
         .await;
 
@@ -1371,11 +1416,49 @@ async fn a_drain_that_cannot_list_the_server_changes_nothing() {
 /// observation of one reaches a retirement.
 #[tokio::test]
 async fn a_user_global_seen_after_the_role_is_off_still_refuses() {
-    let (drained, asked) = drain_reading_only(false, |before, global| {
-        Some(if before > 1 { vec![global] } else { Vec::new() })
+    let (drained, asked) = drain_reading_only(false, |before, metrics| {
+        Look::Lists(if before > 1 {
+            vec![metrics.global.clone()]
+        } else {
+            Vec::new()
+        })
     })
     .await;
 
     assert_refused_for_metrics(drained);
+    assert!(asked.is_empty(), "{asked:?}");
+}
+
+/// A Service with a Global copy anywhere refuses the Drain, even when the Server also runs
+/// a replicated copy of it: the Drain would let go of the Global copy left Out there, and a
+/// copy In elsewhere may crash-loop.
+#[tokio::test]
+async fn a_service_with_any_global_copy_refuses_the_drain() {
+    let (drained, asked) = drain_reading_only(true, |_, metrics| {
+        Look::Lists(vec![metrics.replicated.clone(), metrics.out_global.clone()])
+    })
+    .await;
+
+    assert_refused_for_metrics(drained);
+    assert!(asked.is_empty(), "{asked:?}");
+}
+
+/// A Server the Machine list leaves out at a later look was never asked what it runs by
+/// then, so the Drain can't read it as empty.
+#[tokio::test]
+async fn a_server_left_out_of_the_machine_list_is_not_read_as_empty() {
+    let (drained, asked) = drain_reading_only(false, |before, _| {
+        if before > 1 {
+            Look::Unlisted
+        } else {
+            Look::Lists(Vec::new())
+        }
+    })
+    .await;
+
+    assert!(
+        matches!(drained, Err(super::DrainError::Unobservable { .. })),
+        "{drained:?}"
+    );
     assert!(asked.is_empty(), "{asked:?}");
 }
