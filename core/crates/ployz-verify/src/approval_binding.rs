@@ -107,7 +107,7 @@ use stateright::{Model, Property};
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Write {
     /// `ployz save`: `review::publish::publish`, then `review::approve` with
-    /// `Shipping::Publish`. Nothing staged returns early (`publish.rs:319-339`).
+    /// `Shipping::Publish`. Nothing staged returns early (`publish.rs`, the nothing-staged return).
     Save,
     /// A Deploy carrying a yes: Cloud sends it to the Store instead of a link, and
     /// `review::approve` weighs it with `Shipping::Deploy`.
@@ -833,7 +833,6 @@ impl ApprovalBinding {
         }
     }
 
-    /// Whether the yes counts now, for an effect about to run.
     /// Whether the yes counts now, for an effect about to run on `state.live`: never an
     /// agent's; in a Protected Environment, never a member's own where its protection asks
     /// an owner or admin; on a Machine, only while it accepts the caller's key.
@@ -2146,18 +2145,18 @@ mod tests {
         path
     }
 
-    /// Open, F1 pending Unit K: reachable through a Full caller's Global spec. B crash-loops under
+    /// Open, F1 until #4567: reachable through a Full caller's Global spec. B crash-loops under
     /// `unless-stopped` with no healthcheck from before the ask. Cloud's `drainPlan`, at the
     /// gate and at `stillCovered`, lands on a moment its Container reads Running, so the yes
     /// names G kept on B. `last_in` counts B In, the proxies read B Running and drop A, and
-    /// `retire` removes A. B exits again before it serves, and G stays down. S9, so Unit K
+    /// `retire` removes A. B exits again before it serves, and G stays down. S9, so #4567
     /// is fixing it in production.
     #[test]
     fn a_retirement_removes_a_global_s_copy_beside_a_crash_looping_copy_read_running() {
         unlisted_beside_a_silent_copy(|exec| matches!(exec, Exec::Ready));
     }
 
-    /// Open, #4556, F1 pending Unit K: reachable through a Full caller's Global spec. B's Container exits
+    /// Open, #4556, F1 until #4567: reachable through a Full caller's Global spec. B's Container exits
     /// after Cloud's compare and before the guard reads, and its exit has not replicated when
     /// the proxies drop A. `last_in` counts B, which its daemon still answers In, and the
     /// proxies route B alone. Had they read the exit, they would have kept A and the Drain
@@ -2167,7 +2166,7 @@ mod tests {
         unlisted_beside_a_silent_copy(|exec| matches!(exec, Exec::Covered { .. }));
     }
 
-    /// Open, #4556, F1 pending Unit K: reachable through a Full caller's Global spec. `last_in` counted
+    /// Open, #4556, F1 until #4567: reachable through a Full caller's Global spec. `last_in` counted
     /// B. B's Container exits before the proxies drop A, and its exit has not replicated by
     /// then, so they route B alone and `retire` removes A.
     #[test]
@@ -2175,7 +2174,7 @@ mod tests {
         unlisted_beside_a_silent_copy(|exec| matches!(exec, Exec::Retiring | Exec::Unlisting));
     }
 
-    /// Open, #4556, F1 pending Unit K: reachable through a Full caller's Global spec.
+    /// Open, #4556, F1 until #4567: reachable through a Full caller's Global spec.
     /// `last_in` counted B and A went Out. B stops, and its owner publishes it, or B's
     /// Machine goes Down. The proxies restart before `wait_unlisted` reads them: with no
     /// route to keep, `next_route` routes only what serves now, or B on its Down Machine,
