@@ -380,7 +380,8 @@ async fn wait_for_exec_exit(
 }
 
 /// Completes once a detached exec's command has exited, or Docker no longer knows the exec
-/// because its Container went.
+/// because its Container went. The watch of a detached exec lives only that long: it outlives
+/// the `exec` call, bounded by the command the caller started, and acts only to stop it.
 async fn detached_exec_exit(docker: &bollard::Docker, exec_id: &str) {
     loop {
         match poll_exec_exit(docker, exec_id, DETACHED_EXEC_POLL).await {
