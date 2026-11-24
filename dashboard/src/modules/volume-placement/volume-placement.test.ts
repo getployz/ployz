@@ -162,7 +162,7 @@ describe("placementChanges", () => {
   it("copies first when the target holds nothing, and leaves the mirror list alone", () => {
     const members = [member("web-1", "writer"), pooled("web-3")];
     expect(review(members, row([], { primary: "web-3" }))).toEqual([primaryMove("web-1", "web-3")]);
-    expect(firstRun(members, row([], { primary: "web-3" }))).toEqual({ kind: "move", args: { to: "web-3" } });
+    expect(firstRun(members, row([], { primary: "web-3" }))).toEqual({ kind: "move", args: { to: "web-3", machine: id("web-3") } });
   });
 
   it("restores from the mirror when the primary does not answer, and says what is lost", () => {
@@ -211,7 +211,7 @@ describe("placementChanges", () => {
 
   it("runs deletions that free the copy slot before a move, and a move before a new mirror", () => {
     const members = [member("web-1", "writer"), member("web-2", "mirror"), pooled("web-3")];
-    expect(firstRun(members, row(["web-2"], { primary: "web-2", mirrors: ["web-3"] }))).toEqual({ kind: "move", args: { to: "web-2" } });
+    expect(firstRun(members, row(["web-2"], { primary: "web-2", mirrors: ["web-3"] }))).toEqual({ kind: "move", args: { to: "web-2", machine: id("web-2") } });
     expect(firstRun(members, row(["web-2"], { primary: "web-3" }))).toEqual(
       { kind: "delete_mirror", args: { slot: "web-2", confirmed_name: null, machine: id("web-2"), role: "mirror" } },
     );
@@ -368,7 +368,7 @@ describe("nextPlacementStep", () => {
 
   it("drops the promoted mirror once the move ends, and leaves the old primary detached", () => {
     const members = [member("web-1", "writer"), member("web-2", "mirror")];
-    expect(next(members, row(["web-2"], { primary: "web-2" }))).toEqual({ run: { kind: "move", args: { to: "web-2" } }, mirrors: [], change: { kind: "move", server: id("web-2"), from: id("web-1") } });
+    expect(next(members, row(["web-2"], { primary: "web-2" }))).toEqual({ run: { kind: "move", args: { to: "web-2", machine: id("web-2") } }, mirrors: [], change: { kind: "move", server: id("web-2"), from: id("web-1") } });
   });
 
   it("keeps the mirrors while a change still has runs after this one", () => {
