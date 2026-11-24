@@ -1342,7 +1342,7 @@ fn a_member_whose_record_puts_it_in_another_part_moves_into_its_own() {
         MachineSubnet::parse("10.210.1.0/24").unwrap(),
     );
     assert_eq!(
-        unplaced,
+        unplaced.moved,
         BTreeSet::from(["db".to_owned(), "web".to_owned()])
     );
     let addresses = members
@@ -1358,6 +1358,32 @@ fn a_member_whose_record_puts_it_in_another_part_moves_into_its_own() {
             ("legacy", Some(201)),
         ]
     );
+}
+
+/// A signed database recorded in SignedData but holding an Open address, when every
+/// SignedData address is taken, must leave the bridge rather than keep serving where the
+/// fence reads it as Open.
+#[test]
+fn a_member_whose_own_part_is_full_leaves_the_bridge_without_its_address() {
+    let subnet = MachineSubnet::parse("10.210.1.0/24").unwrap();
+    let mut members = [BridgeMember {
+        id: "db".into(),
+        ipv4: Some(Ipv4Addr::new(10, 210, 1, 3)),
+        attached: true,
+        pinned: true,
+        ipv6: false,
+        namespace: None,
+    }];
+    let mut taken = AddressPart::SignedData
+        .hosts()
+        .map(|last| Ipv4Addr::new(10, 210, 1, last))
+        .collect::<BTreeSet<_>>();
+    taken.insert(Ipv4Addr::new(10, 210, 1, 3));
+    let admitted = BTreeMap::from([("db".to_owned(), AddressPart::SignedData)]);
+    let unplaced = unplace(&mut members, &admitted, &mut taken, subnet);
+    assert_eq!(unplaced.full, BTreeSet::from(["db".to_owned()]));
+    assert!(unplaced.moved.is_empty());
+    assert_eq!(members[0].ipv4, None);
 }
 
 #[test]

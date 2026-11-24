@@ -113,6 +113,9 @@ ployz deploy --recreate
 It replaces every service's containers once, including ones that hold a volume, so each takes its
 new address. `--recreate` with service names replaces only those.
 
+When Ployz starts, a container made before the upgrade moves to its group's addresses. If that
+group is full, the container leaves the private network until Ployz starts again with room in it.
+
 ## Connect to another service
 
 Reference the other service's address in a variable. Every service has a
