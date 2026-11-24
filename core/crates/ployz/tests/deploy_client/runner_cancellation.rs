@@ -53,6 +53,7 @@ pub(super) fn deployment() -> (Arc<ConfigStore>, Actor, DeploymentId) {
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
             &ployz_store::Trusted::default(),
         )
@@ -153,6 +154,7 @@ async fn taken_over_mid_create() -> (Arc<ConfigStore>, Actor, DeploymentId) {
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
             &ployz_store::Trusted::default(),
         )

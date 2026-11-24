@@ -132,6 +132,7 @@ fn admit(store: &ConfigStore, n: u8) -> DeploymentId {
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
             &ployz_store::Trusted::default(),
         )
@@ -398,6 +399,7 @@ fn a_credential_lost_from_the_store_says_to_set_it_again() {
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
             &ployz_store::Trusted::default(),
         )

@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import { cancelServerEnrollments } from "#/modules/machines/waiting/enrollment-run.server";
@@ -30,7 +30,7 @@ export const rejectWaitingServers = Effect.fn("WaitingServer.reject")(function* 
     // The rejected hosts whose open attempt runs on, because Cloud may have sent its join.
     let spared: ReadonlyArray<string> = [];
     if (rejected.length > 0) {
-      yield* drizzle.update(waitingServer).set({ rejectedAt: new Date() })
+      yield* drizzle.update(waitingServer).set({ rejectedAt: sql`now()` })
         .where(inArray(waitingServer.id, rejected.map((row) => row.id)));
       const open = yield* drizzle.select({
         id: serverEnrollment.id,

@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { and, eq, isNotNull, isNull } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import { Cause, Context, Effect, Exit, type Redacted } from "effect";
 import {
   CloudflareError,
@@ -165,6 +165,7 @@ export const setUpCloudflare = Effect.fn("Cloudflare.setUp")(function* (
   const reserved = and(
     eq(organizationCloudflareIngress.organizationId, organizationId),
     eq(organizationCloudflareIngress.state, "setting_up"),
+    // oxlint-disable-next-line anti-slop/postgres-clock-in-queries -- a fence, not a time: the put-back matches this exact value, which a microsecond now() would not survive the round trip
     eq(organizationCloudflareIngress.updatedAt, reservedAt),
   );
   const putBack = database.transaction(Effect.gen(function* () {
@@ -237,7 +238,7 @@ export const setUpCloudflare = Effect.fn("Cloudflare.setUp")(function* (
     return yield* database.transaction(Effect.gen(function* () {
       yield* lockIngressRows(organizationId);
       const { drizzle } = yield* Database;
-      const [written] = yield* drizzle.update(organizationCloudflareIngress).set({ ...row, updatedAt: new Date() })
+      const [written] = yield* drizzle.update(organizationCloudflareIngress).set({ ...row, updatedAt: sql`now()` })
         .where(and(reserved, isNull(organizationCloudflareIngress.clusterRemovedAt)))
         .returning({ organizationId: organizationCloudflareIngress.organizationId });
       if (written === undefined) {

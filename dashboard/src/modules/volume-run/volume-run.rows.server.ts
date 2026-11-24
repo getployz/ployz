@@ -24,6 +24,7 @@ import { Database } from "#/server/database.server";
 import { NotFound } from "#/server/public-error";
 import { uuidFrom } from "#/server/uuid-from";
 import { frameServers } from "#/modules/runtime/daemon-compat";
+import { checkedNow } from "#/db/tables";
 
 type VolumeRunRow = typeof volumeRun.$inferSelect;
 
@@ -108,7 +109,7 @@ export const contextOf = (row: VolumeRunRow): RunContext => ({
 });
 
 export const ended = (state: Exclude<VolumeRunState, "requested" | "running">, message: string | null) =>
-  ({ state, message: message === null ? null : clip(message), finishedAt: new Date(), updatedAt: new Date() }) as const;
+  ({ state, message: message === null ? null : clip(message), finishedAt: sql`now()`, updatedAt: sql`now()` }) as const;
 
 const KIND_WORDS = {
   mirror: "mirror",
@@ -902,7 +903,7 @@ export const claimVolumeRun = Effect.fn("VolumeRun.claim")(function* (
 ) {
   const { drizzle } = yield* Database;
   const [claimed] = yield* drizzle.update(volumeRun)
-    .set({ state: "running", inngestRunId, updatedAt: new Date() })
+    .set({ state: "running", inngestRunId, updatedAt: sql`now()` })
     .where(and(
       eq(volumeRun.id, request.runId),
       eq(volumeRun.organizationId, request.organizationId),
@@ -947,7 +948,7 @@ export const failRun = (ctx: Pick<RunContext, "id">, inngestRunId: string, messa
 /** A message on a run still running, such as the Server it waits on. */
 export const noteRun = Effect.fn("VolumeRun.note")(function* (ctx: Pick<RunContext, "id">, inngestRunId: string, message: string) {
   const { drizzle } = yield* Database;
-  yield* drizzle.update(volumeRun).set({ message: clip(message), updatedAt: new Date() })
+  yield* drizzle.update(volumeRun).set({ message: clip(message), updatedAt: sql`now()` })
     .where(and(eq(volumeRun.id, ctx.id), eq(volumeRun.inngestRunId, inngestRunId), eq(volumeRun.state, "running")));
 });
 
@@ -1012,7 +1013,7 @@ export const takeEpoch = Effect.fn("VolumeRun.epoch")(function* (ctx: RunContext
   const [recorded] = yield* drizzle.select({ epoch: max(volumeRun.epoch) }).from(volumeRun)
     .where(and(eq(volumeRun.volumeId, ctx.volumeId), sql`${volumeRun.id} <> ${ctx.id}`));
   yield* drizzle.update(volumeRun)
-    .set({ epoch: Math.max(observed, recorded?.epoch ?? 0) + 1, updatedAt: new Date() })
+    .set({ epoch: Math.max(observed, recorded?.epoch ?? 0) + 1, updatedAt: sql`now()` })
     .where(and(eq(volumeRun.id, ctx.id), isNull(volumeRun.epoch)));
   const row = yield* readRow(ctx.id);
   const epoch = row?.epoch;
@@ -1120,13 +1121,12 @@ const STALE_ENDS = {
 
 export const closeStaleVolumeRuns = <R>(lookup: InngestRunLookup<R>) => Effect.gen(function* () {
   const { drizzle } = yield* Database;
-  const now = Date.now();
   const unclaimed = yield* drizzle.update(volumeRun)
     .set(ended("not_started", "event never delivered"))
-    .where(and(eq(volumeRun.state, "requested"), lt(volumeRun.createdAt, new Date(now - VOLUME_RUN_UNCLAIMED_LIMIT_MS))))
+    .where(and(eq(volumeRun.state, "requested"), lt(volumeRun.createdAt, sql`${checkedNow()} - make_interval(secs => ${VOLUME_RUN_UNCLAIMED_LIMIT_MS / 1000})`)))
     .returning({ id: volumeRun.id });
   const running = yield* drizzle.select({ id: volumeRun.id, inngestRunId: volumeRun.inngestRunId }).from(volumeRun)
-    .where(and(eq(volumeRun.state, "running"), lt(volumeRun.updatedAt, new Date(now - VOLUME_RUN_RUNNING_CHECK_MS))));
+    .where(and(eq(volumeRun.state, "running"), lt(volumeRun.updatedAt, sql`${checkedNow()} - make_interval(secs => ${VOLUME_RUN_RUNNING_CHECK_MS / 1000})`)));
   let unheld = 0;
   const holders = yield* drizzle.selectDistinct({ heldBy: volumeRun.heldBy }).from(volumeRun).where(isNotNull(volumeRun.heldBy));
   for (const { heldBy } of holders) {

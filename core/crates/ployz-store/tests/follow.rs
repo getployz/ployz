@@ -620,6 +620,7 @@ fn never_sync_stages_a_published_arrival_reversal_until_save() {
         version: Some(diff(&store, &who, "fix-web").version),
         message: None,
         accept_volume_loss: Vec::new(),
+        rule: None,
     };
     store
         .write_trusted(&who, &publish, &Trusted::default())
@@ -679,6 +680,7 @@ fn never_sync_stages_a_published_arrival_reversal_until_save() {
                 version: Some(inverse.version),
                 message: None,
                 accept_volume_loss: Vec::new(),
+                rule: None,
             },
             &Trusted::default(),
         )
@@ -929,6 +931,7 @@ fn save(store: &ConfigStore, who: &Actor, environment: &str) {
         version: Some(diff(store, who, environment).version),
         message: None,
         accept_volume_loss: Vec::new(),
+        rule: None,
     };
     store
         .write_trusted(who, &publish, &Trusted::default())
@@ -1773,6 +1776,7 @@ fn a_service_the_branch_saved_stays_when_the_parent_removes_it() {
             version: Some(diff(&store, &who, "fix-web").version),
             message: None,
             accept_volume_loss: Vec::new(),
+            rule: None,
         };
         store
             .write_trusted(&who, &publish, &Trusted::default())
@@ -2718,6 +2722,7 @@ fn a_deployed_branchs_own_saved_value_still_shows_after_its_parent_seals() {
         version: Some(diff(&store, &who, "qa").version),
         message: None,
         accept_volume_loss: Vec::new(),
+        rule: None,
     };
     store
         .write_trusted(&who, &publish, &Trusted::default())
@@ -3300,6 +3305,7 @@ fn a_node_the_branch_made_its_own_stays_across_confirmed_batches() {
             version: Some(diff(store, who, "fix-web").version),
             message: None,
             accept_volume_loss: Vec::new(),
+            rule: None,
         };
         store
             .write_trusted(who, &publish, &Trusted::default())
@@ -5317,6 +5323,7 @@ fn a_follow_into_a_branch_ignores_what_the_deployer_may_protect() {
         versions: Vec::new(),
         copies: Vec::new(),
         recreate: Vec::new(),
+        rule: None,
     });
     // Protected, production waits for an admin's yes to exactly this deploy.
     let asked = store.write_trusted(&ada, &admit, &deployer).unwrap_err();

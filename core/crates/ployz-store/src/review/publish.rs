@@ -44,6 +44,10 @@ pub struct Publish {
     #[serde(default)]
     #[ts(optional = nullable)]
     pub id: Option<String>,
+    /// The automatic deploy rule the Save's tap signed for what it saves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub rule: Option<crate::auto_rule::SavedRule>,
 }
 
 /// The Saved revision Working State is now in.
@@ -305,6 +309,18 @@ pub(crate) fn publish(
     publish: &Publish,
     trusted: &Trusted,
 ) -> Result<Published, RpcError> {
+    if publish.rule.is_some() {
+        // The rule deploys every push of its branch, as the command that keeps one alone
+        // does. Without the review the tap read, a Save could keep the rule beside settings
+        // nobody read.
+        trusted.admit(crate::Permission::ChangesDeploy)?;
+        if publish.version.is_none() {
+            return Err(crate::error::invalid(
+                "A Save that keeps an automatic deploy rule names the review it read.",
+                serde_json::json!({}),
+            ));
+        }
+    }
     let environment = scope::lock(tx, who, &publish.environment)?;
     trusted.writes(&environment.summary.name)?;
     crate::removal::marked(tx, &environment)?;
@@ -330,6 +346,9 @@ pub(crate) fn publish(
                 (&target, review::Shipping::Publish, &review::Pruning::Off),
                 &gate,
             )?;
+        }
+        if let Some(rule) = &publish.rule {
+            crate::auto_rule::keep_saved(tx, who, &environment, rule)?;
         }
         let summary = after_ending(tx, trusted, &environment.summary.id, consumed)?
             .unwrap_or(environment.summary);
@@ -360,6 +379,9 @@ pub(crate) fn publish(
         },
         trusted,
     )?;
+    if let Some(rule) = &publish.rule {
+        crate::auto_rule::keep_saved(tx, who, &environment, rule)?;
+    }
     // Saved State already held it.
     let summary = after_ending(tx, trusted, &environment.summary.id, consumed && !created)?
         .unwrap_or(environment.summary);

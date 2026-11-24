@@ -8,6 +8,7 @@ import { organizationMachine } from "#/modules/machines/tables";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { machineRefusal, Unauthorized, Unavailable } from "#/server/public-error";
+import { checkedNow } from "#/db/tables";
 
 export const OTLP_SIGNALS = ["logs", "metrics", "traces"] as const;
 export type OtlpSignal = (typeof OTLP_SIGNALS)[number];
@@ -41,7 +42,7 @@ export const recordMachineSeen = Effect.fn("ObserveIngest.machineSeen")(function
     eq(organizationMachine.machineId, sender.machineId),
     or(
       isNull(organizationMachine.observeSeenAt),
-      lt(organizationMachine.observeSeenAt, sql`now() - make_interval(secs => ${SEEN_GRANULARITY_SECONDS})`),
+      lt(organizationMachine.observeSeenAt, sql`${checkedNow()} - make_interval(secs => ${SEEN_GRANULARITY_SECONDS})`),
     ),
   ));
 });

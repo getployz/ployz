@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { randomBytes } from "node:crypto";
-import { and, asc, eq, gte, inArray, lt } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, lt, sql } from "drizzle-orm";
 import { Clock, Effect } from "effect";
 import { dayEnd, dayStart, localDay } from "#/modules/web-analytics/local-time";
 import { readStore } from "#/modules/config-store/config-store.server";
@@ -52,7 +52,7 @@ export const setSiteAnalytics = Effect.fn("WebAnalytics.setSite")(function* (
       .values({ organizationId, environmentId, enabled: setting.enabled, ...(setting.timezone && { timezone: setting.timezone }) })
       .onConflictDoUpdate({
         target: [analyticsSite.organizationId, analyticsSite.environmentId],
-        set: { enabled: setting.enabled, ...(setting.timezone && { timezone: setting.timezone }), updatedAt: new Date(now) },
+        set: { enabled: setting.enabled, ...(setting.timezone && { timezone: setting.timezone }), updatedAt: sql`now()` },
       })
       .returning({ timezone: analyticsSite.timezone });
     if (!setting.enabled || site === undefined) return;
@@ -70,6 +70,7 @@ export const withholdToday = Effect.fn("WebAnalytics.withholdToday")(function* (
   yield* drizzle.delete(analyticsSalt).where(and(
     eq(analyticsSalt.organizationId, organizationId),
     eq(analyticsSalt.environmentId, environmentId),
+    // oxlint-disable-next-line anti-slop/postgres-clock-in-queries -- a day key, not a time: ingest names the same day from its own clock
     eq(analyticsSalt.day, siteDay(site.timezone, now)),
   ));
 });

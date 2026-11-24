@@ -893,6 +893,7 @@ fn sealing_a_value_a_sync_replaced_keeps_no_plain_text_for_its_undo() {
                 version: None,
                 message: None,
                 accept_volume_loss: Vec::new(),
+                rule: None,
             },
         )
         .unwrap();
@@ -1018,6 +1019,7 @@ fn a_secret_added_to_a_synced_node_is_a_change_not_a_seal() {
                 version: None,
                 message: None,
                 accept_volume_loss: Vec::new(),
+                rule: None,
             },
         )
         .unwrap();
@@ -1083,6 +1085,7 @@ fn a_key_sealed_then_added_again_plain_keeps_its_value_for_undo() {
                 version: None,
                 message: None,
                 accept_volume_loss: Vec::new(),
+                rule: None,
             },
         )
         .unwrap();
@@ -1590,6 +1593,7 @@ fn a_branch_syncs_skipping_a_level_and_sideways_ticking_only_its_own_changes() {
                 version: None,
                 message: None,
                 accept_volume_loss: Vec::new(),
+                rule: None,
             },
         )
         .unwrap();

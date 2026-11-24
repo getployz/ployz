@@ -1,6 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { createHash } from "node:crypto";
 import { Clock, Effect, Option, Schema } from "effect";
+import { sql } from "drizzle-orm";
 import type { MachineId } from "@ployz/sdk";
 import { rustMachineIdSchema } from "#/lib/schema";
 import { MAX_SKEW_SECONDS, PUSH_DOMAIN, PUSH_SIGNATURE, PUSH_TIMESTAMP } from "#/modules/observe-ingest/machine-wire";
@@ -55,6 +56,6 @@ export const recordSaltFetch = Effect.fn("ObserveIngest.saltFetch")(function* (p
     .values({ organizationId: pusher.organizationId, machineId: pusher.machineId, stream: "salts", seq: 0n })
     .onConflictDoUpdate({
       target: [observeIngestCursor.organizationId, observeIngestCursor.machineId, observeIngestCursor.stream],
-      set: { updatedAt: new Date() },
+      set: { updatedAt: sql`now()` },
     });
 });
