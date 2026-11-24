@@ -47,7 +47,7 @@ export const createFleetToken = Effect.fn("FleetToken.create")(function* (
           organizationId: organization.id,
           name,
           tokenHash: hashFleetToken(token),
-          expiresAt: sql`now() + make_interval(days => ${LIFETIME_DAYS[input.expiresIn]})`,
+          expiresAt: sql`now() + make_interval(hours => ${24 * LIFETIME_DAYS[input.expiresIn]})`,
           autoEnrollMax: input.autoEnroll?.maxServers ?? null,
           foundsClosed: input.foundsClosed ?? false,
           createdByUserId: actor.userId,
