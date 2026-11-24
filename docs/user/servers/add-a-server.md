@@ -630,6 +630,10 @@ images from ghcr.io.
   with buildx 0.18 or newer and the containerd image store turned on. Otherwise setup stops
   before changing anything; see
   [The install stops while checking Docker](../troubleshooting/servers.md#the-install-stops-while-checking-docker).
+  Keep Docker's default iptables firewall. Ployz
+  [keeps unsigned containers away from databases](../services/private-networking.md#who-can-reach-a-service-that-holds-a-volume)
+  with rules in Docker's `DOCKER-USER` chain, so don't add your own iptables rules that accept
+  traffic for the `ployz` bridge in `FORWARD` ahead of Docker's jump to it.
   Docker's default never rotates container logs, so they can fill the disk; see
   [The server's disk is filling up](../troubleshooting/servers.md#the-servers-disk-is-filling-up).
 - **Which Caddy runs?** The one the server's Ployz release ships with. Upgrading Ployz on the

@@ -56,10 +56,12 @@ impl Stopped {
         Ok(())
     }
 
-    /// Starts every member written down, one at a time, so each start's check of its
-    /// Volume sees the one before it running. Copies in rotation go first, so of two
-    /// holders of one Volume the routed copy starts, not a Pending one a failed Deploy
-    /// left. Once an In copy fails to start, for any reason, copies out of rotation wait
+    /// Starts every member written down that Docker shows on the bridge, one at a time, so
+    /// each start's check of its Volume sees the one before it running. One the pin pass
+    /// left off the bridge stays stopped and written down: Docker would run it detached, or
+    /// on an address it picks. The next start's pin pass tries to attach it again. Copies in
+    /// rotation go first, so of two holders of one Volume the routed copy starts, not a
+    /// Pending one a failed Deploy left. Once an In copy fails to start, for any reason, copies out of rotation wait
     /// for the next start, so none of them takes a Volume its routed copy needs. Drops
     /// one Docker no longer has, and keeps every other it couldn't start for the next
     /// start: one refused beside a running holder starts there once that holder is gone.
@@ -72,6 +74,14 @@ impl Stopped {
                 continue;
             }
             let started = match docker.inspect_container(&id, None).await {
+                Ok(member) if !on_bridge(&member) => {
+                    eprintln!(
+                        "container {id} stays stopped until it rejoins the {DOCKER_NETWORK_NAME} network"
+                    );
+                    routed_stayed |= routed;
+                    self.ids.insert(id);
+                    continue;
+                }
                 Ok(member) => crate::docker::holder::start(docker, &member, None).await,
                 Err(error) => Err(error.into()),
             };
@@ -149,6 +159,15 @@ impl Stopped {
         let body = serde_json::to_vec(&self.ids).map_err(io::Error::other)?;
         crate::filesystem::atomic_write(&self.path, &body, 0o600)
     }
+}
+
+/// Whether Docker shows `member` with an endpoint on the bridge.
+fn on_bridge(member: &bollard::models::ContainerInspectResponse) -> bool {
+    member
+        .network_settings
+        .as_ref()
+        .and_then(|settings| settings.networks.as_ref())
+        .is_some_and(|networks| networks.contains_key(DOCKER_NETWORK_NAME))
 }
 
 fn gone(error: &bollard::errors::Error) -> bool {
@@ -239,7 +258,7 @@ mod tests {
                 return (StatusCode::NO_CONTENT, axum::Json(serde_json::json!({})));
             }
             let (status, message) = match id {
-                "ok" => (StatusCode::OK, String::new()),
+                "ok" | "detached" => (StatusCode::OK, String::new()),
                 "gone" => (StatusCode::NOT_FOUND, format!("No such container: {id}")),
                 "netless" => (
                     StatusCode::NOT_FOUND,
@@ -279,6 +298,7 @@ mod tests {
                             "ployz.service.name": "web",
                         }},
                         "Mounts": [{"Type": "volume", "Name": "app_data", "Driver": "ployz"}],
+                        "NetworkSettings": {"Networks": {"ployz": {}}},
                     })),
                 );
             }
@@ -289,7 +309,14 @@ mod tests {
                         serde_json::json!({ "message": format!("No such container: {id}") }),
                     ),
                 ),
-                _ => (StatusCode::OK, axum::Json(serde_json::json!({ "Id": id }))),
+                "detached" => (StatusCode::OK, axum::Json(serde_json::json!({ "Id": id }))),
+                _ => (
+                    StatusCode::OK,
+                    axum::Json(serde_json::json!({
+                        "Id": id,
+                        "NetworkSettings": {"Networks": {"ployz": {}}},
+                    })),
+                ),
             }
         }
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -427,6 +454,23 @@ mod tests {
         assert_eq!(
             Stopped::load(dir.path()).ids,
             BTreeSet::from(["refused".into()])
+        );
+    }
+
+    /// A member the pin pass left off the bridge stays stopped and written down, so the
+    /// next start attaches it before it runs.
+    #[tokio::test]
+    async fn a_member_off_the_bridge_stays_stopped_and_written_down() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut stopped = Stopped::load(dir.path());
+        stopped.note("detached").unwrap();
+        stopped.note("ok").unwrap();
+        let fake = Arc::new(Fake::default());
+        stopped.start(&docker(fake.clone()).await).await;
+        assert_eq!(fake.started(), ["ok"]);
+        assert_eq!(
+            Stopped::load(dir.path()).ids,
+            BTreeSet::from(["detached".into()])
         );
     }
 
