@@ -303,11 +303,32 @@ pub(super) fn remove_unknown_fence(data_dir: &Path) -> Result<(), Error> {
     if data_dir.join(crate::network::FENCE_FILE).exists() {
         return Ok(());
     }
-    crate::network::remove_fence().map_err(|error| Error::Command {
-        stage: "remove container network fence".into(),
-        message: ployz_core::error_chain::inline(&error),
-    })
+    // Right after the older daemon starts, the kernel can call the chain busy with nothing
+    // left that jumps to it, and the next try a moment later takes it out.
+    let mut tries = 1;
+    loop {
+        match crate::network::remove_fence() {
+            Ok(()) => return Ok(()),
+            Err(error) if tries < FENCE_REMOVAL_TRIES => {
+                eprintln!(
+                    "the container network fence is still in use, trying again: {}",
+                    ployz_core::error_chain::inline(&error),
+                );
+                tries += 1;
+                std::thread::sleep(FENCE_REMOVAL_PAUSE);
+            }
+            Err(error) => {
+                return Err(Error::Command {
+                    stage: "remove container network fence".into(),
+                    message: ployz_core::error_chain::inline(&error),
+                });
+            }
+        }
+    }
 }
+
+const FENCE_REMOVAL_TRIES: u32 = 10;
+const FENCE_REMOVAL_PAUSE: Duration = Duration::from_millis(500);
 
 pub(super) fn activate_units(systemd_dir: &Path) -> Result<(), Error> {
     systemctl("reload systemd units", ["daemon-reload"])?;
