@@ -35,7 +35,9 @@ export function ApproveDeploy({ organizationSlug, id }: { organizationSlug: stri
   const [problem, setProblem] = useState<string | null>(null);
   const [busy, setBusy] = useState<"passkey" | "sending" | null>(null);
   const step = proposal?.steps[0];
-  const waiting = proposal?.status === "presented" && step !== undefined && isDeploy(step);
+  // The one who asked, waiting on an owner or admin, plans nothing here: the card lets them withdraw it.
+  const withdrawOnly = proposal?.mine === true && !proposal.decides;
+  const waiting = proposal?.status === "presented" && step !== undefined && isDeploy(step) && !withdrawOnly;
   const command = waiting ? step.deploy.command : null;
   const review = waiting ? step.deploy.review?.review : undefined;
 

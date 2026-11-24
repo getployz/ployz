@@ -103,6 +103,8 @@ function proposalView(row: ProposalRow, acts: readonly StepAct[] = []) {
     halt: row.halt,
     reason: row.reason,
     requested_by: row.requestedByUserId,
+    // The one who asked took it back: they rejected their own request.
+    withdrawn: row.status === "denied" && row.decidedByUserId !== null && row.decidedByUserId === row.requestedByUserId,
     created_at: row.createdAt.toISOString(),
     decided_at: row.decidedAt?.toISOString() ?? null,
   };
@@ -486,6 +488,20 @@ const protects = Effect.fn("Proposals.protects")(function* (userId: string | nul
   );
 });
 
+/** Whether `userId` may approve `row`: anyone who answers, unless a Deploy, stop or restart waits in a Protected Environment. */
+const decides = Effect.fn("Proposals.decides")(function* (userId: string | null, row: ProposalRow) {
+  const guarded = row.steps.some((step) => isDeploy(step) || step.verb !== "start");
+  return !guarded || (yield* protects(userId, row));
+});
+
+/** `views` as `userId` sees them: which they asked for, and which they may approve. */
+export const asSeenBy = Effect.fn("Proposals.asSeenBy")(function* (organizationId: string, userId: string, views: readonly ProposalView[]) {
+  return yield* Effect.forEach(views, (view) => Effect.gen(function* () {
+    const row = yield* readRow(organizationId, view.id);
+    return { ...view, mine: view.requested_by === userId, decides: row !== undefined && (yield* decides(userId, row)) };
+  }));
+});
+
 /**
  * Start step `index` as the asker. Started once it is admitted,
  * which a rerun replays; halted, recorded on the proposal, when it can't go, which stops the steps after it; later
@@ -611,9 +627,10 @@ export const decideProposal = Effect.fn("Proposals.decide")(function* (decider: 
   const deny = (reason: string | null) => drizzle.update(operationProposals).set({ status: "denied", reason, ...decided })
     .where(and(eq(operationProposals.id, row.id), eq(operationProposals.status, "presented"))).returning();
   // Each step runs as the asker, so in a Protected Environment only someone who can protect it decides a Deploy, stop
-  // or restart: approves it, or rejects it, which ends the ask for good.
-  const guarded = row.steps.some((step) => isDeploy(step) || step.verb !== "start");
-  if (guarded && !(yield* protects(decider.userId, row))) {
+  // or restart: approves it, or rejects another member's request, which ends the ask for good. The one who asked may
+  // always withdraw it: their rejection of their own request runs nothing.
+  const withdraws = "reject" in decision && row.requestedByUserId !== null && row.requestedByUserId === decider.userId;
+  if (!withdraws && !(yield* decides(decider.userId, row))) {
     // A Deploy's approval says it in the Deploy's own words.
     const [first] = row.steps;
     if ("reject" in decision || first === undefined || !isDeploy(first)) return { ok: false, message: OWNER_OR_ADMIN } satisfies Decided;

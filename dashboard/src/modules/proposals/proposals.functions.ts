@@ -2,7 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import type { Change, PostedVersion } from "@ployz/sdk";
 import { Effect, Schema } from "effect";
 import { requireAccess } from "#/modules/organization/access.server";
-import { askerNames, decideProposal, fillDeploy, getProposal, pendingProposals, type ProposalView } from "#/modules/proposals/proposals.server";
+import { askerNames, asSeenBy, decideProposal, fillDeploy, getProposal, pendingProposals, type ProposalView } from "#/modules/proposals/proposals.server";
 import { authenticated, runActor, strictValidator } from "#/server/tanstack";
 
 /** A version the passkey signed. The Store checks the rest of it: this only keeps what is not one out. */
@@ -14,18 +14,23 @@ const Decision = Schema.Union([
   Schema.Struct({ reject: Schema.Struct({ reason: Schema.optional(Schema.String.check(Schema.isMaxLength(1024))) }) }),
 ]);
 
-const named = (proposals: readonly ProposalView[]) =>
-  Effect.map(askerNames(proposals), (names) => proposals.map((proposal) => ({
-    ...proposal,
-    asker: proposal.requested_by === null ? null : names.get(proposal.requested_by) ?? null,
-  })));
+/** `proposals` as `access` sees them: who asked, whether they did, and whether they may approve. */
+const named = (access: { readonly userId: string; readonly organization: { readonly id: string } }, proposals: readonly ProposalView[]) =>
+  Effect.gen(function* () {
+    const names = yield* askerNames(proposals);
+    const seen = yield* asSeenBy(access.organization.id, access.userId, proposals);
+    return seen.map((proposal) => ({
+      ...proposal,
+      asker: proposal.requested_by === null ? null : names.get(proposal.requested_by) ?? null,
+    }));
+  });
 
 export const listPendingProposalsServerFn = createServerFn({ method: "GET" })
   .middleware(authenticated)
   .validator(strictValidator(Schema.Struct({ organizationSlug: Schema.String })))
   .handler(({ context, data }) => runActor(context, Effect.gen(function* () {
     const access = yield* requireAccess(context.actor, data.organizationSlug, "org:read");
-    return yield* named(yield* pendingProposals(access.organization.id));
+    return yield* named(access, yield* pendingProposals(access.organization.id));
   })));
 
 export const getProposalServerFn = createServerFn({ method: "GET" })
@@ -33,7 +38,7 @@ export const getProposalServerFn = createServerFn({ method: "GET" })
   .validator(strictValidator(Schema.Struct({ organizationSlug: Schema.String, id: Schema.String })))
   .handler(({ context, data }) => runActor(context, Effect.gen(function* () {
     const access = yield* requireAccess(context.actor, data.organizationSlug, "org:read");
-    const [proposal] = yield* named([yield* getProposal(access.organization.id, data.id)]);
+    const [proposal] = yield* named(access, [yield* getProposal(access.organization.id, data.id)]);
     return proposal ?? null;
   })));
 
@@ -47,7 +52,7 @@ export const decideProposalServerFn = createServerFn({ method: "POST" })
       Effect.catchTag("NotFound", (missing) => Effect.succeed({ ok: false as const, message: missing.message })),
     );
     if (!decided.ok) return decided;
-    const [proposal] = yield* named([decided.proposal]);
+    const [proposal] = yield* named(access, [decided.proposal]);
     return proposal === undefined ? { ok: false as const, message: "No such proposal." } : { ok: true as const, proposal };
   })));
 
