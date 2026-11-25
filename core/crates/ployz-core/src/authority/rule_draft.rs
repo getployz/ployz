@@ -175,7 +175,6 @@ pub enum RuleDraftError {
     Unnamed {
         service: ServiceName,
         image: String,
-        #[source]
         reason: crate::RegistryName,
     },
     #[error(transparent)]
