@@ -31,46 +31,60 @@ thread_local! {
 /// A stdout writer that dies of SIGPIPE when the reader is gone.
 pub(crate) struct Stdout<W>(pub(super) W);
 
-/// Text for a person, each line masked before it is passed on. A line held at a flush
-/// goes out masked as it stands.
+/// Text for a person, masked token by token before it is passed on. The token after the
+/// last space, tab or line break may still become a URL with user info, so it waits,
+/// through any flush, for the next one or for the drop. A line ending in `\r` goes out
+/// whole.
 pub(crate) struct Masked<W: Write> {
     inner: W,
-    line: Vec<u8>,
+    token: Vec<u8>,
 }
 
 impl<W: Write> Masked<W> {
-    fn new(inner: W) -> Self {
+    pub(super) fn new(inner: W) -> Self {
         Self {
             inner,
-            line: Vec::new(),
+            token: Vec::new(),
         }
     }
 
+    #[cfg(test)]
+    pub(super) fn written(&self) -> &[u8]
+    where
+        W: AsRef<[u8]>,
+    {
+        self.inner.as_ref()
+    }
+
     fn pass(&mut self, through: usize) -> io::Result<()> {
-        let rest = self.line.split_off(through);
-        let lines = std::mem::replace(&mut self.line, rest);
-        self.inner.write_all(&userinfo::mask_bytes(&lines))
+        let rest = self.token.split_off(through);
+        let tokens = std::mem::replace(&mut self.token, rest);
+        self.inner.write_all(&userinfo::mask_bytes(&tokens))
     }
 }
 
 impl<W: Write> Write for Masked<W> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.line.extend_from_slice(buf);
-        if let Some(end) = self.line.iter().rposition(|&byte| byte == b'\n') {
+        self.token.extend_from_slice(buf);
+        if let Some(end) = self
+            .token
+            .iter()
+            .rposition(|&byte| userinfo::ends_token(byte))
+        {
             self.pass(end + 1)?;
         }
         Ok(buf.len())
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.pass(self.line.len())?;
         self.inner.flush()
     }
 }
 
 impl<W: Write> Drop for Masked<W> {
     fn drop(&mut self) {
-        let _ = self.flush();
+        let _ = self.pass(self.token.len());
+        let _ = self.inner.flush();
     }
 }
 
@@ -324,25 +338,7 @@ impl AsyncWrite for AsyncStdout {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Write as _;
-
-    use super::{Json, Masked};
-
-    /// A URL split over several writes is masked once its line is whole.
-    #[test]
-    fn a_line_written_in_pieces_is_masked_whole() {
-        let mut out = Vec::new();
-        {
-            let mut masked = Masked::new(&mut out);
-            write!(masked, "a https://user:").unwrap();
-            write!(masked, "SENTINEL@host b\nnext ssh://SENTINEL").unwrap();
-            write!(masked, "@host").unwrap();
-        }
-        assert_eq!(
-            String::from_utf8(out).unwrap(),
-            "a https://<USER>:<PASSWORD>@host b\nnext ssh://<USER>@host"
-        );
-    }
+    use super::Json;
 
     #[test]
     fn a_json_document_is_masked_value_by_value() {
