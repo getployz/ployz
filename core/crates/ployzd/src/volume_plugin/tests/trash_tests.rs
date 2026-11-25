@@ -1033,6 +1033,54 @@ async fn a_proof_lists_each_entry_of_the_volume_a_restore_pinned() {
     );
 }
 
+/// A Pool that turned `DEGRADED` after the pin proves nothing, so its promote refuses and
+/// the entry stays pinned.
+#[tokio::test]
+async fn a_promote_refuses_once_its_pool_is_degraded() {
+    let test = test_dir();
+    let plugin = Plugin::start(&test, &["root"], Ok(vec![]));
+    let entry = plant_trash(&test, &trash_id(1), "data", "root", 0, false);
+    plugin.call(&entry, false).await;
+    fs::write(
+        test.0.join("props/pools"),
+        USABLE_POOL.replace("ONLINE", "DEGRADED"),
+    )
+    .unwrap();
+
+    let promoted = plugin.call(&entry, true).await;
+
+    assert_eq!(
+        promoted.pointer("/Err/code"),
+        Some(&json!("conflict")),
+        "{promoted}"
+    );
+    assert!(
+        refusal(&promoted).contains("its Pool tank is DEGRADED"),
+        "{promoted}"
+    );
+    assert!(property(&test, &entry, "ployz:trash-pin").is_some());
+}
+
+/// A proof says no restore is pinned only from a row ZFS printed: a read cut short, which
+/// once read as not pinned, fails the proof.
+#[tokio::test]
+async fn a_proof_fails_where_zfs_cut_short_the_read_of_a_pin() {
+    let test = test_dir();
+    let plugin = Plugin::start(&test, &["root"], Ok(vec![]));
+    let entry = plant_trash(&test, &trash_id(1), "data", "root", 0, false);
+    plugin.call(&entry, false).await;
+    let dataset = format!("tank/ployz-trash/{}", trash_id(1));
+    let cut = test.0.join("props/get-cut").join(&dataset);
+    fs::create_dir_all(cut.parent().unwrap()).unwrap();
+    fs::write(&cut, "").unwrap();
+
+    let proof = plugin
+        .post("/Volume.Inspect", json!({"name": "data", "prove": true}))
+        .await;
+
+    assert!(proof.get("Err").is_some(), "{proof}");
+}
+
 /// A Server that can't tell which attached Pool is its own answers that it can't prove
 /// anything, and pins or promotes nothing: the root would come back in a Pool no proof read.
 #[tokio::test]
@@ -1043,7 +1091,7 @@ async fn a_server_that_cant_tell_its_own_pool_proves_nothing_and_restores_nothin
     fs::create_dir_all(test.0.join("props")).unwrap();
     fs::write(
         test.0.join("props/importable"),
-        "   pool: ployz-device\n     id: 1\n  state: ONLINE\n",
+        "   pool: ployz-device\n     id: 1\n  state: ONLINE\n action: The pool can be imported using its name or numeric identifier.\n config:\n\n\tployz-device  ONLINE\n\t  sdb       ONLINE\n",
     )
     .unwrap();
 

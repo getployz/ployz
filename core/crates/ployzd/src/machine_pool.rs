@@ -113,7 +113,7 @@ pub const ZPOOL_LIST: [&str; 4] = [
 ];
 
 /// A writable imported Machine Pool with usable health.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MachinePool {
     name: String,
     size_bytes: NonZeroU64,
@@ -223,15 +223,50 @@ pub fn scan(
     if !stderr.is_empty() {
         return Err(unexpected());
     }
-    let pools: Vec<String> = stdout
-        .lines()
-        .filter_map(|line| line.trim().strip_prefix("pool:").map(str::trim))
-        .map(str::to_owned)
-        .collect();
-    if pools.is_empty() || pools.iter().any(String::is_empty) {
-        return Err(unexpected());
+    blocks(stdout).ok_or_else(unexpected)
+}
+
+/// The keys `zpool import` prints in a Pool's block.
+const BLOCK_KEYS: [&str; 9] = [
+    "pool", "id", "state", "status", "action", "see", "config", "comment", "errata",
+];
+
+/// The Pool names in a label scan's `pool:` blocks, when every line belongs to one: a
+/// `key: value` line with a key ZFS prints, a tab-indented continuation or config line,
+/// or a blank line. Each block names its `id`, `state` and `config`. `None` for anything
+/// else, so a line this judge hasn't seen never hides a Pool.
+fn blocks(stdout: &str) -> Option<Vec<String>> {
+    let mut pools = Vec::new();
+    let mut keys: Vec<&str> = Vec::new();
+    let complete = |keys: &[&str]| {
+        ["id", "state", "config"]
+            .iter()
+            .all(|key| keys.contains(key))
+    };
+    for line in stdout.lines() {
+        if line.trim().is_empty() || (line.starts_with('\t') && !pools.is_empty()) {
+            continue;
+        }
+        let (key, value) = line.trim_start_matches(' ').split_once(':')?;
+        if !BLOCK_KEYS.contains(&key) || !(value.is_empty() || value.starts_with(' ')) {
+            return None;
+        }
+        if key == "pool" {
+            if !pools.is_empty() && !complete(&keys) {
+                return None;
+            }
+            let name = value.trim();
+            if name.is_empty() {
+                return None;
+            }
+            pools.push(name.to_owned());
+            keys.clear();
+        } else if pools.is_empty() {
+            return None;
+        }
+        keys.push(key);
     }
-    Ok(pools)
+    (!pools.is_empty() && complete(&keys)).then_some(pools)
 }
 
 /// Reads the Pool names from one successful `zpool import` label scan, as the installer
@@ -260,11 +295,19 @@ pub fn importable_names<'output>(output: &'output str) -> Result<Vec<&'output st
 }
 
 /// One imported Pool, whatever its health or mode.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Imported {
     pub pool: MachinePool,
     pub health: String,
     pub readonly: bool,
+}
+
+impl Imported {
+    /// Whether Volumes may be written to it: writable, and `ONLINE` or `DEGRADED`.
+    #[must_use]
+    pub fn usable(&self) -> bool {
+        !self.readonly && matches!(self.health.as_str(), "ONLINE" | "DEGRADED")
+    }
 }
 
 /// Every imported Pool in [`ZPOOL_LIST`] output, read-only and unhealthy ones included.
@@ -276,17 +319,35 @@ pub fn imported(output: &str) -> Result<Vec<Imported>, Error> {
     output.lines().map(parse_any).collect()
 }
 
-/// The vdev paths `zpool list -v -H -P -o name POOL` prints: every line after the Pool's
-/// own, as `<TAB><path><TAB>…`.
-#[must_use]
-pub fn vdevs(output: &str) -> Vec<&std::ffi::OsStr> {
-    output
-        .lines()
-        .skip(1)
-        .filter_map(|line| line.trim_start_matches('\t').split('\t').next())
-        .filter(|path| !path.is_empty())
-        .map(std::ffi::OsStr::new)
-        .collect()
+/// The vdev paths `zpool list -v -H -P -o name POOL` prints for `pool`: its own line, then
+/// one `<TAB><path><TAB>…` line per vdev. Any other line fails, so a listing cut short
+/// or reworded never reads as a Pool on some other file.
+///
+/// # Errors
+///
+/// Returns an error when the listing has no vdev or a line it doesn't recognize.
+pub fn vdevs<'output>(
+    output: &'output str,
+    pool: &str,
+) -> Result<Vec<&'output std::ffi::OsStr>, Error> {
+    let invalid = || Error(format!("invalid ZFS vdev listing for {pool}: {output}"));
+    let mut lines = output.lines();
+    if lines.next() != Some(pool) {
+        return Err(invalid());
+    }
+    let paths = lines
+        .map(|line| {
+            line.strip_prefix('\t')
+                .and_then(|line| line.split('\t').next())
+                .filter(|path| path.starts_with('/'))
+                .map(std::ffi::OsStr::new)
+                .ok_or_else(invalid)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if paths.is_empty() {
+        return Err(invalid());
+    }
+    Ok(paths)
 }
 
 /// What a Machine records about the Pool it owns.
@@ -297,7 +358,7 @@ pub struct Records {
     pub mount_root: bool,
 }
 
-/// What the judge of [`read`] sees, gathered without changing anything.
+/// What [`choose`] sees, gathered without changing anything.
 #[derive(Debug, Default)]
 pub struct Inventory {
     pub records: Records,
@@ -305,7 +366,8 @@ pub struct Inventory {
     pub imported: Option<Vec<Imported>>,
     /// The imported Pool whose only vdev is the canonical backing file.
     pub on_backing: Option<String>,
-    /// What the default scan, which sees devices only, could import.
+    /// What the default scan, which sees devices only, could import. Empty where no
+    /// scan ran, as on the write path.
     pub scan: Vec<String>,
     /// What a scan of the backing file could import, when the backing file is recorded.
     pub backing_scan: Vec<String>,
@@ -317,6 +379,182 @@ pub enum By {
     File,
     Device,
     Sole,
+}
+
+/// The Pool a Machine's records and its ZFS make its own, before anything asks whether
+/// it can be written or proves anything.
+#[derive(Debug, Eq, PartialEq)]
+pub enum Choice {
+    /// It records no Pool and has none imported.
+    None,
+    /// It records a Pool that isn't imported, and no other imported Pool is usable, so
+    /// recovery may import it.
+    Missing(String),
+    Pool {
+        imported: Imported,
+        by: By,
+    },
+    /// It can't tell which Pool is its own.
+    Unproven(String),
+}
+
+/// Chooses this Machine's own Pool, for every path that reads or writes it: the
+/// imported Pool its records name, and none where any other imported Pool is usable or
+/// a Pool it can't account for could be its own. It never picks one by elimination where
+/// a record says otherwise.
+#[must_use]
+pub fn choose(inventory: &Inventory) -> Choice {
+    let Inventory {
+        records,
+        imported,
+        on_backing,
+        scan,
+        backing_scan,
+    } = inventory;
+    let Some(imported) = imported else {
+        return if *records == Records::default() {
+            Choice::None
+        } else {
+            Choice::Missing("it records a Pool but can't list Pools".to_owned())
+        };
+    };
+    let found = found(imported, scan);
+    let unproven = || Choice::Unproven(format!("it can't tell which of these is its own: {found}"));
+    let ployz = |name: &str| name.starts_with(ROOT_BACKED_POOL_NAME);
+    let usable = imported.iter().filter(|imported| imported.usable());
+    let (name, by) = match records {
+        Records {
+            backing: true,
+            device: true,
+            ..
+        } => {
+            return Choice::Unproven("it records both a disk Pool and a file Pool".to_owned());
+        }
+        Records { backing: true, .. } => match on_backing {
+            Some(name) if !backing_scan.is_empty() => {
+                return Choice::Unproven(format!(
+                    "its Pool file holds {}, which isn't the imported Pool {name}",
+                    backing_scan.join(", ")
+                ));
+            }
+            Some(_) if scan.iter().any(|name| ployz(name)) => return unproven(),
+            Some(name) => (name.as_str(), By::File),
+            None if imported
+                .iter()
+                .any(|imported| imported.pool.name == ROOT_BACKED_POOL_NAME) =>
+            {
+                return Choice::Unproven(format!(
+                    "the imported Pool {ROOT_BACKED_POOL_NAME} isn't the one in its Pool file"
+                ));
+            }
+            None if usable.clone().next().is_some() => return unproven(),
+            None if backing_scan.is_empty() => {
+                return Choice::Missing("its Pool file holds no Pool it can import".to_owned());
+            }
+            None => {
+                return Choice::Missing(format!(
+                    "its Pool {} isn't imported",
+                    backing_scan.join(", ")
+                ));
+            }
+        },
+        Records { device: true, .. } => {
+            let devices = imported
+                .iter()
+                .filter(|imported| imported.pool.name == DEVICE_BACKED_POOL_NAME)
+                .count();
+            let others = imported
+                .iter()
+                .map(|imported| imported.pool.name.as_str())
+                .chain(scan.iter().map(String::as_str))
+                .filter(|name| ployz(name))
+                .count();
+            if devices == 1 && others == 1 {
+                (DEVICE_BACKED_POOL_NAME, By::Device)
+            } else if devices == 0
+                && others <= 1
+                && usable.clone().next().is_none()
+                && !imported.iter().any(|imported| ployz(&imported.pool.name))
+            {
+                return Choice::Missing(format!(
+                    "its Pool {DEVICE_BACKED_POOL_NAME} isn't imported"
+                ));
+            } else {
+                return unproven();
+            }
+        }
+        Records { .. } => {
+            let mut usable = usable.clone();
+            match (usable.next(), usable.next()) {
+                (Some(sole), None) => (sole.pool.name.as_str(), By::Sole),
+                (None, _) if imported.len() == 1 => {
+                    let sole = imported.first().map_or("", |sole| sole.pool.name.as_str());
+                    (sole, By::Sole)
+                }
+                (None, _) if imported.is_empty() && records.mount_root => {
+                    return Choice::Missing(
+                        "it has Volumes left mounted from a Pool that isn't imported".to_owned(),
+                    );
+                }
+                (None, _) if imported.is_empty() => return Choice::None,
+                _ => {
+                    return Choice::Unproven(format!(
+                        "it records no Pool, and has these attached: {found}"
+                    ));
+                }
+            }
+        }
+    };
+    if usable.clone().any(|other| other.pool.name != name) {
+        return unproven();
+    }
+    match imported.iter().find(|imported| imported.pool.name == name) {
+        Some(imported) => Choice::Pool {
+            imported: imported.clone(),
+            by,
+        },
+        None => unproven(),
+    }
+}
+
+/// The Pool Volumes are written to: what [`choose`] picks, when it is usable. `None`
+/// where no Pool is imported, so recovery may import or create one.
+///
+/// # Errors
+///
+/// Returns why no Pool is written to, when one is imported but not the Machine's own, or
+/// its own can't be written.
+pub fn writable(inventory: &Inventory) -> Result<Option<MachinePool>, Error> {
+    match choose(inventory) {
+        Choice::None | Choice::Missing(_) => Ok(None),
+        Choice::Pool { imported, .. } if imported.usable() => Ok(Some(imported.pool)),
+        Choice::Pool { imported, .. } => Err(Error(format!(
+            "This Server won't write to its Pool {}, since it is {}.",
+            imported.pool.name,
+            unusable(&imported)
+        ))),
+        Choice::Unproven(why) => Err(Error(format!(
+            "This Server won't write to a Pool, since {why}."
+        ))),
+    }
+}
+
+fn unusable(imported: &Imported) -> String {
+    if imported.readonly {
+        "imported read-only".to_owned()
+    } else {
+        imported.health.clone()
+    }
+}
+
+fn found(imported: &[Imported], scan: &[String]) -> String {
+    let mut found: Vec<String> = imported
+        .iter()
+        .map(|imported| format!("{} (imported)", imported.pool.name))
+        .chain(scan.iter().map(|name| format!("{name} (not imported)")))
+        .collect();
+    found.sort();
+    found.join(", ")
 }
 
 /// The Pool a Machine reads, by the records it keeps and what ZFS shows, or why it can't
@@ -332,114 +570,56 @@ pub enum Read {
     Unproven(String),
 }
 
-/// Judges which Pool is this Machine's own. It never picks one by elimination where a
-/// record says otherwise, and any Pool it can't account for leaves it unproven.
+/// What a reader needs of the Pool [`choose`] picks.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Need {
+    /// An answer that something is absent, or a restore that relies on one: only an
+    /// `ONLINE` Pool, the only one attached.
+    Proof,
+    /// A departure's seal, which a `DEGRADED` Pool still takes.
+    Seal,
+}
+
+/// Judges which Pool is this Machine's own for `need`. It is [`choose`]'s Pool, or why it
+/// can't be relied on.
 #[must_use]
-pub fn read(inventory: Inventory) -> Read {
-    let Inventory {
-        records,
-        imported,
-        on_backing,
-        scan,
-        backing_scan,
-    } = inventory;
-    let Some(imported) = imported else {
-        return if records == Records::default() {
-            Read::Unheld
-        } else {
-            Read::Unproven("it records a Pool but can't list Pools".to_owned())
-        };
-    };
-    let found = {
-        let mut found: Vec<String> = imported
-            .iter()
-            .map(|imported| format!("{} (imported)", imported.pool.name))
-            .chain(scan.iter().map(|name| format!("{name} (not imported)")))
-            .collect();
-        found.sort();
-        found.join(", ")
-    };
-    let unproven = || Read::Unproven(format!("it can't tell which of these is its own: {found}"));
-    let ployz = |name: &str| name.starts_with(ROOT_BACKED_POOL_NAME);
-    match records {
-        Records {
-            backing: true,
-            device: true,
-            ..
-        } => Read::Unproven("it records both a disk Pool and a file Pool".to_owned()),
-        Records { backing: true, .. } => match on_backing {
-            Some(_) if scan.iter().any(|name| ployz(name)) => unproven(),
-            Some(name) => take(imported, &name, By::File)
-                .unwrap_or_else(|| Read::Unproven(format!("its Pool {name} isn't imported"))),
-            None if imported
-                .iter()
-                .any(|imported| imported.pool.name == ROOT_BACKED_POOL_NAME) =>
-            {
-                Read::Unproven(format!(
-                    "the imported Pool {ROOT_BACKED_POOL_NAME} isn't the one in its Pool file"
-                ))
-            }
-            None if backing_scan.is_empty() => {
-                Read::Unproven("its Pool file holds no Pool it can import".to_owned())
-            }
-            None => Read::Unproven(format!(
-                "its Pool {} isn't imported",
-                backing_scan.join(", ")
-            )),
-        },
-        Records { device: true, .. } => {
-            let devices = imported
-                .iter()
-                .filter(|imported| imported.pool.name == DEVICE_BACKED_POOL_NAME)
-                .count();
-            let others = imported
-                .iter()
-                .map(|imported| imported.pool.name.as_str())
-                .chain(scan.iter().map(String::as_str))
-                .filter(|name| ployz(name))
-                .count();
-            if devices == 1 && others == 1 {
-                take(imported, DEVICE_BACKED_POOL_NAME, By::Device).unwrap_or_else(unproven)
-            } else if devices == 0
-                && others == 1
-                && scan.iter().any(|name| name == DEVICE_BACKED_POOL_NAME)
-            {
-                Read::Unproven(format!("its Pool {DEVICE_BACKED_POOL_NAME} isn't imported"))
-            } else {
-                unproven()
-            }
-        }
-        Records { .. } if imported.len() == 1 && scan.is_empty() => {
-            let name = imported
-                .first()
-                .map(|imported| imported.pool.name.clone())
-                .unwrap_or_default();
-            take(imported, &name, By::Sole).unwrap_or_else(unproven)
-        }
-        Records {
-            mount_root: true, ..
-        } => unproven(),
-        Records { .. } if imported.is_empty() && scan.is_empty() => Read::Unheld,
-        Records { .. } => Read::Unproven(format!(
-            "it records no Pool, and has these attached: {found}"
+pub fn read(inventory: &Inventory, need: Need) -> Read {
+    let scan = &inventory.scan;
+    let imported = inventory.imported.as_deref().unwrap_or_default();
+    match choose(inventory) {
+        Choice::None if scan.is_empty() => Read::Unheld,
+        Choice::None => Read::Unproven(format!(
+            "it records no Pool, and has these attached: {}",
+            found(imported, scan)
         )),
+        Choice::Missing(why) | Choice::Unproven(why) => Read::Unproven(why),
+        Choice::Pool { imported: own, by } => {
+            let name = &own.pool.name;
+            let healthy = match need {
+                Need::Proof => !own.readonly && own.health == "ONLINE",
+                Need::Seal => own.usable(),
+            };
+            if !healthy {
+                return Read::Unproven(format!("its Pool {name} is {}", unusable(&own)));
+            }
+            if by == By::Sole && (imported.len() != 1 || !scan.is_empty()) {
+                return Read::Unproven(format!(
+                    "it records no Pool, and has these attached: {}",
+                    found(imported, scan)
+                ));
+            }
+            Read::Pool {
+                pool: own.pool,
+                health: own.health,
+                by,
+            }
+        }
     }
 }
 
-fn take(imported: Vec<Imported>, name: &str, by: By) -> Option<Read> {
-    let Imported { pool, health, .. } = imported
-        .into_iter()
-        .find(|imported| imported.pool.name == name)?;
-    Some(Read::Pool { pool, health, by })
-}
-
 fn parse(line: &str) -> Result<Option<MachinePool>, Error> {
-    let Imported {
-        pool,
-        health,
-        readonly,
-    } = parse_any(line)?;
-    Ok((matches!(health.as_str(), "ONLINE" | "DEGRADED") && !readonly).then_some(pool))
+    let imported = parse_any(line)?;
+    Ok(imported.usable().then_some(imported.pool))
 }
 
 fn parse_any(line: &str) -> Result<Imported, Error> {
@@ -573,6 +753,13 @@ mod tests {
         std::os::unix::process::ExitStatusExt::from_raw(code << 8)
     }
 
+    /// A block as ZFS 2.1 and 2.2 print it for a Pool they could import.
+    fn block(name: &str) -> String {
+        format!(
+            "   pool: {name}\n     id: 1\n  state: ONLINE\n action: The pool can be imported using its name or numeric identifier.\n config:\n\n\t{name}  ONLINE\n\t  loop0  ONLINE\n"
+        )
+    }
+
     /// Only the two shapes ZFS prints under `LC_ALL=C` read; a scan that failed, printed a
     /// translated message or warned beside its Pools never reads as nothing to import.
     #[test]
@@ -582,35 +769,78 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+        let degraded = " status: One or more devices are missing from the system.\n action: The pool can be imported despite missing or damaged devices.  The\n\tfault tolerance of the pool may be compromised if imported.\n   see: https://openzfs.github.io/openzfs-docs/msg/ZFS-8000-2Q\n";
+        let two = format!(
+            "{}\n{}",
+            block("ployz"),
+            block("ployz-device")
+                .replace(" action: The pool", &format!("{degraded} action: The pool"))
+        );
         assert_eq!(
-            scan(
-                status(0),
-                "   pool: ployz\n     id: 1\n   pool: ployz-device\n",
-                ""
-            )
-            .unwrap(),
+            scan(status(0), &two, "").unwrap(),
             ["ployz", "ployz-device"]
         );
         for (code, stdout, stderr) in [
-            (0, "", "aucun pool disponible pour l'importation"),
-            (0, "", ""),
+            (0, String::new(), "aucun pool disponible pour l'importation"),
+            (0, String::new(), ""),
             (
                 0,
-                "   pool: ployz\n",
+                block("ployz"),
                 "cannot open '/dev/sdb': Permission denied",
             ),
-            (1, "", "no pools available to import"),
-            (0, "unexpected", ""),
+            (1, String::new(), "no pools available to import"),
+            (0, "unexpected".to_owned(), ""),
+            // A recognized block beside a line ZFS doesn't print in one.
+            (
+                0,
+                format!("{}warning: a label is damaged\n", block("ployz")),
+                "",
+            ),
+            (0, format!("note\n{}", block("ployz")), ""),
+            (0, format!("{}   pool: tank\n", block("ployz")), ""),
+            (0, "   pool: ployz\n     id: 1\n".to_owned(), ""),
         ] {
             assert!(
-                scan(status(code), stdout, stderr).is_err(),
+                scan(status(code), &stdout, stderr).is_err(),
                 "{code} {stdout:?} {stderr:?}"
             );
         }
     }
 
-    fn pool(name: &str, health: &str) -> Imported {
-        parse_any(&format!("{name}\t100\t1\t99\t{health}\toff")).unwrap()
+    #[test]
+    fn a_vdev_listing_reads_only_whole_lines() {
+        let listing = "ployz\n\t/var/lib/ployz-machine-pool\t2.93G\t1M\n";
+        assert_eq!(
+            vdevs(listing, "ployz").unwrap(),
+            [std::ffi::OsStr::new("/var/lib/ployz-machine-pool")]
+        );
+        for listing in [
+            "",
+            "ployz\n",
+            "tank\n\t/var/lib/ployz-machine-pool\t2.93G\n",
+            "ployz\n\t/var/lib/ployz-machine-pool\t2.93G\nwarning\n",
+        ] {
+            assert!(vdevs(listing, "ployz").is_err(), "{listing:?}");
+        }
+    }
+
+    fn pool(name: &str, health: &str, readonly: &str) -> Imported {
+        parse_any(&format!("{name}\t100\t1\t99\t{health}\t{readonly}")).unwrap()
+    }
+
+    fn inventory(
+        records: Records,
+        imported: &[Imported],
+        on_backing: Option<&str>,
+        scan: &[&str],
+    ) -> Inventory {
+        Inventory {
+            records,
+            imported: Some(imported.to_vec()),
+            on_backing: on_backing.map(str::to_owned),
+            scan: scan.iter().map(|name| (*name).to_owned()).collect(),
+            backing_scan: Vec::new(),
+        }
     }
 
     fn judged(
@@ -619,13 +849,14 @@ mod tests {
         on_backing: Option<&str>,
         scan: &[&str],
     ) -> Read {
-        read(Inventory {
-            records,
-            imported: Some(imported.iter().map(|name| pool(name, "ONLINE")).collect()),
-            on_backing: on_backing.map(str::to_owned),
-            scan: scan.iter().map(|name| (*name).to_owned()).collect(),
-            backing_scan: Vec::new(),
-        })
+        let imported: Vec<_> = imported
+            .iter()
+            .map(|name| pool(name, "ONLINE", "off"))
+            .collect();
+        read(
+            &inventory(records, &imported, on_backing, scan),
+            Need::Proof,
+        )
     }
 
     fn owned(read: &Read) -> Option<(&str, By)> {
@@ -655,7 +886,7 @@ mod tests {
     /// Pool could be its own: picking one by elimination answers from the wrong data.
     #[test]
     fn a_machine_reads_only_the_pool_its_records_name() {
-        let file = judged(BACKING, &["ployz", "tank"], Some("ployz"), &[]);
+        let file = judged(BACKING, &["ployz"], Some("ployz"), &[]);
         assert_eq!(owned(&file), Some(("ployz", By::File)));
         // A Pool named ployz that isn't the one in the backing file is someone else's.
         let elsewhere = judged(BACKING, &["ployz"], None, &[]);
@@ -663,7 +894,7 @@ mod tests {
         let beside = judged(BACKING, &["ployz"], Some("ployz"), &["ployz-device"]);
         assert_eq!(owned(&beside), None);
 
-        let device = judged(DEVICE, &["ployz-device", "tank"], None, &[]);
+        let device = judged(DEVICE, &["ployz-device"], None, &[]);
         assert_eq!(owned(&device), Some(("ployz-device", By::Device)));
         let unimported = judged(DEVICE, &["ployz"], None, &["ployz-device"]);
         assert_eq!(owned(&unimported), None);
@@ -683,11 +914,75 @@ mod tests {
             judged(BOTH, &["ployz"], Some("ployz"), &[]),
             Read::Unproven(_)
         ));
-        let missing = read(Inventory {
-            records: DEVICE,
-            ..Inventory::default()
-        });
+        let missing = read(
+            &Inventory {
+                records: DEVICE,
+                ..Inventory::default()
+            },
+            Need::Proof,
+        );
         assert!(matches!(missing, Read::Unproven(_)));
+    }
+
+    /// The Pool a Machine reads and the Pool it writes to are one choice: where another
+    /// imported Pool could be written, or its own is read-only, neither happens, so a
+    /// Volume's root never lands where the proof didn't look.
+    #[test]
+    fn a_machine_writes_only_to_the_pool_it_reads() {
+        let readonly_own = [pool("ployz", "ONLINE", "on"), pool("tank", "ONLINE", "off")];
+        let file = inventory(BACKING, &readonly_own, Some("ployz"), &[]);
+        assert!(writable(&file).is_err());
+        assert!(matches!(read(&file, Need::Proof), Read::Unproven(_)));
+        assert!(matches!(read(&file, Need::Seal), Read::Unproven(_)));
+        // One recording no Pool writes to its sole writable Pool, and proves nothing beside
+        // a read-only one.
+        let readonly_other = [
+            pool("backup", "ONLINE", "on"),
+            pool("tank", "ONLINE", "off"),
+        ];
+        let none = inventory(NONE, &readonly_other, None, &[]);
+        assert_eq!(writable(&none).unwrap().unwrap().name(), "tank");
+        assert!(matches!(read(&none, Need::Proof), Read::Unproven(_)));
+
+        for records in [BACKING, DEVICE] {
+            let own = if records == BACKING {
+                "ployz"
+            } else {
+                "ployz-device"
+            };
+            let beside = [pool(own, "ONLINE", "off"), pool("tank", "ONLINE", "off")];
+            let both = inventory(records, &beside, Some(own), &[]);
+            assert!(writable(&both).is_err(), "{records:?}");
+            assert!(matches!(read(&both, Need::Proof), Read::Unproven(_)));
+        }
+        // A file Pool not imported beside a usable Pool: recovery may not run, nor writes.
+        let tank = [pool("tank", "ONLINE", "off")];
+        assert!(writable(&inventory(BACKING, &tank, None, &[])).is_err());
+        assert_eq!(writable(&inventory(BACKING, &[], None, &[])).unwrap(), None);
+        assert_eq!(writable(&inventory(DEVICE, &[], None, &[])).unwrap(), None);
+    }
+
+    /// A `DEGRADED` Pool takes writes and a seal, and proves nothing.
+    #[test]
+    fn a_degraded_pool_proves_nothing() {
+        let degraded = [pool("ployz", "DEGRADED", "off")];
+        let file = inventory(BACKING, &degraded, Some("ployz"), &[]);
+        assert_eq!(writable(&file).unwrap().unwrap().name(), "ployz");
+        assert_eq!(
+            read(&file, Need::Proof),
+            Read::Unproven("its Pool ployz is DEGRADED".to_owned())
+        );
+        assert_eq!(owned(&read(&file, Need::Seal)), Some(("ployz", By::File)));
+    }
+
+    /// The imported Pool on the backing file's path proves nothing when the file there now
+    /// holds another Pool: the open vdev is a file moved away from that path.
+    #[test]
+    fn a_pool_file_holding_another_pool_proves_nothing() {
+        let imported = [pool("ployz", "ONLINE", "off")];
+        let mut moved = inventory(BACKING, &imported, Some("ployz"), &[]);
+        moved.backing_scan = vec!["ployz".to_owned()];
+        assert!(matches!(read(&moved, Need::Proof), Read::Unproven(_)));
     }
 
     const BOTH: Records = Records {

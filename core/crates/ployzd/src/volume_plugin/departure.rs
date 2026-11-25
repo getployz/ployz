@@ -25,7 +25,7 @@ use std::collections::BTreeSet;
 
 use crate::{
     dataset_layout::DatasetLayout,
-    machine_pool::{MachinePool, Read},
+    machine_pool::{MachinePool, Need, Read},
 };
 use axum::{Json, extract::State};
 use ployz_core::{DepartureFailure, RpcError, StorageDeparture};
@@ -67,7 +67,7 @@ impl VolumeStorage {
         // The seal covers the Pool this Machine knows is its own. One it held but can't
         // tell apart now may hold a root that would come back as a writer, so the
         // departure fails rather than leave it unsealed.
-        let pool = match self.pool.read().await? {
+        let pool = match self.pool.read(Need::Seal).await? {
             Read::Unheld => return Ok(StorageDeparture::default()),
             Read::Pool { pool, .. } => pool,
             Read::Unproven(why) => {
@@ -155,7 +155,8 @@ impl VolumeStorage {
         now_unix_seconds: i64,
         mirrors: Mirrors,
     ) -> super::Result<bool> {
-        let datasets = self.datasets(pool).await?;
+        // A root missing from a cut listing would stay unsealed, so only a finished one reads.
+        let datasets = self.complete_datasets(pool).await?;
         let demoted = match self.departure(pool, &datasets, name).await? {
             Departure::Root(root) | Departure::RootBesideEmptySlot(root) => {
                 self.freeze_root(root, name, now_unix_seconds).await?;

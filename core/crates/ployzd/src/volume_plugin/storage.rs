@@ -476,19 +476,7 @@ impl VolumeStorage {
 
     /// Like [`Self::zfs`], under [`Exit::Listing`].
     pub(super) async fn zfs_listing(&self, args: &[&str]) -> Result<String> {
-        let output = host_command::run(&self.zfs, args).await;
-        if let Ok(output) = &output
-            && Exit::Listing.judge(output) == Ran::StoppedEarly
-        {
-            return Err(format!(
-                "{} {} stopped early: {}",
-                self.zfs.display(),
-                args.join(" "),
-                String::from_utf8_lossy(&output.stderr).trim()
-            )
-            .into());
-        }
-        checked_output(&self.zfs, args, output)
+        checked_listing(&self.zfs, args).await
     }
 
     /// What this Machine holds for `name` in `datasets`, if anything, with `receiving`
@@ -782,6 +770,33 @@ fn dataset_listing(pool: &MachinePool) -> [&str; 6] {
 
 pub(super) async fn checked_command(program: &Path, args: &[&str]) -> Result<String> {
     checked_output(program, args, host_command::run(program, args).await)
+}
+
+/// [`checked_command`] under [`Exit::Listing`], for output an absence or a choice is judged
+/// from.
+pub(super) async fn checked_listing(program: &Path, args: &[&str]) -> Result<String> {
+    listed_output(program, args, host_command::run(program, args).await)
+}
+
+/// [`checked_output`] under [`Exit::Listing`]: ZFS exits 0 when it stopped early and says
+/// so only on stderr, so any stderr fails it.
+pub(super) fn listed_output(
+    program: &Path,
+    args: &[&str],
+    output: io::Result<Output>,
+) -> Result<String> {
+    if let Ok(output) = &output
+        && Exit::Listing.judge(output) == Ran::StoppedEarly
+    {
+        return Err(format!(
+            "{} {} stopped early: {}",
+            program.display(),
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )
+        .into());
+    }
+    checked_output(program, args, output)
 }
 
 pub(super) fn checked_output(

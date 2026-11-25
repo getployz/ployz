@@ -599,7 +599,10 @@ impl VolumeStorage {
     ) -> std::result::Result<TrashRestored, RpcError> {
         let _held = self.admit_mutation().await?;
         let _pool_guard = self.pool.lock_mutation().await?;
-        let pool = self.one_pool().await?;
+        // One listing gives the Pool it writes to and what a proof reads of it, so a root
+        // comes back only in the Pool every proof here was answered from.
+        let (pool, own) = self.pool.restoring().await?;
+        let pool = pool.ok_or_else(|| PluginError::from("no usable existing Machine Pool"))?;
         let layout = DatasetLayout::of(&pool);
         let datasets = self.complete_datasets(&pool).await?;
         // A promote that renamed the entry left its ID on the root, so a call run again
@@ -617,7 +620,7 @@ impl VolumeStorage {
             RpcError::conflict(format!("Trash entry {id} can't be restored: {why}"))
         })?;
         if entry.place == TrashPlace::Root {
-            self.own_pool(&pool).await?;
+            own_pool(own)?;
         }
         match (entry.place, promote) {
             (TrashPlace::Root, false) => self.pin(&layout, &entry).await,
@@ -625,28 +628,6 @@ impl VolumeStorage {
             (TrashPlace::Slot | TrashPlace::Copy, _) => {
                 self.land(&pool, &datasets, dataset, &entry).await
             }
-        }
-    }
-
-    /// Refuses unless `pool` is the Pool this Machine knows is its own, by its records and
-    /// what ZFS shows: the proof a restore reads is answered from that Pool, so a root comes
-    /// back only there.
-    async fn own_pool(&self, pool: &MachinePool) -> std::result::Result<(), RpcError> {
-        match self.pool.read().await? {
-            Read::Pool { pool: own, .. } if own.name() == pool.name() => Ok(()),
-            Read::Pool { pool: own, .. } => Err(RpcError::conflict(format!(
-                "This Server's own Pool is {}, not {}, so it won't restore from {}'s Trash.",
-                own.name(),
-                pool.name(),
-                pool.name()
-            ))),
-            Read::Unheld => Err(RpcError::conflict(
-                "This Server records no Pool as its own, so it won't restore from its Trash."
-                    .to_owned(),
-            )),
-            Read::Unproven(why) => Err(RpcError::conflict(format!(
-                "This Server won't restore from its Trash, since {why}."
-            ))),
         }
     }
 
@@ -862,12 +843,16 @@ impl VolumeStorage {
             let Ok(id) = TrashId::parse(id) else {
                 continue;
             };
-            let marks = self.marks(&dataset.name);
-            if marks.local(Mark::TrashPin).await?.is_none() {
+            // A proof's "not pinned" is an absence, so it comes only from a row ZFS printed.
+            if self
+                .listed_local(&dataset.name, Mark::TrashPin.name())
+                .await?
+                .is_none()
+            {
                 continue;
             }
-            match marks
-                .local(Mark::TrashName)
+            match self
+                .listed_local(&dataset.name, Mark::TrashName.name())
                 .await?
                 .map(|held| held.parse::<VolumeName>())
             {
@@ -1157,4 +1142,20 @@ pub(super) async fn sweep(
     State(storage): State<VolumeStorage>,
 ) -> Json<std::result::Result<TrashSwept, RpcError>> {
     Json(storage.sweep_trash().await.map_err(RpcError::from))
+}
+
+/// Refuses unless the Pool a restore writes to is the one a proof reads, `ONLINE` and the
+/// only one attached: the proof a restore relies on is answered from that Pool, so a root
+/// comes back only there.
+fn own_pool(own: Read) -> std::result::Result<(), RpcError> {
+    match own {
+        Read::Pool { .. } => Ok(()),
+        Read::Unheld => Err(RpcError::conflict(
+            "This Server records no Pool as its own, so it won't restore from its Trash."
+                .to_owned(),
+        )),
+        Read::Unproven(why) => Err(RpcError::conflict(format!(
+            "This Server won't restore from its Trash, since {why}."
+        ))),
+    }
 }

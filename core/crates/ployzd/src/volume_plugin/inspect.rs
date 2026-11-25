@@ -2,7 +2,7 @@
 
 use crate::{
     dataset_layout::DatasetLayout,
-    machine_pool::{By, MachinePool, Read},
+    machine_pool::{By, MachinePool, Need, Read},
 };
 use axum::{Json, extract::State};
 use ployz_core::{
@@ -107,6 +107,30 @@ impl VolumeStorage {
             .await?;
         let value = value.trim_end_matches('\n');
         Ok((!value.is_empty() && value != "-").then(|| value.to_owned()))
+    }
+
+    /// [`Self::local_property`] from the one row a listing ZFS finished prints for it, so
+    /// `None` means ZFS said nothing sets it there, never that it printed nothing.
+    pub(super) async fn listed_local(
+        &self,
+        dataset: &str,
+        property: &str,
+    ) -> Result<Option<String>> {
+        let output = self
+            .zfs_listing(&["get", "-Hp", "-o", "value,source", property, dataset])
+            .await?;
+        let mut rows = output.lines();
+        match (
+            rows.next().and_then(|row| row.split_once('\t')),
+            rows.next(),
+        ) {
+            (Some((value, "local")), None) => Ok(Some(value.to_owned())),
+            (Some((_, source)), None) if !source.is_empty() && !source.contains('\t') => Ok(None),
+            _ => Err(format!(
+                "zfs get {property} {dataset} printed no row Ployz reads: {output:?}"
+            )
+            .into()),
+        }
     }
 
     /// The guid of a dataset's newest snapshot, whatever its name.
@@ -327,6 +351,9 @@ impl VolumeStorage {
     async fn inspect_copy(&self, name: &VolumeName, prove: bool) -> Result<VolumeCopyView> {
         let _guard = self.mutation.lock().await;
         if prove {
+            // The installer changes the Pool under this lock, not the plugin's, so a proof
+            // takes both.
+            let _pool_guard = self.pool.lock_mutation().await?;
             return self.prove_copy(name).await;
         }
         // A Pool this Machine held but can't read now may hold a copy, so it never answers none.
@@ -346,7 +373,7 @@ impl VolumeStorage {
     ///
     /// [`PoolStorage::read`]: super::pool::PoolStorage::read
     async fn prove_copy(&self, name: &VolumeName) -> Result<VolumeCopyView> {
-        let (pool, read) = match self.pool.read().await? {
+        let (pool, read) = match self.pool.read(Need::Proof).await? {
             Read::Unheld => {
                 return Ok(VolumeCopyView {
                     copy: None,

@@ -343,7 +343,7 @@ Each entry names its volume by project, environment and volume ID, like
 server in the Cluster shows that it holds no copy of it and isn't restoring it too, because the
 restored data would otherwise be a second copy. A server shows that only from a healthy pool
 it knows is its own, so the restore waits on a server that runs an older Ployz, whose pool is
-degraded, or that has a pool attached it doesn't record as its own. Until then the entry stays
+degraded or read-only, or that has another pool attached it could write to. Until then the entry stays
 in the trash, and `trash ls` shows it as restoring. Each try keeps it there 7 more days, so run
 the restore again once the servers answer. If two servers restore the same volume, keep one
 and delete the other entry with `trash empty ID`. If the restore stops without an answer, it

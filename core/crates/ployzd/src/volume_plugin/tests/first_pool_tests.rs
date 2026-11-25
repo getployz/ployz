@@ -973,6 +973,7 @@ case "$name" in
         fi
         ;;
       'list -H -o name') [ ! -e '{pool}' ] || printf 'ployz\n' ;;
+      'list -v -H -P -o name ployz') [ ! -e '{pool}' ] || printf 'ployz\n\t%s\t-\t-\n' '{backing}' ;;
       create*)
         case "$*" in *'-O org.debian:periodic-trim=disable'*) touch '{trim_disabled}' ;; esac
         touch '{pool}'; cp '{allocated}' '{claimed}'; [ ! -e '{fail_pool}' ] || exit 2 ;;

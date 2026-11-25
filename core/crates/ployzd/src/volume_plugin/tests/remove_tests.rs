@@ -456,6 +456,7 @@ case "$*" in
   [ ! -e '{root}/imported' ] || printf '{pool}\t4294967296\t0\t4294967296\tONLINE\toff\n' ;;
  import|'import -d {root}/machine-pool') printf 'pool: {pool}\n' ;;
  'import -N ployz-device'|'import -d {root}/machine-pool -f -N ployz') touch '{root}/imported' ;;
+ 'list -v -H -P -o name ployz') printf 'ployz\n\t%s\t-\n' '{root}/machine-pool' ;;
  *) exit 97 ;;
 esac
 "#,

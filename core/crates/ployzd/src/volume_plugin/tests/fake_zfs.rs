@@ -221,6 +221,8 @@ case "$*" in
     if [ -e '{props}/datasets-cut' ]; then
       printf 'tank\t0\t0\t0\t0\t/tank\tyes\toff\n'; echo 'cannot iterate filesystems: I/O error' >&2; exit 0
     fi
+    # props/datasets-cut-later: this listing finishes, and the next one stops early.
+    [ ! -e '{props}/datasets-cut-later' ] || mv '{props}/datasets-cut-later' '{props}/datasets-cut'
     if [ -e '{hold_list}' ]; then
       touch '{list_held}'
       while [ -e '{hold_list}' ]; do sleep 0.01; done
@@ -316,6 +318,9 @@ case "$*" in
     ;;
   'get -H -s local -o value '*)
     require "$8"
+    # props/get-cut/<dataset>: ZFS couldn't read the dataset's properties, said so on
+    # stderr, and still exited 0.
+    [ ! -e '{props}'/get-cut/"$8" ] || {{ echo "cannot get property: I/O error" >&2; exit 0; }}
     check_property "$7"
     f='{props}'/"$8/$7"
     [ ! -e "$f" ] || prop "$8" "$7" -
@@ -331,6 +336,7 @@ case "$*" in
     ;;
   'get -Hp -o value,source '*)
     require "$6"
+    [ ! -e '{props}'/get-cut/"$6" ] || {{ echo "cannot get property: I/O error" >&2; exit 0; }}
     v=$(prop "$6" "$5" -)
     if [ "$v" = - ]; then printf -- '-\t-\n'; else printf '%s\tlocal\n' "$v"; fi
     ;;
