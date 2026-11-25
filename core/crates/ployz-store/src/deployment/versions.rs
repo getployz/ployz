@@ -873,7 +873,7 @@ fn written(spec: &RequestedServiceSpec, namespace: &Namespace) -> Option<RanServ
 ///
 /// A built Service is left to its automatic deploy rule while the rule is live, tracks
 /// the Service's branch and approves its spec. Its first Deploy still needs a build under
-/// the rule, which a push to its branch makes; once a Server verified that build under
+/// the rule, which a push or the Deploy makes; once a Server verified that build under
 /// the rule's current generation, a Deploy reuses its image while only run fields
 /// change, and carries its proof.
 ///
@@ -899,28 +899,7 @@ pub(crate) fn unsigned(
         .collect();
     let ended = stored.as_ref().is_some_and(|rule| rule.ended);
     let approved: Vec<ServiceName> = match stored.filter(|rule| !rule.ended) {
-        Some(rule) => {
-            let tracking = crate::auto_rule::branch(&rule).map(|(repository, branch)| {
-                saved
-                    .services
-                    .iter()
-                    .filter(|service| crate::git::tracks(service, repository, &branch))
-                    .map(|service| service.config.private_dns.clone())
-                    .collect::<Vec<_>>()
-            });
-            let sources = crate::auto_rule::sources(saved);
-            let changed = crate::auto_rule::changed(&rule, namespace, target, &sources, &[]);
-            rule.services
-                .into_iter()
-                .map(|service| service.name)
-                .filter(|service| {
-                    !changed.contains(service)
-                        && tracking
-                            .as_ref()
-                            .is_some_and(|names| names.contains(service))
-                })
-                .collect()
-        }
+        Some(rule) => crate::auto_rule::approved(&rule, namespace, saved, target),
         None => Vec::new(),
     };
     let mut unsigned = Vec::new();

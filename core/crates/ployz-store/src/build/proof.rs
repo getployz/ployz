@@ -82,11 +82,19 @@ pub(crate) fn image_tokens(
 
 /// What a Server issued for each Service Deployment `id` built or reused under a rule,
 /// once it checked the image online: this Deployment's own, or its source's for a
-/// redeploy.
+/// redeploy. Only one issued under the rule and generation its Environment keeps now
+/// counts: a Server refuses any other with the current rule.
 pub(crate) fn verified(
     tx: &mut dyn Tx,
     id: &DeploymentId,
 ) -> Result<BTreeMap<ServiceName, VerifiedClaim>, RpcError> {
+    let stored = deployment::load(tx, id)?;
+    let Some(current) = crate::auto_rule::stored(tx, &stored.summary.environment_id)?
+        .as_ref()
+        .and_then(crate::auto_rule::opened)
+    else {
+        return Ok(BTreeMap::new());
+    };
     Ok(rows(tx, id)?
         .into_iter()
         .filter(|row| {
@@ -96,6 +104,9 @@ pub(crate) fn verified(
             )
         })
         .filter_map(|row| Some((row.service, row.verified?)))
+        .filter(|(_, kept)| {
+            (kept.claim.rule, kept.claim.generation) == (current.rule, current.generation)
+        })
         .collect())
 }
 

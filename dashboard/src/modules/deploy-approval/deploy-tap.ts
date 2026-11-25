@@ -5,7 +5,7 @@
  * rule approves, shows the lines it signs, and the passkey answers one bundle of them. Cloud only relays the plan, the
  * tag pins and the answer, and each Server checks every step.
  */
-import type { Needs, PostedVersion, SavedRule, Unsigned, VersionsDraft } from "@ployz/sdk";
+import type { PostedVersion, SavedRule, Unsigned, VersionsDraft } from "@ployz/sdk";
 import { Option, Schema } from "effect";
 import { versionSteps } from "@ployz/sdk/authority";
 import { StoreRefused } from "#/lib/refusal";
@@ -51,17 +51,17 @@ export function namesReview(current: string, given: string) {
   return reviewed === current || reviewed.startsWith(`${current}:`);
 }
 
-const BLOCKED = {
-  rule: (service) => `No automatic deploy rule covers ${service}. Approve one, or run ployz deploy.`,
-  rebuild: (service) => `Push to ${service}'s branch first. Its rule hasn't built this version yet.`,
-  digest: (service) => `${service} pulls a private tag. Write its image by digest (image@sha256:…).`,
-} satisfies Record<Exclude<Needs, "version">, (service: string) => string>;
+/**
+ * Whether `entry`'s Service builds from source under the automatic deploy rule, so no passkey signs a version of it. The
+ * Deploy's tap may sign the rule with it, and each Server checks the build against the rule that stands.
+ */
+export const underRule = ({ needs, ended }: Unsigned) => (needs === "rule" || needs === "rebuild") && ended !== true;
 
 /** Why a Service no passkey can sign keeps the Deploy from asking, or null when a passkey can sign each of `unsigned`. */
 export function blocked(unsigned: readonly Unsigned[]) {
   for (const { service, needs, ended } of unsigned) {
     if (ended === true) return `Automatic deploys are off for ${service}. Turn on Deploy every push to deploy it.`;
-    if (needs !== "version") return BLOCKED[needs](service);
+    if (needs === "digest") return `${service} pulls a private tag. Write its image by digest (image@sha256:…).`;
   }
   return null;
 }
@@ -112,7 +112,7 @@ export async function prepareDeploy(
   const admit = (): Prepared => ({ kind: "admit", command: bound, held });
   // A version the Deploy already carries, such as one a CLI's device key signed, covers its Service: only the rest ask.
   const covered = new Set((command.versions ?? []).map(versionService));
-  const unsigned = (plan.unsigned ?? []).filter((entry) => !covered.has(entry.service));
+  const unsigned = (plan.unsigned ?? []).filter((entry) => !covered.has(entry.service) && !underRule(entry));
   const rule = source?.kind === "sign" && gate.kind === "ready" && ownerOf !== undefined ? source : null;
   if (gate.kind === "off" || (unsigned.length === 0 && rule === null)) return admit();
   if (gate.kind === "refused") return gate;

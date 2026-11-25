@@ -72,7 +72,7 @@ pub use branch::{
 pub use build::{
     BuildLogQuery, BuildLogView, BuildReport, BuildStatus, BuildView, GitSource, GithubBuild,
     GithubBuildId, GithubClaims, GithubEnd, GithubGrant, GithubHandOff, GithubInput, GithubReport,
-    GithubRun, ImageToken, RunEnd, VerifiedClaim,
+    GithubRule, GithubRun, ImageToken, RunEnd, VerifiedClaim,
 };
 pub use builders::{BuildOrder, BuildOrderQuery, BuildOrderView, Builder, SetBuildOrder};
 pub use client_sealed::SecretValue;
@@ -598,19 +598,23 @@ impl ConfigStore {
             .read(|tx| build::github_authorize(tx, id, claims))
     }
 
-    /// The rule GitHub build `id` builds under, automatic deploy or preview, if any: its
-    /// run is the push's own, which Cloud follows rather than dispatching one.
+    /// The automatic deploy rule GitHub build `id` builds under, if any, and whether
+    /// Cloud follows the push's run or dispatches one.
     ///
     /// # Errors
     /// Returns `not_found` for an unknown Deployment, or a storage error.
-    pub fn github_rule(
-        &self,
-        id: &GithubBuildId,
-    ) -> Result<
-        Option<ployz_core::authority::Signed<ployz_core::authority::AutoDeployRule>>,
-        RpcError,
-    > {
+    pub fn github_rule(&self, id: &GithubBuildId) -> Result<Option<GithubRule>, RpcError> {
         self.storage.read(|tx| build::github_rule(tx, id))
+    }
+
+    /// Whether `image`, which a person's Deploy under the automatic deploy rule would
+    /// reuse for GitHub build `id`, carries proof a Server takes under the rule's
+    /// current generation. In-process only.
+    ///
+    /// # Errors
+    /// Returns `not_found` for an unknown Deployment, or a storage error.
+    pub fn github_proven(&self, id: &GithubBuildId, image: &str) -> Result<bool, RpcError> {
+        self.storage.read(|tx| build::github_proven(tx, id, image))
     }
 
     /// The GitHub build run `run_id` holds while it builds, if any.

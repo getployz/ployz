@@ -387,6 +387,28 @@ pub(crate) fn sources(saved: &SavedEnvironmentIntent) -> Vec<RuleSourceView> {
         .collect()
 }
 
+/// The Services `rule` approves as `saved` stands, lowered to `target` in `namespace`:
+/// each it covers that still builds from its repository and branch, with the settings
+/// and build policy it signed. A person's Deploy builds these under the rule.
+pub(crate) fn approved(
+    rule: &AutoDeployRule,
+    namespace: &Namespace,
+    saved: &SavedEnvironmentIntent,
+    target: &[RequestedServiceSpec],
+) -> Vec<ServiceName> {
+    let Some((repository, branch)) = branch(rule) else {
+        return Vec::new();
+    };
+    let changed = changed(rule, namespace, target, &sources(saved), &[]);
+    saved
+        .services
+        .iter()
+        .filter(|service| crate::git::tracks(service, repository, &branch))
+        .map(|service| service.config.private_dns.clone())
+        .filter(|service| rule.service(service).is_some() && !changed.contains(service))
+        .collect()
+}
+
 /// The Services a push of `rule`'s branch would deploy that the rule doesn't approve:
 /// each it covers whose template in `target`, or whose build policy from `sources`,
 /// changed, and each of `ships` it doesn't cover. All of them when the Environment

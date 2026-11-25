@@ -2339,7 +2339,25 @@ fn deploy_with_rule(
     version: &str,
     (rule, prior): (SignedRule, Option<(u8, u64)>),
 ) -> Result<ployz_store::DeploymentSummary, ployz_core::RpcError> {
-    store.write(
+    let saved = ployz_store::SavedRule {
+        rule,
+        births: Default::default(),
+        prior: prior.map(|(id, generation)| ployz_store::RulePrior {
+            rule: ployz_core::authority::RuleId::from_bytes([id; 16]),
+            generation,
+        }),
+    };
+    deploy_at(store, who, version, Some(saved))
+}
+
+/// Deploy what is staged at review `version`, signing `rule` with it, if any.
+fn deploy_at(
+    store: &ConfigStore,
+    who: &Actor,
+    version: &str,
+    rule: Option<ployz_store::SavedRule>,
+) -> Result<ployz_store::DeploymentSummary, ployz_core::RpcError> {
+    store.write_trusted(
         who,
         &ployz_store::Admit::Deploy(ployz_store::Deploy {
             id: ployz_store::DeploymentId::parse("00000000-0000-4000-8000-000000000141").unwrap(),
@@ -2354,15 +2372,9 @@ fn deploy_with_rule(
             versions: Vec::new(),
             copies: Vec::new(),
             recreate: Vec::new(),
-            rule: Some(Box::new(ployz_store::SavedRule {
-                rule,
-                births: Default::default(),
-                prior: prior.map(|(id, generation)| ployz_store::RulePrior {
-                    rule: ployz_core::authority::RuleId::from_bytes([id; 16]),
-                    generation,
-                }),
-            })),
+            rule: rule.map(Box::new),
         }),
+        &permitted(),
     )
 }
 
@@ -2378,6 +2390,217 @@ fn a_deploy_keeps_the_rule_its_tap_signed_and_the_next_push_deploys() {
     assert_eq!(kept_rule(&store, &who), Some((9, 1, "main".to_owned())));
     let pushed = system(&store, &push(None, Some(H1), None));
     assert_eq!(pushed.admitted.len(), 1, "{pushed:?}");
+}
+
+#[test]
+fn a_persons_deploy_builds_under_the_rule_on_a_run_cloud_dispatches_until_the_rule_ends() {
+    use ployz_store::GithubRule;
+    let (store, who) = shop();
+    set(&store, &who, "web.env.GREETING", json!("hello"));
+    let version = staged_version(&store, &who);
+    let rule = signed_rule(&store, &who, (9, 1, "main"), true);
+    let deployed = deploy_with_rule(&store, &person(), &version, (rule, None)).unwrap();
+    let pushed = system(&store, &push(None, Some(H1), None));
+    let (deployed, pushed) = (
+        build_id(&deployed.id, "web"),
+        build_id(&pushed.admitted[0].deployment.id, "web"),
+    );
+
+    assert!(
+        matches!(
+            store.github_rule(&deployed).unwrap(),
+            Some(GithubRule::Dispatch(_))
+        ),
+        "a person's Deploy builds under the rule it signed"
+    );
+    assert!(matches!(
+        store.github_rule(&pushed).unwrap(),
+        Some(GithubRule::Push(_))
+    ));
+
+    end_rule(&store, &who, 2);
+    assert_eq!(store.github_rule(&deployed).unwrap(), None);
+    assert!(
+        matches!(
+            store.github_rule(&pushed).unwrap(),
+            Some(GithubRule::Push(_))
+        ),
+        "a push's build still names the rule, which the grant Machine refuses once ended"
+    );
+}
+
+/// Build on the Servers first, then GitHub.
+fn servers_first(store: &ConfigStore, who: &Actor) {
+    store
+        .write(
+            who,
+            &ployz_store::SetBuildOrder {
+                build_order: Some(ployz_store::BuildOrder::ServersThenGithub),
+            },
+        )
+        .unwrap();
+}
+
+#[test]
+fn a_persons_deploy_builds_under_the_rule_only_while_it_approves_the_service_as_frozen() {
+    let (store, who) = shop();
+    servers_first(&store, &who);
+    publish(&store, &who);
+    approve_rule(&store, &who, 1).unwrap();
+    // web's build args changed, and the Deploy signed no rule over them.
+    set(&store, &who, "web.env.GREETING", json!("hello"));
+    let version = staged_version(&store, &who);
+    let deployed = deploy_at(&store, &person(), &version, None).unwrap();
+    let id = build_id(&deployed.id, "web");
+
+    assert_eq!(
+        store.github_rule(&id).unwrap(),
+        None,
+        "the rule names web, but not what this Deploy builds"
+    );
+    assert_eq!(
+        store.sources(&deployed.id).unwrap()[0].builders[0],
+        ployz_store::Builder::Servers,
+        "a build under no rule keeps its walk"
+    );
+}
+
+#[test]
+fn a_persons_deploy_reuses_an_image_under_the_rule_only_with_proof_of_its_generation() {
+    let (store, who) = shop();
+    servers_first(&store, &who);
+    set(&store, &who, "web.env.GREETING", json!("hello"));
+    let version = staged_version(&store, &who);
+    let rule = signed_rule(&store, &who, (9, 1, "main"), true);
+    let deployed = deploy_with_rule(&store, &person(), &version, (rule, None)).unwrap();
+    pin_web(&store, &deployed.id, H1, &permitted()).unwrap();
+    let deployed = build_id(&deployed.id, "web");
+    // A push under the same generation builds web, and a Server verifies it.
+    let pushed = system(&store, &push(None, Some(H1), None)).admitted[0]
+        .deployment
+        .id
+        .clone();
+    let image = format!("sha256:{}", "d".repeat(64));
+    built_on_github(&store, &build_id(&pushed, "web"), 41, "token-1", &image);
+    let runner = ployz_store::RunnerId::parse("runner").unwrap();
+    let claimed = store.claim(&pushed, &runner).unwrap();
+    let web = ServiceName::parse("web").unwrap();
+    store
+        .keep_verified(&pushed, &runner, &[(web, verified_web(1))].into())
+        .unwrap();
+    backend::finish(&store, &pushed, claimed);
+
+    assert!(store.github_proven(&deployed, &image).unwrap());
+    assert_eq!(
+        store.sources(&deployed.deployment).unwrap()[0].builders,
+        [ployz_store::Builder::Github],
+        "a build under the rule goes to GitHub alone, with no Server to fall back to"
+    );
+    // A new generation refuses the proof kept under the last one: the Deploy builds again.
+    approve_rule(&store, &who, 2).unwrap();
+    assert!(!store.github_proven(&deployed, &image).unwrap());
+}
+
+#[test]
+fn a_build_under_the_rule_fails_saying_why_when_the_build_order_leaves_github_out() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &ployz_store::SetBuildOrder {
+                build_order: Some(ployz_store::BuildOrder::ServersOnly),
+            },
+        )
+        .unwrap();
+    set(&store, &who, "web.env.GREETING", json!("hello"));
+    let version = staged_version(&store, &who);
+    let rule = signed_rule(&store, &who, (9, 1, "main"), true);
+    let deployed = deploy_with_rule(&store, &person(), &version, (rule, None)).unwrap();
+
+    let web = &store.sources(&deployed.id).unwrap()[0];
+    assert!(web.builders.is_empty(), "no Server builds it: {web:?}");
+    assert_eq!(
+        web.message.as_deref(),
+        Some("Its automatic deploy rule builds it on GitHub, which your Build Order leaves out")
+    );
+}
+
+/// A push under the rule builds web's image `image` with a token, and its Deployment
+/// ends before any Server verified it; a person retries it.
+fn retried_unverified(store: &ConfigStore, who: &Actor, image: &str) -> ployz_store::GithubBuildId {
+    publish(store, who);
+    approve_rule(store, who, 1).unwrap();
+    let pushed = system(store, &push(None, Some(H1), None)).admitted[0]
+        .deployment
+        .id
+        .clone();
+    built_on_github(store, &build_id(&pushed, "web"), 41, "token-1", image);
+    backend::run(store, &pushed);
+    let again = redeploy(5, &pushed);
+    store
+        .write_trusted(
+            &person(),
+            &ployz_store::Admit::Retry(again.clone()),
+            &permitted(),
+        )
+        .unwrap();
+    build_id(&again.id, "web")
+}
+
+#[test]
+fn a_persons_retry_under_the_rule_never_reuses_an_image_only_its_token_proves() {
+    let (store, who) = shop();
+    let image = format!("ployz-build/web@sha256:{}", "d".repeat(64));
+    let again = retried_unverified(&store, &who, &image);
+    assert!(
+        store.github_input(&again).unwrap().image_token.is_some(),
+        "the retry copied its source's token"
+    );
+
+    assert!(
+        !store.github_proven(&again, &image).unwrap(),
+        "a token expires, so no Server may take it by the time the retry runs"
+    );
+}
+
+#[test]
+fn a_verified_build_from_an_earlier_generation_rides_no_claim_under_the_renewed_rule() {
+    let (store, who) = shop();
+    let image = format!("ployz-build/web@sha256:{}", "d".repeat(64));
+    publish(&store, &who);
+    approve_rule(&store, &who, 1).unwrap();
+    let pushed = system(&store, &push(None, Some(H1), None)).admitted[0]
+        .deployment
+        .id
+        .clone();
+    built_on_github(&store, &build_id(&pushed, "web"), 41, "token-1", &image);
+    let runner = ployz_store::RunnerId::parse("runner").unwrap();
+    let claimed = store.claim(&pushed, &runner).unwrap();
+    let web = ServiceName::parse("web").unwrap();
+    store
+        .keep_verified(&pushed, &runner, &[(web.clone(), verified_web(1))].into())
+        .unwrap();
+    backend::finish(&store, &pushed, claimed);
+    // The rule is approved again over the same commit, and the retry builds afresh to
+    // the same digest.
+    approve_rule(&store, &who, 2).unwrap();
+    let again = redeploy(6, &pushed);
+    store
+        .write_trusted(
+            &person(),
+            &ployz_store::Admit::Retry(again.clone()),
+            &permitted(),
+        )
+        .unwrap();
+    built_on_github(&store, &build_id(&again.id, "web"), 42, "token-2", &image);
+
+    let claimed = store.claim(&again.id, &runner).unwrap();
+    assert_eq!(
+        claimed.verified.get(&web),
+        None,
+        "a Server refuses generation 1's claim beside generation 2's rule"
+    );
+    assert_eq!(claimed.image_tokens[&web].generation, 2);
 }
 
 #[test]
