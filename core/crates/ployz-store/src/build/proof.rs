@@ -187,7 +187,7 @@ pub(crate) fn verified_proof(
             return Ok(Some(RuleProof {
                 rule,
                 evidence: RuleEvidence::Verified(kept.verified),
-                claim: kept.claim,
+                claim: Some(kept.claim),
                 reader: None,
             }));
         }

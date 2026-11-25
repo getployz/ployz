@@ -9,8 +9,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::authority::{
-    Births, BuiltImageDigest, CopyStep, PayloadDigest, ProposalRef, Purpose, RuleProof,
-    ServiceVersion, Signed, SignerKey, Statement, Timestamp, deploy::content_addressed,
+    AutoDeployRule, Births, BuiltImageDigest, CopyStep, PayloadDigest, ProposalRef, Purpose,
+    RuleProof, ServiceVersion, Signed, SignerKey, Statement, Timestamp, deploy::content_addressed,
     version::MAX_PRESENTED,
 };
 use ployz_core::{
@@ -684,13 +684,47 @@ pub(crate) fn versions(
     let service = (&query.namespace, &query.service);
     let versions = versions_for(tx, organization, service, query.digest)?;
     let rule = match query.image {
-        Some(image) => crate::build::verified_proof(tx, organization, service, image)?,
+        Some(image) => match crate::build::verified_proof(tx, organization, service, image)? {
+            Some(proof) => Some(proof),
+            None => registry_proof(tx, organization, service)?,
+        },
         None => None,
     };
     Ok(VersionsView {
         versions,
         rule: rule.map(Box::new),
     })
+}
+
+/// The proof a copy of `service` in `namespace` takes under its Environment's registry
+/// rule while that rule is on and names it: the signed rule alone. A drain sends it with a
+/// copy the rule made, and the Server pulls the copy's digest from the registry itself.
+fn registry_proof(
+    tx: &mut dyn Tx,
+    organization: &str,
+    (namespace, service): (&Namespace, &ServiceName),
+) -> Result<Option<RuleProof>, RpcError> {
+    let rows = tx.query(
+        "SELECT DISTINCT r.rule FROM config_auto_deploy_rule r \
+         JOIN config_deployment d ON d.environment_id = r.environment_id \
+         WHERE d.organization_id = ?1 AND d.namespace = ?2",
+        &[organization.into(), namespace.as_str().into()],
+    )?;
+    for row in &rows {
+        let signed: Signed<AutoDeployRule> = row.json(0, "Automatic deploy rule")?;
+        let covers = signed.open().is_ok_and(|rule| {
+            !rule.ended && rule.source.registry().is_some() && rule.service(service).is_some()
+        });
+        if covers {
+            return Ok(Some(RuleProof {
+                rule: signed,
+                evidence: ployz_core::authority::RuleEvidence::Registry,
+                claim: None,
+                reader: None,
+            }));
+        }
+    }
+    Ok(None)
 }
 
 /// What each Service of `target` runs in Deployment `id`, written back so a retry of `id`
@@ -872,7 +906,8 @@ fn written(spec: &RequestedServiceSpec, namespace: &Namespace) -> Option<RanServ
 /// claim would run covers, with what it needs before a person's Deploy can run it.
 ///
 /// A built Service is left to its automatic deploy rule while the rule is live, tracks
-/// the Service's branch and approves its spec. Its first Deploy still needs a build under
+/// the Service's branch and approves its spec. So is an image Service a live registry rule
+/// approves, once its spec names the image by digest. Its first Deploy still needs a build under
 /// the rule, which a push or the Deploy makes; once a Server verified that build under
 /// the rule's current generation, a Deploy reuses its image while only run fields
 /// change, and carries its proof.
@@ -922,6 +957,11 @@ pub(crate) fn unsigned(
         }
         let built = service
             .is_some_and(|service| !matches!(service.config.source, ServiceSource::Image { .. }));
+        // An image the live registry rule approves runs under it once the spec names its
+        // digest: each Server pulls that digest from the registry itself.
+        if !built && approved.contains(&spec.name) && content_addressed(&spec.container.image) {
+            continue;
+        }
         let needs = match (built, approved.contains(&spec.name)) {
             (true, true)
                 if reused.is_some()

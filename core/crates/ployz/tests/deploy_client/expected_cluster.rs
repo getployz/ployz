@@ -471,7 +471,8 @@ async fn the_start_limit_keeps_a_run_whose_check_in_committed_before_it_settled(
 /// one commit.
 fn ruled(first: &DeploymentId, then: &DeploymentId) -> (Arc<ConfigStore>, GithubBuildId) {
     use ployz_core::authority::rule::{
-        BuildPolicy, Builder, PolicyCache, RuleEvent, RuleService, RuleSource, Runner, template,
+        BuildPolicy, Builder, GithubSource, PolicyCache, RuleEvent, RuleService, RuleSource,
+        Runner, template,
     };
     use ployz_core::authority::{AutoDeployRule, RuleId, Signed, Signer, SignerKey, Timestamp};
     let (store, who, _) = pinned();
@@ -509,7 +510,7 @@ fn ruled(first: &DeploymentId, then: &DeploymentId) -> (Arc<ConfigStore>, Github
         generation: 1,
         namespace: view.namespace.clone(),
         machines: Vec::new(),
-        source: RuleSource {
+        source: RuleSource::Github(GithubSource {
             repository_id: 11,
             owner_id: 1,
             repository: "acme/web".into(),
@@ -518,17 +519,17 @@ fn ruled(first: &DeploymentId, then: &DeploymentId) -> (Arc<ConfigStore>, Github
             events: vec![RuleEvent::Push],
             builder: Builder::pinned(),
             runner: Runner::GithubHosted,
-        },
+        }),
         services: vec![RuleService {
             name: spec.name.clone(),
             template: template(spec, &view.namespace).unwrap(),
-            policy: BuildPolicy::derive(
+            policy: Some(BuildPolicy::derive(
                 &source.root_dir,
                 &source.build,
                 spec,
                 ["linux/amd64".to_owned()].into(),
                 PolicyCache::Off,
-            ),
+            )),
             secrets: None,
         }],
         issued_at: Timestamp::from_millis(1_800_000_000_000).unwrap(),

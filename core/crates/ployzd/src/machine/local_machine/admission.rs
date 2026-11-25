@@ -265,6 +265,9 @@ pub(crate) struct AdmittedSpec {
     /// What this Machine issued for a rule build it checked online to admit the spec.
     verified: Option<VerifiedBuild>,
     hook: Option<super::rule_deploy::HookPlace>,
+    /// The image a registry rule's pull placed here, which every Container this admission
+    /// makes, adopts or starts must run.
+    pin: Option<ployz_core::ImageDigest>,
 }
 
 impl std::fmt::Debug for AdmittedSpec {
@@ -314,6 +317,7 @@ impl AdmittedSpec {
             standing: None,
             verified: None,
             hook: None,
+            pin: None,
         })
     }
 
@@ -343,6 +347,12 @@ impl AdmittedSpec {
     /// The place a hook's push takes when its create runs, for a hook a rule admitted.
     pub(crate) fn hook(&self) -> Option<&super::rule_deploy::HookPlace> {
         self.hook.as_ref()
+    }
+
+    /// The image this admission's Container must run, as this Machine pulled it for a
+    /// registry rule.
+    pub(crate) fn pin(&self) -> Option<&ployz_core::ImageDigest> {
+        self.pin.as_ref()
     }
 
     /// Whether the admission covers opening `value`: a version's signers covered the
@@ -412,6 +422,7 @@ impl AdmittedSpec {
             standing: None,
             verified: None,
             hook: None,
+            pin: None,
         }
     }
 
@@ -432,6 +443,7 @@ impl AdmittedSpec {
             standing: None,
             verified: None,
             hook: None,
+            pin: None,
         }
     }
 }
@@ -487,7 +499,7 @@ impl LocalMachine {
         let spec = AdmittedSpec::hash(&new.slot.namespace, &new.resolved_spec).map_err(refused)?;
         let placement = AdmittedSpec::placement_hash(&new.slot.namespace, &new.resolved_spec)
             .map_err(refused)?;
-        let admitted = |by, verified, hook| {
+        let admitted = |by, verified, hook, pin| {
             Ok(Some(AdmittedSpec {
                 spec,
                 placement,
@@ -495,6 +507,7 @@ impl LocalMachine {
                 standing: Some(self.standing()),
                 verified,
                 hook,
+                pin,
             }))
         };
         // One budget for every signature this attempt opens, whichever proof carries it.
@@ -505,7 +518,7 @@ impl LocalMachine {
             QualifiedService::new(new.slot.namespace.clone(), new.resolved_spec.name.clone());
         if !versions.is_empty() {
             match self.approved_versions(new, &service, versions, &mut budget, admit)? {
-                Ok(by) => return admitted(by, None, None),
+                Ok(by) => return admitted(by, None, None, None),
                 // A creation at Full access would hide that the forget failed.
                 Err(refusal) if asks_to_forget(versions, &self.record().trusted_keys()) => {
                     return Err(refused(refusal));
@@ -521,7 +534,12 @@ impl LocalMachine {
                 .await
             {
                 Ok(admitted_rule) => {
-                    return admitted(admitted_rule.by, admitted_rule.verified, admitted_rule.hook);
+                    return admitted(
+                        admitted_rule.by,
+                        admitted_rule.verified,
+                        admitted_rule.hook,
+                        admitted_rule.pin,
+                    );
                 }
                 Err(Error::RuleDeployRefused(_)) if matches!(scope, Scope::Full(_)) => {}
                 Err(error) => return Err(error),
@@ -550,7 +568,7 @@ impl LocalMachine {
                 unapproved.unwrap_or(AuthorityRefusal::SignedName { service }),
             ));
         }
-        admitted(by, None, None)
+        admitted(by, None, None, None)
     }
 
     /// Whether `service`'s name refuses a `kind` Container admitted `by`. A name that ran

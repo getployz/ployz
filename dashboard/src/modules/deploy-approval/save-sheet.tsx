@@ -10,7 +10,7 @@ import { useStoreWriter } from "#/modules/config-store/store-write";
 import { PasskeyDeclined } from "#/modules/passkeys/passkey-statement";
 import { SignedLines } from "./deploy-sheet";
 import { prepareSaveTapServerFn } from "./deploy-tap.functions";
-import { RuleSummaryList } from "./rule-summary";
+import { RuleSummaryList, ruleTrigger } from "./rule-summary";
 import { ownerLookup } from "./source-step";
 import { type Answered, prepareSave, type Publish, type SaveAsk, type SaveSteps, saveWith, sendRule, signRule, type TurnOn } from "./save-tap";
 
@@ -89,9 +89,9 @@ export function useSaveTap(organizationSlug: string) {
     <Dialog open onOpenChange={(next) => { if (!next && busy === null) close(open, new SaveNotSent()); }}>
       <DialogContent className="flex max-h-[85dvh] flex-col sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>Deploy every push to {summary.branch}?</DialogTitle>
+          <DialogTitle>Deploy {ruleTrigger(summary).every}?</DialogTitle>
           <DialogDescription>
-            Each push to {summary.branch} deploys these settings with no prompt.
+            Once you approve, {ruleTrigger(summary).each} deploys these settings with no prompt.
             {open.ask.stops === null ? null : ` This moves the approval off ${open.ask.stops}. Services keep their Auto-deploy settings.`}
           </DialogDescription>
         </DialogHeader>

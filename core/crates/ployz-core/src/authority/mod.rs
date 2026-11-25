@@ -53,10 +53,13 @@ pub use proposal::{ProposalApproval, ProposalRef, ProposalStep, StepDigest, Step
 pub use refusal::{AuthorityRefusal, MismatchField};
 pub use rule::{
     AttestKey, AutoDeployRule, BuildClaim, BuildPolicy, BuildStage, BuiltImageDigest,
-    CommitAuthority, CommitSha, GithubClaims, PolicyDigest, RecipientKey, RuleEvidence, RuleFacts,
-    RuleId, RuleIdentity, RuleProof, RuleService, RuleSource, SealedDigest, VerifiedBuild,
+    CommitAuthority, CommitSha, GithubClaims, GithubSource, PolicyDigest, RecipientKey,
+    RegistryPin, RegistrySource, RuleEvidence, RuleFacts, RuleId, RuleIdentity, RuleProof,
+    RuleService, RuleSource, SealedDigest, VerifiedBuild,
 };
-pub use rule_draft::{RuleBasis, RuleDraft, RuleDraftError, RuleSummary, RuleTerms};
+pub use rule_draft::{
+    RuleBasis, RuleDraft, RuleDraftError, RuleImageView, RuleSummary, RuleTerms, SourceSummary,
+};
 pub use scope::{
     Ask, Cap, CapSet, Grant, GrantKind, GrantVolume, KeyKind, KeyName, KeyPlace, KeyPlaces,
     KeyScope, PlaceService, Reach, TrustedGrant, ValueReach,

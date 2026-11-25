@@ -2070,7 +2070,8 @@ fn signed_rule(
     staged: bool,
 ) -> SignedRule {
     use ployz_core::authority::rule::{
-        BuildPolicy, Builder, PolicyCache, RuleEvent, RuleService, RuleSource, Runner, template,
+        BuildPolicy, Builder, GithubSource, PolicyCache, RuleEvent, RuleService, RuleSource,
+        Runner, template,
     };
     use ployz_core::authority::{AutoDeployRule, RuleId, Signed, Signer, SignerKey, Timestamp};
     let view = store
@@ -2100,13 +2101,13 @@ fn signed_rule(
                         .iter()
                         .find(|source| source.service == spec.name)
                         .unwrap();
-                    BuildPolicy::derive(
+                    Some(BuildPolicy::derive(
                         &source.root_dir,
                         &source.build,
                         spec,
                         ["linux/amd64".to_owned()].into(),
                         PolicyCache::Off,
-                    )
+                    ))
                 },
                 secrets: None,
             }
@@ -2119,7 +2120,7 @@ fn signed_rule(
         generation,
         namespace: view.namespace,
         machines: Vec::new(),
-        source: RuleSource {
+        source: RuleSource::Github(GithubSource {
             repository_id: 11,
             owner_id: 1,
             repository: "acme/web".into(),
@@ -2128,7 +2129,7 @@ fn signed_rule(
             events: vec![RuleEvent::Push],
             builder: Builder::pinned(),
             runner: Runner::GithubHosted,
-        },
+        }),
         services,
         issued_at: Timestamp::from_millis(1_800_000_000_000).unwrap(),
         ended: false,
@@ -2204,7 +2205,11 @@ fn kept_rule(store: &ConfigStore, who: &Actor) -> Option<(u8, u64, String)> {
         )
         .unwrap();
     let rule = view.rule?.open().unwrap();
-    Some((rule.rule.as_bytes()[0], rule.generation, rule.source.branch))
+    Some((
+        rule.rule.as_bytes()[0],
+        rule.generation,
+        rule.source.github().unwrap().branch.clone(),
+    ))
 }
 
 #[test]
@@ -3145,7 +3150,7 @@ fn a_verified_build_rides_a_rollback_and_a_drain_of_its_image() {
     };
     let proof = drained(&"d".repeat(64)).expect("the copy's image has a verified build");
     assert_eq!(proof.evidence, RuleEvidence::Verified(kept.verified));
-    assert_eq!(proof.claim, kept.claim);
+    assert_eq!(proof.claim, Some(kept.claim));
     assert_eq!(drained(&"c".repeat(64)), None);
     // Under the rule's next generation the kept proof proves nothing, so a build's
     // fresh token for the same image goes in its place.
@@ -3215,4 +3220,120 @@ fn a_redeploy_reusing_its_sources_image_keeps_that_images_token() {
         &format!("ployz-build/web@sha256:{}", "c".repeat(64)),
     );
     assert_eq!(store.github_input(&web).unwrap().image_token, None);
+}
+
+/// Sign `generation` of a registry rule for `ghcr.io/acme/worker` over worker's settings
+/// as they are Saved.
+fn signed_registry_rule(store: &ConfigStore, who: &Actor, generation: u64) -> SignedRule {
+    use ployz_core::authority::rule::{RegistrySource, RuleService, RuleSource, template};
+    use ployz_core::authority::{AutoDeployRule, RuleId, Signed, Signer, SignerKey, Timestamp};
+    let view: ployz_store::RuleView = store
+        .read(
+            who,
+            &ployz_store::RuleQuery {
+                environment: EnvironmentRef::default(),
+                staged: false,
+            },
+        )
+        .unwrap();
+    let worker = view
+        .target
+        .iter()
+        .find(|spec| spec.name.as_str() == "worker")
+        .unwrap();
+    let signer = Signer::from_seed(&[7; 32]);
+    let rule = AutoDeployRule {
+        proposal: None,
+        cluster: ployz_core::SealingPublicKey::from_bytes([3; 32]),
+        rule: RuleId::from_bytes([5; 16]),
+        generation,
+        namespace: view.namespace.clone(),
+        machines: Vec::new(),
+        source: RuleSource::Registry(RegistrySource {
+            host: "ghcr.io".into(),
+            repository: "acme/worker".into(),
+        }),
+        services: vec![RuleService {
+            name: worker.name.clone(),
+            template: template(worker, &view.namespace).unwrap(),
+            policy: None,
+            secrets: None,
+        }],
+        issued_at: Timestamp::from_millis(1_800_000_000_000).unwrap(),
+        ended: false,
+        signer: SignerKey::Device(ployz_core::DeviceKey::from_bytes(
+            *signer.public().as_bytes(),
+        )),
+    };
+    Box::new(Signed::sign(&rule, &signer).unwrap())
+}
+
+// Catches a registry rule that leaves every Deploy of a new digest waiting for a tap, or
+// one that stands for a tag or another repository's image.
+#[test]
+fn a_registry_rule_covers_each_digest_of_its_repository_and_nothing_else() {
+    let (store, who) = shop();
+    let digest = |n: char| format!("sha256:{}", n.to_string().repeat(64));
+    store
+        .write(
+            &who,
+            &ployz_store::CreateService {
+                id: ployz_store::ServiceLineageId::parse("00000000-0000-4000-8000-000000000006")
+                    .unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("worker").unwrap(),
+                image: Some(format!("ghcr.io/acme/worker@{}", digest('a'))),
+                template: None,
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::CreateVolume {
+                restored_from: None,
+                shared_writes: false,
+                storage_locked: false,
+                storage: ployz_core::config::VolumeKind::Docker {},
+                id: ployz_store::VolumeId::parse("00000000-0000-4000-8000-000000000007").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ployz_store::VolumeName::parse("jobs").unwrap(),
+                mounts: vec![ployz_store::Mount {
+                    service: ServiceName::parse("worker").unwrap(),
+                    path: "/jobs".into(),
+                }],
+            },
+        )
+        .unwrap();
+    publish(&store, &who);
+    let worker = |store: &ConfigStore| {
+        unsigned(store, &who)
+            .into_iter()
+            .any(|(service, _)| service == "worker")
+    };
+    assert!(worker(&store), "worker reaches data, so it needs a tap");
+    let rule = signed_registry_rule(&store, &who, 1);
+    save_with_rule(&store, &who, &staged_version(&store, &who), (rule, None)).unwrap();
+    assert!(
+        !worker(&store),
+        "the rule approves the digest it was signed beside"
+    );
+    // A new image pushed to the repository deploys with no tap.
+    set(
+        &store,
+        &who,
+        "worker.image",
+        json!(format!("ghcr.io/acme/worker@{}", digest('b'))),
+    );
+    publish(&store, &who);
+    assert!(!worker(&store), "a new digest of the repository deploys");
+    for image in [
+        "ghcr.io/acme/worker:1".to_owned(),
+        format!("ghcr.io/acme/worker-x@{}", digest('b')),
+        format!("docker.io/acme/worker@{}", digest('b')),
+    ] {
+        set(&store, &who, "worker.image", json!(image));
+        publish(&store, &who);
+        assert!(worker(&store), "{image} needs a tap");
+    }
 }

@@ -67,6 +67,38 @@ With more than one project, or to deploy to an environment other than the defaul
 `--project` and `--env` to both commands. See
 [CLI and coding agents](../cli/overview.md#make-an-organization-token) to make the token.
 
+### Deploy each new image without a prompt
+
+When your servers need an [approved device](../servers/manage-servers.md#what-needs-an-approved-device),
+a deploy whose service reaches a volume or a secret asks for approval each time. To approve every
+image pushed to one repository once, open the environment's **Settings**, find **Automatic deploys**
+and turn on **Deploy every image pushed to ghcr.io/acme/web**. Your passkey signs that repository and
+the service's settings. Only this switch approves it: `ployz deploy` never signs it, and
+`ployz github rule end` doesn't turn it off.
+
+After that, a deploy that names a new digest from that repository runs with no prompt, CI included:
+
+```sh
+ployz set 'web.image=ghcr.io/acme/web@sha256:…'
+ployz deploy web
+```
+
+Each server pulls that digest from the registry itself, with the service's
+[saved login](#use-a-private-image), and runs only what it pulled. A copy already on the server
+never stands in. A server refuses an image from another repository, one named by tag, and one the
+registry serves different content for. A tag still asks for approval.
+
+A service's pre-deploy command runs once for each image under one approval. If a deploy fails after
+that command ran, deploying the same image again is refused: push a new image, deploy it from an
+approved device, or click **Approve again** so it runs once more.
+
+A server needs to reach the registry whenever it creates a container under the rule, including when
+it takes over containers from a server that left. Changing a setting the rule covers holds new images
+until you click **Approve again**. Turning on **Deploy every push** for a branch turns this off, and
+the reverse: an environment keeps one rule. The switch only appears for an image on a public
+registry: `localhost`, an IP address or a Ployz host can't be approved. Servers older than this
+release refuse a deploy under the rule and say to upgrade them.
+
 ## Tags on your servers
 
 Only you write a tag like `nginx:1.27` on a server, from the CLI connected to that server itself:

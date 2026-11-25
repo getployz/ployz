@@ -142,6 +142,77 @@ pub(crate) async fn pull_public(docker: &Docker, image: &str) -> Result<String, 
         .ok_or(UnsignedImage::NoDigest)
 }
 
+/// Why this Machine does not run an image under a registry rule.
+#[derive(Debug, thiserror::Error)]
+pub enum RegistryPull {
+    #[error(transparent)]
+    Registry(UnsignedImage),
+    #[error("the Service's registry login doesn't open for this image")]
+    Login(#[source] Box<crate::docker::Error>),
+    #[error("this Server couldn't ask the registry for the image")]
+    Inspect(#[source] Error),
+    #[error("the registry serves {answered} under that name, not the digest the deploy names")]
+    OtherDigest { answered: String },
+    #[error("this Server couldn't pull the image from its registry")]
+    Pull(#[source] Error),
+    #[error("the image this Server holds under that name isn't the one it pulled")]
+    Moved,
+}
+
+/// Pull `reference`, `repository@digest`, from its registry with `auth`, and answer the
+/// ID of the image that pull placed. The registry must answer `digest` for the reference
+/// first: whatever this Machine holds under the name, the image a Cloud push placed
+/// included, runs only when the registry serves the same content. The pull always asks
+/// the registry, and the image it placed must carry the digest it asked for.
+pub(crate) async fn pull_pinned(
+    docker: &Docker,
+    reference: &str,
+    digest: &ployz_core::ImageDigest,
+    auth: Option<&RegistryAuth>,
+) -> Result<ployz_core::ImageDigest, RegistryPull> {
+    // A hint only: an address this Machine reaches may be public too.
+    require_public_registry(reference)
+        .await
+        .map_err(RegistryPull::Registry)?;
+    let credentials = || {
+        auth.map(|auth| DockerCredentials {
+            username: auth.username.clone(),
+            password: Some(auth.password.clone()),
+            ..Default::default()
+        })
+    };
+    let answered = docker
+        .inspect_registry_image(reference, credentials())
+        .await
+        .map_err(RegistryPull::Inspect)?
+        .descriptor
+        .digest
+        .unwrap_or_default();
+    if answered != digest.as_str() {
+        return Err(RegistryPull::OtherDigest { answered });
+    }
+    pull_image(docker, reference, auth)
+        .await
+        .map_err(RegistryPull::Pull)?;
+    let placed = docker
+        .inspect_image(reference)
+        .await
+        .map_err(RegistryPull::Pull)?;
+    let carries = placed.id.as_deref() == Some(digest.as_str())
+        || placed
+            .repo_digests
+            .iter()
+            .flatten()
+            .any(|named| ployz_core::same_image_name(named, reference));
+    if !carries {
+        return Err(RegistryPull::Moved);
+    }
+    placed
+        .id
+        .and_then(|id| ployz_core::ImageDigest::parse(id).ok())
+        .ok_or(RegistryPull::Moved)
+}
+
 /// Why this Machine does not pull an image with a sealed registry login.
 #[derive(Debug, thiserror::Error)]
 pub enum LoginRefused {

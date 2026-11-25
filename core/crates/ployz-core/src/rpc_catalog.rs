@@ -171,6 +171,8 @@ macro_rules! rpc_catalog {
                 SIGNED_VERSION_PROPOSAL_CAPABILITY: ("ployz.container.signed-version.proposal.v1", Always),
                 /// `EnsureContainer` takes an automatic deploy rule with its image token and creates an Operator's Container under it only for the head's image built under the rule.
                 DEPLOY_RULE_CAPABILITY: ("ployz.container.deploy-rule.v1", Always),
+                /// `EnsureContainer` takes a registry automatic deploy rule, and creates an Operator's Container under it only from the image this Machine pulled itself from the rule's repository, by the digest the spec names.
+                DEPLOY_REGISTRY_RULE_CAPABILITY: ("ployz.container.deploy-registry-rule.v1", Always),
                 /// An automatic deploy rule may be answered by a trusted passkey's own prompt, which rides in its envelope, in place of a Device's signature.
                 RULE_PASSKEY_CAPABILITY: ("ployz.rule.passkey.v1", Always),
                 /// The daemon trusts CI and agent keys a person granted, each only for the Service versions its scope names, and admits a join approval carrying them.

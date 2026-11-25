@@ -1599,7 +1599,13 @@ impl LocalMachine {
     ) -> Result<EnsuredContainer, Error> {
         let locator = want_locator(&want);
         let fence = start_fence(&want);
-        let pin = pinned(&want);
+        // A registry rule's pull, admitted already, governs over the caller's pin, which
+        // admission refused when it named other content.
+        let pin = admitted
+            .as_ref()
+            .and_then(AdmittedSpec::pin)
+            .cloned()
+            .or_else(|| pinned(&want));
         let replan = (!self.in_switch.held()).then(|| want.clone());
         let mut now = self.container_now(&locator).await?;
         let admission = admitted
@@ -1837,7 +1843,7 @@ impl LocalMachine {
         let outcome = self
             .finish_mutation(move |local| async move {
                 let _switch = switch;
-                let pin = new.image_id.clone();
+                let pin = admitted.pin().cloned().or_else(|| new.image_id.clone());
                 let login = match (&pin, new.image_prepared, &new.registry_login) {
                     (None, false, Some(login)) => {
                         let image = &new.resolved_spec.container.image;

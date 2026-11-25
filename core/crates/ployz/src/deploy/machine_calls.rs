@@ -760,7 +760,7 @@ impl Client {
     async fn ensure_approved<R>(
         &self,
         machine_id: &MachineId,
-        want: ContainerWant,
+        mut want: ContainerWant,
         approvals: Option<&Approvals>,
         timeout: Option<Duration>,
     ) -> Result<EnsuredContainer, RpcError>
@@ -773,8 +773,15 @@ impl Client {
         let created = if let ContainerWant::Running {
             container: RunTarget::New(new),
             ..
-        } = &want
+        } = &mut want
         {
+            // A registry rule's Server pulls the image itself, so it needs the login
+            // the Deploy's own pull used.
+            if let Some(login) =
+                approvals.and_then(|approvals| approvals.registry_login(&new.slot.service))
+            {
+                new.registry_login = Some(login.clone());
+            }
             Some(new.slot.service.clone())
         } else {
             None

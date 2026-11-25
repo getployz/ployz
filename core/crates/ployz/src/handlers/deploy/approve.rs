@@ -394,10 +394,13 @@ impl Ruled {
     /// the Service still builds from its repository and branch. A `drafted` rule is drafted
     /// from this review; the kept one must also still approve the Service's settings.
     fn approves(&self, rule: &AutoDeployRule, drafted: bool, name: &ServiceName) -> bool {
+        let Some(github) = rule.source.github() else {
+            return false;
+        };
         let tracks = self.sources.iter().any(|source| {
             source.service == *name
-                && source.repository_id == rule.source.repository_id
-                && source.branch.as_deref() == Some(rule.source.branch.as_str())
+                && source.repository_id == github.repository_id
+                && source.branch.as_deref() == Some(github.branch.as_str())
         });
         !rule.ended
             && rule.service(name).is_some()
@@ -462,14 +465,21 @@ fn source(
     {
         return ruled(None);
     }
-    if source_need(&basis) == SourceNeed::None {
+    // A registry rule is approved in the dashboard alone; this Deploy signs versions.
+    if source_need(&basis) == SourceNeed::None
+        || kept
+            .as_ref()
+            .is_some_and(|kept| kept.source.registry().is_some())
+    {
         return ruled(None);
     }
     let terms = RuleTerms {
         cluster: enforcing.cluster,
         machines: enforcing.machines.clone(),
         owner_id: 0,
-        builder: (kept.as_ref()).map_or_else(Builder::pinned, |kept| kept.source.builder.clone()),
+        builder: (kept.as_ref())
+            .and_then(|kept| kept.source.github())
+            .map_or_else(Builder::pinned, |kept| kept.builder.clone()),
         platform: renewed_platform(kept.as_ref()),
         // The births the versions mint come from the same seed, so a Volume both mount is
         // born once.
@@ -485,12 +495,15 @@ fn source(
             return ruled(None);
         }
     };
+    let ployz_core::authority::RuleSource::Github(github) = &mut rule.source else {
+        return ruled(None);
+    };
     match super::super::github_rule::owner(
         matches,
-        (&rule.source.repository, rule.source.repository_id),
+        (&github.repository, github.repository_id),
         "deploy again",
     ) {
-        Ok(owner) => rule.source.owner_id = owner,
+        Ok(owner) => github.owner_id = owner,
         Err(error) => {
             without(&error);
             return ruled(None);
@@ -586,8 +599,13 @@ fn consent(
             let name = service.name.as_str();
             (service.confirm.iter()).map(move |line| format!("{name}: {line}"))
         }));
-        if !rule.pinned {
-            marked.push(format!("builder {}, not Ployz's own release", rule.builder));
+        if let ployz_core::authority::SourceSummary::Github {
+            pinned: false,
+            builder,
+            ..
+        } = &rule.source
+        {
+            marked.push(format!("builder {builder}, not Ployz's own release"));
         }
     }
     let refusal = Error::detailed(
@@ -608,8 +626,13 @@ fn consent(
         json!({ "services": services }),
     )
     .hint(silent.map(Hint::from));
-    let pushes = rule.map_or_else(String::new, |rule| {
-        format!(", and deploy every push to {}", rule.branch)
+    let pushes = rule.map_or_else(String::new, |rule| match &rule.source {
+        ployz_core::authority::SourceSummary::Github { branch, .. } => {
+            format!(", and deploy every push to {branch}")
+        }
+        ployz_core::authority::SourceSummary::Registry { repository } => {
+            format!(", and deploy every image pushed to {repository}")
+        }
     });
     confirm(
         &format!(

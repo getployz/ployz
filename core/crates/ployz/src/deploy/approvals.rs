@@ -7,7 +7,7 @@ use std::{
 
 use ployz_core::{
     ContainerLocator, ContainerWant, Namespace, NewContainer, ResolvedServiceSpec, RunTarget,
-    ServiceName,
+    SealedLogin, ServiceName,
     authority::{
         BuiltImageDigest, PayloadDigest, RuleEvidence, RuleProof, ServiceVersion, Signed,
         VerifiedBuild, version::MAX_PRESENTED,
@@ -144,11 +144,19 @@ pub(crate) fn kept_query(
 pub(crate) struct RuleProofs {
     rules: BTreeMap<ServiceName, RuleProof>,
     issued: Arc<Mutex<BTreeMap<ServiceName, VerifiedBuild>>>,
+    /// The sealed login each Service under a registry rule pulls with, since its Server
+    /// pulls the image itself when it creates the Service's Container.
+    logins: BTreeMap<ServiceName, SealedLogin>,
 }
 
 impl RuleProofs {
     pub(crate) fn insert(&mut self, service: ServiceName, proof: RuleProof) {
         self.rules.insert(service, proof);
+    }
+
+    /// Hand `service`'s Server `login` for the pull its registry rule's creation makes.
+    pub(crate) fn login(&mut self, service: ServiceName, login: SealedLogin) {
+        self.logins.insert(service, login);
     }
 
     pub(crate) fn contains(&self, service: &ServiceName) -> bool {
@@ -158,6 +166,15 @@ impl RuleProofs {
     /// Each Service a rule's proof covers.
     pub(crate) fn services(&self) -> impl Iterator<Item = &ServiceName> {
         self.rules.keys()
+    }
+
+    /// Each Service a registry rule's proof covers, which only a Server that checks one
+    /// admits.
+    pub(crate) fn registry_services(&self) -> impl Iterator<Item = &ServiceName> {
+        self.rules
+            .iter()
+            .filter(|(_, proof)| proof.evidence == RuleEvidence::Registry)
+            .map(|(service, _)| service)
     }
 
     /// The verified build a Server issued for each Service, with the claim it covers.
@@ -174,7 +191,7 @@ impl RuleProofs {
                 Some((
                     service.clone(),
                     ployz_store::VerifiedClaim {
-                        claim: proof.claim.clone(),
+                        claim: proof.claim.clone()?,
                         verified: *verified,
                     },
                 ))
@@ -260,6 +277,17 @@ impl Approvals {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .insert(service.clone(), verified);
         }
+    }
+
+    /// The login a new Container of `service` pulls with when a registry rule's proof
+    /// covers it.
+    pub(super) fn registry_login(&self, service: &ServiceName) -> Option<&SealedLogin> {
+        let proofs = &self.proofs;
+        proofs
+            .rules
+            .get(service)
+            .filter(|proof| proof.evidence == RuleEvidence::Registry)
+            .and_then(|_| proofs.logins.get(service))
     }
 
     /// What a change of `want` carries. A new creation carries its spec's versions; a

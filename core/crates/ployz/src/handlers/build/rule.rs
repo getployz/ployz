@@ -66,7 +66,7 @@ pub(super) fn open(
         generation: rule.generation,
         policy: rule
             .service(service)
-            .map(|approved| approved.policy.clone()),
+            .and_then(|approved| approved.policy.clone()),
     })
 }
 

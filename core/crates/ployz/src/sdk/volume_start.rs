@@ -107,7 +107,10 @@ fn admitting(
     let lists = |proof: &RuleProof| {
         proof.rule.open().is_ok_and(|rule| {
             !rule.ended
-                && rule.generation == proof.claim.generation
+                && proof
+                    .claim
+                    .as_ref()
+                    .is_none_or(|claim| rule.generation == claim.generation)
                 && rule.machines.contains(machine)
         })
     };
@@ -229,8 +232,8 @@ mod tests {
         use ployz_core::authority::rule::{Builder, RuleEvent, Runner};
         use ployz_core::authority::{
             AttestKey, AutoDeployRule, BuildClaim, BuildStage, BuiltImageDigest, CommitAuthority,
-            CommitSha, PolicyDigest, RuleEvidence, RuleId, RuleSource, Signer, SignerKey,
-            Timestamp,
+            CommitSha, GithubSource, PolicyDigest, RuleEvidence, RuleId, RuleSource, Signer,
+            SignerKey, Timestamp,
         };
         let cluster = ployz_core::SealingPublicKey::from_bytes([3; 32]);
         let signer = Signer::from_seed(&[1; 32]);
@@ -241,7 +244,7 @@ mod tests {
             generation: 1,
             namespace: namespace(),
             machines: Vec::new(),
-            source: RuleSource {
+            source: RuleSource::Github(GithubSource {
                 repository_id: 11,
                 owner_id: 1,
                 repository: "acme/web".into(),
@@ -250,7 +253,7 @@ mod tests {
                 events: vec![RuleEvent::Push],
                 builder: Builder::pinned(),
                 runner: Runner::GithubHosted,
-            },
+            }),
             services: Vec::new(),
             issued_at: Timestamp::from_millis(1_800_000_000_000).unwrap(),
             ended: false,
@@ -259,7 +262,7 @@ mod tests {
         RuleProof {
             rule: Signed::sign(&rule, &signer).unwrap(),
             evidence: RuleEvidence::Online(ployz_core::GithubToken::new("image-token".to_owned())),
-            claim: BuildClaim {
+            claim: Some(BuildClaim {
                 cluster,
                 rule: rule.rule,
                 generation: 1,
@@ -271,7 +274,7 @@ mod tests {
                     image: BuiltImageDigest::parse(&format!("sha256:{}", "d".repeat(64))).unwrap(),
                     attest: AttestKey::from_bytes([0x55; 32]),
                 },
-            },
+            }),
             reader: None,
         }
     }

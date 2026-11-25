@@ -190,10 +190,58 @@ impl Builder {
     }
 }
 
-/// The repository, branch and workflow a rule builds from.
+/// What a rule deploys: every push to one GitHub branch, built by the pinned builder, or
+/// every image pushed to one registry repository. Untagged, so a GitHub rule kept before a
+/// registry one could exist keeps its bytes.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(untagged)]
+pub enum RuleSource {
+    Github(GithubSource),
+    Registry(RegistrySource),
+}
+
+impl RuleSource {
+    #[must_use]
+    pub fn github(&self) -> Option<&GithubSource> {
+        match self {
+            Self::Github(github) => Some(github),
+            Self::Registry(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn registry(&self) -> Option<&RegistrySource> {
+        match self {
+            Self::Registry(registry) => Some(registry),
+            Self::Github(_) => None,
+        }
+    }
+}
+
+/// The registry repository a rule deploys every image of, as
+/// [`registry_image`](crate::registry_image) names it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
-pub struct RuleSource {
+pub struct RegistrySource {
+    /// Lowercase, with its port when it names one; `docker.io` for Docker Hub.
+    pub host: String,
+    /// The path on `host`, such as `acme/web`, with `library/` for a Docker Hub official
+    /// image.
+    pub repository: String,
+}
+
+impl RegistrySource {
+    /// `host/repository`, as a person reads it.
+    #[must_use]
+    pub fn name(&self) -> String {
+        format!("{}/{}", self.host, self.repository)
+    }
+}
+
+/// The repository, branch and workflow a GitHub rule builds from.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct GithubSource {
     /// GitHub's repository ID, which a rename or transfer keeps.
     pub repository_id: u64,
     /// GitHub's ID of the repository's owner.
@@ -319,9 +367,13 @@ pub struct RuleService {
     /// every setting but the image, which the image token fills.
     pub template: PayloadDigest,
     /// The policy itself, not its digest, so the builder reads what it must build with
-    /// from the rule it was relayed.
-    pub policy: BuildPolicy,
-    /// The build's Sealed record, or `None` for a build with no secrets.
+    /// from the rule it was relayed. Every Service of a GitHub rule has one, and none of a
+    /// registry rule, which builds nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub policy: Option<BuildPolicy>,
+    /// The build's Sealed record, or `None` for a build with no secrets. A registry rule's
+    /// Services have none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub secrets: Option<SealedDigest>,
@@ -397,12 +449,50 @@ impl AutoDeployRule {
     /// # Errors
     /// Returns [`AuthorityRefusal::Mismatch`] naming the first claim that does not match.
     pub fn verify_claims(&self, claims: &GithubClaims) -> Result<(), AuthorityRefusal> {
-        self.source
-            .verify_claims(claims, &format!("refs/heads/{}", self.source.branch))
+        let github = self.github()?;
+        github.verify_claims(claims, &format!("refs/heads/{}", github.branch))
+    }
+
+    /// The GitHub branch this rule builds.
+    ///
+    /// # Errors
+    /// Returns [`AuthorityRefusal::Mismatch`] naming the source for a registry rule, which
+    /// builds nothing.
+    pub fn github(&self) -> Result<&GithubSource, AuthorityRefusal> {
+        self.source.github().ok_or(AuthorityRefusal::Mismatch {
+            field: MismatchField::RuleSource,
+        })
+    }
+
+    /// Refuse a rule whose Services don't fit its source: a GitHub rule builds each with a
+    /// policy, and a registry rule builds none, so its Services carry neither a policy nor
+    /// build secrets, and its repository must be one [`registry_image`](crate::registry_image)
+    /// names.
+    ///
+    /// # Errors
+    /// Returns [`AuthorityRefusal::Mismatch`] naming the policy, or the repository.
+    pub fn well_formed(&self) -> Result<(), AuthorityRefusal> {
+        let fits = match &self.source {
+            RuleSource::Github(_) => self.services.iter().all(|service| service.policy.is_some()),
+            RuleSource::Registry(registry) => {
+                let named = crate::registry_image(&registry.name());
+                if !named.is_ok_and(|named| {
+                    named.host == registry.host && named.repository == registry.repository
+                }) {
+                    return Err(AuthorityRefusal::Mismatch {
+                        field: MismatchField::Repository,
+                    });
+                }
+                self.services
+                    .iter()
+                    .all(|service| service.policy.is_none() && service.secrets.is_none())
+            }
+        };
+        first_mismatch([(MismatchField::Policy, fits)])
     }
 }
 
-impl RuleSource {
+impl GithubSource {
     /// Check `claims` came from this repository's workflow at `git_ref`, run by the pinned
     /// builder on a GitHub-hosted runner for an event this source builds on.
     ///
@@ -459,11 +549,16 @@ impl AutoDeployRule {
     /// What a Machine's record keeps of this rule.
     #[must_use]
     pub fn identity(&self) -> RuleIdentity<'_> {
+        let (repository_id, branch, registry) = match &self.source {
+            RuleSource::Github(github) => (github.repository_id, github.branch.as_str(), None),
+            RuleSource::Registry(registry) => (0, "", Some(registry.name())),
+        };
         RuleIdentity {
             rule: self.rule,
             generation: self.generation,
-            repository_id: self.source.repository_id,
-            branch: &self.source.branch,
+            repository_id,
+            branch,
+            registry,
             namespace: &self.namespace,
         }
     }
@@ -471,12 +566,16 @@ impl AutoDeployRule {
 
 /// What a Machine records of a rule the first time it sees it, which no later generation
 /// may change, and the generation in hand.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct RuleIdentity<'a> {
     pub rule: RuleId,
     pub generation: u64,
+    /// GitHub's repository ID, or 0 for a registry rule.
     pub repository_id: u64,
+    /// The GitHub branch, or empty for a registry rule.
     pub branch: &'a str,
+    /// A registry rule's `host/repository`, so no generation moves a rule between sources.
+    pub registry: Option<String>,
     pub namespace: &'a Namespace,
 }
 
@@ -494,6 +593,7 @@ pub fn verify_signature(
 ) -> Result<(AutoDeployRule, Approver), AuthorityRefusal> {
     let (body, by, cluster) = open_approval(rule, trusted, cluster)?;
     first_mismatch([(MismatchField::Cluster, body.cluster == cluster)])?;
+    body.well_formed()?;
     Ok((body, by))
 }
 
@@ -577,7 +677,11 @@ pub fn template(
 pub struct RuleProof {
     pub rule: Signed<AutoDeployRule>,
     pub evidence: RuleEvidence,
-    pub claim: BuildClaim,
+    /// The build GitHub evidence names. `None` exactly for [`RuleEvidence::Registry`],
+    /// whose proof is the signed rule alone: the Machine pulls the image itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub claim: Option<BuildClaim>,
     /// A token that may read the repository's branch head, such as an installation
     /// token narrowed to `contents: read`. `None` reads a public repository.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -596,6 +700,34 @@ pub enum RuleEvidence {
     /// passed. It stands for any commit, the head or not, while the rule's signer is
     /// trusted and its generation is the newest a Machine has seen.
     Verified(VerifiedBuild),
+    /// A registry rule's: the Machine asks the registry itself for the digest the
+    /// Container names, with the Service's sealed login, and runs what that pull placed.
+    Registry,
+}
+
+impl RuleProof {
+    /// The build claim GitHub evidence names, refusing a proof whose claim doesn't fit
+    /// its evidence.
+    ///
+    /// # Errors
+    /// Returns [`AuthorityRefusal::Malformed`] for GitHub evidence with no claim, or
+    /// registry evidence with one.
+    pub fn build_claim(&self) -> Result<Option<&BuildClaim>, AuthorityRefusal> {
+        match (&self.evidence, &self.claim) {
+            (RuleEvidence::Online(_) | RuleEvidence::Verified(_), Some(claim)) => Ok(Some(claim)),
+            (RuleEvidence::Registry, None) => Ok(None),
+            (RuleEvidence::Online(_) | RuleEvidence::Verified(_), None) => {
+                Err(AuthorityRefusal::Malformed {
+                    purpose: Purpose::Rule,
+                    problem: "its GitHub evidence names no build".to_owned(),
+                })
+            }
+            (RuleEvidence::Registry, Some(_)) => Err(AuthorityRefusal::Malformed {
+                purpose: Purpose::Rule,
+                problem: "its registry evidence names a build".to_owned(),
+            }),
+        }
+    }
 }
 
 hex_newtype!(
@@ -668,29 +800,19 @@ impl AutoDeployRule {
         if creation.service != facts.service || &creation.spec.name != facts.service {
             return Err(mismatch(MismatchField::Service));
         }
-        if self.source.builder.retired() {
+        let github = self.github()?;
+        if github.builder.retired() {
             return Err(AuthorityRefusal::RetiredBuilder {
-                sha: self.source.builder.sha.to_string(),
+                sha: github.builder.sha.to_string(),
             });
         }
-        let requested = creation.spec.to_requested();
         let policy = self
             .service(facts.service)
-            .map(|service| PolicyDigest::of(&service.policy));
+            .and_then(|service| service.policy.as_ref())
+            .map(PolicyDigest::of);
+        self.admits_here(facts, &creation)?;
         first_mismatch([
-            (
-                MismatchField::Cluster,
-                self.cluster == facts.cluster && claim.cluster == facts.cluster,
-            ),
-            (
-                MismatchField::Machine,
-                !placement_signed(&requested) || self.machines.contains(facts.machine),
-            ),
-            (
-                MismatchField::Environment,
-                &self.namespace == facts.namespace,
-            ),
-            (MismatchField::EndedRule, !self.ended),
+            (MismatchField::Cluster, claim.cluster == facts.cluster),
             (
                 MismatchField::Service,
                 policy.is_some() && &claim.service == facts.service,
@@ -719,6 +841,80 @@ impl AutoDeployRule {
         if BuiltImageDigest::named_by(&creation.spec.container.image) != Some(image) {
             return Err(mismatch(MismatchField::Image));
         }
+        self.approves_spec(facts, &creation)?;
+        Ok(image)
+    }
+
+    /// Check a new Container under this registry rule: the facts every rule checks, as
+    /// [`Self::verify_creation`] does, and a spec that names an image of the rule's
+    /// repository by digest, as [`registry_image`](crate::registry_image) reads it, with
+    /// every other setting the rule approves. Returns the repository and digest the Machine
+    /// must pull from the registry itself before it runs anything.
+    ///
+    /// # Errors
+    /// Returns [`AuthorityRefusal::Mismatch`] naming the first fact that does not hold.
+    pub fn verify_registry_creation(
+        &self,
+        facts: &RuleFacts<'_>,
+        creation: Creation<'_>,
+    ) -> Result<RegistryPin, AuthorityRefusal> {
+        let mismatch = |field| AuthorityRefusal::Mismatch { field };
+        if creation.service != facts.service || &creation.spec.name != facts.service {
+            return Err(mismatch(MismatchField::Service));
+        }
+        let source = self
+            .source
+            .registry()
+            .ok_or(mismatch(MismatchField::RuleSource))?;
+        self.admits_here(facts, &creation)?;
+        let named = crate::registry_image(&creation.spec.container.image)
+            .map_err(|_| mismatch(MismatchField::Image))?;
+        if named.host != source.host || named.repository != source.repository {
+            return Err(mismatch(MismatchField::Repository));
+        }
+        let digest = named.digest.ok_or(mismatch(MismatchField::Image))?;
+        self.approves_spec(facts, &creation)?;
+        Ok(RegistryPin {
+            source: source.clone(),
+            digest,
+        })
+    }
+
+    /// What every rule checks of a creation before its source: its Cluster, this Machine
+    /// for a spec whose placement is signed, its Environment, a live generation and a
+    /// Service the rule names.
+    fn admits_here(
+        &self,
+        facts: &RuleFacts<'_>,
+        creation: &Creation<'_>,
+    ) -> Result<(), AuthorityRefusal> {
+        let requested = creation.spec.to_requested();
+        first_mismatch([
+            (MismatchField::Cluster, self.cluster == facts.cluster),
+            (
+                MismatchField::Machine,
+                !placement_signed(&requested) || self.machines.contains(facts.machine),
+            ),
+            (
+                MismatchField::Environment,
+                &self.namespace == facts.namespace,
+            ),
+            (MismatchField::EndedRule, !self.ended),
+            (
+                MismatchField::Service,
+                self.service(facts.service).is_some(),
+            ),
+        ])
+    }
+
+    /// What every rule checks of a creation after its image: a hook its spec declares,
+    /// Volumes born in its Environment, and the template the rule approves.
+    fn approves_spec(
+        &self,
+        facts: &RuleFacts<'_>,
+        creation: &Creation<'_>,
+    ) -> Result<(), AuthorityRefusal> {
+        let mismatch = |field| AuthorityRefusal::Mismatch { field };
         if creation.kind == ContainerKind::PreDeployHook && creation.spec.pre_deploy.is_none() {
             return Err(mismatch(MismatchField::Hook));
         }
@@ -729,12 +925,28 @@ impl AutoDeployRule {
             .service(facts.service)
             .map(|service| service.template)
             .ok_or_else(|| mismatch(MismatchField::Service))?;
-        let template =
-            template(&requested, facts.namespace).map_err(|_| mismatch(MismatchField::Payload))?;
+        let template = template(&creation.spec.to_requested(), facts.namespace)
+            .map_err(|_| mismatch(MismatchField::Payload))?;
         if template != approved {
             return Err(mismatch(MismatchField::Payload));
         }
-        Ok(image)
+        Ok(())
+    }
+}
+
+/// The image a registry rule's creation runs, as its spec names it: the approved
+/// repository, and the digest this Machine must pull from that registry itself.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RegistryPin {
+    pub source: RegistrySource,
+    pub digest: crate::ImageDigest,
+}
+
+impl RegistryPin {
+    /// `host/repository@sha256:…`, the reference the Machine pulls.
+    #[must_use]
+    pub fn reference(&self) -> String {
+        format!("{}@{}", self.source.name(), self.digest)
     }
 }
 
