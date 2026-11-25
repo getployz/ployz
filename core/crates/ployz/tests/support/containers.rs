@@ -35,6 +35,7 @@ pub async fn run(
                 image_prepared: false,
                 answer: ployz_core::AnswerWhen::Started,
                 image_id: None,
+                replaces: None,
             }),
             rotation: RunRotation::Pending,
         },
@@ -90,7 +91,7 @@ pub async fn remove(
         ContainerWant::Gone {
             container: ContainerLocator::Id(container_id),
             drain: Drain::NONE,
-            anonymous_volumes: ployz_core::AnonymousVolumes::Remove,
+            anonymous_volumes: ployz_core::AnonymousVolumes::keep(),
         },
     )
     .await

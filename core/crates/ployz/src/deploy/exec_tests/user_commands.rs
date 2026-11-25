@@ -277,7 +277,7 @@ fn gone() -> ContainerWant {
     ContainerWant::Gone {
         container: id(),
         drain: Drain::DEFAULT,
-        anonymous_volumes: AnonymousVolumes::Remove,
+        anonymous_volumes: AnonymousVolumes::keep(),
     }
 }
 

@@ -72,6 +72,9 @@ pub(crate) struct FakeDocker {
     pub(crate) refuse_create_of: Arc<Mutex<BTreeSet<String>>>,
     /// Named mode: Docker refuses to remove a Container of these Service names.
     pub(crate) refuse_remove_of: Arc<Mutex<BTreeSet<String>>>,
+    /// Named mode: each removal's Container ID, and whether it took the Container's
+    /// anonymous volumes.
+    pub(crate) removals: Arc<Mutex<Vec<(String, bool)>>>,
     pub(crate) stopped_once: Arc<Mutex<BTreeSet<String>>>,
     /// Named mode: each start of a stopped Container stamps a new `StartedAt`, and a
     /// stop keeps it and stamps `FinishedAt`, as Docker does.
@@ -368,6 +371,17 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
                     )
                         .into_response();
                 }
+                let volumes = uri
+                    .query()
+                    .is_some_and(|query| query.split('&').any(|part| part == "v=true"));
+                fake.removals.lock().unwrap().push((
+                    container
+                        .get("Id")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                    volumes,
+                ));
                 containers.remove(&name);
                 return StatusCode::NO_CONTENT.into_response();
             }
@@ -970,6 +984,7 @@ pub(super) fn container_request<'spec, Storage>(
     ContainerRequest {
         deployment_id: None,
         r#gen: ployz_core::Gen::FIRST,
+        replaces: None,
         image: crate::docker_image::ImagePull::Policy(None),
         creation_key: "test-key",
         kind,

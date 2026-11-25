@@ -175,6 +175,8 @@ macro_rules! rpc_catalog {
                 PARENT_VERSIONS_CAPABILITY: ("ployz.authority.parent-versions.v1", Always),
                 /// A Key step's trust may name the grant it replaces and the key's name, and applies only over that grant. `SetDevice` takes `remove_grant`, which removes only a CI or agent key, and only over the grants a rotation read.
                 KEY_PRIOR_CAPABILITY: ("ployz.authority.key-prior.v1", Always),
+                /// A new Container may name the copy it replaces ([`NewContainer::replaces`](crate::NewContainer::replaces)), which the Machine records and reports on that copy (`replaced_by`). A `Gone` takes a Container's anonymous Volumes only when it names the copy the Machine recorded as its replacement ([`AnonymousVolumes::replaced_by`](crate::AnonymousVolumes::replaced_by)) and that copy runs, routed and not stopping. Whatever the caller asked, it keeps them otherwise.
+                CONTAINER_REPLACES_CAPABILITY: ("ployz.container.replaces.v1", Container),
             }
         }
     };

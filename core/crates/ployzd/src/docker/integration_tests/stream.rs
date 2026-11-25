@@ -558,7 +558,11 @@ async fn l3_015_through_l3_024_exec_and_l3_069_logs_cross_the_real_docker_endpoi
 
     runtime
         .lifecycle()
-        .remove(&created.container_id, true, true)
+        .remove(
+            &created.container_id,
+            crate::docker::VolumeDisposal::Keep,
+            true,
+        )
         .await
         .unwrap();
     server.abort();

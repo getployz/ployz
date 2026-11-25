@@ -258,6 +258,7 @@ async fn a_machine_silent_while_a_global_start_checks_its_slot_is_named() {
                 image_prepared: true,
                 answer: AnswerWhen::Started,
                 image_id: None,
+                replaces: None,
             }),
             rotation: RunRotation::Pending,
         },
@@ -482,6 +483,7 @@ async fn live_and_second(
                             run: None,
                             log_driver: None,
                             admission: None,
+                            replaced_by: None,
                         })
                         .unwrap();
                     RpcResponse::from(ployz_core::EnsuredContainer::Ensured {

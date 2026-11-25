@@ -11,8 +11,8 @@ use std::time::Duration;
 
 use ployz_agent_tools::{LogText, SealedValues, Withheld};
 use ployz_core::{
-    ContainerId, ContainerRuntimeObservation, DeployOperation, DeployOutcome, DeployWarning,
-    ExecutionError, FailedOperation, HealthFailure, LastRun, MachineId, MachineName,
+    AnonymousVolumes, ContainerId, ContainerRuntimeObservation, DeployOperation, DeployOutcome,
+    DeployWarning, ExecutionError, FailedOperation, HealthFailure, LastRun, MachineId, MachineName,
     MachineObservation, Operator, QualifiedService, RemoveContainerPurpose, RpcError, RpcErrorCode,
     RunnerOptions, ServiceName,
 };
@@ -493,7 +493,8 @@ async fn retire_copy<C: CopyLifecycle>(
         client,
         &Copy::observed(&observed),
         copy.purpose.into(),
-        copy.purpose.into(),
+        // The cleanup comes after the Deploy, which keeps no copy any longer.
+        AnonymousVolumes::keep(),
         &CancellationToken::new(),
     )
     .await;

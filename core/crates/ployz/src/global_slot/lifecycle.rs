@@ -120,7 +120,7 @@ async fn retire_copies<C: CopyLifecycle>(
             client,
             &Copy::observed(&observed),
             EmptyPolicy::RequireOtherIn,
-            AnonymousVolumes::Remove,
+            AnonymousVolumes::keep(),
             cancellation,
         )
         .await?
@@ -150,7 +150,7 @@ pub(crate) async fn retire_ingress_proxy<C: CopyLifecycle>(
                 ));
             }
             if let Removal::Refused(refusal) =
-                cleanup::remove(client, &Copy::observed(&observed), AnonymousVolumes::Remove)
+                cleanup::remove(client, &Copy::observed(&observed), AnonymousVolumes::keep())
                     .await?
             {
                 return Err(refusal.into_error());

@@ -106,6 +106,10 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
         "fails closed: an older daemon refuses a Key step carrying `prior` or `name` for its unknown fields, and a `remove_grant` for its unknown kind, so `ployz key` checks for it on every Server first",
     ),
     (
+        "ployz.container.replaces.v1",
+        "gated: a Deploy asks to remove a leftover copy's anonymous Volumes only on a Server advertising it, and asks any other to keep them, since an older daemon removes them as asked. An older daemon ignores `replaces` on EnsureContainer",
+    ),
+    (
         "ployz.metrics.live.v1",
         "refused legibly: `ployz metrics` names a Server whose daemon lacks it as not answering",
     ),
