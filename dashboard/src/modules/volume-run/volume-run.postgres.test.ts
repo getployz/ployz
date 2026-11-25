@@ -2598,7 +2598,7 @@ describe("volume runs", () => {
       });
     });
 
-    it("on a warm row restarts the Service on A and keeps B's copy when B's Ployz can't be read at the Forget", async () => {
+    it("on a warm row restarts the Service on A and keeps B's copy when B's Forget fails through its retries", async () => {
       const G = newSnap("f-1");
       named("fsn-1").copy = slotCopy(G);
       for (const container of containers) container.running = false;
@@ -2606,15 +2606,17 @@ describe("volume runs", () => {
       await owned("warm");
 
       expect(await runEffect(closeVolumeRun("run-1", "failure"))).toBe(1);
-      const looked = await runEffect(observeVolumeMembers(organizationId, dockerVolume));
-      // The release reads the watch once to plan, then again at the Forget.
-      frameFault = (read) => read >= 2 && rpcFault("unavailable", "the Cluster's watch is down");
-      await execute((await releaseRow()).id, "run-2", [{ id: "01-observe", handler: () => looked }]);
+      await execute((await releaseRow()).id, "run-2", [{ id: "04-forget-fsn-2", handler: () => { throw new Error("fsn-2 is missing from the Cluster's report"); } }]);
 
       expect(verbs).toEqual(["floor@fsn-1", "floor@fsn-2", "writer@fsn-1(kept)"]);
       expect(machines[1]?.copy).toEqual(slotCopy(G, null, "2"));
       expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: true }]);
-      expect((await rows()).at(-1)).toMatchObject({ kind: "release", state: "done" });
+      expect((await rows()).at(-1)).toMatchObject({
+        kind: "release",
+        state: "done",
+        // The test engine settles a throwing step without its error, so the reason in the parentheses is the engine's.
+        message: expect.stringMatching(/^kept data-fsn-2, since fsn-2 couldn't be asked to delete it \(.+; ployz volume mirror rm data-fsn-2 deletes it\)$/),
+      });
     });
 
     it("on a warm row waits for a silent Server, noting it on the row, then releases back to A once it answers", async () => {

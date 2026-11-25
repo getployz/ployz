@@ -97,6 +97,10 @@ export const releaseKept = (name: string, server: string, role: SlotRole | undef
     : `kept ${copyName(name, server)}, which may hold writes no other Server has (${rm} deletes it)`;
 };
 
+/** A spare copy a release left because its Server couldn't be asked to delete it. */
+export const releaseUnasked = (name: string, server: string, role: SlotRole | undefined, why: string) =>
+  `kept ${copyName(name, server)}, since ${server} couldn't be asked to delete it (${why}; ployz volume mirror rm ${copyName(name, server)}${ifOldCopy(role)} deletes it)`;
+
 export function roleOf(member: Member): Role {
   if (!member.answered) return "unanswered";
   const copy = member.view.copy;

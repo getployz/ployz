@@ -11,7 +11,7 @@ import { PATIENCE, PATIENCE_WAITS, waitsFor } from "#/modules/volume-run/patienc
 import { type DeploymentsSeen, gb, gbAtLeast, type ResizePhase, type ResizeStep, type SizeDirection, type SizeOutcome, undoOnRefusal } from "#/modules/volume-run/resize";
 import { type RecordAnswer, recordVolumeSize, resizeCopy } from "#/modules/volume-run/volume-size.server";
 import { fenceTaken } from "#/modules/volume-run/volume-run.deploy.server";
-import { alreadyOn, committedWriter, epochOf, expectOf, forgetExpect, type ForwardRelease, holdingNewest, keptMessage, newestGuid, observedEpoch, type Planned, planForwardRelease, planFromCopies, type Refusal, releaseKept, ROLE_NOUN, stillConfirmed, unconfirmedDelete, withdrawnMessage } from "#/modules/volume-run/plan";
+import { alreadyOn, committedWriter, epochOf, expectOf, forgetExpect, type ForwardRelease, holdingNewest, keptMessage, newestGuid, observedEpoch, type Planned, planForwardRelease, planFromCopies, type Refusal, releaseKept, releaseUnasked, ROLE_NOUN, stillConfirmed, unconfirmedDelete, withdrawnMessage } from "#/modules/volume-run/plan";
 import { type AnsweredMember, copyName, type MachineRef, type Member, type ReleasePlan } from "#/modules/volume-run/volume-run";
 import { claimVolumeRun, closeStaleVolumeRuns, closeVolumeRun, endRun, failAndRelease, failRun, laneTarget, noteRun, pinDestination, recordRestarted, refuseRun, releaseChangedMessage, runDeploymentsSeen, type RunContext, takeEpoch } from "#/modules/volume-run/volume-run.rows.server";
 import { cleanOrphans, organizationsWithMachines } from "#/modules/volume-run/volume-run.orphans.server";
@@ -633,7 +633,16 @@ async function releaseVolume(steps: RunSteps, phase: PhaseOf<"release">, epoch: 
     // already keep any older run from making that copy a writer.
     const stays: string[] = [];
     for (const { machine, expect, role } of doomed) {
-      const forgot = await setCopy(steps, `04-forget-${machine.name}`, machine, expect, { kind: "forget" }, `${machine.name} is still busy with ${run.volumeName}`);
+      let forgot: CopyAnswer;
+      try {
+        forgot = await setCopy(steps, `04-forget-${machine.name}`, machine, expect, { kind: "forget" }, `${machine.name} is still busy with ${run.volumeName}`);
+      } catch (error) {
+        // A step's last failure rejects with Inngest's StepError, an Error. The copy is a spare, so it stays and the
+        // release still restarts the Service rather than leaving it stopped until the Server answers.
+        if (error instanceof NonRetriableError || error instanceof Stale || !(error instanceof Error)) throw error;
+        stays.push(releaseUnasked(run.volumeName, machine.name, role, error.message));
+        continue;
+      }
       if (!forgot.ok && forgot.reason !== "written_here" && forgot.reason !== "server_lacks") throw new NonRetriableError(forgot.message);
       if (!forgot.ok) stays.push(releaseKept(run.volumeName, machine.name, role, forgot.reason === "server_lacks"));
     }

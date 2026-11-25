@@ -402,20 +402,18 @@ export const askCopy = Effect.fn("VolumeRun.askCopy")(function* (
   );
   const destroys = destroyedBy(expect, want, adds);
   if (destroys !== null) {
-    // A Server whose capabilities can't be read now is treated as one that lacks them: the copy stays and nothing is
-    // sent, so a Release that only drops a spare copy still goes on to restart the Service.
     const frame = yield* session.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS).pipe(
       clusterRead,
-      Effect.map((read) => read.machines.find((observed) => observed.machine.id === machine.id)),
-      Effect.catch((error) => error instanceof ClusterOutOfTime
-        ? Effect.fail(new ClusterOutOfTime({ inFlight: false }))
-        : Effect.succeed(undefined)),
+      Effect.mapError((error) => error instanceof ClusterOutOfTime
+        ? new ClusterOutOfTime({ inFlight: false })
+        : new SwitchAttemptError(null, `reading what ${machine.name}'s Ployz keeps: ${error.message}`, "unreached")),
     );
-    if (frame === undefined || !keepsWritten({ capabilities: frame.machine.runtime.capabilities ?? [] })) {
-      const message = frame === undefined
-        ? `${machine.name}'s Ployz couldn't be read just now, so ${asker.volumeName}'s copy there was kept. Try again once it answers.`
-        : upgradeBeforeSend(asker.volumeName, machine.name, destroys);
-      return { ok: false, reason: "server_lacks", copy: null, message } satisfies CopyAnswer;
+    const listed = frame.machines.find((observed) => observed.machine.id === machine.id);
+    if (listed === undefined) {
+      return yield* Effect.fail(new SwitchAttemptError(null, `${machine.name} is missing from the Cluster's report, so it wasn't asked`, "unreached"));
+    }
+    if (!keepsWritten({ capabilities: listed.machine.runtime.capabilities ?? [] })) {
+      return { ok: false, reason: "server_lacks", copy: null, message: upgradeBeforeSend(asker.volumeName, machine.name, destroys) } satisfies CopyAnswer;
     }
   }
   const payload = { name: asker.dockerVolume, expect, want, gen: asker.gen };
