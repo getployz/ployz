@@ -5,7 +5,7 @@
  * rule approves, shows the lines it signs, and the passkey answers one bundle of them. Cloud only relays the plan, the
  * tag pins and the answer, and each Server checks every step.
  */
-import type { AutoDeployRule, PlanView, PostedVersion, RuleView, SavedRule, Unsigned, VersionsDraft } from "@ployz/sdk";
+import type { PostedVersion, SavedRule, Unsigned, VersionsDraft } from "@ployz/sdk";
 import { Option, Schema } from "effect";
 import { versionSteps } from "@ployz/sdk/authority";
 import { StoreRefused } from "#/lib/refusal";
@@ -51,43 +51,16 @@ export function namesReview(current: string, given: string) {
   return reviewed === current || reviewed.startsWith(`${current}:`);
 }
 
-/** Whether the kept automatic deploy rule approves `entry`'s Service as it stands, so the Deploy builds it under that rule. */
-export const keptRule = ({ needs, ended }: Unsigned) => needs === "rebuild" && ended !== true;
-
-const uncovered = (service: string) => `No automatic deploy rule covers ${service} as it stands, so your servers won't build it.`;
-
-/** The Services `plan` builds from source: each runs the image its build makes, which no passkey signs. */
-export const builds = (plan: PlanView) =>
-  new Set((plan.target ?? []).filter((spec) => spec.container.image.startsWith("ployz-build/")).map((spec) => spec.name));
-
 /**
- * Why one of `built` won't build under the automatic deploy rule that stands once the Deploy is admitted, as `ployz
- * deploy` checks it, or null when each will. That rule is `drafted`, the body this tap signs, else the one `view` keeps.
- * It builds a Service while it is on, covers it, and the Service still builds from its repository and branch; the kept
- * rule must also still approve its settings. A view Cloud couldn't read refuses: no Server would build what it can't
- * check. `why` says why the tap signs no rule.
+ * Whether `entry`'s Service builds from source under the automatic deploy rule, so no passkey signs a version of it. The
+ * Deploy's tap may sign the rule with it, and each Server checks the build against the rule that stands.
  */
-export function unbuilt(built: ReadonlySet<string>, view: RuleView | null, drafted: string | undefined, why: string | undefined) {
-  const body = drafted ?? view?.rule?.body;
-  // SAFETY: ployz-core drafted or the Store kept this body as an `AutoDeployRule`.
-  const rule = body === undefined ? null : JSON.parse(body) as AutoDeployRule;
-  for (const service of built) {
-    if (view === null) return `Couldn't read the automatic deploy rule, so ${service} can't build under it.`;
-    const tracks = view.sources.some((source) => source.service === service && rule !== null
-      && source.repository_id === rule.source.repository_id && source.branch === rule.source.branch);
-    if (rule !== null && !rule.ended && tracks && rule.services.some(({ name }) => name === service)
-      && (drafted !== undefined || !view.changed.includes(service))) continue;
-    if (rule?.ended === true) return `Automatic deploys are off for ${service}. Turn on Deploy every push to deploy it.`;
-    return `${uncovered(service)} ${why ?? "Turn on Deploy every push, then deploy again."}`;
-  }
-  return null;
-}
+export const underRule = ({ needs, ended }: Unsigned) => (needs === "rule" || needs === "rebuild") && ended !== true;
 
-/** Why a Service no passkey can sign keeps the Deploy from asking, or null when each of `unsigned` can go. */
+/** Why a Service no passkey can sign keeps the Deploy from asking, or null when a passkey can sign each of `unsigned`. */
 export function blocked(unsigned: readonly Unsigned[]) {
   for (const { service, needs, ended } of unsigned) {
     if (ended === true) return `Automatic deploys are off for ${service}. Turn on Deploy every push to deploy it.`;
-    if (needs === "rule") return `${uncovered(service)} Turn on Deploy every push, or run ployz deploy.`;
     if (needs === "digest") return `${service} pulls a private tag. Write its image by digest (image@sha256:…).`;
   }
   return null;
@@ -132,21 +105,17 @@ export async function prepareDeploy(
 ): Promise<Prepared> {
   const planned = await read(command);
   if (planned.kind === "refused") return planned;
-  const { plan, tap: gate, source, rules = null } = planned;
+  const { plan, tap: gate, source } = planned;
   if (command.version !== null && command.version !== undefined && !namesReview(plan.version, command.version)) return { kind: "stale" };
   const bound: AdmitDeploy = { ...command, version: command.version ?? plan.version };
   let held: Held | null = source?.kind === "held" ? { reason: source.reason, unchecked: source.unchecked } : null;
   const admit = (): Prepared => ({ kind: "admit", command: bound, held });
   // A version the Deploy already carries, such as one a CLI's device key signed, covers its Service: only the rest ask.
   const covered = new Set((command.versions ?? []).map(versionService));
-  // A Git Service builds under the automatic deploy rule, which no passkey signs a version for.
-  const built = builds(plan);
-  const unsigned = (plan.unsigned ?? []).filter((entry) => !covered.has(entry.service) && !built.has(entry.service));
+  const unsigned = (plan.unsigned ?? []).filter((entry) => !covered.has(entry.service) && !underRule(entry));
   const rule = source?.kind === "sign" && gate.kind === "ready" && ownerOf !== undefined ? source : null;
-  if (gate.kind === "off" || (unsigned.length === 0 && built.size === 0 && rule === null)) return admit();
+  if (gate.kind === "off" || (unsigned.length === 0 && rule === null)) return admit();
   if (gate.kind === "refused") return gate;
-  // Another review: the Store refuses this Deploy as stale.
-  if (built.size > 0 && rules !== null && rules.version !== plan.version) return { kind: "stale" };
   const refused = blocked(unsigned);
   if (refused !== null) return { kind: "refused", message: refused };
   const names = new Set(unsigned.map((entry) => entry.service));
@@ -168,9 +137,6 @@ export async function prepareDeploy(
   } catch (error) {
     return { kind: "refused", message: error instanceof Error ? error.message : "This browser couldn't draft the deploy." };
   }
-  // Refused before any prompt: no Server would build a Git Service the rule that stands leaves out.
-  const left = unbuilt(built, rules, draft?.source?.body, held?.reason);
-  if (left !== null) return { kind: "refused", message: left };
   if (draft === null) return admit();
   return {
     kind: "ask",

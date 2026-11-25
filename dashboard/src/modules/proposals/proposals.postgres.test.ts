@@ -35,8 +35,7 @@ import { readStore } from "#/modules/config-store/config-store.server";
 import { RunningObserver } from "#/modules/config-store/running-evidence.server";
 import { envPath } from "#/modules/config-store/setting-paths";
 import { type DeployLink, linkDeploy } from "#/modules/deploy-approval/deploy-link.server";
-import { prepareDeploy } from "#/modules/deploy-approval/deploy-tap";
-import { type DeployPlan, prepareDeployTap } from "#/modules/deploy-approval/deploy-tap.server";
+import { prepareDeployTap } from "#/modules/deploy-approval/deploy-tap.server";
 import { createOrganizationToken, revokeCredential } from "#/modules/identity/organization-token.server";
 import { FULL_GRANT } from "#/modules/identity/token-grant";
 import { OrganizationRuntime, type OrganizationRuntimeService } from "#/modules/runtime/organization-runtime.server";
@@ -602,25 +601,6 @@ it.live("a member's dashboard Deploy to a Protected Environment needs no passkey
     expect(yield* plan).toMatchObject({ kind: "plan", tap: { kind: "refused" } });
     yield* protect;
     expect(yield* plan).toMatchObject({ kind: "plan", tap: { kind: "off" } });
-  }));
-
-// Catches a Deploy that builds only from source reading as off on an enforcing Cluster, so a Git Service no rule covers queues.
-it.live("a member's Deploy that only builds from source asks the Servers whether they enforce, and refuses when they can't sign or check it", () =>
-  Effect.gen(function* () {
-    const { cluster, provided, enforce } = yield* deployable();
-    const ada = yield* provided(memberAgent);
-    const command = admitDeploy(production, ASKED);
-    const tap = () => cluster(prepareDeployTap({ userId: ada.userId }, { organizationSlug: "shop", environment: production, services: ["web"], rule: true }));
-    const prepared = (planned: DeployPlan) => Effect.promise(() => prepareDeploy(command, async () => planned, async () => ({ ownerId: 7 })));
-
-    enforce(true);
-    const enforced = yield* tap();
-    expect(enforced).toMatchObject({ kind: "plan", tap: { kind: "refused" } });
-    expect(yield* prepared(enforced)).toMatchObject({ kind: "refused" });
-    enforce(false);
-    const open = yield* tap();
-    expect(open).toMatchObject({ kind: "plan", tap: { kind: "off" } });
-    expect(yield* prepared(open)).toMatchObject({ kind: "admit" });
   }));
 
 it.live("the same Deploy asked twice at once is one proposal, and its Deployment id asked with another body is refused", () =>

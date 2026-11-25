@@ -114,10 +114,10 @@ changes something the rule covers. The rule covers every service that builds fro
 **Auto-deploy** on. If they build from different branches, it keeps the branch the rule already
 covers, and the other services save without it.
 
-**Deploy** does the same: when what it saves isn't what the rule approves, its passkey prompt
-signs the rule with the deploy. From the CLI, `ployz deploy` shows the rule after the services it
-signs, and your yes signs both with this device. A renewed rule keeps the platform it was approved
-for.
+**Deploy** does the same: when no rule approves what it saves, even before you have one, its
+passkey prompt signs the rule with the deploy. From the CLI, `ployz deploy` shows the rule after
+the services it signs, and your yes signs both with this device. A renewed rule keeps the platform
+it was approved for.
 
 A deploy builds each service the rule covers on GitHub Actions only, as a push does, whatever your
 Build Order says. If GitHub skips the build, your servers don't take it, and the deployment says why.
@@ -128,6 +128,13 @@ nothing. A deploy reuses an image only when your servers verified it under the r
 now. After you approve the rule again, the next deploy builds afresh. When the servers a service may
 run on need platforms other than the ones the rule was approved for, GitHub skips the build and the
 deployment says why.
+
+When your servers need an approved device, a service builds from GitHub only when the rule you
+keep, or the one the deploy signs, covers it. When neither does, `ployz deploy` stops before it
+signs:
+`No automatic deploy rule covers web as it stands, so your servers won't build it. Turn on Deploy every push, then deploy again.`
+**Deploy** in the dashboard starts, and the deployment fails at that service's build. Your servers
+refuse it with `This server runs only builds an approved device starts.`
 
 A deploy that waits for an owner or admin in a Protected Environment signs no rule, and approving
 it leaves the rule as it was.
@@ -369,9 +376,9 @@ instead of printing it. Pass `--ref` to read a branch, tag or commit other than 
 
 - **Every deploy ships the newest commit.** Clicking **Deploy** to apply a setting also picks up
   whatever is on the service's Git branch now.
-- **Your servers build from GitHub only under a rule.** A push of a service no rule covers fails
-  at its build, and nothing changes. **Deploy** and `ployz deploy` stop before they sign one and
-  create no deployment. See
+- **Your servers build from GitHub only under a rule.** A push or a dashboard **Deploy** of a
+  service no rule covers fails at its build, and nothing changes. `ployz deploy` stops before it
+  signs and creates no deployment. See
   [Approve a rule for deploys on push](#approve-a-rule-for-deploys-on-push).
 - **Changing a variable rebuilds your app.** See [How builds work](../builds/overview.md#good-to-know).
 - **Only the service's Git branch deploys.** Pull requests can get their own
