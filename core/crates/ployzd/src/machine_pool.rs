@@ -400,6 +400,11 @@ pub fn read(inventory: Inventory) -> Read {
                 .count();
             if devices == 1 && others == 1 {
                 take(imported, DEVICE_BACKED_POOL_NAME, By::Device).unwrap_or_else(unproven)
+            } else if devices == 0
+                && others == 1
+                && scan.iter().any(|name| name == DEVICE_BACKED_POOL_NAME)
+            {
+                Read::Unproven(format!("its Pool {DEVICE_BACKED_POOL_NAME} isn't imported"))
             } else {
                 unproven()
             }
