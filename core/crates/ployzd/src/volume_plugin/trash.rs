@@ -197,6 +197,14 @@ impl VolumeStorage {
         Ok(parent)
     }
 
+    /// Makes the Trash of a Pool created now, while it has room for the parent and its
+    /// slack. A failure only leaves that to the first delete or sweep.
+    pub(super) async fn trash_new_pool(&self, pool: &MachinePool) {
+        if let Err(error) = self.ensure_trash_parent(pool.name(), &[]).await {
+            tracing::warn!(%error, pool = pool.name(), "could not make the new Pool's Trash yet");
+        }
+    }
+
     /// Reserves [`TRASH_SLACK`] on the Trash parent when it holds none. A Pool too full for
     /// it keeps none until a later sweep finds room.
     async fn keep_slack(&self, parent: &str) {

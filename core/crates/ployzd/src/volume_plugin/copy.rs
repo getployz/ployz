@@ -184,7 +184,10 @@ impl VolumeStorage {
             return Ok(pool);
         }
         match self.pool.create(bound).await {
-            Ok(_) => self.one_pool().await.map_err(RpcError::from),
+            Ok(created) => {
+                self.trash_new_pool(created.machine_pool()).await;
+                self.one_pool().await.map_err(RpcError::from)
+            }
             Err(error @ PluginError::Capacity(..)) => Err(no_room(bound, name, &error)),
             Err(error) => Err(RpcError::from(error)),
         }

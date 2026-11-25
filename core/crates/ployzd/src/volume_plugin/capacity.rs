@@ -176,7 +176,8 @@ impl VolumeStorage {
                     .map_err(storage_error)?;
             }
             None => {
-                self.pool.create(commitment).await.map_err(storage_error)?;
+                let created = self.pool.create(commitment).await.map_err(storage_error)?;
+                self.trash_new_pool(created.machine_pool()).await;
             }
         }
         Ok(requested.keys().cloned().collect())
