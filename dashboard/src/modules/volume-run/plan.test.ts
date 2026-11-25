@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { MachineId, VolumeCopy } from "@ployz/sdk";
-import { expectOf, observedEpoch, type PlanInput, planForwardRelease, planFromCopies, restoreSource, type Role, roleOf, withdrawnMessage } from "#/modules/volume-run/plan";
-import type { AnsweredMember, Member } from "#/modules/volume-run/volume-run";
+import { confirmedCopy, expectOf, observedEpoch, type PlanInput, planForwardRelease, planFromCopies, restoreSource, type Role, roleOf, withdrawnMessage } from "#/modules/volume-run/plan";
+import type { AnsweredMember, ConfirmedCopy, Discard, Member } from "#/modules/volume-run/volume-run";
 import type { DeploymentsSeen } from "#/modules/volume-run/resize";
 import { COPIES, type Copy, member } from "#/modules/volume-run/volume-run.test-fixture";
 
@@ -97,8 +97,38 @@ describe("a Server whose Ployz deletes any slot a Forget names", () => {
     expect(outcome(orphan, [member("b", "writtenHere"), older("c", "mirror"), member("d", "mirror")])).toBe("delete d forget none");
     expect(planFromCopies(orphan, [member("b", "writtenHere"), older("c", "mirror")])).toEqual({ ok: false, refusal: {
       code: "written_here",
-      message: "kept ns_vol-1-b, which may hold writes no other Server has; kept ns_vol-1-c until c runs a newer Ployz, which would delete it even if it holds writes no other Server has",
+      message: "kept ns_vol-1-b, which may hold writes no other Server has (ployz volume leftovers rm ns_vol-1 --on b deletes it); kept ns_vol-1-c until c runs a newer Ployz, which would delete it even if it holds writes no other Server has (ployz volume leftovers rm ns_vol-1 --on c deletes it)",
     } });
+  });
+});
+
+describe("a delete someone confirmed", () => {
+  const seen = (server: string, copy: Copy) => {
+    const each = member(server, copy);
+    const confirmed = each.answered ? confirmedCopy(each) : null;
+    if (confirmed === null) throw new Error("a slot with a snapshot");
+    return confirmed;
+  };
+  // SAFETY: a confirmation as only the insert of a run's row makes one.
+  const confirmed = (by: "person" | "deployment", copies: ConfirmedCopy[]): Discard => ({ by, copies }) as Discard;
+  const removing = (slot: string, discard: Discard): PlanInput => ({ kind: "delete_mirror", args: { slot, confirmed_name: null, role: "any", discard }, ...data });
+
+  it("deletes the copy as it was confirmed, and nothing once it was replaced, moved on or written there since", () => {
+    const discard = confirmed("person", [seen("b", "mirror")]);
+    expect(outcome(removing("b", discard), [member("a", "writer"), member("b", "mirror")])).toBe("delete b forget a");
+    for (const now of [member("b", "mirror", { slot: "2" }), member("b", "behind"), member("b", "writtenHere")]) {
+      expect(planFromCopies(removing("b", discard), [member("a", "writer"), now])).toEqual({ ok: false, refusal: {
+        code: "copy_changed",
+        message: "data-b changed since its delete was confirmed, so nothing was deleted. Run ployz volume mirror rm data-b to delete it as it is now",
+      } });
+    }
+    expect(outcome(removing("b", confirmed("deployment", [seen("b", "mirror")])), [member("a", "writer"), member("b", "writtenHere")])).toBe("refuse copy_changed");
+  });
+
+  it("deletes the one copy a deleted Volume left that a person confirmed, even one written there", () => {
+    const input: PlanInput = { ...orphan, args: { slot: "b", confirmed_name: null, discard: confirmed("person", [seen("b", "writtenHere")]) } };
+    expect(outcome(input, [member("b", "writtenHere"), member("c", "writtenHere")])).toBe("delete b forget none");
+    expect(outcome({ ...orphan, args: { ...input.args, slot: "c" } }, [member("b", "writtenHere"), member("c", "writtenHere")])).toBe("refuse copy_changed");
   });
 });
 

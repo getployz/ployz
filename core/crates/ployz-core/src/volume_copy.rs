@@ -172,6 +172,12 @@ pub enum ExpectedCopy {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         role: Option<SlotRole>,
+        /// With it, only a slot whose `written_here` reads the same matches, so a Forget
+        /// someone confirmed on a copy written nowhere else refuses once it is. A Machine
+        /// without [`crate::VOLUME_KEEP_WRITTEN_CAPABILITY`] ignores it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        written_here: Option<bool>,
     },
     None,
 }
@@ -220,8 +226,8 @@ pub enum WantedCopy {
         /// Destroy a slot even when it may hold writes no other Machine has
         /// (`written_here`). Without it, such a slot refuses [`CopyRefusal::WrittenHere`],
         /// so a Forget from a sender that can't tell `ployz volume mirror rm` from a full
-        /// sync never destroys one. `mirror rm` sends it, as does a release for a slot
-        /// whose newest point the Writer it resumes holds. A Machine without
+        /// sync never destroys one. A sender says it only for a copy someone confirmed
+        /// deleting, and names that copy as `expect`, `written_here` included. A Machine without
         /// [`crate::VOLUME_KEEP_WRITTEN_CAPABILITY`] ignores it and destroys any slot, so
         /// a caller sends a Forget without it only to one advertising it.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -551,17 +557,20 @@ fn expect_matches(copy: Option<&VolumeCopy>, expect: &ExpectedCopy) -> bool {
                 slot,
                 newest: Some(newest),
                 role,
+                written_here,
                 ..
             }),
             ExpectedCopy::Mirror {
                 newest: expected,
                 slot: expected_slot,
                 role: expected_role,
+                written_here: expected_written,
             },
         ) => {
             newest.guid == *expected
                 && slot == expected_slot
                 && expected_role.is_none_or(|expected| expected == role.unwrap_or_default())
+                && expected_written.is_none_or(|expected| expected == *written_here)
         }
         (Some(VolumeCopy::Slot { newest: None, .. }) | None, ExpectedCopy::None) => true,
         _ => false,
@@ -665,12 +674,14 @@ mod tests {
         newest: SnapshotGuid::new(10),
         slot: SLOT,
         role: None,
+        written_here: None,
     };
 
     const OLD_COPY_AT_10: ExpectedCopy = ExpectedCopy::Mirror {
         newest: SnapshotGuid::new(10),
         slot: SLOT,
         role: Some(SlotRole::OldCopy),
+        written_here: None,
     };
 
     type Row = (
@@ -792,6 +803,7 @@ mod tests {
                     newest: SnapshotGuid::new(9),
                     slot: SLOT,
                     role: None,
+                    written_here: None,
                 },
                 writer(10, 2, true),
                 Refuse(Behind),
@@ -804,6 +816,7 @@ mod tests {
                     newest: SnapshotGuid::new(9),
                     slot: SLOT,
                     role: None,
+                    written_here: None,
                 },
                 writer(10, 2, true),
                 Refuse(Mismatch),
@@ -888,6 +901,7 @@ mod tests {
                     newest: SnapshotGuid::new(9),
                     slot: SLOT,
                     role: None,
+                    written_here: None,
                 },
                 mirror(true, "f-1"),
                 Transition(MirrorToMirror),
@@ -900,6 +914,7 @@ mod tests {
                     newest: SnapshotGuid::new(9),
                     slot: SLOT,
                     role: None,
+                    written_here: None,
                 },
                 mirror(true, "f-1"),
                 Transition(MirrorToMirror),
@@ -920,6 +935,7 @@ mod tests {
                     newest: SnapshotGuid::new(9),
                     slot: SLOT,
                     role: None,
+                    written_here: None,
                 },
                 mirror(false, "f-1"),
                 Refuse(NoSource),
@@ -1225,6 +1241,38 @@ mod tests {
         let pulled = slot(Some(snapshot("w-1-0", 10)), None);
         assert_eq!(
             plan(Some(&pulled), false, &MIRROR_AT_10, &bare),
+            CopyPlan::Transition(CopyTransition::MirrorToForget)
+        );
+    }
+
+    /// A person confirmed deleting a copy written nowhere else is safe to lose. If the
+    /// same slot is written here by the time the Forget lands, it is no longer that copy.
+    #[test]
+    fn a_confirmed_forget_keeps_a_slot_whose_written_here_changed() {
+        let confirmed = |written: bool| -> ExpectedCopy {
+            serde_json::from_value(serde_json::json!({
+                "kind": "mirror", "newest": "10", "slot": SLOT, "written_here": written,
+            }))
+            .unwrap()
+        };
+        let discard: WantedCopy =
+            serde_json::from_str(r#"{"kind":"forget","discard":true}"#).unwrap();
+        let parked = old_copy(Some(snapshot("dep-1700000000", 10)));
+        assert_eq!(
+            plan(Some(&parked), false, &confirmed(false), &discard),
+            CopyPlan::Refuse(CopyRefusal::Mismatch)
+        );
+        assert_eq!(
+            plan(Some(&parked), false, &confirmed(true), &discard),
+            CopyPlan::Transition(CopyTransition::MirrorToForget)
+        );
+        let pulled = slot(Some(snapshot("w-1-0", 10)), None);
+        assert_eq!(
+            plan(Some(&pulled), false, &confirmed(true), &discard),
+            CopyPlan::Refuse(CopyRefusal::Mismatch)
+        );
+        assert_eq!(
+            plan(Some(&pulled), false, &confirmed(false), &discard),
             CopyPlan::Transition(CopyTransition::MirrorToForget)
         );
     }

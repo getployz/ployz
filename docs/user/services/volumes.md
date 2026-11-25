@@ -305,8 +305,10 @@ The volume and its data stay.
 ## Delete a volume
 
 Deleting a deployed volume deletes its data from your servers for good. Ployz keeps any copy on
-another server that may hold writes no other server has, such as an old copy a move left. See
-[Ployz keeps a copy that may hold writes no other server has](../troubleshooting/volumes.md#ployz-keeps-a-copy-that-may-hold-writes-no-other-server-has).
+another server that may hold writes no other server has, such as an old copy a move left.
+`ployz volume leftovers` lists those copies, and `ployz volume leftovers rm` deletes one after
+showing it. See
+[Copies left behind by a deleted volume](../troubleshooting/volumes.md#copies-left-behind-by-a-deleted-volume).
 
 1. Open the volume and click **Delete volume** under **Danger**. **Keep volume** undoes it.
 2. Click **Delete data**, or **Deploy**.

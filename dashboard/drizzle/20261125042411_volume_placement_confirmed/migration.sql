@@ -1,0 +1,1 @@
+ALTER TABLE "volume_placement" ADD COLUMN "confirmed" jsonb;

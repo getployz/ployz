@@ -9,7 +9,7 @@ import { enqueueEvent } from "#/modules/inngest/outbox.server";
 import { ClusterOutOfTime, clusterRead, PLAN_CLUSTER_BUDGET_MS, requireClusterTime, RUNTIME_FRAME_TIMEOUT_MS, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
 import { type Requirement, requirementFor, requirements, serverSupports } from "#/modules/runtime/daemon-compat";
 import { type PloyzSdkError, RpcError, sdkFailureMessage, setVolumeCopyRefusal } from "#/modules/runtime/ployz.server";
-import { alreadyOn, holdingNewest, type PlanInput, planForwardRelease, planFromCopies, restoreSource, roleOf, writerRemovedMessage } from "#/modules/volume-run/plan";
+import { alreadyOn, confirmedCopy, holdingNewest, type PlanInput, planForwardRelease, planFromCopies, restoreSource, roleOf, writerRemovedMessage } from "#/modules/volume-run/plan";
 import { resizeRequirements, sizeDirection } from "#/modules/volume-run/resize";
 import { isBehind, isCurrent, releaseLine } from "#/modules/server-upgrade/server-upgrade";
 import { channelRelease, organizationReleaseChannel } from "#/modules/server-upgrade/server-upgrade.server";
@@ -105,11 +105,13 @@ export const planOnCluster = Effect.fn("VolumeRun.planOnCluster")(function* (
     : Option.some(null);
   const release = releasePlan(from, source);
   const effects = phaseEffects(volume, phase, release.forgets);
+  // A delete's approval names each copy as the Servers report it now, so a copy replaced or written since asks again.
+  const copies = phase.kind === "delete_mirror" ? phase.destroy.flatMap((member) => confirmedCopy(member) ?? []) : undefined;
   const askedAs = (verb: OperationVerb): OperationAsked => ({
     subject: `volume:${input.volumeId}`,
     verb,
     name: requestName(volume, input),
-    preview: { volume: input.volumeId, copies: effects.map((effect) => effect.node), ...requestPreview(volume, input, members.value) },
+    preview: { volume: input.volumeId, copies: effects.map((effect) => effect.node), ...requestPreview(volume, input, members.value), ...(copies !== undefined && { confirms: copies }) },
     effects,
   });
   const asked = verb === null ? null : askedAs(verb);
@@ -122,7 +124,7 @@ export const planOnCluster = Effect.fn("VolumeRun.planOnCluster")(function* (
     : resolved.kind === "move" && (phase.kind === "move" || phase.kind === "landed")
       ? { ...resolved, args: { ...resolved.args, machine: phase.target.machine.id } }
       : resolved;
-  return { ok: true, volume, asked, guard, input: pinned } satisfies ClusterPlan;
+  return { ok: true, volume, asked, guard, input: pinned, ...(copies !== undefined && { copies }) } satisfies ClusterPlan;
 }, Effect.catchTag("ClusterOutOfTime", () => Effect.succeed({ ok: false, refusal: unanswered } satisfies ClusterPlan)), withClusterBudget(PLAN_CLUSTER_BUDGET_MS));
 
 /**

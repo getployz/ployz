@@ -289,6 +289,12 @@ struct Host {
     /// Cloud lists the Machine as a Server: false for a C the two-Machine scenarios
     /// never have, and for a Machine Cloud forgot.
     member: bool,
+    /// Which slot holds the copy: another slot at the same snapshot replaced it once
+    /// this is 1 (`Replace`).
+    slot: u8,
+    /// The plugin marked the slot written here, as a cut or a promote does, without
+    /// changing its snapshot (`Mark`).
+    marked: bool,
 }
 
 impl Host {
@@ -312,9 +318,24 @@ enum Lane {
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Expect {
-    Writer { epoch: u32 },
-    Mirror { newest: Snap },
+    Writer {
+        epoch: u32,
+    },
+    Mirror {
+        newest: Snap,
+    },
+    /// The slot exactly as a person confirmed deleting it.
+    Confirmed(Confirmed),
     None,
+}
+
+/// A slot as a person confirmed deleting it (`ConfirmedCopy`): its snapshot, which slot
+/// held it, and whether its Machine said it may hold writes no other Server has.
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+struct Confirmed {
+    newest: Snap,
+    slot: u8,
+    written: bool,
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -357,6 +378,8 @@ enum Want {
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Refusal {
+    /// A bare Forget met a slot that may hold writes no other Server has.
+    WrittenHere,
     Stale,
     Busy,
     Mismatch,
@@ -616,8 +639,8 @@ struct MoveRun {
 struct DropRun {
     row: Row,
     driver: Driver<DropStep>,
-    /// The slots it forgets, by the snapshot each held when it planned.
-    slots: [Option<Snap>; 3],
+    /// The slots it forgets, each as its person confirmed it when they asked.
+    slots: [Option<Confirmed>; 3],
     writer: Machine,
     writer_epoch: u32,
 }
@@ -763,6 +786,9 @@ struct State {
     /// A pull or a full sync's Forget destroyed a slot holding a departure's point, which
     /// no other Machine holds.
     lost_written: bool,
+    /// A mirror rm destroyed a slot other than the one its person confirmed, as they saw
+    /// it: replaced since, or written there since.
+    unconfirmed: bool,
 }
 
 /// The entry of a per-Machine array for `machine`.
@@ -1158,6 +1184,12 @@ struct Broken {
     /// The orphan sweep forgets a slot on a Machine that doesn't advertise the
     /// capability, as 4c6dc32563's did.
     sweep_skips_capability: bool,
+    /// A mirror rm says `discard` for the slot its run finds rather than the one its
+    /// person confirmed, as 2ff6f2c021's did.
+    discard_unbound: bool,
+    /// A confirmed Forget's expect names no `written_here`, as 2ff6f2c021's Machine read
+    /// it.
+    expect_ignores_written: bool,
 }
 
 /// Which side runs a release from before `ployz.volume.keep-written.v1`.
@@ -1348,6 +1380,12 @@ enum Action {
     Depart(Machine),
     /// A departed Machine joins the Cluster again, its parked copy still in its slot.
     Rejoin(Machine),
+    /// Another slot at the same snapshot replaces the Machine's slot while a mirror rm
+    /// someone confirmed waits to run.
+    Replace(Machine),
+    /// The plugin marks the Machine's slot written here, while a mirror rm someone
+    /// confirmed waits to run or a Release may forget it.
+    Mark(Machine),
 }
 
 // --- The real planner -------------------------------------------------------------
@@ -1367,20 +1405,20 @@ fn snapshot(snap: Snap) -> Snapshot {
     }
 }
 
-fn slot_id(machine: Machine) -> SlotId {
-    SlotId::new(match machine {
+fn slot_id(machine: Machine, slot: u8) -> SlotId {
+    let first = match machine {
         Machine::A => 10,
         Machine::B => 11,
         Machine::C => 12,
-    })
+    };
+    SlotId::new(first + 3 * u64::from(slot))
 }
 
-/// `inspect`'s copy. A slot is `written_here` when it holds a departure's snapshot. The
-/// cut, seed, promote and epoch marks that also set it in the plugin are left out, so no
-/// Release's bare Forget here meets a refusal on a cut slot. Broken, or on a Machine from
-/// before it, the plugin never reports it.
-fn volume_copy(held: Held, machine: Machine, reports_written: bool) -> Option<VolumeCopy> {
-    match held {
+/// `inspect`'s copy. A slot is `written_here` when it holds a departure's snapshot, or once
+/// `Mark` stands for the cut, seed, promote and epoch marks that also set it in the
+/// plugin. Broken, or on a Machine from before it, the plugin never reports it.
+fn volume_copy(host: &Host, machine: Machine, reports_written: bool) -> Option<VolumeCopy> {
+    match host.copy {
         Held::None => None,
         Held::Root {
             readonly,
@@ -1395,7 +1433,7 @@ fn volume_copy(held: Held, machine: Machine, reports_written: bool) -> Option<Vo
             origin: None,
         }),
         Held::Slot { newest } => Some(VolumeCopy::Slot {
-            slot: slot_id(machine),
+            slot: slot_id(machine, host.slot),
             readonly: true,
             newest: newest.map(snapshot),
             resume_token: None,
@@ -1403,20 +1441,29 @@ fn volume_copy(held: Held, machine: Machine, reports_written: bool) -> Option<Vo
             role: Some(SlotRole::Mirror),
             pull_state: None,
             origin: None,
-            written_here: reports_written && newest == Some(Snap::Departure),
+            written_here: reports_written && (host.marked || newest == Some(Snap::Departure)),
         }),
     }
 }
 
-fn expected(expect: Expect, machine: Machine) -> ExpectedCopy {
+/// The expect as the Machine reads it. A run that names no slot expects the one there now.
+/// Broken, a confirmed delete names no `written_here`, as round 3's did.
+fn expected(expect: Expect, machine: Machine, slot: u8, broken: Broken) -> ExpectedCopy {
     match expect {
         Expect::Writer { epoch } => ExpectedCopy::Writer {
             epoch: WriterEpoch::new(epoch),
         },
         Expect::Mirror { newest } => ExpectedCopy::Mirror {
             newest: snapshot(newest).guid,
-            slot: slot_id(machine),
+            slot: slot_id(machine, slot),
             role: None,
+            written_here: None,
+        },
+        Expect::Confirmed(confirmed) => ExpectedCopy::Mirror {
+            newest: snapshot(confirmed.newest).guid,
+            slot: slot_id(machine, confirmed.slot),
+            role: None,
+            written_here: (!broken.expect_ignores_written).then_some(confirmed.written),
         },
         Expect::None => ExpectedCopy::None,
     }
@@ -1468,13 +1515,13 @@ fn refusal(reason: CopyRefusal) -> Refusal {
         CopyRefusal::NoTransition => Refusal::NoTransition,
         CopyRefusal::Behind => Refusal::Behind,
         CopyRefusal::NoCapacity => Refusal::NoCapacity,
+        CopyRefusal::WrittenHere => Refusal::WrittenHere,
         CopyRefusal::Written
         | CopyRefusal::NoSource
         | CopyRefusal::Foreign
         | CopyRefusal::Held
         | CopyRefusal::Stopped
         | CopyRefusal::DockerUnavailable
-        | CopyRefusal::WrittenHere
         | CopyRefusal::Unrecognized => Refusal::Other,
     }
 }
@@ -1511,6 +1558,21 @@ impl VolumeRuns {
     /// Whether `inspect` reports a slot's `written_here`.
     fn reports_written(&self) -> bool {
         !self.broken.forget_ignores_written && self.skew != Skew::OldDaemon
+    }
+
+    /// A slot as `inspect` reports it and a person confirms it: none for a slot with no
+    /// snapshot or no slot at all.
+    fn confirmed(&self, host: &Host) -> Option<Confirmed> {
+        match host.copy {
+            Held::Slot {
+                newest: Some(newest),
+            } => Some(Confirmed {
+                newest,
+                slot: host.slot,
+                written: self.reports_written() && (host.marked || newest == Snap::Departure),
+            }),
+            Held::Slot { newest: None } | Held::Root { .. } | Held::None => None,
+        }
     }
 
     /// Cloud's Forget of a slot: `discard` for a person's `mirror rm` (`deleteMirror`),
@@ -1861,9 +1923,9 @@ impl VolumeRuns {
             | Want::Start => None,
         };
         let plan = ployz_core::plan(
-            volume_copy(host.copy, to, self.reports_written()).as_ref(),
+            volume_copy(&host, to, self.reports_written()).as_ref(),
             start == Some(StartState::Running),
-            &expected(request.expect, to),
+            &expected(request.expect, to, host.slot, self.broken),
             &wanted(request.want, self.broken),
         );
         let transition = match plan {
@@ -1962,6 +2024,11 @@ impl VolumeRuns {
                 CopyTransition::MirrorToForget | CopyTransition::SeedToForget,
                 Want::Forget { .. },
             ) => {
+                if request.lane == Lane::Drop
+                    && state.drop.and_then(|drop| *at(&drop.slots, to)) != self.confirmed(&host)
+                {
+                    state.unconfirmed = true;
+                }
                 if request.lane != Lane::Drop
                     && host.copy.newest() == Some(Snap::Departure)
                     && Machine::ALL.iter().all(|machine| {
@@ -2621,6 +2688,13 @@ impl VolumeRuns {
                         release.driver.waiting = None;
                     });
                 }
+                // No one chose this delete: the Machine keeps a slot that may hold writes no
+                // other Server has, and the Release restarts the Service all the same.
+                Some(Reply::Refused(Refusal::WrittenHere))
+                    if let (ReleaseStep::Forget(machine), Some(plan)) = (driver.step, resume) =>
+                {
+                    next(state, next_other(&release, Some(machine), plan.on));
+                }
                 Some(Reply::Refused(_) | Reply::PullFailed | Reply::Bound(_)) => fail(state),
             },
             (ReleaseStep::RemoveBehind(machine), _) => {
@@ -2812,14 +2886,28 @@ impl VolumeRuns {
         };
         match (drop.driver.step, reply) {
             (DropStep::Forget(machine), None) => {
-                let Some(newest) = *at(&drop.slots, machine) else {
+                let Some(confirmed) = *at(&drop.slots, machine) else {
+                    return fail(state);
+                };
+                let now = self.confirmed(state.host(machine));
+                // `stillConfirmed`: a copy replaced or written there since its person confirmed
+                // it ends the run before anything is deleted. Broken, the run names the copy
+                // it finds, as round 3's did.
+                let expect = if self.broken.discard_unbound {
+                    match now {
+                        Some(now) => Expect::Mirror { newest: now.newest },
+                        None => return fail(state),
+                    }
+                } else if now == Some(confirmed) {
+                    Expect::Confirmed(confirmed)
+                } else {
                     return fail(state);
                 };
                 let sent = state.send(
                     Lane::Drop,
                     DROP_GEN,
                     machine,
-                    Expect::Mirror { newest },
+                    expect,
                     self.forget_slot(true),
                 );
                 if let Some(drop) = state.drop.as_mut() {
@@ -3158,7 +3246,7 @@ impl VolumeRuns {
                 };
                 let mut forget = [None; 3];
                 for slot in &slots {
-                    *at_mut(&mut forget, *slot) = Some(state.host(*slot).copy.newest()?);
+                    *at_mut(&mut forget, *slot) = Some(self.confirmed(state.host(*slot))?);
                 }
                 let first = Machine::ALL
                     .into_iter()
@@ -3403,6 +3491,8 @@ impl VolumeRuns {
             presence: Presence::Here,
             forgotten: false,
             member,
+            slot: 0,
+            marked: false,
         }
     }
 
@@ -3486,6 +3576,7 @@ impl VolumeRuns {
             repaired: false,
             unapproved_start: false,
             lost_written: false,
+            unconfirmed: false,
         };
         if three {
             // No resize on three Machines: the size never changes. A Deploy may come before
@@ -3604,6 +3695,33 @@ impl Model for VolumeRuns {
             }
             if drop.row.running() && state.ends > 0 {
                 actions.push(Action::EndDrop);
+            }
+            for machine in Machine::ALL {
+                let host = state.host(machine);
+                if !drop.row.running()
+                    || at(&drop.slots, machine).is_none()
+                    || !matches!(host.copy, Held::Slot { .. })
+                {
+                    continue;
+                }
+                if host.slot == 0 {
+                    actions.push(Action::Replace(machine));
+                }
+                if !host.marked && self.reports_written() {
+                    actions.push(Action::Mark(machine));
+                }
+            }
+        }
+        // A slot a running Release may forget can be marked written there first.
+        if let Some(release) = state.moves.iter().find_map(|run| run.release.as_ref())
+            && release.row.running()
+            && self.reports_written()
+        {
+            for machine in Machine::ALL {
+                let host = state.host(machine);
+                if !host.marked && matches!(host.copy, Held::Slot { newest: Some(_) }) {
+                    actions.push(Action::Mark(machine));
+                }
             }
         }
         if let Some(restore) = state.restore
@@ -3734,6 +3852,8 @@ impl Model for VolumeRuns {
             Action::Repair => Self::repair_step(&mut state),
             Action::Next => state = self.next_run(&state)?,
             Action::Drop => self.drop_step(&mut state),
+            Action::Replace(machine) => state.host_mut(machine).slot = 1,
+            Action::Mark(machine) => state.host_mut(machine).marked = true,
             Action::EndDrop => {
                 if let Some(drop) = state.drop.as_mut() {
                     drop.row = Row::Failed;
@@ -3816,6 +3936,7 @@ impl Model for VolumeRuns {
             }),
             Property::always(STORE_FITS, |_, state: &State| state.store_fits()),
             Property::always(KEEPS_WRITTEN, |_, state: &State| !state.lost_written),
+            Property::always(CONFIRMED_ONLY, |_, state: &State| !state.unconfirmed),
             Property::always(RESIZE_DONE_HOLDS, |_, state: &State| {
                 state.resize.row != Row::Done || state.recorded()
             }),
@@ -4326,6 +4447,8 @@ const ENFORCED_STARTS_NOTHING: &str =
     "a Machine creates no Container an Operator's Writer start names";
 const STORE_FITS: &str = "the Store's size fits every copy";
 const KEEPS_WRITTEN: &str = "only a person's mirror rm destroys a point only its Machine holds";
+const CONFIRMED_ONLY: &str =
+    "a mirror rm destroys only the copy its person confirmed, as they saw it";
 const RESIZE_DONE_HOLDS: &str = "a resize that finished done recorded its target";
 const REFUSED_RECORDS_NOTHING: &str =
     "a resize refused before any copy changed ends recording nothing";
@@ -4753,6 +4876,47 @@ mod tests {
         );
         let path = checker.assert_any_discovery(NEVER_TWO_WRITERS);
         println!("{NEVER_TWO_WRITERS} breaks with a Move from slots:\n{path}");
+    }
+
+    /// The path that breaks "a mirror rm destroys only the copy its person confirmed" with
+    /// `broken`, on three Machines whose second Move first removes the Mirror.
+    fn breaks_confirmed(broken: Broken, story: &str) {
+        let checker = discoveries(
+            VolumeRuns {
+                broken,
+                ..three(Scenario::TwoMoves)
+            },
+            &[CONFIRMED_ONLY],
+        );
+        let path = checker.assert_any_discovery(CONFIRMED_ONLY);
+        println!("{CONFIRMED_ONLY} breaks {story}:\n{path}");
+    }
+
+    /// A person confirms the slot `mirror rm` shows them; the run may wait behind another,
+    /// and the slot may be replaced or written there before it runs. Naming the slot the
+    /// run finds then, as 2ff6f2c021 did, deletes one the person never saw.
+    #[test]
+    fn a_mirror_rm_deletes_only_the_copy_its_person_confirmed() {
+        breaks_confirmed(
+            Broken {
+                discard_unbound: true,
+                ..Broken::default()
+            },
+            "with the run's own look in place of the confirm",
+        );
+    }
+
+    /// Cloud checks the confirmed slot before it sends the Forget, and the slot can be
+    /// written there after that look. Only the Machine's check of `written_here` keeps it.
+    #[test]
+    fn a_machine_keeps_a_confirmed_slot_written_there_since() {
+        breaks_confirmed(
+            Broken {
+                expect_ignores_written: true,
+                ..Broken::default()
+            },
+            "with a Forget whose expect ignores written_here",
+        );
     }
 
     /// The path that breaks "only a person's mirror rm destroys a point only its Machine

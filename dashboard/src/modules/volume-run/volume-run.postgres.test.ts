@@ -41,12 +41,15 @@ import { configDeploymentAdmitted } from "#/modules/config-store/config-store.ev
 import { createCloseFinishedVolumeRun, createCloseStaleVolumeRuns, createRunVolume } from "#/modules/volume-run/volume-run.inngest";
 import { operationsOn } from "#/modules/operations/operation-history.server";
 import { askCopy, commitAndStart, commitMove, type CopyAnswer, planVolumeRun, releaseLanesOff, sendSwitch, setVolumeCopy, SwitchAttemptError } from "#/modules/volume-run/volume-run.cluster.server";
-import { closeStaleVolumeRuns, closeVolumeRun, insertRun, isVolumeOwed, listVolumeRuns, requestVolumeRun, requireOwner, resolveVolume, type RunContext, volumeBusyMessage } from "#/modules/volume-run/volume-run.rows.server";
+import { type Caller as RunCaller, closeStaleVolumeRuns, closeVolumeRun, insertRun, isVolumeOwed, listVolumeRuns, requestVolumeRun, requireOwner, resolveVolume, type RunContext, volumeBusyMessage } from "#/modules/volume-run/volume-run.rows.server";
 import { observeOrganization, observeOrganizationCopies, orphanSlotNames, startOrphanDeletes } from "#/modules/volume-run/volume-run.orphans.server";
+import { deleteLeftover, listLeftovers } from "#/modules/volume-run/volume-run.leftovers.server";
 import { PATIENCE_WAITS } from "#/modules/volume-run/patience";
-import type { Discard, Member, VolumeRunInput } from "#/modules/volume-run/volume-run";
+import type { ConfirmedCopy, Discard, Member, VolumeRunInput } from "#/modules/volume-run/volume-run";
 import { member } from "#/modules/volume-run/volume-run.test-fixture";
 import { appliedMirrors, observePlacement } from "#/modules/volume-placement/volume-placement";
+import { stampPlacements, writePlacement } from "#/modules/volume-placement/volume-placement.server";
+import { advancePlacement } from "#/modules/volume-placement/volume-placement.deploy.server";
 import { type DeployLane, fenceDeployVolume, finishDeployVolumes, placeDeployVolumes, releaseFollowed } from "#/modules/volume-run/volume-run.deploy.server";
 import type { Caller } from "#/modules/identity/actor";
 import { runVolume } from "#/modules/operations/operations.server";
@@ -229,6 +232,8 @@ describe("volume runs", () => {
   let storeProtected: boolean;
   /** The nodes every Deployment the Store reads back targets. */
   let deployNodes: Array<{ type: "volume" | "service"; id: string; name: string; outcome: "pending"; rows: [] }>;
+  /** The status the Store reports for every Deployment. */
+  let deployStatus: string;
 
   const machine = (target: string) => {
     const found = machines.find((entry) => (entry.id ?? idOf(entry.name)) === target);
@@ -287,7 +292,8 @@ describe("volume runs", () => {
       case "writer":
         return copy?.kind === "root" && copy.epoch === expect.epoch;
       case "mirror":
-        return copy?.kind === "slot" && copy.newest?.guid === expect.newest && copy.slot === expect.slot && (expect.role === undefined || copy.role === expect.role);
+        return copy?.kind === "slot" && copy.newest?.guid === expect.newest && copy.slot === expect.slot && (expect.role === undefined || copy.role === expect.role)
+          && (expect.written_here === undefined || expect.written_here === (copy.written_here === true));
     }
   };
 
@@ -308,6 +314,7 @@ describe("volume runs", () => {
       fake.copy = { ...copy, role: "mirror" };
       return null;
     }
+    if (want.kind === "forget" && want.discard !== true && copy?.kind === "slot" && copy.written_here === true) return "written_here";
     if (!matches(fake.copy, expect)) return "mismatch";
     if (copy?.kind === "root") {
       switch (want.kind) {
@@ -584,7 +591,7 @@ describe("volume runs", () => {
             if (query.query === "deployments") return { in_flight: storeInFlight, latest: storeLatest === null ? null : { number: storeLatest } };
             if (query.query === "environments") return { environments: [{ id: "env-1", name: "production", protected: storeProtected }] };
             if (query.query === "deployment") {
-              return { id: query.id, status: "running", namespace: "shop-production", environment: { id: "env-1", project: storeProject, name: "production" }, nodes: deployNodes };
+              return { id: query.id, status: deployStatus, namespace: "shop-production", environment: { id: "env-1", project: storeProject, name: "production" }, nodes: deployNodes };
             }
             if (query.environment !== undefined && query.environment.project !== storeProject) {
               throw new RpcError({ code: "not_found", message: `No Project named ${query.environment.project}`, details: null });
@@ -698,6 +705,7 @@ describe("volume runs", () => {
     storeLatest = null;
     storeProtected = false;
     deployNodes = [{ type: "service", id: "svc-web", name: "web", outcome: "pending", rows: [] }, { type: "volume", id: volumeId, name: "data", outcome: "pending", rows: [] }];
+    deployStatus = "running";
     machines = [
       { name: "fsn-1", pool: true, copy: writerCopy() },
       { name: "fsn-2", pool: true, copy: null },
@@ -2522,6 +2530,27 @@ describe("volume runs", () => {
       expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: true }]);
     });
 
+    it("on a warm row restarts the Service on A and keeps a copy whose Server may hold writes no other Server has", async () => {
+      const G = newSnap("f-1");
+      named("fsn-1").copy = slotCopy(G);
+      for (const container of containers) container.running = false;
+      const written: VolumeCopy = { kind: "slot", slot: "2", readonly: true, newest: G, resume_token: null, pull: null, role: "mirror", written_here: true };
+      machines[1] = { name: "fsn-2", pool: true, copy: written };
+      await owned("warm");
+
+      expect(await runEffect(closeVolumeRun("run-1", "failure"))).toBe(1);
+      await execute((await releaseRow()).id, "run-2");
+
+      expect(verbs).toEqual(["floor@fsn-1", "floor@fsn-2", "forget@fsn-2", "writer@fsn-1(kept)"]);
+      expect(machines[1]?.copy).toEqual(written);
+      expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: true }]);
+      expect((await rows()).at(-1)).toMatchObject({
+        kind: "release",
+        state: "done",
+        message: "kept data-fsn-2, which may hold writes no other Server has (ployz volume mirror rm data-fsn-2 deletes it)",
+      });
+    });
+
     it("on a warm row waits for a silent Server, noting it on the row, then releases back to A once it answers", async () => {
       const G = newSnap("f-1");
       named("fsn-1").copy = slotCopy(G);
@@ -3185,30 +3214,41 @@ describe("volume runs", () => {
   });
 
   describe("delete_mirror", () => {
+    /** A person's delete of fsn-2's copy, as the CLI asks for it: planned on the Cluster, which names the copy they confirm. */
+    const deleteFsn2 = async () => {
+      const admitted = await admit({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null, role: "any" } });
+      if (!admitted.ok) throw new Error(admitted.refusal.message);
+      const [row] = await rows();
+      if (row === undefined) throw new Error("no run admitted");
+      return row;
+    };
+    const confirmedFsn2: ConfirmedCopy = { machine: idOf("fsn-2"), slot: "1", newest: base.guid, written_here: false };
+
     it("forgets the slot, then withdraws the slot's Server on the writer", async () => {
       machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
-      const run = await requested({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null, role: "any" } });
+      const run = await deleteFsn2();
 
       const output = await execute(run.id);
 
       expect(output.result).toEqual({ runId: run.id, destroyed: ["fsn-2"] });
       expect(verbs).toEqual(["forget@fsn-2", "forget@fsn-1"]);
-      expect(sent[0]?.expect).toEqual({ kind: "mirror", newest: base.guid, slot: "1" });
-      // A removal deletes even a slot that may hold the only copy of some writes.
+      expect(sent[0]?.expect).toEqual({ kind: "mirror", newest: base.guid, slot: "1", written_here: false });
+      // A removal someone confirmed deletes even a slot that may hold the only copy of some writes.
       expect(sent[0]?.want).toEqual({ kind: "forget", discard: true });
       expect(sent[1]).toMatchObject({ expect: { kind: "writer", epoch: 0 }, want: { kind: "forget" } });
       expect(machines[1]?.copy).toBeNull();
       expect(await rows()).toMatchObject([{ state: "done", epoch: null, message: "Deleted data-fsn-2; fsn-2 and fsn-1 recorded the removal" }]);
     });
 
-    it("says discard only for a delete a person or a Deployment chose, whatever its args say", async () => {
-      // SAFETY: a caller that tries to choose for someone else.
-      const args = { slot: "fsn-2", confirmed_name: null, role: "any", discard: "person" as Discard } as const;
-      const callers = [
+    it("says discard only for a copy a person or a Deployment confirmed, whatever its args say", async () => {
+      // SAFETY: a request that names a confirmation its caller never made.
+      const discard = { by: "person", copies: [confirmedFsn2] } as Discard;
+      const args = { slot: "fsn-2", confirmed_name: null, role: "any", discard } as const;
+      const callers: Array<[RunCaller, WantedCopy]> = [
         [{ userId: null, organizationId }, { kind: "forget" }],
-        [{ userId: null, organizationId, deployment: "deploy-1" }, { kind: "forget", discard: true }],
-        [{ userId, organizationId }, { kind: "forget", discard: true }],
-      ] as const;
+        [{ userId: null, organizationId, confirmed: { by: "deployment", copies: [confirmedFsn2] } }, { kind: "forget", discard: true }],
+        [{ userId, organizationId, confirmed: { by: "person", copies: [confirmedFsn2] } }, { kind: "forget", discard: true }],
+      ];
       for (const [index, [caller, want]] of callers.entries()) {
         machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
         sent = [];
@@ -3219,6 +3259,51 @@ describe("volume runs", () => {
 
         expect(sent[0]?.want).toEqual(want);
       }
+    });
+
+    it("a Deploy deletes only the mirror its confirm named, so one replaced since survives", async () => {
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
+      await runEffect(writePlacement(organizationId, { environment, volumeId, staged: { primary: idOf("fsn-1"), mirrors: [], deletes: [] }, mirrors: [idOf("fsn-2")] }));
+      await runEffect(stampPlacements(organizationId, [volumeId], "dep-1", [], new Map([[volumeId, [confirmedFsn2]]])));
+      // After the confirm, fsn-2's mirror is replaced by a slot written there since.
+      const replaced: VolumeCopy = { kind: "slot", slot: "2", readonly: true, newest: snap("12"), resume_token: null, pull: null, role: "mirror", written_here: true };
+      machines[1] = { name: "fsn-2", pool: true, copy: replaced };
+
+      deployStatus = "queued";
+      const started = await runEffect(advancePlacement(organizationId, "dep-1", null));
+      if (started.kind !== "wait") throw new Error("expected a run");
+      await execute(started.wait.runId);
+
+      expect(verbs).toEqual([]);
+      expect(machines[1]?.copy).toEqual(replaced);
+      expect(await rows()).toMatchObject([{ state: "failed", message: "data-fsn-2 changed since its delete was confirmed, so nothing was deleted. Deploy again to confirm it as it is now" }]);
+    });
+
+    it("deletes nothing once the copy a person confirmed holds writes no other Server has", async () => {
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
+      const run = await deleteFsn2();
+      machines[1] = { name: "fsn-2", pool: true, copy: writtenSlot(base) };
+
+      await execute(run.id);
+
+      expect(verbs).toEqual([]);
+      expect(machines[1]?.copy).toEqual(writtenSlot(base));
+      expect(await rows()).toMatchObject([{
+        state: "failed",
+        message: "data-fsn-2 changed since its delete was confirmed, so nothing was deleted. Run ployz volume mirror rm data-fsn-2 to delete it as it is now",
+      }]);
+    });
+
+    it("the Server keeps a confirmed copy written there after Cloud looked", async () => {
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
+      const run = await deleteFsn2();
+      beforeSet.set("forget@fsn-2", () => { named("fsn-2").copy = writtenSlot(base); });
+
+      await execute(run.id);
+
+      expect(sent[0]).toMatchObject({ expect: { written_here: false }, want: { kind: "forget", discard: true } });
+      expect(machines[1]?.copy).toEqual(writtenSlot(base));
+      expect(verbs).toEqual(["forget@fsn-2"]);
     });
 
     it("ends with the Server's own words when it refuses for a reason this Ployz Cloud can't read", async () => {
@@ -3255,7 +3340,7 @@ describe("volume runs", () => {
 
       await execute(run.id);
 
-      expect(sent.at(-1)?.expect).toEqual({ kind: "mirror", newest: base.guid, slot: "7", role: "old_copy" });
+      expect(sent.at(-1)?.expect).toEqual({ kind: "mirror", newest: base.guid, slot: "7", role: "old_copy", written_here: false });
       expect(verbs).toEqual(["forget@fsn-2"]);
       expect(machines[1]?.copy).toEqual(slotCopy(base, null, "7", "mirror"));
       expect(await rows()).toMatchObject([{ state: "failed", message: "data-fsn-2 is no longer an old copy, so nothing was deleted" }]);
@@ -4512,8 +4597,36 @@ describe("volume runs", () => {
       expect(machines[1]?.copy).toMatchObject({ kind: "slot", written_here: true });
       expect(await rows()).toMatchObject([{
         state: "done",
-        message: "Deleted gone-production_vol-a-fsn-3; fsn-3 recorded the removal; kept gone-production_vol-a-fsn-2, which may hold writes no other Server has",
+        message: "Deleted gone-production_vol-a-fsn-3; fsn-3 recorded the removal; kept gone-production_vol-a-fsn-2, which may hold writes no other Server has (ployz volume leftovers rm gone-production_vol-a --on fsn-2 deletes it)",
       }]);
+    });
+
+    it("deletes a kept copy of a deleted Volume only once a person confirms it as its Server reports it now", async () => {
+      machines = [{ name: "fsn-1", pool: true, copy: null }, { name: "fsn-2", pool: true, copy: writtenSlot(base) }];
+      const observe = () => Effect.succeed(copies(["fsn-2", "gone-production_vol-a", "slot"]));
+      const asked = (confirm: string | null) =>
+        runEffect(deleteLeftover({ userId, organizationId }, { dockerVolume: "gone-production_vol-a", server: "fsn-2", confirm }));
+
+      expect(await runEffect(listLeftovers(organizationId, observe).pipe(Effect.orDie))).toMatchObject([
+        { docker_volume: "gone-production_vol-a", server: "fsn-2", slot: "1", newest: base, written_here: true, confirm: "1-10-written" },
+      ]);
+      expect(await asked(null)).toMatchObject({ ok: false, refusal: {
+        code: "confirmation_required",
+        details: { next: "ployz volume leftovers rm gone-production_vol-a --on fsn-2 --confirm 1-10-written" },
+      } });
+      // Replaced after the person looked: the confirm they copied names the copy that was there.
+      machines[1] = { name: "fsn-2", pool: true, copy: { ...writtenSlot(snap("12")), slot: "2" } as VolumeCopy };
+      expect(await asked("1-10-written")).toMatchObject({ ok: false, refusal: { code: "confirmation_required", message: expect.stringMatching(/^It changed since you looked/u) } });
+      expect(await rows()).toEqual([]);
+
+      machines[1] = { name: "fsn-2", pool: true, copy: writtenSlot(base) };
+      const deleted = await asked("1-10-written");
+      if (!deleted.ok) throw new Error(deleted.refusal.message);
+      await execute(deleted.run.id, "run-1", undefined, "a");
+
+      expect(sent).toMatchObject([{ expect: { kind: "mirror", newest: base.guid, slot: "1", written_here: true }, want: { kind: "forget", discard: true } }]);
+      expect(machines[1]?.copy).toBeNull();
+      expect(await rows()).toMatchObject([{ state: "done", orphan: true }]);
     });
 
     it("starts no orphan run when every slot left may hold writes no other Server has", async () => {

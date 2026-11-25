@@ -1,7 +1,7 @@
 import type { ExpectedCopy, MachineName, SlotRole, Snapshot, SnapshotGuid, VolumeCopy } from "@ployz/sdk";
 import { originUpgradeMessage } from "#/modules/runtime/daemon-release";
 import { type DeploymentsSeen, planResize, planUnheld, type ResizePhase } from "#/modules/volume-run/resize";
-import { type AnsweredMember, copyName, heardFrom, type Member, namesServer, type ReleasePlan, type VolumeRunArgs, type VolumeRunInput } from "#/modules/volume-run/volume-run";
+import { type AnsweredMember, type ConfirmedCopy, copyName, type Discard, heardFrom, type Member, namesServer, type ReleasePlan, type VolumeRunArgs, type VolumeRunInput } from "#/modules/volume-run/volume-run";
 
 /** `cutting` is a read-only root: a cut began on it and has not renamed it to a slot yet. */
 export type Role = "writer" | "cutting" | "mirror" | "empty" | "unanswered";
@@ -23,6 +23,7 @@ export type RefusalCode =
   | "confirm_required"
   | "role_changed"
   | "written_here"
+  | "copy_changed"
   | "deploying";
 
 /**
@@ -53,8 +54,8 @@ export type Planned =
         readonly destroy: readonly AnsweredMember[];
         readonly forget: AnsweredMember | null;
         readonly role: SlotRole | null;
-        /** Someone chose this delete, so its Forget deletes a copy that may hold writes no other Server has. */
-        readonly discard: boolean;
+        /** The copies someone chose to delete, as they saw them: only these Forgets say discard. */
+        readonly confirmed: readonly ConfirmedCopy[];
         /** The slots the orphan sweep leaves, since no one chose to delete them. */
         readonly kept: readonly AnsweredMember[];
       };
@@ -84,6 +85,10 @@ export const ROLE_NOUN = { mirror: "a mirror", old_copy: "an old copy" } as cons
 
 /** `--if-old-copy` on a printed `mirror rm`, so the line deletes nothing once a mirror run made that copy the mirror. */
 const ifOldCopy = (role: SlotRole | "any" | undefined) => (role === "old_copy" ? " --if-old-copy" : "");
+
+/** Why a release kept a copy no one chose to delete, and the command that deletes it. */
+export const releaseKept = (name: string, server: string, role: SlotRole | undefined) =>
+  `kept ${copyName(name, server)}, which may hold writes no other Server has (ployz volume mirror rm ${copyName(name, server)}${ifOldCopy(role)} deletes it)`;
 
 export function roleOf(member: Member): Role {
   if (!member.answered) return "unanswered";
@@ -192,19 +197,71 @@ const replacesParked = (member: AnsweredMember) => {
 };
 
 /**
- * A slot no one chose to delete stays when its Server says it may hold writes no other Server has, or when its Ployz
- * would delete it whatever it holds.
+ * Whether a slot may hold writes no other Server has: its Server says so, or its Ployz can't say. A delete no one chose
+ * keeps it.
  */
-const keepsUnchosen = (member: AnsweredMember) => {
+export const mayHoldOnlyWrites = (member: AnsweredMember) => {
   const copy = member.view.copy;
   return member.keepsWritten !== true || (copy?.kind === "slot" && copy.written_here === true);
 };
 
+/** A slot as a delete confirms it: none for one that holds no snapshot yet. */
+export function confirmedCopy(member: AnsweredMember): ConfirmedCopy | null {
+  const copy = member.view.copy;
+  if (copy?.kind !== "slot" || copy.newest === null) return null;
+  const written_here = member.keepsWritten === true ? copy.written_here === true : null;
+  return { machine: member.machine.id, slot: copy.slot, newest: copy.newest.guid, written_here };
+}
+
+/** The copy `confirmed` lists that `member` still holds exactly, if any. */
+export function stillConfirmed(member: AnsweredMember, confirmed: readonly ConfirmedCopy[]): ConfirmedCopy | undefined {
+  const now = confirmedCopy(member);
+  if (now === null) return undefined;
+  return confirmed.find((copy) => copy.machine === now.machine && copy.slot === now.slot && copy.newest === now.newest && copy.written_here === now.written_here);
+}
+
+/**
+ * What a delete's Forget of `member` expects: the copy someone confirmed, else the copy the run saw. A slot names whether
+ * it was written here too, on a Server that says, so it refuses once that changed.
+ */
+export function forgetExpect(member: AnsweredMember, role: SlotRole | null, confirmed: ConfirmedCopy | undefined): ExpectedCopy {
+  const seen = confirmed ?? confirmedCopy(member);
+  if (seen === null) return expectOf(member.view.copy);
+  return {
+    kind: "mirror", newest: seen.newest, slot: seen.slot,
+    ...(role !== null && { role }),
+    ...(seen.written_here !== null && { written_here: seen.written_here }),
+  };
+}
+
+/**
+ * A delete of `destroy`. One someone chose deletes only the copies they confirmed, each as they saw it: a copy replaced
+ * or written since, or one they never saw, ends the run before anything is deleted.
+ */
+function confirmedPhase(
+  name: string, destroy: readonly AnsweredMember[], forget: AnsweredMember | null, role: SlotRole | null, discard: Discard | undefined,
+  again: (server: string) => string,
+): Planned {
+  const confirmed = discard?.copies ?? [];
+  const changed = discard === undefined ? undefined : destroy.find((member) => confirmedCopy(member) !== null && stillConfirmed(member, confirmed) === undefined);
+  if (changed !== undefined) {
+    const retry = discard?.by === "person" ? `Run ${again(changed.machine.name)} to delete it as it is now` : "Deploy again to confirm it as it is now";
+    return refuse("copy_changed", `${copyName(name, changed.machine.name)} changed since its delete was confirmed, so nothing was deleted. ${retry}`);
+  }
+  return { ok: true, phase: { kind: "delete_mirror", destroy, forget, role, confirmed, kept: [] } };
+}
+
+/** The command that deletes the copy `dockerVolume` left on `server` once its Volume is gone, after showing it. */
+export const leftoverRm = (dockerVolume: string, server: string) => `ployz volume leftovers rm ${dockerVolume} --on ${server}`;
+
 /** Why each slot the orphan sweep left stays, for its run to say. */
 export function keptMessage(name: string, kept: readonly AnsweredMember[]) {
-  return kept.map((member) => member.keepsWritten === true
-    ? `kept ${copyName(name, member.machine.name)}, which may hold writes no other Server has`
-    : `kept ${copyName(name, member.machine.name)} until ${member.machine.name} runs a newer Ployz, which would delete it even if it holds writes no other Server has`).join("; ");
+  return kept.map((member) => {
+    const server = member.machine.name;
+    const why = member.keepsWritten === true ? ", which may hold writes no other Server has"
+      : ` until ${server} runs a newer Ployz, which would delete it even if it holds writes no other Server has`;
+    return `kept ${copyName(name, server)}${why} (${leftoverRm(name, server)} deletes it)`;
+  }).join("; ");
 }
 
 /**
@@ -264,10 +321,17 @@ function planCopies(input: PlanInput, observed: readonly Member[]): Planned {
     if (input.orphan) {
       const writers = roots.filter((member) => !isUnadoptedSeed(member));
       if (writers.length > 0) return refuse("invalid", `${name} still has a writer on ${writers.map(named).join(", ")}`);
-      const kept = mirrors.filter(keepsUnchosen);
+      const { discard, slot } = input.args;
+      if (discard !== undefined) {
+        // A person's delete of one copy the Volume left: the copy they confirmed, and nothing else.
+        const destroy = mirrors.filter((member) => member.machine.name === slot);
+        if (destroy.length === 0) return refuse("no_mirror", `${name} has no copy on ${slot ?? "that server"}`);
+        return confirmedPhase(name, destroy, null, null, discard, (server) => leftoverRm(name, server));
+      }
+      const kept = mirrors.filter(mayHoldOnlyWrites);
       const destroy = [...roots, ...mirrors.filter((member) => !kept.includes(member))];
       if (destroy.length === 0) return kept.length === 0 ? refuse("no_mirror", `${name} has no mirror`) : refuse("written_here", keptMessage(name, kept));
-      return { ok: true, phase: { kind: "delete_mirror", destroy, forget: null, role: null, discard: false, kept } };
+      return { ok: true, phase: { kind: "delete_mirror", destroy, forget: null, role: null, confirmed: [], kept } };
     }
     const { role } = input.args;
     if (role === undefined) {
@@ -289,17 +353,8 @@ function planCopies(input: PlanInput, observed: readonly Member[]): Planned {
       return refuse("confirm_required", `${only} is ${name}'s only copy; volume mirror rm ${only}${ifOldCopy(role)} --confirm ${name}`);
     }
     const [writer] = roots;
-    return {
-      ok: true,
-      phase: {
-        kind: "delete_mirror",
-        destroy,
-        forget: roots.length === 1 && writer !== undefined ? writer : null,
-        role: role === "any" ? null : role,
-        discard: input.args.discard !== undefined,
-        kept: [],
-      },
-    };
+    const again = (server: string) => `ployz volume mirror rm ${copyName(name, server)}${ifOldCopy(role)}`;
+    return confirmedPhase(name, destroy, roots.length === 1 && writer !== undefined ? writer : null, role === "any" ? null : role, input.args.discard, again);
   }
 
   if (unanswered !== undefined) return unknown(unanswered);

@@ -1,7 +1,7 @@
 import type { ChangeKind, MachineId, SlotRole, VolumeCopy } from "@ployz/sdk";
 import { Option, Schema } from "effect";
-import { type MachineRef, STALE_AFTER_MS, VolumeInput } from "#/modules/volume-run/volume-run";
-import { epochOf, planFromCopies, planSeed, SEED_OFF } from "#/modules/volume-run/plan";
+import { type ConfirmedCopy, type MachineRef, STALE_AFTER_MS, VolumeInput } from "#/modules/volume-run/volume-run";
+import { confirmedCopy, epochOf, planFromCopies, planSeed, SEED_OFF } from "#/modules/volume-run/plan";
 import { runWords } from "#/modules/volume-run/run-words";
 import { rustMachineIdSchema } from "#/lib/schema";
 import type { RuntimeVolumeCopy } from "#/modules/runtime/runtime.collection";
@@ -606,39 +606,53 @@ export function changeSteps(change: PlacementChange, now: Date): readonly string
 /**
  * One thing a Deploy of staged changes takes: the copy of `volume` on `server`, or a restore's dropped writes, the
  * source's after `after` when a restore point bounds them. A restore drops both the unanswered primary's copy and its
- * writes.
+ * writes. `copy` is a deleted slot as its Server reports it, which the confirm binds.
  */
-export type PlacementLost = { readonly volume: PlacementVolume; readonly server: MachineRef | null; readonly writes: boolean; readonly after: Date | null };
+export type PlacementLost = {
+  readonly volume: PlacementVolume; readonly server: MachineRef | null; readonly writes: boolean; readonly after: Date | null;
+  readonly copy: ConfirmedCopy | null;
+};
 
-export function placementLosses(changes: readonly PlacementChange[]): PlacementLost[] {
-  const copy = (volume: PlacementVolume, server: MachineRef): PlacementLost => ({ volume, server, writes: false, after: null });
+/** What a Deploy of `changes` to one Volume takes, read against that Volume's `members`. */
+export function placementLosses(changes: readonly PlacementChange[], members: readonly Member[]): PlacementLost[] {
+  const slotOn = (server: MachineRef) => {
+    const member = members.find((each): each is AnsweredMember => each.answered && each.machine.id === server.id);
+    return member === undefined ? null : confirmedCopy(member);
+  };
+  const copy = (volume: PlacementVolume, server: MachineRef): PlacementLost => ({ volume, server, writes: false, after: null, copy: slotOn(server) });
   return changes.flatMap((change) => {
     const cleared = "clears" in change ? change.clears.map((server) => copy(change.volume, server)) : [];
     switch (change.kind) {
       case "move":
-        return change.how === "restore" ? [...cleared, { volume: change.volume, server: change.from, writes: true, after: change.lostAfter }] : cleared;
+        return change.how === "restore" ? [...cleared, { volume: change.volume, server: change.from, writes: true, after: change.lostAfter, copy: null }] : cleared;
       case "add_mirror":
         return cleared;
       case "remove_mirror":
       case "delete_copy":
         return [copy(change.volume, change.server)];
       case "seed":
-        return [{ volume: change.source, server: null, writes: true, after: new Date(change.point.at * 1000) }];
+        return [{ volume: change.source, server: null, writes: true, after: new Date(change.point.at * 1000), copy: null }];
     }
   });
 }
 
-type VolumeLost = { name: string; deletes: { machine_id: MachineId }[]; loss: "data" | "writes"; after?: number };
+/** A deleted copy as a confirm names it: its Server, and the slot as that Server reports it, when it holds a snapshot. */
+export type LostCopy = { machine_id: MachineId; slot?: string; newest?: string; written_here?: boolean | null };
+
+type VolumeLost = { name: string; deletes: LostCopy[]; loss: "data" | "writes"; after?: number };
 
 /**
- * Each Volume that loses something, as a `confirmation_required` refusal names it: the Servers losing a copy, and for a
+ * Each Volume that loses something, as a `confirmation_required` refusal names it: the copies it deletes, and for a
  * restore dropping writes, `writes` and any restore point in seconds, so a refused Deploy words its confirm as the local
  * check does.
  */
 export function lossByVolume(lost: readonly PlacementLost[]): VolumeLost[] {
   return [...new Set(lost.map(({ volume }) => volume.name))].map((name) => {
     const of = lost.filter(({ volume }) => volume.name === name);
-    const deletes = of.flatMap(({ server }) => server === null ? [] : [{ machine_id: server.id }]);
+    const deletes = of.flatMap(({ server, copy }): LostCopy[] => {
+      if (server === null) return [];
+      return copy === null ? [{ machine_id: server.id }] : [{ machine_id: server.id, slot: copy.slot, newest: copy.newest, written_here: copy.written_here }];
+    });
     const writes = of.filter((entry) => entry.writes);
     if (writes.length === 0) return { name, deletes, loss: "data" };
     // The earliest cutoff loses the most; an unknown one may be earlier still.

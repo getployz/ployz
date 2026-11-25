@@ -220,7 +220,10 @@ export const runVolume = (
       const gated = yield* gate(caller, call, asked);
       if (!gated.ok) return refused(gated.refusal);
     }
-    return (runId: string) => admitRun(actor(caller), planned.input, planned.volume, runId)
+    // A delete deletes only the copies the Servers reported as this person asked.
+    const copies = "copies" in planned ? planned.copies : undefined;
+    const who = copies === undefined ? actor(caller) : { ...actor(caller), confirmed: { by: "person" as const, copies: [...copies] } };
+    return (runId: string) => admitRun(who, planned.input, planned.volume, runId)
       .pipe(Effect.map((inserted) => inserted.ok
         ? { ok: true, id: inserted.run.id } as const
         : { ok: false, refusal: inserted.refusal, busy: inserted.busy } as const));

@@ -810,6 +810,21 @@ pub(crate) const VOLUME_INSPECT: Verb = Verb::cloud(
     volume::inspect_command,
     volume::inspect,
 );
+pub(crate) const VOLUME_LEFTOVERS: Verb = Verb::cloud(
+    "volume leftovers",
+    Never,
+    volume::leftovers::list_command,
+    volume::leftovers::list,
+)
+.docs("services/volumes.md");
+pub(crate) const VOLUME_LEFTOVERS_RM: Verb = Verb::cloud(
+    "volume leftovers rm",
+    Always,
+    volume::leftovers::remove_command,
+    volume::leftovers::remove,
+)
+.keeps_running(KeepsRunning::With("--wait"))
+.docs("services/volumes.md");
 pub(crate) const VOLUME_LS: Verb =
     Verb::cloud("volume ls", Never, volume::list_command, volume::list).docs("services/volumes.md");
 pub(crate) const VOLUME_MIRROR: Verb = Verb::cloud(
@@ -1020,6 +1035,8 @@ pub(crate) const VERBS: &[Verb] = &[
     UP,
     VOLUME_ADD,
     VOLUME_INSPECT,
+    VOLUME_LEFTOVERS,
+    VOLUME_LEFTOVERS_RM,
     VOLUME_LS,
     VOLUME_MIRROR,
     VOLUME_MIRROR_RM,

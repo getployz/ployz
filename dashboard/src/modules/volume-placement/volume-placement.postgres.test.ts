@@ -452,7 +452,11 @@ describe("volume placement", () => {
       expect(await admission(admit([]))).toEqual({ ok: false, refusal: {
         code: "confirmation_required",
         message: "Deploying loses data of data. Accept each by name",
-        details: { volumes: [{ name: "data", deletes: [{ machine_id: web("web-2") }], loss: "data" }], accept: ["data"], version: expect.stringMatching(/^v1#loss-/) },
+        details: {
+          volumes: [{ name: "data", deletes: [{ machine_id: web("web-2"), slot: "1", newest: "11", written_here: false }], loss: "data" }],
+          accept: ["data"],
+          version: expect.stringMatching(/^v1#loss-/),
+        },
       } });
       expect(await admission(admit(["other"], null))).toMatchObject({ ok: false, refusal: { details: { accept: ["other", "data"], version: expect.stringMatching(/^diff-7#loss-/) } } });
       expect(writes).toEqual([]);
@@ -462,6 +466,19 @@ describe("volume placement", () => {
       expect(writes).toEqual([]);
       expect(await admission(admit(["data", "other"], await shown()))).toEqual({ ok: true, command: admit(["other"]) });
       expect(await holder()).toBe("dep-1");
+    });
+
+    it("refuses a confirm once the copy it deletes was replaced or written there, and keeps the copy it confirmed", async () => {
+      await stage("web-1");
+      const now = (copy: Member) => () => Effect.succeed([member("web-1", "writer"), copy]);
+      const version = await shown();
+      for (const copy of [member("web-2", "mirror", { slot: "2" }), member("web-2", "writtenHere")]) {
+        expect(await admission(admit(["data"], version), now(copy))).toMatchObject({ ok: false, refusal: { code: "confirmation_required" } });
+      }
+      expect(writes).toEqual([]);
+      expect(await admission(admit(["data"], version))).toMatchObject({ ok: true });
+      expect((await harness.pool.query("select confirmed from volume_placement")).rows)
+        .toEqual([{ confirmed: [{ machine: web("web-2"), slot: "1", newest: "11", written_here: false }] }]);
     });
 
     it("refuses an acceptance of a loss the Volume no longer has, and stamps nothing", async () => {

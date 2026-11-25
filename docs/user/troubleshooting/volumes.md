@@ -352,17 +352,52 @@ data's copy on web-1 may hold writes no other Server has; only ployz volume mirr
 A server running a Ployz later than 0.4.0-beta.2 deletes such a copy only when someone chose to
 delete it: you ran `ployz volume mirror rm`, or you confirmed a deploy whose **Deletes data** listed
 it. Anything else that would delete it stops with this message, and the server keeps the copy as it
-was. A release that would delete such a copy stops before it starts your service again. Run
-`ployz volume mirror rm` on the copy once you no longer need what it holds, then run the command
-again.
+was. Run `ployz volume mirror rm` on the copy once you no longer need what it holds, then run the
+command again.
+
+A release that meets such a copy keeps it and still starts your service again. The run ends done and
+names the copy, like `kept data-web-1, which may hold writes no other Server has (ployz volume
+mirror rm data-web-1 deletes it)`.
+
+## A delete says the copy changed since it was confirmed
+
+```
+data-web-2 changed since its delete was confirmed, so nothing was deleted. Run ployz volume mirror rm data-web-2 to delete it as it is now
+```
+
+A delete removes only the copy you confirmed, as its server showed it then: the same slot, the same
+newest snapshot, and the same answer to whether it may hold writes no other server has. If the
+copy was replaced, refreshed or written to before the delete ran, Ployz deletes nothing. Run the
+command again to see the copy as it is now. A deploy's delete says `Deploy again to confirm it as it
+is now` instead, and the deploy asks again with the copy's new details.
+
+## Copies left behind by a deleted volume
 
 After a deploy deletes a volume or an environment, Ployz deletes the volume's mirrors on your other
 servers. It keeps each copy that may hold writes no other server has, such as an old copy a move
 left or a copy a server parked when it learned it was removed while away. It also keeps every copy
 on a server running Ployz 0.4.0-beta.2 or earlier, since that server would delete it whatever it
 holds. When the cleanup deletes some copies, its run names each one it kept, like `kept
-data-web-1, which may hold writes no other Server has`. These copies stay on the server's disk, and
-no command deletes them yet.
+data-web-1, which may hold writes no other Server has (ployz volume leftovers rm
+shop-production_vol-3f2a --on web-1 deletes it)`.
+
+List the copies Ployz kept:
+
+```
+ployz volume leftovers
+```
+
+Each row shows the copy's server, slot, last snapshot, size, and whether it may hold writes no other
+server has. In Ployz Cloud, a server's page lists its copies under **Copies of deleted volumes**,
+and **Copy delete command** copies the command for one. To delete one, run `ployz volume leftovers rm` with the volume and server from the
+list. The first run shows the copy and deletes nothing:
+
+```
+error: shop-production_vol-3f2a on web-1: slot 7, last snapshot dep-1763600000 (2025-11-20 01:33 UTC), up to 10.0 GB; may hold writes no other Server has. Run ployz volume leftovers rm shop-production_vol-3f2a --on web-1 --confirm 7-1234-written to delete it
+```
+
+Run the line it prints once you no longer need what the copy holds. If the copy changed since you
+looked, the delete stops again and shows it as it is now.
 
 When a server refuses for a reason your Ployz Cloud doesn't know, the run shows the server's own
 message after `web-1 refused:`. Upgrade Ployz Cloud if the message asks you to.

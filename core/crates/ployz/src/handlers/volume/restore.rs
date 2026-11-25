@@ -159,6 +159,7 @@ pub(super) fn plan(
                     newest: newest.guid,
                     slot: *slot,
                     role: None,
+                    written_here: None,
                 },
                 WriterEpoch::new(above.saturating_add(1)),
                 Some(newest.clone()),

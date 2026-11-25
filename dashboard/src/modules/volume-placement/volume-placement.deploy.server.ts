@@ -48,6 +48,7 @@ const release = Effect.fn("VolumePlacement.release")(function* (organizationId: 
   yield* drizzle.update(volumePlacement).set({
     deploymentId: null,
     staged: failed ? sql`${volumePlacement.staged} || '{"unreached":true}'::jsonb` : sql`${volumePlacement.staged}`,
+    confirmed: null,
     updatedAt: sql`now()`,
   }).where(and(eq(volumePlacement.organizationId, organizationId), eq(volumePlacement.deploymentId, deploymentId)));
 });
@@ -278,8 +279,9 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
     }
     // Touching the row without changing it confirms the claim right before the run starts.
     if (!(yield* settleClaimed(row.volumeId, deploymentId, {}))) return { kind: "stopped" } satisfies PlacementAdvance;
-    // The Deployment's confirmed data loss listed each copy its runs delete.
-    const requested = yield* requestVolumeRun({ userId: null, organizationId, deployment: deploymentId }, { volumeId: runsOn, environment, ...step.run }, {
+    // A delete discards only the copies this Deploy's confirm named, as their Servers reported them then.
+    const confirmed = step.run.kind === "delete_mirror" ? { confirmed: { by: "deployment", copies: row.confirmed ?? [] } as const } : {};
+    const requested = yield* requestVolumeRun({ userId: null, organizationId, ...confirmed }, { volumeId: runsOn, environment, ...step.run }, {
       end: "yielded", fences: replanning?.waited.step.run.kind,
     });
     if (requested.ok) {

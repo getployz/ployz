@@ -20,7 +20,7 @@ export function orphanSlotNames(copies: CopyObservation["copies"], configNames: 
   return [...new Set(orphans.map((copy) => copy.name))].sort();
 }
 
-const configVolumeNames = Effect.fn("VolumeRun.configVolumeNames")(function* (organizationId: string) {
+export const configVolumeNames = Effect.fn("VolumeRun.configVolumeNames")(function* (organizationId: string) {
   const names = new Set<string>();
   const { namespaces } = yield* readStore(organizationId, { query: "namespaces" });
   for (const owned of namespaces) {
