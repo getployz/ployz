@@ -274,7 +274,7 @@ pub(in crate::handlers) fn empty(root: &ArgMatches) -> Result<(), Error> {
         }
         return Err(refused);
     }
-    let emptied = runtime.block_on(async {
+    let mut emptied = runtime.block_on(async {
         server
             .client
             .call_shared::<op::EmptyTrash>(
@@ -287,6 +287,8 @@ pub(in crate::handlers) fn empty(root: &ArgMatches) -> Result<(), Error> {
             .await
             .map_err(crate::connect::rpc_error)
     })?;
+    // The entries left out of the request stay too, beside any the Server found pinned.
+    emptied.restoring.extend(restoring);
     crate::ui::finish(
         &json!({ "server": server.name, "emptied": emptied }),
         || {
