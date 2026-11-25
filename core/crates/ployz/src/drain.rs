@@ -544,15 +544,12 @@ async fn preflight(
     let services_role = if server.accepts_services {
         turn_services_off(client, &server.id, cancellation)
             .await
-            .map_err(|stop| {
-                if unanswered(&stop) {
-                    DrainError::MaybeOff {
-                        server: server.name.clone(),
-                        stop,
-                    }
-                } else {
-                    DrainError::Unchanged(stop)
-                }
+            .map_err(|unset| match unset {
+                Unset::Refused(stop) => DrainError::Unchanged(stop),
+                Unset::Unknown(stop) => DrainError::MaybeOff {
+                    server: server.name.clone(),
+                    stop,
+                },
             })?;
         ServicesRole::TurnedOff
     } else {
@@ -677,14 +674,13 @@ fn user_globals(server: &Machine, globals: &[QualifiedService]) -> RpcError {
     )
 }
 
-/// Whether `stop` ended a services-role update without the daemon's answer, so the update
-/// may still have landed: the daemon finishes an update it admitted after its caller goes.
-fn unanswered(stop: &Stop) -> bool {
-    match stop {
-        Stop::Cancelled | Stop::Connect(_) => true,
-        Stop::Refused(error) => error.code == RpcErrorCode::Unavailable,
-        Stop::RoleNotObserved | Stop::Unobservable { .. } => false,
-    }
+/// How turning the services role off failed.
+enum Unset {
+    /// The daemon answered no, or the call never left this client: nothing changed.
+    Refused(Stop),
+    /// The call went out and no answer came back, or the caller cancelled while it was
+    /// pending. The daemon finishes an update it admitted, so the role may be off.
+    Unknown(Stop),
 }
 
 /// Turn the services role off on `id`. Whether the entry observes it is the next phase's.
@@ -692,7 +688,7 @@ async fn turn_services_off(
     client: &mut Client,
     id: &MachineId,
     cancellation: &CancellationToken,
-) -> Result<(), Stop> {
+) -> Result<(), Unset> {
     let target = MachineTarget::from(id);
     let update = client.call_shared::<op::UpdateMachine>(
         UpdateMachineRequest {
@@ -707,10 +703,16 @@ async fn turn_services_off(
     );
     tokio::select! {
         biased;
-        () = cancellation.cancelled() => Err(Stop::Cancelled),
-        updated = update => updated
-            .map(drop)
-            .map_err(|error| Stop::Refused(crate::connect::rpc_error(error))),
+        () = cancellation.cancelled() => Err(Unset::Unknown(Stop::Cancelled)),
+        updated = update => updated.map(drop).map_err(|error| {
+            let unreplied = error.unreplied();
+            let stop = Stop::Refused(crate::connect::rpc_error(error));
+            if unreplied {
+                Unset::Unknown(stop)
+            } else {
+                Unset::Refused(stop)
+            }
+        }),
     }
 }
 

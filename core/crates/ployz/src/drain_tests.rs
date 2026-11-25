@@ -1234,7 +1234,8 @@ struct Metrics {
 /// services role, and every other call it sent, turning that role off included. Its peer
 /// `web-1` runs a copy of `app/metrics`, a user Global left from Compose before
 /// 0.1.2-beta.42. `look` answers for `web-2` by how many Machine listings came before it,
-/// and `look(0)` for the services-off update, which applies before it hangs.
+/// and `look(0)` for the services-off update: `Fails` refuses it unchanged, `Hangs` applies
+/// it and never answers.
 async fn drain_reading_only(
     accepts_services: bool,
     scope: DrainScope,
@@ -1309,11 +1310,25 @@ async fn drain_reading_only(
                     RpcRequestBody::UpdateMachine(update)
                         if update.update.accepts_services == Some(false) =>
                     {
-                        turned_off.store(true, Ordering::SeqCst);
                         asked.lock().unwrap().push("services off".to_owned());
-                        if matches!(look(0, &metrics), Look::Hangs) {
-                            std::future::pending::<()>().await;
+                        match look(0, &metrics) {
+                            Look::Fails => {
+                                return Ok(Response::new(
+                                    RpcResponse::from(RpcError::new(
+                                        ployz_core::RpcErrorCode::Unavailable,
+                                        "this Server's Cluster store isn't ready",
+                                    ))
+                                    .encode()
+                                    .unwrap(),
+                                ));
+                            }
+                            Look::Hangs => {
+                                turned_off.store(true, Ordering::SeqCst);
+                                std::future::pending::<()>().await;
+                            }
+                            Look::Lists(_) | Look::Unlisted => {}
                         }
+                        turned_off.store(true, Ordering::SeqCst);
                         let mut machine = machines[0].machine.clone();
                         machine.accepts_services = false;
                         RpcResponse::from(MachineUpdated { machine })
@@ -1589,6 +1604,26 @@ async fn a_services_off_update_that_never_answers_says_they_may_be_off() {
         ),
         "{message}"
     );
+    assert_eq!(asked, ["services off"]);
+}
+
+/// A daemon that answers the services-off update with a refusal changed nothing, even when
+/// its refusal is coded Unavailable, so the Drain says nothing changed and offers no undo.
+#[tokio::test]
+async fn a_refused_services_off_update_changes_nothing() {
+    let (drained, asked) = drain_reading_only(true, DrainScope::EveryNamespace, |before, _| {
+        if before == 0 {
+            Look::Fails
+        } else {
+            Look::Lists(Vec::new())
+        }
+    })
+    .await;
+
+    let Err(super::DrainError::Unchanged(super::Stop::Refused(refused))) = drained else {
+        panic!("expected a refusal that changed nothing, got {drained:?}");
+    };
+    assert_eq!(refused.code, ployz_core::RpcErrorCode::Unavailable);
     assert_eq!(asked, ["services off"]);
 }
 
