@@ -13,9 +13,9 @@ use clap::ArgMatches;
 use futures_util::{StreamExt, stream};
 use ployz_core::{
     Claim, CopyRefusal, DockerVolumeName, ExpectedCopy, Hint, InspectVolumeCopyRequest, MachineId,
-    MachineName, MachineStorageObservation, MachineTarget, Namespace, RpcErrorCode,
-    SetVolumeCopyRefused, SetVolumeCopyRequest, Snapshot, VOLUME_FLOOR_CAPABILITY, VolumeCopy,
-    VolumeGen, WantedCopy, WriterEpoch, op,
+    MachineName, MachineTarget, Namespace, RpcErrorCode, RuntimeWatchFrame, SetVolumeCopyRefused,
+    SetVolumeCopyRequest, Snapshot, VOLUME_FLOOR_CAPABILITY, VolumeCopy, VolumeGen, WantedCopy,
+    WriterEpoch, op,
 };
 use ployz_store::{EnvironmentSummary, NamespacesQuery, VolumeId, VolumeName};
 use serde::Serialize;
@@ -72,35 +72,7 @@ pub(super) fn plan(
     from: &MachineName,
     seen: &[Seen],
 ) -> Result<Planned, Error> {
-    let silent: Vec<String> = seen
-        .iter()
-        .filter_map(|seen| match &seen.copy {
-            Err(Unseen::Silent(why)) => Some(format!("{} {why}", seen.name)),
-            Ok(_) | Err(Unseen::Unfenced) => None,
-        })
-        .collect();
-    if !silent.is_empty() {
-        return Err(Error::unavailable(format!(
-            "Restore needs every Server to answer, since a copy on one that didn't would become a second writer. {}",
-            silent.join("; ")
-        )));
-    }
-    let unfenced: Vec<&str> = seen
-        .iter()
-        .filter(|seen| matches!(seen.copy, Err(Unseen::Unfenced)))
-        .map(|seen| seen.name.as_str())
-        .collect();
-    if !unfenced.is_empty() {
-        return Err(Error::coded(
-            RpcErrorCode::Unsupported,
-            format!(
-                "{} {} a copy of {volume} but {} a Ployz too old for Restore; upgrade Ployz there first",
-                unfenced.join(", "),
-                if unfenced.len() == 1 { "holds" } else { "hold" },
-                if unfenced.len() == 1 { "runs" } else { "run" },
-            ),
-        ));
-    }
+    answered(volume, seen)?;
     let copies: Vec<(&Seen, &VolumeCopy)> = seen
         .iter()
         .filter_map(|seen| Some((seen, seen.copy.as_ref().ok()?.as_ref()?)))
@@ -181,7 +153,42 @@ pub(super) fn plan(
     })
 }
 
-fn newest(copy: &VolumeCopy) -> Option<&Snapshot> {
+/// Refuses unless every member Server answered, and each one holding a copy runs a Ployz that
+/// fences it: a copy on a Server that didn't could become a second writer.
+pub(super) fn answered(volume: &dyn std::fmt::Display, seen: &[Seen]) -> Result<(), Error> {
+    let silent: Vec<String> = seen
+        .iter()
+        .filter_map(|seen| match &seen.copy {
+            Err(Unseen::Silent(why)) => Some(format!("{} {why}", seen.name)),
+            Ok(_) | Err(Unseen::Unfenced) => None,
+        })
+        .collect();
+    if !silent.is_empty() {
+        return Err(Error::unavailable(format!(
+            "Restore needs every Server to answer, since a copy on one that didn't would become a second writer. {}",
+            silent.join("; ")
+        )));
+    }
+    let unfenced: Vec<&str> = seen
+        .iter()
+        .filter(|seen| matches!(seen.copy, Err(Unseen::Unfenced)))
+        .map(|seen| seen.name.as_str())
+        .collect();
+    if !unfenced.is_empty() {
+        return Err(Error::coded(
+            RpcErrorCode::Unsupported,
+            format!(
+                "{} {} a copy of {volume} but {} a Ployz too old for Restore; upgrade Ployz there first",
+                unfenced.join(", "),
+                if unfenced.len() == 1 { "holds" } else { "hold" },
+                if unfenced.len() == 1 { "runs" } else { "run" },
+            ),
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn newest(copy: &VolumeCopy) -> Option<&Snapshot> {
     match copy {
         VolumeCopy::Root { newest, .. } | VolumeCopy::Slot { newest, .. } => newest.as_ref(),
     }
@@ -237,56 +244,50 @@ pub(super) fn docker_volume(
     Ok((namespace, docker))
 }
 
-/// What every member Server reports for `docker`, sorted by name. A Server that can't say
-/// is [`Unseen`], with why.
-///
-/// # Errors
-/// Returns the error reading the Cluster's runtime frame.
+/// What every member Server in `frame` reports for `docker`, sorted by name. A Server that
+/// can't say is [`Unseen`], with why.
 pub(super) async fn copies(
     client: &crate::connect::Client,
+    frame: &RuntimeWatchFrame,
     docker: &DockerVolumeName,
-) -> Result<Vec<Seen>, Error> {
-    let frame = client.runtime_frame().await?;
-    let mut seen: Vec<Seen> = stream::iter(
-        frame
-            .machines
-            .iter()
-            .filter(|observed| observed.storage != Some(MachineStorageObservation::Stateless)),
-    )
-    .map(|observed| async move {
-        let copy = if observed.invites_rpc() {
-            let inspected = client
-                .call_shared::<op::InspectVolumeCopy>(
-                    InspectVolumeCopyRequest {
-                        name: docker.clone(),
-                    },
-                    Call::once()
-                        .to(&MachineTarget::from(&observed.machine.id))
-                        .within(Deadline::Target(TARGET_RPC_TIMEOUT)),
-                )
-                .await
-                .map_err(crate::connect::rpc_error);
-            let unfenced = observed.machine.runtime.claim(VOLUME_FLOOR_CAPABILITY) == Claim::Lacks;
-            match inspected {
-                Ok(view) if unfenced && view.copy.is_some() => Err(Unseen::Unfenced),
-                Ok(view) => Ok(view.copy),
-                Err(error) => Err(Unseen::Silent(format!(
-                    "did not answer ({})",
-                    error.message
-                ))),
+) -> Vec<Seen> {
+    // A Server Docker-only now may still hold a Pool it can't import, so every member answers.
+    let mut seen: Vec<Seen> = stream::iter(frame.machines.iter())
+        .map(|observed| async move {
+            let copy = if observed.invites_rpc() {
+                let inspected = client
+                    .call_shared::<op::InspectVolumeCopy>(
+                        InspectVolumeCopyRequest {
+                            name: docker.clone(),
+                        },
+                        Call::once()
+                            .to(&MachineTarget::from(&observed.machine.id))
+                            .within(Deadline::Target(TARGET_RPC_TIMEOUT)),
+                    )
+                    .await
+                    .map_err(crate::connect::rpc_error);
+                let unfenced =
+                    observed.machine.runtime.claim(VOLUME_FLOOR_CAPABILITY) == Claim::Lacks;
+                match inspected {
+                    Ok(view) if unfenced && view.copy.is_some() => Err(Unseen::Unfenced),
+                    Ok(view) => Ok(view.copy),
+                    Err(error) => Err(Unseen::Silent(format!(
+                        "did not answer ({})",
+                        error.message
+                    ))),
+                }
+            } else {
+                Err(Unseen::Silent("is down or hasn't joined yet".to_owned()))
+            };
+            Seen {
+                id: observed.machine.id,
+                name: observed.machine.name.to_string(),
+                copy,
             }
-        } else {
-            Err(Unseen::Silent("is down or hasn't joined yet".to_owned()))
-        };
-        Seen {
-            id: observed.machine.id,
-            name: observed.machine.name.to_string(),
-            copy,
-        }
-    })
-    .buffer_unordered(INSPECTS_AT_ONCE)
-    .collect()
-    .await;
+        })
+        .buffer_unordered(INSPECTS_AT_ONCE)
+        .collect()
+        .await;
     seen.extend(frame.incomplete_ids.machines.iter().map(|id| Seen {
         id: *id,
         name: id.to_string(),
@@ -295,7 +296,7 @@ pub(super) async fn copies(
         )),
     }));
     seen.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(seen)
+    seen
 }
 
 /// `ployz volume restore VOLUME --from SERVER` on a Cluster with no Cloud.
@@ -317,7 +318,8 @@ pub(super) fn standalone(
     let runtime = super::super::runtime()?;
     let planned = runtime.block_on(async {
         let client = super::super::route::connect(matches, context).await?;
-        let seen = copies(&client, &docker).await?;
+        let frame = client.runtime_frame().await?;
+        let seen = copies(&client, &frame, &docker).await;
         let docker = &docker;
         let client = &client;
         let planned = plan(volume, docker, from, &seen)?;
