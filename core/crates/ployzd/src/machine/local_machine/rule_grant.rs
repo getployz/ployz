@@ -12,8 +12,9 @@ use std::future::Future;
 use ployz_core::{
     BuildGrantId, GithubToken, RuleGrant, SealedRecord,
     authority::{
-        AuthorityRefusal, AutoDeployRule, BuildClaim, BuildStage, CommitAuthority, CommitSha,
-        GithubClaims, PolicyDigest, RecipientKey, SealedDigest, Timestamp, rule::verify_signature,
+        AuthorityRefusal, AutoDeployRule, Budget, BuildClaim, BuildStage, ChargedAuthority,
+        CommitAuthority, CommitSha, GithubClaims, PolicyDigest, RecipientKey, SealedDigest,
+        Timestamp, rule::verify_signature,
     },
 };
 
@@ -185,8 +186,20 @@ impl LocalMachine {
             .held_sealing(record.phase())
             .and_then(ployz_core::Sealing::held_key)
             .ok_or(Error::RuleGrantRefused(AuthorityRefusal::NoClusterIdentity))?;
-        let (rule, _) = verify_signature(&grant.rule, &record.trusted_keys(), Some(cluster))
+        let trusted = record.trusted_keys();
+        // One budget across the rule, the approval and GitHub's token, each charged before
+        // any is checked, as a creation spends.
+        let mut budget = Budget::default();
+        let charged = budget
+            .charge(&grant.rule, &trusted)
             .map_err(Error::RuleGrantRefused)?;
+        let authority = grant
+            .authority
+            .charge(&mut budget, &trusted)
+            .map_err(Error::RuleGrantRefused)?;
+        budget.reserve_one().map_err(Error::RuleGrantRefused)?;
+        let (rule, _) =
+            verify_signature(charged, Some(cluster)).map_err(Error::RuleGrantRefused)?;
         let refused = |field: MismatchField| {
             tracing::warn!(rule = %rule.rule, field = field.text(), "refused a rule build's grant");
             Error::RuleGrantRefused(AuthorityRefusal::Mismatch { field })
@@ -235,18 +248,12 @@ impl LocalMachine {
         if claims.aud != audience {
             return Err(refused(MismatchField::Audience));
         }
-        match &grant.authority {
+        match authority {
             // The builder checked out the approved commit; Cloud's dispatch ran on another.
-            CommitAuthority::Approved(_) => rule
-                .verify_authority(
-                    &grant.authority,
-                    &record.trusted_keys(),
-                    cluster,
-                    grant.commit,
-                    None,
-                )
+            approved @ ChargedAuthority::Approved(_) => rule
+                .verify_authority(approved, cluster, grant.commit, None)
                 .map_err(Error::RuleGrantRefused)?,
-            CommitAuthority::Head => {
+            ChargedAuthority::Head => {
                 if grant.commit != claims.sha {
                     return Err(refused(MismatchField::Commit));
                 }

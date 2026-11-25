@@ -25,6 +25,7 @@ use super::{
     refusal::{AuthorityRefusal, MismatchField, first_mismatch},
     scope::Ask,
     trusted_key::TrustedKeys,
+    version::{Budget, Charged},
 };
 use crate::value::hex_newtype;
 use crate::{
@@ -592,17 +593,17 @@ pub struct RuleIdentity<'a> {
 
 /// Open a rule for this Machine's Cluster `cluster`: signed by a Device it trusts,
 /// answered by a trusted passkey's own prompt, or a Source step of a bundle either signed.
-/// It names this Cluster before anything records a mark of it.
+/// It names this Cluster before anything records a mark of it. It takes the rule as
+/// [`Budget::charge`] answered it, so its checks are paid for before any runs.
 ///
 /// # Errors
 /// Returns the refusal of [`open_approval`], and [`AuthorityRefusal::Mismatch`] naming
 /// the Cluster for a rule of another.
 pub fn verify_signature(
-    rule: &Signed<AutoDeployRule>,
-    trusted: &TrustedKeys,
+    rule: Charged<'_, AutoDeployRule>,
     cluster: Option<SealingPublicKey>,
 ) -> Result<(AutoDeployRule, Approver), AuthorityRefusal> {
-    let (body, by, cluster) = open_approval(rule, trusted, cluster)?;
+    let (body, by, cluster) = open_approval(rule.signed(), rule.trusted(), cluster)?;
     first_mismatch([(MismatchField::Cluster, body.cluster == cluster)])?;
     Ok((body, by))
 }
@@ -662,6 +663,34 @@ impl StepBody for CommitApproval {
     }
 }
 
+/// A [`CommitAuthority`] whose approval, if it carries one, an admission's [`Budget`]
+/// already paid for. Only [`CommitAuthority::charge`] makes one.
+#[derive(Debug)]
+pub enum ChargedAuthority<'a> {
+    Head,
+    Approved(Charged<'a, CommitApproval>),
+}
+
+impl CommitAuthority {
+    /// Charge to `budget` every check the approval this authority carries can cost, before
+    /// anything of the admission is verified.
+    ///
+    /// # Errors
+    /// Returns [`AuthorityRefusal::Overspent`] for an approval costing more than is left.
+    pub fn charge<'a>(
+        &'a self,
+        budget: &mut Budget,
+        trusted: &'a TrustedKeys,
+    ) -> Result<ChargedAuthority<'a>, AuthorityRefusal> {
+        Ok(match self {
+            Self::Head => ChargedAuthority::Head,
+            Self::Approved(approval) => {
+                ChargedAuthority::Approved(budget.charge(approval, trusted)?)
+            }
+        })
+    }
+}
+
 impl AutoDeployRule {
     /// Check `authority` for a build of `commit` under this rule, in `namespace` when the
     /// caller knows it. The head needs nothing here: its caller reads it from GitHub. An
@@ -673,16 +702,16 @@ impl AutoDeployRule {
     /// the first fact the approval doesn't match.
     pub fn verify_authority(
         &self,
-        authority: &CommitAuthority,
-        trusted: &TrustedKeys,
+        authority: ChargedAuthority<'_>,
         cluster: SealingPublicKey,
         commit: CommitSha,
         namespace: Option<&Namespace>,
     ) -> Result<(), AuthorityRefusal> {
-        let CommitAuthority::Approved(approval) = authority else {
+        let ChargedAuthority::Approved(approval) = authority else {
             return Ok(());
         };
-        let (approval, _, cluster) = open_approval(approval, trusted, Some(cluster))?;
+        let (approval, _, cluster) =
+            open_approval(approval.signed(), approval.trusted(), Some(cluster))?;
         first_mismatch([
             (MismatchField::Cluster, approval.cluster == cluster),
             (

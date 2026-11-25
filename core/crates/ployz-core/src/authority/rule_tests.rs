@@ -107,6 +107,15 @@ fn claims(edit: impl FnOnce(&mut Value)) -> GithubClaims {
     serde_json::from_value(value).unwrap()
 }
 
+/// [`super::verify_signature`] on a fresh admission's budget.
+fn verify_signature(
+    rule: &Signed<AutoDeployRule>,
+    trusted: &TrustedKeys,
+    cluster: Option<SealingPublicKey>,
+) -> Result<(AutoDeployRule, Approver), AuthorityRefusal> {
+    super::verify_signature(Budget::default().charge(rule, trusted)?, cluster)
+}
+
 #[test]
 fn claims_parse_ids_and_seconds_from_githubs_strings() {
     let claims = claims(|_| {});
@@ -1362,9 +1371,9 @@ fn only_a_person_or_a_full_device_approves_a_commit() {
         [],
     );
     let check = |signed: Signed<CommitApproval>, trusted: &TrustedKeys| {
+        let authority = CommitAuthority::Approved(signed);
         rule.verify_authority(
-            &CommitAuthority::Approved(signed),
-            trusted,
+            authority.charge(&mut Budget::default(), trusted)?,
             rule.cluster,
             head(),
             Some(&preview("0000aaaa")),

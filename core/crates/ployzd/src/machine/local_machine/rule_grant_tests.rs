@@ -731,6 +731,59 @@ async fn a_preview_rules_grant_binds_its_cache_off() {
     );
 }
 
+/// A grant's approval is charged per signature on the one budget its rule and GitHub's
+/// token spend, before anything is verified: eight signatures beside the rule are refused
+/// as overspent ahead of the token, which here no GitHub key signed. The same grant with
+/// one signature is checked as usual.
+#[tokio::test]
+async fn a_grants_approval_is_charged_for_every_signature_before_anything_is_checked() {
+    let fixture = fixture().await;
+    let mut rule = fixture.rule();
+    previewing(&mut rule);
+    let preview = fixture.preview_of(&rule, "0000aaaa");
+    let CommitAuthority::Approved(mut approval) =
+        fixture.approved(&fixture.approval(&rule, &preview))
+    else {
+        unreachable!("an approved authority")
+    };
+    let signature = approval.signatures[0].clone();
+    approval.signatures = vec![signature; 8];
+    let grant = RuleGrant {
+        commit: fork(),
+        authority: CommitAuthority::Approved(approval),
+        ..fixture.grant(&rule, "not a token".to_owned())
+    };
+    let result = fixture
+        .admit(&grant, &holder(), Some(&fixture.record()), commit())
+        .await;
+    assert!(
+        matches!(
+            result,
+            Err(Error::RuleGrantRefused(AuthorityRefusal::Overspent))
+        ),
+        "{result:?}"
+    );
+    let CommitAuthority::Approved(mut one) = grant.authority.clone() else {
+        unreachable!("an approved authority")
+    };
+    one.signatures.truncate(1);
+    let checked = fixture
+        .admit(
+            &RuleGrant {
+                authority: CommitAuthority::Approved(one),
+                ..grant
+            },
+            &holder(),
+            Some(&fixture.record()),
+            commit(),
+        )
+        .await;
+    assert!(
+        matches!(checked, Err(Error::RuleProofRefused(_))),
+        "{checked:?}"
+    );
+}
+
 /// A fork's commit builds once a person approves it for one preview, though Cloud's
 /// dispatch ran on another commit, the branch head is a third, and the rule's pushers
 /// leave out the dispatcher. Without the approval the same build is refused, and an

@@ -223,7 +223,13 @@ fn a_save_signs_the_rule_as_a_source_step_the_servers_accept() {
     let step = Signed::proposed(&rule, bundle).unwrap();
     let cluster = SealingPublicKey::from_bytes(CLUSTER);
 
-    let (opened, _) = verify_signature(&step, &trusting(&passkey), Some(cluster)).unwrap();
+    let (opened, _) = verify_signature(
+        crate::authority::Budget::default()
+            .charge(&step, &trusting(&passkey))
+            .unwrap(),
+        Some(cluster),
+    )
+    .unwrap();
     assert_eq!(opened.source.branch, "main");
     assert!(draft.steps.is_empty(), "a Save signs no version");
     let summary = &draft.source.unwrap().summary;

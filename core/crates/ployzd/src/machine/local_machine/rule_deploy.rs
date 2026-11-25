@@ -20,9 +20,9 @@ use hkdf::hmac::Mac as _;
 use ployz_core::{
     ContainerKind, ContainerWant, QualifiedService, RunTarget, Sealing, ServiceName,
     authority::{
-        AuthorityRefusal, AutoDeployRule, Budget, BuildClaim, CommitAuthority, MismatchField,
-        RuleEvidence, RuleFacts, RuleProof, Signed, Timestamp, VerifiedBuild, deploy::Creation,
-        rule::verify_signature,
+        AuthorityRefusal, AutoDeployRule, Budget, BuildClaim, ChargedAuthority, CommitAuthority,
+        MismatchField, RuleEvidence, RuleFacts, RuleProof, Signed, Timestamp, VerifiedBuild,
+        deploy::Creation, rule::verify_signature,
     },
 };
 
@@ -163,14 +163,22 @@ impl LocalMachine {
         let refused = |refusal| Error::RuleDeployRefused(RuleDeployRefusal::Rule(refusal));
         let record = self.record();
         let trusted = record.trusted_keys();
-        budget.reserve(&proof.rule, &trusted).map_err(refused)?;
+        // Every check the proof can cost is charged before any runs: the rule, the approval
+        // its claim carries, and GitHub's token signature.
+        let charged = budget.charge(&proof.rule, &trusted).map_err(refused)?;
+        let authority = match &proof.claim {
+            Some(claim) => claim.authority.charge(budget, &trusted).map_err(refused)?,
+            None => ChargedAuthority::Head,
+        };
+        if let RuleEvidence::Online(_) = proof.evidence {
+            budget.reserve_one().map_err(refused)?;
+        }
         let key = self.held_sealing_key(record.phase());
         let (cluster, key) = match (self.held_sealing(record.phase()), key) {
             (Some(Sealing::Held { public_key }), Some(key)) => (public_key, key),
             _ => return Err(refused(AuthorityRefusal::NoClusterIdentity)),
         };
-        let (rule, signer) =
-            verify_signature(&proof.rule, &trusted, Some(cluster)).map_err(refused)?;
+        let (rule, signer) = verify_signature(charged, Some(cluster)).map_err(refused)?;
         let held = |field: MismatchField| {
             tracing::warn!(rule = %rule.rule, field = field.text(), "refused a deploy under a rule");
             refused(AuthorityRefusal::Mismatch { field })
@@ -233,8 +241,6 @@ impl LocalMachine {
         };
         let head = match &proof.evidence {
             RuleEvidence::Online(token) => {
-                // GitHub's token signature is one more check on the same budget.
-                budget.reserve_one().map_err(refused)?;
                 let claims = github
                     .claims(&rule, token.as_str(), &claim.authority, now)
                     .await
@@ -269,17 +275,8 @@ impl LocalMachine {
             }
             RuleEvidence::Verified(_) | RuleEvidence::Pinned => None,
         };
-        if let CommitAuthority::Approved(approval) = &claim.authority {
-            budget.reserve(approval, &trusted).map_err(refused)?;
-        }
-        rule.verify_authority(
-            &claim.authority,
-            &trusted,
-            cluster,
-            claim.commit,
-            Some(&new.slot.namespace),
-        )
-        .map_err(|refusal| logged(&rule, &new.slot.service, refusal))?;
+        rule.verify_authority(authority, cluster, claim.commit, Some(&new.slot.namespace))
+            .map_err(|refusal| logged(&rule, &new.slot.service, refusal))?;
         rule.verify_creation(claim, &facts(head), creation)
             .map_err(|refusal| logged(&rule, &new.slot.service, refusal))?;
         let verified = match &proof.evidence {
