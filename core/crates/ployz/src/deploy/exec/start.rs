@@ -253,6 +253,7 @@ pub(crate) async fn move_container<C: MachineOperations>(
             resolved_spec: spec.clone(),
             deployment_id: deploy.clone(),
             registry_auth: None,
+            registry_login: None,
             image_prepared: true,
             answer: AnswerWhen::Settled,
             image_id: (!ployz_core::authority::deploy::content_addressed(&spec.container.image))
@@ -562,6 +563,7 @@ pub(super) async fn run_new<C: MachineOperations>(
             resolved_spec: spec.clone(),
             deployment_id: deploy.cloned(),
             registry_auth: None,
+            registry_login: None,
             image_prepared: true,
             answer,
             image_id: None,

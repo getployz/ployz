@@ -32,6 +32,7 @@ pub async fn run(
                 resolved_spec,
                 deployment_id: None,
                 registry_auth: None,
+                registry_login: None,
                 image_prepared: false,
                 answer: ployz_core::AnswerWhen::Started,
                 image_id: None,

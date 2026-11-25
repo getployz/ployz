@@ -907,6 +907,7 @@ fn creation(
             resolved_spec: spec.clone(),
             deployment_id: None,
             registry_auth: None,
+            registry_login: None,
             image_prepared: false,
             image_id: None,
             answer: ployz_core::AnswerWhen::Started,

@@ -10,9 +10,9 @@ use ployz_core::{
     ContainerUpdateOperation, ContainerWant, CopyRotation, CreationKey, DependencyHealthFailure,
     DeployEvent, DeployWarning, DeploymentLogId, Drain, ExecutionError, ExposedPort,
     FailedOperation, HealthFailure, HealthVerdict, InPlaceChange, MachineAction, MachineId,
-    Namespace, OperationPhase, PortPublication, PullPolicy, QualifiedService, RegistryAuth,
-    RemoveContainerPurpose, ResolvedServiceSpec, RpcError, RpcErrorCode, ServiceId, ServiceName,
-    ServiceOutcome, SlotKey, StopOptions, TransportProtocol,
+    Namespace, OperationPhase, PortPublication, PullPolicy, QualifiedService,
+    RemoveContainerPurpose, ResolvedServiceSpec, RpcError, RpcErrorCode, SealedLogin, ServiceId,
+    ServiceName, ServiceOutcome, SlotKey, StopOptions, TransportProtocol,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc::UnboundedSender;
@@ -254,7 +254,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
         .collect();
     let mut schedule = Schedule::new(plan.groups().to_vec(), tasks);
 
-    match pull_images(&client, operations, plan.registry_auth()).await {
+    match pull_images(&client, operations, plan.registry_logins()).await {
         Ok(warnings) => warnings
             .into_iter()
             .for_each(|warning| progress.warn(warning)),
@@ -623,7 +623,7 @@ fn untouched(
 async fn pull_images<C: MachineOperations>(
     client: &C,
     operations: &[DeployOperation],
-    auth: &BTreeMap<ServiceName, RegistryAuth>,
+    auth: &BTreeMap<ServiceName, SealedLogin>,
 ) -> Result<Vec<DeployWarning>, (usize, ExecutionError)> {
     // One pull per image on each Machine, under the strongest policy any of its
     // Services asks for: what `Always` pulls also satisfies `Missing` and `Never`.

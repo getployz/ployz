@@ -536,6 +536,7 @@ fn new_copy(source: &ContainerObservation) -> NewContainer {
         r#gen: source.copy_gen(),
         deployment_id: source.deploy_label(),
         registry_auth: None,
+        registry_login: None,
         image_prepared: false,
         answer: ployz_core::AnswerWhen::Started,
         image_id: None,

@@ -211,14 +211,8 @@ impl ConfigStore {
         query: &Q,
         trusted: &Trusted,
     ) -> Result<Q::View, RpcError> {
-        self.storage.read(|tx| {
-            query.answer(&mut Call {
-                tx,
-                who,
-                sealing: &self.sealing,
-                trusted,
-            })
-        })
+        self.storage
+            .read(|tx| query.answer(&mut Call { tx, who, trusted }))
     }
 
     /// Apply `command` — a [`Command`], or one of its payloads for its own result —
@@ -259,7 +253,6 @@ impl ConfigStore {
             work(&mut Call {
                 tx,
                 who,
-                sealing: &self.sealing,
                 trusted: &trusted,
             })
         })
@@ -367,7 +360,7 @@ impl ConfigStore {
     pub fn claim(&self, deployment: &DeploymentId, runner: &RunnerId) -> Result<Claimed, RpcError> {
         match self
             .storage
-            .write(|tx| deployment::claim(tx, deployment, runner, &self.sealing))?
+            .write(|tx| deployment::claim(tx, deployment, runner))?
         {
             deployment::Taken::Claimed(claimed) => Ok(*claimed),
             deployment::Taken::Refused(refusal) => Err(refusal.into_error()),

@@ -144,7 +144,7 @@ impl DeployOperations for Recording {
         &self,
         machine_id: &MachineId,
         spec: &ResolvedServiceSpec,
-        auth: Option<ployz_core::RegistryAuth>,
+        auth: Option<ployz_core::SealedLogin>,
     ) -> Result<ImagePulled, RpcError> {
         self.fake.ensure_image(machine_id, spec, auth).await
     }

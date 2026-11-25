@@ -991,7 +991,7 @@ impl Run {
         // Delivering images can outlast the lease: keep renewing it.
         let running: Running<PreparedDeploy, Unprepared> = session.prepare_with(
             input,
-            claimed.intent.registry_auth,
+            claimed.intent.registry_logins,
             claimed.intent.options.runner(),
         )?;
         self.renewing(running.finished(), || running.abort()).await

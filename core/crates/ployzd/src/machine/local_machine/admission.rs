@@ -508,7 +508,10 @@ impl LocalMachine {
                 })
             })?;
             self.full_access(full, service.clone(), reach)?
-        } else if let Some(reach) = needs_signature(creation(new), new.registry_auth.is_some()) {
+        } else if let Some(reach) = needs_signature(
+            creation(new),
+            new.registry_auth.is_some() || new.registry_login.is_some(),
+        ) {
             return Err(refused(
                 unapproved.unwrap_or(AuthorityRefusal::NeedsSignature { reach }),
             ));
@@ -738,6 +741,7 @@ impl LocalMachine {
                 r#gen: *r#gen,
                 deployment_id: None,
                 registry_auth: None,
+                registry_login: None,
                 image_prepared: false,
                 answer: AnswerWhen::default(),
                 image_id: None,

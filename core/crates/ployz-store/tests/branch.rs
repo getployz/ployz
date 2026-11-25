@@ -107,7 +107,7 @@ fn shop_on(store: ConfigStore) -> (ConfigStore, Actor) {
             ("web.env.DB_URL", json!("${{ db.PLOYZ_PRIVATE_DOMAIN }}")),
             (
                 "web.registryCredential",
-                json!({ "username": "bot", "secret": "pull-token" }),
+                ployz_store::testing::sealed_login("pull-token"),
             ),
         ],
     );

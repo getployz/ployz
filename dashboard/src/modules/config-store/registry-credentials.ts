@@ -15,21 +15,32 @@ export const registryCredentialSecretSchema = Schema.String.check(
 
 const dockerHubHosts = new Set(["docker.io", "index.docker.io"]);
 
+/** The registry host Docker pulls `image` from, read exactly as Docker reads it. */
 export function getRegistryHostFromImageReference(image: string) {
   const segments = image.trim().split("/");
-  const firstSegment = segments[0]?.toLowerCase() ?? "";
+  const firstSegment = segments[0] ?? "";
 
   // Docker reads the first part as a host only before a `/`: `nginx:1.27` is a tag on Docker Hub, not host:port.
+  // A capital letter makes it a host too, which no registry answers to.
   if (segments.length > 1 && (
     firstSegment.includes(".") ||
     firstSegment.includes(":") ||
-    firstSegment === "localhost"
+    firstSegment === "localhost" ||
+    firstSegment !== firstSegment.toLowerCase()
   )) {
     return dockerHubHosts.has(firstSegment) ? "docker.io" : firstSegment;
   }
 
   return "docker.io";
 }
+
+/** Why credentials can't be added for `image`, in the Engine's words, or null when they can. */
+export function registryHostProblem(image: string): string | null {
+  const host = getRegistryHostFromImageReference(image);
+  return host === host.toLowerCase() ? null : UPPERCASE_HOST;
+}
+
+const UPPERCASE_HOST = "Write the image's registry in lowercase, like ghcr.io.";
 
 /** A registry the credentials form knows how to ask for: what it's called, and what it wants as username and secret. */
 type RegistryProvider = {

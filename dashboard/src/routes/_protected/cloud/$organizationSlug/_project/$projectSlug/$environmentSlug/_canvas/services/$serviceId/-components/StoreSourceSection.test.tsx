@@ -5,6 +5,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import * as selectors from "#/routes/_protected/cloud/$organizationSlug/_project/-components/service-create/service-source-selector";
 import * as github from "#/modules/github/github.queries";
+import * as sealing from "#/modules/sealing/use-sealing";
 import * as gitFields from "./StoreGitFields";
 import { StoreSourceSection, type StoreService } from "./StoreServiceDrawer";
 
@@ -15,6 +16,7 @@ afterEach(() => {
 
 it("shows the picked image as the dialog closes, and the stored one again when the write is refused", async () => {
   vi.spyOn(github, "useGithubWebOrigin").mockReturnValue("https://github.com");
+  vi.spyOn(sealing, "useSealing").mockReturnValue(asTestDouble<sealing.Sealing>()({}));
   vi.spyOn(gitFields, "useRepositoryRef").mockReturnValue(undefined);
   vi.spyOn(gitFields, "useSourceLock").mockReturnValue(undefined);
   vi.spyOn(selectors, "ImageSelectorDialog").mockImplementation(({ open, initialImage, onSelectImage }) =>

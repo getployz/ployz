@@ -963,7 +963,7 @@ fn an_introduced_service_with_a_registry_credential_refuses_remove() {
         "dev",
         &[(
             "cache.registryCredential",
-            json!({"username": "u", "secret": "dev"}),
+            ployz_store::testing::sealed_login("dev"),
         )],
     );
     // The credential the Sync carried goes with the Service.
@@ -980,7 +980,7 @@ fn an_introduced_service_with_a_registry_credential_refuses_remove() {
         "production",
         &[(
             "cache.registryCredential",
-            json!({"username": "u", "secret": "prod"}),
+            ployz_store::testing::sealed_login("prod"),
         )],
     );
     let (code, message) = db.remove("production", &a).unwrap_err();
@@ -1018,7 +1018,7 @@ fn an_introduced_service_with_a_deploy_policy_refuses_remove() {
 fn a_source_credential_rotated_after_the_include_still_removes() {
     let db = Db::new();
     db.service("dev", 11, "cache");
-    let credential = |secret: &str| json!({"username": "u", "secret": secret});
+    let credential = ployz_store::testing::sealed_login;
     db.put("dev", &[("cache.registryCredential", credential("dev"))]);
     let a = proposal(
         &db.include(("dev", "production"), &sync_id(1), None)
@@ -1047,10 +1047,10 @@ fn a_policy_set_here_to_the_source_newer_value_refuses_remove() {
 #[test]
 fn a_credential_the_include_overwrote_refuses_remove() {
     let db = Db::new();
-    let credential = |secret: &str| json!({"username": "u", "secret": secret});
+    let credential = ployz_store::testing::sealed_login;
     let stored = || {
         db.rows(&format!(
-            "SELECT credential FROM config_registry_credential WHERE environment_id = '{}'",
+            "SELECT login FROM config_registry_login WHERE environment_id = '{}'",
             uuid(2)
         ))
     };

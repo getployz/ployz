@@ -531,6 +531,20 @@ impl ContainerRuntime {
         self.observation.sealing()
     }
 
+    /// The login `login` opens to for pulling `image`, as
+    /// [`crate::docker_image::open_login`] allows it.
+    ///
+    /// # Errors
+    ///
+    /// Returns when the login is refused for `image` or does not open.
+    pub(crate) async fn open_login(
+        &self,
+        image: &str,
+        login: &ployz_core::SealedLogin,
+    ) -> Result<ployz_core::RegistryAuth, Error> {
+        crate::docker_image::open_login(&self.docker.client, self.sealing(), image, login).await
+    }
+
     /// The secret files this Machine keeps for the Containers that mount them.
     pub(crate) fn machine_files(&self) -> crate::machine_files::MachineFiles {
         crate::machine_files::MachineFiles::new(self.settings.machine_root.clone())
@@ -1445,6 +1459,9 @@ pub enum Error {
     ForeignTunnelNetwork,
     #[error("image pull failed")]
     ImagePull(#[source] bollard::errors::Error),
+    /// A sealed registry login this Machine won't pull with.
+    #[error("this Server won't pull the image with its registry login")]
+    RegistryLogin(#[from] crate::docker_image::LoginRefused),
     /// A spec nothing signed names an image this Machine cannot pull itself with no login.
     #[error("nothing signed this Service, so its image must be public")]
     UnsignedImage(#[source] crate::docker_image::UnsignedImage),
@@ -1537,6 +1554,7 @@ impl Error {
             | Self::PeerPull(_)
             | Self::UnregistryNotReady { .. }
             | Self::Sealed(crate::sealed_env::OpenError::KeyMissing)
+            | Self::RegistryLogin(crate::docker_image::LoginRefused::Unread(_))
             | Self::LogStoreUpgrading(_) => RpcErrorCode::Unavailable,
             Self::Sealed(_) | Self::MissingPreDeployHook
             | Self::EndpointCapacity
@@ -1553,6 +1571,7 @@ impl Error {
             | Self::TunnelOriginNotRunning
             | Self::UnrecognizedNetwork
             | Self::UnsignedImage(_)
+            | Self::RegistryLogin(_)
             | Self::NotAdmitted
             | Self::Unadmitted(_)
             | Self::NotManaged => RpcErrorCode::InvalidArgument,
