@@ -128,6 +128,13 @@ pub struct PlanView {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(optional, as = "Option<Vec<ServiceName>>")]
     pub sources: Vec<ServiceName>,
+    /// When the query asked for `target`: each Service this Deploy ships, by the name it
+    /// runs under, that builds from a Git repository, whether or not it reaches data. A
+    /// rule signed with the Deploy replaces the live one, so it must approve each of them.
+    /// Absent from an older Store.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<Vec<ServiceName>>")]
+    pub git: Vec<ServiceName>,
 }
 
 /// A Service a Deploy ships that its Servers run only signed, and nothing signed covers.
@@ -411,7 +418,7 @@ pub(crate) fn plan(
         }
         Err(refused) => return Err(refused),
     };
-    let (lowered, volumes, unsigned, uploads, sources) = match query.target {
+    let (lowered, volumes, unsigned, uploads, (sources, git)) = match query.target {
         true => {
             // The specs of the Services it ships, for a Device to approve before it
             // admits the Deploy.
@@ -441,14 +448,15 @@ pub(crate) fn plan(
                 &target,
                 (&frozen.nodes, &lowered),
             )?;
-            (Some(lowered), volumes, unsigned, uploads, sources)
+            let git = deployment::versions::from_git(&target, (&frozen.nodes, &lowered));
+            (Some(lowered), volumes, unsigned, uploads, (sources, git))
         }
         false => (
             None,
             PlannedVolumes::new(),
             Vec::new(),
             Vec::new(),
-            Vec::new(),
+            (Vec::new(), Vec::new()),
         ),
     };
     let regions = target
@@ -491,6 +499,7 @@ pub(crate) fn plan(
         unsigned,
         uploads,
         sources,
+        git,
     })
 }
 
@@ -555,6 +564,7 @@ fn redeploy_plan(
         unsigned: Vec::new(),
         uploads: Vec::new(),
         sources: Vec::new(),
+        git: Vec::new(),
     })
 }
 

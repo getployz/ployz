@@ -979,7 +979,6 @@ pub(crate) fn unsourced(
     saved: &ployz_core::config::SavedEnvironmentIntent,
     (nodes, target): (&[TargetNode], &[RequestedServiceSpec]),
 ) -> Result<Vec<ServiceName>, RpcError> {
-    use ployz_core::config::ServiceSource;
     let stored = crate::auto_rule::stored(tx, environment)?
         .as_ref()
         .and_then(crate::auto_rule::opened);
@@ -989,15 +988,28 @@ pub(crate) fn unsourced(
     let approved = stored.map_or_else(Vec::new, |rule| {
         crate::auto_rule::approved(&rule, namespace, saved, target)
     });
-    Ok(target
+    Ok(from_git(saved, (nodes, target))
+        .into_iter()
+        .filter(|service| !approved.contains(service))
+        .collect())
+}
+
+/// Each Service of `target`, by the name it runs under, that builds from a Git repository,
+/// whether or not it reaches data: what a rule signed with the Deploy must approve, since
+/// the Store keeps it in place of the live one.
+pub(crate) fn from_git(
+    saved: &ployz_core::config::SavedEnvironmentIntent,
+    (nodes, target): (&[TargetNode], &[RequestedServiceSpec]),
+) -> Vec<ServiceName> {
+    use ployz_core::config::ServiceSource;
+    target
         .iter()
-        .filter(|spec| !approved.contains(&spec.name))
         .filter(|spec| {
             saved_service(saved, nodes, spec)
                 .is_some_and(|service| matches!(service.config.source, ServiceSource::Git { .. }))
         })
         .map(|spec| spec.name.clone())
-        .collect())
+        .collect()
 }
 
 /// Whether a person signed a version of `service`, or a Server verified a build of it a

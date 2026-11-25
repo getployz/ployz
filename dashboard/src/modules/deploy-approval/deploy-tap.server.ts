@@ -103,9 +103,10 @@ export const prepareDeployTap = Effect.fn("DeployTap.prepare")(function* (actor:
   const signer = input.classify === true ? null : actor.userId;
   // Only a member who signs here may sign the rule with the Deploy. Classified, it says whether whoever approves it signs one.
   let source = input.rule !== true || access.kind !== "member" ? null : yield* sourceOf(access, input.environment, plan.version, actor.userId, signer === null);
-  // Classified, a build from an upload still reads whether any Server enforces device approval: none builds one then.
-  const uploads = input.classify === true && (plan.uploads ?? []).length > 0;
-  const versions = (unsigned.length === 0 && !uploads) || asks ? Effect.succeed<DeployTap>({ kind: "off" })
+  // Classified, a build from an upload, or one only a Source step builds, still reads whether any Server enforces
+  // device approval: none builds the first then, and the second only under a rule the tap signs.
+  const builds = input.classify === true && (plan.uploads ?? []).length + (plan.sources ?? []).length > 0;
+  const versions = (unsigned.length === 0 && !builds) || asks ? Effect.succeed<DeployTap>({ kind: "off" })
     : gate(signer, access.organization.id, tags, { namespace: plan.namespace, parents, needs: SIGNS });
   let tap: DeployTap;
   if (source?.kind === "sign") {

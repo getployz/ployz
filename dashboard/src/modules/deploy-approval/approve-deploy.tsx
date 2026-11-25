@@ -73,10 +73,13 @@ export function ApproveDeploy({ organizationSlug, id }: { organizationSlug: stri
       }
       if (prepared.kind === "refused") return stop(prepared.message);
       // A Service only the rule builds doesn't build without it, so the page says why rather than approve it. The asker
-      // heard it before any link, so only a change since or this person's own passkeys and Servers stop here.
-      const sources = planned.kind === "plan" && planned.tap.kind !== "off" ? planned.plan.sources ?? [] : [];
+      // heard it before any link, so only a change since or this person's own passkeys and Servers stop here. A rule
+      // drafted here replaces the live one, so it must cover every shipped Git Service, as the decision checks.
+      const drafted = prepared.kind === "ask" ? prepared.ask.draft.source?.summary.services.map(({ name }) => name) : undefined;
+      const shipped = planned.kind !== "plan" || planned.tap.kind === "off" ? undefined : drafted === undefined ? planned.plan.sources : planned.plan.git ?? planned.plan.sources;
+      const sources = shipped ?? [];
       const held = prepared.kind === "admit" ? prepared.held : prepared.ask.held;
-      const sourced = new Set(prepared.kind === "ask" ? prepared.ask.draft.source?.summary.services.map(({ name }) => name) : undefined);
+      const sourced = new Set(drafted);
       const unbuilt = sources.find((service) => !sourced.has(service)) ?? null;
       if (held !== null && (!held.unchecked || unbuilt !== null)) return stop(held.reason);
       if (unbuilt !== null) return stop(`No automatic deploy rule can cover ${unbuilt} now, so your servers won't build it.`);

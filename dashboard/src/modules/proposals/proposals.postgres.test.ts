@@ -711,6 +711,33 @@ it.live("approving with no signature refuses a Deploy whose Servers now need one
     expect(yield* provided(deployStep(id))).toMatchObject({ status: "presented" });
   }));
 
+it.live("a Deploy that builds from an upload, linked before the Servers enforced device approval, is refused at the tap", () =>
+  Effect.gen(function* () {
+    const { cluster, provided, owner, agent, approve, admitted, enforce, write } = yield* deployable();
+    yield* write({ command: "create_service", id: "00000000-0000-4000-8000-00000000b3c2", environment: { project: null, environment: null }, name: "upl", image: null });
+    const command = { ...admitDeploy(production, ASKED, { services: ["upl"] }), upload: { digest: "a".repeat(64), base: null, uploader: null } };
+    const id = linkedId(yield* cluster(linkDeploy(agent, command)));
+    enforce(true);
+    expect(yield* cluster(decideProposal(owner, id, approve))).toMatchObject({ ok: false });
+    expect(yield* admitted(id)).toBe(0);
+    expect(yield* provided(deployStep(id))).toMatchObject({ status: "presented" });
+  }));
+
+it.live("Git Services on two branches with no rule, linked before the Servers enforced device approval, are refused at the tap", () =>
+  Effect.gen(function* () {
+    const { cluster, provided, owner, agent, approve, admitted, enforce, store } = yield* deployable();
+    const [repository] = acmeWeb().repositories;
+    yield* Effect.promise(() => store.write(ORGANIZATION, {
+      command: "create_git_service", id: "00000000-0000-4000-8000-00000000b3c3", environment: { project: null, environment: null },
+      name: "api", repository: "acme/web", branch: "develop",
+    }, { ...acmeWeb(), repositories: [{ ...repository ?? expect.fail("no repository"), branches: ["develop"] }] }));
+    const id = linkedId(yield* cluster(linkDeploy(agent, admitDeploy(production, ASKED))));
+    enforce(true);
+    expect(yield* cluster(decideProposal(owner, id, approve))).toMatchObject({ ok: false });
+    expect(yield* admitted(id)).toBe(0);
+    expect(yield* provided(deployStep(id))).toMatchObject({ status: "presented" });
+  }));
+
 it.live("an agent token revoked before the tap gets nothing run, though its owner is still a member", () =>
   Effect.gen(function* () {
     const { cluster, provided, owner, approve, admitted } = yield* deployable();

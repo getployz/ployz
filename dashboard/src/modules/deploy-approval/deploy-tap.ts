@@ -5,7 +5,7 @@
  * rule approves, shows the lines it signs, and the passkey answers one bundle of them. Cloud only relays the plan, the
  * tag pins and the answer, and each Server checks every step.
  */
-import type { PostedVersion, SavedRule, Unsigned, VersionsDraft } from "@ployz/sdk";
+import type { PlanView, PostedVersion, SavedRule, Unsigned, VersionsDraft } from "@ployz/sdk";
 import { Option, Schema } from "effect";
 import { versionSteps } from "@ployz/sdk/authority";
 import { StoreRefused } from "#/lib/refusal";
@@ -60,15 +60,72 @@ export function namesReview(current: string, given: string) {
 export const underRule = ({ needs, ended }: Unsigned) => (needs === "rule" || needs === "rebuild") && ended !== true;
 
 /**
- * Why no tap can build what a Deploy ships, as the asker hears it before any link, on Servers that enforce device
- * approval: a Service of `uploads`, which builds from an upload, or one of `sources`, which only a Source step builds,
- * when `source` can't be signed. Null when nothing stops it.
+ * The automatic deploy rule a Deploy carries to the Store: none, so the live rule stands; one a Device signed with it,
+ * which its Servers check; or one a passkey signed, with the Services it approves, null when it isn't the Source step
+ * of the bundle the passkey signed.
  */
-export function unbuildable(uploads: readonly string[], sources: readonly string[], source: DeploySource | undefined) {
+export type CarriedRule =
+  | { readonly kind: "none" }
+  | { readonly kind: "device" }
+  | { readonly kind: "signed"; readonly sourced: ReadonlySet<string> | null };
+
+/**
+ * What the Servers said about a Deploy: no Server enforces device approval, Cloud couldn't tell, or they enforce it,
+ * `ready` once Cloud read what a passkey signs for them.
+ */
+export type Enforced = { readonly kind: "off" } | { readonly kind: "refused"; readonly message: string } | { readonly kind: "on" | "ready" };
+
+/**
+ * Whether a Deploy goes to the Store as it is: `admit`; `ask` when a passkey must sign it first, with what to tell
+ * someone who sends it unsigned; `refused` when no tap can build what it ships, `unreached` when Cloud couldn't tell.
+ */
+export type Admission =
+  | { readonly kind: "admit" }
+  | { readonly kind: "ask"; readonly reason: string }
+  | { readonly kind: "refused"; readonly reason: string; readonly unreached: boolean };
+
+/**
+ * The one check of a Deploy that a person may approve, at its link and again at its decision, from the Store's fresh
+ * `plan`, what the Servers said and the `rule` it carries. `covered` are the Services it already carries a version of,
+ * and `source` what the tap could sign for the rule. On Servers that enforce device approval, nothing builds from an
+ * upload, and a Git build runs only under a rule that approves it: the live one when the Deploy carries none, else the
+ * one it carries, which replaces the live rule.
+ */
+export function admission(input: {
+  readonly plan: Pick<PlanView, "unsigned" | "uploads" | "sources" | "git">;
+  readonly servers: Enforced;
+  readonly source: DeploySource | undefined;
+  readonly covered: ReadonlySet<string | null>;
+  readonly rule: CarriedRule;
+}): Admission {
+  const { plan, servers, source, covered, rule } = input;
+  const open = (plan.unsigned ?? []).filter((entry) => !covered.has(entry.service) && !underRule(entry));
+  const uploads = plan.uploads ?? [];
+  // An older Store names no Git Services: each Server checks the rule then.
+  const sourced = rule.kind === "signed" ? rule.sourced : null;
+  const unsourced = rule.kind === "device" ? []
+    : rule.kind === "none" ? plan.sources ?? []
+    : (plan.git ?? plan.sources ?? []).filter((service) => sourced?.has(service) !== true);
+  const refused = (reason: string): Admission => ({ kind: "refused", reason, unreached: false });
+  // A rule swapped or changed after the tap would be kept, so it is refused whatever the Servers enforce.
+  if (rule.kind === "signed" && sourced === null) return refused("This deploy's automatic deploy rule isn't the one your passkey signed. Approve it again.");
+  if (servers.kind === "off") return { kind: "admit" };
+  if (servers.kind === "refused") {
+    return open.length + uploads.length + unsourced.length > 0 ? { kind: "refused", reason: servers.message, unreached: true } : { kind: "admit" };
+  }
+  const stops = blocked(open);
+  if (stops !== null) return refused(stops);
   const [upload] = uploads;
-  if (upload !== undefined) return `Your servers won't build ${upload} from an upload. Deploy a prebuilt image by digest, or connect the service to a GitHub repository.`;
-  if (source?.kind === "held" && sources.length > 0) return `${source.reason} Nothing deployed.`;
-  return null;
+  if (upload !== undefined) return refused(`Your servers won't build ${upload} from an upload. Deploy a prebuilt image by digest, or connect the service to a GitHub repository.`);
+  const [unbuilt] = unsourced;
+  if (unbuilt !== undefined) {
+    // Only a rule the tap signs builds it: without one, each Server refuses its build.
+    if (rule.kind === "signed" || source?.kind === "sign") return { kind: "ask", reason: "Reload this page and approve again." };
+    if (source?.kind === "held") return refused(`${source.reason} Nothing deployed.`);
+    return refused(`No automatic deploy rule can cover ${unbuilt} now, so your servers won't build it. Turn on Deploy every push under Automatic deploys, then deploy again.`);
+  }
+  if (open.length > 0) return { kind: "ask", reason: "Sign this deploy with your passkey on its approval page." };
+  return { kind: "admit" };
 }
 
 /** Why a Service no passkey can sign keeps the Deploy from asking, or null when a passkey can sign each of `unsigned`. */

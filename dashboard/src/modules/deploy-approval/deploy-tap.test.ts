@@ -4,7 +4,7 @@ import { StoreRefused } from "#/lib/refusal";
 import { asTestDouble } from "#/lib/test-double";
 import { type AdmitDeploy, admitDeploy } from "#/modules/config-store/admit-deploy";
 import { environmentKey } from "#/modules/config-store/environment-ref";
-import { type Answer, type Ask, type DeploySteps, deployWith, prepareDeploy, sendAnswer, unbuildable } from "./deploy-tap";
+import { type Answer, type Ask, type DeploySteps, admission, deployWith, prepareDeploy, sendAnswer } from "./deploy-tap";
 import { ready, view } from "./rule-view.test-fixture";
 
 const here = { project: "shop", environment: "production" };
@@ -58,14 +58,31 @@ describe("prepareDeploy", () => {
   });
 });
 
-describe("a keyless Deploy's link", () => {
-  // Catches an agent's first upload linked to a page for a build no Server that enforces device approval starts.
-  it("refuses a Service built from an upload before any link, with what to deploy instead", () => {
-    const refused = unbuildable(["api"], [], undefined);
+describe("admission", () => {
+  const enforcing = { kind: "ready" } as const;
+  const none = new Set<string>();
+  const sign = { kind: "sign", view: view(), unchecked: false } as const;
 
-    expect(refused).toContain("Deploy a prebuilt image by digest, or connect the service to a GitHub repository.");
-    expect(refused).not.toContain("Deploy every push");
-    expect(unbuildable([], ["web"], { kind: "sign", view: view(), unchecked: false })).toBeNull();
+  // Catches an agent's first upload linked, or approved, for a build no Server that enforces device approval starts.
+  it("refuses a Service built from an upload, with what to deploy instead", () => {
+    const refused = admission({ plan: { uploads: ["api"] }, servers: enforcing, source: undefined, covered: none, rule: { kind: "signed", sourced: new Set() } });
+
+    expect(refused).toMatchObject({ kind: "refused", reason: expect.stringContaining("Deploy a prebuilt image by digest, or connect the service to a GitHub repository.") });
+  });
+
+  // Catches a Git Service no rule can cover, as on two branches with no kept rule, admitted for a build every Server refuses.
+  it("refuses a Service only a Source step builds when the tap can't sign one", () => {
+    expect(admission({ plan: { sources: ["web"] }, servers: enforcing, source: undefined, covered: none, rule: { kind: "none" } }))
+      .toMatchObject({ kind: "refused", reason: expect.stringContaining("web") });
+    expect(admission({ plan: { sources: ["web"] }, servers: enforcing, source: sign, covered: none, rule: { kind: "none" } })).toMatchObject({ kind: "ask" });
+  });
+
+  // Catches a rule that replaces the live one and drops a shipped Service the live rule approved.
+  it("asks again when a signed rule leaves out a shipped Git Service, though the live rule approved it", () => {
+    const plan = { sources: ["api"], git: ["web", "api"] };
+    expect(admission({ plan, servers: enforcing, source: sign, covered: none, rule: { kind: "signed", sourced: new Set(["api"]) } }))
+      .toEqual({ kind: "ask", reason: "Reload this page and approve again." });
+    expect(admission({ plan, servers: enforcing, source: sign, covered: none, rule: { kind: "signed", sourced: new Set(["web", "api"]) } })).toEqual({ kind: "admit" });
   });
 });
 
