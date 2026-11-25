@@ -42,6 +42,15 @@ export type ReleasePlan = {
   readonly forward?: { readonly after: string; readonly to: MachineId; readonly removeOn: MachineId[] };
 };
 
+declare const chosen: unique symbol;
+
+/**
+ * Who chose to delete a copy even when its Server says it may hold writes no other Server has: the person who asked for
+ * the delete, or the Deployment whose confirmed data loss listed it. Only the insert of a run's row makes one, from its
+ * caller, so a delete nobody chose, such as the orphan sweep's, has none and its Server keeps such a copy.
+ */
+export type Discard = ("person" | "deployment") & { readonly [chosen]: true };
+
 export type VolumeRunArgs = {
   mirror: Destination;
   sync: { readonly full: boolean };
@@ -50,7 +59,13 @@ export type VolumeRunArgs = {
    * so the Machine refuses a slot that holds the other role by then. `any` is `volume mirror rm`, which deletes either. A
    * row without one was admitted before runs recorded it, and is refused rather than guessed.
    */
-  delete_mirror: { readonly slot: MachineName | null; readonly confirmed_name: string | null; readonly machine?: MachineId; readonly role?: SlotRole | "any" };
+  delete_mirror: {
+    readonly slot: MachineName | null;
+    readonly confirmed_name: string | null;
+    readonly machine?: MachineId;
+    readonly role?: SlotRole | "any";
+    readonly discard?: Discard;
+  };
   /**
    * `holder` is a drain's: the Server it drains and the Container it saw run the Service there. The move takes only that
    * Container, so one replaced or stopped before the cut ends the move before anything stops.

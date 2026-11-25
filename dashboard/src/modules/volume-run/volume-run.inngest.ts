@@ -11,7 +11,7 @@ import { PATIENCE, PATIENCE_WAITS, waitsFor } from "#/modules/volume-run/patienc
 import { type DeploymentsSeen, gb, gbAtLeast, type ResizePhase, type ResizeStep, type SizeDirection, type SizeOutcome, undoOnRefusal } from "#/modules/volume-run/resize";
 import { type RecordAnswer, recordVolumeSize, resizeCopy } from "#/modules/volume-run/volume-size.server";
 import { fenceTaken } from "#/modules/volume-run/volume-run.deploy.server";
-import { alreadyOn, committedWriter, epochOf, expectOf, type ForwardRelease, holdingNewest, observedEpoch, type Planned, planForwardRelease, planFromCopies, type Refusal, ROLE_NOUN, withdrawnMessage } from "#/modules/volume-run/plan";
+import { alreadyOn, committedWriter, epochOf, expectOf, type ForwardRelease, holdingNewest, keptMessage, observedEpoch, type Planned, planForwardRelease, planFromCopies, type Refusal, ROLE_NOUN, withdrawnMessage } from "#/modules/volume-run/plan";
 import { type AnsweredMember, copyName, type MachineRef, type Member, type ReleasePlan } from "#/modules/volume-run/volume-run";
 import { claimVolumeRun, closeStaleVolumeRuns, closeVolumeRun, endRun, failAndRelease, failRun, laneTarget, noteRun, pinDestination, recordRestarted, refuseRun, releaseChangedMessage, runDeploymentsSeen, type RunContext, takeEpoch } from "#/modules/volume-run/volume-run.rows.server";
 import { cleanOrphans, organizationsWithMachines } from "#/modules/volume-run/volume-run.orphans.server";
@@ -298,16 +298,17 @@ const deleteExpect = (copy: VolumeCopy | null, role: SlotRole | null): ExpectedC
 
 /**
  * Each slot is forgotten first. Only once every slot is gone does the Writer drop its run snapshots, so a slot that
- * refuses leaves the Writer as it was. A Writer that doesn't answer fails nothing: the run's message names it.
+ * refuses leaves the Writer as it was. A Writer that doesn't answer fails nothing: the run's message names it. Only a
+ * delete someone chose discards a copy that may hold writes no other Server has; its Server keeps one otherwise.
  */
 async function deleteMirror(steps: RunSteps, phase: PhaseOf<"delete_mirror">) {
   const { run, runId } = steps;
   const behind: string[] = [];
+  const want: WantedCopy = phase.discard ? { kind: "forget", discard: true } : { kind: "forget" };
   try {
     for (const slot of phase.destroy) {
       const expect = deleteExpect(slot.view.copy, phase.role);
-      // The person chose to delete this copy, writes no other Server has included.
-      const answer = await setCopy(steps, `03-forget-${slot.machine.name}`, slot.machine, expect, { kind: "forget", discard: true }, `${slot.machine.name} is still busy with ${run.volumeName}`);
+      const answer = await setCopy(steps, `03-forget-${slot.machine.name}`, slot.machine, expect, want, `${slot.machine.name} is still busy with ${run.volumeName}`);
       if (answer.ok) continue;
       const { role } = phase;
       const reroled = role !== null && answer.reason === "mismatch" && answer.copy?.kind === "slot" && answer.copy.role !== role;
@@ -331,7 +332,8 @@ async function deleteMirror(steps: RunSteps, phase: PhaseOf<"delete_mirror">) {
   } catch (error) {
     return stopped(steps, "05-failed", error instanceof Error ? error : new Error(String(error)));
   }
-  await finish(steps, "05-finish", withdrawnMessage(run.volumeName, phase.destroy.map((slot) => slot.machine.name), phase.forget?.machine.name, behind));
+  const withdrawn = withdrawnMessage(run.volumeName, phase.destroy.map((slot) => slot.machine.name), phase.forget?.machine.name, behind);
+  await finish(steps, "05-finish", phase.kept.length === 0 ? withdrawn : `${withdrawn}; ${keptMessage(run.volumeName, phase.kept)}`);
   return { runId: run.id, destroyed: phase.destroy.map((slot) => slot.machine.name) };
 }
 
@@ -621,9 +623,10 @@ async function releaseVolume(steps: RunSteps, phase: PhaseOf<"release">, epoch: 
       if (now?.kind === "slot" && now.newest?.guid === at.guid) doomed.push({ machine, expect: expectOf(now) });
     }
     if (plan !== undefined && doomed.some(({ machine }) => !plan.forgets.includes(machine.id))) throw changed();
-    // Each holds the point A resumes writing at as its newest, so it holds nothing A lacks.
+    // No one chose these deletes, so a Server keeps a copy that may hold writes no other Server has, and the release
+    // stops before A resumes.
     for (const { machine, expect } of doomed) {
-      await mustSet(steps, `04-forget-${machine.name}`, machine, expect, { kind: "forget", discard: true }, `${machine.name} is still busy with ${run.volumeName}`);
+      await mustSet(steps, `04-forget-${machine.name}`, machine, expect, { kind: "forget" }, `${machine.name} is still busy with ${run.volumeName}`);
     }
     const resumed = await resumeA("05-resume");
     if (!resumed.ok) throw new NonRetriableError(resumed.message);

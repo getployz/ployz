@@ -83,6 +83,23 @@ describe("a Server whose Ployz deletes any slot a Forget names", () => {
     expect(outcome(mirror("b"), [member("a", "writer"), departed("b", true)])).toBe("mirror a->b");
     expect(outcome(mirror("b"), [member("a", "writer"), older("b", "old")])).toBe("mirror a->b");
   });
+
+  it("takes no Move onto a copy it parked when it left, which its first pull would replace", () => {
+    expect(planFromCopies(move("b"), [member("a", "writer"), departed("b", false)])).toEqual({ ok: false, refusal: {
+      code: "server_lacks",
+      message: "Upgrade b first. data-b holds writes from before b left the cluster, and its Ployz would replace them with a fresh copy",
+      next: "ployz volume mirror rm data-b --if-old-copy",
+    } });
+    expect(outcome(move("b"), [member("a", "writer"), departed("b", true)])).toMatch(/^move a->b/);
+  });
+
+  it("leaves an orphan slot to the user when its Server may hold the only writes, or would delete it whatever it holds", () => {
+    expect(outcome(orphan, [member("b", "writtenHere"), older("c", "mirror"), member("d", "mirror")])).toBe("delete d forget none");
+    expect(planFromCopies(orphan, [member("b", "writtenHere"), older("c", "mirror")])).toEqual({ ok: false, refusal: {
+      code: "written_here",
+      message: "kept ns_vol-1-b, which may hold writes no other Server has; kept ns_vol-1-c until c runs a newer Ployz, which would delete it even if it holds writes no other Server has",
+    } });
+  });
 });
 
 describe("a born Volume's copies", () => {

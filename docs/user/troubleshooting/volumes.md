@@ -317,6 +317,11 @@ received, so Ployz counts it as a copy that may hold such writes. Once its write
 mirror's newest snapshot, every refresh stops with this message. Ployz before 0.3.0 is outside the
 stable promise: delete the mirror with `ployz volume mirror rm`, then mirror again.
 
+A mirror's server records what it received only once the writer confirms it. If the writer drops
+that snapshot while the mirror's server can't reach it, the confirmation fails, the server forgets
+what it received, and it counts the mirror as a copy that may hold such writes. Every later refresh
+then stops with this message. Delete the mirror with `ployz volume mirror rm`, then mirror again.
+
 ## A full sync says the copy may hold writes no other server has
 
 ```
@@ -338,14 +343,42 @@ A server running Ployz 0.4.0-beta.2 or earlier can't tell Ployz Cloud whether it
 writes, and deletes it for a full sync whatever it holds, so Ployz Cloud won't send it one. Upgrade
 the server and sync again, or run the `next:` line once you no longer need that copy.
 
-## Deleting a mirror says the copy was kept
+## Ployz keeps a copy that may hold writes no other server has
 
 ```
-Volume … on this Machine may hold writes no other Machine has, so it was kept. To delete it, run `ployz volume mirror rm` (an older Ployz Cloud must be upgraded first)
+data's copy on web-1 may hold writes no other Server has; only ployz volume mirror rm deletes it
 ```
 
-A server running a Ployz later than 0.4.0-beta.2 deletes a copy that may hold writes no other
-server has only when the request says to discard it, which `ployz volume mirror rm` from a current
-Ployz Cloud does. A self-hosted Ployz Cloud from before that sends every delete the same way, so
-the server keeps the copy whether you ran `ployz volume mirror rm`, `ployz volume sync --full` or
-`ployz volume release`. Nothing was deleted. Upgrade Ployz Cloud, then run the command again.
+A server running a Ployz later than 0.4.0-beta.2 deletes such a copy only when someone chose to
+delete it: you ran `ployz volume mirror rm`, or you confirmed a deploy whose **Deletes data** listed
+it. Anything else that would delete it stops with this message, and the server keeps the copy as it
+was. A release that would delete such a copy stops before it starts your service again. Run
+`ployz volume mirror rm` on the copy once you no longer need what it holds, then run the command
+again.
+
+After a deploy deletes a volume or an environment, Ployz deletes the volume's mirrors on your other
+servers. It keeps each copy that may hold writes no other server has, such as an old copy a move
+left or a copy a server parked when it learned it was removed while away. It also keeps every copy
+on a server running Ployz 0.4.0-beta.2 or earlier, since that server would delete it whatever it
+holds. When the cleanup deletes some copies, its run names each one it kept, like `kept
+data-web-1, which may hold writes no other Server has`. These copies stay on the server's disk, and
+no command deletes them yet.
+
+When a server refuses for a reason your Ployz Cloud doesn't know, the run shows the server's own
+message after `web-1 refused:`. Upgrade Ployz Cloud if the message asks you to.
+
+### With a self-hosted Ployz Cloud from before keep-written
+
+```
+web-1 is busy with data
+```
+
+A self-hosted Ployz Cloud from before servers kept these copies sends every delete the same way and
+can't read why the server refused. It shows this message, or `web-1 is still busy with data`, for
+a delete of any copy that may hold writes no other server has. Every old copy a move left is one.
+That covers `ployz volume mirror rm`, `ployz volume sync --full`, a deploy that deletes an old copy
+or a mirror, the cleanup after a deleted volume and, rarely, `ployz volume release`. The server
+keeps the copy and nothing is deleted. Trying again gives the same message, and the cleanup tries
+again after each deploy and each hour. The server's own message, `Volume … on this Machine may hold writes no other
+Machine has, so it was kept`, never reaches that Ployz Cloud. Upgrade Ployz Cloud, then run the
+command again.

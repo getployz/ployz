@@ -72,11 +72,20 @@ export const findOrphans = Effect.fn("VolumeRun.findOrphans")(function* (
   const copies = yield* observe(organizationId);
   if (copies.length === 0) return [];
   const config = yield* configVolumeNames(organizationId);
-  const seeds = yield* Effect.forEach(unheldRootNames(copies, config), (name) => inspect(organizationId, name).pipe(
-    Effect.map((members) => (planFromCopies(orphanDelete(name), members).ok ? [name] : [])),
+  // A name whose every copy stays, such as one a Server may hold the only writes of, starts no run, so the next sweep
+  // doesn't start one for it again.
+  const names = [...new Set([...orphanSlotNames(copies, config), ...unheldRootNames(copies, config)])];
+  const deletable = yield* Effect.forEach(names, (name) => inspect(organizationId, name).pipe(
+    Effect.flatMap((members) => {
+      const planned = planFromCopies(orphanDelete(name), members);
+      if (planned.ok) return Effect.succeed([name]);
+      return planned.refusal.code === "written_here"
+        ? Effect.logWarning("Orphan copies kept.", { organizationId, name, kept: planned.refusal.message }).pipe(Effect.as([]))
+        : Effect.succeed([]);
+    }),
     Effect.catch((error) => Effect.logWarning("Orphan inspect failed.", { organizationId, name, error }).pipe(Effect.as([]))),
   ), { concurrency: 4 });
-  return [...orphanSlotNames(copies, config), ...seeds.flat()].sort();
+  return deletable.flat().sort();
 });
 
 export const startOrphanDeletes = Effect.fn("VolumeRun.startOrphanDeletes")(function* (

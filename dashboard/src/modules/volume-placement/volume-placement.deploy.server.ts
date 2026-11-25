@@ -37,7 +37,6 @@ export type PlacementAdvance =
  */
 export type FailedRestore = { readonly volumeId: string; readonly environment: EnvironmentRef };
 
-const CLOUD = (organizationId: string) => ({ userId: null, organizationId });
 const isActive = (state: VolumeRunState) => ACTIVE_VOLUME_RUN_STATES.some((active) => active === state);
 
 /**
@@ -279,7 +278,8 @@ export const advancePlacement = Effect.fn("VolumePlacement.advance")(function* (
     }
     // Touching the row without changing it confirms the claim right before the run starts.
     if (!(yield* settleClaimed(row.volumeId, deploymentId, {}))) return { kind: "stopped" } satisfies PlacementAdvance;
-    const requested = yield* requestVolumeRun(CLOUD(organizationId), { volumeId: runsOn, environment, ...step.run }, {
+    // The Deployment's confirmed data loss listed each copy its runs delete.
+    const requested = yield* requestVolumeRun({ userId: null, organizationId, deployment: deploymentId }, { volumeId: runsOn, environment, ...step.run }, {
       end: "yielded", fences: replanning?.waited.step.run.kind,
     });
     if (requested.ok) {

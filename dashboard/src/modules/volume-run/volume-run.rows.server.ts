@@ -17,7 +17,7 @@ import { newestGuid, type Planned, planForwardRelease, type Refusal, type Refusa
 import { type DeploymentsSeen, deployingMessage, gb } from "#/modules/volume-run/resize";
 import { volumeRun } from "#/modules/volume-run/tables";
 import { originBlockers, originUpgradeMessage } from "#/modules/runtime/daemon-release";
-import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, copyName, type MachineRef, type Member, namesServer, VOLUME_RUN_MESSAGE_LIMIT, VOLUME_RUN_RUNNING_CHECK_MS, VOLUME_RUN_UNCLAIMED_LIMIT_MS, type VolumeLaneInput, type VolumeRunArgs, type VolumeRunInput, type VolumeRunView } from "#/modules/volume-run/volume-run";
+import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, copyName, type Discard, type MachineRef, type Member, namesServer, VOLUME_RUN_MESSAGE_LIMIT, VOLUME_RUN_RUNNING_CHECK_MS, VOLUME_RUN_UNCLAIMED_LIMIT_MS, type VolumeLaneInput, type VolumeRunArgs, type VolumeRunInput, type VolumeRunView } from "#/modules/volume-run/volume-run";
 import { dockerVolumeName, parseDockerVolumeName } from "#/modules/runtime/naming";
 import { type VolumeRunKind, type VolumeRunPhase, type VolumeRunState } from "#/modules/volume-run/volume-run-states";
 import { Database } from "#/server/database.server";
@@ -633,7 +633,7 @@ export type RequestOptions = {
 };
 
 export const requestVolumeRun = Effect.fn("VolumeRun.request")(function* (
-  caller: { readonly userId: string | null; readonly organizationId: string },
+  caller: Caller,
   input: { readonly volumeId: string; readonly environment: EnvironmentRef } & VolumeRunInput,
   options: RequestOptions = {},
 ) {
@@ -677,7 +677,20 @@ class LaneMoved extends Data.TaggedError("LaneMoved")<{ readonly active: VolumeR
 
 class LaneChurn extends Data.TaggedError("LaneChurn")<{ readonly message: string }> {}
 
-type Caller = { readonly userId: string | null; readonly organizationId: string };
+/** `deployment` is the Deployment that runs a staged placement, whose confirmed data loss listed what it deletes. */
+type Caller = { readonly userId: string | null; readonly organizationId: string; readonly deployment?: string };
+
+/**
+ * A delete's args as its row keeps them: a person's request, or a Deployment's, may delete a copy its Server says may
+ * hold writes no other Server has. This is the one place a `Discard` is made.
+ */
+const rowArgs = (caller: Caller, input: VolumeLaneInput): VolumeLaneInput["args"] => {
+  if (input.kind !== "delete_mirror") return input.args;
+  const { discard: _asked, ...args } = input.args;
+  const chosen = caller.userId !== null ? "person" : caller.deployment !== undefined ? "deployment" : null;
+  // SAFETY: a Discard is this tag, branded so no other module can make one.
+  return chosen === null ? args : { ...args, discard: chosen as Discard };
+};
 
 const TAKE_ROUNDS = 3;
 
@@ -708,7 +721,7 @@ export const takeLane = Effect.fn("VolumeRun.takeLane")(function* (caller: Calle
       refquotaBytes: volume.refquotaBytes,
       recordedBytes: volume.recordedBytes,
       kind: input.kind,
-      args: input.args,
+      args: rowArgs(caller, input),
       state: inngestRunId === null ? "requested" : "running",
       inngestRunId,
       requestedByUserId: caller.userId,

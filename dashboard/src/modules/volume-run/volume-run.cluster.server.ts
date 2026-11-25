@@ -289,6 +289,19 @@ export function switchFailureMessage(
   }
 }
 
+const SaidByServer = Schema.Struct({ message: Schema.String });
+
+/**
+ * A refusal from a Ployz newer than this Cloud, whose reason it can't read: the Server's own words, since only they know
+ * what it needs.
+ */
+function unrecognizedMessage(error: PloyzSdkError, machine: MachineRef) {
+  const said = Schema.decodeUnknownOption(SaidByServer)("cause" in error ? error.cause : undefined);
+  return Option.isSome(said) && said.value.message.length > 0
+    ? `${machine.name} refused: ${said.value.message}`
+    : `${machine.name} refused for a reason this Ployz Cloud doesn't know; upgrade Ployz Cloud`;
+}
+
 /** A cut refused before it stopped anything, since `holder` runs on the Volume beside the Service the run counted. */
 const heldMessage = (name: string, machine: MachineRef, holder: string | null) =>
   `${holder ?? "another Container"} also uses ${name} on ${machine.name}. A move takes one Service, so stop it first`;
@@ -376,7 +389,9 @@ export const askCopy = Effect.fn("VolumeRun.askCopy")(function* (
       const { reason, copy } = refused;
       const message = reason === "held"
         ? heldMessage(asker.volumeName, machine, refused.holder ?? null)
-        : switchFailureMessage(reason, asker, machine) ?? `${machine.name} is busy with ${asker.volumeName}`;
+        : reason === "unrecognized"
+          ? unrecognizedMessage(error, machine)
+          : switchFailureMessage(reason, asker, machine) ?? `${machine.name} is busy with ${asker.volumeName}`;
       if (passing(reason)) return Effect.fail(new SwitchAttemptError(reason, message));
       return Effect.succeed<CopyAnswer>({ ok: false, reason, copy, message });
     }),

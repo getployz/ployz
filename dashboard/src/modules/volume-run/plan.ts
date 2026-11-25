@@ -46,7 +46,19 @@ export type ReleaseFrom =
 export type Planned =
   | { readonly ok: true; readonly phase: { readonly kind: "mirror"; readonly writer: AnsweredMember; readonly target: AnsweredMember } }
   | { readonly ok: true; readonly phase: { readonly kind: "sync"; readonly writer: AnsweredMember; readonly mirror: AnsweredMember; readonly full: boolean } }
-  | { readonly ok: true; readonly phase: { readonly kind: "delete_mirror"; readonly destroy: readonly AnsweredMember[]; readonly forget: AnsweredMember | null; readonly role: SlotRole | null } }
+  | {
+      readonly ok: true;
+      readonly phase: {
+        readonly kind: "delete_mirror";
+        readonly destroy: readonly AnsweredMember[];
+        readonly forget: AnsweredMember | null;
+        readonly role: SlotRole | null;
+        /** Someone chose this delete, so its Forget deletes a copy that may hold writes no other Server has. */
+        readonly discard: boolean;
+        /** The slots the orphan sweep leaves, since no one chose to delete them. */
+        readonly kept: readonly AnsweredMember[];
+      };
+    }
   | { readonly ok: true; readonly phase: { readonly kind: "move"; readonly writer: AnsweredMember; readonly target: AnsweredMember; readonly start: MoveStart } }
   | { readonly ok: true; readonly phase: { readonly kind: "landed"; readonly target: AnsweredMember; readonly behind: readonly AnsweredMember[] } }
   | { readonly ok: true; readonly phase: { readonly kind: "release"; readonly from: ReleaseFrom } }
@@ -137,7 +149,62 @@ export function planFromCopies(input: PlanInput, observed: readonly Member[]): P
   const planned = planCopies(input, observed);
   if (!planned.ok) return planned;
   const unchecked = originUnchecked(planned.phase);
-  return unchecked.length > 0 ? refuse("server_lacks", originUpgradeMessage(input.volumeName, unchecked)) : planned;
+  if (unchecked.length > 0) return refuse("server_lacks", originUpgradeMessage(input.volumeName, unchecked));
+  const onto = pullsOnto(planned.phase);
+  if (onto === null || !replacesParked(onto)) return planned;
+  const server = onto.machine.name;
+  const slot = copyName(input.volumeName, server);
+  const role = onto.view.copy?.kind === "slot" ? onto.view.copy.role : undefined;
+  return refuse("server_lacks", `Upgrade ${server} first. ${slot} holds writes from before ${server} left the cluster, and its Ployz would replace them with a fresh copy`, `ployz volume mirror rm ${slot}${ifOldCopy(role)}`);
+}
+
+/**
+ * The copy a run pulls the Writer's snapshots onto: a mirror's target, a sync's mirror, and a Move's target until it
+ * starts there. No other run pulls. Every run plans through here, so a kind that pulls says so.
+ */
+function pullsOnto(phase: Extract<Planned, { ok: true }>["phase"]): AnsweredMember | null {
+  switch (phase.kind) {
+    case "mirror":
+      return phase.target;
+    case "sync":
+      return phase.mirror;
+    case "move":
+      return phase.start === "start" ? null : phase.target;
+    case "delete_mirror":
+    case "landed":
+    case "release":
+    case "restore":
+    case "demote":
+    case "seed":
+    case "resize":
+      return null;
+  }
+}
+
+/**
+ * A copy a departure parked, on a Server whose Ployz replaces it with a full copy when a pull finds no base on it. No
+ * Writer holds the departure's snapshot, so every pull onto it finds none. A Server with keep-written refuses that pull
+ * itself.
+ */
+const replacesParked = (member: AnsweredMember) => {
+  const copy = member.view.copy;
+  return copy?.kind === "slot" && copy.newest?.name.startsWith(DEPARTURE_SNAPSHOT) === true && member.keepsWritten !== true;
+};
+
+/**
+ * A slot no one chose to delete stays when its Server says it may hold writes no other Server has, or when its Ployz
+ * would delete it whatever it holds.
+ */
+const keepsUnchosen = (member: AnsweredMember) => {
+  const copy = member.view.copy;
+  return member.keepsWritten !== true || (copy?.kind === "slot" && copy.written_here === true);
+};
+
+/** Why each slot the orphan sweep left stays, for its run to say. */
+export function keptMessage(name: string, kept: readonly AnsweredMember[]) {
+  return kept.map((member) => member.keepsWritten === true
+    ? `kept ${copyName(name, member.machine.name)}, which may hold writes no other Server has`
+    : `kept ${copyName(name, member.machine.name)} until ${member.machine.name} runs a newer Ployz, which would delete it even if it holds writes no other Server has`).join("; ");
 }
 
 /**
@@ -197,9 +264,10 @@ function planCopies(input: PlanInput, observed: readonly Member[]): Planned {
     if (input.orphan) {
       const writers = roots.filter((member) => !isUnadoptedSeed(member));
       if (writers.length > 0) return refuse("invalid", `${name} still has a writer on ${writers.map(named).join(", ")}`);
-      const destroy = [...roots, ...mirrors];
-      if (destroy.length === 0) return refuse("no_mirror", `${name} has no mirror`);
-      return { ok: true, phase: { kind: "delete_mirror", destroy, forget: null, role: null } };
+      const kept = mirrors.filter(keepsUnchosen);
+      const destroy = [...roots, ...mirrors.filter((member) => !kept.includes(member))];
+      if (destroy.length === 0) return kept.length === 0 ? refuse("no_mirror", `${name} has no mirror`) : refuse("written_here", keptMessage(name, kept));
+      return { ok: true, phase: { kind: "delete_mirror", destroy, forget: null, role: null, discard: false, kept } };
     }
     const { role } = input.args;
     if (role === undefined) {
@@ -221,7 +289,17 @@ function planCopies(input: PlanInput, observed: readonly Member[]): Planned {
       return refuse("confirm_required", `${only} is ${name}'s only copy; volume mirror rm ${only}${ifOldCopy(role)} --confirm ${name}`);
     }
     const [writer] = roots;
-    return { ok: true, phase: { kind: "delete_mirror", destroy, forget: roots.length === 1 && writer !== undefined ? writer : null, role: role === "any" ? null : role } };
+    return {
+      ok: true,
+      phase: {
+        kind: "delete_mirror",
+        destroy,
+        forget: roots.length === 1 && writer !== undefined ? writer : null,
+        role: role === "any" ? null : role,
+        discard: input.args.discard !== undefined,
+        kept: [],
+      },
+    };
   }
 
   if (unanswered !== undefined) return unknown(unanswered);
@@ -284,12 +362,6 @@ function planCopies(input: PlanInput, observed: readonly Member[]): Planned {
   if (elsewhere !== undefined) return { ok: false, refusal: copyElsewhere(name, elsewhere) };
   const target = answered.find((member) => isDestination(input.args, member));
   if (target === undefined) return refuse("invalid", `${to} is not a Server of this cluster`);
-  // No Writer holds the snapshot a departure parks a copy at, so a pull finds no base there, and an older Server then
-  // replaces the copy with a full one.
-  const kept = target.view.copy;
-  if (kept?.kind === "slot" && kept.newest?.name.startsWith(DEPARTURE_SNAPSHOT) === true && target.keepsWritten !== true) {
-    return refuse("server_lacks", `Upgrade ${to} first. ${named(target)} holds writes from before ${to} left the cluster, and its Ployz would replace them with a fresh copy`, `ployz volume mirror rm ${named(target)}${ifOldCopy(kept.role)}`);
-  }
   return { ok: true, phase: { kind: "mirror", writer: root, target } };
 }
 
