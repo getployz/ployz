@@ -772,15 +772,16 @@ export const startWriter = Effect.fn("VolumeRun.startWriter")(function* (ctx: Ru
 
 /**
  * The stopped Container's spec as B starts it. B pulls nothing when the run `copied` the image there; otherwise it
- * places the image as the Service's own pull policy asks, so a forward Release starts once the registry answers. The
- * spec was resolved at the Service's last Deploy; a resize since then raised the copies, and the Store recorded it.
+ * pulls the image when it isn't there, as every Service's spec asks, so a forward Release starts once the registry
+ * answers. The policy is set either way: a holder an earlier Move started carries that Move's `never`. The spec was
+ * resolved at the Service's last Deploy; a resize since then raised the copies, and the Store recorded it.
  */
 const startingSpec = (ctx: Pick<RunContext, "dockerVolume" | "recordedBytes">, resolved: ResolvedServiceSpec, copied: boolean): ResolvedServiceSpec => {
   const volumes = resolved.volumes.map((volume) =>
     volume.source.kind === "provisioned" && volume.source.name === ctx.dockerVolume && ctx.recordedBytes > 0
       ? { ...volume, source: { ...volume.source, maximum_bytes: ctx.recordedBytes } }
       : volume);
-  return { ...resolved, volumes, container: copied ? { ...resolved.container, pull_policy: "never" } : resolved.container };
+  return { ...resolved, volumes, container: { ...resolved.container, pull_policy: copied ? "never" : "missing" } };
 };
 
 /**

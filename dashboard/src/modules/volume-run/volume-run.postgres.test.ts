@@ -2438,7 +2438,7 @@ describe("volume runs", () => {
 
     it.each([
       ["a Move, which copied A's image there first, pulls nothing", { id: idOf("fsn-1"), name: "fsn-1" }, "never"],
-      ["a forward Release, which copied no image, pulls as the Service asks", null, "always"],
+      ["a forward Release, which copied no image, pulls it when it isn't there", null, "missing"],
     ] as const)("starts B so %s", async (_, from, pullPolicy) => {
       const ctx = await owned();
       containers = [{ machine: "fsn-1", id: "web-fsn-1", running: false }];
