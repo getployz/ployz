@@ -308,10 +308,15 @@ impl VolumeStorage {
         pool: &MachinePool,
         name: &VolumeName,
     ) -> Result<Option<VolumeCopy>> {
+        // An answer of no copy is an absence, so it comes only from a listing ZFS finished.
         let busy = self.receives.status(name).busy();
-        let copy = self.copy(&self.datasets(pool).await?, pool, name).await?;
+        let copy = self
+            .copy(&self.complete_datasets(pool).await?, pool, name)
+            .await?;
         if busy && !self.receives.status(name).busy() {
-            return self.copy(&self.datasets(pool).await?, pool, name).await;
+            return self
+                .copy(&self.complete_datasets(pool).await?, pool, name)
+                .await;
         }
         Ok(copy)
     }
