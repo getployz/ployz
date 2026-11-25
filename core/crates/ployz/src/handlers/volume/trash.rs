@@ -61,13 +61,11 @@ fn id_arg(required: bool) -> clap::Arg {
         .value_parser(|id: &str| TrashId::parse(id).map_err(|error| error.to_string()))
 }
 
-/// One Server's socket, its name for every line, and the one runtime frame whose members
-/// a restore asks.
+/// One Server's socket and its name for every line.
 struct Server {
     client: Client,
     id: MachineId,
     name: String,
-    frame: RuntimeWatchFrame,
 }
 
 pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
@@ -113,8 +111,11 @@ pub(in crate::handlers) fn restore(root: &ArgMatches) -> Result<(), Error> {
         let restored = match first.state {
             // A deleted root waits, pinned, until every Server shows it holds no copy.
             TrashRestore::Pinned { .. } => {
-                let seen = copies(&server.client, &server.frame, &first.name, true).await;
-                proven(&first.name, id, server.id, &server.frame, &seen).map_err(|refused| {
+                // The members asked are the ones after the pin: a Server that joined before
+                // it, holding its own entry, reads this pin or is read here.
+                let frame = server.client.runtime_frame().await?;
+                let seen = copies(&server.client, &frame, &first.name, true).await;
+                proven(&first.name, id, server.id, &frame, &seen).map_err(|refused| {
                     refused.context(format!(
                         "Didn't restore {id}. It stays in {}'s Trash as restoring for 7 more \
                          days.",
@@ -527,12 +528,7 @@ async fn connect(root: &ArgMatches) -> Result<Server, Error> {
             || id.to_string(),
             |observed| observed.machine.name.to_string(),
         );
-    Ok(Server {
-        client,
-        id,
-        name,
-        frame,
-    })
+    Ok(Server { client, id, name })
 }
 
 async fn read(server: &Server) -> Result<TrashList, Error> {
