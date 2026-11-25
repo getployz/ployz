@@ -1376,6 +1376,7 @@ fn store_error(error: StoreError) -> RpcError {
         | StoreError::GrantRemoved(_)
         | StoreError::LastKey(_)
         | StoreError::AmbiguousCode(_)
+        | StoreError::CodeHeld(_)
         | StoreError::GrantKind { .. }
         | StoreError::GrantHeld(_)
         | StoreError::GrantMoved(_)

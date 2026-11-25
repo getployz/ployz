@@ -283,8 +283,8 @@ impl LocalMachine {
     ) -> Result<SealingKeyHeld, super::Error> {
         // The removals it takes stop trusting keys, so it runs as a key change: a Volume
         // step a removed key asked for ends first.
-        self.finish_key_change(move |local, key_change| async move {
-            local.install_admitted(request, key_change).await
+        self.finish_key_change(move |local, key_change| {
+            Box::pin(async move { local.install_admitted(request, key_change).await })
         })
         .await
     }
@@ -312,7 +312,7 @@ impl LocalMachine {
     async fn install_admitted(
         &self,
         request: InstallSealingKeyRequest,
-        key_change: KeyChangeHeld,
+        key_change: &KeyChangeHeld,
     ) -> Result<SealingKeyHeld, super::Error> {
         let record = self.record();
         record.require_participating()?;
@@ -401,7 +401,7 @@ impl LocalMachine {
     /// add restrictions, so they go over this Machine's own record and never replace its keys.
     async fn take_removals(
         &self,
-        key_change: KeyChangeHeld,
+        key_change: &KeyChangeHeld,
         removals: Removals,
     ) -> Result<(), super::Error> {
         if removals == Removals::default() {
@@ -413,9 +413,9 @@ impl LocalMachine {
             removed_members: removals.removed_members,
             floors: Default::default(),
         };
-        self.owner
-            .mutate(move |store| {
-                store.apply_join_restrictions(&key_change, &set)?;
+        key_change
+            .mutate(&self.owner, move |store, key_change| {
+                store.apply_join_restrictions(key_change, &set)?;
                 store.hold_removed_grants(&grants)
             })
             .await??;

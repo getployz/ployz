@@ -18,9 +18,11 @@
 
 use std::sync::Arc;
 
+use futures_util::future::BoxFuture;
 use tokio::sync::OwnedMutexGuard;
 
 use super::{Checked, Error, LocalMachine, turns::Admission};
+use crate::machine::{LocalMachineStore, RecordOwner, RecordOwnerStopped};
 
 /// The switch lock, and this Machine serving the call inside it at the access its caller
 /// holds under it. Only [`LocalMachine::lock_switch`] makes one, so a Volume step that
@@ -61,7 +63,31 @@ impl Clone for InSwitch {
 /// which only [`LocalMachine::finish_key_change`] makes. Every store write that stops
 /// trusting a key or narrows one takes it, so none lands while a switch step or a floor
 /// raise a removed key asked for still runs.
+///
+/// Outside this module it exists only behind a borrow that ends before the locks drop:
+/// the key change's work gets `&KeyChangeHeld` and returns a `'static` value, and a record
+/// write gets its own through [`Self::mutate`], so keeping one past the locks is a compile
+/// error. The compiler does not see a dropped `mutate` future: the owner may still run a
+/// write it already queued, so every caller awaits `mutate` to completion, with no timeout
+/// or select around it.
 pub(crate) struct KeyChangeHeld(());
+
+impl KeyChangeHeld {
+    /// Run `mutation` on the record owner with this proof, waiting for it while the borrow,
+    /// and with it the locks, still holds.
+    ///
+    /// # Errors
+    /// Returns [`RecordOwnerStopped`] when the owner thread has stopped.
+    pub(crate) async fn mutate<R: Send + 'static>(
+        &self,
+        owner: &RecordOwner,
+        mutation: impl FnOnce(&mut LocalMachineStore, &KeyChangeHeld) -> R + Send + 'static,
+    ) -> Result<R, RecordOwnerStopped> {
+        owner
+            .mutate(move |store| mutation(store, &KeyChangeHeld(())))
+            .await
+    }
+}
 
 #[cfg(test)]
 impl KeyChangeHeld {
@@ -99,11 +125,12 @@ impl LocalMachine {
     /// written, the work a key it left short of Full scope started ends, and the change
     /// returns only once that work has stopped: an exec, a tunnel or a Build closes, and a
     /// Build Grant serves nothing more.
-    pub(super) async fn finish_key_change<T, F, Fut>(&self, work: F) -> Result<T, Error>
+    pub(super) async fn finish_key_change<T, F>(&self, work: F) -> Result<T, Error>
     where
         T: Send + 'static,
-        F: FnOnce(Admission, KeyChangeHeld) -> Fut + Send + 'static,
-        Fut: std::future::Future<Output = Result<T, Error>> + Send + 'static,
+        F: for<'g> FnOnce(Admission, &'g KeyChangeHeld) -> BoxFuture<'g, Result<T, Error>>
+            + Send
+            + 'static,
     {
         let switch = self.take_switch().await;
         self.finish_mutation(move |local| async move {
@@ -116,7 +143,8 @@ impl LocalMachine {
                 None => None,
             };
             let bound = local.bound.clone();
-            let changed = work(local, KeyChangeHeld(())).await;
+            let held = KeyChangeHeld(());
+            let changed = work(local, &held).await;
             bound.end_unheld().await;
             changed
         })

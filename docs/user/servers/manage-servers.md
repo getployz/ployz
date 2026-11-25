@@ -274,7 +274,9 @@ step and changes nothing more. That covers a command waiting behind another one,
 for a service's connections to drain, and a volume change waiting behind another volume change. A
 volume step already running on a server, such as a move's switch or a resize whose command was
 cancelled, finishes first: the removal waits for it there, so once `device rm` returns, nothing that
-device asked for is still changing the server. If the same key also holds another connection slot on
+device asked for is still changing the server. The one exception is a volume step the server's
+storage plugin is still working on after 2 minutes: the server stops waiting for it, so the removal
+can return before it does, and a resize like that can still finish afterward. If the same key also holds another connection slot on
 that server, such as Ployz Cloud's, the command goes on with Operator access only, so it can't start
 a container that only that device approved.
 What that device left running on a server stops there before `device rm` returns, even when its
