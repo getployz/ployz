@@ -2359,7 +2359,7 @@ mod tests {
                 "production"
             ]),
             [crate::cli::retry_hint(
-                "ployz --why REASON deploy --no-prune --env production"
+                "ployz --why '<REASON>' deploy --no-prune --env production"
             )]
         );
         assert_eq!(

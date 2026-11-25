@@ -105,7 +105,7 @@ fn shown_assignment(typed: &str) -> Option<Shown> {
 /// validates as its Setting's type and that type holds no secret. None otherwise.
 fn shown_patch(typed: &str) -> Option<Shown> {
     if typed == "-" {
-        return Some(Shown::placeholder("-"));
+        return Some(Shown::word("-"));
     }
     let settings = serde_json::from_str::<serde_json::Map<String, Value>>(typed).ok()?;
     let plain = settings
@@ -758,7 +758,7 @@ mod tests {
                 .and_then(serde_json::Value::as_str),
             Some(
                 format!(
-                    "ployz --ployz-config '{config}' set 'web.env.TOKEN=VALUE' 'web.replicas=3' \
+                    "ployz --ployz-config '{config}' set 'web.env.TOKEN=<VALUE>' 'web.replicas=3' \
                      --env staging --expect 7"
                 )
                 .as_str()

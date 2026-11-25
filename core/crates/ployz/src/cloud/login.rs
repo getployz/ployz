@@ -93,11 +93,22 @@ pub(crate) enum LoginError {
     #[error("PLOYZ_TOKEN acts only in the Organization it was made in")]
     TokenBound,
     #[error("no Organization {0} of yours")]
-    UnknownOrganization(String),
+    UnknownOrganization(crate::cli::Shown),
     #[error("no token or signed-in device {0} in this Organization")]
-    UnknownCredential(String),
+    UnknownCredential(crate::cli::Shown),
     #[error("Tokens named `{name}` here: {}. No changes made.", ids.join(", "))]
     AmbiguousCredential { name: String, ids: Vec<String> },
+}
+
+impl LoginError {
+    /// No Organization of this user's has `slug`, as the refusal names it: whole when it
+    /// reads as a slug, else `<ORGANIZATION>`, since a word typed here may be a credential.
+    pub(crate) fn unknown_organization(slug: &str) -> Self {
+        Self::UnknownOrganization(crate::cli::shown::Label::parse(slug).map_or_else(
+            || crate::cli::Shown::placeholder("ORGANIZATION"),
+            |slug| crate::cli::Shown::of(&slug),
+        ))
+    }
 }
 
 impl Coded for LoginError {

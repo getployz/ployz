@@ -18,6 +18,7 @@ use thiserror::Error;
 
 use crate::cli::ExistingPath;
 use crate::cli::Shown;
+use crate::cli::shown::Label;
 use crate::coded::Coded;
 
 /// Where the Ployz config lives when `PLOYZ_CONFIG` names nowhere: under
@@ -153,7 +154,7 @@ impl Config {
         match none_if_empty(name) {
             Some(name) if !self.contexts.contains_key(&name) => {
                 Err(ContextError::ContextNotFound {
-                    name,
+                    name: shown_context(&name),
                     path: self.path.clone(),
                 })
             }
@@ -172,7 +173,7 @@ impl Config {
     pub fn remove_context(&mut self, name: &str) -> Result<RemovedContext, ContextError> {
         if self.contexts.remove(name).is_none() {
             return Err(ContextError::ContextNotFound {
-                name: name.to_owned(),
+                name: shown_context(name),
                 path: self.path.clone(),
             });
         }
@@ -261,7 +262,7 @@ impl Config {
         self.update(|latest| {
             let context = latest.contexts.get_mut(context_name).ok_or_else(|| {
                 ContextError::ContextNotFound {
-                    name: context_name.to_owned(),
+                    name: shown_context(context_name),
                     path: self.path.clone(),
                 }
             })?;
@@ -445,12 +446,12 @@ pub fn select_connections(
             .contexts
             .get(name)
             .ok_or_else(|| ContextError::ContextNotFound {
-                name: name.to_owned(),
+                name: shown_context(name),
                 path: config.path.clone(),
             })?;
         if context.connections.is_empty() {
             return Err(ContextError::NoConnections {
-                name: name.to_owned(),
+                name: shown_context(name),
             });
         }
         return Ok(SelectedConnections {
@@ -530,15 +531,13 @@ impl Connection {
             Transport::Ssh { .. } => redacted(&self.to_string()),
             Transport::Management(_) => match &self.machine_id {
                 Some(machine_id) => {
-                    Shown::joined(Shown::placeholder("management"), ":", Shown::of(machine_id))
+                    Shown::joined(Shown::word("management"), ":", Shown::of(machine_id))
                 }
                 None => Shown::placeholder("CAPABILITY"),
             },
-            Transport::Tcp(address) => {
-                Shown::joined(Shown::placeholder("tcp"), "://", Shown::of(address))
-            }
+            Transport::Tcp(address) => Shown::joined(Shown::word("tcp"), "://", Shown::of(address)),
             Transport::Unix(path) => Shown::joined(
-                Shown::placeholder("unix"),
+                Shown::word("unix"),
                 "://",
                 ExistingPath::parse(&path.to_string_lossy())
                     .map_or_else(|| Shown::placeholder("PATH"), |path| Shown::of(&path)),
@@ -585,7 +584,7 @@ impl Connection {
     pub fn unix(path: impl Into<PathBuf>) -> Result<Self, ConnectionError> {
         let path = path.into();
         if !path.is_absolute() {
-            return Err(ConnectionError::UnixPath(path));
+            return Err(ConnectionError::UnixPath);
         }
         Ok(Self {
             transport: Transport::Unix(path),
@@ -676,6 +675,13 @@ impl fmt::Display for Connection {
     }
 }
 
+/// A context's name as a message names it: whole when it is one lowercase DNS label, the
+/// shape `ployz link` names contexts by, else `<CONTEXT>`. Names aren't checked when a
+/// context is saved, and a name typed for one that doesn't exist may be anything.
+pub(crate) fn shown_context(name: &str) -> Shown {
+    Label::parse(name).map_or_else(|| Shown::placeholder("CONTEXT"), |label| Shown::of(&label))
+}
+
 /// A connection as typed, as `--connect` shows it again: whole when it parses and every
 /// part of it shows, a TCP address or an existing Unix socket. None for an SSH destination,
 /// whose user may be a session token, so the retry names `CONNECT` instead of reaching
@@ -683,12 +689,12 @@ impl fmt::Display for Connection {
 pub(crate) fn shown(typed: &str) -> Option<Shown> {
     match typed.parse::<Connection>().ok()?.transport {
         Transport::Tcp(address) => Some(Shown::joined(
-            Shown::placeholder("tcp"),
+            Shown::word("tcp"),
             "://",
             Shown::of(&address),
         )),
         Transport::Unix(path) => ExistingPath::parse(&path.to_string_lossy())
-            .map(|path| Shown::joined(Shown::placeholder("unix"), "://", Shown::of(&path))),
+            .map(|path| Shown::joined(Shown::word("unix"), "://", Shown::of(&path))),
         Transport::Ssh { .. } | Transport::Management(_) => None,
     }
 }
@@ -777,8 +783,8 @@ impl<'de> Deserialize<'de> for Connection {
             (TransportFile::Management(capability), None) => Transport::Management(capability),
             (TransportFile::Tcp(address), None) => Transport::Tcp(address),
             (TransportFile::Unix(path), None) if path.is_absolute() => Transport::Unix(path),
-            (TransportFile::Unix(path), None) => {
-                return Err(de::Error::custom(ConnectionError::UnixPath(path)));
+            (TransportFile::Unix(_), None) => {
+                return Err(de::Error::custom(ConnectionError::UnixPath));
             }
             (
                 TransportFile::Management(_) | TransportFile::Tcp(_) | TransportFile::Unix(_),
@@ -973,8 +979,8 @@ pub enum ConnectionError {
     SshDestination(Shown),
     #[error("invalid TCP address {0:?}")]
     TcpAddress(Shown),
-    #[error("Unix connection path must be absolute: {0}")]
-    UnixPath(PathBuf),
+    #[error("Unix connection path must be absolute")]
+    UnixPath,
     #[error("connection scheme was removed: {0:?}")]
     RemovedScheme(Shown),
     #[error("ssh_key_file requires the SSH transport")]
@@ -997,10 +1003,10 @@ pub enum ContextError {
     NoContexts(PathBuf),
     #[error("current context is not set in Ployz config {0}")]
     NoCurrentContext(PathBuf),
-    #[error("context {} not found in Ployz config {path}", .name.escape_debug())]
-    ContextNotFound { name: String, path: PathBuf },
-    #[error("Context {} has no Servers.", .name.escape_debug())]
-    NoConnections { name: String },
+    #[error("context {name} not found in Ployz config {path}")]
+    ContextNotFound { name: Shown, path: PathBuf },
+    #[error("Context {name} has no Servers.")]
+    NoConnections { name: Shown },
     #[error(transparent)]
     Connection(ConnectionError),
 }

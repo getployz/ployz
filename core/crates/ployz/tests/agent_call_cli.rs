@@ -32,6 +32,24 @@ fn text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
+/// Every file under `dir` with its contents, to tell whether a run wrote anything.
+fn files(dir: &std::path::Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+    let mut found = Vec::new();
+    let mut dirs = vec![dir.to_owned()];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else {
+                found.push((path.clone(), std::fs::read(&path).unwrap_or_default()));
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
 #[test]
 #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
 fn an_agent_is_refused_until_it_says_why() {
@@ -86,7 +104,7 @@ fn a_refusal_repeats_no_value_that_did_not_parse_as_its_kind() {
     for (command, next) in [
         (
             &["exec", "web", "--", "env", "AUTH_TOKEN=SENTINEL", "true"][..],
-            "exec web -- COMMAND",
+            "exec web -- '<COMMAND>'",
         ),
         (
             &[
@@ -96,25 +114,32 @@ fn a_refusal_repeats_no_value_that_did_not_parse_as_its_kind() {
                 "--setup",
                 "web=curl -H 'Bearer SENTINEL'",
             ],
-            "env branch fix --setup 'SERVICE=COMMAND'",
+            "env branch fix --setup '<SERVICE=COMMAND>'",
         ),
         (
             &["set", "web.startCommand=serve --token SENTINEL"],
-            "set 'web.startCommand=VALUE'",
+            "set 'web.startCommand=<VALUE>'",
         ),
         (
             &["set", "web.preDeployCommand=migrate --password SENTINEL"],
-            "set 'web.preDeployCommand=VALUE'",
+            "set 'web.preDeployCommand=<VALUE>'",
         ),
-        (&["set", "setup.web=seed SENTINEL"], "set 'setup.web=VALUE'"),
+        (
+            &["set", "setup.web=seed SENTINEL"],
+            "set 'setup.web=<VALUE>'",
+        ),
+        (
+            &["set", "web.env.KEY=SENTINEL"],
+            "set 'web.env.KEY=<VALUE>'",
+        ),
         // A number Setting given text: its value didn't validate as its type.
         (
             &["set", "web.replicas=SENTINEL"],
-            "set 'web.replicas=VALUE'",
+            "set 'web.replicas=<VALUE>'",
         ),
         (
             &["set", "web", "--patch", r#"{"replicas":"SENTINEL"}"#],
-            "set web --patch JSON",
+            "set web --patch '<JSON>'",
         ),
         // A repository URL with a token, refused before the repository name parses.
         (
@@ -125,7 +150,7 @@ fn a_refusal_repeats_no_value_that_did_not_parse_as_its_kind() {
                 "--repo",
                 "https://x-access-token:SENTINEL@github.com/acme/web",
             ],
-            "service add web --repo 'OWNER/REPO[@BRANCH]'",
+            "service add web --repo '<OWNER/REPO[@BRANCH]>'",
         ),
         (
             &[
@@ -133,12 +158,12 @@ fn a_refusal_repeats_no_value_that_did_not_parse_as_its_kind() {
                 "--cloud-url",
                 "https://SENTINEL:SENTINEL@cloud.example:8443/SENTINEL?t=SENTINEL#SENTINEL",
             ],
-            "login --cloud-url CLOUD_URL",
+            "login --cloud-url '<CLOUD_URL>'",
         ),
         // A Cloud served under a path: the host alone would reach another endpoint.
         (
             &["login", "--cloud-url", "https://example.test/SENTINEL"],
-            "login --cloud-url CLOUD_URL",
+            "login --cloud-url '<CLOUD_URL>'",
         ),
     ] {
         let refused = ployz(home.path(), "some-agent", command);
@@ -168,6 +193,19 @@ fn a_refusal_repeats_no_value_that_did_not_parse_as_its_kind() {
         );
         let said = format!("{}{}", text(&json.stdout), text(&json.stderr));
         assert!(!said.contains("SENTINEL"), "{command:?}: {said}");
+
+        // Pasted as printed with a reason, the line is refused before anything runs: each
+        // placeholder stands for a value, and none is ever sent as one.
+        let mut words = shell_words::split(line).unwrap();
+        let why = words.iter().position(|word| word == "--why").unwrap() + 1;
+        *words.get_mut(why).unwrap() = "try the retry".to_owned();
+        let words: Vec<&str> = words.iter().skip(1).map(String::as_str).collect();
+        let before = files(home.path());
+        let pasted = ployz(home.path(), "some-agent", &words);
+        assert_eq!(pasted.status.code(), Some(2), "{words:?}");
+        let said = format!("{}{}", text(&pasted.stderr), text(&pasted.stdout));
+        assert!(said.contains("holds a placeholder"), "{words:?}: {said}");
+        assert_eq!(files(home.path()), before, "{words:?}: wrote something");
     }
 
     let ran = ployz(
@@ -186,6 +224,173 @@ fn a_refusal_repeats_no_value_that_did_not_parse_as_its_kind() {
     let stderr = text(&ran.stderr);
     assert!(!stderr.contains(REASON_REQUIRED), "{stderr}");
     assert!(!stderr.contains("--why"), "{stderr}");
+}
+
+/// `ployz` as `some-agent` sees it, with `env` on top of [`ployz`]'s.
+fn ployz_with(home: &std::path::Path, args: &[&str], env: &[(&str, String)]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args(args)
+        .env("AI_AGENT", "some-agent")
+        .env("HOME", home)
+        .env_remove("XDG_CONFIG_HOME")
+        .env("PLOYZ_CONFIG", home.join("config.yaml"))
+        .env_remove("PLOYZ_TOKEN")
+        .env_remove("PLOYZ_CONNECT")
+        .env_remove("PLOYZ_CONTEXT")
+        .env("NO_PROXY", "127.0.0.1")
+        .env("no_proxy", "127.0.0.1")
+        .env("NO_COLOR", "1")
+        .envs(env.iter().map(|(name, value)| (*name, value.as_str())))
+        .stdin(Stdio::null())
+        .output()
+        .unwrap()
+}
+
+/// A Cloud that answers each path in `routes` with its JSON body, and anything else 404.
+fn json_cloud(routes: &'static [(&'static str, &'static str)]) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { break };
+            let mut request = Vec::new();
+            let mut buffer = [0; 4096];
+            while !text(&request).contains("\r\n\r\n") {
+                let read = stream.read(&mut buffer).unwrap_or(0);
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(buffer.get(..read).unwrap_or_default());
+            }
+            let request = text(&request);
+            let path = request.split(' ').nth(1).unwrap_or_default();
+            let (status, body) = routes
+                .iter()
+                .find(|(route, _)| *route == path)
+                .map_or(("404 Not Found", "{}"), |(_, body)| ("200 OK", *body));
+            let _ = write!(
+                stream,
+                "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+        }
+    });
+    url
+}
+
+/// A credential typed where a command takes something else never reaches output: not an
+/// error, a hint, `--help`, or what ssh said. Each row types `SENTINEL` into a value that
+/// refuses it, or one an error repeats, and no part of stdout, stderr or `--json` shows it.
+#[test]
+fn no_output_repeats_a_credential_typed_where_it_does_not_parse() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(
+        home.path().join("config.yaml"),
+        "current_context: lab\ncontexts:\n  lab:\n    connections:\n      - tcp: 127.0.0.1:1\n",
+    )
+    .unwrap();
+    let cloud = json_cloud(&[
+        ("/api/cli/waiting-servers", r#"{"waiting_servers":[]}"#),
+        ("/api/cli/enrollments", r#"{"enrollments":[]}"#),
+    ]);
+    let signed_in = [
+        ("PLOYZ_TOKEN", "ployz_test_token".to_owned()),
+        ("PLOYZ_CLOUD_URL", cloud),
+    ];
+    // An ssh whose stderr names its user alone, as a session token used as the user would.
+    let bin = tempfile::tempdir().unwrap();
+    let ssh = bin.path().join("ssh");
+    std::fs::write(
+        &ssh,
+        "#!/bin/sh\necho 'SENTINEL' >&2\necho 'Connection to host closed by SENTINEL.' >&2\nexit 255\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&ssh, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let path = format!(
+        "{}:{}",
+        bin.path().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let why = ["--why", "check what output repeats"];
+    for (args, env) in [
+        // A URL given as the config: the agent's `next` line repeated it.
+        (
+            vec![
+                "--ployz-config",
+                "https://user:SENTINEL@host.example/config.yaml",
+                "status",
+            ],
+            vec![],
+        ),
+        (
+            [
+                &why[..],
+                &["server", "reject", "https://u:SENTINEL@x.example", "--yes"],
+            ]
+            .concat(),
+            signed_in.to_vec(),
+        ),
+        (
+            [&why[..], &["server", "reject", "[SENTINEL", "--yes"]].concat(),
+            signed_in.to_vec(),
+        ),
+        (
+            [
+                &why[..],
+                &["--context", "https://u:SENTINEL@x.example", "ps"],
+            ]
+            .concat(),
+            vec![],
+        ),
+        (
+            [&why[..], &["ctx", "use", "SENTINEL:SENTINEL@x"]].concat(),
+            vec![],
+        ),
+        (
+            vec!["status", "--help"],
+            vec![("PLOYZ_CONTEXT", "SENTINEL".to_owned())],
+        ),
+        (
+            vec!["server", "add", "--help"],
+            vec![("PLOYZ_DAEMON_VERSION", "SENTINEL".to_owned())],
+        ),
+        (
+            vec!["status", "--help"],
+            vec![
+                ("PLOYZ_PROJECT", "SENTINEL".to_owned()),
+                ("PLOYZ_ENV", "SENTINEL".to_owned()),
+                ("PLOYZ_AUTO_CONFIRM", "SENTINEL".to_owned()),
+            ],
+        ),
+        (
+            [&why[..], &["--connect", "ssh://SENTINEL@203.0.113.7", "ps"]].concat(),
+            vec![("PATH", path)],
+        ),
+        (
+            [&why[..], &["--connect", "unix://SENTINEL", "ps"]].concat(),
+            vec![],
+        ),
+        (
+            [&why[..], &["--ssh-timeout", "SENTINEL", "status"]].concat(),
+            vec![],
+        ),
+        ([&why[..], &["status", "SENTINEL"]].concat(), vec![]),
+        ([&why[..], &["SENTINEL"]].concat(), vec![]),
+        ([&why[..], &["ps", "--SENTINEL"]].concat(), vec![]),
+        ([&why[..], &["schema", "u:SENTINEL@x"]].concat(), vec![]),
+        (
+            [&why[..], &["logs", "web", "--tail", "SENTINEL"]].concat(),
+            vec![],
+        ),
+    ] {
+        for json in [false, true] {
+            let args = [if json { &["--json"][..] } else { &[] }, &args].concat();
+            let output = ployz_with(home.path(), &args, &env);
+            let said = format!("{}{}", text(&output.stdout), text(&output.stderr));
+            assert!(!said.contains("SENTINEL"), "{args:?} {env:?}: {said}");
+            assert!(!said.is_empty(), "{args:?}: said nothing");
+        }
+    }
 }
 
 #[test]

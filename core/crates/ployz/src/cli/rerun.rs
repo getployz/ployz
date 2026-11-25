@@ -639,7 +639,7 @@ const PARSED: [(&str, Parse); 58] = [
         any(
             typed,
             &[parsed::<std::net::IpAddr>, |typed| {
-                (typed == "none").then(|| Shown::placeholder("none"))
+                (typed == "none").then(|| Shown::word("none"))
             }],
         )
     }),

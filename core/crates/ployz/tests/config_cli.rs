@@ -155,7 +155,7 @@ fn ok(store: &Target, args: &[&str]) -> Value {
 /// Run `retry` as it reads, its `--why` and `--json` included; returns (exit code, stdout JSON).
 fn retried(target: &Target, retry: &str) -> (Option<i32>, Value) {
     let home = tempfile::tempdir().unwrap();
-    let words = shell_words::split(retry).unwrap();
+    let words = as_an_agent_runs(retry);
     assert_eq!(words[0], "ployz", "{retry}");
     let output = target
         .retrying(home.path())
@@ -1573,7 +1573,7 @@ fn the_typed_name_alone_removes_a_project_and_an_environment_that_ran_services()
         assert_eq!(asked["code"], "confirmation_required", "{asked}");
         assert_eq!(
             asked["details"]["retry"],
-            json!("ployz --json --why REASON project rm shop --confirm shop")
+            json!("ployz --json --why '<REASON>' project rm shop --confirm shop")
         );
         // A stale `--expect-version` still binds, so a script that passes one is refused.
         let stale = error(
@@ -1628,7 +1628,7 @@ fn the_typed_name_alone_removes_a_project_and_an_environment_that_ran_services()
                     config,
                     "--json",
                     "--why",
-                    "REASON",
+                    "<REASON>",
                     "env",
                     "rm",
                     "staging",
@@ -1651,7 +1651,8 @@ fn the_typed_name_alone_removes_a_project_and_an_environment_that_ran_services()
                 assert_eq!(admitted["deployment"]["remove"], true, "{admitted}");
                 assert_eq!(admitted["deployments"][0]["remove"], true, "{admitted}");
                 assert_eq!(
-                    admitted["next"], "ployz --json --why REASON project rm shop --confirm shop",
+                    admitted["next"],
+                    "ployz --json --why '<REASON>' project rm shop --confirm shop",
                     "{admitted}"
                 );
             }
@@ -2114,7 +2115,7 @@ fn removing_a_referenced_service_stages_and_prints_the_broken_reference() {
         assert!(output.status.success(), "{args:?}: {output:?}");
         String::from_utf8(output.stdout).unwrap() + &String::from_utf8(output.stderr).unwrap()
     };
-    let line = "sentry.env.REDIS references redis, which was removed; deploys skip it until you change it: ployz set 'sentry.env.REDIS=VALUE'";
+    let line = "sentry.env.REDIS references redis, which was removed; deploys skip it until you change it: ployz set 'sentry.env.REDIS=<VALUE>'";
     let removed = human(&["service", "rm", "redis"]);
     assert!(removed.contains(line), "{removed}");
     let diff = human(&["diff"]);
@@ -2152,7 +2153,7 @@ fn a_broken_reference_in_an_invisible_file_name_prints_escaped() {
         String::from_utf8(output.stdout).unwrap() + &String::from_utf8(output.stderr).unwrap()
     };
     // The name shows as stored, and the fix command still pastes to that file.
-    let line = r"app/a\u{202e}b.txt references redis, which was removed; deploys skip it until you change it: ployz config put app $'a\xe2\x80\xaeb.txt' --from PATH";
+    let line = r"app/a\u{202e}b.txt references redis, which was removed; deploys skip it until you change it: ployz config put app $'a\xe2\x80\xaeb.txt' --from '<PATH>'";
     let removed = human(&["service", "rm", "redis"]);
     assert!(removed.contains(line), "{removed}");
     let diff = human(&["diff"]);
@@ -2594,7 +2595,7 @@ fn an_agent_lists_moves_the_default_and_removes_environments_without_servers() {
         assert_eq!(unconfirmed["details"]["services"], json!(["web"]));
         assert_eq!(
             unconfirmed["details"]["retry"],
-            json!("ployz --json --why REASON env rm production --confirm shop/production")
+            json!("ployz --json --why '<REASON>' env rm production --confirm shop/production")
         );
         let mistyped = error(
             store,
@@ -2602,7 +2603,7 @@ fn an_agent_lists_moves_the_default_and_removes_environments_without_servers() {
         );
         assert_eq!(
             mistyped["details"]["retry"],
-            json!("ployz --json --why REASON env rm production --confirm shop/production")
+            json!("ployz --json --why '<REASON>' env rm production --confirm shop/production")
         );
         let default = error(
             store,
@@ -2882,12 +2883,12 @@ fn an_agent_lists_and_removes_a_project_without_servers() {
         );
         assert_eq!(
             unconfirmed["details"]["retry"],
-            json!("ployz --json --why REASON project rm shop --confirm shop")
+            json!("ployz --json --why '<REASON>' project rm shop --confirm shop")
         );
         let mistyped = error(store, &["project", "rm", "shop", "--confirm", "blog"]);
         assert_eq!(
             mistyped["details"]["retry"],
-            json!("ployz --json --why REASON project rm shop --confirm shop")
+            json!("ployz --json --why '<REASON>' project rm shop --confirm shop")
         );
 
         // Nothing of it ever ran, so it goes at once, with no Server.
@@ -3925,7 +3926,7 @@ fn an_agent_reviews_saves_and_discards() {
         assert_eq!(
             stale.pointer("/details/next"),
             Some(&json!(format!(
-                "ployz --json --why REASON deploy --skip-deploy --expect-version {fresh}"
+                "ployz --json --why '<REASON>' deploy --skip-deploy --expect-version {fresh}"
             )))
         );
 
@@ -4585,7 +4586,7 @@ fn an_agent_plans_deploys_and_reads_the_deployment() {
         assert_eq!(
             plan["next"],
             json!(format!(
-                "ployz --json --why REASON deploy web --expect-version {version}"
+                "ployz --json --why '<REASON>' deploy web --expect-version {version}"
             ))
         );
         assert_eq!(
@@ -4600,7 +4601,7 @@ fn an_agent_plans_deploys_and_reads_the_deployment() {
         assert_eq!(
             stale["details"]["next"],
             json!(format!(
-                "ployz --json --why REASON deploy --expect-version {}",
+                "ployz --json --why '<REASON>' deploy --expect-version {}",
                 stale["details"]["diff"]["version"].as_str().unwrap()
             ))
         );
@@ -4730,7 +4731,7 @@ fn redeploying_an_older_deployment_asks_before_it_rolls_back() {
     assert_eq!(asked["details"]["rolls_back"], json!([2]));
     assert_eq!(
         asked["details"]["retry"],
-        json!("ployz --json --why REASON deployment redeploy 1 --yes")
+        json!("ployz --json --why '<REASON>' deployment redeploy 1 --yes")
     );
 
     let rolled_back = no_server_answers(&store, &["deployment", "redeploy", "1", "--yes"]);
@@ -5639,7 +5640,7 @@ fn ctx_names_no_servers_when_the_config_picks_no_context() {
         (
             "contexts:\n  lab:\n    connections:\n      - unix: /tmp/MY-SERVER.sock\n",
             "servers = (none: no current context)\n",
-            "ployz ctx use CONTEXT",
+            "ployz ctx use '<CONTEXT>'",
         ),
         (
             "contexts: {}\n",
@@ -6868,7 +6869,7 @@ fn history_lists_when_who_and_what_and_names_the_draft_an_action_overwrites() {
     );
     assert_eq!(
         refused["details"]["next"],
-        json!("ployz --json --why REASON history undo 2 --accept-overwrite"),
+        json!("ployz --json --why '<REASON>' history undo 2 --accept-overwrite"),
         "{refused}"
     );
     ok(&store, &["history", "undo", "2", "--accept-overwrite"]);
@@ -7133,8 +7134,20 @@ fn ployz_fed(target: &Target, args: &[&str], input: &str) -> (Option<i32>, Strin
 }
 
 /// `retry` as it reads, `input` on stdin; returns (exit code, stdout, stderr).
+/// The words of `retry` as an agent runs it: with its reason given.
+fn as_an_agent_runs(retry: &str) -> Vec<String> {
+    shell_words::split(retry)
+        .unwrap()
+        .into_iter()
+        .map(|word| match word.as_str() {
+            "<REASON>" => "following the retry".to_owned(),
+            _ => word,
+        })
+        .collect()
+}
+
 fn retried_fed(target: &Target, retry: &str, input: &str) -> (Option<i32>, String, String) {
-    let words = shell_words::split(retry).unwrap();
+    let words = as_an_agent_runs(retry);
     assert_eq!(words[0], "ployz", "{retry}");
     let words: Vec<&str> = words[1..].iter().map(String::as_str).collect();
     fed(target, false, &words, input)
@@ -7191,12 +7204,12 @@ fn a_sync_a_pr_plan_and_a_build_order_retry_with_their_arguments_and_the_digest(
                 "web.env.DEBUG",
                 "--close",
             ][..],
-            "ployz --json --why REASON env sync --env fix-web --only web --skip web.env.DEBUG --close \
+            "ployz --json --why '<REASON>' env sync --env fix-web --only web --skip web.env.DEBUG --close \
              --approval 3:abc --to",
         ),
         (
             &["env", "sync", "--from", "fix-web", "--version", REVIEWED],
-            "ployz --json --why REASON env sync --from fix-web --version 3:1:0.1 --approval 3:abc",
+            "ployz --json --why '<REASON>' env sync --from fix-web --version 3:1:0.1 --approval 3:abc",
         ),
         (
             &[
@@ -7209,7 +7222,7 @@ fn a_sync_a_pr_plan_and_a_build_order_retry_with_their_arguments_and_the_digest(
                 "--env",
                 "fix-web",
             ],
-            "ployz --json --why REASON env sync --take production --only web --env fix-web --approval 3:abc",
+            "ployz --json --why '<REASON>' env sync --take production --only web --env fix-web --approval 3:abc",
         ),
         (
             &[
@@ -7228,17 +7241,17 @@ fn a_sync_a_pr_plan_and_a_build_order_retry_with_their_arguments_and_the_digest(
                 "--project",
                 "shop",
             ],
-            "ployz --json --why REASON env pr acme/web --on --from production --copy web \
+            "ployz --json --why '<REASON>' env pr acme/web --on --from production --copy web \
              --remove-on-close false --bots true --project shop \
              --approval 3:abc",
         ),
         (
             &["env", "pr", "acme/web", "--off"],
-            "ployz --json --why REASON env pr acme/web --off --approval 3:abc",
+            "ployz --json --why '<REASON>' env pr acme/web --off --approval 3:abc",
         ),
         (
             &["org", "build-order", "servers-only"],
-            "ployz --json --why REASON org build-order servers-only --approval 3:abc",
+            "ployz --json --why '<REASON>' org build-order servers-only --approval 3:abc",
         ),
     ] {
         let refused = error(&target, args);
@@ -7292,7 +7305,7 @@ fn a_sync_that_gives_a_secret_names_its_row_in_the_retry_and_never_the_value() {
     let retry = refused["error"]["details"]["retry"].as_str().unwrap();
     assert_eq!(
         retry,
-        "ployz --json --why REASON env sync --env fix-web --value web.env.API_KEY --to"
+        "ployz --json --why '<REASON>' env sync --env fix-web --value web.env.API_KEY --to"
     );
     let message = refused["error"]["message"].as_str().unwrap();
     assert!(
@@ -7358,7 +7371,7 @@ fn under_json_a_save_names_its_digest_and_the_retry_saves() {
     assert_eq!(refused["details"]["approval"], json!("3:abc"));
     assert_eq!(
         refused["details"]["retry"],
-        json!("ployz --json --why REASON deploy --skip-deploy --approval 3:abc"),
+        json!("ployz --json --why '<REASON>' deploy --skip-deploy --approval 3:abc"),
         "{refused}"
     );
     assert_eq!(ok(&target, &["diff"])["holds_staged"], json!(false));
@@ -7378,7 +7391,7 @@ fn a_patch_that_asks_retries_as_set() {
     let retry = refused["details"]["retry"].as_str().unwrap();
     assert_eq!(
         retry,
-        r#"ployz --json --why REASON set web --patch '{"replicas":3}'"#
+        r#"ployz --json --why '<REASON>' set web --patch '{"replicas":3}'"#
     );
 }
 
@@ -7399,7 +7412,7 @@ fn without_a_terminal_a_save_shows_what_it_destroys_and_saves_nothing() {
         "{stderr}"
     );
     assert!(
-        stderr.contains("retry: ployz --why REASON deploy --skip-deploy --approval 3:abc"),
+        stderr.contains("retry: ployz --why '<REASON>' deploy --skip-deploy --approval 3:abc"),
         "{stderr}"
     );
     assert_eq!(ok(&target, &["diff"])["holds_staged"], json!(false));
@@ -7430,7 +7443,7 @@ fn an_agent_following_each_retry_deploys_what_deletes_a_volume() {
     assert_eq!(
         retry.unwrap(),
         format!(
-            "ployz --json --why REASON deploy --detach --accept-volume-loss data \
+            "ployz --json --why '<REASON>' deploy --detach --accept-volume-loss data \
              --expect-version {REVIEWED} --approval 3:abc"
         )
     );
@@ -7576,7 +7589,7 @@ fn signed_in_an_upgrade_runs_in_cloud_along_the_release_channel() {
     assert_eq!(
         mismatch["details"]["retry"],
         json!(format!(
-            "ployz --json --why REASON server upgrade stable {CLOUD_SERVER}"
+            "ployz --json --why '<REASON>' server upgrade stable {CLOUD_SERVER}"
         )),
         "{mismatch}"
     );
@@ -7631,7 +7644,7 @@ fn a_cloud_upgrade_skips_an_offline_or_busy_server_by_name_and_upgrades_the_rest
     assert_eq!(
         skipped["details"]["retry"],
         json!(format!(
-            "ployz --json --why REASON server upgrade stable {OFFLINE_SERVER} {BUSY_SERVER}"
+            "ployz --json --why '<REASON>' server upgrade stable {OFFLINE_SERVER} {BUSY_SERVER}"
         ))
     );
     assert_eq!(
@@ -7727,7 +7740,7 @@ fn under_json_a_cleanup_names_the_retry_that_carries_its_digest() {
     assert_eq!(
         refused["details"]["retry"],
         json!(
-            "ployz --json --why REASON server clean --namespace stray --confirm stray --approval clean:abc"
+            "ployz --json --why '<REASON>' server clean --namespace stray --confirm stray --approval clean:abc"
         ),
         "{refused}"
     );
@@ -7875,7 +7888,7 @@ fn a_drain_asks_and_without_a_terminal_starts_nothing() {
     assert_eq!(
         refused["details"]["retry"],
         json!(format!(
-            "ployz --json --why REASON server drain {CLOUD_SERVER} --approval drain:abc"
+            "ployz --json --why '<REASON>' server drain {CLOUD_SERVER} --approval drain:abc"
         )),
         "{refused}"
     );
@@ -8048,11 +8061,12 @@ fn a_removal_no_server_answers_is_still_removing_and_retries_with_the_same_rm() 
     );
     assert_eq!(
         retry,
-        "ployz --json --why REASON env rm staging --confirm shop/staging"
+        "ployz --json --why '<REASON>' env rm staging --confirm shop/staging"
     );
 
     // The retry it names runs the removal again rather than refusing.
-    let rerun: Vec<&str> = retry.split(' ').skip(1).collect();
+    let rerun = as_an_agent_runs(&retry);
+    let rerun: Vec<&str> = rerun.iter().skip(1).map(String::as_str).collect();
     let (stdout, again) = removing(cloud.retrying(home.path()), &rerun);
     let removed: Value = serde_json::from_slice(&stdout).unwrap();
     assert_eq!(removed["removal"], "removing", "{removed}");
@@ -8069,7 +8083,7 @@ fn a_removal_no_server_answers_is_still_removing_and_retries_with_the_same_rm() 
     assert_eq!(removed["project"]["name"], "shop", "{removed}");
     assert_eq!(
         retry,
-        "ployz --json --why REASON project rm shop --confirm shop"
+        "ployz --json --why '<REASON>' project rm shop --confirm shop"
     );
 }
 

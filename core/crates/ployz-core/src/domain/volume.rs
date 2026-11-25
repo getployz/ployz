@@ -1041,7 +1041,10 @@ mod tests {
                 Some("inventory")
             );
             let error = serde_json::from_value::<VolumeSource>(raw).unwrap_err();
-            assert!(error.to_string().contains(key), "{error}");
+            assert!(
+                error.to_string().contains("a non-reserved user label"),
+                "{key}: {error}"
+            );
         }
     }
 

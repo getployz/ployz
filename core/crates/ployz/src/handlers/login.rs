@@ -9,8 +9,7 @@ use crate::cloud;
 use crate::cloud::login::{
     Account, CredentialStore, LoginError, Organization, Pending, SignedIn, Start,
 };
-use crate::cloud::origin::{CloudOrigin, DEFAULT_CLOUD, NotWebUrl};
-use crate::env;
+use crate::cloud::origin::{CloudOrigin, DEFAULT_CLOUD};
 
 pub(super) fn login_command(command: Command) -> Command {
     command
@@ -60,22 +59,15 @@ pub(super) fn login(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let store = CredentialStore::beside(&config_path(matches)?);
     let stored = readable_cloud(&store, "Replacing it.")?;
-    let cloud = crate::cli::cloud_url_of(matches)
+    let cloud = crate::cli::cloud_url_of(matches)?
         .map(str::to_owned)
         .or(stored)
         .unwrap_or_else(|| DEFAULT_CLOUD.to_owned());
-    if let Err(NotWebUrl { given }) = CloudOrigin::checked(&cloud) {
-        let named = match matches.value_source("cloud-url") {
-            Some(clap::parser::ValueSource::EnvVariable) => env::CLOUD_URL,
-            Some(_) => "--cloud-url",
-            None => {
-                return Err(Error::usage(format!(
-                    "The stored Cloud {given} is not an http:// or https:// URL; name one with --cloud-url"
-                )));
-            }
-        };
+    // A Cloud named on this command line passed above; a stored one may predate the check.
+    if let Err(refused) = CloudOrigin::checked(&cloud) {
         return Err(Error::usage(format!(
-            "{named} takes a host such as ployz.dev, or an http:// or https:// URL, not {given}"
+            "{}; name one with --cloud-url",
+            refused.sentence("The stored Cloud")
         )));
     }
     let wait = matches.get_flag("wait") || !crate::ui::json();

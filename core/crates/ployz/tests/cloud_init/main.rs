@@ -1105,7 +1105,7 @@ async fn invalid_cluster_network_does_not_reset_an_initialized_machine() {
     assert!(enroll.posts().is_empty());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("invalid value 'not-a-cidr' for '--network <network>'"),
+        stderr.contains("invalid value '<VALUE>' for '--network <network>'"),
         "{stderr}"
     );
 }

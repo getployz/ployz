@@ -42,7 +42,7 @@ pub(super) fn with_context_next(failure: Error, leaf: &ArgMatches) -> Error {
         Some(ContextError::NoContexts(_)) => no_contexts_next(leaf),
         Some(ContextError::NoConnections { name, .. }) => Some(
             Rerun::then(leaf, &["server", "add", "--standalone"])
-                .set("context", name)
+                .set("context", name.as_str())
                 .line(),
         ),
         _ => None,
@@ -258,7 +258,7 @@ fn connection_index(
 ) -> Result<usize, Error> {
     if connections.is_empty() {
         return Err(ContextError::NoConnections {
-            name: context.to_owned(),
+            name: crate::context::shown_context(context),
         }
         .into());
     }

@@ -559,7 +559,7 @@ pub(super) fn org_remove(root: &ArgMatches) -> Result<(), Error> {
                 )
                 .hint(Hint::Next(format!("ployz org use {slug}")))
             } else {
-                LoginError::UnknownOrganization(slug.clone()).into()
+                LoginError::unknown_organization(slug).into()
             });
         }
         // A device acts in the Organization it removes; afterwards Cloud refuses it

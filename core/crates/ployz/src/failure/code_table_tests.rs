@@ -167,13 +167,15 @@ fn plain_rows() -> Vec<Row> {
         row(
             "context/not-found",
             ContextError::ContextNotFound {
-                name: "n".into(),
+                name: crate::context::shown_context("n"),
                 path: "p".into(),
             },
         ),
         row(
             "context/no-connections",
-            ContextError::NoConnections { name: "n".into() },
+            ContextError::NoConnections {
+                name: crate::context::shown_context("n"),
+            },
         ),
         row(
             "context/connection",
@@ -528,28 +530,22 @@ fn operator_rows() -> Vec<Row> {
         row("operator/tty-requires-stdin", InputError::TtyRequiresStdin),
         row(
             "operator/invalid-service-selector",
-            InputError::InvalidServiceSelector("s".into()),
+            InputError::InvalidServiceSelector,
         ),
-        row("operator/invalid-tail", InputError::InvalidTail("t".into())),
+        row("operator/invalid-tail", InputError::InvalidTail),
         row(
             "operator/invalid-time",
-            InputError::InvalidTime {
-                flag: "since",
-                value: "v".into(),
-            },
+            InputError::InvalidTime { flag: "since" },
         ),
         row("operator/invalid-proxy-port", InputError::InvalidProxyPort),
-        row(
-            "operator/invalid-local-port",
-            InputError::InvalidLocalPort("p".into()),
-        ),
+        row("operator/invalid-local-port", InputError::InvalidLocalPort),
         row(
             "operator/invalid-remote-port",
-            InputError::InvalidRemotePort("p".into()),
+            InputError::InvalidRemotePort,
         ),
         row(
             "operator/input",
-            OperatorError::Input(InputError::InvalidTail("t".into())),
+            OperatorError::Input(InputError::InvalidTail),
         ),
         row(
             "operator/no-servable-container",
@@ -710,11 +706,11 @@ fn login_rows() -> Vec<Row> {
         row("login/token-bound", LoginError::TokenBound),
         row(
             "login/unknown-organization",
-            LoginError::UnknownOrganization("o".into()),
+            LoginError::UnknownOrganization(crate::cli::Shown::placeholder("o")),
         ),
         row(
             "login/unknown-credential",
-            LoginError::UnknownCredential("c".into()),
+            LoginError::UnknownCredential(crate::cli::Shown::placeholder("c")),
         ),
         row(
             "login/ambiguous-credential",

@@ -337,7 +337,7 @@ fn explicit_config_beats_environment_and_interactive_errors_do_not_mutate() {
     assert!(stderr.contains("needs a terminal"), "{stderr}");
     assert!(
         stderr.contains(&format!(
-            "retry: ployz --ployz-config {} --why REASON ctx use CONTEXT",
+            "retry: ployz --ployz-config {} --why '<REASON>' ctx use '<CONTEXT>'",
             shell_words::quote(flag_path.to_str().unwrap())
         )),
         "{stderr}"
@@ -603,8 +603,10 @@ fn ctx_rm_of_an_unknown_name_fails_without_mutating() {
                 .unwrap();
             assert!(!output.status.success());
             let error = String::from_utf8_lossy(&output.stderr);
+            // A name that isn't a label shows as its placeholder.
+            let shown = if name == "gone" { "gone" } else { "<CONTEXT>" };
             assert!(
-                error.contains(&format!("context {} not found", name.escape_debug())),
+                error.contains(&format!("context {shown} not found")),
                 "{error}"
             );
             assert!(!error.trim().chars().any(char::is_control), "{error}");

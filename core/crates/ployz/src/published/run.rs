@@ -486,7 +486,7 @@ mod tests {
         for (argv, line) in [
             (
                 &["ployz", "org", "member", "role", "Linus Torvalds", "admin"][..],
-                "ployz org member role MEMBER admin --approval a7e572f3",
+                "ployz org member role '<MEMBER>' admin --approval a7e572f3",
             ),
             (
                 &[
@@ -500,22 +500,22 @@ mod tests {
                     "--role",
                     "admin",
                 ],
-                "ployz --ployz-config PLOYZ_CONFIG org member invite EMAIL --role admin \
+                "ployz --ployz-config '<PLOYZ_CONFIG>' org member invite '<EMAIL>' --role admin \
                  --approval a7e572f3",
             ),
             (
                 &["ployz", "--json", "org", "member", "role", "Linus", "admin"],
-                "ployz --json org member role MEMBER admin --approval a7e572f3",
+                "ployz --json org member role '<MEMBER>' admin --approval a7e572f3",
             ),
             (
                 &[
                     "ployz", "org", "member", "role", "Linus", "admin", "--color", "always",
                 ],
-                "ployz --color always org member role MEMBER admin --approval a7e572f3",
+                "ployz --color always org member role '<MEMBER>' admin --approval a7e572f3",
             ),
             (
                 &["ployz", "org", "member", "rm", "--", "--json"],
-                "ployz org member rm MEMBER --approval a7e572f3",
+                "ployz org member rm '<MEMBER>' --approval a7e572f3",
             ),
             (
                 &["ployz", "uptime", "show", "web", "--env", "staging"],
@@ -531,7 +531,7 @@ mod tests {
                     "--",
                     "-a7",
                 ],
-                "ployz org approval deny --reason REASON --approval a7e572f3 -- -a7",
+                "ployz org approval deny --reason '<REASON>' --approval a7e572f3 -- -a7",
             ),
         ] {
             let root = parsed(&published, argv);

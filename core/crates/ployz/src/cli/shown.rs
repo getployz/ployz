@@ -34,19 +34,26 @@ mod sealed {
 }
 
 impl Shown {
-    /// Text compiled into Ployz: a placeholder for a value withheld whole, named for what
-    /// goes there (`VALUE`), or a fixed word such as `tcp`.
+    /// A value withheld whole, named for what goes there: `<VALUE>`. The command line
+    /// refuses a value that holds one ([`placeholder_in`]), so a line that shows one never
+    /// runs as printed.
     pub(crate) fn placeholder(name: &'static str) -> Self {
-        Self(name.to_owned())
+        Self(format!("<{name}>"))
+    }
+
+    /// A fixed word compiled into Ployz, such as `tcp` or `none`.
+    pub(crate) fn word(word: &'static str) -> Self {
+        Self(word.to_owned())
     }
 
     /// The placeholder `arg` declares: its value name, else its id, `--cloud-url` as
-    /// `CLOUD_URL`.
+    /// `<CLOUD_URL>`.
     pub(crate) fn declared(arg: &clap::Arg) -> Self {
-        Self(arg.get_value_names().and_then(<[_]>::first).map_or_else(
-            || arg.get_id().as_str().to_ascii_uppercase().replace('-', "_"),
+        let name = arg.get_value_names().and_then(<[_]>::first).map_or_else(
+            || arg.get_id().as_str().replace('-', "_"),
             ToString::to_string,
-        ))
+        );
+        Self(format!("<{}>", name.to_ascii_uppercase()))
     }
 
     /// `value`, which parsed into a type output may repeat.
@@ -101,6 +108,29 @@ impl Shown {
     pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
+}
+
+/// Whether `typed` holds a placeholder output printed in place of a value, such as `<VALUE>`
+/// in `web.env.KEY=<VALUE>`: `<`, an uppercase letter, then uppercase letters, digits or
+/// `_/[]@=.:-`, then `>`.
+pub(crate) fn placeholder_in(typed: &str) -> bool {
+    typed.split('<').skip(1).any(|after| {
+        after.split_once('>').is_some_and(|(name, _)| {
+            name.starts_with(|c: char| c.is_ascii_uppercase())
+                && name.chars().all(|c| {
+                    c.is_ascii_uppercase() || c.is_ascii_digit() || "_/[]@=.:-".contains(c)
+                })
+        })
+    })
+}
+
+/// Whether `typed` is one placeholder whole, `<COMMAND>`.
+pub(crate) fn is_placeholder(typed: &str) -> bool {
+    typed
+        .strip_prefix('<')
+        .and_then(|rest| rest.strip_suffix('>'))
+        .is_some_and(|name| !name.contains(['<', '>']))
+        && placeholder_in(typed)
 }
 
 /// `scheme://host[:port]`, the parts of `url` a person reads as where it points.
@@ -230,7 +260,15 @@ impl ConfigPath {
         let yaml = path
             .extension()
             .is_some_and(|extension| extension == "yaml" || extension == "yml");
-        (yaml || crate::config_dir::ConfigDir::new(path).kept()).then(|| Self(path.to_owned()))
+        let named = yaml || crate::config_dir::ConfigDir::new(path).kept();
+        (named && !Self::reads_as_url(text)).then(|| Self(path.to_owned()))
+    }
+
+    /// Whether `text` is a URL, `https://…` or `user:…@host/…`, which `--ployz-config`
+    /// refuses: it names no file, and its user info may be a credential that every error
+    /// naming the config would repeat. A one-letter scheme is a Windows drive.
+    pub(crate) fn reads_as_url(text: &str) -> bool {
+        Url::parse(text).is_ok_and(|url| url.scheme().len() > 1)
     }
 }
 

@@ -68,7 +68,7 @@ pub(crate) fn checkin(root: &ArgMatches) -> Result<(), Error> {
             error,
         )
     })?;
-    let cloud_url = crate::cli::cloud_url_of(matches)
+    let cloud_url = crate::cli::cloud_url_of(matches)?
         .unwrap_or(DEFAULT_CLOUD)
         .to_owned();
     let paths = Paths::system(token_file);

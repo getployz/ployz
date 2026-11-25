@@ -25,7 +25,6 @@ fn setup_retry_classifies_ssh_and_preserves_aggregate_cause() {
             target: crate::cli::Shown::placeholder("host"),
             status: std::process::ExitStatus::from_raw(255 << 8),
             failure: SshFailure::of(detail),
-            detail: detail.to_owned(),
         };
         assert_eq!(ssh_error.retry(), retry);
         let error = ConnectError::AllFailed {
@@ -39,7 +38,7 @@ fn setup_retry_classifies_ssh_and_preserves_aggregate_cause() {
         };
         assert_eq!(error.retry(), aggregate);
         let text = error_chain::row(&error);
-        assert!(detail.lines().all(|line| text.contains(line)), "{text}");
+        assert!(!text.contains("user@jump"), "{text}");
         assert_eq!(
             text.contains("ssh-add"),
             detail.contains("Permission denied"),
@@ -1263,7 +1262,6 @@ fn a_call_that_lost_its_answer_outlasts_a_retry_that_never_reached_the_target() 
             target: crate::cli::Shown::placeholder("host"),
             status: std::process::ExitStatus::from_raw(255 << 8),
             failure: SshFailure::Auth,
-            detail: "Permission denied (publickey)".into(),
         }
     };
     let kept = keep_lost_call(Some(lost()), refused_key);
@@ -1324,7 +1322,7 @@ fn a_named_context_without_a_config_is_not_found_rather_than_unconfigured() {
         matches!(
             &error,
             ConnectError::Context(ContextError::ContextNotFound { name, path })
-                if name == "foo" && path == &config
+                if name.as_str() == "foo" && path == &config
         ),
         "{error:?}"
     );
@@ -2445,7 +2443,6 @@ fn every_other_connect_error_keeps_its_facts() {
         target: crate::cli::Shown::placeholder("host"),
         status: std::process::ExitStatus::from_raw(255 << 8),
         failure,
-        detail: String::new(),
     };
     let all_failed = |reached| ConnectError::AllFailed {
         selection: ConnectionSource::Direct,

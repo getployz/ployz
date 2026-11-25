@@ -167,7 +167,7 @@ fn a_connection_that_doesnt_parse_prints_no_part_that_may_be_a_secret() {
         // parses.
         (
             "root:SENTINEL/SENTINEL@203.0.113.7",
-            "invalid SSH destination \"CONNECTION\"",
+            "invalid SSH destination \"<CONNECTION>\"",
         ),
         // The same with digits before the `/`, which parse as a port: an `@` after the
         // authority marks the host as one to withhold.
@@ -254,7 +254,7 @@ fn removing_a_missing_context_is_context_not_found_and_does_not_mutate() {
     assert_eq!(
         config.remove_context("gone"),
         Err(ContextError::ContextNotFound {
-            name: "gone".into(),
+            name: crate::context::shown_context("gone"),
             path,
         })
     );
@@ -307,7 +307,7 @@ fn set_current_context_rejects_an_unknown_name() {
     assert_eq!(
         config.set_current_context(Some("gone".into())),
         Err(ContextError::ContextNotFound {
-            name: "gone".into(),
+            name: crate::context::shown_context("gone"),
             path,
         })
     );

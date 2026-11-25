@@ -893,6 +893,7 @@ pub(super) fn provisioning_flags(command: Command) -> Command {
         .arg(
             value("version", None)
                 .env(env::DAEMON_VERSION)
+                .hide_env_values(true)
                 .default_value(env!("CARGO_PKG_VERSION"))
                 .value_parser(clap::value_parser!(ployz_core::MachineRelease))
                 .help("Daemon release to install: stable, beta, or an exact version"),

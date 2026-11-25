@@ -2158,7 +2158,6 @@ async fn a_lost_answer_never_hides_a_closed_session_or_a_refused_key() {
             target: crate::cli::Shown::placeholder("host"),
             status: std::process::ExitStatus::from_raw(255 << 8),
             failure: crate::connect::SshFailure::Auth,
-            detail: "Permission denied (publickey)".into(),
         }
     });
 
@@ -2188,5 +2187,5 @@ async fn a_lost_answer_never_hides_a_closed_session_or_a_refused_key() {
     )
     .await
     .unwrap_err();
-    assert!(error.message.contains("Permission denied"), "{error:?}");
+    assert!(error.message.contains("authentication failed"), "{error:?}");
 }

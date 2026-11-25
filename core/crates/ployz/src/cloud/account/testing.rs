@@ -146,11 +146,15 @@ pub(crate) fn every_login_error(status: u16) -> Vec<(&'static str, LoginError)> 
         ("TokenBound", LoginError::TokenBound),
         (
             "UnknownOrganization",
-            LoginError::UnknownOrganization("acme".to_owned()),
+            LoginError::UnknownOrganization(crate::cli::Shown::of(
+                &crate::cli::shown::Label::parse("acme").unwrap(),
+            )),
         ),
         (
             "UnknownCredential",
-            LoginError::UnknownCredential("t1".to_owned()),
+            LoginError::UnknownCredential(crate::cli::Shown::of(
+                &crate::cli::shown::Minted::parse("t1").unwrap(),
+            )),
         ),
         (
             "AmbiguousCredential",

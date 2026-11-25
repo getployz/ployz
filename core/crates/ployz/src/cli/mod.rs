@@ -77,6 +77,8 @@ fn connection_args() -> [Arg; 4] {
             .global(true),
         value("ployz-config", None)
             .env(env::CONFIG)
+            .hide_env_values(true)
+            .value_parser(config_path_arg)
             .default_value(crate::context::default_config_path())
             .value_hint(ValueHint::FilePath)
             // PLOYZ_CONFIG is the way to point elsewhere; the flag stays for tests.
@@ -84,8 +86,17 @@ fn connection_args() -> [Arg; 4] {
             .global(true),
         value("context", Some('c'))
             .env(env::CONTEXT)
+            .hide_env_values(true)
             .help("Act through this local context instead of the current one"),
     ]
+}
+
+/// A Ployz config path, handed on as typed: any text but a URL ([`ConfigPath::reads_as_url`]).
+fn config_path_arg(typed: &str) -> Result<String, &'static str> {
+    match shown::ConfigPath::reads_as_url(typed) {
+        true => Err("PLOYZ_CONFIG takes a file path, not a URL"),
+        false => Ok(typed.to_owned()),
+    }
 }
 
 /// `--cloud-url`, or `PLOYZ_CLOUD_URL`: output shows its scheme, host and port alone, and
@@ -101,13 +112,28 @@ pub(crate) fn cloud_url() -> Arg {
         }))
 }
 
-/// The Cloud `--cloud-url` or `PLOYZ_CLOUD_URL` names, as typed.
-pub(crate) fn cloud_url_of(matches: &clap::ArgMatches) -> Option<&str> {
-    matches
+/// The Cloud `--cloud-url` or `PLOYZ_CLOUD_URL` names, as typed, refused when Ployz would
+/// not store it as given ([`CloudOrigin::checked`]). The refusal names which gave it.
+///
+/// [`CloudOrigin::checked`]: crate::cloud::origin::CloudOrigin::checked
+pub(crate) fn cloud_url_of(
+    matches: &clap::ArgMatches,
+) -> Result<Option<&str>, crate::failure::Failure> {
+    let Some(typed) = matches
         .try_get_one::<Withheld>("cloud-url")
         .ok()
         .flatten()
         .map(Withheld::typed)
+    else {
+        return Ok(None);
+    };
+    let named = match matches.value_source("cloud-url") {
+        Some(clap::parser::ValueSource::EnvVariable) => env::CLOUD_URL,
+        Some(_) | None => "--cloud-url",
+    };
+    crate::cloud::origin::CloudOrigin::checked(typed)
+        .map(|_| Some(typed))
+        .map_err(|refused| crate::failure::Failure::usage(refused.sentence(named)))
 }
 
 /// The connection `--connect` or `PLOYZ_CONNECT` names, as typed.
@@ -241,6 +267,7 @@ pub(crate) fn yes(help: &'static str) -> Arg {
     switch("yes", Some('y'))
         .value_parser(clap::builder::BoolishValueParser::new())
         .env(env::AUTO_CONFIRM)
+        .hide_env_values(true)
         .help(help)
 }
 
@@ -409,6 +436,35 @@ mod tests {
         assert_eq!(blank, Vec::<String>::new());
     }
 
+    /// Every argument a variable sets, by its command path.
+    fn showing_env_values(command: &clap::Command, path: &str, shown: &mut Vec<String>) {
+        for arg in command.get_arguments() {
+            if arg.get_env().is_some() && !arg.is_hide_env_values_set() {
+                shown.push(format!("{path} {}", arg.get_id()));
+            }
+        }
+        for sub in command.get_subcommands() {
+            showing_env_values(sub, &format!("{path} {}", sub.get_name()), shown);
+        }
+    }
+
+    /// `--help` names the variable an argument reads and never its value, which may be a
+    /// credential set for another command or pasted into the wrong one.
+    #[test]
+    fn help_shows_no_variables_value() {
+        let mut shown = Vec::new();
+        let published = crate::published::Published::parse(include_bytes!(
+            "../../tests/fixtures/published-manifest.json"
+        ))
+        .unwrap();
+        showing_env_values(
+            &crate::published::attach(super::compiled(), &published),
+            "ployz",
+            &mut shown,
+        );
+        assert_eq!(shown, Vec::<String>::new());
+    }
+
     #[test]
     fn expect_version_takes_a_review_or_refusal_version_only() {
         let project = "9a79b1a9-3c26-40dc-8cd0-3e5567c6daca:3764cac4355a8215";
@@ -481,7 +537,7 @@ mod tests {
 
     /// A retry shows a connection only when it reaches the same place as typed and every
     /// part of it shows: a TCP address, or a Unix socket that exists. Anything else, an SSH
-    /// user that may be a session token among it, makes the whole of it `CONNECT`, which
+    /// user that may be a session token among it, makes the whole of it `<CONNECT>`, which
     /// doesn't run. The command still reads it as typed.
     #[test]
     fn a_retry_never_repeats_a_connections_secret() {
@@ -490,18 +546,18 @@ mod tests {
         std::fs::write(&socket, "").unwrap();
         let socket = format!("unix://{}", socket.display());
         for (typed, shown) in [
-            ("ployz1:SENTINEL-4564", "CONNECT"),
-            ("management:SENTINEL-4564", "CONNECT"),
-            ("ssh://root:SENTINEL-4564@203.0.113.7:22", "CONNECT"),
-            ("root:SENTINEL-4564@203.0.113.7", "CONNECT"),
-            ("SENTINEL-4564@203.0.113.7", "CONNECT"),
-            ("ssh://SENTINEL-4564@203.0.113.7", "CONNECT"),
+            ("ployz1:SENTINEL-4564", "'<CONNECT>'"),
+            ("management:SENTINEL-4564", "'<CONNECT>'"),
+            ("ssh://root:SENTINEL-4564@203.0.113.7:22", "'<CONNECT>'"),
+            ("root:SENTINEL-4564@203.0.113.7", "'<CONNECT>'"),
+            ("SENTINEL-4564@203.0.113.7", "'<CONNECT>'"),
+            ("ssh://SENTINEL-4564@203.0.113.7", "'<CONNECT>'"),
             (
                 "tcp://203.0.113.7:7/SENTINEL-4564?t=SENTINEL-4564#SENTINEL-4564",
-                "CONNECT",
+                "'<CONNECT>'",
             ),
-            ("SENTINEL-4564://203.0.113.7", "CONNECT"),
-            ("unix:///SENTINEL-4564", "CONNECT"),
+            ("SENTINEL-4564://203.0.113.7", "'<CONNECT>'"),
+            ("unix:///SENTINEL-4564", "'<CONNECT>'"),
             ("tcp://203.0.113.7:7", "tcp://203.0.113.7:7"),
             (&socket, &socket),
         ] {

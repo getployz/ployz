@@ -387,7 +387,7 @@ pub(super) fn pending(changes: &[NodeChange], edits: &[ImageEdit]) -> Result<(),
                         .after
                         .get("image")
                         .and_then(Value::as_str)
-                        .unwrap_or("IMAGE")
+                        .unwrap_or("<IMAGE>")
                         .to_owned(),
                 },
                 None => pending(Some(&staged.path)),

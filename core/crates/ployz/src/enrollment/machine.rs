@@ -65,7 +65,7 @@ pub(crate) fn public_ip(value: &str) -> Result<IpAddr, Error> {
 fn reachable_public_ip(value: &str) -> Result<IpAddr, Error> {
     let ip = value
         .parse::<IpAddr>()
-        .map_err(|_| Error::usage(format!("invalid public IP {value:?}")))?;
+        .map_err(|_| Error::usage("invalid public IP: expected an IPv4 or IPv6 address"))?;
     let unreachable = match ip.to_canonical() {
         ip if ip.is_unspecified() => Some("an unspecified"),
         ip if ip.is_loopback() => Some("a loopback"),
@@ -434,7 +434,7 @@ pub(crate) fn parse_endpoints(values: &[String]) -> Result<Vec<AdvertisedEndpoin
                         .map(|address| SocketAddr::new(address, ployz_core::WIREGUARD_PORT))
                 })
                 .map(AdvertisedEndpoint)
-                .map_err(|_| Error::usage(format!("invalid WireGuard endpoint {value:?}")))
+                .map_err(|_| Error::usage("invalid WireGuard endpoint: expected IP or IP:PORT"))
         })
         .collect()
 }

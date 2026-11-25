@@ -764,12 +764,12 @@ fn the_engine_reads_an_instruction_as_server_add_reads_its_flags() {
         (
             "zfs empty device",
             with(&|i| i.storage = zfs(Some(""))),
-            r#"refused: Cloud asked for ZFS on the device "": invalid ZFS device "": an absolute device path"#.to_owned(),
+            r#"refused: Cloud asked for ZFS on the device "": invalid ZFS device: an absolute device path"#.to_owned(),
         ),
         (
             "zfs dash device",
             with(&|i| i.storage = zfs(Some("-x"))),
-            r#"refused: Cloud asked for ZFS on the device "-x": invalid ZFS device "-x": an absolute device path"#.to_owned(),
+            r#"refused: Cloud asked for ZFS on the device "-x": invalid ZFS device: an absolute device path"#.to_owned(),
         ),
         (
             "no name",
@@ -784,7 +784,7 @@ fn the_engine_reads_an_instruction_as_server_add_reads_its_flags() {
         (
             "spaced name",
             with(&|i| i.name = "web 1".to_owned()),
-            r#"engine refuses: invalid Machine Name "web 1": a 1-63 character lowercase DNS label [Closest("web-1")]"#.to_owned(),
+            r#"engine refuses: invalid Machine Name: a 1-63 character lowercase DNS label [Closest("web-1")]"#.to_owned(),
         ),
         (
             "flag name",
@@ -798,7 +798,7 @@ fn the_engine_reads_an_instruction_as_server_add_reads_its_flags() {
                 i.policy.accepts_builds = false;
                 i.policy.accepts_ingress = false;
             }),
-            format!(r#"engine refuses: invalid Machine Label value "a=b": {LABEL_VALUE}"#),
+            format!(r#"engine refuses: invalid Machine Label value: {LABEL_VALUE}"#),
         ),
         (
             "roles and labels",
@@ -812,17 +812,17 @@ fn the_engine_reads_an_instruction_as_server_add_reads_its_flags() {
         (
             "label value with comma",
             with(&|i| i.policy.labels = labelled(&[("a", "b,c")])),
-            r#"engine refuses: invalid label "c": expected KEY=VALUE []"#.to_owned(),
+            r#"engine refuses: invalid label: expected KEY=VALUE []"#.to_owned(),
         ),
         (
             "label key with space",
             with(&|i| i.policy.labels = labelled(&[("Bad Key", "v")])),
-            r#"engine refuses: invalid Machine Label key "Bad Key": nonempty ASCII letters, digits, '_', '.', or '-' []"#.to_owned(),
+            r#"engine refuses: invalid Machine Label key: nonempty ASCII letters, digits, '_', '.', or '-' []"#.to_owned(),
         ),
         (
             "label key with equals",
             with(&|i| i.policy.labels = labelled(&[("k=x", "v")])),
-            format!(r#"engine refuses: invalid Machine Label value "x=v": {LABEL_VALUE}"#),
+            format!(r#"engine refuses: invalid Machine Label value: {LABEL_VALUE}"#),
         ),
         (
             "label key with dash",
@@ -832,7 +832,7 @@ fn the_engine_reads_an_instruction_as_server_add_reads_its_flags() {
         (
             "label empty value",
             with(&|i| i.policy.labels = labelled(&[("a", "")])),
-            format!(r#"engine refuses: invalid Machine Label value "": {LABEL_VALUE}"#),
+            format!(r#"engine refuses: invalid Machine Label value: {LABEL_VALUE}"#),
         ),
         (
             "cluster name",

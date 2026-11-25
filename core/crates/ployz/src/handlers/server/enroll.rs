@@ -112,7 +112,7 @@ pub(crate) fn add(root: &ArgMatches) -> Result<(), Error> {
     if let Some(destination) = matches.get_one::<String>("destination") {
         destination.parse::<crate::context::Connection>()?;
     }
-    let cloud = crate::cli::cloud_url_of(matches).unwrap_or(DEFAULT_CLOUD);
+    let cloud = crate::cli::cloud_url_of(matches)?.unwrap_or(DEFAULT_CLOUD);
     if let Some(token) = enroll_token(matches)? {
         return enroll(root, token, cloud);
     }
@@ -200,7 +200,7 @@ where
             "Pass the enrollment token with --token-stdin, --token-file or PLOYZ_ENROLL_TOKEN",
         )
     })?;
-    let cloud_url = crate::cli::cloud_url_of(matches).unwrap_or(DEFAULT_CLOUD);
+    let cloud_url = crate::cli::cloud_url_of(matches)?.unwrap_or(DEFAULT_CLOUD);
     enroll_as_add(&EnrollPlan::from_matches(root), &token, cloud_url, install)
 }
 
@@ -874,7 +874,7 @@ mod tests {
         let cases: [(&[&str], &str); 11] = [
             (
                 &["--label-add", "x", "--public-ip", "999", "--name", "BAD"],
-                "invalid label \"x\": expected KEY=VALUE []",
+                "invalid label: expected KEY=VALUE []",
             ),
             (
                 &[
@@ -885,36 +885,39 @@ mod tests {
                     "--cluster-name",
                     "BAD",
                 ],
-                "invalid public IP \"999\" []",
+                "invalid public IP: expected an IPv4 or IPv6 address []",
             ),
             (
                 &["--cluster-name", "BAD", "--name", "BAD"],
-                "invalid Machine Name \"BAD\": a 1-63 character lowercase DNS label [Closest(\"bad\")]",
+                "invalid Machine Name: a 1-63 character lowercase DNS label [Closest(\"bad\")]",
             ),
             (
                 &["--label-add", "x"],
-                "invalid label \"x\": expected KEY=VALUE []",
+                "invalid label: expected KEY=VALUE []",
             ),
             (
                 &["--label-add", "a=1", "--label-add", "a=2"],
                 "duplicate label key \"a\" []",
             ),
-            (&["--public-ip", "999"], "invalid public IP \"999\" []"),
+            (
+                &["--public-ip", "999"],
+                "invalid public IP: expected an IPv4 or IPv6 address []",
+            ),
             (
                 &["--public-ip", "127.0.0.1"],
                 "127.0.0.1 is a loopback address, which no visitor can reach. Give the address the internet reaches this Server at, or none. []",
             ),
             (
                 &["--wg-endpoint", "nope"],
-                "invalid WireGuard endpoint \"nope\" []",
+                "invalid WireGuard endpoint: expected IP or IP:PORT []",
             ),
             (
                 &["--name", "MY SERVER"],
-                "invalid Machine Name \"MY SERVER\": a 1-63 character lowercase DNS label [Closest(\"my-server\")]",
+                "invalid Machine Name: a 1-63 character lowercase DNS label [Closest(\"my-server\")]",
             ),
             (
                 &["--name", ""],
-                "invalid Machine Name \"\": a 1-63 character lowercase DNS label []",
+                "invalid Machine Name: a 1-63 character lowercase DNS label []",
             ),
             (
                 &["--cluster-name", "Not A Name"],

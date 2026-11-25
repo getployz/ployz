@@ -114,7 +114,7 @@ mod tests {
         let refused = requested_name(&matches("MY-SERVER")).unwrap_err();
         assert_eq!(
             refused.to_string(),
-            "invalid Machine Name \"MY-SERVER\": a 1-63 character lowercase DNS label"
+            "invalid Machine Name: a 1-63 character lowercase DNS label"
         );
         assert_eq!(refused.report().code, RpcErrorCode::InvalidArgument);
         assert_eq!(refused.hints(), [Hint::Closest("my-server".into())]);

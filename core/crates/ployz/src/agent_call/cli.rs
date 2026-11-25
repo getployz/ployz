@@ -18,7 +18,7 @@ pub(crate) const WHY: &str = "why";
 
 const REASON_REQUIRED: &str =
     "Say why you are running this. Add `--why \"<the goal this command serves>\"`.";
-const PLACEHOLDER: &str = "<the goal this command serves>";
+const PLACEHOLDER: &str = "the goal this command serves";
 
 /// One CLI run, from before its command dispatches to after it ends.
 pub(crate) struct Run {
@@ -48,7 +48,8 @@ impl Run {
             .ok()
             .flatten()
             .map(|why| why.trim().to_owned())
-            .filter(|why| !why.is_empty());
+            // The refusal's own placeholder, pasted as printed, gives no reason either.
+            .filter(|why| !why.is_empty() && *why != format!("<{PLACEHOLDER}>"));
         let agent = agent::name().filter(|_| !internal && !exempt(matches, command, &tool));
         let separate = crate::cli::connection(matches).is_some()
             || matches!(matches.try_get_one::<String>("context"), Ok(Some(_)));
@@ -168,11 +169,11 @@ mod tests {
     fn the_next_line_is_the_same_command_with_why_added_and_no_secret() {
         assert_eq!(
             refused(&["set", "web.env.TOKEN=hunter2", "--env", "staging"]),
-            "ployz --why '<the goal this command serves>' set 'web.env.TOKEN=VALUE' --env staging"
+            "ployz --why '<the goal this command serves>' set 'web.env.TOKEN=<VALUE>' --env staging"
         );
         assert_eq!(
             refused(&["--connect", "ssh://root:hunter2@203.0.113.7", "status"]),
-            "ployz --connect CONNECT --why '<the goal this command serves>' status"
+            "ployz --connect '<CONNECT>' --why '<the goal this command serves>' status"
         );
         assert_eq!(
             refused(&[
@@ -184,7 +185,7 @@ mod tests {
                 "--why",
                 "x"
             ]),
-            "ployz --why '<the goal this command serves>' exec web -- COMMAND"
+            "ployz --why '<the goal this command serves>' exec web -- '<COMMAND>'"
         );
     }
 }

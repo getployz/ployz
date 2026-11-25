@@ -349,7 +349,7 @@ fn the_upgrade_named_keeps_the_cluster_the_deploy_was_given() {
     assert_eq!(
         next_hints(&refused),
         [format!(
-            "ployz --connect CONNECT server upgrade {channel} machine-1 --context prod"
+            "ployz --connect '<CONNECT>' server upgrade {channel} machine-1 --context prod"
         )]
     );
 }
@@ -378,7 +378,7 @@ fn without_a_terminal_a_deploy_ships_only_named_images_and_never_forgets() {
     };
     assert_eq!(
         line(&["--no-prune"]).as_deref(),
-        Some("ployz deploy --no-prune --image 'SERVICE=IMAGE' --yes")
+        Some("ployz deploy --no-prune --image '<SERVICE=IMAGE>' --yes")
     );
     assert_eq!(
         line(&["web", "--image", "web=nginx:1"]).as_deref(),

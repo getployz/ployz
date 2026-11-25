@@ -285,7 +285,7 @@ async fn server_clean_removes_only_a_namespace_no_environment_owns() {
     assert_eq!(
         listed["next"],
         format!(
-            "ployz --connect tcp://{address} --json --why REASON server clean \
+            "ployz --connect tcp://{address} --json --why '<REASON>' server clean \
              --namespace left-over --confirm left-over"
         )
     );
@@ -422,7 +422,7 @@ async fn local_deploy_failure_recovery_keeps_explicit_connection_and_context() {
         "--color",
         "never",
         "--why",
-        "REASON",
+        "<REASON>",
     ];
     let retry = ["deploy", "--context", "staging"];
     let expected = prefix.iter().copied().chain(retry).collect::<Vec<_>>();
@@ -489,7 +489,7 @@ async fn publish_reviews_volume_loss_the_servers_hold_and_publishes_once_accepte
             &format!("tcp://{address}"),
             "--json",
             "--why",
-            "REASON",
+            "<REASON>",
             "deploy",
             "--skip-deploy",
             "--accept-volume-loss",
