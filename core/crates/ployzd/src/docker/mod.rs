@@ -1508,6 +1508,12 @@ pub enum Error {
         #[source]
         source: bollard::errors::Error,
     },
+    /// A Writer start resent after its promote admits another image than the one the
+    /// promote recorded.
+    #[error(
+        "this Writer was promoted to run image {recorded}, but its start now asks for image {resolved}"
+    )]
+    PlacedImageDisagrees { recorded: String, resolved: String },
     /// A sealed registry login this Machine won't pull with.
     #[error("this Server won't pull the image with its registry login")]
     RegistryLogin(#[from] crate::docker_image::LoginRefused),
@@ -1584,6 +1590,7 @@ impl Error {
                 ..
             })
             | Self::VolumeShapeMismatch { .. }
+            | Self::PlacedImageDisagrees { .. }
             | Self::ForeignVolume { .. }
             | Self::VolumeNotWritable(_)
             | Self::VolumeHeld { .. }

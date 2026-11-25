@@ -149,16 +149,27 @@ impl Images {
         self.exposed_ports(image).await
     }
 
-    /// Make `image` present as `policy` asks, with no login, and answer the ID it names
-    /// here now, so a creation can run that ID whatever the tag names later.
+    /// Make `image` present as `policy` asks, with `auth` when the Service has a login,
+    /// and answer the ID it names here now, so a creation can run that ID whatever the
+    /// tag names later. A login pulls an absent image even under `Never`, so a Move's
+    /// check proves the pull before the image is copied here.
     ///
     /// # Errors
     ///
     /// As [`Self::pull_image`], [`Error::ImageAbsent`] when `policy` pulls nothing and
     /// the image isn't here, and when Docker names no ID for it.
-    pub(crate) async fn place(&self, image: &str, policy: PullPolicy) -> Result<String, Error> {
+    pub(crate) async fn place(
+        &self,
+        image: &str,
+        policy: PullPolicy,
+        auth: Option<&RegistryAuth>,
+    ) -> Result<String, Error> {
         let docker = &self.docker.client;
-        if let Err(error) = crate::docker_image::prepare_image(docker, image, policy, None).await {
+        let policy = match (auth, policy) {
+            (Some(_), PullPolicy::Never) => PullPolicy::Missing,
+            _ => policy,
+        };
+        if let Err(error) = crate::docker_image::prepare_image(docker, image, policy, auth).await {
             return Err(self.pull_failure(Error::ImagePull(error)).await);
         }
         match docker.inspect_image(image).await {

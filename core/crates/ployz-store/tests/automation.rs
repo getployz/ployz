@@ -3225,6 +3225,15 @@ fn a_redeploy_reusing_its_sources_image_keeps_that_images_token() {
 /// Sign `generation` of a registry rule for `ghcr.io/acme/worker` over worker's settings
 /// as they are Saved.
 fn signed_registry_rule(store: &ConfigStore, who: &Actor, generation: u64) -> SignedRule {
+    signed_registry_rule_on(store, who, generation, "ghcr.io")
+}
+
+fn signed_registry_rule_on(
+    store: &ConfigStore,
+    who: &Actor,
+    generation: u64,
+    host: &str,
+) -> SignedRule {
     use ployz_core::authority::rule::{RegistrySource, RuleService, RuleSource, template};
     use ployz_core::authority::{AutoDeployRule, RuleId, Signed, Signer, SignerKey, Timestamp};
     let view: ployz_store::RuleView = store
@@ -3250,7 +3259,7 @@ fn signed_registry_rule(store: &ConfigStore, who: &Actor, generation: u64) -> Si
         namespace: view.namespace.clone(),
         machines: Vec::new(),
         source: RuleSource::Registry(RegistrySource {
-            host: "ghcr.io".into(),
+            host: host.into(),
             repository: "acme/worker".into(),
         }),
         services: vec![RuleService {
@@ -3336,6 +3345,109 @@ fn a_registry_rule_covers_each_digest_of_its_repository_and_nothing_else() {
         publish(&store, &who);
         assert!(worker(&store), "{image} needs a tap");
     }
+}
+
+// Catches a moved Volume's start taking the login an older Deploy froze for a registry the
+// Service has left, which its Server refuses as one for another host.
+#[test]
+fn a_registry_rules_proof_comes_with_no_login_once_the_newest_deploy_froze_none() {
+    let (store, who) = shop();
+    let digest = format!("sha256:{}", "a".repeat(64));
+    store
+        .write(
+            &who,
+            &ployz_store::CreateService {
+                id: ployz_store::ServiceLineageId::parse("00000000-0000-4000-8000-000000000006")
+                    .unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("worker").unwrap(),
+                image: Some(format!("ghcr.io/acme/worker@{digest}")),
+                template: None,
+            },
+        )
+        .unwrap();
+    set(
+        &store,
+        &who,
+        "worker.registryCredential",
+        ployz_store::testing::sealed_login_for("ghcr.io", "worker"),
+    );
+    publish(&store, &who);
+    let rule = signed_registry_rule(&store, &who, 1);
+    save_with_rule(&store, &who, &staged_version(&store, &who), (rule, None)).unwrap();
+    deploy(&store, &who, "00000000-0000-4000-8000-000000000108");
+    // The Service moves to a public repository and pulls with no login.
+    let public = format!("docker.io/acme/worker@{digest}");
+    set(&store, &who, "worker.image", json!(public));
+    store
+        .write(
+            &who,
+            &Command::Edit(Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: vec![Change::Unset {
+                    path: SettingPath::parse("worker.registryCredential").unwrap(),
+                }],
+            }),
+        )
+        .unwrap();
+    publish(&store, &who);
+    let rule = signed_registry_rule_on(&store, &who, 2, "docker.io");
+    save_with_rule(
+        &store,
+        &who,
+        &staged_version(&store, &who),
+        (rule, Some((5, 1))),
+    )
+    .unwrap();
+    deploy(&store, &who, "00000000-0000-4000-8000-000000000109");
+
+    let view: ployz_store::RuleView = store
+        .read(
+            &who,
+            &ployz_store::RuleQuery {
+                environment: EnvironmentRef::default(),
+                staged: false,
+            },
+        )
+        .unwrap();
+    let kept = store
+        .versions(
+            &who.organization,
+            &ployz_store::VersionsQuery {
+                namespace: view.namespace,
+                service: ServiceName::parse("worker").unwrap(),
+                digest: ployz_core::authority::PayloadDigest::parse(&"0".repeat(64)).unwrap(),
+                image: ployz_core::authority::BuiltImageDigest::named_by(&public),
+            },
+        )
+        .unwrap();
+    assert!(kept.rule.is_some(), "the registry rule covers worker");
+    assert_eq!(kept.registry_login, None);
+}
+
+fn deploy(store: &ConfigStore, who: &Actor, id: &str) {
+    store
+        .write_trusted(
+            who,
+            &ployz_store::Admit::Deploy(ployz_store::Deploy {
+                id: ployz_store::DeploymentId::parse(id).unwrap(),
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+                prune: false,
+                no_prune: false,
+                versions: Vec::new(),
+                copies: Vec::new(),
+                recreate: Vec::new(),
+                rule: None,
+            }),
+            &Trusted::default(),
+        )
+        .unwrap();
 }
 
 // Catches a moved Volume's start, or any copy a registry rule admits away from its Deploy,

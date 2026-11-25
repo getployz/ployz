@@ -740,6 +740,18 @@ impl ConsumptionLog {
         let image = pin.reference();
         let run = MismatchField::HookRun;
         self.transact(Error::ApprovalRecord, |log| {
+            let newer = |held: u64| held > generation;
+            // A newer approval landed after this one was admitted, for this Service's
+            // hooks or any of the rule's.
+            if log
+                .rules
+                .get(&rule)
+                .is_some_and(|mark| newer(mark.generation))
+            {
+                return Err(refused(AuthorityRefusal::Mismatch {
+                    field: MismatchField::Generation,
+                }));
+            }
             let hooks = log
                 .registry_hooks
                 .entry(rule_service_key(rule, service))
@@ -747,8 +759,7 @@ impl ConsumptionLog {
                     generation,
                     images: Vec::new(),
                 });
-            if hooks.generation > generation {
-                // A newer approval landed after this one was admitted.
+            if newer(hooks.generation) {
                 return Err(refused(AuthorityRefusal::Mismatch {
                     field: MismatchField::Generation,
                 }));

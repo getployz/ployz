@@ -705,24 +705,28 @@ pub(crate) fn versions(
     })
 }
 
-/// The sealed login `service`'s newest Deployment in `namespace` froze for it, if any.
+/// The sealed login the newest Deployment in `namespace` that ships `service` froze for
+/// it: none when that one froze none, though an older one pulled with one.
 fn frozen_login(
     tx: &mut dyn Tx,
     organization: &str,
     (namespace, service): (&Namespace, &ServiceName),
 ) -> Result<Option<ployz_core::SealedLogin>, RpcError> {
     let rows = tx.query(
-        "SELECT logins FROM config_deployment \
+        "SELECT nodes, logins FROM config_deployment \
          WHERE organization_id = ?1 AND namespace = ?2 AND number IS NOT NULL \
-         AND logins <> '{}' \
          ORDER BY number DESC",
         &[organization.into(), namespace.as_str().into()],
     )?;
     for row in &rows {
-        let mut logins: BTreeMap<ServiceName, ployz_core::SealedLogin> =
-            row.json(0, "Deployment logins")?;
-        if let Some(login) = logins.remove(service) {
-            return Ok(Some(login));
+        let nodes: Vec<super::TargetNode> = row.json(0, "Deployment nodes")?;
+        let ships = nodes.iter().any(
+            |node| matches!(node, super::TargetNode::Service { runtime, .. } if runtime == service),
+        );
+        if ships {
+            let mut logins: BTreeMap<ServiceName, ployz_core::SealedLogin> =
+                row.json(1, "Deployment logins")?;
+            return Ok(logins.remove(service));
         }
     }
     Ok(None)

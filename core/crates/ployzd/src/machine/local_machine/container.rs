@@ -355,17 +355,20 @@ impl LocalMachine {
         .await
     }
 
-    /// Pull `spec`'s image as a Writer start's Create would, under shared admission
-    /// like [`Self::pull_free_image`], and read its ID, so that Create, after the
-    /// promote, runs that ID and reaches no registry. A signed start whose promote
-    /// already `recorded` an ID takes that one, as Docker holds it, and pulls nothing.
-    /// An unsigned start pulls as [`Images::pull_free`] does whatever the record says,
-    /// since only that pull proves an image public.
+    /// Place the image a Writer start's Create runs, under shared admission like
+    /// [`Self::pull_free_image`], and read its ID, so that Create, after the promote,
+    /// runs that ID and reaches no registry. The ID the admission resolved, as a
+    /// registry rule's pull does, comes first, and a promote's `recorded` ID must agree
+    /// with it. A signed start the admission resolved no ID for takes the `recorded`
+    /// one, or else pulls `spec`'s image with the Service's sealed `login`. An unsigned
+    /// start pulls as [`Images::pull_free`] does whatever the record says, since only
+    /// that pull proves an image public.
     ///
     /// # Errors
     ///
-    /// Returns when Docker is unavailable, admission is busy, the pull is refused or
-    /// fails, or Docker no longer holds the `recorded` image.
+    /// Returns when Docker is unavailable, admission is busy, the login or pull is
+    /// refused or fails, Docker no longer holds the image chosen, or the `recorded` ID
+    /// is not the one the admission resolved.
     ///
     /// [`Images::pull_free`]: crate::docker::Images::pull_free
     pub(crate) async fn place_holder_image(
@@ -373,14 +376,30 @@ impl LocalMachine {
         spec: ResolvedServiceSpec,
         admitted: AdmittedSpec,
         recorded: Option<String>,
+        login: Option<ployz_core::SealedLogin>,
     ) -> Result<PlacedHolder, Error> {
         self.finish_shared(move |local| async move {
-            let images = local.docker()?.images();
+            let docker = local.docker()?;
+            let images = docker.images();
             let (image, policy) = (&spec.container.image, spec.container.pull_policy);
-            let id = match (recorded, admitted.signed()) {
-                (Some(id), true) => images.placed(&id).await?,
-                (None, true) => images.place(image, policy).await?,
-                (_, false) => images.pull_free(image, policy).await?,
+            let id = match (admitted.pin(), recorded) {
+                (Some(resolved), Some(recorded)) if resolved.as_str() != recorded => {
+                    return Err(crate::docker::Error::PlacedImageDisagrees {
+                        recorded,
+                        resolved: resolved.as_str().to_owned(),
+                    }
+                    .into());
+                }
+                (Some(resolved), _) => images.placed(resolved.as_str()).await?,
+                (None, Some(id)) if admitted.signed() => images.placed(&id).await?,
+                (None, _) if admitted.signed() => {
+                    let auth = match &login {
+                        Some(login) => Some(docker.open_login(image, login).await?),
+                        None => None,
+                    };
+                    images.place(image, policy, auth.as_ref()).await?
+                }
+                (None, _) => images.pull_free(image, policy).await?,
             };
             Ok(PlacedHolder { admitted, id })
         })
@@ -2549,6 +2568,7 @@ fn create_refusal(error: Error) -> Result<ContainerRefusal, Error> {
             Docker::ImagePull(_)
             | Docker::ImageAbsent { .. }
             | Docker::PlacedImageGone { .. }
+            | Docker::PlacedImageDisagrees { .. }
             | Docker::UnsignedImage(_)
             | Docker::DiskFull { .. }
             | Docker::RegistryLogin(

@@ -899,6 +899,18 @@ mod settled {
     }
 
     async fn settling() -> Settling {
+        settling_with(
+            FakeDocker {
+                named_containers: Some(Arc::new(Mutex::new(BTreeMap::new()))),
+                ..Default::default()
+            },
+            None,
+        )
+        .await
+    }
+
+    /// [`settling`] on `fake`, holding the Sealing Key kept in `sealing`.
+    async fn settling_with(fake: FakeDocker, sealing: Option<std::path::PathBuf>) -> Settling {
         let data_dir = std::env::temp_dir().join(format!("ployzd-settled-{}", MachineId::random()));
         let mut store = LocalMachineStore::open(&data_dir).unwrap();
         store
@@ -918,11 +930,11 @@ mod settled {
             })
             .unwrap();
         let owner = RecordOwner::spawn(store).unwrap();
-        let (runtime, fake) = fake_runtime_with(FakeDocker {
-            named_containers: Some(Arc::new(Mutex::new(BTreeMap::new()))),
-            ..Default::default()
-        })
-        .await;
+        let (runtime, fake) = fake_runtime_with(fake).await;
+        let runtime = match sealing {
+            Some(dir) => runtime.with_sealing_key(dir),
+            None => runtime,
+        };
         let local = LocalMachine::new(owner)
             .with_containers(Some(runtime))
             .with_zpool("true");
@@ -1643,73 +1655,143 @@ mod settled {
         }
     }
 
-    // Catches a moved Volume's start under a registry rule running whatever the
-    // Service's name points at here, or starting a Container in its slot that runs
-    // another image, rather than the image the rule's own pull placed.
+    fn volume_start(
+        new: &NewContainer,
+        login: Option<ployz_core::SealedLogin>,
+    ) -> ployz_core::Start {
+        ployz_core::Start::Create {
+            namespace: new.slot.namespace.clone(),
+            resolved_spec: new.resolved_spec.clone(),
+            creation_key: "move-1".to_owned().try_into().unwrap(),
+            r#gen: new.r#gen,
+            rotation: RunRotation::Pending,
+            versions: Vec::new(),
+            rule: None,
+            registry_login: login,
+            check: false,
+        }
+    }
+
+    fn images(fake: &FakeDocker) -> Vec<String> {
+        let containers = fake.named_containers.as_ref().unwrap().lock().unwrap();
+        containers
+            .values()
+            .map(|container| container["Image"].as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    // Catches a moved Volume's start running whatever the Service's name points at
+    // here rather than the image its admission resolved, as a registry rule's pull
+    // does, and a resend running the image its promote recorded when the admission now
+    // resolves another.
     #[tokio::test]
-    async fn a_registry_rules_volume_start_runs_the_image_its_pull_placed() {
+    async fn a_volume_start_runs_the_image_its_admission_resolved() {
         let Settling {
             local,
             fake,
             data_dir,
         } = settling().await;
-        let placed = ployz_core::ImageDigest::parse(format!("sha256:{}", "a".repeat(64))).unwrap();
+        let resolved =
+            ployz_core::ImageDigest::parse(format!("sha256:{}", "a".repeat(64))).unwrap();
+        let other = format!("sha256:{}", "b".repeat(64));
         let new = new_container("settled");
-        let start = |key: &str| ployz_core::Start::Create {
-            namespace: new.slot.namespace.clone(),
-            resolved_spec: new.resolved_spec.clone(),
-            creation_key: key.to_owned().try_into().unwrap(),
-            r#gen: new.r#gen,
-            rotation: RunRotation::Pending,
-            versions: Vec::new(),
-            rule: None,
-            registry_login: None,
-            check: false,
-        };
         let admitted = || {
             super::super::AdmittedSpec::test_pinned(
                 &new.slot.namespace,
                 &new.resolved_spec,
-                placed.clone(),
+                resolved.clone(),
             )
         };
-        let volume: ployz_core::DockerVolumeName = "app_data".parse().unwrap();
-        let at = ployz_core::VolumeGen::new(1);
+        let place = |recorded: Option<&str>| {
+            local.place_holder_image(
+                new.resolved_spec.clone(),
+                admitted(),
+                recorded.map(str::to_owned),
+                None,
+            )
+        };
+
+        let disagreeing = place(Some(&other)).await.map(|placed| placed.id);
+        assert!(
+            matches!(
+                disagreeing,
+                Err(super::super::Error::Docker(
+                    crate::docker::Error::PlacedImageDisagrees { .. }
+                ))
+            ),
+            "{disagreeing:?}"
+        );
+        assert_eq!(
+            place(Some(resolved.as_str())).await.unwrap().id,
+            resolved.as_str()
+        );
+
+        let placed = place(None).await.unwrap();
         local
-            .start_volume_holder(start("move-1"), volume.clone(), at, Some(admitted()))
+            .start_volume_holder(
+                volume_start(&new, None),
+                "app_data".parse().unwrap(),
+                ployz_core::VolumeGen::new(1),
+                Some(placed),
+            )
             .await
             .unwrap()
             .unwrap();
-        let images = || -> Vec<String> {
-            let containers = fake.named_containers.as_ref().unwrap().lock().unwrap();
-            containers
-                .values()
-                .map(|container| container["Image"].as_str().unwrap().to_owned())
-                .collect()
-        };
-        assert_eq!(images(), [placed.as_str()]);
+        assert_eq!(images(&fake), [resolved.as_str()]);
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
 
-        // The slot's Container runs another image by the time a resend arrives.
-        for container in fake
-            .named_containers
-            .as_ref()
-            .unwrap()
-            .lock()
-            .unwrap()
-            .values_mut()
-        {
-            container["Image"] = format!("sha256:{}", "b".repeat(64)).into();
-            container["State"] = json!({"Status": "exited"});
-        }
-        let started = starts(&fake);
-        let resent = local
-            .start_volume_holder(start("move-1"), volume, at, Some(admitted()))
-            .await;
-        assert!(
-            format!("{resent:?}").contains("not the pinned"),
-            "{resent:?}"
+    // Catches a moved Volume's start that a signed version admitted, with no image
+    // resolved, pulling its private image with no login on a Machine that lacks it.
+    #[tokio::test]
+    async fn a_volume_start_pulls_its_absent_private_image_with_the_services_login() {
+        let cluster = crate::sealed_env::test_support::Cluster::new();
+        let mut new = new_container("settled");
+        new.resolved_spec.container.image = "acme/private:1".to_owned();
+        new.resolved_spec.container.pull_policy = ployz_core::PullPolicy::Never;
+        let image = new.resolved_spec.container.image.clone();
+        let Settling {
+            local,
+            fake,
+            data_dir,
+        } = settling_with(
+            FakeDocker {
+                named_containers: Some(Arc::new(Mutex::new(BTreeMap::new()))),
+                private: Arc::new(Mutex::new([image.clone()].into())),
+                images: Arc::new(Mutex::new([(image.clone(), None)].into())),
+                ..Default::default()
+            },
+            Some(cluster.dir.0.clone()),
+        )
+        .await;
+        let login = cluster.seal_login(
+            ployz_core::DOCKER_HUB,
+            &ployz_core::RegistryAuth {
+                username: Some("bot".into()),
+                password: "token".into(),
+            },
         );
-        assert_eq!(starts(&fake), started, "nothing else started");
+        let placed = local
+            .place_holder_image(
+                new.resolved_spec.clone(),
+                super::super::AdmittedSpec::test_signed(&new.slot.namespace, &new.resolved_spec),
+                None,
+                Some(login.clone()),
+            )
+            .await
+            .unwrap();
+        local
+            .start_volume_holder(
+                volume_start(&new, Some(login)),
+                "app_data".parse().unwrap(),
+                ployz_core::VolumeGen::new(1),
+                Some(placed),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let pulled = fake.images.lock().unwrap().get(&image).cloned().flatten();
+        assert_eq!(images(&fake), [pulled.expect("the start pulled the image")]);
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 

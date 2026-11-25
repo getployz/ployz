@@ -119,6 +119,8 @@ pub(crate) struct FakeDocker {
     /// When set, each image pull spends one; once none are left, a pull answers the
     /// registry's rate limit.
     pub(crate) pulls_left: Arc<Mutex<Option<usize>>>,
+    /// Images the registry serves only to a pull that sends a login.
+    pub(crate) private: Arc<Mutex<BTreeSet<String>>>,
 }
 
 impl FakeDocker {
@@ -143,8 +145,29 @@ async fn fake_docker(
     State(fake): State<FakeDocker>,
     method: Method,
     uri: Uri,
+    headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Response {
+    if method == Method::POST
+        && uri.path().ends_with("/images/create")
+        && !headers.contains_key("x-registry-auth")
+        && uri.query().is_some_and(|query| {
+            let query = query.replace("%2F", "/").replace("%3A", ":");
+            fake.private
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|image| query.contains(image.as_str()))
+        })
+    {
+        return (
+            StatusCode::NOT_FOUND,
+            axum::Json(
+                serde_json::json!({"message": "pull access denied: authentication required"}),
+            ),
+        )
+            .into_response();
+    }
     let hold = (method == Method::GET && is_inspect(uri.path()))
         .then(|| fake.answered_hold.lock().unwrap().take())
         .flatten()
