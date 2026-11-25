@@ -5,7 +5,7 @@ import { asTestDouble } from "#/lib/test-double";
 import { operationDigest } from "#/modules/operations/gate.server";
 import { Effect, Layer } from "effect";
 import { CloudStore, ConfigStoreOpenFailure } from "#/modules/config-store/store-sdk.server";
-import { cleanPlan, drainPlan, forgetLoses, ingressOffPlan, nameLostVolumes, removePlan, volumeLabels } from "#/modules/machines/server-operations.server";
+import { cleanPlan, drainPlan, drainRefusal, forgetLoses, ingressOffPlan, nameLostVolumes, removePlan, volumeLabels } from "#/modules/machines/server-operations.server";
 import type { ServerPolicyChange } from "#/modules/machines/server-policy";
 
 const here = "a".repeat(32);
@@ -20,7 +20,8 @@ type Slot = {
   at?: number;
 };
 
-const frame = (services: Record<string, Slot[]>) => {
+/** A frame from an entry that heard both Servers answer but `unanswered`; `answered` overrides who it heard. */
+const frame = (services: Record<string, Slot[]>, unanswered: string[] = [], answered = [here, there].filter((id) => !unanswered.includes(id))) => {
   const listed = Object.entries(services).map(([identity, slots]) => {
     const [namespace, name] = identity.split("/");
     return {
@@ -49,38 +50,77 @@ const frame = (services: Record<string, Slot[]>) => {
     machines: [{ machine: { id: here, name: "fra-1" } }, { machine: { id: there, name: "fra-2" } }],
     services: listed,
     containers: listed.flatMap((service) => service.containers),
+    unanswered,
+    answered,
   });
 };
 
 describe("drainPlan", () => {
-  it("moves stateless Services, keeps ones a Volume holds, retires Globals, and destroys only a Global with no other slot", () => {
+  it("moves stateless Services, keeps ones a Volume holds, and destroys nothing", () => {
     const plan = drainPlan(frame({
       "shop/web": [{ machine: here }],
       "shop/db": [{ machine: here, volumes: 1 }],
-      "shop/edge": [{ machine: here, mode: "global" }, { machine: there, mode: "global" }],
-      "shop/metrics": [{ machine: here, mode: "global" }, { machine: there, mode: "global", state: "exited" }],
       "shop/elsewhere": [{ machine: there }],
       "other/web": [{ machine: here }],
-      "ployz-system/proxy": [{ machine: here }],
+      "ployz-system/proxy": [{ machine: here, mode: "global" }],
     }), new Set(["shop", "ployz-system"]), here);
 
     expect(plan).toEqual({
       subject: `server:${here}`,
       verb: "drain",
       name: "fra-1",
-      preview: { server: here, moves: ["shop/web"], stays: ["shop/db"], retires: ["shop/edge", "shop/metrics"] },
-      effects: [{ kind: "removes_service", name: "shop/metrics", node: "metrics", path: "services/shop/metrics" }],
-      targets: ["shop/db", "shop/edge", "shop/metrics", "shop/web"],
+      preview: { server: here, moves: ["shop/web"], stays: ["shop/db"] },
+      effects: [],
+      targets: ["shop/db", "shop/web"],
       moves: ["shop/web"],
+      globals: [],
+      heard: "answered",
       data: { "shop/db": { kind: "stays", why: "it uses a folder or a Docker volume here" } },
     });
+    expect(plan === null ? "no plan" : drainRefusal(plan)).toBeNull();
+  });
+
+  // Catches a Global no Project owns slipping past Cloud's gate, which the Engine refuses, as it refuses every one.
+  it("refuses for each Service with a Global copy anywhere, owned or not, even beside a replicated copy here", () => {
+    const plan = drainPlan(frame({
+      "shop/web": [{ machine: here }],
+      "shop/edge": [{ machine: here, mode: "global" }, { machine: there, mode: "global" }],
+      "shop/metrics": [{ machine: here, at: 2 }, { machine: there, mode: "global", state: "exited" }],
+      "other/agent": [{ machine: here, mode: "global" }],
+      "other/far": [{ machine: there, mode: "global" }],
+    }), new Set(["shop"]), here);
+
+    expect(plan?.globals).toEqual(["other/agent", "shop/edge", "shop/metrics"]);
+    expect(plan === null ? "no plan" : drainRefusal(plan)?.message).toBe(
+      "agent, edge and metrics run on every server, and draining could stop their last working copies. Remove each, deploy, then add them back with a replica count.",
+    );
+  });
+
+  // Catches a Drain admitted from rows a Server last reported, which may miss a Global it runs now: one that missed the
+  // entry's probes, or one the entry hasn't heard yet, as in a watch's first frame.
+  it.each([
+    ["missed the entry's probes", frame({ "shop/web": [{ machine: here }] }, [here])],
+    ["the entry hasn't heard yet", frame({ "shop/web": [{ machine: here }] }, [], [there])],
+  ])("refuses a Server that %s, as the Engine refuses one it can't list", (_, observed) => {
+    const plan = drainPlan(observed, new Set(["shop"]), here);
+
+    expect(plan === null ? "no plan" : drainRefusal(plan)?.message).toBe(
+      "fra-1 isn't answering, so Cloud can't tell what draining it would stop. Try again once it answers.",
+    );
+  });
+
+  it("leaves a Server an entry too old to name who answered to the Engine's listing", () => {
+    const { answered: _, ...older } = frame({ "shop/web": [{ machine: here }] });
+    const plan = drainPlan(asTestDouble<RuntimeWatchView>()(older), new Set(["shop"]), here);
+
+    expect(plan === null ? "no plan" : drainRefusal(plan)).toBeNull();
   });
 
   it("weighs a Service by its newest slot on the Server", () => {
     const plan = drainPlan(frame({
       "shop/web": [{ machine: here, volumes: 1, at: 1 }, { machine: here, at: 2 }],
     }), new Set(["shop"]), here);
-    expect(plan?.preview).toEqual({ server: here, moves: ["shop/web"], stays: [], retires: [] });
+    expect(plan?.preview).toEqual({ server: here, moves: ["shop/web"], stays: [] });
   });
 
   it("is null for a Server the frame doesn't hold", () => {

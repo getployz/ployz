@@ -19,7 +19,6 @@ use super::{
 };
 use crate::deploy::cleanup::Copy;
 use crate::drain::placement::{Converged, LastIn, Moving, OldCopyEnd, Unconfirmed};
-use crate::drain::retirement::Retirement;
 use crate::global_fixtures::container_id;
 
 fn namespace(value: &str) -> Namespace {
@@ -124,12 +123,10 @@ fn an_outcome_is_flat_on_result() {
 /// Answers each call from its script, in order.
 #[derive(Default)]
 struct Scripted {
-    retirements: Vec<(QualifiedService, Retirement)>,
     observations: VecDeque<Result<Vec<QualifiedService>, Lost>>,
     convergences: VecDeque<Converged>,
     /// Cancelled once the first Service converges.
     cancel_after_converge: Option<CancellationToken>,
-    retired: bool,
     copies: VecDeque<Result<Vec<Copy>, RpcError>>,
     ends: VecDeque<OldCopyEnd>,
     let_go: Vec<Copy>,
@@ -174,16 +171,6 @@ impl DrainClient for Scripted {
         self.observations
             .pop_front()
             .expect("one scripted observation per look")
-    }
-
-    async fn retire(
-        &mut self,
-        _server: &Machine,
-        _globals: &[QualifiedService],
-        _cancellation: &CancellationToken,
-    ) -> Vec<(QualifiedService, Retirement)> {
-        self.retired = true;
-        std::mem::take(&mut self.retirements)
     }
 
     async fn converge(
@@ -270,24 +257,15 @@ fn moved() -> DrainOutcome {
 
 async fn run(
     client: &mut Scripted,
-    globals: &[&str],
     replicated: &[&str],
     cancellation: &CancellationToken,
 ) -> DrainReport {
-    run_within(
-        client,
-        DrainScope::EveryNamespace,
-        globals,
-        replicated,
-        cancellation,
-    )
-    .await
+    run_within(client, DrainScope::EveryNamespace, replicated, cancellation).await
 }
 
 async fn run_within(
     client: &mut Scripted,
     scope: DrainScope,
-    globals: &[&str],
     replicated: &[&str],
     cancellation: &CancellationToken,
 ) -> DrainReport {
@@ -295,7 +273,6 @@ async fn run_within(
         server: drained(),
         scope,
         services_role: ServicesRole::TurnedOff,
-        globals: globals.iter().map(|name| qualified(name)).collect(),
         replicated: replicated.iter().map(|name| qualified(name)).collect(),
     };
     execute(client, ready, cancellation, &mut |_| {}).await
@@ -341,7 +318,7 @@ async fn a_copy_held_by_the_user_stays_and_leaves_the_drain_incomplete() {
         .into(),
         ..Scripted::default()
     };
-    let report = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
+    let report = run(&mut client, &["web"], &CancellationToken::new()).await;
     assert_eq!(outcomes(&report), [entry("web", DrainOutcome::Held)]);
     assert!(
         client.let_go.is_empty(),
@@ -360,7 +337,7 @@ async fn an_out_copy_left_on_the_server_is_let_go_and_never_moved() {
         ends: [OldCopyEnd::Stopped].into(),
         ..Scripted::default()
     };
-    let report = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
+    let report = run(&mut client, &["web"], &CancellationToken::new()).await;
     assert_eq!(
         outcomes(&report),
         [entry(
@@ -389,7 +366,7 @@ async fn a_move_beside_an_out_copy_reports_the_move_then_the_old_copy() {
         ends: [running(proxies.clone())].into(),
         ..Scripted::default()
     };
-    let report = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
+    let report = run(&mut client, &["web"], &CancellationToken::new()).await;
     assert_eq!(
         outcomes(&report),
         [
@@ -438,7 +415,7 @@ async fn a_drain_reports_only_the_moves_off_its_own_server() {
         .into(),
         ..Scripted::default()
     };
-    let report = run(&mut client, &[], &["web", "api"], &CancellationToken::new()).await;
+    let report = run(&mut client, &["web", "api"], &CancellationToken::new()).await;
     assert_eq!(
         outcomes(&report),
         [
@@ -466,7 +443,7 @@ async fn another_server_s_old_copy_left_running_is_still_reported() {
         .into(),
         ..Scripted::default()
     };
-    let report = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
+    let report = run(&mut client, &["web"], &CancellationToken::new()).await;
     assert_eq!(
         outcomes(&report),
         [entry("web", DrainOutcome::Moved { moves: vec![stuck] })]
@@ -494,7 +471,7 @@ async fn another_server_s_failed_move_is_reported_without_failing_this_drain() {
         .into(),
         ..Scripted::default()
     };
-    let report = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
+    let report = run(&mut client, &["web"], &CancellationToken::new()).await;
     assert_eq!(
         outcomes(&report),
         [entry(
@@ -559,7 +536,7 @@ async fn another_server_s_failed_move_fails_this_drain_when_something_was_left()
             .into(),
             ..Scripted::default()
         };
-        let report = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
+        let report = run(&mut client, &["web"], &CancellationToken::new()).await;
         assert!(!report.complete(), "{failure:?}");
     }
 }
@@ -576,7 +553,7 @@ async fn only_another_server_s_moves_beside_an_out_copy_report_just_the_old_copy
         ends: [OldCopyEnd::Stopped].into(),
         ..Scripted::default()
     };
-    let report = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
+    let report = run(&mut client, &["web"], &CancellationToken::new()).await;
     assert_eq!(
         outcomes(&report),
         [entry(
@@ -615,7 +592,7 @@ async fn a_move_whose_old_copy_is_still_in_leaves_the_drain_incomplete() {
         .into(),
         ..Scripted::default()
     };
-    let report = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
+    let report = run(&mut client, &["web"], &CancellationToken::new()).await;
     assert_eq!(
         outcomes(&report),
         [entry("web", DrainOutcome::Moved { moves })]
@@ -633,7 +610,7 @@ async fn the_last_copy_in_rotation_stays_and_leaves_the_drain_incomplete() {
         .into(),
         ..Scripted::default()
     };
-    let report = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
+    let report = run(&mut client, &["web"], &CancellationToken::new()).await;
     assert_eq!(
         outcomes(&report),
         [entry(
@@ -656,7 +633,7 @@ async fn cancelled_after_the_move_leaves_the_out_copy_running_without_asking() {
         cancel_after_converge: Some(cancellation.clone()),
         ..Scripted::default()
     };
-    let report = run(&mut client, &[], &["web"], &cancellation).await;
+    let report = run(&mut client, &["web"], &cancellation).await;
     assert_eq!(
         outcomes(&report),
         [
@@ -681,7 +658,7 @@ async fn a_failed_copy_listing_leaves_the_leftovers_to_remaining() {
         copies: [Err(RpcError::unavailable("the Server did not answer"))].into(),
         ..Scripted::default()
     };
-    let report = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
+    let report = run(&mut client, &["web"], &CancellationToken::new()).await;
     assert_eq!(
         outcomes(&report),
         [entry("web", DrainOutcome::NothingToMove)]
@@ -697,54 +674,6 @@ async fn a_failed_copy_listing_leaves_the_leftovers_to_remaining() {
 }
 
 #[tokio::test]
-async fn cancelled_before_globals_attempts_nothing() {
-    let mut client = Scripted {
-        observations: [nothing_left()].into(),
-        ..Scripted::default()
-    };
-    let cancelled = CancellationToken::new();
-    cancelled.cancel();
-    let report = run(&mut client, &["metrics"], &["web"], &cancelled).await;
-    assert!(!client.retired);
-    assert_eq!(
-        outcomes(&report),
-        [
-            entry("metrics", DrainOutcome::NotAttempted),
-            entry("web", DrainOutcome::NotAttempted),
-        ]
-    );
-    assert_eq!(report.stopped, Some(DrainStop::Cancelled));
-}
-
-#[tokio::test]
-async fn cancelled_between_globals_keeps_what_retired_and_stops() {
-    let mut client = Scripted {
-        retirements: vec![
-            (qualified("metrics"), Retirement::Retired),
-            (qualified("probe"), Retirement::NotAttempted),
-        ],
-        observations: [nothing_left(), nothing_left()].into(),
-        ..Scripted::default()
-    };
-    let report = run(
-        &mut client,
-        &["metrics", "probe"],
-        &["web"],
-        &CancellationToken::new(),
-    )
-    .await;
-    assert_eq!(
-        outcomes(&report),
-        [
-            entry("metrics", DrainOutcome::Retired),
-            entry("probe", DrainOutcome::NotAttempted),
-            entry("web", DrainOutcome::NotAttempted),
-        ]
-    );
-    assert_eq!(report.stopped, Some(DrainStop::Cancelled));
-}
-
-#[tokio::test]
 async fn cancelled_between_services_keeps_the_moves_made() {
     let cancellation = CancellationToken::new();
     let mut client = Scripted {
@@ -753,7 +682,7 @@ async fn cancelled_between_services_keeps_the_moves_made() {
         cancel_after_converge: Some(cancellation.clone()),
         ..Scripted::default()
     };
-    let report = run(&mut client, &[], &["web", "api"], &cancellation).await;
+    let report = run(&mut client, &["web", "api"], &cancellation).await;
     assert_eq!(
         outcomes(&report),
         [
@@ -777,45 +706,6 @@ async fn cancelled_between_services_keeps_the_moves_made() {
 }
 
 #[tokio::test]
-async fn losing_the_entry_after_globals_keeps_their_retirements_and_stops() {
-    let mut client = Scripted {
-        retirements: vec![(qualified("metrics"), Retirement::Retired)],
-        observations: [
-            Err(Lost::Entry("timed out".into())),
-            Err(Lost::Entry("timed out".into())),
-        ]
-        .into(),
-        ..Scripted::default()
-    };
-    let report = run(
-        &mut client,
-        &["metrics"],
-        &["web"],
-        &CancellationToken::new(),
-    )
-    .await;
-    assert_eq!(
-        outcomes(&report),
-        [
-            entry("metrics", DrainOutcome::Retired),
-            entry("web", DrainOutcome::NotAttempted),
-        ]
-    );
-    assert_eq!(
-        report.stopped,
-        Some(DrainStop::EntryUnreachable {
-            detail: "timed out".into()
-        })
-    );
-    assert_eq!(
-        report.remaining,
-        Remaining::Unobserved {
-            error: "timed out".into()
-        }
-    );
-}
-
-#[tokio::test]
 async fn losing_the_entry_mid_replicated_stops_at_that_service() {
     let lost = Converged::Stopped {
         moves: Vec::new(),
@@ -830,7 +720,6 @@ async fn losing_the_entry_mid_replicated_stops_at_that_service() {
     };
     let report = run(
         &mut client,
-        &[],
         &["web", "api", "db"],
         &CancellationToken::new(),
     )
@@ -852,79 +741,6 @@ async fn losing_the_entry_mid_replicated_stops_at_that_service() {
 }
 
 #[tokio::test]
-async fn only_a_global_still_observed_undoes_its_retirement() {
-    let retirements = || {
-        vec![
-            (qualified("metrics"), Retirement::Retired),
-            (qualified("probe"), Retirement::Retired),
-            (
-                qualified("agent"),
-                Retirement::NotRetired("conflict".into()),
-            ),
-        ]
-    };
-    let mut client = Scripted {
-        retirements: retirements(),
-        observations: [
-            Err(Lost::Server("no terminal response".into())),
-            nothing_left(),
-        ]
-        .into(),
-        convergences: [Converged::Moved { moves: one_move() }].into(),
-        ..Scripted::default()
-    };
-    let report = run(
-        &mut client,
-        &["metrics", "probe", "agent"],
-        &["web"],
-        &CancellationToken::new(),
-    )
-    .await;
-    assert_eq!(
-        outcomes(&report),
-        [
-            entry("metrics", DrainOutcome::Retired),
-            entry("probe", DrainOutcome::Retired),
-            entry(
-                "agent",
-                DrainOutcome::NotRetired {
-                    error: "conflict".into()
-                }
-            ),
-            entry("web", moved()),
-        ],
-        "a lost look at the Server keeps every retire result, and the Drain goes on"
-    );
-    assert_eq!(report.stopped, None);
-
-    let mut client = Scripted {
-        retirements: retirements(),
-        observations: [Ok(vec![qualified("probe")]), Ok(vec![qualified("probe")])].into(),
-        convergences: [Converged::Moved { moves: one_move() }].into(),
-        ..Scripted::default()
-    };
-    let report = run(
-        &mut client,
-        &["metrics", "probe", "agent"],
-        &["web"],
-        &CancellationToken::new(),
-    )
-    .await;
-    assert_eq!(
-        outcomes(&report).get(..2).unwrap(),
-        [
-            entry("metrics", DrainOutcome::Retired),
-            entry(
-                "probe",
-                DrainOutcome::NotRetired {
-                    error: "still running on web-2".into()
-                }
-            ),
-        ]
-    );
-}
-
-#[tokio::test]
 async fn a_full_drain_is_complete_and_names_the_user_services_its_scope_left_alone() {
     let blog = QualifiedService::parse("blog/web").unwrap();
     let mut client = Scripted {
@@ -935,7 +751,7 @@ async fn a_full_drain_is_complete_and_names_the_user_services_its_scope_left_alo
     let scope = DrainScope::Owned {
         namespaces: vec![namespace("app")],
     };
-    let report = run_within(&mut client, scope, &[], &["web"], &CancellationToken::new()).await;
+    let report = run_within(&mut client, scope, &["web"], &CancellationToken::new()).await;
     assert_eq!(
         report.remaining,
         Remaining::Observed {
@@ -964,7 +780,7 @@ async fn old_copy_retires_overlap_the_next_move() {
         retire_delay: Some(|| tokio::time::sleep(Duration::from_secs(5))),
         ..Scripted::default()
     };
-    let report = run(&mut client, &[], &["web", "api"], &CancellationToken::new()).await;
+    let report = run(&mut client, &["web", "api"], &CancellationToken::new()).await;
     let calls = client.calls.lock().unwrap().clone();
     let at = |call: &str| calls.iter().position(|seen| seen == call).unwrap();
     assert!(
@@ -991,7 +807,7 @@ async fn an_old_copy_refused_out_keeps_its_move_and_stays() {
         last_in: vec![qualified("web")],
         ..Scripted::default()
     };
-    let report = run(&mut client, &[], &["web", "api"], &CancellationToken::new()).await;
+    let report = run(&mut client, &["web", "api"], &CancellationToken::new()).await;
     assert_eq!(
         outcomes(&report),
         [
@@ -1279,7 +1095,7 @@ async fn a_service_s_rows_follow_from_its_convergence_its_leftovers_and_a_refuse
             },
             ..Scripted::default()
         };
-        let report = run(&mut client, &[], &["web"], &CancellationToken::new()).await;
+        let report = run(&mut client, &["web"], &CancellationToken::new()).await;
         assert_eq!(
             outcomes(&report),
             rows.into_iter()
@@ -1391,4 +1207,438 @@ fn an_outcome_says_whether_it_left_an_old_copy_or_failed() {
         assert_eq!(outcome.left_old_copy(), left_old_copy, "{label}");
         assert_eq!(outcome.failed(), failed, "{label}");
     }
+}
+
+/// What Server `web-2` answers at one look of a Drain.
+enum Look {
+    Lists(Vec<ployz_core::ContainerObservation>),
+    /// Its Container listing fails, as a Server that doesn't answer.
+    Fails,
+    /// The Machine list leaves it out, so nothing asks it.
+    Unlisted,
+    /// The entry's Machine list never answers, so the listing times out.
+    Hangs,
+}
+
+/// Copies of `app/metrics` that `web-2` may list.
+struct Metrics {
+    /// A Global copy, In, as Compose made one before 0.1.2-beta.42.
+    global: ployz_core::ContainerObservation,
+    /// A Global copy rotated Out.
+    out_global: ployz_core::ContainerObservation,
+    /// A replicated copy.
+    replicated: ployz_core::ContainerObservation,
+}
+
+/// The Drain of Server `web-2` within `scope` against a Cluster that answers reads and the
+/// services role, and every other call it sent, turning that role off included. Its peer
+/// `web-1` runs a copy of `app/metrics`, a user Global left from Compose before
+/// 0.1.2-beta.42. `look` answers for `web-2` by how many Machine listings came before it,
+/// and `look(0)` for the services-off update: `Fails` refuses it unchanged, `Hangs` applies
+/// it and never answers.
+async fn drain_reading_only(
+    accepts_services: bool,
+    scope: DrainScope,
+    look: fn(usize, &Metrics) -> Look,
+) -> (Result<DrainReport, super::DrainError>, Vec<String>) {
+    use crate::global_fixtures::{global_service, machine, qualified, running_on};
+    use ployz_core::{
+        ContainerList, MachineList, MachineObservation, MachineTarget, MachineUpdated,
+        MembershipObservation, OpaquePayload, Placement, RpcRequestBody, RpcResponse,
+    };
+    use std::num::NonZeroU32;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use tonic::{Request, Response};
+
+    let drained = Machine {
+        accepts_services,
+        ..machine('1', "web-2")
+    };
+    let peer = machine('2', "web-1");
+    let on = |server: &Machine, hex| {
+        global_service(
+            qualified("app", "metrics"),
+            'a',
+            Placement::default(),
+            running_on(server, hex),
+        )
+        .containers
+        .remove(0)
+        .into_observation()
+    };
+    let mut out_global = on(&drained, 'c');
+    out_global
+        .try_update(|parts| parts.rotation = Some(CopyRotation::Out))
+        .unwrap();
+    let mut replicated = on(&drained, 'd');
+    replicated
+        .try_update(|parts| {
+            parts.resolved_spec.mode = ployz_core::ServiceMode::Replicated {
+                replicas: NonZeroU32::new(2).unwrap(),
+            };
+        })
+        .unwrap();
+    let metrics = Arc::new(Metrics {
+        global: on(&drained, 'a'),
+        out_global,
+        replicated,
+    });
+    let elsewhere = on(&peer, 'b');
+    let (drained_id, peer_id) = (drained.id, peer.id);
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let listings = Arc::new(AtomicUsize::new(0));
+    let turned_off = Arc::new(AtomicBool::new(false));
+    let machines = [drained.clone(), peer]
+        .map(|machine| MachineObservation::new(machine, MembershipObservation::Up));
+    let (mut client, server) = crate::connect::test_support::rpc_client({
+        let asked = asked.clone();
+        move |rpc: Request<OpaquePayload>| {
+            let (asked, listings, machines) = (asked.clone(), listings.clone(), machines.clone());
+            let (metrics, elsewhere) = (metrics.clone(), elsewhere.clone());
+            let turned_off = turned_off.clone();
+            let selected = rpc
+                .metadata()
+                .get(ployz_core::ONE_TARGET_HEADER)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned);
+            async move {
+                #[expect(
+                    clippy::wildcard_enum_match_arm,
+                    reason = "fixture answers only the reads a Drain makes"
+                )]
+                let response = match rpc.into_inner().decode_request().unwrap().body {
+                    RpcRequestBody::UpdateMachine(update)
+                        if update.update.accepts_services == Some(false) =>
+                    {
+                        asked.lock().unwrap().push("services off".to_owned());
+                        match look(0, &metrics) {
+                            Look::Fails => {
+                                return Ok(Response::new(
+                                    RpcResponse::from(RpcError::new(
+                                        ployz_core::RpcErrorCode::Unavailable,
+                                        "this Server's Cluster store isn't ready",
+                                    ))
+                                    .encode()
+                                    .unwrap(),
+                                ));
+                            }
+                            Look::Hangs => {
+                                turned_off.store(true, Ordering::SeqCst);
+                                std::future::pending::<()>().await;
+                            }
+                            Look::Lists(_) | Look::Unlisted => {}
+                        }
+                        turned_off.store(true, Ordering::SeqCst);
+                        let mut machine = machines[0].machine.clone();
+                        machine.accepts_services = false;
+                        RpcResponse::from(MachineUpdated { machine })
+                    }
+                    RpcRequestBody::ListMachines(_) => {
+                        let before = listings.fetch_add(1, Ordering::SeqCst) + 1;
+                        let look = look(before, &metrics);
+                        if matches!(look, Look::Hangs) {
+                            std::future::pending::<()>().await;
+                        }
+                        let unlisted = matches!(look, Look::Unlisted);
+                        let off = turned_off.load(Ordering::SeqCst);
+                        RpcResponse::from(MachineList {
+                            enrollment: None,
+                            machines: machines
+                                .into_iter()
+                                .filter(|seen| !(unlisted && seen.machine.id == drained_id))
+                                .map(|mut seen| {
+                                    if off && seen.machine.id == drained_id {
+                                        seen.machine.accepts_services = false;
+                                    }
+                                    seen
+                                })
+                                .collect(),
+                        })
+                    }
+                    RpcRequestBody::ListContainers(_)
+                        if selected.as_deref() == Some(peer_id.as_str()) =>
+                    {
+                        RpcResponse::from(ContainerList {
+                            containers: vec![elsewhere],
+                        })
+                    }
+                    RpcRequestBody::ListContainers(_)
+                        if selected.as_deref() == Some(drained_id.as_str()) =>
+                    {
+                        match look(listings.load(Ordering::SeqCst), &metrics) {
+                            Look::Lists(containers) => {
+                                RpcResponse::from(ContainerList { containers })
+                            }
+                            Look::Fails | Look::Unlisted | Look::Hangs => {
+                                RpcResponse::from(RpcError::new(
+                                    ployz_core::RpcErrorCode::Internal,
+                                    "the Server did not list its Containers",
+                                ))
+                            }
+                        }
+                    }
+                    other => {
+                        asked.lock().unwrap().push(format!("{other:?}"));
+                        panic!("the Drain asked for more than a read: {other:?}")
+                    }
+                };
+                Ok(Response::new(response.encode().unwrap()))
+            }
+        }
+    })
+    .await;
+
+    let drained = client
+        .drain(
+            &MachineTarget::from(&drained.id),
+            &scope,
+            crate::deploy::Approvals::default(),
+            &CancellationToken::new(),
+            &mut |_| {},
+        )
+        .await;
+    server.abort();
+    let asked = asked.lock().unwrap().clone();
+    (drained, asked)
+}
+
+/// The refusal a user Global gives a Drain: it names the Service and says to give it a
+/// replica count. Retiring it could take the last copy that serves, since a copy stays In
+/// while it crash-loops.
+fn assert_refused_for_metrics(drained: Result<DrainReport, super::DrainError>) {
+    let Err(super::DrainError::Unchanged(super::Stop::Refused(refused))) = drained else {
+        panic!("expected a refusal that changed nothing, got {drained:?}");
+    };
+    assert_eq!(refused.code, ployz_core::RpcErrorCode::Conflict);
+    assert!(
+        refused.message.contains("`app/metrics`"),
+        "{}",
+        refused.message
+    );
+    assert!(
+        refused.message.contains("replica count"),
+        "{}",
+        refused.message
+    );
+}
+
+/// A user Global refuses the Drain before its services role changes.
+#[tokio::test]
+async fn a_user_global_refuses_the_drain_before_the_role_changes() {
+    let (drained, asked) = drain_reading_only(true, DrainScope::EveryNamespace, |_, metrics| {
+        Look::Lists(vec![metrics.global.clone()])
+    })
+    .await;
+
+    assert_refused_for_metrics(drained);
+    assert!(asked.is_empty(), "{asked:?}");
+}
+
+/// A Drain that can't list the Server's Containers can't tell whether it runs a user
+/// Global, so it changes nothing, whether or not its role was already off. A later listing
+/// that finds one must not reach a retirement.
+#[tokio::test]
+async fn a_drain_that_cannot_list_the_server_changes_nothing() {
+    for accepts_services in [true, false] {
+        let (drained, asked) = drain_reading_only(
+            accepts_services,
+            DrainScope::EveryNamespace,
+            |before, metrics| {
+                if before > 1 {
+                    Look::Lists(vec![metrics.global.clone()])
+                } else {
+                    Look::Fails
+                }
+            },
+        )
+        .await;
+
+        assert!(
+            matches!(
+                drained,
+                Err(super::DrainError::Unchanged(
+                    super::Stop::Unobservable { .. }
+                ))
+            ),
+            "accepts_services {accepts_services}: {drained:?}"
+        );
+        assert!(
+            asked.is_empty(),
+            "accepts_services {accepts_services}: {asked:?}"
+        );
+    }
+}
+
+/// A user Global first seen after the services role is off still refuses the Drain: no
+/// observation of one reaches a retirement.
+#[tokio::test]
+async fn a_user_global_seen_after_the_role_is_off_still_refuses() {
+    let (drained, asked) =
+        drain_reading_only(false, DrainScope::EveryNamespace, |before, metrics| {
+            Look::Lists(if before > 1 {
+                vec![metrics.global.clone()]
+            } else {
+                Vec::new()
+            })
+        })
+        .await;
+
+    assert_refused_for_metrics(drained);
+    assert!(asked.is_empty(), "{asked:?}");
+}
+
+/// A Service with a Global copy anywhere refuses the Drain, even when the Server also runs
+/// a replicated copy of it: the Drain would let go of the Global copy left Out there, and a
+/// copy In elsewhere may crash-loop.
+#[tokio::test]
+async fn a_service_with_any_global_copy_refuses_the_drain() {
+    let (drained, asked) = drain_reading_only(true, DrainScope::EveryNamespace, |_, metrics| {
+        Look::Lists(vec![metrics.replicated.clone(), metrics.out_global.clone()])
+    })
+    .await;
+
+    assert_refused_for_metrics(drained);
+    assert!(asked.is_empty(), "{asked:?}");
+}
+
+/// A Server the Machine list leaves out at a later look was never asked what it runs by
+/// then, so the Drain can't read it as empty.
+#[tokio::test]
+async fn a_server_left_out_of_the_machine_list_is_not_read_as_empty() {
+    let (drained, asked) = drain_reading_only(false, DrainScope::EveryNamespace, |before, _| {
+        if before > 1 {
+            Look::Unlisted
+        } else {
+            Look::Lists(Vec::new())
+        }
+    })
+    .await;
+
+    assert!(
+        matches!(
+            drained,
+            Err(super::DrainError::Unchanged(
+                super::Stop::Unobservable { .. }
+            ))
+        ),
+        "{drained:?}"
+    );
+    assert!(asked.is_empty(), "{asked:?}");
+}
+
+/// A user Global the Drain's scope leaves out still refuses it, as Cloud's saved services
+/// would leave out one that appeared after Cloud read its frame. Its copy would otherwise
+/// sit on a Server whose services are off.
+#[tokio::test]
+async fn a_user_global_outside_the_scope_still_refuses() {
+    let scope = DrainScope::Services {
+        services: Vec::new(),
+    };
+    let (drained, asked) = drain_reading_only(false, scope, |_, metrics| {
+        Look::Lists(vec![metrics.global.clone()])
+    })
+    .await;
+
+    assert_refused_for_metrics(drained);
+    assert!(asked.is_empty(), "{asked:?}");
+}
+
+/// A Drain whose Server answered before it turned services off, then went unlisted, says
+/// it left services off: Cloud and the CLI record what changed, not a plain refusal.
+#[tokio::test]
+async fn a_server_unlisted_after_its_services_went_off_says_they_are_off() {
+    let (drained, asked) = drain_reading_only(true, DrainScope::EveryNamespace, |before, _| {
+        if before > 1 {
+            Look::Fails
+        } else {
+            Look::Lists(Vec::new())
+        }
+    })
+    .await;
+
+    assert_left_off(
+        drained,
+        "Cannot observe Services on Server web-2: the Server did not list its Containers.",
+    );
+    assert_eq!(asked, ["services off"]);
+}
+
+/// A listing that times out after the Drain turned services off says they are off, as a
+/// refusal does: the Drain changed the role, whichever way it then stopped.
+#[tokio::test(start_paused = true)]
+async fn a_listing_that_times_out_after_services_went_off_says_they_are_off() {
+    let (drained, asked) = drain_reading_only(true, DrainScope::EveryNamespace, |before, _| {
+        if before > 2 {
+            Look::Hangs
+        } else {
+            Look::Lists(Vec::new())
+        }
+    })
+    .await;
+
+    assert_left_off(drained, "Ployz's call to your Server's daemon failed.");
+    assert_eq!(asked, ["services off"]);
+}
+
+/// An update that turns services off and never answers may still have landed, so the
+/// Drain says services may be off and how to turn them back on, not that nothing changed.
+#[tokio::test(start_paused = true)]
+async fn a_services_off_update_that_never_answers_says_they_may_be_off() {
+    let (drained, asked) = drain_reading_only(true, DrainScope::EveryNamespace, |before, _| {
+        if before == 0 {
+            Look::Hangs
+        } else {
+            Look::Lists(Vec::new())
+        }
+    })
+    .await;
+
+    let Err(error @ super::DrainError::MaybeOff { .. }) = drained else {
+        panic!("expected services maybe off, got {drained:?}");
+    };
+    let message = RpcError::from(error).message;
+    assert!(
+        message.ends_with(
+            "Services may now be off on web-2: if they are, turn them back on to let it run \
+             services again."
+        ),
+        "{message}"
+    );
+    assert_eq!(asked, ["services off"]);
+}
+
+/// A daemon that answers the services-off update with a refusal changed nothing, even when
+/// its refusal is coded Unavailable, so the Drain says nothing changed and offers no undo.
+#[tokio::test]
+async fn a_refused_services_off_update_changes_nothing() {
+    let (drained, asked) = drain_reading_only(true, DrainScope::EveryNamespace, |before, _| {
+        if before == 0 {
+            Look::Fails
+        } else {
+            Look::Lists(Vec::new())
+        }
+    })
+    .await;
+
+    let Err(super::DrainError::Unchanged(super::Stop::Refused(refused))) = drained else {
+        panic!("expected a refusal that changed nothing, got {drained:?}");
+    };
+    assert_eq!(refused.code, ployz_core::RpcErrorCode::Unavailable);
+    assert_eq!(asked, ["services off"]);
+}
+
+/// `drained` stopped for `stopped` after this Drain turned web-2's services off, and the
+/// error Cloud stores and the CLI prints says how to turn them back on.
+fn assert_left_off(drained: Result<DrainReport, super::DrainError>, stopped: &str) {
+    let Err(error @ super::DrainError::LeftOff { .. }) = drained else {
+        panic!("expected services left off, got {drained:?}");
+    };
+    let message = RpcError::from(error).message;
+    assert!(message.contains(stopped), "{message}");
+    assert!(
+        message.ends_with(
+            "Services are now off on web-2: turn them back on to let it run services again."
+        ),
+        "{message}"
+    );
 }

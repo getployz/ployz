@@ -31,7 +31,7 @@ function server(input: { membership?: RuntimeMachineRecord["membership"]; servic
     daemonVersion: "0.3.0-beta.2", capabilities: [], poolCommittableBytes: null, sealing: input.sealing ?? null, membership: input.membership ?? "up", unanswered: false, observedContainerCount: 0, observedAt: "2026-10-14T00:00:00Z",
   };
   const services = (input.services ?? []).map((name) => ({
-    identity: `shop/${name}`, name, namespace: "shop", machineIds: new Set([machine.id]), global: false, runningOn: new Set([machine.id]),
+    identity: `shop/${name}`, name, namespace: "shop", machineIds: new Set([machine.id]), global: false,
   }));
   return { machine, name: machine.name, status: serverStatus(machine), services };
 }
