@@ -491,6 +491,16 @@ fn proven(
                 seen.name
             )));
         }
+        // This Server must still show the pin it just took, in the Pool it proves from: an
+        // answer from another Pool, or none, says nothing about the one the promote lands in.
+        if seen.id == here
+            && (!matches!(seen.read, Some(PoolRead::Pool { .. })) || pinned.as_slice() != [id])
+        {
+            return Err(Error::unavailable(format!(
+                "{} no longer shows {id} pinned in its own Pool. Run the restore again.",
+                seen.name
+            )));
+        }
     }
     Ok(())
 }

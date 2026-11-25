@@ -1061,6 +1061,44 @@ async fn a_promote_refuses_once_its_pool_is_degraded() {
     assert!(property(&test, &entry, "ployz:trash-pin").is_some());
 }
 
+/// A proof reads a pin as absent only from a source ZFS prints. A row cut partway through
+/// its source reads as nothing, where it once read as not pinned.
+#[tokio::test]
+async fn a_proof_fails_where_a_pin_reads_with_a_source_zfs_never_prints() {
+    let test = test_dir();
+    let plugin = Plugin::start(&test, &["root"], Ok(vec![]));
+    let entry = plant_trash(&test, &trash_id(1), "data", "root", 0, false);
+    plugin.call(&entry, false).await;
+    let cut = test
+        .0
+        .join("props/source-cut")
+        .join(format!("tank/ployz-trash/{}", trash_id(1)));
+    fs::create_dir_all(cut.parent().unwrap()).unwrap();
+    fs::write(&cut, "").unwrap();
+
+    let proof = plugin
+        .post("/Volume.Inspect", json!({"name": "data", "prove": true}))
+        .await;
+
+    assert!(proof.get("Err").is_some(), "{proof}");
+}
+
+/// A listing of the Pool without the Pool's own row saw nothing, so the proof fails
+/// rather than answer that there's no copy and no pin.
+#[tokio::test]
+async fn a_proof_fails_on_a_dataset_listing_without_the_pool() {
+    let test = test_dir();
+    let plugin = Plugin::start(&test, &["root"], Ok(vec![]));
+    fs::create_dir_all(test.0.join("props")).unwrap();
+    fs::write(test.0.join("props/datasets-empty"), "").unwrap();
+
+    let proof = plugin
+        .post("/Volume.Inspect", json!({"name": "data", "prove": true}))
+        .await;
+
+    assert!(proof.get("Err").is_some(), "{proof}");
+}
+
 /// A proof says no restore is pinned only from a row ZFS printed: a read cut short, which
 /// once read as not pinned, fails the proof.
 #[tokio::test]

@@ -223,6 +223,9 @@ case "$*" in
     fi
     # props/datasets-cut-later: this listing finishes, and the next one stops early.
     [ ! -e '{props}/datasets-cut-later' ] || mv '{props}/datasets-cut-later' '{props}/datasets-cut'
+    # props/datasets-empty: ZFS printed nothing at all and exited 0; -later from the next one.
+    [ ! -e '{props}/datasets-empty' ] || exit 0
+    [ ! -e '{props}/datasets-empty-later' ] || mv '{props}/datasets-empty-later' '{props}/datasets-empty'
     if [ -e '{hold_list}' ]; then
       touch '{list_held}'
       while [ -e '{hold_list}' ]; do sleep 0.01; done
@@ -337,6 +340,8 @@ case "$*" in
   'get -Hp -o value,source '*)
     require "$6"
     [ ! -e '{props}'/get-cut/"$6" ] || {{ echo "cannot get property: I/O error" >&2; exit 0; }}
+    # props/source-cut/<dataset>: the row ends partway through its source.
+    [ ! -e '{props}'/source-cut/"$6" ] || {{ printf -- '-\tloc\n'; exit 0; }}
     v=$(prop "$6" "$5" -)
     if [ "$v" = - ]; then printf -- '-\t-\n'; else printf '%s\tlocal\n' "$v"; fi
     ;;

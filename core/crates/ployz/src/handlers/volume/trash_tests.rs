@@ -170,6 +170,22 @@ fn a_restore_refuses_an_answer_that_proves_nothing() {
     proven(&name(), entry(), id('1'), &frame(), &with(unheld)).unwrap();
 }
 
+/// The Server that took the pin must still show it, alone, in the Pool it proves from. An
+/// answer from no Pool, or one that lists no pin, comes from somewhere other than where the
+/// promote lands: a Pool swapped out and back between pin, proof and promote.
+#[test]
+fn a_restore_refuses_when_its_own_server_no_longer_shows_the_pin() {
+    let quiet = || seen("web-2", Ok(None));
+    let unheld = Seen {
+        read: Some(PoolRead::Unheld),
+        pinned: Some(vec![entry()]),
+        ..seen("web-1", Ok(None))
+    };
+    assert_eq!(refused(&[unheld, quiet()]), RpcErrorCode::Unavailable);
+    let unpinned = seen("web-1", Ok(None));
+    assert_eq!(refused(&[unpinned, quiet()]), RpcErrorCode::Unavailable);
+}
+
 /// The retry a refused `trash empty` prints names the entries it would delete, and still
 /// keeps any a restore pins before the retry runs, however the refused command was typed.
 #[test]

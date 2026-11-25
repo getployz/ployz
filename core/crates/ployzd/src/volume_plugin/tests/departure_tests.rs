@@ -146,6 +146,33 @@ async fn departure_fails_a_volume_whose_listing_zfs_cut_short() {
     server.abort();
 }
 
+/// The seal's own listing must show the Pool: an empty one, after the first listing found
+/// the Volume, fails it rather than leave its root a writer.
+#[tokio::test]
+async fn departure_fails_a_volume_whose_listing_came_back_empty() {
+    let test = test_dir();
+    let (socket, server) = start(&test, USABLE_POOL, &["root", "volume", "mounted"]);
+    fs::create_dir_all(test.0.join("props")).unwrap();
+    fs::write(test.0.join("props/datasets-empty-later"), "").unwrap();
+
+    let response = post(&socket, "/Storage.Demote", json!(null)).await;
+
+    assert_eq!(
+        response.pointer("/Ok/failed/0/name"),
+        Some(&json!("data")),
+        "{response}"
+    );
+    assert!(
+        failure_reason(&response).contains("printed no row for the Pool itself"),
+        "{response}"
+    );
+    assert!(
+        !commands(&test).contains("zfs rename tank/ployz/data"),
+        "{response}"
+    );
+    server.abort();
+}
+
 #[tokio::test]
 async fn departure_on_a_machine_without_zfs_demotes_nothing() {
     let test = test_dir();

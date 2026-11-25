@@ -396,7 +396,18 @@ impl VolumeStorage {
     /// [`Self::datasets`] from a listing that ZFS finished, for an answer that says a
     /// dataset is absent.
     pub(super) async fn complete_datasets(&self, pool: &MachinePool) -> Result<Vec<Dataset>> {
-        Self::parse_datasets(pool, &self.zfs_listing(&dataset_listing(pool)).await?)
+        let datasets =
+            Self::parse_datasets(pool, &self.zfs_listing(&dataset_listing(pool)).await?)?;
+        // A listing of the Pool always holds the Pool's own row, so one without it saw
+        // nothing, which is no absence.
+        if !datasets.iter().any(|dataset| dataset.name == pool.name()) {
+            return Err(format!(
+                "zfs list -r {} printed no row for the Pool itself",
+                pool.name()
+            )
+            .into());
+        }
+        Ok(datasets)
     }
 
     fn parse_datasets(pool: &MachinePool, output: &str) -> Result<Vec<Dataset>> {

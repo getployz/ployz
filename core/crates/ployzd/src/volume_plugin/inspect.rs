@@ -125,7 +125,7 @@ impl VolumeStorage {
             rows.next(),
         ) {
             (Some((value, "local")), None) => Ok(Some(value.to_owned())),
-            (Some((_, source)), None) if !source.is_empty() && !source.contains('\t') => Ok(None),
+            (Some((_, source)), None) if unset_source(source) => Ok(None),
             _ => Err(format!(
                 "zfs get {property} {dataset} printed no row Ployz reads: {output:?}"
             )
@@ -409,6 +409,16 @@ impl VolumeStorage {
             pinned: Some(self.pinned_entries(&pool, &datasets, name).await?),
         })
     }
+}
+
+/// Whether `source` is one `zfs get` prints for a property not set on the dataset itself:
+/// `received`, `default`, `-` or `inherited from DATASET`. Anything else, such as a cut
+/// `loc`, reads as nothing.
+fn unset_source(source: &str) -> bool {
+    matches!(source, "received" | "default" | "-")
+        || source
+            .strip_prefix("inherited from ")
+            .is_some_and(|from| !from.is_empty() && !from.contains(char::is_whitespace))
 }
 
 pub(super) async fn inspect(

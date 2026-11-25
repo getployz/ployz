@@ -233,22 +233,32 @@ const BLOCK_KEYS: [&str; 9] = [
 
 /// The Pool names in a label scan's `pool:` blocks, when every line belongs to one: a
 /// `key: value` line with a key ZFS prints, a tab-indented continuation or config line,
-/// or a blank line. Each block names its `id`, `state` and `config`. `None` for anything
-/// else, so a line this judge hasn't seen never hides a Pool.
+/// or a blank line. Each block gives its `id` and `state` a value, and a config tree after
+/// `config:`. `None` for anything else, so a line this judge hasn't seen never hides a
+/// Pool.
 fn blocks(stdout: &str) -> Option<Vec<String>> {
     let mut pools = Vec::new();
+    // The keys this block printed, and `tree` once a config line follows its `config:`.
     let mut keys: Vec<&str> = Vec::new();
-    let complete = |keys: &[&str]| {
-        ["id", "state", "config"]
-            .iter()
-            .all(|key| keys.contains(key))
-    };
+    let complete = |keys: &[&str]| ["id", "state", "tree"].iter().all(|key| keys.contains(key));
     for line in stdout.lines() {
-        if line.trim().is_empty() || (line.starts_with('\t') && !pools.is_empty()) {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if line.starts_with('\t') && !pools.is_empty() {
+            if keys.contains(&"config") && !keys.contains(&"tree") {
+                keys.push("tree");
+            }
             continue;
         }
         let (key, value) = line.trim_start_matches(' ').split_once(':')?;
         if !BLOCK_KEYS.contains(&key) || !(value.is_empty() || value.starts_with(' ')) {
+            return None;
+        }
+        // ZFS prints a value after each of these, and its tree after `config:`.
+        if matches!(key, "pool" | "id" | "state") && value.trim().is_empty()
+            || key == "config" && !value.trim().is_empty()
+        {
             return None;
         }
         if key == "pool" {
@@ -366,6 +376,9 @@ pub struct Inventory {
     pub imported: Option<Vec<Imported>>,
     /// The imported Pool whose only vdev is the canonical backing file.
     pub on_backing: Option<String>,
+    /// Each canonical vdev path that more than one imported Pool lists, with those Pools,
+    /// as `path (a, b)`.
+    pub collisions: Vec<String>,
     /// What the default scan, which sees devices only, could import. Empty where no
     /// scan ran, as on the write path.
     pub scan: Vec<String>,
@@ -408,9 +421,16 @@ pub fn choose(inventory: &Inventory) -> Choice {
         records,
         imported,
         on_backing,
+        collisions,
         scan,
         backing_scan,
     } = inventory;
+    if !collisions.is_empty() {
+        return Choice::Unproven(format!(
+            "more than one imported Pool lists the same file: {}",
+            collisions.join(", ")
+        ));
+    }
     let Some(imported) = imported else {
         return if *records == Records::default() {
             Choice::None
@@ -570,11 +590,12 @@ pub enum Read {
     Unproven(String),
 }
 
-/// What a reader needs of the Pool [`choose`] picks.
+/// What a reader needs of the Pool [`choose`] picks. Either way it must be the only Pool
+/// imported, with nothing a label scan could import.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Need {
     /// An answer that something is absent, or a restore that relies on one: only an
-    /// `ONLINE` Pool, the only one attached.
+    /// `ONLINE` Pool.
     Proof,
     /// A departure's seal, which a `DEGRADED` Pool still takes.
     Seal,
@@ -602,11 +623,16 @@ pub fn read(inventory: &Inventory, need: Need) -> Read {
             if !healthy {
                 return Read::Unproven(format!("its Pool {name} is {}", unusable(&own)));
             }
-            if by == By::Sole && (imported.len() != 1 || !scan.is_empty()) {
-                return Read::Unproven(format!(
-                    "it records no Pool, and has these attached: {}",
-                    found(imported, scan)
-                ));
+            // Any other Pool it can see, imported or importable and whatever its name, could
+            // be the home of its Pool under another name, so it proves nothing.
+            if imported.len() != 1 || !scan.is_empty() {
+                let found = found(imported, scan);
+                return Read::Unproven(match by {
+                    By::Sole => format!("it records no Pool, and has these attached: {found}"),
+                    By::File | By::Device => {
+                        format!("it can't tell which of these is its own: {found}")
+                    }
+                });
             }
             Read::Pool {
                 pool: own.pool,
@@ -799,6 +825,19 @@ mod tests {
             (0, format!("note\n{}", block("ployz")), ""),
             (0, format!("{}   pool: tank\n", block("ployz")), ""),
             (0, "   pool: ployz\n     id: 1\n".to_owned(), ""),
+            // A block cut short or with a value missing.
+            (0, block("ployz").replace("id: 1", "id:"), ""),
+            (0, block("ployz").replace("state: ONLINE", "state:"), ""),
+            (
+                0,
+                block("ployz")
+                    .split(" config:")
+                    .next()
+                    .map(|head| format!("{head} config:\n"))
+                    .unwrap_or_default(),
+                "",
+            ),
+            (0, block("ployz").replace(" config:", " config: x"), ""),
         ] {
             assert!(
                 scan(status(code), &stdout, stderr).is_err(),
@@ -838,6 +877,7 @@ mod tests {
             records,
             imported: Some(imported.to_vec()),
             on_backing: on_backing.map(str::to_owned),
+            collisions: Vec::new(),
             scan: scan.iter().map(|name| (*name).to_owned()).collect(),
             backing_scan: Vec::new(),
         }
@@ -960,6 +1000,30 @@ mod tests {
         assert!(writable(&inventory(BACKING, &tank, None, &[])).is_err());
         assert_eq!(writable(&inventory(BACKING, &[], None, &[])).unwrap(), None);
         assert_eq!(writable(&inventory(DEVICE, &[], None, &[])).unwrap(), None);
+    }
+
+    /// Beside its recorded Pool, any other Pool it can see, imported or importable and
+    /// whatever its name, could be its original Pool under another name, so it proves
+    /// nothing: the replacement holds none of what the original does.
+    #[test]
+    fn a_recorded_pool_beside_any_other_pool_proves_nothing() {
+        let renamed = [
+            pool("ployz-device", "ONLINE", "off"),
+            pool("backup", "ONLINE", "on"),
+        ];
+        let device = inventory(DEVICE, &renamed, None, &[]);
+        assert!(matches!(read(&device, Need::Proof), Read::Unproven(_)));
+        let alone = [pool("ployz-device", "ONLINE", "off")];
+        let scanned = inventory(DEVICE, &alone, None, &["backup"]);
+        assert!(matches!(read(&scanned, Need::Proof), Read::Unproven(_)));
+        let file = [
+            pool("ployz", "ONLINE", "off"),
+            pool("backup", "ONLINE", "on"),
+        ];
+        let beside = inventory(BACKING, &file, Some("ployz"), &[]);
+        assert!(matches!(read(&beside, Need::Proof), Read::Unproven(_)));
+        let scanned = inventory(BACKING, &file[..1], Some("ployz"), &["backup"]);
+        assert!(matches!(read(&scanned, Need::Proof), Read::Unproven(_)));
     }
 
     /// A `DEGRADED` Pool takes writes and a seal, and proves nothing.

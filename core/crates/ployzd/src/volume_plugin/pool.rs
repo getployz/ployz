@@ -362,18 +362,34 @@ impl PoolStorage {
             }
             if records.backing {
                 let backing = canonical(self.backing(), "Machine Pool backing file")?;
+                // Which Pools list each file, by the path it resolves to now: a backing file
+                // replaced while the old one is open, or a link moved, shows as two.
+                let mut listing: BTreeMap<PathBuf, Vec<&str>> = BTreeMap::new();
                 for pool in imported {
                     let name = pool.pool.name();
                     let args = ["list", "-v", "-H", "-P", "-o", "name", name];
                     let output = checked_listing(&self.zpool, &args).await?;
                     let vdevs = machine_pool::vdevs(&output, name)
                         .map_err(|error| ployz_core::error_chain::inline(&error))?;
-                    if let [vdev] = vdevs.as_slice()
-                        && fs::canonicalize(vdev).ok().as_ref() == Some(&backing)
-                    {
+                    let resolved: Vec<PathBuf> = vdevs
+                        .iter()
+                        .map(|vdev| fs::canonicalize(vdev).unwrap_or_else(|_| PathBuf::from(vdev)))
+                        .collect();
+                    if resolved == [backing.clone()] {
                         inventory.on_backing = Some(name.to_owned());
                     }
+                    for path in resolved {
+                        let pools = listing.entry(path).or_default();
+                        if !pools.contains(&name) {
+                            pools.push(name);
+                        }
+                    }
                 }
+                inventory.collisions = listing
+                    .into_iter()
+                    .filter(|(_, pools)| pools.len() > 1)
+                    .map(|(path, pools)| format!("{} ({})", path.display(), pools.join(", ")))
+                    .collect();
                 if scans {
                     inventory.backing_scan =
                         self.scan(&["import", "-d", self.backing_text()?]).await?;
@@ -1148,6 +1164,44 @@ esac
 
         assert!(written.is_err(), "{written:?}");
         assert!(matches!(read, machine_pool::Read::Unproven(_)), "{read:?}");
+    }
+
+    /// Two imported Pools that list the backing file, as when it was replaced while the old
+    /// one was still open, leave the file's Pool unknown: nothing is written to either.
+    #[tokio::test]
+    async fn two_pools_on_one_backing_file_take_no_write() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let program = root.path().join("zpool");
+        fs::write(
+            &program,
+            format!(
+                r#"#!/bin/sh
+set -eu
+case "$*" in
+ 'list -Hp -o name,size,allocated,free,health,readonly')
+   printf 'ployz\t8589934592\t0\t8589934592\tONLINE\ton\nployz-new\t8589934592\t0\t8589934592\tONLINE\toff\n' ;;
+ 'list -v -H -P -o name ployz') printf 'ployz\n\t%s\t-\n' '{root}/machine-pool' ;;
+ 'list -v -H -P -o name ployz-new') printf 'ployz-new\n\t%s\t-\n' '{root}/machine-pool' ;;
+ *) exit 97 ;;
+esac
+"#,
+                root = root.path().display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+        let storage = PoolStorage::new(program).with_backing(root.path().join("machine-pool"));
+        fs::write(storage.backing(), "replacement").unwrap();
+
+        let written = storage.one_usable().await;
+
+        assert!(
+            written
+                .as_ref()
+                .is_err_and(|error| error.to_string().contains("ployz, ployz-new")),
+            "{written:?}"
+        );
     }
 
     /// A Pool listing that warned on stderr may have left a Pool out, so neither a write nor
