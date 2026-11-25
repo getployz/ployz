@@ -28,6 +28,9 @@ const BUILD_FORWARD_CHAIN: &str = "PLOYZ-BUILD-FORWARD";
 const TUNNEL_FORWARD_CHAIN: &str = "PLOYZ-TUNNEL-FORWARD";
 /// Hooked first in DOCKER-USER for traffic into the ployz bridge.
 const FENCE_CHAIN: &str = "PLOYZ-FENCE";
+/// Where PLOYZ-FENCE sends a new flow between two preview addresses on this bridge. It ends
+/// in a drop, and the daemon puts the preview Namespaces' own chains ahead of it.
+pub(super) const PREVIEW_CHAIN: &str = "PLOYZ-PREVIEW";
 
 /// Each writer here moves hooks from a listing it read first, and a Build's
 /// fence runs beside the network's periodic re-apply. One writer at a time
@@ -35,7 +38,7 @@ const FENCE_CHAIN: &str = "PLOYZ-FENCE";
 /// [`Installed`] firewall: every install and every removal moves it on.
 static WRITER: Mutex<u64> = Mutex::new(0);
 
-fn writer() -> MutexGuard<'static, u64> {
+pub(super) fn writer() -> MutexGuard<'static, u64> {
     WRITER.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
@@ -86,7 +89,13 @@ impl Installed {
         if *generation != self.generation {
             return Ok(None);
         }
-        install(self.subnet, self.management_address, self.fence).map(Some)
+        install(
+            self.subnet,
+            self.management_address,
+            self.fence,
+            PreviewSets::Kept,
+        )
+        .map(Some)
     }
 }
 
@@ -114,7 +123,7 @@ pub fn apply_firewall_rules(
 ) -> Result<Installed, NetworkError> {
     let mut generation = writer();
     *generation += 1;
-    install(subnet, management_address, fence)?;
+    install(subnet, management_address, fence, PreviewSets::Closed)?;
     Ok(Installed {
         generation: *generation,
         subnet,
@@ -123,11 +132,22 @@ pub fn apply_firewall_rules(
     })
 }
 
+/// What an install does to the preview Namespaces' chains.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PreviewSets {
+    /// A daemon's first install closes them, so no two previews meet until the daemon has
+    /// read their Containers again and written their chains.
+    Closed,
+    /// A re-apply keeps the chains the daemon wrote, and closes them only when they are gone.
+    Kept,
+}
+
 /// Called with [`writer`] held.
 fn install(
     subnet: MachineSubnet,
     management_address: ManagementAddress,
     fence: BridgeFence,
+    previews: PreviewSets,
 ) -> Result<Restored, NetworkError> {
     let mut restored = Restored::default();
     let hooks: Vec<Hook> = hooks(subnet).into_iter().chain(fence_hooks()).collect();
@@ -142,6 +162,12 @@ fn install(
     }
     let mut ipv4_document =
         Chain::input().document("iptables", &ipv4, &[], &mut restored.displaced)?;
+    if previews == PreviewSets::Closed
+        || !command_succeeds("iptables", &["-t", "filter", "-S", PREVIEW_CHAIN])
+    {
+        ipv4_document.push_str(&format!("*filter\n{}COMMIT\n", closed_preview_chain()));
+        super::preview_fence::forget_written();
+    }
     ipv4_document.push_str(&Chain::fence().document(
         "iptables",
         &fence_rules(),
@@ -421,24 +447,54 @@ fn part_match(flag: &str, part: AddressPart) -> String {
 /// signed data. Anything else reaches one only through a port its signed spec
 /// publishes. Docker's own rules then decide what passes. Traffic from the bridge into
 /// the mesh meets the same bridge rules on its way to a peer's Container.
+///
+/// A preview Container is reached only from Open, signed data and its own preview: Free
+/// never reaches one, a preview reaches no Free Container, and two previews meet only on
+/// one bridge, where [`PREVIEW_CHAIN`] lets through only two addresses of one preview
+/// Namespace. Every rule follows the established-flow return, so each reads only new flows.
 fn fence_rules() -> Vec<String> {
     let into_data = part_match("-d", AddressPart::SignedData);
-    let unsigned = [AddressPart::Preview, AddressPart::Free].map(|part| part_match("-s", part));
-    let mut rules = vec!["-m conntrack --ctstate RELATED,ESTABLISHED -j RETURN".to_owned()];
-    for (interface, otherwise) in [
-        (DOCKER_NETWORK_NAME, "RETURN"),
-        (WIREGUARD_INTERFACE_NAME, "ACCEPT"),
-    ] {
+    let into_preview = part_match("-d", AddressPart::Preview);
+    let from_preview = part_match("-s", AddressPart::Preview);
+    let from_free = part_match("-s", AddressPart::Free);
+    let into_free = part_match("-d", AddressPart::Free);
+    // A preview's Containers are signed, but reach no data any more than a Free one.
+    let kept_from_data = [&from_preview, &from_free];
+    let bridge = DOCKER_NETWORK_NAME;
+    let mut rules = vec![
+        "-m conntrack --ctstate RELATED,ESTABLISHED -j RETURN".to_owned(),
+        format!("-i {bridge} -o {bridge} {from_preview} {into_preview} -j {PREVIEW_CHAIN}"),
+        format!("-i {bridge} -o {bridge} {from_preview} {into_preview} -j RETURN"),
+        // Toward a peer's Container, by the part its address lies in.
+        format!("-i {bridge} {from_preview} {into_preview} -j DROP"),
+        format!("-i {bridge} {from_preview} {into_free} -j DROP"),
+    ];
+    for (interface, otherwise) in [(bridge, "RETURN"), (WIREGUARD_INTERFACE_NAME, "ACCEPT")] {
         rules.extend(
-            unsigned
+            kept_from_data
                 .iter()
                 .map(|source| format!("-i {interface} {source} {into_data} -j DROP")),
         );
+        rules.push(format!("-i {interface} {from_free} {into_preview} -j DROP"));
+        if interface == WIREGUARD_INTERFACE_NAME {
+            // Each Server drops on arrival what a peer's fence drops on leaving.
+            rules.push(format!(
+                "-i {interface} {from_preview} {into_preview} -j DROP"
+            ));
+            rules.push(format!("-i {interface} {from_preview} {into_free} -j DROP"));
+        }
         rules.push(format!("-i {interface} -j {otherwise}"));
     }
     rules.push("-m conntrack --ctstate DNAT -j RETURN".to_owned());
     rules.push(format!("{into_data} -j DROP"));
+    rules.push(format!("{into_preview} -j DROP"));
     rules
+}
+
+/// [`PREVIEW_CHAIN`] declared with its drop alone, so no two previews meet until the daemon
+/// writes their Namespaces' chains ahead of it.
+pub(super) fn closed_preview_chain() -> String {
+    format!(":{PREVIEW_CHAIN} - [0:0]\n-A {PREVIEW_CHAIN} -j DROP\n")
 }
 
 /// Where the fence lives for the boot to restore before Docker starts any Container. Its
@@ -456,7 +512,10 @@ struct FenceFile {
 impl FenceFile {
     fn new() -> Self {
         let chain = Chain::fence();
-        let mut iptables = format!("*filter\n:{FENCE_CHAIN} - [0:0]\n");
+        let mut iptables = format!(
+            "*filter\n{}:{FENCE_CHAIN} - [0:0]\n",
+            closed_preview_chain()
+        );
         for rule in fence_rules() {
             iptables.push_str(&format!("-A {FENCE_CHAIN} {rule}\n"));
         }
@@ -648,6 +707,7 @@ pub fn remove_fence() -> Result<(), NetworkError> {
         results.push(hook.delete());
     }
     results.push(Chain::fence().remove("iptables"));
+    results.push(super::preview_fence::remove_preview_chains());
     for result in results {
         if let Err(error) = result {
             failures.push(ployz_core::error_chain::inline(&error));
@@ -1133,7 +1193,7 @@ fn move_behind(
     Ok(moves)
 }
 
-fn restore(program: &str, document: &str) -> Result<(), NetworkError> {
+pub(super) fn restore(program: &str, document: &str) -> Result<(), NetworkError> {
     let program = format!("{program}-restore");
     let mut child = Command::new(&program)
         .args(["--noflush", &format!("--wait={LOCK_WAIT}")])
@@ -1240,11 +1300,11 @@ fn delete_rule(program: &str, table: &str, chain: &str, rule: &[&str]) -> Result
 /// held lock fails the step, and the next re-apply tries again.
 const LOCK_WAIT: &str = "10";
 
-fn xtables(program: &str, args: &[&str]) -> Result<Output, NetworkError> {
+pub(super) fn xtables(program: &str, args: &[&str]) -> Result<Output, NetworkError> {
     super::checked_command(program, &waiting(args))
 }
 
-fn command_succeeds(program: &str, args: &[&str]) -> bool {
+pub(super) fn command_succeeds(program: &str, args: &[&str]) -> bool {
     Command::new(program)
         .args(waiting(args))
         .output()

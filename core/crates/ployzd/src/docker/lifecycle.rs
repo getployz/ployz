@@ -1100,6 +1100,14 @@ impl Lifecycle {
         Ok(self.specs.admitted_by(container_id).await?)
     }
 
+    /// Write the preview Namespaces' sets from Docker.
+    ///
+    /// # Errors
+    /// As [`super::LocalDocker::sync_preview_fence`].
+    pub(crate) async fn sync_preview_fence(&self) -> Result<(), Error> {
+        self.docker.sync_preview_fence().await
+    }
+
     /// The Namespace a managed Container's label names, `None` when it names none.
     pub(crate) async fn namespace_of(
         &self,
@@ -1132,6 +1140,16 @@ impl Lifecycle {
         }
         if let Some(container_labels) = inspected.labels() {
             self.collector.cover(container_labels).await?;
+        }
+        // A preview Container joins its Namespace's set before it starts, so it meets its
+        // siblings and no address leaves a set without its flows forgotten.
+        let preview = inspected
+            .labels()
+            .and_then(|labels| labels.get(labels::NAMESPACE))
+            .and_then(|namespace| Namespace::parse(namespace).ok())
+            .is_some_and(|namespace| ployz_core::PreviewNamespace::of(&namespace).is_some());
+        if preview {
+            self.docker.sync_preview_fence().await?;
         }
         let spec = self.specs.get(container_id).await?;
         match super::holder::start_inspected(&self.docker.client, inspected, spec.as_ref()).await {
@@ -1236,7 +1254,20 @@ impl Lifecycle {
     ) -> Result<(), Error> {
         let mut config_operation = self.specs.config_operation().await;
         self.remove_locked(&mut config_operation, container_id, remove_volumes, force)
-            .await
+            .await?;
+        drop(config_operation);
+        // The Container's address leaves its preview's set, and its flows with it. A failed
+        // write leaves the address in the set until the next start of a preview here writes
+        // the sets again, before that start.
+        if crate::network::preview_sets_held()
+            && let Err(error) = self.docker.sync_preview_fence().await
+        {
+            tracing::warn!(
+                error = %ployz_core::error_chain::inline(&error),
+                "could not write the preview fence after a removal"
+            );
+        }
+        Ok(())
     }
 
     pub(super) async fn remove_locked(
