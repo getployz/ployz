@@ -18,7 +18,6 @@ use crate::global_fixtures::{
     container_id, created_on, global_service, global_service_with_image, grouped, machine,
     qualified, requested, running_on, service_id,
 };
-use ployz_core::Hint;
 
 fn rotated(mut observed: ContainerObservation, rotation: CopyRotation) -> ContainerObservation {
     observed
@@ -35,9 +34,11 @@ fn with_gen(mut observed: ContainerObservation, r#gen: u64) -> ContainerObservat
 }
 
 fn message(error: CatchUpError, joiner: &Machine) -> String {
-    error_chain::row(&joined_catch_up_error(error, joiner, |args| {
-        shell_words::join(std::iter::once("ployz").chain(args.iter().copied()))
-    }))
+    error_chain::row(&joined_catch_up_error(
+        error,
+        joiner,
+        crate::cli::Rerun::plain,
+    ))
 }
 
 async fn catch_up(client: &mut FakeCatchUpClient, joiner: &Machine) -> Result<(), CatchUpError> {
@@ -1061,17 +1062,15 @@ async fn a_router_tailscale_refused_fails_catch_up_and_names_the_way_to_retry() 
     });
 
     let error = catch_up(&mut client, &joiner).await.unwrap_err();
-    let failure = joined_catch_up_error(error, &joiner, |args| {
-        shell_words::join(std::iter::once("ployz").chain(args.iter().copied()))
-    });
+    let failure = joined_catch_up_error(error, &joiner, crate::cli::Rerun::plain);
     let said = error_chain::row(&failure);
 
     assert!(said.contains("refused the auth key"), "{said}");
     assert!(!said.contains("redeploy"), "{said}");
     assert_eq!(
         failure.hints(),
-        [Hint::Retry(
-            "ployz private-access on --auth-key-stdin".to_owned()
+        [crate::cli::retry_hint(
+            "ployz private-access on --auth-key-stdin"
         )]
     );
 }

@@ -5,10 +5,10 @@
 use std::io::{self, IsTerminal as _};
 use std::os::fd::{AsFd as _, BorrowedFd};
 
-use dialoguer::{Confirm, Input, Select, console::Term};
+use dialoguer::{Confirm, Input, Select};
 use rustix::termios::{self, LocalModes, OptionalActions, SpecialCodeIndex, Termios};
 
-use super::{Mode, mode};
+use super::{Mode, mask, mode, stream::terminal};
 use crate::failure::Failure;
 
 /// Whether this run may ask: Interactive mode and a terminal to read from.
@@ -29,9 +29,9 @@ pub(crate) fn confirm_name(
     }
     let answer = ask(|| {
         Input::<String>::new()
-            .with_prompt(format!("Type {name} to continue"))
+            .with_prompt(mask(&format!("Type {name} to continue")))
             .allow_empty(true)
-            .interact_text_on(&Term::stderr())
+            .interact_text_on(&terminal())
             .map(Some)
     })?;
     if answer.as_deref().map(str::trim) == Some(name) {
@@ -52,9 +52,9 @@ pub(crate) fn confirm(
     }
     let answer = ask(|| {
         Confirm::new()
-            .with_prompt(question)
+            .with_prompt(mask(question))
             .default(false)
-            .interact_on_opt(&Term::stderr())
+            .interact_on_opt(&terminal())
     })?;
     if answer == Some(true) {
         Ok(())
@@ -74,9 +74,13 @@ pub(crate) fn input<T, E: std::fmt::Display>(
     }
     let typed = ask(|| {
         Input::<String>::new()
-            .with_prompt(question)
-            .validate_with(|typed: &String| parse(typed.trim()).map(drop))
-            .interact_text_on(&Term::stderr())
+            .with_prompt(mask(question))
+            .validate_with(|typed: &String| {
+                parse(typed.trim())
+                    .map(drop)
+                    .map_err(|error| mask(&error.to_string()).into_owned())
+            })
+            .interact_text_on(&terminal())
             .map(Some)
     })?
     .ok_or_else(|| decline(declined))?;
@@ -98,10 +102,14 @@ pub(crate) fn select<T: ToString>(
     }
     ask(|| {
         Select::new()
-            .with_prompt(title)
-            .items(items.iter().map(ToString::to_string))
+            .with_prompt(mask(title))
+            .items(
+                items
+                    .iter()
+                    .map(|item| mask(&item.to_string()).into_owned()),
+            )
             .default(default)
-            .interact_on_opt(&Term::stderr())
+            .interact_on_opt(&terminal())
     })?
     .ok_or_else(|| decline(declined))
 }
@@ -156,8 +164,8 @@ enum Typed {
 /// the read would restart through. Bracketed paste is on meanwhile, so a
 /// paste's end is marked rather than guessed from a pause.
 fn hidden_line(question: &str) -> io::Result<Typed> {
-    let term = Term::stderr();
-    term.write_str(&format!("{question}: "))?;
+    let term = terminal();
+    term.write_str(&mask(&format!("{question}: ")))?;
     let stdin = io::stdin();
     let typed = {
         let quiet = Quiet::on(stdin.as_fd())?;
@@ -361,9 +369,9 @@ fn ask<T>(prompt: impl FnOnce() -> dialoguer::Result<Option<T>>) -> Result<Optio
     match crate::cancellation::while_prompting(prompt)? {
         Ok(answer) => Ok(answer),
         Err(dialoguer::Error::IO(error)) => {
-            let _ = Term::stderr().show_cursor();
+            let _ = terminal().show_cursor();
             if error.kind() == io::ErrorKind::Interrupted {
-                let _ = Term::stderr().write_line("");
+                let _ = terminal().write_line("");
                 Ok(None)
             } else {
                 Err(Failure::from(error))

@@ -321,7 +321,8 @@ mod tests {
                 ManagementIdentity::parse_hex(&refused)
                     .unwrap_err()
                     .to_string(),
-                format!("invalid Management Identity {refused:?}: 64 lowercase hex digits")
+                "invalid Management Identity: 64 lowercase hex digits",
+                "{refused:?}"
             );
         }
     }

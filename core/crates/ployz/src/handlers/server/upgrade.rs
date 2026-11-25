@@ -26,6 +26,7 @@ use serde_json::json;
 
 use super::super::{Error, leaf_matches, runtime, string_values, with_client};
 use super::ConnectionOptions;
+use crate::cli::Rerun;
 use crate::cluster::{Call, Wait, setup_outcome};
 
 const OBSERVATION_TIMEOUT: Duration = Duration::from_secs(16 * 60);
@@ -118,20 +119,21 @@ pub(in crate::handlers) fn upgrade(root: &ArgMatches) -> Result<(), Error> {
     let rerun = super::super::rerun(matches, &args);
     let runtime = runtime()?;
     if let Some(credential) = super::super::route::cloud_runs(&runtime, matches)? {
-        let direct = direct(root, &args)?;
-        return through_cloud(&runtime, matches, &credential, &release, &selectors, direct);
+        let direct = direct(root)?;
+        return through_cloud(&runtime, root, &credential, &release, &selectors, direct);
     }
     drop(runtime);
     let recovery_matches = matches.clone();
+    let downgrade_asks = (!allow_downgrade).then(|| Rerun::again(root));
     with_client(root, |client| {
         Box::pin(async move {
             let machines = selected_machines(client, &selectors).await?;
-            confirm_downgrades(&machines, &release, allow_downgrade)?;
+            confirm_downgrades(&machines, &release, downgrade_asks)?;
             let cancellation = crate::cancellation::on_ctrl_c();
             let (result, outcome) = run_all(client, &machines, release, rerun, &cancellation).await;
             let outcome = outcome.map_err(|error| {
                 crate::enrollment::output::ingress_hints(error, |args| {
-                    super::super::rerun(&recovery_matches, args)
+                    Rerun::then(&recovery_matches, args)
                 })
             });
             match result {
@@ -213,18 +215,16 @@ fn ids(machines: &[Machine]) -> Vec<MachineId> {
     machines.iter().map(|machine| machine.id).collect()
 }
 
-fn direct(root: &ArgMatches, args: &[&str]) -> Result<Option<Hint>, Error> {
+fn direct(root: &ArgMatches) -> Result<Option<Hint>, Error> {
     let config = ConnectionOptions::from_matches(root)?.load_or_empty_config()?;
-    Ok(config.current_context().map(|context| {
-        let mut args = args.to_vec();
-        args.extend(["--context", context]);
-        Hint::Retry(super::super::rerun(leaf_matches(root), &args))
-    }))
+    Ok(config
+        .current_context()
+        .map(|context| Rerun::again(root).set("context", context).into()))
 }
 
 fn through_cloud(
     runtime: &tokio::runtime::Runtime,
-    matches: &ArgMatches,
+    root: &ArgMatches,
     credential: &Credential,
     release: &MachineRelease,
     selectors: &[String],
@@ -248,7 +248,7 @@ fn through_cloud(
     };
     // Ids route the runs, and only the Engine knows the names prose says.
     let servers = runtime.block_on(async {
-        let mut client = super::super::route::connect(matches, None).await?;
+        let mut client = super::super::route::connect(leaf_matches(root), None).await?;
         selected_machines(&mut client, selectors).await
     })?;
     let unattempted = |from: usize| servers.get(from..).unwrap_or_default();
@@ -271,11 +271,7 @@ fn through_cloud(
                     .details
                     .get("channel")
                     .and_then(serde_json::Value::as_str)
-                    .map(|channel| {
-                        let mut args = vec!["server", "upgrade", channel];
-                        args.extend(selectors.iter().map(String::as_str));
-                        Hint::Retry(super::super::rerun(matches, &args))
-                    });
+                    .map(|channel| Hint::from(Rerun::again(root).set("version", channel)));
                 let error = match along {
                     Some(hint) => Error::from(refused).hint(hint),
                     None => refused.into(),
@@ -361,10 +357,10 @@ fn through_cloud(
         [one] => format!("Skipped Server {one}; it took no Upgrade."),
         many => format!("Skipped Servers {}; they took no Upgrade.", many.join(", ")),
     };
-    let mut args = vec!["server", "upgrade", channel.as_str()];
-    args.extend(skipped.iter().map(|(_, selector, _)| *selector));
-    let skipped = Error::coded(RpcErrorCode::Unavailable, message)
-        .hint(Hint::Retry(super::super::rerun(matches, &args)));
+    let retry = Rerun::again(root)
+        .set("version", channel.as_str())
+        .set_all("server", skipped.iter().map(|(_, selector, _)| *selector));
+    let skipped = Error::coded(RpcErrorCode::Unavailable, message).hint(retry);
     crate::ui::emit_committed(result, Err(skipped))
 }
 
@@ -650,9 +646,9 @@ async fn run_all(
 fn confirm_downgrades(
     machines: &[Machine],
     release: &MachineRelease,
-    allowed: bool,
+    asks: Option<Rerun>,
 ) -> Result<(), Error> {
-    let MachineRelease::Exact(target) = release else {
+    let (MachineRelease::Exact(target), Some(allowing)) = (release, asks) else {
         return Ok(());
     };
     let newer = machines
@@ -662,7 +658,7 @@ fn confirm_downgrades(
             (running > *target).then_some((machine, running))
         })
         .collect::<Vec<_>>();
-    if newer.is_empty() || allowed {
+    if newer.is_empty() {
         return Ok(());
     }
     let servers = newer
@@ -697,7 +693,7 @@ fn confirm_downgrades(
                         .collect::<Vec<_>>(),
                 }),
             )
-            .hint(Hint::Retry(super::super::typed_with(&["--allow-downgrade"])))
+            .hint(allowing.switch("allow-downgrade"))
         },
         "Cancelled. Nothing upgraded.",
     )
@@ -1898,12 +1894,20 @@ mod tests {
         machine
     }
 
+    /// `server upgrade 0.3.0` without `--allow-downgrade`, which asks before a downgrade.
+    fn asks() -> Option<Rerun> {
+        let root = crate::cli::command()
+            .try_get_matches_from(["ployz", "server", "upgrade", "0.3.0", "b"])
+            .unwrap();
+        Some(Rerun::again(&root))
+    }
+
     #[test]
     fn an_older_target_needs_allow_downgrade_without_a_terminal() {
         // #2991: `server upgrade 0.3.0-beta.6` moved a beta.7 Server back with no prompt.
         let older = MachineRelease::parse("0.3.0").unwrap();
         let servers = [running('a', "0.3.0"), running('b', "0.3.1")];
-        let refused = confirm_downgrades(&servers, &older, false)
+        let refused = confirm_downgrades(&servers, &older, asks())
             .unwrap_err()
             .report();
         assert_eq!(refused.code, RpcErrorCode::ConfirmationRequired);
@@ -1915,12 +1919,12 @@ mod tests {
             "{}",
             refused.message
         );
-        assert!(confirm_downgrades(&servers, &older, true).is_ok());
+        assert!(confirm_downgrades(&servers, &older, None).is_ok());
         assert!(!refused.message.contains("relay"), "{}", refused.message);
 
         // Below the relay cut-off the refusal says what the downgrade cuts off.
         let past_relay = MachineRelease::parse("0.3.0-beta.6").unwrap();
-        let refused = confirm_downgrades(&[running('b', "0.3.0-beta.7")], &past_relay, false)
+        let refused = confirm_downgrades(&[running('b', "0.3.0-beta.7")], &past_relay, asks())
             .unwrap_err()
             .report();
         assert!(
@@ -1935,13 +1939,13 @@ mod tests {
         for target in ["0.3.1", "0.3.2", "stable", "beta"] {
             let release = MachineRelease::parse(target).unwrap();
             assert!(
-                confirm_downgrades(&[running('a', "0.3.1")], &release, false).is_ok(),
+                confirm_downgrades(&[running('a', "0.3.1")], &release, asks()).is_ok(),
                 "{target}"
             );
         }
         // A version Ployz never published can't be compared, so the daemon decides.
         let older = MachineRelease::parse("0.3.0").unwrap();
-        assert!(confirm_downgrades(&[running('a', "dev")], &older, false).is_ok());
+        assert!(confirm_downgrades(&[running('a', "dev")], &older, asks()).is_ok());
     }
 
     fn machine(id: char, subnet: u8) -> Machine {

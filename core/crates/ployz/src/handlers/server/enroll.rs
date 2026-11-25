@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::super::{Error, config_path, leaf_matches, runtime};
-use crate::cli::{base, positional, switch, value};
+use crate::cli::{Rerun, base, positional, switch, value};
 use crate::cloud;
 use crate::cloud::account::Credential;
 use crate::cloud::enroll::EnrollStage;
@@ -73,8 +73,7 @@ pub(crate) fn command(command: Command) -> Command {
             .conflicts_with_all(["destination", "standalone"]),
     )
     .arg(
-        value("cloud-url", None)
-            .env(env::CLOUD_URL)
+        crate::cli::cloud_url()
             .help("Cloud that issued the enrollment token [default: ployz.dev]"),
     )
     .arg(
@@ -113,9 +112,7 @@ pub(crate) fn add(root: &ArgMatches) -> Result<(), Error> {
     if let Some(destination) = matches.get_one::<String>("destination") {
         destination.parse::<crate::context::Connection>()?;
     }
-    let cloud = matches
-        .get_one::<String>("cloud-url")
-        .map_or(DEFAULT_CLOUD, String::as_str);
+    let cloud = crate::cli::cloud_url_of(matches)?.unwrap_or(DEFAULT_CLOUD);
     if let Some(token) = enroll_token(matches)? {
         return enroll(root, token, cloud);
     }
@@ -140,7 +137,7 @@ pub(crate) fn add(root: &ArgMatches) -> Result<(), Error> {
         })
     })?;
     if let Some(enrollment) = matches.get_one::<String>("wait") {
-        return runtime.block_on(wait_joined(&acting, enrollment));
+        return runtime.block_on(wait_joined(&acting, enrollment, another(root)));
     }
     // Before Cloud mints a token, so a bad flag costs none.
     let shape = Shaping::from_matches(matches).pasted_args()?;
@@ -149,7 +146,7 @@ pub(crate) fn add(root: &ArgMatches) -> Result<(), Error> {
         let key = ployz_core::first_key::LineKey::Device {
             key: super::super::device::own_key(&config_path(matches)?)?,
         };
-        return runtime.block_on(paste(&acting, &minted, &shape, &key));
+        return runtime.block_on(paste(&acting, &minted, &shape, &key, another(root)));
     }
     drop(runtime);
     enroll(
@@ -203,9 +200,7 @@ where
             "Pass the enrollment token with --token-stdin, --token-file or PLOYZ_ENROLL_TOKEN",
         )
     })?;
-    let cloud_url = matches
-        .get_one::<String>("cloud-url")
-        .map_or(DEFAULT_CLOUD, String::as_str);
+    let cloud_url = crate::cli::cloud_url_of(matches)?.unwrap_or(DEFAULT_CLOUD);
     enroll_as_add(&EnrollPlan::from_matches(root), &token, cloud_url, install)
 }
 
@@ -397,6 +392,7 @@ async fn paste(
     minted: &Minted,
     shape: &[String],
     key: &ployz_core::first_key::LineKey,
+    another: Rerun,
 ) -> Result<(), Error> {
     let line = pasted_command(acting.credential.cloud(), shape, key);
     if crate::ui::json() {
@@ -415,7 +411,7 @@ async fn paste(
         env::ENROLL_TOKEN,
         minted.token
     ));
-    wait_joined(acting, &minted.id).await
+    wait_joined(acting, &minted.id, another).await
 }
 
 /// One line that installs exactly this CLI's release, so the Server speaks the same
@@ -451,7 +447,12 @@ enum Enrollment {
     },
 }
 
-async fn wait_joined(acting: &Acting, enrollment: &str) -> Result<(), Error> {
+/// `server add --command` as this command line gave it: another enrollment to wait on.
+fn another(root: &ArgMatches) -> Rerun {
+    Rerun::again(root).without("wait").switch("command")
+}
+
+async fn wait_joined(acting: &Acting, enrollment: &str, another: Rerun) -> Result<(), Error> {
     crate::ui::note("Waiting for the Server to join...");
     loop {
         let read = acting
@@ -463,7 +464,7 @@ async fn wait_joined(acting: &Acting, enrollment: &str) -> Result<(), Error> {
                     RpcErrorCode::NotFound,
                     "the enrollment ended before a Server joined: forgetting this Organization's Servers voids its token",
                 )
-                .hint(Hint::Retry("ployz server add --command".into())));
+                .hint(another));
             }
             read => match read? {
                 Enrollment::Pending => tokio::time::sleep(JOIN_POLL).await,
@@ -472,7 +473,7 @@ async fn wait_joined(acting: &Acting, enrollment: &str) -> Result<(), Error> {
                         RpcErrorCode::Conflict,
                         "the enrollment expired before a Server joined",
                     )
-                    .hint(Hint::Retry("ployz server add --command".into())));
+                    .hint(another));
                 }
                 Enrollment::Joined { machine_id } => {
                     crate::ui::stream("The Server joined.");
@@ -548,7 +549,7 @@ fn engine_view(root: &ArgMatches) -> String {
             Some(shaping.network()),
             Some(shaping.version()),
             text("ployz-config"),
-            text("connect"),
+            crate::cli::connection(reach).map(str::to_owned),
             crate::cli::ssh_timeout(reach).as_secs(),
             text("context"),
         )
@@ -616,14 +617,19 @@ mod tests {
                 slug: "acme".to_owned(),
             },
         };
-        let error = wait_joined(&acting, "e1").await.unwrap_err();
+        let waiting = crate::cli::command()
+            .try_get_matches_from(["ployz", "server", "add", "--wait", "e1"])
+            .unwrap();
+        let error = wait_joined(&acting, "e1", another(&waiting))
+            .await
+            .unwrap_err();
         assert_eq!(
             error.to_string(),
             "the enrollment ended before a Server joined: forgetting this Organization's Servers voids its token"
         );
         assert_eq!(
             error.hints(),
-            [Hint::Retry("ployz server add --command".into())]
+            [crate::cli::retry_hint("ployz server add --command")]
         );
     }
 
@@ -868,7 +874,7 @@ mod tests {
         let cases: [(&[&str], &str); 11] = [
             (
                 &["--label-add", "x", "--public-ip", "999", "--name", "BAD"],
-                "invalid label \"x\": expected KEY=VALUE []",
+                "invalid label: expected KEY=VALUE []",
             ),
             (
                 &[
@@ -879,36 +885,39 @@ mod tests {
                     "--cluster-name",
                     "BAD",
                 ],
-                "invalid public IP \"999\" []",
+                "invalid public IP: expected an IPv4 or IPv6 address []",
             ),
             (
                 &["--cluster-name", "BAD", "--name", "BAD"],
-                "invalid Machine Name \"BAD\": a 1-63 character lowercase DNS label [Closest(\"bad\")]",
+                "invalid Machine Name: a 1-63 character lowercase DNS label [Closest(\"bad\")]",
             ),
             (
                 &["--label-add", "x"],
-                "invalid label \"x\": expected KEY=VALUE []",
+                "invalid label: expected KEY=VALUE []",
             ),
             (
                 &["--label-add", "a=1", "--label-add", "a=2"],
                 "duplicate label key \"a\" []",
             ),
-            (&["--public-ip", "999"], "invalid public IP \"999\" []"),
+            (
+                &["--public-ip", "999"],
+                "invalid public IP: expected an IPv4 or IPv6 address []",
+            ),
             (
                 &["--public-ip", "127.0.0.1"],
                 "127.0.0.1 is a loopback address, which no visitor can reach. Give the address the internet reaches this Server at, or none. []",
             ),
             (
                 &["--wg-endpoint", "nope"],
-                "invalid WireGuard endpoint \"nope\" []",
+                "invalid WireGuard endpoint: expected IP or IP:PORT []",
             ),
             (
                 &["--name", "MY SERVER"],
-                "invalid Machine Name \"MY SERVER\": a 1-63 character lowercase DNS label [Closest(\"my-server\")]",
+                "invalid Machine Name: a 1-63 character lowercase DNS label [Closest(\"my-server\")]",
             ),
             (
                 &["--name", ""],
-                "invalid Machine Name \"\": a 1-63 character lowercase DNS label []",
+                "invalid Machine Name: a 1-63 character lowercase DNS label []",
             ),
             (
                 &["--cluster-name", "Not A Name"],

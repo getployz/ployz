@@ -40,6 +40,22 @@ impl<'a> ConfigDir<'a> {
     pub(crate) fn published(self) -> PathBuf {
         self.0.with_file_name("published")
     }
+
+    /// Whether this computer keeps Ployz state here: the config, or a file beside it.
+    pub(crate) fn kept(self) -> bool {
+        [
+            self.0.to_owned(),
+            self.mcp_token(),
+            self.cloud(),
+            self.device_key(),
+            self.store_key(),
+            self.sealing_keys(),
+            self.links(),
+            self.published(),
+        ]
+        .iter()
+        .any(|path| path.try_exists().is_ok_and(|exists| exists))
+    }
 }
 
 #[cfg(test)]

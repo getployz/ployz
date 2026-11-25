@@ -178,14 +178,14 @@ async fn cli_exec_says_when_its_container_stopped_under_it() {
     };
     let by_id = "a".repeat(32);
     // The retry runs the same command again, naming the Service as it was typed.
-    let by_id_retry = format!("retry: ployz exec -T {by_id} --connect tcp://");
+    let by_id_retry = format!("--why '<REASON>' exec --no-tty {by_id} -- '<COMMAND>'");
     let cases = [
         (
             vec![web('b', running())],
             1,
             Some((
                 "The container for app/web stopped; exec ended.",
-                "retry: ployz exec -T app/web --connect tcp://",
+                "--why '<REASON>' exec --no-tty app/web -- '<COMMAND>'",
             )),
         ),
         (
@@ -366,7 +366,8 @@ async fn cli_exec_retry_repeats_the_scope_flags_it_was_given() {
     assert_eq!(output.status.code(), Some(1), "{stderr}");
     assert!(
         stderr.contains(&format!(
-            "retry: ployz exec -T web-1 --connect tcp://{address} --project shop --env staging -- true"
+            "retry: ployz --connect tcp://{address} --why '<REASON>' exec --no-tty --project shop \
+             --env staging web-1 -- '<COMMAND>'"
         )),
         "{stderr}"
     );

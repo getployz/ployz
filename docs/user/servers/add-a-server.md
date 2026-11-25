@@ -178,7 +178,7 @@ web-2 can't join from here: this computer has no device key, so nothing tells th
 reaches that server over SSH. With neither, it stops the same way:
 
 ```text
-web-2 can't join from here: this computer has no approved device key and reaches your Servers only through Ployz Cloud. Run it from an approved device, or add --connect ssh://USER@SERVER for a Server of the Cluster. Nothing was enrolled.
+web-2 can't join from here: this computer has no approved device key and reaches your Servers only through Ployz Cloud. Run it from an approved device, or add --connect ssh://<USER>@SERVER for a Server of the Cluster. Nothing was enrolled.
 ```
 
 The line the dashboard or `ployz server add --command` gives you runs on the server itself and
