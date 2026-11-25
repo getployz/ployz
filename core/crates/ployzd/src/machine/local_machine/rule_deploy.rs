@@ -7,10 +7,12 @@
 //! MAC a Machine of this Cluster issued once that online check passed. The Container must
 //! also run the image the claim names, built with secrets sealed from this Machine's own
 //! attest key, with every other setting the rule approves. Nothing here trusts Cloud's
-//! word for a fact.
+//! word for a fact. A Service a preview rule pins has no build: its template names its
+//! image, so it skips the evidence.
 //!
 //!   signature and Cluster ─▶ mark ─▶ floor ─▶ evidence (token and head, or verified
 //!     build) ─▶ verify_creation ─▶ mark again and issue (online) ─▶ hook once
+//!                         └──▶ pinned: verify_pinned
 
 use std::time::Instant;
 
@@ -112,6 +114,8 @@ pub(crate) struct RuleAdmitted {
 #[derive(Clone, Debug)]
 pub(crate) struct HookPlace {
     rule: ployz_core::authority::RuleId,
+    /// The preview a preview rule's hook runs in, each of which runs a push's hook once.
+    preview: Option<ployz_core::Namespace>,
     claim: BuildClaim,
     slot: ployz_core::CreationKey,
 }
@@ -123,7 +127,8 @@ impl HookPlace {
     /// Returns [`Error::RuleDeployRefused`] for a place another slot took, and
     /// [`Error::ApprovalRecord`] when the record cannot be read or written.
     pub(crate) fn take(&self, approvals: &super::ConsumptionLog) -> Result<(), Error> {
-        approvals.consume_rule_hook(self.rule, &self.claim, &self.slot, |refusal| {
+        let place = (self.rule, self.preview.as_ref());
+        approvals.consume_rule_hook(place, &self.claim, &self.slot, |refusal| {
             Error::RuleDeployRefused(RuleDeployRefusal::Rule(refusal))
         })
     }
@@ -186,7 +191,46 @@ impl LocalMachine {
         let service = QualifiedService::new(new.slot.namespace.clone(), new.slot.service.clone());
         self.rule_floor(cluster, &service, &rule, now)
             .map_err(|refusal| logged(&rule, &new.slot.service, refusal))?;
-        let claim = &proof.claim;
+        let by = AdmittedBy::Rule {
+            service,
+            signer: signer.into(),
+            rule: rule.rule,
+            generation: rule.generation,
+            issued_at: rule.issued_at,
+        };
+        let facts = |head| RuleFacts {
+            cluster,
+            attest,
+            machine: &machine,
+            namespace: &new.slot.namespace,
+            service: &new.slot.service,
+            head,
+        };
+        let creation = Creation {
+            service: &new.slot.service,
+            kind: new.slot.kind,
+            spec: &new.resolved_spec,
+        };
+        let claim = match (&proof.evidence, &proof.claim) {
+            (RuleEvidence::Pinned, None) => {
+                rule.verify_pinned(&facts(None), creation)
+                    .map_err(|refusal| logged(&rule, &new.slot.service, refusal))?;
+                tracing::info!(
+                    kind = %new.slot.kind,
+                    "deploy of {} admitted under rule {} gen {} with its pinned image",
+                    new.slot.service,
+                    rule.rule,
+                    rule.generation,
+                );
+                return Ok(RuleAdmitted {
+                    by,
+                    verified: None,
+                    hook: None,
+                });
+            }
+            (RuleEvidence::Online(_) | RuleEvidence::Verified(_), Some(claim)) => claim,
+            _ => return Err(held(MismatchField::Stage)),
+        };
         let head = match &proof.evidence {
             RuleEvidence::Online(token) => {
                 // GitHub's token signature is one more check on the same budget.
@@ -208,33 +252,17 @@ impl LocalMachine {
                 let head = github
                     .head(
                         rule.source.repository_id,
-                        &rule.source.branch,
+                        rule.head_branch(&claims),
                         proof.reader.as_ref(),
                     )
                     .await
                     .map_err(|error| Error::RuleDeployRefused(RuleDeployRefusal::Head(error)))?;
                 Some(head)
             }
-            RuleEvidence::Verified(_) => None,
+            RuleEvidence::Verified(_) | RuleEvidence::Pinned => None,
         };
-        let facts = RuleFacts {
-            cluster,
-            attest,
-            machine: &machine,
-            namespace: &new.slot.namespace,
-            service: &new.slot.service,
-            head,
-        };
-        rule.verify_creation(
-            claim,
-            &facts,
-            Creation {
-                service: &new.slot.service,
-                kind: new.slot.kind,
-                spec: &new.resolved_spec,
-            },
-        )
-        .map_err(|refusal| logged(&rule, &new.slot.service, refusal))?;
+        rule.verify_creation(claim, &facts(head), creation)
+            .map_err(|refusal| logged(&rule, &new.slot.service, refusal))?;
         let verified = match &proof.evidence {
             RuleEvidence::Verified(verified) => {
                 if !holds(&proof.rule, claim, verified, &key) {
@@ -242,6 +270,7 @@ impl LocalMachine {
                 }
                 None
             }
+            RuleEvidence::Pinned => None,
             RuleEvidence::Online(_) => {
                 // Checked again: a newer generation may have landed while GitHub answered.
                 self.approvals.mark_rule(&rule, admit, superseded)?;
@@ -256,6 +285,7 @@ impl LocalMachine {
         };
         let hook = (new.slot.kind == ContainerKind::PreDeployHook).then(|| HookPlace {
             rule: rule.rule,
+            preview: rule.preview.as_ref().map(|_| new.slot.namespace.clone()),
             claim: claim.clone(),
             slot: new.slot.creation_key.clone(),
         });
@@ -269,17 +299,7 @@ impl LocalMachine {
             rule.generation,
             claim.commit.short(),
         );
-        Ok(RuleAdmitted {
-            by: AdmittedBy::Rule {
-                service,
-                signer: signer.into(),
-                rule: rule.rule,
-                generation: rule.generation,
-                issued_at: rule.issued_at,
-            },
-            verified,
-            hook,
-        })
+        Ok(RuleAdmitted { by, verified, hook })
     }
 
     /// Refuse `rule` for `service` when it was issued before the Service's floor here, or

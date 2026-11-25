@@ -746,3 +746,28 @@ fn a_region_change_of_a_volumes_service_says_where_its_volume_goes() {
     assert_eq!(region(&anywhere, &anywhere).as_deref(), Some("any region"));
     assert_eq!(region(&in_fsn, &in_fsn), None);
 }
+
+/// An ordinary Deploy of a Service a pull request edited mints, in its preview, the birth the
+/// Namespace derives, so the Server admits the Volume and its origin reads as a preview's.
+#[test]
+fn a_deploy_into_a_preview_mints_the_preview_birth_whose_origin_is_tagged() {
+    let preview = Namespace::parse("pv-1111111111111111-01234567-0000aaaa").unwrap();
+    let mut target = vec![files(None)];
+    let minted = mint(
+        &mut target,
+        (&preview, &planned("previews", true)),
+        at(MADE),
+        |_| BirthNonce::from_bytes([7; 16]),
+    )
+    .unwrap();
+    let birth = &minted[&declared()];
+    assert!(birth.is_preview(), "{birth:?}");
+    assert!(VolumeOrigin::of(birth).unwrap().is_preview());
+    // A signer's random birth in the same preview is ordinary data, untagged.
+    let signed = VolumeBirth {
+        nonce: BirthNonce::from_bytes([7; 16]),
+        ..birth.clone()
+    };
+    assert!(!VolumeOrigin::of(&signed).unwrap().is_preview());
+    assert!(!VolumeOrigin::of(&previews()).unwrap().is_preview());
+}

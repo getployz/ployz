@@ -504,6 +504,7 @@ fn ruled(first: &DeploymentId, then: &DeploymentId) -> (Arc<ConfigStore>, Github
     let signer = Signer::from_seed(&[7; 32]);
     let rule = AutoDeployRule {
         proposal: None,
+        preview: None,
         cluster: key(7),
         rule: RuleId::from_bytes([9; 16]),
         generation: 1,
@@ -530,6 +531,7 @@ fn ruled(first: &DeploymentId, then: &DeploymentId) -> (Arc<ConfigStore>, Github
                 PolicyCache::Off,
             ),
             secrets: None,
+            seeded: None,
         }],
         issued_at: Timestamp::from_millis(1_800_000_000_000).unwrap(),
         ended: false,

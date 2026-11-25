@@ -122,8 +122,16 @@ impl Consumption {
 
 /// Where a rule's record for one Service is kept: one entry per rule and Service, so the
 /// record grows with rules, not with pushes.
-fn rule_service_key(rule: RuleId, service: &ServiceName) -> String {
-    format!("{rule}/{service}")
+/// A rule's Service, and for a preview rule the preview, which runs its own hooks: a second
+/// preview at the same push seeds its own empty database.
+fn rule_service_key(
+    (rule, preview): (RuleId, Option<&ployz_core::Namespace>),
+    service: &ServiceName,
+) -> String {
+    match preview {
+        Some(preview) => format!("{rule}/{preview}/{service}"),
+        None => format!("{rule}/{service}"),
+    }
 }
 
 /// The hook one push ran for a rule's Service: its build and the slot it was made in.
@@ -633,20 +641,20 @@ impl ConsumptionLog {
         })
     }
 
-    /// Take the hook place of `claim`'s push under `rule` for the slot named `slot`,
-    /// refusing one taken for another slot. A request resent for the same slot passes:
-    /// the Machine adopts the hook that ran. A later push of the Service replaces the
-    /// entry, so a push runs its hook once; a force push back to an earlier commit can
-    /// run that commit's hook again.
+    /// Take the hook place of `claim`'s push under `place`, a rule and for a preview rule
+    /// the preview, for the slot named `slot`, refusing one taken for another slot. A
+    /// request resent for the same slot passes: the Machine adopts the hook that ran. A
+    /// later push of the Service replaces the entry, so a push runs its hook once in each
+    /// place; a force push back to an earlier commit can run that commit's hook again.
     pub(crate) fn consume_rule_hook(
         &self,
-        rule: RuleId,
+        place: (RuleId, Option<&ployz_core::Namespace>),
         claim: &BuildClaim,
         slot: &ployz_core::CreationKey,
         refused: impl FnOnce(AuthorityRefusal) -> Error,
     ) -> Result<(), Error> {
         self.transact(Error::ApprovalRecord, |log| {
-            let key = rule_service_key(rule, &claim.service);
+            let key = rule_service_key(place, &claim.service);
             if let Some(taken) = log.rule_hooks.get(&key)
                 && taken.generation == claim.generation
                 && taken.commit == claim.commit

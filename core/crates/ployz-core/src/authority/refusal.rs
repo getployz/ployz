@@ -131,6 +131,10 @@ pub enum MismatchField {
     ClaimRefType,
     ClaimRepositoryOwnerId,
     ClaimRepositoryId,
+    /// A push by a GitHub user a preview rule doesn't name.
+    ClaimActor,
+    /// A preview's Ingress hostname that doesn't name the preview.
+    Hostname,
     PasskeySignature,
     UserVerification,
     RelyingParty,
@@ -223,6 +227,8 @@ impl MismatchField {
             Self::ClaimRefType => "ref_type",
             Self::ClaimRepositoryOwnerId => "repository_owner_id",
             Self::ClaimRepositoryId => "repository_id",
+            Self::ClaimActor => "actor_id",
+            Self::Hostname => "a hostname",
             Self::PasskeySignature => "a passkey signature",
             Self::UserVerification => "user verification",
             Self::RelyingParty => "a relying party",
@@ -338,6 +344,8 @@ impl MismatchField {
             | Self::ClaimRefType
             | Self::ClaimRepositoryOwnerId
             | Self::ClaimRepositoryId
+            | Self::ClaimActor
+            | Self::Hostname
             | Self::PasskeySignature
             | Self::UserVerification
             | Self::RelyingParty
@@ -399,6 +407,10 @@ impl MismatchField {
             Self::Environment => "The automatic deploy rule is for another environment.",
             Self::Cluster => "The automatic deploy rule is for another cluster.",
             Self::HookRun => "This push already ran its pre-deploy command here.",
+            Self::ClaimActor => "The preview rule doesn't deploy pushes by this GitHub user.",
+            Self::Hostname => {
+                "Each of a preview's domains names the preview, so no two previews share one."
+            }
             Self::Signer | Self::Passkey => {
                 "An automatic deploy rule needs your passkey or an approved device. Approve it again."
             }

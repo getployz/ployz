@@ -1583,7 +1583,7 @@ async fn rule_proofs(
                 RuleProof {
                     rule: signed.clone(),
                     evidence: RuleEvidence::Verified(kept.verified),
-                    claim: kept.claim.clone(),
+                    claim: Some(kept.claim.clone()),
                     reader: None,
                 },
             );
@@ -1673,7 +1673,7 @@ async fn rule_proofs(
             RuleProof {
                 rule: signed.clone(),
                 evidence: RuleEvidence::Online(token),
-                claim,
+                claim: Some(claim),
                 reader: run.reader.clone(),
             },
         );

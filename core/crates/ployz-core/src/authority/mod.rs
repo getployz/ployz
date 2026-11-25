@@ -53,8 +53,9 @@ pub use proposal::{ProposalApproval, ProposalRef, ProposalStep, StepDigest, Step
 pub use refusal::{AuthorityRefusal, MismatchField};
 pub use rule::{
     AttestKey, AutoDeployRule, BuildClaim, BuildPolicy, BuildStage, BuiltImageDigest,
-    CommitAuthority, CommitSha, GithubClaims, PolicyDigest, RecipientKey, RuleEvidence, RuleFacts,
-    RuleId, RuleIdentity, RuleProof, RuleService, RuleSource, SealedDigest, VerifiedBuild,
+    CommitAuthority, CommitSha, GithubClaims, PREVIEW_NAMESPACE, PinnedService, PolicyDigest,
+    PreviewTerms, RecipientKey, RuleEvidence, RuleFacts, RuleId, RuleIdentity, RuleProof,
+    RuleService, RuleSource, SealedDigest, VerifiedBuild, preview_template,
 };
 pub use rule_draft::{RuleBasis, RuleDraft, RuleDraftError, RuleSummary, RuleTerms};
 pub use scope::{

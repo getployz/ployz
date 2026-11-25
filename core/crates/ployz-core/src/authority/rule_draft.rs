@@ -295,6 +295,7 @@ impl RuleBasis {
             template: template(spec, &self.namespace)?,
             policy,
             secrets,
+            seeded: None,
         })
     }
 }
@@ -371,6 +372,7 @@ impl AutoDeployRule {
             ended: false,
             signer: terms.signer,
             proposal: None,
+            preview: None,
         })
     }
 

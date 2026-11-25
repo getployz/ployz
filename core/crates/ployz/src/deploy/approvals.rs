@@ -170,11 +170,11 @@ impl RuleProofs {
         issued
             .iter()
             .filter_map(|(service, verified)| {
-                let proof = self.rules.get(service)?;
+                let claim = self.rules.get(service)?.claim.clone()?;
                 Some((
                     service.clone(),
                     ployz_store::VerifiedClaim {
-                        claim: proof.claim.clone(),
+                        claim,
                         verified: *verified,
                     },
                 ))

@@ -107,7 +107,10 @@ fn admitting(
     let lists = |proof: &RuleProof| {
         proof.rule.open().is_ok_and(|rule| {
             !rule.ended
-                && rule.generation == proof.claim.generation
+                && proof
+                    .claim
+                    .as_ref()
+                    .is_none_or(|claim| claim.generation == rule.generation)
                 && rule.machines.contains(machine)
         })
     };
@@ -236,6 +239,7 @@ mod tests {
         let signer = Signer::from_seed(&[1; 32]);
         let rule = AutoDeployRule {
             proposal: None,
+            preview: None,
             cluster,
             rule: RuleId::from_bytes([9; 16]),
             generation: 1,
@@ -259,7 +263,7 @@ mod tests {
         RuleProof {
             rule: Signed::sign(&rule, &signer).unwrap(),
             evidence: RuleEvidence::Online(ployz_core::GithubToken::new("image-token".to_owned())),
-            claim: BuildClaim {
+            claim: Some(BuildClaim {
                 cluster,
                 rule: rule.rule,
                 generation: 1,
@@ -271,7 +275,7 @@ mod tests {
                     image: BuiltImageDigest::parse(&format!("sha256:{}", "d".repeat(64))).unwrap(),
                     attest: AttestKey::from_bytes([0x55; 32]),
                 },
-            },
+            }),
             reader: None,
         }
     }

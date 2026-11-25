@@ -139,6 +139,7 @@ pub(crate) fn rule_for(
 ) -> AutoDeployRule {
     AutoDeployRule {
         proposal: None,
+        preview: None,
         cluster,
         rule: RuleId::from_bytes([0x11; 16]),
         generation: 3,
@@ -162,6 +163,7 @@ pub(crate) fn rule_for(
             template: PayloadDigest::parse(&"ab".repeat(32)).unwrap(),
             policy: policy(),
             secrets: Some(SealedDigest::of(record).unwrap()),
+            seeded: None,
         }],
         issued_at: Timestamp::from_millis(now().as_millis() - 60_000).unwrap(),
         ended: false,
@@ -637,6 +639,7 @@ async fn a_rule_a_passkey_answered_with_its_own_prompt_mints() {
     let fixture = fixture().await;
     let rule = AutoDeployRule {
         proposal: None,
+        preview: None,
         signer: SignerKey::Passkey(ployz_core::authority::OwnPrompt::Passkey),
         ..fixture.rule()
     };

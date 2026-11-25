@@ -213,6 +213,7 @@ fn fixture_rule() -> AutoDeployRule {
     let text = |name: &str| claims[name].as_str().unwrap().to_owned();
     AutoDeployRule {
         proposal: None,
+        preview: None,
         cluster: SealingPublicKey::from_bytes([9; 32]),
         rule: RuleId::from_bytes([0x5a; 16]),
         generation: 1,

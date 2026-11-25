@@ -11,8 +11,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 use ts_rs::TS;
+use uuid::Uuid;
 
 use super::{
     canonical::{self, CanonicalError, Timestamp, drop_nulls},
@@ -26,8 +28,8 @@ use super::{
 };
 use crate::value::hex_newtype;
 use crate::{
-    BuildGrantId, ContainerKind, GithubToken, MachineId, Namespace, RequestedServiceSpec,
-    SealedRecord, SealingPublicKey, ServiceName,
+    BuildGrantId, ContainerKind, GithubToken, MachineId, Namespace, PortPublication,
+    PreviewNamespace, RequestedServiceSpec, SealedRecord, SealingPublicKey, ServiceName,
 };
 
 /// What prefixes every build audience, so a token minted for a Ployz build names no other
@@ -325,6 +327,50 @@ pub struct RuleService {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub secrets: Option<SealedDigest>,
+    /// Under a preview rule, the [`preview_template`] of the same spec with its Setup
+    /// Command in the hook, which a preview's first deploy runs. `None` when it has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub seeded: Option<PayloadDigest>,
+}
+
+/// What makes a rule a preview rule: it deploys each pull request's preview into a preview
+/// Namespace of its own, opening the values of the Parent Environment, whose Namespace is
+/// the rule's. Its source builds any branch, and each Service's template is a
+/// [`preview_template`].
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct PreviewTerms {
+    /// The Parent Environment, the only one whose Sealed values a preview opens.
+    #[ts(type = "string")]
+    pub parent: Uuid,
+    /// The GitHub user IDs whose pushes deploy, sorted and distinct; empty for anyone who
+    /// can push to the repository.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "canonical::sorted_distinct"
+    )]
+    #[ts(optional, as = "Option<Vec<u64>>")]
+    pub pushers: Vec<u64>,
+    /// The Services that run an image the rule pins by digest, such as a database, rather
+    /// than one a push builds. Sorted by name and distinct.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "pinned_by_name"
+    )]
+    #[ts(optional, as = "Option<Vec<PinnedService>>")]
+    pub pinned: Vec<PinnedService>,
+}
+
+/// A Service a preview rule runs from the image its template pins, with no build.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct PinnedService {
+    pub name: ServiceName,
+    /// The [`preview_template`] of its spec with the image kept, a content digest.
+    pub template: PayloadDigest,
 }
 
 /// A person's standing approval of every push to one branch: built by one pinned builder,
@@ -355,6 +401,10 @@ pub struct AutoDeployRule {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub proposal: Option<ProposalRef>,
+    /// Present for a preview rule, which an older Server refuses as an unknown field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub preview: Option<PreviewTerms>,
 }
 
 impl Statement for AutoDeployRule {
@@ -397,8 +447,47 @@ impl AutoDeployRule {
     /// # Errors
     /// Returns [`AuthorityRefusal::Mismatch`] naming the first claim that does not match.
     pub fn verify_claims(&self, claims: &GithubClaims) -> Result<(), AuthorityRefusal> {
-        self.source
-            .verify_claims(claims, &format!("refs/heads/{}", self.source.branch))
+        let Some(preview) = &self.preview else {
+            return self
+                .source
+                .verify_claims(claims, &format!("refs/heads/{}", self.source.branch));
+        };
+        first_mismatch([(
+            MismatchField::ClaimRef,
+            !self.head_branch(claims).is_empty(),
+        )])?;
+        self.source.verify_claims(claims, &claims.git_ref)?;
+        first_mismatch([(
+            MismatchField::ClaimActor,
+            preview.pushers.is_empty() || preview.pushers.contains(&claims.actor_id),
+        )])
+    }
+
+    /// The branch whose head a build under this rule must be: the rule's own, or under a
+    /// preview rule the branch the token was minted on.
+    #[must_use]
+    pub fn head_branch<'a>(&'a self, claims: &'a GithubClaims) -> &'a str {
+        match self.preview {
+            Some(_) => claims
+                .git_ref
+                .strip_prefix("refs/heads/")
+                .unwrap_or_default(),
+            None => &self.source.branch,
+        }
+    }
+
+    /// Whether a Container in `namespace` deploys under this rule: the rule's own
+    /// Namespace, or under a preview rule a preview Namespace carrying this rule's ID and
+    /// never the Parent's.
+    fn deploys_in(&self, namespace: &Namespace) -> bool {
+        match self.preview {
+            None => &self.namespace == namespace,
+            Some(_) => {
+                PreviewNamespace::of(namespace).is_some()
+                    && namespace.as_str().get(3..19) == self.rule.to_string().get(..16)
+                    && &self.namespace != namespace
+            }
+        }
     }
 }
 
@@ -577,7 +666,10 @@ pub fn template(
 pub struct RuleProof {
     pub rule: Signed<AutoDeployRule>,
     pub evidence: RuleEvidence,
-    pub claim: BuildClaim,
+    /// The build the evidence names; `None` for a [`RuleEvidence::Pinned`] Service.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub claim: Option<BuildClaim>,
     /// A token that may read the repository's branch head, such as an installation
     /// token narrowed to `contents: read`. `None` reads a public repository.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -596,6 +688,8 @@ pub enum RuleEvidence {
     /// passed. It stands for any commit, the head or not, while the rule's signer is
     /// trusted and its generation is the newest a Machine has seen.
     Verified(VerifiedBuild),
+    /// No build: the Service is one a preview rule pins, whose template names its image.
+    Pinned,
 }
 
 hex_newtype!(
@@ -686,10 +780,7 @@ impl AutoDeployRule {
                 MismatchField::Machine,
                 !placement_signed(&requested) || self.machines.contains(facts.machine),
             ),
-            (
-                MismatchField::Environment,
-                &self.namespace == facts.namespace,
-            ),
+            (MismatchField::Environment, self.deploys_in(facts.namespace)),
             (MismatchField::EndedRule, !self.ended),
             (
                 MismatchField::Service,
@@ -725,16 +816,176 @@ impl AutoDeployRule {
         if !creation.spec.volume_graph().born_in(facts.namespace) {
             return Err(mismatch(MismatchField::VolumesEnvironment));
         }
-        let approved = self
+        let service = self
             .service(facts.service)
-            .map(|service| service.template)
             .ok_or_else(|| mismatch(MismatchField::Service))?;
-        let template =
-            template(&requested, facts.namespace).map_err(|_| mismatch(MismatchField::Payload))?;
-        if template != approved {
+        let approved = match &self.preview {
+            None => template(&requested, facts.namespace).is_ok_and(|t| t == service.template),
+            Some(preview) => {
+                self.verify_preview(preview, facts.namespace, &creation)?;
+                preview_template(&requested, facts.namespace, false)
+                    .is_ok_and(|t| t == service.template || Some(t) == service.seeded)
+            }
+        };
+        if !approved {
             return Err(mismatch(MismatchField::Payload));
         }
         Ok(image)
+    }
+
+    /// Check a new Container of a Service this preview rule pins, which needs no build:
+    /// the rule's Cluster, a preview Namespace of the rule, a live generation, no hook, an
+    /// image named by its content, and the spec the rule approves, image included.
+    ///
+    /// # Errors
+    /// Returns [`AuthorityRefusal::Mismatch`] naming the first fact that does not hold.
+    pub fn verify_pinned(
+        &self,
+        facts: &RuleFacts<'_>,
+        creation: Creation<'_>,
+    ) -> Result<(), AuthorityRefusal> {
+        let mismatch = |field| AuthorityRefusal::Mismatch { field };
+        let pinned = self.preview.as_ref().and_then(|preview| {
+            let pinned = preview
+                .pinned
+                .iter()
+                .find(|pinned| &pinned.name == facts.service)?;
+            Some((preview, pinned))
+        });
+        let Some((preview, pinned)) = pinned
+            .filter(|_| creation.service == facts.service && &creation.spec.name == facts.service)
+        else {
+            return Err(mismatch(MismatchField::Service));
+        };
+        let requested = creation.spec.to_requested();
+        first_mismatch([
+            (MismatchField::Cluster, self.cluster == facts.cluster),
+            (
+                MismatchField::Machine,
+                !placement_signed(&requested) || self.machines.contains(facts.machine),
+            ),
+            (MismatchField::Environment, self.deploys_in(facts.namespace)),
+            (MismatchField::EndedRule, !self.ended),
+            (
+                MismatchField::Hook,
+                creation.kind != ContainerKind::PreDeployHook,
+            ),
+            (
+                MismatchField::Image,
+                super::deploy::content_addressed(&requested.container.image),
+            ),
+            (
+                MismatchField::VolumesEnvironment,
+                creation.spec.volume_graph().born_in(facts.namespace),
+            ),
+        ])?;
+        self.verify_preview(preview, facts.namespace, &creation)?;
+        if preview_template(&requested, facts.namespace, true).ok() != Some(pinned.template) {
+            return Err(mismatch(MismatchField::Payload));
+        }
+        Ok(())
+    }
+
+    /// What a preview's spec holds beyond its template: Volumes born for this preview
+    /// alone, only the Parent's Sealed values, and Ingress hostnames that each name the
+    /// preview, so no two previews share one.
+    fn verify_preview(
+        &self,
+        preview: &PreviewTerms,
+        namespace: &Namespace,
+        creation: &Creation<'_>,
+    ) -> Result<(), AuthorityRefusal> {
+        let spec = creation.spec;
+        first_mismatch([
+            (
+                MismatchField::VolumesEnvironment,
+                spec.volume_graph()
+                    .volumes()
+                    .iter()
+                    .filter_map(|volume| volume.source.birth())
+                    .all(|birth| &birth.namespace == namespace && birth.is_preview()),
+            ),
+            (
+                MismatchField::SealedValues,
+                spec.container
+                    .sealed_identity
+                    .as_ref()
+                    .is_none_or(|identity| identity.environment == preview.parent),
+            ),
+            (
+                MismatchField::Hostname,
+                spec.ports.iter().all(|port| match port {
+                    PortPublication::Ingress { hostname, .. } => {
+                        hostname.as_str().contains(namespace.as_str())
+                    }
+                    PortPublication::Host { .. } => true,
+                }),
+            ),
+        ])
+    }
+}
+
+/// What a preview rule writes in place of a preview's Namespace.
+pub const PREVIEW_NAMESPACE: &str = "{preview-namespace}";
+
+/// The digest a preview rule approves for `spec`, a preview's spec in its preview
+/// Namespace `namespace`: [`template`]'s, with the image kept only for a Service the rule
+/// pins, each Volume's birth left out, and `namespace` replaced by [`PREVIEW_NAMESPACE`]
+/// wherever it appears. So one approval covers every preview, each with its own Volumes.
+///
+/// # Errors
+/// Returns a [`CanonicalError`] when the spec has no [`PayloadDigest`] in `namespace`.
+pub fn preview_template(
+    spec: &RequestedServiceSpec,
+    namespace: &Namespace,
+    keep_image: bool,
+) -> Result<PayloadDigest, CanonicalError> {
+    let mut spec = spec.clone();
+    if !keep_image {
+        spec.container.image = String::new();
+    }
+    spec.mount_graph = spec
+        .mount_graph
+        .scope_to_namespace(namespace)
+        .map_err(|error| CanonicalError::Parse(error.to_string()))?;
+    PayloadDigest::of_scoped(&spec, |value| {
+        if let Some(Value::Array(volumes)) = value.get_mut("volumes") {
+            for volume in volumes {
+                if let Some(Value::Object(source)) = volume.get_mut("source") {
+                    source.remove("birth");
+                }
+            }
+        }
+        placeholder(value, namespace.as_str());
+    })
+}
+
+fn placeholder(value: &mut Value, namespace: &str) {
+    match value {
+        Value::String(text) => {
+            if text.contains(namespace) {
+                *text = text.replace(namespace, PREVIEW_NAMESPACE);
+            }
+        }
+        Value::Array(items) => items
+            .iter_mut()
+            .for_each(|item| placeholder(item, namespace)),
+        Value::Object(fields) => {
+            let renamed: Vec<String> = fields
+                .keys()
+                .filter(|key| key.contains(namespace))
+                .cloned()
+                .collect();
+            for key in renamed {
+                if let Some(field) = fields.remove(&key) {
+                    fields.insert(key.replace(namespace, PREVIEW_NAMESPACE), field);
+                }
+            }
+            fields
+                .values_mut()
+                .for_each(|field| placeholder(field, namespace));
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
     }
 }
 
@@ -789,6 +1040,12 @@ fn decimal<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> 
     }
     text.parse()
         .map_err(|_| serde::de::Error::custom("a GitHub ID is out of range"))
+}
+
+fn pinned_by_name<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<PinnedService>, D::Error> {
+    canonical::sorted_by(deserializer, |service: &PinnedService| &service.name)
 }
 
 fn services_by_name<'de, D: Deserializer<'de>>(

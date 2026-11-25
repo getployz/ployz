@@ -98,7 +98,7 @@ fn reader_token(reader: Option<&GithubToken>) -> Option<crate::github::head::Git
 }
 
 /// GitHub as a test fixes it: tokens verify against `keys` at `now` and every branch points
-/// at `head`.
+/// at `head`. Like GitHub, it names no branch without a name.
 #[cfg(test)]
 pub(crate) struct FixedGithub {
     pub(crate) keys: crate::github::oidc::KeySet,
@@ -131,9 +131,14 @@ impl Github for FixedGithub {
     async fn head(
         &self,
         _repository_id: u64,
-        _branch: &str,
+        branch: &str,
         _reader: Option<&GithubToken>,
     ) -> Result<CommitSha, HeadError> {
+        if branch.is_empty() {
+            return Err(HeadError::Branch {
+                branch: branch.to_owned(),
+            });
+        }
         Ok(self.head)
     }
 }
@@ -230,7 +235,7 @@ impl LocalMachine {
         let head = github
             .head(
                 rule.source.repository_id,
-                &rule.source.branch,
+                rule.head_branch(&claims),
                 grant.reader.as_ref(),
             )
             .await

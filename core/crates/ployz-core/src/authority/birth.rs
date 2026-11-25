@@ -21,8 +21,8 @@ use super::{
 };
 use crate::{
     BirthNonce, ContainerKind, ContainerObservation, ContainerRuntimeObservation, DockerVolumeName,
-    MountOrigins, Namespace, RawVolumeSource, Region, RequestedServiceSpec, SealingPublicKey,
-    ServiceMount, ServiceName, VolumeBirth, VolumeDriver, VolumeOrigin,
+    MountOrigins, Namespace, PreviewNamespace, RawVolumeSource, Region, RequestedServiceSpec,
+    SealingPublicKey, ServiceMount, ServiceName, VolumeBirth, VolumeDriver, VolumeOrigin,
 };
 
 /// A Volume a plan's specs mount, as the Config Store names it.
@@ -96,11 +96,18 @@ pub fn mint<'a>(
         }
         spec.mount_graph = spec.mount_graph.with_births(|name| {
             let planned = volumes.get(name).filter(|planned| planned.unborn)?;
-            let birth = births.entry(name.clone()).or_insert_with(|| VolumeBirth {
-                namespace: namespace.clone(),
-                name: planned.name.clone(),
-                made_at,
-                nonce: nonce(name),
+            let birth = births.entry(name.clone()).or_insert_with(|| {
+                // A preview's own Volume takes the birth its Namespace derives, never a
+                // random one, so a Server tags its data as the preview's.
+                PreviewNamespace::of(namespace).map_or_else(
+                    || VolumeBirth {
+                        namespace: namespace.clone(),
+                        name: planned.name.clone(),
+                        made_at,
+                        nonce: nonce(name),
+                    },
+                    |preview| preview.birth(name.as_str()),
+                )
             });
             Some(birth.clone())
         });

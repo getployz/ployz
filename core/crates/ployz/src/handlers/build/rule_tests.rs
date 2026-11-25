@@ -32,6 +32,7 @@ fn rule(policy: BuildPolicy) -> AutoDeployRule {
     let signer = Signer::from_seed(&[7; 32]);
     AutoDeployRule {
         proposal: None,
+        preview: None,
         cluster: SealingPublicKey::from_bytes([9; 32]),
         rule: RuleId::from_bytes([0x11; 16]),
         generation: 3,
@@ -52,6 +53,7 @@ fn rule(policy: BuildPolicy) -> AutoDeployRule {
             template: PayloadDigest::parse(&"ab".repeat(32)).unwrap(),
             policy,
             secrets: None,
+            seeded: None,
         }],
         issued_at: Timestamp::from_millis(1_800_000_000_000).unwrap(),
         ended: false,

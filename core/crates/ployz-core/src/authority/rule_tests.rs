@@ -64,10 +64,12 @@ fn rule() -> AutoDeployRule {
             template: PayloadDigest::parse(&"ab".repeat(32)).unwrap(),
             policy: policy(),
             secrets: None,
+            seeded: None,
         }],
         issued_at: Timestamp::from_millis(1_000).unwrap(),
         ended: false,
         signer: SignerKey::Device(DeviceKey::from_bytes(*signer().public().as_bytes())),
+        preview: None,
     }
 }
 
@@ -1043,6 +1045,219 @@ fn a_verified_build_runs_an_older_commit_and_keeps_every_other_check() {
         ),
         Err(AuthorityRefusal::Mismatch {
             field: MismatchField::Machine
+        })
+    );
+}
+
+/// A preview of `rule()`, on the Server whose home is `01234567`.
+fn preview(nonce: &str) -> Namespace {
+    Namespace::parse(format!("pv-1111111111111111-01234567-{nonce}")).unwrap()
+}
+
+/// `requested_json()` as a preview runs it: the Parent's values, a Volume born for the
+/// preview `born`, and a domain naming `named`.
+fn preview_json(born: &Namespace, named: &str) -> Value {
+    let birth = PreviewNamespace::of(born).unwrap().birth("data");
+    let mut spec = requested_json();
+    spec["volumes"] = json!([{"reference": "data", "source": {"kind": "provisioned",
+        "name": "data", "maximum_bytes": 1_073_741_824_u64, "birth": birth}}]);
+    spec["mounts"] = json!([{"volume": "data", "target": "/data"}]);
+    spec["ports"] = json!([{"mode": "ingress", "hostname": format!("web-{named}.example.com"),
+        "load_balancer_port": 443, "container_port": 80, "http_protocol": "http"}]);
+    spec
+}
+
+fn preview_rule(pushers: Vec<u64>) -> AutoDeployRule {
+    let namespace = preview("0000aaaa");
+    let spec = requested(preview_json(&namespace, namespace.as_str()));
+    let mut rule = rule();
+    rule.source.branch = String::new();
+    rule.services[0].template = preview_template(&spec, &namespace, false).unwrap();
+    rule.preview = Some(PreviewTerms {
+        parent: "11111111-1111-1111-1111-111111111111".parse().unwrap(),
+        pushers,
+        pinned: Vec::new(),
+    });
+    rule
+}
+
+/// Check a creation of `spec` in `namespace` under `rule`, with the head read online.
+fn create_in(
+    rule: &AutoDeployRule,
+    spec: Value,
+    namespace: &Namespace,
+    pinned: bool,
+) -> Result<(), AuthorityRefusal> {
+    let mut spec = requested(spec);
+    spec.mount_graph = spec.mount_graph.scope_to_namespace(namespace).unwrap();
+    let spec = spec
+        .to_resolved(
+            crate::ServiceId::parse("c".repeat(32)).unwrap(),
+            crate::ResolvedUpdateConfig::default(),
+        )
+        .unwrap();
+    let machine = MachineId::parse("1".repeat(32)).unwrap();
+    let facts = RuleFacts {
+        cluster: SealingPublicKey::from_bytes([9; 32]),
+        attest: AttestKey::from_bytes([0x55; 32]),
+        machine: &machine,
+        namespace,
+        service: &spec.name,
+        head: Some(head()),
+    };
+    let creation = Creation {
+        service: &spec.name,
+        kind: ContainerKind::ServiceContainer,
+        spec: &spec,
+    };
+    if pinned {
+        rule.verify_pinned(&facts, creation)
+    } else {
+        rule.verify_creation(&built(), &facts, creation).map(|_| ())
+    }
+}
+
+/// One approval covers every preview of the rule, each with its own Volumes and domains,
+/// and nothing outside them.
+#[test]
+fn a_preview_rule_admits_each_of_its_previews_and_nothing_else() {
+    let rule = preview_rule(Vec::new());
+    let (first, second) = (preview("0000aaaa"), preview("0000bbbb"));
+    let own = |namespace: &Namespace| preview_json(namespace, namespace.as_str());
+    assert_eq!(create_in(&rule, own(&first), &first, false), Ok(()));
+    assert_eq!(create_in(&rule, own(&second), &second, false), Ok(()));
+
+    let other_rule = Namespace::parse("pv-2222222222222222-01234567-0000aaaa").unwrap();
+    let parent = Namespace::parse("app").unwrap();
+    let mut other_parent = own(&first);
+    other_parent["container"]["sealed_identity"]["environment"] =
+        json!("33333333-3333-3333-3333-333333333333");
+    let mut signed_birth = own(&first);
+    signed_birth["volumes"][0]["source"]["birth"]["nonce"] =
+        json!("00112233445566778899aabbccddeeff");
+    let mut edited = own(&first);
+    edited["container"]["environment"]["PLAIN"] = json!("two");
+    let cases: Vec<(&str, Value, &Namespace, MismatchField)> = vec![
+        (
+            "another rule's preview",
+            own(&other_rule),
+            &other_rule,
+            MismatchField::Environment,
+        ),
+        (
+            "the Parent itself",
+            own(&first),
+            &parent,
+            MismatchField::Environment,
+        ),
+        (
+            "another Environment's values",
+            other_parent,
+            &first,
+            MismatchField::SealedValues,
+        ),
+        (
+            "a signer's birth",
+            signed_birth,
+            &first,
+            MismatchField::VolumesEnvironment,
+        ),
+        (
+            "a sibling's Volume",
+            preview_json(&second, first.as_str()),
+            &first,
+            MismatchField::VolumesEnvironment,
+        ),
+        (
+            "a domain naming no preview",
+            preview_json(&first, "shared"),
+            &first,
+            MismatchField::Hostname,
+        ),
+        ("an edited setting", edited, &first, MismatchField::Payload),
+    ];
+    for (case, spec, namespace, field) in cases {
+        assert_eq!(
+            create_in(&rule, spec, namespace, false),
+            Err(AuthorityRefusal::Mismatch { field }),
+            "{case}"
+        );
+    }
+}
+
+#[test]
+fn a_preview_rule_builds_any_branch_pushed_by_its_pushers() {
+    let feature = |actor: &str| {
+        claims(|value| {
+            value["ref"] = json!("refs/heads/feature");
+            value["workflow_ref"] = json!(
+                "Ployz-test/lab-service/.github/workflows/ployz-build.yml@refs/heads/feature"
+            );
+            value["actor_id"] = json!(actor);
+        })
+    };
+    let anyone = preview_rule(Vec::new());
+    assert_eq!(anyone.verify_claims(&feature("1234")), Ok(()));
+    assert_eq!(anyone.head_branch(&feature("1234")), "feature");
+    let named = preview_rule(vec![1234, 5678]);
+    assert_eq!(named.verify_claims(&feature("5678")), Ok(()));
+    assert_eq!(
+        named.verify_claims(&feature("9999")),
+        Err(AuthorityRefusal::Mismatch {
+            field: MismatchField::ClaimActor
+        })
+    );
+    let tag = claims(|value| {
+        value["ref"] = json!("refs/tags/v1");
+        value["ref_type"] = json!("tag");
+    });
+    assert_eq!(
+        anyone.verify_claims(&tag),
+        Err(AuthorityRefusal::Mismatch {
+            field: MismatchField::ClaimRef
+        })
+    );
+    // A rule that isn't a preview's still builds only its own branch.
+    assert_eq!(
+        rule().verify_claims(&feature("1234")),
+        Err(AuthorityRefusal::Mismatch {
+            field: MismatchField::ClaimRef
+        })
+    );
+}
+
+#[test]
+fn a_pinned_service_runs_only_the_digest_its_template_names() {
+    const PINNED: &str =
+        "postgres@sha256:7777777777777777777777777777777777777777777777777777777777777777";
+    let namespace = preview("0000aaaa");
+    let db = |image: &str| {
+        let mut spec = preview_json(&namespace, namespace.as_str());
+        spec["container"]["image"] = json!(image);
+        spec
+    };
+    let mut rule = preview_rule(Vec::new());
+    rule.preview.as_mut().unwrap().pinned = vec![PinnedService {
+        name: web(),
+        template: preview_template(&requested(db(PINNED)), &namespace, true).unwrap(),
+    }];
+    assert_eq!(create_in(&rule, db(PINNED), &namespace, true), Ok(()));
+    let other = PINNED.replace('7', "8");
+    for (image, field) in [
+        (other.as_str(), MismatchField::Payload),
+        ("postgres:18", MismatchField::Image),
+    ] {
+        assert_eq!(
+            create_in(&rule, db(image), &namespace, true),
+            Err(AuthorityRefusal::Mismatch { field }),
+            "{image}"
+        );
+    }
+    rule.preview.as_mut().unwrap().pinned.clear();
+    assert_eq!(
+        create_in(&rule, db(PINNED), &namespace, true),
+        Err(AuthorityRefusal::Mismatch {
+            field: MismatchField::Service
         })
     );
 }

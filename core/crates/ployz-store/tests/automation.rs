@@ -2134,11 +2134,13 @@ fn rule_of(
                     )
                 },
                 secrets: None,
+                seeded: None,
             }
         })
         .collect();
     let rule = AutoDeployRule {
         proposal: None,
+        preview: None,
         cluster: ployz_core::SealingPublicKey::from_bytes([3; 32]),
         rule: RuleId::from_bytes([id; 16]),
         generation,
@@ -3054,7 +3056,7 @@ fn a_verified_build_rides_a_rollback_and_a_drain_of_its_image() {
     };
     let proof = drained(&"d".repeat(64)).expect("the copy's image has a verified build");
     assert_eq!(proof.evidence, RuleEvidence::Verified(kept.verified));
-    assert_eq!(proof.claim, kept.claim);
+    assert_eq!(proof.claim, Some(kept.claim));
     assert_eq!(drained(&"c".repeat(64)), None);
     // Under the rule's next generation the kept proof proves nothing, so a build's
     // fresh token for the same image goes in its place.

@@ -926,6 +926,7 @@ fn online_proof(service: &ServiceName) -> ployz_core::authority::RuleProof {
     let signer = Signer::from_seed(&[1; 32]);
     let rule = AutoDeployRule {
         proposal: None,
+        preview: None,
         cluster,
         rule: RuleId::from_bytes([9; 16]),
         generation: 1,
@@ -949,7 +950,7 @@ fn online_proof(service: &ServiceName) -> ployz_core::authority::RuleProof {
     RuleProof {
         rule: Signed::sign(&rule, &signer).unwrap(),
         evidence: RuleEvidence::Online(ployz_core::GithubToken::new("image-token".to_owned())),
-        claim: BuildClaim {
+        claim: Some(BuildClaim {
             cluster,
             rule: rule.rule,
             generation: 1,
@@ -961,7 +962,7 @@ fn online_proof(service: &ServiceName) -> ployz_core::authority::RuleProof {
                 image: BuiltImageDigest::parse(&format!("sha256:{}", "d".repeat(64))).unwrap(),
                 attest: AttestKey::from_bytes([0x55; 32]),
             },
-        },
+        }),
         reader: None,
     }
 }
