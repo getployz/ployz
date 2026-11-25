@@ -1,7 +1,7 @@
 //! The preview Namespaces' chains: one per Namespace with a Container on this Server's
 //! bridge, each listing that Namespace's addresses. [`PREVIEW_CHAIN`] sends each packet
-//! between two preview addresses to the destination's chain, which accepts it only from the
-//! same Namespace. Whatever none accepts, an emptied chain's included, meets the fence's drop.
+//! between two preview addresses to the destination's chain, which marks it only from the
+//! same Namespace. Whatever none marks, an emptied chain's included, meets the fence's drop.
 //! The chains are never written to disk: a boot restores the fence with [`PREVIEW_CHAIN`]
 //! closed, and the daemon writes them again from Docker once it runs.
 
@@ -15,7 +15,10 @@ use sha2::{Digest as _, Sha256};
 
 use super::{
     NetworkError,
-    firewall::{PREVIEW_CHAIN, closed_preview_chain, command_succeeds, restore, writer, xtables},
+    firewall::{
+        PREVIEW_CHAIN, PREVIEW_MARK, closed_preview_chain, command_succeeds, restore, writer,
+        xtables,
+    },
 };
 
 /// What starts every preview Namespace's chain name.
@@ -54,9 +57,10 @@ pub fn write_preview_sets(
     for (namespace, addresses) in &sets {
         let name = chain(namespace);
         for address in addresses {
-            document.push_str(&format!("-A {name} -s {address} -j ACCEPT\n"));
+            document.push_str(&format!(
+                "-A {name} -s {address} -j MARK --set-xmark {PREVIEW_MARK}/{PREVIEW_MARK}\n"
+            ));
         }
-        document.push_str(&format!("-A {name} -j DROP\n"));
     }
     let kept: BTreeSet<String> = sets.keys().map(chain).collect();
     for stale in namespace_chains()?.difference(&kept) {

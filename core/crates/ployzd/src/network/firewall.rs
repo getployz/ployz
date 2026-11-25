@@ -28,9 +28,13 @@ const BUILD_FORWARD_CHAIN: &str = "PLOYZ-BUILD-FORWARD";
 const TUNNEL_FORWARD_CHAIN: &str = "PLOYZ-TUNNEL-FORWARD";
 /// Hooked first in DOCKER-USER for traffic into the ployz bridge.
 const FENCE_CHAIN: &str = "PLOYZ-FENCE";
-/// Where PLOYZ-FENCE sends a new flow between two preview addresses on this bridge. It ends
+/// Where PLOYZ-FENCE sends each packet between two preview addresses on this bridge. It ends
 /// in a drop, and the daemon puts the preview Namespaces' own chains ahead of it.
 pub(super) const PREVIEW_CHAIN: &str = "PLOYZ-PREVIEW";
+/// The packet mark bit a preview Namespace's chain sets on a pair it lets through.
+/// PLOYZ-FENCE clears it before [`PREVIEW_CHAIN`] and again after reading it, so it never
+/// leaves the fence, and drops what comes back without it.
+pub(super) const PREVIEW_MARK: &str = "0x10000000";
 
 /// Each writer here moves hooks from a listing it read first, and a Build's
 /// fence runs beside the network's periodic re-apply. One writer at a time
@@ -449,10 +453,12 @@ fn part_match(flag: &str, part: AddressPart) -> String {
 ///
 /// A preview Container is reached only from Open, signed data and its own preview: Free
 /// never reaches one, a preview reaches no Free Container, and two previews meet only on
-/// one bridge, where [`PREVIEW_CHAIN`] lets through only two addresses of one preview
-/// Namespace. These rules come ahead of the established-flow return, so they read every
-/// packet: membership in a Namespace is symmetric, so a reply passes as its flow's first
-/// packet did, and a flow whose sets no longer hold both ends stops at its next packet.
+/// one bridge, where [`PREVIEW_CHAIN`] marks only two addresses of one preview Namespace.
+/// The fence drops the rest and never accepts the pair: it carries on through the rules
+/// behind the fence, such as an operator's own in DOCKER-USER. These rules come ahead of
+/// the established-flow return, so they read every packet: membership in a Namespace is
+/// symmetric, so a reply passes as its flow's first packet did, and a flow whose sets no
+/// longer hold both ends stops at its next packet.
 fn fence_rules() -> Vec<String> {
     let into_data = part_match("-d", AddressPart::SignedData);
     let into_preview = part_match("-d", AddressPart::Preview);
@@ -463,10 +469,16 @@ fn fence_rules() -> Vec<String> {
     let kept_from_data = [&from_preview, &from_free];
     let bridge = DOCKER_NETWORK_NAME;
     let mesh = WIREGUARD_INTERFACE_NAME;
+    let pair = format!("-i {bridge} {from_preview} {into_preview}");
+    let mark = format!("{PREVIEW_MARK}/{PREVIEW_MARK}");
+    let unmark = format!("-j MARK --set-xmark 0x0/{PREVIEW_MARK}");
     let mut rules = vec![
-        format!("-i {bridge} -o {bridge} {from_preview} {into_preview} -j {PREVIEW_CHAIN}"),
-        // What PREVIEW_CHAIN leaves, even emptied, and toward a peer's preview.
-        format!("-i {bridge} {from_preview} {into_preview} -j DROP"),
+        // Only PREVIEW_CHAIN's mark lets a pair by, whatever marked the packet before.
+        format!("{pair} {unmark}"),
+        format!("{pair} -o {bridge} -j {PREVIEW_CHAIN}"),
+        // What PREVIEW_CHAIN leaves unmarked, even emptied, and toward a peer's preview.
+        format!("{pair} -m mark ! --mark {mark} -j DROP"),
+        format!("{pair} {unmark}"),
         format!("-i {bridge} {from_preview} {into_free} -j DROP"),
         format!("-i {bridge} {from_free} {into_preview} -j DROP"),
         // Each Server drops on arrival what a peer's fence drops on leaving.

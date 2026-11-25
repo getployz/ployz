@@ -1348,6 +1348,28 @@ fn a_preview_meets_only_its_own_preview_whatever_flows_it_held() {
     let _b = stream_server(&at(140), &address(140), 41006);
     assert_connection_denied(&at(130), &address(130), &address(140), 41006);
 
+    // An operator's deny behind the fence still stops a preview's own traffic.
+    ns(
+        &host,
+        "iptables",
+        &[
+            "-A",
+            "DOCKER-USER",
+            "-p",
+            "tcp",
+            "--dport",
+            "41009",
+            "-j",
+            "DROP",
+        ],
+    );
+    let _denied = stream_server(&at(131), &address(131), 41009);
+    assert_connection_denied(&at(130), &address(130), &address(131), 41009);
+    assert!(
+        sibling.exchange(),
+        "the operator's deny stopped a preview flow it doesn't name"
+    );
+
     // .131 now belongs to preview b, as when an address passes to another preview.
     preview_step(
         &host,
