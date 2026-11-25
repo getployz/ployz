@@ -376,6 +376,35 @@ impl LocalMachine {
         r#gen: VolumeGen,
         admitted: Option<AdmittedSpec>,
     ) -> Result<Result<(), VolumeGen>, Error> {
+        self.volume_holder(start, name, r#gen, admitted, true).await
+    }
+
+    /// [`Self::start_volume_holder`]'s create alone: the Container is made and left
+    /// stopped. A preview's Writer start makes it before the promote, so whatever refuses
+    /// the Container refuses it with the copy as it was.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::start_volume_holder`].
+    pub(crate) async fn create_volume_holder(
+        &self,
+        start: Start,
+        name: DockerVolumeName,
+        r#gen: VolumeGen,
+        admitted: Option<AdmittedSpec>,
+    ) -> Result<Result<(), VolumeGen>, Error> {
+        self.volume_holder(start, name, r#gen, admitted, false)
+            .await
+    }
+
+    async fn volume_holder(
+        &self,
+        start: Start,
+        name: DockerVolumeName,
+        r#gen: VolumeGen,
+        admitted: Option<AdmittedSpec>,
+        run: bool,
+    ) -> Result<Result<(), VolumeGen>, Error> {
         self.finish_mutation(move |local| async move {
             let containers = local.docker()?;
             if let Err(floor) = containers
@@ -389,7 +418,9 @@ impl LocalMachine {
             }
             let container_id = match start {
                 Start::Kept { container_id } => {
-                    local.start_kept(containers, &container_id).await?;
+                    if run {
+                        local.start_kept(containers, &container_id).await?;
+                    }
                     return Ok(Ok(()));
                 }
                 Start::Create {
@@ -399,6 +430,14 @@ impl LocalMachine {
                     r#gen: copy_gen,
                     ..
                 } => {
+                    let admitted = admitted.ok_or_else(unadmitted)?;
+                    // A preview's image was pulled and inspected once, at admission: the
+                    // create runs that ID and pulls nothing more.
+                    let image = if admitted.preview_image().is_some() {
+                        ImagePull::Prepared
+                    } else {
+                        ImagePull::Policy(None)
+                    };
                     local
                         .create_container_admitted(CreationFacts {
                             kind: ContainerKind::ServiceContainer,
@@ -407,14 +446,16 @@ impl LocalMachine {
                             creation_key: creation_key.as_str().to_owned(),
                             deployment_id: None,
                             r#gen: copy_gen,
-                            image: ImagePull::Policy(None),
-                            admitted: admitted.ok_or_else(unadmitted)?,
+                            image,
+                            admitted,
                         })
                         .await?
                         .container_id
                 }
             };
-            local.start_checked(containers, &container_id).await?;
+            if run {
+                local.start_checked(containers, &container_id).await?;
+            }
             Ok(Ok(()))
         })
         .await

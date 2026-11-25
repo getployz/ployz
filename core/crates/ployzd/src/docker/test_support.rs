@@ -110,6 +110,9 @@ pub(crate) struct FakeDocker {
     /// What the registry serves for each tag, by ID. A tag listed nowhere serves the ID
     /// made from its name. A pull of a tag writes it into [`Self::images`].
     pub(crate) registry: Arc<Mutex<BTreeMap<String, String>>>,
+    /// When set, each image pull spends one; once none are left, a pull answers the
+    /// registry's rate limit.
+    pub(crate) pulls_left: Arc<Mutex<Option<usize>>>,
 }
 
 impl FakeDocker {
@@ -551,6 +554,19 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
                 },
                 |container| (StatusCode::OK, container),
             )
+    } else if method == Method::POST
+        && path.ends_with("/images/create")
+        && fake
+            .pulls_left
+            .lock()
+            .unwrap()
+            .as_mut()
+            .is_some_and(|left| left.checked_sub(1).map(|rest| *left = rest).is_none())
+    {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            serde_json::json!({"message":"toomanyrequests: You have reached your pull rate limit"}),
+        )
     } else if method == Method::POST && path.ends_with("/images/create") {
         let pulled = uri
             .query()

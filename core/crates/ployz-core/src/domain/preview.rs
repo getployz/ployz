@@ -136,6 +136,10 @@ pub enum PreviewRefusal {
     #[error("Docker didn't say which image {image} is, so a preview doesn't run it.")]
     ImageUnidentified { image: String },
     #[error(
+        "The Container this start made earlier runs another image than {image} names now, so a preview doesn't start it."
+    )]
+    ImageChanged { image: String },
+    #[error(
         "This Server lists no readable Trash entry {id}, so it can't tell whose data it holds and restores nothing."
     )]
     UnreadTrash { id: String },

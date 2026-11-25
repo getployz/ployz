@@ -358,6 +358,8 @@ impl SwitchGuard {
         .await;
         match (transition, want) {
             (CopyTransition::WriterToWriter, WantedCopy::Writer { at, epoch, start }) => {
+                self.create_before_promote(start.as_ref(), &name, r#gen, admitted.as_ref())
+                    .await?;
                 let copy = match copy {
                     Some(VolumeCopy::Root {
                         readonly,
@@ -392,6 +394,8 @@ impl SwitchGuard {
                 Ok(copy)
             }
             (CopyTransition::MirrorToWriter, WantedCopy::Writer { at, epoch, start }) => {
+                self.create_before_promote(start.as_ref(), &name, r#gen, admitted.as_ref())
+                    .await?;
                 let request = WriterRequest {
                     name: name.clone(),
                     at,
@@ -761,6 +765,34 @@ impl LocalMachine {
             }
         };
         Err(Error::StoragePreparation(error))
+    }
+
+    /// A preview's Create makes its Container, stopped, before the promote, so whatever
+    /// refuses it, an image its tag no longer names included, leaves the copy as it was.
+    /// After the promote only Docker's local start runs: the create resent then finds this
+    /// Container, and pulls nothing. Any other start creates after the promote, as before.
+    async fn create_before_promote(
+        &self,
+        start: Option<&Start>,
+        name: &DockerVolumeName,
+        r#gen: VolumeGen,
+        admitted: Option<&AdmittedSpec>,
+    ) -> Result<(), Error> {
+        let Some(start @ Start::Create { namespace, .. }) = start else {
+            return Ok(());
+        };
+        if ployz_core::PreviewNamespace::of(namespace).is_none()
+            || self.start_state(start, name).await? != StartState::Stopped
+        {
+            return Ok(());
+        }
+        match self
+            .create_volume_holder(start.clone(), name.clone(), r#gen, admitted.cloned())
+            .await?
+        {
+            Ok(()) => Ok(()),
+            Err(floor) => Err(stale(floor, self.inspect_copy(name).await?, name)),
+        }
     }
 
     /// Create the Container when `start` asks for one and it is absent, then start it.

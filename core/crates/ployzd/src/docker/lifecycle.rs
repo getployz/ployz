@@ -120,6 +120,27 @@ pub(crate) struct PreviewImage {
     declared: Vec<String>,
 }
 
+/// Which image a Container already in a creation's slot must run to be reused.
+#[derive(Clone, Copy, Debug)]
+enum ReusedImage<'a> {
+    /// Whichever it runs: outside a preview, or only to find it.
+    Any,
+    /// Exactly this ID: a preview's, resolved for this start.
+    Exactly(&'a str),
+    /// A preview's, not resolved yet: reuse waits for the check after it is.
+    Unresolved,
+}
+
+impl<'a> ReusedImage<'a> {
+    fn of(namespace: &Namespace, image: Option<&'a PreviewImage>) -> Self {
+        match (ployz_core::PreviewNamespace::of(namespace), image) {
+            (None, _) => Self::Any,
+            (Some(_), Some(image)) => Self::Exactly(&image.id),
+            (Some(_), None) => Self::Unresolved,
+        }
+    }
+}
+
 impl PreviewImage {
     /// Refuse `spec` when a `VOLUME` this image declares has no mount, as
     /// [`ployz_core::admit_preview_image`] decides.
@@ -475,7 +496,10 @@ impl Lifecycle {
                     machine,
                     (namespace, kind, spec),
                     creation_key,
-                    admitted.admission(),
+                    (
+                        admitted.admission(),
+                        ReusedImage::of(namespace, admitted.preview_image()),
+                    ),
                 )
                 .await
                 .map_err(E::from)?
@@ -580,19 +604,20 @@ impl Lifecycle {
                 .await?
             }
         };
-        if let Some(image) = preview {
+        if let Some(image) = &preview {
             image.admit(namespace, spec)?;
-            body.image = Some(image.id);
+            body.image = Some(image.id.clone());
         }
         let mut config_operation = self.specs.config_operation().await;
         // Another request may have won while admission and image preparation ran.
+        let reused = ReusedImage::of(namespace, preview.as_ref());
         if let Some(existing) = self
             .matching_creation(
                 &mut config_operation,
                 machine,
                 (namespace, kind, spec),
                 creation_key,
-                creating.admitted.admission(),
+                (creating.admitted.admission(), reused),
             )
             .await?
         {
@@ -619,7 +644,7 @@ impl Lifecycle {
             .await?;
         mounts.extend(docker_config_mounts(&mut config_operation, spec).await?);
         let result = self
-            .create_and_record(&creating, &mut config_operation, body)
+            .create_and_record(&creating, &mut config_operation, body, reused)
             .await;
         if result.is_err()
             && let Err(error) = config_operation.garbage_collect_configs().await
@@ -755,6 +780,7 @@ impl Lifecycle {
         creating: &Creating<'_>,
         config_operation: &mut ConfigOperation<'_>,
         body: ContainerCreateBody,
+        reused: ReusedImage<'_>,
     ) -> Result<ContainerCreated, Error> {
         let Creating {
             machine,
@@ -786,7 +812,7 @@ impl Lifecycle {
                         machine,
                         (namespace, kind, spec),
                         creation_key,
-                        creating.admitted.admission(),
+                        (creating.admitted.admission(), reused),
                     )
                     .await?
                     .ok_or(Error::SlotNameOccupied(display_name));
@@ -865,7 +891,7 @@ impl Lifecycle {
             machine,
             (namespace, kind, spec),
             key,
-            ployz_core::Admission::Free,
+            (ployz_core::Admission::Free, ReusedImage::Any),
         )
         .await
     }
@@ -880,7 +906,7 @@ impl Lifecycle {
         machine: &Machine,
         (namespace, kind, spec): (&Namespace, ContainerKind, &ResolvedServiceSpec),
         key: &str,
-        wanted: ployz_core::Admission,
+        (wanted, image): (ployz_core::Admission, ReusedImage<'_>),
     ) -> Result<Option<ContainerCreated>, Error> {
         let name = &creation_name(&machine.id, namespace, &spec.name, kind, key);
         let existing = self.resolve_slot(operation, &machine.id, name, key).await?;
@@ -890,6 +916,21 @@ impl Lifecycle {
         let signed = wanted == ployz_core::Admission::Signed;
         if !same_creation(&existing, namespace, kind, spec) || (signed && !existing.signed()) {
             return Err(Error::SlotNameOccupied(name.into()));
+        }
+        // A preview's checks read one image: a Container made from another is no match,
+        // whatever its spec names, since a tag can move between two starts.
+        match image {
+            ReusedImage::Any => {}
+            ReusedImage::Unresolved => return Ok(None),
+            ReusedImage::Exactly(id) => {
+                if self.image_of(&existing.container_id).await?.as_deref() != Some(id) {
+                    return Err(Error::PreviewRefused(
+                        ployz_core::PreviewRefusal::ImageChanged {
+                            image: spec.container.image.clone(),
+                        },
+                    ));
+                }
+            }
         }
         Ok(Some(ContainerCreated {
             container_id: existing.container_id,

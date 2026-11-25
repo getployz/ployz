@@ -1,7 +1,7 @@
 use super::*;
 use crate::storage::test_support::FakePlugin;
 use crate::volume_copy::{CUT_ROUTE, INSPECT_ROUTE, WRITER_ROUTE};
-use ployz_core::{Gen, SetVolumeCopyReply};
+use ployz_core::{DockerVolumeName, Gen, Namespace, SetVolumeCopyReply};
 
 const VOLUME: &str = "app_data";
 
@@ -59,7 +59,7 @@ async fn try_set_copy(
                 .unwrap(),
         ))
         .await
-        .unwrap()
+        .map_err(|status| status.message().to_owned())?
         .into_inner()
         .decode_response()
         .unwrap();
@@ -580,4 +580,160 @@ async fn a_cut_naming_only_its_holder_keeps_no_record_of_its_stop() {
         .await
         .expect_err("a Container beside the resend refuses it");
     assert!(held.contains("\"held\""), "{held}");
+}
+
+/// A preview of `node`'s Server, whose Service `api` mounts the preview's own Volume `data`
+/// and pulls its image on every create.
+fn preview_on(node: &Node) -> (Namespace, ResolvedServiceSpec, DockerVolumeName) {
+    let home = ployz_core::PreviewHome::of(&node.row.id);
+    let namespace = Namespace::parse(format!("pv-0123456789abcdef-{home}-00c0ffee")).unwrap();
+    let birth = ployz_core::PreviewNamespace::of(&namespace)
+        .unwrap()
+        .birth("data");
+    let mut source = ployz_core::RawVolumeSource::Provisioned {
+        name: DockerVolumeName::parse("data").unwrap(),
+        maximum_bytes: ployz_core::ProvisionedVolumeMaximumBytes::new(
+            std::num::NonZeroU64::new(1_073_741_824).unwrap(),
+        ),
+        labels: BTreeMap::new(),
+        birth: Some(birth),
+    }
+    .admit()
+    .unwrap();
+    source.scope_to_namespace(&namespace);
+    let mut preview = spec_with_sources(vec![source]);
+    preview.name = spec("api").name;
+    preview.pre_deploy = None;
+    preview.update.monitor_millis = Some(0);
+    preview.container.pull_policy = ployz_core::PullPolicy::Always;
+    preview.container.image = "example.test/api:1".to_owned();
+    let volume = namespace.volume_name(&DockerVolumeName::parse("data").unwrap());
+    (namespace, preview, volume)
+}
+
+/// The preview Volume's root at `epoch`, carrying the preview's origin.
+fn preview_root(spec: &ResolvedServiceSpec, volume: &DockerVolumeName, epoch: u32) -> Value {
+    let birth = spec.volume_graph().volumes()[0].source.birth().cloned();
+    let origin = ployz_core::VolumeOrigin::expected(birth.as_ref(), volume).unwrap();
+    json!({"Ok": {"kind":"root", "readonly":false, "newest":snapshot(), "epoch":epoch,
+        "seed":false, "origin":origin}})
+}
+
+fn preview_writer(
+    namespace: &Namespace,
+    spec: &ResolvedServiceSpec,
+    volume: &DockerVolumeName,
+) -> Value {
+    preview_writer_at(namespace, spec, volume, 1)
+}
+
+/// A Writer start of the preview's Service on its Volume, promoting the root to `epoch`.
+fn preview_writer_at(
+    namespace: &Namespace,
+    spec: &ResolvedServiceSpec,
+    volume: &DockerVolumeName,
+    epoch: u32,
+) -> Value {
+    json!({"name":volume, "expect":{"kind":"writer", "epoch":epoch - 1},
+        "want":{"kind":"writer", "at":"7", "epoch":epoch, "start":{
+            "kind":"create", "namespace":namespace, "resolved_spec":spec,
+            "creation_key":"move-1", "gen":2,
+            "rotation":{"in":{"run":null, "expect":"pending"}}}}})
+}
+
+fn holds_a_container(node: &Node) -> bool {
+    !node
+        .fake
+        .named_containers
+        .as_ref()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .is_empty()
+}
+
+fn promotes(plugin: &FakePlugin) -> usize {
+    plugin
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(route, _)| route == WRITER_ROUTE)
+        .count()
+}
+
+/// A preview's Writer start pulls its image once, before the promote: a registry that
+/// refuses every pull after that one never leaves a promoted copy with no holder.
+#[tokio::test]
+async fn a_preview_start_pulls_once_so_no_refused_pull_follows_its_promote() {
+    let fleet = Fleet::start().await;
+    let node = fleet.node(0);
+    let (namespace, spec, volume) = preview_on(node);
+    *node.fake.pulls_left.lock().unwrap() = Some(1);
+    let plugin = plugin(
+        preview_root(&spec, &volume, 0),
+        WRITER_ROUTE,
+        preview_root(&spec, &volume, 1),
+    );
+    let service = fleet.with_plugin(0, &plugin);
+
+    let reply = try_set_copy(&service, preview_writer(&namespace, &spec, &volume)).await;
+
+    assert!(
+        !reply
+            .as_ref()
+            .is_err_and(|error| error.contains("toomanyrequests")),
+        "the start pulled again: {reply:?}"
+    );
+    assert!(
+        promotes(&plugin) == 0 || holds_a_container(node),
+        "the copy was promoted with no holder made: {reply:?}"
+    );
+}
+
+/// A preview start never runs a Container its slot kept from an image its tag no longer
+/// names, and refuses it before the promote: its checks read the image the tag names now.
+#[tokio::test]
+async fn a_preview_start_refuses_a_kept_container_of_the_image_its_tag_left() {
+    let fleet = Fleet::start().await;
+    let node = fleet.node(0);
+    let (namespace, spec, volume) = preview_on(node);
+    let (first, moved) = (
+        format!("sha256:{}", "a".repeat(64)),
+        format!("sha256:{}", "b".repeat(64)),
+    );
+    let tag = spec.container.image.clone();
+    node.fake
+        .registry
+        .lock()
+        .unwrap()
+        .insert(tag.clone(), first.clone());
+    let plugin = plugin(
+        preview_root(&spec, &volume, 0),
+        WRITER_ROUTE,
+        preview_root(&spec, &volume, 1),
+    );
+    let service = fleet.with_plugin(0, &plugin);
+    // The first start makes its Container from the first image, which exits at once.
+    node.fake.exit_on_start.store(true, Ordering::SeqCst);
+    let _ = try_set_copy(&service, preview_writer(&namespace, &spec, &volume)).await;
+    node.fake.exit_on_start.store(false, Ordering::SeqCst);
+    let kept = only_container(node);
+    assert_eq!(node.container(kept).unwrap()["Image"], first.as_str());
+    assert_eq!(promotes(&plugin), 1);
+
+    node.fake.registry.lock().unwrap().insert(tag, moved);
+    let reply = try_set_copy(&service, preview_writer_at(&namespace, &spec, &volume, 2)).await;
+
+    assert!(
+        !node.running(kept),
+        "the start ran the Container of the image its tag left: {reply:?}"
+    );
+    assert!(
+        reply
+            .as_ref()
+            .is_err_and(|error| error.contains("runs another image")),
+        "{reply:?}"
+    );
+    assert_eq!(promotes(&plugin), 1, "a refused start promoted the copy");
 }
