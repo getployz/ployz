@@ -2633,6 +2633,54 @@ fn unsigned(store: &ConfigStore, who: &Actor) -> Vec<(String, ployz_store::Needs
         .collect()
 }
 
+/// The Services a Deploy of `services` ships that only a Source step signed with it builds.
+fn sources(store: &ConfigStore, who: &Actor, services: &[&str]) -> Vec<String> {
+    store
+        .read(
+            who,
+            &ployz_store::PlanQuery {
+                services: services
+                    .iter()
+                    .map(|service| ServiceName::parse(*service).unwrap())
+                    .collect(),
+                target: true,
+                ..ployz_store::PlanQuery::default()
+            },
+        )
+        .unwrap()
+        .sources
+        .iter()
+        .map(|service| service.as_str().to_owned())
+        .collect()
+}
+
+/// Cloud takes a Deploy's Source step only when it names each of these, so a Service
+/// renamed since its Private DNS name was fixed, or one that reaches no data, is never
+/// left for its build to refuse.
+#[test]
+fn a_plan_names_each_git_service_only_a_source_builds_by_the_name_it_runs_under() {
+    let (store, who) = shop();
+    // Neither reaches data, so no person signs a version of either.
+    assert_eq!(unsigned(&store, &who), []);
+    assert_eq!(sources(&store, &who, &[]), ["web", "api"]);
+    // A Deploy of api alone ships no web, so it needs no Source step for it.
+    assert_eq!(sources(&store, &who, &["api"]), ["api"]);
+    store
+        .write(
+            &who,
+            &ployz_store::Command::RenameService(ployz_store::RenameService {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse("web").unwrap(),
+                name: ServiceName::parse("frontend").unwrap(),
+            }),
+        )
+        .unwrap();
+    assert_eq!(sources(&store, &who, &["frontend"]), ["web"]);
+    publish(&store, &who);
+    approve_rule(&store, &who, 1).unwrap();
+    assert_eq!(sources(&store, &who, &[]), Vec::<String>::new());
+}
+
 #[test]
 fn a_built_service_that_reaches_data_needs_a_build_its_rule_vouches_for() {
     use ployz_store::Needs;

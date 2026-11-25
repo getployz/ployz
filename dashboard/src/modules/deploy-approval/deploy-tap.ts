@@ -5,7 +5,7 @@
  * rule approves, shows the lines it signs, and the passkey answers one bundle of them. Cloud only relays the plan, the
  * tag pins and the answer, and each Server checks every step.
  */
-import type { PostedVersion, SavedRule, Unsigned, VersionsDraft } from "@ployz/sdk";
+import type { PlanView, PostedVersion, SavedRule, Unsigned, VersionsDraft } from "@ployz/sdk";
 import { Option, Schema } from "effect";
 import { versionSteps } from "@ployz/sdk/authority";
 import { StoreRefused } from "#/lib/refusal";
@@ -13,7 +13,7 @@ import type { AdmitDeploy } from "#/modules/config-store/admit-deploy";
 import { environmentKey } from "#/modules/config-store/environment-ref";
 import { type OnlyPasskey, signWithPasskey } from "#/modules/passkeys/passkey-statement";
 import { LOSS_MARK } from "#/modules/volume-placement/volume-placement.review";
-import type { DeployPlan } from "./deploy-tap.server";
+import type { DeployPlan, DeploySource, DeployTap } from "./deploy-tap.server";
 import { draftSource, type OwnerOf, priorOf } from "./source-step";
 
 /** What the Store refuses a plan with while a copied sealed value, such as a Database Preset's password, has no value yet. */
@@ -56,6 +56,49 @@ export function namesReview(current: string, given: string) {
  * Deploy's tap may sign the rule with it, and each Server checks the build against the rule that stands.
  */
 export const underRule = ({ needs, ended }: Unsigned) => (needs === "rule" || needs === "rebuild") && ended !== true;
+
+/**
+ * The automatic deploy rule a Deploy carries to the Store: none, so the live rule stands, or one a passkey signed, with
+ * the Services it approves, null when it isn't the Source step of the bundle the passkey signed.
+ */
+export type CarriedRule = { readonly kind: "none" } | { readonly kind: "signed"; readonly sourced: ReadonlySet<string> | null };
+
+/**
+ * Whether a Deploy goes to the Store as it is: `admit`, with `source` when a Source step the tap can sign builds a
+ * Service it ships; `ask` when a passkey must sign it first, with what to tell someone who sends it unsigned; `refused`
+ * when no tap can sign it, `unreached` when Cloud couldn't reach the Servers to ask.
+ */
+export type Admission =
+  | { readonly kind: "admit"; readonly source: boolean }
+  | { readonly kind: "ask"; readonly reason: string }
+  | { readonly kind: "refused"; readonly reason: string; readonly unreached: boolean };
+
+/**
+ * The one check of a Deploy a person may approve, at its link and again at its decision, from the Store's fresh `plan`,
+ * the tap read for it (`servers`, and `source` for the rule) and the `rule` it carries. `covered` are the Services it
+ * already carries a version of. It checks only what a tap signs: whether each Server takes a build is the Server's to
+ * say, and the Deployment shows its refusal.
+ */
+export function admission(input: {
+  readonly plan: Pick<PlanView, "unsigned" | "sources">;
+  readonly servers: DeployTap;
+  readonly source: DeploySource | undefined;
+  readonly covered: ReadonlySet<string | null>;
+  readonly rule: CarriedRule;
+}): Admission {
+  const { plan, servers, source, covered, rule } = input;
+  const open = (plan.unsigned ?? []).filter((entry) => !covered.has(entry.service) && !underRule(entry));
+  // A rule swapped or changed after the tap would be kept, so it is refused whatever the Servers enforce.
+  if (rule.kind === "signed" && rule.sourced === null) {
+    return { kind: "refused", reason: "This deploy's automatic deploy rule isn't the one your passkey signed. Approve it again.", unreached: false };
+  }
+  if (servers.kind === "refused" && open.length > 0) return { kind: "refused", reason: servers.message, unreached: true };
+  if (servers.kind !== "ready") return { kind: "admit", source: false };
+  const stops = blocked(open);
+  if (stops !== null) return { kind: "refused", reason: stops, unreached: false };
+  if (open.length > 0) return { kind: "ask", reason: "Sign this deploy with your passkey on its approval page." };
+  return { kind: "admit", source: rule.kind === "none" && source?.kind === "sign" && (plan.sources ?? []).length > 0 };
+}
 
 /** Why a Service no passkey can sign keeps the Deploy from asking, or null when a passkey can sign each of `unsigned`. */
 export function blocked(unsigned: readonly Unsigned[]) {

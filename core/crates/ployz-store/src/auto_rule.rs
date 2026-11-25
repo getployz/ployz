@@ -99,8 +99,8 @@ pub struct RuleView {
     #[ts(optional)]
     pub protected: Option<bool>,
     /// For a staged read, whether an owner or admin decides the reader's Deploy here, as
-    /// its protection asks of them: their Deploy waits for one, who approves no automatic
-    /// deploy rule with it. Absent from an older Store.
+    /// its protection asks of them: their Deploy waits for one, whose tap on its approval
+    /// page signs the automatic deploy rule with it. Absent from an older Store.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub protector_decides: Option<bool>,

@@ -137,8 +137,12 @@ signs:
 refuse it with `This server runs only builds an approved device starts.` When you turned automatic
 deploys off, **Deploy** stops before it starts instead.
 
-A deploy that waits for an owner or admin in a Protected Environment signs no rule, and approving
-it leaves the rule as it was.
+A deploy that waits at a link, from a computer with no device key or for an owner or admin in a
+Protected Environment, signs the rule on its [approval page](deployments.md#deploy-with-no-key):
+the tap that approves the deploy signs it too. When the page can't sign it, the deploy goes without
+it, says why, and your servers refuse the builds only the rule covers. If the rule changed after
+the tap, the deploy is refused:
+`Automatic deploys changed since you looked. Check them, then try again.`
 
 To turn automatic deploys on yourself, open the environment's **Settings**, find **Automatic
 deploys** and turn on **Deploy every push**. That's a Save that signs the rule: the same sheet
