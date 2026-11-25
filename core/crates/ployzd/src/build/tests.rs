@@ -2,6 +2,7 @@
 //! termination evidence; the informing test proves a real remote image.
 
 mod admission;
+mod free;
 
 use super::*;
 use crate::{
@@ -716,11 +717,17 @@ case "$1 $2" in
     if [ -f "$root/fail-cleanup" ]; then exit 1; fi ;;
   'buildx inspect')
     if [ -f "$root/slow-check" ]; then : > "$root/checking"; exec sleep 30; fi ;;
-  'buildx ls') printf '%s\n' '{{"Name":"{}","Nodes":[{{"Status":"running","Platforms":["linux/amd64"]}}]}}' ;;
+  'buildx ls')
+    printf '%s\n' '{{"Name":"{}","Nodes":[{{"Status":"running","Platforms":["linux/amd64"]}}]}}'
+    printf '%s\n' '{{"Name":"ployz-free-{}","Nodes":[{{"Status":"running","Platforms":["linux/amd64"]}}]}}' ;;
   'buildx bake')
     : > "$root/executed"
     printf '%s\n' "$@" > "$root/bake-args"
     printf '%s' "$BUILDX_METADATA_PROVENANCE" > "$root/metadata-provenance"
+    printf '%s' "$DOCKER_CONFIG" > "$root/docker-config"
+    find "$DOCKER_CONFIG" -mindepth 1 > "$root/docker-config-files" 2>&1
+    untagged=
+    for arg in "$@"; do [ "$arg" = api.tags= ] && untagged=1; done
     while [ -f "$root/hold-build" ]; do sleep 0.01; done
     find source -type f > "$root/source-list"
     find source -name payload -exec cp '{{}}' "$root/received-payload" \;
@@ -736,7 +743,8 @@ case "$1 $2" in
     if [ -f "$root/slow" ]; then printf 'building\n'; exec sleep 30; fi
     previous=
     for arg in "$@"; do
-      if [ "$previous" = --metadata-file ]; then printf '%s\n' '{{"api":{{"containerimage.digest":"sha256:{}","image.name":"example.test/api:built"}}}}' > "$arg"; fi
+      if [ "$previous" = --metadata-file ] && [ -n "$untagged" ]; then printf '%s\n' '{{"api":{{"containerimage.digest":"sha256:{}"}}}}' > "$arg"
+      elif [ "$previous" = --metadata-file ]; then printf '%s\n' '{{"api":{{"containerimage.digest":"sha256:{}","image.name":"example.test/api:built"}}}}' > "$arg"; fi
       previous=$arg
     done
     if [ -f "$root/fail-after-output" ]; then exit 1; fi ;;
@@ -747,6 +755,8 @@ esac
 "#,
         root.display(),
         ployz_build::builder_name(),
+        rustix::process::getuid().as_raw(),
+        "1".repeat(64),
         "1".repeat(64),
         "1".repeat(64)
     );
@@ -830,6 +840,7 @@ async fn upload_timeout_stops_before_execution_and_releases_admission() {
         ReceiverStream::new(receiver),
         Runner::new(policy, Default::default()).unwrap(),
         crate::sealed_env::SealingKeyStore::default(),
+        ployz_build::Access::Full,
     );
     assert!(matches!(
         remote::decode::<Event>(&responses.next().await.unwrap().unwrap()).unwrap(),

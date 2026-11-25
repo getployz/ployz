@@ -6,7 +6,7 @@ pub(crate) use queue::Runner;
 use crate::logs::RpcStream;
 use crate::sealed_env::{SealedRecord, SealingKeyStore};
 use ployz_build::{
-    Admission, BuildError, HostPolicy, Output, Progress, Stage,
+    Access, Admission, BuildError, HostPolicy, Output, Progress, Stage,
     remote::{self, Definition, Event, Input, Outcome},
 };
 use ployz_core::{BuildConcurrency, MachineId, OpaquePayload, OpenedSealed};
@@ -43,17 +43,27 @@ struct ExecutionAdmission {
     installation: crate::mutation::MutationGuard,
 }
 
+/// Run one Build with `access`: a Full caller's, or a free one that any caller may start.
 pub(crate) fn start(
     local: crate::machine::LocalMachine,
     requests: impl Stream<Item = Result<OpaquePayload, Status>> + Send + Unpin + 'static,
     runner: std::sync::Arc<Runner>,
     sealing: SealingKeyStore,
+    access: Access,
 ) -> RpcStream {
     let (events, receiver) = mpsc::channel(8);
     tokio::spawn(async move {
         let shutdown = runner.shutdown.clone();
         let state = Arc::new(AttemptState::default());
-        let outcome = attempt(local, requests, &events, runner, state.clone(), sealing).await;
+        let outcome = attempt(
+            local,
+            requests,
+            &events,
+            runner,
+            state.clone(),
+            (sealing, access),
+        )
+        .await;
         let message = "Build terminal report exceeds the response size limit";
         let fallback = match &outcome {
             Outcome::Unknown { stage, .. } => Outcome::Unknown {
@@ -64,6 +74,7 @@ pub(crate) fn start(
             Outcome::Failed { stage, .. } => failed(*stage, message),
             Outcome::CapabilitiesChecked { .. }
             | Outcome::Images { .. }
+            | Outcome::FreeImages { .. }
             | Outcome::Validated { .. }
             | Outcome::Published { .. } => {
                 failed(Stage::Output, format!("Build completed; {message}"))
@@ -118,7 +129,7 @@ async fn attempt(
     events: &mpsc::Sender<Result<OpaquePayload, Status>>,
     runner: Arc<Runner>,
     state: Arc<AttemptState>,
-    sealing: SealingKeyStore,
+    (sealing, access): (SealingKeyStore, Access),
 ) -> Outcome {
     let start = tokio::time::timeout(Duration::from_secs(10), requests.next()).await;
     let request = match start {
@@ -160,14 +171,26 @@ async fn attempt(
     if let Err(reason) = require_build_acceptance(&local) {
         return failed(Stage::Admission, reason.to_string()).with_work(work);
     }
-    // Only a Full caller builds, and a Build opens Sealed build values. Bound before it
-    // queues, so a key change that leaves the key short of Full ends it queued or running,
-    // and returns only once it stopped.
-    let bound = match local.bind_full(crate::machine::Work::Build) {
-        Ok(bound) => bound,
-        Err(error) => {
-            return failed(Stage::Admission, ployz_core::error_chain::inline(&error))
-                .with_work(work);
+    let bound = match access {
+        // Only a Full caller builds with Sealed build values, logins and other Services'
+        // images. Bound before it queues, so a key change that leaves the key short of
+        // Full ends it queued or running, and returns only once it stopped.
+        Access::Full => match local.bind_full(crate::machine::Work::Build) {
+            Ok(bound) => bound,
+            Err(error) => {
+                return failed(Stage::Admission, ployz_core::error_chain::inline(&error))
+                    .with_work(work);
+            }
+        },
+        // A free Build reads none of those, so no key's scope bounds it. It is refused
+        // before it queues when it asks for another Service's image or a tag.
+        Access::Free => {
+            if let Input::Start(definition) = &request
+                && let Some(refusal) = free_refusal(definition)
+            {
+                return failed(Stage::Admission, refusal).with_work(work);
+            }
+            crate::machine::Bound::unbound()
         }
     };
     let admitted = async {
@@ -210,7 +233,10 @@ async fn attempt(
             .map_err(|reason| failed(Stage::Admission, reason.to_string()).with_work(work.clone()))?;
         let admission = match tokio::task::spawn_blocking({
             let policy = runner.policy.clone();
-            move || Admission::try_acquire_within(&policy, concurrency)
+            move || {
+                Admission::try_acquire_within(&policy, concurrency)
+                    .map(|admission| admission.with_access(access))
+            }
         })
         .await
         {
@@ -269,7 +295,7 @@ async fn attempt(
                     installation,
                 },
                 policy.clone(),
-                &sealing,
+                (&sealing, access),
                 &bound,
                 &output,
                 &observed,
@@ -312,6 +338,7 @@ async fn attempt(
             Outcome::Failed { .. }
             | Outcome::CapabilitiesChecked { .. }
             | Outcome::Images { .. }
+            | Outcome::FreeImages { .. }
             | Outcome::Validated { .. }
             | Outcome::Published { .. } => bound.stopped(crate::machine::Seen::Joined),
         }
@@ -343,6 +370,7 @@ async fn attempt(
             outcome @ Outcome::Unknown { .. } => outcome,
             Outcome::CapabilitiesChecked { .. }
             | Outcome::Images { .. }
+            | Outcome::FreeImages { .. }
             | Outcome::Validated { .. }
             | Outcome::Published { .. } => failed(
                 Stage::Cleanup,
@@ -408,7 +436,7 @@ fn receive_and_execute(
     mut source: mpsc::Receiver<OpaquePayload>,
     admission: ExecutionAdmission,
     policy: HostPolicy,
-    sealing: &SealingKeyStore,
+    (sealing, access): (&SealingKeyStore, Access),
     bound: &crate::machine::Bound,
     events: &mpsc::Sender<Result<OpaquePayload, Status>>,
     state: &AttemptState,
@@ -442,7 +470,12 @@ fn receive_and_execute(
             break;
         }
     }
-    let sealed = match upload.private_file(ployz_build::capture::SEALED_RECORD) {
+    // A free Build's upload refused any Sealed record as it arrived; none is looked for.
+    let record = match access {
+        Access::Full => upload.private_file(ployz_build::capture::SEALED_RECORD),
+        Access::Free => Ok(None),
+    };
+    let sealed = match record {
         Ok(None) => None,
         Ok(Some(record)) => match bound.read(|| open_sealed(&record, sealing)) {
             Ok(Ok(opened)) => {
@@ -518,13 +551,14 @@ fn receive_and_execute(
                     _installation: installation,
                 });
             }
-            match definition.output {
-                Output::Load => Outcome::Images {
+            match (definition.output, access) {
+                (Output::Load, Access::Full) => Outcome::Images {
                     machine_id,
                     images: completed.images,
                 },
-                Output::Validate => Outcome::Validated { machine_id },
-                Output::Registry => Outcome::Published { machine_id },
+                (Output::Load, Access::Free) => free_images(machine_id, completed.images, sealing),
+                (Output::Validate, _) => Outcome::Validated { machine_id },
+                (Output::Registry, _) => Outcome::Published { machine_id },
             }
         }
         Err(error) => failure(error.stage(), error),
@@ -532,6 +566,45 @@ fn receive_and_execute(
     match &sealed {
         Some((_, scrub)) => scrub.outcome(outcome),
         None => outcome,
+    }
+}
+
+/// Why a free Build is refused before it queues: it names another Service's image, a tag
+/// to keep, or an output other than loading here.
+fn free_refusal(definition: &Definition) -> Option<&'static str> {
+    if !definition.image_contexts.is_empty() {
+        Some("A free Build takes no other Service's image; execution was not attempted")
+    } else if !definition.retained_tags.is_empty() || definition.output != Output::Load {
+        Some("A free Build loads its image here under no name; execution was not attempted")
+    } else {
+        None
+    }
+}
+
+/// A free Build's images, each with this Cluster's receipt for its ID.
+fn free_images(
+    machine_id: MachineId,
+    images: Vec<ployz_build::BuiltImage>,
+    sealing: &SealingKeyStore,
+) -> Outcome {
+    let receipts = images
+        .into_iter()
+        .map(|image| {
+            let id = ployz_core::ImageDigest::parse(&image.reference).map_err(|error| {
+                format!("the free Build's image ID can't be vouched for: {error}")
+            })?;
+            let receipt = sealing.free_receipt(&id).map_err(|error| {
+                format!(
+                    "this Server can't vouch for its free Build's image: {}",
+                    ployz_core::error_chain::inline(&error)
+                )
+            })?;
+            Ok(remote::FreeImage { image, receipt })
+        })
+        .collect::<Result<Vec<_>, String>>();
+    match receipts {
+        Ok(images) => Outcome::FreeImages { machine_id, images },
+        Err(message) => failed(Stage::Output, message),
     }
 }
 

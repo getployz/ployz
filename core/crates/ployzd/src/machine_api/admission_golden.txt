@@ -72,6 +72,8 @@ ployz.cluster.name.v1 | any name => served
 ployz.cluster.doors.v1 | any doors => served
 ployz.container.exec.v1 | from the mesh => status PermissionDenied: This Server takes this call only from an approved Device connected to it directly, or over SSH. A ployz CLI older than 0.4 sends it through another Server: upgrade ployz on this computer to 0.4, then run the command again. {"capability":"ployz.container.exec.v1","next":"Connect directly to the target Server as an approved Device, or over SSH."}
 ployz.build.v1 | no statement => status PermissionDenied: This server runs only builds an approved device starts. {"capability":"ployz.build.v1"}
+ployz.build.free.v1 | sealed values => proven in a unit test
+ployz.build.free.v1 | no secret => proven in a unit test
 ## participating / mesh with operator header
 ployz.machine.enroll.v1 | member, no capsule => status PermissionDenied: This Server has no key to check its join approval against: its install line named none, or its disk already used one. {"capability":"ployz.machine.join.device-approval.v1","next":"copy the install command again, or run sudo ployz key add LINE on this Server"}
 ployz.machine.enroll.v1 | member, approved capsule => error InvalidArgument: assignment does not match the local durable Machine ID null
@@ -146,6 +148,8 @@ ployz.cluster.name.v1 | any name => served
 ployz.cluster.doors.v1 | any doors => served
 ployz.container.exec.v1 | from the mesh => status PermissionDenied: This Server takes this call only from an approved Device connected to it directly, or over SSH. A ployz CLI older than 0.4 sends it through another Server: upgrade ployz on this computer to 0.4, then run the command again. {"capability":"ployz.container.exec.v1","next":"Connect directly to the target Server as an approved Device, or over SSH."}
 ployz.build.v1 | no statement => status PermissionDenied: This server runs only builds an approved device starts. {"capability":"ployz.build.v1"}
+ployz.build.free.v1 | sealed values => proven in a unit test
+ployz.build.free.v1 | no secret => proven in a unit test
 ## participating / mesh with cloud-routed header
 ployz.machine.enroll.v1 | member, no capsule => status PermissionDenied: This Server has no key to check its join approval against: its install line named none, or its disk already used one. {"capability":"ployz.machine.join.device-approval.v1","next":"copy the install command again, or run sudo ployz key add LINE on this Server"}
 ployz.machine.enroll.v1 | member, approved capsule => error InvalidArgument: assignment does not match the local durable Machine ID null
@@ -220,6 +224,8 @@ ployz.cluster.name.v1 | any name => served
 ployz.cluster.doors.v1 | any doors => served
 ployz.container.exec.v1 | from the mesh => status PermissionDenied: This Server takes this call only from an approved Device connected to it directly, or over SSH. A ployz CLI older than 0.4 sends it through another Server: upgrade ployz on this computer to 0.4, then run the command again. {"capability":"ployz.container.exec.v1","next":"Connect directly to the target Server as an approved Device, or over SSH."}
 ployz.build.v1 | no statement => status PermissionDenied: This server runs only builds an approved device starts. {"capability":"ployz.build.v1"}
+ployz.build.free.v1 | sealed values => proven in a unit test
+ployz.build.free.v1 | no secret => proven in a unit test
 ## participating / local socket
 ployz.machine.enroll.v1 | member, no capsule => status PermissionDenied: This Server has no key to check its join approval against: its install line named none, or its disk already used one. {"capability":"ployz.machine.join.device-approval.v1","next":"copy the install command again, or run sudo ployz key add LINE on this Server"}
 ployz.machine.enroll.v1 | member, approved capsule => error InvalidArgument: assignment does not match the local durable Machine ID null
@@ -294,6 +300,8 @@ ployz.cluster.name.v1 | any name => served
 ployz.cluster.doors.v1 | any doors => served
 ployz.container.exec.v1 | from the mesh => status InvalidArgument: truncated stream frame header 
 ployz.build.v1 | no statement => served
+ployz.build.free.v1 | sealed values => proven in a unit test
+ployz.build.free.v1 | no secret => proven in a unit test
 ## participating / local socket with operator header
 ployz.machine.enroll.v1 | member, no capsule => status PermissionDenied: This Server has no key to check its join approval against: its install line named none, or its disk already used one. {"capability":"ployz.machine.join.device-approval.v1","next":"copy the install command again, or run sudo ployz key add LINE on this Server"}
 ployz.machine.enroll.v1 | member, approved capsule => error InvalidArgument: assignment does not match the local durable Machine ID null
@@ -368,6 +376,8 @@ ployz.cluster.name.v1 | any name => served
 ployz.cluster.doors.v1 | any doors => served
 ployz.container.exec.v1 | from the mesh => status PermissionDenied: ployz.container.exec.v1 needs Full access: run `ployz device request` (update ployz first if it has no `device` command) {"capability":"ployz.container.exec.v1","next":"ployz device request"}
 ployz.build.v1 | no statement => status PermissionDenied: This server runs only builds an approved device starts. {"capability":"ployz.build.v1"}
+ployz.build.free.v1 | sealed values => proven in a unit test
+ployz.build.free.v1 | no secret => proven in a unit test
 ## resetting / mesh
 ployz.machine.enroll.v1 | member, no capsule => status PermissionDenied: This Server has no key to check its join approval against: its install line named none, or its disk already used one. {"capability":"ployz.machine.join.device-approval.v1","next":"copy the install command again, or run sudo ployz key add LINE on this Server"}
 ployz.machine.enroll.v1 | member, approved capsule => error InvalidArgument: assignment does not match the local durable Machine ID null
@@ -442,6 +452,8 @@ ployz.cluster.name.v1 | any name => error Unavailable: Machine is not participat
 ployz.cluster.doors.v1 | any doors => error Unavailable: Machine is not participating null
 ployz.container.exec.v1 | from the mesh => status PermissionDenied: This Server takes this call only from an approved Device connected to it directly, or over SSH. A ployz CLI older than 0.4 sends it through another Server: upgrade ployz on this computer to 0.4, then run the command again. {"capability":"ployz.container.exec.v1","next":"Connect directly to the target Server as an approved Device, or over SSH."}
 ployz.build.v1 | no statement => status PermissionDenied: This server runs only builds an approved device starts. {"capability":"ployz.build.v1"}
+ployz.build.free.v1 | sealed values => proven in a unit test
+ployz.build.free.v1 | no secret => proven in a unit test
 ## resetting / mesh with operator header
 ployz.machine.enroll.v1 | member, no capsule => status PermissionDenied: This Server has no key to check its join approval against: its install line named none, or its disk already used one. {"capability":"ployz.machine.join.device-approval.v1","next":"copy the install command again, or run sudo ployz key add LINE on this Server"}
 ployz.machine.enroll.v1 | member, approved capsule => error InvalidArgument: assignment does not match the local durable Machine ID null
@@ -516,6 +528,8 @@ ployz.cluster.name.v1 | any name => error Unavailable: Machine is not participat
 ployz.cluster.doors.v1 | any doors => error Unavailable: Machine is not participating null
 ployz.container.exec.v1 | from the mesh => status PermissionDenied: This Server takes this call only from an approved Device connected to it directly, or over SSH. A ployz CLI older than 0.4 sends it through another Server: upgrade ployz on this computer to 0.4, then run the command again. {"capability":"ployz.container.exec.v1","next":"Connect directly to the target Server as an approved Device, or over SSH."}
 ployz.build.v1 | no statement => status PermissionDenied: This server runs only builds an approved device starts. {"capability":"ployz.build.v1"}
+ployz.build.free.v1 | sealed values => proven in a unit test
+ployz.build.free.v1 | no secret => proven in a unit test
 ## resetting / mesh with cloud-routed header
 ployz.machine.enroll.v1 | member, no capsule => status PermissionDenied: This Server has no key to check its join approval against: its install line named none, or its disk already used one. {"capability":"ployz.machine.join.device-approval.v1","next":"copy the install command again, or run sudo ployz key add LINE on this Server"}
 ployz.machine.enroll.v1 | member, approved capsule => error InvalidArgument: assignment does not match the local durable Machine ID null
@@ -590,6 +604,8 @@ ployz.cluster.name.v1 | any name => error Unavailable: Machine is not participat
 ployz.cluster.doors.v1 | any doors => error Unavailable: Machine is not participating null
 ployz.container.exec.v1 | from the mesh => status PermissionDenied: This Server takes this call only from an approved Device connected to it directly, or over SSH. A ployz CLI older than 0.4 sends it through another Server: upgrade ployz on this computer to 0.4, then run the command again. {"capability":"ployz.container.exec.v1","next":"Connect directly to the target Server as an approved Device, or over SSH."}
 ployz.build.v1 | no statement => status PermissionDenied: This server runs only builds an approved device starts. {"capability":"ployz.build.v1"}
+ployz.build.free.v1 | sealed values => proven in a unit test
+ployz.build.free.v1 | no secret => proven in a unit test
 ## resetting / local socket
 ployz.machine.enroll.v1 | member, no capsule => status PermissionDenied: This Server has no key to check its join approval against: its install line named none, or its disk already used one. {"capability":"ployz.machine.join.device-approval.v1","next":"copy the install command again, or run sudo ployz key add LINE on this Server"}
 ployz.machine.enroll.v1 | member, approved capsule => error InvalidArgument: assignment does not match the local durable Machine ID null
@@ -664,6 +680,8 @@ ployz.cluster.name.v1 | any name => error Unavailable: Machine is not participat
 ployz.cluster.doors.v1 | any doors => error Unavailable: Machine is not participating null
 ployz.container.exec.v1 | from the mesh => status InvalidArgument: truncated stream frame header 
 ployz.build.v1 | no statement => served
+ployz.build.free.v1 | sealed values => proven in a unit test
+ployz.build.free.v1 | no secret => proven in a unit test
 ## resetting / local socket with operator header
 ployz.machine.enroll.v1 | member, no capsule => status PermissionDenied: This Server has no key to check its join approval against: its install line named none, or its disk already used one. {"capability":"ployz.machine.join.device-approval.v1","next":"copy the install command again, or run sudo ployz key add LINE on this Server"}
 ployz.machine.enroll.v1 | member, approved capsule => error InvalidArgument: assignment does not match the local durable Machine ID null
@@ -738,6 +756,8 @@ ployz.cluster.name.v1 | any name => error Unavailable: Machine is not participat
 ployz.cluster.doors.v1 | any doors => error Unavailable: Machine is not participating null
 ployz.container.exec.v1 | from the mesh => status PermissionDenied: ployz.container.exec.v1 needs Full access: run `ployz device request` (update ployz first if it has no `device` command) {"capability":"ployz.container.exec.v1","next":"ployz device request"}
 ployz.build.v1 | no statement => status PermissionDenied: This server runs only builds an approved device starts. {"capability":"ployz.build.v1"}
+ployz.build.free.v1 | sealed values => proven in a unit test
+ployz.build.free.v1 | no secret => proven in a unit test
 ## busy with a mutation / mesh
 ployz.machine.enroll.v1 | member, no capsule => waits for the turn
 ployz.machine.enroll.v1 | member, approved capsule => waits for the turn
@@ -812,6 +832,8 @@ ployz.cluster.name.v1 | any name => served
 ployz.cluster.doors.v1 | any doors => served
 ployz.container.exec.v1 | from the mesh => status PermissionDenied: This Server takes this call only from an approved Device connected to it directly, or over SSH. A ployz CLI older than 0.4 sends it through another Server: upgrade ployz on this computer to 0.4, then run the command again. {"capability":"ployz.container.exec.v1","next":"Connect directly to the target Server as an approved Device, or over SSH."}
 ployz.build.v1 | no statement => status PermissionDenied: This server runs only builds an approved device starts. {"capability":"ployz.build.v1"}
+ployz.build.free.v1 | sealed values => proven in a unit test
+ployz.build.free.v1 | no secret => proven in a unit test
 ## busy with a mutation / mesh with operator header
 ployz.machine.enroll.v1 | member, no capsule => waits for the turn
 ployz.machine.enroll.v1 | member, approved capsule => waits for the turn
@@ -886,6 +908,8 @@ ployz.cluster.name.v1 | any name => served
 ployz.cluster.doors.v1 | any doors => served
 ployz.container.exec.v1 | from the mesh => status PermissionDenied: This Server takes this call only from an approved Device connected to it directly, or over SSH. A ployz CLI older than 0.4 sends it through another Server: upgrade ployz on this computer to 0.4, then run the command again. {"capability":"ployz.container.exec.v1","next":"Connect directly to the target Server as an approved Device, or over SSH."}
 ployz.build.v1 | no statement => status PermissionDenied: This server runs only builds an approved device starts. {"capability":"ployz.build.v1"}
+ployz.build.free.v1 | sealed values => proven in a unit test
+ployz.build.free.v1 | no secret => proven in a unit test
 ## busy with a mutation / mesh with cloud-routed header
 ployz.machine.enroll.v1 | member, no capsule => waits for the turn
 ployz.machine.enroll.v1 | member, approved capsule => waits for the turn
@@ -960,6 +984,8 @@ ployz.cluster.name.v1 | any name => served
 ployz.cluster.doors.v1 | any doors => served
 ployz.container.exec.v1 | from the mesh => status PermissionDenied: This Server takes this call only from an approved Device connected to it directly, or over SSH. A ployz CLI older than 0.4 sends it through another Server: upgrade ployz on this computer to 0.4, then run the command again. {"capability":"ployz.container.exec.v1","next":"Connect directly to the target Server as an approved Device, or over SSH."}
 ployz.build.v1 | no statement => status PermissionDenied: This server runs only builds an approved device starts. {"capability":"ployz.build.v1"}
+ployz.build.free.v1 | sealed values => proven in a unit test
+ployz.build.free.v1 | no secret => proven in a unit test
 ## busy with a mutation / local socket
 ployz.machine.enroll.v1 | member, no capsule => waits for the turn
 ployz.machine.enroll.v1 | member, approved capsule => waits for the turn
@@ -1034,6 +1060,8 @@ ployz.cluster.name.v1 | any name => served
 ployz.cluster.doors.v1 | any doors => served
 ployz.container.exec.v1 | from the mesh => status InvalidArgument: truncated stream frame header 
 ployz.build.v1 | no statement => served
+ployz.build.free.v1 | sealed values => proven in a unit test
+ployz.build.free.v1 | no secret => proven in a unit test
 ## busy with a mutation / local socket with operator header
 ployz.machine.enroll.v1 | member, no capsule => waits for the turn
 ployz.machine.enroll.v1 | member, approved capsule => waits for the turn
@@ -1108,3 +1136,5 @@ ployz.cluster.name.v1 | any name => served
 ployz.cluster.doors.v1 | any doors => served
 ployz.container.exec.v1 | from the mesh => status PermissionDenied: ployz.container.exec.v1 needs Full access: run `ployz device request` (update ployz first if it has no `device` command) {"capability":"ployz.container.exec.v1","next":"ployz device request"}
 ployz.build.v1 | no statement => status PermissionDenied: This server runs only builds an approved device starts. {"capability":"ployz.build.v1"}
+ployz.build.free.v1 | sealed values => proven in a unit test
+ployz.build.free.v1 | no secret => proven in a unit test

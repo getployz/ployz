@@ -109,6 +109,12 @@ pub enum Outcome {
         machine_id: MachineId,
         images: Vec<BuiltImage>,
     },
+    /// A free Build's images, loaded under no name, each with the receipt an unsigned
+    /// creation of it carries.
+    FreeImages {
+        machine_id: MachineId,
+        images: Vec<FreeImage>,
+    },
     Validated {
         machine_id: MachineId,
     },
@@ -125,6 +131,13 @@ pub enum Outcome {
         message: String,
         work: crate::WorkEvidence,
     },
+}
+
+/// One image a free Build loaded, and the receipt its Server gave for it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct FreeImage {
+    pub image: BuiltImage,
+    pub receipt: ployz_core::FreeReceipt,
 }
 
 /// Enforce the message limit on both sides, before deserialization allocates
@@ -157,6 +170,7 @@ impl Outcome {
             Self::Failed { work, .. } | Self::Unknown { work, .. } => *work = evidence,
             Self::CapabilitiesChecked { .. }
             | Self::Images { .. }
+            | Self::FreeImages { .. }
             | Self::Validated { .. }
             | Self::Published { .. } => {}
         }
