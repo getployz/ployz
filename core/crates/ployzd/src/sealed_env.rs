@@ -204,28 +204,6 @@ impl SealingKeyStore {
         serde_json::from_slice(&opened).map_err(|_| unopenable())
     }
 
-    /// The receipt for `image`, an image a free Build loaded here.
-    ///
-    /// # Errors
-    /// Returns [`OpenError::KeyMissing`] or [`OpenError::KeyUnreadable`] as opening does.
-    pub(crate) fn free_receipt(
-        &self,
-        image: &ployz_core::ImageDigest,
-    ) -> Result<ployz_core::FreeReceipt, OpenError> {
-        Ok(self.load()?.free_receipt(image))
-    }
-
-    /// Whether a Machine of this Cluster made `receipt`.
-    ///
-    /// # Errors
-    /// Returns [`OpenError::KeyMissing`] or [`OpenError::KeyUnreadable`] as opening does.
-    pub(crate) fn made_free_receipt(
-        &self,
-        receipt: &ployz_core::FreeReceipt,
-    ) -> Result<bool, OpenError> {
-        Ok(self.load()?.made_free_receipt(receipt))
-    }
-
     /// The Cluster's build attest key pair, derived from the Sealing Key.
     ///
     /// # Errors

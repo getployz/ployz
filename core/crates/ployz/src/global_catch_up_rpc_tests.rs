@@ -25,7 +25,6 @@ fn new_container(key: &str, resolved_spec: ployz_core::ResolvedServiceSpec) -> N
         answer: ployz_core::AnswerWhen::Started,
         image_id: None,
         replaces: None,
-        free_receipt: None,
     }
 }
 

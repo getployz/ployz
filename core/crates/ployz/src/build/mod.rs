@@ -115,7 +115,6 @@ impl TryFrom<Outcome> for RemoteBuildFailure {
             }),
             outcome @ (Outcome::CapabilitiesChecked { .. }
             | Outcome::Images { .. }
-            | Outcome::FreeImages { .. }
             | Outcome::Validated { .. }
             | Outcome::Published { .. }) => Err(outcome),
         }

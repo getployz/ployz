@@ -104,35 +104,8 @@ pub fn builder_name() -> String {
     format!("ployz-{}", rustix::process::getuid().as_raw())
 }
 
-/// Who a Build runs for, which decides what it may read and how it names its images.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum Access {
-    /// A Full caller's: its Sealed values, registry logins, other Services' images and tags.
-    #[default]
-    Full,
-    /// A free Build, which nothing signed: it reads none of those, and reaches no image
-    /// server. It runs on a builder and cache of its own, so it never takes a Full Build's
-    /// cache, and loads its images by content under no name.
-    Free,
-}
-
-impl Access {
-    /// The builder this access uses in build `slot`. Slot 0 keeps the historical names.
-    pub(crate) fn builder(self, slot: usize) -> String {
-        let name = match self {
-            Self::Full => builder_name(),
-            Self::Free => format!("ployz-free-{}", rustix::process::getuid().as_raw()),
-        };
-        match slot {
-            0 => name,
-            slot => format!("{name}-{slot}"),
-        }
-    }
-}
-
-/// Whether `volume` is the build cache of a Ployz builder, any user's and any slot's, a
-/// free Build's included: Ployz's own, not data. Its node is `<uid>0`, or `<uid>-<slot>0`
-/// for slots 1 to 255, after `free-` for a free Build's.
+/// Whether `volume` is the build cache of a Ployz builder, any user's and any slot's:
+/// Ployz's own, not data. Its node is `<uid>0`, or `<uid>-<slot>0` for slots 1 to 255.
 #[must_use]
 pub fn is_builder_cache(volume: &str) -> bool {
     let digits = |part: &str| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit());
@@ -148,7 +121,6 @@ pub fn is_builder_cache(volume: &str) -> bool {
     };
     volume
         .strip_prefix("buildx_buildkit_ployz-")
-        .map(|rest| rest.strip_prefix("free-").unwrap_or(rest))
         .and_then(|rest| rest.strip_suffix("_state"))
         .is_some_and(|node| match node.split_once('-') {
             // Buildx appends `0` to the builder name, so a slot's node is `<slot>0`.
@@ -563,13 +535,6 @@ fn execute_produce(
             "multi-platform Railpack builds require local image output".into(),
         ));
     }
-    // A free Build's image loads under no name, and an assembled index would carry one.
-    let free = admission.access == Access::Free;
-    if free && request.targets.iter().any(|t| t.platforms.len() > 1) {
-        return Err(BuildError::Request(
-            "A free Build produces one platform".into(),
-        ));
-    }
     if planned.is_empty() {
         return Ok(Vec::new());
     }
@@ -607,14 +572,8 @@ fn execute_produce(
     let fence = admission
         .fence
         .map(|install| (install, image_contexts::loopback_ports(request)));
-    let builder = Builder::acquire(
-        &docker,
-        admission.lock,
-        admission.access,
-        &admission.resources,
-        fence,
-    )
-    .map_err(|error| error.at(Stage::Preparation))?;
+    let builder = Builder::acquire(&docker, admission.lock, &admission.resources, fence)
+        .map_err(|error| error.at(Stage::Preparation))?;
     let mut preparation = None;
     let result = (|| {
         let native = builder
@@ -651,11 +610,6 @@ fn execute_produce(
                 &metadata,
                 overrides.as_deref(),
             );
-            if free {
-                // Loaded by content only, so no tag a Full creation runs can name it.
-                arguments.push("--set".into());
-                arguments.push(format!("{}.tags=", target.bake));
-            }
             arguments.push("--set".into());
             arguments.push(format!(
                 "{}.platform={}",
@@ -679,7 +633,7 @@ fn execute_produce(
                     && !error.is_unknown()
                     && metadata.is_file()
                     && let Err(verification) =
-                        built_image(&docker.releasing(), &metadata, target, free, progress)
+                        built_image(&docker.releasing(), &metadata, target, progress)
                 {
                     return Err(error.at(Stage::Building).with_later_failure(verification));
                 }
@@ -688,7 +642,7 @@ fn execute_produce(
             progress(Progress::Stage(Stage::Output));
             match produce {
                 Produce::Output(Output::Load) => images.push(
-                    built_image(&docker, &metadata, target, free, progress)
+                    built_image(&docker, &metadata, target, progress)
                         .map_err(|error| error.at(Stage::Output))?,
                 ),
                 Produce::Output(output @ (Output::Registry | Output::Validate)) => {
@@ -849,13 +803,10 @@ fn bake_arguments<'a>(
     arguments
 }
 
-/// The image one Bake run loaded, as its metadata names it and the image store holds it.
-/// A free Build's carries no tag; any other's must carry one.
 fn built_image(
     docker: &Docker<'_>,
     metadata: &Path,
     planned: &Planned<'_>,
-    free: bool,
     progress: &(dyn Fn(Progress) + Sync),
 ) -> Result<BuiltImage, BuildError> {
     let content = std::fs::read(metadata)
@@ -874,18 +825,10 @@ fn built_image(
             })
         })?;
     let tags = result.tags();
-    match (free, tags.is_empty()) {
-        (false, true) => {
-            return Err(BuildError::Result(format!(
-                "the build tagged no image for '{name}'"
-            )));
-        }
-        (true, false) => {
-            return Err(BuildError::Result(format!(
-                "a free Build tagged its image for '{name}'"
-            )));
-        }
-        (false, false) | (true, true) => {}
+    if tags.is_empty() {
+        return Err(BuildError::Result(format!(
+            "the build tagged no image for '{name}'"
+        )));
     }
     let reference = result.digest;
     let platform = verify(
@@ -976,8 +919,7 @@ fn covers(observed: &str, requested: &str) -> bool {
 struct TargetMetadata {
     #[serde(rename = "containerimage.digest")]
     digest: String,
-    /// Absent for an image loaded under no name.
-    #[serde(rename = "image.name", default)]
+    #[serde(rename = "image.name")]
     name: String,
 }
 

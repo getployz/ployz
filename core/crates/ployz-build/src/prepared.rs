@@ -61,39 +61,24 @@ impl<'a> Prepared<'a> {
             definition,
             opened,
             extra_environment,
-            crate::Access::Full,
         )
     }
 
-    /// [`Self::capture`], staging into `staging`, which its owner can revoke, for a Build
-    /// with `access`. A free Build's capture is checked as one, and its Docker client reads
-    /// an empty configuration this host made, never the one the capture brought.
+    /// [`Self::capture`], staging into `staging`, which its owner can revoke.
     pub(crate) fn staged_in(
         staging: &SealedStaging,
         root: &'a Path,
         definition: &'a Definition,
         opened: Option<&OpenedSealed>,
         extra_environment: impl IntoIterator<Item = (String, String)>,
-        access: crate::Access,
     ) -> Result<Self, PrepareError> {
         let staged = opened
             .map(|opened| Staged::stage(staging, opened, &definition.targets))
             .transpose()
             .map_err(PrepareError::Staging)?;
-        let files = match access {
-            crate::Access::Full => SealedFiles::Opened,
-            crate::Access::Free => SealedFiles::Free,
-        };
-        let railpack = validate_capture(root, definition, files)
+        let railpack = validate_capture(root, definition, SealedFiles::Opened)
             .map_err(|error| PrepareError::Invalid(error.to_string()))?;
-        let mut environment = match access {
-            crate::Access::Full => crate::upload::environment(root),
-            crate::Access::Free => crate::upload::free_environment(root).map_err(|error| {
-                PrepareError::Staging(BuildError::Prerequisite(format!(
-                    "make a free Build's empty Docker configuration: {error}"
-                )))
-            })?,
-        };
+        let mut environment = crate::upload::environment(root);
         environment.extend(extra_environment);
         if crate::reads_plaintext(
             staged.as_ref().and_then(Staged::compose_override),

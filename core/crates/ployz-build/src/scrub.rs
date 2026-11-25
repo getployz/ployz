@@ -159,7 +159,6 @@ impl OutputScrub {
                 message: self.forms.scrub(&message, &mut redacted),
             },
             other @ (Outcome::Images { .. }
-            | Outcome::FreeImages { .. }
             | Outcome::Validated { .. }
             | Outcome::Published { .. }
             | Outcome::CapabilitiesChecked { .. }) => other,

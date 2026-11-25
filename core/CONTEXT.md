@@ -188,14 +188,6 @@ _Avoid_: CI credential, push token, Management Capability
 A MAC a Machine issues over one rule build's claim and the exact rule approval it ran under, only after it checked that build with GitHub. Every Machine holding the Sealing Key checks it with its own key, so the build deploys again after its GitHub token expired or its branch moved on, while the rule's signer is trusted and no newer approval of the rule reached that Machine.
 _Avoid_: Build Receipt, accepted build
 
-**Free Build**:
-A Build that opens no Sealed value, reads no registry login, takes no other Service's image and reaches no image server. It loads its image untagged on the Machine that ran it, which returns a Free receipt for each image.
-_Avoid_: unsigned build, preview build
-
-**Free receipt**:
-A MAC a Machine issues over one Free Build image's ID, keyed from the Sealing Key. An unsigned creation that carries it runs exactly that image from the Machine's store, and a Machine of another Cluster refuses it. Machines keep no list of free images.
-_Avoid_: Build Receipt, verified build
-
 **Deploy**:
 A bounded command attempt that calculates and executes work against an observer-relative snapshot. It is not a persistent resource or durable workflow; its record is a Deployment.
 _Avoid_: Deployment (the record), reconciliation loop

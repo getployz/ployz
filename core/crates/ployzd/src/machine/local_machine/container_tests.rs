@@ -513,7 +513,6 @@ mod plan {
             answer: ployz_core::AnswerWhen::Started,
             image_id: None,
             replaces: None,
-            free_receipt: None,
         }
     }
 
@@ -2775,7 +2774,6 @@ mod anonymous_volumes {
                 answer: ployz_core::AnswerWhen::Started,
                 image_id: None,
                 replaces,
-                free_receipt: None,
             };
             let reply = self
                 .local
