@@ -1628,7 +1628,7 @@ fn the_typed_name_alone_removes_a_project_and_an_environment_that_ran_services()
                     config,
                     "--json",
                     "--why",
-                    "test",
+                    "REASON",
                     "env",
                     "rm",
                     "staging",
@@ -7220,8 +7220,6 @@ fn a_sync_a_pr_plan_and_a_build_order_retry_with_their_arguments_and_the_digest(
                 "production",
                 "--copy",
                 "web",
-                "--setup",
-                "web=make seed",
                 "--remove-on-close",
                 "false",
                 "--bots",
@@ -7230,7 +7228,7 @@ fn a_sync_a_pr_plan_and_a_build_order_retry_with_their_arguments_and_the_digest(
                 "shop",
             ],
             "ployz --json --why REASON env pr acme/web --on --from production --copy web \
-             --setup 'web=make seed' --remove-on-close false --bots true --project shop \
+             --remove-on-close false --bots true --project shop \
              --approval 3:abc",
         ),
         (

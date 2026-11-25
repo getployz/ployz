@@ -192,11 +192,16 @@ mod tests {
     /// A command a Setting or Setup Command runs, and a Cloud URL's user info, path and
     /// query, show as placeholders: the line repeats nothing typed that isn't a name.
     #[test]
-    fn the_next_line_repeats_no_command_a_setting_runs_and_no_part_of_a_cloud_url_but_its_host()
-    {
+    fn the_next_line_repeats_no_command_a_setting_runs_and_no_part_of_a_cloud_url_but_its_host() {
         for (words, line) in [
             (
-                &["env", "branch", "fix", "--setup", "web=curl -H 'Bearer SENTINEL'"][..],
+                &[
+                    "env",
+                    "branch",
+                    "fix",
+                    "--setup",
+                    "web=curl -H 'Bearer SENTINEL'",
+                ][..],
                 "ployz --why '<the goal this command serves>' env branch fix \
                  --setup 'SERVICE=COMMAND'",
             ),

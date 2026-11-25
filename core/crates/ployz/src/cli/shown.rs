@@ -23,14 +23,10 @@ impl Shown {
     /// The placeholder `arg` declares: its value name, else its id, `--cloud-url` as
     /// `CLOUD_URL`.
     pub(crate) fn declared(arg: &clap::Arg) -> Self {
-        Self(
-            arg.get_value_names()
-                .and_then(<[_]>::first)
-                .map_or_else(
-                    || arg.get_id().as_str().to_ascii_uppercase().replace('-', "_"),
-                    ToString::to_string,
-                ),
-        )
+        Self(arg.get_value_names().and_then(<[_]>::first).map_or_else(
+            || arg.get_id().as_str().to_ascii_uppercase().replace('-', "_"),
+            ToString::to_string,
+        ))
     }
 
     /// `typed` whole, for a value whose kind is never a secret, such as a name, a number,
@@ -135,7 +131,10 @@ fn is_host(host: &str) -> bool {
         .strip_prefix('[')
         .and_then(|inner| inner.strip_suffix(']'))
         .is_some_and(|inner| {
-            !inner.is_empty() && inner.chars().all(|c| c.is_ascii_hexdigit() || c == ':' || c == '.')
+            !inner.is_empty()
+                && inner
+                    .chars()
+                    .all(|c| c.is_ascii_hexdigit() || c == ':' || c == '.')
         });
     bracketed
         || (!host.is_empty()
@@ -163,13 +162,25 @@ mod tests {
             ("[::1]:22", "[::1]:22"),
             // A password that holds `://`.
             ("ssh://root:x://EXAMPLE@203.0.113.7", "ssh://HOST"),
-            ("ssh://root:EXAMPLE@203.0.113.7:22", "ssh://USER:PASSWORD@203.0.113.7:22"),
+            (
+                "ssh://root:EXAMPLE@203.0.113.7:22",
+                "ssh://USER:PASSWORD@203.0.113.7:22",
+            ),
             // A token in the path, the query or the fragment.
-            ("https://cloud.example/EXAMPLE?t=EXAMPLE#EXAMPLE", "https://cloud.example"),
+            (
+                "https://cloud.example/EXAMPLE?t=EXAMPLE#EXAMPLE",
+                "https://cloud.example",
+            ),
             // A token as the user.
-            ("https://EXAMPLE@cloud.example", "https://USER@cloud.example"),
+            (
+                "https://EXAMPLE@cloud.example",
+                "https://USER@cloud.example",
+            ),
             // A URL in the query, with a user of its own.
-            ("https://cloud.example/?next=https://EXAMPLE@x.example/", "https://HOST"),
+            (
+                "https://cloud.example/?next=https://EXAMPLE@x.example/",
+                "https://HOST",
+            ),
             // A password that holds a `/`, so its `@` sits past the authority.
             ("root:EXAMPLE/EXAMPLE@203.0.113.7", "HOST"),
             // A scheme of its own, a host and a port that aren't one.
@@ -194,11 +205,7 @@ mod tests {
             ("EXAMPLE", false),
             ("", false),
         ] {
-            assert_eq!(
-                Shown::references(typed).is_some(),
-                shown,
-                "{typed}"
-            );
+            assert_eq!(Shown::references(typed).is_some(), shown, "{typed}");
         }
     }
 }

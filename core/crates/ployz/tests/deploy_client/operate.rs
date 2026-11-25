@@ -489,7 +489,7 @@ async fn publish_reviews_volume_loss_the_servers_hold_and_publishes_once_accepte
             &format!("tcp://{address}"),
             "--json",
             "--why",
-            "test",
+            "REASON",
             "deploy",
             "--skip-deploy",
             "--accept-volume-loss",

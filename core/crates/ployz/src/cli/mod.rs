@@ -487,7 +487,10 @@ mod tests {
                 "ssh://root:SENTINEL-4564@203.0.113.7:22",
                 "ssh://USER:PASSWORD@203.0.113.7:22",
             ),
-            ("root:SENTINEL-4564@203.0.113.7", "USER:PASSWORD@203.0.113.7"),
+            (
+                "root:SENTINEL-4564@203.0.113.7",
+                "USER:PASSWORD@203.0.113.7",
+            ),
             ("SENTINEL-4564@203.0.113.7", "USER@203.0.113.7"),
             ("ssh://SENTINEL-4564@203.0.113.7", "ssh://USER@203.0.113.7"),
             (

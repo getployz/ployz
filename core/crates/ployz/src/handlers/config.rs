@@ -88,7 +88,10 @@ fn shown_assignment(typed: &str) -> Shown {
     let Ok(path) = SettingPath::parse(path) else {
         return Shown::placeholder("PATH=VALUE");
     };
-    #[expect(clippy::disallowed_methods, reason = "a path that parsed names a Setting")]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "a path that parsed names a Setting"
+    )]
     let named = Shown::verbatim(&path.to_string());
     let Some(value) = value else {
         return named;
@@ -111,17 +114,25 @@ fn shown_patch(typed: &str) -> Shown {
     if typed == "-" {
         return Shown::placeholder("-");
     }
-    let plain = |value: &Value| !matches!(value, Value::Object(_) | Value::Array(_));
-    let shows = serde_json::from_str::<serde_json::Map<String, Value>>(typed).is_ok_and(|settings| {
-        settings.iter().all(|(setting, value)| {
-            let shown = |path: SettingPath| path.shows_its_value();
-            SettingPath::parse(&format!("web.{setting}")).is_ok_and(shown)
-                && match value {
-                    Value::Array(items) => items.iter().all(plain),
-                    value => plain(value),
-                }
-        })
-    });
+    let plain = |value: &Value| match value {
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => true,
+        Value::Array(_) | Value::Object(_) => false,
+    };
+    let shows =
+        serde_json::from_str::<serde_json::Map<String, Value>>(typed).is_ok_and(|settings| {
+            settings.iter().all(|(setting, value)| {
+                let shown = |path: SettingPath| path.shows_its_value();
+                SettingPath::parse(&format!("web.{setting}")).is_ok_and(shown)
+                    && match value {
+                        Value::Array(items) => items.iter().all(plain),
+                        Value::Null
+                        | Value::Bool(_)
+                        | Value::Number(_)
+                        | Value::String(_)
+                        | Value::Object(_) => plain(value),
+                    }
+            })
+        });
     match shows {
         #[expect(
             clippy::disallowed_methods,

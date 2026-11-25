@@ -1145,10 +1145,7 @@ mod tests {
         assert_eq!(add.get_one::<bool>("accepts-ingress"), Some(&false));
         assert!(add.get_flag("reset"));
         assert_eq!(add.get_one::<u32>("wg-mtu").copied(), Some(1400));
-        assert_eq!(
-            crate::cli::cloud_url_of(add),
-            Some("example.test")
-        );
+        assert_eq!(crate::cli::cloud_url_of(add), Some("example.test"));
     }
 
     #[test]

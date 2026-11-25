@@ -113,5 +113,11 @@ pub(super) fn say(matches: &ArgMatches, environment: &EnvironmentSummary, typed:
     };
     let scope = super::super::store::scope_args(&environment.project, &environment.name);
     let assignment = format!("{path}={value}");
-    ui::hint(&Rerun::then(matches, &[&["set", assignment.as_str()][..], &scope].concat()).into());
+    ui::hint(
+        &Rerun::then(
+            matches,
+            &[&["set", assignment.as_str()][..], &scope].concat(),
+        )
+        .into(),
+    );
 }

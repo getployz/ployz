@@ -296,7 +296,7 @@ fn token_rm_revokes_a_token_by_the_name_token_ls_shows() {
                 config.to_str().unwrap(),
                 "--json",
                 "--why",
-                "test",
+                "REASON",
                 "token",
                 "rm",
                 "t2",
@@ -617,7 +617,7 @@ fn org_leave_without_yes_and_no_terminal_refuses_before_cloud_hears_of_it() {
 #[test]
 fn help_never_prints_the_cloud_urls_value() {
     let home = tempfile::tempdir().unwrap();
-    for command in [&["login"][..], &["server", "checkin"], &["server", "enroll"]] {
+    for command in [&["login"][..], &["server", "checkin"], &["server", "add"]] {
         let help = Command::new(env!("CARGO_BIN_EXE_ployz"))
             .env("HOME", home.path())
             .env("PLOYZ_CONFIG", home.path().join("config.yaml"))
