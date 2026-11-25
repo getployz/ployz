@@ -21,9 +21,9 @@ Under a second. CI runs every `ployz-verify` model in the `rust-tests (cli-*)` l
 
 Green is 24 passing tests, in three groups:
 
-- **The code holds.** `the_code_binds_every_yes_to_its_plan_and_moment` checks every command as it ships (Save, Deploy, Retry, RemovalRetry, ShutDown, Remove, Cancel, Move, Drain, a turned Machine route), prints each state count, and fails on any unreached `sometimes`: a branch the model can no longer reach makes a passing property meaningless. It leaves out the open paths below: the installed route, and the changes `open_paths` adds (a Cancel's Deployment starting, B stopping unseen, the proxies restarting).
+- **The code holds.** `the_code_binds_every_yes_to_its_plan_and_moment` checks every command as it ships (Save, Deploy, Retry, RemovalRetry, ShutDown, Remove, Cancel, Move, Drain, both Machine routes), prints each state count, and fails on any unreached `sometimes`: a branch the model can no longer reach makes a passing property meaningless. It leaves out the open paths below, the changes `open_paths` adds (a Cancel's Deployment starting, B stopping unseen, the proxies restarting).
 - **The past bugs and guards.** Each test sets one `Broken` flag that restores the code before a fix, or removes a guard, and expects a counterexample. If one goes green, the guard stopped mattering or the model lost the path that shows it.
-- **The open paths.** Six tests pass because the shipped code breaks the property (below). When one is fixed, its test goes red: move its change into the shipped model and give the fix a `Broken` flag and a breaking test, as the others have.
+- **The open paths.** Five tests pass because the shipped code breaks the property (below). When one is fixed, its test goes red: move its change into the shipped model and give the fix a `Broken` flag and a breaking test, as the others have.
 
 | Commit | `Broken` flag | Command |
 |---|---|---|
@@ -33,6 +33,7 @@ Green is 24 passing tests, in three groups:
 | 1c93248b9b | `agent_yes_unrefused`, `gate_skips_yes`, `drain_runs_harmless` | Save, Drain |
 | bad55e1aed | `drain_runs_gone` | Drain |
 | 273b77fabc | `turn_trusts_arrival` | Machine, turned route |
+| #4558 | `installed_trusts_arrival` | Machine, installed route |
 | guard | `member_yes_answers_protected` | Save |
 | guard | `retire_skips_last_in` | Drain |
 | guard | `retire_skips_unlisting` (removes as `retire_unconfirmed` does) | Drain |
@@ -65,7 +66,6 @@ Each is scored per AGENTS.md, filed when a user can reach it, and left in the co
 
 | Issue | Test | What runs | F | S |
 |---|---|---|---|---|
-| #4553 | `an_installed_step_runs_for_a_key_revoked_while_it_drained` | `finish_installed` checks the caller's management access when the call arrives; its work drains, takes `exclusive_turn`, which checks nothing, and stops or removes a Container for a Device `set_device` removed meanwhile. Removing a Container can delete its only anonymous-volume data. Fixed by #4558 (open), which checks under each turn the work takes. | 1 | 10 |
 | #4555 | `a_cancel_s_yes_while_queued_stops_a_started_deployment` | A carried-digest case. `approve_cancel` binds the Deployment and the review version; Head's token counts only ended Deployments, so the runner's claim moves neither, and a carried yes to take a queued Deployment out of the queue stops it partway once it runs (`Plan::Started`). No end-to-end approval path is shown: an authorized caller's cancel skips the first ask, and a protected member's gets a refusal. | 1 | 4 |
 | none | `a_retirement_removes_a_global_s_copy_beside_a_crash_looping_copy_read_running` | B crash-loops under `unless-stopped` with no healthcheck, from before the ask. Both of Cloud's reads (`drainPlan` at the gate and at `stillCovered`, `server-operations.server.ts:92`) land on a moment it reads Running, during a long failed start or from a lagging observation. `last_in` counts B In, the proxies read a Serving Container and drop A, and `retire` removes A. B exits again before it serves, and G stays down. S9 meets the fix bar: #4567 makes every Machine refuse a Global outside a reserved `ployz-system` identity. | 1 until #4567 | 9 |
 | #4556 | `a_retirement_counts_a_global_s_other_copy_that_stopped_unseen_before_its_guard` | G's Container on B exits after Cloud's compare and before the drained Server's guard reads, and its exit has not replicated when the proxies drop A. B's daemon still answers In, not leaving, so `last_in` counts it (had the proxies already dropped B, they would route A alone and `last_in` would refuse); the proxies read B Running and route it alone; `retire` removes A. Had the proxies read the exit, they would keep A routed and the Drain would report `NotRetired` (`UNLISTING_KEEPS`). | 1 until #4567 | 6 |

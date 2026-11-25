@@ -13,7 +13,7 @@ use super::{Caller, Error, FullCaller, LocalMachine};
 use crate::machine::LocalMachineRecord;
 
 impl LocalMachine {
-    /// Set or clear one labelled Management Client slot under mutation admission.
+    /// Set or clear one labelled Management Client slot, as a key change.
     ///
     /// `Set` stages a fresh client public key in the slot and returns its Management
     /// Capability. The slot's accepted key remains usable through read-only replacement
@@ -38,16 +38,16 @@ impl LocalMachine {
             return Err(Error::DeviceSlot);
         }
         let caller = self.call.caller();
-        self.finish_mutation(move |local| async move {
-            local
-                .owner
-                .mutate(move |store| {
+        self.finish_key_change(move |local, held| {
+            Box::pin(async move {
+                held.mutate(&local.owner, move |store, held| {
                     store.record().require_participating()?;
                     LocalMachine::require_slot_authority(caller, store.record())?;
                     let capability = match request {
                         SetManagementClientRequest::Set { label } => {
                             let client = iroh::SecretKey::generate();
                             store.stage_management_client(
+                                held,
                                 label,
                                 ClientKey::from_bytes(*client.public().as_bytes()),
                             )?;
@@ -57,20 +57,21 @@ impl LocalMachine {
                             ))
                         }
                         SetManagementClientRequest::Clear { label } => {
-                            store.clear_management_client(&label)?;
+                            store.clear_management_client(held, &label)?;
                             None
                         }
                     };
                     Ok(SetManagementClientResponse { capability })
                 })
                 .await?
+            })
         })
         .await
     }
 
     /// Approve one Device on this Machine, or remove the key a code names, Device or passkey,
-    /// under mutation admission. A removal goes through [`LocalMachineStore::remove_key`],
-    /// so the key stays removed and the last key stays.
+    /// as a key change, which waits out a switch step under way. A removal goes through
+    /// [`LocalMachineStore::remove_key`], so the key stays removed and the last key stays.
     ///
     /// The scope recheck runs on the Machine the caller dialed: a Device removed there
     /// while its own request waited for admission changes nothing. A routed call reaches
@@ -86,59 +87,68 @@ impl LocalMachine {
     ///
     /// [`LocalMachineStore::remove_key`]: crate::machine::LocalMachineStore::remove_key
     pub async fn set_device(&self, request: SetDeviceRequest) -> Result<DeviceSet, Error> {
-        let full = self.full_caller()?;
-        self.finish_mutation(move |local| async move {
-            local
-                .owner
-                .mutate(move |store| {
+        self.finish_key_change(move |local, held| {
+            Box::pin(async move {
+                let full = local.full_caller()?;
+                held.mutate(&local.owner, move |store, held| {
                     store.record().require_participating()?;
                     let by = full.approver(store.record())?;
                     match request {
-                        SetDeviceRequest::Approve { key } => {
-                            trust(store, (NewKey::Device { key }, None), by, Timestamp::now())
-                        }
+                        SetDeviceRequest::Approve { key } => trust(
+                            store,
+                            held,
+                            (NewKey::Device { key }, None),
+                            by,
+                            Timestamp::now(),
+                        ),
                         SetDeviceRequest::Remove { code } => {
-                            let removed = store.remove_by_code(code)?;
+                            let removed = store.remove_by_code(held, code)?;
                             Ok(removal(code, removed, by))
                         }
                         SetDeviceRequest::RemoveKey { key } => {
-                            let removed = store.remove_key(key)?;
+                            let removed = store.remove_key(held, key)?;
                             Ok(removal(key.code(), removed, by))
                         }
                         SetDeviceRequest::RemoveGrant { key, retired } => {
-                            let removed = store.remove_grant(key, retired)?;
+                            let removed = store.remove_grant(held, key, retired)?;
                             Ok(removal(key.code(), removed, by))
                         }
                     }
                 })
                 .await?
+            })
         })
         .await
     }
 
     /// Trust one person's passkey or CLI Device on this Machine alone, as root on this
-    /// Server asks with `ployz key add`, under mutation admission. It reuses [`trust`], so a
+    /// Server asks with `ployz key add`, as a key change. It reuses [`trust`], so a
     /// removed key, or one that collides with a key held as another kind, is refused.
     ///
     /// # Errors
     /// As [`Self::set_device`], and as [`trust`] for a key it refuses.
     pub async fn set_key(&self, request: SetKeyRequest) -> Result<DeviceSet, Error> {
-        let full = self.full_caller()?;
-        self.finish_mutation(move |local| async move {
-            local
-                .owner
-                .mutate(move |store| {
+        self.finish_key_change(move |local, held| {
+            Box::pin(async move {
+                let full = local.full_caller()?;
+                held.mutate(&local.owner, move |store, held| {
                     store.record().require_participating()?;
                     let by = full.approver(store.record())?;
-                    trust(store, (request.key.into(), None), by, Timestamp::now())
+                    trust(
+                        store,
+                        held,
+                        (request.key.into(), None),
+                        by,
+                        Timestamp::now(),
+                    )
                 })
                 .await?
+            })
         })
         .await
     }
 
-    /// Apply a person's signed change to the keys this Machine trusts, under mutation
-    /// admission: a trust as a step of a bundle whose window holds on this Machine's floored
+    /// Apply a person's signed change to the keys this Machine trusts, as a key change: a trust as a step of a bundle whose window holds on this Machine's floored
     /// clock and that names this Machine, a removal alone or in a bundle. Signature, window
     /// and removed keys are checked inside the record write, so a removal that lands first
     /// wins.
@@ -152,14 +162,13 @@ impl LocalMachine {
     /// [`Error::RecordOwner`], and [`Error::Store`] for a removed key, the last key, or a
     /// record that cannot be written.
     pub async fn key_step(&self, request: KeyStepRequest) -> Result<DeviceSet, Error> {
-        self.finish_mutation(move |local| async move {
-            let cluster = crate::sealing_key::SealingKey::load(local.owner.data_dir())
-                .map_err(Error::JoinRecord)?
-                .map(|key| key.public_key());
-            let approvals = local.approvals.clone();
-            local
-                .owner
-                .mutate(move |store| {
+        self.finish_key_change(move |local, held| {
+            Box::pin(async move {
+                let cluster = crate::sealing_key::SealingKey::load(local.owner.data_dir())
+                    .map_err(Error::JoinRecord)?
+                    .map(|key| key.public_key());
+                let approvals = local.approvals.clone();
+                held.mutate(&local.owner, move |store, held| {
                     let record = store.record();
                     record.require_participating()?;
                     let now = approvals.observed_now(Timestamp::now())?;
@@ -184,14 +193,15 @@ impl LocalMachine {
                             key,
                             issued_at,
                             prior,
-                        } => trust(store, (*key, prior), by, issued_at),
+                        } => trust(store, held, (*key, prior), by, issued_at),
                         KeyVerified::Remove { key } => {
-                            let removed = store.remove_key(key)?;
+                            let removed = store.remove_key(held, key)?;
                             Ok(removal(key.code(), removed, by))
                         }
                     }
                 })
                 .await?
+            })
         })
         .await
     }
@@ -218,21 +228,25 @@ impl FullCaller {
 impl LocalMachine {
     /// Activate a staged management key for an authenticated operational RPC.
     ///
+    /// It retires the key its slot accepted, as a key change: a Volume step the retiring
+    /// key asked for ends first, so none still runs once the new key is in. Only the first
+    /// call on a staged key waits for it.
+    ///
     /// # Errors
     /// Returns mutation admission, record owner or persistence errors.
     pub async fn activate_management_client(&self, remote: ClientKey) -> Result<(), Error> {
         if self.record().pending_label(&remote).is_none() {
             return Ok(());
         }
-        self.finish_mutation(move |local| async move {
-            local
-                .owner
-                .mutate(move |store| {
+        self.finish_key_change(move |local, held| {
+            Box::pin(async move {
+                held.mutate(&local.owner, move |store, held| {
                     store
-                        .activate_management_client(remote)
+                        .activate_management_client(held, remote)
                         .map_err(Error::from)
                 })
                 .await?
+            })
         })
         .await
     }
@@ -254,6 +268,7 @@ fn removal(code: DeviceCode, removed: bool, by: PasskeyApprover) -> DeviceSet {
 /// passkey. A `prior` is only ever a grant's, so a Device or passkey with one is refused.
 fn trust(
     store: &mut crate::machine::LocalMachineStore,
+    held: &crate::machine::KeyChangeHeld,
     (key, prior): (NewKey, Option<Prior>),
     by: PasskeyApprover,
     issued_at: Timestamp,
@@ -350,6 +365,7 @@ fn trust(
             let kind = KeyKind::from(grant.kind);
             Ok(approved(
                 store.approve_grant(
+                    held,
                     TrustedGrant {
                         grant,
                         approved_by: by,
@@ -424,7 +440,7 @@ mod tests {
         );
         local.activate_management_client(key).await.unwrap();
         let remote = local.clone().with_management_client(key);
-        let lock = local.exclusive_turn().await;
+        let lock = local.owner().admission_lock().write_owned().await;
         let clear = local.set_management_client(clear());
         let queued = remote.set_management_client(set());
         tokio::pin!(clear, queued);
@@ -737,7 +753,7 @@ mod tests {
                 .unwrap();
         }
         let caller = local.clone().with_management_client(first.into());
-        let lock = local.exclusive_turn().await;
+        let lock = local.owner().admission_lock().write_owned().await;
         let remove = local.set_device(SetDeviceRequest::Remove { code: first.code() });
         let queued = caller.set_device(SetDeviceRequest::Approve { key: second });
         tokio::pin!(remove, queued);

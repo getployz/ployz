@@ -2,7 +2,7 @@
 
 use ployz_core::{MachineUpgradeAttempt, RequestMachineUpgradeRequest};
 
-use super::{Caller, Error, LocalMachine, Scope};
+use super::{Caller, Checked, Error, LocalMachine, Scope};
 use crate::installer::upgrade::ReleaseChoice;
 
 impl LocalMachine {
@@ -30,8 +30,12 @@ impl LocalMachine {
         {
             return Ok(attempt);
         }
-        let (_turn, installation) = self.try_exclusive_installation()?;
-        let choice = self.release_choice();
+        let super::turns::ExclusiveInstallation {
+            local,
+            turn: _turn,
+            installation,
+        } = self.try_exclusive_installation()?;
+        let choice = release_choice(&local);
         crate::installer::require_standard_machine_paths(&data_dir, &run_dir.join("ployz.sock"))
             .map_err(crate::installer::upgrade::Error::NonstandardPaths)?;
         crate::installer::upgrade::request(
@@ -53,14 +57,14 @@ impl LocalMachine {
             crate::installer::upgrade::Downgrade::Allowed
         }
     }
+}
 
-    /// The releases this call may name: a Full caller any published release, an Operator
-    /// a Release Channel or what one resolves to now.
-    fn release_choice(&self) -> ReleaseChoice {
-        match self.scope() {
-            Scope::Full(_) => ReleaseChoice::AnyRelease,
-            Scope::Operator => ReleaseChoice::ChannelResolved,
-        }
+/// The releases this call may name: a Full caller any published release, an Operator a
+/// Release Channel or what one resolves to now.
+fn release_choice(local: &Checked) -> ReleaseChoice {
+    match local.scope() {
+        Scope::Full(_) => ReleaseChoice::AnyRelease,
+        Scope::Operator => ReleaseChoice::ChannelResolved,
     }
 }
 
