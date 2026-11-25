@@ -326,6 +326,48 @@ A volume that was never deployed holds no data, so it goes on your next deploy w
 A mounted volume whose first deploy is still running counts as deployed, since that deploy may
 already have created it. Saving or deploying its deletion asks first, the same way.
 
+### Get deleted data back
+
+Each server keeps its own trash. Run these on the server with `sudo`, or from your computer with
+`--connect ssh://USER@HOST`. A context that reaches several servers is refused: pick one with
+`--connect`. Ployz Cloud can't list, restore or empty a trash.
+
+```sh
+sudo ployz volume trash ls
+```
+
+Each entry names its volume by project, environment and volume ID, like
+`shop-production_vol-0500e190-…`, and says when the trash deletes it.
+
+`ployz volume trash restore ID` puts one entry back. A deleted volume comes back only once every
+server in the Cluster answers that it holds no copy of it, because the restored data would
+otherwise be a second copy. Until then it stays in the trash, and `trash ls` shows it as
+restoring. Each try keeps it there 7 more days, so run the restore again once the servers
+answer.
+
+A deleted volume comes back unused. Redeploy a deployment from before the removal, and its
+services mount the restored data. That rollback lasts until your next deploy, so discard the
+removal too, and save that before any automatic deploy runs, or that deploy deletes the volume
+again. Review the discard with `ployz diff` before you save it:
+
+```sh
+ployz deployment redeploy 12 --project shop --env production
+ployz discard volumes.data --project shop --env production
+ployz deploy --skip-deploy --project shop --env production
+```
+
+The restore names the project and environment when you're signed in where you run it, and
+otherwise the volume's Namespace.
+
+A mirror or a mirror's old data comes back as an old copy.
+
+`sudo ployz volume trash empty` deletes everything in the server's trash for good, after you
+confirm, except entries being restored. Name entry IDs to delete only those, restoring ones
+included. An entry Ployz can't read stays in the trash, and
+`trash ls` and `trash empty` print the command that deletes it and exit with code 3. Without a
+terminal, `trash empty` with no IDs deletes nothing and prints the command naming each entry it
+can read. It exits with code 2, or 3 while an entry it can't read remains.
+
 ## Good to know
 
 - **A branch gets an empty volume.** A [branch](../environments/environments.md) that copies
