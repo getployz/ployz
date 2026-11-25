@@ -75,32 +75,33 @@ impl Shown {
     }
 
     /// `url` as an error names it: its scheme, host and port, with each other part it has
-    /// named in its place, as in `https://USER:PASSWORD@cloud.example/PATH?QUERY#FRAGMENT`.
-    /// A scheme not in `schemes` shows as `SCHEME`. When an `@` follows the authority, user
-    /// info may have held a `/`, so what parsed as the host and port shows as `HOST`.
+    /// named in its place, as in
+    /// `https://<USER>:<PASSWORD>@cloud.example/<PATH>?<QUERY>#<FRAGMENT>`. A scheme not in
+    /// `schemes` shows as `<SCHEME>`. When an `@` follows the authority, user info may have
+    /// held a `/`, so what parsed as the host and port shows as `<HOST>`.
     pub(crate) fn url_redacted(url: &Url, schemes: &[&str]) -> Self {
         let scheme = url.scheme();
         let mut shown = match schemes.contains(&scheme) {
             true => format!("{scheme}://"),
-            false => "SCHEME://".to_owned(),
+            false => "<SCHEME>://".to_owned(),
         };
         match (url.username().is_empty(), url.password().is_some()) {
-            (_, true) => shown.push_str("USER:PASSWORD@"),
-            (false, false) => shown.push_str("USER@"),
+            (_, true) => shown.push_str("<USER>:<PASSWORD>@"),
+            (false, false) => shown.push_str("<USER>@"),
             (true, false) => {}
         }
         match url[url::Position::BeforePath..].contains('@') {
-            true => shown.push_str("HOST"),
+            true => shown.push_str("<HOST>"),
             false => shown.push_str(&host_and_port(url)),
         }
         if !matches!(url.path(), "" | "/") {
-            shown.push_str("/PATH");
+            shown.push_str("/<PATH>");
         }
         if url.query().is_some() {
-            shown.push_str("?QUERY");
+            shown.push_str("?<QUERY>");
         }
         if url.fragment().is_some() {
-            shown.push_str("#FRAGMENT");
+            shown.push_str("#<FRAGMENT>");
         }
         Self(shown)
     }
@@ -122,6 +123,16 @@ pub(crate) fn placeholder_in(typed: &str) -> bool {
                 })
         })
     })
+}
+
+/// Whether `typed` may hold URL user info: it holds `://`, or an `@` before its first `/`.
+/// Such text never shows as a path, whatever it ends with.
+pub(crate) fn may_hold_user_info(typed: &str) -> bool {
+    typed.contains("://")
+        || typed
+            .split('/')
+            .next()
+            .is_some_and(|head| head.contains('@'))
 }
 
 /// Whether `typed` is one placeholder whole, `<COMMAND>`.
@@ -220,7 +231,8 @@ pub(crate) struct ExistingPath(PathBuf);
 impl ExistingPath {
     pub(crate) fn parse(text: &str) -> Option<Self> {
         let path = Path::new(text);
-        (text == "-" || path.try_exists().is_ok_and(|exists| exists)).then(|| Self(path.to_owned()))
+        let exists = text == "-" || path.try_exists().is_ok_and(|exists| exists);
+        (exists && !may_hold_user_info(text)).then(|| Self(path.to_owned()))
     }
 }
 
@@ -261,14 +273,16 @@ impl ConfigPath {
             .extension()
             .is_some_and(|extension| extension == "yaml" || extension == "yml");
         let named = yaml || crate::config_dir::ConfigDir::new(path).kept();
-        (named && !Self::reads_as_url(text)).then(|| Self(path.to_owned()))
+        (named && !may_hold_user_info(text) && !Self::reads_as_url(text))
+            .then(|| Self(path.to_owned()))
     }
 
-    /// Whether `text` is a URL, `https://…` or `user:…@host/…`, which `--ployz-config`
-    /// refuses: it names no file, and its user info may be a credential that every error
-    /// naming the config would repeat. A one-letter scheme is a Windows drive.
+    /// Whether `text` is a URL, `https://…` or `user:…@host/…`, parsed or not, which
+    /// `--ployz-config` refuses: it names no file, and its user info may be a credential
+    /// that every error naming the config would repeat. A one-letter scheme is a Windows
+    /// drive.
     pub(crate) fn reads_as_url(text: &str) -> bool {
-        Url::parse(text).is_ok_and(|url| url.scheme().len() > 1)
+        text.contains("://") || Url::parse(text).is_ok_and(|url| url.scheme().len() > 1)
     }
 }
 
@@ -400,30 +414,30 @@ mod tests {
             (
                 "https://example.test/ployz",
                 None,
-                "https://example.test/PATH",
+                "https://example.test/<PATH>",
             ),
             (
                 "https://EXAMPLE:EXAMPLE@cloud.example:8443/EXAMPLE?t=EXAMPLE#EXAMPLE",
                 None,
-                "https://USER:PASSWORD@cloud.example:8443/PATH?QUERY#FRAGMENT",
+                "https://<USER>:<PASSWORD>@cloud.example:8443/<PATH>?<QUERY>#<FRAGMENT>",
             ),
             (
                 "https://EXAMPLE@cloud.example",
                 None,
-                "https://USER@cloud.example",
+                "https://<USER>@cloud.example",
             ),
             (
                 "https://cloud.example/?next=https://EXAMPLE@x.example/",
                 None,
-                "https://HOST?QUERY",
+                "https://<HOST>?<QUERY>",
             ),
             // A password with a `/` and digits before it, which parse as a port.
             (
                 "https://EXAMPLE:1234/EXAMPLE@cloud.example",
                 None,
-                "https://HOST/PATH",
+                "https://<HOST>/<PATH>",
             ),
-            ("ftp://cloud.example", None, "SCHEME://cloud.example"),
+            ("ftp://cloud.example", None, "<SCHEME>://cloud.example"),
         ] {
             let url = url::Url::parse(typed).unwrap();
             let schemes = &["http", "https"];

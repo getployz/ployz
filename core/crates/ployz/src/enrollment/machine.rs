@@ -152,7 +152,10 @@ pub(crate) fn machine_name_requested(
     };
     MachineName::parse(requested).map(Some).map_err(|error| {
         let failure = Error::from(error);
-        match MachineName::from_hostname(requested) {
+        // A suggestion fixes a hostname's case and separators. Text with `:`, `/` or `@`
+        // is no hostname, and may be a URL whose user info the suggestion would keep.
+        let hostname = !requested.contains([':', '/', '@']);
+        match MachineName::from_hostname(requested).filter(|_| hostname) {
             Some(suggested) => failure.hint(Hint::Closest(suggested.into())),
             None => failure,
         }

@@ -149,19 +149,19 @@ fn a_connection_that_doesnt_parse_prints_no_part_that_may_be_a_secret() {
     for (typed, said) in [
         (
             "https://SENTINEL@cloud.example/SENTINEL?t=SENTINEL",
-            "unsupported connection scheme: \"SCHEME://USER@cloud.example/PATH?QUERY\"",
+            "unsupported connection scheme: \"<SCHEME>://<USER>@cloud.example/<PATH>?<QUERY>\"",
         ),
         (
             "tcp://SENTINEL@203.0.113.7:1",
-            "invalid TCP address \"tcp://USER@203.0.113.7:1\"",
+            "invalid TCP address \"tcp://<USER>@203.0.113.7:1\"",
         ),
         (
             "ssh+go://SENTINEL:SENTINEL@203.0.113.7",
-            "connection scheme was removed: \"ssh+go://USER:PASSWORD@203.0.113.7\"",
+            "connection scheme was removed: \"ssh+go://<USER>:<PASSWORD>@203.0.113.7\"",
         ),
         (
             "x-SENTINEL://203.0.113.7/?q=SENTINEL",
-            "unsupported connection scheme: \"SCHEME://203.0.113.7?QUERY\"",
+            "unsupported connection scheme: \"<SCHEME>://203.0.113.7?<QUERY>\"",
         ),
         // A password that holds a `/`: what reads as the host is part of it, so no URL
         // parses.
@@ -173,7 +173,7 @@ fn a_connection_that_doesnt_parse_prints_no_part_that_may_be_a_secret() {
         // authority marks the host as one to withhold.
         (
             "ssh+go://root:1234/SENTINEL@203.0.113.7",
-            "connection scheme was removed: \"ssh+go://HOST/PATH\"",
+            "connection scheme was removed: \"ssh+go://<HOST>/<PATH>\"",
         ),
     ] {
         let refused = typed.parse::<super::Connection>().unwrap_err();

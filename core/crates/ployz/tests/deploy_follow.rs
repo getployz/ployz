@@ -670,7 +670,7 @@ fn cloud_failure_recovery_keeps_selected_config_and_actual_runtime_identity() {
                 "--color",
                 "never",
                 "--why",
-                "test",
+                "<REASON>",
                 "deploy",
                 "--project",
                 "shop",

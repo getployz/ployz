@@ -100,7 +100,7 @@ async fn an_unreachable_destination_reports_its_ssh_failure_not_the_local_config
     assert!(!installed.get(), "never installs on this host");
     let causes = error.causes().join("\n");
     assert!(
-        causes.contains("USER@127.0.0.1"),
+        causes.contains("<USER>@127.0.0.1"),
         "names the SSH destination: {error}: {causes}"
     );
 }

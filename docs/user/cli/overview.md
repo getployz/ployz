@@ -439,12 +439,20 @@ be a secret typed in the wrong place. A value an option refuses shows as `<VALUE
 command takes as `<WORD>`, unless it is a command or a flag. A context name or a `server reject`
 pattern shows as typed when it reads as one, else as `<CONTEXT>` or `<PATTERN>`. An error that
 names a Cloud or a connection shows its scheme, host and port, and marks what it leaves out:
-`USER` or `USER:PASSWORD`, then `/PATH`, `?QUERY` and `#FRAGMENT`, as in
-`https://USER@cloud.example/PATH`. When SSH to a server fails, Ployz says why in its own words,
+`<USER>` or `<USER>:<PASSWORD>`, then `/<PATH>`, `?<QUERY>` and `#<FRAGMENT>`, as in
+`https://<USER>@cloud.example/<PATH>`. When SSH to a server fails, Ployz says why in its own words,
 such as a refused key or a host key that doesn't match, and never repeats ssh's output, which can
 include the user; run `ssh` to the server yourself to see it. `--help` names each variable it
 reads, such as `PLOYZ_CLOUD_URL` and `PLOYZ_CONTEXT`, without its value. `--ployz-config` takes a
 file path and refuses a URL.
+
+Nothing Ployz prints shows the user name or password of a URL, whether you typed it, stored it or
+an app logged it. Results, `--json`, errors, hints, `ployz get` and `ployz logs` all print
+`postgres://app:hunter2@db/shop` as `postgres://<USER>:<PASSWORD>@db/shop`, and
+`ssh://root@203.0.113.7` as `ssh://<USER>@203.0.113.7`. Two commands pass output on exactly as
+it was written: `ployz exec`, which relays what your command prints in the container, and
+`ployz github cat`, which prints a file. To see a value whole, read it where it's used, such as
+`ployz exec web -- printenv DATABASE_URL`.
 `ployz logs` reading your servers prints each line on the stream your app wrote it to, so add
 `2>&1` to pipe every line; see [Logs](../observe/logs.md#read-logs-from-the-cli).
 

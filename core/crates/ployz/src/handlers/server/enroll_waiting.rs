@@ -1,6 +1,6 @@
 //! Select waiting hosts by name, review Cloud's plan, and follow its enrollment attempts.
 
-use std::{collections::BTreeMap, io::IsTerminal, time::Duration};
+use std::{collections::BTreeMap, time::Duration};
 
 use chrono::DateTime;
 use clap::{ArgMatches, Command};
@@ -329,8 +329,7 @@ fn plan_table(plan: &Plan, selected: &[&Waiting]) -> Table {
 /// Show `plan` and, unless `--yes` was given, ask: `ask` is this command with `--yes`.
 fn review(plan: &Plan, selected: &[&Waiting], ask: Option<Rerun>, all: bool) -> Result<(), Error> {
     if !ui::json() {
-        let _ = plan_table(plan, selected)
-            .write(&mut anstream::stderr(), std::io::stderr().is_terminal());
+        let _ = plan_table(plan, selected).write(&mut ui::stderr(), ui::stderr_is_terminal());
         ui::note(format_args!(
             "{} to enroll · {} skipped · {} providers · {} networks",
             plan.plan.len(),

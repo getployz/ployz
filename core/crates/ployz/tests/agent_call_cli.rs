@@ -382,12 +382,79 @@ fn no_output_repeats_a_credential_typed_where_it_does_not_parse() {
             [&why[..], &["logs", "web", "--tail", "SENTINEL"]].concat(),
             vec![],
         ),
+        // A URL that doesn't parse, for its port, given as the config.
+        (
+            vec![
+                "--ployz-config",
+                "https://user:SENTINEL@example.invalid:99999/config.yaml",
+                "status",
+            ],
+            vec![],
+        ),
+        // A connection no context holds, named in its not-found error.
+        (
+            [
+                &why[..],
+                &[
+                    "ctx",
+                    "use",
+                    "lab",
+                    "--connection",
+                    "ssh://user:SENTINEL@x.example",
+                ],
+            ]
+            .concat(),
+            vec![],
+        ),
+        // A Server name a suggestion would make a DNS label of, keeping the password.
+        (
+            [
+                &why[..],
+                &["server", "add", "--name", "https://user:sentinel@x.example"],
+            ]
+            .concat(),
+            vec![("PLOYZ_ENROLL_TOKEN", "enroll-test".to_owned())],
+        ),
+        // A docs page that doesn't exist, and a search whose result repeats its query.
+        (
+            [
+                &why[..],
+                &["docs", "https://user:SENTINEL@x.example/missing.md"],
+            ]
+            .concat(),
+            vec![],
+        ),
+        (
+            [
+                &why[..],
+                &["docs", "https://user:SENTINEL@x.example/domains"],
+            ]
+            .concat(),
+            vec![],
+        ),
+        // A token file that can't be read, named in the error.
+        (
+            [
+                &why[..],
+                &[
+                    "server",
+                    "add",
+                    "--token-file",
+                    "https://user:SENTINEL@x.example",
+                ],
+            ]
+            .concat(),
+            vec![],
+        ),
     ] {
         for json in [false, true] {
             let args = [if json { &["--json"][..] } else { &[] }, &args].concat();
             let output = ployz_with(home.path(), &args, &env);
             let said = format!("{}{}", text(&output.stdout), text(&output.stderr));
-            assert!(!said.contains("SENTINEL"), "{args:?} {env:?}: {said}");
+            assert!(
+                !said.to_ascii_lowercase().contains("sentinel"),
+                "{args:?} {env:?}: {said}"
+            );
             assert!(!said.is_empty(), "{args:?}: said nothing");
         }
     }

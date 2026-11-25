@@ -575,7 +575,7 @@ fn typed_parsers() -> [(TypeId, Parse); 12] {
 /// id means different things in different commands, every type it may be. Any other text
 /// argument, such as a message, a reason, a command, a key, a URL or a pattern, shows as
 /// its placeholder.
-const PARSED: [(&str, Parse); 58] = [
+const PARSED: [(&str, Parse); 59] = [
     ("accept-volume-loss", named::<VolumeName>),
     ("approval", minted),
     ("build-concurrency", parsed::<u32>),
@@ -597,6 +597,7 @@ const PARSED: [(&str, Parse); 58] = [
     ("domain", parsed::<IngressHost>),
     ("env", named::<EnvironmentName>),
     ("environment", named::<EnvironmentName>),
+    ("events", path),
     ("expect", parsed::<u64>),
     ("expect-version", parsed::<ReviewVersion>),
     ("file", parsed::<ConfigFileName>),

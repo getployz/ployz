@@ -2,8 +2,6 @@
 //! join Cloud hasn't sent, cancelling their attempt. Their check-in loop stops and they won't
 //! come back under the same Fleet Token.
 
-use std::io::IsTerminal;
-
 use clap::{ArgMatches, Command};
 use globset::Glob;
 use ployz_core::RpcErrorCode;
@@ -100,8 +98,7 @@ pub(crate) fn reject(root: &ArgMatches) -> Result<(), Error> {
                 Cell::from("-"),
             ]);
         }
-        let stderr = std::io::stderr();
-        let _ = table.write(&mut anstream::stderr(), stderr.is_terminal());
+        let _ = table.write(&mut ui::stderr(), ui::stderr_is_terminal());
         if !joining.is_empty() {
             let them = if joining.len() == 1 { "it" } else { "them" };
             ui::warn(format!(

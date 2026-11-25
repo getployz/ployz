@@ -391,7 +391,8 @@ fn usage_failure(error: clap::Error, tree: &Command) -> Error {
         tree,
     );
     if !wants_json {
-        error.exit();
+        let _ = write!(crate::ui::stderr(), "{}", error.render().ansi());
+        return Error::exit(u8::try_from(error.exit_code()).unwrap_or(2));
     }
     crate::ui::init(true, crate::ui::Color::Auto);
     clap_usage(&error)

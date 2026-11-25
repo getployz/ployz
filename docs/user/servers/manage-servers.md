@@ -1056,7 +1056,7 @@ CLI use them only through a server on a newer release. While every newer server 
 **Servers** page reads **Upgrade your server over SSH**, and the CLI says:
 
 ```text
-Machine 0123… runs Ployz 0.3.2, which can't show which Cluster it belongs to. Upgrade it to 0.3.3 or later over SSH: ployz server upgrade stable SERVER --connect ssh://USER@HOST
+Machine 0123… runs Ployz 0.3.2, which can't show which Cluster it belongs to. Upgrade it to 0.3.3 or later over SSH: ployz server upgrade stable SERVER --connect ssh://<USER>@HOST
 ```
 
 The server keeps running your apps, so don't forget it. Upgrade it over SSH, as for a server on 0.2

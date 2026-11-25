@@ -420,7 +420,11 @@ async fn forward_exec(
     detach: bool,
 ) -> Result<i32, Error> {
     let mut written = ExecWriter::default();
-    let (mut stdout, mut stderr) = (crate::ui::stdout_bytes(), std::io::stderr());
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "a container's output, relayed byte for byte"
+    )]
+    let (mut stdout, mut stderr) = (crate::ui::relayed_stdout(), crate::ui::relayed_stderr());
     while let Some(payload) = output.next().await {
         let frame = match payload.map(|payload| ExecResponseFrame::decode(&payload)) {
             Ok(Ok(frame)) => frame,
@@ -1223,7 +1227,7 @@ fn print_stored(line: &StoredLine, utc: bool) -> Result<(), Error> {
         return Ok(());
     }
     let output: &mut dyn Write = if stderr {
-        &mut std::io::stderr()
+        &mut crate::ui::stderr_bytes()
     } else {
         &mut crate::ui::stdout_bytes()
     };
@@ -1325,7 +1329,7 @@ fn print_entry(
         return Ok(());
     };
     let output: &mut dyn Write = if stderr {
-        &mut std::io::stderr()
+        &mut crate::ui::stderr_bytes()
     } else {
         &mut crate::ui::stdout_bytes()
     };

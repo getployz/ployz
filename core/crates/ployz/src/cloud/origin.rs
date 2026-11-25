@@ -112,7 +112,7 @@ impl CloudOrigin {
     }
 
     /// As an error names it: its scheme, host and port, with any user info, path, query or
-    /// fragment marked in place (`https://USER@cloud.example/PATH`), and `CLOUD_URL` when it
+    /// fragment marked in place (`https://<USER>@cloud.example/<PATH>`), and `CLOUD_URL` when it
     /// isn't a URL at all.
     pub(crate) fn shown(&self) -> Shown {
         url::Url::parse(&self.0).map_or_else(
@@ -199,7 +199,10 @@ mod tests {
         assert_eq!(
             CloudOrigin::checked("ftp://EXAMPLE@ployz.dev/EXAMPLE")
                 .map_err(|refused| (refused.given.to_string(), refused.why)),
-            Err(("SCHEME://USER@ployz.dev/PATH".to_owned(), Refusal::Scheme))
+            Err((
+                "<SCHEME>://<USER>@ployz.dev/<PATH>".to_owned(),
+                Refusal::Scheme
+            ))
         );
     }
 
@@ -211,22 +214,22 @@ mod tests {
             (
                 "https://EXAMPLE:EXAMPLE@cloud.example",
                 Refusal::UserInfo,
-                "https://USER:PASSWORD@cloud.example",
+                "https://<USER>:<PASSWORD>@cloud.example",
             ),
             (
                 "EXAMPLE@cloud.example",
                 Refusal::UserInfo,
-                "https://USER@cloud.example",
+                "https://<USER>@cloud.example",
             ),
             (
                 "https://cloud.example/?token=EXAMPLE",
                 Refusal::QueryOrFragment,
-                "https://cloud.example?QUERY",
+                "https://cloud.example?<QUERY>",
             ),
             (
                 "https://cloud.example#EXAMPLE",
                 Refusal::QueryOrFragment,
-                "https://cloud.example#FRAGMENT",
+                "https://cloud.example#<FRAGMENT>",
             ),
             ("<CLOUD_URL>", Refusal::NoHost, "<CLOUD_URL>"),
         ] {

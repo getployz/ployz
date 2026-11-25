@@ -31,8 +31,13 @@ impl CapturedBuild {
             if let Some(scrub) = scrub
                 && std::env::var_os("GITHUB_ACTIONS").is_some_and(|value| value == "true")
             {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "the runner hides a secret only when its mask line names it exactly"
+                )]
+                let stderr = crate::ui::relayed_stderr();
                 scrub
-                    .mask_github(&mut std::io::stderr().lock())
+                    .mask_github(&mut stderr.lock())
                     .map_err(|error| BuildError::Request(error.to_string()))?;
             }
             ployz_build::execute(request, cancellation, scrub, observe)

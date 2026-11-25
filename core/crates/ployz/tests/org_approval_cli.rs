@@ -552,11 +552,15 @@ fn context_config_org_removal_hint_ignores_the_context_environment() {
         .unwrap();
     assert!(!retry.contains("--context"), "{retry}");
     let words = shell_words::split(retry).unwrap();
+    // A retry withholds the typed reason, which the person types again.
     let args = words
         .get(1..)
         .unwrap()
         .iter()
-        .map(String::as_str)
+        .map(|word| match word.as_str() {
+            "<REASON>" => "test",
+            word => word,
+        })
         .collect::<Vec<_>>();
     let approved = execute(&args);
     assert!(approved.status.success(), "{}", json_of(&approved));

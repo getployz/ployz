@@ -8840,7 +8840,7 @@ fn set_seals_only_to_the_key_this_computer_pinned_and_writes_nothing_otherwise()
         assert_eq!(refused["error"]["code"], json!("conflict"), "{refused}");
         assert_eq!(
             refused["error"]["details"]["next"],
-            json!("ployz device pin --connect ssh://USER@SERVER")
+            json!("ployz device pin --connect ssh://<USER>@SERVER")
         );
         cloud_never_saw(&cloud, plaintext);
         refused["error"]["message"].as_str().unwrap().to_owned()

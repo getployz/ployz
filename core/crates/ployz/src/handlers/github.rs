@@ -260,7 +260,12 @@ pub(super) fn cat(root: &ArgMatches) -> Result<(), Error> {
     let file: GithubFileView = read_repository(root, "file", &query)?;
     crate::ui::finish(&file, || match &file.body {
         GithubFileBody::Text { content } => {
-            let _ = std::io::Write::write_all(&mut crate::ui::stdout(), content.as_bytes());
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "a file's bytes, printed exactly so a redirect keeps the file"
+            )]
+            let mut stdout = crate::ui::relayed_stdout();
+            let _ = std::io::Write::write_all(&mut stdout, content.as_bytes());
         }
         GithubFileBody::Withheld { note } => crate::ui::note(note),
     })?;

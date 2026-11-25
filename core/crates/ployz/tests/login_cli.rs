@@ -625,31 +625,31 @@ fn a_failed_login_names_the_cloud_without_its_secret() {
         (
             &elsewhere,
             "https://SENTINEL:SENTINEL@other.example:8443/SENTINEL?t=SENTINEL#SENTINEL",
-            "https://USER:PASSWORD@other.example:8443/PATH?QUERY#FRAGMENT",
+            "https://<USER>:<PASSWORD>@other.example:8443/<PATH>?<QUERY>#<FRAGMENT>",
             2,
         ),
         (
             &elsewhere,
             "https://SENTINEL@other.example/?next=SENTINEL",
-            "https://USER@other.example?QUERY",
+            "https://<USER>@other.example?<QUERY>",
             2,
         ),
         (
             &fresh,
             "http://SENTINEL:SENTINEL@127.0.0.1:9/SENTINEL?token=SENTINEL",
-            "http://USER:PASSWORD@127.0.0.1:9/PATH?QUERY",
+            "http://<USER>:<PASSWORD>@127.0.0.1:9/<PATH>?<QUERY>",
             2,
         ),
         (
             &elsewhere,
             "https://other.example/SENTINEL",
-            "https://other.example/PATH",
+            "https://other.example/<PATH>",
             1,
         ),
         (
             &fresh,
             "http://127.0.0.1:9/SENTINEL",
-            "http://127.0.0.1:9/PATH",
+            "http://127.0.0.1:9/<PATH>",
             1,
         ),
     ] {
@@ -762,6 +762,37 @@ fn a_cloud_url_that_holds_a_credential_is_refused_before_it_is_stored() {
         Vec::<String>::new(),
         "Cloud was asked"
     );
+}
+
+/// A sign-in stored before Ployz refused a Cloud URL with user info still holds one, and
+/// logout names that Cloud without it.
+#[test]
+fn logout_names_a_stored_cloud_without_its_user_info() {
+    let stored = json!({
+        "state": "pending",
+        "cloud": "http://user:SENTINEL@127.0.0.1:9",
+        "device_code": "device",
+        "code": "ABCD",
+        "url": "http://user:SENTINEL@127.0.0.1:9/device?code=ABCD",
+        "expires_at": 9_999_999_999_u64,
+        "interval_secs": 5,
+    });
+    for args in [&["logout"][..], &["--json", "logout"]] {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.yaml");
+        let cloud = dir.path().join("cloud.json");
+        std::fs::write(&cloud, stored.to_string()).unwrap();
+        std::fs::set_permissions(&cloud, std::os::unix::fs::PermissionsExt::from_mode(0o600))
+            .unwrap();
+        let output = ployz(&config, args);
+        let said = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!said.contains("SENTINEL"), "{args:?}: {said}");
+        assert!(said.contains("127.0.0.1:9"), "{args:?}: {said}");
+    }
 }
 
 /// `--help` names `PLOYZ_CLOUD_URL` without its value, which may carry a token in its user
