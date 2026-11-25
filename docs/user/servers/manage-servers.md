@@ -531,7 +531,8 @@ your other servers one at a time. Each new container runs
 the same image, and each one starts, is healthy and is routed by every server's proxy before the
 old container is taken out of routing and removed. Anonymous volumes of the containers a drain
 removes, such as the one a `postgres` image makes when no volume in Ployz is mounted at its data
-directory, stay on the drained server.
+directory, stay on the drained server. `ployz server volumes <server>` lists them, and
+[`prune`](../services/services.md#delete-the-volumes-a-server-kept) deletes them.
 
 A service set to run on every server, from a Compose file with `deploy.mode: global` deployed
 before 0.1.2-beta.42, stops the drain before it moves anything, because its copy on this server

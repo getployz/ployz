@@ -93,6 +93,8 @@ macro_rules! rpc_catalog {
                 PrepareVolumes: (prepare_volumes, PrepareVolumesRequest, PreparedVolumes, PREPARE_VOLUMES_CAPABILITY, "ployz.storage.prepare.v1", Container, Operator),
                 ListVolumes: (list_volumes, ListVolumesRequest, VolumeInventory, LIST_VOLUMES_CAPABILITY, "ployz.volume.list.v1", Container, Operator),
                 RemoveVolume: (remove_volume, RemoveVolumeRequest, VolumeRemoved, REMOVE_VOLUME_CAPABILITY, "ployz.volume.remove.v1", Container, Operator),
+                ListKeptVolumes: (list_kept_volumes, ListKeptVolumesRequest, KeptVolumes, LIST_KEPT_VOLUMES_CAPABILITY, "ployz.volume.kept.list.v1", Container, Operator),
+                RemoveKeptVolumes: (remove_kept_volumes, RemoveKeptVolumesRequest, KeptVolumesRemoved, REMOVE_KEPT_VOLUMES_CAPABILITY, "ployz.volume.kept.remove.v1", Container, Operator),
                 InspectVolumeCopy: (inspect_volume_copy, InspectVolumeCopyRequest, VolumeCopyView, INSPECT_VOLUME_COPY_CAPABILITY, "ployz.volume.copy.inspect.v1", Container, Operator),
                 SeedVolume: (seed_volume, SeedVolumeRequest, VolumeCopyView, SEED_VOLUME_CAPABILITY, "ployz.volume.seed.v1", Container, Full),
                 SeedCopy: (seed_copy, SeedCopyRequest, VolumeCopyView, SEED_COPY_CAPABILITY, "ployz.volume.seed-copy.v1", Container, Operator),

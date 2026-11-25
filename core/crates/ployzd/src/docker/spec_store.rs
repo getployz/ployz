@@ -8,10 +8,12 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+use chrono::{DateTime, SecondsFormat, Utc};
 use hex::encode as hex_encode;
 use ployz_core::{
     AddressPart, Admission, ConfigMount, ConfigSpec, ContainerId, ContainerKind, ContainerRun,
-    CopyRotation, DockerVolumeName, Namespace, QualifiedService, ResolvedServiceSpec, VolumeGen,
+    CopyRotation, DockerVolumeName, KeptVolume, Namespace, QualifiedService, ResolvedServiceSpec,
+    VolumeGen,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::de::DeserializeOwned;
@@ -57,11 +59,79 @@ CREATE TABLE IF NOT EXISTS replacements (
     id       TEXT NOT NULL PRIMARY KEY,
     replaces TEXT NOT NULL UNIQUE
 );
+CREATE TABLE IF NOT EXISTS kept_volumes (
+    name      TEXT NOT NULL PRIMARY KEY,
+    namespace TEXT NOT NULL,
+    service   TEXT NOT NULL,
+    container TEXT NOT NULL,
+    path      TEXT NOT NULL,
+    kept_at   INTEGER NOT NULL,
+    created   TEXT NOT NULL
+);
 ";
 /// The tables keyed by a Container's Docker ID, which move and are dropped with it.
 const ID_TABLES: [&str; 5] = [SPEC_TABLE, "rotations", "stops", "admitted", "replacements"];
 const SPEC_TABLE: &str = "containers";
 static TEMPORARY_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+const KEPT_COLUMNS: &str = "name, namespace, service, container, path, kept_at, created";
+
+/// A Kept Volume as this Machine recorded it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KeptRecord {
+    pub volume: KeptVolume,
+    /// Docker's `CreatedAt` for the exact Volume kept. A Volume made later under its name
+    /// carries another, and is not the one kept.
+    pub created: DateTime<Utc>,
+}
+
+/// `time` as the `created` column holds it.
+fn stored_created(time: &DateTime<Utc>) -> String {
+    time.to_rfc3339_opts(SecondsFormat::AutoSi, true)
+}
+
+/// One `kept_volumes` row as SQLite holds it.
+struct KeptRow {
+    name: String,
+    namespace: String,
+    service: String,
+    container: String,
+    path: String,
+    kept_at: i64,
+    created: String,
+}
+
+impl KeptRow {
+    fn read(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
+        Ok(Self {
+            name: row.get(0)?,
+            namespace: row.get(1)?,
+            service: row.get(2)?,
+            container: row.get(3)?,
+            path: row.get(4)?,
+            kept_at: row.get(5)?,
+            created: row.get(6)?,
+        })
+    }
+
+    /// The row as a record; `None` when a column this store wrote no longer parses.
+    fn parse(self) -> Option<KeptRecord> {
+        Some(KeptRecord {
+            volume: KeptVolume {
+                name: DockerVolumeName::parse(self.name).ok()?,
+                namespace: Namespace::parse(self.namespace).ok()?,
+                service: ployz_core::ServiceName::parse(self.service).ok()?,
+                container: ContainerId::parse(self.container).ok()?,
+                path: ployz_core::ContainerPath::parse(self.path).ok()?,
+                kept_at: self.kept_at,
+                size_bytes: None,
+            },
+            created: DateTime::parse_from_rfc3339(&self.created)
+                .ok()?
+                .with_timezone(&Utc),
+        })
+    }
+}
 
 /// The namespace, kind and creation key a keyed create reserved. A container-level
 /// restore keeps a Container's labels and so its slot, but mints a new Docker ID.
@@ -229,6 +299,40 @@ impl MachineSpecStore {
             .await?;
         // A row this store wrote holds a Docker ID; one that doesn't parse names nothing.
         Ok(replacement.and_then(|id| ContainerId::parse(id).ok()))
+    }
+
+    /// The Kept Volumes this Machine recorded, oldest first, unmeasured. A row that no
+    /// longer reads as one is left out.
+    pub async fn kept_volumes(&self) -> Result<Vec<KeptRecord>, Error> {
+        self.run(|connection| {
+            let mut statement = connection.prepare(&format!(
+                "SELECT {KEPT_COLUMNS} FROM kept_volumes ORDER BY kept_at, name"
+            ))?;
+            let rows = statement.query_map([], KeptRow::read)?;
+            let mut kept = Vec::new();
+            for row in rows {
+                kept.extend(row?.parse());
+            }
+            Ok(kept)
+        })
+        .await
+    }
+
+    /// Drop `record`, once Docker no longer has the Volume it names. Only that exact
+    /// record goes, so a newer record of the same name stays, and no lock is needed.
+    pub async fn forget_kept(&self, record: &KeptRecord) -> Result<(), Error> {
+        let (name, created) = (
+            record.volume.name.to_string(),
+            stored_created(&record.created),
+        );
+        self.run(move |connection| {
+            connection.execute(
+                "DELETE FROM kept_volumes WHERE name = ?1 AND created = ?2",
+                params![name, created],
+            )?;
+            Ok(())
+        })
+        .await
     }
 
     /// This Machine's record of a copy's rotation, `None` when it never left Pending.
@@ -704,24 +808,76 @@ impl ConfigOperation<'_> {
     }
 
     pub async fn remove(&mut self, container_id: &ContainerId) -> Result<bool, Error> {
+        self.remove_keeping(container_id, Vec::new()).await
+    }
+
+    /// [`Self::remove`], recording in the same write that Docker kept `kept`, the
+    /// Container's anonymous Volumes. A name already recorded takes the newer record.
+    ///
+    /// A Volume any stored spec mounts by name, this Container's included, holds that
+    /// Service's data whatever label Docker gave it, so it is not recorded, and a record
+    /// of it from an earlier removal goes.
+    pub async fn remove_keeping(
+        &mut self,
+        container_id: &ContainerId,
+        kept: Vec<KeptRecord>,
+    ) -> Result<bool, Error> {
         let path = self.store.path.clone();
         let container_id = container_id.to_string();
         self.store
             .run(move |connection| {
+                let transaction = connection.transaction()?;
+                match named_volumes(&transaction) {
+                    Ok(named) => {
+                        let named: HashSet<DockerVolumeName> =
+                            named.into_iter().flat_map(|(_, names)| names).collect();
+                        for name in &named {
+                            transaction.execute(
+                                "DELETE FROM kept_volumes WHERE name = ?1",
+                                [name.as_str()],
+                            )?;
+                        }
+                        for KeptRecord { volume, created } in
+                            kept.iter().filter(|kept| !named.contains(&kept.volume.name))
+                        {
+                            transaction.execute(
+                                &format!(
+                                    "INSERT OR REPLACE INTO kept_volumes ({KEPT_COLUMNS}) \
+                                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
+                                ),
+                                params![
+                                    volume.name.as_str(),
+                                    volume.namespace.as_str(),
+                                    volume.service.as_str(),
+                                    volume.container.as_str(),
+                                    volume.path.as_str(),
+                                    volume.kept_at,
+                                    stored_created(created),
+                                ],
+                            )?;
+                        }
+                    }
+                    // Unreadable specs might name any of them, so none is recorded.
+                    Err(error) => tracing::warn!(
+                        error = %ployz_core::error_chain::inline(&error),
+                        "could not read which volumes this machine's specs mount by name; the removed container's volumes are kept but not recorded"
+                    ),
+                }
                 let mut removed = false;
                 for table in ID_TABLES.iter().rev() {
-                    let rows = connection.execute(
+                    let rows = transaction.execute(
                         &format!("DELETE FROM {table} WHERE id = ?1"),
                         [&container_id],
                     )?;
                     removed |= *table == SPEC_TABLE && rows > 0;
                 }
-                connection.execute("DELETE FROM creations WHERE id = ?1", [&container_id])?;
+                transaction.execute("DELETE FROM creations WHERE id = ?1", [&container_id])?;
                 // Nothing replaces a Container that is gone.
-                connection.execute(
+                transaction.execute(
                     "DELETE FROM replacements WHERE replaces = ?1",
                     [container_id],
                 )?;
+                transaction.commit()?;
                 if removed
                     && let Err(error) = referenced_config_names(connection)
                         .and_then(|retained| garbage_collect_config_files(&path, &retained))
@@ -732,6 +888,44 @@ impl ConfigOperation<'_> {
                     );
                 }
                 Ok(removed)
+            })
+            .await
+    }
+
+    /// The Kept Volume `name`, as this Machine recorded it.
+    pub(super) async fn kept_volume(
+        &mut self,
+        name: &DockerVolumeName,
+    ) -> Result<Option<KeptRecord>, Error> {
+        let name = name.to_string();
+        self.store
+            .run(move |connection| {
+                Ok(connection
+                    .query_row(
+                        &format!("SELECT {KEPT_COLUMNS} FROM kept_volumes WHERE name = ?1"),
+                        [name],
+                        KeptRow::read,
+                    )
+                    .optional()?
+                    .and_then(KeptRow::parse))
+            })
+            .await
+    }
+
+    /// The Containers whose stored spec mounts `name` by name, whether or not Docker still
+    /// has them.
+    pub(super) async fn specs_naming(
+        &mut self,
+        name: &DockerVolumeName,
+    ) -> Result<Vec<ContainerId>, Error> {
+        let name = name.clone();
+        self.store
+            .run(move |connection| {
+                Ok(named_volumes(connection)?
+                    .into_iter()
+                    .filter(|(_, names)| names.contains(&name))
+                    .filter_map(|(id, _)| ContainerId::parse(id).ok())
+                    .collect())
             })
             .await
     }
@@ -957,6 +1151,30 @@ fn config_directory(database: &Path) -> Result<PathBuf, Error> {
         .filter(|path| !path.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
     Ok(fs::canonicalize(parent)?.join("configs"))
+}
+
+/// Each stored spec's Container ID with the Docker Volumes the spec mounts by name.
+fn named_volumes(
+    connection: &Connection,
+) -> Result<Vec<(String, HashSet<DockerVolumeName>)>, Error> {
+    let mut statement = connection.prepare("SELECT id, service_spec FROM containers")?;
+    let rows = statement.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut named = Vec::new();
+    for row in rows {
+        let (id, encoded) = row?;
+        let spec: ResolvedServiceSpec = serde_json::from_str(&encoded)?;
+        let names = spec
+            .volume_graph()
+            .volumes()
+            .iter()
+            .filter_map(|volume| volume.source.docker_volume_name())
+            .cloned()
+            .collect();
+        named.push((id, names));
+    }
+    Ok(named)
 }
 
 fn referenced_config_names(connection: &Connection) -> Result<HashSet<String>, Error> {

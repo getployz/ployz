@@ -677,6 +677,13 @@ pub(crate) const SERVER_UPGRADE: Verb = Verb::cloud(
     server::upgrade,
 )
 .docs("servers/manage-servers.md");
+pub(crate) const SERVER_VOLUMES: Verb = Verb::cloud(
+    "server volumes",
+    Depends,
+    server::volumes::command,
+    server::volumes::volumes,
+)
+.docs("troubleshooting/servers.md");
 pub(crate) const SERVER_UPGRADE_POLICY_SET: Verb = Verb::cloud(
     "server upgrade-policy set",
     Never,
@@ -1002,6 +1009,7 @@ pub(crate) const VERBS: &[Verb] = &[
     SERVER_TOKEN_REVOKE,
     SERVER_UPGRADE,
     SERVER_UPGRADE_POLICY_SET,
+    SERVER_VOLUMES,
     SERVICE_ADD,
     SERVICE_INSPECT,
     SERVICE_LS,

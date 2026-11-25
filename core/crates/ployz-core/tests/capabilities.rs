@@ -110,6 +110,14 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
         "gated: a Deploy asks to remove a leftover copy's anonymous Volumes only on a Server advertising it, and asks any other to keep them, since an older daemon removes them as asked. An older daemon ignores `replaces` on EnsureContainer",
     ),
     (
+        "ployz.volume.kept.list.v1",
+        "refused legibly: `ployz server volumes` says the Server needs a daemon upgrade, and `ployz server show` leaves its kept volumes out",
+    ),
+    (
+        "ployz.volume.kept.remove.v1",
+        "refused legibly: `ployz server volumes prune` lists first, so an older daemon refuses the list and the CLI says the Server needs a daemon upgrade",
+    ),
+    (
         "ployz.metrics.live.v1",
         "refused legibly: `ployz metrics` names a Server whose daemon lacks it as not answering",
     ),

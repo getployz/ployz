@@ -651,6 +651,8 @@ async fn removal_sent(anonymous_volumes: ployz_core::AnonymousVolumes) -> Vec<Co
                     | RpcRequestBody::PrepareVolumes(_)
                     | RpcRequestBody::ListVolumes(_)
                     | RpcRequestBody::RemoveVolume(_)
+                    | RpcRequestBody::ListKeptVolumes(_)
+                    | RpcRequestBody::RemoveKeptVolumes(_)
                     | RpcRequestBody::InspectVolumeCopy(_)
                     | RpcRequestBody::SeedVolume(_)
                     | RpcRequestBody::SeedCopy(_)
