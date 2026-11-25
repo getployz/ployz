@@ -7,8 +7,8 @@
 //! secret's plain text never goes to Cloud. The in-process Store seals every secret itself.
 
 use ployz_core::{
-    Hint, RpcErrorCode, SealedIdentity, SealingPublicKey, ServiceName, image_registry,
-    is_image_reference, login_host, seal_login, seal_value,
+    Hint, RpcErrorCode, SealedIdentity, SealingPublicKey, ServiceName, UppercaseHost,
+    image_registry, is_image_reference, login_host, seal_login, seal_value,
 };
 use ployz_store::{
     Ask as _, Edit, EnvironmentSummary, SealingService, SealingTargetsQuery, SealingTargetsView,
@@ -246,7 +246,7 @@ fn login_host_for(
     let host_of = |image: &str| {
         login_host(image)
             .map(str::to_owned)
-            .map_err(|error| Error::usage(format!("{path}: {error}.")))
+            .map_err(|error| unreadable_host(&path, error))
     };
     let registry = registry
         .map(|host| match image_registry(&format!("{host}/image")) {
@@ -281,6 +281,15 @@ fn login_host_for(
     Ok(host)
 }
 
+/// A registry no login can be sealed for as written, with why as its cause.
+fn unreadable_host(path: &str, error: UppercaseHost) -> Error {
+    Error::caused(
+        RpcErrorCode::InvalidArgument,
+        format!("{path}: can't seal a login for that registry."),
+        error,
+    )
+}
+
 /// The host of `named`, the image Cloud says `service` runs, and the question that asks
 /// to seal for it. Cloud's text is shown only as the host a whole image reference
 /// yields, so it can't hide where the token goes, such as behind terminal escapes.
@@ -297,7 +306,7 @@ fn named_host(service: &ServiceName, named: Option<&str>) -> Result<(String, Str
              Name the registry, like --registry ghcr.io."
         )));
     }
-    let host = login_host(image).map_err(|error| Error::usage(format!("{path}: {error}.")))?;
+    let host = login_host(image).map_err(|error| unreadable_host(&path, error))?;
     let question = format!("Seal {service}'s registry credentials for {host}?");
     Ok((host.to_owned(), question))
 }
