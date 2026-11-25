@@ -5,7 +5,7 @@
  * only relays the rule view and the answer, and each Server checks the rule on every push.
  */
 import type { ConfigCommand, PostedVersion, RuleView, SavedRule, VersionsDraft } from "@ployz/sdk";
-import { sourceNeed } from "@ployz/sdk/authority";
+import { type PushBranch, sourceNeed } from "@ployz/sdk/authority";
 import { StoreRefused } from "#/lib/refusal";
 import type { OnlyPasskey } from "#/modules/passkeys/passkey-statement";
 import { signWithPasskey } from "#/modules/passkeys/passkey-statement";
@@ -41,6 +41,8 @@ export type SavePrepared =
 
 /** Why a stage-only member's Save holds pushes. */
 const ASK_DEPLOYER = "Ask someone who can deploy to approve the rule.";
+/** Why the switch can't turn the rule on for this person here. */
+const NOT_HERE = "An owner or admin turns on automatic deploys here.";
 
 /** Cloud's read of what a Save saves; with `gate`, also what asking for a passkey needs. */
 export type ReadSave = (gate: boolean) => Promise<SaveTap>;
@@ -57,16 +59,20 @@ const saves = (view: RuleView, command: Publish): view is RuleView & { version: 
  * failed. Whether a rule is needed is read from the view alone, so a Save that needs none never reaches a Server or asks
  * for a passkey. When one is needed but can't be asked for, the Save goes without it and says why. A Save whose review
  * moved since the person looked is sent as it is, and the Store refuses it as stale.
+ *
+ * `on` is the branch the Deploy every push switch turns the rule on for: that Save always signs a rule, even one the
+ * person ended, and saves nothing when it can't.
  */
-export async function prepareSave(command: Publish, read: ReadSave, ownerOf: OwnerOf, now = Date.now()): Promise<SavePrepared> {
+export async function prepareSave(command: Publish, read: ReadSave, ownerOf: OwnerOf, now = Date.now(), on?: PushBranch): Promise<SavePrepared> {
   const plain = { kind: "save", command } as const;
   const first = await read(false);
-  if (first.kind === "off") return plain;
   if (first.kind === "refused") return first;
+  if (on !== undefined && first.kind !== "view") return { kind: "refused", message: first.kind === "off" ? NOT_HERE : ASK_DEPLOYER };
+  if (first.kind === "off") return plain;
   if (!saves(first.view, command)) return plain;
   let need: ReturnType<typeof sourceNeed>;
   try {
-    need = sourceNeed(first.view);
+    need = on === undefined ? sourceNeed(first.view) : "rule";
   } catch (error) {
     return { ...plain, held: error instanceof Error && error.message !== "" ? error.message : READ };
   }
@@ -76,7 +82,8 @@ export async function prepareSave(command: Publish, read: ReadSave, ownerOf: Own
   // A new rule holds every push. When only the Servers the kept rule names may be out of date, a push holds only if it
   // lands on one the rule doesn't name, which is certain once the Cluster's Servers drafted a rule that names more.
   const held = (reason: string, drafted = false): SavePrepared =>
-    need === "servers" && !drafted ? { ...plain, held: reason, unchecked: true } : { ...plain, held: reason };
+    on !== undefined ? { kind: "refused", message: reason }
+    : need === "servers" && !drafted ? { ...plain, held: reason, unchecked: true } : { ...plain, held: reason };
   const second = await read(true).catch(() => null);
   if (second === null) return held("Couldn't reach Ployz Cloud.");
   // Publish checks the version and who may save; a refused read only keeps the rule from being asked for.
@@ -89,10 +96,10 @@ export async function prepareSave(command: Publish, read: ReadSave, ownerOf: Own
     cluster: gate.cluster, namespace: view.namespace, volumes: view.volumes, services: [],
     operation: crypto.randomUUID().replaceAll("-", ""), issued_at: now, expires_at: now + WINDOW_MS,
     seed: [...crypto.getRandomValues(new Uint8Array(16))], against: gate.against,
-  }, view, gate.members, ownerOf);
+  }, view, gate.members, ownerOf, on);
   if (drafted.kind === "held") return held(drafted.reason, drafted.drafted);
   const signed = drafted.draft;
-  if (signed?.source === undefined) return plain;
+  if (signed?.source === undefined) return on === undefined ? plain : held(`No service deploys on push from ${on.branch}.`);
   return {
     kind: "ask",
     ask: {
@@ -116,7 +123,7 @@ export type Answered = { readonly review: string; readonly rule: SavedRule };
 export type SaveSteps = {
   readonly answered: { current: Answered | null };
   readonly commit: (command: Publish, handles: readonly string[]) => Promise<void>;
-  readonly prepare: (command: Publish) => Promise<SavePrepared>;
+  readonly prepare: (command: Publish, on?: PushBranch) => Promise<SavePrepared>;
   /** Asks the person to sign `ask`'s rule; settles once their Save was sent, or throws why it wasn't. */
   readonly ask: (ask: SaveAsk, handles: readonly string[]) => Promise<void>;
   /** Tells the person the Save went without a rule, and why; `unchecked` when pushes may not wait. */
@@ -137,16 +144,17 @@ export async function sendRule(steps: Pick<SaveSteps, "answered" | "commit">, co
 }
 
 /**
- * Saves `command`. A confirmed retry of the review a rule was answered for carries that rule and the rule it read as
- * kept, so the Store refuses the whole Save if the kept rule moved since, rather than saving without it.
+ * Saves `command`, turning the rule on for `on` as [`prepareSave`] does. A confirmed retry of the review a rule was
+ * answered for carries that rule and the rule it read as kept, so the Store refuses the whole Save if the kept rule moved
+ * since, rather than saving without it.
  */
-export async function saveWith(steps: SaveSteps, command: Publish, handles: readonly string[] = []): Promise<void> {
+export async function saveWith(steps: SaveSteps, command: Publish, handles: readonly string[] = [], on?: PushBranch): Promise<void> {
   const answered = steps.answered.current;
   steps.answered.current = null;
   if (answered !== null && command.version !== null && command.version !== undefined && namesReview(answered.review, command.version)) {
     return sendRule(steps, command, answered, handles);
   }
-  const prepared = await steps.prepare(command);
+  const prepared = await steps.prepare(command, on);
   if (prepared.kind === "refused") throw steps.refused(prepared.message);
   if (prepared.kind === "ask") return steps.ask(prepared.ask, handles);
   await steps.commit(prepared.command, handles);

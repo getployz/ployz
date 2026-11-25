@@ -967,7 +967,7 @@ pub(super) fn refusal_text(refusal: &AuthorityRefusal) -> String {
         }
         AuthorityRefusal::Expired => "The device's approval expired. Deploy again.",
         AuthorityRefusal::RetiredBuilder { .. } => {
-            "This automatic deploy rule pins a builder Ployz no longer trusts. Approve the rule again to pin the current builder."
+            "This automatic deploy rule pins a builder Ployz no longer trusts. Turn Deploy every push off and on again to pin the current builder."
         }
         // A CI or agent key is a key too, and a removed one is unknown here by kind.
         AuthorityRefusal::UnknownKey { .. } => {

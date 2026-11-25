@@ -3,7 +3,7 @@
  * the Servers check, from the Store's staged rule view, as the last step of the bundle a Save or a Deploy signs.
  */
 import type { AutoDeployRule, RuleView, SavedRule, VersionsDraft } from "@ployz/sdk";
-import { versionSteps } from "@ployz/sdk/authority";
+import { type PushBranch, type SourceAsked, versionSteps } from "@ployz/sdk/authority";
 import type { QueryClient } from "@tanstack/react-query";
 import { githubRepositoryOwnerQueryOptions } from "#/modules/github/github.queries";
 
@@ -27,12 +27,15 @@ export type SourceDrafted =
 
 /**
  * `asked`'s bundle with the Source step `view` needs for the Cluster's `members`, drafted once to learn the repository
- * and again with its owner's GitHub ID, which every GitHub token the rule takes must name.
+ * and again with its owner's GitHub ID, which every GitHub token the rule takes must name. `on` turns the rule on for
+ * that branch.
  */
-export async function draftSource(asked: Asked, view: RuleView, members: readonly string[], ownerOf: OwnerOf): Promise<SourceDrafted> {
-  const draft = (ownerId: number) => versionSteps({
-    ...asked, source: { rule: view.rule ?? null, sources: view.sources, target: view.target, machines: [...members], owner_id: ownerId },
-  });
+export async function draftSource(asked: Asked, view: RuleView, members: readonly string[], ownerOf: OwnerOf, on?: PushBranch): Promise<SourceDrafted> {
+  const draft = (ownerId: number) => {
+    const source: SourceAsked = { rule: view.rule ?? null, sources: view.sources, target: view.target, machines: [...members], owner_id: ownerId };
+    if (on !== undefined) source.on = on;
+    return versionSteps({ ...asked, source });
+  };
   let unowned: VersionsDraft | null;
   try {
     unowned = draft(0);

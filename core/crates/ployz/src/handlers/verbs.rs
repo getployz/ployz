@@ -433,13 +433,6 @@ pub(crate) const GITHUB_DISCONNECT: Verb = Verb::cloud(
 .docs("deploy/github.md");
 pub(crate) const GITHUB_LS: Verb =
     Verb::cloud("github ls", Never, github::list_command, github::list).docs("deploy/github.md");
-pub(crate) const GITHUB_RULE_APPROVE: Verb = Verb::cloud(
-    "github rule approve",
-    Never,
-    github_rule::approve_command,
-    github_rule::approve,
-)
-.docs("deploy/github.md");
 pub(crate) const GITHUB_RULE_END: Verb = Verb::cloud(
     "github rule end",
     Never,
@@ -945,7 +938,6 @@ pub(crate) const VERBS: &[Verb] = &[
     GITHUB_CONNECT,
     GITHUB_DISCONNECT,
     GITHUB_LS,
-    GITHUB_RULE_APPROVE,
     GITHUB_RULE_END,
     GITHUB_TREE,
     HISTORY,

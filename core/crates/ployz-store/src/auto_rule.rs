@@ -18,8 +18,9 @@ use crate::id::{BranchName, RepositoryId};
 use crate::storage::Tx;
 use crate::{Actor, EnvironmentId, EnvironmentRef, EnvironmentSummary, Trusted, error, scope};
 
-/// Keep the rule a Device or passkey signed for an Environment. Cloud checks only that it fits
-/// the Environment; the Machines check the signature.
+/// Keep the generation a Device or passkey signed to turn an Environment's rule off. Cloud
+/// checks only that it fits the Environment; the Machines check the signature. A rule that
+/// deploys is signed with a Save or a Deploy, which carries it as [`SavedRule`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct ApproveRule {
@@ -140,9 +141,17 @@ pub(crate) fn opened(rule: &Signed<AutoDeployRule>) -> Option<AutoDeployRule> {
     rule.open().ok()
 }
 
-/// Keep `c.rule` as its Environment's rule. A rule for another Namespace, or one that
-/// doesn't supersede the one kept, is refused: every Machine would refuse it.
+/// Keep `c.rule`, which turns its Environment's rule off. A rule that deploys is refused,
+/// as an older CLI's `ployz github rule approve` sends it: only a Save or a Deploy signs
+/// one. So is a rule for another Namespace, or one that doesn't supersede the one kept:
+/// every Machine would refuse it.
 pub(crate) fn approve(tx: &mut dyn Tx, who: &Actor, c: &ApproveRule) -> Result<RuleView, RpcError> {
+    if opened(&c.rule).is_some_and(|rule| !rule.ended) {
+        return Err(error::invalid(
+            "ployz github rule approve is gone. Turn on Deploy every push in Ployz Cloud.",
+            json!({}),
+        ));
+    }
     let environment = scope::lock(tx, who, &c.environment)?;
     keep(tx, who, &environment, (&c.rule, &c.births))?;
     view_of(tx, who, &environment, None, false)
@@ -457,18 +466,9 @@ pub(crate) fn changed(
 
 /// Why a push waits for the rule's next approval.
 pub(crate) fn reapprove(changed: &[ServiceName]) -> String {
-    let names = changed
-        .iter()
-        .map(ServiceName::as_str)
-        .collect::<Vec<_>>()
-        .join(" ");
+    let names: Vec<&str> = changed.iter().map(ServiceName::as_str).collect();
     format!(
-        "{} changed since the automatic deploy rule was approved. Approve it again in the \
-         environment's settings, or run ployz github rule approve {names}.",
-        changed
-            .iter()
-            .map(ServiceName::as_str)
-            .collect::<Vec<_>>()
-            .join(", "),
+        "{} changed since the automatic deploy rule was approved. Deploy to approve the change.",
+        names.join(", ")
     )
 }

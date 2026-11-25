@@ -377,7 +377,7 @@ impl MismatchField {
     pub const fn rule_deploy_refusal(self) -> Option<&'static str> {
         Some(match self {
             Self::Payload => {
-                "This service's settings differ from what the automatic deploy rule approves. Approve the rule again."
+                "This service's settings differ from what the automatic deploy rule approves. Deploy it to approve the change."
             }
             Self::Image => {
                 "This server runs only the image GitHub built for this commit under the rule."

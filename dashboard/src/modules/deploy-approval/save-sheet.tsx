@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import type { SavedRule } from "@ployz/sdk";
+import type { PushBranch } from "@ployz/sdk/authority";
 import { KeyRoundIcon } from "lucide-react";
 import { toast } from "sonner";
 import { useCollectionScope } from "#/collections/use-collection-scope";
@@ -20,8 +21,8 @@ class SaveNotSent extends Error {}
 type Open = { ask: SaveAsk; handles: readonly string[]; settle: (failed: Error | null) => void; problem: string | null; rule?: SavedRule };
 
 /**
- * Saves from this tab. When what the Save saves isn't what the kept automatic deploy rule approves, the sheet shows the
- * rule and one passkey tap signs it with the Save. A caller's accepted retry of the same review, after the Store asked
+ * Saves from this tab. When what the Save saves isn't what the kept automatic deploy rule approves, or the Deploy every
+ * push switch turns it on, the sheet shows the rule and one passkey tap signs it with the Save. A caller's accepted retry of the same review, after the Store asked
  * to confirm a Volume loss, sends that answer again. `drop` forgets it when the caller cancels.
  */
 export function useSaveTap(organizationSlug: string) {
@@ -36,7 +37,7 @@ export function useSaveTap(organizationSlug: string) {
   const steps: SaveSteps = {
     answered,
     commit: (command, handles) => writer.commit(command, handles).then(() => undefined),
-    prepare: (command) => prepareSave(command, (gate) => prepareSaveTapServerFn({ data: { organizationSlug, environment: command.environment, gate } }), ownerOf)
+    prepare: (command, on) => prepareSave(command, (gate) => prepareSaveTapServerFn({ data: { organizationSlug, environment: command.environment, gate } }), ownerOf, Date.now(), on)
       .catch(() => ({ kind: "refused", message: "Couldn't check automatic deploys. Try again." }) as const),
     ask: async (ask, handles) => {
       const failed = await new Promise<Error | null>((settle) => setOpen({ ask, handles, settle, problem: null }));
@@ -49,7 +50,8 @@ export function useSaveTap(organizationSlug: string) {
     },
   };
 
-  const save = (command: Publish, handles: readonly string[] = []) => saveWith(steps, command, handles);
+  /** Saves `command`; with `on`, the Deploy every push switch's Save, which turns the rule on for that branch. */
+  const save = (command: Publish, handles: readonly string[] = [], on?: PushBranch) => saveWith(steps, command, handles, on);
 
   function close(sheet: Open, failed: Error | null) {
     sheet.settle(failed);

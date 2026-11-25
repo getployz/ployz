@@ -1,10 +1,10 @@
-import type { RuleTerms, RuleView, SavedRule } from "@ployz/sdk";
-import { autoDeployRuleBody, autoDeployRuleEndBody } from "@ployz/sdk/authority";
+import type { RuleView, SavedRule } from "@ployz/sdk";
+import { autoDeployRuleEndBody } from "@ployz/sdk/authority";
 import { describe, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { StoreRefused } from "#/lib/refusal";
 import type { SaveTap } from "./deploy-tap.server";
-import { CLUSTER, kept, placed, ready, view } from "./rule-view.test-fixture";
+import { kept, placed, ready, signedRule, view } from "./rule-view.test-fixture";
 import { type Answered, prepareSave, type Publish, type SaveAsk, type SaveSteps, saveWith, sendRule } from "./save-tap";
 
 const here = { project: "shop", environment: "production" };
@@ -46,9 +46,7 @@ describe("prepareSave", () => {
   });
 
   it("says pushes may wait when it can't check a placed Service's Servers against the rule", async () => {
-    const rule = { body: autoDeployRuleBody(view(null, placed()), asTestDouble<RuleTerms>()({
-      cluster: CLUSTER, machines: ["1".repeat(32)], owner_id: 7, new_rule: "3".repeat(32), issued_at: 1_000, signer: "passkey",
-    })).body, signatures: [] };
+    const rule = signedRule(placed());
     const read = reads(view(rule, placed()), { kind: "refused", message: "Couldn't reach your servers. Try again." });
 
     expect(await prepareSave(save, read, owner)).toEqual({ kind: "save", command: save, held: "Couldn't reach your servers. Try again.", unchecked: true });

@@ -1,131 +1,155 @@
 import { useState } from "react";
-import type { RuleDraft, RuleView, Signed } from "@ployz/sdk";
-import { useQuery } from "@tanstack/react-query";
+import type { RuleView, Signed } from "@ployz/sdk";
+import type { PushBranch } from "@ployz/sdk/authority";
 import { KeyRoundIcon, TriangleAlertIcon } from "lucide-react";
 import { SettingsRow, SettingsSection } from "#/components/settings/settings-section";
 import { SettingsEmpty } from "#/components/settings/settings-list";
 import { Button } from "#/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "#/components/ui/dialog";
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import { Spinner } from "#/components/ui/spinner";
 import { Switch } from "#/components/ui/switch";
-import { ruleQuery, useStoreView } from "#/modules/config-store/store-view.queries";
+import { diffQuery, ruleQuery, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
-import { answerRule, draftedRepository, draftEnd, draftRule, keptRule, RuleRefused, ruleOn, ruleScope } from "./auto-deploy-rule";
-import { githubRepositoryOwnerQueryOptions } from "#/modules/github/github.queries";
-import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
-import { useEnvironmentMachines } from "#/providers/runtime-provider";
-import { RuleSummaryList } from "#/modules/deploy-approval/rule-summary";
+import { useSaveTap } from "#/modules/deploy-approval/save-sheet";
+import { answerRule, draftEnd, keptRule, RuleRefused, ruleOn } from "./auto-deploy-rule";
 
 type Place = { organizationSlug: string; projectSlug: string; environmentSlug: string };
+
+/** A branch a pushed Service builds from, with its repository's name. */
+type Branch = PushBranch & { readonly repository: string };
 
 const listed = (names: readonly string[]) =>
   names.length <= 1 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
 
-/** Where a rule goes: the Cluster and every Server in it, and the first Server that can't take one. */
-function useRuleScope(organizationSlug: string, namespace: string) {
-  const { machines } = useRuntimeLens(organizationSlug);
-  return ruleScope(useEnvironmentMachines(namespace), machines);
+const keyOf = (branch: PushBranch) => `${branch.repository_id}:${branch.branch}`;
+
+/** Each branch a Service with Auto-deploy on builds from, once. */
+function pushBranches(view: RuleView): Branch[] {
+  const found = new Map<string, Branch>();
+  for (const source of view.sources) {
+    if (!source.on_push || !source.branch) continue;
+    const branch = { repository: source.repository, repository_id: source.repository_id, branch: source.branch };
+    found.set(keyOf(branch), branch);
+  }
+  return [...found.values()];
 }
 
 /**
- * Deploy every push of the Environment's branch under a rule the person's passkey approves with a prompt of its own. A Saved change to what the rule covers holds pushes until it is approved
- * again, which shows here as a card.
+ * Deploy every push of one branch under a rule the person's passkey signs. Turning it on is a Save that signs the rule
+ * in the same tap; a Save or Deploy that changes what it covers signs it again. With Services on several branches, the
+ * person picks the one whose pushes deploy.
  */
 export function StoreAutomaticDeploys({ organizationSlug, projectSlug, environmentSlug }: Place) {
   const environment = { project: projectSlug, environment: environmentSlug };
   const read = useStoreView(organizationSlug, ruleQuery(environment));
-  const view = read.ok ? read.value : null;
-  const rule = useRuleScope(organizationSlug, view?.namespace ?? "");
-  const [open, setOpen] = useState<"approve" | "end" | null>(null);
+  const diff = useStoreView(organizationSlug, diffQuery(environment));
+  const saveTap = useSaveTap(organizationSlug);
   const writer = useStoreWriter(organizationSlug);
-  if (view === null) return null;
+  const [ending, setEnding] = useState(false);
+  const [picked, setPicked] = useState<string | null>(null);
+  if (!read.ok) return null;
+  const view = read.value;
   const kept = keptRule(view);
   const on = ruleOn(view);
+  const branches = pushBranches(view);
+  const following = kept === null ? undefined
+    : branches.find((branch) => branch.repository_id === kept.source.repository_id && branch.branch === kept.source.branch);
+  // While on, the picker shows the rule's branch, and picking another turns the rule on there.
+  const selected = on ? following : branches.find((branch) => keyOf(branch) === picked) ?? following ?? branches[0];
+  // Turning on saves what is staged, so it waits until nothing is.
+  const staged = diff.ok && !diff.value.holds_staged;
   const held = on ? view.changed : [];
-  const branch = kept?.source.branch ?? view.sources[0]?.branch ?? "your branch";
-  const covered = kept?.services.map((service) => service.name) ?? [];
+  const shownBranch = on && kept !== null ? kept.source.branch : selected?.branch ?? "your branch";
+  const repositories = new Set(branches.map((branch) => branch.repository_id));
+  const named = (branch: Branch) => repositories.size > 1 ? `${branch.repository} at ${branch.branch}` : branch.branch;
+  const turnOn = ({ repository_id, branch }: Branch) => {
+    // Whatever stopped it already showed; the switch stays as the Store keeps the rule.
+    saveTap.save({ command: "publish", environment, version: null, accept_volume_loss: [], message: null }, [], { repository_id, branch })
+      .catch(() => undefined);
+  };
   return (
     <SettingsSection id="automatic-deploys" title="Automatic deploys"
       description="Deploy each push to your branch without a prompt.">
       {held.length > 0 ? (
         <SettingsRow
-          label={<span className="flex items-center gap-2"><TriangleAlertIcon className="size-4 shrink-0 text-warning" />Pushes to {branch} are on hold</span>}
-          hint={`${listed(held)} changed since you approved.`}
+          label={<span className="flex items-center gap-2"><TriangleAlertIcon className="size-4 shrink-0 text-warning" />Pushes to {shownBranch} are on hold</span>}
+          hint={`${listed(held)} changed since you approved. Deploy to approve the change.`}
           commit="none"
-          control={<Button onClick={() => setOpen("approve")}>Review and approve</Button>}
         />
       ) : null}
-      {!on && view.sources.length === 0 ? (
+      {!on && branches.length === 0 ? (
         <SettingsEmpty title="No service builds from GitHub">Connect a service to a repository first.</SettingsEmpty>
       ) : (
-        <SettingsRow
-          label="Deploy every push"
-          hint={on ? `Pushes to ${branch} deploy ${listed(covered)}.`
-            : `Approve once with your passkey. Pushes to ${branch} then deploy with no prompt.`}
-          commit="none"
-          control={
-            <Switch id="automatic-deploys" aria-label="Deploy every push" checked={on}
-              onCheckedChange={(next) => setOpen(next ? "approve" : "end")} />
-          }
-        />
+        <>
+          {branches.length > 1 ? (
+            <SettingsRow
+              label="Branch"
+              hint="Only pushes to this branch deploy."
+              commit="change"
+              control={(
+                <Select value={selected === undefined ? null : keyOf(selected)} disabled={on && staged} onValueChange={(next) => {
+                  const branch = branches.find((candidate) => keyOf(candidate) === next);
+                  if (branch === undefined) return;
+                  if (on) turnOn(branch);
+                  else setPicked(keyOf(branch));
+                }}>
+                  <SelectTrigger aria-label="Branch that deploys on push">
+                    <SelectValue>{selected === undefined ? "Pick a branch" : named(selected)}</SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      {branches.map((branch) => (
+                        <SelectItem key={keyOf(branch)} value={keyOf(branch)} label={named(branch)}>{named(branch)}</SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+              )}
+            />
+          ) : null}
+          <SettingsRow
+            label="Deploy every push"
+            hint={on ? `Pushes to ${shownBranch} deploy ${listed(kept?.services.map((service) => service.name) ?? [])}.`
+              : staged ? "Save or discard your changes first."
+              : `Approve once with your passkey. Pushes to ${shownBranch} then deploy with no prompt.`}
+            commit="none"
+            control={
+              <Switch id="automatic-deploys" aria-label="Deploy every push" checked={on}
+                disabled={!on && (staged || selected === undefined)}
+                onCheckedChange={(next) => {
+                  if (!next) setEnding(true);
+                  else if (selected !== undefined) turnOn(selected);
+                }} />
+            }
+          />
+        </>
       )}
-      {open === null ? null : (
-        <RuleDialog organizationSlug={organizationSlug} view={view} scope={rule} ending={open === "end"}
-          onClose={() => setOpen(null)}
-          commit={async (signed, births) => { await writer.commit({ command: "approve_rule", environment, rule: signed, births }); }}
-          ownerQuery={githubRepositoryOwnerQueryOptions} />
-      )}
+      {ending ? (
+        <EndDialog view={view} branch={shownBranch} onClose={() => setEnding(false)}
+          commit={async (rule) => { await writer.commit({ command: "approve_rule", environment, rule }); }} />
+      ) : null}
+      {saveTap.sheet}
     </SettingsSection>
   );
 }
 
-/**
- * What turning a rule on, approving it again or turning it off asks: the rule as it would be signed, then one passkey
- * prompt. `commit` keeps the signed rule in the Store, with the births of the Volumes it makes new; `ownerQuery` reads who
- * owns the repository on GitHub.
- */
-export function RuleDialog({ organizationSlug, view, scope, ending, onClose, commit, ownerQuery }: {
-  organizationSlug: string;
+/** What turning the rule off asks: one passkey prompt for its ending generation, which `commit` keeps in the Store. */
+function EndDialog({ view, branch, onClose, commit }: {
   view: RuleView;
-  scope: ReturnType<typeof ruleScope>;
-  ending: boolean;
+  branch: string;
   onClose: () => void;
-  commit: (rule: Signed, births: NonNullable<RuleDraft["births"]>) => Promise<void>;
-  ownerQuery: typeof githubRepositoryOwnerQueryOptions;
+  commit: (rule: Signed) => Promise<void>;
 }) {
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
-  const blocked = ending ? null
-    : scope.older !== null ? `${scope.older} needs a newer Ployz for automatic deploys from the dashboard. Upgrade it, or run ployz github rule approve.`
-    : scope.scope === null ? "Cloud couldn't check the servers. Try again."
-    : null;
-  // What the dialog shows: the rule as it would be signed now. The press drafts it again, at its own moment.
-  const target = scope.scope;
-  let preview: RuleDraft | null = null;
-  let unready: string | null = null;
-  try {
-    preview = ending ? draftEnd(view) : target === null ? null : draftRule(view, target, 0);
-  } catch (error) {
-    unready = error instanceof RuleRefused ? error.message : "This browser couldn't draft the rule. Try again.";
-  }
-  const repository = ending || preview === null ? null : draftedRepository(preview);
-  // The button waits, disabled, until GitHub answers: a read shows nothing in flight.
-  const owner = useQuery({ ...ownerQuery(organizationSlug, repository ?? ""), enabled: repository !== null });
-  const ownerProblem = repository === null || owner.isPending ? null
-    : owner.isError ? `Cloud couldn't read ${repository} on GitHub. Try again.`
-    : owner.data.repositoryId !== view.sources.find((source) => source.repository === repository)?.repository_id
-      ? `${repository} now names another repository. Connect your services to it again, then approve.` : null;
-  const problem = blocked ?? unready ?? ownerProblem;
-  const ready = preview !== null && problem === null && (ending || owner.data !== undefined);
 
-  const approve = async () => {
-    if (busy || !ready || (!ending && (target === null || owner.data === undefined))) return;
+  const end = async () => {
+    if (busy) return;
     setBusy(true);
     setFailed(null);
     try {
-      const draft = ending || target === null ? draftEnd(view) : draftRule(view, target, owner.data?.ownerId ?? 0);
-      const rule = await answerRule(draft);
-      await commit(rule, draft.births ?? {});
+      await commit(await answerRule(draftEnd(view)));
       onClose();
     } catch (error) {
       // The Store's refusal toasts by itself; a passkey's or the draft's shows here.
@@ -135,45 +159,22 @@ export function RuleDialog({ organizationSlug, view, scope, ending, onClose, com
     }
   };
 
-  const summary = preview?.summary;
   return (
     <Dialog open onOpenChange={(next) => { if (!next && !busy) onClose(); }}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>{ending ? "Turn off automatic deploys?" : ruleOn(view) ? "Approve automatic deploys again" : "Turn on automatic deploys"}</DialogTitle>
-          <DialogDescription>
-            {ending
-              ? `Pushes to ${summary?.branch ?? "the branch"} stop deploying.`
-              : `Every push to ${summary?.branch ?? "the branch"} deploys with these settings. A change to them waits for you.`}
-          </DialogDescription>
+          <DialogTitle>Turn off automatic deploys?</DialogTitle>
+          <DialogDescription>Pushes to {branch} stop deploying.</DialogDescription>
         </DialogHeader>
-        {summary && !ending ? <RuleSummaryList summary={summary} /> : null}
-        {summary && !ending ? <NeedsYes summary={summary} /> : null}
-        {problem !== null ? <p role="alert" className="text-sm text-destructive">{problem}</p>
-          : failed !== null ? <p role="alert" className="text-sm text-destructive">{failed}</p> : null}
+        {failed !== null ? <p role="alert" className="text-sm text-destructive">{failed}</p> : null}
         <DialogFooter>
           <DialogClose render={<Button variant="outline" disabled={busy} />}>Cancel</DialogClose>
-          <Button disabled={busy || !ready} onClick={() => void approve()}>
+          <Button disabled={busy} onClick={() => void end()}>
             {busy ? <Spinner data-icon="inline-start" /> : <KeyRoundIcon data-icon="inline-start" />}
-            {ending ? "Turn off with passkey" : "Approve with passkey"}
+            Turn off with passkey
           </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
-  );
-}
-
-/** The mounts of existing data the rule pins. The passkey tap is the yes, as the CLI asks before it signs. */
-function NeedsYes({ summary }: { summary: RuleDraft["summary"] }) {
-  const marked = summary.services.flatMap((service) => (service.confirm ?? []).map((line) => `${service.name}: ${line}`));
-  if (marked.length === 0) return null;
-  return (
-    <div className="flex flex-col gap-1 text-sm">
-      <p className="font-medium">Needs your yes</p>
-      <ul className="flex flex-col gap-1">
-        {marked.map((line) => <li key={line} className="font-mono text-xs break-all">{line}</li>)}
-      </ul>
-      <p className="text-muted-foreground">Every push deploys with this data. Approving says yes to it.</p>
-    </div>
   );
 }

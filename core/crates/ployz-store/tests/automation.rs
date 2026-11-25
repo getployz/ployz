@@ -2047,31 +2047,16 @@ fn a_status_or_conclusion_github_adds_later_reads_other() {
     assert_eq!(conclusion, ployz_store::CheckConclusion::Other);
 }
 
-/// Sign `generation` of an automatic deploy rule over web's and api's Saved settings, as
-/// `ployz github rule approve web api` does, and keep it.
+/// Sign `generation` of an automatic deploy rule over web's and api's settings and keep it
+/// with a Save of what is staged, as turning on Deploy every push does.
 fn approve_rule(
     store: &ConfigStore,
     who: &Actor,
     generation: u64,
-) -> Result<ployz_store::RuleView, ployz_core::RpcError> {
-    keep_rule(store, who, generation, false)
-}
-
-/// As [`approve_rule`], or ending the rule when `ended`.
-fn keep_rule(
-    store: &ConfigStore,
-    who: &Actor,
-    generation: u64,
-    ended: bool,
-) -> Result<ployz_store::RuleView, ployz_core::RpcError> {
-    store.write(
-        who,
-        &ployz_store::ApproveRule {
-            environment: EnvironmentRef::default(),
-            rule: rule_of(store, who, (9, generation, "main"), (false, ended)),
-            births: Default::default(),
-        },
-    )
+) -> Result<Written, ployz_core::RpcError> {
+    let prior = kept_rule(store, who).map(|(id, generation, _)| (id, generation));
+    let rule = signed_rule(store, who, (9, generation, "main"), true);
+    save_with_rule(store, who, &staged_version(store, who), (rule, prior))
 }
 
 type SignedRule = Box<ployz_core::authority::Signed<ployz_core::authority::AutoDeployRule>>;
@@ -2081,18 +2066,8 @@ type SignedRule = Box<ployz_core::authority::Signed<ployz_core::authority::AutoD
 fn signed_rule(
     store: &ConfigStore,
     who: &Actor,
-    rule: (u8, u64, &str),
-    staged: bool,
-) -> SignedRule {
-    rule_of(store, who, rule, (staged, false))
-}
-
-/// As [`signed_rule`], ending the rule when `ended`.
-fn rule_of(
-    store: &ConfigStore,
-    who: &Actor,
     (id, generation, branch): (u8, u64, &str),
-    (staged, ended): (bool, bool),
+    staged: bool,
 ) -> SignedRule {
     use ployz_core::authority::rule::{
         BuildPolicy, Builder, PolicyCache, RuleEvent, RuleService, RuleSource, Runner, template,
@@ -2156,7 +2131,7 @@ fn rule_of(
         },
         services,
         issued_at: Timestamp::from_millis(1_800_000_000_000).unwrap(),
-        ended,
+        ended: false,
         signer: SignerKey::Device(ployz_core::DeviceKey::from_bytes(
             *signer.public().as_bytes(),
         )),
@@ -2253,10 +2228,11 @@ fn of_two_saves_from_one_review_only_the_first_keeps_its_rule_and_its_push_deplo
 fn a_save_whose_rule_moved_since_its_tap_saves_nothing() {
     let (store, who) = shop();
     publish(&store, &who);
+    // Another tab turned automatic deploys on while this one's tap read none kept.
+    approve_rule(&store, &who, 1).unwrap();
     set(&store, &who, "web.env.GREETING", json!("hello"));
     let version = staged_version(&store, &who);
     let tapped = signed_rule(&store, &who, (8, 1, "main"), true);
-    approve_rule(&store, &who, 1).unwrap();
 
     let refused = save_with_rule(&store, &who, &version, (tapped, None)).unwrap_err();
 
@@ -2755,7 +2731,7 @@ fn a_service_a_rule_deployed_needs_approval_once_the_rule_ends() {
     publish(&store, &who);
     assert_eq!(unsigned(&store, &who), []);
     approve_rule(&store, &who, 1).unwrap();
-    keep_rule(&store, &who, 2, true).unwrap();
+    end_rule(&store, &who, 2);
     assert_eq!(
         unsigned(&store, &who),
         [
@@ -2806,8 +2782,8 @@ fn a_push_under_a_rule_waits_for_approval_again_once_a_setting_changed() {
     assert_eq!(
         reasons(&automated),
         vec![
-            "web changed since the automatic deploy rule was approved. Approve it again in \
-             the environment's settings, or run ployz github rule approve web."
+            "web changed since the automatic deploy rule was approved. Deploy to approve the \
+             change."
         ]
     );
     // Approved again over the new settings, the next push deploys.
@@ -2822,8 +2798,8 @@ fn a_push_under_a_rule_waits_for_approval_again_once_a_setting_changed() {
     assert_eq!(
         reasons(&automated),
         vec![
-            "web changed since the automatic deploy rule was approved. Approve it again in \
-             the environment's settings, or run ployz github rule approve web."
+            "web changed since the automatic deploy rule was approved. Deploy to approve the \
+             change."
         ]
     );
 }
@@ -2840,8 +2816,8 @@ fn a_new_service_on_the_rules_branch_holds_the_push_and_shows_in_the_rule_view()
     assert_eq!(
         reasons(&automated),
         vec![
-            "worker changed since the automatic deploy rule was approved. Approve it again in \
-             the environment's settings, or run ployz github rule approve worker."
+            "worker changed since the automatic deploy rule was approved. Deploy to approve \
+             the change."
         ]
     );
     // The view the dashboard reads names what holds the push, so it can be approved.
@@ -2855,6 +2831,36 @@ fn a_new_service_on_the_rules_branch_holds_the_push_and_shows_in_the_rule_view()
         )
         .unwrap();
     assert_eq!(view.changed, [ServiceName::parse("worker").unwrap()]);
+}
+
+// Catches an older CLI's `ployz github rule approve` keeping a rule beside the one way to
+// sign one, a Save or a Deploy.
+#[test]
+fn a_rule_approved_on_its_own_is_refused_and_says_where_to_turn_it_on() {
+    let (store, who) = shop();
+    publish(&store, &who);
+
+    let refused = store
+        .write(
+            &who,
+            &ployz_store::ApproveRule {
+                environment: EnvironmentRef::default(),
+                rule: signed_rule(&store, &who, (9, 1, "main"), false),
+                births: Default::default(),
+            },
+        )
+        .unwrap_err();
+
+    assert_eq!(refused.code, RpcErrorCode::InvalidArgument, "{refused:?}");
+    assert!(
+        refused.message.contains("Turn on Deploy every push"),
+        "{refused:?}"
+    );
+    assert_eq!(kept_rule(&store, &who), None);
+    // Turning automatic deploys off still works as an older CLI's `rule end` sends it.
+    approve_rule(&store, &who, 1).unwrap();
+    end_rule(&store, &who, 2);
+    assert_eq!(kept_rule(&store, &who), Some((9, 2, "main".to_owned())));
 }
 
 #[test]
