@@ -587,6 +587,52 @@ async fn own_superseded_copies_retire_after_in() {
     assert!(client.removed.is_empty());
 }
 
+/// This Machine's own record of which copy replaced `observed`, as its daemon reports it.
+fn replaced_by(mut observed: ContainerObservation, by: char) -> ContainerObservation {
+    observed
+        .try_update(|parts| parts.replaced_by = Some(container_id(by)))
+        .unwrap();
+    observed
+}
+
+#[tokio::test(start_paused = true)]
+async fn only_the_copy_the_started_one_replaced_loses_its_anonymous_volumes() {
+    let joiner = machine('1', "joiner");
+    let founder = machine('f', "founder");
+    let identity = qualified("app", "api");
+    let service = |observed| global_service(identity.clone(), 'a', Placement::default(), observed);
+    let source = service(rotated(running_on(&founder, 'b'), CopyRotation::In));
+    // `a` is the copy this Machine made `c` to replace. `d` is an unrelated leftover that
+    // a copy no longer here once replaced, and `e` one whose daemon keeps no record.
+    let leftovers = [
+        replaced_by(running_on(&joiner, 'a'), 'c'),
+        replaced_by(running_on(&joiner, 'd'), '9'),
+        running_on(&joiner, 'e'),
+    ];
+    let mut client = fake(&joiner, vec![source]);
+    client.target_services = Some(
+        std::iter::once(running_on(&joiner, 'c'))
+            .chain(leftovers)
+            .map(service)
+            .collect(),
+    );
+    client.run_result = Ok(Some(container_id('c')));
+    catch_up(&mut client, &joiner).await.unwrap();
+    let asks = client
+        .volume_asks
+        .iter()
+        .map(|(id, ask)| (*id, ask.replaced_by()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        asks,
+        std::collections::BTreeMap::from([
+            (container_id('a'), Some(container_id('c'))),
+            (container_id('d'), None),
+            (container_id('e'), None),
+        ])
+    );
+}
+
 fn unconfirmed(ids: &[MachineId]) -> cleanup::Unconfirmed {
     cleanup::Unconfirmed {
         machines: ids.to_vec(),
@@ -1111,6 +1157,8 @@ struct FakeCatchUpClient {
     bring_in: FakeBringIn,
     brought_in: Vec<Copy>,
     retired: Vec<Copy>,
+    /// What each retire asked of the copy's anonymous Volumes, by copy.
+    volume_asks: Vec<(ContainerId, AnonymousVolumes)>,
     removed: Vec<Copy>,
     retire_step: fn() -> Rotated,
     remove_step: fn() -> Removal,
@@ -1139,6 +1187,7 @@ fn fake(joiner: &Machine, services: Vec<ServiceObservation>) -> FakeCatchUpClien
         bring_in: FakeBringIn::In,
         brought_in: Vec::new(),
         retired: Vec::new(),
+        volume_asks: Vec::new(),
         removed: Vec::new(),
         retire_step: || Rotated::Done,
         remove_step: || Removal::Removed,
@@ -1231,9 +1280,12 @@ impl SlotIo for FakeCatchUpClient {
     async fn retire_copy(
         &mut self,
         copy: &Copy,
+        anonymous_volumes: AnonymousVolumes,
         _cancel: &tokio_util::sync::CancellationToken,
     ) -> Result<Rotated, RpcError> {
         self.retired.push(copy.clone());
+        self.volume_asks
+            .push((copy.container_id, anonymous_volumes));
         Ok((self.retire_step)())
     }
 
@@ -1415,6 +1467,8 @@ struct FakeSlot {
     listing: Vec<ContainerObservation>,
     retired: Vec<ContainerId>,
     ensured: Vec<&'static str>,
+    /// What each new copy was made to replace.
+    replaces: Vec<Option<ContainerId>>,
 }
 
 impl FakeSlot {
@@ -1424,6 +1478,7 @@ impl FakeSlot {
             listing,
             retired: Vec::new(),
             ensured: Vec::new(),
+            replaces: Vec::new(),
         }
     }
 }
@@ -1455,6 +1510,7 @@ impl SlotIo for FakeSlot {
     async fn retire_copy(
         &mut self,
         copy: &Copy,
+        _anonymous_volumes: AnonymousVolumes,
         _cancel: &CancellationToken,
     ) -> Result<Rotated, RpcError> {
         self.retired.push(copy.container_id);
@@ -1467,7 +1523,10 @@ impl SlotIo for FakeSlot {
         container: RunTarget,
     ) -> Result<ContainerNow, RpcError> {
         self.ensured.push(match container {
-            RunTarget::New(_) => "new",
+            RunTarget::New(new) => {
+                self.replaces.push(new.replaces);
+                "new"
+            }
             RunTarget::Existing(_) => "existing",
         });
         Ok(ContainerNow::Absent {
@@ -1537,6 +1596,47 @@ async fn an_out_copy_goes_before_a_new_one_is_made_and_a_held_one_refuses() {
     assert_eq!(error.code, ployz_core::RpcErrorCode::Conflict);
     assert!(error.message.contains("stopped on this Machine by a user"));
     assert!(slot.ensured.is_empty() && slot.retired.is_empty());
+}
+
+/// A copy of the same Global here, on a spec older than `origin`'s.
+fn older_here(joiner: &Machine, hex: char, rotation: CopyRotation) -> ContainerObservation {
+    let mut older = rotated(running_on(joiner, hex), rotation);
+    older
+        .try_update(|parts| parts.resolved_spec.container.image = "example.test/old".into())
+        .unwrap();
+    older
+}
+
+#[tokio::test]
+async fn a_new_copy_names_the_older_copy_this_machine_routes_in_its_slot() {
+    let (joiner, peer) = (machine('1', "joiner"), machine('2', "peer"));
+    let origin = running_on(&peer, 'a');
+    let held = CopyRotation::Held(DeploymentLogId::parse("dep-a").unwrap());
+    for rotation in [CopyRotation::In, held] {
+        let older = older_here(&joiner, 'b', rotation.clone());
+        let mut slot = FakeSlot::listing(vec![older.clone()]);
+        placed(&mut slot, &joiner, &origin).await.unwrap();
+        assert_eq!(slot.replaces, [Some(older.container_id)], "{rotation:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_new_copy_beside_no_routed_copy_names_none() {
+    let (joiner, peer) = (machine('1', "joiner"), machine('2', "peer"));
+    let origin = running_on(&peer, 'a');
+    let mut other = older_here(&joiner, 'd', CopyRotation::In);
+    other
+        .try_update(|parts| {
+            parts.resolved_spec.name = ployz_core::ServiceName::parse("other").unwrap()
+        })
+        .unwrap();
+    let mut slot = FakeSlot::listing(vec![
+        older_here(&joiner, 'b', CopyRotation::Out),
+        older_here(&joiner, 'c', CopyRotation::Pending),
+        other,
+    ]);
+    placed(&mut slot, &joiner, &origin).await.unwrap();
+    assert_eq!(slot.replaces, [None]);
 }
 
 #[path = "global_catch_up_rpc_tests.rs"]

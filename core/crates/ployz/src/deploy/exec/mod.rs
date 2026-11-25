@@ -22,7 +22,7 @@ use tokio_util::sync::CancellationToken;
 use super::{
     DeployOperation, DeployOutcome, ReplacementCompensation, ReplacementOperation, RestoreAttempt,
     StopAttempt,
-    schedule::{Action, Event, GroupRole, Schedule, Stage, Task, TaskKind, creates_container},
+    schedule::{Action, Event, GroupRole, Schedule, Stage, Task, TaskKind},
 };
 
 use super::cleanup::{self, ACK_WAIT};
@@ -45,7 +45,10 @@ use publish::{
     rolling_step, route_new,
 };
 use report::Report;
-use start::{Attempt, FailedStart, Row, SlotRun, answer_when, out_of_memory, remove_stray, start};
+use start::{
+    Attempt, FailedStart, NewCopy, Row, SlotRun, Unstarted, answer_when, out_of_memory,
+    remove_stray, start,
+};
 pub(crate) use start::{MoveEnd, MoveError, move_container};
 use stop_first::{
     StopFirstSteps, remove_container, replace_stop_first, restore_group, stop_old_copy,
@@ -129,15 +132,15 @@ fn outcome_from(
 #[derive(Default)]
 struct Ran {
     /// The new Container it started.
-    started: Option<ContainerId>,
+    started: Option<NewCopy>,
     /// The old copy it withdrew and stopped, which a failed Service restores.
     held_old: Option<Box<(ResolvedServiceSpec, cleanup::Copy)>>,
 }
 
 impl Ran {
-    fn started(id: ContainerId) -> Self {
+    fn started(copy: NewCopy) -> Self {
         Self {
-            started: Some(id),
+            started: Some(copy),
             ..Self::default()
         }
     }
@@ -146,6 +149,8 @@ impl Ran {
 #[derive(Clone)]
 enum OperationFailure {
     Ordinary(ExecutionError),
+    /// A start that failed, which may leave a copy that failed its health.
+    Start(Unstarted),
     Replacement {
         error: ExecutionError,
         compensation: Box<ReplacementCompensation<ExecutionError>>,
@@ -160,7 +165,7 @@ impl OperationFailure {
         Option<ReplacementCompensation<ExecutionError>>,
     ) {
         match self {
-            Self::Ordinary(error) => (error, None),
+            Self::Ordinary(error) | Self::Start(Unstarted { error, .. }) => (error, None),
             Self::Replacement {
                 error,
                 compensation,
@@ -172,6 +177,12 @@ impl OperationFailure {
 impl From<ExecutionError> for OperationFailure {
     fn from(error: ExecutionError) -> Self {
         Self::Ordinary(error)
+    }
+}
+
+impl From<Unstarted> for OperationFailure {
+    fn from(unstarted: Unstarted) -> Self {
+        Self::Start(unstarted)
     }
 }
 
@@ -281,7 +292,13 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                     let service = QualifiedService::new(plan.namespace.clone(), service);
                     let new = records
                         .get(&group)
-                        .map(|record| record.started.clone())
+                        .map(|record| {
+                            record
+                                .started
+                                .iter()
+                                .map(|(task, machine, copy)| (*task, *machine, copy.container_id))
+                                .collect()
+                        })
                         .unwrap_or_default();
                     let old = old_copies(schedule.group(group), operations);
                     Either::Right(async move {
@@ -322,17 +339,16 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
             Some(Done::Task(index, result)) => {
                 let group = schedule.group_of(index);
                 let operation = operation_at(operations, index);
-                let new_container = match &result {
+                let new_copy = match &result {
                     Ok(ran) => ran.started,
-                    Err(OperationFailure::Ordinary(ExecutionError::Health {
-                        container_id,
-                        ..
-                    })) if creates_container(operation) => Some(*container_id),
-                    Err(_) => None,
+                    Err(OperationFailure::Start(unstarted)) => unstarted.unhealthy(),
+                    Err(OperationFailure::Ordinary(_) | OperationFailure::Replacement { .. }) => {
+                        None
+                    }
                 };
                 let record = records.entry(group).or_default();
-                if let Some(id) = new_container {
-                    record.started.push((index, operation.machine_id(), id));
+                if let Some(copy) = new_copy {
+                    record.started.push((index, operation.machine_id(), copy));
                 }
                 match result {
                     Ok(ran) => {
@@ -340,10 +356,12 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                             record.stopped.push(*old);
                         }
                         let publishing = schedule.group(group).publishing_service();
-                        if let (Some(_), Some(container_id)) = (publishing, ran.started) {
+                        if let (Some(_), Some(copy)) = (publishing, ran.started) {
                             progress.set_running(
                                 index,
-                                OperationPhase::WaitingForSwitch { container_id },
+                                OperationPhase::WaitingForSwitch {
+                                    container_id: copy.container_id,
+                                },
                             );
                             record.awaiting_flip.push(index);
                         } else {
@@ -355,7 +373,10 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                         });
                         if let Some((service, new)) = service
                             .filter(|service| shared.plan.routed(service))
-                            .zip(rolling_step(operation, ran.started))
+                            .zip(rolling_step(
+                                operation,
+                                ran.started.map(|copy| copy.container_id),
+                            ))
                         {
                             inflight.push(Either::Left(Either::Right(async move {
                                 let new = [(index, new.0, new.1)];
@@ -543,7 +564,7 @@ impl<'a> Ledger<'a> {
 #[derive(Default)]
 struct GroupRecord {
     /// The new Containers its tasks started, with their tasks and Machines.
-    started: Vec<(usize, MachineId, ContainerId)>,
+    started: Vec<(usize, MachineId, NewCopy)>,
     /// The old copies its tasks withdrew and stopped.
     stopped: Vec<(ResolvedServiceSpec, cleanup::Copy)>,
     /// The tasks that finished and wait for the group's flip to complete.
@@ -885,6 +906,7 @@ async fn execute_operation<C: MachineOperations>(
                 deploy: Some(shared.plan.run()),
                 r#gen,
                 answer: answer_when(*skip_health_monitor),
+                replaces: None,
             };
             start(&attempt, run, FailedStart::Discard)
                 .await
@@ -935,12 +957,13 @@ async fn execute_operation<C: MachineOperations>(
             machine_id,
             container_id,
             purpose,
+            anonymous_volumes,
         } => {
             remove_container(
                 client,
                 index,
                 progress,
-                (machine_id, container_id, *purpose),
+                (machine_id, container_id, *purpose, *anonymous_volumes),
                 shared,
                 cancellation,
             )
@@ -975,6 +998,7 @@ async fn execute_operation<C: MachineOperations>(
                     deploy: Some(shared.plan.run()),
                     r#gen,
                     answer: answer_when(replacement.skip_health_monitor),
+                    replaces: Some(replacement.old_container_id),
                 };
                 return replace_stop_first(
                     client,
@@ -996,6 +1020,7 @@ async fn execute_operation<C: MachineOperations>(
                 deploy: Some(shared.plan.run()),
                 r#gen,
                 answer: answer_when(replacement.skip_health_monitor),
+                replaces: Some(replacement.old_container_id),
             };
             start(&attempt, run, FailedStart::Discard)
                 .await
@@ -1088,7 +1113,8 @@ async fn stop<C: MachineOperations>(
     .map_err(|error| machine_error(MachineAction::StopContainer, error))
 }
 
-/// Remove a Container by its id, with its anonymous Volumes.
+/// Remove a Container by its id, keeping its anonymous Volumes: an old hook, or a new
+/// copy that failed its health, neither of which a copy replaced.
 async fn remove_by_id<C: MachineOperations>(
     client: &C,
     machine_id: &MachineId,
@@ -1101,7 +1127,7 @@ async fn remove_by_id<C: MachineOperations>(
             ContainerWant::Gone {
                 container: ContainerLocator::Id(*container_id),
                 drain,
-                anonymous_volumes: AnonymousVolumes::Remove,
+                anonymous_volumes: AnonymousVolumes::keep(),
             },
         )
         .await

@@ -1560,6 +1560,7 @@ fn ensure_container_names_the_want_the_observation_and_the_refusal_on_the_wire()
                 image_prepared: false,
                 answer: AnswerWhen::Started,
                 image_id: None,
+                replaces: None,
             }),
             rotation: RunRotation::Pending,
         },
@@ -1609,12 +1610,58 @@ fn ensure_container_names_the_want_the_observation_and_the_refusal_on_the_wire()
     }))
     .unwrap();
     assert_eq!(
-        gone.want,
-        ContainerWant::Gone {
-            container: ContainerLocator::Key(slot.clone()),
+        serde_json::to_value(&gone.want).unwrap(),
+        json!({ "state": "gone", "container": { "key": slot_json }, "drain": 0,
+                "anonymous_volumes": "remove" }),
+        "a Gone that omits what happens to anonymous Volumes asks to remove them, as v1 \
+         always has, and is passed on that way"
+    );
+    let ContainerWant::Gone {
+        anonymous_volumes, ..
+    } = gone.want
+    else {
+        panic!("a gone want decodes as one");
+    };
+    assert_eq!(
+        anonymous_volumes.replaced_by(),
+        None,
+        "an ask that names no copy relies on none"
+    );
+    let replacement = ContainerId::parse("b".repeat(64)).unwrap();
+    for (wire, relied_on) in [
+        (json!({ "anonymous_volumes": "keep" }), None),
+        (
+            json!({ "anonymous_volumes": "remove", "replaced_by": replacement }),
+            Some(replacement),
+        ),
+        (
+            json!({ "anonymous_volumes": "keep", "replaced_by": replacement }),
+            None,
+        ),
+    ] {
+        let mut want = json!({ "state": "gone", "container": { "id": id }, "drain": 0 });
+        want.as_object_mut()
+            .unwrap()
+            .extend(wire.as_object().unwrap().clone());
+        let decoded: ContainerWant = serde_json::from_value(want.clone()).unwrap();
+        let ContainerWant::Gone {
+            anonymous_volumes, ..
+        } = &decoded
+        else {
+            panic!("a gone want decodes as one");
+        };
+        assert_eq!(anonymous_volumes.replaced_by(), relied_on, "{wire}");
+        assert_eq!(serde_json::to_value(&decoded).unwrap(), want);
+    }
+    assert_eq!(
+        serde_json::to_value(ContainerWant::Gone {
+            container: ContainerLocator::Id(id),
             drain: Drain::NONE,
-            anonymous_volumes: ployz_core::AnonymousVolumes::Remove,
-        }
+            anonymous_volumes: ployz_core::AnonymousVolumes::keep(),
+        })
+        .unwrap(),
+        json!({ "state": "gone", "container": { "id": id }, "drain": 0,
+                "anonymous_volumes": "keep" })
     );
     assert!(
         serde_json::from_value::<EnsureContainerRequest>(json!({

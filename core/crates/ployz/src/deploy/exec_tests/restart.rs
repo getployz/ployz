@@ -671,6 +671,86 @@ async fn cancelled_global_health_wait_keeps_an_adopted_container() {
     client.assert_done();
 }
 
+/// `api` as a Global that waits for health, so its start can adopt a running copy.
+fn global_with_health() -> ResolvedServiceSpec {
+    let mut global = spec(Some(0), Some(healthcheck()), None);
+    global.mode = ployz_core::ServiceMode::Global;
+    global
+}
+
+/// A Global start that adopts a running Container of its spec, which then fails its
+/// check, fails the Service but leaves that Container: it ran before this Deploy, so
+/// neither it nor its anonymous Volumes are this Deploy's to remove.
+#[tokio::test(start_paused = true)]
+async fn a_failed_global_start_leaves_the_container_it_adopted() {
+    let machine = machine('1');
+    let adopted = container('a');
+    let plan = vec![run(&machine, global_with_health(), false)];
+    let mut client = Scripted::new(vec![unhealthy_run(machine, &adopted)]);
+    client.runs_global = true;
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(
+        matches!(
+            outcome,
+            DeployOutcome::Failed {
+                failed: FailedOperation::Operation {
+                    error: ExecutionError::Health { container_id, .. },
+                    ..
+                },
+                ..
+            } if container_id == adopted
+        ),
+        "{outcome:?}"
+    );
+    client.assert_done();
+}
+
+/// A stop-first Global replacement whose start adopts a running Container of the new
+/// spec that then fails its check brings the old copy back and leaves the adopted one.
+#[tokio::test(start_paused = true)]
+async fn a_failed_stop_first_global_start_restores_the_old_copy_and_leaves_the_adopted_one() {
+    let machine = machine('1');
+    let (old, adopted) = (container('a'), container('b'));
+    let mut global = global_with_health();
+    global.update.order = UpdateOrder::StopFirst;
+    let plan = vec![DeployOperation::ReplaceContainer(ReplacementOperation {
+        machine_id: machine,
+        old_container_id: old,
+        spec: global,
+        skip_health_monitor: false,
+    })];
+    let mut client = Scripted::new(vec![
+        observed(Call::Inspect(machine, old), running()),
+        ok(Call::Stop(machine, old)),
+        unhealthy_run(machine, &adopted),
+        ok(Call::Restart(machine, old)),
+    ])
+    .with_copy(&machine, &old, CopyRotation::In);
+    client.runs_global = true;
+
+    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+
+    assert!(
+        matches!(
+            outcome,
+            DeployOutcome::Failed {
+                failed: FailedOperation::Replacement {
+                    compensation: ReplacementCompensation::OldStopped {
+                        stop_new_container: None,
+                        restore_old_container: RestoreAttempt::Restored,
+                    },
+                    ..
+                },
+                ..
+            }
+        ),
+        "{outcome:?}"
+    );
+    client.assert_done();
+}
+
 #[tokio::test(start_paused = true)]
 async fn storage_preparation_lost_to_a_daemon_restart_is_resent() {
     let machine = machine('1');

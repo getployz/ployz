@@ -70,6 +70,7 @@ fn copy(suffix: u8, machine: MachineId, rotation: CopyRotation) -> ContainerObse
         run: None,
         log_driver: None,
         admission: None,
+        replaced_by: None,
     })
     .unwrap()
 }

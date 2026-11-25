@@ -167,6 +167,7 @@ mod tests {
                 run: None,
                 log_driver: log_driver.map(str::to_owned),
                 admission: None,
+                replaced_by: None,
             })
             .unwrap()
         };

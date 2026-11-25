@@ -931,6 +931,7 @@ fn listing_container(
         run: None,
         log_driver: None,
         admission: None,
+        replaced_by: None,
     })
     .unwrap()
 }
@@ -1020,6 +1021,7 @@ async fn observing_containers_past_tonic_s_default_4_mib_succeeds() {
             run: None,
             log_driver: None,
             admission: None,
+            replaced_by: None,
         })
         .unwrap();
     service.listed_containers.lock().unwrap().push(container);

@@ -145,6 +145,9 @@ struct Recorded {
     in_before: bool,
     stopped: bool,
     present: bool,
+    /// The copy its Machine recorded as made to take this one's place, as a Server
+    /// advertising the replacement record keeps it.
+    replaced_by: Option<ContainerId>,
 }
 
 impl Recorded {
@@ -160,6 +163,7 @@ impl Recorded {
             in_before: *observed.rotation() == CopyRotation::In,
             stopped: false,
             present: true,
+            replaced_by: observed.replaced_by,
         }
     }
 
@@ -324,6 +328,9 @@ struct Scripted {
     /// What dialing the entry again answers; none when this client can't.
     redial: Option<Result<(), RedialFailure>>,
     redials: Mutex<usize>,
+    /// Each Gone sent through `ensure_unsettled` by Container id, and whether it
+    /// deletes the Container's anonymous Volumes.
+    deleted_volumes: Mutex<Vec<(ContainerId, bool)>>,
 }
 
 impl Scripted {
@@ -376,6 +383,7 @@ impl Scripted {
             listed: Mutex::new(Vec::new()),
             redial: None,
             redials: Mutex::new(0),
+            deleted_volumes: Mutex::new(Vec::new()),
         }
     }
 
@@ -409,6 +417,7 @@ impl Scripted {
                 rotation,
                 stopped: false,
                 present: true,
+                replaced_by: None,
             },
         );
         self
@@ -561,10 +570,12 @@ impl Scripted {
             .entry(observed.container_id)
             .or_insert_with(|| Recorded::of(&observed));
         let (rotation, r#gen, deploy) = (copy.rotation.clone(), copy.r#gen, copy.deploy.clone());
+        let replaced_by = copy.replaced_by;
         observed
             .try_update(|parts| {
                 parts.rotation = Some(rotation);
                 parts.r#gen = Some(r#gen);
+                parts.replaced_by = replaced_by;
                 if let Some(deploy) = deploy {
                     parts
                         .labels
@@ -1040,6 +1051,7 @@ impl Scripted {
                     new.r#gen,
                     new.deployment_id.clone(),
                     new.slot.creation_key.clone(),
+                    new.replaces,
                 ));
                 (call, ContainerLocator::Key(new.slot))
             }
@@ -1103,8 +1115,22 @@ impl Scripted {
             | Reply::Error(_)
             | Reply::Refused(..) => None,
         };
-        if let (Some((service, kind, r#gen, deploy, key)), Some(id)) = (created, container_id) {
-            self.copies.lock().unwrap().insert(
+        if let (Some((service, kind, r#gen, deploy, key, replaces)), Some(id)) =
+            (created, container_id)
+        {
+            let mut copies = self.copies.lock().unwrap();
+            // The Machine records the copy a new one replaces only when it is of the same
+            // Service and kind, In or Held, and no other copy claimed it.
+            if let Some(old) = replaces.and_then(|old| copies.get_mut(&old))
+                && old.machine_id == machine
+                && old.service == service
+                && old.kind == kind
+                && matches!(old.rotation, CopyRotation::In | CopyRotation::Held(_))
+                && old.replaced_by.is_none()
+            {
+                old.replaced_by = Some(id);
+            }
+            copies.insert(
                 id,
                 Recorded {
                     machine_id: machine,
@@ -1117,6 +1143,7 @@ impl Scripted {
                     in_before: false,
                     stopped: false,
                     present: true,
+                    replaced_by: None,
                 },
             );
         }
@@ -1364,9 +1391,22 @@ impl CopyLifecycle for Scripted {
                 )
                 .await
             }
-            want @ (ContainerWant::Running { .. }
-            | ContainerWant::Stopped { .. }
-            | ContainerWant::Gone { .. }) => self.converge(machine_id, want).await,
+            ContainerWant::Gone {
+                ref container,
+                anonymous_volumes,
+                ..
+            } => {
+                if let ContainerLocator::Id(id) = container {
+                    self.deleted_volumes
+                        .lock()
+                        .unwrap()
+                        .push((*id, anonymous_volumes.replaced_by().is_some()));
+                }
+                self.converge(machine_id, want).await
+            }
+            want @ (ContainerWant::Running { .. } | ContainerWant::Stopped { .. }) => {
+                self.converge(machine_id, want).await
+            }
         }
     }
 
@@ -1703,6 +1743,7 @@ fn observation(
         run: None,
         log_driver: None,
         admission: None,
+        replaced_by: None,
     })
     .unwrap()
 }
