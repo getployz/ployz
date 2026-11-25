@@ -1,7 +1,11 @@
 //! The Cloud a command talks to, written once: a bare host is https, a URL is kept as given,
 //! and nothing else about it is spelled anywhere else.
 
+use crate::cli::Shown;
 use crate::env;
+
+/// The schemes a Cloud is reached by.
+const WEB: &[&str] = &["http", "https"];
 
 /// The Cloud a sign-in goes to when none is named or stored.
 pub(crate) const DEFAULT_CLOUD: &str = "ployz.dev";
@@ -10,10 +14,43 @@ pub(crate) const DEFAULT_CLOUD: &str = "ployz.dev";
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CloudOrigin(String);
 
-/// A Cloud written with a scheme that is neither `http` nor `https`.
+/// A Cloud URL Ployz won't store or reach.
 #[derive(Debug, Eq, PartialEq)]
-pub(crate) struct NotWebUrl {
-    pub(crate) given: String,
+pub(crate) struct Refused {
+    /// What was given, as an error names it ([`CloudOrigin::shown`]).
+    pub(crate) given: Shown,
+    pub(crate) why: Refusal,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Refusal {
+    /// A scheme other than `http` or `https`.
+    Scheme,
+    /// No host a URL can name, such as a placeholder.
+    NoHost,
+    /// A user name or password: Ployz signs in through the approval page, and would store
+    /// and print the URL whole.
+    UserInfo,
+    /// A query or fragment, which Ployz's own paths can't follow.
+    QueryOrFragment,
+}
+
+impl Refused {
+    /// The refusal of the Cloud `named` (`--cloud-url`, a variable, or the stored one) gave.
+    pub(crate) fn sentence(&self, named: &str) -> String {
+        let given = &self.given;
+        match self.why {
+            Refusal::Scheme | Refusal::NoHost => format!(
+                "{named} takes a host such as ployz.dev, or an http:// or https:// URL, not {given}"
+            ),
+            Refusal::UserInfo => format!(
+                "{named} can't hold a user name or password, which Ployz would store and print: {given}. Name the Cloud alone; you sign in on its approval page"
+            ),
+            Refusal::QueryOrFragment => format!(
+                "{named} can't hold a query or fragment, which Ployz's own paths can't follow: {given}. Name the Cloud alone"
+            ),
+        }
+    }
 }
 
 impl CloudOrigin {
@@ -26,16 +63,34 @@ impl CloudOrigin {
         })
     }
 
-    /// [`Self::new`], refusing a scheme the Cloud is not reached by.
-    pub(crate) fn checked(text: &str) -> Result<Self, NotWebUrl> {
-        if let Some((scheme, _)) = text.split_once("://")
-            && !["http", "https"].contains(&scheme.to_ascii_lowercase().as_str())
+    /// [`Self::new`], refusing a URL Ployz would not store as given: a scheme the Cloud is
+    /// not reached by, no host, user info, a query or a fragment.
+    pub(crate) fn checked(text: &str) -> Result<Self, Refused> {
+        let origin = Self::new(text);
+        let refused = |why| {
+            Err(Refused {
+                given: origin.shown(),
+                why,
+            })
+        };
+        if let Some((scheme, _)) = text.trim().split_once("://")
+            && !WEB.contains(&scheme.to_ascii_lowercase().as_str())
         {
-            return Err(NotWebUrl {
-                given: text.to_owned(),
-            });
+            return refused(Refusal::Scheme);
         }
-        Ok(Self::new(text))
+        let Some(url) = url::Url::parse(&origin.0)
+            .ok()
+            .filter(|url| url.host_str().is_some_and(|host| !host.is_empty()))
+        else {
+            return refused(Refusal::NoHost);
+        };
+        if !url.username().is_empty() || url.password().is_some() {
+            return refused(Refusal::UserInfo);
+        }
+        if url.query().is_some() || url.fragment().is_some() {
+            return refused(Refusal::QueryOrFragment);
+        }
+        Ok(origin)
     }
 
     pub(crate) fn default_cloud() -> Self {
@@ -54,6 +109,24 @@ impl CloudOrigin {
 
     pub(crate) fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// As an error names it: its scheme, host and port, with any user info, path, query or
+    /// fragment marked in place (`https://<USER>@cloud.example/<PATH>`), and `CLOUD_URL` when it
+    /// isn't a URL at all.
+    pub(crate) fn shown(&self) -> Shown {
+        url::Url::parse(&self.0).map_or_else(
+            |_| Shown::placeholder("CLOUD_URL"),
+            |url| Shown::url_redacted(&url, WEB),
+        )
+    }
+
+    /// As a command shows it again: whole when it is a scheme, a host and a port alone,
+    /// else none, so the command names `CLOUD_URL` rather than reaching another Cloud.
+    pub(crate) fn whole(&self) -> Option<Shown> {
+        url::Url::parse(&self.0)
+            .ok()
+            .and_then(|url| Shown::url(&url, WEB))
     }
 
     pub(crate) fn into_string(self) -> String {
@@ -124,10 +197,55 @@ mod tests {
             "https://ployz.dev"
         );
         assert_eq!(
-            CloudOrigin::checked("ftp://ployz.dev"),
-            Err(NotWebUrl {
-                given: "ftp://ployz.dev".into()
-            })
+            CloudOrigin::checked("ftp://EXAMPLE@ployz.dev/EXAMPLE")
+                .map_err(|refused| (refused.given.to_string(), refused.why)),
+            Err((
+                "<SCHEME>://<USER>@ployz.dev/<PATH>".to_owned(),
+                Refusal::Scheme
+            ))
         );
+    }
+
+    /// A Cloud URL is stored and printed whole on success, so one that holds a credential,
+    /// or anything Ployz's own paths can't follow, is refused before it is stored.
+    #[test]
+    fn a_cloud_with_user_info_a_query_a_fragment_or_no_host_is_refused() {
+        for (typed, why, given) in [
+            (
+                "https://EXAMPLE:EXAMPLE@cloud.example",
+                Refusal::UserInfo,
+                "https://<USER>:<PASSWORD>@cloud.example",
+            ),
+            (
+                "EXAMPLE@cloud.example",
+                Refusal::UserInfo,
+                "https://<USER>@cloud.example",
+            ),
+            (
+                "https://cloud.example/?token=EXAMPLE",
+                Refusal::QueryOrFragment,
+                "https://cloud.example?<QUERY>",
+            ),
+            (
+                "https://cloud.example#EXAMPLE",
+                Refusal::QueryOrFragment,
+                "https://cloud.example#<FRAGMENT>",
+            ),
+            ("<CLOUD_URL>", Refusal::NoHost, "<CLOUD_URL>"),
+        ] {
+            assert_eq!(
+                CloudOrigin::checked(typed)
+                    .map_err(|refused| (refused.given.to_string(), refused.why)),
+                Err((given.to_owned(), why)),
+                "{typed}"
+            );
+        }
+        for typed in [
+            "ployz.dev",
+            "http://127.0.0.1:9",
+            "https://example.test/ployz",
+        ] {
+            assert!(CloudOrigin::checked(typed).is_ok(), "{typed}");
+        }
     }
 }

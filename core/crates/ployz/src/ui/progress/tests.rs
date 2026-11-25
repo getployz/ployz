@@ -1315,3 +1315,14 @@ fn an_unread_server_gap_names_it_and_counts_without_claiming_down() {
     assert!(!text.contains(machine_id.as_str()), "{text}");
     assert!(!text.contains("observed Down"), "{text}");
 }
+
+/// A live row cut to the terminal's width would drop the `@` the mask finds user info by.
+#[test]
+fn a_row_cut_to_the_width_never_shows_user_info() {
+    let row = clip(
+        "pulling https://app:SENTINELSENTINEL@registry.example/web",
+        30,
+    );
+    assert!(!row.contains("SENTINEL"), "{row}");
+    assert!(row.starts_with("pulling https://<USER>:"), "{row}");
+}

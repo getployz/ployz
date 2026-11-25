@@ -417,7 +417,7 @@ fn servers(matches: &ArgMatches, config: &Path) -> Result<Servers, Error> {
         local_socket_status: None,
         none: Some((why, next)),
     };
-    if matches.get_one::<String>("connect").is_some() {
+    if crate::cli::connection(matches).is_some() {
         return Ok(via("connect", None));
     }
     if let Some(context) = matches.get_one::<String>("context") {
@@ -444,7 +444,11 @@ fn servers(matches: &ArgMatches, config: &Path) -> Result<Servers, Error> {
         match select_connections(None, Some(&config), None, false, &local) {
             Err(ContextError::NoCurrentContext(_)) => none(
                 "no current context",
-                Some(super::context::retry_use(matches)),
+                Some(
+                    super::Rerun::then(matches, &["ctx", "use"])
+                        .placeholder("context-name", "CONTEXT")
+                        .line(),
+                ),
             ),
             Err(ContextError::NoContexts(_)) => {
                 none("no contexts", super::context::no_contexts_next(matches))

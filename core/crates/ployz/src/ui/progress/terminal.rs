@@ -12,7 +12,7 @@ use indicatif::{ProgressDrawTarget, TermLike};
 pub(super) const ECHO_ROOM: u16 = 2;
 
 pub(super) fn draw_target() -> ProgressDrawTarget {
-    let term = Term::buffered_stderr();
+    let term = super::super::stream::terminal_buffered();
     if !term.is_term() || console::is_dumb() {
         return ProgressDrawTarget::hidden();
     }
@@ -55,11 +55,11 @@ impl TermLike for DrawTerm {
     }
 
     fn write_line(&self, value: &str) -> io::Result<()> {
-        self.term.write_line(value)
+        self.term.write_line(&super::super::mask(value))
     }
 
     fn write_str(&self, value: &str) -> io::Result<()> {
-        self.term.write_str(value)
+        self.term.write_str(&super::super::mask(value))
     }
 
     fn clear_line(&self) -> io::Result<()> {

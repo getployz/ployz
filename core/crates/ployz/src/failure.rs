@@ -310,6 +310,10 @@ impl Failure {
     /// What the reader can do: hints set here, then those an error from the wire
     /// carried that no hint set here replaces.
     #[must_use]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "relays the hints an error from the wire carried"
+    )]
     pub fn hints(&self) -> Vec<Hint> {
         let mut hints = self.own_hints().to_vec();
         if let Inner::Command { error, .. } = &self.inner {

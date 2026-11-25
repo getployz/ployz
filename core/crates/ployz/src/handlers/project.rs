@@ -160,9 +160,9 @@ struct Removal<'a> {
 pub(super) fn rm(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let name = ProjectName::parse(required(matches, "name")?)?;
-    let store = store(root)?.args([name.as_str(), "--confirm", name.as_str()]);
+    let store = store(root)?.retrying("confirm", name.as_str());
     let mut shown = None;
-    confirm(matches, name.as_str(), "Project", store.again(&[]), || {
+    confirm(matches, name.as_str(), "Project", store.again(), || {
         unconfirmed(&store, &name).map(|(refusal, loss, listed)| {
             shown = Some(listed);
             (refusal, loss)
@@ -220,7 +220,7 @@ fn unconfirmed(
             inventory(store, &at)
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let retry = store.again(&[]);
+    let retry = store.again();
     let loss = Tree::new(
         format!("Removing Project {project} deletes, for good:"),
         environments
@@ -240,6 +240,6 @@ fn unconfirmed(
         ),
         json!({ "project": project, "environments": environments }),
     )
-    .hint(Hint::Retry(retry));
+    .hint(retry);
     Ok((refusal, loss, teardown::Shown::of(&environments)))
 }

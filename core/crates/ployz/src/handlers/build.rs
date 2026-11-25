@@ -319,7 +319,6 @@ impl Pushed {
     /// The Cloud runner's fixed result line, on stdout in every mode. A rule build adds
     /// its image token, which names the image and the attest key its secrets opened with.
     fn print(&self, image_token: Option<&ployz_core::GithubToken>) -> Result<(), Error> {
-        use std::io::Write as _;
         #[derive(serde::Serialize)]
         #[serde(rename_all = "camelCase")]
         struct Line<'a> {
@@ -335,11 +334,7 @@ impl Pushed {
             platforms: &self.platforms,
             image_token: image_token.map(ployz_core::GithubToken::as_str),
         };
-        writeln!(
-            crate::ui::stdout_bytes(),
-            "{}",
-            serde_json::to_string(&line).map_err(std::io::Error::other)?
-        )?;
+        crate::ui::Json::stdout().write(&line, false)?;
         Ok(())
     }
 }

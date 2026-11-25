@@ -11,7 +11,7 @@ use crate::global_slot::ServerNames;
 pub(crate) fn joined_catch_up_error(
     error: CatchUpError,
     server: &Machine,
-    command: impl Fn(&[&str]) -> String,
+    command: impl Fn(&[&str]) -> crate::cli::Rerun,
 ) -> Failure {
     let mut message = if error.cause.is_interrupted() {
         "Server joined; Global catch-up was interrupted. It remains a Cluster member."
@@ -29,21 +29,24 @@ pub(crate) fn joined_catch_up_error(
     let mut failure = error.cause.context(message);
     for identity in error.unresolved {
         let hint = if identity == QualifiedService::system_ingress() {
-            Hint::Retry(command(&[
+            Hint::from(command(&[
                 "server",
                 "set",
                 &server.id.to_string(),
                 "--accepts-ingress=true",
             ]))
         } else if identity.is_private_access_router() {
-            Hint::Retry(command(&["private-access", "on", "--auth-key-stdin"]))
+            Hint::from(command(&["private-access", "on", "--auth-key-stdin"]))
         } else {
-            Hint::Inspect(command(&[
-                "logs",
-                &identity.to_string(),
-                "--machine",
-                &server.id.to_string(),
-            ]))
+            Hint::Inspect(
+                command(&[
+                    "logs",
+                    &identity.to_string(),
+                    "--machine",
+                    &server.id.to_string(),
+                ])
+                .line(),
+            )
         };
         failure = failure.hint(hint);
     }
@@ -55,7 +58,7 @@ pub(crate) fn joined_catch_up_error(
 pub(crate) async fn follow_globals(
     client: &mut Client,
     assigned: &Machine,
-    command: impl Fn(&[&str]) -> String,
+    command: impl Fn(&[&str]) -> crate::cli::Rerun,
 ) -> (Vec<serde_json::Value>, Result<(), CatchUpError>) {
     use crate::ui::progress::{Disposition, Frame, Progress, Row, Run, State, Subject, Timing};
     let signal = match crate::cancellation::interrupted() {
@@ -137,9 +140,9 @@ pub(crate) async fn follow_globals(
     let mut unarrived = Vec::new();
     // A Server enrolled moments ago looks the same as one that never will join,
     // so forgetting it is offered only with its condition.
-    let list = command(&["server", "ls"]);
+    let list = command(&["server", "ls"]).line();
     for (id, name) in not_arrived {
-        let next = command(&["server", "forget", id.as_str(), "--confirm", "dead"]);
+        let next = command(&["server", "forget", id.as_str(), "--confirm", "dead"]).line();
         crate::ui::warn(format!(
             "Server {name} may still be joining, so Global catch-up did not wait on it; if `{}` \
              keeps showing it down with no version, remove it with `{}`.",

@@ -1,6 +1,6 @@
 //! Select waiting hosts by name, review Cloud's plan, and follow its enrollment attempts.
 
-use std::{collections::BTreeMap, io::IsTerminal, time::Duration};
+use std::{collections::BTreeMap, time::Duration};
 
 use chrono::DateTime;
 use clap::{ArgMatches, Command};
@@ -15,7 +15,7 @@ use super::super::waiting::{self, State, Waiting};
 use crate::cli::{base, positional, switch, value};
 use crate::cloud;
 use crate::cloud::account::Credential;
-use crate::handlers::{Error, leaf_matches, runtime, typed_with};
+use crate::handlers::{Error, Rerun, leaf_matches, runtime};
 use crate::ui::{self, Cell, Table, printable};
 
 pub(crate) fn command(command: Command) -> Command {
@@ -326,10 +326,10 @@ fn plan_table(plan: &Plan, selected: &[&Waiting]) -> Table {
     table
 }
 
-fn review(plan: &Plan, selected: &[&Waiting], yes: bool, all: bool) -> Result<(), Error> {
+/// Show `plan` and, unless `--yes` was given, ask: `ask` is this command with `--yes`.
+fn review(plan: &Plan, selected: &[&Waiting], ask: Option<Rerun>, all: bool) -> Result<(), Error> {
     if !ui::json() {
-        let _ = plan_table(plan, selected)
-            .write(&mut anstream::stderr(), std::io::stderr().is_terminal());
+        let _ = plan_table(plan, selected).write(&mut ui::stderr(), ui::stderr_is_terminal());
         ui::note(format_args!(
             "{} to enroll · {} skipped · {} providers · {} networks",
             plan.plan.len(),
@@ -358,7 +358,7 @@ fn review(plan: &Plan, selected: &[&Waiting], yes: bool, all: bool) -> Result<()
     if plan.plan.is_empty() {
         return Ok(());
     }
-    if !yes {
+    if let Some(yes) = ask {
         ui::confirm(
             &format!(
                 "Enroll {} waiting server{}?",
@@ -366,7 +366,7 @@ fn review(plan: &Plan, selected: &[&Waiting], yes: bool, all: bool) -> Result<()
                 if plan.plan.len() == 1 { "" } else { "s" }
             ),
             || {
-                Error::detailed(RpcErrorCode::ConfirmationRequired, "Enrollment needs confirmation. Nothing enrolled.", json!({ "plan": plan.plan, "skipped": plan.skipped, "changes": plan.changes, "spread": plan.spread, "waiting_servers": plan.waiting_servers, "runs": runs() })).hint(Hint::Retry(typed_with(&["--yes"])))
+                Error::detailed(RpcErrorCode::ConfirmationRequired, "Enrollment needs confirmation. Nothing enrolled.", json!({ "plan": plan.plan, "skipped": plan.skipped, "changes": plan.changes, "spread": plan.spread, "waiting_servers": plan.waiting_servers, "runs": runs() })).hint(yes)
             },
             "Nothing enrolled.",
         )?;
@@ -551,7 +551,7 @@ pub(crate) fn enroll(root: &ArgMatches) -> Result<(), Error> {
     review(
         &plan,
         &selected,
-        matches.get_flag("yes"),
+        (!matches.get_flag("yes")).then(|| Rerun::again(root).switch("yes")),
         matches.get_flag("all"),
     )?;
     if plan.plan.is_empty() {

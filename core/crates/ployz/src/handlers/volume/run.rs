@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use super::super::store::{self, Backend};
 use super::super::{Error, leaf_matches};
 use crate::approval::{self, Asked};
-use crate::cli::{approval as approval_arg, positional, switch, value};
+use crate::cli::{Rerun, approval as approval_arg, positional, switch, value};
 use crate::cloud::account::{Credential, StoreCallError};
 use crate::ui::{Cell, Fields, Table, Tone};
 
@@ -243,39 +243,15 @@ impl RunAsk {
     }
 
     /// The approval's verb and the command that asks again for this run, up to `--approval`.
-    fn rerun(&self, volume: &VolumeName) -> (OperationVerb, Vec<String>) {
-        // A Protected Environment asks someone who can't protect it before these too.
-        let words = |verb: &str, rest: &[&str]| {
-            ["volume", verb, volume.as_str()]
-                .into_iter()
-                .chain(rest.iter().copied())
-                .map(str::to_owned)
-                .collect::<Vec<_>>()
-        };
+    fn verb(&self) -> OperationVerb {
         match self {
-            Self::DeleteMirror { slot, confirm, .. } => (
-                OperationVerb::RemoveMirror,
-                removal_words(volume, slot, false, confirm.as_deref()),
-            ),
-            Self::DeleteOldCopy { slot, confirm, .. } => (
-                OperationVerb::RemoveMirror,
-                removal_words(volume, slot, true, confirm.as_deref()),
-            ),
-            Self::Release => (OperationVerb::Release, words("release", &[])),
-            Self::Move { to, .. } => (OperationVerb::Move, words("move", &["--to", to.as_str()])),
-            Self::Restore { from, .. } => (
-                OperationVerb::Restore,
-                words("restore", &["--from", from.as_str()]),
-            ),
-            Self::Resize { maximum_bytes, .. } => (
-                OperationVerb::Resize,
-                words("set", &["--size", size_word(*maximum_bytes).as_str()]),
-            ),
-            Self::Mirror { to, .. } => (
-                OperationVerb::Mirror,
-                words("mirror", &["--to", to.as_str()]),
-            ),
-            Self::Sync { .. } => (OperationVerb::Sync, words("sync", &["--full"])),
+            Self::DeleteMirror { .. } | Self::DeleteOldCopy { .. } => OperationVerb::RemoveMirror,
+            Self::Release => OperationVerb::Release,
+            Self::Move { .. } => OperationVerb::Move,
+            Self::Restore { .. } => OperationVerb::Restore,
+            Self::Resize { .. } => OperationVerb::Resize,
+            Self::Mirror { .. } => OperationVerb::Mirror,
+            Self::Sync { .. } => OperationVerb::Sync,
         }
     }
 }
@@ -340,29 +316,6 @@ fn predates_if_old_copy(ask: &RunAsk, error: &StoreCallError) -> Option<Error> {
             ),
         )
     })
-}
-
-/// The `volume mirror rm` line that asks again to remove `volume`'s copy on `slot`.
-pub(super) fn removal_words(
-    volume: &VolumeName,
-    slot: &MachineName,
-    if_old_copy: bool,
-    confirm: Option<&str>,
-) -> Vec<String> {
-    let mut words = ["volume", "mirror", "rm"].map(str::to_owned).to_vec();
-    words.push(MirrorName::new(volume, slot).to_string());
-    if if_old_copy {
-        words.push("--if-old-copy".to_owned());
-    }
-    if let Some(confirm) = confirm {
-        words.extend(["--confirm".to_owned(), confirm.to_owned()]);
-    }
-    words
-}
-
-/// A size as `volume set --size` reads it back, such as `20GB` or `0.5GB`.
-fn size_word(maximum_bytes: ProvisionedVolumeMaximumBytes) -> String {
-    maximum_bytes.to_string().replace(' ', "")
 }
 
 impl Serialize for Full {
@@ -774,14 +727,14 @@ fn request(
         runtime,
         credential,
         matches,
-        volume,
         &found.volume_id,
         &asked,
+        &store.again(),
     )? {
         Ok(run) => run,
         Err(error) => {
             return Err(predates_if_old_copy(&asked.ask, &error)
-                .unwrap_or_else(|| refused(store, matches, error, &asked.ask, volume)));
+                .unwrap_or_else(|| refused(store, error, &asked.ask, volume)));
         }
     };
     let follow = store::next(
@@ -818,22 +771,15 @@ fn approved(
     runtime: &tokio::runtime::Runtime,
     credential: &Credential,
     matches: &ArgMatches,
-    volume: &VolumeName,
     volume_id: &VolumeId,
     asked: &RunRequest,
+    again: &Rerun,
 ) -> Result<Result<VolumeRun, StoreCallError>, Error> {
-    let (verb, mut words) = asked.ask.rerun(volume);
-    words.push("--approval".to_owned());
-    let retry = |id: &str| {
-        let mut args: Vec<&str> = words.iter().map(String::as_str).collect();
-        args.push(id);
-        store::next(matches, &args)
-    };
     approval::approved(
         runtime,
-        verb,
+        asked.ask.verb(),
         matches.get_one::<String>("approval").cloned(),
-        retry,
+        again,
         async |approval| match start(credential, volume_id, asked, approval).await {
             Err(StoreCallError::Refused(refusal)) if Asked::of(&refusal).is_some() => {
                 Err(StoreCallError::Refused(refusal))
@@ -893,19 +839,16 @@ fn ended_word(state: &MaybeKnown<VolumeRunState>) -> String {
 
 fn refused(
     store: &store::Store<'_>,
-    matches: &ArgMatches,
     error: StoreCallError,
     ask: &RunAsk,
     volume: &VolumeName,
 ) -> Error {
     let confirm = matches!(&error, StoreCallError::Refused(refusal) if refusal.code == RpcErrorCode::ConfirmationRequired);
     let failure = store.fail(error);
-    if let Some((slot, None, if_old_copy)) = ask.removal()
+    if let Some((_, None, _)) = ask.removal()
         && confirm
     {
-        let words = removal_words(volume, slot, if_old_copy, Some(volume.as_str()));
-        let words: Vec<&str> = words.iter().map(String::as_str).collect();
-        return failure.hint(Hint::Retry(store::next(matches, &words)));
+        return failure.hint(store.again().set("confirm", volume.as_str()));
     }
     failure
 }

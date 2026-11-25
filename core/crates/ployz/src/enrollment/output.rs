@@ -50,12 +50,12 @@ pub(crate) fn ingress_headline(stem: &str, error: &Error) -> String {
 
 /// Direct ingress diagnostics acquire their command scope before committed output is serialized.
 /// Each Server is selected by Machine ID, since a Machine Name may be ambiguous.
-pub(crate) fn ingress_hints(error: Error, command: impl Fn(&[&str]) -> String) -> Error {
+pub(crate) fn ingress_hints(error: Error, command: impl Fn(&[&str]) -> crate::cli::Rerun) -> Error {
     let retry = error
         .diagnostic()
         .and_then(|diagnostic| diagnostic.failed_machine)
         .map(|machine| {
-            Hint::Retry(command(&[
+            Hint::from(command(&[
                 "server",
                 "set",
                 &machine.to_string(),
@@ -69,7 +69,7 @@ pub(crate) fn ingress_hints(error: Error, command: impl Fn(&[&str]) -> String) -
 /// first. `server` selects each Server in the hints.
 pub(crate) fn ingress_log_hints(
     mut error: Error,
-    command: impl Fn(&[&str]) -> String,
+    command: impl Fn(&[&str]) -> crate::cli::Rerun,
     server: impl Fn(&MachineId) -> String,
 ) -> Error {
     let Some(diagnostic) = error.diagnostic() else {
@@ -79,12 +79,15 @@ pub(crate) fn ingress_log_hints(
         .logs
         .iter()
         .map(|tail| {
-            Hint::Inspect(command(&[
-                "logs",
-                &tail.service.to_string(),
-                "--machine",
-                &server(&tail.machine),
-            ]))
+            Hint::Inspect(
+                command(&[
+                    "logs",
+                    &tail.service.to_string(),
+                    "--machine",
+                    &server(&tail.machine),
+                ])
+                .line(),
+            )
         })
         .collect::<Vec<_>>();
     for hint in hints {

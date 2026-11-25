@@ -140,25 +140,38 @@ deploys off, **Deploy** stops before it starts instead.
 A deploy that waits for an owner or admin in a Protected Environment signs no rule, and approving
 it leaves the rule as it was.
 
-When the services build from several branches and none of them is the rule's, Save signs nothing.
-Turn on **Deploy every push** under **Automatic deploys** in the environment's **Settings** to
-approve one. After you turn it off, Save and Deploy never turn it back on: only the switch does.
+To turn automatic deploys on yourself, open the environment's **Settings**, find **Automatic
+deploys** and turn on **Deploy every push**. That's a Save that signs the rule: the same sheet
+shows the rule, and **Save with passkey** signs it in one prompt. Save or discard any staged
+changes first. When the services build from several branches, pick one under **Branch**: only
+pushes to it deploy, and a Save leaves the rule on its branch. Picking another branch while the
+rule is on signs a new rule for that branch the same way. When every service with **Auto-deploy**
+on moves to one other branch, a Save signs a rule for that branch instead. Either way the sheet
+says the approval moves off `main`. Services that follow `main` keep their **Auto-deploy**
+setting, so turn it off there if pushes to `main` should start nothing.
+
+While the rule is on, **Approve again** signs its next generation in one prompt, for the services,
+settings and servers as they are now. Use it when pushes to the branch are on hold, after you add a
+server, or when a push is refused. Turning the rule on or approving it again pins Ployz's own
+builder.
+
+After you turn it off, Save and Deploy never turn it back on: only the switch does. If the rule
+changed after the page loaded, for example in another tab, nothing is turned off:
+`The rule changed since this page loaded. Reload.`
 A deploy signed while the rule was on, and sent after you turned it off, deploys nothing:
 `Automatic deploys are off for web. Turn on Deploy every push to deploy it.`
 
 When Save or Deploy can't ask your passkey for the rule, for example because a server is offline,
 your servers don't trust your passkey, or a server runs an older `ployz`, it goes on without the
-rule and tells you why. Pushes then hold until you approve the rule. If you can stage changes but
+rule and tells you why. Pushes then hold until a Deploy signs the rule. If you can stage changes but
 not deploy them, Save never asks: it tells you when pushes hold until someone who can deploy
-approves the rule.
+approves the rule. The switch, **Branch** and **Approve again** save nothing when they can't sign
+the rule, and say why. When none of your servers checks approvals, pushes deploy without a rule:
+`None of your servers checks approvals, so pushes deploy without a rule.`
 
-From the CLI, approve it for the services that build from one branch:
-
-```bash
-ployz github rule approve web worker
-```
-
-It prints what you approve, asks about any mount that holds data, then signs it with your device key:
+There's no separate command to approve a rule. From the CLI, `ployz deploy` signs it with your
+device key whenever what it deploys isn't what the rule approves. It prints the rule after the
+services it signs:
 
 ```text
 Approving automatic deploys for production:
@@ -171,30 +184,20 @@ Approving automatic deploys for production:
     builds    Dockerfile Dockerfile, context ., platforms linux/amd64, with the Actions cache, build args LOG_LEVEL=info, build secrets DATABASE_URL
     variables DATABASE_URL (sealed), LOG_LEVEL=info
     command ["node server.js"]
-Approved. Every push to main now deploys web, worker with these settings.
 ```
+
+`ployz github rule approve` is gone, from an older CLI too:
+`ployz github rule approve is gone. Turn on Deploy every push in Ployz Cloud.`
 
 A volume a service mounts shows as its own line, the way [`ployz deploy`](deployments.md#deploy-from-an-approved-device) shows it, such as `mounts managed volume uploads at /app/uploads, read-write: a new, empty volume`. A volume only services outside the rule mount stays as it was.
 
 A rule has no approved version to compare a volume with, so each volume that already holds data
 needs your yes, every time you approve. That includes data from before this version of Ployz,
 an external Docker volume such as `mounts external Docker volume customer-db at /archive, read-write: data from outside Ployz`,
-and a host path. A tmpfs mount asks nothing. The CLI lists those lines and asks before it signs:
+and a host path. A tmpfs mount asks nothing. The sheet lists those lines, and your passkey says
+yes to them. `ployz deploy` lists them and asks before it signs; answer no and nothing is signed.
 
-```text
-Needs your yes:
-  web: mounts managed volume uploads at /app/uploads, read-write: data made as uploads, 3 Nov 14:02 UTC, 20 days ago
-Use the data marked above? [y/N]
-```
-
-Answer no and nothing is signed. With no terminal, it stops, names the lines and signs nothing.
-Run it at a terminal. In the dashboard the same lines show under **Needs your yes**, above
-**Approve with passkey**. Approving with your passkey says yes to them.
-
-It lists every setting the rule pins that isn't Ployz's default, including the start command and how GitHub builds each service, so read them before you rely on it. A value with anything but letters, digits and `-_./:@+` shows in double quotes, with line breaks and other control characters escaped, so `X="a, Y=b"` is one build arg and `X=a, Y=b` is two.
-
-To pin your own fork of the builder, add `--builder <owner>/build/.github/workflows/build.yml@<sha>`
-and `--builder-sha <sha>`.
+The rule lists every setting it pins that isn't Ployz's default, including the start command and how GitHub builds each service, so read them before you rely on it. A value with anything but letters, digits and `-_./:@+` shows in double quotes, with line breaks and other control characters escaped, so `X="a, Y=b"` is one build arg and `X=a, Y=b` is two.
 
 From then on every push to that branch deploys with no prompt, force pushes included. GitHub
 Actions builds it with Ployz's pinned builder, and each server checks that the image is the one
@@ -237,14 +240,14 @@ deploy of another environment from it builds on your servers.
 - **A saved change waits for you.** A Save or Deploy in the dashboard, or `ployz deploy`, signs
   the change with the rule. A change saved without it, such as a CLI save with no deploy, to a service the rule covers, its settings or
   how it builds, or a new service that builds from the rule's branch, holds pushes until you
-  approve the rule again. Settings shows **Pushes to main are on hold** with what changed;
-  **Review and approve** names each changed setting and asks your passkey once. From the CLI, `ployz github rule approve web`
-  names what changed, as `changed     web since the last approval`. A push that changes only
+  approve the rule again. Settings shows **Pushes to main are on hold** with what changed: click
+  **Approve again**. Your next Deploy, or `ployz deploy`, also signs the rule with it and names
+  what changed, as `changed     web since the last approval`. A push that changes only
   the code deploys as before, and so does a new replica count.
 - **A new server waits for a service that keeps data there.** The rule names the servers it was
   approved for. A service with a volume, a folder from its server or other host access runs only
-  on those, so approve the rule again after you [add a server](../servers/add-a-server.md). A
-  service that keeps nothing on its server runs on any server.
+  on those, so after you [add a server](../servers/add-a-server.md), click **Approve again**
+  under **Automatic deploys**, or deploy: either signs the rule again for every server. A service that keeps nothing on its server runs on any server.
 - **Stop it** by turning off **Deploy every push**, or with `ployz github rule end`. Pushes no
   longer deploy on those servers.
 - **A server checks the approval's time.** It refuses a rule approved more than 10 minutes ahead

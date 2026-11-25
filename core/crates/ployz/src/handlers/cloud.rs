@@ -1,7 +1,6 @@
 //! `ployz cloud reset`.
 
 use clap::{ArgMatches, Command};
-use ployz_core::Hint;
 
 use super::{Error, config_path, leaf_matches, runtime};
 use crate::cli::{base, switch};
@@ -26,7 +25,7 @@ pub(super) fn reset(root: &ArgMatches) -> Result<(), Error> {
         return Err(Error::usage(
             "cloud reset gives up the unfinished founding; stop or erase the founding Server, then confirm with --yes",
         )
-        .hint(Hint::Retry("ployz cloud reset --yes".into())));
+        .hint(super::Rerun::again(root).switch("yes")));
     }
     let store = crate::cloud::login::CredentialStore::beside(&config_path(matches)?);
     runtime()?.block_on(async {

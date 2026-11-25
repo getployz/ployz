@@ -1,8 +1,4 @@
-import { auto_deploy_rule_body, auto_deploy_rule_end_body, install_key, passkey_join_step, private_access_approval_body, source_need, version_steps } from './generated/config-wasm.mjs';
-
-export function autoDeployRuleBody(view, terms, services) {
-  return JSON.parse(auto_deploy_rule_body(JSON.stringify(services === undefined ? { view, terms } : { view, terms, services })));
-}
+import { auto_deploy_rule_end_body, install_key, passkey_join_step, private_access_approval_body, source_need, version_steps } from './generated/config-wasm.mjs';
 
 export function autoDeployRuleEndBody(view, terms) {
   return JSON.parse(auto_deploy_rule_end_body(JSON.stringify({ view, issued_at: terms.issued_at, signer: terms.signer })));
