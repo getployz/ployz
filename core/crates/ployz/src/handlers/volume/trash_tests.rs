@@ -3,7 +3,7 @@ use ployz_core::{
     RuntimeWatchFrame, SlotId, SlotRole, VolumeCopy,
 };
 
-use super::no_copy;
+use super::{emptying, no_copy, retry_args};
 use crate::global_fixtures::machine;
 use crate::handlers::volume::restore::{Seen, Unseen};
 
@@ -77,4 +77,27 @@ fn a_deleted_volume_comes_back_only_when_every_server_of_the_frame_answers_with_
         RpcErrorCode::Unavailable
     );
     assert_eq!(refused(id('3'), &quiet), RpcErrorCode::Unavailable);
+}
+
+/// The retry a refused `trash empty` prints names the entries it would delete, and still
+/// keeps any a restore pins before the retry runs.
+#[test]
+fn the_retry_of_a_refused_empty_still_keeps_entries_being_restored() {
+    let ids = [
+        ployz_core::TrashId::parse("aeaqcaibaeaqcaibaeaqcaibae").unwrap(),
+        ployz_core::TrashId::parse("aiaqcaibaeaqcaibaeaqcaibae").unwrap(),
+    ];
+    let argv = ["ployz", "volume", "trash", "empty"]
+        .map(str::to_owned)
+        .into_iter()
+        .chain(retry_args(&ids));
+    let root = crate::cli::command().try_get_matches_from(argv).unwrap();
+
+    let (named, bulk) = emptying(&root);
+
+    assert_eq!(named, ids);
+    assert!(
+        bulk,
+        "a retry that names entries must still keep pinned ones"
+    );
 }

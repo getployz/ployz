@@ -343,7 +343,8 @@ Each entry names its volume by project, environment and volume ID, like
 server in the Cluster answers that it holds no copy of it, because the restored data would
 otherwise be a second copy. Until then it stays in the trash, and `trash ls` shows it as
 restoring. Each try keeps it there 7 more days, so run the restore again once the servers
-answer.
+answer. If the restore stops without an answer, it may have happened: run the same command
+again to finish it.
 
 A deleted volume comes back unused. Redeploy a deployment from before the removal, and its
 services mount the restored data. That rollback lasts until your next deploy, so discard the
@@ -363,7 +364,7 @@ A mirror or a mirror's old data comes back as an old copy.
 
 `sudo ployz volume trash empty` deletes everything in the server's trash for good, after you
 confirm, except entries being restored. Name entry IDs to delete only those, restoring ones
-included. An entry Ployz can't read stays in the trash, and
+included, or add `--keep-restoring` to leave those out. An entry Ployz can't read stays in the trash, and
 `trash ls` and `trash empty` print the command that deletes it and exit with code 3. Without a
 terminal, `trash empty` with no IDs deletes nothing and prints the command naming each entry it
 can read. It exits with code 2, or 3 while an entry it can't read remains.

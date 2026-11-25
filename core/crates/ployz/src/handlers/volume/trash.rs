@@ -40,12 +40,19 @@ pub(in crate::handlers) fn restore_command(command: Command) -> Command {
 }
 
 pub(in crate::handlers) fn empty_command(command: Command) -> Command {
-    base(command, "Delete data in a Server's Trash for good").arg(
-        id_arg(false)
-            .num_args(0..)
-            .action(ArgAction::Append)
-            .help("Trash entry IDs; with none, every entry"),
-    )
+    base(command, "Delete data in a Server's Trash for good")
+        .arg(
+            id_arg(false)
+                .num_args(0..)
+                .action(ArgAction::Append)
+                .help("Trash entry IDs; with none, every entry"),
+        )
+        .arg(
+            clap::Arg::new("keep-restoring")
+                .long("keep-restoring")
+                .action(ArgAction::SetTrue)
+                .help("Keep entries being restored, even when named"),
+        )
 }
 
 fn id_arg(required: bool) -> clap::Arg {
@@ -108,7 +115,9 @@ pub(in crate::handlers) fn restore(root: &ArgMatches) -> Result<(), Error> {
             TrashRestore::Pinned { .. } => {
                 let seen = copies(&server.client, &server.frame, &first.name).await;
                 no_copy(&first.name, server.id, &seen, &server.frame)?;
-                restore_call(&server, id, true).await?
+                restore_call(&server, id, true)
+                    .await
+                    .map_err(|error| uncertain(&server, id, error))?
             }
             TrashRestore::Landed | TrashRestore::Restored { .. } => first,
         };
@@ -160,6 +169,27 @@ async fn restore_call(server: &Server, id: TrashId, promote: bool) -> Result<Tra
         })
 }
 
+/// A promote that failed without the Server refusing it may have committed, so it says the
+/// same command finishes it: a rerun takes up a restore that happened and makes none twice.
+fn uncertain(server: &Server, id: TrashId, error: Error) -> Error {
+    match error.report().code {
+        RpcErrorCode::Conflict
+        | RpcErrorCode::NotFound
+        | RpcErrorCode::InvalidArgument
+        | RpcErrorCode::Unsupported
+        | RpcErrorCode::Unauthenticated
+        | RpcErrorCode::ConfirmationRequired
+        | RpcErrorCode::Ambiguous => error,
+        RpcErrorCode::Unavailable | RpcErrorCode::Internal | RpcErrorCode::Unknown(_) => error
+            .context(format!(
+                "{} didn't confirm restoring {id}, so it may have happened. Run this again to \
+                 finish it; a second run changes nothing a first one did.",
+                server.name
+            ))
+            .hint(Hint::Retry(sudo(&crate::cli::typed_with(&[])))),
+    }
+}
+
 /// After a deleted Volume comes back: the deployment that mounts it, the discard that keeps
 /// the next deploy from deleting it again, and the save that keeps an automatic deploy from
 /// doing so, in the Project and Environment that own it when a Store says which.
@@ -209,13 +239,30 @@ fn owner(root: &ArgMatches, name: &DockerVolumeName) -> Option<OwnedNamespace> {
         .find(|owned| owned.namespace.as_str() == namespace)
 }
 
-pub(in crate::handlers) fn empty(root: &ArgMatches) -> Result<(), Error> {
-    let named: Vec<TrashId> = leaf_matches(root)
+/// The IDs `trash empty` names, and whether it keeps entries a restore pinned: with no
+/// IDs, or with `--keep-restoring`, the Server skips them under its lock.
+fn emptying(root: &ArgMatches) -> (Vec<TrashId>, bool) {
+    let matches = leaf_matches(root);
+    let named: Vec<TrashId> = matches
         .get_many::<TrashId>("id")
         .into_iter()
         .flatten()
         .copied()
         .collect();
+    let bulk = named.is_empty() || matches.get_flag("keep-restoring");
+    (named, bulk)
+}
+
+/// What a refused `trash empty` with no IDs offers to run: the entries it would have
+/// deleted, still keeping any a restore pins before the retry reaches the Server.
+fn retry_args(ids: &[TrashId]) -> Vec<String> {
+    std::iter::once("--keep-restoring".to_owned())
+        .chain(ids.iter().map(ToString::to_string))
+        .collect()
+}
+
+pub(in crate::handlers) fn empty(root: &ArgMatches) -> Result<(), Error> {
+    let (named, bulk) = emptying(root);
     let runtime = runtime()?;
     let (server, ids, kept, restoring) = runtime.block_on(async {
         let server = connect(root).await?;
@@ -277,13 +324,7 @@ pub(in crate::handlers) fn empty(root: &ArgMatches) -> Result<(), Error> {
     let mut emptied = runtime.block_on(async {
         server
             .client
-            .call_shared::<op::EmptyTrash>(
-                EmptyTrashRequest {
-                    ids,
-                    bulk: named.is_empty(),
-                },
-                once(),
-            )
+            .call_shared::<op::EmptyTrash>(EmptyTrashRequest { ids, bulk }, once())
             .await
             .map_err(crate::connect::rpc_error)
     })?;
@@ -345,8 +386,8 @@ fn unreadable(server: &str, kept: &[UnreadableTrash]) -> Result<(), Error> {
 
 /// Ask before emptying every entry; `--json` and a script get the command naming each one.
 fn confirm_all(server: &str, ids: &[TrashId]) -> Result<(), Error> {
-    let named: Vec<String> = ids.iter().map(ToString::to_string).collect();
-    let named: Vec<&str> = named.iter().map(String::as_str).collect();
+    let retry = retry_args(ids);
+    let named: Vec<&str> = retry.iter().map(String::as_str).collect();
     crate::ui::confirm(
         &format!(
             "Delete {} in {server}'s Trash for good?",
