@@ -409,13 +409,14 @@ approves it as it stands, the page shows the rule too, and the same tap signs it
 builds that service, and later pushes to its branch deploy with no prompt. A deploy with only such
 services to sign still gets a link.
 
-A deploy from an upload, as `ployz up` sends one, still gets a link. Once approved, it fails at its
-build with `This server runs only builds an approved device starts.`
+A deploy from an upload, as `ployz up` sends one, either queues at once or waits for approval like
+any other deploy. Either way, it then fails at its build with
+`This server runs only builds an approved device starts.`
 
 Otherwise it's refused with what to do, and no link opens. A private tag needs its image written
 by digest. When Ployz
 Cloud can't reach every server, the deploy queues as before and each server checks it. A coding
-agent's deploy is refused instead.
+agent's deploy that still has services to sign is refused instead.
 
 ### Upgrade servers before you sign
 
