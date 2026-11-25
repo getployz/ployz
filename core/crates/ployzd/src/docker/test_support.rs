@@ -298,6 +298,7 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
                         "Driver": "local",
                         "Mountpoint": format!("/var/lib/docker/volumes/{volume}/_data"),
                         "Labels": {ANONYMOUS_VOLUME_LABEL: ""},
+                        "CreatedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
                         "Scope": "local",
                         "Options": null,
                     }),

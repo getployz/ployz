@@ -253,8 +253,16 @@ mod tests {
     }
 
     async fn create(runtime: &ContainerRuntime, creation_key: &'static str) -> ContainerId {
+        create_with(runtime, creation_key, Vec::new()).await
+    }
+
+    async fn create_with(
+        runtime: &ContainerRuntime,
+        creation_key: &'static str,
+        sources: Vec<ployz_core::VolumeSource>,
+    ) -> ContainerId {
         let namespace = Namespace::parse("app").unwrap();
-        let spec = spec_with_sources(Vec::new());
+        let spec = spec_with_sources(sources);
         runtime
             .lifecycle()
             .create_with_admission::<_, _, Error>(
@@ -308,6 +316,15 @@ mod tests {
             }),
         );
         ContainerId::parse(id).unwrap()
+    }
+
+    /// A Service's mount of `volume` by its name, as an External Volume.
+    fn external(volume: &DockerVolumeName) -> ployz_core::VolumeSource {
+        ployz_core::RawVolumeSource::External {
+            name: volume.clone(),
+        }
+        .admit()
+        .unwrap()
     }
 
     fn exists(fake: &FakeDocker, volume: &DockerVolumeName) -> bool {
@@ -407,6 +424,77 @@ mod tests {
         );
         assert!(!exists(&fake, &volume));
         assert!(runtime.lifecycle().kept_volumes().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn prune_refuses_a_volume_made_again_under_a_kept_name() {
+        let (runtime, fake, containers) = machine_with_image_volume().await;
+        let (_, volume) = scale_down(&runtime, &containers, "plan:0").await;
+        // Deleted with Docker, as a daemon killed between Docker's removal and forgetting
+        // the record leaves it too, then made again under the same name with new data.
+        let mut made_again = fake
+            .volumes
+            .lock()
+            .unwrap()
+            .remove(volume.as_str())
+            .unwrap();
+        made_again.as_object_mut().unwrap().insert(
+            "CreatedAt".to_owned(),
+            serde_json::json!("2031-01-01T00:00:00Z"),
+        );
+        fake.volumes
+            .lock()
+            .unwrap()
+            .insert(volume.as_str().to_owned(), made_again);
+
+        assert_eq!(
+            prune(&runtime, &volume).await,
+            KeptVolumeRemovalOutcome::NotKept,
+            "the record names the Volume that was deleted, not the one that took its name"
+        );
+        assert!(exists(&fake, &volume));
+        assert!(runtime.lifecycle().kept_volumes().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn prune_refuses_a_volume_a_service_mounted_by_name_then_scaled_to_zero() {
+        let (runtime, fake, containers) = machine_with_image_volume().await;
+        let (_, volume) = scale_down(&runtime, &containers, "plan:0").await;
+        let adopter = create_with(&runtime, "plan:1", vec![external(&volume)]).await;
+        runtime
+            .lifecycle()
+            .remove(&adopter, VolumeDisposal::Keep, true)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            prune(&runtime, &volume).await,
+            KeptVolumeRemovalOutcome::NotKept,
+            "an External Volume holds a Service's data, whatever label Docker gave it"
+        );
+        assert!(exists(&fake, &volume));
+        let listed = runtime.lifecycle().kept_volumes().await.unwrap();
+        assert!(listed.iter().all(|kept| kept.name != volume), "{listed:?}");
+    }
+
+    #[tokio::test]
+    async fn prune_refuses_a_kept_volume_a_stored_spec_mounts_by_name() {
+        let (runtime, fake, containers) = machine_with_image_volume().await;
+        let (_, volume) = scale_down(&runtime, &containers, "plan:0").await;
+        let adopter = create_with(&runtime, "plan:1", vec![external(&volume)]).await;
+        // Docker lost the Container, as `docker rm` by hand does; this Machine still holds
+        // its spec.
+        containers.lock().unwrap().retain(|_, found| {
+            found.get("Id").and_then(serde_json::Value::as_str) != Some(adopter.as_str())
+        });
+
+        assert_eq!(
+            prune(&runtime, &volume).await,
+            KeptVolumeRemovalOutcome::InUse {
+                containers: vec![adopter]
+            }
+        );
+        assert!(exists(&fake, &volume));
     }
 
     #[tokio::test]
