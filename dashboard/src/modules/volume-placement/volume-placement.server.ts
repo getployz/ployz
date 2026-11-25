@@ -13,7 +13,7 @@ import type { Access } from "#/modules/organization/access.server";
 import { ClusterOutOfTime, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
 import { failedRestore, volumePlacement } from "#/modules/volume-placement/tables";
 import { UNANSWERED, unlessOriginRefused, unlessPlacementRefused } from "#/modules/volume-placement/volume-placement.gates.server";
-import { lossByVolume, oldCopies, observePlacement, placementChanges, serversAnswer, placementLosses, type Placement, type PlacementRow, type Seed } from "#/modules/volume-placement/volume-placement";
+import { lossByVolume, oldCopies, observePlacement, placementChanges, serversAnswer, placementLosses, type Placement, type PlacementRow, type Seed, type ShownCopy } from "#/modules/volume-placement/volume-placement";
 import { lossVersion, storeVersion } from "#/modules/volume-placement/volume-placement.review";
 import { lossTime } from "#/utils/relative-time";
 import { ACTIVE_VOLUME_RUN_STATES, type ConfirmedCopy, type VolumeRunInput } from "#/modules/volume-run/volume-run";
@@ -415,7 +415,7 @@ const NOT_OLD = { message: "Not an old copy" };
 export const deleteOldCopy = Effect.fn("VolumePlacement.deleteOldCopy")(function* (
   organizationId: string,
   userId: string | null,
-  input: { readonly volumeId: string; readonly environment: EnvironmentRef; readonly server: string },
+  input: { readonly volumeId: string; readonly environment: EnvironmentRef; readonly server: string; readonly copy: ShownCopy | null },
 ) {
   const { inspect } = yield* VolumeCluster;
   const row = yield* readRow(organizationId, input.volumeId);
@@ -432,8 +432,13 @@ export const deleteOldCopy = Effect.fn("VolumePlacement.deleteOldCopy")(function
   if (!planned.ok) return { ok: false, refusal: { message: planned.refusal.message } } as const;
   const held = members.find((member) => member.machine.id === old.server.id);
   const point = held?.answered === true ? held.view.copy?.newest?.guid ?? null : null;
-  // The person deletes the old copy as the Servers report it now.
-  const confirmed = { by: "person" as const, copies: "copies" in planned ? [...(planned.copies ?? [])] : [] };
+  // The person deletes the copy the dialog showed them, and nothing once its Server reports another.
+  const copies = "copies" in planned ? [...(planned.copies ?? [])] : [];
+  const shown = input.copy;
+  const same = shown !== null && copies.length === 1 && copies.every((copy) =>
+    copy.machine === old.server.id && copy.slot === shown.slot && copy.newest === shown.newest && copy.written_here === shown.written_here);
+  if (!same) return { ok: false, refusal: { message: `${input.server}'s copy changed since you opened Delete, so nothing was deleted. Look at it again before you delete it` } } as const;
+  const confirmed = { by: "person" as const, copies };
   const requested = yield* requestUnclaimedRun({ userId, organizationId, confirmed }, { ...run, args: { ...run.args, machine: old.server.id } }, { server: old.server.id, point });
   return requested.ok ? { ok: true, run: requested.run } as const : { ok: false, refusal: { message: requested.refusal.message } } as const;
 });

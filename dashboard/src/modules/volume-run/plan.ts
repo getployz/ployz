@@ -86,9 +86,16 @@ export const ROLE_NOUN = { mirror: "a mirror", old_copy: "an old copy" } as cons
 /** `--if-old-copy` on a printed `mirror rm`, so the line deletes nothing once a mirror run made that copy the mirror. */
 const ifOldCopy = (role: SlotRole | "any" | undefined) => (role === "old_copy" ? " --if-old-copy" : "");
 
-/** Why a release kept a copy no one chose to delete, and the command that deletes it. */
-export const releaseKept = (name: string, server: string, role: SlotRole | undefined) =>
-  `kept ${copyName(name, server)}, which may hold writes no other Server has (ployz volume mirror rm ${copyName(name, server)}${ifOldCopy(role)} deletes it)`;
+/**
+ * Why a release kept a copy no one chose to delete, and the command that deletes it: on a Server whose Ployz would delete
+ * it whatever it holds, only once that Server is upgraded.
+ */
+export const releaseKept = (name: string, server: string, role: SlotRole | undefined, older = false) => {
+  const rm = `ployz volume mirror rm ${copyName(name, server)}${ifOldCopy(role)}`;
+  return older
+    ? `kept ${copyName(name, server)}, since ${server}'s Ployz would delete it even if it holds writes no other Server has (upgrade ${server}, then ${rm} deletes it)`
+    : `kept ${copyName(name, server)}, which may hold writes no other Server has (${rm} deletes it)`;
+};
 
 export function roleOf(member: Member): Role {
   if (!member.answered) return "unanswered";
@@ -133,9 +140,6 @@ export function committedWriter(
 
 const SNAPSHOT_EPOCH = /^[wf]-(\d+)/;
 
-/** The prefix of the snapshot a departure takes of a copy before it parks it (`DEPARTURE_SNAPSHOT_PREFIX` in ployzd). */
-const DEPARTURE_SNAPSHOT = "dep-";
-
 /** The highest epoch any answered copy shows, in its root or in the run that named its newest snapshot. */
 export function observedEpoch(members: readonly Member[]): number {
   return Math.max(0, ...members.flatMap((member) => {
@@ -155,46 +159,62 @@ export function planFromCopies(input: PlanInput, observed: readonly Member[]): P
   if (!planned.ok) return planned;
   const unchecked = originUnchecked(planned.phase);
   if (unchecked.length > 0) return refuse("server_lacks", originUpgradeMessage(input.volumeName, unchecked));
-  const onto = pullsOnto(planned.phase);
-  if (onto === null || !replacesParked(onto)) return planned;
-  const server = onto.machine.name;
-  const slot = copyName(input.volumeName, server);
-  const role = onto.view.copy?.kind === "slot" ? onto.view.copy.role : undefined;
-  return refuse("server_lacks", `Upgrade ${server} first. ${slot} holds writes from before ${server} left the cluster, and its Ployz would replace them with a fresh copy`, `ployz volume mirror rm ${slot}${ifOldCopy(role)}`);
+  const older = destroys(planned.phase).find(({ on }) => on.keepsWritten !== true);
+  return older === undefined ? planned : refuse("server_lacks", upgradeFirst(input.volumeName, older));
 }
 
+/** What a run would destroy on a Server: a Forget of a slot holding a copy, or a pull that may replace one. */
+type Destroys = { readonly on: AnsweredMember; readonly by: "forget" | "pull" };
+
 /**
- * The copy a run pulls the Writer's snapshots onto: a mirror's target, a sync's mirror, and a Move's target until it
- * starts there. No other run pulls. Every run plans through here, so a kind that pulls says so.
+ * Every copy a run's steps may delete or replace, by the Server that would do it. Every run plans through here, so a
+ * new kind says what it destroys. A Release's Forgets are chosen while it runs, so `releaseVolume` asks the same.
  */
-function pullsOnto(phase: Extract<Planned, { ok: true }>["phase"]): AnsweredMember | null {
+function destroys(phase: Extract<Planned, { ok: true }>["phase"]): Destroys[] {
   switch (phase.kind) {
-    case "mirror":
-      return phase.target;
-    case "sync":
-      return phase.mirror;
-    case "move":
-      return phase.start === "start" ? null : phase.target;
     case "delete_mirror":
+      return phase.destroy.filter(holdsCopy).map((on) => ({ on, by: "forget" }));
+    case "sync":
+      return phase.full && holdsCopy(phase.mirror) ? [{ on: phase.mirror, by: "forget" }] : [];
+    case "mirror":
+      return mayReplace(phase.target, phase.writer) ? [{ on: phase.target, by: "pull" }] : [];
+    case "move":
+      return phase.start !== "start" && mayReplace(phase.target, phase.writer) ? [{ on: phase.target, by: "pull" }] : [];
     case "landed":
     case "release":
     case "restore":
     case "demote":
     case "seed":
     case "resize":
-      return null;
+      return [];
   }
 }
 
+/** A slot holding a snapshot, whose Forget deletes it. */
+export const holdsCopy = (member: AnsweredMember) => member.view.copy?.kind === "slot" && member.view.copy.newest !== null;
+
 /**
- * A copy a departure parked, on a Server whose Ployz replaces it with a full copy when a pull finds no base on it. No
- * Writer holds the departure's snapshot, so every pull onto it finds none. A Server with keep-written refuses that pull
- * itself.
+ * Whether a pull from `writer` onto `onto` may replace the slot's copy with a full send. Only an incremental never
+ * does: the slot's newest is the Writer's own, no interrupted receive waits on it, and the run snapshots the Writer
+ * once before it pulls, so that snapshot is still the Writer's second newest when the pull asks for it.
  */
-const replacesParked = (member: AnsweredMember) => {
-  const copy = member.view.copy;
-  return copy?.kind === "slot" && copy.newest?.name.startsWith(DEPARTURE_SNAPSHOT) === true && member.keepsWritten !== true;
-};
+export function mayReplace(onto: AnsweredMember, writer: AnsweredMember) {
+  const copy = onto.view.copy;
+  if (copy?.kind !== "slot" || copy.newest === null) return false;
+  return copy.resume_token !== null || copy.newest.guid !== newestGuid(writer.view.copy);
+}
+
+/**
+ * Why a run stops before it destroys a copy on a Server whose Ployz can't keep one that may hold writes no other Server
+ * has: it can't say whether its copy holds such writes, ignores which copy a delete confirmed, and replaces a copy it
+ * can't pull onto.
+ */
+export function upgradeFirst(name: string, { on, by }: Destroys) {
+  const server = on.machine.name;
+  const copy = copyName(name, server);
+  const effect = by === "forget" ? `would delete ${copy}` : `would replace ${copy} with a fresh copy`;
+  return `Upgrade ${server} first. Its Ployz ${effect} even if it holds writes no other Server has, so nothing was changed`;
+}
 
 /**
  * Whether a slot may hold writes no other Server has: its Server says so, or its Ployz can't say. A delete no one chose
@@ -249,6 +269,18 @@ function confirmedPhase(
     return refuse("copy_changed", `${copyName(name, changed.machine.name)} changed since its delete was confirmed, so nothing was deleted. ${retry}`);
   }
   return { ok: true, phase: { kind: "delete_mirror", destroy, forget, role, confirmed, kept: [] } };
+}
+
+/**
+ * A delete someone chose whose row names no copy they confirmed: an older Ployz Cloud queued it. It deletes nothing and
+ * asks for the delete again, so a Server deletes only a copy someone saw as it is.
+ */
+export function unconfirmedDelete(run: VolumeRunInput & { readonly orphan: boolean; readonly volumeName: string }): Refusal | null {
+  if (run.kind !== "delete_mirror" || run.orphan || run.args.discard !== undefined) return null;
+  return {
+    code: "confirm_required",
+    message: `${run.volumeName}'s delete was queued by an older Ployz Cloud, which didn't record the copy it deletes, so nothing was deleted. Delete the copy again.`,
+  };
 }
 
 /** The command that deletes the copy `dockerVolume` left on `server` once its Volume is gone, after showing it. */
@@ -402,11 +434,6 @@ function planCopies(input: PlanInput, observed: readonly Member[]): Planned {
     // A full sync forgets the slot first, so it never takes one that may hold the only copy of some writes.
     if (input.args.full && copy?.kind === "slot" && (copy.role === "old_copy" || copy.written_here === true)) {
       return refuse("written_here", `${named(mirror)} may hold writes no other Server has, so sync --full keeps it`, `ployz volume mirror rm ${named(mirror)}${ifOldCopy(copy.role)}`);
-    }
-    // An older Server neither reports `written_here` nor refuses a Forget of such a slot, so nothing tells a slot it
-    // must keep from one it may drop.
-    if (input.args.full && mirror.keepsWritten !== true) {
-      return refuse("server_lacks", `Upgrade ${mirror.machine.name} first. Its Ployz deletes ${named(mirror)} for sync --full even when that copy holds writes no other Server has`, `ployz volume mirror rm ${named(mirror)}${ifOldCopy(copy?.kind === "slot" ? copy.role : undefined)}`);
     }
     return { ok: true, phase: { kind: "sync", writer: root, mirror, full: input.args.full } };
   }

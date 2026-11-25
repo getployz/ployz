@@ -9,6 +9,8 @@ import { configVolumeNames, type CopyObserver, type NameInspector, observeOrgani
 import { insertLeftoverDelete } from "#/modules/volume-run/volume-run.rows.server";
 import type { StoreRefusal } from "#/lib/refusal";
 import type { Actor } from "#/modules/identity/actor";
+import type { OperationAsked } from "#/modules/operations/asked";
+import type { Gate } from "#/modules/operations/gate.server";
 import { requireAccess } from "#/modules/organization/access.server";
 
 /**
@@ -79,13 +81,29 @@ type Deleted = { readonly ok: true; readonly run: VolumeRunView } | { readonly o
 const refused = (code: StoreRefusal["code"], message: string, details: StoreRefusal["details"] = null): Deleted =>
   ({ ok: false, refusal: { code, message, details } });
 
+/** A leftover's delete as a person says yes to it, bound to the copy its Server reports now. */
+const askedDelete = (copy: LeftoverCopy, confirms: ConfirmedCopy): OperationAsked => {
+  const named = `${copy.docker_volume} on ${copy.server}`;
+  const node = `${copy.machine_id}/${copy.docker_volume}`;
+  return {
+    subject: `leftover:${node}`,
+    verb: "remove_mirror",
+    name: named,
+    preview: { docker_volume: copy.docker_volume, server: copy.server, confirms: [confirms] },
+    effects: [{ kind: "deletes_volume", name: named, node, path: `volumes/${node}` }],
+    ployz: `${leftoverRm(copy.docker_volume, copy.server)} --confirm ${copy.confirm}`,
+  };
+};
+
 /**
- * Deletes the copy `dockerVolume` left on `server`, once `confirm` names it as its Server reports it now. Without it, or
- * once the copy changed, nothing is deleted and the refusal shows the copy and the command that deletes it.
+ * Deletes the copy `dockerVolume` left on `server`, once `confirm` names it as its Server reports it now and `gate`
+ * lets the caller delete it. Without it, or once the copy changed, nothing is deleted and the refusal shows the copy and
+ * the command that deletes it.
  */
 export const deleteLeftover = Effect.fn("VolumeRun.deleteLeftover")(function* (
   caller: { readonly userId: string | null; readonly organizationId: string },
   input: { readonly dockerVolume: string; readonly server: string; readonly confirm: string | null },
+  gate: Gate,
   inspect: NameInspector = observeVolumeMembers,
 ) {
   const { organizationId } = caller;
@@ -106,8 +124,14 @@ export const deleteLeftover = Effect.fn("VolumeRun.deleteLeftover")(function* (
     const changed = input.confirm === null ? "" : "It changed since you looked. ";
     return refused("confirmation_required", `${changed}${describeLeftover(found)}. Run ${next} to delete it`, { next, copy: found });
   }
-  const machine = { id: found.machine_id, name: server };
+  // An older Ployz deletes a slot without asking whether it holds writes no other Server has, so it gets no delete.
+  if (member.answered && member.keepsWritten !== true) {
+    return refused("unsupported", `Upgrade ${server} first. Its Ployz would delete ${dockerVolume}'s copy even if it holds writes no other Server has, so nothing was changed`);
+  }
   const copy: ConfirmedCopy = { machine: found.machine_id, slot: found.slot, newest: found.newest.guid, written_here: found.written_here };
+  const allowed = yield* gate(askedDelete(found, copy));
+  if (!allowed.ok) return { ok: false, refusal: allowed.refusal } satisfies Deleted;
+  const machine = { id: found.machine_id, name: server };
   const confirmed = { by: "person" as const, copies: [copy] };
   const run = yield* insertLeftoverDelete({ ...caller, confirmed }, { environmentId: parsed.namespace, volumeId: parsed.volumeId, dockerVolume }, machine);
   if (run === null) return refused("conflict", `A run on ${dockerVolume} is under way. Try again once it ends`);

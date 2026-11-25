@@ -64,9 +64,16 @@
 //!   `written_here`; only a person's `volume mirror rm` says `discard`, so only it
 //!   destroys one. With `Skew::OldCloud` every Forget is bare, as an older Cloud's is.
 //!   With `Skew::OldDaemon` no Machine advertises `ployz.volume.keep-written.v1`, so
-//!   none reports `written_here` or reads `discard`, and its pull replaces a copy it
-//!   can't send an incremental onto; Cloud then plans no full sync, no mirror and no
-//!   Move onto a copy a departure parked, and its sweep keeps every slot there;
+//!   none reports `written_here` or reads `discard`, its plugin destroys a slot as its
+//!   daemon planned, and its pull replaces a copy it can't send an incremental onto.
+//!   Cloud then plans no full sync, no mirror and no Move there but a pull from the
+//!   Writer's newest snapshot (`mayReplace`), and its sweep keeps every slot there. A
+//!   cut's final a Restore from an earlier copy skipped is, like a departure's, on no
+//!   Writer's line, so a pull can't send an incremental onto it;
+//! - a slot's Forget in two steps: the daemon plans it under the switch lock, then the
+//!   plugin's `copy_destroy` plans it again on the slot it finds and destroys it. A
+//!   receive started earlier runs outside the switch lock, so `Replace` and `Mark` may
+//!   land between the two;
 //! - a Deploy's lane at its real boundaries, sent to the Writer Cloud sees: Prepare
 //!   (`prepare_volumes`) takes the switch lock, reads the forgotten record, then in a
 //!   step of its own admits a plain mount (`admit_plain_mount`) from the copy and the
@@ -427,6 +434,10 @@ enum Progress {
     StartAdmit,
     /// `start_volume_holder` holds the turn past its floor check.
     StartRun,
+    /// The daemon planned a slot's Forget under the switch lock and asked the plugin to
+    /// destroy it (`copy_destroy`). A receive started earlier runs outside that lock, so
+    /// the slot can change before the plugin acts on it.
+    Destroying,
     /// A Deploy's Prepare read the forgotten record, under the switch lock; it reads its
     /// copy and its view next.
     PrepareRead {
@@ -880,6 +891,7 @@ impl State {
             | Progress::CutFlip
             | Progress::StartAdmit
             | Progress::StartRun
+            | Progress::Destroying
             | Progress::PrepareRead { .. }
             | Progress::Lost => None,
         }
@@ -910,6 +922,21 @@ impl State {
     /// Machine makes once that copy is gone is not it.
     fn displaced(&self, machine: Machine, exempt: bool) -> bool {
         exempt && *at(&self.displaced, machine)
+    }
+
+    /// Whether no Writer holds `point` to send an incremental from: a departure's
+    /// snapshot, or a cut's final that a Restore from an earlier copy skipped. The restored
+    /// Writer's line is the copy it promoted, then the mirror round's `Warm2`.
+    fn off_line(&self, point: Snap) -> bool {
+        let skipped = self.restored
+            && self.restore.is_some_and(|restore| {
+                matches!(
+                    (restore.at, point),
+                    (Snap::Warm, Snap::Final)
+                        | (Snap::Warm | Snap::Final | Snap::Warm2, Snap::Final2)
+                )
+            });
+        point == Snap::Departure || skipped
     }
 
     fn note_restored(&mut self) {
@@ -1190,6 +1217,13 @@ struct Broken {
     /// A confirmed Forget's expect names no `written_here`, as 2ff6f2c021's Machine read
     /// it.
     expect_ignores_written: bool,
+    /// `copy_destroy` destroys the slot by name, as 161c95ffc2's did, without planning the
+    /// daemon's Forget again on the slot it finds.
+    destroy_unchecked: bool,
+    /// Cloud refuses a pull onto a Machine without `ployz.volume.keep-written.v1` only
+    /// when the slot's newest is a departure's `dep-` snapshot, as 161c95ffc2's
+    /// `planFromCopies` did, so a cut's final a Restore skipped gets the pull.
+    dep_prefix_only: bool,
 }
 
 /// Which side runs a release from before `ployz.volume.keep-written.v1`.
@@ -1615,6 +1649,7 @@ impl VolumeRuns {
             Progress::Sent
             | Progress::CutDrain
             | Progress::StartRun
+            | Progress::Destroying
             | Progress::PrepareRead { .. } => true,
             Progress::Admitted => host.switch.is_none(),
             Progress::CutStop | Progress::CutFlip | Progress::StartAdmit => host.turn.is_none(),
@@ -1750,6 +1785,7 @@ impl VolumeRuns {
                 let reply = self.deploy_step(state, index, false);
                 state.reply(index, reply);
             }
+            Progress::Destroying => self.destroy(state, index),
             Progress::Replied(_) | Progress::Lost => {}
         }
     }
@@ -2019,29 +2055,11 @@ impl VolumeRuns {
                 }
                 state.reply(index, Reply::Copy(state.host(to).copy));
             }
-            // `copy_destroy`: the slot parent goes, its origin recorded first.
+            // The daemon's Forget of a slot: `copy_destroy` on the plugin, next.
             (
                 CopyTransition::MirrorToForget | CopyTransition::SeedToForget,
                 Want::Forget { .. },
-            ) => {
-                if request.lane == Lane::Drop
-                    && state.drop.and_then(|drop| *at(&drop.slots, to)) != self.confirmed(&host)
-                {
-                    state.unconfirmed = true;
-                }
-                if request.lane != Lane::Drop
-                    && host.copy.newest() == Some(Snap::Departure)
-                    && Machine::ALL.iter().all(|machine| {
-                        *machine == to
-                            || state.host(*machine).copy.newest() != Some(Snap::Departure)
-                    })
-                {
-                    state.lost_written = true;
-                }
-                state.host_mut(to).forgotten = true;
-                state.host_mut(to).copy = Held::None;
-                state.reply(index, Reply::Copy(Held::None));
-            }
+            ) => state.set_progress(index, Progress::Destroying),
             (
                 CopyTransition::MirrorToMirror | CopyTransition::NoneToMirror,
                 Want::Mirror {
@@ -2057,14 +2075,22 @@ impl VolumeRuns {
                 if !source.here() || source.copy.newest() != Some(target) {
                     return state.reply(index, Reply::PullFailed);
                 }
-                // `pull_stream`: no Writer holds a departure's snapshot, so the incremental
-                // from it finds no base, and the full send would replace the slot's copy.
-                // `written_here` keeps it: the pull fails.
-                if host.copy.newest() == Some(Snap::Departure) {
+                // `pull_stream`: the incremental starts from the slot's newest snapshot, which
+                // must be on the Writer's line. A departure's is on none, and a cut's final a
+                // Restore from before it skipped is on no Writer's since, so the full send
+                // would replace the slot's copy. `written_here` keeps it, as the departure's
+                // snapshot or the cut's own mark sets it: the pull fails.
+                if let Some(point) = host.copy.newest()
+                    && state.off_line(point)
+                {
                     if !self.broken.pull_replaces_written && self.skew != Skew::OldDaemon {
                         return state.reply(index, Reply::PullFailed);
                     }
-                    state.lost_written = true;
+                    if Machine::ALL.iter().all(|machine| {
+                        *machine == to || state.host(*machine).copy.newest() != Some(point)
+                    }) {
+                        state.lost_written = true;
+                    }
                 }
                 let copy = Held::Slot {
                     newest: Some(target),
@@ -2074,6 +2100,53 @@ impl VolumeRuns {
             }
             (transition, want) => unreachable!("the planner paired {transition:?} with {want:?}"),
         }
+    }
+
+    /// `copy_destroy` (`ployzd/src/volume_plugin/copy.rs`), under the plugin's mutation
+    /// once no receive runs: it plans the daemon's Forget again on the slot it finds and
+    /// destroys it only if the same Forget still deletes it. A daemon from before that
+    /// check sends no expect, so its plugin destroys the slot as the daemon planned. The
+    /// slot parent goes, its origin recorded first.
+    fn destroy(&self, state: &mut State, index: usize) {
+        let request = state.request(index);
+        let to = request.to;
+        let host = state.host(to).clone();
+        if !self.broken.destroy_unchecked && self.skew != Skew::OldDaemon {
+            let plan = ployz_core::plan(
+                volume_copy(&host, to, self.reports_written()).as_ref(),
+                false,
+                &expected(request.expect, to, host.slot, self.broken),
+                &wanted(request.want, self.broken),
+            );
+            match plan {
+                CopyPlan::Transition(
+                    CopyTransition::MirrorToForget | CopyTransition::SeedToForget,
+                ) => {}
+                CopyPlan::AtWant => return state.reply(index, Reply::Copy(host.copy)),
+                CopyPlan::Refuse(reason) => {
+                    return state.reply(index, Reply::Refused(refusal(reason)));
+                }
+                CopyPlan::Transition(_) => {
+                    return state.reply(index, Reply::Refused(Refusal::NoTransition));
+                }
+            }
+        }
+        if request.lane == Lane::Drop
+            && state.drop.and_then(|drop| *at(&drop.slots, to)) != self.confirmed(&host)
+        {
+            state.unconfirmed = true;
+        }
+        if request.lane != Lane::Drop
+            && host.copy.newest() == Some(Snap::Departure)
+            && Machine::ALL.iter().all(|machine| {
+                *machine == to || state.host(*machine).copy.newest() != Some(Snap::Departure)
+            })
+        {
+            state.lost_written = true;
+        }
+        state.host_mut(to).forgotten = true;
+        state.host_mut(to).copy = Held::None;
+        state.reply(index, Reply::Copy(Held::None));
     }
 
     /// Whether the cut's flip passes its checks and runs `zfs`, the only place a restart
@@ -2101,6 +2174,7 @@ impl VolumeRuns {
             | Progress::StartAdmit
             | Progress::StartRun => self.scenario.three(),
             Progress::Sent
+            | Progress::Destroying
             | Progress::PrepareRead { .. }
             | Progress::Replied(_)
             | Progress::Lost => false,
@@ -2157,6 +2231,7 @@ fn state_in_flight(progress: Progress) -> bool {
         | Progress::CutFlip
         | Progress::StartAdmit
         | Progress::StartRun
+        | Progress::Destroying
         | Progress::PrepareRead { .. } => true,
         Progress::Replied(_) | Progress::Lost => false,
     }
@@ -3351,11 +3426,19 @@ impl VolumeRuns {
                 };
                 next.stage = stage;
                 next.mirror = None;
-                let parked = state.host(*to).copy.newest() == Some(Snap::Departure);
+                let newest = state.host(*to).copy.newest();
+                let parked = newest == Some(Snap::Departure);
+                // `mayReplace`: only a pull from the Writer's newest snapshot surely adds to
+                // the slot, whatever the slot's snapshot is called.
+                let replaces = if self.broken.dep_prefix_only {
+                    parked
+                } else {
+                    newest.is_some() && newest != state.host(*writer).copy.newest()
+                };
                 let capable = self.skew != Skew::OldDaemon;
                 let planned = match onto {
-                    Onto::Mirror => capable || !parked || self.broken.mirror_skips_capability,
-                    Onto::Move => capable || !parked || self.broken.move_skips_capability,
+                    Onto::Mirror => capable || !replaces || self.broken.mirror_skips_capability,
+                    Onto::Move => capable || !replaces || self.broken.move_skips_capability,
                     Onto::Sync => capable || self.broken.sync_skips_capability,
                     Onto::Sweep => {
                         self.broken.sweep_discards
@@ -3451,6 +3534,7 @@ fn resendable<S>(state: &State, driver: Driver<S>) -> bool {
         | Progress::CutFlip
         | Progress::StartAdmit
         | Progress::StartRun
+        | Progress::Destroying
         | Progress::PrepareRead { .. } => driver.resends > 0,
     }
 }
@@ -4919,6 +5003,20 @@ mod tests {
         );
     }
 
+    /// The daemon plans a confirmed slot's Forget under the switch lock, but a receive it
+    /// started earlier runs outside that lock and can land before the plugin destroys the
+    /// slot. Only the plugin's own plan of the Forget, on the slot it finds, keeps it.
+    #[test]
+    fn the_plugin_destroys_a_slot_only_as_the_daemon_planned_its_forget() {
+        breaks_confirmed(
+            Broken {
+                destroy_unchecked: true,
+                ..Broken::default()
+            },
+            "with a plugin that destroys the slot by name",
+        );
+    }
+
     /// The path that breaks "only a person's mirror rm destroys a point only its Machine
     /// holds" on `Restore` with `skew` and `broken`.
     fn breaks_written(skew: Skew, broken: Broken, story: &str) {
@@ -5034,6 +5132,23 @@ mod tests {
                 ..Broken::default()
             },
             "with a Move onto an older daemon's departed copy",
+        );
+    }
+
+    /// A Machine cut away before its final reached the mirror, and a Restore promoted the
+    /// mirror's earlier copy. Back after it departed, the Machine's slot holds a cut's
+    /// final no Writer has, under a name that isn't a departure's. A Machine from before
+    /// keep-written replaces it with a full send, so Cloud plans a pull there only from the
+    /// Writer's newest snapshot, whatever the slot's snapshot is called.
+    #[test]
+    fn cloud_plans_no_pull_onto_a_cut_a_restore_skipped_on_a_machine_from_before_keep_written() {
+        breaks_written(
+            Skew::OldDaemon,
+            Broken {
+                dep_prefix_only: true,
+                ..Broken::default()
+            },
+            "with a mirror onto an older daemon's cut a Restore skipped",
         );
     }
 

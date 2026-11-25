@@ -21,9 +21,9 @@ use crate::{
     faults::{Identity, Point, Want},
     machine::has_cluster_identity,
     volume_copy::{
-        CUT_ROUTE, CopyBinding, CopyRequest, CutRequest, DESTROY_ROUTE, FORGET_ROUTE,
-        ForgetRequest, INSPECT_ROUTE, PULL_ROUTE, PullRequest, SNAPSHOT_ROUTE, SeedCopy,
-        SnapshotRequest, StartWindow, VOLUME_SEED_COPY_ROUTE, VOLUME_SEED_ROUTE,
+        CUT_ROUTE, CopyBinding, CopyRequest, CutRequest, DESTROY_ROUTE, DestroyRequest,
+        FORGET_ROUTE, ForgetRequest, INSPECT_ROUTE, PULL_ROUTE, PullRequest, SNAPSHOT_ROUTE,
+        SeedCopy, SnapshotRequest, StartWindow, VOLUME_SEED_COPY_ROUTE, VOLUME_SEED_ROUTE,
         VOLUME_SIZE_SET_ROUTE, WRITER_ROUTE, WriterRequest,
     },
 };
@@ -468,7 +468,7 @@ impl SwitchGuard {
             }
             (
                 CopyTransition::MirrorToForget | CopyTransition::SeedToForget,
-                WantedCopy::Forget { .. },
+                WantedCopy::Forget { discard },
             ) => {
                 // Recorded before the destroy, so no restart after it loses the record.
                 if let Some(VolumeCopy::Slot { origin, .. } | VolumeCopy::Root { origin, .. }) =
@@ -477,8 +477,16 @@ impl SwitchGuard {
                     let origin = origin.unwrap_or_else(|| ployz_core::VolumeOrigin::legacy(&name));
                     self.docker()?.lifecycle().forgot(&name, &origin).await?;
                 }
-                self.plugin_copy(DESTROY_ROUTE, &ForgetRequest { name, r#gen })
-                    .await
+                // A receive this Machine started earlier runs outside the switch lock and can
+                // land between the plan above and the destroy, so the plugin plans the same
+                // Forget again where no receive can change the slot.
+                let request = DestroyRequest {
+                    name,
+                    r#gen,
+                    expect: Some(expect),
+                    discard,
+                };
+                self.plugin_copy(DESTROY_ROUTE, &request).await
             }
             (transition, want) => {
                 unreachable!("the planner paired {transition:?} with {want:?}")

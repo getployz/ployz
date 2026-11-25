@@ -5,7 +5,7 @@ import { OPERATIONS } from "#/modules/operations/operations";
 import { runVolume, unheld } from "#/modules/operations/operations.server";
 import { deleteLeftover, listLeftovers } from "#/modules/volume-run/volume-run.leftovers.server";
 import { getVolumeRun, listVolumeRuns } from "#/modules/volume-run/volume-run.rows.server";
-import { approvalCarried, decodeBody, keyedCall, missingRefusal, refusedMissing, type CliRoutes } from "#/modules/commands/cli-call.server";
+import { approvalCarried, decodeBody, gated, keyedCall, missingRefusal, refusedMissing, type CliRoutes } from "#/modules/commands/cli-call.server";
 import { cliRefusalResponse } from "#/server/public-error";
 
 const LeftoverRm = Schema.Struct({ server: Schema.NonEmptyString, confirm: Schema.optional(Schema.String) });
@@ -23,7 +23,7 @@ export const volumeRunCliRoutes = {
       if (carried !== null) return carried;
       const body = yield* decodeBody(LeftoverRm, request, "Deleting a leftover copy takes its Server.");
       const input = { dockerVolume: decodeURIComponent(id ?? ""), server: body.server, confirm: body.confirm ?? null };
-      const deleted = yield* deleteLeftover({ userId: caller.userId, organizationId: caller.organization.id }, input);
+      const deleted = yield* deleteLeftover({ userId: caller.userId, organizationId: caller.organization.id }, input, gated(caller, request));
       return deleted.ok ? { run: deleted.run } : cliRefusalResponse(deleted.refusal);
     }),
   "POST volumes/:id/runs": ({ caller, request, id }) =>

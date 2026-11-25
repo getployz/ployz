@@ -68,28 +68,42 @@ describe("a Server whose Ployz deletes any slot a Forget names", () => {
     return { ...each, keepsWritten: keeps, view: { copy: { ...each.view.copy, newest: { name: "dep-1700000000", guid: "12", created_unix_seconds: 0 } } } };
   };
 
-  it("takes no sync --full, since nothing tells it to keep a copy only it holds", () => {
-    const refused = planFromCopies(sync(true), [member("a", "writer"), older("b", "mirror")]);
-    expect(refused).toEqual({ ok: false, refusal: {
-      code: "server_lacks",
-      message: "Upgrade b first. Its Ployz deletes data-b for sync --full even when that copy holds writes no other Server has",
-      next: "ployz volume mirror rm data-b",
-    } });
+  const deletes = { ok: false, refusal: {
+    code: "server_lacks",
+    message: "Upgrade b first. Its Ployz would delete data-b even if it holds writes no other Server has, so nothing was changed",
+  } };
+  const replaces = { ok: false, refusal: {
+    code: "server_lacks",
+    message: "Upgrade b first. Its Ployz would replace data-b with a fresh copy even if it holds writes no other Server has, so nothing was changed",
+  } };
+  /** b's copy is a cut at a point the Writer never had: it left before its last cut reached a mirror. */
+  const cutAlone = (keeps: boolean): Member => {
+    const each = older("b", "old");
+    if (!each.answered || each.view.copy?.kind !== "slot") throw new Error("a slot");
+    return { ...each, keepsWritten: keeps, view: { copy: { ...each.view.copy, newest: { name: "f-1", guid: "12", created_unix_seconds: 0 } } } };
+  };
+
+  it("takes no sync --full or mirror rm of a copy, since nothing tells it to keep a copy only it holds", () => {
+    expect(planFromCopies(sync(true), [member("a", "writer"), older("b", "mirror")])).toEqual(deletes);
+    const remove: PlanInput = { kind: "delete_mirror", args: { slot: "b", confirmed_name: null, role: "any" }, ...data };
+    expect(planFromCopies(remove, [member("a", "writer"), older("b", "mirror")])).toEqual(deletes);
     expect(outcome(sync(), [member("a", "writer"), older("b", "mirror")])).toBe("sync a->b");
   });
 
-  it("takes no mirror onto a copy it parked when it left, which its pull would replace", () => {
-    expect(outcome(mirror("b"), [member("a", "writer"), departed("b", false)])).toBe("refuse server_lacks");
-    expect(outcome(mirror("b"), [member("a", "writer"), departed("b", true)])).toBe("mirror a->b");
+  it("takes no mirror or Move onto a copy its pull would replace whole, whatever the copy's snapshot is called", () => {
+    for (const onto of [departed("b", false), cutAlone(false), older("b", "behind")]) {
+      expect(planFromCopies(mirror("b"), [member("a", "writer"), onto])).toEqual(replaces);
+      expect(planFromCopies(move("b"), [member("a", "writer"), onto])).toEqual(replaces);
+    }
+    const resuming = older("b", "mirror");
+    if (!resuming.answered || resuming.view.copy?.kind !== "slot") throw new Error("a slot");
+    expect(planFromCopies(mirror("b"), [member("a", "writer"), { ...resuming, view: { copy: { ...resuming.view.copy, resume_token: "1-abc" } } }]))
+      .toEqual(replaces);
+    // A pull that starts from the Writer's newest snapshot only adds to the copy.
     expect(outcome(mirror("b"), [member("a", "writer"), older("b", "old")])).toBe("mirror a->b");
-  });
-
-  it("takes no Move onto a copy it parked when it left, which its first pull would replace", () => {
-    expect(planFromCopies(move("b"), [member("a", "writer"), departed("b", false)])).toEqual({ ok: false, refusal: {
-      code: "server_lacks",
-      message: "Upgrade b first. data-b holds writes from before b left the cluster, and its Ployz would replace them with a fresh copy",
-      next: "ployz volume mirror rm data-b --if-old-copy",
-    } });
+    expect(outcome(mirror("b"), [member("a", "writer"), older("b", "empty")])).toBe("mirror a->b");
+    // A Ployz that keeps a slot written there checks it itself.
+    expect(outcome(mirror("b"), [member("a", "writer"), cutAlone(true)])).toBe("mirror a->b");
     expect(outcome(move("b"), [member("a", "writer"), departed("b", true)])).toMatch(/^move a->b/);
   });
 
@@ -331,7 +345,7 @@ describe("plan_from_copies_table", () => {
 
   it("leaves a slot whose Server reports no role to that Server's own check", () => {
     const { role: _, ...unreported } = COPIES.mirror;
-    const silent: Member = { machine: member("fsn-2", "mirror").machine, address: "fdcc::1", answered: true, view: { copy: unreported }, floorless: false };
+    const silent: Member = { machine: member("fsn-2", "mirror").machine, address: "fdcc::1", answered: true, view: { copy: unreported }, floorless: false, keepsWritten: true };
     const input: PlanInput = { kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null, role: "old_copy" }, ...data };
     expect(outcome(input, [member("fsn-1", "writer"), silent])).toBe("delete fsn-2 forget fsn-1");
   });

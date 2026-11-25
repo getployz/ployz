@@ -130,6 +130,24 @@ describe("the mirror sync", () => {
     expect(await runs()).toEqual([]);
   });
 
+  it("pulls onto an older Ployz's mirror only from the Writer's newest snapshot, which its pull adds to", async () => {
+    const older = (copy: "mirror" | "behind"): Member => {
+      const each = member("web-2", copy);
+      if (!each.answered) throw new Error("an answered Server");
+      return { ...each, keepsWritten: false };
+    };
+    members = [member("web-1", "writer"), older("behind")];
+    expect((await sync()).lines).toEqual([
+      "db-web-2 refused the pull: Upgrade web-2 first. Its Ployz would replace db-web-2 with a fresh copy even if it holds writes no other Server has, so nothing was changed",
+    ]);
+    expect(asked).toEqual(["snapshot web-1"]);
+
+    asked = [];
+    members = [member("web-1", "writer"), older("mirror")];
+    expect((await sync()).lines).toEqual(["db-web-2 is pulling w-1-5"]);
+    expect(asked).toEqual(["snapshot web-1", "mirror web-2"]);
+  });
+
   it("names each sync's snapshot apart from one taken the same millisecond, above any lane run's round", async () => {
     const clock = vi.spyOn(Date, "now").mockReturnValue(1_790_000_000_000);
     const names: string[] = [];

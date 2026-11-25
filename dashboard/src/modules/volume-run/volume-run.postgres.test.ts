@@ -53,6 +53,8 @@ import { advancePlacement } from "#/modules/volume-placement/volume-placement.de
 import { type DeployLane, fenceDeployVolume, finishDeployVolumes, placeDeployVolumes, releaseFollowed } from "#/modules/volume-run/volume-run.deploy.server";
 import type { Caller } from "#/modules/identity/actor";
 import { runVolume } from "#/modules/operations/operations.server";
+import type { OperationAsked } from "#/modules/operations/asked";
+import { gateOperation } from "#/modules/operations/gate.server";
 import { FULL_GRANT } from "#/modules/identity/token-grant";
 import type { Database } from "#/server/database.server";
 import { makeInngestEffectRunner, type runInngestEffect } from "#/modules/inngest/run.server";
@@ -66,6 +68,10 @@ import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postg
 
 const organizationId = "00000000-0000-4000-8000-000000000e01";
 const userId = "00000000-0000-4000-8000-000000000e02";
+/** A person who runs `ployz volume leftovers rm`. */
+const leftoverCaller: Caller = { userId, organization: { id: organizationId, slug: "acme" }, credential: { kind: "session", id: "session-1" }, role: "owner", support: null, via: "cli" };
+/** A dashboard confirm, which is its own yes. */
+const dashboard = (operation: OperationAsked) => gateOperation({ ...leftoverCaller, via: "dashboard" }, null, operation);
 const volumeId = "vol1";
 const dockerVolume = `shop-production_vol-${volumeId}`;
 const environment = { project: "shop", environment: "production" };
@@ -619,6 +625,12 @@ describe("volume runs", () => {
     if (!result.ok) throw new Error(result.refusal.message);
     return result.run;
   };
+  /** A person's delete as Cloud admits one: its row names the copies they confirmed. */
+  const confirmedDelete = (args: Extract<VolumeRunInput, { kind: "delete_mirror" }>["args"], copies: ConfirmedCopy[]) =>
+    runEffect(requestVolumeRun({ userId, organizationId, confirmed: { by: "person", copies } }, { volumeId, environment, kind: "delete_mirror", args })).then((result) => {
+      if (!result.ok) throw new Error(result.refusal.message);
+      return result.run;
+    });
   const waitingOnLock = () => vi.waitFor(async () => {
     const { rows: waiting } = await harness.pool.query(
       "select 1 from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'");
@@ -2566,6 +2578,26 @@ describe("volume runs", () => {
       });
     });
 
+    it("on a warm row restarts the Service on A and keeps the copy on a Server whose Ployz would delete it unchecked", async () => {
+      const G = newSnap("f-1");
+      named("fsn-1").copy = slotCopy(G);
+      for (const container of containers) container.running = false;
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(G, null, "2"), capabilities: ON_PLOYZ_04.filter((capability) => capability !== requirements.volumeKeepWritten.capability) };
+      await owned("warm");
+
+      expect(await runEffect(closeVolumeRun("run-1", "failure"))).toBe(1);
+      await execute((await releaseRow()).id, "run-2");
+
+      expect(verbs).toEqual(["floor@fsn-1", "floor@fsn-2", "writer@fsn-1(kept)"]);
+      expect(machines[1]?.copy).toEqual(slotCopy(G, null, "2"));
+      expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: true }]);
+      expect((await rows()).at(-1)).toMatchObject({
+        kind: "release",
+        state: "done",
+        message: "kept data-fsn-2, since fsn-2's Ployz would delete it even if it holds writes no other Server has (upgrade fsn-2, then ployz volume mirror rm data-fsn-2 deletes it)",
+      });
+    });
+
     it("on a warm row waits for a silent Server, noting it on the row, then releases back to A once it answers", async () => {
       const G = newSnap("f-1");
       named("fsn-1").copy = slotCopy(G);
@@ -3204,7 +3236,7 @@ describe("volume runs", () => {
 
       expect(output.result).toMatchObject({ refused: { code: "server_lacks" } });
       expect(verbs).toEqual([]);
-      expect(await rows()).toMatchObject([{ state: "failed", message: "Upgrade fsn-2 first. Its Ployz deletes data-fsn-2 for sync --full even when that copy holds writes no other Server has" }]);
+      expect(await rows()).toMatchObject([{ state: "failed", message: "Upgrade fsn-2 first. Its Ployz would delete data-fsn-2 even if it holds writes no other Server has, so nothing was changed" }]);
     });
 
     it("a refusal ends the run with its message", async () => {
@@ -3259,8 +3291,9 @@ describe("volume runs", () => {
       // SAFETY: a request that names a confirmation its caller never made.
       const discard = { by: "person", copies: [confirmedFsn2] } as Discard;
       const args = { slot: "fsn-2", confirmed_name: null, role: "any", discard } as const;
-      const callers: Array<[RunCaller, WantedCopy]> = [
-        [{ userId: null, organizationId }, { kind: "forget" }],
+      // A row that names no confirmation, as an older Ployz Cloud queued one, deletes nothing.
+      const callers: Array<[RunCaller, WantedCopy | undefined]> = [
+        [{ userId: null, organizationId }, undefined],
         [{ userId: null, organizationId, confirmed: { by: "deployment", copies: [confirmedFsn2] } }, { kind: "forget", discard: true }],
         [{ userId, organizationId, confirmed: { by: "person", copies: [confirmedFsn2] } }, { kind: "forget", discard: true }],
       ];
@@ -3325,7 +3358,7 @@ describe("volume runs", () => {
       machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
       const said = "Volume data on this Machine needs something new; upgrade Ployz Cloud";
       failNext.set("forget@fsn-2", new RawFault({ code: "failed_precondition", message: said, details: { reason: "some_future_reason", copy: slotCopy(base) } }));
-      const run = await requested({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null, role: "any" } });
+      const run = await confirmedDelete({ slot: "fsn-2", confirmed_name: null, role: "any" }, [confirmedFsn2]);
 
       await execute(run.id);
 
@@ -3336,7 +3369,7 @@ describe("volume runs", () => {
     it("names a Writer that never answers its withdrawal instead of failing a removal that happened", async () => {
       machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
       failNext.set("forget@fsn-1", "held");
-      const run = await requested({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null, role: "any"} });
+      const run = await confirmedDelete({ slot: "fsn-2", confirmed_name: null, role: "any" }, [confirmedFsn2]);
 
       const output = await execute(run.id);
 
@@ -3351,7 +3384,7 @@ describe("volume runs", () => {
     it("refuses an old copy a late pull made the mirror after the run looked, and deletes nothing", async () => {
       machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base, null, "7", "old_copy") };
       beforeSet.set("forget@fsn-2", () => { named("fsn-2").copy = slotCopy(base, null, "7", "mirror"); });
-      const run = await requested({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null, machine: idOf("fsn-2"), role: "old_copy" } });
+      const run = await confirmedDelete({ slot: "fsn-2", confirmed_name: null, machine: idOf("fsn-2"), role: "old_copy" }, [{ ...confirmedFsn2, slot: "7" }]);
 
       await execute(run.id);
 
@@ -3361,7 +3394,7 @@ describe("volume runs", () => {
       expect(await rows()).toMatchObject([{ state: "failed", message: "data-fsn-2 is no longer an old copy, so nothing was deleted" }]);
     });
 
-    const LEGACY = "data's delete was requested before Ployz recorded which copy it deletes, so nothing was deleted. Delete the copy again.";
+    const LEGACY = "data's delete was queued by an older Ployz Cloud, which didn't record the copy it deletes, so nothing was deleted. Delete the copy again.";
     const legacyOldCopyDelete = async () => {
       machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base, null, "7", "old_copy") };
       const admitted = await requested({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null, machine: idOf("fsn-2"), role: "old_copy" } });
@@ -3750,7 +3783,7 @@ describe("volume runs", () => {
       machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base), lacks: "0.2.4" };
       vi.stubGlobal("fetch", async () => new Response("v0.2.5\n"));
       try {
-        const run = await requested({ kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null, role: "any" } });
+        const run = await confirmedDelete({ slot: "fsn-2", confirmed_name: null, role: "any" }, [{ machine: idOf("fsn-2"), slot: "1", newest: base.guid, written_here: null }]);
 
         await execute(run.id);
 
@@ -4620,7 +4653,7 @@ describe("volume runs", () => {
       machines = [{ name: "fsn-1", pool: true, copy: null }, { name: "fsn-2", pool: true, copy: writtenSlot(base) }];
       const observe = () => Effect.succeed(copies(["fsn-2", "gone-production_vol-a", "slot"]));
       const asked = (confirm: string | null) =>
-        runEffect(deleteLeftover({ userId, organizationId }, { dockerVolume: "gone-production_vol-a", server: "fsn-2", confirm }));
+        runEffect(deleteLeftover({ userId, organizationId }, { dockerVolume: "gone-production_vol-a", server: "fsn-2", confirm }, dashboard));
 
       expect(await runEffect(listLeftovers(organizationId, observe).pipe(Effect.orDie))).toMatchObject([
         { docker_volume: "gone-production_vol-a", server: "fsn-2", slot: "1", newest: base, written_here: true, confirm: "1-10-written" },
@@ -4642,6 +4675,54 @@ describe("volume runs", () => {
       expect(sent).toMatchObject([{ expect: { kind: "mirror", newest: base.guid, slot: "1", written_here: true }, want: { kind: "forget", discard: true } }]);
       expect(machines[1]?.copy).toBeNull();
       expect(await rows()).toMatchObject([{ state: "done", orphan: true }]);
+    });
+
+    it("deletes a kept copy for an agent only with a person's yes, and for ployz only with the yes to this copy", async () => {
+      machines = [{ name: "fsn-1", pool: true, copy: null }, { name: "fsn-2", pool: true, copy: writtenSlot(base) }];
+      const asked = (via: Caller["via"], approved: string | null = null) => runEffect(deleteLeftover(
+        { userId, organizationId }, { dockerVolume: "gone-production_vol-a", server: "fsn-2", confirm: "1-10-written" },
+        (operation) => gateOperation({ ...leftoverCaller, via }, approved, operation),
+      ));
+
+      expect(await asked("agent")).toEqual({ ok: false, refusal: {
+        code: "forbidden",
+        message: "This remove mirror of gone-production_vol-a on fsn-2 needs a person. Do it in Ployz Cloud (or run `ployz volume leftovers rm gone-production_vol-a --on fsn-2 --confirm 1-10-written`).",
+        details: null,
+      } });
+      const ask = await asked("cli");
+      if (ask.ok || ask.refusal.code !== "approval_required") throw new Error("ployz was not asked for a yes");
+      // SAFETY: an approval_required refusal carries its digest.
+      const { approval } = ask.refusal.details as { approval: string };
+      expect(await rows()).toEqual([]);
+
+      // The copy is replaced after the yes: the yes covers the copy the person saw, so it asks again.
+      machines[1] = { name: "fsn-2", pool: true, copy: writtenSlot(snap("12")) };
+      const moved = await runEffect(deleteLeftover(
+        { userId, organizationId }, { dockerVolume: "gone-production_vol-a", server: "fsn-2", confirm: "1-12-written" },
+        (operation) => gateOperation(leftoverCaller, approval, operation),
+      ));
+      expect(moved).toMatchObject({ ok: false, refusal: { code: "approval_required" } });
+      expect(await rows()).toEqual([]);
+
+      machines[1] = { name: "fsn-2", pool: true, copy: writtenSlot(base) };
+      expect(await asked("cli", approval)).toMatchObject({ ok: true });
+      expect(await rows()).toMatchObject([{ kind: "delete_mirror", orphan: true }]);
+    });
+
+    it("deletes no kept copy on a Server whose Ployz would delete it without checking it", async () => {
+      machines = [
+        { name: "fsn-1", pool: true, copy: null },
+        { name: "fsn-2", pool: true, copy: writtenSlot(base), capabilities: ON_PLOYZ_04.filter((capability) => capability !== requirements.volumeKeepWritten.capability) },
+      ];
+
+      const deleted = await runEffect(deleteLeftover({ userId, organizationId }, { dockerVolume: "gone-production_vol-a", server: "fsn-2", confirm: "1-10-unknown" }, dashboard));
+
+      expect(deleted).toEqual({ ok: false, refusal: {
+        code: "unsupported",
+        message: "Upgrade fsn-2 first. Its Ployz would delete gone-production_vol-a's copy even if it holds writes no other Server has, so nothing was changed",
+        details: null,
+      } });
+      expect(await rows()).toEqual([]);
     });
 
     it("starts no orphan run when every slot left may hold writes no other Server has", async () => {

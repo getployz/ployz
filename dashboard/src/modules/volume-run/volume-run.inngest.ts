@@ -11,7 +11,7 @@ import { PATIENCE, PATIENCE_WAITS, waitsFor } from "#/modules/volume-run/patienc
 import { type DeploymentsSeen, gb, gbAtLeast, type ResizePhase, type ResizeStep, type SizeDirection, type SizeOutcome, undoOnRefusal } from "#/modules/volume-run/resize";
 import { type RecordAnswer, recordVolumeSize, resizeCopy } from "#/modules/volume-run/volume-size.server";
 import { fenceTaken } from "#/modules/volume-run/volume-run.deploy.server";
-import { alreadyOn, committedWriter, epochOf, expectOf, forgetExpect, type ForwardRelease, holdingNewest, keptMessage, observedEpoch, type Planned, planForwardRelease, planFromCopies, type Refusal, releaseKept, ROLE_NOUN, stillConfirmed, withdrawnMessage } from "#/modules/volume-run/plan";
+import { alreadyOn, committedWriter, epochOf, expectOf, forgetExpect, type ForwardRelease, holdingNewest, keptMessage, observedEpoch, type Planned, planForwardRelease, planFromCopies, type Refusal, releaseKept, ROLE_NOUN, stillConfirmed, unconfirmedDelete, withdrawnMessage } from "#/modules/volume-run/plan";
 import { type AnsweredMember, copyName, type MachineRef, type Member, type ReleasePlan } from "#/modules/volume-run/volume-run";
 import { claimVolumeRun, closeStaleVolumeRuns, closeVolumeRun, endRun, failAndRelease, failRun, laneTarget, noteRun, pinDestination, recordRestarted, refuseRun, releaseChangedMessage, runDeploymentsSeen, type RunContext, takeEpoch } from "#/modules/volume-run/volume-run.rows.server";
 import { cleanOrphans, organizationsWithMachines } from "#/modules/volume-run/volume-run.orphans.server";
@@ -58,6 +58,11 @@ export async function runVolume(
   const deployments = run.kind === "resize" ? await step.run("01-deployments", () => runEffect(runDeploymentsSeen(run, runId))) : null;
   const members = run.kind === "release" ? await observeRelease(steps) : await step.run("01-observe", () => runEffect(observeMembers(run, runId)));
   if (run.kind === "deploy") throw new NonRetriableError(`run ${run.id} is a Deploy's lane, not a volume run`);
+  const unconfirmed = unconfirmedDelete(run);
+  if (unconfirmed !== null) {
+    await step.run("02-refuse", () => runEffect(refuseRun(run, runId, unconfirmed)));
+    return { runId: run.id, refused: unconfirmed };
+  }
   const plan = planFromCopies(run.kind === "resize" && deployments !== null ? { ...run, deployments } : run, members);
   if (!plan.ok) {
     await step.run("02-refuse", () => runEffect(refuseRun(run, runId, plan.refusal)));
@@ -607,8 +612,8 @@ async function releaseVolume(steps: RunSteps, phase: PhaseOf<"release">, epoch: 
       epoch,
       start: { kind: "kept", container_id: source.containerId },
     });
-    const doomed: Array<{ machine: MachineRef; expect: ExpectedCopy; role: SlotRole | undefined }> = [];
-    for (const { machine } of from.slots.filter((slot) => slot !== owner)) {
+    const doomed: Array<{ machine: MachineRef; expect: ExpectedCopy; role: SlotRole | undefined; keepsWritten: boolean }> = [];
+    for (const { machine, keepsWritten } of from.slots.filter((slot) => slot !== owner)) {
       const now = await steps.step.run(`04-inspect-${machine.name}`, () => steps.runEffect(inspectCopy(run, steps.runId, machine)));
       if (now?.kind === "root") {
         throw new NonRetriableError(
@@ -616,13 +621,18 @@ async function releaseVolume(steps: RunSteps, phase: PhaseOf<"release">, epoch: 
             + `${run.volumeName}'s Service stays stopped on ${A.name}`,
         );
       }
-      if (now?.kind === "slot" && now.newest?.guid === at.guid) doomed.push({ machine, expect: expectOf(now), role: now.role });
+      if (now?.kind === "slot" && now.newest?.guid === at.guid) doomed.push({ machine, expect: expectOf(now), role: now.role, keepsWritten: keepsWritten === true });
     }
     if (plan !== undefined && doomed.some(({ machine }) => !plan.forgets.includes(machine.id))) throw changed();
-    // No one chose these deletes, so a Server keeps a copy that may hold writes no other Server has. The release
-    // restarts the Service all the same: its floors already keep any older run from making that copy a writer.
+    // No one chose these deletes, so a Server keeps a copy that may hold writes no other Server has, and one whose
+    // Ployz would delete it whatever it holds is not asked. The release restarts the Service all the same: its floors
+    // already keep any older run from making that copy a writer.
     const stays: string[] = [];
-    for (const { machine, expect, role } of doomed) {
+    for (const { machine, expect, role, keepsWritten } of doomed) {
+      if (!keepsWritten) {
+        stays.push(releaseKept(run.volumeName, machine.name, role, true));
+        continue;
+      }
       const forgot = await setCopy(steps, `04-forget-${machine.name}`, machine, expect, { kind: "forget" }, `${machine.name} is still busy with ${run.volumeName}`);
       if (!forgot.ok && forgot.reason !== "written_here") throw new NonRetriableError(forgot.message);
       if (!forgot.ok) stays.push(releaseKept(run.volumeName, machine.name, role));

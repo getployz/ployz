@@ -293,6 +293,34 @@ async fn set_forget(socket: &Path, expect: &ployz_core::ExpectedCopy, discard: b
     post(socket, "/Volume.Copy.Destroy", json!({"name": "data"})).await
 }
 
+/// The daemon planned a confirmed delete of the slot at `w-1-1`. A receive it had started
+/// landed `w-1-2` before the destroy reached the plugin, which holds the only lock that
+/// receive took. The plugin plans the same Forget again on the copy it holds, so the delete
+/// keeps a copy someone never confirmed, and deletes the one they did.
+#[tokio::test]
+#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+async fn a_destroy_keeps_a_slot_that_changed_after_its_forget_was_planned() {
+    let test = test_dir();
+    let (socket, server) = slot(&test, &[("w-1-2", 12), ("w-1-1", 11)]);
+    let inspect = || post(&socket, "/Volume.Copy.Inspect", json!({"name": "data"}));
+    let now = inspect().await;
+    assert_eq!(now["Ok"]["written_here"], json!(true), "{now}");
+    let planned = |newest: &str, written_here: bool| {
+        json!({"name": "data", "discard": true, "expect": {"kind": "mirror",
+            "newest": newest, "slot": now["Ok"]["slot"], "written_here": written_here}})
+    };
+
+    let landed = post(&socket, "/Volume.Copy.Destroy", planned("11", true)).await;
+    assert_eq!(reason(&landed), "mismatch", "{landed}");
+    let written = post(&socket, "/Volume.Copy.Destroy", planned("12", false)).await;
+    assert_eq!(reason(&written), "mismatch", "{written}");
+    assert_eq!(guid(&inspect().await), "12");
+
+    let confirmed = post(&socket, "/Volume.Copy.Destroy", planned("12", true)).await;
+    assert_eq!(confirmed, json!({"Ok": null}));
+    server.abort();
+}
+
 /// Cloud deletes an old copy it saw; a cancelled run's pull that landed after Cloud looked
 /// made the slot the mirror at the same snapshot, so the delete names the old copy's role
 /// and the Machine refuses it.

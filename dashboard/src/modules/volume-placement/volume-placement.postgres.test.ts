@@ -9,11 +9,13 @@ import { CloudStore } from "#/modules/config-store/store-sdk.server";
 import { GithubAuthority } from "#/modules/github/github-authority.server";
 import { GithubApi } from "#/modules/github/github-observation.api";
 import { InngestClient } from "#/modules/inngest/client";
-import { ClusterOutOfTime, clusterRead, OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
+import { ClusterOutOfTime, clusterRead, type ConnectedRuntimeClient, OrganizationRuntime, type OrganizationRuntimeService } from "#/modules/runtime/organization-runtime.server";
+import { requirements } from "#/modules/runtime/daemon-compat";
 import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-errors";
 import {
   deleteOldCopy, discardPlacement, listPlacements, OLD_COPY_CLUSTER_BUDGET_MS, requestUnclaimedRun, restoreSettled, stageRestore, stampPlacements, writeAdmitted, writePlacement,
 } from "#/modules/volume-placement/volume-placement.server";
+import type { ShownCopy } from "#/modules/volume-placement/volume-placement";
 import type { Member } from "#/modules/volume-run/volume-run";
 import { VolumeCluster } from "#/modules/volume-run/volume-run.cluster.server";
 import { ClusterUnreachable, requestVolumeRun } from "#/modules/volume-run/volume-run.rows.server";
@@ -36,6 +38,24 @@ const web = (name: string) => name.padEnd(32, "0") as MachineId;
 
 const polling = { timeout: 20_000, interval: 10 };
 
+const NO_CLUSTER: OrganizationRuntimeService = { cancel: () => Effect.void, open: () => Effect.die("no Cluster") };
+
+/** A Cluster whose Servers each answer the Volume's copy as `members` says, for a run's plan to read. */
+const clusterAnswering = (members: readonly Member[]) => asTestDouble<OrganizationRuntimeService>()({
+  cancel: () => Effect.void,
+  open: () => Effect.succeed({ status: "connected" as const, connected: asTestDouble<ConnectedRuntimeClient>()({
+    watchFirstFrame: () => Effect.succeed({
+      machines: members.map(({ machine }) => ({
+        machine: { ...machine, public_key: Array.from({ length: 32 }, (_, index) => index), runtime: { daemon_version: "", capabilities: Object.values(requirements).map((requirement) => requirement.capability) } },
+        storage: { state: "pool" },
+      })),
+      volumes: [],
+      incomplete_ids: { machines: [] },
+    }),
+    volumeSwitch: (id: string) => Effect.succeed(members.flatMap((member) => member.machine.id === id && member.answered ? [member.view] : [])[0]),
+  }) }),
+});
+
 /** Polls until `ready`, on the real clock, so a test's TestClock stays where the test put it. */
 const until = (ready: () => Promise<boolean>) => Effect.promise(() => expect.poll(ready, polling).toBe(true));
 
@@ -56,6 +76,8 @@ describe("volume placement", () => {
   let deleting: boolean;
   // Runs once, as the Store answers `query`: a Deploy admitted while the edit is between its check and its write.
   let between: { readonly query: string; readonly run: () => Promise<void> } | null;
+  // The Cluster a run's plan asks: none, unless a test pairs one.
+  let runtime: OrganizationRuntimeService;
 
   // A placement with no restore staged never writes the Store; its writer's services only fill the type.
   const run = <A, E>(operation: Effect.Effect<A, E, Database | CloudStore | StoreWrites>, inspect?: (typeof VolumeCluster.Service)["inspect"]) => harness.runEffect(operation.pipe(
@@ -64,7 +86,7 @@ describe("volume placement", () => {
     Effect.provideService(GithubApi, fakeGithubApi().service),
     Effect.provideService(GithubAuthority, fakeGithubAuthority().service),
     Effect.provideService(InngestClient, sendsNowhere()),
-    Effect.provideService(OrganizationRuntime, { cancel: () => Effect.void, open: () => Effect.die("no Cluster") }),
+    Effect.provideService(OrganizationRuntime, runtime),
     Effect.provideService(CloudStore, {
       open: Effect.succeed(asTestDouble<ConfigStore>()({
         read: async (_: string, query: { query: string; environment?: { environment: string | null } }) => {
@@ -106,6 +128,7 @@ describe("volume placement", () => {
     refusing = null;
     deleting = false;
     between = null;
+    runtime = NO_CLUSTER;
     await harness.pool.query(`
       truncate table organization cascade;
       insert into organization (id, name, slug) values ('${organizationId}', 'Acme', 'acme');
@@ -202,12 +225,31 @@ describe("volume placement", () => {
   it("deletes only an old copy at once, never the writer or a mirror", async () => {
     await stage("web-1", ["web-2", "web-4"]);
     const members = [member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "old"), member("web-4", "mirror")];
-    const deleting = (server: string) => run(deleteOldCopy(organizationId, null, { volumeId, environment, server }), () => Effect.succeed(members));
+    const deleting = (server: string) => run(deleteOldCopy(organizationId, null, { volumeId, environment, server, copy: null }), () => Effect.succeed(members));
     for (const server of ["web-1", "web-2", "web-4"]) {
       expect(await deleting(server)).toEqual({ ok: false, refusal: { message: "Not an old copy" } });
     }
     await expect(deleting("web-3")).rejects.toThrow("no Cluster");
     expect((await harness.pool.query("select count(*)::int as runs from volume_run")).rows).toEqual([{ runs: 0 }]);
+  });
+
+  it("deletes the old copy the dialog showed, and nothing once its Server reports another", async () => {
+    await stage("web-1", ["web-2"]);
+    const members = [member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "old")];
+    runtime = clusterAnswering(members);
+    const deleting = (copy: ShownCopy | null) =>
+      run(deleteOldCopy(organizationId, null, { volumeId, environment, server: "web-3", copy }), () => Effect.succeed(members));
+    const runs = async () => (await harness.pool.query("select count(*)::int as runs from volume_run")).rows;
+    // The dialog opened on the copy at 10, and a pull landed 11 before the person confirmed.
+    const opened = { slot: "1", newest: "10", written_here: false };
+    for (const copy of [opened, { ...opened, newest: "11", written_here: true }, null]) {
+      expect(await deleting(copy)).toEqual({
+        ok: false, refusal: { message: "web-3's copy changed since you opened Delete, so nothing was deleted. Look at it again before you delete it" },
+      });
+    }
+    expect(await runs()).toEqual([{ runs: 0 }]);
+    expect(await deleting({ ...opened, newest: "11" })).toMatchObject({ ok: true });
+    expect(await runs()).toEqual([{ runs: 1 }]);
   });
 
   it("refuses deleting an old copy staged back onto the Volume between the check and the run", async () => {
@@ -390,7 +432,7 @@ describe("volume placement", () => {
     await stage("web-1", ["web-2"]);
     await run(stampPlacements(organizationId, [volumeId], "dep-1"));
     const members = [member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "mirror")];
-    expect(await run(deleteOldCopy(organizationId, null, { volumeId, environment, server: "web-3" }), () => Effect.succeed(members)))
+    expect(await run(deleteOldCopy(organizationId, null, { volumeId, environment, server: "web-3", copy: null }), () => Effect.succeed(members)))
       .toEqual({ ok: false, refusal: { message: "A Deploy is moving this Volume. Wait for it to finish." } });
   });
 
@@ -398,7 +440,7 @@ describe("volume placement", () => {
     await stage("web-3", ["web-2"]);
     await run(stampPlacements(organizationId, [volumeId], "dep-1"));
     const members = [member("web-1", "writer"), member("web-2", "mirror"), member("web-3", "mirror")];
-    expect(await run(deleteOldCopy(organizationId, null, { volumeId, environment, server: "web-3" }), () => Effect.succeed(members)))
+    expect(await run(deleteOldCopy(organizationId, null, { volumeId, environment, server: "web-3", copy: null }), () => Effect.succeed(members)))
       .toEqual({ ok: false, refusal: { message: "A Deploy is moving this Volume. Wait for it to finish." } });
   });
 

@@ -3,13 +3,16 @@
 //! deletes that, after seeing it.
 
 use clap::{ArgMatches, Command};
+use ployz_store::OperationVerb;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 
 use super::super::store;
 use super::super::{Error, leaf_matches};
 use super::run::{self, OneRun, Pacing};
-use crate::cli::{positional, value};
+use crate::approval::{self, Asked};
+use crate::cli::{approval as approval_arg, positional, value};
+use crate::cloud::account::StoreCallError;
 use crate::ui::{Cell, Table, Tone};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -60,6 +63,7 @@ pub(crate) fn remove_command(command: Command) -> Command {
         .arg(value("confirm", None).value_name("COPY").help(
             "The CONFIRM value `ployz volume leftovers` shows for the copy",
         ))
+        .arg(approval_arg())
         .arg(run::wait_flag())
 }
 
@@ -133,15 +137,43 @@ pub(crate) fn remove(root: &ArgMatches) -> Result<(), Error> {
         Some(confirm) => serde_json::json!({ "server": server, "confirm": confirm }),
         None => serde_json::json!({ "server": server }),
     };
-    let asked: OneRun = runtime
-        .block_on(crate::cloud::account::refusable_operation(
-            credential,
-            Method::POST,
-            &format!("volume-leftovers/{volume}/rm"),
-            Some(&body),
-        ))
-        .map_err(|error| store.fail(error))?;
-    let run = asked.run;
+    let path = format!("volume-leftovers/{volume}/rm");
+    let mut words = vec![
+        "volume",
+        "leftovers",
+        "rm",
+        volume.as_str(),
+        "--on",
+        server.as_str(),
+    ];
+    if let Some(confirm) = confirm {
+        words.extend(["--confirm", confirm.as_str()]);
+    }
+    // Cloud asks a person before it deletes the copy. Only that ask leaves the outer
+    // result; every other refusal comes back inner, with the store's hints.
+    let asked = approval::approved(
+        runtime,
+        OperationVerb::RemoveMirror,
+        matches.get_one::<String>("approval").cloned(),
+        |id| crate::cli::approved_rerun(matches, &words, id),
+        async |approval| {
+            let answer = crate::cloud::account::approved_answer::<OneRun>(
+                credential,
+                Method::POST,
+                &path,
+                &body,
+                approval,
+            )
+            .await;
+            match answer {
+                Err(StoreCallError::Refused(refusal)) if Asked::of(&refusal).is_some() => {
+                    Err(StoreCallError::Refused(refusal))
+                }
+                other => Ok(other),
+            }
+        },
+    )?;
+    let run = asked.map_err(|error| store.fail(error))?.run;
     let started = format!("delete of {volume}'s copy on {server}");
     let follow = store::next(matches, &["volume", "leftovers"]);
     if !matches.get_flag("wait") {

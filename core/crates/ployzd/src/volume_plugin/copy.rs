@@ -8,14 +8,16 @@ use crate::{
     faults::{Identity, Point, Want},
     machine_pool::MachinePool,
     volume_copy::{
-        CopyRequest, CutRequest, ForgetRequest, PullRequest, SnapshotRequest, WriterRequest,
+        CopyRequest, CutRequest, DestroyRequest, ForgetRequest, PullRequest, SnapshotRequest,
+        WriterRequest,
     },
     volume_send::protocol,
 };
 use axum::{Json, extract::State};
 use ployz_core::{
-    CopyRefusal, CopyTransition, DockerVolumeName as WireName, RpcError, SendSource, SendStream,
-    SetVolumeCopyRefused, SlotRole, SnapshotName, VolumeCopy, VolumeGen, error_chain::inline,
+    CopyPlan, CopyRefusal, CopyTransition, DockerVolumeName as WireName, RpcError, SendSource,
+    SendStream, SetVolumeCopyRefused, SlotRole, SnapshotName, VolumeCopy, VolumeGen, WantedCopy,
+    error_chain::inline,
 };
 
 use super::{
@@ -82,7 +84,7 @@ pub(super) async fn pull(
 
 pub(super) async fn destroy(
     State(storage): State<VolumeStorage>,
-    Json(request): Json<ForgetRequest>,
+    Json(request): Json<DestroyRequest>,
 ) -> Reply {
     Json(storage.copy_destroy(&request).await)
 }
@@ -915,12 +917,47 @@ impl VolumeStorage {
             .map_err(|error| RpcError::internal(format!("GET {url} answered {body:?}: {error}")))
     }
 
-    async fn copy_destroy(&self, request: &ForgetRequest) -> Result<Copy, RpcError> {
+    /// The slot, or an unadopted seed's root, destroyed, once the Forget the daemon planned
+    /// still deletes the copy here. No receive changes the slot past the busy check: its task
+    /// has ended, and a new one starts only under the mutation this route holds.
+    async fn copy_destroy(&self, request: &DestroyRequest) -> Result<Copy, RpcError> {
         let wire = &request.name;
         let Some(scope) = self.scope(wire).await? else {
             return Ok(None);
         };
         let name = &scope.name;
+        let receiving = self.receives.status(name).busy();
+        if scope.root()?.is_none() && scope.slot().is_some() && receiving {
+            return Err(self
+                .refuse_found(
+                    &scope,
+                    CopyRefusal::Busy,
+                    format!("Volume {name} is still receiving into its slot"),
+                )
+                .await);
+        }
+        if let Some(expect) = &request.expect {
+            let copy = self.copy_now(&scope).await?;
+            let want = WantedCopy::Forget {
+                discard: request.discard,
+            };
+            match ployz_core::plan(copy.as_ref(), false, expect, &want) {
+                CopyPlan::Transition(
+                    CopyTransition::MirrorToForget | CopyTransition::SeedToForget,
+                ) => {}
+                CopyPlan::AtWant => return Ok(copy),
+                CopyPlan::Refuse(reason) => {
+                    let message = format!(
+                        "Volume {name} changed after this Machine planned its delete, so it was kept"
+                    );
+                    return Err(refuse(reason, copy, message));
+                }
+                CopyPlan::Transition(_) => {
+                    let message = format!("Volume {name} has no copy here to delete");
+                    return Err(refuse(CopyRefusal::NoTransition, copy, message));
+                }
+            }
+        }
         if let Some(root) = scope.root()? {
             if self.marks(&root.name).unadopted_seed().await? {
                 crate::faults::kill_inside(
@@ -928,7 +965,13 @@ impl VolumeStorage {
                     Some(forgetting(wire, request.r#gen)),
                 );
                 self.z(&["destroy", "-r", &root.name]).await?;
-                if scope.slot().is_some() && !self.receives.status(name).busy() {
+                // A slot beside the seed is the parent its landing emptied; one holding a
+                // copy that may be the only one stays.
+                let kept = match scope.fs() {
+                    Some(fs) => self.written_here(&fs.name).await?,
+                    None => false,
+                };
+                if scope.slot().is_some() && !receiving && !kept {
                     self.z(&[
                         "destroy",
                         "-r",
@@ -951,15 +994,6 @@ impl VolumeStorage {
         }
         if scope.slot().is_none() {
             return Ok(None);
-        }
-        if self.receives.status(name).busy() {
-            return Err(self
-                .refuse_found(
-                    &scope,
-                    CopyRefusal::Busy,
-                    format!("Volume {name} is still receiving into its slot"),
-                )
-                .await);
         }
         crate::faults::kill_inside(
             Point::Copy(CopyTransition::MirrorToForget),

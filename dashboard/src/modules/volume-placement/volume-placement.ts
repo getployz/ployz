@@ -686,7 +686,17 @@ export function storageStep(deploymentId: string, rows: readonly PlacementRow[],
 /** `at` is the restore point's time in Unix seconds. */
 export const StageRestoreInput = Schema.Struct({ ...VolumeInput.fields, guid: Schema.NonEmptyString, name: Schema.NonEmptyString, at: Schema.Number });
 
-export const DeleteCopyInput = Schema.Struct({ ...VolumeInput.fields, server: Schema.NonEmptyString });
+/** The copy a Delete showed, as its Server reported it: the delete deletes nothing once the copy is not this one. */
+export const ShownCopy = Schema.Struct({ slot: Schema.String, newest: Schema.String, written_here: Schema.NullOr(Schema.Boolean) });
+export type ShownCopy = typeof ShownCopy.Type;
+
+/** `member`'s copy as a Delete shows it, or null for one that holds no snapshot. */
+export const shownCopy = (member: Member | undefined): ShownCopy | null => {
+  const copy = member?.answered === true ? confirmedCopy(member) : null;
+  return copy === null ? null : { slot: copy.slot, newest: copy.newest, written_here: copy.written_here };
+};
+
+export const DeleteCopyInput = Schema.Struct({ ...VolumeInput.fields, server: Schema.NonEmptyString, copy: Schema.NullOr(ShownCopy) });
 
 /** Why several writers on one volume are a warning: said once, wherever it's warned. */
 export const SHARED_VOLUME_WHY = "These containers write to the same files at the same time. Databases like Postgres and MySQL expect to be the only writer, so their data can be corrupted. Run 1 replica, or give each service its own volume.";

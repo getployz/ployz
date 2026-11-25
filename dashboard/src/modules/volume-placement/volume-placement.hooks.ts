@@ -13,6 +13,7 @@ import {
   appliedMirrors, observePlacement, type Placement, placementChanges, placementLosses,
   type PlacementVolume, type RestorePoint,
   stagedOffServer, storageStep, undoPlacement,
+  type ShownCopy,
 } from "./volume-placement";
 import { placementGroup, placementLoss, type PlacementLoss } from "./volume-placement.review";
 import { deleteCopyServerFn, discardPlacementServerFn, stagePlacementServerFn, stageRestoreServerFn } from "./volume-placement.functions";
@@ -62,16 +63,16 @@ export function useDeleteCopy(organizationSlug: string, environment: Environment
     else toast.error(run?.message ?? `Could not delete the copy of ${volume.name}`);
     void queryClient.invalidateQueries({ queryKey: volumePlacementKeys.all });
   });
-  async function remove(server: MachineName) {
+  async function remove(server: MachineName, copy: ShownCopy | null) {
     try {
-      const result = await deleteCopyServerFn({ data: { organizationSlug, volumeId: volume.id, environment, server } });
+      const result = await deleteCopyServerFn({ data: { organizationSlug, volumeId: volume.id, environment, server, copy } });
       if (result.ok) watch(result.run.id);
       else toast.error(result.refusal.message);
     } catch (error) {
       toast.error(toErrorMessage(error, `Could not delete the copy of ${volume.name}`));
     }
   }
-  return (server: MachineName) => { void remove(server); };
+  return (server: MachineName, copy: ShownCopy | null) => { void remove(server, copy); };
 }
 
 export type StagedPlacements = {
