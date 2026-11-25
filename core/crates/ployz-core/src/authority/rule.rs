@@ -933,8 +933,13 @@ pub const PREVIEW_NAMESPACE: &str = "{preview-namespace}";
 /// pins, each Volume's birth left out, and `namespace` replaced by [`PREVIEW_NAMESPACE`]
 /// wherever it appears. So one approval covers every preview, each with its own Volumes.
 ///
+/// A spec that already holds [`PREVIEW_NAMESPACE`] has no template: it would digest as one
+/// holding `namespace` there, and a key it renames could overwrite one it holds. Refusing
+/// it keeps the rewrite one-to-one, since the placeholder can't overlap itself.
+///
 /// # Errors
-/// Returns a [`CanonicalError`] when the spec has no [`PayloadDigest`] in `namespace`.
+/// Returns a [`CanonicalError`] when the spec has no [`PayloadDigest`] in `namespace`, or
+/// holds [`PREVIEW_NAMESPACE`].
 pub fn preview_template(
     spec: &RequestedServiceSpec,
     namespace: &Namespace,
@@ -948,7 +953,9 @@ pub fn preview_template(
         .mount_graph
         .scope_to_namespace(namespace)
         .map_err(|error| CanonicalError::Parse(error.to_string()))?;
-    PayloadDigest::of_scoped(&spec, |value| {
+    let mut holds_placeholder = false;
+    let digest = PayloadDigest::of_scoped(&spec, |value| {
+        holds_placeholder = value.to_string().contains(PREVIEW_NAMESPACE);
         if let Some(Value::Array(volumes)) = value.get_mut("volumes") {
             for volume in volumes {
                 if let Some(Value::Object(source)) = volume.get_mut("source") {
@@ -957,7 +964,13 @@ pub fn preview_template(
             }
         }
         placeholder(value, namespace.as_str());
-    })
+    })?;
+    if holds_placeholder {
+        return Err(CanonicalError::Parse(format!(
+            "a preview's spec can't hold {PREVIEW_NAMESPACE}, which stands for its Namespace"
+        )));
+    }
+    Ok(digest)
 }
 
 fn placeholder(value: &mut Value, namespace: &str) {

@@ -1185,6 +1185,60 @@ fn a_preview_rule_admits_each_of_its_previews_and_nothing_else() {
     }
 }
 
+/// A rule whose template names its preview in `PLAIN` and in an environment key.
+fn naming_rule(first: &Namespace) -> AutoDeployRule {
+    let mut rule = preview_rule(Vec::new());
+    let named = naming(
+        first,
+        json!({"PLAIN": first.as_str(), format!("FOR_{first}"): "one"}),
+    );
+    rule.services[0].template = preview_template(&requested(named), first, false).unwrap();
+    rule
+}
+
+fn naming(first: &Namespace, environment: Value) -> Value {
+    let mut spec = preview_json(first, first.as_str());
+    spec["container"]["environment"] = environment;
+    spec
+}
+
+/// A value holding the placeholder itself is not the preview's Namespace, though both
+/// rewrite to the same text.
+#[test]
+fn a_preview_spec_holding_the_placeholder_is_refused() {
+    let first = preview("0000aaaa");
+    let rule = naming_rule(&first);
+    let own = json!({"PLAIN": first.as_str(), format!("FOR_{first}"): "one"});
+    assert_eq!(create_in(&rule, naming(&first, own), &first, false), Ok(()));
+
+    let literal = json!({"PLAIN": PREVIEW_NAMESPACE, format!("FOR_{first}"): "one"});
+    assert_eq!(
+        create_in(&rule, naming(&first, literal), &first, false),
+        Err(AuthorityRefusal::Mismatch {
+            field: MismatchField::Payload
+        })
+    );
+}
+
+/// A key that the rewrite would rename onto one the spec already holds can't hide that
+/// key's value from the approval.
+#[test]
+fn a_preview_spec_whose_renamed_key_meets_another_is_refused() {
+    let first = preview("0000aaaa");
+    let rule = naming_rule(&first);
+    let smuggled = json!({
+        "PLAIN": first.as_str(),
+        format!("FOR_{first}"): "one",
+        format!("FOR_{PREVIEW_NAMESPACE}"): "unapproved",
+    });
+    assert_eq!(
+        create_in(&rule, naming(&first, smuggled), &first, false),
+        Err(AuthorityRefusal::Mismatch {
+            field: MismatchField::Payload
+        })
+    );
+}
+
 #[test]
 fn a_preview_rule_builds_any_branch_pushed_by_its_pushers() {
     let feature = |actor: &str| {
