@@ -260,7 +260,6 @@ pub(crate) async fn move_container<C: MachineOperations>(
                 .then(|| image.clone()),
             // A move's copy lands on another Machine, so it takes no copy's place there.
             replaces: None,
-            free_receipt: None,
         }),
         rotation: RunRotation::Pending,
     };
@@ -569,7 +568,6 @@ pub(super) async fn run_new<C: MachineOperations>(
             answer,
             image_id: None,
             replaces,
-            free_receipt: None,
         }),
         rotation: RunRotation::Pending,
     };

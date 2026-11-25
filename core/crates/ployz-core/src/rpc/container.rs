@@ -253,13 +253,6 @@ pub struct NewContainer {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub replaces: Option<crate::ContainerId>,
-    /// The receipt a free Build's Server gave for the image this creation runs. An
-    /// unsigned creation that carries one runs exactly that image, which must already be
-    /// on the Machine, and only when the receipt's MAC holds under the Cluster's Sealing
-    /// Key. A signed creation ignores it. An older Machine ignores it and pulls as before.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub free_receipt: Option<crate::FreeReceipt>,
 }
 
 /// When the Machine answers a new creation: once it starts, or once its health settles.

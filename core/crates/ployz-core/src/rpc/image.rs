@@ -149,32 +149,6 @@ pub struct PullFreeImageRequest {
     pub registry_login: Option<crate::SealedLogin>,
 }
 
-/// What a Server answers for each image a free Build loaded: the image's ID, and a MAC
-/// over it under a key every Server of the Cluster derives from its Sealing Key. Cloud
-/// carries it to an unsigned creation, which then runs exactly that image, and can't make
-/// one: a creation's Server refuses a receipt whose MAC doesn't hold under its own key.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct FreeReceipt {
-    pub image: crate::ImageDigest,
-    pub mac: FreeImageMac,
-}
-
-crate::value::hex_newtype!(
-    /// HMAC-SHA256 over [`FreeReceipt::input`], under a key every Server of the Cluster
-    /// derives from its Sealing Key and nothing else can.
-    FreeImageMac, "free image MAC", 32, "", "64 lowercase hex digits"
-);
-
-impl FreeReceipt {
-    /// The bytes a receipt is a MAC of: a fixed prefix and the image ID.
-    #[must_use]
-    pub fn input(image: &crate::ImageDigest) -> Vec<u8> {
-        let mut input = crate::separation::FREE_IMAGE.to_vec();
-        input.extend(image.as_str().as_bytes());
-        input
-    }
-}
-
 /// Successful `PullImage`, `PullFreeImage` and `PullImageFromMachine` payload.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ImagePulled {

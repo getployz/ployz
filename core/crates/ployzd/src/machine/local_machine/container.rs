@@ -1804,20 +1804,6 @@ impl LocalMachine {
             .finish_mutation(move |local| async move {
                 let _switch = switch;
                 let pin = new.image_id.clone();
-                // Only an unsigned creation runs a free Build's image by its receipt; a
-                // signed one runs what its signature names.
-                let free = match (&new.free_receipt, admitted.signed()) {
-                    (Some(receipt), false) => {
-                        match crate::docker_image::FreeImage::check(
-                            receipt,
-                            local.docker()?.sealing(),
-                        ) {
-                            Ok(free) => Some(free),
-                            Err(error) => return create_refusal(error.into()).map(Made::Refused),
-                        }
-                    }
-                    (Some(_) | None, _) => None,
-                };
                 let login = match (&pin, new.image_prepared, &new.registry_login) {
                     (None, false, Some(login)) => {
                         let image = &new.resolved_spec.container.image;
@@ -1836,11 +1822,10 @@ impl LocalMachine {
                         creation_key: new.slot.creation_key.as_str().to_owned(),
                         deployment_id: new.deployment_id,
                         r#gen: new.r#gen,
-                        image: match (&free, &pin, new.image_prepared) {
-                            (Some(free), _, _) => ImagePull::Free(free),
-                            (None, Some(pin), _) => ImagePull::Pinned(pin),
-                            (None, None, true) => ImagePull::Prepared,
-                            (None, None, false) => {
+                        image: match (&pin, new.image_prepared) {
+                            (Some(pin), _) => ImagePull::Pinned(pin),
+                            (None, true) => ImagePull::Prepared,
+                            (None, false) => {
                                 ImagePull::Policy(login.as_ref().or(new.registry_auth.as_ref()))
                             }
                         },
@@ -2523,7 +2508,6 @@ fn create_refusal(error: Error) -> Result<ContainerRefusal, Error> {
         Error::Docker(
             Docker::ImagePull(_)
             | Docker::UnsignedImage(_)
-            | Docker::FreeImage(_)
             | Docker::DiskFull { .. }
             | Docker::RegistryLogin(
                 LoginRefused::Uppercase(_)

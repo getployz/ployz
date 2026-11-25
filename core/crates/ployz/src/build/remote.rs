@@ -444,7 +444,6 @@ fn validate_outcome(
         }),
         Outcome::CapabilitiesChecked { .. }
         | Outcome::Images { .. }
-        | Outcome::FreeImages { .. }
         | Outcome::Validated { .. }
         | Outcome::Published { .. } => Err(unknown(
             Stage::Output,

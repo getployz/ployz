@@ -48,12 +48,6 @@ pub const VERIFIED_BUILD_KEY: &[u8] = b"ployz-verified-build-key-v1";
 /// What a verified build's MAC input starts with.
 pub const VERIFIED_BUILD: &[u8] = b"ployz-verified-build/v1\n";
 
-/// HKDF label of the key a free build's receipt is a MAC under.
-pub const FREE_IMAGE_KEY: &[u8] = b"ployz-free-image-key-v1";
-
-/// What a free build's receipt MAC input starts with.
-pub const FREE_IMAGE: &[u8] = b"ployz-free-image/v1\n";
-
 /// Digest prefix of the code that names a joining Machine.
 pub const JOIN_CODE: &[u8] = b"ployz-join-v1\n";
 
@@ -87,7 +81,7 @@ pub const AUTHORITY_SIGNING: &[u8] = b"ployz-authority/v1\n";
 mod tests {
     use super::*;
 
-    const ALL: [(&str, &[u8]); 23] = [
+    const ALL: [(&str, &[u8]); 21] = [
         ("SEALED_VALUE", SEALED_VALUE),
         ("PLATFORM_SEALED", PLATFORM_SEALED),
         ("REGISTRY_LOGIN", REGISTRY_LOGIN),
@@ -100,8 +94,6 @@ mod tests {
         ("JOIN_RESTRICTIONS", JOIN_RESTRICTIONS),
         ("VERIFIED_BUILD_KEY", VERIFIED_BUILD_KEY),
         ("VERIFIED_BUILD", VERIFIED_BUILD),
-        ("FREE_IMAGE_KEY", FREE_IMAGE_KEY),
-        ("FREE_IMAGE", FREE_IMAGE),
         ("JOIN_CODE", JOIN_CODE),
         ("FOUNDING_CLAIM", FOUNDING_CLAIM),
         ("WIREGUARD_KEY_DIGEST", WIREGUARD_KEY_DIGEST),
@@ -127,7 +119,7 @@ mod tests {
 
     #[test]
     fn each_string_is_the_bytes_old_machines_and_stored_rows_know() {
-        let expected: [&[u8]; 23] = [
+        let expected: [&[u8]; 21] = [
             b"ployz-sealed-v1",
             b"ployz-platform-sealed-v1",
             b"ployz-registry-login-v1",
@@ -140,8 +132,6 @@ mod tests {
             b"ployz-join-restrictions-v1",
             b"ployz-verified-build-key-v1",
             b"ployz-verified-build/v1\n",
-            b"ployz-free-image-key-v1",
-            b"ployz-free-image/v1\n",
             b"ployz-join-v1\n",
             b"ployz founding claim v1\0",
             b"ployz-wireguard-key-v1\n",

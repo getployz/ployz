@@ -1,7 +1,6 @@
 //! BuildKit itself runs on the host network, so a Dockerfile `ADD` of a URL is
 //! fetched from the host. The daemon fences BuildKit's sockets by cgroup, so
-//! those fetches reach the internet and, for a Full caller's Build, the mesh image
-//! servers, never the host.
+//! those fetches reach the internet and the mesh image servers, never the host.
 
 /// What the daemon fences for one build slot's BuildKit.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -12,8 +11,6 @@ pub struct Fence {
     pub cgroup: CgroupPath,
     /// Loopback ports of this Build's image context proxies.
     pub image_ports: Vec<u16>,
-    /// Whether BuildKit may reach the mesh's image servers. A free Build may not.
-    pub mesh_images: bool,
 }
 
 /// Installs or replaces a slot's fence. Every BuildKit solve waits on it, and

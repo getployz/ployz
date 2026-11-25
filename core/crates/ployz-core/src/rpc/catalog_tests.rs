@@ -510,14 +510,6 @@ const ROWS: &[(&str, &str, &str, &str, &str, &str)] = &[
         "Operator",
         "BidiStreaming",
     ),
-    (
-        "BuildFree",
-        "build_free",
-        "ployz.build.free.v1",
-        "Container",
-        "Operator",
-        "BidiStreaming",
-    ),
 ];
 
 /// Capabilities that name no route, in catalog order: `(capability, advertisement)`.
@@ -542,7 +534,6 @@ const EXTRAS: &[(&str, &str)] = &[
     ("ployz.private-access.approval.v1", "Cluster"),
     ("ployz.container.signed-version.v1", "Always"),
     ("ployz.container.signed-version.proposal.v1", "Always"),
-    ("ployz.container.free-receipt.v1", "Always"),
     ("ployz.container.deploy-rule.v1", "Always"),
     ("ployz.rule.passkey.v1", "Always"),
     ("ployz.authority.scoped-keys.v1", "Always"),

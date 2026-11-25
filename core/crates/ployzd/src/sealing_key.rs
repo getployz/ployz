@@ -163,35 +163,6 @@ impl SealingKey {
             .expect("HMAC takes a key of any length")
     }
 
-    /// The receipt for `image`, which a free Build loaded here: a MAC over its ID under a
-    /// key every Machine holding this Sealing Key derives, and nothing without it can.
-    pub(crate) fn free_receipt(&self, image: &ployz_core::ImageDigest) -> ployz_core::FreeReceipt {
-        use hkdf::hmac::Mac as _;
-        let mut mac = self.free_image();
-        mac.update(&ployz_core::FreeReceipt::input(image));
-        ployz_core::FreeReceipt {
-            image: image.clone(),
-            mac: ployz_core::FreeImageMac::from_bytes(mac.finalize().into_bytes().into()),
-        }
-    }
-
-    /// Whether a Machine holding this Sealing Key made `receipt`, compared in constant time.
-    pub(crate) fn made_free_receipt(&self, receipt: &ployz_core::FreeReceipt) -> bool {
-        use hkdf::hmac::Mac as _;
-        let mut mac = self.free_image();
-        mac.update(&ployz_core::FreeReceipt::input(&receipt.image));
-        mac.verify_slice(receipt.mac.as_bytes()).is_ok()
-    }
-
-    fn free_image(&self) -> hkdf::hmac::Hmac<sha2_0_10::Sha256> {
-        let mut key = Zeroizing::new([0; 32]);
-        hkdf::Hkdf::<sha2_0_10::Sha256>::new(None, &self.0)
-            .expand(separation::FREE_IMAGE_KEY, key.as_mut())
-            .expect("32 bytes is a valid HKDF-SHA256 output length");
-        <hkdf::hmac::Hmac<sha2_0_10::Sha256> as hkdf::hmac::Mac>::new_from_slice(key.as_ref())
-            .expect("HMAC takes a key of any length")
-    }
-
     /// Classifies `<data_dir>/sealing.key`: 32 bytes are the key, no file is
     /// [`KeyFile::Absent`], and any other length is [`KeyFile::Unusable`].
     ///

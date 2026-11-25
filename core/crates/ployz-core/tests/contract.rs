@@ -1562,7 +1562,6 @@ fn ensure_container_names_the_want_the_observation_and_the_refusal_on_the_wire()
                 answer: AnswerWhen::Started,
                 image_id: None,
                 replaces: None,
-                free_receipt: None,
             }),
             rotation: RunRotation::Pending,
         },

@@ -637,8 +637,6 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
             StatusCode::OK,
             serde_json::json!({"Descriptor": {"digest": fake.served(tag)}, "Platforms": []}),
         )
-    } else if method == Method::GET && path.ends_with("/images/json") {
-        (StatusCode::OK, serde_json::json!([]))
     } else if method == Method::GET && path.contains("/images/") && path.ends_with("/json") {
         if let Some(barrier) = &fake.image_barrier {
             barrier.wait().await;
