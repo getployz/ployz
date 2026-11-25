@@ -31,6 +31,24 @@ pub(super) fn answering(mut copy: Option<VolumeCopy>, failure: String) -> Option
     copy
 }
 
+/// `copy` with no failure shown: a pull that failed reads as still receiving, as it did
+/// when a Seed's decision found it, so the reply shows no failure that decision did not
+/// answer. The Seed's next resend answers it.
+pub(super) fn receiving(mut copy: Option<VolumeCopy>) -> Option<VolumeCopy> {
+    if let Some(VolumeCopy::Slot {
+        pull: Some(pull),
+        pull_state,
+        ..
+    }) = &mut copy
+        && pull.failure.take().is_some()
+    {
+        *pull_state = Some(PullState::Receiving {
+            target: pull.target.clone(),
+        });
+    }
+    copy
+}
+
 /// Every snapshot of `dataset` as `name<TAB>guid<TAB>creation`, newest first by
 /// transaction group (creation time ties within a second).
 fn snapshot_listing(dataset: &str) -> [&str; 11] {

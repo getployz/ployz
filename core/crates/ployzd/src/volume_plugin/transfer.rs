@@ -55,6 +55,9 @@ pub(super) const STOP_DEADLINE: Duration = Duration::from_secs(30);
 #[derive(Clone)]
 pub(super) struct Receives {
     receives: Arc<Mutex<BTreeMap<String, Entry>>>,
+    /// The newest seed run whose Seed of each Volume this process admitted, by gen. It
+    /// outlives the entry, since a later run's Seed replaces the entry with its own copy.
+    seeds: Arc<Mutex<BTreeMap<String, VolumeGen>>>,
     /// How long a failure waits for the children its task dropped. One still alive after
     /// the departure's own deadline for a stop is stuck, not writing.
     hold: Duration,
@@ -64,6 +67,7 @@ impl Default for Receives {
     fn default() -> Self {
         Self {
             receives: Arc::default(),
+            seeds: Arc::default(),
             hold: STOP_DEADLINE,
         }
     }
@@ -97,6 +101,14 @@ impl Answered {
             (Self::Not, _) => false,
             (Self::To(Some(answered)), Some(run)) => run > answered,
             (Self::To(_), None) | (Self::To(None), Some(_)) => true,
+        }
+    }
+
+    /// Answered to `run` too.
+    fn and(self, run: Option<VolumeGen>) -> Self {
+        match self {
+            Self::To(answered) => Self::To(answered.max(run)),
+            Self::Not => Self::To(run),
         }
     }
 }
@@ -317,16 +329,41 @@ impl Receives {
         }
     }
 
+    /// Admits a Seed of `name` from the seed run `run`, which becomes the newest unless
+    /// one after it was admitted, whose gen is the refusal. Cloud takes a run's gen before
+    /// it admits the run, and a Seed can wait in transit past its run, so a Seed of an
+    /// earlier run can reach this Machine after a later run's. Refused, it neither answers
+    /// the later run's failure to its own run nor starts the later run's copy over. A Seed
+    /// without a gen names no run and is admitted.
+    pub(super) fn admit_seed(
+        &self,
+        name: &VolumeName,
+        run: Option<VolumeGen>,
+    ) -> Result<(), VolumeGen> {
+        let Some(run) = run else {
+            return Ok(());
+        };
+        let mut seeds = self.seeds.lock().expect("seed fence is not poisoned");
+        let newest = seeds.entry(name.to_string()).or_insert(run);
+        if run < *newest {
+            return Err(*newest);
+        }
+        *newest = run;
+        Ok(())
+    }
+
     /// The failure of `name`'s receive of `target` a Seed of `run` answers, read as
     /// [`Self::take_failure`] reads it. Unlike that read, it stays: a reply can be lost on
     /// its way to Cloud, which then resends the same run's Seed, and that Seed must answer
     /// the failure again rather than start over. It goes only when a Seed of a later run
-    /// than every one it was answered to (see [`Self::answered`]) reads it: that run began
-    /// after the earlier one ended, so the copy starts over at Cloud's ask.
+    /// than every one it was answered to reads it: that run began after the earlier one
+    /// ended, so the copy starts over at Cloud's ask. An answer records `run` for the
+    /// failure in the same step, so only a reply showing this answer shows the failure.
     ///
     /// # Errors
     ///
-    /// [`Busy`] as [`Self::take_failure`] answers it.
+    /// [`Busy`] as [`Self::take_failure`] answers it, which records nothing, though the
+    /// failure may already show.
     pub(super) fn seed_failure(
         &self,
         name: &VolumeName,
@@ -337,7 +374,7 @@ impl Receives {
             .receives
             .lock()
             .expect("receive registry is not poisoned");
-        let Some(entry) = receives.get(name.as_str()) else {
+        let Some(entry) = receives.get_mut(name.as_str()) else {
             return Ok(None);
         };
         match entry {
@@ -350,45 +387,17 @@ impl Receives {
                         ..
                     },
                 answered,
-            } if Some(failed) == target && life.finished.is_cancelled() => {
+            } if Some(&*failed) == target && life.finished.is_cancelled() => {
                 if answered.superseded_by(run) {
                     receives.remove(name.as_str());
                     Ok(None)
                 } else {
+                    *answered = answered.and(run);
                     Ok(Some(failure.clone()))
                 }
             }
             entry if entry.receive.unfinished() => Err(Busy),
             _ => Ok(None),
-        }
-    }
-
-    /// Records that a Seed of `run` answered the failure of `name`'s receive of `target`,
-    /// so [`Self::seed_failure`] keeps it for that run's resends.
-    pub(super) fn answered(
-        &self,
-        name: &VolumeName,
-        target: &SnapshotName,
-        run: Option<VolumeGen>,
-    ) {
-        let mut receives = self
-            .receives
-            .lock()
-            .expect("receive registry is not poisoned");
-        if let Some(entry) = receives.get_mut(name.as_str())
-            && entry.target == *target
-            && matches!(
-                entry.receive,
-                Receive::Ended {
-                    ending: Ending::Failed(_),
-                    ..
-                }
-            )
-        {
-            entry.answered = match entry.answered {
-                Answered::To(answered) => Answered::To(answered.max(run)),
-                Answered::Not => Answered::To(run),
-            };
         }
     }
 

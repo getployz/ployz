@@ -1,35 +1,47 @@
 //! A Seed whose copy fails, on the Machine A that holds the source's writer. Cloud's
 //! `seed` run (`seedVolume`, volume-run.inngest.ts) resends `Volume.Seed`, carrying the
 //! run's gen, until A answers a root, and fails the run on an answer that shows a copy
-//! failure. A reply can be lost, or arrive after Cloud's attempt timed out, and Cloud then
-//! resends the same run's Seed (`sendSwitch`, volume-run.cluster.server.ts). A run whose
-//! sends all went unanswered, or that ran out of patience, gives up. The operator may then
-//! seed the same point again, which is a new run with a later gen.
+//! failure or a Stale refusal (`sendSwitch`, volume-run.cluster.server.ts). A reply can be
+//! lost, or arrive after Cloud's attempt timed out, and Cloud then resends the same run's
+//! Seed. A request can also wait in transit past its attempt, and reach A after its run
+//! ended and later runs began. A run whose sends all went unanswered, or that ran out of
+//! patience, gives up. The operator may then seed the same point again, which is a new
+//! run. Postgres takes a run's gen before it admits the run (`volume_run.gen`, tables.ts),
+//! so a run admitted later can carry a lower gen than one that already ended.
 //!
-//! A runs each request under `admit_mutation` (storage.rs) and reads its receive registry
-//! (`Receives`, transfer.rs) twice: once for its decision (`VolumeStorage::seed_progress`,
-//! seed.rs), whose one registry read is `Receives::seed_failure`, with the arm
-//! `seed_volume` takes on it, then again when it forms its reply (`VolumeStorage::seeded`),
-//! whose `current_copy` (inspect.rs) shows a failure `Receives::status_of` reads, and
-//! `seed_volume` records the run it showed a failure to (`Receives::answered`). The
-//! receive task runs outside the mutation, so it can end between the two. Forming a reply
-//! and Cloud receiving it are separate steps, since the reply can be lost between them.
+//! A runs each request under `admit_mutation` (storage.rs). It first admits the Seed's gen
+//! against the newest it admitted for `into` (`Receives::admit_seed`, transfer.rs), and
+//! refuses an older one Stale. Its decision (`VolumeStorage::seed_progress`, seed.rs) reads
+//! the receive registry once, through `Receives::seed_failure`, which answers a failure
+//! and records the run it answered in one step. The reply then reads the copy
+//! (`VolumeStorage::seeded`), and shows only the failure the decision answered
+//! (`answering` and `receiving`, inspect.rs). The receive task runs outside the mutation,
+//! so it can end between the decision and the reply. A task that failed can leave a `zfs`
+//! child it dropped alive past the hold: the registry then shows the failure while
+//! `seed_failure` still answers `Busy`. Forming a reply and Cloud receiving it are separate
+//! steps, since the reply can be lost between them.
 //!
 //! The findings. Before PR #4576, the reply showed a failure that ended after the decision
 //! and left it, so the operator's next run answered it again instead of starting over
 //! (`Broken::answer_leaves_failure`). The PR's first fix took the failure when a reply
 //! showed it, so a reply lost on its way left the run's resend to start the copy over, and
-//! Cloud never saw the failure (`Broken::answer_takes_failure`). The fix: a failure stays
-//! for every Seed of the run it was answered to, and goes with the first Seed of a later
-//! run, which Cloud starts only after the earlier run ended.
+//! Cloud never saw the failure (`Broken::answer_takes_failure`). Its second kept a failure
+//! for the newest run a reply showed it to, which a request of an ended run, or of a run
+//! with a lower gen, could claim (`Broken::no_seed_fence`), and showed a failure in a
+//! reply whose decision answered Busy (`Broken::reply_reads_registry`). The fix: A admits
+//! no Seed older than one it admitted, and a reply shows only the failure its decision
+//! answered and recorded.
 //!
 //! The properties: no copy failure reaches Cloud in two runs, and a copy starts over past
-//! a failure Cloud never received only in a run that began after the failure.
+//! a failure Cloud never received only for a Seed of a later run than every one that
+//! reached A before the failure. A cannot fence a run whose Seed has not reached it, so a
+//! request of an ended run can take a failure while the next run's first Seed is still on
+//! its way. That run then starts the copy over, and is answered what its own copy does.
 //!
 //! Out of scope: the marks, the floor and the later runs (the parent `volume_marks` model),
-//! a request in transit past its run, a Seed carrying no gen (it names no run, so the next
-//! one after an answer starts over), a dropped child outliving the hold (its failure shows
-//! while `seed_failure` still answers `Busy`), Busy answers, and a landing that fails.
+//! a Seed carrying no gen (it names no run, so the next one after an answer starts over),
+//! a plugin restart (it empties the registry, so no failure is left to answer), and a
+//! landing that fails.
 
 use std::fmt::Write as _;
 
@@ -41,10 +53,15 @@ use crate::harness::{self, Narrated, everywhere};
 const MAX_RECEIVES: u8 = 3;
 /// The seed runs: the first, and the operator's runs after it.
 const MAX_RUNS: u8 = 3;
-/// The Seeds one run sends before it gives up.
-const MAX_SENDS: u8 = 3;
+/// The Seeds one run sends before it gives up: as many as the plugin tests send one run.
+const MAX_SENDS: u8 = 4;
 /// The replies lost on their way to Cloud, over all runs.
 const MAX_LOSSES: u8 = 2;
+/// The requests that outlive their attempt, over all runs.
+const MAX_STRANDS: u8 = 1;
+/// The gen Postgres took for a run before every other run's: the one a run admitted after
+/// them may carry.
+const FIRST_GEN: u8 = 1;
 
 /// The seed run's row, as `seedVolume` ends it.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -54,6 +71,8 @@ enum Run {
     Done,
     /// `failed("03-failed", ..)` after a reply showing a copy failure.
     Failed,
+    /// `sendSwitch` failed the run on A's Stale refusal: a later run took `into`.
+    Fenced,
     /// Every send went unanswered, or `03-too-long`: the run ended without a failure shown.
     GaveUp,
 }
@@ -69,11 +88,11 @@ enum Into {
     Root,
 }
 
-/// Which runs a failure was answered to (`Answered`, transfer.rs), by run number.
+/// Which runs a failure was answered to (`Answered`, transfer.rs), by gen.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Answered {
     Not,
-    /// The newest run it was answered to.
+    /// The newest gen it was answered to.
     To(u8),
 }
 
@@ -83,16 +102,24 @@ enum Answered {
 enum Receive {
     None,
     Running(u8),
-    Failed(u8, Answered),
+    /// Receive `n`'s task failed. `settled` is false while a child it dropped outlives the
+    /// hold: `status_of` reads the failure, and `seed_failure` answers `Busy`. Before the
+    /// hold passes both read it running, which `Running` stands for.
+    Failed {
+        n: u8,
+        answered: Answered,
+        settled: bool,
+    },
 }
 
 /// The arm of `seed_volume` (seed.rs) a request's decision took.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum SeedPath {
+    /// `admit_seed` refused the request's gen, below the newest A admitted.
+    Fenced,
     /// `SeedProgress::Copying`: `seed_failure` answered `Busy`.
     Copying,
-    /// `SeedProgress::Failed`: `seed_failure` read receive `n`'s failure, which the reply
-    /// shows through `answering` (inspect.rs).
+    /// `SeedProgress::Failed`: `seed_failure` answered receive `n`'s failure.
     Failed(u8),
     /// `SeedProgress::Copied`: `Copied::land` makes the slot's `fs` the root.
     Lands,
@@ -112,54 +139,96 @@ enum Shown {
     Slot,
     /// A slot whose pull shows receive `n`'s failure.
     Failure(u8),
+    /// The Stale refusal.
+    Stale,
+}
+
+/// A request A holds the mutation for: the run that sent it, and whether it outlived its
+/// attempt, so no reply reaches Cloud.
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+struct Request {
+    run: u8,
+    late: bool,
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Action {
-    /// Cloud sends the run's Seed, and A takes it under `admit_mutation`: `seed_progress`,
-    /// then the arm `seed_volume` takes on it.
+    /// Cloud sends the run's Seed, and A takes it under `admit_mutation`: `admit_seed`,
+    /// `seed_progress`, then the arm `seed_volume` takes on it.
     Decide,
-    /// A forms the reply: `seeded` reads the copy, `seed_volume` records the run a failure
-    /// it shows was answered to, and the mutation ends.
+    /// Cloud sends the run's Seed, and it waits in transit past the attempt, which times
+    /// out (`sendSwitch`).
+    Strand,
+    /// A takes the request that waited in transit, as `Decide` does.
+    Late,
+    /// A forms the reply: `seeded` reads the copy, the arm shows what its decision
+    /// answered, and the mutation ends.
     Answer,
     /// `seedVolume` reads the reply (volume-run.inngest.ts).
     Deliver,
     /// The reply is lost, or arrives after the attempt timed out (`sendSwitch`).
     Lose,
     /// The running receive's task ends (`copy_snapshot`, seed.rs), failed when the
-    /// receive or the send exits non-zero.
-    End { failed: bool },
-    /// The operator seeds the same point again after the run ended without a root.
-    Retry,
+    /// receive or the send exits non-zero, with a child it dropped alive past the hold
+    /// when `lingers`.
+    End { failed: bool, lingers: bool },
+    /// The child a failed task dropped exits (`Exit::held`, transfer.rs).
+    Settle,
+    /// The operator seeds the same point again after the run ended without a root: a new
+    /// run, carrying the gen Postgres took first when `first_gen`.
+    Retry { first_gen: bool },
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 struct State {
     runs: u8,
     run: Run,
+    /// The run that carries `FIRST_GEN`, 0 if none does.
+    first_gen_run: u8,
     /// The Seeds the current run sent.
     sends: u8,
     losses: u8,
+    strands: u8,
+    /// The run whose request waits in transit.
+    stranded: Option<u8>,
+    /// The newest gen `admit_seed` admitted for `into`, 0 if none.
+    admitted: u8,
     into: Into,
     receive: Receive,
     spawned: u8,
     /// The arm the last decision took.
     path: Option<SeedPath>,
     /// A decision ran and its reply is not formed: the handler holds the mutation.
-    answering: bool,
+    handling: Option<Request>,
     /// A formed reply on its way to Cloud.
     in_flight: Option<Shown>,
-    /// The run current when receive `n` failed, at index `n - 1`, 0 if it has not.
-    failed_in: [u8; MAX_RECEIVES as usize],
+    /// The newest gen of a Seed A took, fenced or not, 0 if none.
+    taken: u8,
+    /// `taken` when receive `n` failed, at index `n - 1`, 0 if it has not: the newest run
+    /// A knew of then.
+    failed_for: [u8; MAX_RECEIVES as usize],
     /// The run that received receive `n`'s failure, at index `n - 1`, 0 if none has.
     delivered_to: [u8; MAX_RECEIVES as usize],
     /// Receives whose failure a lost reply showed, one bit each.
     lost: u8,
     /// A failure reached Cloud in a second run.
     delivered_twice: bool,
-    /// A copy started over past a failure Cloud never received, in the run it failed in.
+    /// A copy started over past a failure Cloud never received, for a Seed of a run A had
+    /// taken a Seed of before the failure, or of an earlier run.
     hidden: bool,
     last: Option<Action>,
+}
+
+impl State {
+    /// The gen run `run` carries: `FIRST_GEN` for the run that took it, and otherwise one
+    /// above every gen before it, in the order the runs began.
+    fn gen_of(&self, run: u8) -> u8 {
+        if run == self.first_gen_run {
+            FIRST_GEN
+        } else {
+            run + FIRST_GEN
+        }
+    }
 }
 
 /// Receive `n`'s entry in `runs`, or nothing for a receive the model never spawns.
@@ -181,10 +250,16 @@ struct Broken {
     /// PR #4576's first fix: the decision takes a failure it reads, and the reply takes
     /// the failure it shows.
     answer_takes_failure: bool,
+    /// PR #4576's second fix: the reply shows every failure the registry reads, even one
+    /// its decision answered `Busy`, and records the run for it.
+    reply_reads_registry: bool,
+    /// PR #4576's second fix: A admits a Seed whatever its gen, as the floor check does at
+    /// an equal floor.
+    no_seed_fence: bool,
     /// `Answered::superseded_by` reads the run a failure was answered to as later, so the
     /// run's own resend clears it.
     supersedes_its_own_run: bool,
-    /// `seed_volume` records no run for a failure its reply showed.
+    /// `seed_failure` records no run for a failure it answers.
     answer_records_no_run: bool,
 }
 
@@ -192,6 +267,12 @@ impl Broken {
     /// The decision takes every failure it reads, as `take_failure` does.
     fn decision_takes(self) -> bool {
         self.answer_leaves_failure || self.answer_takes_failure
+    }
+
+    /// The reply shows a failure `status_of` reads, not only the one its decision
+    /// answered.
+    fn reply_reads(self) -> bool {
+        self.answer_leaves_failure || self.answer_takes_failure || self.reply_reads_registry
     }
 }
 
@@ -205,36 +286,50 @@ enum Omit {
 
 type Coverage = harness::Coverage<SeedFailure, Omit>;
 
-/// The last step formed a reply to a decision that took `path`, and it showed a failure.
-fn answered_failure(state: &State, path: SeedPath) -> bool {
-    state.last == Some(Action::Answer)
-        && state.path == Some(path)
-        && matches!(state.in_flight, Some(Shown::Failure(_)))
-}
+const RETRIES: &[Action] = &[
+    Action::Retry { first_gen: false },
+    Action::Retry { first_gen: true },
+];
 
 const COVERAGE: &[Coverage] = &[
     Coverage {
         name: "a reply shows the failure its decision read",
         on: everywhere,
         omit: Some(Omit::Path(SeedPath::Failed(1))),
-        reached: |_, state| answered_failure(state, SeedPath::Failed(1)),
+        reached: |_, state| {
+            state.last == Some(Action::Answer)
+                && state.path == Some(SeedPath::Failed(1))
+                && state.in_flight == Some(Shown::Failure(1))
+        },
     },
     Coverage {
-        name: "a reply shows a failure that ended after its decision found the receive running",
+        name: "a reply to a Seed answered Busy shows no failure the registry holds",
         on: everywhere,
         omit: Some(Omit::Path(SeedPath::Copying)),
-        reached: |_, state| answered_failure(state, SeedPath::Copying),
+        reached: |_, state| {
+            state.last == Some(Action::Answer)
+                && state.path == Some(SeedPath::Copying)
+                && state.in_flight == Some(Shown::Slot)
+                && matches!(state.receive, Receive::Failed { .. })
+        },
     },
     Coverage {
-        name: "a reply shows a failure that ended after its decision spawned the receive",
+        name: "a Seed answered Busy while a failed task's child outlives the hold",
         on: everywhere,
-        omit: Some(Omit::Path(SeedPath::Starts)),
-        reached: |_, state| answered_failure(state, SeedPath::Starts),
+        omit: Some(Omit::Actions(&[Action::End {
+            failed: true,
+            lingers: true,
+        }])),
+        reached: |_, state| {
+            state.last == Some(Action::Decide)
+                && state.path == Some(SeedPath::Copying)
+                && matches!(state.receive, Receive::Failed { settled: false, .. })
+        },
     },
     Coverage {
         name: "a resend after a lost reply shows the failure again",
         on: everywhere,
-        omit: Some(Omit::Actions(&[Action::Lose])),
+        omit: Some(Omit::Actions(&[Action::Lose, Action::Strand])),
         reached: |_, state| {
             state.last == Some(Action::Answer)
                 && matches!(state.in_flight, Some(Shown::Failure(n)) if state.lost & bit(n) != 0)
@@ -255,9 +350,32 @@ const COVERAGE: &[Coverage] = &[
         },
     },
     Coverage {
+        name: "a request that outlived its attempt is admitted while no later run seeded",
+        on: everywhere,
+        omit: Some(Omit::Actions(&[Action::Strand])),
+        reached: |_, state| {
+            state.last == Some(Action::Late)
+                && state.path.is_some_and(|path| path != SeedPath::Fenced)
+        },
+    },
+    Coverage {
+        name: "a request that outlived its run is refused Stale",
+        on: everywhere,
+        omit: Some(Omit::Actions(&[Action::Strand])),
+        reached: |_, state| {
+            state.last == Some(Action::Late) && state.path == Some(SeedPath::Fenced)
+        },
+    },
+    Coverage {
+        name: "a run whose gen was taken before an ended run's ends on its Stale refusal",
+        on: everywhere,
+        omit: Some(Omit::Actions(&[Action::Retry { first_gen: true }])),
+        reached: |_, state| state.last == Some(Action::Deliver) && state.run == Run::Fenced,
+    },
+    Coverage {
         name: "the seed run ends done after an earlier run ended without a root",
         on: everywhere,
-        omit: Some(Omit::Actions(&[Action::Retry])),
+        omit: Some(Omit::Actions(RETRIES)),
         reached: |_, state| state.run == Run::Done && state.runs > 1,
     },
     Coverage {
@@ -279,8 +397,7 @@ const COVERAGE: &[Coverage] = &[
 ];
 
 const DELIVERED_ONCE: &str = "no copy failure reaches Cloud in two runs";
-const NEVER_HIDDEN: &str =
-    "a copy starts over past a failure Cloud never received only in a run that began after it";
+const NEVER_HIDDEN: &str = "a copy starts over past a failure Cloud never received only for a Seed of a later run than every one that reached A before it";
 
 #[derive(Clone, Copy, Debug)]
 struct SeedFailure {
@@ -295,57 +412,74 @@ impl SeedFailure {
         state.receive = Receive::Running(state.spawned);
     }
 
-    /// `Answered::superseded_by` (transfer.rs) for a Seed of run `run`.
-    fn superseded(self, answered: Answered, run: u8) -> bool {
+    /// `Answered::superseded_by` (transfer.rs) for a Seed of gen `seed`.
+    fn superseded(self, answered: Answered, seed: u8) -> bool {
         match answered {
             Answered::Not => false,
-            Answered::To(to) if self.broken.supersedes_its_own_run => run >= to,
-            Answered::To(to) => run > to,
+            Answered::To(to) if self.broken.supersedes_its_own_run => seed >= to,
+            Answered::To(to) => seed > to,
         }
     }
 
-    /// Notes a copy that starts over in run `run` past a failure Cloud never received,
-    /// which failed in that run.
-    fn passes(state: &mut State) {
+    /// Notes a copy that starts over for a Seed of gen `seed` past a failure Cloud never
+    /// received, when no run after `seed` had reached A before the failure.
+    fn passes(state: &mut State, seed: u8) {
         let hidden =
             state
-                .failed_in
+                .failed_for
                 .iter()
                 .zip(state.delivered_to)
-                .any(|(&failed_in, delivered_to)| {
-                    failed_in != 0 && delivered_to == 0 && state.runs <= failed_in
+                .any(|(&failed_for, delivered_to)| {
+                    failed_for != 0 && delivered_to == 0 && seed <= failed_for
                 });
         state.hidden |= hidden;
     }
 
-    /// `seed_progress` and the arm `seed_volume` takes on it (seed.rs). The root is read
-    /// first, then the registry, then the slot's `fs`.
-    fn decide(self, state: &mut State) -> SeedPath {
+    /// `admit_seed`, `seed_progress` and the arm `seed_volume` takes on it (seed.rs), for
+    /// a request of run `run`. The root is read first, then the registry, then the slot's
+    /// `fs`. `seed_failure` records the gen it answers a failure to.
+    fn decide(self, state: &mut State, run: u8) -> SeedPath {
+        let seed = state.gen_of(run);
+        state.taken = state.taken.max(seed);
+        if !self.broken.no_seed_fence {
+            if seed < state.admitted {
+                return SeedPath::Fenced;
+            }
+            state.admitted = seed;
+        }
         if state.into == Into::Root {
             return SeedPath::Landed;
         }
-        if let Receive::Running(_) = state.receive {
-            return SeedPath::Copying;
-        }
-        if let Receive::Failed(n, answered) = state.receive {
-            if self.broken.decision_takes() {
+        match state.receive {
+            Receive::Running(_) | Receive::Failed { settled: false, .. } => {
+                return SeedPath::Copying;
+            }
+            Receive::Failed { n, .. } if self.broken.decision_takes() => {
                 state.receive = Receive::None;
                 return SeedPath::Failed(n);
             }
-            if !self.superseded(answered, state.runs) {
+            Receive::Failed { n, answered, .. } if !self.superseded(answered, seed) => {
+                if !self.broken.answer_records_no_run && !self.broken.reply_reads_registry {
+                    state.receive = Receive::Failed {
+                        n,
+                        answered: Self::and(answered, seed),
+                        settled: true,
+                    };
+                }
                 return SeedPath::Failed(n);
             }
-            state.receive = Receive::None;
+            Receive::Failed { .. } => state.receive = Receive::None,
+            Receive::None => {}
         }
         match state.into {
             Into::Root => unreachable!("the root was read first"),
             Into::Slot { holds_point: true } => {
-                Self::passes(state);
+                Self::passes(state, seed);
                 state.into = Into::Root;
                 SeedPath::Lands
             }
             Into::Slot { holds_point: false } => {
-                Self::passes(state);
+                Self::passes(state, seed);
                 Self::spawn(state);
                 SeedPath::Restarts
             }
@@ -357,28 +491,51 @@ impl SeedFailure {
         }
     }
 
-    /// `seeded` (seed.rs): `current_copy` reads the copy and shows a failure `status_of`
-    /// reads. The `Failed` arm's `answering` shows the one its decision read. Then
-    /// `seed_volume` records the run a failure it shows was answered to.
-    fn answer(self, state: &mut State) -> Shown {
+    /// `Answered::and`: answered to `seed` too.
+    fn and(answered: Answered, seed: u8) -> Answered {
+        match answered {
+            Answered::Not => Answered::To(seed),
+            Answered::To(to) => Answered::To(to.max(seed)),
+        }
+    }
+
+    /// `seeded` (seed.rs) reads the copy. The `Failed` arm's `answering` shows the failure
+    /// its decision answered, and every other arm's reply goes through `receiving`, which
+    /// shows none. Under `Broken::reply_reads`, the reply shows a failure `status_of`
+    /// reads, and `seed_volume` records the run it showed it to.
+    fn answer(self, state: &mut State, request: Request) -> Shown {
         let shown = match (state.path, state.receive, state.into) {
-            (Some(SeedPath::Failed(n)), ..) | (_, Receive::Failed(n, _), _) => Shown::Failure(n),
-            (_, Receive::None | Receive::Running(_), Into::Root) => Shown::Root,
-            (_, Receive::None | Receive::Running(_), Into::Absent | Into::Slot { .. }) => {
-                Shown::Slot
-            }
+            (Some(SeedPath::Fenced), ..) => Shown::Stale,
+            (Some(SeedPath::Failed(n)), ..) => Shown::Failure(n),
+            (_, Receive::Failed { n, .. }, _) if self.broken.reply_reads() => Shown::Failure(n),
+            (.., Into::Root) => Shown::Root,
+            (.., Into::Absent | Into::Slot { .. }) => Shown::Slot,
         };
-        if let Receive::Failed(n, answered) = state.receive {
+        if self.broken.reply_reads()
+            && let (
+                Shown::Failure(shown),
+                Receive::Failed {
+                    n,
+                    answered,
+                    settled,
+                },
+            ) = (shown, state.receive)
+            && shown == n
+        {
             state.receive = if self.broken.answer_takes_failure {
                 Receive::None
             } else if self.broken.answer_records_no_run || self.broken.answer_leaves_failure {
-                Receive::Failed(n, answered)
+                Receive::Failed {
+                    n,
+                    answered,
+                    settled,
+                }
             } else {
-                let to = match answered {
-                    Answered::Not => state.runs,
-                    Answered::To(to) => to.max(state.runs),
-                };
-                Receive::Failed(n, Answered::To(to))
+                Receive::Failed {
+                    n,
+                    answered: Self::and(answered, state.gen_of(request.run)),
+                    settled,
+                }
             };
         }
         shown
@@ -391,16 +548,44 @@ impl SeedFailure {
         }
     }
 
+    fn take(self, state: &mut State, request: Request) {
+        state.path = Some(self.decide(state, request.run));
+        state.handling = Some(request);
+    }
+
     fn step(self, state: &mut State, action: Action) {
         match action {
             Action::Decide => {
                 state.sends += 1;
-                state.path = Some(self.decide(state));
-                state.answering = true;
+                let request = Request {
+                    run: state.runs,
+                    late: false,
+                };
+                self.take(state, request);
+            }
+            Action::Strand => {
+                state.sends += 1;
+                state.strands += 1;
+                state.stranded = Some(state.runs);
+                Self::out_of_sends(state);
+            }
+            Action::Late => {
+                let run = state
+                    .stranded
+                    .take()
+                    .expect("only a stranded request is late");
+                self.take(state, Request { run, late: true });
             }
             Action::Answer => {
-                state.in_flight = Some(self.answer(state));
-                state.answering = false;
+                let request = state.handling.take().expect("only a taken request answers");
+                let shown = self.answer(state, request);
+                if request.late {
+                    if let Shown::Failure(n) = shown {
+                        state.lost |= bit(n);
+                    }
+                } else {
+                    state.in_flight = Some(shown);
+                }
             }
             Action::Deliver => match state.in_flight.take() {
                 Some(Shown::Root) => state.run = Run::Done,
@@ -412,6 +597,7 @@ impl SeedFailure {
                     }
                     state.run = Run::Failed;
                 }
+                Some(Shown::Stale) => state.run = Run::Fenced,
                 None => unreachable!("only a formed reply is delivered"),
             },
             Action::Lose => {
@@ -422,24 +608,36 @@ impl SeedFailure {
                 state.losses += 1;
                 Self::out_of_sends(state);
             }
-            Action::End { failed } => {
+            Action::End { failed, lingers } => {
                 let Receive::Running(n) = state.receive else {
                     unreachable!("only a running receive ends");
                 };
                 if failed {
-                    state.receive = Receive::Failed(n, Answered::Not);
-                    if let Some(failed_in) = of(&mut state.failed_in, n) {
-                        *failed_in = state.runs;
+                    state.receive = Receive::Failed {
+                        n,
+                        answered: Answered::Not,
+                        settled: !lingers,
+                    };
+                    if let Some(failed_for) = of(&mut state.failed_for, n) {
+                        *failed_for = state.taken;
                     }
                 } else {
                     state.receive = Receive::None;
                     state.into = Into::Slot { holds_point: true };
                 }
             }
-            Action::Retry => {
+            Action::Settle => {
+                if let Receive::Failed { settled, .. } = &mut state.receive {
+                    *settled = true;
+                }
+            }
+            Action::Retry { first_gen } => {
                 state.runs += 1;
                 state.run = Run::Polling;
                 state.sends = 0;
+                if first_gen {
+                    state.first_gen_run = state.runs;
+                }
             }
         }
     }
@@ -448,7 +646,9 @@ impl SeedFailure {
         match self.omit {
             None => false,
             Some(Omit::Actions(actions)) => actions.contains(&action),
-            Some(Omit::Path(path)) => action == Action::Decide && after.path == Some(path),
+            Some(Omit::Path(path)) => {
+                matches!(action, Action::Decide | Action::Late) && after.path == Some(path)
+            }
         }
     }
 }
@@ -461,15 +661,20 @@ impl Model for SeedFailure {
         vec![State {
             runs: 1,
             run: Run::Polling,
+            first_gen_run: 0,
             sends: 0,
             losses: 0,
+            strands: 0,
+            stranded: None,
+            admitted: 0,
             into: Into::Absent,
             receive: Receive::None,
             spawned: 0,
             path: None,
-            answering: false,
+            handling: None,
             in_flight: None,
-            failed_in: [0; MAX_RECEIVES as usize],
+            taken: 0,
+            failed_for: [0; MAX_RECEIVES as usize],
             delivered_to: [0; MAX_RECEIVES as usize],
             lost: 0,
             delivered_twice: false,
@@ -479,23 +684,48 @@ impl Model for SeedFailure {
     }
 
     fn actions(&self, state: &State, actions: &mut Vec<Action>) {
-        if state.answering {
+        if state.handling.is_some() {
             actions.push(Action::Answer);
-        } else if state.in_flight.is_some() {
-            actions.push(Action::Deliver);
-            if state.losses < MAX_LOSSES {
-                actions.push(Action::Lose);
+        } else {
+            if state.in_flight.is_some() {
+                actions.push(Action::Deliver);
+                if state.losses < MAX_LOSSES {
+                    actions.push(Action::Lose);
+                }
+            } else if state.run == Run::Polling {
+                actions.push(Action::Decide);
+                if state.strands < MAX_STRANDS {
+                    actions.push(Action::Strand);
+                }
+            } else if state.run != Run::Done && state.runs < MAX_RUNS {
+                actions.push(Action::Retry { first_gen: false });
+                if state.first_gen_run == 0 {
+                    actions.push(Action::Retry { first_gen: true });
+                }
             }
-        } else if state.run == Run::Polling {
-            actions.push(Action::Decide);
-        } else if matches!(state.run, Run::Failed | Run::GaveUp) && state.runs < MAX_RUNS {
-            actions.push(Action::Retry);
+            if state.stranded.is_some() {
+                actions.push(Action::Late);
+            }
         }
-        if let Receive::Running(n) = state.receive {
-            actions.push(Action::End { failed: false });
-            if n < MAX_RECEIVES {
-                actions.push(Action::End { failed: true });
+        match state.receive {
+            Receive::Running(n) => {
+                actions.push(Action::End {
+                    failed: false,
+                    lingers: false,
+                });
+                if n < MAX_RECEIVES {
+                    actions.push(Action::End {
+                        failed: true,
+                        lingers: false,
+                    });
+                    actions.push(Action::End {
+                        failed: true,
+                        lingers: true,
+                    });
+                }
             }
+            Receive::Failed { settled: false, .. } => actions.push(Action::Settle),
+            Receive::Failed { settled: true, .. } | Receive::None => {}
         }
     }
 
@@ -522,25 +752,58 @@ impl Model for SeedFailure {
 /// `action` in the code's words, read with `after` for the arm it took.
 fn reads_as(action: Action, after: &State) -> String {
     match action {
-        Action::Decide => format!(
-            "A: run {}'s Volume.Seed under admit_mutation; seed_progress reads seed_failure and takes {:?} (seed.rs seed_volume)",
-            after.runs, after.path
+        Action::Decide | Action::Late => format!(
+            "A: {}run {}'s Volume.Seed at gen {} under admit_mutation; admit_seed, then seed_progress reads seed_failure: {:?} (seed.rs seed_volume)",
+            if action == Action::Late {
+                "the stranded request: "
+            } else {
+                ""
+            },
+            after.handling.map_or(0, |request| request.run),
+            after
+                .handling
+                .map_or(0, |request| after.gen_of(request.run)),
+            after.path
         ),
+        Action::Strand => {
+            "Cloud's Seed waits in transit past its attempt, which times out (sendSwitch)"
+                .to_owned()
+        }
         Action::Answer => format!(
-            "A: seeded reads the copy and forms {:?}; seed_volume records the run it showed a failure to",
-            after.in_flight
+            "A: seeded reads the copy and forms {:?}{}",
+            after.in_flight,
+            if after.in_flight.is_none() {
+                ", which no attempt waits for"
+            } else {
+                ""
+            }
         ),
         Action::Deliver => "seedVolume reads the reply (volume-run.inngest.ts)".to_owned(),
         Action::Lose => {
             "the reply is lost or arrives after the attempt timed out (sendSwitch)".to_owned()
         }
-        Action::End { failed: true } => {
-            "the receive task ends failed, outside the mutation (seed.rs copy_snapshot)".to_owned()
-        }
-        Action::End { failed: false } => {
+        Action::End {
+            failed: true,
+            lingers,
+        } => format!(
+            "the receive task ends failed, outside the mutation{} (seed.rs copy_snapshot)",
+            if lingers {
+                ", leaving a zfs child alive past the hold"
+            } else {
+                ""
+            }
+        ),
+        Action::End { failed: false, .. } => {
             "the receive task ends: fs holds the point (seed.rs copy_snapshot)".to_owned()
         }
-        Action::Retry => "the operator seeds the same point again: a new run".to_owned(),
+        Action::Settle => "the zfs child the failed task dropped exits (transfer.rs)".to_owned(),
+        Action::Retry { first_gen: false } => {
+            "the operator seeds the same point again: a new run".to_owned()
+        }
+        Action::Retry { first_gen: true } => {
+            "a run Postgres gave the first gen, before the earlier runs', is admitted now"
+                .to_owned()
+        }
     }
 }
 
@@ -552,15 +815,16 @@ impl Narrated for SeedFailure {
             let Some(action) = action else { continue };
             let _ = write!(
                 story,
-                "{}. {}\n    run {} {:?} sends={} | into={:?} receive={:?} failed_in={:?} delivered_to={:?}\n",
+                "{}. {}\n    run {} {:?} sends={} admitted={} | into={:?} receive={:?} failed_for={:?} delivered_to={:?}\n",
                 number + 1,
                 reads_as(*action, after),
                 after.runs,
                 after.run,
                 after.sends,
+                after.admitted,
                 after.into,
                 after.receive,
-                after.failed_in,
+                after.failed_for,
                 after.delivered_to,
             );
         }
@@ -573,7 +837,7 @@ mod tests {
     use stateright::Checker;
 
     use super::*;
-    use crate::harness::{breaks, check, last, took_action};
+    use crate::harness::{breaks, breaks_where, check, last, took_action};
 
     fn fixed() -> SeedFailure {
         SeedFailure {
@@ -584,6 +848,20 @@ mod tests {
 
     fn broken(broken: Broken) -> SeedFailure {
         SeedFailure { broken, ..fixed() }
+    }
+
+    fn retried(path: &[(State, Option<Action>)]) -> bool {
+        RETRIES.iter().any(|retry| took_action(path, *retry))
+    }
+
+    fn lingered(path: &[(State, Option<Action>)]) -> bool {
+        took_action(
+            path,
+            Action::End {
+                failed: true,
+                lingers: true,
+            },
+        )
     }
 
     #[test]
@@ -614,10 +892,10 @@ mod tests {
             ..Broken::default()
         });
         let path = breaks(model, DELIVERED_ONCE);
-        assert!(took_action(&path, Action::Retry), "a second run read it");
+        assert!(retried(&path), "a second run read it");
         assert!(
-            path.iter().any(|(before, action)| before.answering
-                && *action == Some(Action::End { failed: true })),
+            path.iter().any(|(before, action)| before.handling.is_some()
+                && matches!(action, Some(Action::End { failed: true, .. }))),
             "the receive failed between a decision and its reply"
         );
     }
@@ -631,12 +909,8 @@ mod tests {
             answer_takes_failure: true,
             ..Broken::default()
         });
-        let path = breaks(model, NEVER_HIDDEN);
-        assert!(took_action(&path, Action::Lose), "a reply was lost");
-        assert!(
-            !took_action(&path, Action::Retry),
-            "the run that lost it started over"
-        );
+        let path = breaks_where(model, NEVER_HIDDEN, |path| took_action(path, Action::Lose));
+        assert!(!retried(&path), "the run that lost it started over");
         assert!(
             check(model).discovery(DELIVERED_ONCE).is_none(),
             "the first fix shows no failure to two runs"
@@ -650,28 +924,79 @@ mod tests {
             supersedes_its_own_run: true,
             ..Broken::default()
         });
-        let path = breaks(model, NEVER_HIDDEN);
-        assert!(took_action(&path, Action::Lose), "a reply was lost");
+        breaks_where(model, NEVER_HIDDEN, |path| took_action(path, Action::Lose));
     }
 
-    /// A reply shows a failure that ended after its decision, and records no run for it,
-    /// so the next run reads it as never answered and is shown it again.
+    /// A decision answers a failure and records no run for it, so the next run reads it as
+    /// never answered and is shown it again.
     #[test]
-    fn a_reply_records_the_run_it_showed_a_failure_to() {
+    fn a_seed_records_the_run_it_answered_a_failure_to() {
         let model = broken(Broken {
             answer_records_no_run: true,
             ..Broken::default()
         });
         let path = breaks(model, DELIVERED_ONCE);
-        assert!(took_action(&path, Action::Retry), "a second run read it");
+        assert!(retried(&path), "a second run read it");
     }
 
-    /// The orders the plugin tests force on fake ZFS
-    /// (`a_failed_seed_copy_is_answered_to_its_run_and_the_next_run_starts_over`,
-    /// seed_tests.rs): a resend finds the receive running, it fails before that resend's
-    /// reply, and the reply is lost. The run's next resend is shown the failure again under
-    /// the fix, and starts the copy over under the first fix. Delivered, the operator's
-    /// next run starts over under the fix and is shown it again under the old reply.
+    /// PR #4576's second fix, which the second review found. A failed task's child outlives
+    /// the hold, so the registry shows the failure while `seed_failure` answers Busy. The
+    /// reply to that Seed shows the failure and records its run, and the next run's Seed,
+    /// answered Busy too, is shown it again. It is the only path that shows a failure to
+    /// two runs under that reply.
+    #[test]
+    fn a_reply_to_a_seed_answered_busy_shows_no_failure() {
+        let model = broken(Broken {
+            reply_reads_registry: true,
+            ..Broken::default()
+        });
+        let path = breaks(model, DELIVERED_ONCE);
+        assert!(lingered(&path), "a failed task's child outlived the hold");
+        assert!(retried(&path), "a second run read it");
+    }
+
+    /// PR #4576's second fix, which the second review found. A request of run 1 waits in
+    /// transit while run 1 gives up and run 2 starts a copy that fails. The request reaches
+    /// A, is answered the failure though no attempt waits for it, and records run 1. Run
+    /// 2's next Seed reads the failure as answered to an earlier run and starts the copy
+    /// over: run 2 never sees its failure.
+    #[test]
+    fn a_seed_of_an_ended_run_is_refused() {
+        let model = broken(Broken {
+            no_seed_fence: true,
+            ..Broken::default()
+        });
+        breaks_where(model, NEVER_HIDDEN, |path| {
+            path.iter().any(|(before, action)| {
+                *action == Some(Action::Late)
+                    && before.stranded.is_some_and(|run| run < before.runs)
+            })
+        });
+    }
+
+    /// PR #4576's second fix, which the second review found. A run that carries the first
+    /// gen is admitted after a run with a later gen failed and was shown its failure. Its
+    /// Seed reads the failure as answered to no later run than its own, and is shown it
+    /// again.
+    #[test]
+    fn a_run_with_an_earlier_gen_than_an_ended_run_is_refused() {
+        let model = broken(Broken {
+            no_seed_fence: true,
+            ..Broken::default()
+        });
+        let path = breaks_where(model, DELIVERED_ONCE, |path| {
+            took_action(path, Action::Retry { first_gen: true }) && !took_action(path, Action::Late)
+        });
+        assert!(!lingered(&path));
+    }
+
+    /// The orders the plugin tests force on fake ZFS (seed_tests.rs). In
+    /// `a_failed_seed_copy_is_answered_to_its_run_and_the_next_run_starts_over`, a resend
+    /// finds the receive running, it fails before that resend's reply, and that reply shows
+    /// no failure under the fix. The run's next resend is shown it, and so is the one after
+    /// a lost reply. Under the first fix, the reply takes the failure and a lost reply
+    /// leaves the next resend to start the copy over. Delivered, the operator's next run
+    /// starts over under the fix and is shown it again under the old reply.
     #[test]
     fn a_failure_that_ends_during_a_resent_seed_is_shown_to_its_run_only() {
         const RESENT: &[Action] = &[
@@ -679,31 +1004,157 @@ mod tests {
             Action::Answer,
             Action::Deliver,
             Action::Decide,
-            Action::End { failed: true },
+            Action::End {
+                failed: true,
+                lingers: false,
+            },
             Action::Answer,
         ];
-        let lost = [RESENT, &[Action::Lose, Action::Decide]].concat();
-        let path = harness::follow(fixed(), &lost);
-        assert_eq!(last(&path).path, Some(SeedPath::Failed(1)));
+        let path = harness::follow(fixed(), RESENT);
+        assert_eq!(last(&path).in_flight, Some(Shown::Slot));
+        let shown = [
+            RESENT,
+            &[
+                Action::Deliver,
+                Action::Decide,
+                Action::Answer,
+                Action::Lose,
+                Action::Decide,
+                Action::Answer,
+            ],
+        ]
+        .concat();
+        let path = harness::follow(fixed(), &shown);
+        assert_eq!(last(&path).in_flight, Some(Shown::Failure(1)));
+        let retried = [
+            &shown[..],
+            &[
+                Action::Deliver,
+                Action::Retry { first_gen: false },
+                Action::Decide,
+            ],
+        ]
+        .concat();
+        let path = harness::follow(fixed(), &retried);
+        assert_eq!(last(&path).path, Some(SeedPath::Restarts));
+        assert!(!last(&path).hidden);
+
         let first_fix = broken(Broken {
             answer_takes_failure: true,
             ..Broken::default()
         });
-        let path = harness::follow(first_fix, &lost);
+        let path = harness::follow(
+            first_fix,
+            &[RESENT, &[Action::Lose, Action::Decide]].concat(),
+        );
         assert_eq!(last(&path).path, Some(SeedPath::Restarts));
         assert!(last(&path).hidden);
 
-        let retried = [RESENT, &[Action::Deliver, Action::Retry, Action::Decide]].concat();
-        let path = harness::follow(fixed(), &retried);
-        assert_eq!(last(&path).path, Some(SeedPath::Restarts));
         let old = broken(Broken {
             answer_leaves_failure: true,
             ..Broken::default()
         });
         let path = harness::follow(
             old,
-            &[&retried[..], &[Action::Answer, Action::Deliver]].concat(),
+            &[
+                RESENT,
+                &[
+                    Action::Deliver,
+                    Action::Retry { first_gen: false },
+                    Action::Decide,
+                    Action::Answer,
+                    Action::Deliver,
+                ],
+            ]
+            .concat(),
         );
         assert!(last(&path).delivered_twice);
+    }
+
+    /// The orders the two plugin tests of PR #4576's second review force on fake ZFS
+    /// (seed_tests.rs). In
+    /// `a_seed_of_an_earlier_run_is_refused_and_leaves_the_failure_to_the_later_run`, run
+    /// 2's copy fails before it is shown, and a request of run 1 that outlived it arrives:
+    /// it is refused, and run 2 is shown the failure. In
+    /// `a_seed_answered_busy_shows_no_failure_while_a_dropped_child_lives`, the Seed
+    /// answered Busy shows no failure, and once the child exits the run's resend shows it.
+    #[test]
+    fn the_second_review_orders_end_as_the_plugin_tests_expect() {
+        // Run 1's first request is stranded. The run starts the copy and gives up once it
+        // sent all it may, and run 2's Seed finds the copy still running before it fails.
+        let stranded = [
+            Action::Strand,
+            Action::Decide,
+            Action::Answer,
+            Action::Deliver,
+            Action::Decide,
+            Action::Answer,
+            Action::Deliver,
+            Action::Decide,
+            Action::Answer,
+            Action::Deliver,
+            Action::Retry { first_gen: false },
+            Action::Decide,
+            Action::End {
+                failed: true,
+                lingers: false,
+            },
+            Action::Answer,
+            Action::Deliver,
+            Action::Late,
+        ];
+        let path = harness::follow(fixed(), &stranded);
+        assert_eq!(last(&path).path, Some(SeedPath::Fenced));
+        let path = harness::follow(
+            fixed(),
+            &[&stranded[..], &[Action::Answer, Action::Decide]].concat(),
+        );
+        assert_eq!(last(&path).path, Some(SeedPath::Failed(1)));
+        let path = harness::follow(
+            broken(Broken {
+                no_seed_fence: true,
+                ..Broken::default()
+            }),
+            &[&stranded[..], &[Action::Answer, Action::Decide]].concat(),
+        );
+        assert_eq!(last(&path).path, Some(SeedPath::Restarts));
+        assert!(last(&path).hidden);
+
+        let busy = [
+            Action::Decide,
+            Action::Answer,
+            Action::Deliver,
+            Action::End {
+                failed: true,
+                lingers: true,
+            },
+            Action::Decide,
+            Action::Answer,
+        ];
+        let path = harness::follow(fixed(), &busy);
+        assert_eq!(last(&path).path, Some(SeedPath::Copying));
+        assert_eq!(last(&path).in_flight, Some(Shown::Slot));
+        let path = harness::follow(
+            fixed(),
+            &[
+                &busy[..],
+                &[
+                    Action::Deliver,
+                    Action::Settle,
+                    Action::Decide,
+                    Action::Answer,
+                ],
+            ]
+            .concat(),
+        );
+        assert_eq!(last(&path).in_flight, Some(Shown::Failure(1)));
+        let path = harness::follow(
+            broken(Broken {
+                reply_reads_registry: true,
+                ..Broken::default()
+            }),
+            &busy,
+        );
+        assert_eq!(last(&path).in_flight, Some(Shown::Failure(1)));
     }
 }

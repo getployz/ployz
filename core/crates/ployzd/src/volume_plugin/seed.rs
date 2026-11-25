@@ -31,15 +31,15 @@ use crate::{
 use axum::{Json, extract::State};
 use ployz_core::authority::{StepDigest, Timestamp};
 use ployz_core::{
-    DockerVolumeName, Pull, RpcError, SeedVolumeRequest, Snapshot, SnapshotGuid, SwitchError,
-    VolumeCopy, VolumeCopyView, VolumeGen, VolumeOrigin,
+    CopyRefusal, DockerVolumeName, RpcError, SeedVolumeRequest, SetVolumeCopyRefused, Snapshot,
+    SnapshotGuid, SwitchError, VolumeCopyView, VolumeGen, VolumeOrigin,
 };
 use tokio::{io::AsyncWriteExt as _, process::Command};
 
 use super::{
     Dataset, PluginError, VolumeName, VolumeStorage,
     holders::{Unheld, copy_held_for_other_data, copy_unlisted},
-    inspect::answering,
+    inspect::{answering, receiving},
     marks::{Mark, Marks, Write},
     origin::Origin,
     storage::{HeldMutation, checked_command},
@@ -317,9 +317,10 @@ impl VolumeStorage {
     /// A failed copy is answered to every Seed of the seed run it was first answered to,
     /// named by the request's gen, since Cloud resends that run's Seed when a reply is lost
     /// or arrives after its attempt timed out. Only a Seed of a later run starts the copy
-    /// over, and Cloud starts one only after the earlier run ended. A Seed without a gen
-    /// names no run, so the next one after an answer starts over, and a reply lost before
-    /// it goes unseen.
+    /// over, and Cloud starts one only after the earlier run ended. A Seed of an earlier
+    /// run than one already admitted is refused Stale, since its run is over. A Seed without
+    /// a gen names no run, so the next one after an answer starts over, and a reply lost
+    /// before it goes unseen.
     pub(super) async fn seed_volume(
         &self,
         request: &SeedVolumeRequest,
@@ -329,16 +330,28 @@ impl VolumeStorage {
         let into = VolumeName::try_from(&request.into)?;
         let guid = request.guid;
         let (held, _installation) = self.admit_mutation().await?;
+        if let Err(newest) = self.receives.admit_seed(&into, request.r#gen) {
+            return Err(SetVolumeCopyRefused {
+                reason: CopyRefusal::Stale,
+                copy: None,
+                floor: Some(newest),
+                holder: None,
+            }
+            .rpc_error(format!(
+                "a later seed of Volume {into} reached this Machine, at lane {newest}"
+            )));
+        }
         let pool = self.one_pool().await?;
         let datasets = self.datasets(&pool).await?;
+        // A reply shows only a failure its decision answered: a receive ends outside the
+        // mutation, so the copy read for the reply can show a failure the decision found
+        // running, or whose dropped child it found alive, and no run is recorded for that.
         let view = match self
             .seed_progress(&held, &pool, &datasets, &into, (guid, copy), request.r#gen)
             .await?
         {
-            SeedProgress::Taken => {
-                return Err(SwitchError::Precondition
-                    .rpc_error(format!("Volume {into} already exists on this Machine")));
-            }
+            SeedProgress::Taken => Err(SwitchError::Precondition
+                .rpc_error(format!("Volume {into} already exists on this Machine"))),
             SeedProgress::Renamed(renamed) => {
                 renamed.finish_landing(self).await?;
                 self.seeded(&pool, &into).await
@@ -349,9 +362,9 @@ impl VolumeStorage {
             // otherwise.
             SeedProgress::Failed(failure) => {
                 tracing::warn!(%into, failure, "Volume seed copy failed");
-                self.seeded(&pool, &into).await.map(|view| VolumeCopyView {
+                return self.seeded(&pool, &into).await.map(|view| VolumeCopyView {
                     copy: answering(view.copy, failure),
-                })
+                });
             }
             SeedProgress::Copied(copied) => {
                 copied.land(self, &request.into, (guid, copy)).await?;
@@ -412,31 +425,18 @@ impl VolumeStorage {
                 }
             }
         }?;
-        // A receive ends outside the mutation, so the answer can show a failure that ended
-        // after the read above found the receive running or after this call spawned it.
-        // That failure stays for this run's resends, whose replies Cloud may be the first
-        // to receive, and goes with the next run's first Seed.
-        if let Some(VolumeCopy::Slot {
-            pull:
-                Some(Pull {
-                    target,
-                    failure: Some(_),
-                }),
-            ..
-        }) = &view.copy
-        {
-            self.receives.answered(&into, target, request.r#gen);
-        }
-        Ok(view)
+        Ok(VolumeCopyView {
+            copy: receiving(view.copy),
+        })
     }
 
     /// The one read of [`SeedProgress`], under the mutation `_held`, for a Seed of the seed
     /// run `run`. Its only registry read is [`super::transfer::Receives::seed_failure`],
-    /// which answers and, for a later run than the failure was answered to, clears in one
-    /// step: a receive task ends outside the mutation, so two reads could each see a
-    /// different side of that end. Under `copy`, a root of `into` the seed goes on with
-    /// must carry the step's birth, and a slot must carry the step and record the birth or
-    /// hold a copy carrying it; a receive of `into` with no such slot is another's.
+    /// which answers and records `run`, or for a later run than the failure was answered
+    /// to clears, in one step: a receive task ends outside the mutation, so two reads could
+    /// each see a different side of that end. Under `copy`, a root of `into` the seed goes
+    /// on with must carry the step's birth, and a slot must carry the step and record the
+    /// birth or hold a copy carrying it; a receive of `into` with no such slot is another's.
     async fn seed_progress(
         &self,
         _held: &HeldMutation,
