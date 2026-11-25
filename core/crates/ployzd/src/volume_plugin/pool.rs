@@ -1187,11 +1187,15 @@ esac
         for (later, changed) in [
             (
                 "ployz-device\t11\t8589934592\t0\t8589934592\tONLINE\toff\nbackup\t12\t8589934592\t0\t8589934592\tONLINE\ton",
-                "from ployz-device (11) to backup (12), ployz-device (11)",
+                "from ployz-device (11, ONLINE) to backup (12, ONLINE, read-only), ployz-device (11, ONLINE)",
             ),
             (
                 "ployz-device\t13\t8589934592\t0\t8589934592\tONLINE\toff",
-                "from ployz-device (11) to ployz-device (13)",
+                "from ployz-device (11, ONLINE) to ployz-device (13, ONLINE)",
+            ),
+            (
+                "ployz-device\t11\t8589934592\t0\t8589934592\tDEGRADED\toff",
+                "from ployz-device (11, ONLINE) to ployz-device (11, DEGRADED)",
             ),
         ] {
             let root = tempfile::tempdir().unwrap();

@@ -404,8 +404,14 @@ fn group(vdev: &str) -> bool {
             })
             && parts.next().is_none()
     });
+    // A dRAID distributed spare, `draid1-0-0`: the vdev's own name, then the spare's index.
+    let distributed_spare = kind
+        .strip_prefix("draid")
+        .and_then(|rest| rest.split_once('-'))
+        .is_some_and(|(parity, vdev)| matches!(parity, "1" | "2" | "3") && digits(vdev));
     digits(id)
         && (draid
+            || distributed_spare
             || matches!(
                 kind,
                 "mirror" | "raidz1" | "raidz2" | "raidz3" | "spare" | "replacing" | "indirect"
@@ -635,7 +641,13 @@ fn unusable(imported: &Imported) -> String {
 fn ids(imported: &[Imported]) -> String {
     let mut ids: Vec<String> = imported
         .iter()
-        .map(|imported| format!("{} ({})", imported.pool.name, imported.guid))
+        .map(|imported| {
+            let access = if imported.readonly { ", read-only" } else { "" };
+            format!(
+                "{} ({}, {}{access})",
+                imported.pool.name, imported.guid, imported.health
+            )
+        })
         .collect();
     ids.sort();
     if ids.is_empty() {
@@ -966,7 +978,7 @@ mod tests {
     /// class headers are structure; only the leaves are read.
     #[test]
     fn a_vdev_listing_reads_the_leaves_of_every_layout_zfs_prints() {
-        let listings: [(&str, String, Vec<&str>); 4] = [
+        let listings: [(&str, String, Vec<&str>); 5] = [
         (
             "probe",
             [
@@ -1017,6 +1029,20 @@ mod tests {
             ]
             .concat(),
             vec!["/root/probe/f15", "/root/probe/f16", "/root/probe/f17"],
+        ),
+        (
+            "spared",
+            [
+                "spared\n",
+                "\tdraid1:1d:3c:1s-0\t576M\t213K\t576M\t-\t-\t0%\t0.03%\t-\tONLINE\n",
+                "\t/root/probe/f20\t256M\t-\t-\t-\t-\t-\t-\t-\tONLINE\n",
+                "\t/root/probe/f21\t256M\t-\t-\t-\t-\t-\t-\t-\tONLINE\n",
+                "\t/root/probe/f22\t256M\t-\t-\t-\t-\t-\t-\t-\tONLINE\n",
+                "spare                     -      -      -        -         -      -      -      -         -\n",
+                "\tdraid1-0-0\t-\t-\t-\t-\t-\t-\t-\t-\tAVAIL\n",
+            ]
+            .concat(),
+            vec!["/root/probe/f20", "/root/probe/f21", "/root/probe/f22"],
         ),
         (
             "prober",
