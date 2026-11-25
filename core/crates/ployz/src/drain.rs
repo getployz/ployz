@@ -530,15 +530,22 @@ async fn preflight(
     } else {
         ServicesRole::AlreadyOff
     };
-    let replicated = services_off(client, &server, scope, services_role, cancellation, progress)
-        .await
-        .map_err(|stop| match services_role {
-            ServicesRole::TurnedOff => DrainError::LeftOff {
-                server: server.name.clone(),
-                stop,
-            },
-            ServicesRole::AlreadyOff => DrainError::Unchanged(stop),
-        })?;
+    let replicated = services_off(
+        client,
+        &server,
+        scope,
+        services_role,
+        cancellation,
+        progress,
+    )
+    .await
+    .map_err(|stop| match services_role {
+        ServicesRole::TurnedOff => DrainError::LeftOff {
+            server: server.name.clone(),
+            stop,
+        },
+        ServicesRole::AlreadyOff => DrainError::Unchanged(stop),
+    })?;
     Ok(Ready {
         server,
         scope: scope.clone(),

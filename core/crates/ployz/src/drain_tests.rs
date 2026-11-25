@@ -1350,10 +1350,12 @@ async fn drain_reading_only(
                             Look::Lists(containers) => {
                                 RpcResponse::from(ContainerList { containers })
                             }
-                            Look::Fails | Look::Unlisted | Look::Hangs => RpcResponse::from(RpcError::new(
-                                ployz_core::RpcErrorCode::Internal,
-                                "the Server did not list its Containers",
-                            )),
+                            Look::Fails | Look::Unlisted | Look::Hangs => {
+                                RpcResponse::from(RpcError::new(
+                                    ployz_core::RpcErrorCode::Internal,
+                                    "the Server did not list its Containers",
+                                ))
+                            }
                         }
                     }
                     other => {
@@ -1435,7 +1437,9 @@ async fn a_drain_that_cannot_list_the_server_changes_nothing() {
         assert!(
             matches!(
                 drained,
-                Err(super::DrainError::Unchanged(super::Stop::Unobservable { .. }))
+                Err(super::DrainError::Unchanged(
+                    super::Stop::Unobservable { .. }
+                ))
             ),
             "accepts_services {accepts_services}: {drained:?}"
         );
@@ -1493,9 +1497,11 @@ async fn a_server_left_out_of_the_machine_list_is_not_read_as_empty() {
 
     assert!(
         matches!(
-                drained,
-                Err(super::DrainError::Unchanged(super::Stop::Unobservable { .. }))
-            ),
+            drained,
+            Err(super::DrainError::Unchanged(
+                super::Stop::Unobservable { .. }
+            ))
+        ),
         "{drained:?}"
     );
     assert!(asked.is_empty(), "{asked:?}");

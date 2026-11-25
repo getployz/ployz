@@ -145,7 +145,10 @@ fn runtime_watch_frame_accepts_unknown_fields_and_honest_defaults() {
         RuntimeWatchIncompleteIds::default()
     );
     assert!(defaults.unanswered.is_empty());
-    assert_eq!(defaults.answered, None, "absent: an older daemon names only who missed");
+    assert_eq!(
+        defaults.answered, None,
+        "absent: an older daemon names only who missed"
+    );
     assert_eq!(defaults.observed_at, "2024-01-01T00:00:00Z");
 }
 

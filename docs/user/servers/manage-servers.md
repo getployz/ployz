@@ -533,17 +533,26 @@ old container is taken out of routing and removed.
 
 A service set to run on every server, from a Compose file with `deploy.mode: global` deployed
 before 0.1.2-beta.42, stops the drain before it moves anything, because its copy on this server
-could be the last one working. The drain also stops when Ployz can't ask the server what it runs,
-and Ployz Cloud won't start one for a server that isn't answering:
+could be the last one working. The drain also stops when Ployz can't ask the server what it runs:
 
 ```text
 error: Server web-2 runs `shop-production/metrics` on every Server, and draining could stop its last working copy. Remove it, deploy, then add it back with a replica count.
 ```
 
 [Move that service off `deploy.mode: global`](../troubleshooting/servers.md#move-a-service-off-deploymode-global),
-then drain again. A drain that turned the server's services off before it found such a service,
-or before the server stopped answering, says so, and the server takes no new services until you
-turn them on again.
+then drain again.
+
+Ployz Cloud won't start a drain until it hears the server answer, since a server that doesn't
+answer may run a service it hasn't reported. It waits up to 20 seconds, both when you confirm and
+when the drain's turn comes, then says `web-2 isn't answering, so Cloud can't tell what draining it
+would stop. Try again once it answers.` Through a server on an older release, Cloud can't tell
+whether the server answered, so the drain goes ahead and stops if Ployz can't ask the server what
+it runs.
+
+A drain that stops after turning the server's services off, for any reason, ends its error with
+`Services are now off on web-2: turn them back on to let it run services again.` The server takes no
+new services until you turn **Run services here** back on, or run
+`ployz server set web-2 --accepts-services=true`.
 
 The new container runs exactly the image the old one ran, even when its tag, like `app:v1`, names
 another image on the other server by then. A service whose image is named by a tag therefore moves

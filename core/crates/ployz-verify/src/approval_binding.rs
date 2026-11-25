@@ -713,9 +713,7 @@ impl ApprovalBinding {
             }
             Exec::Off => &[Data::Frees],
             Exec::Moving => &[Data::Frees, Data::Global],
-            Exec::Admitting { .. } | Exec::Cutting { .. } | Exec::Ran | Exec::Refused { .. } => {
-                &[]
-            }
+            Exec::Admitting { .. } | Exec::Cutting { .. } | Exec::Ran | Exec::Refused { .. } => &[],
         }
     }
 
@@ -1236,7 +1234,14 @@ impl Model for ApprovalBinding {
                 state.swapped = Some(match state.exec {
                     Exec::Admitting { .. } => Swap::Admit,
                     Exec::Cutting { .. } => Swap::Cut,
-                    _ => return None,
+                    Exec::Ready
+                    | Exec::Resending
+                    | Exec::Waiting { .. }
+                    | Exec::Covered { .. }
+                    | Exec::Off
+                    | Exec::Moving
+                    | Exec::Ran
+                    | Exec::Refused { .. } => return None,
                 });
             }
             Action::Cut => {
@@ -1701,7 +1706,9 @@ const fn holder_words(broken: Broken) -> &'static str {
     match (broken.move_skips_holder, broken.volume_moves_global) {
         (true, _) => "no check (under Broken)",
         (false, true) => "a check that takes a Global's copy (under Broken)",
-        (false, false) => "holderOn and the Drain's pin, which refuse a Global or another Container",
+        (false, false) => {
+            "holderOn and the Drain's pin, which refuse a Global or another Container"
+        }
     }
 }
 
