@@ -2598,6 +2598,25 @@ describe("volume runs", () => {
       });
     });
 
+    it("on a warm row restarts the Service on A and keeps B's copy when B's Ployz can't be read at the Forget", async () => {
+      const G = newSnap("f-1");
+      named("fsn-1").copy = slotCopy(G);
+      for (const container of containers) container.running = false;
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(G, null, "2") };
+      await owned("warm");
+
+      expect(await runEffect(closeVolumeRun("run-1", "failure"))).toBe(1);
+      const looked = await runEffect(observeVolumeMembers(organizationId, dockerVolume));
+      // The release reads the watch once to plan, then again at the Forget.
+      frameFault = (read) => read >= 2 && rpcFault("unavailable", "the Cluster's watch is down");
+      await execute((await releaseRow()).id, "run-2", [{ id: "01-observe", handler: () => looked }]);
+
+      expect(verbs).toEqual(["floor@fsn-1", "floor@fsn-2", "writer@fsn-1(kept)"]);
+      expect(machines[1]?.copy).toEqual(slotCopy(G, null, "2"));
+      expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: true }]);
+      expect((await rows()).at(-1)).toMatchObject({ kind: "release", state: "done" });
+    });
+
     it("on a warm row waits for a silent Server, noting it on the row, then releases back to A once it answers", async () => {
       const G = newSnap("f-1");
       named("fsn-1").copy = slotCopy(G);
