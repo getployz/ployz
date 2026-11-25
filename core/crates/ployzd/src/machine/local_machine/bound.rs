@@ -322,7 +322,6 @@ impl Bound {
 #[cfg(test)]
 impl Bound {
     /// Work the daemon itself started, for a test that has no Machine to ask.
-    #[must_use]
     pub fn for_test() -> Self {
         Self::unbound()
     }

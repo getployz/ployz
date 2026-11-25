@@ -57,7 +57,7 @@ impl ContainerRuntime {
         let (opened, open) = tokio::sync::oneshot::channel();
         tokio::spawn(self.clone().run_exec(requests, bound, opened));
         open.await
-            .unwrap_or_else(|_| Err(Status::internal("the exec's task failed")))
+            .map_err(|_| Status::internal("the exec's task failed"))?
     }
 
     async fn run_exec(
