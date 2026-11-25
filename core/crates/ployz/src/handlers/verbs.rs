@@ -438,7 +438,8 @@ pub(crate) const GITHUB_RULE_APPROVE: Verb = Verb::internal(
     Never,
     github_rule::approve_command,
     github_rule::approve,
-);
+)
+.docs("deploy/github.md");
 pub(crate) const GITHUB_RULE_END: Verb = Verb::cloud(
     "github rule end",
     Never,
