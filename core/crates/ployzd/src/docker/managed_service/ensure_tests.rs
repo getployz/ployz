@@ -81,13 +81,9 @@ async fn a_service_on_the_host_docker_creates_starts_and_replaces() {
 async fn a_service_on_the_endpoint_creates_through_the_local_docker() {
     let (docker, fake) = local_docker().await;
     let service = ManagedService::new(docker.clone(), "svc");
-    let network = ["GET /networks/ployz", "GET /containers/json"];
 
     service.ensure(desired("one")).await.unwrap();
-    assert_eq!(
-        calls(&fake),
-        [&[INSPECT, IMAGE][..], &network, &[CREATE, START]].concat()
-    );
+    assert_eq!(calls(&fake), [INSPECT, IMAGE, CREATE, START]);
 
     service.ensure(desired("one")).await.unwrap();
     assert_eq!(calls(&fake), [INSPECT, START]);
@@ -96,17 +92,14 @@ async fn a_service_on_the_endpoint_creates_through_the_local_docker() {
     assert_eq!(
         calls(&fake),
         [
-            &[
-                INSPECT,
-                IMAGE,
-                "POST /containers/svc/stop",
-                "DELETE /containers/svc",
-                IMAGE,
-            ][..],
-            &network,
-            &[CREATE, START],
+            INSPECT,
+            IMAGE,
+            "POST /containers/svc/stop",
+            "DELETE /containers/svc",
+            IMAGE,
+            CREATE,
+            START,
         ]
-        .concat()
     );
     assert_eq!(docker.creates(), 2);
 }

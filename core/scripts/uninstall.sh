@@ -53,6 +53,18 @@ spend_first_key() {
     sync "$(dirname "$file")" 2>/dev/null || sync
 }
 
+# Take the container network's fence out of the host firewall, once Docker no longer needs it.
+remove_fence() {
+    if command -v iptables >/dev/null 2>&1; then
+        while iptables -w -t filter -D DOCKER-USER -o ployz -j PLOYZ-FENCE 2>/dev/null; do :; done
+        iptables -w -t filter -F PLOYZ-FENCE 2>/dev/null || true
+        iptables -w -t filter -X PLOYZ-FENCE 2>/dev/null || true
+    fi
+    if command -v ip6tables >/dev/null 2>&1; then
+        while ip6tables -w -t filter -D DOCKER-USER -i ployz -o ployz -j DROP 2>/dev/null; do :; done
+    fi
+}
+
 stop_loaded_units() {
     local units unit rest
     units=$(systemctl list-units --all --plain --no-legend "$1") || error "Cannot inspect $1; uninstall aborted"
@@ -143,16 +155,20 @@ EOF
     fi
 
     systemctl stop ployz-volume-plugin.socket ployz-volume-plugin.service 2>/dev/null || true
-    systemctl disable ployz-checkin.service ployz.service ployz.socket ployz-volume-plugin.socket ployz-volume-plugin.service ployz-observe.service 2>/dev/null || true
+    systemctl disable ployz-checkin.service ployz.service ployz.socket ployz-volume-plugin.socket ployz-volume-plugin.service ployz-observe.service ployz-fence.service 2>/dev/null || true
+    # Docker requires the fence unit through this drop-in; left behind, Docker never starts.
+    rm -f "$INSTALL_SYSTEMD_DIR/docker.service.d/ployz-fence.conf"
     rm -f "$INSTALL_SYSTEMD_DIR/ployz-checkin.service" \
         "$INSTALL_SYSTEMD_DIR/ployz.service" \
         "$INSTALL_SYSTEMD_DIR/ployz.socket" \
         "$INSTALL_SYSTEMD_DIR/ployz-observe.service" \
         "$INSTALL_SYSTEMD_DIR/ployz-volume-plugin.socket" \
         "$INSTALL_SYSTEMD_DIR/ployz-volume-plugin.service" \
+        "$INSTALL_SYSTEMD_DIR/ployz-fence.service" \
         "$RUNTIME_SYSTEMD_DIR/ployz-dns.service" \
         "$RUNTIME_SYSTEMD_DIR/ployz-observe.service"
     systemctl daemon-reload
+    remove_fence
     rm -f "$INSTALL_BIN_DIR/ployzd"
 
     rm -rf "$PLOYZ_DATA_DIR"

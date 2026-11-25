@@ -5,10 +5,10 @@
 //! waits for a person instead of failing on every Machine.
 
 use ployz_core::authority::{
-    AutoDeployRule, Births, BuildPolicy, PlannedVolumes, RuleBasis, Signed, rule::template,
+    AutoDeployRule, Births, BuildPolicy, PlannedVolumes, RuleBasis, RuleId, Signed, rule::template,
     rule_draft::RuleSourceView,
 };
-use ployz_core::config::{SavedEnvironmentIntent, ServiceSource};
+use ployz_core::config::{SavedEnvironmentIntent, ServiceSource, canonicalize_environment_intent};
 use ployz_core::{Namespace, RequestedServiceSpec, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -35,12 +35,41 @@ pub struct ApproveRule {
     pub births: Births,
 }
 
+/// The rule a Save's or Deploy's tap signed, kept in its own transaction once it saved.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SavedRule {
+    #[ts(as = "Signed<AutoDeployRule>")]
+    pub rule: Box<Signed<AutoDeployRule>>,
+    /// As [`ApproveRule::births`].
+    #[serde(default, skip_serializing_if = "Births::is_empty")]
+    #[ts(optional, as = "Option<Births>")]
+    pub births: Births,
+    /// The rule kept when the tap read the Save, none when there was none. A Save that
+    /// finds another kept refuses, as a stale review does, and saves nothing.
+    pub prior: Option<RulePrior>,
+}
+
+/// One generation of a rule.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct RulePrior {
+    pub rule: RuleId,
+    #[ts(type = "number")]
+    pub generation: u64,
+}
+
 /// An Environment's rule, and what a Device needs to sign its next generation.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct RuleQuery {
     #[serde(default)]
     pub environment: EnvironmentRef,
+    /// Read what a Save would save, staged changes included, rather than the latest Saved
+    /// revision, with the review version that Save names.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(optional, as = "Option<bool>")]
+    pub staged: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
@@ -60,6 +89,20 @@ pub struct RuleView {
     /// The latest Saved revision's Volumes, by the name `target` declares each under.
     #[serde(default)]
     pub volumes: PlannedVolumes,
+    /// For a staged read, the review version a Save of what it read names.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub version: Option<String>,
+    /// For a staged read, whether the Environment is Protected, read with it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub protected: Option<bool>,
+    /// For a staged read, whether an owner or admin decides the reader's Deploy here, as
+    /// its protection asks of them: their Deploy waits for one, who approves no automatic
+    /// deploy rule with it. Absent from an older Store.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub protector_decides: Option<bool>,
 }
 
 impl RuleView {
@@ -101,9 +144,55 @@ pub(crate) fn opened(rule: &Signed<AutoDeployRule>) -> Option<AutoDeployRule> {
 /// doesn't supersede the one kept, is refused: every Machine would refuse it.
 pub(crate) fn approve(tx: &mut dyn Tx, who: &Actor, c: &ApproveRule) -> Result<RuleView, RpcError> {
     let environment = scope::lock(tx, who, &c.environment)?;
+    keep(tx, who, &environment, (&c.rule, &c.births))?;
+    view_of(tx, who, &environment, None, false)
+}
+
+/// Keep the rule a Save's or Deploy's tap signed, once it saved under `environment`'s
+/// lock, unless the rule kept moved since the tap read it. A rule the person ended since
+/// stays ended: only the Deploy every push switch turns it on again.
+pub(crate) fn keep_saved(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    environment: &scope::Environment,
+    saved: &SavedRule,
+) -> Result<(), RpcError> {
+    let kept = stored(tx, &environment.summary.id)?
+        .as_ref()
+        .and_then(opened);
+    let prior = kept.as_ref().map(|kept| RulePrior {
+        rule: kept.rule,
+        generation: kept.generation,
+    });
+    if prior != saved.prior {
+        let message = match (&kept, opened(&saved.rule)) {
+            (Some(kept), Some(signed)) if kept.ended => {
+                let names: Vec<&str> = (signed.services.iter())
+                    .map(|service| service.name.as_str())
+                    .collect();
+                let them = if names.len() == 1 { "it" } else { "them" };
+                format!(
+                    "Automatic deploys are off for {}. Turn on Deploy every push to deploy {them}.",
+                    names.join(", ")
+                )
+            }
+            _ => {
+                "Automatic deploys changed since you looked. Check them, then try again.".to_owned()
+            }
+        };
+        return Err(error::conflict(message, json!({})));
+    }
+    keep(tx, who, environment, (&saved.rule, &saved.births))
+}
+
+fn keep(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    environment: &scope::Environment,
+    (signed, births): (&Signed<AutoDeployRule>, &Births),
+) -> Result<(), RpcError> {
     let id = environment.summary.id.clone();
-    let rule = c
-        .rule
+    let rule = signed
         .open()
         .map_err(|_| error::invalid("The rule isn't a signed automatic deploy rule", json!({})))?;
     let namespace = crate::deployment::reserve_namespace(tx, who, &environment.summary)?;
@@ -113,14 +202,14 @@ pub(crate) fn approve(tx: &mut dyn Tx, who: &Actor, c: &ApproveRule) -> Result<R
             json!({ "namespace": namespace }),
         ));
     }
-    if !c.births.is_empty() {
+    if !births.is_empty() {
         let saved = crate::review::latest_saved(tx, &id)?.ok_or_else(|| {
             error::invalid(
                 "This environment has no saved settings for the rule's new volumes. Save, then approve again.",
                 json!({}),
             )
         })?;
-        crate::volume::birth::record(tx, (&id, &namespace), &saved.intent, &c.births)?;
+        crate::volume::birth::record(tx, (&id, &namespace), &saved.intent, births)?;
     }
     if let Some(kept) = stored(tx, &id)?.as_ref().and_then(opened)
         && kept.rule == rule.rule
@@ -132,7 +221,7 @@ pub(crate) fn approve(tx: &mut dyn Tx, who: &Actor, c: &ApproveRule) -> Result<R
         ));
     }
     let text =
-        serde_json::to_string(&*c.rule).map_err(|_| error::corrupt("Automatic deploy rule"))?;
+        serde_json::to_string(signed).map_err(|_| error::corrupt("Automatic deploy rule"))?;
     let generation = i64::try_from(rule.generation)
         .map_err(|_| error::invalid("The rule's generation is too large", json!({})))?;
     tx.execute(
@@ -156,7 +245,7 @@ pub(crate) fn approve(tx: &mut dyn Tx, who: &Actor, c: &ApproveRule) -> Result<R
         ended = rule.ended,
         "kept an automatic deploy rule"
     );
-    view_of(tx, who, &environment, None)
+    Ok(())
 }
 
 /// `q.environment`'s rule and what signing it next takes.
@@ -167,7 +256,7 @@ pub(crate) fn view(
     q: &RuleQuery,
 ) -> Result<RuleView, RpcError> {
     let environment = scope::environment(tx, who, &q.environment)?;
-    view_of(tx, who, &environment, Some(trusted))
+    view_of(tx, who, &environment, Some(trusted), q.staged)
 }
 
 fn view_of(
@@ -175,34 +264,56 @@ fn view_of(
     who: &Actor,
     environment: &scope::Environment,
     trusted: Option<&Trusted>,
+    staged: bool,
 ) -> Result<RuleView, RpcError> {
     let id = &environment.summary.id;
     let rule = stored(tx, id)?;
     let namespace = crate::deployment::namespace(tx, who, &environment.summary)?;
-    let saved = crate::review::latest_saved(tx, id)?;
-    let sources = saved
-        .as_ref()
-        .map(|saved| sources(&saved.intent))
-        .unwrap_or_default();
+    let (saved, version, protected, protector_decides) = match staged {
+        true => {
+            let version = crate::review::review(tx, environment)?.view.version;
+            let working = canonicalize_environment_intent(environment.working.clone());
+            let protected = scope::protected(tx, id)?;
+            let decides = match trusted {
+                Some(trusted) => {
+                    Some(crate::review::approval::Gate::new(tx, id, trusted)?.protected())
+                }
+                None => None,
+            };
+            (Some(working), Some(version), Some(protected), decides)
+        }
+        false => (
+            crate::review::latest_saved(tx, id)?.map(|saved| saved.intent),
+            None,
+            None,
+            None,
+        ),
+    };
+    let mut sources = saved.as_ref().map(sources).unwrap_or_default();
+    if let Some(saved) = &saved {
+        for source in &mut sources {
+            let service = (saved.services.iter())
+                .find(|service| service.config.private_dns == source.service);
+            if let Some(service) = service {
+                source.on_push = crate::policy::load(tx, id, &service.id)?.auto_deploy;
+            }
+        }
+    }
     let target = match (trusted, &saved) {
-        (Some(trusted), Some(saved)) => crate::deployment::query::saved_target(
-            tx,
-            who,
-            trusted,
-            (environment, &saved.intent),
-            &[],
-        )?,
+        (Some(trusted), Some(saved)) => {
+            crate::deployment::query::saved_target(tx, who, trusted, (environment, saved), &[])?
+        }
         _ => Vec::new(),
     };
     let changed = match (rule.as_ref().and_then(opened), &saved) {
         (Some(rule), Some(saved)) if !target.is_empty() => {
-            let ships = following(tx, id, &saved.intent, &rule)?;
+            let ships = following(tx, id, saved, &rule)?;
             changed(&rule, &namespace, &target, &sources, &ships)
         }
         _ => Vec::new(),
     };
     let volumes = match &saved {
-        Some(saved) => crate::volume::birth::planned(tx, id, &saved.intent)?,
+        Some(saved) => crate::volume::birth::planned(tx, id, saved)?,
         None => PlannedVolumes::new(),
     };
     Ok(RuleView {
@@ -213,6 +324,9 @@ fn view_of(
         target,
         changed,
         volumes,
+        version,
+        protected,
+        protector_decides,
     })
 }
 
@@ -266,6 +380,7 @@ pub(crate) fn sources(saved: &SavedEnvironmentIntent) -> Vec<RuleSourceView> {
                 branch: crate::git::branch_name(branch).map(str::to_owned),
                 root_dir: root_dir.clone(),
                 build: service.config.build.clone(),
+                on_push: true,
             }),
             ServiceSource::Image { .. } | ServiceSource::Empty { .. } => None,
         })

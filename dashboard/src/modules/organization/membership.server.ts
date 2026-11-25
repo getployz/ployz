@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { oauthConsent } from "#/modules/identity/oauth-tables";
 import { organizationToken, session, user } from "#/modules/identity/tables";
@@ -30,7 +30,7 @@ export const moveSessionsOutOf = Effect.fn("Organization.moveSessionsOutOf")(fun
     .innerJoin(organization, eq(organization.id, member.organizationId))
     .where(eq(member.userId, userId)).orderBy(asc(member.createdAt)).limit(1);
   yield* drizzle.update(session)
-    .set({ activeOrganizationId: next?.id ?? null, activeOrganizationSlug: next?.slug ?? null, updatedAt: new Date() })
+    .set({ activeOrganizationId: next?.id ?? null, activeOrganizationSlug: next?.slug ?? null, updatedAt: sql`now()` })
     .where(and(eq(session.userId, userId), eq(session.activeOrganizationId, organizationId)));
 });
 

@@ -124,6 +124,7 @@ fn admit(
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
         )
         .unwrap()
@@ -208,6 +209,7 @@ fn publish(store: &ConfigStore, who: &Actor) {
                 version: None,
                 message: None,
                 accept_volume_loss: Vec::new(),
+                rule: None,
             },
         )
         .unwrap();
@@ -303,6 +305,7 @@ fn a_narrowed_deploy_lists_the_services_it_references_among_those_it_ships() {
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
         )
         .unwrap();

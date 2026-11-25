@@ -88,9 +88,9 @@ const keepsReport = sql`${serverDrainAttempt.report} is not null`;
 
 /** The columns that end a row under `code`; its state follows from the code. */
 const ended = (code: DrainEndCodeWithoutMessage) =>
-  ({ state: DRAIN_END_CODES[code], endCode: code, refusalMessage: null, endedAt: new Date() }) as const;
+  ({ state: DRAIN_END_CODES[code], endCode: code, refusalMessage: null, endedAt: sql`now()` }) as const;
 const refused = (message: string) =>
-  ({ state: DRAIN_END_CODES.refused, endCode: "refused", refusalMessage: message, endedAt: new Date() }) as const;
+  ({ state: DRAIN_END_CODES.refused, endCode: "refused", refusalMessage: message, endedAt: sql`now()` }) as const;
 
 /** Asks for the row's run in the caller's transaction; the outbox sends it once that commits. */
 const enqueueDrain = (row: DrainAttemptRow) =>
@@ -463,12 +463,12 @@ export const closeStaleDrains = Effect.fn("ServerDrain.closeStale")(function* ()
         state: sql<DrainState>`case when ${keepsReport} then 'finished' else 'unknown' end`,
         endCode: sql<DrainEndCode | null>`case when ${keepsReport} then null else 'lost' end`,
         refusalMessage: null,
-        endedAt: new Date(),
+        endedAt: sql`now()`,
       },
     },
     pending: {
       end: ended("not_started"),
-      when: (now) => queueWaitedPast(serverDrainAttempt, new Date(now - DRAIN_PENDING_LIMIT_MS), { earlierOnly: false }),
+      when: queueWaitedPast(serverDrainAttempt, DRAIN_PENDING_LIMIT_MS, { earlierOnly: false }),
     },
   });
   return { failed: pending, unknown: running };

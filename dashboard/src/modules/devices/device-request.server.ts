@@ -4,6 +4,7 @@ import { Effect } from "effect";
 import { deviceCodeOf } from "#/modules/devices/device-code";
 import { deviceRequest } from "#/modules/devices/tables";
 import { Database } from "#/server/database.server";
+import { checkedNow } from "#/db/tables";
 
 /**
  * Holds `key`'s request in the Organization for a day, under the code Cloud computes from it. The same key again
@@ -20,7 +21,7 @@ export const requestDevice = Effect.fn("Devices.requestDevice")(function* (organ
         expiresAt: sql`excluded.expires_at`,
         createdAt: sql`case when ${deviceRequest.key} = excluded.key then ${deviceRequest.createdAt} else excluded.created_at end`,
       },
-      setWhere: sql`${deviceRequest.key} = excluded.key or ${deviceRequest.expiresAt} <= now()`,
+      setWhere: sql`${deviceRequest.key} = excluded.key or ${deviceRequest.expiresAt} <= ${checkedNow()}`,
     })
     .returning({ code: deviceRequest.code, expiresAt: deviceRequest.expiresAt });
   return row ?? null;
@@ -31,7 +32,7 @@ export const readDeviceRequest = Effect.fn("Devices.readDeviceRequest")(function
   const { drizzle } = yield* Database;
   const [row] = yield* drizzle.select({ code: deviceRequest.code, key: deviceRequest.key, expiresAt: deviceRequest.expiresAt })
     .from(deviceRequest)
-    .where(and(eq(deviceRequest.organizationId, organizationId), eq(deviceRequest.code, code), gt(deviceRequest.expiresAt, sql`now()`)))
+    .where(and(eq(deviceRequest.organizationId, organizationId), eq(deviceRequest.code, code), gt(deviceRequest.expiresAt, checkedNow())))
     .limit(1);
   return row ?? null;
 });

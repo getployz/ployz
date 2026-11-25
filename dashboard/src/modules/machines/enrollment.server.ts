@@ -18,7 +18,7 @@ import { requireAccess, requireAccessById } from "#/modules/organization/access.
 import { Ployz, type PloyzProviderError, type PloyzSdkError, type PloyzSession, predatesSealing, RpcError } from "#/modules/runtime/ployz.server";
 import { ClusterOutOfTime, clusterRead, OrganizationRuntime, SESSION_CLOSE_CLUSTER_MS, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
 import { PostHog } from "#/modules/analytics/posthog.server";
-import { JoinApprovalRequired, enrollmentExpiry, MANAGEMENT_CAPABILITY_LENGTH, registerRequestFromEnrollmentIdentity, setupReportAccepted, setupReportProperties, type SetupReport, waitForFounder, waitForJoinSlot, type EnrollmentIdentity, type EnrollmentCallback, type EnrollmentCallbackSealing, type CliMintMachineEnrollmentInput, type CliResetPendingEnrollmentInput, type EnrollResponse, type ReadMachineEnrollmentInput, type ResetPendingEnrollmentInput } from "#/modules/machines/enrollment";
+import { ENROLLMENT_TOKEN_TTL_MS, JoinApprovalRequired, MANAGEMENT_CAPABILITY_LENGTH, registerRequestFromEnrollmentIdentity, setupReportAccepted, setupReportProperties, type SetupReport, waitForFounder, waitForJoinSlot, type EnrollmentIdentity, type EnrollmentCallback, type EnrollmentCallbackSealing, type CliMintMachineEnrollmentInput, type CliResetPendingEnrollmentInput, type EnrollResponse, type ReadMachineEnrollmentInput, type ResetPendingEnrollmentInput } from "#/modules/machines/enrollment";
 import { rustMachineIdSchema } from "#/lib/schema";
 import { joinCode } from "#/modules/machines/join-code.server";
 import { readOrganizationSealingKey, recordFirstRecoveryBackup, recordReportedSealingPublicKey } from "#/modules/sealing/sealing-key.server";
@@ -40,6 +40,7 @@ import { lockOrganizationEnrollment } from "#/modules/machines/pairing-release.s
 import {
   decryptPairingSecret, foundingClaimFresh, loadOrganizationConnections, managementIdentity, SERVER_REACH_TIMEOUT_MS,
 } from "#/modules/runtime/connections.server";
+import { checkedNow } from "#/db/tables";
 
 const TOKEN_PREFIX = "pmet_";
 
@@ -116,20 +117,17 @@ export const insertEnrollmentToken = Effect.fn("MachineEnrollment.insertToken")(
     readonly attempt?: { readonly role: EnrollmentRole; readonly serverEnrollmentId: string };
   }) {
     const { drizzle } = yield* Database;
-    const { expiresAt, token } = yield* Effect.sync(() => ({
-      expiresAt: enrollmentExpiry(new Date()),
-      token: randomSecret(TOKEN_PREFIX),
-    }));
+    const token = yield* Effect.sync(() => randomSecret(TOKEN_PREFIX));
     const [issued] = yield* drizzle.insert(schemaMachineEnrollmentToken).values({
       organizationId: input.organizationId,
       createdByUserId: input.userId,
       tokenHash: hashEnrollmentToken(token),
-      expiresAt,
+      expiresAt: sql`now() + make_interval(secs => ${ENROLLMENT_TOKEN_TTL_MS / 1000})`,
       enrollmentRole: input.attempt?.role ?? null,
       serverEnrollmentId: input.attempt?.serverEnrollmentId ?? null,
-    }).returning({ id: schemaMachineEnrollmentToken.id });
+    }).returning({ id: schemaMachineEnrollmentToken.id, expiresAt: schemaMachineEnrollmentToken.expiresAt });
     if (!issued) return yield* Effect.die("Enrollment token insert returned no row");
-    return { id: issued.id, token, expiresAt };
+    return { id: issued.id, token, expiresAt: issued.expiresAt };
   },
 );
 
@@ -166,7 +164,7 @@ export const readMachineEnrollment = Effect.fn("MachineEnrollment.read")(
     const [row] = yield* drizzle
       .select({
         joinedMachineId: schemaMachineEnrollmentToken.joinedMachineId,
-        expiresAt: schemaMachineEnrollmentToken.expiresAt,
+        expired: sql<boolean>`${schemaMachineEnrollmentToken.expiresAt} <= ${checkedNow()}`,
       })
       .from(schemaMachineEnrollmentToken)
       .where(and(
@@ -176,7 +174,7 @@ export const readMachineEnrollment = Effect.fn("MachineEnrollment.read")(
       .limit(1);
     if (!row) return yield* new NotFound({ message: "Enrollment not found." });
     if (row.joinedMachineId !== null) return { status: "joined" as const, machineId: row.joinedMachineId };
-    return { status: row.expiresAt.getTime() <= Date.now() ? "expired" as const : "pending" as const };
+    return { status: row.expired ? "expired" as const : "pending" as const };
   },
 );
 
@@ -185,7 +183,7 @@ const recordJoined = Effect.fn("MachineEnrollment.recordJoined")(
   function* (token: string, machineId: MachineId, { founder }: { readonly founder: boolean }) {
     const { drizzle } = yield* Database;
     const joined = yield* drizzle.update(schemaMachineEnrollmentToken)
-      .set({ joinedMachineId: machineId, updatedAt: new Date() })
+      .set({ joinedMachineId: machineId, updatedAt: sql`now()` })
       .where(and(
         eq(schemaMachineEnrollmentToken.tokenHash, hashEnrollmentToken(token)),
         isNull(schemaMachineEnrollmentToken.joinedMachineId),
@@ -215,11 +213,12 @@ export const recordMachineSetupReport = Effect.fn("MachineEnrollment.recordSetup
         organizationId: schemaMachineEnrollmentToken.organizationId,
         joinedMachineId: schemaMachineEnrollmentToken.joinedMachineId,
         expiresAt: schemaMachineEnrollmentToken.expiresAt,
+        now: sql`now()`.mapWith(schemaMachineEnrollmentToken.expiresAt),
       })
       .from(schemaMachineEnrollmentToken)
       .where(eq(schemaMachineEnrollmentToken.tokenHash, hashEnrollmentToken(input.token)))
       .limit(1);
-    if (!setupReportAccepted(row, input.report.outcome, new Date())) {
+    if (row === undefined || !setupReportAccepted(row, input.report.outcome, row.now)) {
       return yield* new NotFound({ message: "Enrollment not found." });
     }
     // Every CLI since reports began (0.2.2) moves to `storage` only once Cloud answered its enroll,
@@ -229,7 +228,7 @@ export const recordMachineSetupReport = Effect.fn("MachineEnrollment.recordSetup
     // holding it for the idle limit (#3630). An earlier step names no claim; a report has no identity.
     if (input.report.outcome === "failed" && input.report.failedStep === "storage") {
       yield* drizzle.update(schemaMachineEnrollmentToken)
-        .set({ claimedAt: sql`'epoch'::timestamptz`, updatedAt: new Date() })
+        .set({ claimedAt: sql`'epoch'::timestamptz`, updatedAt: sql`now()` })
         .where(and(
           eq(schemaMachineEnrollmentToken.tokenHash, hashEnrollmentToken(input.token)),
           isNotNull(schemaMachineEnrollmentToken.claimedMachineId),
@@ -269,7 +268,7 @@ const loadEnrollmentToken = Effect.fn("MachineEnrollment.loadToken")(
       .from(schemaMachineEnrollmentToken)
       .where(and(
         eq(schemaMachineEnrollmentToken.tokenHash, hashEnrollmentToken(token)),
-        gt(schemaMachineEnrollmentToken.expiresAt, sql`clock_timestamp()`),
+        gt(schemaMachineEnrollmentToken.expiresAt, checkedNow()),
       ))
       .limit(1);
     if (!row) return yield* new Unauthorized();
@@ -314,27 +313,30 @@ export const JoinSlots = Context.Reference<number>("ployz/JoinSlots", { defaultV
 const JOIN_SLOT_IDLE_LIMIT = sql`interval '10 minutes'`;
 /** A queued token keeps its place while it asks again within this long; asking stamps `updatedAt`. */
 const QUEUED_LIVE = sql`interval '15 seconds'`;
-const claimHoldsSlot = sql`${schemaMachineEnrollmentToken.claimedAt} > clock_timestamp() - ${JOIN_SLOT_IDLE_LIMIT}`;
+const claimHoldsSlot = sql`${schemaMachineEnrollmentToken.claimedAt} > ${checkedNow()} - ${JOIN_SLOT_IDLE_LIMIT}`;
 
 /**
  * Binds the token to one Machine identity before it hands out the Pairing secret. The same identity
  * may claim again to resume until enrollment completes; a failed enrollment keeps the token spent.
  * Claiming takes a join slot, and renews a claim whose slot lapsed.
+ * It locks the token first, so the expiry check follows any wait, even behind a release that locked it and changed nothing.
  */
 const claimEnrollmentToken = Effect.fn("MachineEnrollment.claimToken")(
   function* (token: string, identity: { readonly machineId: MachineId; readonly publicKey: string; readonly name: MachineName }) {
     const { drizzle } = yield* Database;
+    const scope = eq(schemaMachineEnrollmentToken.tokenHash, hashEnrollmentToken(token));
+    yield* drizzle.select({ tokenHash: schemaMachineEnrollmentToken.tokenHash }).from(schemaMachineEnrollmentToken).where(scope).for("update");
     const [claimed] = yield* drizzle.update(schemaMachineEnrollmentToken)
       .set({
         claimedMachineId: identity.machineId,
         claimedPublicKey: identity.publicKey,
         claimedName: identity.name,
         claimedAt: sql`case when ${claimHoldsSlot} then ${schemaMachineEnrollmentToken.claimedAt} else now() end`,
-        updatedAt: new Date(),
+        updatedAt: sql`now()`,
       })
       .where(and(
-        eq(schemaMachineEnrollmentToken.tokenHash, hashEnrollmentToken(token)),
-        gt(schemaMachineEnrollmentToken.expiresAt, sql`clock_timestamp()`),
+        scope,
+        gt(schemaMachineEnrollmentToken.expiresAt, checkedNow()),
         isNull(schemaMachineEnrollmentToken.joinedMachineId),
         or(
           isNull(schemaMachineEnrollmentToken.claimedMachineId),
@@ -450,20 +452,20 @@ const queueForJoinSlot = Effect.fn("MachineEnrollment.queueForJoinSlot")(
     const tokens = schemaMachineEnrollmentToken;
     const tokenHash = hashEnrollmentToken(input.token);
     const own = (column: SQL) => sql`(select ${column} from ${tokens} where ${tokens.tokenHash} = ${tokenHash})`;
-    const place = sql`coalesce(${own(sql`${tokens.queuedAt}`)}, clock_timestamp())`;
+    const place = sql`coalesce(${own(sql`${tokens.queuedAt}`)}, ${checkedNow()})`;
     const [line] = yield* drizzle.select({
       holding: sql<boolean>`coalesce(${own(claimHoldsSlot)}, false)`,
       joining: countWhere(and(claimHoldsSlot, ne(tokens.claimedMachineId, input.founderMachineId))),
       waiting: countWhere(and(
         sql`not coalesce(${claimHoldsSlot}, false)`,
         lt(tokens.queuedAt, place),
-        gt(tokens.updatedAt, sql`clock_timestamp() - ${QUEUED_LIVE}`),
+        gt(tokens.updatedAt, sql`${checkedNow()} - ${QUEUED_LIVE}`),
       )),
     }).from(tokens).where(and(
       eq(tokens.organizationId, input.organizationId),
       ne(tokens.tokenHash, tokenHash),
       isNull(tokens.joinedMachineId),
-      gt(tokens.expiresAt, sql`clock_timestamp()`),
+      gt(tokens.expiresAt, checkedNow()),
     ));
     if (line?.holding) return null;
     const first = (line?.joining ?? 0) + (line?.waiting ?? 0);
@@ -489,7 +491,7 @@ export const readJoinStatus = Effect.fn("MachineEnrollment.readJoinStatus")(func
   if (founder === null) return { ahead: line, joining: 0 };
   const tokens = schemaMachineEnrollmentToken;
   const holding = sql`coalesce(${claimHoldsSlot}, false)`;
-  const waiter = sql`not ${holding} and ${tokens.queuedAt} is not null and ${tokens.updatedAt} > clock_timestamp() - ${QUEUED_LIVE}`;
+  const waiter = sql`not ${holding} and ${tokens.queuedAt} is not null and ${tokens.updatedAt} > ${checkedNow()} - ${QUEUED_LIVE}`;
   const rows = yield* drizzle.select({
     serverEnrollmentId: tokens.serverEnrollmentId,
     waiter: sql<boolean>`${waiter}`,
@@ -498,7 +500,7 @@ export const readJoinStatus = Effect.fn("MachineEnrollment.readJoinStatus")(func
   }).from(tokens).where(and(
     eq(tokens.organizationId, organizationId),
     isNull(tokens.joinedMachineId),
-    gt(tokens.expiresAt, sql`clock_timestamp()`),
+    gt(tokens.expiresAt, checkedNow()),
   ));
   const joining = rows.filter((row) => row.joining).length;
   for (const row of rows) {
@@ -510,7 +512,7 @@ export const readJoinStatus = Effect.fn("MachineEnrollment.readJoinStatus")(func
 const renewJoinSlot = Effect.fn("MachineEnrollment.renewJoinSlot")(function* (token: string) {
   const { drizzle } = yield* Database;
   const renewed = yield* drizzle.update(schemaMachineEnrollmentToken)
-    .set({ claimedAt: sql`now()`, updatedAt: new Date() })
+    .set({ claimedAt: sql`now()`, updatedAt: sql`now()` })
     .where(and(eq(schemaMachineEnrollmentToken.tokenHash, hashEnrollmentToken(token)), claimHoldsSlot))
     .returning({ tokenHash: schemaMachineEnrollmentToken.tokenHash });
   return renewed.length > 0;
@@ -535,7 +537,7 @@ const releaseUnsentJoinSlot = (token: string, machineId: MachineId, organization
       ));
     if (allocation?.assignments.some((saved) => saved.machine.id === machineId)) return;
     yield* drizzle.update(schemaMachineEnrollmentToken)
-      .set({ claimedAt: sql`'epoch'::timestamptz`, updatedAt: new Date() })
+      .set({ claimedAt: sql`'epoch'::timestamptz`, updatedAt: sql`now()` })
       .where(and(
         scope,
         eq(schemaMachineEnrollmentToken.claimedMachineId, machineId),
@@ -892,7 +894,7 @@ const releaseRefusedClaim = Effect.fn("MachineEnrollment.releaseRefusedClaim")(f
       .where(eq(organizationMachine.organizationId, organizationId)).limit(1);
     if (held) return "connected" as const;
     yield* drizzle.delete(schemaOrganizationPairing).where(eq(schemaOrganizationPairing.organizationId, organizationId));
-    yield* drizzle.update(schemaMachineEnrollmentToken).set({ expiresAt: sql`now()`, updatedAt: new Date() }).where(and(
+    yield* drizzle.update(schemaMachineEnrollmentToken).set({ expiresAt: sql`now()`, updatedAt: sql`now()` }).where(and(
       eq(schemaMachineEnrollmentToken.organizationId, organizationId),
       eq(schemaMachineEnrollmentToken.claimedMachineId, machineId),
       isNull(schemaMachineEnrollmentToken.joinedMachineId),
@@ -1014,7 +1016,7 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
           founderPublicationUntil: sql`clock_timestamp() + ${PUBLICATION_TURN_MS} * interval '1 millisecond'`,
         }).where(and(
           eq(schemaOrganizationPairing.organizationId, token.organizationId),
-          or(isNull(schemaOrganizationPairing.founderPublication), lt(schemaOrganizationPairing.founderPublicationUntil, sql`clock_timestamp()`)),
+          or(isNull(schemaOrganizationPairing.founderPublication), lt(schemaOrganizationPairing.founderPublicationUntil, checkedNow())),
         )).returning({ organizationId: schemaOrganizationPairing.organizationId });
         if (!taken) return yield* publicationBusy();
         return { iv, founding, encryptedPairingSecret: pairing.encryptedPairingSecret, turn };
@@ -1037,7 +1039,7 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
         }
         yield* drizzle.update(organizationMachine).set({
           encryptedCapability: encryption.encrypt(input.capability), managementIdentity: identity, pushTarget: null,
-          machineName: token.claimedName ?? saved.machineName, updatedAt: new Date(),
+          machineName: token.claimedName ?? saved.machineName, updatedAt: sql`now()`,
         }).where(scope);
       } else {
         // Before Cloud holds a connection into it, a founder's Cluster is checked fresh, and a joiner is checked joined.
@@ -1050,7 +1052,7 @@ export const publishMachineEnrollment = Effect.fn("MachineEnrollment.publishCand
           set: {
             clusterKey, encryptedCapability: encryption.encrypt(input.capability), managementIdentity: identity, pushTarget: null,
             machineName: sql`coalesce(excluded.machine_name, ${organizationMachine.machineName})`,
-            isDialEntry: pairing.founderClaimMachineId === input.machineId, updatedAt: new Date(),
+            isDialEntry: pairing.founderClaimMachineId === input.machineId, updatedAt: sql`now()`,
           },
         });
       }
@@ -1273,7 +1275,7 @@ const commitFounder = Effect.fn("MachineEnrollment.commitFounder")(function* (
     return yield* new Conflict({ message: "The Organization is already ready on another Machine." });
   }
   if (pairing.founderMachineId !== null) return;
-  yield* drizzle.update(schemaOrganizationPairing).set({ founderMachineId: machineId, updatedAt: new Date() })
+  yield* drizzle.update(schemaOrganizationPairing).set({ founderMachineId: machineId, updatedAt: sql`now()` })
     .where(eq(schemaOrganizationPairing.organizationId, organizationId));
 });
 

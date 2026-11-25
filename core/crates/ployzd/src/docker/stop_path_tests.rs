@@ -459,8 +459,6 @@ async fn creating_a_door_asks_docker_for_nothing_it_does_not_need() {
             "GET /containers/holder/json",
             "GET /images/<pinned image>/json",
             "GET /containers/<new caddy>/json",
-            "GET /networks/ployz",
-            "GET /containers/json",
             "POST /containers/create",
         ])
     );

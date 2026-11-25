@@ -39,7 +39,7 @@ export const upsertGithubInstallation = Effect.fn(
 /** GitHub suspended the installation: no token for it, Cloud's or an Organization's, until it unsuspends. */
 export const suspendGithubInstallation = Effect.fn("Github.suspendInstallation")(function* (installationId: number) {
   const database = yield* Database;
-  yield* database.drizzle.update(schemaGithubInstallation).set({ suspendedAt: new Date() })
+  yield* database.drizzle.update(schemaGithubInstallation).set({ suspendedAt: sql`now()` })
     .where(eq(schemaGithubInstallation.installationId, installationId));
 });
 

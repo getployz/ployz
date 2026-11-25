@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { and, eq, gt, inArray, lte, ne, or } from "drizzle-orm";
+import { and, eq, gt, inArray, lte, ne, or, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { setupStaleCutoff } from "#/modules/ingress/doors";
 import { lockIngressRows } from "#/modules/ingress/doors.lock.server";
@@ -26,8 +26,8 @@ export const endClusterIngress = Effect.fn("Cloudflare.endClusterIngress")(funct
   const working = and(eq(organizationCloudflareIngress.state, "setting_up"), gt(organizationCloudflareIngress.updatedAt, cutoff));
   const ended = or(ne(organizationCloudflareIngress.state, "setting_up"), lte(organizationCloudflareIngress.updatedAt, cutoff));
   yield* drizzle.delete(organizationCloudflareIngress).where(and(row, ended));
-  yield* drizzle.update(organizationCloudflareIngress).set({ clusterRemovedAt: new Date() }).where(and(row, working));
+  yield* drizzle.update(organizationCloudflareIngress).set({ clusterRemovedAt: sql`now()` }).where(and(row, working));
   yield* drizzle.update(ingressDoorsAttempt)
-    .set({ state: "failed", failure: "The Cluster was removed.", endedAt: new Date() })
+    .set({ state: "failed", failure: "The Cluster was removed.", endedAt: sql`now()` })
     .where(and(eq(ingressDoorsAttempt.organizationId, organizationId), inArray(ingressDoorsAttempt.state, ["pending", "running"])));
 });

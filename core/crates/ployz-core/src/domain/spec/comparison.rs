@@ -166,6 +166,7 @@ mod tests {
                 stopped: false,
                 run: None,
                 log_driver: log_driver.map(str::to_owned),
+                admission: None,
             })
             .unwrap()
         };

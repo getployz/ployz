@@ -6,6 +6,7 @@ import { session } from "#/modules/identity/tables";
 import { member } from "#/modules/organization/tables";
 import { whileLocked } from "#/server/advisory-lock.server";
 import { Database } from "#/server/database.server";
+import { checkedNow } from "#/db/tables";
 
 // Holding a member's grants pins a connection while its work takes more, so this bounds how many hold or wait at once.
 const grantHolders = Semaphore.makeUnsafe(4);
@@ -43,21 +44,24 @@ export const linkConsentSession = Effect.fn("Identity.linkConsentSession")(funct
   grant: { readonly clientId: string; readonly userId: string; readonly organizationId: string },
   sessionId: string,
 ) {
-  const { drizzle } = yield* Database;
-  const [consent] = yield* drizzle.select({ id: oauthConsent.id }).from(oauthConsent).where(and(
-    eq(oauthConsent.clientId, grant.clientId),
-    eq(oauthConsent.userId, grant.userId),
-    eq(oauthConsent.referenceId, grant.organizationId),
-  )).limit(1);
-  if (consent === undefined) return false;
-  const link = and(eq(oauthConsentSession.consentId, consent.id), eq(oauthConsentSession.sessionId, sessionId));
-  yield* drizzle.insert(oauthConsentSession).values({ consentId: consent.id, sessionId }).onConflictDoNothing();
-  const [live] = yield* drizzle.select({ id: session.id }).from(session)
-    .where(and(eq(session.id, sessionId), gt(session.expiresAt, new Date())))
-    .for("share");
-  if (live !== undefined) return true;
-  yield* drizzle.update(oauthConsentSession).set({ signedOutAt: new Date() }).where(link);
-  return false;
+  const database = yield* Database;
+  return yield* database.transaction(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    const [consent] = yield* drizzle.select({ id: oauthConsent.id }).from(oauthConsent).where(and(
+      eq(oauthConsent.clientId, grant.clientId),
+      eq(oauthConsent.userId, grant.userId),
+      eq(oauthConsent.referenceId, grant.organizationId),
+    )).limit(1);
+    if (consent === undefined) return false;
+    const link = and(eq(oauthConsentSession.consentId, consent.id), eq(oauthConsentSession.sessionId, sessionId));
+    yield* drizzle.insert(oauthConsentSession).values({ consentId: consent.id, sessionId }).onConflictDoNothing();
+    yield* drizzle.select({ id: session.id }).from(session).where(eq(session.id, sessionId)).for("share");
+    const [live] = yield* drizzle.select({ id: session.id }).from(session)
+      .where(and(eq(session.id, sessionId), gt(session.expiresAt, checkedNow())));
+    if (live !== undefined) return true;
+    yield* drizzle.update(oauthConsentSession).set({ signedOutAt: sql`now()` }).where(link);
+    return false;
+  }));
 });
 
 /**
@@ -108,9 +112,9 @@ export const grantActs = Effect.fn("Identity.grantActs")(function* (consentId: s
 export const signOutSessionAgents = Effect.fn("Identity.signOutSessionAgents")(function* (userId: string, sessionId: string) {
   const { drizzle } = yield* Database;
   const consents = drizzle.select({ id: oauthConsent.id }).from(oauthConsent).where(eq(oauthConsent.userId, userId));
-  const signedIn = drizzle.select({ id: session.id }).from(session).where(and(eq(session.userId, userId), gt(session.expiresAt, new Date())));
+  const signedIn = drizzle.select({ id: session.id }).from(session).where(and(eq(session.userId, userId), gt(session.expiresAt, checkedNow())));
   yield* drizzle.update(oauthConsentSession)
-    .set({ signedOutAt: new Date() })
+    .set({ signedOutAt: sql`now()` })
     .where(and(
       isNull(oauthConsentSession.signedOutAt),
       inArray(oauthConsentSession.consentId, consents),

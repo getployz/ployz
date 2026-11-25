@@ -89,6 +89,7 @@ fn shop() -> (ConfigStore, Actor) {
                 version: None,
                 message: None,
                 accept_volume_loss: Vec::new(),
+                rule: None,
             }),
         )
         .unwrap();
@@ -345,6 +346,30 @@ fn a_pr_environment_cannot_be_protected() {
         "pr-5 is a PR Environment: only a Project's own Environments can be Protected"
     );
     assert!(protection(&store, &who).contains(&("pr-5".into(), false)));
+}
+
+// Catches a protected member's Device signing an automatic deploy rule into a Deploy that
+// waits for an owner or admin, who never sees it.
+#[test]
+fn a_staged_rule_read_says_whether_an_owner_or_admin_decides_the_readers_deploy() {
+    let (store, who) = shop();
+    let who = person(&who);
+    let decides = |protects| {
+        let view: ployz_store::RuleView = store
+            .read_trusted(
+                &who,
+                &ployz_store::RuleQuery {
+                    environment: at("production"),
+                    staged: true,
+                },
+                &acme_as(protects),
+            )
+            .unwrap();
+        view.protector_decides
+    };
+
+    assert_eq!(decides(false), Some(true));
+    assert_eq!(decides(true), Some(false));
 }
 
 /// `who` as a person, rather than the Store's own automation.

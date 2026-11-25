@@ -28,7 +28,7 @@ import { DEPLOY_MOVED } from "#/modules/proposals/proposal";
 import type { CliCall } from "#/modules/commands/cli-call.server";
 import { proposalsCliRoutes } from "#/modules/proposals/proposals.cli.server";
 import { operationProposals } from "#/modules/proposals/tables";
-import type { Change, ConfigCommand, ConfigQuery, ConfigStore, ConfigTrusted, DiffView, MachineId } from "@ployz/sdk";
+import type { Change, ConfigCommand, ConfigQuery, ConfigStore, ConfigTrusted, DiffView, MachineId, SavedRule } from "@ployz/sdk";
 import { RpcError } from "#/modules/runtime/ployz.server";
 import { admitDeploy } from "#/modules/config-store/admit-deploy";
 import { readStore } from "#/modules/config-store/config-store.server";
@@ -369,20 +369,20 @@ it.live("the sweep starts a step whose kickoff was lost, once, and never a step 
     // Approved in the database but never kicked off: Cloud fell over between the two.
     yield* provided(Effect.flatMap(Database, ({ drizzle }) => drizzle.update(operationProposals)
       .set({ status: "approved", decidedByUserId: owner.userId, decidedAt: new Date() }).where(eq(operationProposals.id, id))));
-    expect(yield* cluster(sweepProposals(new Date()))).toEqual([id]);
+    expect(yield* cluster(sweepProposals())).toEqual([id]);
     let rows = yield* acts;
     expect(rows).toMatchObject([{ verb: "stop", step: 0 }]);
     // Step 0 still running: another sweep starts nothing. Done and its advance lost: the sweep starts step 1, once.
-    yield* cluster(sweepProposals(new Date()));
+    yield* cluster(sweepProposals());
     expect(yield* acts).toHaveLength(1);
     yield* ended(rows[0]?.id ?? expect.fail("no act"), "done");
-    yield* cluster(sweepProposals(new Date()));
-    yield* cluster(sweepProposals(new Date()));
+    yield* cluster(sweepProposals());
+    yield* cluster(sweepProposals());
     rows = yield* acts;
     expect(rows).toMatchObject([{ verb: "stop", step: 0 }, { verb: "start", step: 1 }]);
     // A plan approved over an hour ago is past every step's window and is left alone.
     yield* provided(Effect.flatMap(Database, ({ drizzle }) => drizzle.update(operationProposals).set({ decidedAt: new Date(Date.now() - 2 * 60 * 60_000) }).where(eq(operationProposals.id, id))));
-    expect(yield* cluster(sweepProposals(new Date()))).toEqual([]);
+    expect(yield* cluster(sweepProposals())).toEqual([]);
   }));
 
 it.live("a denial with a blank reason is a denial with none", () =>
@@ -421,7 +421,7 @@ it.live("an agent's Deploy becomes one proposal with one link, and one person's 
     expect(yield* admitted(id)).toBe(1);
     // A second answer, and the sweep that runs the step again, admit nothing more.
     expect(yield* cluster(decideProposal(owner, id, approve))).toMatchObject({ ok: false, message: expect.stringContaining("already decided") });
-    yield* cluster(sweepProposals(new Date()));
+    yield* cluster(sweepProposals());
     expect(yield* admitted(id)).toBe(1);
     // The proposal reads as its Deployment: not done until it lands.
     expect(yield* provided(proposalStatus(owner, id))).toMatchObject({ ok: true, value: { steps: [{ state: expect.stringMatching(/^(accepted|running)$/) }] } });
@@ -570,6 +570,22 @@ it.live("a member's Deploy to a Protected Environment that only the page can fin
     expect(yield* admitted(id)).toBe(0);
     expect(yield* cluster(decideProposal(owner, id, approve))).toMatchObject({ ok: true, proposal: { status: "approved" } });
     expect(yield* admitted(id)).toBe(1);
+  }));
+
+// Catches a protected member's signed rule riding their proposal, so a protector's yes to the Deploy turns on every push.
+it.live("a member's CLI Deploy to a Protected Environment drops the automatic deploy rule it signed, and its approval keeps none", () =>
+  Effect.gen(function* () {
+    const { cluster, provided, owner, approve, admitted, protect, store } = yield* deployable();
+    yield* protect;
+    pendingCopy(store, yield* provided(readStore(ORGANIZATION, { query: "diff", environment: production })));
+    const ada = { ...(yield* provided(memberAgent)), via: "cli" } satisfies Caller;
+    const rule = asTestDouble<SavedRule>()({ rule: { body: "{}", signatures: [] }, births: {}, prior: null });
+    const id = linkedId(yield* cluster(linkDeploy(ada, { ...admitDeploy(production, ASKED), rule })));
+    expect(yield* cluster(filledBy(owner, id))).toMatchObject({ ok: true });
+    expect((yield* provided(deployStep(id))).command).not.toHaveProperty("rule");
+    expect(yield* cluster(decideProposal(owner, id, approve))).toMatchObject({ ok: true, proposal: { status: "approved" } });
+    expect(yield* admitted(id)).toBe(1);
+    expect((yield* provided(deployStep(id))).command).not.toHaveProperty("rule");
   }));
 
 it.live("a member's dashboard Deploy to a Protected Environment needs no passkey of theirs, so it reaches the proposal", () =>

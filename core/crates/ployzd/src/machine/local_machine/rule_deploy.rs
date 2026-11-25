@@ -359,6 +359,7 @@ fn refusal_text(refusal: &AuthorityRefusal) -> String {
         | AuthorityRefusal::VolumeNotGranted { .. }
         | AuthorityRefusal::Unsigned { .. }
         | AuthorityRefusal::NeedsSignature { .. }
+        | AuthorityRefusal::SignedName { .. }
         | AuthorityRefusal::NoClusterIdentity
         | AuthorityRefusal::Expired
         | AuthorityRefusal::ProofReplayed

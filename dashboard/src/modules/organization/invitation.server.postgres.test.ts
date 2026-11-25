@@ -1,5 +1,5 @@
 import { FULL_GRANT } from "#/modules/identity/token-grant";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { ConfigProvider, Effect, Layer } from "effect";
 import { Inngest } from "inngest";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -190,6 +190,20 @@ describe("invite links", () => {
     await harness.db.update(member).set({ role: "admin" }).where(and(eq(member.organizationId, ACME), eq(member.userId, ids.carol)));
   });
 
+  it("refuses a link whose deadline passes while its accept waits on the invite's lock", async () => {
+    const { id, link } = await invite("ada", {});
+    const { joined } = await harness.db.transaction(async (tx) => {
+      await tx.select({ id: invitation.id }).from(invitation).where(eq(invitation.id, id)).for("update");
+      const joined = outcome(acceptInvite(tokenOf(link), ids.dan));
+      await lockWaiter();
+      // The deadline lands inside the wait: after the accept's transaction began, before it holds the row.
+      await tx.update(invitation).set({ expiresAt: sql`clock_timestamp()` }).where(eq(invitation.id, id));
+      return { joined };
+    });
+    expect(await joined).toBe("Conflict");
+    expect(await roleOf(ids.dan)).toBeNull();
+  });
+
   it("shows a link from a sender who is no longer an admin as revoked, and lets someone else invite that email again", async () => {
     const sent = await invite("carol", { email: "dan@example.test" });
     await harness.db.update(member).set({ role: "member" }).where(and(eq(member.organizationId, ACME), eq(member.userId, ids.carol)));
@@ -311,7 +325,7 @@ describe("a former member", () => {
     run(getOrganizationState({ userId: ids[who] }, slug));
 
   it("learns they are no longer a member of an Organization they joined, while anyone else learns nothing", async () => {
-    expect(await roleOf(ids.eve)).toBeNull();
+    expect(await roleOf(ids.dan)).toBeNull();
     expect(await stateOf("eve", "acme")).toMatchObject({ formerOrganization: "Acme" });
     expect(await stateOf("dan", "acme")).toMatchObject({ formerOrganization: null });
     expect(await stateOf("eve", "nowhere")).toMatchObject({ formerOrganization: null });

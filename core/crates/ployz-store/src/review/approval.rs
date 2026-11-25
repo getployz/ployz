@@ -438,7 +438,7 @@ impl<'a> Gate<'a> {
     }
 
     /// Whether the Environment's protection asks this caller.
-    const fn protected(&self) -> bool {
+    pub(crate) const fn protected(&self) -> bool {
         self.protection.asks()
     }
 

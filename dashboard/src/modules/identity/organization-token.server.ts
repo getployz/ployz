@@ -12,6 +12,7 @@ import { FULL_GRANT, grantLabel, presetGrant, type TokenGrant, type TokenPreset 
 import { Database } from "#/server/database.server";
 import { NotFound, Validation } from "#/server/public-error";
 import { DAY_MS } from "#/lib/time-range";
+import { checkedNow } from "#/db/tables";
 
 /** Marks a bearer as an Organization Token rather than a session token. */
 export const ORGANIZATION_TOKEN_PREFIX = "ployz_";
@@ -147,7 +148,7 @@ export const listCredentials = Effect.fn("OrganizationToken.list")(function* (ca
     .where(and(
       eq(session.userId, caller.userId),
       isCliSession,
-      gt(session.expiresAt, now),
+      gt(session.expiresAt, checkedNow()),
     ))
     .orderBy(asc(session.createdAt), asc(session.id));
   return {

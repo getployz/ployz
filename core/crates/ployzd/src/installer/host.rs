@@ -242,11 +242,85 @@ pub fn write_units(bin_dir: &Path, run_dir: &Path, systemd_dir: &Path) -> Result
         &volume_plugin_service_unit(bin_dir),
         "write Volume plugin service unit",
     )?;
+    write_file_atomically(
+        &systemd_dir.join(Unit::Fence.name()),
+        &fence_service_unit(bin_dir),
+        "write container network fence unit",
+    )?;
+    let docker_drop_in = docker_fence_drop_in(systemd_dir);
+    fs::create_dir_all(docker_drop_in.parent().unwrap_or(systemd_dir)).map_err(|source| {
+        Error::Io {
+            stage: "create Docker unit drop-in directory",
+            source,
+        }
+    })?;
+    write_file_atomically(
+        &docker_drop_in,
+        &docker_fence_requirement(),
+        "write Docker's fence requirement",
+    )?;
     remove_legacy_observe_unit(systemd_dir)
 }
 
-pub(super) fn activate_units() -> Result<(), Error> {
+/// Where Docker's unit learns it starts only once the fence is back.
+pub(super) fn docker_fence_drop_in(systemd_dir: &Path) -> std::path::PathBuf {
+    systemd_dir
+        .join("docker.service.d")
+        .join("ployz-fence.conf")
+}
+
+/// Takes the fence's boot files away once a release that may not know the fence is in
+/// place: Docker's requirement, the unit and the fence file. A release that knows the fence
+/// writes them again: the unit with its units, the file at its network start.
+pub(super) fn remove_fence_files(systemd_dir: &Path, data_dir: &Path) -> Result<(), Error> {
+    for (path, stage) in [
+        (
+            docker_fence_drop_in(systemd_dir),
+            "remove Docker's fence requirement",
+        ),
+        (
+            systemd_dir.join(Unit::Fence.name()),
+            "remove container network fence unit",
+        ),
+        (
+            data_dir.join(crate::network::FENCE_FILE),
+            "remove container network fence file",
+        ),
+    ] {
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => return Err(Error::Io { stage, source }),
+        }
+    }
+    Ok(())
+}
+
+/// Once the release now running is ready: when its daemon wrote no fence file, it doesn't
+/// know the fence, which would drop its own Containers' traffic, so take the fence out of
+/// iptables. Run only after this release's daemon stopped, whose keeper would put it back.
+pub(super) fn remove_unknown_fence(data_dir: &Path) -> Result<(), Error> {
+    if data_dir.join(crate::network::FENCE_FILE).exists() {
+        return Ok(());
+    }
+    crate::network::remove_fence().map_err(|error| Error::Command {
+        stage: "remove container network fence".into(),
+        message: ployz_core::error_chain::inline(&error),
+    })
+}
+
+pub(super) fn activate_units(systemd_dir: &Path) -> Result<(), Error> {
     systemctl("reload systemd units", ["daemon-reload"])?;
+    // Bridged traffic between two Containers on this Server reaches the fence only once
+    // `br_netfilter` is loaded, which Docker leaves off; the unit loads it. Started, never
+    // restarted: Docker requires the unit, so a restart would restart Docker too. A
+    // release from before the fence writes no unit.
+    if systemd_dir.join(Unit::Fence.name()).is_file() {
+        systemctl(
+            "start the container network fence",
+            ["start", Unit::Fence.name()],
+        )?;
+    }
     systemctl("enable daemon", ["enable", Unit::Ployz.name()])?;
     systemctl(
         "enable Machine API socket",
@@ -259,15 +333,19 @@ pub(super) fn activate_units() -> Result<(), Error> {
     Ok(())
 }
 
+/// The daemon starts after the fence unit, which a restart starts too: an upgrade worker
+/// from before the fence restarts only the daemon. The daemon keeps bridge filtering on
+/// itself, so it may write the bridge's sysctls.
 fn machine_daemon_service_unit(bin_dir: &Path) -> String {
     let bin = bin_dir.display();
     let socket = Unit::PloyzSocket.name();
+    let fence = Unit::Fence.name();
     format!(
         "\
 [Unit]
 Description=Ployz Machine daemon
-After=network-online.target docker.service {socket}
-Wants=network-online.target
+After=network-online.target {fence} docker.service {socket}
+Wants=network-online.target {fence}
 Requires={socket}
 
 [Service]
@@ -285,12 +363,49 @@ ProtectSystem=full
 ProtectControlGroups=true
 ProtectHome=read-only
 ProtectKernelTunables=true
+ReadWritePaths=-/proc/sys/net/bridge
 PrivateTmp=true
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 RestrictNamespaces=true
 
 [Install]
 WantedBy=multi-user.target
+"
+    )
+}
+
+/// Puts the fence on the container network back before Docker starts any Container at
+/// boot. Install and upgrade only write it: nothing starts it but Docker's start. A release
+/// from before the fence, which a failed upgrade puts back, refuses the subcommand as a
+/// usage error, exit 2, and keeps no fence to restore.
+fn fence_service_unit(bin_dir: &Path) -> String {
+    let bin = bin_dir.display();
+    format!(
+        "\
+[Unit]
+Description=Ployz container network fence
+Before=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart={bin}/ployzd fence
+SuccessExitStatus={USAGE_ERROR}
+
+[Install]
+WantedBy=multi-user.target
+"
+    )
+}
+
+/// Docker starts only after the fence is back, and not at all when it can't be.
+fn docker_fence_requirement() -> String {
+    let fence = Unit::Fence.name();
+    format!(
+        "\
+[Unit]
+Requires={fence}
+After={fence}
 "
     )
 }
@@ -711,8 +826,8 @@ WantedBy=sockets.target
             "\
 [Unit]
 Description=Ployz Machine daemon
-After=network-online.target docker.service ployz.socket
-Wants=network-online.target
+After=network-online.target ployz-fence.service docker.service ployz.socket
+Wants=network-online.target ployz-fence.service
 Requires=ployz.socket
 
 [Service]
@@ -730,6 +845,7 @@ ProtectSystem=full
 ProtectControlGroups=true
 ProtectHome=read-only
 ProtectKernelTunables=true
+ReadWritePaths=-/proc/sys/net/bridge
 PrivateTmp=true
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 RestrictNamespaces=true
