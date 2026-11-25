@@ -65,6 +65,9 @@ Machine RPC evolves by capability, never by version compare:
    - `ensure.v1` and `ensure-pinned.v1` keep a removed Container's anonymous
      volumes unless the removal names the copy that replaced it (#4562). An
      older runner's in-place replace leaves zero to many volumes behind.
+   - A Volume Forget refuses a slot that may hold writes no other Machine has
+     unless it says `discard` (#4571). A self-hosted Cloud on 0.4.0-beta.2 or
+     earlier can't remove a Move's old copy until it upgrades.
 
 A breaking line protects older Clusters from its own side: daemons follow
 their own line's channel, and the new line refuses to mix with the old.
