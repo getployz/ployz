@@ -1233,7 +1233,8 @@ struct Metrics {
 /// The Drain of Server `web-2` within `scope` against a Cluster that answers reads and the
 /// services role, and every other call it sent, turning that role off included. Its peer
 /// `web-1` runs a copy of `app/metrics`, a user Global left from Compose before
-/// 0.1.2-beta.42. `look` answers for `web-2` by how many Machine listings came before it.
+/// 0.1.2-beta.42. `look` answers for `web-2` by how many Machine listings came before it,
+/// and `look(0)` for the services-off update, which applies before it hangs.
 async fn drain_reading_only(
     accepts_services: bool,
     scope: DrainScope,
@@ -1310,6 +1311,9 @@ async fn drain_reading_only(
                     {
                         turned_off.store(true, Ordering::SeqCst);
                         asked.lock().unwrap().push("services off".to_owned());
+                        if matches!(look(0, &metrics), Look::Hangs) {
+                            std::future::pending::<()>().await;
+                        }
                         let mut machine = machines[0].machine.clone();
                         machine.accepts_services = false;
                         RpcResponse::from(MachineUpdated { machine })
@@ -1558,6 +1562,33 @@ async fn a_listing_that_times_out_after_services_went_off_says_they_are_off() {
     .await;
 
     assert_left_off(drained, "Ployz's call to your Server's daemon failed.");
+    assert_eq!(asked, ["services off"]);
+}
+
+/// An update that turns services off and never answers may still have landed, so the
+/// Drain says services may be off and how to turn them back on, not that nothing changed.
+#[tokio::test(start_paused = true)]
+async fn a_services_off_update_that_never_answers_says_they_may_be_off() {
+    let (drained, asked) = drain_reading_only(true, DrainScope::EveryNamespace, |before, _| {
+        if before == 0 {
+            Look::Hangs
+        } else {
+            Look::Lists(Vec::new())
+        }
+    })
+    .await;
+
+    let Err(error @ super::DrainError::MaybeOff { .. }) = drained else {
+        panic!("expected services maybe off, got {drained:?}");
+    };
+    let message = RpcError::from(error).message;
+    assert!(
+        message.ends_with(
+            "Services may now be off on web-2: if they are, turn them back on to let it run \
+             services again."
+        ),
+        "{message}"
+    );
     assert_eq!(asked, ["services off"]);
 }
 

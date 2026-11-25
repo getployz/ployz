@@ -554,6 +554,11 @@ A drain that stops after turning the server's services off, for any reason, ends
 new services until you turn **Run services here** back on, or run
 `ployz server set web-2 --accepts-services=true`.
 
+If the server never answers the request to turn its services off, or you cancel while it's
+pending, the drain can't tell whether the change landed. Its error then ends with
+`Services may now be off on web-2: if they are, turn them back on to let it run services again.`
+Check **Run services here** on the server, and turn it back on if it's off.
+
 The new container runs exactly the image the old one ran, even when its tag, like `app:v1`, names
 another image on the other server by then. A service whose image is named by a tag therefore moves
 only to a server on this release of Ployz or later; one named by digest (`app@sha256:…`) can move

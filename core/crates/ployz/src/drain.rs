@@ -323,6 +323,10 @@ pub enum DrainError {
     /// finds it off.
     #[error("{}", left_off(.server, .stop))]
     LeftOff { server: MachineName, stop: Stop },
+    /// Turning `server`'s services role off timed out or was cancelled, so the daemon may
+    /// have turned it off anyway.
+    #[error("{}", maybe_off(.server, .stop))]
+    MaybeOff { server: MachineName, stop: Stop },
 }
 
 /// What stopped a Drain before anything moved.
@@ -362,6 +366,17 @@ fn left_off(server: &MachineName, stop: &Stop) -> String {
     )
 }
 
+/// What a Drain says when `stop` ended its turning `server`'s services off without an
+/// answer.
+fn maybe_off(server: &MachineName, stop: &Stop) -> String {
+    let stopped = stop.to_string();
+    let end = if stopped.ends_with('.') { "" } else { "." };
+    format!(
+        "{stopped}{end} Services may now be off on {server}: if they are, turn them back on \
+         to let it run services again."
+    )
+}
+
 impl From<Stop> for RpcError {
     fn from(stop: Stop) -> Self {
         let coded = |code, stop: &Stop| Self::new(code, stop.to_string());
@@ -381,6 +396,10 @@ impl From<DrainError> for RpcError {
             DrainError::Unchanged(stop) => stop.into(),
             DrainError::LeftOff { server, stop } => {
                 let message = left_off(&server, &stop);
+                Self::from(stop).with_message(message)
+            }
+            DrainError::MaybeOff { server, stop } => {
+                let message = maybe_off(&server, &stop);
                 Self::from(stop).with_message(message)
             }
         }
@@ -525,7 +544,16 @@ async fn preflight(
     let services_role = if server.accepts_services {
         turn_services_off(client, &server.id, cancellation)
             .await
-            .map_err(DrainError::Unchanged)?;
+            .map_err(|stop| {
+                if unanswered(&stop) {
+                    DrainError::MaybeOff {
+                        server: server.name.clone(),
+                        stop,
+                    }
+                } else {
+                    DrainError::Unchanged(stop)
+                }
+            })?;
         ServicesRole::TurnedOff
     } else {
         ServicesRole::AlreadyOff
@@ -647,6 +675,16 @@ fn user_globals(server: &Machine, globals: &[QualifiedService]) -> RpcError {
             server.name
         ),
     )
+}
+
+/// Whether `stop` ended a services-role update without the daemon's answer, so the update
+/// may still have landed: the daemon finishes an update it admitted after its caller goes.
+fn unanswered(stop: &Stop) -> bool {
+    match stop {
+        Stop::Cancelled | Stop::Connect(_) => true,
+        Stop::Refused(error) => error.code == RpcErrorCode::Unavailable,
+        Stop::RoleNotObserved | Stop::Unobservable { .. } => false,
+    }
 }
 
 /// Turn the services role off on `id`. Whether the entry observes it is the next phase's.

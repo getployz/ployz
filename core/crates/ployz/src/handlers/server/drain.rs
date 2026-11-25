@@ -250,7 +250,7 @@ fn refusal(matches: &ArgMatches, error: DrainError) -> Error {
         // The CLI reports a connection failure with its own words.
         DrainError::Unchanged(Stop::Connect(error)) => error.into(),
         error @ DrainError::Unchanged(_) => RpcError::from(error).into(),
-        DrainError::LeftOff { ref server, .. } => {
+        DrainError::LeftOff { ref server, .. } | DrainError::MaybeOff { ref server, .. } => {
             let undo = crate::cli::rerun(
                 matches,
                 &["server", "set", server.as_str(), "--accepts-services=true"],
