@@ -110,26 +110,8 @@ impl Backend {
         trusted: &Trusted,
         approval: Option<&str>,
     ) -> Result<C::Written, StoreCallError> {
-        if let Self::Cloud(..) = self {
-            refuse_unsealed_logins(command)?;
-        }
         self.call(self.client().write(command, trusted, approval))
     }
-}
-
-/// Refuses `command` before it leaves for Cloud unless each registry login it sets
-/// is one this CLI sealed, kept or removed, by any path or key the Store reads one from.
-/// Sealing is the only way a login leaves, whatever route a write takes here.
-fn refuse_unsealed_logins<C: Tell>(command: &C) -> Result<(), StoreCallError> {
-    let command = ployz_store::Command::decode(command.to_command()).map_err(|error| {
-        StoreCallError::Refused(ployz_core::RpcError::new(
-            ployz_core::RpcErrorCode::Internal,
-            format!("this CLI could not read its own command: {error}"),
-        ))
-    })?;
-    command
-        .refuse_unsealed_logins()
-        .map_err(StoreCallError::Refused)
 }
 
 /// The Config Store as one command sees it: a refusal becomes this command's
