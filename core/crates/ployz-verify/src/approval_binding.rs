@@ -28,7 +28,9 @@
 //!   second read (`Action::Unlisted`). Cloud and the Engine observe it apart (bet 1).
 //! - **The frame** changes what `dataCheck` reads of a Service the Engine leaves on the
 //!   drained Server for its Volume, once (`Data`): the Volume's reason to stay clears, the
-//!   Service now mounts another managed Volume, or a Deploy made it a Global.
+//!   Service now mounts another managed Volume, or a Deploy made it a Global. Once a move is
+//!   planned, a Full caller replaces the Service that holds the Volume with a Global, once,
+//!   before admission or before the Move's cut (`Action::Swap`).
 //! - **The remover** revokes the caller's management access on a Machine once
 //!   (`Action::Revoke`): a Full caller's `set_device` removes the Device and its slot under
 //!   its own exclusive turn (`machine/local_machine/management_client.rs`).
@@ -36,8 +38,9 @@
 //!   its later steps: Cloud's second Store call before f06d2a6351 (`Action::Resend`), a
 //!   Drain's compare and Inngest's retry of it (`Action::Run`, `Action::Crash`), then its
 //!   Engine call: the first read and services off (`Action::Engine`), the second read
-//!   (`Action::Reread`), then its Volume plan (`Action::Volumes`) and each move's
-//!   admission (`Action::Admit`); and a Machine's admitted turn (`Action::Run`).
+//!   (`Action::Reread`), then its Volume plan (`Action::Volumes`), each move's
+//!   admission (`Action::Admit`) and its Move's cut (`Action::Cut`); and a Machine's
+//!   admitted turn (`Action::Run`).
 //!
 //! Each gate is restated by hand from the function it copies, with each shortcut that once
 //! skipped the digest comparison as a `Broken` flag that restores it:
@@ -59,8 +62,12 @@
 //!   a Server that didn't answer or that runs a user Global, chosen or not. Later still,
 //!   `planDrainVolumes` (`dashboard/src/modules/machines/server-drain-volumes.server.ts`)
 //!   plans each Volume move from a new frame through `dataCheck`, which keeps a Service any
-//!   copy of which is Global, and `admitDrainVolume` admits or refuses it; every Move's
-//!   `holderOn` (`volume-run.cluster.server.ts`) refuses a Global holder (`Command::Drain`).
+//!   copy of which is Global, and `admitDrainVolume` admits or refuses it. Admission and
+//!   each Move step read the holder again: `holderOn` (`volume-run.cluster.server.ts`)
+//!   refuses a Global's copy, and the Drain's pin (`admitDrainVolume`'s compare,
+//!   `holderSwapped` in `volume-run.inngest.ts`) a Container other than the one it chose
+//!   (`Command::Drain`). A Global that replaced the holder is a new Container, so either
+//!   refuses it; the model folds them into one holder check.
 //!   The carried yes's ask shows the Drain's effects and no preview (`yesRequired`'s
 //!   `previewed`), so it names no Volume forecast, and the model checks no move against one.
 //! - A Machine checks the caller's management access, `require_management_access`
@@ -374,6 +381,11 @@ enum Exec {
     Admitting {
         read: Data,
     },
+    /// `admitDrainVolume` admitted the move; its Move's steps are still to read the holder
+    /// again and cut it.
+    Cutting {
+        read: Data,
+    },
     Ran,
     /// Refused, `waited` once admitted, at the run.
     Refused {
@@ -407,6 +419,16 @@ enum Data {
     /// A Full caller replaced the Service with a Global after the Engine left it, so its
     /// Container on the Volume is a Global's copy.
     Global,
+}
+
+/// The step a Global that replaced the Volume's planned holder landed before: a Full
+/// caller replaced the Service with a Global after `planDrainVolumes` read it.
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+enum Swap {
+    /// `admitDrainVolume`, which reads the holder through `holderOn` (`readHolder`).
+    Admit,
+    /// The Move's steps, which read it through `holderOn` (`findHolder`) before the cut.
+    Cut,
 }
 
 /// The Drain step a change to the drained Server landed before.
@@ -447,6 +469,9 @@ enum Admission {
     /// Every candidate refused, the target stopped taking services, or the drain no longer
     /// owns its row: the Volume stays, with that reason on the report.
     Stayed,
+    /// The holder check refused the move: a Global's copy holds the Volume, or a Container
+    /// other than the one the Drain chose. The Volume stays.
+    HolderRefused,
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
@@ -470,6 +495,8 @@ struct State {
     data: Data,
     /// The frame changed `data` after Cloud's last compare.
     data_late: bool,
+    /// A Global replaced the Volume's planned holder.
+    swapped: Option<Swap>,
     exec: Exec,
     wrote: Option<Wrote>,
     admission: Option<Admission>,
@@ -484,7 +511,12 @@ impl State {
     const fn compared(&self) -> bool {
         matches!(
             self.exec,
-            Exec::Covered { .. } | Exec::Off | Exec::Moving | Exec::Admitting { .. } | Exec::Ran
+            Exec::Covered { .. }
+                | Exec::Off
+                | Exec::Moving
+                | Exec::Admitting { .. }
+                | Exec::Cutting { .. }
+                | Exec::Ran
         )
     }
 
@@ -496,7 +528,11 @@ impl State {
             Exec::Resending | Exec::Waiting { .. } => Some(Before::Compare),
             Exec::Covered { .. } => Some(Before::Read),
             Exec::Off => Some(Before::Reread),
-            Exec::Moving | Exec::Admitting { .. } | Exec::Ran | Exec::Refused { .. } => None,
+            Exec::Moving
+            | Exec::Admitting { .. }
+            | Exec::Cutting { .. }
+            | Exec::Ran
+            | Exec::Refused { .. } => None,
         }
     }
 
@@ -569,6 +605,12 @@ struct Broken {
     /// #4567 before its fourth round: `dataCheck` and `holderOn` took a Global's copy as
     /// the holder a Volume move cuts.
     volume_moves_global: bool,
+    /// A guard, not a past bug: the holder check at admission and at each Move step, which
+    /// refuses a Global's copy (`holderOn`) or a Container other than the one the Drain
+    /// chose (`admitDrainVolume`'s compare, `holderSwapped`). A Global that replaced the
+    /// holder is a new Container, so either refuses it. Set, the Move cuts whatever holds
+    /// the Volume when its step reads it.
+    move_skips_holder: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -610,8 +652,14 @@ enum Action {
     Reread,
     /// `planDrainVolumes` reads a new frame and plans each move `dataCheck` allows.
     Volumes,
-    /// `admitDrainVolume` admits the planned move (true) or refuses it (false).
+    /// `admitDrainVolume` admits the planned move (true) or refuses it (false), after its
+    /// holder check.
     Admit(bool),
+    /// A Full caller replaces the Service that holds the Volume with a Global, after
+    /// `planDrainVolumes` planned its move and before the Move's cut.
+    Swap,
+    /// The Move's steps read the holder again through the holder check, then cut it.
+    Cut,
 }
 
 impl ApprovalBinding {
@@ -662,8 +710,20 @@ impl ApprovalBinding {
             }
             Exec::Off => &[Data::Frees],
             Exec::Moving => &[Data::Frees, Data::Global],
-            Exec::Admitting { .. } | Exec::Ran | Exec::Refused { .. } => &[],
+            Exec::Admitting { .. } | Exec::Cutting { .. } | Exec::Ran | Exec::Refused { .. } => {
+                &[]
+            }
         }
+    }
+
+    /// Whether the holder check refuses a move planned from `read`: the Volume's holder is a
+    /// Global's copy (`holderOn`), or `swapped` replaced the Container the Drain chose
+    /// (the compare in `admitDrainVolume`, `holderSwapped` in the Move).
+    const fn holder_refuses(&self, read: Data, swapped: Option<Swap>) -> bool {
+        if self.broken.move_skips_holder {
+            return false;
+        }
+        swapped.is_some() || (matches!(read, Data::Global) && !self.broken.volume_moves_global)
     }
 
     /// `Gate::ask`'s comparison, at `protection` as the gate holds it.
@@ -1009,6 +1069,7 @@ impl Model for ApprovalBinding {
                         off: false,
                         data: Data::Stays,
                         data_late: false,
+                        swapped: None,
                         exec: Exec::Ready,
                         wrote: None,
                         admission: None,
@@ -1052,9 +1113,18 @@ impl Model for ApprovalBinding {
             }
             Exec::Off => actions.push(Action::Reread),
             Exec::Moving => actions.push(Action::Volumes),
-            Exec::Admitting { .. } => {
+            Exec::Admitting { read } => {
                 actions.push(Action::Admit(true));
                 actions.push(Action::Admit(false));
+                if state.swapped.is_none() && read != Data::Global {
+                    actions.push(Action::Swap);
+                }
+            }
+            Exec::Cutting { read } => {
+                actions.push(Action::Cut);
+                if state.swapped.is_none() && read != Data::Global {
+                    actions.push(Action::Swap);
+                }
             }
             Exec::Ran | Exec::Refused { .. } => {}
         }
@@ -1144,17 +1214,43 @@ impl Model for ApprovalBinding {
                 let Exec::Admitting { read } = state.exec else {
                     return None;
                 };
-                state.admission = Some(if admitted {
-                    Admission::Moved(read)
+                if !admitted {
+                    state.admission = Some(Admission::Stayed);
+                    state.exec = Exec::Ran;
+                } else if self.holder_refuses(read, state.swapped) {
+                    state.admission = Some(Admission::HolderRefused);
+                    state.exec = Exec::Ran;
                 } else {
-                    Admission::Stayed
+                    state.exec = Exec::Cutting { read };
+                }
+            }
+            Action::Swap => {
+                state.swapped = Some(match state.exec {
+                    Exec::Admitting { .. } => Swap::Admit,
+                    Exec::Cutting { .. } => Swap::Cut,
+                    _ => return None,
                 });
-                // A move cuts the Container it holds on the Volume: a Global's copy here.
-                if admitted && read == Data::Global {
-                    state.wrote = Some(Wrote {
-                        plan: Plan::Global,
-                        valid: self.valid(&state),
-                    });
+            }
+            Action::Cut => {
+                let Exec::Cutting { read } = state.exec else {
+                    return None;
+                };
+                if self.holder_refuses(read, state.swapped) {
+                    state.admission = Some(Admission::HolderRefused);
+                } else {
+                    // The cut stops the Container that holds the Volume now.
+                    let holder = if state.swapped.is_some() {
+                        Data::Global
+                    } else {
+                        read
+                    };
+                    state.admission = Some(Admission::Moved(holder));
+                    if holder == Data::Global {
+                        state.wrote = Some(Wrote {
+                            plan: Plan::Global,
+                            valid: self.valid(&state),
+                        });
+                    }
                 }
                 state.exec = Exec::Ran;
             }
@@ -1322,6 +1418,10 @@ impl Model for ApprovalBinding {
                     ADMISSION_REFUSES,
                     |_, state: &State| state.admission == Some(Admission::Stayed),
                 ));
+                properties.push(Property::sometimes(HOLDER_REFUSES, |_, state: &State| {
+                    state.swapped == Some(Swap::Cut)
+                        && state.admission == Some(Admission::HolderRefused)
+                }));
             }
             Command::Machine(Route::Turned) => {
                 properties.push(Property::sometimes(
@@ -1364,6 +1464,8 @@ const GLOBAL_KEEPS_VOLUME: &str =
 const SWITCHED_MOVES: &str = "a Volume the Service switched to after Cloud's compare and \
      before services-off moves once admitted, which the carried yes never named";
 const ADMISSION_REFUSES: &str = "admission refuses a planned Volume move, and the Volume stays";
+const HOLDER_REFUSES: &str = "a Global that replaced the Volume's holder after admission is \
+     refused at the Move's step, and the Volume stays";
 
 /// `path` under `model` in the code's words: each step, and what stands once it ran.
 fn story(model: &ApprovalBinding, path: &[(State, Option<Action>)]) -> String {
@@ -1408,7 +1510,7 @@ fn story(model: &ApprovalBinding, path: &[(State, Option<Action>)]) -> String {
         );
         let volume = if model.command == Command::Drain {
             format!(
-                " server=(global {:?}, Cloud reads {}, Engine lists it {}, services {}) data={:?} admission={:?}",
+                " server=(global {:?}, Cloud reads {}, Engine lists it {}, services {}) data={:?} swapped={:?} admission={:?}",
                 state.global,
                 state.silent.map_or_else(
                     || "it now".to_owned(),
@@ -1417,6 +1519,7 @@ fn story(model: &ApprovalBinding, path: &[(State, Option<Action>)]) -> String {
                 !state.unlisted,
                 if state.off { "off" } else { "on" },
                 state.data,
+                state.swapped,
                 state.admission
             )
         } else {
@@ -1445,6 +1548,7 @@ fn reads_as(model: &ApprovalBinding, action: Action, after: &State) -> String {
         Exec::Off => "and services go off, the second read to come".to_owned(),
         Exec::Moving => "and the Engine answers".to_owned(),
         Exec::Admitting { read } => format!("and it plans a move from what it read: {read:?}"),
+        Exec::Cutting { .. } => "and the Move starts, its cut to come".to_owned(),
         Exec::Ready => String::new(),
     };
     match action {
@@ -1483,12 +1587,21 @@ fn reads_as(model: &ApprovalBinding, action: Action, after: &State) -> String {
         Action::Volumes => {
             format!("Cloud: planDrainVolumes reads a new frame through dataCheck, {outcome}")
         }
-        Action::Admit(true) => {
-            "Cloud: admitDrainVolume admits the move, and the Volume moves".to_owned()
-        }
+        Action::Admit(true) => format!(
+            "Cloud: admitDrainVolume reads the holder through {}, {outcome}",
+            holder_words(broken)
+        ),
         Action::Admit(false) => {
             "Cloud: admitDrainVolume refuses the move, and the Volume stays".to_owned()
         }
+        Action::Swap => {
+            "server: a Full caller replaces the Service holding the Volume with a Global".to_owned()
+        }
+        Action::Cut => format!(
+            "Cloud: the Move's step reads the holder through {}, then cuts it: {:?}",
+            holder_words(broken),
+            after.admission
+        ),
         Action::Send => match model.command {
             Command::Store(write) if broken.cloud_calls_twice => format!(
                 "executor: handleConfigRequest's first Store call carries no yes (under Broken), {} weighs `required`, {outcome}",
@@ -1570,6 +1683,15 @@ const fn engine_words(broken: Broken) -> &'static str {
             "reads a Server that didn't answer as running nothing (under Broken)"
         }
         (false, false, false) => "refuses a Server it can't list or that runs a user Global",
+    }
+}
+
+/// What the holder check refuses, as `broken` leaves it.
+const fn holder_words(broken: Broken) -> &'static str {
+    match (broken.move_skips_holder, broken.volume_moves_global) {
+        (true, _) => "no check (under Broken)",
+        (false, true) => "a check that takes a Global's copy (under Broken)",
+        (false, false) => "holderOn and the Drain's pin, which refuse a Global or another Container",
     }
 }
 
@@ -2117,6 +2239,20 @@ mod tests {
             ..Broken::default()
         };
         let ran = drains_beside_a_global(broken, |state| state.global.is_none());
+        assert_eq!(ran.admission, Some(Admission::Moved(Data::Global)));
+    }
+
+    /// A guard, not a past bug: the holder check at each Move step. `dataCheck` and
+    /// admission read the holder before a Full caller replaces it with a Global, so only the
+    /// Move's own read stands between that Global's copy and the cut.
+    #[test]
+    fn a_move_step_never_cuts_a_global_that_replaced_its_holder() {
+        let broken = Broken {
+            move_skips_holder: true,
+            ..Broken::default()
+        };
+        let ran = drains_beside_a_global(broken, |state| state.swapped == Some(Swap::Cut));
+        assert_ne!(ran.data, Data::Global, "dataCheck read no Global");
         assert_eq!(ran.admission, Some(Admission::Moved(Data::Global)));
     }
 }

@@ -20,7 +20,8 @@ type Slot = {
   at?: number;
 };
 
-const frame = (services: Record<string, Slot[]>, unanswered: string[] = []) => {
+/** A frame from an entry that heard both Servers answer but `unanswered`; `answered` overrides who it heard. */
+const frame = (services: Record<string, Slot[]>, unanswered: string[] = [], answered = [here, there].filter((id) => !unanswered.includes(id))) => {
   const listed = Object.entries(services).map(([identity, slots]) => {
     const [namespace, name] = identity.split("/");
     return {
@@ -50,6 +51,7 @@ const frame = (services: Record<string, Slot[]>, unanswered: string[] = []) => {
     services: listed,
     containers: listed.flatMap((service) => service.containers),
     unanswered,
+    answered,
   });
 };
 
@@ -72,7 +74,7 @@ describe("drainPlan", () => {
       targets: ["shop/db", "shop/web"],
       moves: ["shop/web"],
       globals: [],
-      unanswered: false,
+      heard: "answered",
       data: { "shop/db": { kind: "stays", why: "it uses a folder or a Docker volume here" } },
     });
     expect(plan === null ? "no plan" : drainRefusal(plan)).toBeNull();
@@ -94,13 +96,24 @@ describe("drainPlan", () => {
     );
   });
 
-  // Catches a Drain admitted from rows a Server last reported, which may miss a Global it runs now.
-  it("refuses a Server the frame lists as not answering, as the Engine refuses one it can't list", () => {
-    const plan = drainPlan(frame({ "shop/web": [{ machine: here }] }, [here]), new Set(["shop"]), here);
+  // Catches a Drain admitted from rows a Server last reported, which may miss a Global it runs now: one that missed the
+  // entry's probes, or one the entry hasn't heard yet, as in a watch's first frame.
+  it.each([
+    ["missed the entry's probes", frame({ "shop/web": [{ machine: here }] }, [here])],
+    ["the entry hasn't heard yet", frame({ "shop/web": [{ machine: here }] }, [], [there])],
+  ])("refuses a Server that %s, as the Engine refuses one it can't list", (_, observed) => {
+    const plan = drainPlan(observed, new Set(["shop"]), here);
 
     expect(plan === null ? "no plan" : drainRefusal(plan)?.message).toBe(
       "fra-1 isn't answering, so Cloud can't tell what draining it would stop. Try again once it answers.",
     );
+  });
+
+  it("leaves a Server an entry too old to name who answered to the Engine's listing", () => {
+    const { answered: _, ...older } = frame({ "shop/web": [{ machine: here }] });
+    const plan = drainPlan(asTestDouble<RuntimeWatchView>()(older), new Set(["shop"]), here);
+
+    expect(plan === null ? "no plan" : drainRefusal(plan)).toBeNull();
   });
 
   it("weighs a Service by its newest slot on the Server", () => {

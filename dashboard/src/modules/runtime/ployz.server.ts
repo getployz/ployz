@@ -193,10 +193,15 @@ export interface PloyzSession {
   readonly watch: (
     options?: WatchOptions,
   ) => Effect.Effect<AsyncIterable<RuntimeWatchView>, RuntimeConnectionFailure>;
+  /** The first frame, or with `settle`, the first `settle` holds for (see `firstFrame`). */
   readonly watchFirstFrame: (
     timeoutMs: number,
+    settle?: Settle,
   ) => Effect.Effect<RuntimeWatchView, RuntimeConnectionFailure>;
 }
+
+/** Which frame of a watch a read waits for: the first `settled` holds for, for up to `patienceMs` in all. */
+export type Settle = { readonly settled: (frame: RuntimeWatchView) => boolean; readonly patienceMs: number };
 
 export type ServiceCopies = Awaited<ReturnType<Client["observeService"]>>;
 export type NamespaceContainers = Awaited<ReturnType<Client["observeNamespace"]>>;
@@ -430,28 +435,38 @@ function wrapClient(client: Client): PloyzSession {
     publishCertificateMaterial: (request) =>
       sdkPromise("publish certificate material", () => client.publishCertificateMaterial(request).then(() => undefined)),
     watch,
-    watchFirstFrame: (timeoutMs) => firstFrame((options) => client.runtime.watch(options), timeoutMs),
+    watchFirstFrame: (timeoutMs, settle) => firstFrame((options) => client.runtime.watch(options), timeoutMs, settle),
   };
 }
 
 /**
  * The first frame a runtime watch yields, failing when none comes within `timeoutMs`. Only that timeout and an
- * unavailable transport are waitable; an error the Cluster answered with, or a watch it ended, is not.
+ * unavailable transport are waitable; an error the Cluster answered with, or a watch it ended, is not. With `settle`, it
+ * reads on to the first frame `settle.settled` holds for, and once `settle.patienceMs` passed, or the watch ended,
+ * answers the latest frame it read instead: the caller weighs a frame that never settled.
  */
 export function firstFrame(
   watch: (options: { readonly signal: AbortSignal }) => AsyncIterable<RuntimeWatchView>,
   timeoutMs: number,
+  settle?: Settle,
 ) {
+  const settled = settle?.settled ?? (() => true);
+  let latest: RuntimeWatchView | undefined;
+  const timedOut = new RuntimeConnectionFailure({ cause: new Error("Runtime watch timed out"), waitable: true });
   return Effect.tryPromise({
     try: async (signal) => {
-      for await (const frame of watch({ signal })) return frame;
+      for await (const frame of watch({ signal })) {
+        latest = frame;
+        if (settled(frame)) return frame;
+      }
+      if (latest !== undefined) return latest;
       throw new Error("Runtime watch ended before the first frame");
     },
     catch: (cause) => new RuntimeConnectionFailure({ cause, waitable: rpcCode(cause) === "unavailable" }),
   }).pipe(
     Effect.timeoutOrElse({
-      duration: timeoutMs,
-      orElse: () => Effect.fail(new RuntimeConnectionFailure({ cause: new Error("Runtime watch timed out"), waitable: true })),
+      duration: Math.max(timeoutMs, settle?.patienceMs ?? 0),
+      orElse: () => latest === undefined ? Effect.fail(timedOut) : Effect.succeed(latest),
     }),
   );
 }

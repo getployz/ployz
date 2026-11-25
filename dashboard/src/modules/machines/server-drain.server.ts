@@ -17,7 +17,7 @@ import {
   type DrainEndCodeWithoutMessage,
   type DrainState,
 } from "#/modules/machines/server-drain-states";
-import { drainPlan, drainRefusal, planDrain, unseenDrain } from "#/modules/machines/server-operations.server";
+import { drainPlan, drainRefusal, drainSettle, planDrain, unseenDrain } from "#/modules/machines/server-operations.server";
 import { untried } from "#/modules/machines/server-drain-volumes";
 import { readVolumeLines, targetedMessage, volumeRunTargeting } from "#/modules/machines/server-drain-volumes.server";
 import { serverDrainAttempt } from "#/modules/machines/tables";
@@ -283,15 +283,15 @@ export const bindDrainRun = (request: DrainRequest, runId: string) =>
     eq(serverDrainAttempt.machineId, request.machineId),
   ]);
 
-/** The Cluster as the Drain finds it when its turn comes: the frame it plans from. */
-const reachCluster = Effect.fn("ServerDrain.reachCluster")(function* (organizationId: string) {
+/** The Cluster as the Drain of `machineId` finds it when its turn comes: the frame it plans from. */
+const reachCluster = Effect.fn("ServerDrain.reachCluster")(function* (organizationId: string, machineId: string) {
   const session = yield* (yield* OrganizationRuntime).open(organizationId);
   // No Cluster paired is nothing to wait for.
   if (session.status === "no_connection") return yield* new Conflict({ userFacing: true, message: SERVERS_UNANSWERED_MESSAGE });
   if (session.status !== "connected") {
     return yield* new ServerDrainUnreachable({ operation: "open organization runtime", cause: session.status });
   }
-  const frame = yield* session.connected.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS).pipe(
+  const frame = yield* session.connected.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS, drainSettle(machineId)).pipe(
     clusterRead,
     Effect.mapError((cause) => new ServerDrainUnreachable({ operation: "read the cluster", cause })),
   );
@@ -368,7 +368,7 @@ export const executeDrainOnce = Effect.fn("ServerDrain.execute")(function* (
         return settled((yield* rows.end(id, runId, values, ["pending"])) ?? (yield* rows.stateOf(id)));
       });
       if (waited && (yield* expired)) return yield* endPending(ended("not_started"));
-      const reached = yield* reachCluster(request.organizationId).pipe(
+      const reached = yield* reachCluster(request.organizationId, request.machineId).pipe(
         Effect.map(Option.some),
         Effect.catchIf((error) => error instanceof ServerDrainUnreachable, () => Effect.succeedNone),
       );

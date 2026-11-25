@@ -5,6 +5,7 @@ import {
   Ployz,
   PloyzProviderError,
   type PloyzSession,
+  type Settle,
 } from "#/modules/runtime/ployz.server";
 import {
   loadOrganizationConnections,
@@ -241,7 +242,8 @@ function recordingFrames(session: PloyzSession, record: (frame: RuntimeWatchView
   return {
     ...session,
     watch: (options) => session.watch(options).pipe(Effect.map(recordEach)),
-    watchFirstFrame: (timeoutMs) => session.watchFirstFrame(timeoutMs).pipe(Effect.tap((frame) => Effect.sync(() => record(frame)))),
+    watchFirstFrame: (timeoutMs, settle) =>
+      session.watchFirstFrame(timeoutMs, settle).pipe(Effect.tap((frame) => Effect.sync(() => record(frame)))),
   };
 }
 
@@ -408,14 +410,14 @@ export const makeOrganizationRuntimeLive = <R>(frameRecords: Effect.Effect<reado
 /**
  * One Runtime Watch frame of the Organization's Cluster, for an operation that refuses without one: null when no
  * Cluster is paired. A fresh connection through the relay can take longer than a glance allows, so only the connect
- * phase and the frame are bounded, each by its own ceiling.
+ * phase and the frame are bounded, each by its own ceiling. `settle` picks a later frame, as `firstFrame` says.
  */
 export const operationRuntimeFrame = Effect.fn("OrganizationRuntime.operationFrame")(function* (
-  organizationId: string, entry?: RuntimeEntry,
+  organizationId: string, entry?: RuntimeEntry, settle?: Settle,
 ) {
   const session = yield* (yield* OrganizationRuntime).open(organizationId, entry);
   if (session.status !== "connected") return null;
-  return yield* session.connected.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS).pipe(clusterRead);
+  return yield* session.connected.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS, settle).pipe(clusterRead);
 }, Effect.scoped);
 
 /**

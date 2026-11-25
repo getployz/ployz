@@ -1216,6 +1216,8 @@ enum Look {
     Fails,
     /// The Machine list leaves it out, so nothing asks it.
     Unlisted,
+    /// The entry's Machine list never answers, so the listing times out.
+    Hangs,
 }
 
 /// Copies of `app/metrics` that `web-2` may list.
@@ -1314,7 +1316,11 @@ async fn drain_reading_only(
                     }
                     RpcRequestBody::ListMachines(_) => {
                         let before = listings.fetch_add(1, Ordering::SeqCst) + 1;
-                        let unlisted = matches!(look(before, &metrics), Look::Unlisted);
+                        let look = look(before, &metrics);
+                        if matches!(look, Look::Hangs) {
+                            std::future::pending::<()>().await;
+                        }
+                        let unlisted = matches!(look, Look::Unlisted);
                         let off = turned_off.load(Ordering::SeqCst);
                         RpcResponse::from(MachineList {
                             enrollment: None,
@@ -1344,7 +1350,7 @@ async fn drain_reading_only(
                             Look::Lists(containers) => {
                                 RpcResponse::from(ContainerList { containers })
                             }
-                            Look::Fails | Look::Unlisted => RpcResponse::from(RpcError::new(
+                            Look::Fails | Look::Unlisted | Look::Hangs => RpcResponse::from(RpcError::new(
                                 ployz_core::RpcErrorCode::Internal,
                                 "the Server did not list its Containers",
                             )),
@@ -1379,8 +1385,8 @@ async fn drain_reading_only(
 /// replica count. Retiring it could take the last copy that serves, since a copy stays In
 /// while it crash-loops.
 fn assert_refused_for_metrics(drained: Result<DrainReport, super::DrainError>) {
-    let Err(super::DrainError::Refused(refused)) = drained else {
-        panic!("expected a refusal, got {drained:?}");
+    let Err(super::DrainError::Unchanged(super::Stop::Refused(refused))) = drained else {
+        panic!("expected a refusal that changed nothing, got {drained:?}");
     };
     assert_eq!(refused.code, ployz_core::RpcErrorCode::Conflict);
     assert!(
@@ -1427,7 +1433,10 @@ async fn a_drain_that_cannot_list_the_server_changes_nothing() {
         .await;
 
         assert!(
-            matches!(drained, Err(super::DrainError::Unobservable { .. })),
+            matches!(
+                drained,
+                Err(super::DrainError::Unchanged(super::Stop::Unobservable { .. }))
+            ),
             "accepts_services {accepts_services}: {drained:?}"
         );
         assert!(
@@ -1483,7 +1492,10 @@ async fn a_server_left_out_of_the_machine_list_is_not_read_as_empty() {
     .await;
 
     assert!(
-        matches!(drained, Err(super::DrainError::Unobservable { .. })),
+        matches!(
+                drained,
+                Err(super::DrainError::Unchanged(super::Stop::Unobservable { .. }))
+            ),
         "{drained:?}"
     );
     assert!(asked.is_empty(), "{asked:?}");
@@ -1519,13 +1531,42 @@ async fn a_server_unlisted_after_its_services_went_off_says_they_are_off() {
     })
     .await;
 
-    let Err(error @ super::DrainError::Unobservable { .. }) = drained else {
-        panic!("expected Unobservable, got {drained:?}");
-    };
-    assert_eq!(
-        error.to_string(),
-        "Cannot observe Services on Server web-2 after turning its services off: \
-         the Server did not list its Containers"
+    assert_left_off(
+        drained,
+        "Cannot observe Services on Server web-2: the Server did not list its Containers.",
     );
     assert_eq!(asked, ["services off"]);
+}
+
+/// A listing that times out after the Drain turned services off says they are off, as a
+/// refusal does: the Drain changed the role, whichever way it then stopped.
+#[tokio::test(start_paused = true)]
+async fn a_listing_that_times_out_after_services_went_off_says_they_are_off() {
+    let (drained, asked) = drain_reading_only(true, DrainScope::EveryNamespace, |before, _| {
+        if before > 2 {
+            Look::Hangs
+        } else {
+            Look::Lists(Vec::new())
+        }
+    })
+    .await;
+
+    assert_left_off(drained, "Ployz's call to your Server's daemon failed.");
+    assert_eq!(asked, ["services off"]);
+}
+
+/// `drained` stopped for `stopped` after this Drain turned web-2's services off, and the
+/// error Cloud stores and the CLI prints says how to turn them back on.
+fn assert_left_off(drained: Result<DrainReport, super::DrainError>, stopped: &str) {
+    let Err(error @ super::DrainError::LeftOff { .. }) = drained else {
+        panic!("expected services left off, got {drained:?}");
+    };
+    let message = RpcError::from(error).message;
+    assert!(message.contains(stopped), "{message}");
+    assert!(
+        message.ends_with(
+            "Services are now off on web-2: turn them back on to let it run services again."
+        ),
+        "{message}"
+    );
 }

@@ -2230,6 +2230,8 @@ const leftBehindClusterOf = (cluster: LeftBehind) => Layer.succeed(OrganizationR
     status: "connected" as const,
     connected: asTestDouble<PloyzSession>()({
       watchFirstFrame: () => Effect.succeed(asTestDouble<RuntimeWatchView>()({
+        unanswered: [],
+        answered: [fra1],
         machines: cluster.observesFra1 ? [{ machine: { id: fra1, name: "fra-1" } }] : [],
         volumes: [],
         services: [{
@@ -2576,6 +2578,8 @@ const operationClusterOf = (plan: FraRunsGlobal) => Layer.succeed(OrganizationRu
     status: "connected" as const,
     connected: asTestDouble<PloyzSession>()({
       watchFirstFrame: () => Effect.succeed(asTestDouble<RuntimeWatchView>()({
+        unanswered: [],
+        answered: [fra1],
         machines: [{ machine: { id: fra1, name: "fra-1" } }],
         volumes: plan.holdsOnlyCopy === undefined
           ? []
@@ -2747,6 +2751,8 @@ const renamedCluster = Layer.succeed(OrganizationRuntime, {
     status: "connected" as const,
     connected: asTestDouble<PloyzSession>()({
       watchFirstFrame: () => Effect.succeed(asTestDouble<RuntimeWatchView>()({
+        unanswered: [],
+        answered: [fra1],
         machines: [runtimeWatchMachineObservationFixture({ machine: runtimeWatchMachineFixture(fra1, "new"), membership: "up" })],
         volumes: [],
         services: [],

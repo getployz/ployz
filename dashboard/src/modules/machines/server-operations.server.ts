@@ -19,6 +19,7 @@ import {
   RUNTIME_FRAME_TIMEOUT_MS,
 } from "#/modules/runtime/organization-runtime.server";
 import { dockerVolumeName } from "#/modules/runtime/naming";
+import type { Settle } from "#/modules/runtime/ployz.server";
 import { Conflict } from "#/server/public-error";
 
 const unreachable = () => new Conflict({ userFacing: true, message: SERVERS_UNANSWERED_MESSAGE });
@@ -56,17 +57,42 @@ export function volumeMountLabel(frame: RuntimeWatchView, { id }: DataLossIdenti
 }
 
 /**
+ * Whether the frame's entry heard a Server's daemon answer: `answered`, or `unanswered` once it missed the entry's last
+ * probes, when its rows are only as it last reported them. `pending` until the entry has heard either way, as in a
+ * watch's first frame, sent before any probe. `unsaid` from an entry too old to name who answered, which names only who
+ * missed.
+ */
+export type Heard = "answered" | "unanswered" | "pending" | "unsaid";
+
+export const heardFrom = (frame: RuntimeWatchView, machineId: string): Heard =>
+  frame.unanswered.some((id) => id === machineId) ? "unanswered"
+  : frame.answered === undefined ? "unsaid"
+  : frame.answered.some((id) => id === machineId) ? "answered"
+  : "pending";
+
+/**
+ * How long a Drain reads frames for the entry to hear the drained Server. A watch's first frame comes before any probe,
+ * and the entry names a Server unanswered after two missed probes five seconds apart.
+ */
+const DRAIN_HEARD_MS = 20_000;
+
+/** The frame a Drain plans from: the first that says whether the drained Server answers, or that no longer lists it. */
+export const drainSettle = (machineId: string): Settle => ({
+  settled: (frame) => serverName(frame, machineId) === undefined || heardFrom(frame, machineId) !== "pending",
+  patienceMs: DRAIN_HEARD_MS,
+});
+
+/**
  * An operation as the gate weighs it, with the services a Drain of it acts on and those it moves to another Server.
- * `globals` and `unanswered` refuse it (see `drainRefusal`). `data` is what the frame says of each Service held by its
- * data here: whether it may move with its Volume. It is a forecast the drain checks again, so it stays out of the
- * preview the approval signs.
+ * `globals` and `heard` refuse it (see `drainRefusal`). `data` is what the frame says of each Service held by its data
+ * here: whether it may move with its Volume. It is a forecast the drain checks again, so it stays out of the preview
+ * the approval signs.
  */
 export type DrainPlan = OperationAsked & {
   readonly targets: QualifiedService[];
   readonly moves: QualifiedService[];
   readonly globals: QualifiedService[];
-  /** The Server didn't answer the frame's last probes, so its rows are only as it last reported them. */
-  readonly unanswered: boolean;
+  readonly heard: Heard;
   readonly data: Readonly<Record<string, DataPlan>>;
 };
 
@@ -113,7 +139,7 @@ export function drainPlan(frame: RuntimeWatchView, owned: ReadonlySet<string>, m
     targets: [...moves, ...stays].sort(byName),
     moves,
     globals,
-    unanswered: frame.unanswered.some((id) => id === machineId),
+    heard: heardFrom(frame, machineId),
     data,
   };
 }
@@ -123,13 +149,16 @@ export const unseenDrain = (name: string | null) =>
   `${name ?? "The server"} isn't answering, so Cloud can't tell what draining it would stop. Try again once it answers.`;
 
 /**
- * Why a Drain of the Server can't go ahead from the frame `plan` read, or null when it may. A Server that didn't answer
- * is refused, as the Engine refuses one it can't list: its rows may miss a Global that runs there now. So is one that
- * runs a Service with a Global copy: a copy stays routed while it crash-loops, so the one here could be the last that
- * works.
+ * Why a Drain of the Server can't go ahead from the frame `plan` read, or null when it may. A Server the entry didn't
+ * hear answer is refused, whether it missed the entry's probes or the entry hadn't heard it yet, as the Engine refuses
+ * one it can't list: its rows may miss a Global that runs there now. An entry too old to say leaves that to the
+ * Engine's listing. So is one that runs a Service with a Global copy: a copy stays routed while it crash-loops, so the
+ * one here could be the last that works.
  */
 export const drainRefusal = (plan: DrainPlan) => {
-  if (plan.unanswered) return new Conflict({ userFacing: true, message: unseenDrain(plan.name) });
+  if (plan.heard === "unanswered" || plan.heard === "pending") {
+    return new Conflict({ userFacing: true, message: unseenDrain(plan.name) });
+  }
   if (plan.globals.length === 0) return null;
   return new Conflict({ userFacing: true, message: globalsStopDrain(plan.globals.map((service) => splitQualifiedService(service).name)) });
 };
@@ -251,13 +280,13 @@ export function removePlan(
   };
 }
 
-export const observe = (organizationId: string) => operationRuntimeFrame(organizationId).pipe(
+export const observe = (organizationId: string, settle?: Settle) => operationRuntimeFrame(organizationId, undefined, settle).pipe(
   Effect.mapError(unreachable),
   Effect.flatMap((frame) => frame === null ? Effect.fail(unreachable()) : Effect.succeed(frame)),
 );
 
 export const planDrain = Effect.fn("ServerOperations.planDrain")(function* (organizationId: string, machineId: string) {
-  const frame = yield* observe(organizationId);
+  const frame = yield* observe(organizationId, drainSettle(machineId));
   return drainPlan(frame, new Set(yield* ownedNamespaces(organizationId)), machineId);
 });
 
