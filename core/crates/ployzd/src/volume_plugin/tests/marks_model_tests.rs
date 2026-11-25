@@ -30,7 +30,7 @@ fn every_mark_keeps_its_name_on_disk() {
 }
 
 #[test]
-fn provenance_goes_in_the_order_cut_epoch_promote_seed() {
+fn provenance_goes_in_the_order_cut_epoch_promote_seed_restored() {
     assert_eq!(
         Marks::clear_provenance(),
         [
@@ -38,6 +38,7 @@ fn provenance_goes_in_the_order_cut_epoch_promote_seed() {
             inherit(Mark::Epoch),
             inherit(Mark::Promote),
             inherit(Mark::Seed),
+            inherit(Mark::Restored),
         ]
     );
 }
@@ -51,6 +52,7 @@ fn a_pull_records_the_newest_snapshot_after_every_mark_it_clears() {
             inherit(Mark::Epoch),
             inherit(Mark::Promote),
             inherit(Mark::Seed),
+            inherit(Mark::Restored),
             set(Mark::Pulled, "1234"),
         ]
     );

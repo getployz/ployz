@@ -263,6 +263,7 @@ async fn a_landed_pull_marks_the_slot_in_this_order() {
             "zfs inherit ployz:epoch tank/ployz-mirror/data/fs",
             "zfs inherit ployz:promote tank/ployz-mirror/data/fs",
             "zfs inherit ployz:seed tank/ployz-mirror/data/fs",
+            "zfs inherit ployz:restored tank/ployz-mirror/data/fs",
             "zfs set ployz:pulled=12 tank/ployz-mirror/data/fs",
             "zfs inherit ployz:pull tank/ployz-mirror/data",
         ]
@@ -487,15 +488,7 @@ async fn remove_reads_promote_as_an_effective_value() {
 
         let reply = post(&socket, "/VolumeDriver.Remove", json!({"Name": "data"})).await;
         let trace = trace(&commands(&test));
-        // A promoted root is refused unless it came back from the Trash.
-        let read: &[&str] = if inherited {
-            &[
-                "zfs get -H -o value ployz:promote tank/ployz/data",
-                "zfs get -H -o value ployz:restored tank/ployz/data",
-            ]
-        } else {
-            &["zfs get -H -o value ployz:promote tank/ployz/data"]
-        };
+        let read = ["zfs get -H -o value ployz:promote tank/ployz/data"];
         assert_eq!(
             trace.iter().take(read.len()).collect::<Vec<_>>(),
             read,

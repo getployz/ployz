@@ -1884,6 +1884,7 @@ async fn a_landed_pull_drops_the_writer_marks_so_the_departure_destroys_the_mirr
         ("ployz:epoch", "3"),
         ("ployz:promote", "on"),
         ("ployz:seed", "11"),
+        ("ployz:restored", "on"),
     ] {
         let source = Source::start(Some(BOUND), "snapshot w-1-2 12\n").await;
         let test = test_dir();

@@ -95,25 +95,32 @@ impl VolumeStorage {
             0
         };
         let live = commitment.unmanaged_used_bytes - trash;
+        let required = ployz_core::storage_with_headroom(commitment.bytes)?
+            .checked_add(commitment.unmanaged_used_bytes)
+            .ok_or("Pool occupancy overflows u64")?;
+        let cannot_grow = |size| -> PluginError {
+            ployz_core::StorageCapacityError::PoolCannotGrow {
+                required_bytes: required,
+                capacity_bytes: size,
+            }
+            .into()
+        };
+        // The size growth for live data would reach decides before anything grows, so a
+        // request that fits only once the Trash is emptied leaves the backing file as it was.
         let fits = match self
             .pool
-            .ensure_capacity(pool, commitment.bytes, live)
+            .live_growth_size(pool, commitment.bytes, live)
             .await
         {
-            Ok(size) => {
-                let required = ployz_core::storage_with_headroom(commitment.bytes)?
-                    .checked_add(commitment.unmanaged_used_bytes)
-                    .ok_or("Pool occupancy overflows u64")?;
-                if size < required {
-                    Err(ployz_core::StorageCapacityError::PoolCannotGrow {
-                        required_bytes: required,
-                        capacity_bytes: size,
-                    }
-                    .into())
-                } else {
-                    Ok(())
-                }
-            }
+            Ok(grown) if grown < required => Err(cannot_grow(pool.size_bytes().get())),
+            Ok(_) => match self
+                .pool
+                .ensure_capacity(pool, commitment.bytes, live)
+                .await
+            {
+                Ok(size) if size < required => Err(cannot_grow(size)),
+                result => result.map(drop),
+            },
             Err(error) => Err(error),
         };
         match fits {
@@ -502,6 +509,31 @@ impl PoolStorage {
                 .await),
             Err(error) => Err(self.cleanup(error).await),
         }
+    }
+
+    /// The size [`Self::ensure_capacity`] would grow `pool` to for `commitment` beside
+    /// `unmanaged_used_bytes`, read without growing anything: its own size when that holds
+    /// them or it can't grow.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backing file can't be read or the growth overflows.
+    pub(super) async fn live_growth_size(
+        &self,
+        pool: &MachinePool,
+        commitment: u64,
+        unmanaged_used_bytes: u64,
+    ) -> Result<u64> {
+        let minimum = ployz_core::storage_with_headroom(commitment)?
+            .checked_add(unmanaged_used_bytes)
+            .ok_or("Pool occupancy overflows u64")?;
+        let size = pool.size_bytes().get();
+        if size >= minimum || pool.name() != POOL_NAME {
+            return Ok(size);
+        }
+        let (length, _) = self.backing_allocation(self.backing_text()?).await?;
+        let target = ployz_core::storage_growth_target(length, size, minimum)?;
+        Ok(size.saturating_add(target - length))
     }
 
     /// Makes the managed backing Pool large enough for all requested bounds; returns the

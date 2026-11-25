@@ -442,8 +442,8 @@ async fn remove_releases_a_commitment_and_usage_is_not_a_growth_input() {
 }
 
 /// The backing file never shrinks, so a Pool grows for live data only: a Create that fits
-/// only once the Trash is emptied keeps the file at what live data needs and says what the
-/// Trash holds.
+/// only once the Trash is emptied leaves the file as it was, though live data alone would
+/// have grown it, and says what the Trash holds.
 #[tokio::test]
 async fn a_pool_never_grows_for_what_its_trash_holds() {
     let test = test_dir();
@@ -470,7 +470,7 @@ async fn a_pool_never_grows_for_what_its_trash_holds() {
     );
     assert_eq!(
         fs::read_to_string(test.0.join("allocated")).unwrap(),
-        "4294967296\n"
+        "2147483648\n"
     );
     assert!(!test.0.join("other").exists());
 }
@@ -503,7 +503,7 @@ async fn prepare_refuses_what_fits_only_once_the_trash_is_emptied_with_the_trash
     );
     assert_eq!(
         fs::read_to_string(test.0.join("allocated")).unwrap(),
-        "3221225472\n"
+        "2147483648\n"
     );
 }
 

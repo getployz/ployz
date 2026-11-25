@@ -7,7 +7,7 @@
 //! between any two entries leaves a state the readers keep rather than destroy:
 //!
 //! - A mark that says another step made the copy goes before the mark that says this step
-//!   did. [`Marks::received`] drops the cut, epoch, promote and seed marks first and records
+//!   did. [`Marks::received`] drops the cut, epoch, promote, seed and restore marks first and records
 //!   `ployz:pulled` last, so a stop between leaves a slot with neither, which a departure
 //!   keeps ([`Marks::holds_alone`], `written_here`).
 //! - A copy gains the marks that make it a root before it is renamed into place. A landing
@@ -314,12 +314,18 @@ impl Marks<'_> {
     }
 
     /// Any cut, epoch, promote or seed mark describes a point another writer has since
-    /// built on.
+    /// built on, as does the restore mark of a restored root cut into its slot.
     pub(super) fn clear_provenance() -> Vec<Write> {
-        [Mark::Cut, Mark::Epoch, Mark::Promote, Mark::Seed]
-            .into_iter()
-            .map(Write::Inherit)
-            .collect()
+        [
+            Mark::Cut,
+            Mark::Epoch,
+            Mark::Promote,
+            Mark::Seed,
+            Mark::Restored,
+        ]
+        .into_iter()
+        .map(Write::Inherit)
+        .collect()
     }
 
     /// The marks a seed lands its slot's `fs` with, just before the rename makes it the
