@@ -299,6 +299,16 @@ case "$*" in
       [ ! -e "$f" ] || prop "$d" "$8" -
     done
     ;;
+  'get -r -H -s local -o name,value '*)
+    require "$9"
+    check_property "$8"
+    for d in tank/ployz tank/ployz/data tank/ployz/data/child tank/ployz/sibling tank/ployz/{seed} $(trash_datasets); do
+      case "$d" in "$9"|"$9"/*) ;; *) continue ;; esac
+      exists "$d" || continue
+      f='{props}'/"$d/$8"
+      [ ! -e "$f" ] || printf '%s\t%s\n' "$d" "$(prop "$d" "$8" -)"
+    done
+    ;;
   'get -H -s local -o value '*)
     require "$8"
     check_property "$7"

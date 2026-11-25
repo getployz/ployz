@@ -1045,7 +1045,7 @@ case "$name" in
       # A delete moves the Volume to the Trash; its bytes leave the commitment.
       'list -H -o name -t filesystem') [ ! -e '{other}.trash' ] || printf 'ployz/ployz-trash\n' ;;
       'get -H -s local -o value '*) ;;
-      'set ployz:trash'*' ployz/ployz/other'|'set ployz:trashed'*' ployz/ployz/other') ;;
+      'set ployz:trash'*' ployz/ployz/other'|'set ployz:trashed'*' ployz/ployz/other'|'inherit ployz:trash-'*' ployz/ployz/other') ;;
       'rename ployz/ployz/other ployz/ployz-trash/'*) rm '{other}' '{other_bound}' ;;
       'set canmount=off ployz/ployz-trash/'*) ;;
       'get -H -o value mounted ployz/ployz-trash/'*) echo no ;;

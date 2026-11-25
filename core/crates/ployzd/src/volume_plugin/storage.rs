@@ -215,8 +215,14 @@ impl VolumeStorage {
                 crate::faults::kill_inside(crate::faults::Point::Verb("Create"), None);
             }
             if restored {
+                // A promote stopped after its rename left the root unmountable; it finishes
+                // before the root loses the ID a restore run again would find it by.
+                self.finish_promote(&existing.name).await?;
                 marks
-                    .apply(&[super::marks::Write::Inherit(Mark::Restored)])
+                    .apply(&[
+                        super::marks::Write::Inherit(Mark::Restored),
+                        super::marks::Write::Inherit(Mark::TrashRestored),
+                    ])
                     .await?;
             }
             return Ok(());

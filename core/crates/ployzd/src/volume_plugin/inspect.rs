@@ -318,7 +318,11 @@ impl VolumeStorage {
 
     async fn inspect_copy(&self, name: &VolumeName) -> Result<VolumeCopyView> {
         let _guard = self.mutation.lock().await;
+        // A Pool this Machine held but can't read now may hold a copy, so it never answers none.
         let Some(pool) = self.pool.one_usable().await? else {
+            if self.pool.has_held_a_pool()? {
+                return Err(PluginError::HeldPoolNotImported);
+            }
             return Ok(VolumeCopyView { copy: None });
         };
         Ok(VolumeCopyView {

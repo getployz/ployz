@@ -65,9 +65,22 @@ impl Plugin {
         .await
     }
 
+    /// A restore as the CLI runs it: a root entry is pinned, then promoted.
     async fn restore(&self, entry: &str) -> Value {
+        let pinned = self.call(entry, false).await;
+        if pinned.pointer("/Ok/state/kind") == Some(&json!("pinned")) {
+            return self.call(entry, true).await;
+        }
+        pinned
+    }
+
+    async fn call(&self, entry: &str, promote: bool) -> Value {
         let id = entry.rsplit('/').next().unwrap();
-        self.post("/Ployz.Trash.Restore", json!({"id": id})).await
+        self.post(
+            "/Ployz.Trash.Restore",
+            json!({"id": id, "promote": promote}),
+        )
+        .await
     }
 
     async fn sweep(&self) -> Value {
@@ -588,25 +601,24 @@ async fn a_restored_root_no_create_took_up_goes_back_to_the_trash() {
     );
 }
 
-/// A Create for other data refused at a restored root changes nothing on it, not even the
-/// promote mark a seed left there.
+/// A Create for other data refused at a restored root changes nothing on it.
 #[tokio::test]
 async fn a_create_refused_at_a_restored_root_leaves_its_marks() {
     let test = test_dir();
     let (plugin, entry) = deleted_root(&test).await;
-    set_property(&test, &entry, "ployz:promote", "on");
     assert!(plugin.restore(&entry).await.get("Ok").is_some());
 
     let other = plugin.create(&"1".repeat(64)).await;
 
     assert!(error(&other).contains("restored from the Trash"), "{other}");
     assert_eq!(
-        property(&test, ROOT, "ployz:promote").as_deref(),
-        Some("on")
-    );
-    assert_eq!(
         property(&test, ROOT, "ployz:restored").as_deref(),
         Some("on")
+    );
+    let id = entry.rsplit('/').next().unwrap();
+    assert_eq!(
+        property(&test, ROOT, "ployz:trash-restored").as_deref(),
+        Some(id)
     );
 }
 
@@ -645,4 +657,296 @@ async fn a_late_sweep_loses_no_hour() {
 
     assert_eq!(late.pointer("/Ok/hours"), Some(&json!(1)), "{late}");
     assert_eq!(next.pointer("/Ok/hours"), Some(&json!(2)), "{next}");
+}
+
+fn id_of(entry: &str) -> &str {
+    entry.rsplit('/').next().unwrap()
+}
+
+/// A pin only marks the entry: it stays in the Trash, its 7 days start again, and it takes
+/// the epoch after the one it held.
+#[tokio::test]
+async fn a_pin_keeps_a_deleted_root_in_the_trash_and_restarts_its_seven_days() {
+    let test = test_dir();
+    let (plugin, entry) = deleted_root(&test).await;
+    set_property(&test, &entry, "ployz:epoch", "4");
+    plugin.sweep().await;
+    set_property(&test, "tank/ployz-trash", "ployz:trash-hours", "100");
+
+    let pinned = plugin.call(&entry, false).await;
+
+    assert_eq!(
+        pinned.pointer("/Ok/state"),
+        Some(&json!({"kind": "pinned", "epoch": 5})),
+        "{pinned}"
+    );
+    assert_eq!(trashed(&test).as_slice(), std::slice::from_ref(&entry));
+    assert!(!test.0.join("volume").exists());
+    assert_eq!(
+        property(&test, &entry, "ployz:trash-pin"),
+        Some(format!("{}:5", id_of(&entry)))
+    );
+    assert_eq!(
+        property(&test, &entry, "ployz:trashed-hour").as_deref(),
+        Some("100")
+    );
+    let listed = plugin.post("/Ployz.Trash.List", json!(null)).await;
+    assert_eq!(
+        listed.pointer("/Ok/entries/0/restoring"),
+        Some(&json!(true)),
+        "{listed}"
+    );
+}
+
+/// A promote makes the pinned entry the Volume's root at its pinned epoch, writable, with
+/// its `canmount` back and no trash marks; it keeps the entry's ID until a Create.
+#[tokio::test]
+async fn a_promote_makes_the_pinned_root_the_volume_at_its_epoch() {
+    let test = test_dir();
+    let (plugin, entry) = deleted_root(&test).await;
+    set_property(&test, &entry, "readonly", "on");
+    set_property(&test, &entry, "ployz:cut", "on");
+
+    let restored = plugin.restore(&entry).await;
+
+    assert_eq!(
+        restored.pointer("/Ok/state"),
+        Some(&json!({"kind": "restored", "epoch": 1})),
+        "{restored}"
+    );
+    assert_eq!(trashed(&test), Vec::<String>::new());
+    assert_eq!(property(&test, ROOT, "ployz:epoch").as_deref(), Some("1"));
+    assert_eq!(property(&test, ROOT, "readonly").as_deref(), Some("off"));
+    assert_eq!(property(&test, ROOT, "canmount").as_deref(), Some("on"));
+    assert_eq!(property(&test, ROOT, "ployz:cut"), None);
+    for mark in ["ployz:trash-pin", "ployz:trash-was", "ployz:trash-name"] {
+        assert_eq!(property(&test, ROOT, mark), None, "{mark}");
+    }
+    assert_eq!(
+        property(&test, ROOT, "ployz:trash-restored").as_deref(),
+        Some(id_of(&entry))
+    );
+}
+
+/// A promote stopped at any step finishes when run again, by the entry while it is in the
+/// Trash and by the root once the rename committed; once finished, a call run again still
+/// answers that the restore committed.
+#[tokio::test]
+async fn a_promote_stopped_at_any_step_finishes_when_run_again() {
+    let id = trash_id(1);
+    let entry = format!("tank/ployz-trash/{id}");
+    let steps = [
+        format!("set ployz:restored=on {entry}"),
+        format!("set readonly=off {entry}"),
+        format!("rename {entry} {ROOT}"),
+        format!("set canmount=on {ROOT}"),
+        format!("inherit ployz:trash-was {ROOT}"),
+        format!("inherit ployz:trash-pin {ROOT}"),
+        // Nothing stops: the reply is lost.
+        String::new(),
+    ];
+    for step in steps {
+        let test = test_dir();
+        let plugin = Plugin::start(&test, &["root"], Ok(vec![]));
+        plant_trash(&test, &id, "data", "root", 0, false);
+        assert!(
+            plugin.call(&entry, false).await.get("Ok").is_some(),
+            "{step}"
+        );
+        if !step.is_empty() {
+            set_property(&test, "", "fail-command", &step);
+            let stopped = plugin.call(&entry, true).await;
+            assert!(stopped.get("Err").is_some(), "{step}: {stopped}");
+        } else {
+            assert!(plugin.call(&entry, true).await.get("Ok").is_some());
+        }
+
+        let again = plugin.call(&entry, true).await;
+
+        assert_eq!(
+            again.pointer("/Ok/state/kind"),
+            Some(&json!("restored")),
+            "{step}: {again}"
+        );
+        assert!(test.0.join("volume").exists(), "{step}");
+        assert_eq!(trashed(&test), Vec::<String>::new(), "{step}");
+        assert_eq!(
+            property(&test, ROOT, "canmount").as_deref(),
+            Some("on"),
+            "{step}"
+        );
+        for mark in ["ployz:trash-pin", "ployz:trash-was", "ployz:trashed-at"] {
+            assert_eq!(property(&test, ROOT, mark), None, "{step}: {mark}");
+        }
+    }
+}
+
+/// A Create that takes up a restored root whose promote stopped before its `canmount` came
+/// back finishes that first, so the Volume mounts.
+#[tokio::test]
+async fn a_create_finishes_a_restore_that_stopped_before_its_canmount_came_back() {
+    let test = test_dir();
+    let (plugin, entry) = deleted_root(&test).await;
+    assert!(plugin.call(&entry, false).await.get("Ok").is_some());
+    set_property(
+        &test,
+        "",
+        "fail-command",
+        &format!("set canmount=on {ROOT}"),
+    );
+    assert!(plugin.call(&entry, true).await.get("Err").is_some());
+    assert_eq!(property(&test, ROOT, "canmount").as_deref(), Some("off"));
+
+    assert_eq!(plugin.create(BORN).await, json!({"Err": ""}));
+
+    assert_eq!(property(&test, ROOT, "canmount").as_deref(), Some("on"));
+    for mark in [
+        "ployz:trash-was",
+        "ployz:trash-pin",
+        "ployz:restored",
+        "ployz:trash-restored",
+    ] {
+        assert_eq!(property(&test, ROOT, mark), None, "{mark}");
+    }
+}
+
+/// A promote needs its entry's own pin, and refuses while another entry of the Volume on
+/// this Server is pinned: of two restores of one Volume, only one finishes.
+#[tokio::test]
+async fn a_promote_refuses_without_its_pin_or_beside_another_pinned_entry_of_the_volume() {
+    let test = test_dir();
+    let plugin = Plugin::start(&test, &["root"], Ok(vec![]));
+    let first = plant_trash(&test, &trash_id(1), "data", "root", 0, false);
+    let second = plant_trash(&test, &trash_id(2), "data", "root", 0, false);
+
+    let unpinned = plugin.call(&first, true).await;
+    assert!(
+        refusal(&unpinned).contains("isn't being restored any more"),
+        "{unpinned}"
+    );
+    // A pin naming another entry is left from elsewhere.
+    set_property(
+        &test,
+        &first,
+        "ployz:trash-pin",
+        &format!("{}:1", trash_id(2)),
+    );
+    assert!(plugin.call(&first, true).await.get("Err").is_some());
+
+    assert!(plugin.call(&first, false).await.get("Ok").is_some());
+    assert!(plugin.call(&second, false).await.get("Ok").is_some());
+    let beside = plugin.call(&first, true).await;
+
+    assert_eq!(beside.pointer("/Err/code"), Some(&json!("conflict")));
+    assert!(refusal(&beside).contains(&trash_id(2)), "{beside}");
+    assert!(!test.0.join("volume").exists());
+    assert_eq!(trashed(&test), [first.clone(), second]);
+
+    // Emptied by name, the other restore no longer stands in the way.
+    plugin
+        .post("/Ployz.Trash.Empty", json!({"ids": [trash_id(2)]}))
+        .await;
+    assert_eq!(
+        plugin.call(&first, true).await.pointer("/Ok/state/kind"),
+        Some(&json!("restored"))
+    );
+}
+
+/// A promote whose entry was emptied or expired meanwhile says so, and restores nothing.
+#[tokio::test]
+async fn a_promote_after_its_entry_was_emptied_finds_nothing() {
+    let test = test_dir();
+    let (plugin, entry) = deleted_root(&test).await;
+    assert!(plugin.call(&entry, false).await.get("Ok").is_some());
+    plugin
+        .post("/Ployz.Trash.Empty", json!({"ids": [id_of(&entry)]}))
+        .await;
+
+    let late = plugin.call(&entry, true).await;
+
+    assert_eq!(
+        late.pointer("/Err/code"),
+        Some(&json!("not_found")),
+        "{late}"
+    );
+    assert!(!test.0.join("volume").exists());
+}
+
+/// Emptying the whole Trash keeps an entry a restore pinned; naming it deletes it.
+#[tokio::test]
+async fn a_bulk_empty_keeps_a_pinned_entry_and_a_named_one_deletes_it() {
+    let test = test_dir();
+    let plugin = Plugin::start(&test, &["root"], Ok(vec![]));
+    let pinned = plant_trash(&test, &trash_id(1), "data", "root", 0, false);
+    let other = plant_trash(&test, &trash_id(2), "logs", "root", 0, false);
+    assert!(plugin.call(&pinned, false).await.get("Ok").is_some());
+    let all = json!({"ids": [trash_id(1), trash_id(2)], "bulk": true});
+
+    let bulk = plugin.post("/Ployz.Trash.Empty", all).await;
+
+    assert_eq!(
+        bulk.pointer("/Ok/emptied"),
+        Some(&json!([trash_id(2)])),
+        "{bulk}"
+    );
+    assert_eq!(bulk.pointer("/Ok/restoring"), Some(&json!([trash_id(1)])));
+    assert_eq!(trashed(&test).as_slice(), std::slice::from_ref(&pinned));
+    assert!(!trashed(&test).contains(&other));
+
+    let named = plugin
+        .post("/Ployz.Trash.Empty", json!({"ids": [trash_id(1)]}))
+        .await;
+    assert_eq!(
+        named.pointer("/Ok/emptied"),
+        Some(&json!([trash_id(1)])),
+        "{named}"
+    );
+    assert_eq!(trashed(&test), Vec::<String>::new());
+}
+
+/// A pin doesn't keep an entry past its 7 days: one no restore tried again expires.
+#[tokio::test]
+async fn an_abandoned_pin_expires_seven_days_after_its_last_attempt() {
+    let test = test_dir();
+    let (plugin, entry) = deleted_root(&test).await;
+    plugin.sweep().await;
+    set_property(&test, "tank/ployz-trash", "ployz:trash-hours", "50");
+    assert!(plugin.call(&entry, false).await.get("Ok").is_some());
+    set_property(&test, "tank/ployz-trash", "ployz:trash-hours", "217");
+
+    plugin.later(1);
+    let swept = plugin.sweep().await;
+
+    assert_eq!(
+        swept.pointer("/Ok/destroyed"),
+        Some(&json!([id_of(&entry)])),
+        "{swept}"
+    );
+}
+
+/// A Volume restored and deleted again goes back with none of the first restore's marks,
+/// so its new entry pins and restores on its own.
+#[tokio::test]
+async fn a_restored_root_deleted_again_carries_no_restore_marks_into_its_entry() {
+    let test = test_dir();
+    let (plugin, entry) = deleted_root(&test).await;
+    assert!(plugin.restore(&entry).await.get("Ok").is_some());
+
+    let removed = plugin
+        .post("/VolumeDriver.Remove", json!({"Name": "data"}))
+        .await;
+
+    assert_eq!(removed, json!({"Err": ""}));
+    let again = trashed_one(&test, "root");
+    for mark in [
+        "ployz:trash-pin",
+        "ployz:trash-restored",
+        "ployz:trash-restoring",
+    ] {
+        assert_eq!(property(&test, &again, mark), None, "{mark}");
+    }
+    assert_eq!(
+        plugin.restore(&again).await.pointer("/Ok/state/kind"),
+        Some(&json!("restored"))
+    );
 }
