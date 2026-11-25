@@ -2819,10 +2819,7 @@ const RAW_MESSAGE_FIELDS: &[(&str, &str)] = &[
         "the Ployz config path: PLOYZ_CONFIG refuses a URL",
     ),
     ("DeliveryError.0", "text Ployz composes"),
-    (
-        "DrainError::Unobservable.detail",
-        "text a Server's daemon sent",
-    ),
+    ("Stop::Unobservable.detail", "text a Server's daemon sent"),
     (
         "EnrollInstructionError::LeadingDash.value",
         "Cloud's enroll instruction",
