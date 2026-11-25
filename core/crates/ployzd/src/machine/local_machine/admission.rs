@@ -821,7 +821,8 @@ impl Checked {
             .map_err(Error::DeployRefused)
     }
 
-    /// Start `id`. An Operator's start is refused when the admission kept with the
+    /// Start `id`, refused on any Server but its home when it is a preview's. An Operator's
+    /// start is also refused when the admission kept with the
     /// Container no longer stands here, as [`Standing::admits`] decides, and when this
     /// Machine kept no admission for it. Docker's start refuses it beside another running
     /// holder of its Provisioned Volume, as [`crate::docker::holder::start`] decides.
@@ -835,6 +836,17 @@ impl Checked {
         containers: &ContainerRuntime,
         id: &ContainerId,
     ) -> Result<(), Error> {
+        if let Some(preview) = containers
+            .lifecycle()
+            .namespace_of(id)
+            .await?
+            .as_ref()
+            .and_then(ployz_core::PreviewNamespace::of)
+        {
+            preview
+                .admit_on(&self.record().id())
+                .map_err(Error::PreviewRefused)?;
+        }
         if let Scope::Operator = self.scope() {
             let refusal = match containers.lifecycle().admitted_by(id).await? {
                 Some(by) => self.standing().admits(&by, Error::ApprovalRecord)?.err(),
