@@ -161,7 +161,9 @@ impl RuntimeWatchSnapshot {
 /// subscription gone quiet, or on once-per-second membership/RTT samples from
 /// the local admin source and the mesh echo. While it runs, one prober asks each
 /// peer that invites RPC for a cheap read and names those that miss in a row in
-/// `unanswered`; a change in that list yields too. The notification payload is not
+/// `unanswered` and those that answered in `answered`, beside the entry itself; a
+/// change in either list yields too. The first frame comes before any probe, so it
+/// names every peer in neither. The notification payload is not
 /// the observation. Unchanged observations do not yield, including when only
 /// `observed_at` advances. Store failure ends the stream. Admin telemetry
 /// failure keeps replicated rows.
@@ -244,10 +246,9 @@ where
     let (sender, receiver) = mpsc::channel(8);
     let disconnected = sender.clone();
     let (peers_tx, peers) = watch::channel(Vec::new());
-    let (unanswered_tx, mut unanswered) = watch::channel(Vec::new());
+    let (heard_tx, mut heard) = watch::channel(crate::runtime_watch_probe::Heard::default());
     // One prober for every stream on this producer, so open watches don't multiply probes.
-    let prober =
-        crate::runtime_watch_probe::probe_peers(peers, unanswered_tx, probe_interval, answers);
+    let prober = crate::runtime_watch_probe::probe_peers(peers, heard_tx, probe_interval, answers);
     let producer = async move {
         let mut changes = std::pin::pin!(changes);
         let mut ticks = std::pin::pin!(ticks);
@@ -274,12 +275,16 @@ where
                 latest.observed_at.clone(),
             );
             let probed = probed_peers(&frame, &entry_id);
-            frame.unanswered = unanswered
-                .borrow_and_update()
-                .iter()
-                .filter(|machine| probed.iter().any(|(probed, _)| probed == *machine))
-                .copied()
-                .collect();
+            let is_probed = |machine: &&MachineId| probed.iter().any(|(id, _)| id == *machine);
+            {
+                let heard = heard.borrow_and_update();
+                frame.unanswered = heard.unanswered.iter().filter(is_probed).copied().collect();
+                let mut answered: Vec<MachineId> =
+                    heard.answered.iter().filter(is_probed).copied().collect();
+                answered.push(entry_id);
+                answered.sort_unstable();
+                frame.answered = Some(answered);
+            }
             peers_tx.send_if_modified(|current| {
                 let changed = *current != probed;
                 if changed {
@@ -322,7 +327,7 @@ where
                 Some(()) = ticks.next() => {
                     latest = sample().await;
                 }
-                Ok(()) = unanswered.changed() => {}
+                Ok(()) = heard.changed() => {}
                 changed = changes.next() => match changed {
                     Some(Ok(())) => match load().await {
                         Ok(next) => snapshot = next,
@@ -371,6 +376,7 @@ fn observation_changed(previous: &RuntimeWatchFrame, next: &RuntimeWatchFrame) -
         certificates,
         incomplete_ids,
         unanswered,
+        answered,
         observed_at: _,
     } = previous;
     let RuntimeWatchFrame {
@@ -380,6 +386,7 @@ fn observation_changed(previous: &RuntimeWatchFrame, next: &RuntimeWatchFrame) -
         certificates: next_certificates,
         incomplete_ids: next_incomplete_ids,
         unanswered: next_unanswered,
+        answered: next_answered,
         observed_at: _,
     } = next;
     machines != next_machines
@@ -388,6 +395,7 @@ fn observation_changed(previous: &RuntimeWatchFrame, next: &RuntimeWatchFrame) -
         || certificates != next_certificates
         || incomplete_ids != next_incomplete_ids
         || unanswered != next_unanswered
+        || answered != next_answered
 }
 
 /// The peers the entry would call: every Machine but itself whose membership invites RPC.
@@ -443,6 +451,7 @@ pub(crate) fn assemble_runtime_watch_frame(
             certificates: snapshot.certificates.incomplete_ids,
         },
         unanswered: Vec::new(),
+        answered: None,
         observed_at,
     }
 }

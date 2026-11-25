@@ -20,6 +20,7 @@ export function ConfirmDialog({
   cancelLabel = "Cancel",
   pendingLabel,
   variant = "default",
+  actionDisabled = false,
   onConfirm,
 }: {
   open: boolean;
@@ -31,6 +32,8 @@ export function ConfirmDialog({
   cancelLabel?: string;
   pendingLabel?: string;
   variant?: "default" | "destructive";
+  /** The action can't run now; the description says why. */
+  actionDisabled?: boolean;
   onConfirm: () => void | Promise<void>;
 }) {
   const [pending, setPending] = useState(false);
@@ -58,7 +61,7 @@ export function ConfirmDialog({
           <AlertDialogCancel disabled={pending}>{cancelLabel}</AlertDialogCancel>
           <AlertDialogAction
             variant={variant === "destructive" ? "destructive" : "default"}
-            disabled={pending}
+            disabled={pending || actionDisabled}
             onClick={() => void handleConfirm()}
           >
             {pending ? <Spinner /> : null}

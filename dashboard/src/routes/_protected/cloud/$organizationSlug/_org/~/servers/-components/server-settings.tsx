@@ -69,7 +69,7 @@ export function ServerSettings({ organizationSlug, server, servers, stale }: {
           />
         )}
       />
-      <DrainDialog serverName={server.name} rows={drainDialogRows(drain.view, server.machine.id, server.services, strays, drain.data)} {...drain.dialog} />
+      <DrainDialog serverName={server.name} rows={drainDialogRows(drain.view, server.services, strays, drain.data)} {...drain.dialog} />
       <WebTrafficDialog serverName={server.name} domains={webTraffic.domains} partial={webTraffic.partial} reach={webTraffic.reach} {...webTraffic.dialog} />
     </>
   );

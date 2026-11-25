@@ -19,7 +19,7 @@ use crate::cloud::account::Credential;
 use crate::deploy::Approvals;
 use crate::drain::{
     DrainError, DrainOutcome, DrainReport, DrainScope, DrainStep, Move, MoveFailure, OldCopyEnd,
-    Remaining, ServiceDrain, ServicesRole, StayReason, Unconfirmed,
+    Remaining, ServiceDrain, ServicesRole, StayReason, Stop, Unconfirmed,
 };
 use crate::handlers::{Error, leaf_matches, route, runtime, store};
 use ployz_store::OperationVerb;
@@ -64,7 +64,7 @@ pub(in crate::handlers) fn drain(root: &ArgMatches) -> Result<(), Error> {
             None => {
                 let unsigned = crate::drain::needing_versions(&mut client, &target, &scope)
                     .await
-                    .map_err(refusal)?;
+                    .map_err(|error| refusal(matches, error))?;
                 if !unsigned.is_empty() {
                     return Err(unsigned_moves(matches, selector, &unsigned));
                 }
@@ -75,7 +75,7 @@ pub(in crate::handlers) fn drain(root: &ArgMatches) -> Result<(), Error> {
         let report = client
             .drain(&target, &scope, approvals, &cancellation, &mut show)
             .await
-            .map_err(refusal)?;
+            .map_err(|error| refusal(matches, error))?;
         render(&report)
     })
 }
@@ -237,14 +237,20 @@ fn unsigned_moves(matches: &ArgMatches, server: &str, services: &[QualifiedServi
     .hint(Hint::Next(crate::cli::rerun(matches, &["login"])))
 }
 
-fn refusal(error: DrainError) -> Error {
+/// A Drain's error as the CLI reports it. One that left services off names the command
+/// that turns them back on.
+fn refusal(matches: &ArgMatches, error: DrainError) -> Error {
     match error {
         // The CLI reports a connection failure with its own words.
-        DrainError::Connect(error) => error.into(),
-        error @ (DrainError::Refused(_)
-        | DrainError::RoleNotObserved
-        | DrainError::Unobservable { .. }
-        | DrainError::Cancelled) => RpcError::from(error).into(),
+        DrainError::Unchanged(Stop::Connect(error)) => error.into(),
+        error @ DrainError::Unchanged(_) => RpcError::from(error).into(),
+        DrainError::LeftOff { ref server, .. } | DrainError::MaybeOff { ref server, .. } => {
+            let undo = crate::cli::rerun(
+                matches,
+                &["server", "set", server.as_str(), "--accepts-services=true"],
+            );
+            Error::from(RpcError::from(error)).hint(Hint::Undo(undo))
+        }
     }
 }
 

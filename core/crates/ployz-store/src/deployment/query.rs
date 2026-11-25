@@ -131,10 +131,11 @@ pub enum Needs {
     /// A version the person signs.
     Version,
     /// Its automatic deploy rule approved again: it builds from source, and no live rule
-    /// that tracks its branch approves its spec as it stands.
+    /// that tracks its branch approves its spec as it stands. The Deploy's own tap signs
+    /// the rule, and the Deploy builds under it.
     Rule,
-    /// Its first Deploy under its rule, which a push to its branch makes: the rule
-    /// approves its spec, but no build under the rule has deployed it yet.
+    /// A build under its rule: the rule approves its spec, but no build under the rule
+    /// has deployed it yet. A push to its branch makes one, and so does a Deploy.
     Rebuild,
     /// Its image written by digest: it pulls a tag with a login, which no public lookup
     /// can pin for a person to sign.
