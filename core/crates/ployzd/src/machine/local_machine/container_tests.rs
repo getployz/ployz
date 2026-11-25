@@ -2169,9 +2169,12 @@ mod stopped_on_request {
             // socket, which emits no event.
             tokio::time::sleep(Duration::from_millis(1_500)).await;
 
-            tokio::time::timeout(Duration::from_millis(300), fixture.local.exclusive_turn())
-                .await
-                .expect("the removal's wait holds the Machine's turn");
+            tokio::time::timeout(
+                Duration::from_millis(300),
+                fixture.local.owner().admission_lock().write_owned(),
+            )
+            .await
+            .expect("the removal's wait holds the Machine's turn");
 
             assert!(!removing.is_finished(), "the removal did not wait");
             removing.await.unwrap().unwrap();
