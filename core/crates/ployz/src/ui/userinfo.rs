@@ -122,6 +122,9 @@ fn spans(text: &[u8]) -> impl Iterator<Item = (Range<usize>, &'static str)> + '_
 /// Where user info may run in `token`: from its first URL's authority to its last `@`.
 fn user_info(token: &[u8]) -> Option<Range<usize>> {
     let at = token.iter().rposition(|&byte| byte == b'@')?;
+    if is_digest(token.get(at + 1..)?) {
+        return None;
+    }
     let start = authority(token.get(..at)?)?;
     (start < at).then_some(start..at)
 }
@@ -148,6 +151,26 @@ fn authority(text: &[u8]) -> Option<usize> {
         }
     }
     None
+}
+
+/// Whether `text` starts with an image digest like `sha256:<hex>`, as in `my-http:v1@sha256:<hex>`.
+/// No URL parser reads it as a host and port, since no port has that many digits or any hex letter,
+/// so the text before its `@` is never user info.
+fn is_digest(text: &[u8]) -> bool {
+    let Some(hex) = [&b"sha256:"[..], b"sha512:"].iter().find_map(|algorithm| {
+        text.get(..algorithm.len())
+            .filter(|prefix| prefix.eq_ignore_ascii_case(algorithm))
+            .and_then(|_| text.get(algorithm.len()..))
+    }) else {
+        return false;
+    };
+    let digits = hex
+        .iter()
+        .take_while(|byte| byte.is_ascii_hexdigit())
+        .count();
+    let port = hex.get(..digits).unwrap_or_default();
+    let significant = port.iter().skip_while(|&&byte| byte == b'0').count();
+    digits >= 32 && (port.iter().any(u8::is_ascii_alphabetic) || significant > 5)
 }
 
 fn ends_in(scheme: &[u8], name: &[u8]) -> bool {

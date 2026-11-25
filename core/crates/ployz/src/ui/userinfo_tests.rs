@@ -95,6 +95,9 @@ fn text_without_user_info_is_left_as_it_is() {
         "nginx@sha256:abc and user@host and https://",
         "docker.io/library/nginx:1.25@sha256:0123abcd",
         "ghcr.io/acme/web:v1@sha256:0123abcd",
+        "ghcr.io/acme/my-http:v1@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "registry.example/team/sftp-wss:2@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "https://user:pw@sha512:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         "git@github.com:acme/web.git",
         "mailto:a@b.example",
         "See https://example.com for help, or mail a@b.example.",
@@ -103,6 +106,18 @@ fn text_without_user_info_is_left_as_it_is() {
         "",
     ] {
         assert!(matches!(mask(text), Cow::Borrowed(_)), "{text}");
+    }
+}
+
+#[test]
+fn a_url_never_has_user_info_before_an_image_digest() {
+    let hex = "0123456789abcdef".repeat(4);
+    for text in [
+        format!("https://user:pw@sha256:{hex}"),
+        format!("https://user:pw@SHA512:{}", "9".repeat(32)),
+        format!("ftp:user:pw@sha256:{hex}/x"),
+    ] {
+        assert!(url::Url::parse(&text).is_err(), "{text}");
     }
 }
 
