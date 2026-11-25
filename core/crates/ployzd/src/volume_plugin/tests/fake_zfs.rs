@@ -87,7 +87,14 @@ if [ "$name" = zpool ]; then
     if [ -e '{props}/importable' ]; then cat '{props}/importable'; else echo 'no pools available to import' >&2; fi
     exit 0
   fi
-  if [ -e '{props}/pools' ]; then cat '{props}/pools'; else printf '{pools}'; fi
+  pools() {{ if [ -e '{props}/pools' ]; then cat '{props}/pools'; else printf '{pools}'; fi; }}
+  # A listing with guids gives each Pool the guid its name's checksum makes.
+  case "$*" in
+    'list -Hp -o name,guid,'*) pools | while IFS="$(printf '\t')" read -r pool rest || [ -n "$pool" ]; do
+        printf '%s\t%s\t%s\n' "$pool" "$(printf %s "$pool" | cksum | cut -d' ' -f1)" "$rest"
+      done ;;
+    *) pools ;;
+  esac
   exit 0
 fi
 # ZFS refuses a user property (a name with a colon) holding anything but a-z, 0-9 and :._-

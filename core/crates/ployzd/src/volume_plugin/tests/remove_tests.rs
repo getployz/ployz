@@ -452,8 +452,8 @@ async fn docker_lookups_and_mounts_recover_existing_pools_without_create_or_capa
                     r#"#!/bin/sh
 set -eu
 case "$*" in
- 'list -Hp -o name,size,allocated,free,health,readonly')
-  [ ! -e '{root}/imported' ] || printf '{pool}\t4294967296\t0\t4294967296\tONLINE\toff\n' ;;
+ 'list -Hp -o name,guid,size,allocated,free,health,readonly')
+  [ ! -e '{root}/imported' ] || printf '{pool}\t7\t4294967296\t0\t4294967296\tONLINE\toff\n' ;;
  import|'import -d {root}/machine-pool') printf 'pool: {pool}\n' ;;
  'import -N ployz-device'|'import -d {root}/machine-pool -f -N ployz') touch '{root}/imported' ;;
  'list -v -H -P -o name ployz') printf 'ployz\n\t%s\t-\n' '{root}/machine-pool' ;;

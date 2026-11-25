@@ -344,13 +344,10 @@ impl PoolStorage {
             device: self.has_device_pool()?,
             mount_root: path_exists(&self.volume_root, "Volume mount root")?,
         };
-        let args = machine_pool::ZPOOL_LIST;
+        let args = machine_pool::ZPOOL_IDS;
         let imported = match host_command::run(&self.zpool, &args).await {
             Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-            output => Some(
-                machine_pool::imported(&listed_output(&self.zpool, &args, output)?)
-                    .map_err(|error| ployz_core::error_chain::inline(&error))?,
-            ),
+            output => Some(self.imported(output)?),
         };
         let mut inventory = machine_pool::Inventory {
             records,
@@ -395,9 +392,25 @@ impl PoolStorage {
                         self.scan(&["import", "-d", self.backing_text()?]).await?;
                 }
             }
+            // A Pool imported or exported between the first listing and the scans is in
+            // neither, so the scans are bracketed by a second listing to compare.
+            if scans {
+                let output = host_command::run(&self.zpool, &args).await;
+                inventory.relisted = Some(self.imported(output)?);
+            }
         }
         inventory.imported = imported;
         Ok(inventory)
+    }
+
+    /// The imported Pools a complete [`machine_pool::ZPOOL_IDS`] listing printed.
+    fn imported(
+        &self,
+        output: io::Result<std::process::Output>,
+    ) -> Result<Vec<machine_pool::Imported>> {
+        let listed = listed_output(&self.zpool, &machine_pool::ZPOOL_IDS, output)?;
+        machine_pool::imported(&listed)
+            .map_err(|error| ployz_core::error_chain::inline(&error).into())
     }
 
     /// The Pools one `zpool import` label scan with `args` could import.
@@ -1039,8 +1052,8 @@ set -eu
 case "$*" in
   import) {scan} ;;
   'import -N ployz-device') {import} ;;
-  'list -Hp -o name,size,allocated,free,health,readonly')
-    [ ! -e '{0}/imported' ] || printf 'ployz-device\t8589934592\t0\t8589934592\tONLINE\toff\n' ;;
+  'list -Hp -o name,guid,size,allocated,free,health,readonly')
+    [ ! -e '{0}/imported' ] || printf 'ployz-device\t7\t8589934592\t0\t8589934592\tONLINE\toff\n' ;;
   'list -v -H -P -o name ployz-device') printf 'ployz-device\n\t/dev/sdb\t-\n' ;;
   *) echo unexpected command >&2; exit 2 ;;
 esac
@@ -1144,8 +1157,8 @@ esac
 set -eu
 case "$*" in
  import|'import -d {root}/machine-pool') echo 'no pools available to import' >&2 ;;
- 'list -Hp -o name,size,allocated,free,health,readonly')
-   printf 'ployz\t8589934592\t0\t8589934592\tONLINE\ton\ntank\t8589934592\t0\t8589934592\tONLINE\toff\n' ;;
+ 'list -Hp -o name,guid,size,allocated,free,health,readonly')
+   printf 'ployz\t7\t8589934592\t0\t8589934592\tONLINE\ton\ntank\t7\t8589934592\t0\t8589934592\tONLINE\toff\n' ;;
  'list -v -H -P -o name ployz') printf 'ployz\n\t%s\t-\n' '{root}/machine-pool' ;;
  'list -v -H -P -o name tank') printf 'tank\n\t/dev/sdb\t-\n' ;;
  *) exit 97 ;;
@@ -1166,6 +1179,54 @@ esac
         assert!(matches!(read, machine_pool::Read::Unproven(_)), "{read:?}");
     }
 
+    /// A Pool imported between the listing and the scan is in neither, as is another Pool
+    /// imported under the same name, so the Pools listed again after the scans must match.
+    #[tokio::test]
+    async fn a_pool_imported_while_the_scans_ran_proves_nothing() {
+        use std::os::unix::fs::PermissionsExt;
+        for (later, changed) in [
+            (
+                "ployz-device\t11\t8589934592\t0\t8589934592\tONLINE\toff\nbackup\t12\t8589934592\t0\t8589934592\tONLINE\ton",
+                "from ployz-device (11) to backup (12), ployz-device (11)",
+            ),
+            (
+                "ployz-device\t13\t8589934592\t0\t8589934592\tONLINE\toff",
+                "from ployz-device (11) to ployz-device (13)",
+            ),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let program = root.path().join("zpool");
+            fs::write(root.path().join("later"), format!("{later}\n")).unwrap();
+            fs::write(
+                &program,
+                format!(
+                    r#"#!/bin/sh
+set -eu
+case "$*" in
+ import) echo 'no pools available to import' >&2 ;;
+ 'list -Hp -o name,guid,size,allocated,free,health,readonly')
+   if [ -e '{root}/listed' ]; then cat '{root}/later'
+   else printf 'ployz-device\t11\t8589934592\t0\t8589934592\tONLINE\toff\n'; touch '{root}/listed'; fi ;;
+ *) exit 97 ;;
+esac
+"#,
+                    root = root.path().display()
+                ),
+            )
+            .unwrap();
+            fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+            let storage = PoolStorage::new(program).with_backing(root.path().join("machine-pool"));
+            storage.files.confirm().unwrap();
+
+            let read = storage.read(machine_pool::Need::Proof).await.unwrap();
+
+            assert!(
+                matches!(&read, machine_pool::Read::Unproven(why) if why.contains(changed)),
+                "{read:?}"
+            );
+        }
+    }
+
     /// Two imported Pools that list the backing file, as when it was replaced while the old
     /// one was still open, leave the file's Pool unknown: nothing is written to either.
     #[tokio::test]
@@ -1179,8 +1240,8 @@ esac
                 r#"#!/bin/sh
 set -eu
 case "$*" in
- 'list -Hp -o name,size,allocated,free,health,readonly')
-   printf 'ployz\t8589934592\t0\t8589934592\tONLINE\ton\nployz-new\t8589934592\t0\t8589934592\tONLINE\toff\n' ;;
+ 'list -Hp -o name,guid,size,allocated,free,health,readonly')
+   printf 'ployz\t7\t8589934592\t0\t8589934592\tONLINE\ton\nployz-new\t7\t8589934592\t0\t8589934592\tONLINE\toff\n' ;;
  'list -v -H -P -o name ployz') printf 'ployz\n\t%s\t-\n' '{root}/machine-pool' ;;
  'list -v -H -P -o name ployz-new') printf 'ployz-new\n\t%s\t-\n' '{root}/machine-pool' ;;
  *) exit 97 ;;
@@ -1213,7 +1274,7 @@ esac
         let program = root.path().join("zpool");
         fs::write(
             &program,
-            "#!/bin/sh\ncase \"$*\" in\n import) echo 'no pools available to import' >&2 ;;\n 'list -Hp -o name,size,allocated,free,health,readonly')\n   printf 'tank\\t8589934592\\t0\\t8589934592\\tONLINE\\toff\\n'\n   echo \"cannot open 'other': I/O error\" >&2 ;;\n *) exit 97 ;;\nesac\n",
+            "#!/bin/sh\ncase \"$*\" in\n import) echo 'no pools available to import' >&2 ;;\n 'list -Hp -o name,guid,size,allocated,free,health,readonly')\n   printf 'tank\\t7\\t8589934592\\t0\\t8589934592\\tONLINE\\toff\\n'\n   echo \"cannot open 'other': I/O error\" >&2 ;;\n *) exit 97 ;;\nesac\n",
         )
         .unwrap();
         fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
@@ -1281,8 +1342,8 @@ case "$*" in
  'import -d {root}/machine-pool') printf 'pool: ployz\n' ;;
  'import -d {root}/machine-pool -f -N ployz') echo ployz > '{root}/selected' ;;
  'import -N ployz-device') echo ployz-device > '{root}/selected' ;;
- 'list -Hp -o name,size,allocated,free,health,readonly')
-   printf '%s\t8589934592\t0\t8589934592\tONLINE\toff\n' "$(cat '{root}/selected')" ;;
+ 'list -Hp -o name,guid,size,allocated,free,health,readonly')
+   printf '%s\t7\t8589934592\t0\t8589934592\tONLINE\toff\n' "$(cat '{root}/selected')" ;;
  'list -v -H -P -o name ployz') printf 'ployz\n\t%s\t-\n' '{root}/machine-pool' ;;
  *) exit 97 ;;
 esac

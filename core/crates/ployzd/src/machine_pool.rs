@@ -112,6 +112,15 @@ pub const ZPOOL_LIST: [&str; 4] = [
     "name,size,allocated,free,health,readonly",
 ];
 
+/// The `zpool list` arguments whose output [`imported`] reads: [`ZPOOL_LIST`] with each
+/// Pool's guid on its line, so another Pool imported under the same name reads as changed.
+pub const ZPOOL_IDS: [&str; 4] = [
+    "list",
+    "-Hp",
+    "-o",
+    "name,guid,size,allocated,free,health,readonly",
+];
+
 /// A writable imported Machine Pool with usable health.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MachinePool {
@@ -308,6 +317,8 @@ pub fn importable_names<'output>(output: &'output str) -> Result<Vec<&'output st
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Imported {
     pub pool: MachinePool,
+    /// Its guid, from [`ZPOOL_IDS`]; empty where [`ZPOOL_LIST`] listed it.
+    pub guid: String,
     pub health: String,
     pub readonly: bool,
 }
@@ -320,22 +331,24 @@ impl Imported {
     }
 }
 
-/// Every imported Pool in [`ZPOOL_LIST`] output, read-only and unhealthy ones included.
+/// Every imported Pool in [`ZPOOL_IDS`] output, read-only and unhealthy ones included.
 ///
 /// # Errors
 ///
 /// Returns an error for malformed output.
 pub fn imported(output: &str) -> Result<Vec<Imported>, Error> {
-    output.lines().map(parse_any).collect()
+    output.lines().map(parse_ids).collect()
 }
 
-/// The vdev paths `zpool list -v -H -P -o name POOL` prints for `pool`: its own line, then
-/// one `<TAB><path><TAB>…` line per vdev. Any other line fails, so a listing cut short
-/// or reworded never reads as a Pool on some other file.
+/// The leaf vdev paths `zpool list -v -H -P -o name POOL` prints for `pool`: its own
+/// line, then a `<TAB><vdev><TAB>…` line per vdev, where a vdev is a leaf's path or a
+/// group such as `mirror-0`, and a `logs`, `cache`, `spare`, `special` or `dedup` header
+/// padded with dashes before each class. Any other line fails, so a listing cut short or
+/// reworded never reads as a Pool on some other file.
 ///
 /// # Errors
 ///
-/// Returns an error when the listing has no vdev or a line it doesn't recognize.
+/// Returns an error when the listing has no leaf or a line it doesn't recognize.
 pub fn vdevs<'output>(
     output: &'output str,
     pool: &str,
@@ -345,19 +358,58 @@ pub fn vdevs<'output>(
     if lines.next() != Some(pool) {
         return Err(invalid());
     }
-    let paths = lines
-        .map(|line| {
-            line.strip_prefix('\t')
-                .and_then(|line| line.split('\t').next())
-                .filter(|path| path.starts_with('/'))
-                .map(std::ffi::OsStr::new)
-                .ok_or_else(invalid)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut paths = Vec::new();
+    for line in lines {
+        match line.strip_prefix('\t').map(|line| line.split('\t').next()) {
+            Some(Some(path)) if path.starts_with('/') => paths.push(std::ffi::OsStr::new(path)),
+            Some(Some(vdev)) if group(vdev) => {}
+            Some(_) => return Err(invalid()),
+            None => {
+                let mut words = line.split_whitespace();
+                let header = words.next().is_some_and(|class| {
+                    matches!(
+                        class,
+                        "logs" | "cache" | "spare" | "spares" | "special" | "dedup"
+                    )
+                });
+                if !header || words.any(|word| word != "-") {
+                    return Err(invalid());
+                }
+            }
+        }
+    }
     if paths.is_empty() {
         return Err(invalid());
     }
     Ok(paths)
+}
+
+/// Whether `vdev` names one of ZFS's interior vdevs, which hold leaves and no path:
+/// `mirror-0`, `raidz2-1`, `draid1:1d:3c:0s-0`, `spare-0`, `replacing-0` or `indirect-1`.
+fn group(vdev: &str) -> bool {
+    let Some((kind, id)) = vdev.rsplit_once('-') else {
+        return false;
+    };
+    let digits = |text: &str| !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit());
+    let draid = kind.strip_prefix("draid").is_some_and(|layout| {
+        let mut parts = layout.split(':');
+        parts
+            .next()
+            .is_some_and(|parity| matches!(parity, "1" | "2" | "3"))
+            && ["d", "c", "s"].iter().all(|unit| {
+                parts
+                    .next()
+                    .and_then(|part| part.strip_suffix(unit))
+                    .is_some_and(digits)
+            })
+            && parts.next().is_none()
+    });
+    digits(id)
+        && (draid
+            || matches!(
+                kind,
+                "mirror" | "raidz1" | "raidz2" | "raidz3" | "spare" | "replacing" | "indirect"
+            ))
 }
 
 /// What a Machine records about the Pool it owns.
@@ -384,6 +436,9 @@ pub struct Inventory {
     pub scan: Vec<String>,
     /// What a scan of the backing file could import, when the backing file is recorded.
     pub backing_scan: Vec<String>,
+    /// The imported Pools listed again after the scans, where they ran. A Pool imported or
+    /// exported between the two listings is in neither the first listing nor the scans.
+    pub relisted: Option<Vec<Imported>>,
 }
 
 /// How a Machine knows a Pool is its own.
@@ -424,12 +479,21 @@ pub fn choose(inventory: &Inventory) -> Choice {
         collisions,
         scan,
         backing_scan,
+        relisted,
     } = inventory;
     if !collisions.is_empty() {
         return Choice::Unproven(format!(
             "more than one imported Pool lists the same file: {}",
             collisions.join(", ")
         ));
+    }
+    if let (Some(before), Some(after)) = (imported, relisted) {
+        let (before, after) = (ids(before), ids(after));
+        if before != after {
+            return Choice::Unproven(format!(
+                "its imported Pools changed while it read them, from {before} to {after}"
+            ));
+        }
     }
     let Some(imported) = imported else {
         return if *records == Records::default() {
@@ -567,6 +631,20 @@ fn unusable(imported: &Imported) -> String {
     }
 }
 
+/// Each Pool in `imported` as `name (guid)`, in name order, or `none`.
+fn ids(imported: &[Imported]) -> String {
+    let mut ids: Vec<String> = imported
+        .iter()
+        .map(|imported| format!("{} ({})", imported.pool.name, imported.guid))
+        .collect();
+    ids.sort();
+    if ids.is_empty() {
+        "none".to_owned()
+    } else {
+        ids.join(", ")
+    }
+}
+
 fn found(imported: &[Imported], scan: &[String]) -> String {
     let mut found: Vec<String> = imported
         .iter()
@@ -648,6 +726,19 @@ fn parse(line: &str) -> Result<Option<MachinePool>, Error> {
     Ok(imported.usable().then_some(imported.pool))
 }
 
+/// One [`ZPOOL_IDS`] line: a name, a guid of digits, then a [`ZPOOL_LIST`] line's rest.
+fn parse_ids(line: &str) -> Result<Imported, Error> {
+    let invalid = || Error(format!("invalid ZFS Pool output: {line}"));
+    let (name, rest) = line.split_once('\t').ok_or_else(invalid)?;
+    let (guid, rest) = rest.split_once('\t').ok_or_else(invalid)?;
+    if guid.is_empty() || !guid.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(invalid());
+    }
+    let mut imported = parse_any(&format!("{name}\t{rest}")).map_err(|_| invalid())?;
+    imported.guid = guid.to_owned();
+    Ok(imported)
+}
+
 fn parse_any(line: &str) -> Result<Imported, Error> {
     let mut fields = line.split('\t');
     let invalid = || Error(format!("invalid ZFS Pool output: {line}"));
@@ -690,6 +781,7 @@ fn parse_any(line: &str) -> Result<Imported, Error> {
             used_bytes,
             free_bytes,
         },
+        guid: String::new(),
         health: health.to_owned(),
         readonly: readonly == "on",
     })
@@ -858,8 +950,92 @@ mod tests {
             "ployz\n",
             "tank\n\t/var/lib/ployz-machine-pool\t2.93G\n",
             "ployz\n\t/var/lib/ployz-machine-pool\t2.93G\nwarning\n",
+            "ployz\n\tmirror\t-\n\t/dev/sdb\t-\n",
+            "ployz\n\tmirror-0-x\t-\n\t/dev/sdb\t-\n",
+            "ployz\n\tdraid1:1d:3c-0\t-\n\t/dev/sdb\t-\n",
+            "ployz\n\t/dev/sdb\t-\nlogs  -  4G\n",
+            "ployz\n\t/dev/sdb\t-\nl2arc  -  -\n",
+            "ployz\n\tmirror-0\t-\n",
         ] {
             assert!(vdevs(listing, "ployz").is_err(), "{listing:?}");
+        }
+    }
+
+    /// What ZFS 2.2.2 printed for Pools of file vdevs: a mirror with an active spare and a
+    /// vdev of every class, a raidz, a draid, and a Pool with a removed vdev. Groups and
+    /// class headers are structure; only the leaves are read.
+    #[test]
+    fn a_vdev_listing_reads_the_leaves_of_every_layout_zfs_prints() {
+        let listings: [(&str, String, Vec<&str>); 4] = [
+        (
+            "probe",
+            [
+                "probe\n",
+                "\tmirror-0\t240M\t0\t240M\t-\t-\t0%\t0.00%\t-\tONLINE\n",
+                "\tspare-0\t-\t-\t-\t-\t-\t-\t-\t-\tONLINE\n",
+                "\t/root/probe/f1\t256M\t-\t-\t-\t-\t-\t-\t-\tONLINE\n",
+                "\t/root/probe/f6\t256M\t-\t-\t-\t-\t-\t-\t-\tONLINE\n",
+                "\t/root/probe/f2\t256M\t-\t-\t-\t-\t-\t-\t-\tONLINE\n",
+                "dedup                     -      -      -        -         -      -      -      -         -\n",
+                "\t/root/probe/f9\t256M\t0\t240M\t-\t-\t0%\t0.00%\t-\tONLINE\n",
+                "special                   -      -      -        -         -      -      -      -         -\n",
+                "\tmirror-2\t240M\t178K\t240M\t-\t-\t3%\t0.07%\t-\tONLINE\n",
+                "\t/root/probe/f7\t256M\t-\t-\t-\t-\t-\t-\t-\tONLINE\n",
+                "\t/root/probe/f8\t256M\t-\t-\t-\t-\t-\t-\t-\tONLINE\n",
+                "logs                      -      -      -        -         -      -      -      -         -\n",
+                "\tmirror-1\t240M\t0\t240M\t-\t-\t0%\t0.00%\t-\tONLINE\n",
+                "\t/root/probe/f3\t256M\t-\t-\t-\t-\t-\t-\t-\tONLINE\n",
+                "\t/root/probe/f4\t256M\t-\t-\t-\t-\t-\t-\t-\tONLINE\n",
+                "cache                     -      -      -        -         -      -      -      -         -\n",
+                "\t/root/probe/f5\t256M\t15K\t251M\t-\t-\t0%\t0.00%\t-\tONLINE\n",
+                "spare                     -      -      -        -         -      -      -      -         -\n",
+                "\t/root/probe/f6\t256M\t-\t-\t-\t-\t-\t-\t-\tINUSE\n",
+            ]
+            .concat(),
+            vec!["/root/probe/f1", "/root/probe/f6", "/root/probe/f2", "/root/probe/f9", "/root/probe/f7", "/root/probe/f8", "/root/probe/f3", "/root/probe/f4", "/root/probe/f5", "/root/probe/f6"],
+        ),
+        (
+            "probez",
+            [
+                "probez\n",
+                "\traidz1-0\t704M\t196K\t704M\t-\t-\t0%\t0.02%\t-\tONLINE\n",
+                "\t/root/probe/f10\t256M\t-\t-\t-\t-\t-\t-\t-\tONLINE\n",
+                "\t/root/probe/f11\t256M\t-\t-\t-\t-\t-\t-\t-\tONLINE\n",
+                "\t/root/probe/f12\t256M\t-\t-\t-\t-\t-\t-\t-\tONLINE\n",
+            ]
+            .concat(),
+            vec!["/root/probe/f10", "/root/probe/f11", "/root/probe/f12"],
+        ),
+        (
+            "probed",
+            [
+                "probed\n",
+                "\tdraid1:1d:3c:0s-0\t576M\t213K\t576M\t-\t-\t0%\t0.03%\t-\tONLINE\n",
+                "\t/root/probe/f15\t256M\t-\t-\t-\t-\t-\t-\t-\tONLINE\n",
+                "\t/root/probe/f16\t256M\t-\t-\t-\t-\t-\t-\t-\tONLINE\n",
+                "\t/root/probe/f17\t256M\t-\t-\t-\t-\t-\t-\t-\tONLINE\n",
+            ]
+            .concat(),
+            vec!["/root/probe/f15", "/root/probe/f16", "/root/probe/f17"],
+        ),
+        (
+            "prober",
+            [
+                "prober\n",
+                "\t/root/probe/f18\t256M\t148K\t240M\t-\t-\t3%\t0.06%\t-\tONLINE\n",
+                "\tindirect-1\t-\t-\t-\t-\t-\t-\t-\t-\tONLINE\n",
+            ]
+            .concat(),
+            vec!["/root/probe/f18"],
+        ),
+        ];
+        for (pool, listing, leaves) in listings {
+            let read: Vec<_> = vdevs(&listing, pool)
+                .unwrap_or_else(|error| panic!("{pool}: {error}"))
+                .iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(read, leaves, "{pool}");
         }
     }
 
@@ -880,6 +1056,7 @@ mod tests {
             collisions: Vec::new(),
             scan: scan.iter().map(|name| (*name).to_owned()).collect(),
             backing_scan: Vec::new(),
+            relisted: None,
         }
     }
 

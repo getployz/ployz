@@ -957,7 +957,7 @@ case "$name" in
         [ ! -e '{fail_import}' ] || {{ echo 'import failed' >&2; exit 2; }}
         touch '{pool}'
         ;;
-      'list -Hp -o name,size,allocated,free,health,readonly')
+      'list -Hp -o name,guid,size,allocated,free,health,readonly')
         if [ -e '{concurrent}' ] && [ ! -e '{pool}' ]; then
           sleep 0.1
         else
@@ -968,7 +968,7 @@ case "$name" in
             [ ! -e '{pool_overhead}' ] || capacity=$((capacity - $(cat '{pool_overhead}')))
             used=0
             [ ! -e '{trash_entry}' ] || used=$(cut -d' ' -f2 '{trash_entry}')
-            printf 'ployz\t%s\t%s\t%s\tONLINE\toff\n' "$capacity" "$used" "$((capacity - used))"
+            printf 'ployz\t7\t%s\t%s\t%s\tONLINE\toff\n' "$capacity" "$used" "$((capacity - used))"
           fi
         fi
         ;;
