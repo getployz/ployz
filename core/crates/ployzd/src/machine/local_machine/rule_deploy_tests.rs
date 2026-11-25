@@ -1085,3 +1085,55 @@ async fn an_approved_fork_commit_creates_only_in_its_own_preview() {
         "a commit"
     );
 }
+
+/// An approval carrying more signatures than one admission may check is refused before
+/// the Machine verifies past that limit, offline as online.
+#[tokio::test]
+async fn an_approval_is_charged_for_every_signature_it_carries() {
+    let fixture = fixture().await;
+    let rule = fixture.preview_rule();
+    let preview = fixture.preview(&rule, "0000aaaa");
+    let CommitAuthority::Approved(mut approval) =
+        fixture.approved(&fixture.approval(&rule, &preview))
+    else {
+        unreachable!("an approved authority")
+    };
+    let honest = BuildClaim {
+        commit: fork(),
+        authority: CommitAuthority::Approved(approval.clone()),
+        ..fixture.built(&rule, fixture.attest())
+    };
+    let verified = fixture
+        .issued(
+            want_in(preview.as_str(), "service_container", "k1", &spec()),
+            &fixture.proof(&rule, &honest, token_for(&honest, "fork")),
+        )
+        .await;
+    let signature = approval.signatures[0].clone();
+    approval.signatures = vec![signature; 8];
+    let padded = BuildClaim {
+        authority: CommitAuthority::Approved(approval),
+        ..honest
+    };
+    let offline = Fixture::offline(
+        &fixture.proof(&rule, &padded, token_for(&padded, "fork")),
+        verified,
+    );
+    let result = fixture
+        .deploy(
+            want_in(preview.as_str(), "service_container", "k2", &spec()),
+            &offline,
+            commit(),
+            now(),
+        )
+        .await;
+    assert!(
+        matches!(
+            result,
+            Err(Error::RuleDeployRefused(RuleDeployRefusal::Rule(
+                AuthorityRefusal::Overspent
+            )))
+        ),
+        "{result:?}"
+    );
+}

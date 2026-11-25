@@ -269,8 +269,8 @@ impl LocalMachine {
             }
             RuleEvidence::Verified(_) | RuleEvidence::Pinned => None,
         };
-        if let CommitAuthority::Approved(_) = claim.authority {
-            budget.reserve_one().map_err(refused)?;
+        if let CommitAuthority::Approved(approval) = &claim.authority {
+            budget.reserve(approval, &trusted).map_err(refused)?;
         }
         rule.verify_authority(
             &claim.authority,
