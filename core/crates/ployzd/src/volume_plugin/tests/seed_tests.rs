@@ -321,15 +321,64 @@ async fn a_renamed_seed_whose_parent_holds_a_record_is_refused() {
     assert_eq!(snapshot_names(&test, "tank/ployz/seed"), ["w-1-1"]);
 }
 
+/// Wraps `zfs` so a Seed's answer waits while `<test>/answer-gate` exists, after touching
+/// `<test>/answer-reached`. It waits at the read of the slot copy's resume token, which a
+/// Seed that finds its receive running makes only for its answer, after `take_failure`.
+fn answer_gated(test: &TestDir, zfs: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt as _;
+    let wrapper = test.0.join("answer-gated-zfs");
+    fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\n\
+             if [ \"$*\" = 'get -H -o value receive_resume_token tank/ployz-mirror/seed/fs' ] && [ -e '{root}/answer-gate' ]; then\n\
+             \ttouch '{root}/answer-reached'\n\
+             \twhile [ -e '{root}/answer-gate' ]; do sleep 0.01; done\n\
+             fi\n\
+             exec '{zfs}' \"$@\"\n",
+            root = test.0.display(),
+            zfs = zfs.display(),
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+    wrapper
+}
+
+/// The receive fails after a resent Seed found it running and before that Seed read the
+/// copy for its answer. The answer shows the failure, and the next call starts over.
 #[tokio::test]
 async fn a_failed_seed_copy_is_answered_once_and_the_next_call_starts_over() {
     let test = test_dir();
-    let (socket, _server) = start(&test, USABLE_POOL, &["root", "volume"]);
+    for marker in ["root", "volume"] {
+        fs::write(test.0.join(marker), "").unwrap();
+    }
+    let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
+    let storage = VolumeStorage::with_programs(zpool, answer_gated(&test, &zfs));
+    let receives = storage.receives.clone();
+    let socket = test.0.join("plugin.sock");
+    let _server = tokio::spawn(serve(UnixListener::bind(&socket).unwrap(), storage));
+    let into: VolumeName = "seed".parse().unwrap();
     set_property(&test, "tank/ployz/data", "snapshots", POINT);
     fs::write(test.0.join("props").join("receive-fails"), "").unwrap();
+    fs::write(test.0.join("props").join("stall-read"), "").unwrap();
     post(&socket, "/Volume.Seed", seed(77)).await;
+    receive_ready(&test).await;
 
-    let failed = settled(&socket).await;
+    fs::write(test.0.join("answer-gate"), "").unwrap();
+    let resent = tokio::spawn({
+        let socket = socket.clone();
+        async move { post(&socket, "/Volume.Seed", seed(77)).await }
+    });
+    eventually("the resent Seed's answer", || {
+        test.0.join("answer-reached").exists()
+    })
+    .await;
+    fs::remove_file(test.0.join("props").join("stall-read")).unwrap();
+    eventually("the receive's failure", || !receives.status(&into).busy()).await;
+    fs::remove_file(test.0.join("answer-gate")).unwrap();
+
+    let failed = resent.await.unwrap();
     let failure = failed
         .pointer("/Ok/copy/pull/failure")
         .and_then(Value::as_str)
