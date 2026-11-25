@@ -39,6 +39,14 @@ enum StartState {
 }
 
 impl LocalMachine {
+    /// Refuse data arriving into `name` when it belongs to another Server's preview.
+    ///
+    /// # Errors
+    /// Returns [`Error::PreviewRefused`] for another Server's preview.
+    pub(crate) fn admit_preview_arrival(&self, name: &DockerVolumeName) -> Result<(), Error> {
+        ployz_core::admit_preview_arrival(&self.record().id(), name).map_err(Error::PreviewRefused)
+    }
+
     /// SetVolumeCopy: move the copy of `request.name` to its want, under the switch lock
     /// from the floor check through the transition.
     ///
@@ -49,6 +57,9 @@ impl LocalMachine {
         &self,
         request: SetVolumeCopyRequest,
     ) -> Result<Copy, Error> {
+        if !matches!(request.want, WantedCopy::Forget | WantedCopy::Floor) {
+            self.admit_preview_arrival(&request.name)?;
+        }
         // The spec of the Container this request's start creates, when it creates one,
         // which the create checks again under its turn.
         let admitted = match &request.want {
@@ -104,6 +115,7 @@ impl LocalMachine {
         &self,
         request: &SeedVolumeRequest,
     ) -> Result<VolumeCopyView, Error> {
+        self.admit_preview_arrival(&request.into)?;
         let switch = self.lock_switch().await?;
         // Only a Full caller seeds, checked under the switch: the Machine API refused an
         // Operator on arrival, and a key that lost its Device slot since is one now.
@@ -137,6 +149,7 @@ impl LocalMachine {
         &self,
         request: SeedCopyRequest,
     ) -> Result<VolumeCopyView, Error> {
+        self.admit_preview_arrival(&request.seed.into)?;
         let switch = self.lock_switch().await?;
         if let Some(r#gen) = request.seed.r#gen {
             switch.check_gen(&request.seed.into, r#gen).await?;

@@ -960,6 +960,18 @@ impl Lifecycle {
         Ok(self.specs.admitted_by(container_id).await?)
     }
 
+    /// The Namespace a managed Container's label names, `None` when it names none.
+    pub(crate) async fn namespace_of(
+        &self,
+        container_id: &ContainerId,
+    ) -> Result<Option<Namespace>, Error> {
+        let inspected = self.observation.ensure_managed(container_id).await?;
+        Ok(inspected
+            .labels()
+            .and_then(|labels| labels.get(labels::NAMESPACE))
+            .and_then(|namespace| Namespace::parse(namespace).ok()))
+    }
+
     pub async fn start(&self, container_id: &ContainerId) -> Result<(), Error> {
         let inspected = self.observation.ensure_managed(container_id).await?;
         self.recovery.release(container_id).await;
