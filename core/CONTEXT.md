@@ -480,6 +480,14 @@ _Avoid_: primary, master, active replica, source of truth
 A read-only point-in-time copy of a Provisioned Volume held in a hidden slot on another Machine's Pool, refreshed by request. Docker never lists a slot; the Pool still pays for its bound. It is not continuous replication and does not make the Volume shared. The Machine records each slot's role: a pull makes it a Mirror, and a cut or a departure that parks the Writer's root in it makes it an **Old copy**, which nothing refreshes.
 _Avoid_: replica, standby, backup, secondary
 
+**Trash**:
+Where a Machine keeps every copy of a Provisioned Volume it deletes, on the same Machine Pool, for 168 hourly sweeps it ran (7 days while it runs). A delete moves the copy there and frees no space; the sweep, or a person with Full access emptying it, destroys it. The Machine never empties it to make room. Plain and anonymous Docker volumes are not kept.
+_Avoid_: recycle bin, soft delete, retention, backup
+
+**Trash entry**:
+One deleted copy in a Machine's Trash: a root, a slot or a slot's copy, with its Docker Volume name, the place it came from, the origin of the data it holds and the sweep hour it was deleted at. A person with Full access restores it where its Volume has no copy, never a slot a restore was still filling.
+_Avoid_: deleted volume, backup, snapshot
+
 **Lease**:
 The per-Volume record each Machine keeps on its Pool, `<lease>:<seq>.<round>.<sub>:<open|closed>`, that admits a switch request only when its lease and step are not behind what this Machine already did. The operator driving the Volume Run numbers the lease from its own store. A newer lease adopts, the same step replays, and anything older is refused. It outlives the copy, `docker volume rm` and a Machine reset, which closes it.
 _Avoid_: lock, fencing token, leader, epoch (as a user-facing word)

@@ -125,7 +125,7 @@ async fn departure_on_a_machine_without_zfs_demotes_nothing() {
 }
 
 #[tokio::test]
-async fn departure_destroys_a_received_mirror_and_the_emptied_mirror_root() {
+async fn departure_trashes_a_received_mirror_and_destroys_the_emptied_mirror_root() {
     for markers in [
         &["root", "mirror-root", "mirror", "mirror-fs"][..],
         &["root", "mirror-root", "mirror"],
@@ -147,10 +147,16 @@ async fn departure_destroys_a_received_mirror_and_the_emptied_mirror_root() {
             "{markers:?}"
         );
         let log = commands(&test);
-        assert!(
-            log.contains("zfs destroy -r tank/ployz-mirror/data\n"),
-            "{markers:?}: {log}"
-        );
+        if markers.contains(&"mirror-fs") {
+            let entry = trashed_one(&test, "slot");
+            assert_eq!(snapshot_names(&test, &format!("{entry}/fs")), ["w-3-1"]);
+        } else {
+            assert!(
+                log.contains("zfs destroy tank/ployz-mirror/data\n"),
+                "{markers:?}: {log}"
+            );
+            assert_eq!(trashed(&test), Vec::<String>::new());
+        }
         assert!(!test.0.join("mirror").exists(), "{markers:?}");
         assert!(
             log.contains("zfs destroy tank/ployz-mirror\n"),

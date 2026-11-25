@@ -14,9 +14,13 @@
 //! at the top of its arm and right before each of its two effects; a copy started over in
 //! the slot its step made reads none, since that slot is the destination the window
 //! already admitted. Any effect can fail or be the last before a restart.
-//! A receive runs outside both locks. The user deletes `into` under the same mutation:
-//! every destroy of a dataset carrying the step leaves the step's tombstone first
-//! (`VolumeStorage::bury`, run by `VolumeStorage::zfs`), and a restart can come between.
+//! A receive runs outside both locks. The user deletes `into` under the same mutation, and
+//! the delete moves it to the Trash (`VolumeStorage::discard`, trash.rs): the trash marks,
+//! the rename, then the step's tombstone (`VolumeStorage::bury`) once the rename committed,
+//! with a restart possible between any two. A seed into an absent `into` buries the steps
+//! the Trash holds before it reads its own (`bury_trash`). The person can restore the entry
+//! where nothing of `into` is (`restore_trash`), never a slot still carrying its step, and the
+//! sweep can destroy it (`sweep_trash`), burying first.
 //! The daemon and the plugin can restart between any two steps, which kills the receive
 //! and loses the request in hand, but keeps the record, the tombstones and the datasets.
 //! The step's window closes once, and the plugin's wall clock may step back once after.
@@ -27,8 +31,9 @@
 //! copy never answers, lands on or destroys a copy of `into` it did not make; every root
 //! the copy answers carries the step's birth; a new copy makes its slot and starts its
 //! receive only inside the step's window on the plugin's clock; a call the daemon found
-//! past the window starts no new copy; and a copy is refused as deleted only after `into`
-//! was deleted, so no call that ended or failed partway costs the approval.
+//! past the window starts no new copy; a copy is refused as deleted only after `into`
+//! was deleted, so no call that ended or failed partway costs the approval; and `into`
+//! never holds two roots.
 //!
 //! Out of scope: a receive that fails (its answer is the same `Failed` arm the unbound seed
 //! has), the zfs calls inside a landing (the `volume_marks` model checks their order), a
@@ -187,11 +192,17 @@ enum Action {
     WindowCloses,
     /// The plugin's wall clock steps back across the window's end.
     ClockBack,
-    /// The user deletes `into` (Volume.Remove or a forget, under `admit_mutation`): the
-    /// tombstone of a step it carries goes first.
+    /// The user deletes `into` (Volume.Remove or a forget, under `admit_mutation`):
+    /// `discard` writes its trash marks, which nothing on a live copy reads.
     Delete,
-    /// The destroy that deletes `into`.
-    Destroyed,
+    /// `discard`'s rename moves `into` to the Trash.
+    Trashed,
+    /// `discard` buries the step the entry carries, after the rename.
+    Buried,
+    /// The person restores the entry (`restore_trash`, under `admit_mutation`).
+    Restore,
+    /// The sweep, or an Empty, destroys the entry, burying first.
+    Expire,
     /// Another approval makes a Volume named `into`, which carries another origin.
     Reuse,
     /// An interrupted mirror pull of another Volume named `into` leaves an empty slot parent.
@@ -239,8 +250,12 @@ struct State {
     into: Into,
     receiving: bool,
     held: Held,
-    /// A delete wrote its tombstone and has not destroyed `into` yet.
+    /// A delete holds the mutation: it began and has not buried yet.
     deleting: bool,
+    /// The delete's rename committed and its tombstone is not written yet.
+    renamed: bool,
+    /// The Trash entry the delete made, as `into` was.
+    trash: Option<Into>,
     on_wire: u8,
     sends: u8,
     restarted: bool,
@@ -250,8 +265,18 @@ struct State {
     made: bool,
     /// `into` was deleted while it carried the birth.
     deleted: bool,
-    /// A restart came between a delete's tombstone and its destroy.
+    /// A restart came before a delete's rename.
     delete_cut: bool,
+    /// A restart came between a delete's rename and its tombstone.
+    bury_cut: bool,
+    /// The entry came back from the Trash.
+    restored: bool,
+    /// The sweep destroyed the entry.
+    expired: bool,
+    /// A copy made, refilled or landed `into` after it was deleted carrying the birth.
+    remade: bool,
+    /// A restore put a root under `into` while it held one.
+    two_roots: bool,
     /// The effect a call was cut before, by an outage or a restart.
     cut: Option<Stage>,
     /// A step destroyed or landed on a copy of `into` it did not make.
@@ -305,6 +330,12 @@ struct Broken {
     ignores_verdict: bool,
     /// `Copied::land` stamps the point's own origin, not the slot's record.
     lands_point_origin: bool,
+    /// A seed into an absent `into` reads its tombstone without burying the Trash's steps.
+    no_trash_bury: bool,
+    /// A restore puts back a slot whose parent still carries its step.
+    restores_unlanded: bool,
+    /// A restore goes ahead while `into` has a copy.
+    restores_over_taken: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -337,6 +368,7 @@ const ANSWERS_BIRTH: &str = "every root the copy answers carries the step's birt
 const STARTS_IN_WINDOW: &str = "a new copy makes its slot and starts its receive only inside the step's window on the plugin's clock";
 const CLOSED_STAYS_CLOSED: &str = "a call the daemon found past the window starts no new copy";
 const DELETED_ONLY_AFTER_DELETE: &str = "a copy is refused as deleted only after into was deleted";
+const ONE_ROOT: &str = "into never holds two roots";
 
 /// Each branch the bounds reach, once. `every_copy_sometimes_needs_what_it_names` takes each
 /// row's `omit` out and expects its `name` unreached.
@@ -430,6 +462,24 @@ const COVERAGE: &[Coverage] = &[
         },
     },
     Coverage {
+        name: "a late resend after a restart cut a delete between its rename and its tombstone refuses into deleted",
+        on: fresh,
+        omit: Some(Omit::Actions(&[Action::Restart])),
+        reached: |_, state| took(state, Path::Deleted) && state.bury_cut,
+    },
+    Coverage {
+        name: "a late resend after the sweep destroyed the entry refuses into deleted",
+        on: fresh,
+        omit: Some(Omit::Actions(&[Action::Expire])),
+        reached: |_, state| took(state, Path::Deleted) && state.expired,
+    },
+    Coverage {
+        name: "a resend answers the root the person restored",
+        on: fresh,
+        omit: Some(Omit::Actions(&[Action::Restore])),
+        reached: |_, state| took(state, Path::AnswersRoot) && state.restored,
+    },
+    Coverage {
         name: "a copy refuses a copy of into it did not make",
         on: everywhere,
         omit: Some(Omit::Path(Path::Taken)),
@@ -508,6 +558,7 @@ impl CopyStep {
                         record.unwrap_or(Origin::Source)
                     };
                     state.harmed_other |= !ours;
+                    state.remade |= state.deleted;
                     // The landing destroys the parent, which carries the step.
                     state.tombstone |= ours && !self.broken.no_tombstone;
                     state.into = Into::Root(stamped);
@@ -527,6 +578,9 @@ impl CopyStep {
                 }
             }
             Into::Absent => {
+                if !self.broken.no_trash_bury && !self.broken.no_tombstone {
+                    state.tombstone |= state.trash.is_some_and(Into::carries_step);
+                }
                 if state.tombstone && !self.broken.no_tombstone {
                     state.falsely_deleted |= !state.deleted;
                     Err(Path::Deleted)
@@ -561,6 +615,7 @@ impl CopyStep {
         }
         let next = match at {
             Stage::Make => {
+                state.remade |= state.deleted;
                 state.started_late |= !state.plugin_open;
                 state.started_closed |= !open;
                 state.made = true;
@@ -588,6 +643,7 @@ impl CopyStep {
                 Stage::Spawn
             }
             Stage::Spawn => {
+                state.remade |= state.deleted;
                 state.started_late |= new && !state.plugin_open;
                 state.started_closed |= new && !open;
                 if let Into::Slot { ours, record, .. } = state.into {
@@ -661,8 +717,10 @@ impl CopyStep {
                 state.restarted = true;
                 Self::cut(state);
                 state.receiving = false;
-                state.delete_cut |= state.deleting;
+                state.delete_cut |= state.deleting && !state.renamed;
+                state.bury_cut |= state.renamed;
                 state.deleting = false;
+                state.renamed = false;
                 state.restarted_after_receipt |= matches!(
                     state.into,
                     Into::Slot {
@@ -679,14 +737,32 @@ impl CopyStep {
                 state.plugin_open = true;
                 state.clock_back = true;
             }
-            Action::Delete => {
-                state.tombstone |= state.into.carries_step() && !self.broken.no_tombstone;
-                state.deleting = true;
-            }
-            Action::Destroyed => {
+            Action::Delete => state.deleting = true,
+            Action::Trashed => {
                 state.deleted |= state.into.carries_birth();
+                state.trash = Some(state.into);
                 state.into = Into::Absent;
+                state.renamed = true;
+            }
+            Action::Buried => {
+                state.tombstone |=
+                    state.trash.is_some_and(Into::carries_step) && !self.broken.no_tombstone;
                 state.deleting = false;
+                state.renamed = false;
+            }
+            Action::Restore => {
+                if let Some(entry) = state.trash.take() {
+                    state.two_roots |=
+                        matches!((state.into, entry), (Into::Root(_), Into::Root(_)));
+                    state.into = entry;
+                    state.restored = true;
+                }
+            }
+            Action::Expire => {
+                state.tombstone |=
+                    state.trash.is_some_and(Into::carries_step) && !self.broken.no_tombstone;
+                state.trash = None;
+                state.expired = true;
             }
             Action::Reuse => {
                 state.reused = true;
@@ -733,6 +809,8 @@ impl Model for CopyStep {
             receiving: false,
             held: Held::Idle,
             deleting: false,
+            renamed: false,
+            trash: None,
             on_wire: 0,
             sends: 0,
             restarted: false,
@@ -741,6 +819,11 @@ impl Model for CopyStep {
             made: false,
             deleted: false,
             delete_cut: false,
+            bury_cut: false,
+            restored: false,
+            expired: false,
+            remade: false,
+            two_roots: false,
             cut: None,
             harmed_other: false,
             answered: None,
@@ -782,6 +865,7 @@ impl Model for CopyStep {
         }
         // Volume.Remove refuses a Volume a receive is writing, and waits for the mutation.
         if state.into != Into::Absent
+            && state.trash.is_none()
             && !state.receiving
             && !state.deleted
             && !state.deleting
@@ -790,7 +874,24 @@ impl Model for CopyStep {
             actions.push(Action::Delete);
         }
         if state.deleting {
-            actions.push(Action::Destroyed);
+            actions.push(if state.renamed {
+                Action::Buried
+            } else {
+                Action::Trashed
+            });
+        }
+        // Restore and the sweep take the same mutation; a restore refuses a name with a
+        // copy, and a slot whose parent still carries its step.
+        if let Some(entry) = state.trash
+            && !state.deleting
+            && !in_plugin
+        {
+            let free = state.into == Into::Absent || self.broken.restores_over_taken;
+            let unlanded = matches!(entry, Into::Slot { ours: true, .. });
+            if free && !state.receiving && (!unlanded || self.broken.restores_unlanded) {
+                actions.push(Action::Restore);
+            }
+            actions.push(Action::Expire);
         }
         if state.into == Into::Absent && state.deleted && !state.reused {
             actions.push(Action::Reuse);
@@ -810,9 +911,7 @@ impl Model for CopyStep {
 
     fn properties(&self) -> Vec<Property<Self>> {
         let mut properties = vec![
-            Property::always(NEVER_REMADE, |_, state: &State| {
-                !(state.deleted && state.into.carries_birth())
-            }),
+            Property::always(NEVER_REMADE, |_, state: &State| !state.remade),
             Property::always(KEEPS_OTHER, |_, state: &State| !state.harmed_other),
             Property::always(ANSWERS_BIRTH, |_, state: &State| {
                 state.answered.is_none_or(|origin| origin == Origin::Birth)
@@ -824,6 +923,7 @@ impl Model for CopyStep {
             Property::always(DELETED_ONLY_AFTER_DELETE, |_, state: &State| {
                 !state.falsely_deleted
             }),
+            Property::always(ONE_ROOT, |_, state: &State| !state.two_roots),
         ];
         properties.extend(harness::sometimes(COVERAGE, self));
         properties
@@ -857,11 +957,23 @@ fn reads_as(action: Action, after: &State) -> String {
         ),
         Action::WindowCloses => "the step's window closes".to_owned(),
         Action::ClockBack => "the plugin's wall clock steps back inside the window".to_owned(),
-        Action::Delete => format!(
-            "the user deletes into: bury leaves the tombstone first; tombstone={}",
+        Action::Delete => "the user deletes into: discard writes the trash marks".to_owned(),
+        Action::Trashed => format!(
+            "discard renames into to the Trash (trash.rs discard); trash={:?}",
+            after.trash
+        ),
+        Action::Buried => format!(
+            "discard buries the step the entry carries; tombstone={}",
             after.tombstone
         ),
-        Action::Destroyed => "the delete destroys into".to_owned(),
+        Action::Restore => format!(
+            "the person restores the entry (trash.rs restore_trash); into={:?}",
+            after.into
+        ),
+        Action::Expire => format!(
+            "the sweep buries and destroys the entry (trash.rs sweep_trash); tombstone={}",
+            after.tombstone
+        ),
         Action::Reuse => "another approval makes a Volume named into".to_owned(),
         Action::ReuseEmpty => {
             "an interrupted mirror pull leaves an empty slot parent of into".to_owned()
@@ -959,7 +1071,7 @@ mod tests {
             NEVER_REMADE,
         );
         assert!(
-            harness::took_action(&path, Action::Destroyed),
+            harness::took_action(&path, Action::Trashed),
             "into was deleted"
         );
     }
@@ -1119,6 +1231,61 @@ mod tests {
         assert!(
             a_new_copy_broke(&path),
             "a new copy started after the window"
+        );
+    }
+
+    /// A delete stopped between its rename and its tombstone leaves the step unburied: a
+    /// seed that reads its tombstone without burying the Trash's steps makes the deleted
+    /// Volume again.
+    #[test]
+    fn a_copy_buries_the_trash_before_it_reads_its_tombstone() {
+        let path = breaks(
+            broken(
+                Scenario::Fresh,
+                Broken {
+                    no_trash_bury: true,
+                    ..Broken::default()
+                },
+            ),
+            NEVER_REMADE,
+        );
+        assert!(
+            last(&path).bury_cut,
+            "a restart came between rename and tombstone"
+        );
+    }
+
+    /// A slot still carrying its step is a copy that never landed; put back, its seed
+    /// starts it over past the window and lands the deleted Volume.
+    #[test]
+    fn a_restore_refuses_a_slot_that_still_carries_its_step() {
+        let path = breaks(
+            broken(
+                Scenario::Fresh,
+                Broken {
+                    restores_unlanded: true,
+                    ..Broken::default()
+                },
+            ),
+            NEVER_REMADE,
+        );
+        assert!(
+            harness::took_action(&path, Action::Restore),
+            "the slot came back"
+        );
+    }
+
+    #[test]
+    fn a_restore_refuses_a_name_that_has_a_copy() {
+        breaks(
+            broken(
+                Scenario::Fresh,
+                Broken {
+                    restores_over_taken: true,
+                    ..Broken::default()
+                },
+            ),
+            ONE_ROOT,
         );
     }
 

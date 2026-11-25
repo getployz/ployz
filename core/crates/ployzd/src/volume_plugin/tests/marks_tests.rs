@@ -19,6 +19,39 @@ async fn finished(socket: &Path, target: &str) -> Value {
     .unwrap_or_else(|| panic!("the pull of {target} never finished"))
 }
 
+/// The part of `trace` that moved `dataset` to the Trash, which begins with its first
+/// trash mark: the marks set on the live copy, the rename, then the tombstone read on the
+/// entry. `None` when it never moved.
+fn trash_move<'trace>(trace: &'trace [String], dataset: &str) -> Option<&'trace [String]> {
+    let first = trace
+        .iter()
+        .position(|line| line.starts_with("zfs get -H -s local -o value ployz:trash-hours"))?;
+    let tail = trace.get(first..)?;
+    let rename = tail
+        .iter()
+        .position(|line| line.starts_with(&format!("zfs rename {dataset} tank/ployz-trash/")))?;
+    let (before, after) = tail.split_at(rename);
+    let (moved, after) = after.split_first()?;
+    let entry = moved.rsplit(' ').next()?;
+    let marked = [
+        "trash-name",
+        "trash-place",
+        "trash-was",
+        "trashed-hour",
+        "trashed-at",
+    ]
+    .iter()
+    .all(|mark| {
+        before.iter().any(|line| {
+            line.starts_with(&format!("zfs set ployz:{mark}=")) && line.ends_with(dataset)
+        })
+    });
+    let buried_after = after
+        .iter()
+        .any(|line| *line == format!("zfs get -r -H -s local -o value ployz:copy-step {entry}"));
+    (marked && buried_after).then_some(tail)
+}
+
 /// Every `zfs` call that reads or writes a mark, and the steps whose position among them
 /// matters, in the order the plugin ran them.
 fn trace(log: &str) -> Vec<String> {
@@ -346,15 +379,19 @@ async fn a_departure_reads_the_four_marks_in_order_then_pulled_locally() {
     .await;
     assert_eq!(reply, DESTROYED);
     assert_eq!(
-        trace,
+        trace.iter().take(5).collect::<Vec<_>>(),
         [
             "zfs get -H -o value ployz:seed tank/ployz-mirror/data/fs",
             "zfs get -H -o value ployz:promote tank/ployz-mirror/data/fs",
             "zfs get -H -o value ployz:cut tank/ployz-mirror/data/fs",
             "zfs get -H -o value ployz:epoch tank/ployz-mirror/data/fs",
             "zfs get -H -s local -o value ployz:pulled tank/ployz-mirror/data/fs",
-            "zfs get -r -H -s local -o value ployz:copy-step tank/ployz-mirror/data",
         ]
+    );
+    assert_eq!(
+        trash_move(&trace, "tank/ployz-mirror/data").map(<[String]>::as_ptr),
+        trace.get(5..).map(<[String]>::as_ptr),
+        "{trace:#?}"
     );
 }
 
@@ -449,17 +486,19 @@ async fn remove_reads_promote_as_an_effective_value() {
         }
 
         let reply = post(&socket, "/VolumeDriver.Remove", json!({"Name": "data"})).await;
-        let log = commands(&test);
+        let trace = trace(&commands(&test));
         let mut read = vec!["zfs get -H -o value ployz:promote tank/ployz/data"];
         if !inherited {
-            read.push("zfs get -r -H -s local -o value ployz:copy-step tank/ployz/data");
+            read.push("zfs get -H -o value ployz:restored tank/ployz/data");
         }
-        assert_eq!(trace(&log), read, "{inherited}");
         assert_eq!(
-            log.contains("zfs destroy -r tank/ployz/data"),
-            !inherited,
-            "{reply}"
+            trace.iter().take(read.len()).collect::<Vec<_>>(),
+            read,
+            "{inherited}"
         );
+        let moved = trash_move(&trace, ROOT);
+        assert_eq!(moved.is_some(), !inherited, "{reply}");
+        assert_eq!(trace.len(), read.len() + moved.map_or(0, <[String]>::len));
         server.abort();
     }
 }
@@ -482,6 +521,7 @@ async fn create_of_an_existing_unregistered_root_clears_its_promote() {
         [
             "zfs get -H -o value ployz:promote tank/ployz/data",
             "zfs inherit ployz:promote tank/ployz/data",
+            "zfs get -H -o value ployz:restored tank/ployz/data",
         ]
     );
     assert_eq!(property(&test, ROOT, "ployz:promote"), None);
@@ -537,6 +577,7 @@ async fn list_reads_promote_once_per_volume_in_listing_order() {
         trace(&commands(&test)),
         [
             "zfs get -H -o value ployz:promote tank/ployz/data",
+            "zfs get -H -o value ployz:restored tank/ployz/data",
             "zfs get -H -o value ployz:promote tank/ployz/sibling",
         ]
     );

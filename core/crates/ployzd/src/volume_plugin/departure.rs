@@ -27,7 +27,7 @@ use crate::{dataset_layout::DatasetLayout, machine_pool::MachinePool};
 use axum::{Json, extract::State};
 use ployz_core::{DepartureFailure, RpcError, StorageDeparture};
 
-use super::{Dataset, VolumeName, VolumeStorage};
+use super::{Dataset, VolumeName, VolumeStorage, storage::Holds};
 
 /// Prefix of the snapshot a departure takes on each root before demoting it.
 pub(super) const DEPARTURE_SNAPSHOT_PREFIX: &str = "dep-";
@@ -129,7 +129,7 @@ impl VolumeStorage {
         {
             return;
         }
-        if let Err(error) = self.zfs(&["destroy", &mirror_root]).await {
+        if let Err(error) = self.destroy(&mirror_root, Holds::Nothing).await {
             tracing::warn!(%error, %mirror_root, "left the empty mirror root in place");
         }
     }
@@ -167,7 +167,7 @@ impl VolumeStorage {
             Departure::Departed => false,
             Departure::Mirror => match mirrors {
                 Mirrors::Destroy => {
-                    self.zfs(&["destroy", "-r", &DatasetLayout::of(pool).slot_parent(name)])
+                    self.discard_slot(&DatasetLayout::of(pool).slot_parent(name), name)
                         .await?;
                     self.receives.forget(name);
                     true

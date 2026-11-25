@@ -42,6 +42,8 @@ The limit starts at 5 GB. A volume can't grow past it: once it's full, writes fa
 limit is set aside on the server's disk, so a deploy fails if no server has room for it.
 Volumes a deploy deletes free their space only after it succeeds, so they don't make room for new
 volumes in the same deploy. To make room, remove the new volumes, deploy, then add them again.
+A deleted volume's data waits in its server's trash for 7 days and keeps its space until then,
+so a server that is short of room says how much its trash holds and until when.
 `--size` refuses a limit under 0.1 GB, whether you add a volume or change one.
 
 You can change the limit in the volume's **Settings**, under **Space**, or with
@@ -244,8 +246,8 @@ removed, the deploy still won't start the service on a new, empty volume:
 Volume data was deployed, but no Server in this Cluster holds a copy of it. If a Server you removed still holds its data, add that Server back, then run ployz volume restore data --from <server>
 ```
 
-To start over with an empty volume instead, remove it with `ployz volume rm data`, which deletes
-its data, add it again and deploy.
+To start over with an empty volume instead, remove it with `ployz volume rm data`, which moves
+its data to each server's trash, add it again and deploy.
 
 Without Ployz Cloud, `ployz volume restore` runs from the CLI, and the reason prints the same
 line. It asks every server what it holds first, and it refuses while one of them doesn't answer,
@@ -304,7 +306,9 @@ The volume and its data stay.
 
 ## Delete a volume
 
-Deleting a deployed volume deletes its data from your servers for good.
+Deleting a deployed volume moves its data to the trash on each server that held a copy. It
+waits there for 7 days, counted only while the server runs, then Ployz deletes it for good.
+Until then it still takes its space. A server that hasn't been upgraded to a Ployz with the trash deletes the data at once.
 
 1. Open the volume and click **Delete volume** under **Danger**. **Keep volume** undoes it.
 2. Click **Delete data**, or **Deploy**.

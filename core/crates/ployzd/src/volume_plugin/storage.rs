@@ -61,7 +61,7 @@ pub(super) fn committed_bytes(dataset: &Dataset, pool: &str) -> u64 {
         | Place::Slot {
             at: SlotAt::Parent, ..
         } => dataset.refquota,
-        Place::Slot { .. } | Place::Outside => 0,
+        Place::Slot { .. } | Place::Trash(_) | Place::Outside => 0,
     }
 }
 
@@ -192,6 +192,17 @@ impl VolumeStorage {
                 marks.clear_promote().await?;
                 crate::faults::kill_inside(crate::faults::Point::Verb("Create"), None);
             }
+            // A root restored from the Trash registers only for the data it holds.
+            if marks.is_set(Mark::Restored).await? {
+                if self.local_origin(&existing.name, Mark::Origin).await? != origin {
+                    return Err(PluginError::RestoredForOtherData {
+                        name: name.to_string(),
+                    });
+                }
+                marks
+                    .apply(&[super::marks::Write::Inherit(Mark::Restored)])
+                    .await?;
+            }
             return Ok(());
         }
 
@@ -224,6 +235,11 @@ impl VolumeStorage {
         }
 
         self.ensure_root(&datasets, &root).await?;
+        if matches!(admission, CapacityAdmission::Ensured) {
+            // A Pool made now gets its Trash while it has room: a delete is only a rename,
+            // and needs none. The daemon's first sweep makes it on a Pool from before.
+            self.ensure_trash_parent(pool.name(), &datasets).await?;
+        }
         // The first create carries the origin, so no crash leaves a born root unmarked.
         let mut args = vec![
             "create".to_owned(),
@@ -404,16 +420,33 @@ impl VolumeStorage {
         Ok(names.lines().any(|name| name == dataset))
     }
 
-    /// Runs `zfs` with `args`. A `destroy` of a dataset first leaves the tombstone of each
-    /// Copy step it, or with `-r` a dataset under it, carries ([`Self::bury`]), so no path
-    /// destroys a Copy's Volume without it.
+    /// Runs `zfs` with `args`. It refuses a `destroy` of a filesystem: data leaves through
+    /// the Trash ([`super::trash`]), and the few datasets that hold none go through
+    /// [`Self::destroy`].
     pub(super) async fn zfs(&self, args: &[&str]) -> Result<String> {
-        if let ["destroy", flags @ .., dataset] = args
+        if let ["destroy", .., dataset] = args
             && !dataset.contains('@')
         {
-            self.bury(dataset, flags.contains(&"-r")).await?;
+            return Err(format!("refusing to destroy {dataset} outside the Trash").into());
         }
         checked_command(&self.zfs, args).await
+    }
+
+    /// Destroys `dataset`, which `holds` says holds no data a person could want back,
+    /// after leaving the tombstone of each Copy step it or a dataset under it carries
+    /// ([`Self::bury`]), so no path destroys a Copy's Volume without it.
+    pub(super) async fn destroy(&self, dataset: &str, holds: Holds) -> Result<()> {
+        let recursive = match holds {
+            Holds::Nothing => false,
+            Holds::Unreceived | Holds::Expired => true,
+        };
+        self.bury(dataset, recursive).await?;
+        let mut args = vec!["destroy"];
+        if recursive {
+            args.push("-r");
+        }
+        args.push(dataset);
+        checked_command(&self.zfs, &args).await.map(drop)
     }
 
     /// Like [`Self::zfs`], under [`Exit::Listing`].
@@ -512,6 +545,8 @@ pub(super) struct Dataset {
     /// ZFS `referenced`: the copy's data as `refquota` bounds it, shared snapshot
     /// blocks included.
     pub(super) referenced_bytes: u64,
+    /// ZFS `used`: the dataset with its snapshots and descendants.
+    pub(super) used_bytes: u64,
     pub(super) active_used_bytes: u64,
     pub(super) mountpoint: String,
     pub(super) mounted: bool,
@@ -555,6 +590,7 @@ impl Dataset {
             name: name.to_owned(),
             refquota: parse_zfs_bytes(refquota)?,
             referenced_bytes: referenced_bytes.parse::<u64>().map_err(|_| invalid())?,
+            used_bytes,
             active_used_bytes,
             mountpoint: mountpoint.to_owned(),
             mounted: mounted == "yes",
@@ -639,6 +675,18 @@ fn parse_zfs_bytes(value: &str) -> Result<u64> {
             .parse()
             .map_err(|_| PluginError::from(format!("invalid byte count from ZFS: {value}"))),
     }
+}
+
+/// Why a dataset may be destroyed outright rather than moved to the Trash.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum Holds {
+    /// An empty slot parent, or the empty mirror root: ZFS refuses the destroy if a copy or
+    /// a snapshot is under it.
+    Nothing,
+    /// A receive's copy that never completed a first snapshot, so it holds no point.
+    Unreceived,
+    /// A Trash entry the sweep or an Empty destroys.
+    Expired,
 }
 
 /// What Docker's Create asks of a Provisioned Volume: its bound, and its origin when born.

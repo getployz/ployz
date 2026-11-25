@@ -536,6 +536,12 @@ async fn sample(case: &Case, machine: &Enforcing) -> Sample {
         (ployz_core::REMOVE_VOLUME_CAPABILITY, _) => {
             unary::<op::RemoveVolume>(json!({"name": "app_data", "force": false}))
         }
+        (ployz_core::RESTORE_TRASH_CAPABILITY, _) => {
+            unary::<op::RestoreTrash>(json!({"id": "a".repeat(26)}))
+        }
+        (ployz_core::EMPTY_TRASH_CAPABILITY, _) => {
+            unary::<op::EmptyTrash>(json!({"ids": ["a".repeat(26)]}))
+        }
         (ployz_core::SEED_VOLUME_CAPABILITY, _) => unary::<op::SeedVolume>(json!({
             "name": "app_data", "into": "app_restore", "guid": "7",
         })),

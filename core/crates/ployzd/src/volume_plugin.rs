@@ -38,13 +38,17 @@ mod size;
 mod slot;
 mod storage;
 mod transfer;
+mod trash;
+
+pub(crate) use trash::TrashSwept;
 
 use crate::{
     dataset_layout::VolumeName,
     volume_copy::{
         CUT_ROUTE, DESTROY_ROUTE, FORGET_ROUTE, INSPECT_ROUTE, PULL_ROUTE, SEND_POINT_ROUTE,
         SNAPSHOT_ROUTE, STORAGE_DEMOTE_ROUTE, STORAGE_INSPECT_ROUTE, STORAGE_PREPARE_ROUTE,
-        STORAGE_SEAL_ROUTE, VOLUME_INSPECT_ROUTE, VOLUME_SEED_COPY_ROUTE, VOLUME_SEED_ROUTE,
+        STORAGE_SEAL_ROUTE, TRASH_EMPTY_ROUTE, TRASH_LIST_ROUTE, TRASH_RESTORE_ROUTE,
+        TRASH_SWEEP_ROUTE, VOLUME_INSPECT_ROUTE, VOLUME_SEED_COPY_ROUTE, VOLUME_SEED_ROUTE,
         VOLUME_SIZE_SET_ROUTE, WRITER_ROUTE,
     },
 };
@@ -175,6 +179,10 @@ async fn serve(listener: UnixListener, storage: VolumeStorage) -> io::Result<()>
         .route(&at(PULL_ROUTE), post(copy::pull))
         .route(&at(DESTROY_ROUTE), post(copy::destroy))
         .route(&at(SEND_POINT_ROUTE), post(send_point::send_point))
+        .route(&at(TRASH_LIST_ROUTE), post(trash::list))
+        .route(&at(TRASH_RESTORE_ROUTE), post(trash::restore))
+        .route(&at(TRASH_EMPTY_ROUTE), post(trash::empty))
+        .route(&at(TRASH_SWEEP_ROUTE), post(trash::sweep))
         .route("/VolumeDriver.Create", post(create))
         .route("/VolumeDriver.Remove", post(removal::remove))
         .route("/VolumeDriver.Get", post(removal::get))
@@ -326,6 +334,72 @@ mod tests {
             .map(|value| value.trim_end().to_owned())
     }
 
+    /// The Trash entries in the fake Pool `tank`, as dataset names.
+    fn trashed(test: &TestDir) -> Vec<String> {
+        let mut entries: Vec<String> = fs::read_dir(test.0.join("trash"))
+            .map(|entries| {
+                entries
+                    .map(|entry| {
+                        let id = entry.unwrap().file_name();
+                        format!("tank/ployz-trash/{}", id.to_string_lossy())
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        entries.sort();
+        entries
+    }
+
+    /// The Trash ID drawn from `byte` repeated.
+    fn trash_id(byte: u8) -> String {
+        ployz_core::TrashId::from_bytes([byte; 16]).to_string()
+    }
+
+    /// Puts an entry of `name`, taken from `place` at sweep hour `hour`, in the fake
+    /// Pool's Trash, with a copy under it when `fs`; returns its dataset.
+    fn plant_trash(
+        test: &TestDir,
+        id: &str,
+        name: &str,
+        place: &str,
+        hour: u64,
+        fs: bool,
+    ) -> String {
+        let entry = format!("tank/ployz-trash/{id}");
+        fs::create_dir_all(test.0.join("trash").join(id)).unwrap();
+        if fs {
+            fs::write(test.0.join("trash").join(id).join("fs"), "").unwrap();
+        }
+        for (property, value) in [
+            ("ployz:trash-name", name.to_owned()),
+            ("ployz:trash-place", place.to_owned()),
+            ("ployz:trash-was", "readonly=-,canmount=-".to_owned()),
+            ("ployz:trashed-hour", hour.to_string()),
+            ("ployz:trashed-at", "1700000000".to_owned()),
+            ("canmount", "off".to_owned()),
+            ("refquota", "1073741824".to_owned()),
+        ] {
+            let directory = test.0.join("props").join(&entry);
+            fs::create_dir_all(&directory).unwrap();
+            fs::write(directory.join(property), format!("{value}\n")).unwrap();
+        }
+        entry
+    }
+
+    /// The one Trash entry in the fake Pool, which must have been taken from `place`.
+    fn trashed_one(test: &TestDir, place: &str) -> String {
+        let [entry] = &trashed(test)[..] else {
+            panic!("one Trash entry: {:?}", trashed(test));
+        };
+        assert_eq!(
+            property(test, entry, "ployz:trash-place").as_deref(),
+            Some(place),
+            "{entry}"
+        );
+        assert_eq!(property(test, entry, "canmount").as_deref(), Some("off"));
+        entry.clone()
+    }
+
     fn snapshot_names(test: &TestDir, dataset: &str) -> Vec<String> {
         property(test, dataset, "snapshots")
             .unwrap_or_default()
@@ -369,6 +443,7 @@ mod tests {
     mod marks_tests;
     mod seed_tests;
     mod size_tests;
+    mod trash_tests;
 
     use fake_zfs::{USABLE_POOL, begun, fake_zfs, fake_zfs_seeding};
 

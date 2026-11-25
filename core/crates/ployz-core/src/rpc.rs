@@ -1,7 +1,8 @@
 use crate::{
-    InspectVolumeCopyRequest, SeedCopyRequest, SeedVolumeRequest, SetVolumeCopyReply,
-    SetVolumeCopyRequest, SetVolumeSizeReply, SetVolumeSizeRequest, StorageCapacity,
-    VolumeCopyView,
+    EmptyTrashRequest, InspectVolumeCopyRequest, ListTrashRequest, RestoreTrashRequest,
+    SeedCopyRequest, SeedVolumeRequest, SetVolumeCopyReply, SetVolumeCopyRequest,
+    SetVolumeSizeReply, SetVolumeSizeRequest, StorageCapacity, TrashEmptied, TrashList,
+    TrashRestored, VolumeCopyView,
     metrics::{MetricsLiveReply, MetricsLiveRequest},
 };
 
@@ -392,6 +393,9 @@ define_responses! {
     ContractDescription(ContractDescription) => "contract_description";
     SetVolumeCopyReply(SetVolumeCopyReply) => "set_volume_copy_reply";
     SetVolumeSizeReply(SetVolumeSizeReply) => "set_volume_size_reply";
+    TrashList(TrashList) => "trash_list";
+    TrashRestored(TrashRestored) => "trash_restored";
+    TrashEmptied(TrashEmptied) => "trash_emptied";
     MachineDetails(MachineDetails) => "machine_details";
     Enrolled(Enrolled) => "enrolled";
     SealingKeyWrapped(SealingKeyWrapped) => "sealing_key_wrapped";

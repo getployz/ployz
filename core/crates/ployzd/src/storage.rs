@@ -51,6 +51,43 @@ impl Plugin {
     }
 }
 
+/// How often the daemon asks the plugin to sweep the Trash. The plugin counts at most one
+/// hour per hour of wall time, so a tick that comes early counts nothing.
+const TRASH_SWEEP_EVERY: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// Asks the plugin for one Trash sweep at start and every hour after, until `shutdown`.
+/// A Machine without a Pool sweeps nothing; a sweep that fails is logged and tried
+/// again at the next tick.
+pub(crate) async fn sweep_trash_hourly(
+    plugin: Plugin,
+    shutdown: tokio_util::sync::CancellationToken,
+) {
+    let mut ticks = tokio::time::interval(TRASH_SWEEP_EVERY);
+    ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            () = shutdown.cancelled() => return,
+            _ = ticks.tick() => {}
+        }
+        match plugin
+            .call::<crate::volume_plugin::TrashSwept>(crate::volume_copy::TRASH_SWEEP_ROUTE, &())
+            .await
+        {
+            Ok(swept) => {
+                for id in &swept.destroyed {
+                    tracing::info!(%id, hours = swept.hours, "the Trash sweep destroyed an expired entry");
+                }
+                for failure in &swept.failed {
+                    tracing::warn!(id = %failure.id, reason = %failure.reason, "the Trash sweep could not settle an entry; it tries again next hour");
+                }
+            }
+            Err(error) => {
+                tracing::warn!(error = %ployz_core::error_chain::inline(&error), "the Trash sweep did not run; it tries again next hour");
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod test_support {
     use std::{

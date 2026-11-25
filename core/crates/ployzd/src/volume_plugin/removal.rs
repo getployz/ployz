@@ -9,6 +9,7 @@ use axum::{
     Json,
     extract::{State, rejection::JsonRejection},
 };
+use ployz_core::TrashPlace;
 use serde::Serialize;
 
 use super::{
@@ -50,13 +51,13 @@ impl VolumeStorage {
         let dataset = Self::dataset(&datasets, &pool, name)?
             .expect("the requested dataset was just observed");
         dataset.require_provisioned(name)?;
-        if self.marks(&dataset.name).unregistered().await? {
+        if self.marks(&dataset.name).hidden().await? {
             return Err(PluginError::UnregisteredRoot {
                 name: name.to_string(),
                 dataset: dataset.name.clone(),
             });
         }
-        self.zfs(&["destroy", "-r", &dataset.name]).await?;
+        self.discard(&dataset.name, TrashPlace::Root, name).await?;
         Ok(())
     }
 
@@ -70,7 +71,7 @@ impl VolumeStorage {
             return self.inspect_cut(&datasets, &pool, name).await;
         };
         dataset.require_provisioned(name)?;
-        if self.marks(&dataset.name).unregistered().await? {
+        if self.marks(&dataset.name).hidden().await? {
             return Ok(None);
         }
         Ok(Some(PluginVolume::new(name, dataset)))
@@ -137,7 +138,7 @@ impl VolumeStorage {
             }
             let name = name.parse::<VolumeName>()?;
             dataset.require_provisioned(&name)?;
-            if self.marks(&dataset.name).unregistered().await? {
+            if self.marks(&dataset.name).hidden().await? {
                 continue;
             }
             volumes.push(PluginVolume::new(&name, dataset));

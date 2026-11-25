@@ -20,16 +20,16 @@ fn unknown(error: impl std::fmt::Display) -> ployz_core::RpcError {
 }
 
 fn storage_error(error: super::PluginError) -> ployz_core::RpcError {
-    match error.into_capacity() {
-        Ok(error) => error.into_rpc_error(),
-        Err(error) => ployz_core::RpcError::internal("Storage preparation failed")
-            .with_details(serde_json::json!({"code": "storage_preparation_failed"}))
-            .with_causes(
-                std::iter::once(error.to_string())
-                    .chain(ployz_core::error_chain::causes(&error))
-                    .collect(),
-            ),
+    if error.is_capacity() {
+        return error.into();
     }
+    ployz_core::RpcError::internal("Storage preparation failed")
+        .with_details(serde_json::json!({"code": "storage_preparation_failed"}))
+        .with_causes(
+            std::iter::once(error.to_string())
+                .chain(ployz_core::error_chain::causes(&error))
+                .collect(),
+        )
 }
 
 impl VolumeStorage {
@@ -86,7 +86,7 @@ impl VolumeStorage {
                             0,
                         )
                     }
-                    Place::Outside => continue,
+                    Place::Trash(_) | Place::Outside => continue,
                 };
                 let maximum = ProvisionedVolumeMaximumBytes::new(
                     std::num::NonZeroU64::new(maximum_bytes).ok_or("Volume has no finite bound")?,

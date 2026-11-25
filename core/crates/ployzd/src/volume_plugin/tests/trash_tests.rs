@@ -1,0 +1,441 @@
+//! The Trash: a delete moves the data, a restore puts it back only where nothing else
+//! claims it, and the sweep destroys an entry only after 168 hours the Server counted.
+
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
+
+use super::super::holders::{Holder, Holders};
+use super::copy_tests::BORN;
+use super::inspect_tests::set_property;
+use super::*;
+
+const ROOT: &str = "tank/ployz/data";
+const HOUR_MS: u64 = 3_600_000;
+/// The clock the tests start at: 2023-11-14.
+const START_MS: u64 = 1_700_000_000_000;
+
+struct Plugin {
+    socket: PathBuf,
+    clock: Arc<AtomicU64>,
+    server: tokio::task::JoinHandle<io::Result<()>>,
+}
+
+impl Plugin {
+    /// A plugin over fake ZFS with `markers`, Docker listing `holders` for every name.
+    fn start(
+        test: &TestDir,
+        markers: &[&str],
+        holders: std::result::Result<Vec<Holder>, String>,
+    ) -> Self {
+        for marker in markers {
+            fs::write(test.0.join(marker), "").unwrap();
+        }
+        let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
+        let mut storage = VolumeStorage::with_programs(zpool, zfs);
+        let listed = Holders::none();
+        listed.set(holders);
+        storage.holders = listed;
+        let clock = Arc::new(AtomicU64::new(START_MS));
+        storage.now = {
+            let clock = Arc::clone(&clock);
+            Arc::new(move || {
+                ployz_core::authority::Timestamp::from_millis(clock.load(Ordering::SeqCst)).unwrap()
+            })
+        };
+        let socket = test.0.join("plugin.sock");
+        let server = tokio::spawn(serve(UnixListener::bind(&socket).unwrap(), storage));
+        Self {
+            socket,
+            clock,
+            server,
+        }
+    }
+
+    async fn post(&self, route: &str, body: Value) -> Value {
+        post(&self.socket, route, body).await
+    }
+
+    async fn create(&self, origin: &str) -> Value {
+        self.post(
+            "/VolumeDriver.Create",
+            json!({"Name": "data", "Opts": {"size": "1g", ployz_core::PROVISIONED_ORIGIN_OPTION: origin}}),
+        )
+        .await
+    }
+
+    async fn restore(&self, entry: &str) -> Value {
+        let id = entry.rsplit('/').next().unwrap();
+        self.post("/Ployz.Trash.Restore", json!({"id": id})).await
+    }
+
+    async fn sweep(&self) -> Value {
+        self.post("/Ployz.Trash.Sweep", json!(null)).await
+    }
+
+    fn later(&self, hours: u64) {
+        self.clock.fetch_add(hours * HOUR_MS, Ordering::SeqCst);
+    }
+}
+
+impl Drop for Plugin {
+    fn drop(&mut self) {
+        self.server.abort();
+    }
+}
+
+/// A plugin holding a root of `data` born as [`BORN`], which a Remove has moved to the
+/// Trash; returns the plugin and the entry.
+async fn deleted_root(test: &TestDir) -> (Plugin, String) {
+    let plugin = Plugin::start(test, &["root", "volume"], Ok(vec![]));
+    set_property(test, ROOT, "ployz:origin", BORN);
+    let removed = plugin
+        .post("/VolumeDriver.Remove", json!({"Name": "data"}))
+        .await;
+    assert_eq!(removed, json!({"Err": ""}));
+    let entry = trashed_one(test, "root");
+    (plugin, entry)
+}
+
+fn refusal(reply: &Value) -> String {
+    reply
+        .pointer("/Err/message")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("a refusal: {reply}"))
+        .to_owned()
+}
+
+#[tokio::test]
+async fn the_trash_lists_what_a_remove_moved_with_its_name_origin_and_expiry() {
+    let test = test_dir();
+    let (plugin, entry) = deleted_root(&test).await;
+
+    let listed = plugin.post("/Ployz.Trash.List", json!(null)).await;
+
+    let id = entry.rsplit('/').next().unwrap();
+    assert_eq!(
+        listed.pointer("/Ok/entries/0/id"),
+        Some(&json!(id)),
+        "{listed}"
+    );
+    assert_eq!(listed.pointer("/Ok/entries/0/name"), Some(&json!("data")));
+    assert_eq!(listed.pointer("/Ok/entries/0/place"), Some(&json!("root")));
+    assert_eq!(listed.pointer("/Ok/entries/0/origin"), Some(&json!(BORN)));
+    assert_eq!(
+        listed.pointer("/Ok/entries/0/expires_at"),
+        Some(&json!(START_MS / 1000 + 168 * 3600))
+    );
+}
+
+#[tokio::test]
+async fn a_restored_root_stays_hidden_until_a_create_of_its_own_data_registers_it() {
+    let test = test_dir();
+    let (plugin, entry) = deleted_root(&test).await;
+
+    assert_eq!(
+        plugin.restore(&entry).await.pointer("/Ok/place"),
+        Some(&json!("root"))
+    );
+    assert!(test.0.join("volume").exists());
+    assert_eq!(trashed(&test), Vec::<String>::new());
+    assert_eq!(property(&test, ROOT, "ployz:trash-name"), None);
+    assert_eq!(property(&test, ROOT, "ployz:origin").as_deref(), Some(BORN));
+    let get = plugin
+        .post("/VolumeDriver.Get", json!({"Name": "data"}))
+        .await;
+    assert!(get.get("Volume").is_none(), "{get}");
+    let list = plugin.post("/VolumeDriver.List", json!({})).await;
+    assert_eq!(list.pointer("/Volumes"), Some(&json!([])), "{list}");
+
+    let other = plugin.create(&"1".repeat(64)).await;
+    assert!(error(&other).contains("restored from the Trash"), "{other}");
+    assert!(
+        plugin
+            .post("/VolumeDriver.Get", json!({"Name": "data"}))
+            .await
+            .get("Volume")
+            .is_none()
+    );
+
+    assert_eq!(plugin.create(BORN).await, json!({"Err": ""}));
+    assert_eq!(property(&test, ROOT, "ployz:restored"), None);
+    let get = plugin
+        .post("/VolumeDriver.Get", json!({"Name": "data"}))
+        .await;
+    assert_eq!(get.pointer("/Volume/Name"), Some(&json!("data")), "{get}");
+}
+
+#[tokio::test]
+async fn a_restore_refuses_a_name_that_has_a_copy_again() {
+    let test = test_dir();
+    let (plugin, entry) = deleted_root(&test).await;
+    let fresh = "1".repeat(64);
+    assert_eq!(plugin.create(&fresh).await, json!({"Err": ""}));
+
+    let reply = plugin.restore(&entry).await;
+
+    assert!(refusal(&reply).contains("already has a copy"), "{reply}");
+    assert_eq!(trashed(&test), [entry]);
+    assert_eq!(property(&test, ROOT, "ployz:origin"), Some(fresh));
+}
+
+#[tokio::test]
+async fn a_restore_refuses_under_a_container_expecting_other_data_or_when_docker_is_silent() {
+    for (holders, refused) in [
+        (
+            Ok(vec![Holder {
+                origins: Some(format!(r#"{{"data":"{}"}}"#, "1".repeat(64))),
+            }]),
+            "data",
+        ),
+        (Err("Docker is not answering".to_owned()), "Docker"),
+    ] {
+        let test = test_dir();
+        let plugin = Plugin::start(&test, &["root"], holders);
+        let entry = plant_trash(&test, &trash_id(1), "data", "root", 0, false);
+        set_property(&test, &entry, "ployz:origin", BORN);
+
+        let reply = plugin.restore(&entry).await;
+
+        assert!(refusal(&reply).contains(refused), "{reply}");
+        assert!(!test.0.join("volume").exists());
+        assert_eq!(trashed(&test), [entry]);
+    }
+}
+
+#[tokio::test]
+async fn a_restore_refuses_a_copy_the_pool_cannot_hold() {
+    let test = test_dir();
+    let plugin = Plugin::start(&test, &["root"], Ok(vec![]));
+    let entry = plant_trash(&test, &trash_id(1), "data", "root", 0, false);
+    set_property(&test, &entry, "refquota", &(8u64 << 30).to_string());
+
+    let reply = plugin.restore(&entry).await;
+
+    assert!(!test.0.join("volume").exists(), "{reply}");
+    assert!(reply.get("Err").is_some(), "{reply}");
+    assert_eq!(trashed(&test), [entry]);
+}
+
+/// A slot whose parent still carries its Copy step is a copy a restore was making: its
+/// step restarts on its own, past its window, so the Trash never puts it back.
+#[tokio::test]
+async fn a_restore_refuses_the_slot_of_a_copy_that_never_landed() {
+    let test = test_dir();
+    let plugin = Plugin::start(&test, &["root"], Ok(vec![]));
+    let entry = plant_trash(&test, &trash_id(1), "data", "slot", 0, true);
+    set_property(&test, &entry, "ployz:copy-step", &"7".repeat(64));
+
+    let reply = plugin.restore(&entry).await;
+
+    assert!(
+        refusal(&reply).contains("approve that restore again"),
+        "{reply}"
+    );
+    assert!(!test.0.join("mirror").exists());
+    assert_eq!(trashed(&test), [entry]);
+}
+
+/// An old copy of a Volume a restore made: its origin rides on the slot's record, not the
+/// copy, so a Container expecting that origin lets it back as an old copy.
+#[tokio::test]
+async fn an_old_copy_of_a_seed_born_volume_restores_as_an_old_copy() {
+    let test = test_dir();
+    let plugin = Plugin::start(
+        &test,
+        &["root"],
+        Ok(vec![Holder {
+            origins: Some(format!(r#"{{"data":"{BORN}"}}"#)),
+        }]),
+    );
+    let entry = plant_trash(&test, &trash_id(1), "data", "slot", 0, true);
+    set_property(&test, &entry, "ployz:pull-origin", BORN);
+    set_property(
+        &test,
+        &format!("{entry}/fs"),
+        "snapshots",
+        &format!("{entry}/fs@w-1-1\t11\t1690000000"),
+    );
+
+    let reply = plugin.restore(&entry).await;
+
+    assert_eq!(reply.pointer("/Ok/place"), Some(&json!("slot")), "{reply}");
+    assert!(test.0.join("mirror").exists() && test.0.join("mirror-fs").exists());
+    assert_eq!(
+        property(&test, "tank/ployz-mirror/data", "ployz:role").as_deref(),
+        Some("old_copy")
+    );
+    assert_eq!(
+        snapshot_names(&test, "tank/ployz-mirror/data/fs"),
+        ["w-1-1"]
+    );
+    assert_eq!(
+        property(&test, "tank/ployz-mirror/data", "ployz:trash-place"),
+        None
+    );
+    assert_eq!(trashed(&test), Vec::<String>::new());
+}
+
+/// A delete stopped before its rename leaves the Volume where it was and mountable, with
+/// only inert marks on it, and a delete after takes it whole.
+#[tokio::test]
+async fn a_delete_stopped_before_its_rename_leaves_a_working_volume() {
+    let steps = [
+        "set ployz:trash-name=data tank/ployz/data",
+        "set ployz:trash-place=root tank/ployz/data",
+        "set ployz:trashed-hour=0 tank/ployz/data",
+        "rename",
+    ];
+    for step in steps {
+        let test = test_dir();
+        let plugin = Plugin::start(&test, &["root", "volume"], Ok(vec![]));
+        if step == "rename" {
+            fs::write(test.0.join("rename-fails"), "").unwrap();
+        } else {
+            set_property(&test, "", "fail-command", step);
+        }
+
+        let removed = plugin
+            .post("/VolumeDriver.Remove", json!({"Name": "data"}))
+            .await;
+
+        assert!(!error(&removed).is_empty(), "{step}: {removed}");
+        assert!(test.0.join("volume").exists(), "{step}");
+        assert_eq!(trashed(&test), Vec::<String>::new(), "{step}");
+        assert_eq!(property(&test, ROOT, "canmount"), None, "{step}");
+        let mounted = plugin
+            .post("/VolumeDriver.Mount", json!({"Name": "data", "ID": "c"}))
+            .await;
+        assert_eq!(error(&mounted), "", "{step}: {mounted}");
+
+        let _ = fs::remove_file(test.0.join("rename-fails"));
+        plugin
+            .post("/VolumeDriver.Unmount", json!({"Name": "data", "ID": "c"}))
+            .await;
+        let removed = plugin
+            .post("/VolumeDriver.Remove", json!({"Name": "data"}))
+            .await;
+        assert_eq!(removed, json!({"Err": ""}), "{step}");
+        trashed_one(&test, "root");
+    }
+}
+
+/// The sweep counts one hour per hour of wall time it saw pass, and destroys an entry
+/// once 168 of them passed since its delete.
+#[tokio::test]
+async fn the_sweep_keeps_an_entry_167_hours_and_destroys_it_at_168() {
+    let test = test_dir();
+    let (plugin, entry) = deleted_root(&test).await;
+    let first = plugin.sweep().await;
+    assert_eq!(
+        first.pointer("/Ok/advanced"),
+        Some(&json!(false)),
+        "{first}"
+    );
+    set_property(&test, "tank/ployz-trash", "ployz:trash-hours", "166");
+
+    plugin.later(1);
+    let kept = plugin.sweep().await;
+    assert_eq!(kept.pointer("/Ok/hours"), Some(&json!(167)), "{kept}");
+    assert_eq!(trashed(&test).as_slice(), std::slice::from_ref(&entry));
+
+    plugin.later(1);
+    let swept = plugin.sweep().await;
+    assert_eq!(swept.pointer("/Ok/hours"), Some(&json!(168)), "{swept}");
+    let id = entry.rsplit('/').next().unwrap();
+    assert_eq!(swept.pointer("/Ok/destroyed"), Some(&json!([id])));
+    assert_eq!(trashed(&test), Vec::<String>::new());
+}
+
+/// A clock that jumps a year ahead adds one hour, and one that steps back adds none: 167
+/// hours after a delete, nothing goes.
+#[tokio::test]
+async fn a_clock_jump_adds_at_most_one_sweep_hour() {
+    let test = test_dir();
+    let (plugin, entry) = deleted_root(&test).await;
+    plugin.sweep().await;
+    set_property(&test, "tank/ployz-trash", "ployz:trash-hours", "166");
+
+    plugin.later(24 * 365);
+    let ahead = plugin.sweep().await;
+    assert_eq!(ahead.pointer("/Ok/hours"), Some(&json!(167)), "{ahead}");
+    plugin.later(1);
+    plugin.clock.fetch_sub(48 * HOUR_MS, Ordering::SeqCst);
+    let back = plugin.sweep().await;
+    assert_eq!(back.pointer("/Ok/hours"), Some(&json!(167)), "{back}");
+
+    assert_eq!(trashed(&test), [entry]);
+}
+
+#[tokio::test]
+async fn the_sweep_never_destroys_an_entry_whose_marks_do_not_read() {
+    let test = test_dir();
+    let plugin = Plugin::start(&test, &["root"], Ok(vec![]));
+    let markless = plant_trash(&test, &trash_id(1), "data", "root", 0, false);
+    fs::remove_file(
+        test.0
+            .join("props")
+            .join(&markless)
+            .join("ployz:trashed-hour"),
+    )
+    .unwrap();
+    let unreadable = plant_trash(&test, &trash_id(2), "data", "root", 0, false);
+    set_property(&test, &unreadable, "ployz:trash-place", "elsewhere");
+    plugin.sweep().await;
+    set_property(&test, "tank/ployz-trash", "ployz:trash-hours", "5000");
+    plugin.later(1);
+
+    let swept = plugin.sweep().await;
+
+    assert_eq!(swept.pointer("/Ok/destroyed"), Some(&json!([])), "{swept}");
+    assert_eq!(trashed(&test).len(), 2);
+    let listed = plugin.post("/Ployz.Trash.List", json!(null)).await;
+    assert_eq!(
+        listed
+            .pointer("/Ok/unreadable")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(2),
+        "{listed}"
+    );
+}
+
+#[tokio::test]
+async fn empty_destroys_the_entries_it_names_and_keeps_one_whose_marks_do_not_read() {
+    let test = test_dir();
+    let plugin = Plugin::start(&test, &["root"], Ok(vec![]));
+    let named = plant_trash(&test, &trash_id(1), "data", "root", 0, false);
+    let kept = plant_trash(&test, &trash_id(2), "logs", "root", 0, false);
+    let unreadable = plant_trash(&test, &trash_id(3), "data", "root", 0, false);
+    fs::remove_file(
+        test.0
+            .join("props")
+            .join(&unreadable)
+            .join("ployz:trash-name"),
+    )
+    .unwrap();
+
+    let reply = plugin
+        .post(
+            "/Ployz.Trash.Empty",
+            json!({"ids": [trash_id(1), trash_id(3), trash_id(4)]}),
+        )
+        .await;
+
+    assert_eq!(
+        reply.pointer("/Ok/emptied"),
+        Some(&json!([trash_id(1)])),
+        "{reply}"
+    );
+    assert_eq!(reply.pointer("/Ok/missing"), Some(&json!([trash_id(4)])));
+    assert_eq!(reply.pointer("/Ok/failed/0/id"), Some(&json!(trash_id(3))));
+    assert_eq!(trashed(&test), [kept, unreadable]);
+    assert!(
+        !test
+            .0
+            .join("trash")
+            .join(named.rsplit('/').next().unwrap())
+            .exists()
+    );
+}

@@ -85,9 +85,16 @@ impl VolumeStorage {
             self.zfs(&["set", PERIODIC_TRIM_DISABLED, POOL_NAME])
                 .await?;
         }
-        self.pool
+        match self
+            .pool
             .ensure_capacity(pool, commitment, unmanaged_used_bytes)
             .await
+        {
+            Err(PluginError::Capacity(error, _)) => {
+                Err(PluginError::Capacity(error, self.trash_held(pool).await))
+            }
+            result => result,
+        }
     }
 
     /// Creates a bounded Volume, creating its Machine Pool first when absent.

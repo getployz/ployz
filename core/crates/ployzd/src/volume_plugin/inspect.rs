@@ -59,6 +59,20 @@ impl VolumeStorage {
         Ok((value != "-").then(|| value.to_owned()))
     }
 
+    /// A dataset's property as set on the dataset itself, or `None` when it inherits it
+    /// or nothing sets it.
+    pub(super) async fn local_property(
+        &self,
+        dataset: &str,
+        property: &str,
+    ) -> Result<Option<String>> {
+        let value = self
+            .zfs(&["get", "-H", "-s", "local", "-o", "value", property, dataset])
+            .await?;
+        let value = value.trim_end_matches('\n');
+        Ok((!value.is_empty() && value != "-").then(|| value.to_owned()))
+    }
+
     /// The guid of a dataset's newest snapshot, whatever its name.
     pub(super) async fn newest_guid(&self, dataset: &str) -> Result<Option<String>> {
         Ok(self

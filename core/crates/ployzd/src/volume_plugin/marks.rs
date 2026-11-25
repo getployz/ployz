@@ -67,6 +67,26 @@ pub(super) enum Mark {
     /// On a slot parent a Copy step's seed made: the step's digest, set as ZFS makes the
     /// parent. Only a slot carrying it is that step's copy ([`super::seed`]).
     CopyStep,
+    /// On a root restored from the Trash until Docker's Create of its name registers it.
+    /// Get and List hide a marked root, as they hide a promoted one; unlike
+    /// `ployz:promote`, it says nothing about seeds or Forget.
+    Restored,
+    /// On a Trash entry, and set just before the move that makes one: the Docker Volume
+    /// name the copy was under ([`super::trash`]).
+    TrashName,
+    /// On a Trash entry: `root`, `slot` or `copy`, the place the copy was taken from.
+    TrashPlace,
+    /// On a Trash entry: the copy's own `readonly` and `canmount` before the move, each
+    /// `-` when the copy inherited it.
+    TrashWas,
+    /// On a Trash entry: the Trash's sweep hours when the move committed.
+    TrashedHour,
+    /// On a Trash entry: Unix seconds of the move, for people to read only.
+    TrashedAt,
+    /// On the Trash parent: how many hourly sweeps advanced it.
+    TrashHours,
+    /// On the Trash parent: Unix seconds of the sweep that last advanced it.
+    TrashLast,
 }
 
 impl Mark {
@@ -83,6 +103,14 @@ impl Mark {
             Self::Origin => "ployz:origin",
             Self::PullOrigin => "ployz:pull-origin",
             Self::CopyStep => "ployz:copy-step",
+            Self::Restored => "ployz:restored",
+            Self::TrashName => "ployz:trash-name",
+            Self::TrashPlace => "ployz:trash-place",
+            Self::TrashWas => "ployz:trash-was",
+            Self::TrashedHour => "ployz:trashed-hour",
+            Self::TrashedAt => "ployz:trashed-at",
+            Self::TrashHours => "ployz:trash-hours",
+            Self::TrashLast => "ployz:trash-last",
         }
     }
 }
@@ -151,6 +179,17 @@ impl Marks<'_> {
         self.is_set(Mark::Promote).await
     }
 
+    /// Whether Get and List keep the root from Docker: it waits for Docker's Create to
+    /// register it, promoted or restored from the Trash.
+    pub(super) async fn hidden(&self) -> Result<bool> {
+        Ok(self.unregistered().await? || self.is_set(Mark::Restored).await?)
+    }
+
+    /// `mark` as set on the dataset itself, ignoring any value it inherits.
+    pub(super) async fn local(&self, mark: Mark) -> Result<Option<String>> {
+        self.storage.local_property(self.dataset, mark.name()).await
+    }
+
     /// Whether the dataset is a seed root Docker has not adopted: it carries both
     /// `ployz:seed` and `ployz:promote`.
     pub(super) async fn unadopted_seed(&self) -> Result<bool> {
@@ -170,21 +209,7 @@ impl Marks<'_> {
 
     /// `ployz:pulled` as set on the dataset itself, ignoring any value it inherits.
     pub(super) async fn pulled_local(&self) -> Result<Option<String>> {
-        let value = self
-            .storage
-            .zfs(&[
-                "get",
-                "-H",
-                "-s",
-                "local",
-                "-o",
-                "value",
-                Mark::Pulled.name(),
-                self.dataset,
-            ])
-            .await?;
-        let value = value.trim_end_matches('\n');
-        Ok((!value.is_empty() && value != "-").then(|| value.to_owned()))
+        self.local(Mark::Pulled).await
     }
 
     /// The run of writes a root belongs to; a root SetVolumeCopy never numbered reads 0.

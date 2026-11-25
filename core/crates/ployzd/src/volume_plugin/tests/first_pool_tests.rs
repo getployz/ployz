@@ -942,6 +942,7 @@ case "$name" in
         [ ! -e '{slot}' ] || printf 'ployz/ployz-mirror/data\t%s\t0\t0\t0\t/var/lib/ployz-mirror/data\tno\ton\n' "$(cat '{slot}')"
         ;;
       'create -o canmount=off -o mountpoint=/var/lib/ployz-volumes ployz/ployz') touch '{root}' ;;
+      'create -o mountpoint=none -o canmount=off ployz/ployz-trash') touch '{other}.trash' ;;
       'create -o refquota='*' ployz/ployz/data')
         if [ -e '{pause_failed_volume}' ]; then
           touch '{pool_visible}'
@@ -962,10 +963,17 @@ case "$name" in
         if [ -e '{trim_disabled}' ]; then echo disable; else echo '-'; fi
         ;;
       'set org.debian:periodic-trim=disable ployz') touch '{trim_disabled}' ;;
-      'get -H -o value ployz:promote '*) echo '-' ;;
+      'get -H -o value ployz:promote '*|'get -H -o value ployz:restored '*) echo '-' ;;
       'get -Hp -o value,source ployz:origin '*|'get -Hp -o value,source ployz:pull-origin '*) printf -- '-\t-\n' ;;
       'get -r -H -s local -o value ployz:copy-step '*) ;;
       'destroy -r ployz/ployz/other') rm '{other}' '{other_bound}' ;;
+      # A delete moves the Volume to the Trash; its bytes leave the commitment.
+      'list -H -o name -t filesystem') [ ! -e '{other}.trash' ] || printf 'ployz/ployz-trash\n' ;;
+      'get -H -s local -o value '*) ;;
+      'set ployz:trash'*' ployz/ployz/other'|'set ployz:trashed'*' ployz/ployz/other') ;;
+      'rename ployz/ployz/other ployz/ployz-trash/'*) rm '{other}' '{other_bound}' ;;
+      'set canmount=off ployz/ployz-trash/'*) ;;
+      'get -H -o value mounted ployz/ployz-trash/'*) echo no ;;
       'create -o canmount=off -o mountpoint=/var/lib/ployz-mirror -o readonly=on ployz/ployz-mirror') touch '{mirror_root}' ;;
       'create -o canmount=off -o readonly=on -o refquota='*' ployz/ployz-mirror/data')
         if [ -e '{fail_slot_once}' ]; then rm '{fail_slot_once}'; exit 2; fi

@@ -7,10 +7,12 @@
 //! digest and records the birth's origin from the moment ZFS makes it, and the root lands
 //! carrying both. Only a slot carrying both, or a root carrying the origin, is this copy's;
 //! any other refuses, so the seed never adopts, clears or lands on another copy of `into`.
-//! A copy killed partway starts over inside the slot it made, which it keeps. Every destroy
-//! of a dataset carrying a step's digest first leaves a tombstone of the step, in a file of
-//! its own ([`VolumeStorage::bury`]), so an `into` that is gone and a tombstone mean the
-//! step's Volume was deleted, and the step never makes it again. With no tombstone the step
+//! A copy killed partway starts over inside the slot it made, which it keeps. Every delete
+//! of a dataset carrying a step's digest leaves a tombstone of the step, in a file of its
+//! own ([`VolumeStorage::bury`]): a destroy first, a move to the Trash once its rename
+//! committed. A seed into an absent `into` buries the steps the Trash holds before it reads
+//! its own, which covers a move stopped between the two. So an `into` that is gone and a
+//! tombstone mean the step's Volume was deleted, and the step never makes it again. With no tombstone the step
 //! never made anything that was then destroyed, however a call before ended, so it may
 //! start. The step's window bounds only what makes a new destination: a copy into an
 //! absent `into` makes its slot and starts its receive only while the window holds on the
@@ -42,7 +44,7 @@ use super::{
     inspect::answering,
     marks::{Mark, Marks, Write},
     origin::Origin,
-    storage::{HeldMutation, checked_command},
+    storage::{HeldMutation, Holds, checked_command},
     transfer::{Busy, Stop, ZfsChild, exited},
 };
 
@@ -111,7 +113,7 @@ impl Renamed {
         storage.zfs(&["inherit", "mountpoint", root]).await?;
         storage.zfs(&["set", "readonly=off", root]).await?;
         if let Some(parent) = &self.parent {
-            storage.zfs(&["destroy", parent]).await?;
+            storage.destroy(parent, Holds::Nothing).await?;
         }
         storage
             .zfs(&["destroy", &format!("{root}@{}", self.received)])
@@ -190,7 +192,7 @@ impl Stale {
                 self.parent
             )));
         }
-        storage.zfs(&["destroy", "-r", &self.parent]).await?;
+        storage.discard_slot(&self.parent, into).await?;
         Ok(())
     }
 
@@ -208,7 +210,7 @@ impl Stale {
                 self.parent
             )));
         }
-        storage.zfs(&["destroy", "-r", fs]).await?;
+        storage.discard_copy(&self.parent, fs, into, None).await?;
         Ok(())
     }
 }
@@ -370,6 +372,9 @@ impl VolumeStorage {
                 }
             }
             SeedProgress::Absent => {
+                if copy.is_some() {
+                    self.bury_trash(&pool, &datasets).await?;
+                }
                 if let Some(copy) = copy
                     && self.buried(copy.step)?
                 {

@@ -144,9 +144,15 @@ async fn destroy_drops_a_landed_seed_docker_never_adopted() {
         "the seed root is gone"
     );
     assert!(test.0.join("volume").exists(), "the source stays");
+    assert!(
+        !effects_since(&test, &log)
+            .iter()
+            .any(|effect| effect.contains("destroy"))
+    );
+    let entry = trashed_one(&test, "root");
     assert_eq!(
-        effects_since(&test, &log),
-        ["zfs destroy -r tank/ployz/seed"]
+        property(&test, &entry, "ployz:trash-name").as_deref(),
+        Some("seed")
     );
     assert_eq!(
         post(&socket, "/Volume.Copy.Destroy", json!({"name": "seed"})).await,
@@ -176,12 +182,14 @@ async fn destroy_drops_a_seed_and_the_slot_parent_a_crashed_landing_left() {
         "the slot parent is gone"
     );
     assert!(test.0.join("volume").exists(), "the source stays");
+    trashed_one(&test, "root");
     assert_eq!(
-        effects_since(&test, &log),
-        [
-            "zfs destroy -r tank/ployz/seed",
-            "zfs destroy -r tank/ployz-mirror/seed"
-        ]
+        effects_since(&test, &log)
+            .iter()
+            .filter(|effect| effect.contains("destroy"))
+            .collect::<Vec<_>>(),
+        ["zfs destroy tank/ployz-mirror/seed"],
+        "the empty slot parent goes outright"
     );
 }
 
@@ -701,10 +709,16 @@ async fn a_seed_replaces_a_slot_a_mirror_pull_marked_or_that_holds_no_point() {
             "pulled {pulled}: {landed}"
         );
         let log = commands(&test);
-        assert!(
-            log.contains("zfs destroy -r tank/ployz-mirror/seed\n"),
-            "pulled {pulled}: {log}"
-        );
+        if pulled {
+            let entry = trashed_one(&test, "slot");
+            assert_eq!(snapshot_names(&test, &format!("{entry}/fs")), ["w-9-1"]);
+        } else {
+            assert!(
+                log.contains("zfs destroy -r tank/ployz-mirror/seed\n"),
+                "a slot with no point goes outright: {log}"
+            );
+            assert_eq!(trashed(&test), Vec::<String>::new());
+        }
         assert_landed(&test);
     }
 }
@@ -856,9 +870,10 @@ async fn a_seed_replaces_a_slot_parent_with_no_fs() {
     );
     let log = commands(&test);
     assert!(
-        log.contains("zfs destroy -r tank/ployz-mirror/seed\n"),
+        log.contains("zfs destroy tank/ployz-mirror/seed\n"),
         "{log}"
     );
+    assert_eq!(trashed(&test), Vec::<String>::new());
     assert_landed(&test);
 }
 
@@ -1182,7 +1197,12 @@ async fn a_closed_window_finishes_a_copy_underway_and_starts_none() {
 /// restarted plugin is refused, makes nothing, and the Volume stays gone.
 #[tokio::test]
 async fn a_copy_never_makes_its_deleted_volume_again() {
-    for delete in ["forget the landed root", "docker rm", "forget the slot"] {
+    for delete in [
+        "forget the landed root",
+        "docker rm",
+        "docker rm stopped before its tombstone",
+        "forget the slot",
+    ] {
         let test = if delete == "forget the slot" {
             killed_copy()
         } else {
@@ -1192,7 +1212,7 @@ async fn a_copy_never_makes_its_deleted_volume_again() {
         if delete != "forget the slot" {
             copy_settled(&socket, &copy(open(OPEN))).await;
         }
-        let deleted = if delete == "docker rm" {
+        let deleted = if delete.starts_with("docker rm") {
             let created = post(
                 &socket,
                 "/VolumeDriver.Create",
@@ -1208,6 +1228,12 @@ async fn a_copy_never_makes_its_deleted_volume_again() {
             deleted.get("Err").is_none_or(|error| error == ""),
             "{delete}: {deleted}"
         );
+        if delete == "docker rm stopped before its tombstone" {
+            // The move's rename committed and the plugin stopped before it wrote the
+            // tombstone: the step's Volume waits in the Trash, carrying the step.
+            fs::remove_dir_all(test.0.join("admission-data/seed-copies")).unwrap();
+            assert_eq!(trashed(&test).len(), 1);
+        }
         stop(server).await;
         let (socket, _server) = plugin(&test, None);
         let log = commands(&test);
