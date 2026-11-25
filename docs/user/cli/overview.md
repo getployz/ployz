@@ -62,7 +62,7 @@ still provides a Server route without Cloud sign-in.
 
 Signed out, without `--connect` or `--context`, and with a config file that sets no current
 context, commands reach no server, so it shows
-`servers = (none: no current context)` and `next: ployz ctx use CONTEXT`. With no contexts in the
+`servers = (none: no current context)` and `next: ployz ctx use '<CONTEXT>'`. With no contexts in the
 file, it shows `(none: no contexts)` and the step those commands name, such as `ployz login`. In
 JSON, `servers.via` is `none` then.
 
@@ -418,23 +418,33 @@ A `retry:` line is the command you ran, with every flag you typed, such as `--pl
 pick where a command runs, `--context`, `--connect`, `--project` and `--env`, are spelled out
 even when they came from a variable. A retry repeats a value you typed only when it reads as what
 the argument takes, such as a name, a number, a choice, an image, a file on this computer or a
-`${{ service.VARIABLE }}` reference. Anything else shows as a placeholder that names what goes
-there:
+`${{ service.VARIABLE }}` reference. Anything else shows as a placeholder in angle brackets that
+names what goes there:
 
 - A variable's value, a registry token, or a value its Setting refuses:
-  `ployz set 'web.env.TOKEN=VALUE'`. A `--patch` with any of these: `--patch JSON`.
-- A command: a Setting that runs one, such as `web.startCommand=VALUE`, a Setup Command as
-  `--setup 'SERVICE=COMMAND'`, and what `ployz exec` runs as `-- COMMAND`.
-- Free text, such as `--why REASON`, and a value of the wrong kind, such as a URL in `--repo`:
-  `--repo 'OWNER/REPO[@BRANCH]'`.
+  `ployz set 'web.env.TOKEN=<VALUE>'`. A `--patch` with any of these: `--patch '<JSON>'`.
+- A command: a Setting that runs one, such as `'web.startCommand=<VALUE>'`, a Setup Command as
+  `--setup '<SERVICE=COMMAND>'`, and what `ployz exec` runs as `-- '<COMMAND>'`.
+- Free text, such as `--why '<REASON>'`, and a value of the wrong kind, such as a URL in `--repo`:
+  `--repo '<OWNER/REPO[@BRANCH]>'`.
 - A `--connect` other than a `tcp://` address or a `unix://` socket on this computer, such as
-  `ssh://`: `--connect CONNECT`.
-- A Cloud URL with a user, a path, a query or a fragment: `--cloud-url CLOUD_URL`.
+  `ssh://`: `--connect '<CONNECT>'`.
+- A Cloud URL with a user, a path, a query or a fragment: `--cloud-url '<CLOUD_URL>'`.
 
-Put them back before you run it. An error that names a Cloud or a connection shows its scheme,
-host and port, and marks what it leaves out: `USER` or `USER:PASSWORD`, then `/PATH`, `?QUERY`
-and `#FRAGMENT`, as in `https://USER@cloud.example/PATH`. `--help` names `PLOYZ_CLOUD_URL`
-without showing its value.
+Replace each placeholder before you run the line. A command that still holds one is refused
+before it does anything, naming the flag, so a placeholder is never sent as a value.
+
+An error never repeats a word you typed that doesn't read as what its place takes, since it may
+be a secret typed in the wrong place. A value an option refuses shows as `<VALUE>`, and a word no
+command takes as `<WORD>`, unless it is a command or a flag. A context name or a `server reject`
+pattern shows as typed when it reads as one, else as `<CONTEXT>` or `<PATTERN>`. An error that
+names a Cloud or a connection shows its scheme, host and port, and marks what it leaves out:
+`USER` or `USER:PASSWORD`, then `/PATH`, `?QUERY` and `#FRAGMENT`, as in
+`https://USER@cloud.example/PATH`. When SSH to a server fails, Ployz says why in its own words,
+such as a refused key or a host key that doesn't match, and never repeats ssh's output, which can
+include the user; run `ssh` to the server yourself to see it. `--help` names each variable it
+reads, such as `PLOYZ_CLOUD_URL` and `PLOYZ_CONTEXT`, without its value. `--ployz-config` takes a
+file path and refuses a URL.
 `ployz logs` reading your servers prints each line on the stream your app wrote it to, so add
 `2>&1` to pipe every line; see [Logs](../observe/logs.md#read-logs-from-the-cli).
 
@@ -584,8 +594,8 @@ Once it starts, `ployz exec` exits with your command's own exit code. When the c
 because a deploy replaced it or the service was stopped, it exits 1 with
 `The container for web stopped; exec ended.` A `retry:` line follows when another container of the
 service runs. It is the command you ran: `-T` as `--no-tty`, the `--context`, `--connect`,
-`--project` and `--env` you gave as flags or variables, and your command as `COMMAND`, since any word
-of it may be a secret, like `retry: ployz exec --no-tty web -- COMMAND`. Put your command back and
+`--project` and `--env` you gave as flags or variables, and your command as `'<COMMAND>'`, since any word
+of it may be a secret, like `retry: ployz exec --no-tty web -- '<COMMAND>'`. Put your command back and
 run it to attach there. It names no container, so it reaches whichever one runs. When `ployz exec` stops before your command does,
 because you pressed Ctrl-C, a script killed it or the connection dropped, the server stops the
 command too: it sends SIGTERM, then SIGKILL after 10 seconds. The signal reaches the command
