@@ -134,10 +134,11 @@ pub enum RunRotation {
 
 /// What `Gone` asks for the Container's anonymous Volumes. Only a
 /// [`crate::RemoveContainerPurpose`] makes one, so a caller says why it removes the
-/// Container and never picks what happens to the data. The Machine keeps them unless,
-/// as it removes the Container, another of its Containers of the same Service and kind
-/// runs that was made to replace it ([`NewContainer::replaces`]). An ask to keep them
-/// always keeps them.
+/// Container and never picks what happens to the data. An ask to keep them always keeps
+/// them. A Machine advertising [`crate::CONTAINER_REPLACES_CAPABILITY`] removes them only
+/// while the Container it recorded as made to replace this one
+/// ([`NewContainer::replaces`]) runs, In or Held, and no stop is taking it out. An older
+/// Machine removes them whenever asked.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(transparent)]
 pub struct AnonymousVolumes(#[ts(inline)] Disposal);
@@ -206,9 +207,12 @@ pub struct NewContainer {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub image_id: Option<crate::ImageDigest>,
-    /// The copy on this Machine the new Container takes the place of, stamped as the
-    /// `ployz.replaces` label. While the new Container runs, a `Gone` of that copy may
-    /// take its anonymous Volumes. An older Machine ignores it.
+    /// The copy on this Machine the new Container takes the place of. The Machine records
+    /// that claim at create, and only for a Container of the same Service and kind that it
+    /// routes, In or Held, and that no other Container claimed. While the new Container
+    /// runs, In or Held, and no stop is taking it out, a `Gone` of that copy may take its
+    /// anonymous Volumes. A resend that reuses the Container keeps the first create's
+    /// record. An older Machine ignores it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub replaces: Option<crate::ContainerId>,

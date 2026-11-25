@@ -53,9 +53,13 @@ CREATE TABLE IF NOT EXISTS admitted (
     id          TEXT NOT NULL PRIMARY KEY,
     admitted_by TEXT NOT NULL CHECK (json_valid(admitted_by))
 );
+CREATE TABLE IF NOT EXISTS replacements (
+    id       TEXT NOT NULL PRIMARY KEY,
+    replaces TEXT NOT NULL UNIQUE
+);
 ";
 /// The tables keyed by a Container's Docker ID, which move and are dropped with it.
-const ID_TABLES: [&str; 4] = [SPEC_TABLE, "rotations", "stops", "admitted"];
+const ID_TABLES: [&str; 5] = [SPEC_TABLE, "rotations", "stops", "admitted", "replacements"];
 const SPEC_TABLE: &str = "containers";
 static TEMPORARY_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -534,6 +538,49 @@ impl ConfigOperation<'_> {
             Ok(())
         })
         .await
+    }
+
+    /// Record that `container_id` was made to take `replaced`'s place. Records nothing
+    /// when another Container already took it, so each copy has one replacement at most.
+    /// The record goes when `container_id` does.
+    pub(super) async fn record_replacement(
+        &mut self,
+        container_id: &ContainerId,
+        replaced: &ContainerId,
+    ) -> Result<(), Error> {
+        let (container_id, replaced) = (container_id.to_string(), replaced.to_string());
+        self.store
+            .run(move |connection| {
+                connection.execute(
+                    "INSERT INTO replacements (id, replaces) VALUES (?1, ?2) ON CONFLICT DO NOTHING",
+                    params![container_id, replaced],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    /// The Container recorded as made to take `container_id`'s place, if any.
+    pub(super) async fn replacement(
+        &mut self,
+        container_id: &ContainerId,
+    ) -> Result<Option<ContainerId>, Error> {
+        let container_id = container_id.to_string();
+        let replacement = self
+            .store
+            .run(move |connection| {
+                connection
+                    .query_row(
+                        "SELECT id FROM replacements WHERE replaces = ?1",
+                        [container_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()
+                    .map_err(Error::from)
+            })
+            .await?;
+        // A row this store wrote holds a Docker ID; one that doesn't parse names nothing.
+        Ok(replacement.and_then(|id| ContainerId::parse(id).ok()))
     }
 
     /// Point each listed slot with no holder at the listed Container holding its spec.

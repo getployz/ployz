@@ -313,6 +313,75 @@ fn replicated_plan_removes_containers_beyond_the_requested_count() {
     ));
 }
 
+/// The purpose of `b`'s removal when one replica is asked for, two Servers advertise
+/// `capabilities`, the first holds `b`, a copy of an older spec, and `kept_on` holds `c`,
+/// a copy of the requested one. With `c` beside `b`, that is what an attempt that made
+/// `c` leaves when it stops before removing `b`.
+fn leftover_purpose(capabilities: &[&str], kept_on: char) -> ployz_core::RemoveContainerPurpose {
+    let requested = requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    });
+    let mut older = requested.clone();
+    older.container.image = "ghcr.io/getployz/api:old".into();
+    let service_id = service_id('a');
+    let server = |hex, name| {
+        let mut server = machine(hex, name);
+        server.machine.runtime.capabilities =
+            capabilities.iter().map(|c| (*c).to_owned()).collect();
+        server
+    };
+    let snapshot = DeploySnapshot {
+        machines: vec![server('1', "first"), server('2', "second")],
+        containers: vec![
+            container('b', '1', &older, &service_id),
+            container('c', kept_on, &requested, &service_id),
+        ],
+        ..Default::default()
+    };
+    let plan = plan_deploy([&requested], &snapshot, PlanOptions::default()).unwrap();
+    match operations(&plan).as_slice() {
+        [
+            DeployOperation::RemoveContainer {
+                container_id: removed,
+                purpose,
+                service_stays: true,
+                ..
+            },
+        ] if *removed == container_id('b') => *purpose,
+        other => panic!("expected only b's removal, got {other:?}"),
+    }
+}
+
+const PROVES: &[&str] = &[ployz_core::CONTAINER_REPLACES_CAPABILITY];
+
+/// The Server may hold the copy that replaced `b`, and it removes `b`'s anonymous
+/// Volumes only if it recorded that copy as the replacement.
+#[test]
+fn a_leftover_beside_a_kept_copy_asks_a_server_that_proves_replacements_to_remove_its_volumes() {
+    assert_eq!(
+        leftover_purpose(PROVES, '1'),
+        ployz_core::RemoveContainerPurpose::Rollout
+    );
+}
+
+/// An older daemon removes anonymous Volumes whenever it is asked to.
+#[test]
+fn a_leftover_beside_a_kept_copy_asks_an_older_server_to_keep_its_volumes() {
+    assert_eq!(
+        leftover_purpose(&[], '1'),
+        ployz_core::RemoveContainerPurpose::Retire
+    );
+}
+
+/// A scale-down whose kept copy runs on another Server leaves nothing in `b`'s slot.
+#[test]
+fn a_leftover_with_no_kept_copy_beside_it_keeps_its_volumes() {
+    assert_eq!(
+        leftover_purpose(PROVES, '2'),
+        ployz_core::RemoveContainerPurpose::Retire
+    );
+}
+
 #[test]
 fn changing_replica_count_keeps_matching_existing_containers() {
     let current = requested(ServiceMode::Replicated {

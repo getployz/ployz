@@ -2506,20 +2506,20 @@ mod reserved_lifecycle {
     }
 }
 
-/// A removal takes a Container's anonymous volumes only while this Machine runs a
-/// Container of the same Service and kind that was made to replace it, whatever the
-/// caller asked.
+/// A removal takes a Container's anonymous volumes only while the Container this Machine
+/// recorded, when it made it, as taking that one's place runs, routed and not stopping,
+/// whatever the caller asked.
 mod anonymous_volumes {
     use std::{collections::BTreeMap, path::PathBuf, sync::Mutex};
 
     use ployz_core::{
-        ContainerId, ContainerKind, ContainerLocator, ContainerNow, ContainerWant, Drain,
-        EnsuredContainer, MachineName, NewContainer, RemoveContainerPurpose, RunRotation,
-        RunTarget, ServiceName, StopOptions,
+        ContainerId, ContainerKind, ContainerLocator, ContainerNow, ContainerWant, CopyRotation,
+        DeploymentLogId, Drain, EnsuredContainer, MachineName, NewContainer,
+        RemoveContainerPurpose, RunRotation, RunTarget, ServiceName, StopOptions, labels,
     };
 
     use super::*;
-    use crate::docker::test_support::{FakeDocker, fake_runtime_with, spec_with_sources};
+    use crate::docker::test_support::{FakeDocker, fake_runtime_with, image_id, spec_with_sources};
 
     use ContainerKind::{PreDeployHook as Hook, ServiceContainer as Copy};
     use RemoveContainerPurpose::{Retire, Rollout};
@@ -2569,8 +2569,20 @@ mod anonymous_volumes {
         }
 
         /// Run a new Container of `service` and `kind` in slot `key`, made to replace
-        /// `replaces`.
+        /// `replaces`, and route it.
         async fn run(
+            &self,
+            (service, kind): (&str, ContainerKind),
+            key: &str,
+            replaces: Option<ContainerId>,
+        ) -> ContainerId {
+            let id = self.create((service, kind), key, replaces).await;
+            self.rotate(id, CopyRotation::In).await;
+            id
+        }
+
+        /// Run a new Container as [`Self::run`] does, left Pending.
+        async fn create(
             &self,
             (service, kind): (&str, ContainerKind),
             key: &str,
@@ -2615,6 +2627,14 @@ mod anonymous_volumes {
             }
         }
 
+        /// Record `id` at `rotation`, the write an In, Held or Out want ends with. An In
+        /// want also reads the Cluster's replicated copies, which this Machine has none of.
+        async fn rotate(&self, id: ContainerId, rotation: CopyRotation) {
+            let lifecycle = self.local.docker().unwrap().lifecycle();
+            let turn = lifecycle.rotation_turn(&id).await.unwrap();
+            turn.write(&rotation).await.unwrap();
+        }
+
         async fn stop(&self, id: ContainerId) {
             self.local
                 .ensure_full_access(ContainerWant::Stopped {
@@ -2626,8 +2646,10 @@ mod anonymous_volumes {
                 .unwrap();
         }
 
-        /// Remove `id` for `purpose`, and answer whether its anonymous volumes went too.
+        /// Take `id` out of routing and remove it for `purpose`, as cleanup does, and
+        /// answer whether its anonymous volumes went too.
         async fn remove(&self, id: ContainerId, purpose: RemoveContainerPurpose) -> bool {
+            self.rotate(id, CopyRotation::Out).await;
             let reply = self
                 .local
                 .ensure_full_access(ContainerWant::Gone {
@@ -2662,6 +2684,10 @@ mod anonymous_volumes {
         }
     }
 
+    fn held() -> CopyRotation {
+        CopyRotation::Held(DeploymentLogId::parse("deploy-1").unwrap())
+    }
+
     #[tokio::test]
     async fn a_removal_with_nothing_in_its_slot_keeps_them() {
         let machine = Machine::new().await;
@@ -2681,6 +2707,19 @@ mod anonymous_volumes {
     async fn a_running_replacement_in_its_slot_takes_them() {
         let machine = Machine::new().await;
         let old = machine.run(("api", Copy), "old", None).await;
+        machine.run(("api", Copy), "new", Some(old)).await;
+
+        assert!(machine.remove(old, Rollout).await);
+        machine.finish();
+    }
+
+    #[tokio::test]
+    async fn a_stop_first_replacement_of_a_held_copy_takes_them() {
+        let machine = Machine::new().await;
+        // Stop-first holds the old copy for its run and stops it before the new one is made.
+        let old = machine.run(("api", Copy), "old", None).await;
+        machine.rotate(old, held()).await;
+        machine.stop(old).await;
         machine.run(("api", Copy), "new", Some(old)).await;
 
         assert!(machine.remove(old, Rollout).await);
@@ -2708,11 +2747,62 @@ mod anonymous_volumes {
     }
 
     #[tokio::test]
+    async fn a_second_claim_on_a_copy_records_nothing() {
+        let machine = Machine::new().await;
+        let old = machine.run(("api", Copy), "old", None).await;
+        let first = machine.run(("api", Copy), "first", Some(old)).await;
+        // A second copy names the same old one, then the first copy goes.
+        machine.run(("api", Copy), "second", Some(old)).await;
+        machine.remove(first, Rollout).await;
+
+        assert!(
+            !machine.remove(old, Rollout).await,
+            "a second copy made for a slot already taken freed the old copy's data"
+        );
+        machine.finish();
+    }
+
+    #[tokio::test]
     async fn a_replacement_of_another_service_or_kind_keeps_them() {
         let machine = Machine::new().await;
         let old = machine.run(("api", Copy), "old", None).await;
         machine.run(("web", Copy), "web", Some(old)).await;
         machine.run(("api", Hook), "hook", Some(old)).await;
+
+        assert!(!machine.remove(old, Rollout).await);
+        machine.finish();
+    }
+
+    #[tokio::test]
+    async fn a_replacement_that_is_not_routed_keeps_them() {
+        let machine = Machine::new().await;
+        // A replacement that never came In, and one taken Out while it still runs.
+        let pending = machine.run(("api", Copy), "pending", None).await;
+        machine
+            .create(("api", Copy), "pending-new", Some(pending))
+            .await;
+        assert!(!machine.remove(pending, Rollout).await);
+
+        let out = machine.run(("api", Copy), "out", None).await;
+        let new = machine.run(("api", Copy), "out-new", Some(out)).await;
+        machine.rotate(new, CopyRotation::Out).await;
+        assert!(!machine.remove(out, Rollout).await);
+        machine.finish();
+    }
+
+    #[tokio::test]
+    async fn a_replacement_that_is_stopping_keeps_them() {
+        let machine = Machine::new().await;
+        let old = machine.run(("api", Copy), "old", None).await;
+        let new = machine.run(("api", Copy), "new", Some(old)).await;
+        // A stop has marked the replacement and is draining it; it still runs.
+        let _stopping = machine
+            .local
+            .docker()
+            .unwrap()
+            .lifecycle()
+            .withdraw_locked(new)
+            .await;
 
         assert!(!machine.remove(old, Rollout).await);
         machine.finish();
@@ -2725,6 +2815,7 @@ mod anonymous_volumes {
         let new = machine
             .run(("api", Copy), "stopped-new", Some(stopped))
             .await;
+        machine.rotate(new, held()).await;
         machine.stop(new).await;
         assert!(!machine.remove(stopped, Rollout).await);
 
@@ -2733,6 +2824,22 @@ mod anonymous_volumes {
         let removed = machine.run(("api", Copy), "left-new", Some(left)).await;
         machine.remove(removed, Rollout).await;
         assert!(!machine.remove(left, Rollout).await);
+        machine.finish();
+    }
+
+    #[tokio::test]
+    async fn a_label_the_image_carries_names_no_copy_it_replaces() {
+        let machine = Machine::new().await;
+        let old = machine.run(("api", Copy), "old", None).await;
+        // The next copy's image says it replaces `old`; the request names nothing.
+        let image = spec_with_sources(vec![]).container.image;
+        machine.fake.image_labels.lock().unwrap().insert(
+            image_id(&image),
+            BTreeMap::from([(labels::REPLACES.to_owned(), old.to_string())]),
+        );
+        machine.run(("api", Copy), "new", None).await;
+
+        assert!(!machine.remove(old, Rollout).await);
         machine.finish();
     }
 

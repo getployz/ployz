@@ -319,6 +319,13 @@ impl Lifecycle {
         self.standing.withdraw(container_id)
     }
 
+    /// As [`Self::withdraw`], for a caller that holds no config lock: the mark is set
+    /// under it, so a removal that read this Container unmarked has finished first.
+    pub async fn withdraw_locked(&self, container_id: ContainerId) -> Withdrawal {
+        let _operation = self.specs.config_operation().await;
+        self.standing.withdraw(container_id)
+    }
+
     /// Mark this Container leaving until the returned guard drops, so a peer's inspect
     /// reports it. The caller holds the Machine's exclusive admission turn.
     #[must_use]
@@ -569,8 +576,9 @@ impl Lifecycle {
             .pin_external_drivers(&machine.id, spec, mounts)
             .await?;
         mounts.extend(docker_config_mounts(&mut config_operation, spec).await?);
+        let replaced = self.slot_taken(&creating).await;
         let result = self
-            .create_and_record(&creating, &mut config_operation, body)
+            .create_and_record(&creating, &mut config_operation, body, replaced)
             .await;
         if result.is_err()
             && let Err(error) = config_operation.garbage_collect_configs().await
@@ -591,7 +599,6 @@ impl Lifecycle {
             creation_key,
             deployment_id,
             r#gen,
-            replaces,
             kind,
             namespace,
             spec,
@@ -642,17 +649,19 @@ impl Lifecycle {
             deployment_id,
             Some(creation_key),
             r#gen,
-            replaces,
         );
         Ok(body)
     }
 
-    /// Creates the Container under its slot's name, then writes its spec. A Container with no spec is removed again, so none outlives a failed write.
+    /// Creates the Container under its slot's name, then writes its spec, and that it
+    /// takes `replaced`'s place. A Container with no spec is removed again, so none
+    /// outlives a failed write.
     async fn create_and_record(
         &self,
         creating: &Creating<'_>,
         config_operation: &mut ConfigOperation<'_>,
         body: ContainerCreateBody,
+        replaced: Option<ContainerId>,
     ) -> Result<ContainerCreated, Error> {
         let Creating {
             machine,
@@ -710,10 +719,36 @@ impl Lifecycle {
             self.remove_if_present(&container_id).await?;
             return Err(error.into());
         }
+        // A daemon killed before this write leaves no record, so the old copy's anonymous
+        // volumes stay.
+        if let Some(replaced) = replaced {
+            config_operation
+                .record_replacement(&container_id, &replaced)
+                .await?;
+        }
         Ok(ContainerCreated {
             container_id,
             display_name,
         })
+    }
+
+    /// The copy whose slot this creation takes: the one the caller names, when it is a
+    /// Container of the same Service and kind on this Machine that is In or Held, so it
+    /// is what the slot routes. Read under the config lock, which every rotation write
+    /// takes. A copy this Machine can't read takes no record, so its volumes stay.
+    async fn slot_taken(&self, creating: &Creating<'_>) -> Option<ContainerId> {
+        let replaced = creating.replaces?;
+        let inspected = self.observation.ensure_managed(replaced).await.ok()?;
+        let labels = ServiceLabels::parse(inspected.labels()?).ok()?;
+        let new = ServiceLabels {
+            identity: ployz_core::QualifiedService::new(
+                creating.namespace.clone(),
+                creating.spec.name.clone(),
+            ),
+            kind: creating.kind,
+        };
+        let rotation = self.specs.rotation(replaced).await.ok()??;
+        (labels == new && slotted(&rotation)).then_some(*replaced)
     }
 
     /// The image ID `container_id` runs, as Docker resolved it when it made the Container.
@@ -1118,8 +1153,10 @@ impl Lifecycle {
                 force,
             } => match self.observation.ensure_managed(container_id).await {
                 Ok(inspected) => {
-                    let remove_volumes =
-                        remove_volumes && self.replaced(container_id, &inspected).await?;
+                    let remove_volumes = remove_volumes
+                        && self
+                            .replaced(config_operation, container_id, &inspected)
+                            .await?;
                     let options = RemoveContainerOptionsBuilder::default()
                         .v(remove_volumes)
                         .force(force)
@@ -1148,39 +1185,42 @@ impl Lifecycle {
         Ok(())
     }
 
-    /// Whether `retiree`'s anonymous volumes may go with it: a Container of the same
-    /// Service and kind runs on this Machine, not withdrawn, that was made to replace it
-    /// ([`labels::REPLACES`]). Read under the config lock every Ployz create and removal
-    /// takes, so none lands between this read and the removal. The removal of a system
-    /// Container, whose spec is the daemon's own, takes them as asked.
-    async fn replaced(&self, retiree: &ContainerId, inspected: &Inspected) -> Result<bool, Error> {
+    /// Whether `retiree`'s anonymous volumes may go with it: this Machine recorded,
+    /// when it made another Container, that it takes `retiree`'s place (see
+    /// [`Self::slot_taken`]), and that Container runs, In or Held, and no stop is taking
+    /// it out of routing. Read under the config lock, which every create, removal,
+    /// rotation write and stopping mark takes, so none lands between this read and the
+    /// removal. The removal of a system Container, whose spec is the daemon's own, takes
+    /// them as asked.
+    async fn replaced(
+        &self,
+        config_operation: &mut ConfigOperation<'_>,
+        retiree: &ContainerId,
+        inspected: &Inspected,
+    ) -> Result<bool, Error> {
         let labels = inspected.labels().ok_or(Error::NotManaged)?;
         if labels::Class::of(labels) == Some(labels::Class::System) {
             return Ok(true);
         }
-        let retiring = ServiceLabels::parse(labels)?;
-        let named = self
-            .docker
-            .labelled(vec![format!("{}={retiree}", labels::REPLACES)])
-            .await?;
-        for (candidate, labels) in named {
-            if candidate == *retiree
-                || ServiceLabels::parse(&labels).ok().as_ref() != Some(&retiring)
-                || self.standing.is_withdrawn(&candidate)
-            {
-                continue;
-            }
-            match self.docker.inspect(&candidate).await {
-                Ok(replacement)
-                    if super::runtime_observation(replacement.state.as_ref()).is_running() =>
-                {
-                    return Ok(true);
-                }
-                Ok(_) | Err(Error::ContainerNotFound(_)) => {}
-                Err(error) => return Err(error),
-            }
+        let Some(replacement) = config_operation.replacement(retiree).await? else {
+            return Ok(false);
+        };
+        if self.standing.is_withdrawn(&replacement)
+            || !self
+                .specs
+                .rotation(&replacement)
+                .await?
+                .is_some_and(|rotation| slotted(&rotation))
+        {
+            return Ok(false);
         }
-        Ok(false)
+        match self.docker.inspect(&replacement).await {
+            Ok(replacement) => {
+                Ok(super::runtime_observation(replacement.state.as_ref()).is_running())
+            }
+            Err(Error::ContainerNotFound(_)) => Ok(false),
+            Err(error) => Err(error),
+        }
     }
 
     /// Stops `container_id`. A Container already stopped or gone is success.
@@ -1315,6 +1355,15 @@ pub(super) fn idempotent_lifecycle_result(
         Err(error) if classify(&error) == Status::Unchanged => Ok(()),
         Err(error) => Err(docker_error(container_id, error)),
     }
+}
+
+/// Whether a copy in `rotation` is what its slot routes: In, or Held by a run that may
+/// route it again.
+fn slotted(rotation: &ployz_core::CopyRotation) -> bool {
+    matches!(
+        rotation,
+        ployz_core::CopyRotation::In | ployz_core::CopyRotation::Held(_)
+    )
 }
 
 pub(crate) fn same_creation(
@@ -1555,6 +1604,7 @@ mod tests {
                 "ployz.deployment.id": "deploy-7",
                 "ployz.creation.key": "plan:0",
                 "ployz.gen": "3",
+                "ployz.replaces": "",
             })
         );
         let hook = stamped_labels(ContainerKind::PreDeployHook, "plan:1", None, Gen::FIRST).await;
@@ -1568,6 +1618,7 @@ mod tests {
                 "ployz.network.ipv6": "true",
                 "ployz.creation.key": "plan:1",
                 "ployz.gen": Gen::FIRST.to_string(),
+                "ployz.replaces": "",
             })
         );
     }

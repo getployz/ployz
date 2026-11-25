@@ -113,6 +113,9 @@ pub(crate) struct FakeDocker {
     /// What the registry serves for each tag, by ID. A tag listed nowhere serves the ID
     /// made from its name. A pull of a tag writes it into [`Self::images`].
     pub(crate) registry: Arc<Mutex<BTreeMap<String, String>>>,
+    /// Named mode: the labels each image carries, by image ID. A create merges them
+    /// under the Container's own, as Docker does.
+    pub(crate) image_labels: Arc<Mutex<BTreeMap<String, BTreeMap<String, String>>>>,
 }
 
 impl FakeDocker {
@@ -253,7 +256,7 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
                     .into_response();
             }
             let id = format!("{}{}", MachineId::random(), MachineId::random());
-            let config: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            let mut config: serde_json::Value = serde_json::from_slice(&body).unwrap();
             if config
                 .pointer("/Labels/ployz.service.name")
                 .and_then(serde_json::Value::as_str)
@@ -271,6 +274,22 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
                 .get("Image")
                 .and_then(serde_json::Value::as_str)
                 .and_then(|image| fake.image(image));
+            let carried = image
+                .as_ref()
+                .and_then(|image| fake.image_labels.lock().unwrap().get(image).cloned());
+            if let Some(carried) = carried {
+                let mut labels: serde_json::Map<String, serde_json::Value> = carried
+                    .into_iter()
+                    .map(|(key, value)| (key, value.into()))
+                    .collect();
+                if let Some(own) = config.get("Labels").and_then(serde_json::Value::as_object) {
+                    labels.extend(own.clone());
+                }
+                config
+                    .as_object_mut()
+                    .unwrap()
+                    .insert("Labels".to_owned(), labels.into());
+            }
             // Docker answers each mount by the Volume's name and where it is mounted.
             let mounts: Vec<serde_json::Value> = host_config
                 .get("Mounts")
@@ -957,7 +976,7 @@ pub(super) fn machine() -> Machine {
 
 /// The ID this fake gives `image`: the digest it names, or one made from its name, so a
 /// pull, an inspect and a Container of one reference agree.
-fn image_id(image: &str) -> String {
+pub(crate) fn image_id(image: &str) -> String {
     use sha2::Digest as _;
 
     match ployz_core::ImageRef::new(image).digest {

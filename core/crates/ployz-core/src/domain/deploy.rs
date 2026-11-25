@@ -707,14 +707,16 @@ pub enum StopContainerPurpose {
 }
 
 /// Why Ployz removes a Container: whether a new copy takes its slot on its Server. A
-/// `Retire` keeps the Container's anonymous Volumes. A `Rollout` only asks to remove
-/// them, which the Machine does when it runs the copy made to replace this one (see
-/// [`crate::AnonymousVolumes`]).
+/// `Retire` keeps the Container's anonymous Volumes on every Machine. A `Rollout` asks to
+/// remove them, which a Machine advertising [`crate::CONTAINER_REPLACES_CAPABILITY`] does
+/// only while it runs the copy it recorded as made to replace this one, and an older one
+/// does whenever asked (see [`crate::AnonymousVolumes`]). So a caller sends `Rollout` to
+/// an older Machine only when a new copy took this one's slot.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum RemoveContainerPurpose {
-    /// Replace the copy in its slot, or undo a copy the same run made: its anonymous
-    /// Volumes go with the Container.
+    /// A new copy took the copy's slot, or the copy is one the same run made and undoes:
+    /// its anonymous Volumes may go with the Container.
     #[default]
     Rollout,
     /// Take the copy off its Server with nothing in its slot after it: a removed

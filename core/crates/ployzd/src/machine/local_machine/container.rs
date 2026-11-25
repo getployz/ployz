@@ -414,7 +414,9 @@ impl Installed {
     /// holding a turn deadlocks.
     ///
     /// The stopping mark is set without a turn so replication tells every proxy and
-    /// Internal DNS during the drain. An idle copy ends its drain early, though not
+    /// Internal DNS during the drain. It is set under the config lock, so a removal
+    /// that took a replaced copy's anonymous volumes on this Container's word finished
+    /// before it. An idle copy ends its drain early, though not
     /// before `WITHDRAWAL_PROPAGATION`, so Internal DNS has heard before the stop. A
     /// drain shorter than that, or a proxy slower to hear, may still dial the stopped
     /// copy and retry another. A daemon restart forgets the mark; a still-running
@@ -1833,7 +1835,11 @@ impl<'a> StopGuard for Fence<'a> {
     }
 
     async fn withdraw(&self) -> Result<Result<Withdrawal, VolumeGen>, Error> {
-        Ok(Ok(self.containers.lifecycle().withdraw(*self.container)))
+        Ok(Ok(self
+            .containers
+            .lifecycle()
+            .withdraw_locked(*self.container)
+            .await))
     }
 
     async fn drained(&self) -> Result<Result<(), VolumeGen>, Error> {

@@ -223,11 +223,11 @@ pub(crate) struct Placed {
 
 /// Place `new`, the copy of one observed Global, on `machine_id`: nothing when the Machine
 /// rules the slot out, the copy already there when one of the same shape runs, and
-/// otherwise a keyed create.
+/// otherwise a keyed create that names the routed copy of an older spec it replaces.
 async fn place_slot<C: SlotIo>(
     client: &mut C,
     machine_id: &MachineId,
-    new: NewContainer,
+    mut new: NewContainer,
     cancel: &CancellationToken,
 ) -> Result<Option<Placed>, RpcError> {
     let target = MachineTarget::from(machine_id);
@@ -237,16 +237,35 @@ async fn place_slot<C: SlotIo>(
     {
         return Ok(None);
     }
-    let existing = client
-        .list_target(machine_id)
-        .await?
-        .into_iter()
-        .find(|observed| {
+    let listed = client.list_target(machine_id).await?;
+    let here = || {
+        listed.iter().filter(|observed| {
             observed.machine_id == *machine_id
                 && observed.kind == ContainerKind::ServiceContainer
                 && observed.namespace == new.slot.namespace
-                && observed.resolved_spec == new.resolved_spec
-        });
+        })
+    };
+    let existing = here()
+        .find(|observed| observed.resolved_spec == new.resolved_spec)
+        .cloned();
+    // Settle retires every older copy here once the new one is In; the one this
+    // Machine routes in the slot is the copy the new one takes the place of.
+    let replaces = here()
+        .filter(|observed| {
+            observed.resolved_spec.name == new.slot.service
+                && matches!(
+                    observed.rotation(),
+                    CopyRotation::In | CopyRotation::Held(_)
+                )
+        })
+        .max_by_key(|observed| {
+            (
+                *observed.rotation() == CopyRotation::In,
+                observed.copy_gen(),
+                observed.recency_key(),
+            )
+        })
+        .map(|observed| observed.container_id);
     // The keyed create below answers with a Container that already holds the
     // creation key's name, so an Out copy must go before a new one is made. That one
     // may still fail, so nothing is known to take the Out copy's slot.
@@ -292,6 +311,7 @@ async fn place_slot<C: SlotIo>(
     if let Some(error) = endpoint_capacity_error(1, capacity.as_ref()) {
         return Err(RpcError::conflict(error.to_string()));
     }
+    new.replaces = replaces;
     let now = client.ensure_pending(&target, RunTarget::New(new)).await?;
     Ok(now.present().map(|copy| Placed {
         copy: Copy::observed(copy),

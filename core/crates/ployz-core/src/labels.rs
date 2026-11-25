@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
-    ContainerId, ContainerKind, DeploymentLogId, Gen, Namespace, QualifiedService, ServiceId,
-    ServiceName, ValueError,
+    ContainerKind, DeploymentLogId, Gen, Namespace, QualifiedService, ServiceId, ServiceName,
+    ValueError,
 };
 
 /// Written, empty, on every container a Machine creates for a Service or a pre-deploy
@@ -37,8 +37,8 @@ pub const DEPLOYMENT_ID: &str = "ployz.deployment.id";
 pub const CREATION_KEY: &str = "ployz.creation.key";
 /// The rotation generation of a container's copy.
 pub const GEN: &str = "ployz.gen";
-/// The id of the container on the same Machine that a container was made to replace.
-/// While it runs, the Machine may remove that container's anonymous volumes.
+/// Written empty on every container a Machine creates, so a label the image carries
+/// never says which container one replaces. Only the Machine's own record says that.
 pub const REPLACES: &str = "ployz.replaces";
 /// `true` on a container whose spec publishes no host port, else `false`. Written
 /// either way so a label the image carries can't decide it.
@@ -233,14 +233,12 @@ impl Stamp<'_> {
 }
 
 /// Write which Deploy run, creation key and generation a container was made under, and
-/// which container it replaces. A missing run, key or replaced container leaves its
-/// label off, whatever `labels` held.
+/// [`REPLACES`] empty. A missing run or key leaves its label off.
 pub fn stamp_run(
     labels: &mut HashMap<String, String>,
     deployment: Option<&DeploymentLogId>,
     creation_key: Option<&str>,
     generation: Gen,
-    replaces: Option<&ContainerId>,
 ) {
     if let Some(deployment) = deployment {
         labels.insert(DEPLOYMENT_ID.to_owned(), deployment.to_string());
@@ -249,10 +247,7 @@ pub fn stamp_run(
         labels.insert(CREATION_KEY.to_owned(), key.to_owned());
     }
     labels.insert(GEN.to_owned(), generation.to_string());
-    labels.remove(REPLACES);
-    if let Some(replaces) = replaces {
-        labels.insert(REPLACES.to_owned(), replaces.to_string());
-    }
+    labels.insert(REPLACES.to_owned(), String::new());
 }
 
 /// The generation a container's labels record; [`Gen::FIRST`] when absent or unreadable.
@@ -347,14 +342,7 @@ mod tests {
         }
         .write(&mut labels);
         let deployment = DeploymentLogId::parse("deploy-7").unwrap();
-        let replaced = ContainerId::parse("b".repeat(64)).unwrap();
-        stamp_run(
-            &mut labels,
-            Some(&deployment),
-            Some("plan:0"),
-            Gen::new(3),
-            Some(&replaced),
-        );
+        stamp_run(&mut labels, Some(&deployment), Some("plan:0"), Gen::new(3));
         assert_eq!(
             labels,
             map(&[
@@ -368,15 +356,14 @@ mod tests {
                 ("ployz.deployment.id", "deploy-7"),
                 ("ployz.creation.key", "plan:0"),
                 ("ployz.gen", "3"),
-                ("ployz.replaces", &"b".repeat(64)),
+                ("ployz.replaces", ""),
             ])
         );
         assert_eq!(generation(&labels), Gen::new(3));
         // A spec's own label never names a container this one replaces.
         let mut bare = map(&[(REPLACES, &"b".repeat(64))]);
-        stamp_run(&mut bare, None, None, Gen::FIRST, None);
-        assert_eq!(bare.len(), 1);
-        assert_eq!(generation(&bare), Gen::FIRST);
+        stamp_run(&mut bare, None, None, Gen::FIRST);
+        assert_eq!(bare, map(&[(GEN, "1"), (REPLACES, "")]));
     }
 
     #[test]
