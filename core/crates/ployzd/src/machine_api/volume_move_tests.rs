@@ -704,3 +704,101 @@ async fn a_move_start_pulls_before_its_promote_so_no_refused_pull_follows_it() {
     assert_eq!(promotes(&plugin), 1);
     assert!(node.running(only_container(node)));
 }
+
+/// A start that sees its Service's replacement running before the promote, and finds it
+/// exited after, creates a holder all the same: it pulled before the promote, so no
+/// refused pull follows it.
+#[tokio::test]
+async fn a_replacement_that_exits_during_the_promote_leaves_no_pull_after_it() {
+    let fleet = Fleet::start().await;
+    let source = fleet.routed(0, "a", "api", 2).await;
+    cut(&fleet, 0).await;
+    let node = fleet.node(1);
+    let mut replacement = fleet.node(0).container(source).unwrap();
+    replacement["Id"] = json!(format!("{}{}", MachineId::random(), MachineId::random()));
+    replacement["Name"] = json!("/api-replacement");
+    replacement["State"] = json!({"Status":"running"});
+    let named = node.fake.named_containers.as_ref().unwrap().clone();
+    named
+        .lock()
+        .unwrap()
+        .insert("api-replacement".into(), replacement);
+    let plugin = plugin(
+        json!({"Ok": {"kind":"root", "readonly":true, "newest":snapshot(), "epoch":0,
+            "seed":false}}),
+        WRITER_ROUTE,
+        writer_root(1, Some(snapshot())),
+    );
+    // The replacement exits while the plugin promotes.
+    let exits = named.clone();
+    plugin.on(WRITER_ROUTE, move || {
+        exits.lock().unwrap().get_mut("api-replacement").unwrap()["State"] =
+            json!({"Status":"exited"});
+    });
+    let destination = fleet.with_plugin(1, &plugin);
+    let mut moved = on_volume("api");
+    moved.container.pull_policy = ployz_core::PullPolicy::Always;
+    *node.fake.pulls_left.lock().unwrap() = Some(0);
+
+    let reply = try_set_copy(
+        &destination,
+        json!({"name":VOLUME, "expect":{"kind":"writer", "epoch":0},
+            "want":{"kind":"writer", "at":"7", "epoch":1, "start":{
+                "kind":"create", "namespace":"app", "resolved_spec":moved,
+                "creation_key":"move-1", "gen":2,
+                "rotation":{"in":{"run":null, "expect":"pending"}}}}}),
+    )
+    .await;
+
+    assert!(
+        promotes(&plugin) == 0 || named.lock().unwrap().len() > 2,
+        "the copy was promoted, then a refused pull left it with no holder: {reply:?}"
+    );
+}
+
+/// A signed start creates its holder from the image it pulled before the promote, by ID,
+/// though the local tag moved to another image while the promote ran.
+#[tokio::test]
+async fn a_signed_start_runs_the_image_it_pulled_though_its_tag_moved() {
+    let fleet = Fleet::start().await;
+    let node = fleet.node(1);
+    let mut moved = spec("api");
+    moved.container.pull_policy = ployz_core::PullPolicy::Always;
+    moved.container.image = "example.test/api:1".to_owned();
+    let (pulled, moved_to) = (
+        format!("sha256:{}", "a".repeat(64)),
+        format!("sha256:{}", "b".repeat(64)),
+    );
+    let tag = moved.container.image.clone();
+    node.fake
+        .registry
+        .lock()
+        .unwrap()
+        .insert(tag.clone(), pulled.clone());
+    let plugin = plugin(
+        slot(Some(snapshot())),
+        WRITER_ROUTE,
+        writer_root(1, Some(snapshot())),
+    );
+    let images = node.fake.images.clone();
+    plugin.on(WRITER_ROUTE, move || {
+        images
+            .lock()
+            .unwrap()
+            .insert(tag.clone(), Some(moved_to.clone()));
+    });
+    let destination = fleet.with_plugin(1, &plugin);
+
+    set_copy(
+        &destination,
+        json!({"name":VOLUME, "expect":{"kind":"mirror", "newest":"7", "slot":"1"},
+            "want":{"kind":"writer", "at":"7", "epoch":1, "start":{
+                "kind":"create", "namespace":"app", "resolved_spec":moved,
+                "creation_key":"move-1", "gen":2,
+                "rotation":{"in":{"run":null, "expect":"pending"}}}}}),
+    )
+    .await;
+
+    let holder = only_container(node);
+    assert_eq!(node.container(holder).unwrap()["Image"], pulled.as_str());
+}

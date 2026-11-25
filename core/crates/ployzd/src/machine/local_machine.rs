@@ -102,7 +102,7 @@ pub(crate) use call::{Call, Caller, Checked, Scope};
 pub(crate) use consumption::ConsumptionLog;
 #[cfg(test)]
 pub(crate) use container::names_content;
-pub(crate) use container::{CutRefusal, PlacedImage};
+pub(crate) use container::{CutRefusal, PlacedHolder};
 #[cfg(test)]
 pub(crate) use container::{EnsurePause, EnsurePausePoint};
 #[cfg(test)]

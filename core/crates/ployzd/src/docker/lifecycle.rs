@@ -553,10 +553,10 @@ impl Lifecycle {
                         )
                         .await?;
                 }
-                ImagePull::Free(id) if self.images.is_free(id) => {
+                ImagePull::Placed(id) if self.images.is_free(id) => {
                     body.image = Some(id.to_owned());
                 }
-                ImagePull::Policy(_) | ImagePull::Prepared | ImagePull::Free(_) => {
+                ImagePull::Policy(_) | ImagePull::Prepared | ImagePull::Placed(_) => {
                     // By ID: the spec's tag here may name what a caller with Full access
                     // put under it, which this creation must not run.
                     let id = self
@@ -566,6 +566,8 @@ impl Lifecycle {
                     body.image = Some(id);
                 }
             }
+        } else if let ImagePull::Placed(id) = creating.image {
+            body.image = Some(id.to_owned());
         } else if let ImagePull::Policy(registry_auth) = creating.image
             && let Err(error) = prepare_image(
                 &self.docker.client,

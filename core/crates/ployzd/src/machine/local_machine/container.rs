@@ -356,8 +356,8 @@ impl LocalMachine {
     }
 
     /// Pull `spec`'s image as a Writer start's Create would, under shared admission
-    /// like [`Self::pull_free_image`], so that Create, after the promote, reaches no
-    /// registry.
+    /// like [`Self::pull_free_image`], and read its ID, so that Create, after the
+    /// promote, runs that ID and reaches no registry.
     ///
     /// # Errors
     ///
@@ -366,17 +366,17 @@ impl LocalMachine {
     pub(crate) async fn place_holder_image(
         &self,
         spec: ResolvedServiceSpec,
-        signed: bool,
-    ) -> Result<PlacedImage, Error> {
+        admitted: AdmittedSpec,
+    ) -> Result<PlacedHolder, Error> {
         self.finish_shared(move |local| async move {
             let images = local.docker()?.images();
             let (image, policy) = (&spec.container.image, spec.container.pull_policy);
-            if signed {
-                images.pull_image(image, policy, None).await?;
-                Ok(PlacedImage::Signed)
+            let id = if admitted.signed() {
+                images.place(image, policy).await?
             } else {
-                Ok(PlacedImage::Free(images.pull_free(image, policy).await?))
-            }
+                images.pull_free(image, policy).await?
+            };
+            Ok(PlacedHolder { admitted, id })
         })
         .await
     }
@@ -384,8 +384,8 @@ impl LocalMachine {
     /// A Writer's start: create its Container when absent, then start it, under one
     /// exclusive turn. A floor raised above `gen` starts nothing, since the newer lane
     /// may have started its own holder of the Volume already. A start ordered after
-    /// the check waits for the turn, so it sees this holder running. The Create runs
-    /// `placed` when the start placed its image before the promote.
+    /// the check waits for the turn, so it sees this holder running. A Create runs the
+    /// image `placed` before the promote, and pulls nothing.
     ///
     /// # Errors
     ///
@@ -396,7 +396,7 @@ impl LocalMachine {
         start: Start,
         name: DockerVolumeName,
         r#gen: VolumeGen,
-        (admitted, placed): (Option<AdmittedSpec>, Option<PlacedImage>),
+        placed: Option<PlacedHolder>,
     ) -> Result<Result<(), VolumeGen>, Error> {
         self.finish_mutation(move |local| async move {
             let containers = local.docker()?;
@@ -421,6 +421,7 @@ impl LocalMachine {
                     r#gen: copy_gen,
                     ..
                 } => {
+                    let PlacedHolder { admitted, id } = placed.ok_or_else(unadmitted)?;
                     local
                         .create_container_admitted(CreationFacts {
                             kind: ContainerKind::ServiceContainer,
@@ -429,10 +430,8 @@ impl LocalMachine {
                             creation_key: creation_key.as_str().to_owned(),
                             deployment_id: None,
                             r#gen: copy_gen,
-                            image: placed
-                                .as_ref()
-                                .map_or(ImagePull::Policy(None), PlacedImage::pull),
-                            admitted: admitted.ok_or_else(unadmitted)?,
+                            image: ImagePull::Placed(&id),
+                            admitted,
                             replaces: None,
                         })
                         .await?
@@ -2583,22 +2582,11 @@ pub(crate) fn names_content(pull: &ployz_core::PeerImagePull) -> bool {
     })
 }
 
-/// The image a Writer start placed before its promote, so its Create after the promote
-/// reaches no registry.
-pub(crate) enum PlacedImage {
-    /// A signed spec's tag, pulled as its policy asks.
-    Signed,
-    /// An unsigned spec's image, by the ID its free pull placed.
-    Free(String),
-}
-
-impl PlacedImage {
-    fn pull(&self) -> ImagePull<'_> {
-        match self {
-            Self::Signed => ImagePull::Prepared,
-            Self::Free(id) => ImagePull::Free(id),
-        }
-    }
+/// A Writer start's Create, admitted, with the ID of the image it placed before its
+/// promote, so the Create after the promote reaches no registry.
+pub(crate) struct PlacedHolder {
+    admitted: AdmittedSpec,
+    id: String,
 }
 
 #[path = "drain_idle.rs"]
