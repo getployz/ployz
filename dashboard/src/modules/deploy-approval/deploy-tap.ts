@@ -20,6 +20,8 @@ import { draftSource, type OwnerOf, priorOf } from "./source-step";
 export const Pending = Schema.Struct({
   environment: Schema.String,
   pending: Schema.NonEmptyArray(Schema.Struct({ service: Schema.String, id: Schema.String, key: Schema.String, generated: Schema.String })),
+  /** What the Deploy builds from an upload, which no Server that enforces device approval builds. */
+  uploads: Schema.optional(Schema.Array(Schema.String)),
 });
 export const isPending = Schema.is(Pending);
 
@@ -57,40 +59,17 @@ export function namesReview(current: string, given: string) {
  */
 export const underRule = ({ needs, ended }: Unsigned) => (needs === "rule" || needs === "rebuild") && ended !== true;
 
-/** Whether `entry`'s Service builds from source and no rule that stands covers it, so only a signed Source step builds it. */
-export const needsSource = ({ needs, ended }: Unsigned) => needs === "rule" && ended !== true;
-
-/** The first Service of `unsigned` that only a Source step builds and that `sourced` leaves out, or null when none is. */
-export const unsourced = (unsigned: readonly Unsigned[], sourced: ReadonlySet<string>) =>
-  unsigned.find((entry) => needsSource(entry) && !sourced.has(entry.service))?.service ?? null;
-
 /**
  * Why no tap can build what a Deploy ships, as the asker hears it before any link, on Servers that enforce device
- * approval: a Service of `uploads`, which builds from an upload, or one of `unsigned` that only a Source step builds
+ * approval: a Service of `uploads`, which builds from an upload, or one of `sources`, which only a Source step builds,
  * when `source` can't be signed. Null when nothing stops it.
  */
-export function unbuildable(uploads: readonly string[], unsigned: readonly Unsigned[], source: DeploySource | undefined) {
+export function unbuildable(uploads: readonly string[], sources: readonly string[], source: DeploySource | undefined) {
   const [upload] = uploads;
   if (upload !== undefined) return `Your servers won't build ${upload} from an upload. Deploy a prebuilt image by digest, or connect the service to a GitHub repository.`;
-  if (source?.kind === "held" && unsigned.some(needsSource)) return `${source.reason} Nothing deployed.`;
+  if (source?.kind === "held" && sources.length > 0) return `${source.reason} Nothing deployed.`;
   return null;
 }
-
-/** The Services a Deploy of `services`, or of every Service when it names none, ships that `source`'s rule must name. */
-export const sourceRequires = (services: readonly string[], source: DeploySource | undefined) =>
-  source?.kind === "sign" && !source.unchecked
-    ? source.view.sources.map(({ service }) => service).filter((service) => services.length === 0 || services.includes(service))
-    : [];
-
-/** Whether a Deploy of `services` ships a Service whose rule `source` signs. */
-export const shipsSource = (services: readonly string[], source: DeploySource | undefined) => sourceRequires(services, source).length > 0;
-
-/**
- * The first Service a Deploy of `services` ships that its Source step must name and `sourced` leaves out: one the
- * rule view `source` requires, or one of `unsigned` that only a Source step builds. Null when it names each.
- */
-export const unsourcedShipped = (services: readonly string[], unsigned: readonly Unsigned[], source: DeploySource | undefined, sourced: ReadonlySet<string>) =>
-  sourceRequires(services, source).find((service) => !sourced.has(service)) ?? unsourced(unsigned, sourced);
 
 /** Why a Service no passkey can sign keeps the Deploy from asking, or null when a passkey can sign each of `unsigned`. */
 export function blocked(unsigned: readonly Unsigned[]) {

@@ -121,6 +121,13 @@ pub struct PlanView {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(optional, as = "Option<Vec<ServiceName>>")]
     pub uploads: Vec<ServiceName>,
+    /// When the query asked for `target`: each Service this Deploy ships, by the name it
+    /// runs under, that builds from a Git repository and that the live automatic deploy
+    /// rule doesn't approve as it stands, whether or not it reaches data. Only a Source
+    /// step signed with the Deploy builds it. Absent from an older Store.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<Vec<ServiceName>>")]
+    pub sources: Vec<ServiceName>,
 }
 
 /// A Service a Deploy ships that its Servers run only signed, and nothing signed covers.
@@ -373,7 +380,7 @@ pub(crate) fn plan(
         unresolved.push(Unresolved::VolumeData);
     }
     let landing = deployment::Landing::of(&review.head);
-    let frozen = deployment::freeze(
+    let frozen = match deployment::freeze(
         &environment.summary.id,
         &who.organization,
         &target,
@@ -381,12 +388,41 @@ pub(crate) fn plan(
         deployment::Scope::of(&query.services, &removed),
         namespace.clone(),
         None,
-    )?;
-    let (lowered, volumes, unsigned, uploads) = match query.target {
+    ) {
+        Ok(frozen) => frozen,
+        // A Pending value refuses the freeze, yet Cloud refuses a Deploy no Server
+        // builds before it asks anyone to make one: what the Deploy names still says.
+        Err(refused) if query.target => {
+            let named = |service: &ployz_core::config::SavedServiceIntent| {
+                query.services.is_empty()
+                    || query
+                        .services
+                        .iter()
+                        .any(|name| name.as_str() == service.slug.as_str())
+            };
+            let uploads = deployment::uploads::building(
+                tx,
+                &environment.summary.id,
+                &target,
+                named,
+                query.upload,
+            )?;
+            return Err(with_uploads(refused, &uploads));
+        }
+        Err(refused) => return Err(refused),
+    };
+    let (lowered, volumes, unsigned, uploads, sources) = match query.target {
         true => {
             // The specs of the Services it ships, for a Device to approve before it
             // admits the Deploy.
             trusted.writes(&environment.summary.name)?;
+            let uploads = deployment::uploads::building(
+                tx,
+                &environment.summary.id,
+                &target,
+                |service| frozen.targets(&service.id),
+                query.upload,
+            )?;
             let lowered = saved_target(tx, who, trusted, (&environment, &target), &query.services)?;
             let unsigned = deployment::versions::unsigned(
                 tx,
@@ -399,16 +435,21 @@ pub(crate) fn plan(
                 (&frozen.nodes, &lowered),
             )?;
             let volumes = crate::volume::birth::planned(tx, &environment.summary.id, &target)?;
-            let uploads = deployment::uploads::building(
+            let sources = deployment::versions::unsourced(
                 tx,
-                &environment.summary.id,
+                (&environment.summary.id, &namespace),
                 &target,
-                &frozen,
-                query.upload,
+                (&frozen.nodes, &lowered),
             )?;
-            (Some(lowered), volumes, unsigned, uploads)
+            (Some(lowered), volumes, unsigned, uploads, sources)
         }
-        false => (None, PlannedVolumes::new(), Vec::new(), Vec::new()),
+        false => (
+            None,
+            PlannedVolumes::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ),
     };
     let regions = target
         .services
@@ -449,7 +490,20 @@ pub(crate) fn plan(
         volumes,
         unsigned,
         uploads,
+        sources,
     })
+}
+
+/// `refused` with `uploads` in its details when it is a Pending value's refusal, which
+/// Cloud reads to refuse a Deploy no Server builds before it asks for the value.
+fn with_uploads(mut refused: RpcError, uploads: &[ServiceName]) -> RpcError {
+    if !uploads.is_empty()
+        && let Some(details) = refused.details.as_object_mut()
+        && details.contains_key("pending")
+    {
+        details.insert("uploads".to_owned(), json!(uploads));
+    }
+    refused
 }
 
 /// A redeploy of Deployment `id` of `environment`, which ships its source's frozen
@@ -500,6 +554,7 @@ fn redeploy_plan(
         volumes,
         unsigned: Vec::new(),
         uploads: Vec::new(),
+        sources: Vec::new(),
     })
 }
 

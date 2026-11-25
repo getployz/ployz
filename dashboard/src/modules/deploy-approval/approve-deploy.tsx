@@ -13,7 +13,7 @@ import { prunes } from "#/modules/deploy-approval/review";
 import { decideProposal, landProposal, proposalOptions } from "#/modules/proposals/proposals.queries";
 import { useSealing } from "#/modules/sealing/use-sealing";
 import { prepareDeployTapServerFn } from "./deploy-tap.functions";
-import { type Prepared, prepareDeploy, signVersions, unsourced } from "./deploy-tap";
+import { type Prepared, prepareDeploy, signVersions } from "./deploy-tap";
 import { SignedLines } from "./deploy-sheet";
 import { fillPending } from "./fill-pending";
 import { RuleSummaryList } from "./rule-summary";
@@ -74,10 +74,10 @@ export function ApproveDeploy({ organizationSlug, id }: { organizationSlug: stri
       if (prepared.kind === "refused") return stop(prepared.message);
       // A Service only the rule builds doesn't build without it, so the page says why rather than approve it. The asker
       // heard it before any link, so only a change since or this person's own passkeys and Servers stop here.
-      const unsigned = planned.kind === "plan" && planned.tap.kind !== "off" ? planned.plan.unsigned ?? [] : [];
+      const sources = planned.kind === "plan" && planned.tap.kind !== "off" ? planned.plan.sources ?? [] : [];
       const held = prepared.kind === "admit" ? prepared.held : prepared.ask.held;
-      const sourced = prepared.kind === "ask" ? prepared.ask.draft.source?.summary.services.map(({ name }) => name) : undefined;
-      const unbuilt = unsourced(unsigned, new Set(sourced));
+      const sourced = new Set(prepared.kind === "ask" ? prepared.ask.draft.source?.summary.services.map(({ name }) => name) : undefined);
+      const unbuilt = sources.find((service) => !sourced.has(service)) ?? null;
       if (held !== null && (!held.unchecked || unbuilt !== null)) return stop(held.reason);
       if (unbuilt !== null) return stop(`No automatic deploy rule can cover ${unbuilt} now, so your servers won't build it.`);
       setPage({ kind: "ready", prepared });

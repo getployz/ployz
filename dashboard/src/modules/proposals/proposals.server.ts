@@ -12,7 +12,7 @@ import { protector } from "#/modules/config-store/protected.server";
 import { OWNER_OR_ADMIN } from "#/modules/operations/gate.server";
 import { withoutSealedBefore } from "#/modules/config-store/store-diff";
 import { environmentProtected, findService } from "#/modules/config-store/store-lookup.server";
-import { isPending, moved, namesReview, underRule, unsourcedShipped, versionService } from "#/modules/deploy-approval/deploy-tap";
+import { isPending, moved, namesReview, underRule, versionService } from "#/modules/deploy-approval/deploy-tap";
 import { prepareDeployTap } from "#/modules/deploy-approval/deploy-tap.server";
 import { sourceServices } from "#/modules/deploy-approval/signed-source.server";
 import { refusal, refused, type StoreRefusal } from "#/lib/refusal";
@@ -642,11 +642,11 @@ const approvedDeploy = Effect.fn("Proposals.approvedDeploy")(function* (decider:
   if (sourced === null) return refuse("This deploy's automatic deploy rule isn't the one your passkey signed. Approve it again.");
   const open = (planned.plan.unsigned ?? []).filter((entry) => !covered.has(entry.service) && !underRule(entry));
   if (open.length > 0 && planned.tap.kind === "refused") return refuse(planned.tap.message);
-  // A plan that needs the rule takes no approval whose Source step leaves out a Service it ships, even with every
-  // version signed: an answer from a page drafted before the rule changed, one that dropped it, or one that carries
-  // another Deploy's Source, is signed again.
-  const unsourced = unsourcedShipped(command.services ?? [], planned.plan.unsigned ?? [], planned.source, sourced);
-  if (planned.tap.kind === "ready" && unsourced !== null) return refuse("Reload this page and approve again.");
+  // A plan that needs the rule takes no approval whose Source step leaves out a Service the Store says only it builds,
+  // even with every version signed: an answer from a page drafted before the rule changed, one that dropped it, or one
+  // that carries another Deploy's Source, is signed again.
+  const unsourced = (planned.plan.sources ?? []).some((service) => !sourced.has(service));
+  if (planned.tap.kind === "ready" && unsourced) return refuse("Reload this page and approve again.");
   if (open.length > 0 && planned.tap.kind === "ready") return refuse("Sign this deploy with your passkey on its approval page.");
   const approved: AdmitDeploy = { ...ruleless(command), versions: [...kept, ...versions] };
   return { step: { ...step, deploy: { ...step.deploy, command: rule === undefined ? approved : { ...approved, rule } } } satisfies DeployStep };

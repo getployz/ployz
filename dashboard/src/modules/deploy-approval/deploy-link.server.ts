@@ -6,8 +6,8 @@ import type { AdmitDeploy } from "#/modules/config-store/admit-deploy";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { protector, protectorOnly } from "#/modules/config-store/protected.server";
 import { environmentProtected } from "#/modules/config-store/store-lookup.server";
-import { blocked, isPending, namesReview, needsSource, shipsSource, unbuildable, underRule, versionService } from "#/modules/deploy-approval/deploy-tap";
-import { prepareDeployTap } from "#/modules/deploy-approval/deploy-tap.server";
+import { blocked, isPending, namesReview, unbuildable, underRule, versionService } from "#/modules/deploy-approval/deploy-tap";
+import { enforcement, prepareDeployTap } from "#/modules/deploy-approval/deploy-tap.server";
 import { type Caller, callerEnvironments, callerPermissions } from "#/modules/identity/actor";
 import type { DeployReview } from "#/modules/proposals/proposal";
 import { askedDeployProposal, presentDeployProposal, reviewDeploy } from "#/modules/proposals/proposals.server";
@@ -46,22 +46,25 @@ export const linkDeploy = Effect.fn("DeployLink.link")(function* (caller: Caller
     upload: command.upload !== undefined && command.upload !== null, rule: !keyed,
   }).pipe(Effect.catchIf((error) => error instanceof Forbidden || error instanceof NotFound, () => Effect.succeed(null)));
   if (planned === null) return null;
-  const pending = planned.kind === "refused" && isPending(planned.details);
-  if (planned.kind === "refused" && !pending) return null;
+  const waits = planned.kind === "refused" && isPending(planned.details) ? planned.details : null;
+  if (planned.kind === "refused" && waits === null) return null;
+  const pending = waits !== null;
   const plan = planned.kind === "plan" ? planned.plan : null;
-  // Unless a Device signed it, a Service that builds from source with no rule that covers it waits on the approver's
-  // tap, which signs the rule.
-  const open = (plan?.unsigned ?? []).filter((entry) => !covered.has(entry.service) && (!underRule(entry) || (!keyed && needsSource(entry))));
-  const tap = planned.kind === "plan" ? planned.tap : null;
+  const open = (plan?.unsigned ?? []).filter((entry) => !covered.has(entry.service) && !underRule(entry));
+  // The Store names what builds from an upload, and what only a Source step builds, a Pending plan the uploads alone.
+  // A Device that signed the rule with this Deploy already signed its Source step.
+  const uploads = plan?.uploads ?? waits?.uploads ?? [];
+  const sources = keyed ? [] : plan?.sources ?? [];
+  // A Pending plan reads no tap, so only whether a Server enforces device approval says an upload won't build.
+  const tap = planned.kind === "plan" ? planned.tap : plan === null && uploads.length > 0 ? yield* enforcement(caller.organization.id) : null;
+  const ready = tap?.kind === "ready" || tap?.kind === "on";
   // Only an agent waits on a person here. Anyone else's Deploy queues as it always did, and each Server checks it.
-  const uploads = plan?.uploads ?? [];
-  if ((open.length > 0 || uploads.length > 0) && tap?.kind === "refused") return agent ? { refused: refusal("conflict", `${tap.message} Nothing deployed.`) } : null;
+  if (open.length + uploads.length + sources.length > 0 && tap?.kind === "refused") return agent ? { refused: refusal("conflict", `${tap.message} Nothing deployed.`) } : null;
   const source = planned.kind === "plan" ? planned.source : undefined;
-  const cannot = tap?.kind === "ready" ? blocked(open) ?? unbuildable(uploads, open, source) : null;
+  const cannot = ready ? blocked(open) ?? unbuildable(uploads, sources, source) : null;
   if (cannot !== null) return { refused: refusal("conflict", cannot) };
-  // A Git build no rule covers needs one even when it reaches no data, so the approver's tap signs the rule for a Deploy
-  // that ships it.
-  const signs = tap?.kind === "ready" && (open.length > 0 || shipsSource(command.services ?? [], source));
+  // A Git build no rule covers needs one even when it reaches no data, so the approver's tap signs the rule with it.
+  const signs = tap?.kind === "ready" && (open.length > 0 || sources.length > 0);
   const makes = pending && covered.size === 0;
   if (!agent && !signs && !makes && !mayGuard) return null;
 

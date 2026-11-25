@@ -451,6 +451,53 @@ fn made_password(environment: &str, db: &str, n: u8) -> Value {
 
 const GENERATED: &str = r#"${{ secret(32, "a-zA-Z") }}"#;
 
+/// Cloud refuses a Deploy that builds from an upload before it asks a person to make a
+/// Pending value, so the plan's refusal for that value still names the upload builds.
+#[test]
+fn a_plan_waiting_on_a_made_password_still_names_what_builds_from_an_upload() {
+    let (store, who) = shop();
+    set(
+        &store,
+        &who,
+        "production",
+        &[("db.env.PASSWORD", made_password(&uuid(2), &uuid(4), 1))],
+    );
+    store
+        .write(&who, &branch("fix-db", "production", &["db"]))
+        .unwrap();
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse(uuid(9)).unwrap(),
+                environment: at("fix-db"),
+                name: ServiceName::parse("site").unwrap(),
+                image: None,
+                template: None,
+            },
+        )
+        .unwrap();
+    let plan = |upload: bool| {
+        store
+            .read(
+                &who,
+                &ployz_store::PlanQuery {
+                    environment: at("fix-db"),
+                    target: true,
+                    upload,
+                    ..ployz_store::PlanQuery::default()
+                },
+            )
+            .unwrap_err()
+            .details
+    };
+    let sent = plan(true);
+    assert!(sent["pending"].is_array(), "{sent}");
+    assert_eq!(sent["uploads"], json!(["site"]));
+    // Nothing uploaded yet: a Deploy that sends none builds nothing from one.
+    assert_eq!(plan(false).get("uploads"), None);
+}
+
 #[test]
 fn a_copy_of_a_made_sealed_password_deploys_only_once_the_browser_makes_its_own() {
     let (store, who) = shop();

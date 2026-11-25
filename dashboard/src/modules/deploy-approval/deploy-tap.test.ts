@@ -4,7 +4,7 @@ import { StoreRefused } from "#/lib/refusal";
 import { asTestDouble } from "#/lib/test-double";
 import { type AdmitDeploy, admitDeploy } from "#/modules/config-store/admit-deploy";
 import { environmentKey } from "#/modules/config-store/environment-ref";
-import { type Answer, type Ask, type DeploySteps, deployWith, prepareDeploy, sendAnswer, shipsSource, unbuildable, unsourcedShipped } from "./deploy-tap";
+import { type Answer, type Ask, type DeploySteps, deployWith, prepareDeploy, sendAnswer, unbuildable } from "./deploy-tap";
 import { ready, view } from "./rule-view.test-fixture";
 
 const here = { project: "shop", environment: "production" };
@@ -59,30 +59,13 @@ describe("prepareDeploy", () => {
 });
 
 describe("a keyless Deploy's link", () => {
-  const sign = { kind: "sign" as const, view: view(), unchecked: false };
-
-  // Catches a CI deploy of an image Service sent to a person because web's rule went stale.
-  it("asks no one to sign web's rule for a Deploy of another Service", () => {
-    expect(shipsSource(["api"], sign)).toBe(false);
-    expect(shipsSource(["web"], sign)).toBe(true);
-    expect(shipsSource([], sign)).toBe(true);
-  });
-
   // Catches an agent's first upload linked to a page for a build no Server that enforces device approval starts.
   it("refuses a Service built from an upload before any link, with what to deploy instead", () => {
     const refused = unbuildable(["api"], [], undefined);
 
     expect(refused).toContain("Deploy a prebuilt image by digest, or connect the service to a GitHub repository.");
     expect(refused).not.toContain("Deploy every push");
-    expect(unbuildable([], [{ service: "web", needs: "rule" }], sign)).toBeNull();
-  });
-
-  // Catches a decision that carries another Deploy's Source step, naming none of what this one ships, and no versions.
-  it("takes a Source step only when it names each Service the rule view requires", () => {
-    expect(unsourcedShipped([], [], sign, new Set(["api"]))).toBe("web");
-    expect(unsourcedShipped(["web"], [], sign, new Set())).toBe("web");
-    expect(unsourcedShipped([], [], sign, new Set(["web"]))).toBeNull();
-    expect(unsourcedShipped(["api"], [], sign, new Set())).toBeNull();
+    expect(unbuildable([], ["web"], { kind: "sign", view: view(), unchecked: false })).toBeNull();
   });
 });
 

@@ -10,7 +10,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ployz_core::config::{SavedEnvironmentIntent, ServiceSource};
+use ployz_core::config::{SavedEnvironmentIntent, SavedServiceIntent, ServiceSource};
 use ployz_core::{RpcError, ServiceName, UploadDigest};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -179,23 +179,23 @@ pub(crate) fn admitted(
         }))
 }
 
-/// The Services without a source of their own that a Deploy of `frozen` builds from
-/// an upload, by name: every one it targets when it `sends` one, as [`admitted`]
-/// chooses, and otherwise every one when any of them built from an upload before.
+/// The Services without a source of their own that a Deploy `targets` builds from an
+/// upload, by name: every one it targets when it `sends` one, as [`admitted`] chooses,
+/// and otherwise every one when any of them built from an upload before.
 /// Whether each reaches data doesn't matter: a Server that enforces Device approval
 /// starts none of these builds.
 pub(crate) fn building(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
     intent: &SavedEnvironmentIntent,
-    frozen: &Frozen,
+    targets: impl Fn(&SavedServiceIntent) -> bool,
     sends: bool,
 ) -> Result<Vec<ServiceName>, RpcError> {
     let sourceless: Vec<_> = intent
         .services
         .iter()
         .filter(|service| matches!(service.config.source, ServiceSource::Empty { .. }))
-        .filter(|service| frozen.targets(&service.id))
+        .filter(|service| targets(service))
         .collect();
     if sourceless.is_empty() {
         return Ok(Vec::new());
