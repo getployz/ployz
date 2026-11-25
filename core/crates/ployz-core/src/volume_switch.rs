@@ -274,6 +274,12 @@ pub enum VolumeCopy {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         origin: Option<crate::VolumeOrigin>,
+        /// The image the Writer start of this root's epoch placed before its promote, as
+        /// `ployz:image` records it. Absent for a promote with no start, and from older
+        /// daemons.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        placed: Option<PlacedImage>,
     },
     /// `<pool>/ployz-mirror/<name>`: a read-only copy Docker never sees. `newest` is of
     /// its `fs` child; `resume_token` is set while a receive into `fs` is interrupted.
@@ -313,6 +319,40 @@ pub enum VolumeCopy {
         #[ts(optional, as = "Option<bool>")]
         written_here: bool,
     },
+}
+
+/// The image a Writer start placed on this Machine before the promote it asked for, by the
+/// ID Docker named then, and the start's creation key. The promote records it in the same
+/// step as the epoch, so a resend of that start after the promote creates its holder from
+/// this ID, pulling nothing and reading no tag.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct PlacedImage {
+    pub creation_key: crate::CreationKey,
+    pub id: String,
+}
+
+impl PlacedImage {
+    /// `ployz:image`'s value: the ID, a space, then the creation key. An image ID holds no
+    /// space, so the first one splits them.
+    #[must_use]
+    pub fn mark(&self) -> String {
+        format!("{} {}", self.id, self.creation_key.as_str())
+    }
+
+    /// The record `ployz:image` holds.
+    ///
+    /// # Errors
+    ///
+    /// When `value` is not one [`Self::mark`] wrote.
+    pub fn parse_mark(value: &str) -> Result<Self, String> {
+        let (id, key) = value
+            .split_once(' ')
+            .ok_or_else(|| format!("{value:?} names no creation key"))?;
+        Ok(Self {
+            creation_key: crate::CreationKey::try_from(key.to_owned())?,
+            id: id.to_owned(),
+        })
+    }
 }
 
 /// The `ployz:*` mark on a read-only root, named after the mark and claiming no more.
@@ -785,6 +825,7 @@ mod tests {
             seed: false,
             mark: None,
             origin: None,
+            placed: None,
         };
         let slot = VolumeCopy::Slot {
             slot: SlotId::new(1),

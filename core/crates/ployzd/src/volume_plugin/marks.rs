@@ -24,7 +24,7 @@
 
 use std::fmt;
 
-use ployz_core::{SlotRole, SnapshotName, WriterEpoch};
+use ployz_core::{PlacedImage, SlotRole, SnapshotName, WriterEpoch};
 
 use super::{PluginError, Result, VolumeStorage};
 
@@ -67,6 +67,11 @@ pub(super) enum Mark {
     /// On a slot parent a Copy step's seed made: the step's digest, set as ZFS makes the
     /// parent. Only a slot carrying it is that step's copy ([`super::seed`]).
     CopyStep,
+    /// On a root: the image its epoch's Writer start placed before the promote, and that
+    /// start's creation key ([`ployz_core::PlacedImage::mark`]). Every promote writes it
+    /// just before `ployz:epoch`, set or cleared, so it only ever sits beside the epoch
+    /// whose promote wrote it, or one older.
+    Image,
 }
 
 impl Mark {
@@ -83,6 +88,7 @@ impl Mark {
             Self::Origin => "ployz:origin",
             Self::PullOrigin => "ployz:pull-origin",
             Self::CopyStep => "ployz:copy-step",
+            Self::Image => "ployz:image",
         }
     }
 }
@@ -257,9 +263,39 @@ impl Marks<'_> {
         self.apply(&[Write::on(Mark::Cut)]).await
     }
 
+    /// The image a promote recorded, or `None` when it recorded none.
+    pub(super) async fn placed(&self) -> Result<Option<PlacedImage>> {
+        let Some(value) = self.get(Mark::Image).await? else {
+            return Ok(None);
+        };
+        PlacedImage::parse_mark(&value).map(Some).map_err(|error| {
+            PluginError::from(format!(
+                "{} carries an unreadable {} {value:?}: {error}",
+                self.dataset,
+                Mark::Image
+            ))
+        })
+    }
+
     pub(super) async fn set_epoch(&self, epoch: impl fmt::Display) -> Result<()> {
         self.apply(&[Write::Set(Mark::Epoch, epoch.to_string())])
             .await
+    }
+
+    /// Records the image a promote's start placed, or clears an earlier record when it
+    /// placed none. Every promote runs it just before it writes `ployz:epoch`, so a stop
+    /// between leaves the new image beside the old epoch, which no start at the new epoch
+    /// takes. Writes nothing when the mark already says so, as a resend finds it.
+    pub(super) async fn record_image(&self, image: Option<&PlacedImage>) -> Result<()> {
+        let image = image.map(PlacedImage::mark);
+        if self.get(Mark::Image).await? == image {
+            return Ok(());
+        }
+        self.apply(&[match image {
+            Some(image) => Write::Set(Mark::Image, image),
+            None => Write::Inherit(Mark::Image),
+        }])
+        .await
     }
 
     /// Docker's Create registered the root, so it shows to Get and List.
@@ -303,15 +339,20 @@ impl Marks<'_> {
     }
 
     /// The slot's `fs` takes a writer's marks before the rename that makes it the root:
-    /// `ployz:pulled` goes, `ployz:seed` goes whenever the slot carries it, `ployz:epoch`
-    /// becomes `epoch`, and `ployz:promote` is set unless the slot was cut. The reads sit
-    /// between the writes, as the plugin ran them before this type, and each follows the
-    /// write before it.
-    pub(super) async fn promote_slot(&self, epoch: impl fmt::Display) -> Result<()> {
+    /// `ployz:pulled` goes, `ployz:seed` goes whenever the slot carries it, `ployz:image`
+    /// becomes `image` ([`Self::record_image`]), `ployz:epoch` becomes `epoch`, and
+    /// `ployz:promote` is set unless the slot was cut. The reads sit between the writes,
+    /// as the plugin ran them before this type, and each follows the write before it.
+    pub(super) async fn promote_slot(
+        &self,
+        epoch: impl fmt::Display,
+        image: Option<&PlacedImage>,
+    ) -> Result<()> {
         self.apply(&[Write::Inherit(Mark::Pulled)]).await?;
         if self.is_set(Mark::Seed).await? {
             self.apply(&[Write::Inherit(Mark::Seed)]).await?;
         }
+        self.record_image(image).await?;
         self.set_epoch(epoch).await?;
         if !self.is_set(Mark::Cut).await? {
             self.apply(&[Write::on(Mark::Promote)]).await?;

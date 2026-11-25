@@ -802,3 +802,86 @@ async fn a_signed_start_runs_the_image_it_pulled_though_its_tag_moved() {
     let holder = only_container(node);
     assert_eq!(node.container(holder).unwrap()["Image"], pulled.as_str());
 }
+
+/// A start stopped between its promote and its Create, then resent, creates its holder
+/// from the image the promote recorded: the registry refuses every pull and the tag has
+/// moved, so a start that placed its image again would refuse or run another image. With
+/// that image gone, the resend refuses rather than pulls.
+#[tokio::test]
+async fn a_start_resent_after_its_promote_runs_the_image_the_promote_recorded() {
+    let fleet = Fleet::start().await;
+    let node = fleet.node(1);
+    let mut moved = spec("api");
+    moved.container.pull_policy = ployz_core::PullPolicy::Always;
+    moved.container.image = "example.test/api:1".to_owned();
+    let (pulled, moved_to) = (
+        format!("sha256:{}", "a".repeat(64)),
+        format!("sha256:{}", "b".repeat(64)),
+    );
+    let tag = moved.container.image.clone();
+    node.fake
+        .registry
+        .lock()
+        .unwrap()
+        .insert(tag.clone(), pulled.clone());
+    let plugin = plugin(
+        slot(Some(snapshot())),
+        WRITER_ROUTE,
+        writer_root(1, Some(snapshot())),
+    );
+    // The plugin records the request's image on the root it promotes.
+    let (calls, replies) = (plugin.calls.clone(), plugin.replies.clone());
+    plugin.on(WRITER_ROUTE, move || {
+        let image = calls.lock().unwrap().last().unwrap().1["image"].clone();
+        let mut root = writer_root(1, Some(snapshot()));
+        root["Ok"]["placed"] = image;
+        let mut replies = replies.lock().unwrap();
+        replies.insert(WRITER_ROUTE.into(), root.clone());
+        replies.insert(INSPECT_ROUTE.into(), root);
+    });
+    let destination = fleet.with_plugin(1, &plugin);
+    let start = json!({"name":VOLUME, "expect":{"kind":"mirror", "newest":"7", "slot":"1"},
+        "want":{"kind":"writer", "at":"7", "epoch":1, "start":{
+            "kind":"create", "namespace":"app", "resolved_spec":moved,
+            "creation_key":"move-1", "gen":2,
+            "rotation":{"in":{"run":null, "expect":"pending"}}}}});
+
+    // The daemon stops after the promote, before Docker creates the holder.
+    node.fake
+        .refuse_create_of
+        .lock()
+        .unwrap()
+        .insert("api".into());
+    try_set_copy(&destination, start.clone())
+        .await
+        .expect_err("the Create fails after the promote");
+    assert_eq!(promotes(&plugin), 1);
+    node.fake.refuse_create_of.lock().unwrap().clear();
+    *node.fake.pulls_left.lock().unwrap() = Some(0);
+    node.fake
+        .registry
+        .lock()
+        .unwrap()
+        .insert(tag.clone(), moved_to.clone());
+    node.fake.images.lock().unwrap().insert(tag, Some(moved_to));
+
+    node.fake
+        .images
+        .lock()
+        .unwrap()
+        .insert(pulled.clone(), None);
+    let gone = try_set_copy(&destination, start.clone())
+        .await
+        .expect_err("the recorded image is gone");
+    assert!(gone.contains("no longer on this Server"), "{gone}");
+
+    node.fake.images.lock().unwrap().remove(&pulled);
+    let resent = try_set_copy(&destination, start).await;
+    assert!(
+        resent.is_ok(),
+        "the resend placed its image again: {resent:?}"
+    );
+    assert_eq!(promotes(&plugin), 1);
+    let holder = only_container(node);
+    assert_eq!(node.container(holder).unwrap()["Image"], pulled.as_str());
+}

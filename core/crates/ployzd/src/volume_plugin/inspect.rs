@@ -225,10 +225,12 @@ impl VolumeStorage {
                     Some((&root.name, newest.as_ref().map(|newest| &newest.name))),
                 )
                 .await?;
+            let marks = self.marks(&root.name);
             return Ok(Some(copy.view(
                 newest,
-                self.marks(&root.name).epoch().await?,
+                marks.epoch().await?,
                 origin,
+                marks.placed().await?,
             )));
         }
         let Some(slot) = Self::slot(datasets, pool, name) else {

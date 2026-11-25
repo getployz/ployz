@@ -163,12 +163,34 @@ impl Images {
         }
         match docker.inspect_image(image).await {
             Ok(inspected) => inspected.id.ok_or(Error::MissingField("image ID")),
-            Err(error)
-                if policy == PullPolicy::Never && crate::docker_image::is_not_found(&error) =>
+            Err(source)
+                if policy == PullPolicy::Never && crate::docker_image::is_not_found(&source) =>
             {
-                Err(Error::ImageAbsent(image.to_owned()))
+                Err(Error::ImageAbsent {
+                    image: image.to_owned(),
+                    source,
+                })
             }
             Err(error) => Err(Error::ImagePull(error)),
+        }
+    }
+
+    /// The image `id` names, which [`Self::place`] answered before a promote, confirmed
+    /// here. Reaches no registry and reads no tag.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::PlacedImageGone`] when Docker no longer holds it.
+    pub(crate) async fn placed(&self, id: &str) -> Result<String, Error> {
+        match self.docker.client.inspect_image(id).await {
+            Ok(_) => Ok(id.to_owned()),
+            Err(source) if crate::docker_image::is_not_found(&source) => {
+                Err(Error::PlacedImageGone {
+                    image: id.to_owned(),
+                    source,
+                })
+            }
+            Err(error) => Err(Error::Docker(error)),
         }
     }
 

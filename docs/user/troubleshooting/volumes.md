@@ -273,6 +273,18 @@ your service keeps running on `web-1`. What to do depends on the reason:
   Remove that mount from the service, deploy, then move again.
 - **`web-2` runs an older Ployz.** Upgrade it, then move again.
 
+## A move says the service's image is no longer on the server
+
+```
+image sha256:3f…, which this Writer was promoted to run, is no longer on this Server, and a start after its promote pulls nothing
+```
+
+`web-2` gets your service's image before it takes over the volume, and remembers which image
+that was. If `web-2` restarted during the switch, it starts your service from that same image
+and doesn't pull again, so a registry outage or a tag pushed since can't change what runs. This
+message means the image was deleted from `web-2` in between. Deploy the service, and the deploy
+starts it on `web-2` with its image.
+
 ## A deploy refuses a mirror change after a move
 
 ```

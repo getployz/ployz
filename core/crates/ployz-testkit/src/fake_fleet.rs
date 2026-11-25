@@ -940,6 +940,7 @@ impl Fleet {
                             seed: false,
                             mark: None,
                             origin: None,
+                            placed: None,
                         },
                     });
                 unary(VolumeCopyView { copy }.into())

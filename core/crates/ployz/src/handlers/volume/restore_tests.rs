@@ -63,6 +63,7 @@ fn root(readonly: bool, epoch: u32) -> VolumeCopy {
         seed: false,
         mark: None,
         origin: None,
+        placed: None,
     }
 }
 

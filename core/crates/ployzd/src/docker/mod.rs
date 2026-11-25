@@ -1460,8 +1460,24 @@ pub enum Error {
     #[error("image pull failed")]
     ImagePull(#[source] bollard::errors::Error),
     /// A start whose pull policy is `never` names an image this Server doesn't hold.
-    #[error("image {0} isn't on this Server, and its pull policy is never, so nothing pulls it")]
-    ImageAbsent(String),
+    #[error(
+        "image {image} isn't on this Server, and its pull policy is never, so nothing pulls it"
+    )]
+    ImageAbsent {
+        image: String,
+        #[source]
+        source: bollard::errors::Error,
+    },
+    /// A Writer start resent after its promote names the image it placed before it,
+    /// which this Server no longer holds.
+    #[error(
+        "image {image}, which this Writer was promoted to run, is no longer on this Server, and a start after its promote pulls nothing"
+    )]
+    PlacedImageGone {
+        image: String,
+        #[source]
+        source: bollard::errors::Error,
+    },
     /// A sealed registry login this Machine won't pull with.
     #[error("this Server won't pull the image with its registry login")]
     RegistryLogin(#[from] crate::docker_image::LoginRefused),
@@ -1519,7 +1535,8 @@ impl Error {
             | Self::SpecNotFound(_)
             | Self::LimitsSpecNotFound(_)
             | Self::ExternalVolumeNotFound(_)
-            | Self::ImageAbsent(_)
+            | Self::ImageAbsent { .. }
+            | Self::PlacedImageGone { .. }
             | Self::Docker(bollard::errors::Error::DockerResponseServerError {
                 status_code: 404,
                 ..

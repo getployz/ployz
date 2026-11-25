@@ -357,24 +357,30 @@ impl LocalMachine {
 
     /// Pull `spec`'s image as a Writer start's Create would, under shared admission
     /// like [`Self::pull_free_image`], and read its ID, so that Create, after the
-    /// promote, runs that ID and reaches no registry.
+    /// promote, runs that ID and reaches no registry. A signed start whose promote
+    /// already `recorded` an ID takes that one, as Docker holds it, and pulls nothing.
+    /// An unsigned start pulls as [`Images::pull_free`] does whatever the record says,
+    /// since only that pull proves an image public.
     ///
     /// # Errors
     ///
-    /// Returns when Docker is unavailable, admission is busy, or the pull is refused or
-    /// fails.
+    /// Returns when Docker is unavailable, admission is busy, the pull is refused or
+    /// fails, or Docker no longer holds the `recorded` image.
+    ///
+    /// [`Images::pull_free`]: crate::docker::Images::pull_free
     pub(crate) async fn place_holder_image(
         &self,
         spec: ResolvedServiceSpec,
         admitted: AdmittedSpec,
+        recorded: Option<String>,
     ) -> Result<PlacedHolder, Error> {
         self.finish_shared(move |local| async move {
             let images = local.docker()?.images();
             let (image, policy) = (&spec.container.image, spec.container.pull_policy);
-            let id = if admitted.signed() {
-                images.place(image, policy).await?
-            } else {
-                images.pull_free(image, policy).await?
+            let id = match (recorded, admitted.signed()) {
+                (Some(id), true) => images.placed(&id).await?,
+                (None, true) => images.place(image, policy).await?,
+                (_, false) => images.pull_free(image, policy).await?,
             };
             Ok(PlacedHolder { admitted, id })
         })
@@ -2535,7 +2541,8 @@ fn create_refusal(error: Error) -> Result<ContainerRefusal, Error> {
         Error::Docker(Docker::SlotNameOccupied(_)) => ContainerRefusalReason::SlotOccupied,
         Error::Docker(
             Docker::ImagePull(_)
-            | Docker::ImageAbsent(_)
+            | Docker::ImageAbsent { .. }
+            | Docker::PlacedImageGone { .. }
             | Docker::UnsignedImage(_)
             | Docker::DiskFull { .. }
             | Docker::RegistryLogin(
@@ -2588,6 +2595,19 @@ pub(crate) fn names_content(pull: &ployz_core::PeerImagePull) -> bool {
 pub(crate) struct PlacedHolder {
     admitted: AdmittedSpec,
     id: String,
+}
+
+impl PlacedHolder {
+    /// The ID the promote records for `start`, so a resend after it takes the same one.
+    pub(crate) fn record(&self, start: &Start) -> Option<ployz_core::PlacedImage> {
+        let Start::Create { creation_key, .. } = start else {
+            return None;
+        };
+        Some(ployz_core::PlacedImage {
+            creation_key: creation_key.clone(),
+            id: self.id.clone(),
+        })
+    }
 }
 
 #[path = "drain_idle.rs"]

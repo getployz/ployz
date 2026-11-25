@@ -167,6 +167,10 @@ pub struct WriterRequest {
     pub epoch: WriterEpoch,
     #[serde(default)]
     pub r#gen: VolumeGen,
+    /// The image the start placed before this promote, recorded beside `epoch` as
+    /// `ployz:image`. `None` clears an earlier record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<ployz_core::PlacedImage>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

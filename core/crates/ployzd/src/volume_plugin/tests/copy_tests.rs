@@ -536,6 +536,30 @@ async fn the_writer_route_promotes_a_pulled_slot() {
     server.abort();
 }
 
+/// The promote records the image its start placed just before the epoch, and the copy
+/// answers it, so a start resent after the promote reads back the image it chose.
+#[tokio::test]
+async fn the_writer_route_records_the_start_image_beside_the_epoch() {
+    let test = test_dir();
+    let (socket, server) = slot(&test, &[("f-1", 13)]);
+    let image = json!({"creation_key": "move-1", "id": format!("sha256:{}", "a".repeat(64))});
+
+    let request = json!({"name": "data", "at": "13", "epoch": 2, "image": image});
+    let reply = post(&socket, "/Volume.Copy.Writer", request.clone()).await;
+    assert_eq!(reply.pointer("/Ok/placed"), Some(&image), "{reply}");
+    let made = effects(&commands(&test));
+    let at = |effect: &str| made.iter().position(|run| run.starts_with(effect));
+    assert!(
+        at("zfs set ployz:image=").unwrap() < at("zfs set ployz:epoch=2").unwrap(),
+        "{made:?}"
+    );
+
+    let before = commands(&test);
+    assert_eq!(post(&socket, "/Volume.Copy.Writer", request).await, reply);
+    assert!(effects(&commands(&test)[before.len()..]).is_empty());
+    server.abort();
+}
+
 #[tokio::test]
 async fn the_writer_route_promotes_a_pulled_slot_on_a_pool_without_the_managed_parent() {
     let test = test_dir();

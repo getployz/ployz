@@ -1465,6 +1465,7 @@ fn volume_copy(host: &Host, machine: Machine, reports_written: bool) -> Option<V
             seed: false,
             mark: None,
             origin: None,
+            placed: None,
         }),
         Held::Slot { newest } => Some(VolumeCopy::Slot {
             slot: slot_id(machine, host.slot),

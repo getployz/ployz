@@ -5,10 +5,10 @@
 use ployz_core::{
     ContainerKind, ContainerLocator, ContainerNow, ContainerObservation, ContainerRefusalReason,
     ContainerWant, CopyPlan, CopyRefusal, CopyRotation, CopyTransition, DockerVolumeName,
-    EnsuredContainer, HealthVerdict, QualifiedService, RpcError, RunRotation, RunTarget,
-    SeedCopyRequest, SeedVolumeRequest, SetVolumeCopyRefused, SetVolumeCopyRequest,
+    EnsuredContainer, HealthVerdict, PlacedImage, QualifiedService, RpcError, RunRotation,
+    RunTarget, SeedCopyRequest, SeedVolumeRequest, SetVolumeCopyRefused, SetVolumeCopyRequest,
     SetVolumeSizeReply, SetVolumeSizeRequest, Start, VolumeCopy, VolumeCopyView, VolumeGen,
-    WantedCopy,
+    WantedCopy, WriterEpoch,
 };
 
 use ployz_core::authority::{
@@ -36,6 +36,13 @@ enum StartState {
     Running,
     Stopped,
     Gone,
+}
+
+/// What a promote records of the image `placed` for `start`.
+fn placed_record(placed: Option<&PlacedHolder>, start: Option<&Start>) -> Option<PlacedImage> {
+    placed
+        .zip(start)
+        .and_then(|(placed, start)| placed.record(start))
 }
 
 impl LocalMachine {
@@ -309,7 +316,9 @@ impl SwitchGuard {
         .await;
         match (transition, want) {
             (CopyTransition::WriterToWriter, WantedCopy::Writer { at, epoch, start }) => {
-                let placed = self.place_start_image(start.as_ref(), admitted).await?;
+                let placed = self
+                    .place_start_image(copy.as_ref(), epoch, start.as_ref(), admitted)
+                    .await?;
                 let copy = match copy {
                     Some(VolumeCopy::Root {
                         readonly,
@@ -321,6 +330,7 @@ impl SwitchGuard {
                             at,
                             epoch,
                             r#gen,
+                            image: placed_record(placed.as_ref(), start.as_ref()),
                         };
                         self.plugin_copy(WRITER_ROUTE, &request).await?
                     }
@@ -343,12 +353,15 @@ impl SwitchGuard {
                 Ok(copy)
             }
             (CopyTransition::MirrorToWriter, WantedCopy::Writer { at, epoch, start }) => {
-                let placed = self.place_start_image(start.as_ref(), admitted).await?;
+                let placed = self
+                    .place_start_image(copy.as_ref(), epoch, start.as_ref(), admitted)
+                    .await?;
                 let request = WriterRequest {
                     name: name.clone(),
                     at,
                     epoch,
                     r#gen,
+                    image: placed_record(placed.as_ref(), start.as_ref()),
                 };
                 let copy = self.plugin_copy(WRITER_ROUTE, &request).await?;
                 crate::faults::kill_inside(
@@ -731,15 +744,38 @@ impl LocalMachine {
     /// the Create after it pulls nothing. Placed even beside a holder that runs now,
     /// since it can exit while the promote runs. `None` for a Kept start, which creates
     /// nothing.
+    ///
+    /// The promote records the ID on the copy beside its epoch. A resend that finds
+    /// `copy` promoted at `epoch` for this start takes the recorded ID and pulls
+    /// nothing: the image was chosen before the promote, and a stop since changes
+    /// neither it nor what the tag named then.
     async fn place_start_image(
         &self,
+        copy: Option<&VolumeCopy>,
+        epoch: WriterEpoch,
         start: Option<&Start>,
         admitted: Option<AdmittedSpec>,
     ) -> Result<Option<PlacedHolder>, Error> {
-        let (Some(Start::Create { resolved_spec, .. }), Some(admitted)) = (start, admitted) else {
+        let (
+            Some(Start::Create {
+                resolved_spec,
+                creation_key,
+                ..
+            }),
+            Some(admitted),
+        ) = (start, admitted)
+        else {
             return Ok(None);
         };
-        self.place_holder_image(resolved_spec.clone(), admitted)
+        let recorded = match copy {
+            Some(VolumeCopy::Root {
+                epoch: held,
+                placed: Some(placed),
+                ..
+            }) if *held == epoch && placed.creation_key == *creation_key => Some(placed.id.clone()),
+            _ => None,
+        };
+        self.place_holder_image(resolved_spec.clone(), admitted, recorded)
             .await
             .map(Some)
     }
