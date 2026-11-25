@@ -57,6 +57,29 @@ pub(crate) enum AdmittedBy {
     Free,
 }
 
+impl AdmittedBy {
+    /// What the Container's address part counts. A key, a rule or this Machine's own
+    /// caller vouched for every admission but [`Self::Free`].
+    pub(crate) fn admission(&self) -> ployz_core::Admission {
+        match self {
+            Self::Keys { .. } | Self::Rule { .. } | Self::Local { .. } => {
+                ployz_core::Admission::Signed
+            }
+            Self::Free => ployz_core::Admission::Free,
+        }
+    }
+
+    /// What the Container's observation reports, which names and hostnames read. A key or
+    /// a rule keeps its name signed. This Machine's own socket counts as free for names,
+    /// since no Device signed it.
+    pub(crate) fn name_admission(&self) -> ployz_core::Admission {
+        match self {
+            Self::Keys { .. } | Self::Rule { .. } => ployz_core::Admission::Signed,
+            Self::Local { .. } | Self::Free => ployz_core::Admission::Free,
+        }
+    }
+}
+
 /// Whether an admission keeps what it decided: a floor a forget raised, a rule's newer
 /// generation and a hook's place. A check answers the same and keeps none of them.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -287,6 +310,11 @@ impl AdmittedSpec {
         &self.by
     }
 
+    /// What the Container it makes reports, which names and hostnames read.
+    pub(crate) fn admission(&self) -> ployz_core::Admission {
+        self.by.name_admission()
+    }
+
     pub(crate) fn verified(&self) -> Option<VerifiedBuild> {
         self.verified
     }
@@ -332,6 +360,20 @@ impl AdmittedSpec {
     #[cfg(test)]
     pub(crate) fn test_signed(namespace: &Namespace, spec: &ResolvedServiceSpec) -> Self {
         Self::own(namespace, spec).unwrap()
+    }
+
+    /// `spec` admitted by a Device's signature, for a test that needs a Container another
+    /// key made.
+    #[cfg(test)]
+    pub(crate) fn test_keyed(namespace: &Namespace, spec: &ResolvedServiceSpec) -> Self {
+        Self {
+            by: AdmittedBy::Keys {
+                service: QualifiedService::new(namespace.clone(), spec.name.clone()),
+                keys: Vec::new(),
+                reach: None,
+            },
+            ..Self::own(namespace, spec).unwrap()
+        }
     }
 
     /// A version's admission of no spec in particular that reaches `reach`, for a test
@@ -445,27 +487,73 @@ impl LocalMachine {
                 Err(refusal) => unapproved = Some(refusal),
             }
         }
-        if let Scope::Full(full) = scope {
+        // A rule's proof is read before Full access, so a rule deploy through this Server's
+        // own socket keeps its name as it does from anywhere else.
+        if let Some(rule) = rule {
+            match self
+                .admit_rule_deploy_online(want, rule, &mut budget, admit)
+                .await
+            {
+                Ok(admitted_rule) => {
+                    return admitted(admitted_rule.by, admitted_rule.verified, admitted_rule.hook);
+                }
+                Err(Error::RuleDeployRefused(_)) if matches!(scope, Scope::Full(_)) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        let by = if let Scope::Full(full) = scope {
             let reach = Reach::of(new.slot.kind, &new.resolved_spec).map_err(|_| {
                 refused(AuthorityRefusal::Mismatch {
                     field: MismatchField::Payload,
                 })
             })?;
-            return admitted(self.full_access(full, service, reach)?, None, None);
-        }
-        if let Some(rule) = rule {
-            let admitted_rule = self
-                .admit_rule_deploy_online(want, rule, &mut budget, admit)
-                .await?;
-            return admitted(admitted_rule.by, admitted_rule.verified, admitted_rule.hook);
-        }
-        match needs_signature(creation(new), new.registry_auth.is_some()) {
-            Some(reach) => Err(refused(
+            self.full_access(full, service.clone(), reach)?
+        } else if let Some(reach) = needs_signature(creation(new), new.registry_auth.is_some()) {
+            return Err(refused(
                 unapproved.unwrap_or(AuthorityRefusal::NeedsSignature { reach }),
-            )),
+            ));
+        } else {
             // A spec that reaches no data runs whatever came with it.
-            None => admitted(AdmittedBy::Free, None, None),
+            AdmittedBy::Free
+        };
+        if self.name_refuses(&by, new.slot.kind, &service).await? {
+            return Err(refused(
+                unapproved.unwrap_or(AuthorityRefusal::SignedName { service }),
+            ));
         }
+        admitted(by, None, None)
+    }
+
+    /// Whether `service`'s name refuses a `kind` Container admitted `by`. A name that ran
+    /// signed answers only for a signed Container, so one no Device or rule signed never
+    /// takes it. A free one fails closed with no replica to read. One from this Server's
+    /// own socket is root's, so the refusal only saves a copy that would answer for
+    /// nothing, and it is skipped with no replica, as it is in the system Namespace.
+    ///
+    /// # Errors
+    /// Returns [`Error::ClusterStoreUnavailable`] for a free create with no replica, and the
+    /// replica's error when the name can't be read.
+    pub(super) async fn name_refuses(
+        &self,
+        by: &AdmittedBy,
+        kind: ContainerKind,
+        service: &QualifiedService,
+    ) -> Result<bool, Error> {
+        if kind != ContainerKind::ServiceContainer {
+            return Ok(false);
+        }
+        let replicated = match by {
+            AdmittedBy::Keys { .. } | AdmittedBy::Rule { .. } => return Ok(false),
+            AdmittedBy::Free => self.replicated()?,
+            AdmittedBy::Local { .. } if service.namespace == Namespace::system() => {
+                return Ok(false);
+            }
+            AdmittedBy::Local { .. } => match self.replicated() {
+                Ok(replicated) => replicated,
+                Err(_) => return Ok(false),
+            },
+        };
+        Ok(replicated.signed_service_kept(service).await?)
     }
 
     /// The admission of `new`'s spec under `versions`: every key that signed one of them,
@@ -857,6 +945,12 @@ pub(super) fn refusal_text(refusal: &AuthorityRefusal) -> String {
         AuthorityRefusal::NeedsSignature { reach } => {
             return format!(
                 "This service {reach}, so this server runs it only from a deploy an approved device signed."
+            );
+        }
+        AuthorityRefusal::SignedName { service } => {
+            return format!(
+                "{} ran from a signed deploy before, so this server runs it only from a deploy an approved device signed.",
+                service.name
             );
         }
         AuthorityRefusal::Unsigned { .. } => {

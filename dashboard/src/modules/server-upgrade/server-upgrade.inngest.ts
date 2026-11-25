@@ -118,7 +118,7 @@ const closeRollout = Effect.fn("ServerUpgrade.closeRollout")(function* (runId: s
  */
 const closeStaleRollouts = Effect.fn("ServerUpgrade.closeStaleRollouts")(function* () {
   const closed = yield* closeStaleUpgradeAttempts();
-  const runIds = yield* listUnknownAutomaticRollouts(new Date(Date.now() - 2 * SWEEP_INTERVAL_MS));
+  const runIds = yield* listUnknownAutomaticRollouts(2 * SWEEP_INTERVAL_MS);
   yield* Effect.forEach(runIds, (runId) => mailUpgradeFailures(runId, { inngestRunId: runId }, new Map()), { discard: true });
   return { closed };
 });

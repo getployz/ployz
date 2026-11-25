@@ -1880,8 +1880,8 @@ mod revoked {
         machine.remove();
     }
 
-    /// A hook this Server's own socket created and never started, in the slot a Device's
-    /// create names with the same spec, sent at Full access while the Device slot goes.
+    /// A hook another Device created and never started, in the slot a Device's create
+    /// names with the same spec, sent at Full access while the Device slot goes.
     #[tokio::test(flavor = "multi_thread")]
     #[expect(clippy::indexing_slicing, reason = "JSON fixture")]
     async fn a_create_queued_while_its_device_slot_goes_adopts_no_hook_another_key_made() {
@@ -1893,16 +1893,17 @@ mod revoked {
             serde_json::from_value(hooked.clone()).unwrap();
         let mut want = want_of("migrate", hooked, false);
         want["container"]["new"]["slot"]["kind"] = json!("pre_deploy_hook");
+        let namespace = ployz_core::Namespace::parse("app").unwrap();
         machine
             .service
             .local
-            .create_container(
+            .create_container_for_test(
                 ployz_core::ContainerKind::PreDeployHook,
-                &ployz_core::Namespace::parse("app").unwrap(),
+                &namespace,
                 &resolved,
                 Some("attacker-0001".to_owned()),
-                None,
-                None,
+                crate::machine::local_machine::AdmittedSpec::test_keyed(&namespace, &resolved),
+                (None, None),
             )
             .await
             .unwrap();

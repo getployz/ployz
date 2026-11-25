@@ -22,16 +22,18 @@
 //! start's `Stopped::start` starts it again. A failed rewrite of the
 //! note after a start that Docker accepted keeps the member written down the same way.
 //!
-//! The second finding: `Stopped::start` starts every member written down, whether or not
-//! `pin_members` rejoined it. `pin_members` returns before rejoining anything when its listing
-//! fails, and records a member whose `rejoin_with` failed only in `unjoined`, so a member still detached from the bridge is started.
+//! The second finding, fixed: `Stopped::start` started every member written down, whether or
+//! not `pin_members` rejoined it. `pin_members` returns before rejoining anything when its
+//! listing fails, and records a member whose `rejoin_with` failed only in `unjoined`, so a
+//! member still detached from the bridge was started. The code now reads each member's
+//! endpoint first and keeps one Docker shows detached written down, unstarted, for a later
+//! start; `Broken::fix_starts_detached` restores the earlier code.
 //!
 //! The fix variant (`BridgeNotes::fix`) reads each member's `MemberDebt` from the two notes, with
-//! their formats unchanged. Its `Stopped::start` pays a Start debt only once Docker shows the
-//! member attached. A start it cannot pay, one Docker refuses or one it defers, it drops
-//! (`OnRefusal::Drop`) or keeps for `RETRIES` later daemon starts (`OnRefusal::Retry`). It keeps
-//! the code's order: Docker's start first, then the note's update. Each `Broken` flag removes one
-//! guard, the code's or the fix's.
+//! their formats unchanged, and defers as the code does. A start it cannot pay, one Docker
+//! refuses or one it defers, it drops (`OnRefusal::Drop`) or keeps for `RETRIES` later daemon
+//! starts (`OnRefusal::Retry`); the code keeps both. It keeps the code's order: Docker's start
+//! first, then the note's update. Each `Broken` flag removes one guard, the code's or the fix's.
 
 use std::fmt::Write as _;
 
@@ -79,7 +81,7 @@ const CRASHES: u8 = 1;
 const REFUSED_STARTS: u8 = 1;
 /// Container listings that fail, in the readdress (`ployzd::network::linux::bridge::NetworkPlane::readdress_docker_network`) or the pin pass (`ployzd::network::linux::bridge::NetworkPlane::pin_members`).
 const FAILED_LISTINGS: u8 = 1;
-/// Pinned connects Docker refuses, whose `connect(None)` fallback it then accepts or refuses.
+/// Pinned connects Docker refuses.
 const REFUSED_CONNECTS: u8 = 1;
 /// Moves of Docker's restart policy on a member not stopped through the API.
 const FLIPS: u8 = 1;
@@ -335,9 +337,6 @@ enum Step {
     Stop(Settle),
     /// The disconnect again (`ployzd::network::linux::bridge::NetworkPlane::detach`), or the pinned connect again (`ployzd::network::linux::bridge::NetworkPlane::rejoin_with`).
     Again,
-    /// `connect(None)` (`ployzd::network::linux::bridge::NetworkPlane::rejoin_with`); `either`: Docker may refuse it too, after it refused the
-    /// pinned connect.
-    Fallback { either: bool },
 }
 
 /// The statement a daemon start runs next.
@@ -471,7 +470,6 @@ enum Disconnect {
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Connect {
     Pinned(Addr),
-    Dynamic(Addr),
     BetweenRestarts,
     /// Another endpoint holds the pinned address.
     InUse,
@@ -704,7 +702,8 @@ struct Broken {
     /// `gone` reads the netless 404 as gone, as `is_not_found` did before 74391f71f9
     /// (`ployz_decide::bridge::gone`).
     netless_gone: bool,
-    /// The fix starts a member Docker shows detached.
+    /// `Stopped::start` starts a member Docker shows detached, as the code did before it
+    /// read the member's endpoint (`ployzd::network::linux::stopped::Stopped::start`).
     fix_starts_detached: bool,
     /// The fix keeps a start it cannot pay, as the code keeps a refused one.
     fix_keeps_unpaid: bool,
@@ -923,13 +922,12 @@ impl BridgeNotes {
         }
     }
 
-    /// `Stopped::start`'s next id after `after` (`ployzd::network::linux::stopped::Stopped::start`), or its update.
-    /// The fix's start predicate: it pays a member's Start debt only once Docker shows the
-    /// member attached. It does not check that the member sits at the address an
-    /// `AddressThenStart` debt owes: no property here needs that check.
+    /// `Stopped::start`'s start predicate, the code's and the fix's: it pays a member's Start
+    /// debt only once Docker shows the member attached (`on_bridge`,
+    /// `ployzd::network::linux::stopped::Stopped::start`). It does not check that the member
+    /// sits at the address an `AddressThenStart` debt owes: no property here needs that check.
     fn defers(&self, state: &State, member: Member) -> bool {
-        self.fix.is_proposed()
-            && !self.broken.fix_starts_detached
+        !self.broken.fix_starts_detached
             && matches!(
                 debt(state, member),
                 Some(MemberDebt::Start | MemberDebt::AddressThenStart)
@@ -1050,7 +1048,7 @@ impl BridgeNotes {
                     Step::Again
                 }
             }
-            Step::First | Step::Again | Step::Fallback { .. } => step,
+            Step::First | Step::Again => step,
         }
     }
 
@@ -1274,7 +1272,6 @@ impl BridgeNotes {
                         i,
                         step: self.stop(state, member, step, pick),
                     },
-                    Step::Fallback { .. } => unreachable!("detach has no fallback"),
                 }
             }
             At::Remove => {
@@ -1327,22 +1324,18 @@ impl BridgeNotes {
                             answer,
                         });
                         match answer {
-                            Connect::Pinned(_) | Connect::Dynamic(_) => {
-                                Self::after_member(state, phase, i)
-                            }
+                            Connect::Pinned(_) => Self::after_member(state, phase, i),
                             Connect::BetweenRestarts if step == Step::First => At::Rejoin {
                                 phase,
                                 i,
                                 step: Step::Inspect,
                             },
                             Connect::BetweenRestarts | Connect::InUse | Connect::Refused => {
-                                At::Rejoin {
-                                    phase,
-                                    i,
-                                    step: Step::Fallback {
-                                        either: pick == Pick::Fails,
-                                    },
+                                if phase == Phase::Pin {
+                                    state.pass.unjoined = state.pass.unjoined.with(member);
                                 }
+                                state.took = Some(Branch::Unjoined { phase, member });
+                                Self::after_member(state, phase, i)
                             }
                         }
                     }
@@ -1351,33 +1344,6 @@ impl BridgeNotes {
                         i,
                         step: self.stop(state, member, step, pick),
                     },
-                    Step::Fallback { .. } => {
-                        let answer = match pick {
-                            Pick::Dynamic(address) => {
-                                state.docker.get_mut(member).endpoint = Endpoint::Dynamic(address);
-                                Connect::Dynamic(address)
-                            }
-                            Pick::Go
-                            | Pick::Fails
-                            | Pick::AfterRename
-                            | Pick::Netless
-                            | Pick::Stop
-                            | Pick::Remove => Connect::Refused,
-                        };
-                        state.took = Some(Branch::Connected {
-                            phase,
-                            member,
-                            step,
-                            answer,
-                        });
-                        if answer == Connect::Refused {
-                            if phase == Phase::Pin {
-                                state.pass.unjoined = state.pass.unjoined.with(member);
-                            }
-                            state.took = Some(Branch::Unjoined { phase, member });
-                        }
-                        Self::after_member(state, phase, i)
-                    }
                 }
             }
             At::Finish => {
@@ -1582,24 +1548,6 @@ impl BridgeNotes {
                             vec![Pick::Go, Pick::Fails]
                         } else {
                             vec![Pick::Go]
-                        }
-                    }
-                    (At::Rejoin { .. }, Step::Fallback { either }) => {
-                        let container = state.docker.get(member);
-                        if matches!(container.run, Run::Gone | Run::Held)
-                            || container.endpoint.attached()
-                        {
-                            vec![Pick::Go]
-                        } else {
-                            let mut picks = self
-                                .free(state)
-                                .into_iter()
-                                .map(Pick::Dynamic)
-                                .collect::<Vec<_>>();
-                            if either || picks.is_empty() {
-                                picks.push(Pick::Go);
-                            }
-                            picks
                         }
                     }
                     _ => vec![Pick::Go],
@@ -1926,7 +1874,17 @@ fn ran_loaded(state: &State, why: Why) -> bool {
     )
 }
 
-/// Each branch the bounds reach. `current_code_breaks_both_properties_and_reaches_every_row`
+/// The code before `Stopped::start` read a member's endpoint, which starts one Docker shows
+/// detached.
+fn starts_detached(model: &BridgeNotes) -> bool {
+    model.broken.fix_starts_detached
+}
+
+fn defers_detached(model: &BridgeNotes) -> bool {
+    !model.broken.fix_starts_detached
+}
+
+/// Each branch the bounds reach. `current_code_breaks_the_first_property_and_reaches_every_row`
 /// expects every row on the code as it is, and the two policy tests every row their policy keeps.
 const COVERAGE: &[Coverage] = &[
     // ensure_docker_network_shape.
@@ -2486,24 +2444,8 @@ const COVERAGE: &[Coverage] = &[
     },
     // Risk 3: an owed address that a member no longer holds.
     Coverage {
-        name: "a refused pinned connect falls back to a dynamic address while the address note owes another",
-        on: everywhere,
-        omit: None,
-        reached: |_, state| {
-            matches!(
-                state.took,
-                Some(Branch::Connected {
-                    step: Step::Fallback { .. },
-                    answer: Connect::Dynamic(address),
-                    member,
-                    ..
-                }) if owes_another(state, member, address)
-            )
-        },
-    },
-    Coverage {
         name: "Docker attaches a detached member it starts on a dynamic address while the address note owes another",
-        on: everywhere,
+        on: starts_detached,
         omit: None,
         reached: |_, state| {
             matches!(
@@ -2516,24 +2458,6 @@ const COVERAGE: &[Coverage] = &[
                     member,
                     ..
                 }) if owes_another(state, member, address)
-            )
-        },
-    },
-    Coverage {
-        name: "Stopped::start starts a member attached on a dynamic address while the address note owes another",
-        on: everywhere,
-        omit: None,
-        reached: |_, state| {
-            matches!(
-                state.took,
-                Some(Branch::Start {
-                    answer: Started::Ran { detached: false, .. },
-                    member,
-                    ..
-                }) if matches!(
-                    state.docker.get(member).endpoint,
-                    Endpoint::Dynamic(address) if owes_another(state, member, address)
-                )
             )
         },
     },
@@ -2634,10 +2558,9 @@ const COVERAGE: &[Coverage] = &[
             )
         },
     },
-    // The fix's own branches, rows only for a model that proposes it.
     Coverage {
-        name: "the fix defers the start of a member Docker shows detached",
-        on: |model| model.fix.is_proposed(),
+        name: "Stopped::start defers the start of a member Docker shows detached",
+        on: defers_detached,
         omit: None,
         reached: |_, state| {
             matches!(
@@ -2649,6 +2572,7 @@ const COVERAGE: &[Coverage] = &[
             )
         },
     },
+    // The fix's own branches, rows only for a model that proposes it.
     Coverage {
         name: "the fix drops a member whose start it cannot pay",
         on: |model| model.fix.is_proposed(),
@@ -2682,7 +2606,7 @@ const COVERAGE: &[Coverage] = &[
     },
     Coverage {
         name: "a member deferred for its address is started at a later daemon start",
-        on: |model| model.fix.is_proposed(),
+        on: defers_detached,
         omit: None,
         reached: |_, state| ran_loaded(state, Why::Deferred),
     },
@@ -2960,8 +2884,6 @@ fn reads_as(model: &BridgeNotes, before: &State, action: Action, after: &State) 
             answer,
         } => {
             let call = match (phase, step) {
-                (Phase::Readdress, Step::Fallback { .. }) => "readdress: rejoin_with falls back to connect(None)".to_owned(),
-                (Phase::Pin, Step::Fallback { .. }) => "pin pass: rejoin_with falls back to connect(None)".to_owned(),
                 (_, Step::Again) => format!("{}: rejoin_with connects {member:?} again, pinned", phase_name(phase)),
                 (_, Step::First | Step::Inspect | Step::Note | Step::Stop(_)) => format!(
                     "{}: rejoin_with connects {member:?} pinned at {:?}",
@@ -2971,7 +2893,6 @@ fn reads_as(model: &BridgeNotes, before: &State, action: Action, after: &State) 
             };
             let answered = match answer {
                 Connect::Pinned(address) => format!("it rejoins pinned at {address:?}"),
-                Connect::Dynamic(address) => format!("Docker attaches it on {address:?}, a dynamic address"),
                 Connect::BetweenRestarts => "Docker refuses it as between restarts (`ployzd::network::linux::bridge::NetworkPlane::rejoin_with`)".to_owned(),
                 Connect::InUse => "Docker refuses it: another endpoint holds that address".to_owned(),
                 Connect::Refused => "Docker refuses it".to_owned(),
@@ -2979,7 +2900,7 @@ fn reads_as(model: &BridgeNotes, before: &State, action: Action, after: &State) 
             format!("{call}: {answered}")
         }
         Branch::Unjoined { phase, member } => format!(
-            "{}: connect(None) is refused too, so rejoin_with reports and returns false{}",
+            "{}: rejoin_with reports the refusal and returns false{}",
             phase_name(phase),
             match phase {
                 Phase::Readdress => format!(", which rejoin discards; {member:?} stays detached"),
@@ -3107,6 +3028,18 @@ mod tests {
         }
     }
 
+    /// The code before `Stopped::start` read a member's endpoint, with one member: the
+    /// second finding's code.
+    fn before() -> BridgeNotes {
+        BridgeNotes {
+            broken: Broken {
+                fix_starts_detached: true,
+                ..Broken::default()
+            },
+            ..as_is()
+        }
+    }
+
     /// The branch each step took, in order.
     fn branches(path: &Path) -> Vec<Branch> {
         path.iter()
@@ -3185,25 +3118,25 @@ mod tests {
         ])
     }
 
-    /// The second finding's early return: start 1's rejoin of M0 is refused pinned and refused
-    /// again by `connect(None)`, so M0 stays detached. The pin pass's listing fails, so
+    /// The second finding's early return: start 1's rejoin of M0 is refused, so M0 stays
+    /// detached. The pin pass's listing fails, so
     /// `pin_members` returns before rejoining it, and `Stopped::start` runs M0.
     fn the_early_return() -> Vec<Action> {
         schedule(&[
             &TO_THE_REJOIN,
-            &[daemon(Pick::Fails), GO, daemon(Pick::Fails), GO],
+            &[daemon(Pick::Fails), daemon(Pick::Fails), GO],
         ])
     }
 
     /// The second finding's false rejoin: start 1 dies after detaching M0. Start 2's readdress
     /// lists M0 detached, detaches nothing and replaces the bridge, so it rejoins nothing. The
-    /// pin pass restores A for M0, and Docker refuses the pinned connect and `connect(None)`,
-    /// so `rejoin_with` returns false. `finish` keeps {M0: A}, and `Stopped::start` runs M0.
+    /// pin pass restores A for M0, and Docker refuses the pinned connect, so `rejoin_with`
+    /// returns false. `finish` keeps {M0: A}, and `Stopped::start` runs M0.
     fn the_false_rejoin() -> Vec<Action> {
         schedule(&[
             &TO_THE_DETACH,
             &[CRASH, GO, GO, GO, GO, GO, GO, GO],
-            &[daemon(Pick::Fails), GO, GO, GO],
+            &[daemon(Pick::Fails), GO, GO],
         ])
     }
 
@@ -3298,12 +3231,13 @@ mod tests {
         assert!(ran_after_an_operator_stop(&last(&found), Why::Unupdated));
     }
 
-    /// The second finding's early return, on the code as it is: `pin_members` returns before
-    /// rejoining M0, and `Stopped::start` runs it detached. The checker's first path to a
-    /// detached start through a failed pin-pass listing ends the same way.
+    /// The second finding's early return, on the code before `Stopped::start` read a
+    /// member's endpoint: `pin_members` returns before rejoining M0, and `Stopped::start`
+    /// runs it detached. The checker's first path to a detached start through a failed
+    /// pin-pass listing ends the same way.
     #[test]
-    fn current_code_starts_a_member_pin_members_returned_before_rejoining() {
-        let path = follow(as_is(), &the_early_return());
+    fn earlier_code_starts_a_member_pin_members_returned_before_rejoining() {
+        let path = follow(before(), &the_early_return());
         let taken = branches(&path);
         assert!(taken.contains(&Branch::Unjoined {
             phase: Phase::Readdress,
@@ -3318,7 +3252,7 @@ mod tests {
         assert_eq!(after.docker.m0.endpoint, Endpoint::Detached);
         assert_eq!(after.pins.m0, Some(Addr::A), "the address is still owed");
 
-        let found = breaks_where(as_is(), STARTS_ONLY_ON_BRIDGE, |path| {
+        let found = breaks_where(before(), STARTS_ONLY_ON_BRIDGE, |path| {
             branches(path).contains(&Branch::Listed {
                 phase: Phase::Pin,
                 ok: false,
@@ -3327,11 +3261,12 @@ mod tests {
         assert!(ran_detached(&last(&found)));
     }
 
-    /// The second finding's false rejoin, on the code as it is: `rejoin_with` returns false,
-    /// M0 goes into `unjoined`, and `Stopped::start` runs it detached.
+    /// The second finding's false rejoin, on the code before `Stopped::start` read a
+    /// member's endpoint: `rejoin_with` returns false, M0 goes into `unjoined`, and
+    /// `Stopped::start` runs it detached.
     #[test]
-    fn current_code_starts_a_member_whose_rejoin_failed() {
-        let path = follow(as_is(), &the_false_rejoin());
+    fn earlier_code_starts_a_member_whose_rejoin_failed() {
+        let path = follow(before(), &the_false_rejoin());
         let taken = branches(&path);
         assert!(taken.contains(&Branch::Crashed));
         assert!(taken.contains(&Branch::Unjoined {
@@ -3346,7 +3281,7 @@ mod tests {
         assert!(ran_detached(&after));
         assert_eq!(after.pins.m0, Some(Addr::A), "finish kept the owed address");
 
-        let found = breaks_where(as_is(), STARTS_ONLY_ON_BRIDGE, |path| {
+        let found = breaks_where(before(), STARTS_ONLY_ON_BRIDGE, |path| {
             branches(path).iter().any(|branch| {
                 matches!(
                     branch,
@@ -3360,21 +3295,34 @@ mod tests {
         assert!(ran_detached(&last(&found)));
     }
 
-    /// The code as it is breaks both findings' properties, keeps its two guards' properties,
-    /// and reaches every row.
+    /// The code as it is breaks the first finding's property, keeps the second's and its two
+    /// guards' properties, and reaches every row.
     #[test]
-    fn current_code_breaks_both_properties_and_reaches_every_row() {
+    fn current_code_breaks_the_first_property_and_reaches_every_row() {
         let checker = check(as_is());
         println!("as is: {} states", checker.unique_state_count());
-        for property in [STARTS_ONLY_OWED, STARTS_ONLY_ON_BRIDGE] {
-            assert!(checker.discovery(property).is_some(), "{property} holds");
-        }
-        for property in [NOTED_BEFORE_STOP, ADDRESS_NOTED_BEFORE_DETACH] {
+        assert!(checker.discovery(STARTS_ONLY_OWED).is_some());
+        for property in [
+            STARTS_ONLY_ON_BRIDGE,
+            NOTED_BEFORE_STOP,
+            ADDRESS_NOTED_BEFORE_DETACH,
+        ] {
             assert!(checker.discovery(property).is_none(), "{property} fails");
         }
         harness::assert_reached(COVERAGE, &as_is(), &checker);
         breaks(as_is(), STARTS_ONLY_OWED);
-        breaks(as_is(), STARTS_ONLY_ON_BRIDGE);
+    }
+
+    /// The code before `Stopped::start` read a member's endpoint breaks both findings'
+    /// properties and reaches every row it has.
+    #[test]
+    fn earlier_code_breaks_both_properties_and_reaches_every_row() {
+        let checker = check(before());
+        println!("before: {} states", checker.unique_state_count());
+        for property in [STARTS_ONLY_OWED, STARTS_ONLY_ON_BRIDGE] {
+            assert!(checker.discovery(property).is_some(), "{property} holds");
+        }
+        harness::assert_reached(COVERAGE, &before(), &checker);
     }
 
     fn fixed(on_refusal: OnRefusal) -> BridgeNotes {
@@ -3399,10 +3347,6 @@ mod tests {
             .find(|candidate| candidate.name == property)
             .expect("a model property");
         (named.condition)(&model, state)
-    }
-
-    fn row(name: &str) -> &'static Coverage {
-        COVERAGE.iter().find(|row| row.name == name).expect("a row")
     }
 
     /// The rows of `model` its checker never reaches, in `COVERAGE` order.
@@ -3518,22 +3462,22 @@ mod tests {
     #[test]
     fn second_property_fails_for_a_detached_member_with_an_address_noted() {
         let after = step(
-            as_is(),
-            &at_start(as_is(), Endpoint::Detached, Some(Addr::A)),
+            before(),
+            &at_start(before(), Endpoint::Detached, Some(Addr::A)),
             Pick::Go,
         );
-        assert!(!holds_at(as_is(), STARTS_ONLY_ON_BRIDGE, &after));
+        assert!(!holds_at(before(), STARTS_ONLY_ON_BRIDGE, &after));
     }
 
     /// `Pins::record` skips a member with no address (`ployzd::network::linux::pins::Pins::record`), so none is noted.
     #[test]
     fn second_property_fails_for_a_detached_member_with_no_address_noted() {
         let after = step(
-            as_is(),
-            &at_start(as_is(), Endpoint::Detached, None),
+            before(),
+            &at_start(before(), Endpoint::Detached, None),
             Pick::Go,
         );
-        assert!(!holds_at(as_is(), STARTS_ONLY_ON_BRIDGE, &after));
+        assert!(!holds_at(before(), STARTS_ONLY_ON_BRIDGE, &after));
     }
 
     /// Risk 3: no property, a row.
@@ -3545,10 +3489,6 @@ mod tests {
             Pick::Go,
         );
         assert!(holds_at(as_is(), STARTS_ONLY_ON_BRIDGE, &after));
-        let risk_3 = row(
-            "Stopped::start starts a member attached on a dynamic address while the address note owes another",
-        );
-        assert!((risk_3.reached)(&as_is(), &after));
     }
 
     #[test]
@@ -3797,10 +3737,12 @@ mod tests {
             },
         );
         let checker = check(model);
-        for property in [STARTS_ONLY_OWED, STARTS_ONLY_ON_BRIDGE] {
-            assert!(checker.discovery(property).is_some(), "{property} holds");
-        }
-        for property in [NOTED_BEFORE_STOP, ADDRESS_NOTED_BEFORE_DETACH] {
+        assert!(checker.discovery(STARTS_ONLY_OWED).is_some());
+        for property in [
+            STARTS_ONLY_ON_BRIDGE,
+            NOTED_BEFORE_STOP,
+            ADDRESS_NOTED_BEFORE_DETACH,
+        ] {
             assert!(checker.discovery(property).is_none(), "{property} fails");
         }
         assert_eq!(
@@ -3853,10 +3795,12 @@ mod tests {
             "two members, unguarded: {} states",
             checker.unique_state_count()
         );
-        for property in [STARTS_ONLY_OWED, STARTS_ONLY_ON_BRIDGE] {
-            assert!(checker.discovery(property).is_some(), "{property} holds");
-        }
-        for property in [NOTED_BEFORE_STOP, ADDRESS_NOTED_BEFORE_DETACH] {
+        assert!(checker.discovery(STARTS_ONLY_OWED).is_some());
+        for property in [
+            STARTS_ONLY_ON_BRIDGE,
+            NOTED_BEFORE_STOP,
+            ADDRESS_NOTED_BEFORE_DETACH,
+        ] {
             assert!(checker.discovery(property).is_none(), "{property} fails");
         }
         assert!(unreached(unguarded, &checker).is_empty());
@@ -3946,7 +3890,6 @@ mod tests {
                 "Stopped::start rewrites the stopped note with the members Docker did not start",
                 "a member Docker refused is started at a later daemon start",
                 "a member Docker refused for a missing network is started at a later daemon start",
-                "Docker attaches a detached member it starts on a dynamic address while the address note owes another",
                 "the fix drops a member whose retries are spent",
                 "a member deferred for its address is started at a later daemon start",
             ]
@@ -3968,11 +3911,6 @@ mod tests {
         }
         let found = breaks_where(model, STARTS_ONLY_OWED, off_route_3);
         assert!(ran_after_an_operator_stop(&last(&found), Why::Refused));
-        assert_eq!(
-            unreached(model, &checker),
-            [
-                "Docker attaches a detached member it starts on a dynamic address while the address note owes another",
-            ]
-        );
+        assert!(unreached(model, &checker).is_empty());
     }
 }

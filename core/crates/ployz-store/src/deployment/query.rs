@@ -116,6 +116,12 @@ pub struct PlanView {
 pub struct Unsigned {
     pub service: ServiceName,
     pub needs: Needs,
+    /// For [`Needs::Rule`]: the person ended the rule, which only the Deploy every push
+    /// switch turns back on. A field of its own, so a client that predates it still reads
+    /// the plan.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(optional, as = "Option<bool>")]
+    pub ended: bool,
 }
 
 /// What a Service in [`PlanView::unsigned`] needs before a person's Deploy can run it.

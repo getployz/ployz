@@ -18,8 +18,8 @@ use hickory_server::proto::{
 };
 use ipnet::Ipv4Net;
 use ployz_core::{
-    ClusterName, ContainerObservation, MachineId, Namespace, ProxyRoutes, QualifiedService,
-    ServiceId, service_containers,
+    ClusterName, ContainerObservation, KeptNames, MachineId, Namespace, ProxyRoutes,
+    QualifiedService, ServiceId, service_containers,
 };
 use tokio::sync::watch;
 
@@ -54,15 +54,22 @@ pub(super) struct ProjectionInputs {
     pub(super) observations: Vec<ContainerObservation>,
     pub(super) cluster: Option<ClusterName>,
     pub(super) reach: Reach,
+    /// Every name this process has seen run signed, from the replica's rows and the
+    /// observations it loaded. Never shrinks, so a row or copy missing from one read
+    /// frees no name.
+    kept: KeptNames,
 }
 
 pub(super) struct Snapshot {
     pub(super) observations: Vec<ContainerObservation>,
     pub(super) cluster: Option<ClusterName>,
+    pub(super) kept: KeptNames,
 }
 
 impl ProjectionInputs {
     pub(super) fn load(&mut self, snapshot: Snapshot) {
+        self.kept.keep(snapshot.kept);
+        self.kept.keep_signed(&snapshot.observations);
         self.observations = snapshot.observations;
         self.cluster = snapshot.cluster;
     }
@@ -72,12 +79,13 @@ impl ProjectionInputs {
             observations: Vec::new(),
             cluster: None,
             reach: Reach::new(local_id),
+            kept: KeptNames::default(),
         }
     }
 
     pub(super) fn build(&mut self) -> Projection {
         let containers = service_containers(self.observations.iter().cloned());
-        let pass = self.reach.pass(&containers);
+        let pass = self.reach.pass(&containers, &self.kept);
         let mut projection = Projection::from_routes(&self.observations, &pass.reachable);
         projection.cluster.clone_from(&self.cluster);
         self.reach.keep(pass.routes);
@@ -111,10 +119,13 @@ impl Projection {
             let observation = serving.as_observation();
             let address = serving.address();
             let identity = observation.identity();
-            service_ids
-                .entry(observation.service_id())
-                .or_default()
-                .push(address.0);
+            // A Service ID is whatever its creator chose, so only a signed copy answers by it.
+            if observation.signed() {
+                service_ids
+                    .entry(observation.service_id())
+                    .or_default()
+                    .push(address.0);
+            }
             identities
                 .entry(identity.clone())
                 .or_default()

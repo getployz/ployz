@@ -74,6 +74,55 @@ no other container has used recently. This holds for the IPv4 address that `NAME
 answers with. A container's IPv6 address can change when Docker or the server restarts, so don't
 connect to one by it.
 
+### Who can reach a service that holds a volume
+
+A service that mounts a volume, such as a database, takes private connections only from services
+that run from a signed deploy: one your passkey or an
+[approved device](../deploy/deployments.md#deploy-from-an-approved-device) signed, or an
+automatic deploy rule. That holds on its own server and across servers, by name or by address.
+
+A service that reaches no data, with no sealed value and no volume, can run from a deploy nobody
+signed. It can't connect to any service that mounts a volume, database or API alike. If it needs
+one, give it a sealed variable, such as its `DATABASE_URL`, or deploy it from an approved device.
+Its next deploy is signed, and it connects.
+
+Services that don't mount a volume take connections from every container, as before. Your
+domains, Cloudflare Tunnel and Tailscale reach every service.
+
+This needs Docker's default iptables firewall. With `"firewall-backend": "nftables"` or
+`--iptables=false`, Ployz doesn't start its network; see
+[Ployz stops because Docker uses its nftables firewall](../troubleshooting/servers.md#ployz-stops-because-docker-uses-its-nftables-firewall).
+Don't add your own iptables rules that accept traffic to or from the `ployz` bridge in `FORWARD`
+ahead of Docker's `DOCKER-USER` jump. Traffic those rules accept skips this check.
+
+A port a service publishes on the server answers anyone who reaches the server,
+including containers on other servers, so don't publish a database's port.
+
+Containers don't reach each other over IPv6. Private DNS answers only with IPv4 addresses, so
+connect by name.
+
+Each server holds up to 32 containers that mount a volume from a signed deploy, 63 from a deploy
+nobody signed, and 126 others. Stopped containers count, and so does the second copy of a
+service while a deploy replaces it. When a group is full, a new container in it doesn't start,
+and the deploy says `every signed data address on this Server's ployz network is taken`.
+
+#### Right after upgrading
+
+Upgrade every server, then run `ployz deploy --recreate` in every environment, idle ones too, or
+delete them. Until then, some traffic from containers made before the upgrade to databases is
+refused, and a database made before the upgrade takes connections from every container.
+
+```sh
+ployz deploy --recreate
+```
+
+It replaces every service's containers once, including ones that hold a volume, so each takes its
+new address. `--recreate` with service names replaces only those.
+
+When Ployz starts, a container made before the upgrade moves to its group's addresses. If that
+group is full, the container keeps its old address, and takes connections as it did before the
+upgrade, until Ployz starts again with room in the group.
+
 ## Connect to another service
 
 Reference the other service's address in a variable. Every service has a
@@ -217,10 +266,27 @@ and running `off` again finishes the removal.
   [healthcheck](settings.md#healthcheck) if it has one. One that passed stays even if its check
   fails later, and its service card shows an amber **⚠**. While no replica is ready, the name
   doesn't resolve. Check that service's **Logs**.
+- **A name that ran signed stays signed.** Once a service runs from a deploy an
+  [approved device signed](../deploy/deployments.md#deploy-from-an-approved-device), or from an
+  automatic deploy rule, its name answers only with replicas deployed that way, even after
+  you delete the service. A container started any other way under that name gets no answers,
+  and your servers refuse to create one. Deploy it with your passkey or `ployz deploy`.
+- **A deploy run on a server without an approved device doesn't protect a name.** A deploy
+  with `--connect ssh://` or on the server itself that no approved device signs counts like any
+  other unsigned container: its name doesn't stay signed, and once the name has run signed, your
+  servers refuse it. Deploy from an
+  [approved device](../servers/manage-servers.md#what-needs-an-approved-device) to protect the
+  name.
+- **After upgrading from 0.4.0-beta.2 or earlier, deploy each environment once.** Upgrade every
+  server first, then deploy with your passkey or `ployz deploy`. Until then, names from before
+  the upgrade aren't kept signed. The deploy restarts each service once, including ones that
+  hold a volume.
 - **Names are scoped to an environment; addresses aren't.** Projects and environments on
   your servers share one private network. A container that knows another environment's
-  private address can connect to it, so give databases a password (the ones Ployz creates
-  have one). Run anything that must be walled off in its own organization, on its own servers.
+  private address can connect to it, unless that service
+  [holds a volume](#who-can-reach-a-service-that-holds-a-volume) and the container runs from a
+  deploy nobody signed. Give databases a password (the ones Ployz creates have one). Run
+  anything that must be walled off in its own organization, on its own servers.
 - **Servers must reach each other on UDP port 51820.** Without it, services on different
   servers can't reach each other.
 - **`ping` and raw sockets don't work inside a service,** even as root, unless the service runs

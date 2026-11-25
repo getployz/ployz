@@ -35,7 +35,8 @@ describe("operation outbox", () => {
 
     expect(send.mock.calls).toEqual([[event("a")]]);
     expect(await unsent()).toEqual([]);
-    expect(await run(sweepOutbox(new Date(Date.now() + 60_000)))).toBe(0);
+    await harness.pool.query(`update operation_outbox set created_at = created_at - interval '1 minute'`);
+    expect(await run(sweepOutbox())).toBe(0);
   });
 
   it("the sweep sends what a failed delivery left, only once it is old enough, and marks it sent", async () => {
@@ -44,8 +45,9 @@ describe("operation outbox", () => {
     await enqueue("b");
     expect(await unsent()).toEqual(["volume-run-a", "volume-run-b"]);
 
-    expect(await run(sweepOutbox(new Date()))).toBe(0);
-    expect(await run(sweepOutbox(new Date(Date.now() + 60_000)))).toBe(2);
+    expect(await run(sweepOutbox())).toBe(0);
+    await harness.pool.query(`update operation_outbox set created_at = created_at - interval '1 minute'`);
+    expect(await run(sweepOutbox())).toBe(2);
 
     expect(send.mock.calls.at(-1)).toEqual([[event("a"), event("b")]]);
     expect(await unsent()).toEqual([]);

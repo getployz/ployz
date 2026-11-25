@@ -6211,6 +6211,19 @@ mod ensure_container {
         }
 
         impl Enforced {
+            /// Give the Machine a replica of its own, where an Operator's unsigned create
+            /// looks up the names kept signed. Keep the returned server running.
+            async fn with_replica(&mut self) -> tokio::task::JoinHandle<()> {
+                let (replicated, server) = crate::corrosion::fake_cluster::store().await;
+                let admin = crate::corrosion::AdminClient::new("/no/such/admin.sock");
+                self.service.local = self
+                    .service
+                    .local
+                    .clone()
+                    .with_cluster(Some((replicated, admin)));
+                server
+            }
+
             /// The service a restarted daemon builds over the same record and Docker.
             fn restarted(&self) -> MachineService {
                 let mut service = MachineService::with_cluster(self.store.clone(), None)
@@ -6804,7 +6817,8 @@ mod ensure_container {
         #[tokio::test]
         #[expect(clippy::indexing_slicing, reason = "JSON fixture")]
         async fn an_operator_runs_a_spec_that_reaches_no_data_with_no_signature() {
-            let fixture = enforced("ployzd-free-spec").await;
+            let mut fixture = enforced("ployzd-free-spec").await;
+            let _replica = fixture.with_replica().await;
             let service = &fixture.service;
             let free = spec(PUBLIC);
             let seen = requests(&fixture.fake).len();
@@ -7036,7 +7050,8 @@ mod ensure_container {
         #[tokio::test]
         #[expect(clippy::indexing_slicing, reason = "JSON fixture")]
         async fn an_unsigned_creation_follows_its_pull_policy() {
-            let fixture = enforced("ployzd-free-pull-policy").await;
+            let mut fixture = enforced("ployzd-free-pull-policy").await;
+            let _replica = fixture.with_replica().await;
             let service = &fixture.service;
             let with_policy = |image: &str, policy: &str| {
                 let mut spec = spec(image);

@@ -889,3 +889,35 @@ async fn a_moved_volume_starts_under_a_verified_rule_only_where_the_rule_places_
         .await
         .unwrap();
 }
+
+/// A rule deploy through this Server's own socket is admitted under the rule, as from
+/// anywhere else, so its copy keeps its name and the next deploy under the rule finds it
+/// signed instead of replacing it again.
+#[tokio::test]
+async fn a_rule_deploy_through_the_servers_socket_is_admitted_under_the_rule() {
+    let fixture = fixture().await;
+    let rule = fixture.deploy_rule(3);
+    let claim = fixture.built(&rule, fixture.attest());
+    let online = fixture.proof(&rule, &claim, token_for(&claim, "socket"));
+    let verified = fixture
+        .issued(want("service_container", "k1", &spec()), &online)
+        .await;
+    let admitted = fixture
+        .machine
+        .clone()
+        .on_local_socket()
+        .admit_spec(
+            &want("service_container", "k2", &spec()),
+            Some(&Fixture::offline(&online, verified)),
+            &[],
+            Admit::Record,
+        )
+        .await
+        .unwrap()
+        .expect("a new Container's admission");
+    assert!(
+        matches!(admitted.by(), AdmittedBy::Rule { .. }),
+        "{admitted:?}"
+    );
+    assert_eq!(admitted.admission(), ployz_core::Admission::Signed);
+}

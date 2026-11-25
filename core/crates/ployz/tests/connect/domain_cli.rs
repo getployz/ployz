@@ -84,6 +84,7 @@ fn applied(store: &Path) {
         versions: Vec::new(),
         copies: Vec::new(),
         recreate: Vec::new(),
+        rule: None,
     });
     local
         .write_trusted(&who, &deploy, &Trusted::default())

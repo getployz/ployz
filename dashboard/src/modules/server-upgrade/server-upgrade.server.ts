@@ -35,6 +35,7 @@ import { organizationServerUpgrades, serverUpgradeAttempt } from "#/modules/serv
 import { SERVERS_UNANSWERED_MESSAGE, type StoreRefusal } from "#/lib/refusal";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
+import { checkedNow } from "#/db/tables";
 
 const POINTER_CACHE_MS = 5 * 60_000;
 // ponytail: one process-wide cache of a public, tiny pointer per path; a handful of paths, nothing to evict.
@@ -256,7 +257,6 @@ export const recordUpgradeAttempt = Effect.fn("ServerUpgrade.record")(function* 
   // An unreadable pointer leaves the target to the Server's answer.
   const expected = line === null ? null : yield* channelRelease(input.channel, line).pipe(Effect.orElseSucceed(() => null));
   const { drizzle } = yield* Database;
-  const startedAt = new Date();
   yield* drizzle.insert(serverUpgradeAttempt).values({
     organizationId: input.request.organizationId,
     machineId: input.request.machineId,
@@ -268,10 +268,10 @@ export const recordUpgradeAttempt = Effect.fn("ServerUpgrade.record")(function* 
     fromVersion: input.fromVersion,
     targetVersion: expected,
     inngestRunId: input.inngestRunId,
-    startedAt,
+    startedAt: sql`now()`,
   }).onConflictDoUpdate({
     target: [serverUpgradeAttempt.organizationId, serverUpgradeAttempt.machineId, serverUpgradeAttempt.attemptId],
-    set: { inngestRunId: input.inngestRunId, startedAt },
+    set: { inngestRunId: input.inngestRunId, startedAt: sql`now()` },
     setWhere: and(eq(serverUpgradeAttempt.outcome, "running"), ne(serverUpgradeAttempt.inngestRunId, input.inngestRunId)),
   });
 });
@@ -280,6 +280,9 @@ export const dropUpgradeAttempt = Effect.fn("ServerUpgrade.drop")(function* (org
   const { drizzle } = yield* Database;
   yield* drizzle.delete(serverUpgradeAttempt).where(attemptWhere(organizationId, attemptId));
 });
+
+/** Postgres's clock, which stamps `startedAt`, so an attempt's age never mixes it with a web instance's. */
+const postgresNow = sql`now()`.mapWith(serverUpgradeAttempt.startedAt);
 
 const attemptWhere = (organizationId: string, attemptId: string) =>
   and(eq(serverUpgradeAttempt.organizationId, organizationId), eq(serverUpgradeAttempt.attemptId, attemptId));
@@ -345,9 +348,9 @@ const resendUpgradeOnServer = Effect.fn("ServerUpgrade.resendOnServer")(function
  */
 export const pollUpgradeOnServer = Effect.fn("ServerUpgrade.poll")(function* (input: AttemptOnServer) {
   const { drizzle } = yield* Database;
-  const [row] = yield* drizzle.select({ startedAt: serverUpgradeAttempt.startedAt }).from(serverUpgradeAttempt)
+  const [row] = yield* drizzle.select({ startedAt: serverUpgradeAttempt.startedAt, now: postgresNow }).from(serverUpgradeAttempt)
     .where(attemptWhere(input.organizationId, input.attemptId));
-  if (row === undefined || attemptState({ outcome: "running", startedAt: row.startedAt }, Date.now()) !== "running") return { kind: "expired" } as const;
+  if (row === undefined || attemptState({ outcome: "running", startedAt: row.startedAt }, row.now.getTime()) !== "running") return { kind: "expired" } as const;
   const attempt = yield* resendUpgradeOnServer(input);
   return attempt === null ? { kind: "unreadable" } as const : { kind: "read", attempt } as const;
 });
@@ -390,12 +393,11 @@ export const finishUpgradeAttempt = Effect.fn("ServerUpgrade.finish")(function* 
   readonly error: string | null;
 }) {
   const { drizzle } = yield* Database;
-  const endedAt = new Date();
   const [row] = yield* drizzle.update(serverUpgradeAttempt).set({
     outcome: input.outcome,
     stage: input.outcome === "succeeded" ? null : sql`coalesce(${input.stage}, ${serverUpgradeAttempt.stage})`,
     error: input.error,
-    endedAt,
+    endedAt: sql`now()`,
   }).where(and(attemptWhere(input.organizationId, input.attemptId), eq(serverUpgradeAttempt.outcome, "running"))).returning();
   if (row === undefined) return false;
   const properties: UpgradeEventProperties = {
@@ -403,7 +405,7 @@ export const finishUpgradeAttempt = Effect.fn("ServerUpgrade.finish")(function* 
     channel: row.channel,
     from_version: row.fromVersion,
     to_version: row.targetVersion,
-    total_seconds: Math.round((endedAt.getTime() - row.startedAt.getTime()) / 1000),
+    total_seconds: Math.round(((row.endedAt ?? row.startedAt).getTime() - row.startedAt.getTime()) / 1000),
   };
   const { stage, error } = endEvidence(input.outcome, row.stage, row.error);
   // PostHog gets only the evidence there is.
@@ -487,16 +489,19 @@ export const observeServerNames = (organizationId: string) =>
 
 /** The hourly sweep: an attempt still `running` after the observation limit lost its Rollout run, so it reads `unknown`. */
 export const closeStaleUpgradeAttempts = () =>
-  closeRunningAttempts(lt(serverUpgradeAttempt.startedAt, new Date(Date.now() - UPGRADE_OBSERVATION_LIMIT_MS)));
+  closeRunningAttempts(lt(serverUpgradeAttempt.startedAt, sql`${checkedNow()} - make_interval(secs => ${UPGRADE_OBSERVATION_LIMIT_MS / 1000})`));
 
-/** The automatic Rollout runs with an attempt that ended `unknown` since `since`, so the sweep can mail them again on retry. */
-export const listUnknownAutomaticRollouts = Effect.fn("ServerUpgrade.listUnknownAutomatic")(function* (since: Date) {
+/**
+ * The automatic Rollout runs with an attempt that ended `unknown` in the last `withinMs`, on Postgres's clock, which
+ * stamps the end, so the sweep can mail them again on retry.
+ */
+export const listUnknownAutomaticRollouts = Effect.fn("ServerUpgrade.listUnknownAutomatic")(function* (withinMs: number) {
   const { drizzle } = yield* Database;
   const rows = yield* drizzle.selectDistinct({ inngestRunId: serverUpgradeAttempt.inngestRunId }).from(serverUpgradeAttempt)
     .where(and(
       eq(serverUpgradeAttempt.trigger, "automatic"),
       eq(serverUpgradeAttempt.outcome, "unknown"),
-      gte(serverUpgradeAttempt.endedAt, since),
+      gte(serverUpgradeAttempt.endedAt, sql`${checkedNow()} - make_interval(secs => ${withinMs / 1000})`),
     ));
   return rows.map(({ inngestRunId }) => inngestRunId);
 });
@@ -520,7 +525,7 @@ export const setServerUpgradeSettings = Effect.fn("ServerUpgrade.setSettings")(f
 ) {
   const { drizzle } = yield* Database;
   const [row] = yield* drizzle.insert(organizationServerUpgrades).values({ organizationId, ...settings })
-    .onConflictDoUpdate({ target: organizationServerUpgrades.organizationId, set: { ...settings, updatedAt: new Date() } })
+    .onConflictDoUpdate({ target: organizationServerUpgrades.organizationId, set: { ...settings, updatedAt: sql`now()` } })
     .returning({
       id: organizationServerUpgrades.organizationId,
       automatic: organizationServerUpgrades.automatic,
@@ -558,7 +563,7 @@ export const planCliServerUpgrade = Effect.fn("ServerUpgrade.planCli")(function*
     } as const satisfies { ok: false; refusal: StoreRefusal };
   }
   const { drizzle } = yield* Database;
-  const [running] = yield* drizzle.select({ attemptId: serverUpgradeAttempt.attemptId, outcome: serverUpgradeAttempt.outcome, startedAt: serverUpgradeAttempt.startedAt })
+  const [running] = yield* drizzle.select({ attemptId: serverUpgradeAttempt.attemptId, outcome: serverUpgradeAttempt.outcome, startedAt: serverUpgradeAttempt.startedAt, now: postgresNow })
     .from(serverUpgradeAttempt)
     .where(and(
       eq(serverUpgradeAttempt.organizationId, caller.organizationId),
@@ -567,7 +572,7 @@ export const planCliServerUpgrade = Effect.fn("ServerUpgrade.planCli")(function*
     ))
     .orderBy(desc(serverUpgradeAttempt.startedAt))
     .limit(1);
-  if (running !== undefined && attemptState(running, Date.now()) === "running") {
+  if (running !== undefined && attemptState(running, running.now.getTime()) === "running") {
     return () => Effect.succeed({ ok: true, id: running.attemptId } as const);
   }
   const unavailable = (message: string) =>
@@ -594,6 +599,7 @@ export const readCliServerUpgrade = Effect.fn("ServerUpgrade.readCli")(function*
     targetVersion: serverUpgradeAttempt.targetVersion,
     stage: serverUpgradeAttempt.stage,
     error: serverUpgradeAttempt.error,
+    now: postgresNow,
   }).from(serverUpgradeAttempt).where(attemptWhere(organizationId, attemptId));
   if (row === undefined) {
     return {
@@ -602,7 +608,7 @@ export const readCliServerUpgrade = Effect.fn("ServerUpgrade.readCli")(function*
       message: "The Server was busy with a build or another Upgrade, or went offline, so it took no Upgrade.",
     } as const;
   }
-  const outcome = attemptState(row, Date.now());
+  const outcome = attemptState(row, row.now.getTime());
   if (outcome === "running") return { state: "running" } as const;
   return {
     state: "finished",
