@@ -19,7 +19,7 @@ use ployz_core::{
 use zeroize::Zeroizing;
 
 use super::reserved::{self, Effects, Gate, Placed, Retiree, Step, newest, retirees, usable};
-use super::{Error, LocalMachine};
+use super::{Error, LocalMachine, turns::ExclusiveTurn};
 use crate::docker::{ContainerRuntime, Door, DoorEntry, same_creation};
 use crate::images::{DoorSpecs, TunnelSpecs};
 
@@ -460,9 +460,9 @@ impl LocalMachine {
                     .machine_files().write_tunnel_token(&token)
                     .map_err(Error::TunnelTokenFile)?;
             }
-            let _turn = local.exclusive_turn().await;
+            let turn = local.exclusive_turn().await?;
             local
-                .converge_doors_admitted(&containers, &inventory, &pinned, Legacy::No)
+                .converge_doors_admitted(&turn, &containers, &inventory, &pinned, Legacy::No)
                 .await
                 .map(Some)
         })
@@ -470,9 +470,11 @@ impl LocalMachine {
     }
 
     /// Place the doors `specs` describe, or the doors this Machine has with a fresh
-    /// Caddy for a legacy Deploy. Every pin is pulled and the tunnel `token` written
-    /// before any running Container is touched, under the door lifecycle lock and
-    /// before the admission turn, so a slow pull holds up no other admitted work.
+    /// Caddy for a legacy Deploy. Every pin is pulled before any running Container is
+    /// touched, under the door lifecycle lock and before the admission turn, so a slow
+    /// pull holds up no other admitted work. The tunnel `token` is written under the turn,
+    /// once the caller is checked again there, so a caller removed while this waited
+    /// writes nothing.
     pub(super) async fn converge_doors(
         &self,
         specs: &DoorSpecs,
@@ -504,15 +506,15 @@ impl LocalMachine {
                     .prepare_pinned_image(&spec.container.image)
                     .await?;
             }
+            let turn = local.exclusive_turn().await?;
             if let Some(token) = &token {
                 containers
                     .machine_files()
                     .write_tunnel_token(token)
                     .map_err(Error::TunnelTokenFile)?;
             }
-            let _turn = local.exclusive_turn().await;
             let set = local
-                .converge_doors_admitted(&containers, &inventory, &specs, legacy)
+                .converge_doors_admitted(&turn, &containers, &inventory, &specs, legacy)
                 .await?;
             if specs.tunnel.is_none() && set.failure.is_none() {
                 containers
@@ -545,6 +547,7 @@ impl LocalMachine {
     /// the next call starts or replaces the door that failed.
     async fn converge_doors_admitted(
         &self,
+        _turn: &ExclusiveTurn,
         containers: &ContainerRuntime,
         inventory: &[DoorEntry],
         specs: &DoorSpecs,
