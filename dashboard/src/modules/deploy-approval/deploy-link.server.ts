@@ -6,7 +6,7 @@ import type { AdmitDeploy } from "#/modules/config-store/admit-deploy";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { protector, protectorOnly } from "#/modules/config-store/protected.server";
 import { environmentProtected } from "#/modules/config-store/store-lookup.server";
-import { blocked, isPending, namesReview, needsSource, underRule, versionService } from "#/modules/deploy-approval/deploy-tap";
+import { blocked, isPending, namesReview, needsSource, shipsSource, unbuildable, underRule, versionService } from "#/modules/deploy-approval/deploy-tap";
 import { prepareDeployTap } from "#/modules/deploy-approval/deploy-tap.server";
 import { type Caller, callerEnvironments, callerPermissions } from "#/modules/identity/actor";
 import type { DeployReview } from "#/modules/proposals/proposal";
@@ -46,16 +46,19 @@ export const linkDeploy = Effect.fn("DeployLink.link")(function* (caller: Caller
   const pending = planned.kind === "refused" && isPending(planned.details);
   if (planned.kind === "refused" && !pending) return null;
   const plan = planned.kind === "plan" ? planned.plan : null;
-  // A Service that builds from source with no rule that covers it waits on the approver's tap, which signs the rule.
-  const open = (plan?.unsigned ?? []).filter((entry) => !covered.has(entry.service) && (!underRule(entry) || needsSource(entry)));
+  // A Device that signed the rule with this Deploy already signed its Source step. Otherwise a Service that builds from
+  // source with no rule that covers it waits on the approver's tap, which signs the rule.
+  const keyed = command.rule !== undefined;
+  const open = (plan?.unsigned ?? []).filter((entry) => !covered.has(entry.service) && (!underRule(entry) || (!keyed && needsSource(entry))));
   const tap = planned.kind === "plan" ? planned.tap : null;
   // Only an agent waits on a person here. Anyone else's Deploy queues as it always did, and each Server checks it.
   if (open.length > 0 && tap?.kind === "refused") return agent ? { refused: refusal("conflict", `${tap.message} Nothing deployed.`) } : null;
-  const cannot = tap?.kind === "ready" ? blocked(open) : null;
+  const source = planned.kind === "plan" && !keyed ? planned.source : undefined;
+  const cannot = tap?.kind === "ready" ? blocked(open) ?? unbuildable(open, source) : null;
   if (cannot !== null) return { refused: refusal("conflict", cannot) };
-  // A Git build no rule covers needs one even when it reaches no data, so the approver's tap signs the rule for it.
-  const sources = planned.kind === "plan" && planned.source?.kind === "sign" && !planned.source.unchecked;
-  const signs = tap?.kind === "ready" && (open.length > 0 || sources);
+  // A Git build no rule covers needs one even when it reaches no data, so the approver's tap signs the rule for a Deploy
+  // that ships it.
+  const signs = tap?.kind === "ready" && (open.length > 0 || shipsSource(command.services ?? [], source));
   const makes = pending && covered.size === 0;
   if (!agent && !signs && !makes && !mayGuard) return null;
 

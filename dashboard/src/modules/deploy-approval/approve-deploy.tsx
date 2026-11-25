@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { KeyRoundIcon } from "lucide-react";
 import { ReviewDestroys } from "#/components/agent-sidebar/approval-card";
@@ -13,7 +13,7 @@ import { prunes } from "#/modules/deploy-approval/review";
 import { decideProposal, landProposal, proposalOptions } from "#/modules/proposals/proposals.queries";
 import { useSealing } from "#/modules/sealing/use-sealing";
 import { prepareDeployTapServerFn } from "./deploy-tap.functions";
-import { needsSource, type Prepared, prepareDeploy, signVersions, unsourced } from "./deploy-tap";
+import { type Prepared, prepareDeploy, signVersions, unsourced } from "./deploy-tap";
 import { SignedLines } from "./deploy-sheet";
 import { fillPending } from "./fill-pending";
 import { RuleSummaryList } from "./rule-summary";
@@ -22,7 +22,8 @@ import { ownerLookup } from "./source-step";
 type Page =
   | { readonly kind: "reading" }
   | { readonly kind: "ready"; readonly prepared: Extract<Prepared, { kind: "admit" | "ask" }> }
-  | { readonly kind: "stopped"; readonly message: string };
+  /** `deniable`: the proposal still waits, and the person may deny it. */
+  | { readonly kind: "stopped"; readonly message: string; readonly deniable: boolean };
 
 /**
  * The page a link opens: one proposal's Deploy, planned again as it is now with this person's own passkeys. A copied
@@ -48,7 +49,7 @@ export function ApproveDeploy({ organizationSlug, id }: { organizationSlug: stri
   useEffect(() => {
     if (command === null) return;
     let live = true;
-    const stop = (message: string) => live && setPage({ kind: "stopped", message });
+    const stop = (message: string, deniable = true) => live && setPage({ kind: "stopped", message, deniable });
     const plan = async () => {
       const planned = await prepareDeployTapServerFn({
         data: { organizationSlug, environment: command.environment, services: [...command.services ?? []], rule: true },
@@ -68,28 +69,47 @@ export function ApproveDeploy({ organizationSlug, id }: { organizationSlug: stri
       if (!live) return;
       if (prepared.kind === "stale") {
         await decideProposal(organizationSlug, id, { reject: { reason: DEPLOY_MOVED } });
-        return stop(DEPLOY_MOVED);
+        return stop(DEPLOY_MOVED, false);
       }
       if (prepared.kind === "refused") return stop(prepared.message);
-      // A Service only the rule builds doesn't build without it, so the page says why rather than approve it.
-      const unsigned = planned.kind === "plan" && planned.tap.kind === "ready" ? planned.plan.unsigned ?? [] : [];
+      // A Service only the rule builds doesn't build without it, so the page says why rather than approve it. The asker
+      // heard it before any link, so only a change since or this person's own passkeys and Servers stop here.
+      const unsigned = planned.kind === "plan" && planned.tap.kind !== "off" ? planned.plan.unsigned ?? [] : [];
       const held = prepared.kind === "admit" ? prepared.held : prepared.ask.held;
-      if (held !== null && (!held.unchecked || unsigned.some(needsSource))) return stop(held.reason);
       const sourced = prepared.kind === "ask" ? prepared.ask.draft.source?.summary.services.map(({ name }) => name) : undefined;
       const unbuilt = unsourced(unsigned, new Set(sourced));
-      if (unbuilt !== null) return stop(unbuilt);
+      if (held !== null && (!held.unchecked || unbuilt !== null)) return stop(held.reason);
+      if (unbuilt !== null) return stop(`No automatic deploy rule can cover ${unbuilt} now, so your servers won't build it.`);
       setPage({ kind: "ready", prepared });
     };
     plan().catch((error) => stop(error instanceof Error && error.message ? error.message : "Couldn't plan this deploy. Try again."));
     return () => { live = false; };
   }, [organizationSlug, id, command, queryClient]);
 
+  const deny = async () => {
+    setBusy("sending");
+    const answer = await decideProposal(organizationSlug, id, { reject: {} }).finally(() => setBusy(null));
+    if (answer.ok) return await landProposal(queryClient, organizationSlug, id, answer.decided);
+    setProblem(answer.message);
+  };
+
   if (isPending) return <Skeleton className="h-40 w-full" />;
   if (proposal === null || proposal === undefined) return <Note title="Nothing to approve here" body="This link doesn't name anything waiting in this organization." />;
   // A stop or restart, or a decided proposal: its card approves or shows it.
   if (!waiting) return <ProposalCard organizationSlug={organizationSlug} id={id} seed={proposal} />;
   if (page.kind === "reading") return <Skeleton aria-label="Checking this deploy" className="h-40 w-full" />;
-  if (page.kind === "stopped") return <Note title="Not approved" body={page.message} />;
+  if (page.kind === "stopped") {
+    return (
+      <Note title="Not approved" body={page.message}>
+        {page.deniable && (
+          <CardFooter className="flex-col items-start gap-2">
+            {problem !== null && <p role="alert" className="text-sm text-destructive">{problem}</p>}
+            <Button variant="outline" disabled={busy !== null} onClick={() => void deny()}>Deny</Button>
+          </CardFooter>
+        )}
+      </Note>
+    );
+  }
 
   const { prepared } = page;
   const destroys = review !== undefined && (review.effects.length > 0 || prunes(review));
@@ -120,12 +140,6 @@ export function ApproveDeploy({ organizationSlug, id }: { organizationSlug: stri
       setBusy(null);
     }
   };
-  const deny = async () => {
-    setBusy("sending");
-    const answer = await decideProposal(organizationSlug, id, { reject: {} }).finally(() => setBusy(null));
-    if (answer.ok) return await landProposal(queryClient, organizationSlug, id, answer.decided);
-    setProblem(answer.message);
-  };
 
   return (
     <Card aria-label="Approve this deploy">
@@ -134,7 +148,7 @@ export function ApproveDeploy({ organizationSlug, id }: { organizationSlug: stri
         <CardDescription>
           {proposal.asker ? `${proposal.asker} asked for this deploy.` : "Someone asked for this deploy."}
           {prepared.kind === "ask" ? " Check each line. Your passkey signs exactly this." : ""}
-          {summary === undefined ? "" : ` Then each push to ${summary.branch} deploys these settings with no prompt.`}
+          {summary === undefined ? "" : ` Then each push to ${summary.branch} deploys the services below without asking.`}
           {review?.protected ? " Only an owner or admin can approve a deploy to a Protected Environment." : ""}
         </CardDescription>
       </CardHeader>
@@ -155,13 +169,14 @@ export function ApproveDeploy({ organizationSlug, id }: { organizationSlug: stri
   );
 }
 
-function Note({ title, body }: { title: string; body: string }) {
+function Note({ title, body, children }: { title: string; body: string; children?: ReactNode }) {
   return (
     <Card>
       <CardHeader>
         <CardTitle>{title}</CardTitle>
         <CardDescription>{body}</CardDescription>
       </CardHeader>
+      {children}
     </Card>
   );
 }

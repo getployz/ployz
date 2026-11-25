@@ -409,8 +409,9 @@ approves it as it stands, the page shows the rule too, and the same tap signs it
 builds that service, and later pushes to its branch deploy with no prompt. A deploy with only such
 services to sign still gets a link.
 
-Otherwise it's refused with what to do. A service built from source, as `ployz up` builds one,
-needs an automatic deploy rule, and a private tag needs its image written by digest. When Ployz
+Otherwise it's refused with what to do, and no link opens. No automatic deploy rule covers a
+service built from an upload, as `ployz up` builds one, so deploy a prebuilt image by digest or
+connect the service to a GitHub repository. A private tag needs its image written by digest. When Ployz
 Cloud can't reach every server, the deploy queues as before and each server checks it. A coding
 agent's deploy is refused instead.
 

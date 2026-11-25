@@ -1,4 +1,4 @@
-import type { SavedRule } from "@ployz/sdk";
+import type { PostedVersion, SavedRule } from "@ployz/sdk";
 import { versionSteps } from "@ployz/sdk/authority";
 import { describe, expect, it } from "vitest";
 import { CLUSTER, view } from "./rule-view.test-fixture";
@@ -19,11 +19,14 @@ const tap = (owner: number) => {
 /** `body` carried under `bundle`, as a decision posts the rule its passkey signed. */
 const saved = (body: string, bundle: string): SavedRule => ({ rule: { body, signatures: [], proposal: { body: bundle, signatures: [] } }, births: {}, prior: null });
 
+/** A version a decision posts, signed under `bundle`. */
+const posted = (bundle: string): PostedVersion => ({ statement: { body: "{}", signatures: [], proposal: { body: bundle, signatures: [] } }, births: {} });
+
 describe("sourceServices", () => {
   it("names the Services the tap's own Source step approves", () => {
     const { bundle, body } = tap(7);
 
-    expect(sourceServices(saved(body, bundle))).toEqual(new Set(["web"]));
+    expect(sourceServices(saved(body, bundle), [posted(bundle)])).toEqual(new Set(["web"]));
   });
 
   // Catches a decision whose rule was swapped after the tap: the Store would keep a rule every Server refuses.
@@ -31,6 +34,13 @@ describe("sourceServices", () => {
     const { bundle } = tap(7);
     const swapped = tap(8).body;
 
-    expect(sourceServices(saved(swapped, bundle))).toBeNull();
+    expect(sourceServices(saved(swapped, bundle), [])).toBeNull();
+  });
+
+  // Catches a rule from one tap posted with versions from another: each signature checks, but no one tap signed both.
+  it("refuses a rule signed in another tap than the versions it comes with", () => {
+    const { bundle, body } = tap(7);
+
+    expect(sourceServices(saved(body, bundle), [posted(tap(8).bundle)])).toBeNull();
   });
 });

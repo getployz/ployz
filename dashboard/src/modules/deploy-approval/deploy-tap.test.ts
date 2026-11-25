@@ -4,7 +4,7 @@ import { StoreRefused } from "#/lib/refusal";
 import { asTestDouble } from "#/lib/test-double";
 import { type AdmitDeploy, admitDeploy } from "#/modules/config-store/admit-deploy";
 import { environmentKey } from "#/modules/config-store/environment-ref";
-import { type Answer, type Ask, type DeploySteps, deployWith, prepareDeploy, sendAnswer } from "./deploy-tap";
+import { type Answer, type Ask, type DeploySteps, deployWith, prepareDeploy, sendAnswer, shipsSource, unbuildable } from "./deploy-tap";
 import { ready, view } from "./rule-view.test-fixture";
 
 const here = { project: "shop", environment: "production" };
@@ -55,6 +55,26 @@ describe("prepareDeploy", () => {
     expect(await prepareDeploy(command, read, async () => ({ problem: "Couldn't read acme/web on GitHub." }))).toEqual({
       kind: "admit", command: { ...command, version: "v1" }, held: { reason: "Couldn't read acme/web on GitHub.", unchecked: false },
     });
+  });
+});
+
+describe("a keyless Deploy's link", () => {
+  const sign = { kind: "sign" as const, view: view(), unchecked: false };
+
+  // Catches a CI deploy of an image Service sent to a person because web's rule went stale.
+  it("asks no one to sign web's rule for a Deploy of another Service", () => {
+    expect(shipsSource(["api"], sign)).toBe(false);
+    expect(shipsSource(["web"], sign)).toBe(true);
+    expect(shipsSource([], sign)).toBe(true);
+  });
+
+  // Catches an upload-built Service linked to a page that can never draft a rule for it.
+  it("refuses a Service built from an upload before any link, with what to deploy instead", () => {
+    const refused = unbuildable([{ service: "api", needs: "rule" }], sign);
+
+    expect(refused).toContain("Deploy a prebuilt image by digest, or connect the service to a GitHub repository.");
+    expect(refused).not.toContain("Deploy every push");
+    expect(unbuildable([{ service: "web", needs: "rule" }], sign)).toBeNull();
   });
 });
 

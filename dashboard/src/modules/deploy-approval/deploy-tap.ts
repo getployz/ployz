@@ -13,7 +13,7 @@ import type { AdmitDeploy } from "#/modules/config-store/admit-deploy";
 import { environmentKey } from "#/modules/config-store/environment-ref";
 import { type OnlyPasskey, signWithPasskey } from "#/modules/passkeys/passkey-statement";
 import { LOSS_MARK } from "#/modules/volume-placement/volume-placement.review";
-import type { DeployPlan } from "./deploy-tap.server";
+import type { DeployPlan, DeploySource } from "./deploy-tap.server";
 import { draftSource, type OwnerOf, priorOf } from "./source-step";
 
 /** What the Store refuses a plan with while a copied sealed value, such as a Database Preset's password, has no value yet. */
@@ -60,15 +60,25 @@ export const underRule = ({ needs, ended }: Unsigned) => (needs === "rule" || ne
 /** Whether `entry`'s Service builds from source and no rule that stands covers it, so only a signed Source step builds it. */
 export const needsSource = ({ needs, ended }: Unsigned) => needs === "rule" && ended !== true;
 
+/** The first Service of `unsigned` that only a Source step builds and that `sourced` leaves out, or null when none is. */
+export const unsourced = (unsigned: readonly Unsigned[], sourced: ReadonlySet<string>) =>
+  unsigned.find((entry) => needsSource(entry) && !sourced.has(entry.service))?.service ?? null;
+
 /**
- * Why a Service of `unsigned` that builds from source won't build, as `ployz deploy` says it, when no Source step names it
- * among `sourced`; null when each will.
+ * Why no tap can build a Service of `unsigned` that only a Source step builds, as the asker hears it before any link:
+ * `source`'s reason when it can't be signed, or what to deploy instead when its rule can't name the Service. Null when
+ * it names each.
  */
-export function unsourced(unsigned: readonly Unsigned[], sourced: ReadonlySet<string>) {
-  const service = unsigned.find((entry) => needsSource(entry) && !sourced.has(entry.service))?.service;
-  return service === undefined ? null
-    : `No automatic deploy rule covers ${service} as it stands, so your servers won't build it. Turn on Deploy every push, then deploy again.`;
+export function unbuildable(unsigned: readonly Unsigned[], source: DeploySource | undefined) {
+  const service = unsourced(unsigned, new Set(source?.kind === "sign" ? source.view.sources.map(({ service }) => service) : []));
+  if (service === null) return null;
+  if (source?.kind === "held") return `${source.reason} Nothing deployed.`;
+  return `No automatic deploy rule can cover ${service}, so your servers won't build it. Deploy a prebuilt image by digest, or connect the service to a GitHub repository.`;
 }
+
+/** Whether a Deploy of `services`, or of every Service when it names none, ships one whose rule `source` signs. */
+export const shipsSource = (services: readonly string[], source: DeploySource | undefined) =>
+  source?.kind === "sign" && !source.unchecked && (services.length === 0 || source.view.sources.some(({ service }) => services.includes(service)));
 
 /** Why a Service no passkey can sign keeps the Deploy from asking, or null when a passkey can sign each of `unsigned`. */
 export function blocked(unsigned: readonly Unsigned[]) {

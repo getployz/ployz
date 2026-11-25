@@ -139,9 +139,8 @@ deploys off, **Deploy** stops before it starts instead.
 
 A deploy that waits at a link, from a computer with no device key or for an owner or admin in a
 Protected Environment, signs the rule on its [approval page](deployments.md#deploy-with-no-key):
-the tap that approves the deploy signs it too. When the page can't sign it, or the rule leaves out
-a service that builds from GitHub, the page says why and nothing deploys. If the rule changed after
-the tap, the deploy is refused:
+the tap that approves the deploy signs it too. When the page can't sign it, the page says why and
+offers **Deny**, and nothing deploys. If the rule changed after the tap, the deploy is refused:
 `Automatic deploys changed since you looked. Check them, then try again.`
 
 To turn automatic deploys on yourself, open the environment's **Settings**, find **Automatic
