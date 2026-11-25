@@ -14,7 +14,7 @@ mod exec_watch;
 mod inspect;
 use inspect::{Inspected, RawContainerConfig};
 mod lifecycle;
-pub use lifecycle::Lifecycle;
+pub use lifecycle::{Lifecycle, VolumeDisposal};
 mod limits;
 mod live_stats;
 mod managed_service;
@@ -312,14 +312,9 @@ impl RotationTurn<'_> {
     /// # Errors
     ///
     /// As [`Lifecycle::remove`].
-    pub async fn remove(mut self, remove_volumes: bool, force: bool) -> Result<(), Error> {
+    pub async fn remove(mut self, volumes: VolumeDisposal, force: bool) -> Result<(), Error> {
         self.runtime
-            .remove_locked(
-                &mut self.operation,
-                &self.container_id,
-                remove_volumes,
-                force,
-            )
+            .remove_locked(&mut self.operation, &self.container_id, volumes, force)
             .await
     }
 }
@@ -883,6 +878,7 @@ impl Observation {
             .await?
             .ok_or_else(|| Error::SpecNotFound(*container_id))?;
         let rotation = rotation.unwrap_or_default();
+        let replaced_by = self.specs.replaced_by(container_id).await?;
         let r#gen = labels::generation(labels);
 
         let environment = inspected.config.as_ref().and_then(inspected_environment);
@@ -974,6 +970,7 @@ impl Observation {
                     .and_then(|host| host.log_config.as_ref())
                     .and_then(|log| log.typ.clone()),
                 admission: Some(admission),
+                replaced_by,
             })?;
         let oom_killed = inspected.oom_killed();
         Ok(InspectedRun {

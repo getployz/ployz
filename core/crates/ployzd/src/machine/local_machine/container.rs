@@ -328,6 +328,7 @@ impl LocalMachine {
                     r#gen: Gen::FIRST,
                     image: ImagePull::Policy(registry_auth.as_ref()),
                     admitted,
+                    replaces: None,
                 })
                 .await
         })
@@ -402,6 +403,7 @@ impl LocalMachine {
                             r#gen: copy_gen,
                             image: ImagePull::Policy(None),
                             admitted: admitted.ok_or_else(unadmitted)?,
+                            replaces: None,
                         })
                         .await?
                         .container_id
@@ -423,14 +425,14 @@ impl LocalMachine {
     pub(crate) async fn remove_container(
         &self,
         container_id: ContainerId,
-        remove_volumes: bool,
+        volumes: crate::docker::VolumeDisposal,
         force: bool,
     ) -> Result<(), Error> {
         self.finish_mutation(move |local| async move {
             local
                 .docker()?
                 .lifecycle()
-                .remove(&container_id, remove_volumes, force)
+                .remove(&container_id, volumes, force)
                 .await?;
             Ok(())
         })
@@ -445,7 +447,9 @@ impl Installed {
     /// holding a turn deadlocks.
     ///
     /// The stopping mark is set without a turn so replication tells every proxy and
-    /// Internal DNS during the drain. An idle copy ends its drain early, though not
+    /// Internal DNS during the drain. It is set under the config lock, so a removal
+    /// that took a replaced copy's anonymous volumes on this Container's word finished
+    /// before it. An idle copy ends its drain early, though not
     /// before `WITHDRAWAL_PROPAGATION`, so Internal DNS has heard before the stop. A
     /// drain shorter than that, or a proxy slower to hear, may still dial the stopped
     /// copy and retry another. A daemon restart forgets the mark; a still-running
@@ -1624,13 +1628,8 @@ impl LocalMachine {
                     let turn = local.exclusive_turn().await?;
                     let containers = local.docker()?;
                     removed(
-                        remove_out_of_rotation(
-                            &turn,
-                            containers,
-                            &id,
-                            anonymous_volumes == AnonymousVolumes::Remove,
-                        )
-                        .await,
+                        remove_out_of_rotation(&turn, containers, &id, anonymous_volumes.into())
+                            .await,
                     )
                 })
                 .await?
@@ -1645,13 +1644,8 @@ impl LocalMachine {
                     let turn = local.exclusive_turn().await?;
                     let containers = local.docker()?;
                     removed(
-                        remove_out_of_rotation(
-                            &turn,
-                            containers,
-                            &id,
-                            anonymous_volumes == AnonymousVolumes::Remove,
-                        )
-                        .await,
+                        remove_out_of_rotation(&turn, containers, &id, anonymous_volumes.into())
+                            .await,
                     )
                 })
                 .await?
@@ -1769,6 +1763,7 @@ impl LocalMachine {
                             (None, false) => ImagePull::Policy(new.registry_auth.as_ref()),
                         },
                         admitted,
+                        replaces: new.replaces,
                     })
                     .await;
                 let created = match created {
@@ -1833,6 +1828,7 @@ impl LocalMachine {
             r#gen,
             image,
             admitted,
+            replaces,
         } = facts;
         let containers = self.docker()?;
         let record = self.record();
@@ -1854,6 +1850,7 @@ impl LocalMachine {
                     creation_key: &creation_key,
                     deployment_id: deployment_id.as_ref(),
                     r#gen,
+                    replaces: replaces.as_ref(),
                     image,
                     kind,
                     namespace,
@@ -1973,7 +1970,11 @@ impl<'a> StopGuard for Fence<'a> {
     }
 
     async fn withdraw(&self) -> Result<Result<Withdrawal, VolumeGen>, Error> {
-        Ok(Ok(self.containers.lifecycle().withdraw(*self.container)))
+        Ok(Ok(self
+            .containers
+            .lifecycle()
+            .withdraw_locked(*self.container)
+            .await))
     }
 
     async fn drained(&self) -> Result<Result<(), VolumeGen>, Error> {
@@ -2040,6 +2041,8 @@ pub(super) struct CreationFacts<'a> {
     pub(super) r#gen: Gen,
     pub(super) image: ImagePull<'a>,
     pub(super) admitted: AdmittedSpec,
+    /// The copy on this Machine the new Container takes the place of.
+    pub(super) replaces: Option<ContainerId>,
 }
 
 /// Whether Docker still runs the Container's process. Paused and restarting count as
@@ -2305,15 +2308,15 @@ async fn remove_out_of_rotation(
     _turn: &ExclusiveTurn,
     containers: &crate::docker::ContainerRuntime,
     container: &ContainerId,
-    remove_volumes: bool,
+    volumes: crate::docker::VolumeDisposal,
 ) -> Result<Option<ContainerRefusal>, Error> {
     match leave_rotation(containers, container, &RotationTarget::Gone).await {
-        Ok(Ok(turn)) => turn.remove(remove_volumes, false).await?,
+        Ok(Ok(turn)) => turn.remove(volumes, false).await?,
         Ok(Err(refusal)) => return Ok(Some(refusal)),
         Err(Error::Docker(crate::docker::Error::ContainerNotFound(_))) => {
             containers
                 .lifecycle()
-                .remove(container, remove_volumes, false)
+                .remove(container, volumes, false)
                 .await?;
         }
         Err(error) => return Err(error),

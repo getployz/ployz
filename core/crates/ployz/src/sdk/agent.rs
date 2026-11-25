@@ -555,9 +555,8 @@ pub async fn stop_one(
         .await
 }
 
-/// Remove Container `container` from `machine` with its anonymous Volumes, keeping its
-/// named Volumes. A copy that serves leaves rotation and is removed once no proxy routes
-/// to it. A Container the Machine no longer has answers Ok, so a resend after a crash
+/// Remove Container `container` from `machine`, keeping its anonymous and named Volumes.
+/// A copy that serves leaves rotation and is removed once no proxy routes to it. A Container the Machine no longer has answers Ok, so a resend after a crash
 /// converges.
 ///
 /// # Errors

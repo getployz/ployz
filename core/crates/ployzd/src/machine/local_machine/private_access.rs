@@ -395,7 +395,11 @@ impl LocalMachine {
         }
         let mut stays = None;
         for retiree in &plan.retire {
-            match containers.lifecycle().remove(&retiree.id, true, true).await {
+            match containers
+                .lifecycle()
+                .remove(&retiree.id, crate::docker::VolumeDisposal::System, true)
+                .await
+            {
                 Ok(()) => set.retired.push(retiree.id),
                 Err(crate::docker::Error::ContainerNotFound(_)) => {}
                 Err(source) if wanted.is_none() => {

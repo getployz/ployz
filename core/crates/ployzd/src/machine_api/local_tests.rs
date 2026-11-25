@@ -557,7 +557,11 @@ async fn keyed_creation_replays_conflicts_and_obeys_new_work_admission() {
     );
     service
         .local
-        .remove_container(first.container_id, false, false)
+        .remove_container(
+            first.container_id,
+            crate::docker::VolumeDisposal::Keep,
+            false,
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -2149,7 +2153,7 @@ mod ingress_doors {
                 | crate::docker::Door::Tunnel => {
                     runtime
                         .lifecycle()
-                        .remove(&entry.facts.id, true, true)
+                        .remove(&entry.facts.id, crate::docker::VolumeDisposal::Keep, true)
                         .await
                         .unwrap();
                 }
