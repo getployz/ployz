@@ -7,8 +7,8 @@
 //! InspectVolumeCopy reports.
 
 use ployz_core::{
-    DockerVolumeName, ManagementAddress, SnapshotGuid, SnapshotName, VolumeGen, VolumeOrigin,
-    WriterEpoch,
+    DockerVolumeName, ExpectedCopy, ManagementAddress, SnapshotGuid, SnapshotName, VolumeGen,
+    VolumeOrigin, WriterEpoch,
 };
 use serde::{Deserialize, Serialize};
 
@@ -135,6 +135,21 @@ pub struct ForgetRequest {
     pub name: DockerVolumeName,
     #[serde(default)]
     pub r#gen: VolumeGen,
+}
+
+/// A slot's Forget as the daemon planned it. The plugin plans it again on the copy it
+/// holds under its mutation, after no receive is left to change the slot, and destroys
+/// only if the same Forget still deletes it. A request without `expect` comes from a daemon
+/// before this check, and destroys as that daemon planned.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct DestroyRequest {
+    pub name: DockerVolumeName,
+    #[serde(default)]
+    pub r#gen: VolumeGen,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expect: Option<ExpectedCopy>,
+    #[serde(default)]
+    pub discard: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

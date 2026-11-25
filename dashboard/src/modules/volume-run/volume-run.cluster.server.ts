@@ -9,12 +9,12 @@ import { enqueueEvent } from "#/modules/inngest/outbox.server";
 import { ClusterOutOfTime, clusterRead, PLAN_CLUSTER_BUDGET_MS, requireClusterTime, RUNTIME_FRAME_TIMEOUT_MS, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
 import { type Requirement, requirementFor, requirements, serverSupports } from "#/modules/runtime/daemon-compat";
 import { type PloyzSdkError, RpcError, sdkFailureMessage, setVolumeCopyRefusal } from "#/modules/runtime/ployz.server";
-import { alreadyOn, holdingNewest, type PlanInput, planForwardRelease, planFromCopies, restoreSource, roleOf, writerRemovedMessage } from "#/modules/volume-run/plan";
+import { alreadyOn, confirmedCopy, destroyedBy, holdingNewest, type PlanInput, planForwardRelease, planFromCopies, restoreSource, roleOf, upgradeBeforeSend, writerRemovedMessage } from "#/modules/volume-run/plan";
 import { resizeRequirements, sizeDirection } from "#/modules/volume-run/resize";
 import { isBehind, isCurrent, releaseLine } from "#/modules/server-upgrade/server-upgrade";
 import { channelRelease, organizationReleaseChannel } from "#/modules/server-upgrade/server-upgrade.server";
 import { volumeRun } from "#/modules/volume-run/tables";
-import { checksOrigins } from "#/modules/runtime/daemon-release";
+import { checksOrigins, keepsWritten } from "#/modules/runtime/daemon-release";
 import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, isDestination, type MachineRef, type Member, needsFloor, RUN_FEATURES, type ServiceSpec, type VolumeLaneInput } from "#/modules/volume-run/volume-run";
 import { managementAddress } from "#/modules/runtime/naming";
 import { type VolumeRunKind } from "#/modules/volume-run/volume-run-states";
@@ -105,11 +105,13 @@ export const planOnCluster = Effect.fn("VolumeRun.planOnCluster")(function* (
     : Option.some(null);
   const release = releasePlan(from, source);
   const effects = phaseEffects(volume, phase, release.forgets);
+  // A delete's approval names each copy as the Servers report it now, so a copy replaced or written since asks again.
+  const copies = phase.kind === "delete_mirror" ? phase.destroy.flatMap((member) => confirmedCopy(member) ?? []) : undefined;
   const askedAs = (verb: OperationVerb): OperationAsked => ({
     subject: `volume:${input.volumeId}`,
     verb,
     name: requestName(volume, input),
-    preview: { volume: input.volumeId, copies: effects.map((effect) => effect.node), ...requestPreview(volume, input, members.value) },
+    preview: { volume: input.volumeId, copies: effects.map((effect) => effect.node), ...requestPreview(volume, input, members.value), ...(copies !== undefined && { confirms: copies }) },
     effects,
   });
   const asked = verb === null ? null : askedAs(verb);
@@ -122,7 +124,7 @@ export const planOnCluster = Effect.fn("VolumeRun.planOnCluster")(function* (
     : resolved.kind === "move" && (phase.kind === "move" || phase.kind === "landed")
       ? { ...resolved, args: { ...resolved.args, machine: phase.target.machine.id } }
       : resolved;
-  return { ok: true, volume, asked, guard, input: pinned } satisfies ClusterPlan;
+  return { ok: true, volume, asked, guard, input: pinned, ...(copies !== undefined && { copies }) } satisfies ClusterPlan;
 }, Effect.catchTag("ClusterOutOfTime", () => Effect.succeed({ ok: false, refusal: unanswered } satisfies ClusterPlan)), withClusterBudget(PLAN_CLUSTER_BUDGET_MS));
 
 /**
@@ -229,6 +231,7 @@ export type SwitchReason = CopyRefusal | SwitchError["reason"];
 const SWITCH_REASONS = [
   "mismatch", "no_transition", "busy", "no_capacity", "behind", "written", "no_source",
   "precondition", "volume_switching", "no_writer", "restore_point_gone", "stale", "foreign", "docker_unavailable", "held", "stopped",
+  "written_here",
 ] as const satisfies readonly SwitchReason[];
 
 /** Refusals that pass on their own, so they fail only the attempt and the step asks again. Docker comes back by itself. */
@@ -281,9 +284,24 @@ export function switchFailureMessage(
       return heldMessage(name, machine, null);
     case "stopped":
       return `${name}'s Service no longer runs on ${machine.name}, so the move stopped nothing`;
+    case "written_here":
+      return `${name}'s copy on ${machine.name} may hold writes no other Server has; only ployz volume mirror rm deletes it`;
     case "busy":
       return undefined;
   }
+}
+
+const SaidByServer = Schema.Struct({ message: Schema.String });
+
+/**
+ * A refusal from a Ployz newer than this Cloud, whose reason it can't read: the Server's own words, since only they know
+ * what it needs.
+ */
+function unrecognizedMessage(error: PloyzSdkError, machine: MachineRef) {
+  const said = Schema.decodeUnknownOption(SaidByServer)("cause" in error ? error.cause : undefined);
+  return Option.isSome(said) && said.value.message.length > 0
+    ? `${machine.name} refused: ${said.value.message}`
+    : `${machine.name} refused for a reason this Ployz Cloud doesn't know; upgrade Ployz Cloud`;
 }
 
 /**
@@ -346,10 +364,13 @@ export const sendSwitch = <R extends SwitchRequest>(ctx: RunContext, inngestRunI
   }).pipe(Effect.scoped);
 };
 
-/** Plain JSON, since a step returns it: the copy the Machine holds now, after the step or after its refusal. */
+/**
+ * Plain JSON, since a step returns it: the copy the Machine holds now, after the step or after its refusal. A step
+ * refused `server_lacks` was never sent, so its copy is unknown.
+ */
 export type CopyAnswer =
   | { readonly ok: true; readonly copy: VolumeCopy | null }
-  | { readonly ok: false; readonly reason: CopyRefusal | "unanswered" | "refused"; readonly copy: VolumeCopy | null; readonly message: string };
+  | { readonly ok: false; readonly reason: CopyRefusal | "unanswered" | "refused" | "server_lacks"; readonly copy: VolumeCopy | null; readonly message: string };
 
 /**
  * Who a SetVolumeCopy is for: a run, a Deploy following another run's lane without owning its row, or the rowless
@@ -362,17 +383,39 @@ export type CopyAsker = Pick<RunContext, "organizationId" | "dockerVolume" | "vo
  * Machine whose Docker isn't answering, fails, so a run's step retries. Spent Cluster time fails it before it opens a session, and out of time is `inFlight` only
  * when the SetVolumeCopy itself was cut. Any other failure but a `SwitchAttemptError` is a session that didn't open, so
  * the SetVolumeCopy was never sent.
+ *
+ * Every SetVolumeCopy goes through here, so this is where a step that deletes or may replace a copy is checked: it is
+ * sent only to a Server whose capabilities, read over the same session just before, keep a copy that may hold writes no
+ * other Server has. Otherwise it is refused `server_lacks` and never sent. A pull names `adds`, the Writer's snapshot it
+ * adds to, to say it can't replace the slot.
  */
 export const askCopy = Effect.fn("VolumeRun.askCopy")(function* (
   asker: CopyAsker,
   machine: MachineRef,
   expect: ExpectedCopy,
   want: WantedCopy,
+  adds?: SnapshotGuid,
 ) {
   yield* requireClusterTime;
   const session = yield* openSession(asker.organizationId).pipe(
     Effect.catchIf((error) => error instanceof ClusterOutOfTime, () => Effect.fail(new ClusterOutOfTime({ inFlight: false }))),
   );
+  const destroys = destroyedBy(expect, want, adds);
+  if (destroys !== null) {
+    const frame = yield* session.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS).pipe(
+      clusterRead,
+      Effect.mapError((error) => error instanceof ClusterOutOfTime
+        ? new ClusterOutOfTime({ inFlight: false })
+        : new SwitchAttemptError(null, `reading what ${machine.name}'s Ployz keeps: ${error.message}`, "unreached")),
+    );
+    const listed = frame.machines.find((observed) => observed.machine.id === machine.id);
+    if (listed === undefined) {
+      return yield* Effect.fail(new SwitchAttemptError(null, `${machine.name} is missing from the Cluster's report, so it wasn't asked`, "unreached"));
+    }
+    if (!keepsWritten({ capabilities: listed.machine.runtime.capabilities ?? [] })) {
+      return { ok: false, reason: "server_lacks", copy: null, message: upgradeBeforeSend(asker.volumeName, machine.name, destroys) } satisfies CopyAnswer;
+    }
+  }
   const payload = { name: asker.dockerVolume, expect, want, gen: asker.gen };
   return yield* session.volumeSwitch(machine.id, { command: "set_volume_copy", payload }).pipe(
     clusterRead,
@@ -387,7 +430,9 @@ export const askCopy = Effect.fn("VolumeRun.askCopy")(function* (
       const { reason, copy } = refused;
       const message = reason === "held"
         ? heldMessage(asker.volumeName, machine, refused.holder ?? null)
-        : switchFailureMessage(reason, asker, machine) ?? `${machine.name} is busy with ${asker.volumeName}`;
+        : reason === "unrecognized"
+          ? unrecognizedMessage(error, machine)
+          : switchFailureMessage(reason, asker, machine) ?? `${machine.name} is busy with ${asker.volumeName}`;
       if (passing(reason)) return Effect.fail(new SwitchAttemptError(reason, message));
       return Effect.succeed<CopyAnswer>({ ok: false, reason, copy, message });
     }),
@@ -400,9 +445,10 @@ export const setVolumeCopy = Effect.fn("VolumeRun.setVolumeCopy")(function* (
   machine: MachineRef,
   expect: ExpectedCopy,
   want: WantedCopy,
+  adds?: SnapshotGuid,
 ) {
   yield* requireOwner(ctx.id, inngestRunId);
-  return yield* askCopy(ctx, machine, expect, want);
+  return yield* askCopy(ctx, machine, expect, want, adds);
 });
 
 export const inspectCopy = (ctx: RunContext, inngestRunId: string, machine: MachineRef) =>
@@ -828,6 +874,7 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
           view,
           floorless,
           checksOrigins: checksOrigins(capabilities),
+          keepsWritten: keepsWritten(capabilities),
           ...sized,
         })),
       Effect.catchTag("ServerLacks", (lack) => lacks(lack.capability, run?.kind)),

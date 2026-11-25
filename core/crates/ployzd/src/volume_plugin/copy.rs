@@ -8,14 +8,16 @@ use crate::{
     faults::{Identity, Point, Want},
     machine_pool::MachinePool,
     volume_copy::{
-        CopyRequest, CutRequest, ForgetRequest, PullRequest, SnapshotRequest, WriterRequest,
+        CopyRequest, CutRequest, DestroyRequest, ForgetRequest, PullRequest, SnapshotRequest,
+        WriterRequest,
     },
     volume_send::protocol,
 };
 use axum::{Json, extract::State};
 use ployz_core::{
-    CopyRefusal, CopyTransition, DockerVolumeName as WireName, RpcError, SendSource, SendStream,
-    SetVolumeCopyRefused, SlotRole, SnapshotName, VolumeCopy, VolumeGen, error_chain::inline,
+    CopyPlan, CopyRefusal, CopyTransition, DockerVolumeName as WireName, RpcError, SendSource,
+    SendStream, SetVolumeCopyRefused, SlotRole, SnapshotName, VolumeCopy, VolumeGen, WantedCopy,
+    error_chain::inline,
 };
 
 use super::{
@@ -24,7 +26,7 @@ use super::{
     inspect::answering,
     marks::{Mark, Marks},
     pool::UnlabeledBacking,
-    transfer::{Busy, ReceiveFailure, Stop, pulling},
+    transfer::{Busy, Proof, ReceiveFailure, Stop, pulling},
 };
 
 type Copy = Option<VolumeCopy>;
@@ -82,7 +84,7 @@ pub(super) async fn pull(
 
 pub(super) async fn destroy(
     State(storage): State<VolumeStorage>,
-    Json(request): Json<ForgetRequest>,
+    Json(request): Json<DestroyRequest>,
 ) -> Reply {
     Json(storage.copy_destroy(&request).await)
 }
@@ -617,8 +619,22 @@ impl VolumeStorage {
             Some(_) => self.snapshots(&fs).await?.into_iter().next(),
             None => None,
         };
-        let newest_name = newest.as_ref().map(|newest| newest.name.as_str());
-        if newest_name == Some(target.as_str()) {
+        if let Some(newest) = &newest
+            && newest.name == request.target
+        {
+            if pulling.as_deref() == Some(target.as_str())
+                && self.written_here(&fs).await?
+                && let Some(failure) = self
+                    .mark_proven_pull(request, (&parent, &fs), newest.guid)
+                    .await?
+            {
+                // Nothing proved or refuted the landing, so `ployz:pull` stays for the next
+                // resend to prove.
+                return self
+                    .copy_now(&scope)
+                    .await
+                    .map(|copy| answering(copy, failure));
+            }
             // An old copy already holding the target receives nothing, and is the mirror now.
             if self.marks(&parent).role().await? != SlotRole::Mirror {
                 self.marks(&parent).set_role(SlotRole::Mirror).await?;
@@ -635,9 +651,6 @@ impl VolumeStorage {
             return self.copy_now(&scope).await;
         }
         let retarget = pulling.as_deref() != Some(target.as_str());
-        if retarget {
-            self.marks(&parent).set_role(SlotRole::Mirror).await?;
-        }
         let bound = if fresh {
             bound
         } else {
@@ -679,7 +692,7 @@ impl VolumeStorage {
                     .pull_stream(from, stream, (&parent, &fs), bound, r#gen, &stop)
                     .await
                 {
-                    Ok(()) => match storage.mark_pulled(&fs).await {
+                    Ok(()) => match storage.mark_pulled(&parent, &fs).await {
                         Ok(()) => storage
                             .complete(&parent, &fs)
                             .await
@@ -702,7 +715,9 @@ impl VolumeStorage {
     /// One receive of `stream`. When the writer no longer has the base or the token the
     /// stream names, the slot's copy starts over from a full send. The copy is dropped
     /// only once the writer answers the full send, so a writer without the target leaves
-    /// the slot's newest snapshot in place.
+    /// the slot's newest snapshot in place. A copy this Machine may alone hold
+    /// ([`Self::written_here`]), such as one a departure parked, is never dropped: the
+    /// pull fails and the copy stays.
     async fn pull_stream(
         &self,
         from: ployz_core::ManagementAddress,
@@ -732,6 +747,16 @@ impl VolumeStorage {
             SendSource::Resume { target, .. } => (target.clone(), true),
             SendSource::Incremental { target, .. } => (target.clone(), false),
         };
+        if self
+            .written_here(fs)
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            return Err(format!(
+                "this Machine's copy of {} may hold writes {} doesn't have, so the pull keeps it rather than replace it with a full copy; delete it with `ployz volume mirror rm` to take a fresh one",
+                stream.name, from.0
+            ));
+        }
         let full = SendStream {
             name: stream.name,
             source: SendSource::Full { target },
@@ -760,23 +785,65 @@ impl VolumeStorage {
             .map_err(|failure| failure.to_string())
     }
 
-    /// Marks the slot received from a writer elsewhere. A receive that exits 0 made the
-    /// stream's snapshot, and a pull of the slot's own newest never starts one, so the
-    /// newest snapshot is the one a writer elsewhere sent. Any cut, restore, promote or
-    /// seed mark describes a point that writer has since built on, so each goes first: a
-    /// crash between leaves a slot with neither, which the departure keeps.
-    async fn mark_pulled(&self, fs: &str) -> Result<(), String> {
-        let Some(newest) = self
-            .newest_guid(fs)
-            .await
-            .map_err(|error| error.to_string())?
-        else {
+    /// A resend of a pull whose target landed, on a slot not marked pulled: a daemon that
+    /// stopped between the receive and [`Self::mark_pulled`]. A slot a released version
+    /// wrote can carry the same marks with no receive, so the writer must send the target
+    /// as the slot's newest guid before the slot is marked. A writer that says it can't
+    /// leaves the slot as it is, kept by a departure. A writer that gives no answer, such
+    /// as one that can't be reached, leaves why, and the slot unmarked.
+    async fn mark_proven_pull(
+        &self,
+        request: &PullRequest,
+        (parent, fs): (&str, &str),
+        guid: ployz_core::SnapshotGuid,
+    ) -> Result<Option<String>, RpcError> {
+        let stream = SendStream {
+            name: request.name.clone(),
+            source: SendSource::Full {
+                target: request.target.clone(),
+            },
+        };
+        match self.sends_as(request.from, &stream, guid).await {
+            Ok(Proof::Sent) => {
+                self.mark_pulled(parent, fs)
+                    .await
+                    .map_err(RpcError::internal)?;
+                Ok(None)
+            }
+            Ok(Proof::Refuted(failure)) => {
+                tracing::warn!(%fs, %failure, "left a landed pull unmarked: its writer did not send its snapshot");
+                Ok(None)
+            }
+            Err(failure) => Ok(Some(format!(
+                "could not confirm with its writer that {} landed: {failure}",
+                request.target
+            ))),
+        }
+    }
+
+    /// Marks the slot received from a writer elsewhere, and that writer's Mirror. A
+    /// receive that exits 0 made the stream's snapshot, and a pull of the slot's own newest
+    /// never starts one, so the newest snapshot is the one a writer elsewhere sent, with
+    /// that writer's guid. Any cut, restore, promote or seed mark describes a point that
+    /// writer has since built on, so each goes first: a crash between leaves a slot with
+    /// neither, which the departure keeps. The role goes last, so an old copy a refused
+    /// pull leaves stays an old copy.
+    async fn mark_pulled(&self, parent: &str, fs: &str) -> Result<(), String> {
+        let failed = |error: super::PluginError| error.to_string();
+        let Some(newest) = self.newest_guid(fs).await.map_err(failed)? else {
             return Ok(());
         };
         self.marks(fs)
             .apply(&Marks::received(newest))
             .await
-            .map_err(|error| error.to_string())
+            .map_err(failed)?;
+        if self.marks(parent).role().await.map_err(failed)? != SlotRole::Mirror {
+            self.marks(parent)
+                .set_role(SlotRole::Mirror)
+                .await
+                .map_err(failed)?;
+        }
+        Ok(())
     }
 
     /// The slot's bound raised to the writer's, when the writer's Volume grew since the
@@ -850,12 +917,47 @@ impl VolumeStorage {
             .map_err(|error| RpcError::internal(format!("GET {url} answered {body:?}: {error}")))
     }
 
-    async fn copy_destroy(&self, request: &ForgetRequest) -> Result<Copy, RpcError> {
+    /// The slot, or an unadopted seed's root, destroyed, once the Forget the daemon planned
+    /// still deletes the copy here. No receive changes the slot past the busy check: its task
+    /// has ended, and a new one starts only under the mutation this route holds.
+    async fn copy_destroy(&self, request: &DestroyRequest) -> Result<Copy, RpcError> {
         let wire = &request.name;
         let Some(scope) = self.scope(wire).await? else {
             return Ok(None);
         };
         let name = &scope.name;
+        let receiving = self.receives.status(name).busy();
+        if scope.root()?.is_none() && scope.slot().is_some() && receiving {
+            return Err(self
+                .refuse_found(
+                    &scope,
+                    CopyRefusal::Busy,
+                    format!("Volume {name} is still receiving into its slot"),
+                )
+                .await);
+        }
+        if let Some(expect) = &request.expect {
+            let copy = self.copy_now(&scope).await?;
+            let want = WantedCopy::Forget {
+                discard: request.discard,
+            };
+            match ployz_core::plan(copy.as_ref(), false, expect, &want) {
+                CopyPlan::Transition(
+                    CopyTransition::MirrorToForget | CopyTransition::SeedToForget,
+                ) => {}
+                CopyPlan::AtWant => return Ok(copy),
+                CopyPlan::Refuse(reason) => {
+                    let message = format!(
+                        "Volume {name} changed after this Machine planned its delete, so it was kept"
+                    );
+                    return Err(refuse(reason, copy, message));
+                }
+                CopyPlan::Transition(_) => {
+                    let message = format!("Volume {name} has no copy here to delete");
+                    return Err(refuse(CopyRefusal::NoTransition, copy, message));
+                }
+            }
+        }
         if let Some(root) = scope.root()? {
             if self.marks(&root.name).unadopted_seed().await? {
                 crate::faults::kill_inside(
@@ -863,7 +965,13 @@ impl VolumeStorage {
                     Some(forgetting(wire, request.r#gen)),
                 );
                 self.z(&["destroy", "-r", &root.name]).await?;
-                if scope.slot().is_some() && !self.receives.status(name).busy() {
+                // A slot beside the seed is the parent its landing emptied; one holding a
+                // copy that may be the only one stays.
+                let kept = match scope.fs() {
+                    Some(fs) => self.written_here(&fs.name).await?,
+                    None => false,
+                };
+                if scope.slot().is_some() && !receiving && !kept {
                     self.z(&[
                         "destroy",
                         "-r",
@@ -886,15 +994,6 @@ impl VolumeStorage {
         }
         if scope.slot().is_none() {
             return Ok(None);
-        }
-        if self.receives.status(name).busy() {
-            return Err(self
-                .refuse_found(
-                    &scope,
-                    CopyRefusal::Busy,
-                    format!("Volume {name} is still receiving into its slot"),
-                )
-                .await);
         }
         crate::faults::kill_inside(
             Point::Copy(CopyTransition::MirrorToForget),

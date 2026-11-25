@@ -1,6 +1,6 @@
 use super::*;
 use crate::storage::test_support::FakePlugin;
-use crate::volume_copy::{CUT_ROUTE, INSPECT_ROUTE, WRITER_ROUTE};
+use crate::volume_copy::{CUT_ROUTE, DESTROY_ROUTE, INSPECT_ROUTE, WRITER_ROUTE};
 use ployz_core::{Gen, SetVolumeCopyReply};
 
 const VOLUME: &str = "app_data";
@@ -264,6 +264,74 @@ async fn a_release_after_the_cut_routes_the_kept_copy_again() {
 
     assert!(fleet.node(0).running(source));
     assert_eq!(fleet.node(0).rotation(source).await, CopyRotation::In);
+}
+
+/// A `ployz volume sync --full` forgets the mirror before it copies the Volume again, with
+/// the same bare Forget an older Cloud's `mirror rm` sends. The slot here is the copy a
+/// departure parked, with writes no other Machine has, so a bare Forget keeps it, and only
+/// `mirror rm`, which says to discard it, deletes it.
+#[tokio::test]
+async fn a_bare_forget_keeps_a_parked_copy_that_mirror_rm_deletes() {
+    let fleet = Fleet::start().await;
+    let parked = json!({"Ok": {"kind":"slot", "slot":"1", "readonly":true,
+        "newest":snapshot(), "resume_token":null, "pull":null, "role":"old_copy",
+        "written_here":true}});
+    let plugin = plugin(parked, DESTROY_ROUTE, json!({"Ok": null}));
+    let machine = fleet.with_plugin(0, &plugin);
+    let forget = |want: Value| json!({"name":VOLUME, "expect":{"kind":"mirror", "newest":"7", "slot":"1"}, "want":want});
+
+    let refused = try_set_copy(&machine, forget(json!({"kind":"forget"})))
+        .await
+        .unwrap_err();
+    assert!(refused.contains("written_here"), "{refused}");
+    assert!(
+        !plugin
+            .routes_called()
+            .iter()
+            .any(|route| route == DESTROY_ROUTE),
+        "{:?}",
+        plugin.routes_called()
+    );
+
+    set_copy(&machine, forget(json!({"kind":"forget", "discard":true}))).await;
+    assert!(
+        plugin
+            .routes_called()
+            .iter()
+            .any(|route| route == DESTROY_ROUTE),
+        "{:?}",
+        plugin.routes_called()
+    );
+}
+
+/// Someone confirmed deleting this slot while it was written nowhere else. Written here
+/// since, it is not the copy they confirmed, so their Forget deletes nothing.
+#[tokio::test]
+async fn a_confirmed_forget_keeps_a_copy_written_here_since() {
+    let fleet = Fleet::start().await;
+    let parked = json!({"Ok": {"kind":"slot", "slot":"1", "readonly":true,
+        "newest":snapshot(), "resume_token":null, "pull":null, "role":"old_copy",
+        "written_here":true}});
+    let plugin = plugin(parked, DESTROY_ROUTE, json!({"Ok": null}));
+    let machine = fleet.with_plugin(0, &plugin);
+    let confirmed = |written: bool| {
+        json!({"name":VOLUME,
+            "expect":{"kind":"mirror", "newest":"7", "slot":"1", "written_here":written},
+            "want":{"kind":"forget", "discard":true}})
+    };
+    let destroyed = || {
+        plugin
+            .routes_called()
+            .iter()
+            .any(|route| route == DESTROY_ROUTE)
+    };
+
+    let refused = try_set_copy(&machine, confirmed(false)).await.unwrap_err();
+    assert!(refused.contains("mismatch"), "{refused}");
+    assert!(!destroyed(), "{:?}", plugin.routes_called());
+
+    set_copy(&machine, confirmed(true)).await;
+    assert!(destroyed(), "{:?}", plugin.routes_called());
 }
 
 /// A Container `docker run` made on the Volume, with no Ployz labels, on Machine

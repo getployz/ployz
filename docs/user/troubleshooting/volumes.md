@@ -295,3 +295,169 @@ or older deletes the copy anyway.
 
 A Ployz Cloud from before `--if-old-copy` refuses a `ployz volume mirror rm --if-old-copy` line and
 deletes nothing.
+
+## A move or mirror says the copy may hold writes the writer doesn't have
+
+```
+this Machine's copy of … may hold writes … doesn't have, so the pull keeps it rather than replace it with a full copy; delete it with `ployz volume mirror rm` to take a fresh one
+```
+
+The server you moved or mirrored to already held a copy of the volume that may hold writes no
+other server has, such as the copy a server parks when it learns it was removed while away, and
+the writer can't send changes on top of it. Ployz keeps that copy and stops instead of replacing
+it. Delete it with `ployz volume mirror rm` only once you no longer need what it holds. The next
+move or mirror then copies the volume in full.
+
+A server running Ployz 0.4.0-beta.2 or earlier replaces such a copy with a full one instead, so
+Ployz Cloud asks you to upgrade it first. See
+[Ployz asks you to upgrade a server first](#ployz-asks-you-to-upgrade-a-server-first).
+
+A mirror last refreshed by a Ployz before 0.3.0, such as a 0.3.0 beta, has no record of what it
+received, so Ployz counts it as a copy that may hold such writes. Once its writer drops that
+mirror's newest snapshot, every refresh stops with this message. Ployz before 0.3.0 is outside the
+stable promise: delete the mirror with `ployz volume mirror rm`, then mirror again.
+
+A mirror's server records what it received only once the writer confirms it. If the writer drops
+that snapshot while the mirror's server can't reach it, the confirmation fails, the server forgets
+what it received, and it counts the mirror as a copy that may hold such writes. Every later refresh
+then stops with this message. Delete the mirror with `ployz volume mirror rm`, then mirror again.
+
+## A full sync says the copy may hold writes no other server has
+
+```
+error: data-web-1 may hold writes no other Server has, so sync --full keeps it
+next: ployz volume mirror rm data-web-1 --if-old-copy
+```
+
+`ployz volume sync --full` deletes the mirror's copy before it copies the volume again, so it
+won't run on an old copy or on a copy that may hold writes no other server has. Nothing was
+deleted. Run the `next:` line only once you no longer need what that copy holds, then mirror again.
+If the copy is a mirror, the line has no `--if-old-copy`.
+
+A server running Ployz 0.4.0-beta.2 or earlier gets no full sync. See
+[Ployz asks you to upgrade a server first](#ployz-asks-you-to-upgrade-a-server-first).
+
+## Ployz asks you to upgrade a server first
+
+```
+error: Upgrade web-1 first. Its Ployz would delete data-web-1 even if it holds writes no other Server has, so nothing was changed
+error: Upgrade web-1 first. Its Ployz would replace data-web-1 with a fresh copy even if it holds writes no other Server has, so nothing was changed
+```
+
+A server running Ployz 0.4.0-beta.2 or earlier deletes any copy Ployz Cloud names, and replaces a
+copy it can't add to with a full one, whatever the copy holds. It can't say whether the copy holds
+writes no other server has, so Ployz Cloud sends it nothing that would delete or replace a copy.
+Nothing was changed. Upgrade the server, then run the command again.
+
+Ployz Cloud checks the server's Ployz again as it sends each such step. If the server went back to
+such a Ployz after the command started, the command stops there with `..., so it wasn't asked to`
+in place of `so nothing was changed`. The copy is as it was, and steps that came before it, like a
+snapshot of the writer, stay done.
+
+That covers:
+
+- `ployz volume mirror rm`, **Delete copy** in Ployz Cloud and a deploy's delete of a copy there.
+- `ployz volume sync --full` onto it.
+- `ployz volume leftovers rm` of a copy there, which says `Its Ployz would delete
+  shop-production_vol-3f2a's copy`.
+- A mirror, a move or a mirror refresh onto a copy there, unless the pull starts from the
+  writer's newest snapshot and so only adds to the copy. A refresh says `data-web-1 refused the
+  pull:` before the message.
+
+A release keeps the copies on such a server and still starts your service again. The run ends done
+and names each copy, like `kept data-web-1, since web-1's Ployz would delete it even if it holds
+writes no other Server has (upgrade web-1, then ployz volume mirror rm data-web-1 deletes it)`. The
+cleanup after a deleted volume keeps them too.
+
+## A delete queued before an upgrade deletes nothing
+
+```
+data's delete was queued by an older Ployz Cloud, which didn't record the copy it deletes, so nothing was deleted. Delete the copy again.
+```
+
+A delete waiting when Ployz Cloud was upgraded has no record of the copy you confirmed, so Ployz
+deletes nothing. Delete the copy again to confirm it as it is now.
+
+## Ployz keeps a copy that may hold writes no other server has
+
+```
+data's copy on web-1 may hold writes no other Server has; only ployz volume mirror rm deletes it
+```
+
+A server running a Ployz later than 0.4.0-beta.2 deletes such a copy only when someone chose to
+delete it: you ran `ployz volume mirror rm`, or you confirmed a deploy whose **Deletes data** listed
+it. Anything else that would delete it stops with this message, and the server keeps the copy as it
+was. Run `ployz volume mirror rm` on the copy once you no longer need what it holds, then run the
+command again.
+
+A release that meets such a copy keeps it and still starts your service again. The run ends done and
+names the copy, like `kept data-web-1, which may hold writes no other Server has (ployz volume
+mirror rm data-web-1 deletes it)`.
+
+## A delete says the copy changed since it was confirmed
+
+```
+data-web-2 changed since its delete was confirmed, so nothing was deleted. Run ployz volume mirror rm data-web-2 to delete it as it is now
+```
+
+A delete removes only the copy you confirmed, as its server showed it then: the same slot, the same
+newest snapshot, and the same answer to whether it may hold writes no other server has. If the
+copy was replaced, refreshed or written to before the delete ran, Ployz deletes nothing. Run the
+command again to see the copy as it is now. A deploy's delete says `Deploy again to confirm it as it
+is now` instead, and the deploy asks again with the copy's new details.
+
+The server checks again as it deletes the copy, so a refresh that lands after the delete was sent
+keeps the copy too.
+
+**Delete copy** in Ployz Cloud deletes the copy its dialog showed. If the server reports another
+by the time you confirm, it says `web-1's copy changed since you opened Delete, so nothing was
+deleted. Look at it again before you delete it`. Open **Delete copy** again.
+
+## Copies left behind by a deleted volume
+
+After a deploy deletes a volume or an environment, Ployz deletes the volume's mirrors on your other
+servers. It keeps each copy that may hold writes no other server has, such as an old copy a move
+left or a copy a server parked when it learned it was removed while away. It also keeps every copy
+on a server running Ployz 0.4.0-beta.2 or earlier, since that server would delete it whatever it
+holds. When the cleanup deletes some copies, its run names each one it kept, like `kept
+data-web-1, which may hold writes no other Server has (ployz volume leftovers rm
+shop-production_vol-3f2a --on web-1 deletes it)`.
+
+List the copies Ployz kept:
+
+```
+ployz volume leftovers
+```
+
+Each row shows the copy's server, slot, last snapshot, size, and whether it may hold writes no other
+server has. In Ployz Cloud, a server's page lists its copies under **Copies of deleted volumes**,
+and **Copy delete command** copies the command for one. To delete one, run `ployz volume leftovers rm` with the volume and server from the
+list. The first run shows the copy and deletes nothing:
+
+```
+error: shop-production_vol-3f2a on web-1: slot 7, last snapshot dep-1763600000 (2025-11-20 01:33 UTC), up to 10.0 GB; may hold writes no other Server has. Run ployz volume leftovers rm shop-production_vol-3f2a --on web-1 --confirm 7-1234-written to delete it
+```
+
+Run the line it prints once you no longer need what the copy holds. `ployz` shows what the delete
+destroys and asks you to say yes. If the copy changed since you looked, the delete stops again and
+shows it as it is now. An agent can't delete such a copy while a person in the organization could
+say yes. Its refusal names the line for a person to run.
+
+When a server refuses for a reason your Ployz Cloud doesn't know, the run shows the server's own
+message after `web-1 refused:`. Upgrade Ployz Cloud if the message asks you to.
+
+### With a self-hosted Ployz Cloud from before keep-written
+
+```
+web-1 is busy with data
+```
+
+A self-hosted Ployz Cloud from before servers kept these copies sends every delete the same way and
+can't read why the server refused. It shows this message, or `web-1 is still busy with data`, for
+a delete of any copy that may hold writes no other server has. Every old copy a move left is one.
+That covers `ployz volume mirror rm`, `ployz volume sync --full`, a deploy that deletes an old copy
+or a mirror, the cleanup after a deleted volume and, rarely, `ployz volume release`. The server
+keeps the copy and nothing is deleted. Trying again gives the same message, and the cleanup tries
+again after each deploy and each hour. The server's own message, `Volume … on this Machine may hold writes no other
+Machine has, so it was kept`, never reaches that Ployz Cloud. Upgrade Ployz Cloud, then run the
+command again.

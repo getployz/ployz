@@ -49,7 +49,31 @@
 //!   (`ployz server forget`); a `ployz volume restore` from the one copy Cloud still
 //!   sees (`restoreVolume`) then promotes that copy. The forgotten Machine keeps
 //!   writing its copy when it comes back, until it departs (`forgotten_fence.rs`,
-//!   `volume_plugin/departure.rs`), which parks its root in a slot;
+//!   `volume_plugin/departure.rs`), which snapshots its root and parks it in a slot;
+//! - that Machine joining again with its parked copy, and a `volume mirror` onto it
+//!   (`mirrorVolume`'s round: snapshot the restored Writer, pull it). No Writer holds the
+//!   departure's snapshot, so the pull's incremental finds no base, and `pull_stream`
+//!   keeps a copy `written_here` rather than replace it with a full send. Then a
+//!   `volume sync --full` onto that slot, which Cloud plans whatever the slot holds:
+//!   it forgets the slot, then the Writer's snapshots, then pulls afresh. Then a Move
+//!   onto that slot, whose warm round sends the mirror's snapshot and pull, and the
+//!   orphan sweep's Forget of the slot once the Volume left the config (`findOrphans`,
+//!   `deleteMirror`; the Writer's removal is left out, since the Machine plans the
+//!   slot's Forget from the slot alone). Cloud keeps a slot `written_here` from the
+//!   sweep before any row. The Machine's `plan` refuses a bare Forget of a slot
+//!   `written_here`; only a person's `volume mirror rm` says `discard`, so only it
+//!   destroys one. With `Skew::OldCloud` every Forget is bare, as an older Cloud's is.
+//!   With `Skew::OldDaemon` no Machine advertises `ployz.volume.keep-written.v1`, so
+//!   none reports `written_here` or reads `discard`, its plugin destroys a slot as its
+//!   daemon planned, and its pull replaces a copy it can't send an incremental onto.
+//!   Cloud then plans no full sync, no mirror and no Move there but a pull from the
+//!   Writer's newest snapshot (`mayReplace`), and its sweep keeps every slot there. A
+//!   cut's final a Restore from an earlier copy skipped is, like a departure's, on no
+//!   Writer's line, so a pull can't send an incremental onto it;
+//! - a slot's Forget in two steps: the daemon plans it under the switch lock, then the
+//!   plugin's `copy_destroy` plans it again on the slot it finds and destroys it. A
+//!   receive started earlier runs outside the switch lock, so `Replace` and `Mark` may
+//!   land between the two;
 //! - a Deploy's lane at its real boundaries, sent to the Writer Cloud sees: Prepare
 //!   (`prepare_volumes`) takes the switch lock, reads the forgotten record, then in a
 //!   step of its own admits a plain mount (`admit_plain_mount`) from the copy and the
@@ -110,6 +134,8 @@ const SECOND_GEN: u8 = 4;
 const SECOND_EPOCH: u32 = 4;
 const RESTORE_GEN: u8 = 6;
 const RESTORE_EPOCH: u32 = 6;
+/// The `volume mirror` onto the old copy a Machine that joined again kept.
+const MIRROR_GEN: u8 = 7;
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 enum Machine {
@@ -182,13 +208,18 @@ enum Cramped {
 }
 
 /// The first Move's warm round snapshot, which B already holds, and its cut's final
-/// `f-<epoch>`; the second Move's snapshot before its warm pull, and its cut's.
+/// `f-<epoch>`; the second Move's snapshot before its warm pull, and its cut's. In
+/// `Restore`, `Warm2` is the snapshot the mirror's round takes on the restored Writer.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Snap {
     Warm,
     Final,
     Warm2,
     Final2,
+    /// The `dep-<seconds>` snapshot a departure takes of a root it parks
+    /// (`freeze_root`): a point no other Machine holds, so no Writer can send a pull an
+    /// incremental from it.
+    Departure,
 }
 
 /// What a Machine holds of the Volume: `VolumeCopy` without the fields no step reads.
@@ -265,6 +296,12 @@ struct Host {
     /// Cloud lists the Machine as a Server: false for a C the two-Machine scenarios
     /// never have, and for a Machine Cloud forgot.
     member: bool,
+    /// Which slot holds the copy: another slot at the same snapshot replaced it once
+    /// this is 1 (`Replace`).
+    slot: u8,
+    /// The plugin marked the slot written here, as a cut or a promote does, without
+    /// changing its snapshot (`Mark`).
+    marked: bool,
 }
 
 impl Host {
@@ -281,13 +318,31 @@ enum Lane {
     Drop,
     Restore,
     Deploy,
+    Mirror,
+    /// The orphan sweep's `delete_mirror`.
+    Sweep,
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Expect {
-    Writer { epoch: u32 },
-    Mirror { newest: Snap },
+    Writer {
+        epoch: u32,
+    },
+    Mirror {
+        newest: Snap,
+    },
+    /// The slot exactly as a person confirmed deleting it.
+    Confirmed(Confirmed),
     None,
+}
+
+/// A slot as a person confirmed deleting it (`ConfirmedCopy`): its snapshot, which slot
+/// held it, and whether its Machine said it may hold writes no other Server has.
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+struct Confirmed {
+    newest: Snap,
+    slot: u8,
+    written: bool,
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -310,7 +365,9 @@ enum Want {
     Snapshot {
         at: Snap,
     },
-    Forget,
+    Forget {
+        said: Said,
+    },
     Floor,
     /// `SetVolumeSize`, which carries no `gen` and checks no lane floor. A shrink run
     /// sends it with `allow_shrink`.
@@ -328,6 +385,8 @@ enum Want {
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Refusal {
+    /// A bare Forget met a slot that may hold writes no other Server has.
+    WrittenHere,
     Stale,
     Busy,
     Mismatch,
@@ -375,6 +434,10 @@ enum Progress {
     StartAdmit,
     /// `start_volume_holder` holds the turn past its floor check.
     StartRun,
+    /// The daemon planned a slot's Forget under the switch lock and asked the plugin to
+    /// destroy it (`copy_destroy`). A receive started earlier runs outside that lock, so
+    /// the slot can change before the plugin acts on it.
+    Destroying,
     /// A Deploy's Prepare read the forgotten record, under the switch lock; it reads its
     /// copy and its view next.
     PrepareRead {
@@ -383,6 +446,17 @@ enum Progress {
     Replied(Reply),
     /// The daemon restarted under it; no reply comes.
     Lost,
+}
+
+/// What a Forget says about a slot that may hold writes no other Machine has.
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+enum Said {
+    /// Nothing: a full sync's, and every Forget an older Cloud sends.
+    Nothing,
+    /// `discard`: a person's `volume mirror rm`.
+    Discard,
+    /// `keep_written`, which 2f4f30f267's full sync alone sent (`Broken::forget_opt_in`).
+    Keep,
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -476,6 +550,18 @@ enum RestoreStep {
     Over,
 }
 
+/// `mirrorVolume`'s one round (`runRounds`): snapshot the Writer, then pull it. A full
+/// sync first forgets the Mirror's copy, then the Writer's run snapshots.
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+enum MirrorStep {
+    Forget,
+    Withdraw,
+    Snapshot,
+    Pull,
+    Finish,
+    Over,
+}
+
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum DeployStep {
     Prepare,
@@ -564,8 +650,8 @@ struct MoveRun {
 struct DropRun {
     row: Row,
     driver: Driver<DropStep>,
-    /// The slots it forgets, by the snapshot each held when it planned.
-    slots: [Option<Snap>; 3],
+    /// The slots it forgets, each as its person confirmed it when they asked.
+    slots: [Option<Confirmed>; 3],
     writer: Machine,
     writer_epoch: u32,
 }
@@ -578,6 +664,41 @@ struct RestoreRun {
     expect: Expect,
     at: Snap,
     epoch: u32,
+}
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+struct MirrorRun {
+    row: Row,
+    driver: Driver<MirrorStep>,
+    writer: Machine,
+    epoch: u32,
+    to: Machine,
+    /// The slot `to` held when the run planned, and none once a full sync forgot it.
+    expect: Expect,
+    onto: Onto,
+}
+
+/// What a run after the Restore does to the one slot.
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+enum Onto {
+    /// `ployz volume mirror`: a snapshot of the Writer and a pull of it.
+    Mirror,
+    /// `ployz volume sync --full`: the slot's Forget and the Writer's, then that round.
+    Sync,
+    /// A Move to the slot's Machine: its warm round, the same snapshot and pull.
+    Move,
+    /// The orphan sweep: the slot's Forget alone.
+    Sweep,
+}
+
+impl MirrorRun {
+    fn lane(self) -> Lane {
+        match self.onto {
+            Onto::Mirror | Onto::Sync => Lane::Mirror,
+            Onto::Move => Lane::Move,
+            Onto::Sweep => Lane::Sweep,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -598,6 +719,14 @@ enum Stage {
     Drop,
     /// The second Move, or the Restore, has run or holds the row.
     Second,
+    /// The `volume mirror` after the Restore has run or holds the row.
+    Mirror,
+    /// The `volume sync --full` after that mirror has run or holds the row.
+    Sync,
+    /// The Move onto that slot has run or holds the row.
+    Move,
+    /// The orphan sweep has run or holds the row.
+    Sweep,
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -633,6 +762,7 @@ struct State {
     moves: Vec<MoveRun>,
     drop: Option<DropRun>,
     restore: Option<RestoreRun>,
+    mirror: Option<MirrorRun>,
     deploy: Option<DeployRun>,
     stage: Stage,
     crashes: u8,
@@ -664,6 +794,12 @@ struct State {
     repair: Option<usize>,
     /// That Deploy's own Create started the Service on B.
     repaired: bool,
+    /// A pull or a full sync's Forget destroyed a slot holding a departure's point, which
+    /// no other Machine holds.
+    lost_written: bool,
+    /// A mirror rm destroyed a slot other than the one its person confirmed, as they saw
+    /// it: replaced since, or written there since.
+    unconfirmed: bool,
 }
 
 /// The entry of a per-Machine array for `machine`.
@@ -755,6 +891,7 @@ impl State {
             | Progress::CutFlip
             | Progress::StartAdmit
             | Progress::StartRun
+            | Progress::Destroying
             | Progress::PrepareRead { .. }
             | Progress::Lost => None,
         }
@@ -785,6 +922,21 @@ impl State {
     /// Machine makes once that copy is gone is not it.
     fn displaced(&self, machine: Machine, exempt: bool) -> bool {
         exempt && *at(&self.displaced, machine)
+    }
+
+    /// Whether no Writer holds `point` to send an incremental from: a departure's
+    /// snapshot, or a cut's final that a Restore from an earlier copy skipped. The restored
+    /// Writer's line is the copy it promoted, then the mirror round's `Warm2`.
+    fn off_line(&self, point: Snap) -> bool {
+        let skipped = self.restored
+            && self.restore.is_some_and(|restore| {
+                matches!(
+                    (restore.at, point),
+                    (Snap::Warm, Snap::Final)
+                        | (Snap::Warm | Snap::Final | Snap::Warm2, Snap::Final2)
+                )
+            });
+        point == Snap::Departure || skipped
     }
 
     fn note_restored(&mut self) {
@@ -844,6 +996,9 @@ impl State {
         }
         if let Some(restore) = self.restore.as_mut() {
             held.push(&mut restore.driver.waiting);
+        }
+        if let Some(mirror) = self.mirror.as_mut() {
+            held.push(&mut mirror.driver.waiting);
         }
         if let Some(deploy) = self.deploy.as_mut() {
             held.push(&mut deploy.driver.waiting);
@@ -956,6 +1111,7 @@ impl State {
         moves
             && self.drop.is_none_or(|drop| !drop.row.running())
             && self.restore.is_none_or(|restore| !restore.row.running())
+            && self.mirror.is_none_or(|mirror| !mirror.row.running())
             && self.deploy.is_none_or(|deploy| !deploy.row.running())
     }
 
@@ -1030,8 +1186,56 @@ struct Broken {
     prepare_switch: bool,
     /// Create makes a fresh root on a Machine that forgot its copy.
     forgotten: bool,
+    /// A pull whose Writer can't send an incremental onto its slot replaces a copy a
+    /// departure parked with a full send (`pull_stream` without its `written_here`).
+    pull_replaces_written: bool,
     /// `planMove` plans a Move from a lone slot while no Machine holds a root.
     move_from_slots: bool,
+    /// The plugin reports no slot `written_here`, so a full sync's Forget destroys a copy
+    /// a departure parked.
+    forget_ignores_written: bool,
+    /// 2f4f30f267's Forget: a Machine keeps a slot `written_here` only when the Forget says
+    /// `keep_written`, which only that commit's full sync said, so a bare one destroys it.
+    forget_opt_in: bool,
+    /// Cloud plans a full sync onto a Machine that doesn't advertise
+    /// `ployz.volume.keep-written.v1`.
+    sync_skips_capability: bool,
+    /// Cloud plans a mirror onto a copy a departure parked on a Machine that doesn't
+    /// advertise `ployz.volume.keep-written.v1`.
+    mirror_skips_capability: bool,
+    /// Cloud plans a Move onto such a copy: 4c6dc32563 checked only `mirror`.
+    move_skips_capability: bool,
+    /// The orphan sweep forgets every slot it finds and says `discard`, as 4c6dc32563's
+    /// did.
+    sweep_discards: bool,
+    /// The orphan sweep forgets a slot on a Machine that doesn't advertise the
+    /// capability, as 4c6dc32563's did.
+    sweep_skips_capability: bool,
+    /// A mirror rm says `discard` for the slot its run finds rather than the one its
+    /// person confirmed, as 2ff6f2c021's did.
+    discard_unbound: bool,
+    /// A confirmed Forget's expect names no `written_here`, as 2ff6f2c021's Machine read
+    /// it.
+    expect_ignores_written: bool,
+    /// `copy_destroy` destroys the slot by name, as 161c95ffc2's did, without planning the
+    /// daemon's Forget again on the slot it finds.
+    destroy_unchecked: bool,
+    /// Cloud refuses a pull onto a Machine without `ployz.volume.keep-written.v1` only
+    /// when the slot's newest is a departure's `dep-` snapshot, as 161c95ffc2's
+    /// `planFromCopies` did, so a cut's final a Restore skipped gets the pull.
+    dep_prefix_only: bool,
+}
+
+/// Which side runs a release from before `ployz.volume.keep-written.v1`.
+#[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
+enum Skew {
+    #[default]
+    None,
+    /// Cloud sends a bare Forget for every run and plans without the capability.
+    OldCloud,
+    /// No Machine advertises the capability: each reports no slot `written_here`, ignores
+    /// `discard`, and its pull replaces a copy it can't send an incremental onto.
+    OldDaemon,
 }
 
 /// One bounded slice of the runs. Each is checked whole; together they cover the resize
@@ -1051,7 +1255,8 @@ enum Scenario {
     /// C and its Release, and one Deploy at any moment the row is free.
     TwoMoves,
     /// On A, B and C: the first Move and its Release, a Machine away and forgotten, a
-    /// Restore from the copy left, and one Deploy at any moment the row is free.
+    /// Restore from the copy left, the forgotten Machine departing and joining again, a
+    /// `volume mirror` onto its parked copy, and one Deploy at any moment the row is free.
     Restore,
 }
 
@@ -1139,6 +1344,7 @@ struct VolumeRuns {
     aways: u8,
     /// On three Machines: rows Cloud may end before their run ends them.
     ends: u8,
+    skew: Skew,
     broken: Broken,
 }
 
@@ -1155,6 +1361,7 @@ impl Default for VolumeRuns {
             deploys: 1,
             aways: 1,
             ends: 1,
+            skew: Skew::None,
             broken: Broken::default(),
         }
     }
@@ -1192,6 +1399,8 @@ enum Action {
     EndDrop,
     Restore,
     EndRestore,
+    /// The `volume mirror` run's next step.
+    Mirror,
     /// Cloud starts a Deploy while the row is free.
     StartDeploy,
     Deploy,
@@ -1203,6 +1412,14 @@ enum Action {
     Forget(Machine),
     /// A forgotten Machine learns it and leaves.
     Depart(Machine),
+    /// A departed Machine joins the Cluster again, its parked copy still in its slot.
+    Rejoin(Machine),
+    /// Another slot at the same snapshot replaces the Machine's slot while a mirror rm
+    /// someone confirmed waits to run.
+    Replace(Machine),
+    /// The plugin marks the Machine's slot written here, while a mirror rm someone
+    /// confirmed waits to run or a Release may forget it.
+    Mark(Machine),
 }
 
 // --- The real planner -------------------------------------------------------------
@@ -1213,6 +1430,7 @@ fn snapshot(snap: Snap) -> Snapshot {
         Snap::Final => ("f-2", 2),
         Snap::Warm2 => ("w-4-0", 3),
         Snap::Final2 => ("f-4", 4),
+        Snap::Departure => ("dep-1700000000", 5),
     };
     Snapshot {
         name: name.parse().expect("a valid snapshot name"),
@@ -1221,16 +1439,20 @@ fn snapshot(snap: Snap) -> Snapshot {
     }
 }
 
-fn slot_id(machine: Machine) -> SlotId {
-    SlotId::new(match machine {
+fn slot_id(machine: Machine, slot: u8) -> SlotId {
+    let first = match machine {
         Machine::A => 10,
         Machine::B => 11,
         Machine::C => 12,
-    })
+    };
+    SlotId::new(first + 3 * u64::from(slot))
 }
 
-fn volume_copy(held: Held, machine: Machine) -> Option<VolumeCopy> {
-    match held {
+/// `inspect`'s copy. A slot is `written_here` when it holds a departure's snapshot, or once
+/// `Mark` stands for the cut, seed, promote and epoch marks that also set it in the
+/// plugin. Broken, or on a Machine from before it, the plugin never reports it.
+fn volume_copy(host: &Host, machine: Machine, reports_written: bool) -> Option<VolumeCopy> {
+    match host.copy {
         Held::None => None,
         Held::Root {
             readonly,
@@ -1245,7 +1467,7 @@ fn volume_copy(held: Held, machine: Machine) -> Option<VolumeCopy> {
             origin: None,
         }),
         Held::Slot { newest } => Some(VolumeCopy::Slot {
-            slot: slot_id(machine),
+            slot: slot_id(machine, host.slot),
             readonly: true,
             newest: newest.map(snapshot),
             resume_token: None,
@@ -1253,25 +1475,37 @@ fn volume_copy(held: Held, machine: Machine) -> Option<VolumeCopy> {
             role: Some(SlotRole::Mirror),
             pull_state: None,
             origin: None,
+            written_here: reports_written && (host.marked || newest == Some(Snap::Departure)),
         }),
     }
 }
 
-fn expected(expect: Expect, machine: Machine) -> ExpectedCopy {
+/// The expect as the Machine reads it. A run that names no slot expects the one there now.
+/// Broken, a confirmed delete names no `written_here`, as round 3's did.
+fn expected(expect: Expect, machine: Machine, slot: u8, broken: Broken) -> ExpectedCopy {
     match expect {
         Expect::Writer { epoch } => ExpectedCopy::Writer {
             epoch: WriterEpoch::new(epoch),
         },
         Expect::Mirror { newest } => ExpectedCopy::Mirror {
             newest: snapshot(newest).guid,
-            slot: slot_id(machine),
+            slot: slot_id(machine, slot),
             role: None,
+            written_here: None,
+        },
+        Expect::Confirmed(confirmed) => ExpectedCopy::Mirror {
+            newest: snapshot(confirmed.newest).guid,
+            slot: slot_id(machine, confirmed.slot),
+            role: None,
+            written_here: (!broken.expect_ignores_written).then_some(confirmed.written),
         },
         Expect::None => ExpectedCopy::None,
     }
 }
 
-fn wanted(want: Want) -> WantedCopy {
+/// The want as the Machine reads it. It destroys a slot `written_here` when the Forget says
+/// `discard`, or, before 2f4f30f267's opt-in was reversed, unless it says `keep_written`.
+fn wanted(want: Want, broken: Broken) -> WantedCopy {
     match want {
         // `plan` reads only whether a start is named; the Machine reads its kind.
         Want::Writer { at, epoch, start } => WantedCopy::Writer {
@@ -1293,7 +1527,13 @@ fn wanted(want: Want) -> WantedCopy {
         Want::Snapshot { at } => WantedCopy::Snapshot {
             name: snapshot(at).name,
         },
-        Want::Forget => WantedCopy::Forget,
+        Want::Forget { said } => WantedCopy::Forget {
+            discard: if broken.forget_opt_in {
+                said != Said::Keep
+            } else {
+                said == Said::Discard
+            },
+        },
         Want::Floor => WantedCopy::Floor,
         Want::Size { .. } | Want::Prepare | Want::Create | Want::Start => {
             unreachable!("only SetVolumeCopy asks plan")
@@ -1309,6 +1549,7 @@ fn refusal(reason: CopyRefusal) -> Refusal {
         CopyRefusal::NoTransition => Refusal::NoTransition,
         CopyRefusal::Behind => Refusal::Behind,
         CopyRefusal::NoCapacity => Refusal::NoCapacity,
+        CopyRefusal::WrittenHere => Refusal::WrittenHere,
         CopyRefusal::Written
         | CopyRefusal::NoSource
         | CopyRefusal::Foreign
@@ -1348,6 +1589,38 @@ fn modelled(r#gen: VolumeGen) -> u8 {
 // --- One Machine ------------------------------------------------------------------
 
 impl VolumeRuns {
+    /// Whether `inspect` reports a slot's `written_here`.
+    fn reports_written(&self) -> bool {
+        !self.broken.forget_ignores_written && self.skew != Skew::OldDaemon
+    }
+
+    /// A slot as `inspect` reports it and a person confirms it: none for a slot with no
+    /// snapshot or no slot at all.
+    fn confirmed(&self, host: &Host) -> Option<Confirmed> {
+        match host.copy {
+            Held::Slot {
+                newest: Some(newest),
+            } => Some(Confirmed {
+                newest,
+                slot: host.slot,
+                written: self.reports_written() && (host.marked || newest == Snap::Departure),
+            }),
+            Held::Slot { newest: None } | Held::Root { .. } | Held::None => None,
+        }
+    }
+
+    /// Cloud's Forget of a slot: `discard` for a person's `mirror rm` (`deleteMirror`),
+    /// bare for a Release, a full sync and the orphan sweep, which no one chose. An older
+    /// Cloud sends every Forget bare; 2f4f30f267's said `keep_written` in a full sync's.
+    fn forget_slot(&self, discard: bool) -> Want {
+        let said = match (self.skew, self.broken.forget_opt_in, discard) {
+            (Skew::OldCloud, ..) | (_, true, true) | (_, false, false) => Said::Nothing,
+            (_, true, false) => Said::Keep,
+            (_, false, true) => Said::Discard,
+        };
+        Want::Forget { said }
+    }
+
     /// `FloorTurn::admit`, through `ployz_decide::volume_floor::admit`. Without floors a
     /// refused gen passes and leaves the floor.
     fn admit(&self, host: &mut Host, r#gen: u8) -> bool {
@@ -1376,6 +1649,7 @@ impl VolumeRuns {
             Progress::Sent
             | Progress::CutDrain
             | Progress::StartRun
+            | Progress::Destroying
             | Progress::PrepareRead { .. } => true,
             Progress::Admitted => host.switch.is_none(),
             Progress::CutStop | Progress::CutFlip | Progress::StartAdmit => host.turn.is_none(),
@@ -1511,6 +1785,7 @@ impl VolumeRuns {
                 let reply = self.deploy_step(state, index, false);
                 state.reply(index, reply);
             }
+            Progress::Destroying => self.destroy(state, index),
             Progress::Replied(_) | Progress::Lost => {}
         }
     }
@@ -1574,7 +1849,7 @@ impl VolumeRuns {
             Want::Writer { .. }
             | Want::Mirror { .. }
             | Want::Snapshot { .. }
-            | Want::Forget
+            | Want::Forget { .. }
             | Want::Floor
             | Want::Size { .. } => unreachable!("a Deploy sends only its own steps"),
         }
@@ -1676,7 +1951,7 @@ impl VolumeRuns {
             Want::Writer { start: None, .. }
             | Want::Mirror { .. }
             | Want::Snapshot { .. }
-            | Want::Forget
+            | Want::Forget { .. }
             | Want::Floor
             | Want::Size { .. }
             | Want::Prepare
@@ -1684,10 +1959,10 @@ impl VolumeRuns {
             | Want::Start => None,
         };
         let plan = ployz_core::plan(
-            volume_copy(host.copy, to).as_ref(),
+            volume_copy(&host, to, self.reports_written()).as_ref(),
             start == Some(StartState::Running),
-            &expected(request.expect, to),
-            &wanted(request.want),
+            &expected(request.expect, to, host.slot, self.broken),
+            &wanted(request.want, self.broken),
         );
         let transition = match plan {
             CopyPlan::AtWant => return state.reply(index, Reply::Copy(host.copy)),
@@ -1767,7 +2042,7 @@ impl VolumeRuns {
                 state.reply(index, Reply::Copy(state.host(to).copy));
             }
             // `copy_forget`: a root keeps its data and loses its snapshots.
-            (CopyTransition::WriterToForget, Want::Forget) => {
+            (CopyTransition::WriterToForget, Want::Forget { .. }) => {
                 if let Held::Root {
                     readonly, epoch, ..
                 } = host.copy
@@ -1780,12 +2055,11 @@ impl VolumeRuns {
                 }
                 state.reply(index, Reply::Copy(state.host(to).copy));
             }
-            // `copy_destroy`: the slot parent goes, its origin recorded first.
-            (CopyTransition::MirrorToForget | CopyTransition::SeedToForget, Want::Forget) => {
-                state.host_mut(to).forgotten = true;
-                state.host_mut(to).copy = Held::None;
-                state.reply(index, Reply::Copy(Held::None));
-            }
+            // The daemon's Forget of a slot: `copy_destroy` on the plugin, next.
+            (
+                CopyTransition::MirrorToForget | CopyTransition::SeedToForget,
+                Want::Forget { .. },
+            ) => state.set_progress(index, Progress::Destroying),
             (
                 CopyTransition::MirrorToMirror | CopyTransition::NoneToMirror,
                 Want::Mirror {
@@ -1798,18 +2072,81 @@ impl VolumeRuns {
                 }
                 // The pull lands in one step when the source answers and holds the target.
                 let source = state.host(from);
-                if source.here() && source.copy.newest() == Some(target) {
-                    let copy = Held::Slot {
-                        newest: Some(target),
-                    };
-                    state.host_mut(to).copy = copy;
-                    state.reply(index, Reply::Copy(copy));
-                } else {
-                    state.reply(index, Reply::PullFailed);
+                if !source.here() || source.copy.newest() != Some(target) {
+                    return state.reply(index, Reply::PullFailed);
                 }
+                // `pull_stream`: the incremental starts from the slot's newest snapshot, which
+                // must be on the Writer's line. A departure's is on none, and a cut's final a
+                // Restore from before it skipped is on no Writer's since, so the full send
+                // would replace the slot's copy. `written_here` keeps it, as the departure's
+                // snapshot or the cut's own mark sets it: the pull fails.
+                if let Some(point) = host.copy.newest()
+                    && state.off_line(point)
+                {
+                    if !self.broken.pull_replaces_written && self.skew != Skew::OldDaemon {
+                        return state.reply(index, Reply::PullFailed);
+                    }
+                    if Machine::ALL.iter().all(|machine| {
+                        *machine == to || state.host(*machine).copy.newest() != Some(point)
+                    }) {
+                        state.lost_written = true;
+                    }
+                }
+                let copy = Held::Slot {
+                    newest: Some(target),
+                };
+                state.host_mut(to).copy = copy;
+                state.reply(index, Reply::Copy(copy));
             }
             (transition, want) => unreachable!("the planner paired {transition:?} with {want:?}"),
         }
+    }
+
+    /// `copy_destroy` (`ployzd/src/volume_plugin/copy.rs`), under the plugin's mutation
+    /// once no receive runs: it plans the daemon's Forget again on the slot it finds and
+    /// destroys it only if the same Forget still deletes it. A daemon from before that
+    /// check sends no expect, so its plugin destroys the slot as the daemon planned. The
+    /// slot parent goes, its origin recorded first.
+    fn destroy(&self, state: &mut State, index: usize) {
+        let request = state.request(index);
+        let to = request.to;
+        let host = state.host(to).clone();
+        if !self.broken.destroy_unchecked && self.skew != Skew::OldDaemon {
+            let plan = ployz_core::plan(
+                volume_copy(&host, to, self.reports_written()).as_ref(),
+                false,
+                &expected(request.expect, to, host.slot, self.broken),
+                &wanted(request.want, self.broken),
+            );
+            match plan {
+                CopyPlan::Transition(
+                    CopyTransition::MirrorToForget | CopyTransition::SeedToForget,
+                ) => {}
+                CopyPlan::AtWant => return state.reply(index, Reply::Copy(host.copy)),
+                CopyPlan::Refuse(reason) => {
+                    return state.reply(index, Reply::Refused(refusal(reason)));
+                }
+                CopyPlan::Transition(_) => {
+                    return state.reply(index, Reply::Refused(Refusal::NoTransition));
+                }
+            }
+        }
+        if request.lane == Lane::Drop
+            && state.drop.and_then(|drop| *at(&drop.slots, to)) != self.confirmed(&host)
+        {
+            state.unconfirmed = true;
+        }
+        if request.lane != Lane::Drop
+            && host.copy.newest() == Some(Snap::Departure)
+            && Machine::ALL.iter().all(|machine| {
+                *machine == to || state.host(*machine).copy.newest() != Some(Snap::Departure)
+            })
+        {
+            state.lost_written = true;
+        }
+        state.host_mut(to).forgotten = true;
+        state.host_mut(to).copy = Held::None;
+        state.reply(index, Reply::Copy(Held::None));
     }
 
     /// Whether the cut's flip passes its checks and runs `zfs`, the only place a restart
@@ -1837,6 +2174,7 @@ impl VolumeRuns {
             | Progress::StartAdmit
             | Progress::StartRun => self.scenario.three(),
             Progress::Sent
+            | Progress::Destroying
             | Progress::PrepareRead { .. }
             | Progress::Replied(_)
             | Progress::Lost => false,
@@ -1875,7 +2213,7 @@ fn cut_target(request: Request) -> Snap {
         Want::Mirror { target, .. } => target,
         Want::Writer { .. }
         | Want::Snapshot { .. }
-        | Want::Forget
+        | Want::Forget { .. }
         | Want::Floor
         | Want::Size { .. }
         | Want::Prepare
@@ -1893,6 +2231,7 @@ fn state_in_flight(progress: Progress) -> bool {
         | Progress::CutFlip
         | Progress::StartAdmit
         | Progress::StartRun
+        | Progress::Destroying
         | Progress::PrepareRead { .. } => true,
         Progress::Replied(_) | Progress::Lost => false,
     }
@@ -2374,7 +2713,7 @@ impl VolumeRuns {
                     r#gen,
                     machine,
                     Expect::Mirror { newest: plan.at },
-                    Want::Forget,
+                    self.forget_slot(false),
                 );
                 wait(state, sent);
             }
@@ -2423,6 +2762,13 @@ impl VolumeRuns {
                         release.driver.busy -= 1;
                         release.driver.waiting = None;
                     });
+                }
+                // No one chose this delete: the Machine keeps a slot that may hold writes no
+                // other Server has, and the Release restarts the Service all the same.
+                Some(Reply::Refused(Refusal::WrittenHere))
+                    if let (ReleaseStep::Forget(machine), Some(plan)) = (driver.step, resume) =>
+                {
+                    next(state, next_other(&release, Some(machine), plan.on));
                 }
                 Some(Reply::Refused(_) | Reply::PullFailed | Reply::Bound(_)) => fail(state),
             },
@@ -2574,7 +2920,7 @@ impl VolumeRuns {
         }
     }
 
-    fn drop_step(state: &mut State) {
+    fn drop_step(&self, state: &mut State) {
         let Some(drop) = state.drop else {
             return;
         };
@@ -2615,15 +2961,29 @@ impl VolumeRuns {
         };
         match (drop.driver.step, reply) {
             (DropStep::Forget(machine), None) => {
-                let Some(newest) = *at(&drop.slots, machine) else {
+                let Some(confirmed) = *at(&drop.slots, machine) else {
+                    return fail(state);
+                };
+                let now = self.confirmed(state.host(machine));
+                // `stillConfirmed`: a copy replaced or written there since its person confirmed
+                // it ends the run before anything is deleted. Broken, the run names the copy
+                // it finds, as round 3's did.
+                let expect = if self.broken.discard_unbound {
+                    match now {
+                        Some(now) => Expect::Mirror { newest: now.newest },
+                        None => return fail(state),
+                    }
+                } else if now == Some(confirmed) {
+                    Expect::Confirmed(confirmed)
+                } else {
                     return fail(state);
                 };
                 let sent = state.send(
                     Lane::Drop,
                     DROP_GEN,
                     machine,
-                    Expect::Mirror { newest },
-                    Want::Forget,
+                    expect,
+                    self.forget_slot(true),
                 );
                 if let Some(drop) = state.drop.as_mut() {
                     drop.driver.waiting = Some(sent);
@@ -2638,7 +2998,9 @@ impl VolumeRuns {
                     Expect::Writer {
                         epoch: drop.writer_epoch,
                     },
-                    Want::Forget,
+                    Want::Forget {
+                        said: Said::Nothing,
+                    },
                 );
                 if let Some(drop) = state.drop.as_mut() {
                     drop.driver.waiting = Some(sent);
@@ -2710,6 +3072,121 @@ impl VolumeRuns {
             (RestoreStep::Promote, Some(_)) => end(state, Row::Failed),
             (RestoreStep::Finish, _) => end(state, Row::Done),
             (RestoreStep::Over, _) => {}
+        }
+    }
+
+    /// `mirrorVolume`: one round, a snapshot of the Writer and a pull of it onto `to`,
+    /// after a full sync's two Forgets. A Move's warm round sends the same two; the orphan
+    /// sweep sends the slot's Forget alone.
+    fn mirror_step(&self, state: &mut State) {
+        let Some(mirror) = state.mirror else {
+            return;
+        };
+        let end = |state: &mut State, row: Row| {
+            if let Some(mirror) = state.mirror.as_mut() {
+                if mirror.row.running() {
+                    mirror.row = row;
+                }
+                mirror.driver.step = MirrorStep::Over;
+                mirror.driver.waiting = None;
+            }
+        };
+        if !mirror.row.running() {
+            return end(state, Row::Failed);
+        }
+        let reply = state.replied(mirror.driver.waiting);
+        if let Some(index) = mirror.driver.waiting
+            && reply.is_none()
+        {
+            if stalled(state, index) {
+                end(state, Row::Failed);
+            } else if let Some(mirror) = state.mirror.as_mut() {
+                mirror.driver.waiting = None;
+            }
+            return;
+        }
+        let next = |state: &mut State, step: MirrorStep| {
+            if let Some(mirror) = state.mirror.as_mut() {
+                mirror.driver.step = step;
+                mirror.driver.waiting = None;
+            }
+        };
+        match (mirror.driver.step, reply) {
+            (MirrorStep::Forget, None) => {
+                let sent = state.send(
+                    mirror.lane(),
+                    MIRROR_GEN,
+                    mirror.to,
+                    mirror.expect,
+                    self.forget_slot(mirror.onto == Onto::Sweep && self.broken.sweep_discards),
+                );
+                if let Some(mirror) = state.mirror.as_mut() {
+                    mirror.driver.waiting = Some(sent);
+                }
+            }
+            (MirrorStep::Forget, Some(Reply::Copy(_))) if mirror.onto == Onto::Sweep => {
+                next(state, MirrorStep::Finish);
+            }
+            (MirrorStep::Forget, Some(Reply::Copy(_))) => {
+                next(state, MirrorStep::Withdraw);
+                if let Some(mirror) = state.mirror.as_mut() {
+                    mirror.expect = Expect::None;
+                }
+            }
+            (MirrorStep::Withdraw, None) => {
+                let sent = state.send(
+                    mirror.lane(),
+                    MIRROR_GEN,
+                    mirror.writer,
+                    Expect::Writer {
+                        epoch: mirror.epoch,
+                    },
+                    Want::Forget {
+                        said: Said::Nothing,
+                    },
+                );
+                if let Some(mirror) = state.mirror.as_mut() {
+                    mirror.driver.waiting = Some(sent);
+                }
+            }
+            (MirrorStep::Withdraw, Some(Reply::Copy(_))) => next(state, MirrorStep::Snapshot),
+            (MirrorStep::Snapshot, None) => {
+                let sent = state.send(
+                    mirror.lane(),
+                    MIRROR_GEN,
+                    mirror.writer,
+                    Expect::Writer {
+                        epoch: mirror.epoch,
+                    },
+                    Want::Snapshot { at: Snap::Warm2 },
+                );
+                if let Some(mirror) = state.mirror.as_mut() {
+                    mirror.driver.waiting = Some(sent);
+                }
+            }
+            (MirrorStep::Snapshot, Some(Reply::Copy(_))) => next(state, MirrorStep::Pull),
+            (MirrorStep::Pull, None) => {
+                let sent = state.send(
+                    mirror.lane(),
+                    MIRROR_GEN,
+                    mirror.to,
+                    mirror.expect,
+                    Want::Mirror {
+                        from: Some(mirror.writer),
+                        target: Snap::Warm2,
+                    },
+                );
+                if let Some(mirror) = state.mirror.as_mut() {
+                    mirror.driver.waiting = Some(sent);
+                }
+            }
+            (MirrorStep::Pull, Some(Reply::Copy(_))) => next(state, MirrorStep::Finish),
+            (
+                MirrorStep::Forget | MirrorStep::Withdraw | MirrorStep::Snapshot | MirrorStep::Pull,
+                Some(_),
+            ) => end(state, Row::Failed),
+            (MirrorStep::Finish, _) => end(state, Row::Done),
+            (MirrorStep::Over, _) => {}
         }
     }
 
@@ -2844,7 +3321,7 @@ impl VolumeRuns {
                 };
                 let mut forget = [None; 3];
                 for slot in &slots {
-                    *at_mut(&mut forget, *slot) = Some(state.host(*slot).copy.newest()?);
+                    *at_mut(&mut forget, *slot) = Some(self.confirmed(state.host(*slot))?);
                 }
                 let first = Machine::ALL
                     .into_iter()
@@ -2919,6 +3396,78 @@ impl VolumeRuns {
                 });
                 next.stage = Stage::Second;
             }
+            // `planCopies`' mirror: the one Writer, and no slot but on the Machine it
+            // mirrors to, so a Machine that joined again with its old copy takes the pull.
+            // Then its full sync onto that one slot, which Cloud plans whatever the slot
+            // holds: only the Machine refuses a parked copy. Then a Move onto that slot,
+            // and the orphan sweep once the Volume left the config. Every pull onto a slot
+            // passes `planFromCopies`' one check, so a Machine without
+            // `ployz.volume.keep-written.v1` takes no mirror and no Move onto a copy a
+            // departure parked, and no full sync. The sweep keeps a slot its Machine reports
+            // `written_here`, and every slot on a Machine without the capability.
+            (Scenario::Restore, Stage::Second | Stage::Mirror | Stage::Sync | Stage::Move) => {
+                let ([writer], [to]) = (roots.as_slice(), slots.as_slice()) else {
+                    return None;
+                };
+                let Held::Root {
+                    readonly: false,
+                    epoch,
+                    ..
+                } = state.host(*writer).copy
+                else {
+                    return None;
+                };
+                let (onto, stage) = match state.stage {
+                    Stage::Second => (Onto::Mirror, Stage::Mirror),
+                    Stage::Mirror => (Onto::Sync, Stage::Sync),
+                    Stage::Sync => (Onto::Move, Stage::Move),
+                    Stage::Move => (Onto::Sweep, Stage::Sweep),
+                    Stage::Start | Stage::First | Stage::Drop | Stage::Sweep => return None,
+                };
+                next.stage = stage;
+                next.mirror = None;
+                let newest = state.host(*to).copy.newest();
+                let parked = newest == Some(Snap::Departure);
+                // `mayReplace`: only a pull from the Writer's newest snapshot surely adds to
+                // the slot, whatever the slot's snapshot is called.
+                let replaces = if self.broken.dep_prefix_only {
+                    parked
+                } else {
+                    newest.is_some() && newest != state.host(*writer).copy.newest()
+                };
+                let capable = self.skew != Skew::OldDaemon;
+                let planned = match onto {
+                    Onto::Mirror => capable || !replaces || self.broken.mirror_skips_capability,
+                    Onto::Move => capable || !replaces || self.broken.move_skips_capability,
+                    Onto::Sync => capable || self.broken.sync_skips_capability,
+                    Onto::Sweep => {
+                        self.broken.sweep_discards
+                            || match self.skew {
+                                Skew::None => !(parked && self.reports_written()),
+                                Skew::OldCloud => true,
+                                Skew::OldDaemon => self.broken.sweep_skips_capability,
+                            }
+                    }
+                };
+                if !planned {
+                    return Some(next);
+                }
+                next.mirror = Some(MirrorRun {
+                    row: Row::Warm,
+                    driver: Driver::new(
+                        match onto {
+                            Onto::Sync | Onto::Sweep => MirrorStep::Forget,
+                            Onto::Mirror | Onto::Move => MirrorStep::Snapshot,
+                        },
+                        0,
+                    ),
+                    writer: *writer,
+                    epoch,
+                    to: *to,
+                    expect: expect_of(state.host(*to).copy),
+                    onto,
+                });
+            }
             _ => return None,
         }
         Some(next)
@@ -2985,6 +3534,7 @@ fn resendable<S>(state: &State, driver: Driver<S>) -> bool {
         | Progress::CutFlip
         | Progress::StartAdmit
         | Progress::StartRun
+        | Progress::Destroying
         | Progress::PrepareRead { .. } => driver.resends > 0,
     }
 }
@@ -3025,6 +3575,8 @@ impl VolumeRuns {
             presence: Presence::Here,
             forgotten: false,
             member,
+            slot: 0,
+            marked: false,
         }
     }
 
@@ -3090,6 +3642,7 @@ impl VolumeRuns {
             }],
             drop: None,
             restore: None,
+            mirror: None,
             deploy: None,
             stage: Stage::First,
             crashes: 0,
@@ -3106,6 +3659,8 @@ impl VolumeRuns {
             repair: None,
             repaired: false,
             unapproved_start: false,
+            lost_written: false,
+            unconfirmed: false,
         };
         if three {
             // No resize on three Machines: the size never changes. A Deploy may come before
@@ -3225,6 +3780,33 @@ impl Model for VolumeRuns {
             if drop.row.running() && state.ends > 0 {
                 actions.push(Action::EndDrop);
             }
+            for machine in Machine::ALL {
+                let host = state.host(machine);
+                if !drop.row.running()
+                    || at(&drop.slots, machine).is_none()
+                    || !matches!(host.copy, Held::Slot { .. })
+                {
+                    continue;
+                }
+                if host.slot == 0 {
+                    actions.push(Action::Replace(machine));
+                }
+                if !host.marked && self.reports_written() {
+                    actions.push(Action::Mark(machine));
+                }
+            }
+        }
+        // A slot a running Release may forget can be marked written there first.
+        if let Some(release) = state.moves.iter().find_map(|run| run.release.as_ref())
+            && release.row.running()
+            && self.reports_written()
+        {
+            for machine in Machine::ALL {
+                let host = state.host(machine);
+                if !host.marked && matches!(host.copy, Held::Slot { newest: Some(_) }) {
+                    actions.push(Action::Mark(machine));
+                }
+            }
         }
         if let Some(restore) = state.restore
             && restore.driver.step != RestoreStep::Over
@@ -3235,6 +3817,12 @@ impl Model for VolumeRuns {
             if restore.row.running() && state.ends > 0 {
                 actions.push(Action::EndRestore);
             }
+        }
+        if let Some(mirror) = state.mirror
+            && mirror.driver.step != MirrorStep::Over
+            && (!mirror.row.running() || retries(state, mirror.driver))
+        {
+            actions.push(Action::Mirror);
         }
         if let Some(deploy) = state.deploy
             && deploy.driver.step != DeployStep::Over
@@ -3267,6 +3855,20 @@ impl Model for VolumeRuns {
                     if host.member && self.scenario == Scenario::Restore {
                         actions.push(Action::Forget(machine));
                     }
+                }
+                // Only once the Restore is over and nothing sent to it is in flight: a
+                // late step reaching a Machine that departed and joined again is out of
+                // scope, as the model's departure keeps a pulled slot the real one
+                // destroys.
+                Presence::Departed
+                    if self.scenario == Scenario::Restore
+                        && state.stage == Stage::Second
+                        && state.row_free()
+                        && !state.requests.iter().any(|request| {
+                            request.to == machine && state_in_flight(request.progress)
+                        }) =>
+                {
+                    actions.push(Action::Rejoin(machine));
                 }
                 Presence::Here | Presence::Departed => {}
             }
@@ -3333,7 +3935,9 @@ impl Model for VolumeRuns {
             Action::Enforce => state.enforcing = true,
             Action::Repair => Self::repair_step(&mut state),
             Action::Next => state = self.next_run(&state)?,
-            Action::Drop => Self::drop_step(&mut state),
+            Action::Drop => self.drop_step(&mut state),
+            Action::Replace(machine) => state.host_mut(machine).slot = 1,
+            Action::Mark(machine) => state.host_mut(machine).marked = true,
             Action::EndDrop => {
                 if let Some(drop) = state.drop.as_mut() {
                     drop.row = Row::Failed;
@@ -3345,6 +3949,7 @@ impl Model for VolumeRuns {
                     restore.row = Row::Failed;
                 }
             }
+            Action::Mirror => self.mirror_step(&mut state),
             Action::StartDeploy => state = Self::start_deploy(&state)?,
             Action::Deploy => Self::deploy_driver(&mut state),
             Action::DeployResend => {
@@ -3366,16 +3971,24 @@ impl Model for VolumeRuns {
             }
             Action::Back(machine) => state.host_mut(machine).presence = Presence::Here,
             Action::Forget(machine) => state.host_mut(machine).member = false,
-            // `departure.rs` seals every root into a slot; the Machine leaves the Cluster.
+            // `departure.rs` snapshots every root and seals it into a slot; the Machine
+            // leaves the Cluster.
             Action::Depart(machine) => {
                 let host = state.host_mut(machine);
-                if let Held::Root { newest, .. } = host.copy {
-                    host.copy = Held::Slot { newest };
+                if let Held::Root { .. } = host.copy {
+                    host.copy = Held::Slot {
+                        newest: Some(Snap::Departure),
+                    };
                 }
                 host.holder = Holder::Absent;
                 host.presence = Presence::Departed;
                 host.switch = None;
                 host.turn = None;
+            }
+            Action::Rejoin(machine) => {
+                let host = state.host_mut(machine);
+                host.presence = Presence::Here;
+                host.member = true;
             }
         }
         if self.scenario.three() {
@@ -3406,6 +4019,8 @@ impl Model for VolumeRuns {
                 !state.unapproved_start
             }),
             Property::always(STORE_FITS, |_, state: &State| state.store_fits()),
+            Property::always(KEEPS_WRITTEN, |_, state: &State| !state.lost_written),
+            Property::always(CONFIRMED_ONLY, |_, state: &State| !state.unconfirmed),
             Property::always(RESIZE_DONE_HOLDS, |_, state: &State| {
                 state.resize.row != Row::Done || state.recorded()
             }),
@@ -3462,6 +4077,9 @@ fn all_over(model: &VolumeRuns, state: &State) -> bool {
         && state
             .restore
             .is_none_or(|restore| restore.driver.step == RestoreStep::Over)
+        && state
+            .mirror
+            .is_none_or(|mirror| mirror.driver.step == MirrorStep::Over)
         && state
             .deploy
             .is_none_or(|deploy| deploy.driver.step == DeployStep::Over)
@@ -3722,7 +4340,7 @@ impl VolumeRuns {
             }
             Scenario::Restore => {
                 let mut reached = move_ends();
-                reached.extend(restore_ends());
+                reached.extend(restore_ends(self.skew));
                 reached
             }
         }
@@ -3806,8 +4424,15 @@ fn second_move_ends() -> Vec<Property<VolumeRuns>> {
     ]
 }
 
-fn restore_ends() -> Vec<Property<VolumeRuns>> {
-    vec![
+/// Some Machine still holds the departure's point.
+fn holds_departed(state: &State) -> bool {
+    Machine::ALL
+        .iter()
+        .any(|machine| state.host(*machine).copy.newest() == Some(Snap::Departure))
+}
+
+fn restore_ends(skew: Skew) -> Vec<Property<VolumeRuns>> {
+    let mut ends = vec![
         Property::sometimes(
             "a Restore promotes the copy left once Cloud forgot the Writer",
             |_, state: &State| {
@@ -3839,7 +4464,61 @@ fn restore_ends() -> Vec<Property<VolumeRuns>> {
                     })
             },
         ),
-    ]
+    ];
+    ends.push(Property::sometimes(
+        "the orphan sweep keeps the old copy a departed Machine brought back",
+        |_, state: &State| {
+            state.stage == Stage::Sweep
+                && state
+                    .mirror
+                    .is_none_or(|mirror| mirror.driver.step == MirrorStep::Over)
+                && holds_departed(state)
+        },
+    ));
+    if skew == Skew::OldDaemon {
+        ends.push(Property::sometimes(
+            "Cloud plans no mirror, no full sync, no Move and no sweep onto the old copy a departed Machine from before keep-written brought back",
+            |_, state: &State| {
+                state.stage == Stage::Sweep && state.mirror.is_none() && holds_departed(state)
+            },
+        ));
+        return ends;
+    }
+    ends.push(Property::sometimes(
+        "a mirror onto the old copy a departed Machine brought back fails and keeps it",
+        |_, state: &State| {
+            state.mirror.is_some_and(|mirror| {
+                mirror.onto == Onto::Mirror
+                    && mirror.row == Row::Failed
+                    && mirror.driver.step == MirrorStep::Over
+                    && state.host(mirror.to).copy.newest() == Some(Snap::Departure)
+                    && state.host(mirror.writer).copy.newest() == Some(Snap::Warm2)
+            })
+        },
+    ));
+    ends.push(Property::sometimes(
+        "a full sync onto that old copy is refused and keeps it",
+        |_, state: &State| {
+            state.mirror.is_some_and(|mirror| {
+                mirror.onto == Onto::Sync
+                    && mirror.row == Row::Failed
+                    && mirror.driver.step == MirrorStep::Over
+                    && state.host(mirror.to).copy.newest() == Some(Snap::Departure)
+            })
+        },
+    ));
+    ends.push(Property::sometimes(
+        "a Move onto that old copy fails and keeps it",
+        |_, state: &State| {
+            state.mirror.is_some_and(|mirror| {
+                mirror.onto == Onto::Move
+                    && mirror.row == Row::Failed
+                    && mirror.driver.step == MirrorStep::Over
+                    && state.host(mirror.to).copy.newest() == Some(Snap::Departure)
+            })
+        },
+    ));
+    ends
 }
 
 const NEVER_TWO_WRITERS: &str = "never two Writers";
@@ -3851,6 +4530,9 @@ const RELEASE_WINS: &str = "a Release finishes whatever the dead Move still send
 const ENFORCED_STARTS_NOTHING: &str =
     "a Machine creates no Container an Operator's Writer start names";
 const STORE_FITS: &str = "the Store's size fits every copy";
+const KEEPS_WRITTEN: &str = "only a person's mirror rm destroys a point only its Machine holds";
+const CONFIRMED_ONLY: &str =
+    "a mirror rm destroys only the copy its person confirmed, as they saw it";
 const RESIZE_DONE_HOLDS: &str = "a resize that finished done recorded its target";
 const REFUSED_RECORDS_NOTHING: &str =
     "a resize refused before any copy changed ends recording nothing";
@@ -4278,6 +4960,224 @@ mod tests {
         );
         let path = checker.assert_any_discovery(NEVER_TWO_WRITERS);
         println!("{NEVER_TWO_WRITERS} breaks with a Move from slots:\n{path}");
+    }
+
+    /// The path that breaks "a mirror rm destroys only the copy its person confirmed" with
+    /// `broken`, on three Machines whose second Move first removes the Mirror.
+    fn breaks_confirmed(broken: Broken, story: &str) {
+        let checker = discoveries(
+            VolumeRuns {
+                broken,
+                ..three(Scenario::TwoMoves)
+            },
+            &[CONFIRMED_ONLY],
+        );
+        let path = checker.assert_any_discovery(CONFIRMED_ONLY);
+        println!("{CONFIRMED_ONLY} breaks {story}:\n{path}");
+    }
+
+    /// A person confirms the slot `mirror rm` shows them; the run may wait behind another,
+    /// and the slot may be replaced or written there before it runs. Naming the slot the
+    /// run finds then, as 2ff6f2c021 did, deletes one the person never saw.
+    #[test]
+    fn a_mirror_rm_deletes_only_the_copy_its_person_confirmed() {
+        breaks_confirmed(
+            Broken {
+                discard_unbound: true,
+                ..Broken::default()
+            },
+            "with the run's own look in place of the confirm",
+        );
+    }
+
+    /// Cloud checks the confirmed slot before it sends the Forget, and the slot can be
+    /// written there after that look. Only the Machine's check of `written_here` keeps it.
+    #[test]
+    fn a_machine_keeps_a_confirmed_slot_written_there_since() {
+        breaks_confirmed(
+            Broken {
+                expect_ignores_written: true,
+                ..Broken::default()
+            },
+            "with a Forget whose expect ignores written_here",
+        );
+    }
+
+    /// The daemon plans a confirmed slot's Forget under the switch lock, but a receive it
+    /// started earlier runs outside that lock and can land before the plugin destroys the
+    /// slot. Only the plugin's own plan of the Forget, on the slot it finds, keeps it.
+    #[test]
+    fn the_plugin_destroys_a_slot_only_as_the_daemon_planned_its_forget() {
+        breaks_confirmed(
+            Broken {
+                destroy_unchecked: true,
+                ..Broken::default()
+            },
+            "with a plugin that destroys the slot by name",
+        );
+    }
+
+    /// The path that breaks "only a person's mirror rm destroys a point only its Machine
+    /// holds" on `Restore` with `skew` and `broken`.
+    fn breaks_written(skew: Skew, broken: Broken, story: &str) {
+        let checker = discoveries(
+            VolumeRuns {
+                skew,
+                broken,
+                ..three(Scenario::Restore)
+            },
+            &[KEEPS_WRITTEN],
+        );
+        let path = checker.assert_any_discovery(KEEPS_WRITTEN);
+        println!("{KEEPS_WRITTEN} breaks {story}:\n{path}");
+    }
+
+    /// A Machine that departed and joined again holds a departure's point no Writer
+    /// holds, so a mirror onto it finds no base for an incremental. A full send in its
+    /// place destroys that point, unless `pull_stream` keeps a slot `written_here`.
+    #[test]
+    fn a_pull_keeps_a_departed_copy_its_writer_cannot_send_onto() {
+        breaks_written(
+            Skew::None,
+            Broken {
+                pull_replaces_written: true,
+                ..Broken::default()
+            },
+            "with a full send over a departed copy",
+        );
+    }
+
+    /// A full sync forgets the Mirror's copy before it pulls afresh, and Cloud plans it
+    /// onto any one slot. Only the Machine's `written_here` keeps a departed copy from
+    /// that Forget: without it, the sync destroys the departure's point.
+    #[test]
+    fn a_full_sync_keeps_a_departed_copy() {
+        breaks_written(
+            Skew::None,
+            Broken {
+                forget_ignores_written: true,
+                ..Broken::default()
+            },
+            "with a full sync over a departed copy",
+        );
+    }
+
+    /// An older Cloud and an older daemon each beside the code as it is: the departed copy
+    /// survives, by the Machine's refusal of a bare Forget and by Cloud's refusal to plan
+    /// onto a Machine without `ployz.volume.keep-written.v1`.
+    #[test]
+    fn a_departed_copy_survives_a_cloud_or_a_daemon_from_before_keep_written() {
+        for skew in [Skew::OldCloud, Skew::OldDaemon] {
+            let checker = check(VolumeRuns {
+                skew,
+                ..three(Scenario::Restore)
+            });
+            println!("{skew:?}: {} states", checker.unique_state_count());
+            checker.assert_properties();
+        }
+    }
+
+    /// An older Cloud sends its full sync the same bare Forget as its `mirror rm`. Under
+    /// 2f4f30f267's opt-in, where a Machine kept a slot `written_here` only for a Forget
+    /// that said `keep_written`, that bare Forget destroys the departed copy.
+    #[test]
+    fn a_bare_forget_from_an_older_cloud_keeps_a_departed_copy() {
+        breaks_written(
+            Skew::OldCloud,
+            Broken {
+                forget_opt_in: true,
+                ..Broken::default()
+            },
+            "with an older Cloud's bare Forget under the opt-in",
+        );
+    }
+
+    /// A Machine from before keep-written reports no `written_here` and ignores what a
+    /// Forget says, so a full sync Cloud plans there destroys the departed copy.
+    #[test]
+    fn cloud_plans_no_full_sync_onto_a_machine_from_before_keep_written() {
+        breaks_written(
+            Skew::OldDaemon,
+            Broken {
+                sync_skips_capability: true,
+                ..Broken::default()
+            },
+            "with a full sync onto an older daemon",
+        );
+    }
+
+    /// That Machine's pull also replaces a copy its Writer can't send an incremental onto,
+    /// so a mirror Cloud plans onto the departed copy there destroys it.
+    #[test]
+    fn cloud_plans_no_mirror_onto_a_departed_copy_on_a_machine_from_before_keep_written() {
+        breaks_written(
+            Skew::OldDaemon,
+            Broken {
+                mirror_skips_capability: true,
+                ..Broken::default()
+            },
+            "with a mirror onto an older daemon's departed copy",
+        );
+    }
+
+    /// A Move's warm round pulls onto its target's slot as a mirror's does, so a Move
+    /// Cloud plans onto an older daemon's departed copy destroys it, unless the one check
+    /// every pull passes covers a Move too.
+    #[test]
+    fn cloud_plans_no_move_onto_a_departed_copy_on_a_machine_from_before_keep_written() {
+        breaks_written(
+            Skew::OldDaemon,
+            Broken {
+                move_skips_capability: true,
+                ..Broken::default()
+            },
+            "with a Move onto an older daemon's departed copy",
+        );
+    }
+
+    /// A Machine cut away before its final reached the mirror, and a Restore promoted the
+    /// mirror's earlier copy. Back after it departed, the Machine's slot holds a cut's
+    /// final no Writer has, under a name that isn't a departure's. A Machine from before
+    /// keep-written replaces it with a full send, so Cloud plans a pull there only from the
+    /// Writer's newest snapshot, whatever the slot's snapshot is called.
+    #[test]
+    fn cloud_plans_no_pull_onto_a_cut_a_restore_skipped_on_a_machine_from_before_keep_written() {
+        breaks_written(
+            Skew::OldDaemon,
+            Broken {
+                dep_prefix_only: true,
+                ..Broken::default()
+            },
+            "with a mirror onto an older daemon's cut a Restore skipped",
+        );
+    }
+
+    /// No one chose the orphan sweep's deletes, so a sweep that says `discard` destroys
+    /// the departed copy a Machine kept from every other Forget.
+    #[test]
+    fn the_orphan_sweep_keeps_a_departed_copy() {
+        breaks_written(
+            Skew::None,
+            Broken {
+                sweep_discards: true,
+                ..Broken::default()
+            },
+            "with an orphan sweep that says discard",
+        );
+    }
+
+    /// A Machine from before keep-written deletes whatever slot a Forget names, so the
+    /// sweep keeps every slot there.
+    #[test]
+    fn the_orphan_sweep_keeps_every_slot_on_a_machine_from_before_keep_written() {
+        breaks_written(
+            Skew::OldDaemon,
+            Broken {
+                sweep_skips_capability: true,
+                ..Broken::default()
+            },
+            "with an orphan sweep onto an older daemon",
+        );
     }
 
     /// The old Writer Cloud forgot while it was away comes back writable beside the copy

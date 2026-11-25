@@ -142,6 +142,8 @@ macro_rules! rpc_catalog {
                 VOLUME_START_CAPABILITY: ("ployz.volume.start.v1", Container),
                 /// `SetVolumeCopy`'s cut with a `holder` takes `running`: it refuses `stopped` when that Container no longer runs, and records a stop it makes before making it, so a resent cut knows the stop as its own.
                 VOLUME_CUT_RUNNING_CAPABILITY: ("ployz.volume.cut.running.v1", Container),
+                /// `SetVolumeCopy` keeps a slot that may hold writes no other Machine has: a Forget without `discard` refuses `written_here`, and a pull never replaces it with a full send.
+                VOLUME_KEEP_WRITTEN_CAPABILITY: ("ployz.volume.keep-written.v1", Container),
                 /// The daemon can take a Certificate Policy from cluster state.
                 CERTIFICATE_POLICY_CAPABILITY: ("ployz.certificates.policy.v1", Always),
                 /// `Inspect` can report requested current local Machine storage evidence.

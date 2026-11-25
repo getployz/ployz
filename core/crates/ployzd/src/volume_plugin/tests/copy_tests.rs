@@ -277,19 +277,48 @@ async fn a_pull_of_the_snapshot_an_old_copy_holds_makes_it_a_mirror() {
 }
 
 /// What the daemon does for a `SetVolumeCopy` Forget want against a slot: plan against
-/// the inspected copy, and call the Destroy route only on `MirrorToForget`.
-async fn set_forget(socket: &Path, expect: &ployz_core::ExpectedCopy) -> Value {
+/// the inspected copy, and call the Destroy route only on `MirrorToForget`. `ployz volume
+/// mirror rm` discards; a full sync's bare Forget keeps a slot written here.
+async fn set_forget(socket: &Path, expect: &ployz_core::ExpectedCopy, discard: bool) -> Value {
     let copy = parsed_copy(&post(socket, "/Volume.Copy.Inspect", json!({"name": "data"})).await);
     let plan = ployz_core::plan(
         copy.as_ref(),
         false,
         expect,
-        &ployz_core::WantedCopy::Forget,
+        &ployz_core::WantedCopy::Forget { discard },
     );
     if plan != ployz_core::CopyPlan::Transition(ployz_core::CopyTransition::MirrorToForget) {
         return json!({"Planned": format!("{plan:?}")});
     }
     post(socket, "/Volume.Copy.Destroy", json!({"name": "data"})).await
+}
+
+/// The daemon planned a confirmed delete of the slot at `w-1-1`. A receive it had started
+/// landed `w-1-2` before the destroy reached the plugin, which holds the only lock that
+/// receive took. The plugin plans the same Forget again on the copy it holds, so the delete
+/// keeps a copy someone never confirmed, and deletes the one they did.
+#[tokio::test]
+#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+async fn a_destroy_keeps_a_slot_that_changed_after_its_forget_was_planned() {
+    let test = test_dir();
+    let (socket, server) = slot(&test, &[("w-1-2", 12), ("w-1-1", 11)]);
+    let inspect = || post(&socket, "/Volume.Copy.Inspect", json!({"name": "data"}));
+    let now = inspect().await;
+    assert_eq!(now["Ok"]["written_here"], json!(true), "{now}");
+    let planned = |newest: &str, written_here: bool| {
+        json!({"name": "data", "discard": true, "expect": {"kind": "mirror",
+            "newest": newest, "slot": now["Ok"]["slot"], "written_here": written_here}})
+    };
+
+    let landed = post(&socket, "/Volume.Copy.Destroy", planned("11", true)).await;
+    assert_eq!(reason(&landed), "mismatch", "{landed}");
+    let written = post(&socket, "/Volume.Copy.Destroy", planned("12", false)).await;
+    assert_eq!(reason(&written), "mismatch", "{written}");
+    assert_eq!(guid(&inspect().await), "12");
+
+    let confirmed = post(&socket, "/Volume.Copy.Destroy", planned("12", true)).await;
+    assert_eq!(confirmed, json!({"Ok": null}));
+    server.abort();
 }
 
 /// Cloud deletes an old copy it saw; a cancelled run's pull that landed after Cloud looked
@@ -321,7 +350,7 @@ async fn a_delete_of_an_old_copy_refuses_the_mirror_a_late_pull_made_of_it() {
     assert_eq!(late.pointer("/Ok/role"), Some(&json!("mirror")), "{late}");
 
     assert_eq!(
-        set_forget(&socket, &delete).await,
+        set_forget(&socket, &delete, true).await,
         json!({"Planned": "Refuse(Mismatch)"})
     );
     assert_eq!(
@@ -773,13 +802,25 @@ enum Mode {
     Silent,
 }
 
+/// A writer's stream: its BEGIN record names the guid the fake receive makes of `text`'s
+/// `snapshot <name> <guid>` line, as a real send's names the snapshot it builds.
+fn sent(text: &str) -> Vec<u8> {
+    let guid = text
+        .lines()
+        .find_map(|line| line.strip_prefix("snapshot "))
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|guid| guid.parse().ok())
+        .unwrap_or(0);
+    begun(guid, text)
+}
+
 impl Source {
     pub(super) async fn start(bound: Option<u64>, stream: &str) -> Self {
         let requests = Arc::new(StdMutex::new(Vec::new()));
         let answers = Arc::new(StdMutex::new(vec![Answer {
             key: String::new(),
             status: StatusCode::OK,
-            stream: begun(0, stream),
+            stream: sent(stream),
             mode: Mode::Now,
         }]));
         let gate = Arc::new(Semaphore::new(0));
@@ -867,7 +908,7 @@ impl Source {
 
     fn push(&self, key: &str, status: StatusCode, stream: &str, mode: Mode) {
         let stream = if status == StatusCode::OK {
-            begun(0, stream)
+            sent(stream)
         } else {
             stream.as_bytes().to_vec()
         };
@@ -1353,6 +1394,7 @@ async fn a_pull_whose_base_the_writer_lost_starts_over_from_a_full_send() {
     let test = test_dir();
     let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
     set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
+    set_property(&test, SLOT_FS, "ployz:pulled", "11");
 
     post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
     let copy = landed(&socket, "w-1-2").await;
@@ -1373,6 +1415,163 @@ async fn a_pull_whose_base_the_writer_lost_starts_over_from_a_full_send() {
     server.abort();
 }
 
+/// A departure parked this Machine's root here, with writes no other Machine has. A Move
+/// back from the Writer a Restore made elsewhere pulls onto it, and that Writer never
+/// held the departure snapshot, so the incremental finds no base.
+#[tokio::test]
+async fn a_pull_keeps_an_old_copy_written_here_that_the_writer_cannot_send_onto() {
+    let source = Source::start(Some(BOUND), "snapshot w-6-1 12\n").await;
+    source.answer(
+        "base=",
+        StatusCode::NOT_FOUND,
+        "snapshot 11 is not on tank/ployz/data",
+    );
+    let test = test_dir();
+    let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
+    set_snapshots(&test, SLOT_FS, &[("dep-1700000000", 11)]);
+    set_property(&test, SLOT, "ployz:role", "old_copy");
+
+    post(&socket, "/Volume.Copy.Pull", pull("w-6-1")).await;
+    let copy = landed(&socket, "w-6-1").await;
+    assert!(
+        copy.pointer("/Ok/pull/failure")
+            .is_some_and(|failure| !failure.is_null()),
+        "{copy}"
+    );
+    assert_eq!(snapshot_names(&test, SLOT_FS), ["dep-1700000000"]);
+    assert!(
+        !commands(&test).contains("destroy -r"),
+        "{}",
+        commands(&test)
+    );
+    assert_eq!(
+        source.requests(),
+        [
+            "/volume-bound/data",
+            "/volume-send/data?target=w-6-1&base=11",
+        ]
+    );
+    assert_eq!(
+        slot_roles(&socket).await,
+        (json!("old_copy"), json!("old_copy")),
+        "the refused pull left the parked copy a mirror, which mirror rm --if-old-copy refuses and the mirror sync refreshes"
+    );
+    assert_eq!(
+        copy.pointer("/Ok/written_here"),
+        Some(&json!(true)),
+        "{copy}"
+    );
+
+    // A `ployz volume sync --full` forgets the mirror first; the parked copy refuses it.
+    let full = mirror_expect(&copy);
+    assert_eq!(
+        set_forget(&socket, &full, false).await,
+        json!({"Planned": "Refuse(WrittenHere)"})
+    );
+    assert_eq!(snapshot_names(&test, SLOT_FS), ["dep-1700000000"]);
+    assert!(
+        set_forget(&socket, &full, true).await.get("Ok").is_some(),
+        "mirror rm deletes it"
+    );
+    assert!(!test.0.join("mirror-fs").exists());
+    server.abort();
+}
+
+/// A daemon that stopped between landing a pull and marking it leaves the target its slot's
+/// newest snapshot, unmarked. The resend proves the writer sends that snapshot as the slot's
+/// guid and marks it, so a later pull whose base the writer pruned starts over from a full
+/// send instead of keeping the slot forever.
+#[tokio::test]
+async fn a_resend_marks_a_landed_pull_its_writer_proves() {
+    let source = Source::start(Some(BOUND), "snapshot w-1-2 12\n").await;
+    let test = test_dir();
+    let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
+    set_snapshots(&test, SLOT_FS, &[("w-1-2", 12), ("w-1-1", 11)]);
+    set_property(&test, SLOT_FS, "ployz:pulled", "11");
+    set_property(&test, SLOT, "ployz:pull", "w-1-2");
+
+    post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
+    source.answer("target=w-1-3", StatusCode::OK, "snapshot w-1-3 13\n");
+    source.answer(
+        "base=",
+        StatusCode::NOT_FOUND,
+        "snapshot 12 is not on tank/ployz/data",
+    );
+    let copy = finished(&socket, "w-1-3").await;
+    assert_eq!(
+        copy.pointer("/Ok/newest/guid"),
+        Some(&json!("13")),
+        "{copy}"
+    );
+    assert_eq!(copy.pointer("/Ok/written_here"), None, "{copy}");
+    server.abort();
+}
+
+/// The same resend from a writer that sends the target as another snapshot proves
+/// nothing, so the slot stays unmarked and a departure keeps it.
+#[tokio::test]
+async fn a_resend_leaves_a_landed_pull_unmarked_when_its_writer_sends_another_snapshot() {
+    let source = Source::start(Some(BOUND), "snapshot w-1-2 99\n").await;
+    let test = test_dir();
+    let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
+    set_snapshots(&test, SLOT_FS, &[("w-1-2", 12), ("w-1-1", 11)]);
+    set_property(&test, SLOT_FS, "ployz:pulled", "11");
+    set_property(&test, SLOT, "ployz:pull", "w-1-2");
+
+    let reply = post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
+    assert_eq!(
+        reply.pointer("/Ok/written_here"),
+        Some(&json!(true)),
+        "{reply}"
+    );
+    assert_eq!(
+        property(&test, SLOT_FS, "ployz:pulled").as_deref(),
+        Some("11")
+    );
+    let reply = post(&socket, "/Storage.Demote", json!(null)).await;
+    assert_eq!(
+        reply,
+        json!({"Ok": {"demoted": [], "stuck": [], "failed": []}})
+    );
+    assert!(test.0.join("mirror-fs").exists());
+    server.abort();
+}
+
+/// The same resend while the writer can't answer proves nothing and refutes nothing, so
+/// it answers the pull failed and keeps `ployz:pull`, and a later resend marks the slot.
+#[tokio::test]
+async fn a_resend_whose_writer_does_not_answer_keeps_its_landed_pull_to_prove_later() {
+    let source = Source::start(Some(BOUND), "snapshot w-1-2 12\n").await;
+    source.answer(
+        "target=w-1-2",
+        StatusCode::SERVICE_UNAVAILABLE,
+        "the writer is not reachable",
+    );
+    let test = test_dir();
+    let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
+    set_snapshots(&test, SLOT_FS, &[("w-1-2", 12), ("w-1-1", 11)]);
+    set_property(&test, SLOT_FS, "ployz:pulled", "11");
+    set_property(&test, SLOT, "ployz:pull", "w-1-2");
+
+    let reply = post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
+    assert!(
+        reply
+            .pointer("/Ok/pull/failure")
+            .is_some_and(|failure| !failure.is_null()),
+        "{reply}"
+    );
+    assert_eq!(
+        property(&test, SLOT, "ployz:pull").as_deref(),
+        Some("w-1-2")
+    );
+
+    source.answer("target=w-1-2", StatusCode::OK, "snapshot w-1-2 12\n");
+    let reply = post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
+    assert_eq!(reply.pointer("/Ok/pull"), Some(&json!(null)), "{reply}");
+    assert_eq!(reply.pointer("/Ok/written_here"), None, "{reply}");
+    server.abort();
+}
+
 #[tokio::test]
 async fn a_pull_whose_token_the_writer_cannot_send_starts_over_from_a_full_send() {
     let source = Source::start(Some(BOUND), "snapshot w-1-2 12\n").await;
@@ -1384,6 +1583,7 @@ async fn a_pull_whose_token_the_writer_cannot_send_starts_over_from_a_full_send(
     let test = test_dir();
     let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
     set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
+    set_property(&test, SLOT_FS, "ployz:pulled", "11");
     set_property(&test, SLOT_FS, "receive_resume_token", "token-1");
 
     post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
@@ -1419,6 +1619,7 @@ async fn a_pull_resent_with_its_first_expect_continues_a_full_send_that_emptied_
     let test = test_dir();
     let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
     set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
+    set_property(&test, SLOT_FS, "ployz:pulled", "11");
     let machine = Machine { test, socket };
     let expect = mirror_expect(&machine.copy().await);
 
@@ -1869,15 +2070,21 @@ fn landed_before_a_restart(test: &TestDir, mark: &str, value: &str) {
     set_property(test, SLOT_FS, mark, value);
 }
 
+/// The resend's writer can't be reached, so nothing proves the slot's newest arrived from
+/// it: the slot keeps its marks and its pull, unmarked, and a departure keeps it.
 #[tokio::test]
-async fn a_resend_of_the_slots_newest_keeps_its_marks_and_marks_no_pull() {
+async fn a_resend_of_the_slots_newest_its_writer_cannot_answer_keeps_its_marks() {
     for (mark, value) in [("ployz:cut", "on"), ("ployz:epoch", "3")] {
         let test = test_dir();
         let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], 1);
         landed_before_a_restart(&test, mark, value);
 
         let reply = post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
-        assert_eq!(reply.pointer("/Ok/pull"), Some(&Value::Null), "{reply}");
+        assert_eq!(
+            reply.pointer("/Ok/pull/target"),
+            Some(&json!("w-1-2")),
+            "{reply}"
+        );
         assert_eq!(property(&test, SLOT_FS, mark).as_deref(), Some(value));
         assert_eq!(property(&test, SLOT_FS, "ployz:pulled"), None, "{mark}");
         let reply = post(&socket, "/Storage.Demote", json!(null)).await;
@@ -3083,6 +3290,7 @@ fn mirror_expect(copy: &Value) -> ployz_core::ExpectedCopy {
         newest: newest.guid,
         slot,
         role: None,
+        written_here: None,
     }
 }
 
@@ -3288,7 +3496,7 @@ async fn set_copy(machine: &Machine, docker: &mut Docker, set: &Set) -> Value {
                 )
                 .await
         }
-        (CopyTransition::WriterToForget, WantedCopy::Forget) => {
+        (CopyTransition::WriterToForget, WantedCopy::Forget { .. }) => {
             machine
                 .call("/Volume.Copy.Forget", json!({"name": "data"}))
                 .await
@@ -3301,7 +3509,10 @@ async fn set_copy(machine: &Machine, docker: &mut Docker, set: &Set) -> Value {
                 .call("/Volume.Copy.Pull", pull(&target.to_string()))
                 .await
         }
-        (CopyTransition::MirrorToForget | CopyTransition::SeedToForget, WantedCopy::Forget) => {
+        (
+            CopyTransition::MirrorToForget | CopyTransition::SeedToForget,
+            WantedCopy::Forget { .. },
+        ) => {
             machine
                 .call("/Volume.Copy.Destroy", json!({"name": "data"}))
                 .await
@@ -3511,7 +3722,7 @@ async fn every_request_of_a_move_replayed_late_through_the_planner_keeps_one_wri
         .send(Set {
             side: Side::A,
             expect: mirror_expect(&a),
-            want: ployz_core::WantedCopy::Forget,
+            want: ployz_core::WantedCopy::Forget { discard: true },
             run: None,
         })
         .await;
@@ -3549,7 +3760,7 @@ async fn every_request_of_a_move_replayed_late_through_the_planner_keeps_one_wri
         .send(Set {
             side: Side::B,
             expect: mirror_expect(&b),
-            want: ployz_core::WantedCopy::Forget,
+            want: ployz_core::WantedCopy::Forget { discard: true },
             run: None,
         })
         .await;
@@ -3573,7 +3784,7 @@ async fn every_request_of_a_move_replayed_late_through_the_planner_keeps_one_wri
         .send(Set {
             side: Side::B,
             expect: mirror_expect(&b),
-            want: ployz_core::WantedCopy::Forget,
+            want: ployz_core::WantedCopy::Forget { discard: true },
             run: None,
         })
         .await;
@@ -3935,9 +4146,10 @@ impl Writing {
         }
     }
 
-    /// Whether the finished path leaves a slot a writer elsewhere holds the point of.
+    /// Whether the finished path leaves a slot a writer elsewhere holds the point of. A
+    /// resend receives nothing: its writer proves it sends the slot's newest guid.
     fn received(self) -> bool {
-        matches!(self, Self::FirstPull | Self::IncrementalPull)
+        matches!(self, Self::FirstPull | Self::IncrementalPull | Self::Resend)
     }
 
     /// Whether the fixture is such a slot before the path changes anything.
@@ -4026,14 +4238,19 @@ async fn every_stop_of_a_writer_path_leaves_a_slot_the_departure_keeps_until_a_p
         if let Some(marked) = marked {
             let received = steps
                 .iter()
-                .position(|step| step.starts_with("zfs receive"))
-                .unwrap();
+                .position(|step| step.starts_with("zfs receive"));
+            assert_eq!(
+                received.is_some(),
+                !matches!(writing, Writing::Resend),
+                "{writing:?}: {steps:?}"
+            );
+            let received = received.unwrap_or(0);
             assert!(received < marked, "{writing:?}: {steps:?}");
             for mark in ["ployz:cut", "ployz:epoch", "ployz:promote", "ployz:seed"] {
                 let inherit = format!("zfs inherit {mark} {SLOT_FS}");
                 let dropped = steps.iter().position(|step| *step == inherit);
                 assert!(
-                    dropped.is_some_and(|dropped| received < dropped && dropped < marked),
+                    dropped.is_some_and(|dropped| received <= dropped && dropped < marked),
                     "{writing:?}: {mark} is not dropped between the receive and the mark: {steps:?}"
                 );
             }

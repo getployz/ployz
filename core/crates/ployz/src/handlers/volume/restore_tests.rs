@@ -51,6 +51,7 @@ fn old_copy(newest: Option<Snapshot>) -> VolumeCopy {
         role: Some(SlotRole::OldCopy),
         pull_state: None,
         origin: None,
+        written_here: true,
     }
 }
 
@@ -102,6 +103,7 @@ fn a_removed_servers_old_copy_becomes_the_writer_in_a_newer_epoch() {
             newest: SnapshotGuid::new(99),
             slot: SlotId::new(7),
             role: None,
+            written_here: None,
         }
     );
     assert_eq!(

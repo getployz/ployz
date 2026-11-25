@@ -10,13 +10,13 @@ import { hashEnrollmentToken } from "#/modules/machines/enrollment.server";
 import { loadOrganizationConnections } from "#/modules/runtime/connections.server";
 import { clusterRead, makeOrganizationRuntimeLayer, OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { makePloyzLayer, RpcError } from "#/modules/runtime/ployz.server";
-import { runtimeWatchFrameFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
+import { runtimeWatchFrameFixture, runtimeWatchMachineFixture, runtimeWatchMachineObservationFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
 import { mirrorStatuses, refreshMirror, SYNC_CLUSTER_BUDGET_MS } from "#/modules/volume-copies/mirror-sync/mirror-sync.refresh.server";
 import { stampPlacements, writePlacement } from "#/modules/volume-placement/volume-placement.server";
 import type { Member } from "#/modules/volume-run/volume-run";
 import { type CopyAnswer, type VolumeCluster } from "#/modules/volume-run/volume-run.cluster.server";
 import { requestVolumeRun } from "#/modules/volume-run/volume-run.rows.server";
-import { answeringWith, clusterShowing, COPIES, member } from "#/modules/volume-run/volume-run.test-fixture";
+import { answeringWith, clusterShowing, COPIES, member, PLACEMENT_VERBS } from "#/modules/volume-run/volume-run.test-fixture";
 import { Database } from "#/server/database.server";
 import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
 import { noPairingChanges } from "#/test/organization-runtime";
@@ -33,6 +33,11 @@ vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
 type Ask = (typeof VolumeCluster.Service)["ask"];
 /** The Servers the Cluster reports, each on a daemon that runs placement. */
 const SERVERS = ["web-1", "web-2", "web-3"];
+
+const KEEPING = SERVERS.map((name) => {
+  const machine = runtimeWatchMachineFixture(web(name), name);
+  return runtimeWatchMachineObservationFixture({ machine: { ...machine, runtime: { ...machine.runtime, daemon_version: "", capabilities: PLACEMENT_VERBS } } });
+});
 
 const SNAPSHOT = { copy: { ...COPIES.writer, newest: { name: "w-1-5", guid: "12", created_unix_seconds: 1_790_000_100 } } };
 // The SDK's own 10s timeout on a target Machine's RPC: no Machine sent it.
@@ -90,8 +95,9 @@ describe("Refresh now", () => {
         connecting();
         return asTestDouble<Client>()({
         close: async () => {},
-        // Cloud reads the Servers' releases before a change; these list none, so none runs Ployz 0.3.
-        runtime: { watch: async function* () { yield runtimeWatchFrameFixture({ machines: [] }); } },
+        // Cloud reads the Servers' releases before a change; these list none, so none runs Ployz 0.3. A pull that may
+        // replace a copy reads its Server's capabilities here as it is sent: each runs every placement verb.
+        runtime: { watch: async function* () { yield runtimeWatchFrameFixture({ machines: KEEPING }); } },
         volumeSwitch: async (_machine: MachineId, request: VolumeSwitchRequest) => {
           if (request.command !== "set_volume_copy") throw new Error(`unexpected ${request.command}`);
           return answer(request.payload.want);

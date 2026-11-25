@@ -755,6 +755,7 @@ fn held_copy(held: Held) -> Option<ployz_core::VolumeCopy> {
             role: None,
             pull_state: None,
             origin: None,
+            written_here: false,
         }),
     }
 }

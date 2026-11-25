@@ -21,9 +21,9 @@ use crate::{
     faults::{Identity, Point, Want},
     machine::has_cluster_identity,
     volume_copy::{
-        CUT_ROUTE, CopyBinding, CopyRequest, CutRequest, DESTROY_ROUTE, FORGET_ROUTE,
-        ForgetRequest, INSPECT_ROUTE, PULL_ROUTE, PullRequest, SNAPSHOT_ROUTE, SeedCopy,
-        SnapshotRequest, StartWindow, VOLUME_SEED_COPY_ROUTE, VOLUME_SEED_ROUTE,
+        CUT_ROUTE, CopyBinding, CopyRequest, CutRequest, DESTROY_ROUTE, DestroyRequest,
+        FORGET_ROUTE, ForgetRequest, INSPECT_ROUTE, PULL_ROUTE, PullRequest, SNAPSHOT_ROUTE,
+        SeedCopy, SnapshotRequest, StartWindow, VOLUME_SEED_COPY_ROUTE, VOLUME_SEED_ROUTE,
         VOLUME_SIZE_SET_ROUTE, WRITER_ROUTE, WriterRequest,
     },
 };
@@ -58,7 +58,7 @@ impl LocalMachine {
             WantedCopy::Writer { start: None, .. }
             | WantedCopy::Mirror { .. }
             | WantedCopy::Snapshot { .. }
-            | WantedCopy::Forget
+            | WantedCopy::Forget { .. }
             | WantedCopy::Floor => None,
         };
         if let WantedCopy::Writer {
@@ -281,7 +281,7 @@ impl SwitchGuard {
             WantedCopy::Writer { start: None, .. }
             | WantedCopy::Mirror { .. }
             | WantedCopy::Snapshot { .. }
-            | WantedCopy::Forget
+            | WantedCopy::Forget { .. }
             | WantedCopy::Floor => None,
         };
         let start_running = start == Some(StartState::Running);
@@ -442,7 +442,7 @@ impl SwitchGuard {
                 )
                 .await
             }
-            (CopyTransition::WriterToForget, WantedCopy::Forget) => {
+            (CopyTransition::WriterToForget, WantedCopy::Forget { .. }) => {
                 self.plugin_copy(FORGET_ROUTE, &ForgetRequest { name, r#gen })
                     .await
             }
@@ -466,7 +466,10 @@ impl SwitchGuard {
                 )
                 .await
             }
-            (CopyTransition::MirrorToForget | CopyTransition::SeedToForget, WantedCopy::Forget) => {
+            (
+                CopyTransition::MirrorToForget | CopyTransition::SeedToForget,
+                WantedCopy::Forget { discard },
+            ) => {
                 // Recorded before the destroy, so no restart after it loses the record.
                 if let Some(VolumeCopy::Slot { origin, .. } | VolumeCopy::Root { origin, .. }) =
                     &copy
@@ -474,8 +477,16 @@ impl SwitchGuard {
                     let origin = origin.unwrap_or_else(|| ployz_core::VolumeOrigin::legacy(&name));
                     self.docker()?.lifecycle().forgot(&name, &origin).await?;
                 }
-                self.plugin_copy(DESTROY_ROUTE, &ForgetRequest { name, r#gen })
-                    .await
+                // A receive this Machine started earlier runs outside the switch lock and can
+                // land between the plan above and the destroy, so the plugin plans the same
+                // Forget again where no receive can change the slot.
+                let request = DestroyRequest {
+                    name,
+                    r#gen,
+                    expect: Some(expect),
+                    discard,
+                };
+                self.plugin_copy(DESTROY_ROUTE, &request).await
             }
             (transition, want) => {
                 unreachable!("the planner paired {transition:?} with {want:?}")
@@ -783,6 +794,9 @@ fn refusal(refused: SetVolumeCopyRefused, name: &DockerVolumeName) -> Error {
                 "the Container the cut would stop no longer runs on Volume {name}, so the cut stopped nothing"
             )
         }
+        CopyRefusal::WrittenHere => format!(
+            "Volume {name} on this Machine may hold writes no other Machine has, so it was kept. To delete it, run `ployz volume mirror rm` (an older Ployz Cloud must be upgraded first)"
+        ),
         CopyRefusal::Unrecognized => format!("Volume {name} was refused for an unknown reason"),
         CopyRefusal::Stale => format!(
             "a newer move or release owns Volume {name}; this Machine is at lane {}",

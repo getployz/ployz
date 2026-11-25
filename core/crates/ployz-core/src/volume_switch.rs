@@ -305,6 +305,13 @@ pub enum VolumeCopy {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         origin: Option<crate::VolumeOrigin>,
+        /// The slot may hold writes no other Machine has: it carries a departure's
+        /// snapshot or a seed, promote, cut or epoch mark, or no pull is known to have
+        /// received its newest snapshot. A Forget without `discard` refuses it. A daemon
+        /// without [`crate::VOLUME_KEEP_WRITTEN_CAPABILITY`] never reports it.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        #[ts(optional, as = "Option<bool>")]
+        written_here: bool,
     },
 }
 
@@ -788,6 +795,7 @@ mod tests {
             role: Some(SlotRole::Mirror),
             pull_state: None,
             origin: None,
+            written_here: false,
         };
         let known = |role| {
             vec![KnownCopy {

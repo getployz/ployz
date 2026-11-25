@@ -512,7 +512,7 @@ pub(crate) fn runs_command(command: Command) -> Command {
         .arg(positional("run", false).help("A run ID, to show that run"))
 }
 
-fn cloud(backend: &Backend) -> Result<(&tokio::runtime::Runtime, &Credential), Error> {
+pub(super) fn cloud(backend: &Backend) -> Result<(&tokio::runtime::Runtime, &Credential), Error> {
     match backend {
         Backend::Cloud(runtime, credential) => Ok((runtime, credential)),
         Backend::Local(..) => Err(Error::coded(
@@ -761,8 +761,8 @@ fn request(
 
 /// A run as `ployz volume` prints it.
 #[derive(Serialize)]
-struct Started<'a> {
-    run: &'a VolumeRun,
+pub(super) struct Started<'a> {
+    pub(super) run: &'a VolumeRun,
 }
 
 /// Start `asked`, settling an approval Cloud asks for first. Only `approval_required` leaves
@@ -789,7 +789,7 @@ fn approved(
     )
 }
 
-fn ended(run: &VolumeRun, started: &str, follow: String) -> Result<(), Error> {
+pub(super) fn ended(run: &VolumeRun, started: &str, follow: String) -> Result<(), Error> {
     if run.state == MaybeKnown::Known(VolumeRunState::Done) {
         return crate::ui::finish(&Started { run }, || {
             crate::ui::stream(format_args!("The {started} is done: run {}.", run.id));

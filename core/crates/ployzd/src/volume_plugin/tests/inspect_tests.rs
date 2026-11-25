@@ -201,7 +201,8 @@ fn every_root_mark_combination_parses_to_one_copy() {
         WantedCopy::Snapshot {
             name: "f-2".parse().unwrap(),
         },
-        WantedCopy::Forget,
+        WantedCopy::Forget { discard: false },
+        WantedCopy::Forget { discard: true },
         WantedCopy::Floor,
     ];
     let expects = [
@@ -210,6 +211,7 @@ fn every_root_mark_combination_parses_to_one_copy() {
             newest: SnapshotGuid::new(13),
             slot: SlotId::new(1),
             role: Some(SlotRole::Mirror),
+            written_here: None,
         },
         ExpectedCopy::None,
     ];

@@ -302,7 +302,8 @@ export const OPERATION_PARITY = {
           slot: { via: "server" },
           confirmName: { omitted: "The page's own dialog confirms." },
           ifOldCopy: { omitted: "The page deletes only an old copy, so Cloud always admits it as one." },
-          acceptLoss: { omitted: "The page's own dialog confirms." },
+          // The copy the dialog showed, which Cloud deletes only while its Server still reports it.
+          acceptLoss: { via: "copy" },
         },
       },
     },

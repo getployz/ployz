@@ -76,7 +76,7 @@ const gates: ReadonlyArray<readonly [string, Gated, string | RegExp, ReadonlyArr
     startServerEnrollment(actor, { organizationSlug: SLUG, ids: [MISSING], storage: { kind: "none" } } as never) as never, "Validation: Pick the first server: it sets up the cluster the rest join.", []],
   ["cancelServerEnrollment", (actor) => cancelServerEnrollment(actor, { organizationSlug: SLUG, id: MISSING }) as never, "NotFound: No such enrollment.", []],
   ["deleteCopy", (actor) =>
-    deleteCopy(actor, { organizationSlug: SLUG, volumeId: "v", environment: { project: "shop", environment: "production" }, server: MACHINE }).pipe(
+    deleteCopy(actor, { organizationSlug: SLUG, volumeId: "v", environment: { project: "shop", environment: "production" }, server: MACHINE, copy: null }).pipe(
       Effect.provideService(OrganizationRuntime, silentCluster)) as never, JSON.stringify({ ok: false, refusal: { code: "unanswered", message: "Your servers aren't answering. Try again once they are.", details: null } }), []],
   ["server_upgrade_policy_set", (actor) => runCommand(caller(actor.userId), "server_upgrade_policy_set", { automatic: true }, { approved: null, key: null }) as never, JSON.stringify({ ok: true, output: { channel: "stable", automatic: true } }), ["server/upgrade.requested"]],
 ];

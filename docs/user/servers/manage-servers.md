@@ -1290,13 +1290,11 @@ Ployz refuses to forget a server that answers and holds a copy of any volume. Re
 `ployz server rm` instead, and the reset makes its copies read-only and deletes its mirrors.
 
 A mirror that Ployz v0.3.0-beta.2 or earlier refreshed last stays on the server after the reset.
-To have the reset delete it, the mirror must finish a pull from the writer before you run
-`ployz server rm`. `ployz volume sync <volume> --full --wait` copies the whole volume to the
-mirror again and returns only once the mirror holds the writer's newest data. Plain `ployz volume
-sync <volume>` hands the mirror its pull and returns before the download ends, and removing the
-server during the download stops the pull and keeps the mirror. It also pulls only what the
-volume wrote since the mirror's last refresh, so the mirror of a volume that wrote nothing since
-pulls nothing and stays.
+To have it gone, delete it with `ployz volume mirror rm` before you run `ployz server rm`.
+`ployz volume sync --full` refuses such a mirror, because Ployz can't tell whether it holds writes
+no other server has. On a server running Ployz 0.4.0-beta.2 or earlier, it refuses every mirror,
+and so does `ployz volume mirror rm`, since that server would delete the copy whatever it holds.
+Upgrade the server first.
 
 A forgotten server isn't told it was removed. If it runs again as it is, it starts its services on
 its own copy of each volume and they keep writing there, and a later move, mirror, sync or release
