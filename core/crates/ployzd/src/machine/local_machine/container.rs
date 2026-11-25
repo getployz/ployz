@@ -932,7 +932,8 @@ impl LocalMachine {
         request: PullFreeImageRequest,
     ) -> Result<ImagePulled, Error> {
         // What a free pull places runs with no signature, so a login never makes it.
-        if let (Scope::Operator, Some(_)) = (self.scope_now()?, &request.registry_auth) {
+        let operator = matches!(self.scope_now()?, Scope::Operator);
+        if request.registry_login.is_some() || (operator && request.registry_auth.is_some()) {
             return Err(Error::PullRefused(
                 ployz_core::RpcError::invalid_argument(
                     "A free pull carries no registry login: sign the Service to pull its private image.",

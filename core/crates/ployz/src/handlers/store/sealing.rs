@@ -1,12 +1,14 @@
 //! Seals a write's new secrets and registry logins in this CLI when the write goes
-//! through Cloud. A login is sealed for the registry its Service's image names.
-//! Cloud says whether it does and to which key, asked once per command and only for
+//! through Cloud. A login is sealed for a registry the person names: the image the
+//! same write sets, `--registry`, or the image Cloud names once they say yes, never
+//! Cloud's word alone. Cloud says whether it does and to which key, asked once per command and only for
 //! a write that carries plain text; the Store says where each secret lands. The key is
 //! sealed to only when it is the one this computer pinned for the Organization, and a
 //! secret's plain text never goes to Cloud. The in-process Store seals every secret itself.
 
 use ployz_core::{
-    Hint, RpcErrorCode, SealedIdentity, SealingPublicKey, login_host, seal_login, seal_value,
+    Hint, RpcErrorCode, SealedIdentity, SealingPublicKey, ServiceName, image_registry, login_host,
+    seal_login, seal_value,
 };
 use ployz_store::{
     Ask as _, Edit, EnvironmentSummary, SealingService, SealingTargetsQuery, SealingTargetsView,
@@ -20,6 +22,7 @@ use super::{Backend, Error, Store};
 use crate::cloud;
 use crate::cloud::account::StoreCallError;
 use crate::sealing_pin::{self, Pins};
+use crate::ui;
 
 /// What Cloud answers about sealing one write's secrets.
 #[derive(Deserialize)]
@@ -72,9 +75,13 @@ impl Store<'_> {
     pub(crate) fn seal_edit(
         &self,
         mut edit: Edit,
+        registry: Option<&str>,
         fail: impl Fn(StoreCallError) -> Error,
     ) -> Result<Edit, Error> {
-        if !edit.carries_plaintext_secret() && !edit.carries_plaintext_login() {
+        let refused = |error| fail(StoreCallError::Refused(error));
+        // A login this CLI can't read is refused here, so its text never leaves.
+        let logins = edit.carries_plaintext_login().map_err(refused)?;
+        if !edit.carries_plaintext_secret() && !logins {
             return Ok(edit);
         }
         let query = SealingTargetsQuery::Edit {
@@ -92,7 +99,6 @@ impl Store<'_> {
             return Err(unexpected("an Edit's targets"));
         };
         let environment_id = bound(&environment)?;
-        let refused = |error| fail(StoreCallError::Refused(error));
         edit.map_plaintext_secrets(refused, |secret| {
             let service =
                 SealingService::bind(&services, &environment, secret.service(), secret.key())
@@ -105,19 +111,13 @@ impl Store<'_> {
             let plaintext = secret.admit().map_err(refused)?;
             seal(&recipient, &identity, secret.key(), plaintext).map(Some)
         })?;
-        edit.map_plaintext_logins(|service, login| {
-            let image = services
+        edit.map_plaintext_logins(refused, |service, set, login| {
+            let named = services
                 .iter()
                 .find(|target| &target.name == service)
-                .and_then(|target| target.image.as_deref())
-                .ok_or_else(|| {
-                    Error::usage(format!(
-                        "{service}.registryCredential: only an image service takes registry credentials."
-                    ))
-                })?;
-            let host = login_host(image)
-                .map_err(|error| Error::usage(format!("{service}.registryCredential: {error}.")))?;
-            seal_login(&recipient, host, &login).map_err(|error| {
+                .and_then(|target| target.image.as_deref());
+            let host = login_host_for(service, set, registry, named)?;
+            seal_login(&recipient, &host, &login).map_err(|error| {
                 Error::caused(
                     RpcErrorCode::Internal,
                     format!("{service}.registryCredential: could not seal the credentials"),
@@ -230,6 +230,60 @@ impl Store<'_> {
             }
         }
     }
+}
+
+/// The registry host to seal `service`'s login for: that of `set`, the image this edit
+/// sets, or `registry`, from `--registry`. Otherwise that of `named`, the image Cloud
+/// says `service` runs, once the person at the terminal says yes: Cloud alone never
+/// chooses where a token goes.
+fn login_host_for(
+    service: &ServiceName,
+    set: Option<&str>,
+    registry: Option<&str>,
+    named: Option<&str>,
+) -> Result<String, Error> {
+    let path = format!("{service}.registryCredential");
+    let host_of = |image: &str| {
+        login_host(image)
+            .map(str::to_owned)
+            .map_err(|error| Error::usage(format!("{path}: {error}.")))
+    };
+    let registry = registry
+        .map(|host| match image_registry(&format!("{host}/image")) {
+            Some(first) if first == host => host_of(&format!("{host}/image")),
+            Some(_) | None => Err(Error::usage(format!(
+                "--registry takes a registry host, like ghcr.io or registry.example.com:5000, not {host}."
+            ))),
+        })
+        .transpose()?;
+    if let Some(image) = set {
+        let host = host_of(image)?;
+        return match registry {
+            Some(registry) if registry != host => Err(Error::usage(format!(
+                "{path}: the image is on {host}, not {registry}."
+            ))),
+            Some(_) | None => Ok(host),
+        };
+    }
+    if let Some(registry) = registry {
+        return Ok(registry);
+    }
+    let image = named.ok_or_else(|| {
+        Error::usage(format!(
+            "{path}: only an image service takes registry credentials."
+        ))
+    })?;
+    let host = host_of(image)?;
+    ui::confirm(
+        &format!("{image} is on {host}. Seal {service}'s credentials for {host}?"),
+        || {
+            Error::usage(format!(
+                "{path}: name the registry these credentials are for, like --registry ghcr.io."
+            ))
+        },
+        "Cancelled. Nothing sent.",
+    )?;
+    Ok(host)
 }
 
 fn seal(

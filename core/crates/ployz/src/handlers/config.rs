@@ -56,6 +56,11 @@ pub(super) fn set_command(command: Command) -> Command {
                 .help("Seal a value read from stdin: set web.env.KEY --secret, or set web.registryCredential --secret for a private image's token. With --from-env-file, seal every value"),
         )
         .arg(
+            value("registry", None)
+                .value_name("HOST")
+                .help("Registry the credentials are for, like ghcr.io"),
+        )
+        .arg(
             value("from-env-file", None)
                 .value_name("FILE")
                 .help("Set a Service's variables from a .env file; - reads stdin. Variables that are secret stay secret"),
@@ -613,7 +618,9 @@ pub(super) fn edit_or_discard(
     };
     let store = store(root)?;
     let fail = |error| store.fail(with_refresh_hint(error, matches, "get"));
-    let edit = store.seal_edit(edit, fail)?;
+    // Only `set` names a registry; other edits carry no login.
+    let registry = matches.try_get_one::<String>("registry").ok().flatten();
+    let edit = store.seal_edit(edit, registry.map(String::as_str), fail)?;
     let edited = store.try_edit(&edit).map_err(fail)?;
     let (verb, then) = if discarded(&store, &edited)? {
         ("Discarded", Then::Diff)

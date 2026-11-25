@@ -410,6 +410,7 @@ async fn a_full_callers_pull_leaves_the_tag_its_creation_runs() {
                     image: image.into(),
                     policy,
                     registry_auth: None,
+                    registry_login: None,
                 })
                 .encode()
                 .unwrap(),

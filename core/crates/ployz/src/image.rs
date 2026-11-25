@@ -259,6 +259,7 @@ pub(crate) async fn pull_cluster_image(
                     policy,
                     // What a free pull places runs unsigned, so it never carries a login.
                     registry_auth: None,
+                    registry_login: None,
                 },
                 Call::keyed().to(&target),
             )

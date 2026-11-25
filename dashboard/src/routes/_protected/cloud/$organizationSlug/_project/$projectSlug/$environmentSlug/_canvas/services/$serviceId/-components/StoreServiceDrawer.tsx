@@ -39,7 +39,7 @@ import { CanvasInspectorNotFound, CanvasInspectorPending } from "#/routes/_prote
 import { CanvasInspectorNameEditor } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/CanvasInspectorNameEditor";
 import { ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO } from "#/lib/environment-routes";
 import { RegistryCredentialsField } from "./RegistryCredentialsField";
-import { getRegistryHostFromImageReference } from "#/modules/config-store/registry-credentials";
+import { getRegistryHostFromImageReference, registryHostProblem } from "#/modules/config-store/registry-credentials";
 import { sealLogin } from "#/modules/sealing/seal-value";
 import { SealError } from "#/modules/sealing/seal-error";
 import { useSealing } from "#/modules/sealing/use-sealing";
@@ -714,6 +714,8 @@ function StoreRegistryCredentials({ state, image }: { state: StoreService; image
       onSet={({ username, secret }) => {
         const path = state.path("registryCredential");
         const write = state.edit({ op: "set", path, value: { secret: true } }, async () => {
+          const problem = registryHostProblem(image);
+          if (problem) throw new SealError(problem);
           const { publicKey } = await sealer();
           const login = await sealLogin(publicKey, getRegistryHostFromImageReference(image), { username, password: secret })
             .catch(() => { throw new SealError(UNSEALED_LOGIN); });

@@ -108,13 +108,17 @@ credentials** row shows the provider and registry, like **Docker Hub · docker.i
 them, click the pencil. A new secret takes effect at once, not as a staged change, and Discard
 can't bring the old one back. **Disconnect** stops using credentials from your next deploy, and
 **Restore** undoes it until then. From the CLI, `ployz set web.registryCredential --secret`
-seals a token the same way.
+seals a token the same way. Ployz Cloud doesn't choose its registry: at a terminal the CLI names
+the registry and asks you to confirm it, and a script names it with `--registry ghcr.io`. If the
+same command sets the image, the token is sealed for that image's registry.
 
 If you move the image to another registry, enter its credentials again.
 
 > [!IMPORTANT]
 > Credentials saved before this release are deleted when Ployz Cloud upgrades, since Cloud could
-> read them. Revoke every older token at your registry, then enter a new one here.
+> read them. Revoke every older token at your registry. Update `ployz` before you enter a new
+> token from the CLI, since an older CLI sends it unsealed. Then enter a new one. A Deployment made
+> before the upgrade has no credentials to redeploy with, so deploy again instead.
 
 A server refuses to send credentials where they could leak, and the deploy fails at pull:
 

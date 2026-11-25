@@ -71,6 +71,30 @@ pub(crate) fn set(
 
 /// A new sealed login, or none to keep the stored one. The value is never echoed.
 fn input(value: &Value, sealer: Sealer<'_>) -> Result<Option<SealedLogin>, RpcError> {
+    match login_input(value)? {
+        LoginInput::Keep => Ok(None),
+        LoginInput::Sealed(login) => Ok(Some(login)),
+        LoginInput::Plaintext(_) => {
+            Err(sealer.refuse("registryCredential", SETTING.invalid(PLAINTEXT_REFUSED)))
+        }
+    }
+}
+
+/// What a `registryCredential` value holds.
+pub(crate) enum LoginInput {
+    /// `{"secret": true}`: keep the stored login.
+    Keep,
+    Sealed(SealedLogin),
+    /// `{"secret": "…"}`, nonempty, with an optional username: a login a client seals,
+    /// or an older CLI's plain text.
+    Plaintext(RegistryAuth),
+}
+
+/// What `value` holds as a `registryCredential`. The value is never echoed.
+///
+/// # Errors
+/// Any other value, which a client refuses before it sends one.
+pub(crate) fn login_input(value: &Value) -> Result<LoginInput, RpcError> {
     let invalid = || {
         SETTING.invalid(
             "expected a login sealed on your device, or {\"secret\": true} to keep the stored one; set one with --secret",
@@ -79,28 +103,28 @@ fn input(value: &Value, sealer: Sealer<'_>) -> Result<Option<SealedLogin>, RpcEr
     // The CLI sends `web.registryCredential={"secret":true}` as JSON text.
     if let Some(text) = value.as_str() {
         return if SecretInput::keeps_by_text(text) {
-            Ok(None)
+            Ok(LoginInput::Keep)
         } else {
             Err(invalid())
         };
     }
     if let Ok(login) = serde_json::from_value::<SealedLogin>(value.clone()) {
-        return Ok(Some(login));
+        return Ok(LoginInput::Sealed(login));
     }
-    if plaintext_login(value).is_some() {
-        return Err(sealer.refuse("registryCredential", SETTING.invalid(PLAINTEXT_REFUSED)));
+    if let Some(login) = plaintext_login(value) {
+        return Ok(LoginInput::Plaintext(login));
     }
     match value.get("secret").and_then(SecretInput::of) {
         Some(SecretInput::Keep) if value.as_object().is_some_and(|fields| fields.len() == 1) => {
-            Ok(None)
+            Ok(LoginInput::Keep)
         }
         Some(_) | None => Err(invalid()),
     }
 }
 
 /// The login `value` holds as plain text: `{"secret": "…"}`, nonempty, with an optional
-/// username, as a CLI from before sealed logins sent one.
-pub(crate) fn plaintext_login(value: &Value) -> Option<RegistryAuth> {
+/// nonempty username.
+fn plaintext_login(value: &Value) -> Option<RegistryAuth> {
     let fields = value.as_object()?;
     if fields
         .keys()
@@ -160,17 +184,73 @@ pub(crate) fn freeze(
             continue;
         }
         let login = stored(tx, environment, &service.id)?.ok_or_else(|| {
-            error::conflict(
+            set_one(
+                service,
                 format!("{} has no registry credential: set one", service.slug),
-                FollowUp::SetRegistryCredential {
-                    service: service.slug.clone(),
-                }
-                .details(),
             )
         })?;
+        // A login opens for one registry, so one for another image's would fail at pull.
+        if let ServiceSource::Image { image, .. } = &service.config.source
+            && let Ok(host) = ployz_core::login_host(image)
+            && host != login.host
+        {
+            return Err(set_one(
+                service,
+                format!(
+                    "{}: the registry credentials are for {}, and the image is on {host}. \
+                     Enter them again for {host}",
+                    service.slug, login.host
+                ),
+            ));
+        }
         logins.insert(service.config.private_dns.clone(), login);
     }
     Ok(logins)
+}
+
+/// Refuse a redeploy that ships a Service of `saved` pulling with a login Deployment
+/// `source` never froze: one admitted before logins were sealed.
+pub(crate) fn refuse_unfrozen<'a>(
+    tx: &mut dyn Tx,
+    source: &str,
+    saved: &SavedEnvironmentIntent,
+    ships: impl IntoIterator<Item = &'a str>,
+) -> Result<(), RpcError> {
+    let rows = tx.query(
+        "SELECT logins FROM config_deployment WHERE id = ?1",
+        &[source.into()],
+    )?;
+    let frozen: BTreeMap<ServiceName, SealedLogin> = rows
+        .first()
+        .ok_or_else(|| error::corrupt("Deployment"))?
+        .json(0, "Deployment logins")?;
+    for id in ships {
+        if let Some(service) = saved.services.iter().find(|service| service.id == id)
+            && uses_login(service)
+            && !frozen.contains_key(&service.config.private_dns)
+        {
+            return Err(set_one(
+                service,
+                format!(
+                    "{} has no registry credential in this Deployment: set one, then deploy \
+                     again rather than redeploy",
+                    service.slug
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// `message`, about `service`'s registry credential, which a new one fixes.
+fn set_one(service: &SavedServiceIntent, message: String) -> RpcError {
+    error::conflict(
+        message,
+        FollowUp::SetRegistryCredential {
+            service: service.slug.clone(),
+        }
+        .details(),
+    )
 }
 
 /// Store `login` as Service `service_id`'s in `environment`, replacing any it had.

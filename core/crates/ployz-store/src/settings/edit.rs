@@ -5,7 +5,7 @@
 //! Environment's lock, so edits to different Settings never overwrite each other.
 //! A caller may pass the revision it read; the edit then refuses if Working State moved.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::config::{ClientSealedValue, Replicas};
 use ployz_core::{Region, RegistryAuth, RpcError, SealedLogin, ServiceName};
@@ -17,7 +17,7 @@ use crate::error;
 use crate::git::GitSetting;
 use crate::id::{ConfigId, Revision, VolumeName};
 use crate::policy::{self, Policy};
-use crate::registry;
+use crate::registry::{self, LoginInput, login_input};
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
 use crate::settings::{self, Apply, EnvironmentSetting, ServiceSetting, SettingPath, Target};
 use crate::storage::Tx;
@@ -103,31 +103,54 @@ impl Edit {
 
     /// Whether this edit carries a new registry login's plain text, which the Store
     /// refuses: `{"secret": "…"}` with an optional username, set or patched.
-    #[must_use]
-    pub fn carries_plaintext_login(&self) -> bool {
-        self.clone().plaintext_logins().next().is_some()
+    ///
+    /// # Errors
+    /// A login the Store would refuse, which may hold a secret's text: a client refuses
+    /// it before it sends anything.
+    pub fn carries_plaintext_login(&self) -> Result<bool, RpcError> {
+        let mut carries = false;
+        for (service, slot) in self.clone().login_slots() {
+            if !slot.is_null() && matches!(login_input(slot)?, LoginInput::Plaintext(_)) {
+                service?;
+                carries = true;
+            }
+        }
+        Ok(carries)
     }
 
     /// Each new registry login's plain text this edit carries, replaced where the edit
-    /// holds it by what `seal` makes of it for its Service.
+    /// holds it by what `seal` makes of it for its Service. `seal` gets the image this
+    /// edit sets for that Service, if it sets one.
     ///
     /// # Errors
-    /// What `seal` refuses.
+    /// What [`Self::carries_plaintext_login`] refuses, through `refuse`, and what
+    /// `seal` refuses.
     pub fn map_plaintext_logins<E>(
         &mut self,
-        mut seal: impl FnMut(&ServiceName, RegistryAuth) -> Result<SealedLogin, E>,
+        refuse: impl Fn(RpcError) -> E,
+        mut seal: impl FnMut(&ServiceName, Option<&str>, RegistryAuth) -> Result<SealedLogin, E>,
     ) -> Result<(), E> {
-        for (service, slot, login) in self.plaintext_logins() {
-            *slot = serde_json::to_value(seal(&service, login)?).expect("a sealed login is JSON");
+        let images = self.images_set();
+        for (service, slot) in self.login_slots() {
+            if slot.is_null() {
+                continue;
+            }
+            let LoginInput::Plaintext(login) = login_input(slot).map_err(&refuse)? else {
+                continue;
+            };
+            let service = service.map_err(&refuse)?;
+            let image = images.get(&service).map(String::as_str);
+            *slot = serde_json::to_value(seal(&service, image, login)?)
+                .expect("a sealed login is JSON");
         }
         Ok(())
     }
 
-    /// Each registry login's plain text in this edit: its Service, where the edit holds
-    /// it, and the login. A change the Store would refuse for its path holds none.
-    fn plaintext_logins(
+    /// Each registry login this edit sets or patches, by its Service, as the Store
+    /// reads it.
+    fn login_slots(
         &mut self,
-    ) -> impl Iterator<Item = (ServiceName, &mut Value, RegistryAuth)> + '_ {
+    ) -> impl Iterator<Item = (Result<ServiceName, RpcError>, &mut Value)> + '_ {
         self.changes.iter_mut().filter_map(|change| {
             let (path, slot) = match change {
                 Change::Set { path, value }
@@ -139,9 +162,32 @@ impl Edit {
                 Change::Patch { path, value } => (path, value.get_mut("registryCredential")?),
                 Change::Set { .. } | Change::Unset { .. } | Change::Rename { .. } => return None,
             };
-            let login = registry::plaintext_login(slot)?;
-            Some((path.settings_of().ok()?.clone(), slot, login))
+            Some((path.settings_of().cloned(), slot))
         })
+    }
+
+    /// The image this edit sets for each Service it sets one for.
+    fn images_set(&self) -> BTreeMap<ServiceName, String> {
+        self.changes
+            .iter()
+            .filter_map(|change| {
+                let (path, image) = match change {
+                    Change::Set { path, value }
+                        if path.target() == Some(&Target::Setting(ServiceSetting::Image)) =>
+                    {
+                        (path, value)
+                    }
+                    Change::Patch { path, value } => (path, value.get("image")?),
+                    Change::Set { .. } | Change::Unset { .. } | Change::Rename { .. } => {
+                        return None;
+                    }
+                };
+                Some((
+                    path.settings_of().ok()?.clone(),
+                    image.as_str()?.trim().to_owned(),
+                ))
+            })
+            .collect()
     }
 
     /// The new secrets' plain text the Store reads from this edit: each variable a

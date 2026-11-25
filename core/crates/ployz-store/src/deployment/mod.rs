@@ -417,6 +417,10 @@ pub(crate) fn clipped(text: &str) -> String {
 /// record renews it; once it lapses the runner is gone and the outcome is unknown.
 pub(crate) const LEASE: i64 = 10 * 60;
 
+/// The frozen credentials a Store from before sealed logins reads: none, so it still
+/// deploys public images during a rollout. A later release drops the column.
+pub(crate) const NO_LEGACY_CREDENTIALS: &str = "{}";
+
 /// A queued Deployment no runner claimed: its dispatch may have been lost.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct Unclaimed {

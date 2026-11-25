@@ -983,7 +983,9 @@ fn whatever_the_store_reads_as_a_secret_s_text_the_cli_seals_or_refuses_and_send
             );
             let reads_text = raw.as_ref().is_err_and(read_secret_text);
             read += usize::from(reads_text);
-            if !asked.carries_plaintext_secret() && !asked.carries_plaintext_login() {
+            // A login the CLI can't read it refuses before it sends anything.
+            let logins = asked.carries_plaintext_login();
+            if !asked.carries_plaintext_secret() && matches!(logins, Ok(false)) {
                 assert!(!reads_text && !holds, "missed: {asked:?}");
                 continue;
             }
@@ -997,7 +999,10 @@ fn whatever_the_store_reads_as_a_secret_s_text_the_cli_seals_or_refuses_and_send
                 },
             );
             let sealed = sealed.and_then(|()| {
-                sent.map_plaintext_logins(|_, _| Ok(ployz_store::testing::login("cli")))
+                sent.map_plaintext_logins(
+                    |error| error,
+                    |_, _, _| Ok(ployz_store::testing::login("cli")),
+                )
             });
             match sealed {
                 Err(refused) => {
