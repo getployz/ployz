@@ -226,13 +226,20 @@ fn docker_root_total_bytes(docker: &Docker<'_>) -> Option<u64> {
 /// invalid host configuration, and
 /// reports upstream launch/prune errors or unconfirmed cleanup.
 pub fn clear_cache(policy: &HostPolicy) -> Result<(), BuildError> {
-    // Every build slot keeps its own cache; stop at the first refusal.
-    crate::builder::Lock::known_slots(&policy.state_directory)
-        .try_for_each(|slot| clear_slot_cache(policy, slot))
+    // Every build slot keeps a cache for each access; stop at the first refusal.
+    crate::builder::Lock::known_slots(&policy.state_directory).try_for_each(|slot| {
+        [crate::Access::Full, crate::Access::Free]
+            .into_iter()
+            .try_for_each(|access| clear_slot_cache(policy, slot, access))
+    })
 }
 
-fn clear_slot_cache(policy: &HostPolicy, slot: usize) -> Result<(), BuildError> {
-    let admission = Admission::try_acquire_slot(policy, slot)?;
+fn clear_slot_cache(
+    policy: &HostPolicy,
+    slot: usize,
+    access: crate::Access,
+) -> Result<(), BuildError> {
+    let admission = Admission::try_acquire_slot(policy, slot)?.with_access(access);
     let environment: BTreeMap<String, String> = std::env::vars().collect();
     // Private command output must not collide with a concurrent caller or a Build.
     let directory = policy
@@ -252,7 +259,13 @@ fn clear_slot_cache(policy: &HostPolicy, slot: usize) -> Result<(), BuildError> 
     };
     let result = (|| {
         docker.require_local()?;
-        let builder = Builder::acquire(&docker, admission.lock, &admission.resources, None)?;
+        let builder = Builder::acquire(
+            &docker,
+            admission.lock,
+            admission.access,
+            &admission.resources,
+            None,
+        )?;
         let result = docker
             .run(
                 "start the builder for cache clearing",

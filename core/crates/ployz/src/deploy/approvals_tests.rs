@@ -71,6 +71,7 @@ fn want_of(
             image_id: None,
             answer: ployz_core::AnswerWhen::Started,
             replaces: None,
+            free_receipt: None,
         }),
         rotation: RunRotation::Pending,
     }

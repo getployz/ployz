@@ -17,6 +17,47 @@ pub(crate) enum ImagePull<'auth> {
     /// the spec's tag names now. Unsigned, it runs only once this Machine pulled it from
     /// the spec's repository by digest, with no login.
     Pinned(&'auth ployz_core::ImageDigest),
+    /// A free Build loaded this image, and its receipt held: creation runs exactly it from
+    /// this Machine's store, never pulled, whatever the spec's image names.
+    Free(&'auth FreeImage),
+}
+
+/// An image a free Build of this Cluster loaded, by its ID: a receipt whose MAC held under
+/// this Machine's Sealing Key.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct FreeImage(ployz_core::ImageDigest);
+
+impl FreeImage {
+    /// The image `receipt` names, once its MAC holds under this Machine's Sealing Key.
+    ///
+    /// # Errors
+    /// Returns [`FreeImageRefusal::NotThisCluster`] for a receipt no Machine of this
+    /// Cluster made, and the key's own error when this Machine holds no usable key.
+    pub(crate) fn check(
+        receipt: &ployz_core::FreeReceipt,
+        sealing: &crate::sealed_env::SealingKeyStore,
+    ) -> Result<Self, crate::docker::Error> {
+        if sealing.made_free_receipt(receipt)? {
+            Ok(Self(receipt.image.clone()))
+        } else {
+            Err(crate::docker::Error::FreeImage(
+                FreeImageRefusal::NotThisCluster(receipt.image.clone()),
+            ))
+        }
+    }
+
+    pub(crate) fn id(&self) -> &ployz_core::ImageDigest {
+        &self.0
+    }
+}
+
+/// Why an unsigned creation won't run the image its free Build receipt names.
+#[derive(Debug, thiserror::Error)]
+pub enum FreeImageRefusal {
+    #[error("no Server of this Cluster made the receipt for image {0}")]
+    NotThisCluster(ployz_core::ImageDigest),
+    #[error("image {0} isn't on this Server; copy it here, then create the Container again")]
+    Absent(ployz_core::ImageDigest),
 }
 
 /// `image`'s repository, registry and port kept, pinned to `id`: `repo:tag` becomes

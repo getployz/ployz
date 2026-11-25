@@ -781,6 +781,7 @@ fn the_build_worker_reaches_the_image_servers_and_dns_but_not_the_host_the_mesh_
             slot: 0,
             cgroup: ployz_build::CgroupPath::new(&cgroup).unwrap(),
             image_ports: vec![51505],
+            mesh_images: true,
         })
         .unwrap();
         return;

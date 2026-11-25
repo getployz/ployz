@@ -10,8 +10,12 @@ use std::{
     path::{Component, Path},
 };
 
+/// Why a free Build refuses a recipe that reads private material.
+const FREE_SECRETS: &str = "A free Build reads no secret, Sealed value or SSH key";
+
 /// Validate a captured recipe, isolate its registry configuration, and return
-/// checked private Railpack inputs for execution.
+/// checked private Railpack inputs for execution. A free Build's recipe is checked as one,
+/// and its capture brings no registry configuration to isolate.
 /// # Errors
 /// Rejects uncaptured paths, unsupported host settings, and SSH contexts without
 /// a captured default key; reports missing or malformed input.
@@ -72,6 +76,16 @@ pub fn validate_capture(
     {
         return Err("invalid temporary Build tags".into());
     }
+    if sealed == SealedFiles::Free
+        && (!definition.image_contexts.is_empty()
+            || !definition.retained_tags.is_empty()
+            || definition.output != crate::Output::Load)
+    {
+        return Err(
+            "A free Build takes no other Service's image or tag, and loads its image on this Server"
+                .into(),
+        );
+    }
     let context_names = names
         .iter()
         .copied()
@@ -131,6 +145,9 @@ pub fn validate_capture(
             "build",
         )?;
         let mut default_ssh = false;
+        if sealed == SealedFiles::Free && build.contains_key("ssh") {
+            return Err(FREE_SECRETS.into());
+        }
         if let Some(ssh) = build.get("ssh") {
             for key in sequence(ssh)? {
                 let (id, paths) = text(key)?
@@ -222,6 +239,9 @@ pub fn validate_capture(
         if let Some(bake) = build.get("x-bake") {
             only(mapping(bake)?, &["no-cache-filter"], "build.x-bake")?;
         }
+        if sealed == SealedFiles::Free && build.contains_key("cache_to") {
+            return Err("A free Build exports no cache".into());
+        }
         for cache in ["cache_from", "cache_to"] {
             if let Some(entries) = build.get(cache) {
                 for entry in sequence(entries)? {
@@ -254,6 +274,9 @@ pub fn validate_capture(
         }
     }
     let railpack = railpack(root, definition, services, sealed)?;
+    if sealed == SealedFiles::Free {
+        return Ok(railpack);
+    }
     let config_path = crate::capture::docker_config(root);
     let mut config: serde_json::Value = serde_json::from_slice(
         &fs::read(&config_path).map_err(|_| "Build registry configuration is missing")?,
@@ -335,9 +358,15 @@ pub enum SealedFiles {
     Opened,
     /// Captured but not yet opened: a Sealed value's file is checked by name only.
     Pending,
+    /// A free Build's, which may name no secret, SSH key, registry configuration, cache
+    /// export or other Service's image, and loads its image here.
+    Free,
 }
 
 fn secret_file(root: &Path, path: &Path, sealed: SealedFiles) -> Result<(), InputError> {
+    if sealed == SealedFiles::Free {
+        return Err(FREE_SECRETS.into());
+    }
     match path.strip_prefix(crate::sealed::DIRECTORY) {
         Ok(name) if sealed == SealedFiles::Pending => name
             .to_str()
