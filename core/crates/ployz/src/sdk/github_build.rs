@@ -67,9 +67,9 @@ pub enum GithubStart {
 /// Machine still holds it for this commit, else dispatch to the runner of its one
 /// platform. A Service that needs several platforms, or a Cluster Cloud can't read,
 /// skips GitHub. A push under an automatic deploy rule follows the push's own run. A
-/// person's Deploy under it reuses only an image proven under the rule's generation, and
-/// otherwise dispatches the rule's workflow when the rule's platforms are what the
-/// Service's Servers run, else skips GitHub saying why.
+/// person's Deploy under it reuses only an image a Server verified under the rule as it
+/// stands, and otherwise dispatches the rule's workflow when the rule's platforms are
+/// what the Service's Servers run, else skips GitHub saying why.
 /// With `expect`, it reads only an entry of that Cluster, as [`super::run_deployment_expecting`] runs, naming the
 /// Machines it left.
 ///
@@ -112,9 +112,18 @@ pub async fn github_start(
     };
     let deployment = only(&built.input, &id.service)?;
     let commit = built.commit;
-    let receipt = built
+    let mut receipt: Option<BuildReceipt> = built
         .receipt
         .and_then(|receipt| serde_json::from_value(receipt).ok());
+    // A person's Deploy under the rule reuses only an image a Server verified under the
+    // rule as it stands. Any other receipt is left out before the Servers are asked, so
+    // the platforms they answer are the Service's own, not the rejected image's.
+    if let (Some(_), Some(offered)) = (&approved, &receipt) {
+        let (id, image) = (id.clone(), offered.image.reference.clone());
+        if !store_call(&store, move |store| store.github_proven(&id, &image)).await? {
+            receipt = None;
+        }
+    }
     let mut foreign = Vec::new();
     let outside = match session(connections, expect).await {
         Ok(session) => {
@@ -125,36 +134,28 @@ pub async fn github_start(
         }
         Err(error) => Err(error),
     };
-    // A person's Deploy under the rule reuses an image only with proof a Server takes
-    // under the rule's current generation. Any other builds under the rule, for the
-    // platforms it signed, when those are what the Service's Servers run.
+    // Any other build under the rule is for the platforms it signed, when those are what
+    // the Service's Servers run.
     let mut refused = None;
-    if let Some(rule) = approved {
-        let proven = match &outside {
-            Ok(OutsideBuild::Reuse { receipt, .. }) => {
-                let (id, image) = (id.clone(), receipt.image.reference.clone());
-                store_call(&store, move |store| store.github_proven(&id, &image)).await?
+    if let Some(rule) = approved
+        && !matches!(outside, Ok(OutsideBuild::Reuse { .. }))
+    {
+        let signed = (rule.service(&id.service))
+            .map(|approved| approved.policy.platforms.clone())
+            .unwrap_or_default();
+        match unbuildable(&signed, &id.service, &outside) {
+            None => {
+                return Ok(Dialed {
+                    outcome: GithubStart::Approved {
+                        workflow: rule.source.workflow,
+                        workflow_ref: rule.source.builder.r#ref,
+                        branch: rule.source.branch,
+                        commit: commit.to_string(),
+                    },
+                    foreign,
+                });
             }
-            Ok(OutsideBuild::Build { .. }) | Err(_) => false,
-        };
-        if !proven {
-            let signed = (rule.service(&id.service))
-                .map(|approved| approved.policy.platforms.clone())
-                .unwrap_or_default();
-            match unbuildable(&signed, &id.service, &outside) {
-                None => {
-                    return Ok(Dialed {
-                        outcome: GithubStart::Approved {
-                            workflow: rule.source.workflow,
-                            workflow_ref: rule.source.builder.r#ref,
-                            branch: rule.source.branch,
-                            commit: commit.to_string(),
-                        },
-                        foreign,
-                    });
-                }
-                Some(message) => refused = Some(GithubEnd::Skipped { message }),
-            }
+            Some(message) => refused = Some(GithubEnd::Skipped { message }),
         }
     }
     let end = match (refused, outside) {

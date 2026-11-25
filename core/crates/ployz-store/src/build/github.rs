@@ -494,32 +494,18 @@ pub(crate) fn rule_of(
 }
 
 /// Whether `image`, which a person's Deploy under the rule would reuse for GitHub build
-/// `id`, carries proof a Server takes under the rule's current generation: the image
-/// token copied with it, or a build a Server verified. An image without one dispatches
-/// a build under the rule instead, which every enforcing Server would otherwise refuse.
+/// `id`, is a build a Server verified under the rule and generation the Environment keeps
+/// now. An image token doesn't count: it expires, and only a Server's verification
+/// outlives it. An image without one is built again under the rule.
 pub(crate) fn github_proven(
     tx: &mut dyn Tx,
     id: &GithubBuildId,
     image: &str,
 ) -> Result<bool, RpcError> {
-    let stored = deployment::load(tx, &id.deployment)?;
-    let Some(rule) = rule_of(tx, &stored, &id.service)?
-        .as_ref()
-        .and_then(|rule| crate::auto_rule::opened(rule.signed()))
-    else {
-        return Ok(false);
-    };
-    let row = github_row(tx, &stored, id)?;
-    if row
-        .image_token
-        .as_ref()
-        .is_some_and(|token| token.image == image && token.generation == rule.generation)
-    {
-        return Ok(true);
-    }
     let Ok(digest) = BuiltImageDigest::parse(image) else {
         return Ok(false);
     };
+    let stored = deployment::load(tx, &id.deployment)?;
     let organization = deployment::organization(tx, &id.deployment)?;
     Ok(crate::build::verified_proof(
         tx,

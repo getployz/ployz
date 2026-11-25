@@ -15,7 +15,7 @@ import { codeOfPasskeyKey } from "#/modules/passkeys/passkey-key";
 import { listOrganizationServers } from "#/modules/runtime/connections.server";
 import { firstRuntimeFrame, OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { pinImageDigests } from "#/modules/runtime/ployz.server";
-import { fromSource } from "#/modules/deploy-approval/deploy-tap";
+import { builds } from "#/modules/deploy-approval/deploy-tap";
 import { Database } from "#/server/database.server";
 
 /** What a Server that enforces device approval needs to check a passkey's versions. */
@@ -54,9 +54,12 @@ export type DeploySource =
   | { readonly kind: "sign"; readonly view: RuleView; readonly unchecked: boolean }
   | { readonly kind: "held"; readonly reason: string; readonly unchecked: boolean };
 
-/** The plan Cloud read for a Deploy, with what asking for it needs, or the Store's refusal of the read. */
+/**
+ * The plan Cloud read for a Deploy, with what asking for it needs, or the Store's refusal of the read. `rules` is the
+ * staged rule view each Git Service the plan builds is checked against, null when Cloud couldn't read it.
+ */
 export type DeployPlan =
-  | { readonly kind: "plan"; readonly plan: PlanView; readonly tap: DeployTap; readonly source?: DeploySource }
+  | { readonly kind: "plan"; readonly plan: PlanView; readonly tap: DeployTap; readonly source?: DeploySource; readonly rules?: RuleView | null }
   | { readonly kind: "refused"; readonly message: string; readonly details?: JsonValue };
 
 /**
@@ -81,8 +84,9 @@ export const prepareDeployTap = Effect.fn("DeployTap.prepare")(function* (actor:
   }, { approval: "not_required", permissions: access.permissions, environments: access.environments });
   if (!read.ok) return { kind: "refused", message: read.refusal.message, details: read.refusal.details } satisfies DeployPlan;
   const plan = read.value;
-  // A Git Service builds under the automatic deploy rule, and the grant Server checks it: it asks no Server here.
-  const unsigned = (plan.unsigned ?? []).filter((entry) => !fromSource(entry));
+  // A Git Service builds under the automatic deploy rule, and the grant Server checks it: no passkey signs a version.
+  const built = builds(plan);
+  const unsigned = (plan.unsigned ?? []).filter((entry) => !built.has(entry.service));
   const signs = new Set(unsigned.filter((entry) => entry.needs === "version").map((entry) => entry.service));
   // A Service only a digest or the switch can cover refuses before any lookup, unless nothing enforces.
   const tags = signs.size < unsigned.length ? [] : (plan.target ?? []).filter((spec) => signs.has(spec.name))
@@ -100,10 +104,15 @@ export const prepareDeployTap = Effect.fn("DeployTap.prepare")(function* (actor:
       Effect.catchTag("StoreRefused", () => Effect.succeed(false)),
     ));
   const signer = input.classify === true ? null : actor.userId;
-  const versions = unsigned.length === 0 || asks ? Effect.succeed<DeployTap>({ kind: "off" })
-    : gate(signer, access.organization.id, tags, { namespace: plan.namespace, parents, needs: SIGNS });
+  // A member's Deploy that builds from source asks whether a Server enforces even when no passkey signs a version:
+  // each Git Service is then checked against the rule. Only a Cluster seen to enforce nothing is off.
+  const checks = signer !== null && access.kind === "member" && built.size > 0;
+  const versions = asks || (unsigned.length === 0 && !checks) ? Effect.succeed<DeployTap>({ kind: "off" })
+    : gate(unsigned.length === 0 ? null : signer, access.organization.id, tags, { namespace: plan.namespace, parents, needs: SIGNS });
+  const view = signer === null || access.kind !== "member" || (input.rule !== true && !checks) ? undefined
+    : yield* stagedRule(access, input.environment, signer);
   // Only a member who signs here may sign the rule with the Deploy.
-  let source = input.rule !== true || signer === null || access.kind !== "member" ? null : yield* sourceOf(access, input.environment, plan.version, signer);
+  let source = input.rule !== true || view === undefined ? null : sourceOf(access, view, plan.version);
   let tap: DeployTap;
   if (source?.kind === "sign") {
     const ruled = yield* gate(signer, access.organization.id, tags, { namespace: plan.namespace, parents, needs: SIGNS_RULE });
@@ -121,22 +130,26 @@ export const prepareDeployTap = Effect.fn("DeployTap.prepare")(function* (actor:
     if (!shown.ok) return { kind: "refused", message: shown.refusal.message } satisfies DeployPlan;
     return { kind: "plan", plan: shown.value, tap } satisfies DeployPlan;
   }
-  const planned: DeployPlan = { kind: "plan", plan, tap };
+  const planned: DeployPlan = view === undefined ? { kind: "plan", plan, tap } : { kind: "plan", plan, tap, rules: view };
   return source === null ? planned : { ...planned, source };
 });
 
-/**
- * What a Deploy at review `version` of `environment` needs for its Source step, read from the staged rule view alone,
- * before any Server or passkey is reached: null when it needs none, when nothing builds from GitHub, when the review
- * moved, or when a protector decides the member's writes here.
- */
-const sourceOf = Effect.fn("DeployTap.source")(function* (access: Access, environment: EnvironmentRef, version: string, userId: string) {
+/** The staged rule view of `environment`, or null when the Store wouldn't answer. */
+const stagedRule = Effect.fn("DeployTap.stagedRule")(function* (access: Access, environment: EnvironmentRef, userId: string) {
   const read = yield* callStore(access.organization.id, userId, {
     operation: "read", query: { query: "rule", environment, staged: true },
   }, { approval: "not_required", permissions: access.permissions, environments: access.environments });
+  return read.ok ? read.value : null;
+});
+
+/**
+ * What a Deploy at review `version` needs for its Source step, read from the staged rule `view` alone, before any Server
+ * or passkey is reached: null when it needs none, when nothing builds from GitHub, when the review moved, or when a
+ * protector decides the member's writes here.
+ */
+function sourceOf(access: Omit<Access, "organization">, view: RuleView | null, version: string): DeploySource | null {
   const unread: DeploySource = { kind: "held", reason: "Couldn't check automatic deploys.", unchecked: true };
-  if (!read.ok) return unread;
-  const view = read.value;
+  if (view === null) return unread;
   // Read with the view: a protection Cloud couldn't read never reads as none.
   if (view.sources.length === 0 || view.version !== version || (view.protected !== false && !mayProtect(access, view.environment.name))) return null;
   let need: ReturnType<typeof sourceNeed>;
@@ -146,8 +159,8 @@ const sourceOf = Effect.fn("DeployTap.source")(function* (access: Access, enviro
     return unread;
   }
   if (need === "none") return null;
-  return { kind: "sign", view, unchecked: need === "servers" } satisfies DeploySource;
-});
+  return { kind: "sign", view, unchecked: need === "servers" };
+}
 
 type Access = {
   readonly organization: { readonly id: string };

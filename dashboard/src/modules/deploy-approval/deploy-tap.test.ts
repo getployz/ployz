@@ -1,11 +1,12 @@
-import type { PlanView, SavedRule } from "@ployz/sdk";
+import type { PlanView, RuleView, SavedRule } from "@ployz/sdk";
 import { describe, expect, it, vi } from "vitest";
 import { StoreRefused } from "#/lib/refusal";
 import { asTestDouble } from "#/lib/test-double";
 import { type AdmitDeploy, admitDeploy } from "#/modules/config-store/admit-deploy";
 import { environmentKey } from "#/modules/config-store/environment-ref";
 import { type Answer, type Ask, type DeploySteps, deployWith, prepareDeploy, sendAnswer } from "./deploy-tap";
-import { ready, view } from "./rule-view.test-fixture";
+import type { DeployPlan, DeploySource } from "./deploy-tap.server";
+import { kept, ready, view } from "./rule-view.test-fixture";
 
 const here = { project: "shop", environment: "production" };
 const plan = (version: string) => async () => ({
@@ -40,7 +41,7 @@ describe("prepareDeploy", () => {
   it("signs only the rule for a new Git Service that reaches data, and no version of it", async () => {
     const read = async () => ({
       kind: "plan" as const, plan: asTestDouble<PlanView>()({ version: "v1", namespace: "app", unsigned: [{ service: "web", needs: "rule" }], target: view().target }),
-      tap: ready, source: { kind: "sign" as const, view: view(), unchecked: false },
+      tap: ready, source: { kind: "sign" as const, view: view(), unchecked: false }, rules: view(),
     });
 
     expect(await prepareDeploy(admitDeploy(here, "d7"), read, async () => ({ ownerId: 7 }))).toMatchObject({
@@ -48,26 +49,45 @@ describe("prepareDeploy", () => {
     });
   });
 
-  it("refuses a new Git Service before any prompt when the tap signs no rule over it", async () => {
-    const read = async () => ({
-      kind: "plan" as const, plan: asTestDouble<PlanView>()({ version: "v1", namespace: "app", unsigned: [{ service: "web", needs: "rule" }] }),
-      tap: ready, source: { kind: "held" as const, reason: "An owner or admin approves this Deploy.", unchecked: false },
-    });
+  /** A Deploy of web from source on Servers that enforce, as Cloud read it: `rules` is the staged rule view, null unread. */
+  const building = (rules: RuleView | null, source?: DeploySource) => async (): Promise<DeployPlan> => {
+    const planned = { kind: "plan" as const, plan: asTestDouble<PlanView>()({ version: "v1", namespace: "app", unsigned: [], target: view().target }), tap: ready, rules };
+    return source === undefined ? planned : { ...planned, source };
+  };
 
-    expect(await prepareDeploy(admitDeploy(here, "d9"), read, async () => ({ ownerId: 7 }))).toEqual({
+  it("refuses a Git Service before any prompt when the tap signs no rule over it", async () => {
+    const held = { kind: "held" as const, reason: "Upgrade web-1 first. Its ployz can't check your passkey.", unchecked: false };
+
+    expect(await prepareDeploy(admitDeploy(here, "d9"), building(view(), held), async () => ({ ownerId: 7 }))).toEqual({
       kind: "refused",
-      message: "No automatic deploy rule covers web as it stands, so your servers won't build it. An owner or admin approves this Deploy.",
+      message: "No automatic deploy rule covers web as it stands, so your servers won't build it. Upgrade web-1 first. Its ployz can't check your passkey.",
+    });
+  });
+
+  it("refuses every Git Service when Cloud couldn't read the rule", async () => {
+    const unread = { kind: "held" as const, reason: "Couldn't check automatic deploys.", unchecked: true };
+
+    expect(await prepareDeploy(admitDeploy(here, "d10"), building(null, unread), async () => ({ ownerId: 7 }))).toEqual({
+      kind: "refused", message: "Couldn't read the automatic deploy rule, so web can't build under it.",
+    });
+  });
+
+  it("checks a Git Service the plan doesn't ask a version of against the kept rule's settings", async () => {
+    // web reaches no data, so the plan lists it nowhere, and its settings moved past what the kept rule approves.
+    const moved = { ...view(kept()), changed: ["web"] };
+
+    expect(await prepareDeploy(admitDeploy(here, "d11"), building(moved))).toEqual({
+      kind: "refused", message: "No automatic deploy rule covers web as it stands, so your servers won't build it. Turn on Deploy every push, then deploy again.",
     });
   });
 
   it("deploys a Git Service its kept rule approves with no tap, and refuses one whose rule was ended", async () => {
-    const read = (unsigned: PlanView["unsigned"]) => async () => ({
-      kind: "plan" as const, plan: asTestDouble<PlanView>()({ version: "v1", namespace: "app", unsigned }), tap: ready,
-    });
     const command = admitDeploy(here, "d8");
+    const body = kept();
+    const ended = { ...body, body: JSON.stringify({ ...JSON.parse(body.body), ended: true }) };
 
-    expect(await prepareDeploy(command, read([{ service: "web", needs: "rebuild" }]))).toEqual({ kind: "admit", command: { ...command, version: "v1" }, held: null });
-    expect(await prepareDeploy(command, read([{ service: "web", needs: "rule", ended: true }]))).toEqual({
+    expect(await prepareDeploy(command, building(view(body)))).toEqual({ kind: "admit", command: { ...command, version: "v1" }, held: null });
+    expect(await prepareDeploy(command, building(view(ended)))).toEqual({
       kind: "refused", message: "Automatic deploys are off for web. Turn on Deploy every push to deploy it.",
     });
   });

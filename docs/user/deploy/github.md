@@ -119,12 +119,15 @@ signs the rule with the deploy. From the CLI, `ployz deploy` shows the rule afte
 signs, and your yes signs both with this device. A renewed rule keeps the platform it was approved
 for.
 
-A deploy builds each service the rule covers on GitHub Actions, as a push does, even when your
-Build Order tries your servers first. A new service from a repository deploys in one prompt, and one
-the rule already approves asks nothing. A deploy reuses an image only when your servers verified it
-under the rule as it stands now. After you approve the rule again, the next deploy builds afresh.
-When the servers a service may run on need platforms other than the ones the rule was approved
-for, GitHub skips the build and the deployment says why.
+A deploy builds each service the rule covers on GitHub Actions only, as a push does, whatever your
+Build Order says. If GitHub skips the build, your servers don't take it, and the deployment says why.
+If your Build Order is **Servers only**, the build fails with
+`Its automatic deploy rule builds it on GitHub, which your Build Order leaves out`.
+A new service from a repository deploys in one prompt, and one the rule already approves asks
+nothing. A deploy reuses an image only when your servers verified it under the rule as it stands
+now. After you approve the rule again, the next deploy builds afresh. When the servers a service may
+run on need platforms other than the ones the rule was approved for, GitHub skips the build and the
+deployment says why.
 
 A deploy that waits for an owner or admin in a Protected Environment signs no rule, and approving
 it leaves the rule as it was.
@@ -366,8 +369,9 @@ instead of printing it. Pass `--ref` to read a branch, tag or commit other than 
 
 - **Every deploy ships the newest commit.** Clicking **Deploy** to apply a setting also picks up
   whatever is on the service's Git branch now.
-- **Your servers build from GitHub only under a rule.** A push or deploy of a service no rule
-  covers fails at its build and nothing changes. See
+- **Your servers build from GitHub only under a rule.** A push of a service no rule covers fails
+  at its build, and nothing changes. **Deploy** and `ployz deploy` stop before they sign one and
+  create no deployment. See
   [Approve a rule for deploys on push](#approve-a-rule-for-deploys-on-push).
 - **Changing a variable rebuilds your app.** See [How builds work](../builds/overview.md#good-to-know).
 - **Only the service's Git branch deploys.** Pull requests can get their own
