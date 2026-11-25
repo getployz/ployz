@@ -40,8 +40,9 @@ struct Leftovers {
 }
 
 pub(crate) fn list_command(command: Command) -> Command {
-    command
-        .about("List the copies deleted Volumes left on Servers that only you can delete (Ployz Cloud)")
+    command.about(
+        "List the copies deleted Volumes left on Servers that only you can delete (Ployz Cloud)",
+    )
 }
 
 pub(crate) fn remove_command(command: Command) -> Command {
