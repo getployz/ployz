@@ -1,5 +1,6 @@
+use serde_json::{Value, json};
+
 use super::*;
-use crate::{ServiceMount, ServiceVolume, ServiceVolumeReference, VolumeOrigin};
 
 const RULE: &str = "0123456789abcdef";
 const NONCE: &str = "00c0ffee";
@@ -13,31 +14,54 @@ fn namespace_on(machine: &MachineId) -> Namespace {
 }
 
 fn physical(namespace: &Namespace) -> DockerVolumeName {
-    namespace.volume_name(&DockerVolumeName::parse("vol-db").unwrap())
+    namespace.volume_name(&DockerVolumeName::parse("db").unwrap())
 }
 
-/// A graph mounting one Volume of `source` at `/data`.
-fn mounting(source: serde_json::Value) -> ServiceVolumeGraph {
-    ServiceVolumeGraph::parse(
-        vec![ServiceVolume {
-            reference: ServiceVolumeReference::parse("data").unwrap(),
-            source: serde_json::from_value(source).unwrap(),
-        }],
-        vec![ServiceMount {
-            volume: ServiceVolumeReference::parse("data").unwrap(),
-            target: ContainerPath::parse("/data").unwrap(),
-            read_only: false,
-            no_copy: false,
-            subpath: None,
-        }],
-    )
-    .unwrap()
+/// A spec mounting tmpfs at `/tmp` and a Config at `/etc/site.conf`, reaching nothing else.
+fn contained() -> Value {
+    json!({
+        "name": "web",
+        "mode": {"mode": "replicated", "replicas": 1},
+        "container": {"image": "nginx", "pull_policy": "missing",
+            "config_mounts": [{"config_name": "site", "target": "/etc/site.conf"}]},
+        "configs": [{"name": "site", "content": [104, 105]}],
+        "volumes": [{"reference": "scratch", "source": {"kind": "tmpfs"}}],
+        "mounts": [{"volume": "scratch", "target": "/tmp"}],
+    })
 }
 
-fn provisioned(name: &DockerVolumeName, birth: Option<&VolumeBirth>) -> ServiceVolumeGraph {
-    mounting(serde_json::json!({
+fn spec(value: Value) -> RequestedServiceSpec {
+    serde_json::from_value(value).unwrap()
+}
+
+/// [`contained`] with `key` of the object at `parent` set to `value`.
+fn with(parent: &[&str], key: &str, value: Value) -> RequestedServiceSpec {
+    let mut spec_value = contained();
+    let object = parent
+        .iter()
+        .fold(&mut spec_value, |at, step| &mut at[*step]);
+    object[key] = value;
+    spec(spec_value)
+}
+
+/// [`contained`], mounting a Volume of `source` at `/data` too.
+#[expect(clippy::indexing_slicing, reason = "JSON fixture")]
+fn mounting(source: Value) -> RequestedServiceSpec {
+    let mut value = contained();
+    let mut push = |list: &str, entry: Value| value[list].as_array_mut().unwrap().push(entry);
+    push("volumes", json!({"reference": "data", "source": source}));
+    push("mounts", json!({"volume": "data", "target": "/data"}));
+    spec(value)
+}
+
+fn provisioned(name: &DockerVolumeName, birth: Option<&VolumeBirth>) -> RequestedServiceSpec {
+    mounting(json!({
         "kind": "provisioned", "name": name, "maximum_bytes": 1_073_741_824u64, "birth": birth,
     }))
+}
+
+fn data() -> ContainerPath {
+    ContainerPath::parse("/data").unwrap()
 }
 
 #[test]
@@ -63,16 +87,16 @@ fn only_the_exact_form_is_a_preview_namespace() {
 fn only_the_home_server_admits_a_preview_container_or_its_data() {
     let (home, other) = (machine('a'), machine('b'));
     let namespace = namespace_on(&home);
-    let tmpfs = mounting(serde_json::json!({ "kind": "tmpfs" }));
+    let contained = spec(contained());
     assert_eq!(
-        admit_preview(&home, &namespace, Admission::Signed, &tmpfs),
+        admit_preview(&home, &namespace, Admission::Signed, &contained),
         Ok(())
     );
     let elsewhere = Err(PreviewRefusal::Elsewhere {
         namespace: namespace.clone(),
     });
     assert_eq!(
-        admit_preview(&other, &namespace, Admission::Signed, &tmpfs),
+        admit_preview(&other, &namespace, Admission::Signed, &contained),
         elsewhere
     );
     assert_eq!(admit_preview_arrival(&home, &physical(&namespace)), Ok(()));
@@ -87,11 +111,83 @@ fn only_the_home_server_admits_a_preview_container_or_its_data() {
 #[test]
 fn a_preview_runs_no_free_container() {
     let home = machine('a');
-    let tmpfs = mounting(serde_json::json!({ "kind": "tmpfs" }));
     assert_eq!(
-        admit_preview(&home, &namespace_on(&home), Admission::Free, &tmpfs),
+        admit_preview(
+            &home,
+            &namespace_on(&home),
+            Admission::Free,
+            &spec(contained())
+        ),
         Err(PreviewRefusal::Unsigned)
     );
+}
+
+#[test]
+fn a_preview_reaches_nothing_of_its_server() {
+    let home = machine('a');
+    let namespace = namespace_on(&home);
+    let host_port = json!([{"mode": "host", "bind": {"kind": "all"}, "published_port": 8080,
+        "container_port": 80, "transport_protocol": "tcp"}]);
+    let device = json!({"devices": [{"machine_path": "/dev/sda",
+        "container_path": "/dev/sda", "cgroup_permissions": "rwm"}]});
+    let bind = json!([{"reference": "scratch", "source": {"kind": "tmpfs"}},
+        {"reference": "host", "source": {"kind": "bind", "machine_path": "/"}}]);
+    for (what, reaches) in [
+        (
+            "privileged",
+            with(&["container"], "privileged", json!(true)),
+        ),
+        (
+            "device /dev/sda:/dev/sda",
+            with(&["container"], "resources", device),
+        ),
+        (
+            "reserves nvidia devices",
+            with(
+                &["container"],
+                "resources",
+                json!({"device_reservations": [{"driver": "nvidia"}]}),
+            ),
+        ),
+        (
+            "adds SYS_ADMIN",
+            with(&["container"], "cap_add", json!(["SYS_ADMIN"])),
+        ),
+        ("pid host", with(&["container"], "pid_mode", json!("host"))),
+        (
+            "sysctl net.ipv4.ip_forward",
+            with(
+                &["container"],
+                "sysctls",
+                json!({"net.ipv4.ip_forward": "1"}),
+            ),
+        ),
+        ("host port 8080", with(&[], "ports", host_port)),
+        // Declared, never mounted: the spec is signed whole.
+        ("binds /", with(&[], "volumes", bind)),
+        (
+            "privileged hook",
+            with(
+                &[],
+                "pre_deploy",
+                json!({"command": ["migrate"], "privileged": true}),
+            ),
+        ),
+    ] {
+        let refusal = admit_preview(&home, &namespace, Admission::Signed, &reaches);
+        let Err(PreviewRefusal::HostReach { what: shown }) = refusal else {
+            panic!("{what}: {refusal:?}");
+        };
+        assert!(
+            shown.starts_with(what.split(' ').next().unwrap()),
+            "{what}: {shown}"
+        );
+    }
+    let network = with(&["container"], "network", json!("tunnel"));
+    assert!(matches!(
+        admit_preview(&home, &namespace, Admission::Signed, &network),
+        Err(PreviewRefusal::HostReach { .. })
+    ));
 }
 
 #[test]
@@ -101,64 +197,68 @@ fn a_preview_mounts_only_its_own_preview_born_volumes() {
     let preview = PreviewNamespace::of(&namespace).unwrap();
     let name = physical(&namespace);
     let admit =
-        |volumes: &ServiceVolumeGraph| admit_preview(&home, &namespace, Admission::Signed, volumes);
+        |spec: &RequestedServiceSpec| admit_preview(&home, &namespace, Admission::Signed, spec);
     assert_eq!(
-        admit(&provisioned(&name, Some(&preview.birth(&name)))),
+        admit(&provisioned(&name, Some(&preview.birth("db")))),
         Ok(())
+    );
+
+    let outside = Err(PreviewRefusal::Outside { target: data() });
+    assert_eq!(
+        admit(&mounting(json!({ "kind": "bind", "machine_path": "/etc" }))),
+        outside
+    );
+    assert_eq!(
+        admit(&mounting(json!({ "kind": "external", "name": name }))),
+        outside
     );
 
     // Another preview's Namespace, with that preview's own Volume and birth.
     let sibling =
         Namespace::parse(format!("pv-{RULE}-{}-0000beef", PreviewHome::of(&home))).unwrap();
     let sibling_name = physical(&sibling);
-    let sibling_birth = PreviewNamespace::of(&sibling).unwrap().birth(&sibling_name);
+    let sibling_birth = PreviewNamespace::of(&sibling).unwrap().birth("db");
     let signed_birth = VolumeBirth {
         nonce: crate::BirthNonce::from_bytes([7; 16]),
-        ..preview.birth(&name)
+        ..preview.birth("db")
     };
-    let refused = [
+    let not_its_own = [
         provisioned(&name, None),
         provisioned(&name, Some(&signed_birth)),
+        provisioned(&name, Some(&preview.birth("other"))),
         provisioned(&sibling_name, Some(&sibling_birth)),
-        provisioned(&sibling_name, Some(&preview.birth(&sibling_name))),
-        mounting(serde_json::json!({ "kind": "bind", "machine_path": "/etc" })),
-        mounting(serde_json::json!({ "kind": "external", "name": name })),
-        mounting(serde_json::json!({
+        provisioned(&sibling_name, Some(&preview.birth("db"))),
+        mounting(json!({
             "kind": "ordinary", "name": name, "driver": { "name": "local" },
-            "birth": preview.birth(&name),
+            "birth": preview.birth("db"),
         })),
     ];
-    for volumes in refused {
+    for spec in not_its_own {
         assert_eq!(
-            admit(&volumes),
-            Err(PreviewRefusal::Mount {
-                target: ContainerPath::parse("/data").unwrap(),
-            }),
-            "{volumes:?}"
+            admit(&spec),
+            Err(PreviewRefusal::NotItsOwn { target: data() }),
+            "{spec:?}"
         );
     }
 }
 
 #[test]
-fn only_a_preview_birth_takes_the_preview_origin() {
-    let home = machine('a');
-    let namespace = namespace_on(&home);
-    let name = physical(&namespace);
-    let preview = PreviewNamespace::of(&namespace).unwrap().birth(&name);
-    let tagged = |birth: &VolumeBirth| {
-        VolumeOrigin::of(birth).unwrap().as_bytes()[..16] == crate::PREVIEW_ORIGIN_TAG[..]
-    };
-    assert!(tagged(&preview));
-    let signed = VolumeBirth {
-        nonce: crate::BirthNonce::from_bytes([7; 16]),
-        ..preview.clone()
-    };
-    assert!(!tagged(&signed));
-    // The same derivation in an ordinary Namespace marks nothing.
-    let ordinary = Namespace::parse("pv-production").unwrap();
-    let lookalike = VolumeBirth {
-        namespace: ordinary,
-        ..preview
-    };
-    assert!(!tagged(&lookalike));
+fn a_preview_runs_an_image_only_over_the_volumes_it_declares() {
+    let namespace = namespace_on(&machine('a'));
+    let spec = spec(contained());
+    let image =
+        |declared: &[&str]| admit_preview_image(&namespace, &spec, declared.iter().copied());
+    assert_eq!(image(&[]), Ok(()));
+    assert_eq!(image(&["/tmp", "/tmp/", "/etc/site.conf"]), Ok(()));
+    assert_eq!(
+        image(&["/tmp", "/var/lib/postgresql/data"]),
+        Err(PreviewRefusal::ImageVolume {
+            target: "/var/lib/postgresql/data".to_owned()
+        })
+    );
+    let ordinary = Namespace::parse("shop-production").unwrap();
+    assert_eq!(
+        admit_preview_image(&ordinary, &spec, ["/var/lib/postgresql/data"]),
+        Ok(())
+    );
 }

@@ -231,6 +231,34 @@ impl LocalMachine {
             .map_err(Error::StoragePreparation)
     }
 
+    /// Put Trash entry `request.id` back, refused before the plugin changes anything when
+    /// it holds the data of a preview whose home is another Server.
+    ///
+    /// # Errors
+    /// Returns [`Error::PreviewRefused`] for another Server's preview, and the plugin's
+    /// error otherwise.
+    pub(crate) async fn restore_trash(
+        &self,
+        request: &ployz_core::RestoreTrashRequest,
+    ) -> Result<ployz_core::TrashRestored, Error> {
+        let trash: ployz_core::TrashList = self
+            .volume_verb(
+                "ListTrash",
+                crate::volume_copy::TRASH_LIST_ROUTE,
+                &ployz_core::ListTrashRequest {},
+            )
+            .await?;
+        if let Some(entry) = trash.entries.iter().find(|entry| entry.id == request.id) {
+            self.admit_preview_arrival(&entry.name)?;
+        }
+        self.volume_verb(
+            "RestoreTrash",
+            crate::volume_copy::TRASH_RESTORE_ROUTE,
+            request,
+        )
+        .await
+    }
+
     fn require_joined(&self) -> Result<(), Error> {
         if has_cluster_identity(&self.record().phase()) {
             Ok(())

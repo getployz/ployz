@@ -353,7 +353,7 @@ pub(super) fn host_sensitive(spec: &RequestedServiceSpec) -> Vec<Shown> {
 /// volumes it names itself or that are not [`plain_local`], the Ingress
 /// holder's network, and a privileged hook. Only a Device or a passkey's own prompt
 /// approves any of it.
-pub(super) fn host_reach(spec: &RequestedServiceSpec) -> Vec<Shown> {
+pub(crate) fn host_reach(spec: &RequestedServiceSpec) -> Vec<Shown> {
     reach(spec, spec.volume_graph().volumes())
 }
 

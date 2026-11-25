@@ -594,15 +594,7 @@ impl MachineRpc for MachineService {
 
     async fn restore_trash(&self, request: Request<OpaquePayload>) -> Answer {
         let request = expect::<op::RestoreTrash>(request)?;
-        finish(
-            self.local
-                .volume_verb::<ployz_core::TrashRestored>(
-                    "RestoreTrash",
-                    crate::volume_copy::TRASH_RESTORE_ROUTE,
-                    &request,
-                )
-                .await,
-        )
+        finish(self.local.restore_trash(&request).await)
     }
 
     async fn empty_trash(&self, request: Request<OpaquePayload>) -> Answer {
@@ -1116,7 +1108,8 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
             &error,
             &Gate::new(ployz_core::SEED_COPY_CAPABILITY),
         )),
-        LocalMachineError::PreviewRefused(_) => Err(gated(
+        LocalMachineError::PreviewRefused(_)
+        | LocalMachineError::Docker(crate::docker::Error::PreviewRefused(_)) => Err(gated(
             tonic::Code::PermissionDenied,
             &error,
             &Gate::new(ployz_core::PREVIEW_HOME_CAPABILITY),

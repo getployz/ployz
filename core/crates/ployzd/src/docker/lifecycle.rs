@@ -540,6 +540,12 @@ impl Lifecycle {
         {
             return Err(self.images.pull_failure(Error::ImagePull(error)).await);
         }
+        self.admit_preview_image(
+            namespace,
+            spec,
+            body.image.as_deref().unwrap_or(&spec.container.image),
+        )
+        .await?;
         let mut config_operation = self.specs.config_operation().await;
         // Another request may have won while admission and image preparation ran.
         if let Some(existing) = self
@@ -586,6 +592,30 @@ impl Lifecycle {
             );
         }
         result
+    }
+
+    /// Refuse a preview's Container whose image `image` declares a `VOLUME` that no mount
+    /// of `spec` covers, as [`ployz_core::admit_preview_image`] decides.
+    async fn admit_preview_image(
+        &self,
+        namespace: &Namespace,
+        spec: &ResolvedServiceSpec,
+        image: &str,
+    ) -> Result<(), Error> {
+        if ployz_core::PreviewNamespace::of(namespace).is_none() {
+            return Ok(());
+        }
+        let inspected = self.docker.client.inspect_image(image).await?;
+        let declared = inspected
+            .config
+            .and_then(|config| config.volumes)
+            .unwrap_or_default();
+        ployz_core::admit_preview_image(
+            namespace,
+            &spec.to_requested(),
+            declared.iter().map(String::as_str),
+        )
+        .map_err(Error::PreviewRefused)
     }
 
     /// The create body for Docker: the network it joins, the sysctls only the Ingress

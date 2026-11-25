@@ -698,3 +698,71 @@ async fn an_unsigned_create_under_a_name_that_ran_signed_is_refused() {
         );
     }
 }
+
+/// Cloud asks the Server a Move would start a Writer on before it cuts. A preview's
+/// Writer is refused there on any Server but its home, so no cut or promote runs for a
+/// Container its create would refuse.
+#[tokio::test]
+async fn a_checked_start_of_another_servers_preview_is_refused_before_any_cut() {
+    let fixture = fixture().await;
+    let elsewhere = Namespace::parse("pv-0123456789abcdef-00000000-00c0ffee").unwrap();
+    let start: Start = serde_json::from_value(json!({"kind": "create",
+        "namespace": elsewhere, "resolved_spec": resolved(&mounting_data(), &elsewhere),
+        "creation_key": "move-1", "gen": 2, "rotation": "pending", "versions": []}))
+    .unwrap();
+    let volume = format!("{elsewhere}_data");
+    for start in [checking(start.clone()), start] {
+        let refused = fixture
+            .machine
+            .admit_volume_start(&volume.parse().unwrap(), &start)
+            .await;
+        assert!(
+            matches!(
+                refused,
+                Err(Error::PreviewRefused(
+                    ployz_core::PreviewRefusal::Elsewhere { .. }
+                ))
+            ),
+            "{refused:?}"
+        );
+    }
+}
+
+/// A Trash entry holding another Server's preview's data is never put back here: the
+/// plugin is asked for no restore at all.
+#[tokio::test]
+async fn a_trash_restore_of_another_servers_preview_changes_nothing() {
+    let fixture = fixture().await;
+    let dir = crate::test_dir::TestDir::new("preview-trash");
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let plugin = crate::storage::test_support::FakePlugin::default();
+    let id = "a".repeat(26);
+    plugin.reply(
+        crate::volume_copy::TRASH_LIST_ROUTE,
+        json!({"Ok": {"entries": [{"id": id, "place": "root",
+            "name": "pv-0123456789abcdef-00000000-00c0ffee_data", "trashed_at": 0,
+            "expires_at": 0, "used_bytes": 0}]}}),
+    );
+    plugin.reply(
+        crate::volume_copy::TRASH_RESTORE_ROUTE,
+        json!({"Ok": {"id": id, "name": "pv-0123456789abcdef-00000000-00c0ffee_data",
+            "place": "root"}}),
+    );
+    let (served, _server) = plugin.serve(&dir.0);
+    let machine = fixture.machine.clone().with_plugin(served);
+    let request = ployz_core::RestoreTrashRequest {
+        id: ployz_core::TrashId::parse(&id).unwrap(),
+    };
+    let refused = machine.restore_trash(&request).await;
+    assert!(
+        matches!(refused, Err(Error::PreviewRefused(_))),
+        "{refused:?}"
+    );
+    let calls = plugin.calls.lock().unwrap().clone();
+    assert!(
+        calls
+            .iter()
+            .all(|(route, _)| route != crate::volume_copy::TRASH_RESTORE_ROUTE),
+        "{calls:?}"
+    );
+}

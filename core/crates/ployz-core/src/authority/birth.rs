@@ -698,6 +698,7 @@ impl Mounts<'_> {
     /// `previews, 3 Nov 14:02 UTC`, or the name data from before births has on its Servers.
     fn named(&self, mounted: &Mounted<'_>) -> Shown {
         match mounted.volume.birth {
+            Some(birth) if birth.is_preview() => Shown::text(&birth.name),
             Some(birth) => Shown::text(&birth.name)
                 .and_words(", ")
                 .and(when(birth.made_at, self.now)),
@@ -707,6 +708,9 @@ impl Mounts<'_> {
 
     /// `data made as previews, 3 Nov 14:02 UTC, 16 days ago`.
     fn made(&self, birth: &VolumeBirth) -> Shown {
+        if birth.is_preview() {
+            return Shown::words("this preview's own data");
+        }
         let made = Shown::words("data made as ")
             .and_text(&birth.name)
             .and_words(", ")

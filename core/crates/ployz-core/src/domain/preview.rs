@@ -6,8 +6,8 @@ use sha2::{Digest as _, Sha256};
 
 use crate::{
     Admission, ContainerPath, DockerVolumeName, MachineId, Namespace, RawVolumeSource,
-    ServiceVolumeGraph, VolumeBirth,
-    authority::canonical::Timestamp,
+    RequestedServiceSpec, VolumeBirth,
+    authority::{canonical::Timestamp, deploy::host_reach},
     separation::{PREVIEW_BIRTH, PREVIEW_HOME},
     value::{hex_newtype, is_lower_hex},
 };
@@ -53,6 +53,13 @@ impl PreviewNamespace {
         })
     }
 
+    /// The preview whose Docker Volume `physical` is, if any.
+    #[must_use]
+    pub fn holding(physical: &DockerVolumeName) -> Option<Self> {
+        let (namespace, _) = physical.as_str().split_once('_')?;
+        Self::of(&Namespace::parse(namespace).ok()?)
+    }
+
     /// Refuse this preview on any Server but its home.
     ///
     /// # Errors
@@ -67,34 +74,36 @@ impl PreviewNamespace {
         }
     }
 
-    /// The birth of the preview's Volume `physical`: derived from the two names alone, so
-    /// every Deploy of the preview mounts the same empty Volume, and no signer's random
-    /// nonce ever matches it.
+    /// The birth of the preview's Volume `logical`, as its drafts name it: derived from the
+    /// two names alone, so every Deploy of the preview mounts the same empty Volume, and no
+    /// signer's random nonce ever matches it. It has no time of its own, so it is shown as
+    /// the preview's own data rather than by when it was made.
     #[must_use]
-    pub fn birth(&self, physical: &DockerVolumeName) -> VolumeBirth {
+    pub fn birth(&self, logical: &str) -> VolumeBirth {
         let digest: [u8; 32] = Sha256::new()
             .chain_update(PREVIEW_BIRTH)
             .chain_update(self.namespace.as_str())
             .chain_update(b"\0")
-            .chain_update(physical.as_str())
+            .chain_update(logical)
             .finalize()
             .into();
         let (nonce, _) = digest.split_first_chunk().expect("a digest holds 16 bytes");
         VolumeBirth {
             namespace: self.namespace.clone(),
-            name: physical.as_str().to_owned(),
+            name: logical.to_owned(),
             made_at: Timestamp::from_millis(0).expect("zero is a time"),
             nonce: crate::BirthNonce::from_bytes(*nonce),
         }
     }
 
-    /// Whether `physical` is a Docker Volume of this Namespace.
-    fn holds(&self, physical: &DockerVolumeName) -> bool {
+    /// The name the preview's drafts give `physical`, when it is a Docker Volume of this
+    /// Namespace.
+    fn logical<'a>(&self, physical: &'a DockerVolumeName) -> Option<&'a str> {
         physical
             .as_str()
             .strip_prefix(self.namespace.as_str())
             .and_then(|declared| declared.strip_prefix('_'))
-            .is_some_and(|declared| !declared.is_empty())
+            .filter(|declared| !declared.is_empty())
     }
 }
 
@@ -102,10 +111,8 @@ impl VolumeBirth {
     /// Whether this is the birth a preview Namespace derives for its own Volume.
     #[must_use]
     pub fn is_preview(&self) -> bool {
-        PreviewNamespace::of(&self.namespace).is_some_and(|preview| {
-            DockerVolumeName::parse(self.name.as_str())
-                .is_ok_and(|physical| preview.birth(&physical) == *self)
-        })
+        PreviewNamespace::of(&self.namespace)
+            .is_some_and(|preview| preview.birth(&self.name) == *self)
     }
 }
 
@@ -116,16 +123,25 @@ pub enum PreviewRefusal {
     Elsewhere { namespace: Namespace },
     #[error("A preview runs only signed Containers.")]
     Unsigned,
+    #[error("A preview can't reach its Server, and this one asks for {what}.")]
+    HostReach { what: String },
+    #[error("A preview mounts no data from outside it, and what it mounts at {target} is.")]
+    Outside { target: ContainerPath },
     #[error(
-        "A preview mounts only its own Volumes and tmpfs, and what it mounts at {target} is neither."
+        "A preview mounts only Volumes it made, and the one at {target} is a Volume this preview didn't make."
     )]
-    Mount { target: ContainerPath },
+    NotItsOwn { target: ContainerPath },
+    #[error("The image keeps data at {target}, so a preview mounts its own Volume or tmpfs there.")]
+    ImageVolume { target: String },
 }
 
 /// Refuse a Container in a preview Namespace unless this Server is its home, a person's
-/// signature or rule admitted it, and it mounts only tmpfs and the preview's own
-/// Provisioned Volumes, each with its preview birth. A Container in any other Namespace
-/// passes.
+/// signature or rule admitted it, it reaches nothing of its Server, and it mounts only tmpfs
+/// and the preview's own Provisioned Volumes, each with its preview birth. A Container in
+/// any other Namespace passes.
+///
+/// Config mounts are the one exception: each binds read only a file this Server wrote from
+/// the signed spec itself, so it carries nothing from outside the preview.
 ///
 /// # Errors
 /// Returns the first [`PreviewRefusal`] that holds.
@@ -133,7 +149,7 @@ pub fn admit_preview(
     machine: &MachineId,
     namespace: &Namespace,
     admission: Admission,
-    volumes: &ServiceVolumeGraph,
+    spec: &RequestedServiceSpec,
 ) -> Result<(), PreviewRefusal> {
     let Some(preview) = PreviewNamespace::of(namespace) else {
         return Ok(());
@@ -142,22 +158,64 @@ pub fn admit_preview(
     if admission != Admission::Signed {
         return Err(PreviewRefusal::Unsigned);
     }
+    let volumes = spec.volume_graph();
     for mount in volumes.mounts() {
-        let own = match volumes.volume_for(mount).source.kind() {
-            RawVolumeSource::Tmpfs { .. } => true,
+        let target = || mount.target.clone();
+        match volumes.volume_for(mount).source.kind() {
+            RawVolumeSource::Tmpfs { .. } => {}
             RawVolumeSource::Provisioned {
                 name,
                 birth: Some(birth),
                 ..
-            } => preview.holds(name) && *birth == preview.birth(name),
-            RawVolumeSource::Provisioned { birth: None, .. }
-            | RawVolumeSource::Bind { .. }
-            | RawVolumeSource::External { .. }
-            | RawVolumeSource::Ordinary { .. } => false,
-        };
-        if !own {
-            return Err(PreviewRefusal::Mount {
-                target: mount.target.clone(),
+            } if preview
+                .logical(name)
+                .is_some_and(|logical| *birth == preview.birth(logical)) => {}
+            RawVolumeSource::Bind { .. } | RawVolumeSource::External { .. } => {
+                return Err(PreviewRefusal::Outside { target: target() });
+            }
+            RawVolumeSource::Provisioned { .. } | RawVolumeSource::Ordinary { .. } => {
+                return Err(PreviewRefusal::NotItsOwn { target: target() });
+            }
+        }
+    }
+    match host_reach(spec).first() {
+        Some(what) => Err(PreviewRefusal::HostReach {
+            what: what.to_string(),
+        }),
+        None => Ok(()),
+    }
+}
+
+/// Refuse a preview's Container whose image declares a `VOLUME` that no mount of `spec`
+/// covers, since Docker would make an anonymous Volume there that no preview birth names.
+/// `declared` is the image's `VOLUME` paths. A Container in any other Namespace passes.
+///
+/// # Errors
+/// Returns [`PreviewRefusal::ImageVolume`] for the first path no mount covers.
+pub fn admit_preview_image<'a>(
+    namespace: &Namespace,
+    spec: &RequestedServiceSpec,
+    declared: impl IntoIterator<Item = &'a str>,
+) -> Result<(), PreviewRefusal> {
+    if PreviewNamespace::of(namespace).is_none() {
+        return Ok(());
+    }
+    let mounted = spec
+        .mounts()
+        .iter()
+        .map(|mount| &mount.target)
+        .chain(
+            spec.config_mounts()
+                .iter()
+                .filter_map(|mount| mount.target.as_ref()),
+        )
+        .collect::<Vec<_>>();
+    for path in declared {
+        let covered = ContainerPath::parse(path.trim_end_matches('/'))
+            .is_ok_and(|path| mounted.contains(&&path));
+        if !covered {
+            return Err(PreviewRefusal::ImageVolume {
+                target: path.to_owned(),
             });
         }
     }
@@ -173,12 +231,7 @@ pub fn admit_preview_arrival(
     machine: &MachineId,
     physical: &DockerVolumeName,
 ) -> Result<(), PreviewRefusal> {
-    let preview = physical
-        .as_str()
-        .split_once('_')
-        .and_then(|(namespace, _)| Namespace::parse(namespace).ok())
-        .and_then(|namespace| PreviewNamespace::of(&namespace));
-    preview.map_or(Ok(()), |preview| preview.admit_on(machine))
+    PreviewNamespace::holding(physical).map_or(Ok(()), |preview| preview.admit_on(machine))
 }
 
 #[cfg(test)]

@@ -751,6 +751,12 @@ impl LocalMachine {
         if operator && !admitted.as_ref().is_some_and(AdmittedSpec::signed) {
             return Err(start_refused(resolved_spec, MismatchField::VolumeStart));
         }
+        admit_preview_start(
+            &self.record().id(),
+            namespace,
+            resolved_spec,
+            admitted.as_ref(),
+        )?;
         if check {
             let record = self.record();
             let machine = record.cluster_machine().ok_or(Error::NotParticipating)?;
@@ -803,11 +809,15 @@ impl Checked {
         let (resolved_spec, versions, rule) = match start {
             Start::Kept { container_id } => return self.refuse_operator_hook(container_id).await,
             Start::Create {
+                namespace,
                 resolved_spec,
                 versions,
                 rule,
                 ..
-            } => (resolved_spec, versions, rule),
+            } => {
+                admit_preview_start(&self.record().id(), namespace, resolved_spec, admitted)?;
+                (resolved_spec, versions, rule)
+            }
         };
         let operator = matches!(self.scope(), Scope::Operator);
         if operator {
@@ -1006,6 +1016,23 @@ pub(super) fn refusal_text(refusal: &AuthorityRefusal) -> String {
         }
     };
     text.to_owned()
+}
+
+/// A Writer's start of a Container in a preview Namespace, refused as
+/// [`ployz_core::admit_preview`] refuses the Container itself, so a start its create would
+/// refuse promotes nothing first.
+///
+/// # Errors
+/// Returns [`Error::PreviewRefused`] for a refused preview start.
+fn admit_preview_start(
+    machine: &ployz_core::MachineId,
+    namespace: &Namespace,
+    spec: &ResolvedServiceSpec,
+    admitted: Option<&AdmittedSpec>,
+) -> Result<(), Error> {
+    let admission = admitted.map_or(ployz_core::Admission::Free, AdmittedSpec::admission);
+    ployz_core::admit_preview(machine, namespace, admission, &spec.to_requested())
+        .map_err(Error::PreviewRefused)
 }
 
 #[cfg(test)]

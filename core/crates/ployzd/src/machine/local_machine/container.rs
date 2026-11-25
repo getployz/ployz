@@ -1849,7 +1849,7 @@ impl LocalMachine {
             &machine.id,
             namespace,
             admitted.admission(),
-            spec.volume_graph(),
+            &spec.to_requested(),
         )
         .map_err(Error::PreviewRefused)?;
         // Only a key or a rule keeps a name: Cloud never learns of a deploy through this

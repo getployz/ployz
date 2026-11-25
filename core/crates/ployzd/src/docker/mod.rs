@@ -1285,6 +1285,9 @@ fn container_address(inspected: &Inspected) -> Option<ContainerAddress> {
 pub enum Error {
     #[error("Direct Image Transfer requires Docker's containerd image store")]
     UnsupportedImageStore,
+    /// A preview's Container that its image or spec would let reach past the preview.
+    #[error(transparent)]
+    PreviewRefused(ployz_core::PreviewRefusal),
     #[error(transparent)]
     Observation(#[from] ployz_core::ContainerObservationError),
     /// A required host telemetry read failed.
@@ -1555,6 +1558,7 @@ impl Error {
             | Self::UnsignedImage(_)
             | Self::NotAdmitted
             | Self::Unadmitted(_)
+            | Self::PreviewRefused(_)
             | Self::NotManaged => RpcErrorCode::InvalidArgument,
             Self::Docker(_)
             | Self::ImagePull(_)
