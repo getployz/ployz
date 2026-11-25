@@ -82,6 +82,11 @@ name=${{0##*/}}
 printf '%s %s\n' "$name" "$*" >> '{commands}'
 # props/pools, when a test writes it, stands for the Pools in place of the given ones.
 if [ "$name" = zpool ]; then
+  # A label scan finds what props/importable lists, and otherwise says so on stderr as ZFS does.
+  if [ "$1" = import ]; then
+    if [ -e '{props}/importable' ]; then cat '{props}/importable'; else echo 'no pools available to import' >&2; fi
+    exit 0
+  fi
   if [ -e '{props}/pools' ]; then cat '{props}/pools'; else printf '{pools}'; fi
   exit 0
 fi

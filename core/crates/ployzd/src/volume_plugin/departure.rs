@@ -23,7 +23,10 @@
 
 use std::collections::BTreeSet;
 
-use crate::{dataset_layout::DatasetLayout, machine_pool::MachinePool};
+use crate::{
+    dataset_layout::DatasetLayout,
+    machine_pool::{MachinePool, Read},
+};
 use axum::{Json, extract::State};
 use ployz_core::{DepartureFailure, RpcError, StorageDeparture};
 
@@ -61,8 +64,15 @@ impl VolumeStorage {
     ) -> super::Result<StorageDeparture> {
         let (held, _installation) = self.admit_mutation().await?;
         let _pool_guard = self.pool.lock_mutation().await?;
-        let Some(pool) = self.pool.one_usable().await? else {
-            return Ok(StorageDeparture::default());
+        // The seal covers the Pool this Machine knows is its own. One it held but can't
+        // tell apart now may hold a root that would come back as a writer, so the
+        // departure fails rather than leave it unsealed.
+        let pool = match self.pool.read().await? {
+            Read::Unheld => return Ok(StorageDeparture::default()),
+            Read::Pool { pool, .. } => pool,
+            Read::Unproven(why) => {
+                return Err(format!("this Server's Volumes can't be sealed, since {why}").into());
+            }
         };
         // Every receive starts under admission, so once these stop only this departure
         // changes a slot until it ends. A stuck receive may still write, so its Volume is
@@ -71,7 +81,7 @@ impl VolumeStorage {
         if !stuck.is_empty() {
             tracing::warn!(stuck = %stuck.join(", "), deadline = ?self.stop_deadline, "copies did not stop; leaving their Volumes");
         }
-        let datasets = self.datasets(&pool).await?;
+        let datasets = self.complete_datasets(&pool).await?;
         let names = datasets
             .iter()
             .filter_map(|dataset| DatasetLayout::of(&pool).place(&dataset.name).volume())

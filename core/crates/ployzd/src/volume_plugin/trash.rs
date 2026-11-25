@@ -52,7 +52,7 @@ use super::{
 };
 use crate::{
     dataset_layout::{DatasetLayout, Place},
-    machine_pool::MachinePool,
+    machine_pool::{MachinePool, Read},
 };
 
 const HOUR_SECONDS: i64 = 3600;
@@ -616,12 +616,37 @@ impl VolumeStorage {
         let entry = self.entry(id, dataset).await?.map_err(|why| {
             RpcError::conflict(format!("Trash entry {id} can't be restored: {why}"))
         })?;
+        if entry.place == TrashPlace::Root {
+            self.own_pool(&pool).await?;
+        }
         match (entry.place, promote) {
             (TrashPlace::Root, false) => self.pin(&layout, &entry).await,
             (TrashPlace::Root, true) => self.promote(&pool, &datasets, &entry).await,
             (TrashPlace::Slot | TrashPlace::Copy, _) => {
                 self.land(&pool, &datasets, dataset, &entry).await
             }
+        }
+    }
+
+    /// Refuses unless `pool` is the Pool this Machine knows is its own, by its records and
+    /// what ZFS shows: the proof a restore reads is answered from that Pool, so a root comes
+    /// back only there.
+    async fn own_pool(&self, pool: &MachinePool) -> std::result::Result<(), RpcError> {
+        match self.pool.read().await? {
+            Read::Pool { pool: own, .. } if own.name() == pool.name() => Ok(()),
+            Read::Pool { pool: own, .. } => Err(RpcError::conflict(format!(
+                "This Server's own Pool is {}, not {}, so it won't restore from {}'s Trash.",
+                own.name(),
+                pool.name(),
+                pool.name()
+            ))),
+            Read::Unheld => Err(RpcError::conflict(
+                "This Server records no Pool as its own, so it won't restore from its Trash."
+                    .to_owned(),
+            )),
+            Read::Unproven(why) => Err(RpcError::conflict(format!(
+                "This Server won't restore from its Trash, since {why}."
+            ))),
         }
     }
 
@@ -822,7 +847,7 @@ impl VolumeStorage {
 
     /// The IDs of `name`'s entries a restore pinned, whether or not their marks read. One
     /// whose name doesn't read may be `name`'s, so it refuses.
-    async fn pinned_entries(
+    pub(super) async fn pinned_entries(
         &self,
         pool: &MachinePool,
         datasets: &[Dataset],

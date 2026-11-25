@@ -411,16 +411,72 @@ pub enum PullState {
     Unrecognized,
 }
 
-/// Live answer to `InspectVolumeCopy`: what this Machine holds.
+/// Live answer to `InspectVolumeCopy`: what this Machine holds. `read` and `pinned` come
+/// only when the request asked to `prove` absence, and only from a Machine that knows how;
+/// an older Machine leaves both out, which proves nothing.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct VolumeCopyView {
     pub copy: Option<VolumeCopy>,
+    /// Which Pool the answer read, and how this Machine knows it is its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub read: Option<PoolRead>,
+    /// Every Trash entry of the Volume in that Pool that a restore pinned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, as = "Option<Vec<String>>")]
+    pub pinned: Option<Vec<crate::TrashId>>,
 }
 
-/// Ask a Machine what it holds for one Volume name.
+impl VolumeCopyView {
+    /// An answer that carries no proof.
+    #[must_use]
+    pub const fn of(copy: Option<VolumeCopy>) -> Self {
+        Self {
+            copy,
+            read: None,
+            pinned: None,
+        }
+    }
+}
+
+/// Which Pool a Machine read to answer, judged from its own records and what ZFS lists and
+/// can import, without changing either.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PoolRead {
+    /// This Machine never held a Pool, and none is imported or importable.
+    Unheld,
+    /// The Pool this Machine owns.
+    Pool {
+        name: String,
+        health: String,
+        by: PoolBy,
+    },
+    /// This Machine can't tell which Pool is its own.
+    Unproven { why: String },
+    #[serde(other)]
+    Unknown,
+}
+
+/// How a Machine knows a Pool is its own.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum PoolBy {
+    /// Its only vdev is the backing file this Machine records.
+    File,
+    /// It is the one `ployz-device` Pool this Machine records.
+    Device,
+    /// It is the only Pool, and this Machine records nothing.
+    Sole,
+}
+
+/// Ask a Machine what it holds for one Volume name. With `prove`, the answer also says
+/// which Pool it read and which Trash entries of the Volume a restore pinned there.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct InspectVolumeCopyRequest {
     pub name: DockerVolumeName,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub prove: bool,
 }
 
 /// SeedVolume on the writer: a new Volume `into` holding the restore point `guid` of

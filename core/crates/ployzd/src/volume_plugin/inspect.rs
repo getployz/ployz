@@ -1,10 +1,13 @@
 //! What this Machine holds for one Volume name: its root or slot and its newest snapshot.
 
-use crate::{dataset_layout::DatasetLayout, machine_pool::MachinePool};
+use crate::{
+    dataset_layout::DatasetLayout,
+    machine_pool::{By, MachinePool, Read},
+};
 use axum::{Json, extract::State};
 use ployz_core::{
-    InspectVolumeCopyRequest, Pull, PullState, RpcError, SlotId, Snapshot, SnapshotGuid,
-    SnapshotName, VolumeCopy, VolumeCopyView,
+    InspectVolumeCopyRequest, PoolBy, PoolRead, Pull, PullState, RpcError, SlotId, Snapshot,
+    SnapshotGuid, SnapshotName, VolumeCopy, VolumeCopyView,
 };
 
 use ployz_decide::volume_root::{PromoteMark, RootCopy, RootMarks};
@@ -321,17 +324,62 @@ impl VolumeStorage {
         Ok(copy)
     }
 
-    async fn inspect_copy(&self, name: &VolumeName) -> Result<VolumeCopyView> {
+    async fn inspect_copy(&self, name: &VolumeName, prove: bool) -> Result<VolumeCopyView> {
         let _guard = self.mutation.lock().await;
+        if prove {
+            return self.prove_copy(name).await;
+        }
         // A Pool this Machine held but can't read now may hold a copy, so it never answers none.
         let Some(pool) = self.pool.one_usable().await? else {
             if self.pool.has_held_a_pool()? {
                 return Err(PluginError::HeldPoolNotImported);
             }
-            return Ok(VolumeCopyView { copy: None });
+            return Ok(VolumeCopyView::of(None));
         };
+        Ok(VolumeCopyView::of(self.current_copy(&pool, name).await?))
+    }
+
+    /// The answer a restore's proof reads: the copy in the Pool [`PoolStorage::read`] says
+    /// is this Machine's own, and the Volume's entries there that a restore pinned. A
+    /// Machine that can't tell which Pool is its own answers why, and no copy or pins,
+    /// which proves nothing.
+    ///
+    /// [`PoolStorage::read`]: super::pool::PoolStorage::read
+    async fn prove_copy(&self, name: &VolumeName) -> Result<VolumeCopyView> {
+        let (pool, read) = match self.pool.read().await? {
+            Read::Unheld => {
+                return Ok(VolumeCopyView {
+                    copy: None,
+                    read: Some(PoolRead::Unheld),
+                    pinned: Some(Vec::new()),
+                });
+            }
+            Read::Unproven(why) => {
+                return Ok(VolumeCopyView {
+                    copy: None,
+                    read: Some(PoolRead::Unproven { why }),
+                    pinned: None,
+                });
+            }
+            Read::Pool { pool, health, by } => {
+                let read = PoolRead::Pool {
+                    name: pool.name().to_owned(),
+                    health,
+                    by: match by {
+                        By::File => PoolBy::File,
+                        By::Device => PoolBy::Device,
+                        By::Sole => PoolBy::Sole,
+                    },
+                };
+                (pool, read)
+            }
+        };
+        let copy = self.current_copy(&pool, name).await?;
+        let datasets = self.complete_datasets(&pool).await?;
         Ok(VolumeCopyView {
-            copy: self.current_copy(&pool, name).await?,
+            copy,
+            read: Some(read),
+            pinned: Some(self.pinned_entries(&pool, &datasets, name).await?),
         })
     }
 }
@@ -341,7 +389,10 @@ pub(super) async fn inspect(
     Json(request): Json<InspectVolumeCopyRequest>,
 ) -> Json<std::result::Result<VolumeCopyView, RpcError>> {
     let result = match request.name.as_str().parse::<VolumeName>() {
-        Ok(name) => storage.inspect_copy(&name).await.map_err(RpcError::from),
+        Ok(name) => storage
+            .inspect_copy(&name, request.prove)
+            .await
+            .map_err(RpcError::from),
         Err(error) => Err(error.into()),
     };
     Json(result)

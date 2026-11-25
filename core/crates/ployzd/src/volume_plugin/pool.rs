@@ -314,6 +314,74 @@ impl PoolStorage {
             || path_exists(&self.volume_root, "Volume mount root")?)
     }
 
+    /// Which Pool is this Machine's own, judged by [`machine_pool::read`] from its records
+    /// and what ZFS lists and could import. It writes nothing, not even the device marker
+    /// [`Self::one_usable`] records.
+    ///
+    /// # Errors
+    /// Returns an error when a record, listing or scan can't be read.
+    pub(super) async fn read(&self) -> Result<machine_pool::Read> {
+        let records = machine_pool::Records {
+            backing: path_exists(self.backing(), "Machine Pool backing file")?,
+            device: self.has_device_pool()?,
+            mount_root: path_exists(&self.volume_root, "Volume mount root")?,
+        };
+        let args = machine_pool::ZPOOL_LIST;
+        let imported = match host_command::run(&self.zpool, &args).await {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            output => Some(
+                machine_pool::imported(&checked_output(&self.zpool, &args, output)?)
+                    .map_err(|error| ployz_core::error_chain::inline(&error))?,
+            ),
+        };
+        let mut inventory = machine_pool::Inventory {
+            records,
+            ..machine_pool::Inventory::default()
+        };
+        if let Some(imported) = &imported {
+            inventory.scan = self.scan(&["import"]).await?;
+            if records.backing {
+                let backing = fs::canonicalize(self.backing()).map_err(|error| {
+                    format!(
+                        "could not resolve Machine Pool backing file {}: {error}",
+                        self.backing().display(),
+                        error = ployz_core::error_chain::inline(&error),
+                    )
+                })?;
+                for pool in imported {
+                    let name = pool.pool.name();
+                    let args = ["list", "-v", "-H", "-P", "-o", "name", name];
+                    let output = checked_command(&self.zpool, &args).await?;
+                    if machine_pool::vdevs(&output) == [backing.as_os_str()] {
+                        inventory.on_backing = Some(name.to_owned());
+                    }
+                }
+                inventory.backing_scan = self.scan(&["import", "-d", self.backing_text()?]).await?;
+            }
+        }
+        inventory.imported = imported;
+        Ok(machine_pool::read(inventory))
+    }
+
+    /// The Pools one `zpool import` label scan with `args` could import.
+    async fn scan(&self, args: &[&str]) -> Result<Vec<String>> {
+        let output = host_command::run_c(&self.zpool, args)
+            .await
+            .map_err(|error| {
+                format!(
+                    "could not run {}: {error}",
+                    self.zpool.display(),
+                    error = ployz_core::error_chain::inline(&error),
+                )
+            })?;
+        machine_pool::scan(
+            output.status,
+            &String::from_utf8_lossy(&output.stdout),
+            &String::from_utf8_lossy(&output.stderr),
+        )
+        .map_err(|error| ployz_core::error_chain::inline(&error).into())
+    }
+
     /// Imports the device Pool or valid backing Pool, preserving device ownership when absent.
     ///
     /// # Errors
