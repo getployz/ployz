@@ -13,9 +13,11 @@ import { prunes } from "#/modules/deploy-approval/review";
 import { decideProposal, landProposal, proposalOptions } from "#/modules/proposals/proposals.queries";
 import { useSealing } from "#/modules/sealing/use-sealing";
 import { prepareDeployTapServerFn } from "./deploy-tap.functions";
-import { type Prepared, prepareDeploy, signVersions } from "./deploy-tap";
+import { needsSource, type Prepared, prepareDeploy, signVersions, unsourced } from "./deploy-tap";
 import { SignedLines } from "./deploy-sheet";
 import { fillPending } from "./fill-pending";
+import { RuleSummaryList } from "./rule-summary";
+import { ownerLookup } from "./source-step";
 
 type Page =
   | { readonly kind: "reading" }
@@ -25,7 +27,9 @@ type Page =
 /**
  * The page a link opens: one proposal's Deploy, planned again as it is now with this person's own passkeys. A copied
  * password with no value yet is made here first, and the page reads the deploy again once it is. The person checks what
- * it destroys and what the passkey signs, and taps once, which signs and approves it. A plan that moved since it was asked for is denied, so the one who asked asks again.
+ * it destroys and what the passkey signs, the automatic deploy rule included when a Service builds from source and no
+ * rule covers it, and taps once, which signs and approves it. A plan that moved since it was asked for is denied, so the
+ * one who asked asks again.
  */
 export function ApproveDeploy({ organizationSlug, id }: { organizationSlug: string; id: string }) {
   const queryClient = useQueryClient();
@@ -47,7 +51,7 @@ export function ApproveDeploy({ organizationSlug, id }: { organizationSlug: stri
     const stop = (message: string) => live && setPage({ kind: "stopped", message });
     const plan = async () => {
       const planned = await prepareDeployTapServerFn({
-        data: { organizationSlug, environment: command.environment, services: [...command.services ?? []] },
+        data: { organizationSlug, environment: command.environment, services: [...command.services ?? []], rule: true },
       });
       // Each Pending value is made and sealed here, and lands only on the revision this Deploy was asked at. Cloud binds
       // the filled Deploy to the Store's review then, so the page reads the proposal again and plans that.
@@ -60,13 +64,21 @@ export function ApproveDeploy({ organizationSlug, id }: { organizationSlug: stri
         await queryClient.invalidateQueries({ queryKey: proposalOptions(organizationSlug, id).queryKey });
         return;
       }
-      const prepared = await prepareDeploy(command, async () => planned);
+      const prepared = await prepareDeploy(command, async () => planned, ownerLookup(queryClient, organizationSlug));
       if (!live) return;
       if (prepared.kind === "stale") {
         await decideProposal(organizationSlug, id, { reject: { reason: DEPLOY_MOVED } });
         return stop(DEPLOY_MOVED);
       }
-      setPage(prepared.kind === "refused" ? { kind: "stopped", message: prepared.message } : { kind: "ready", prepared });
+      if (prepared.kind === "refused") return stop(prepared.message);
+      // A Service only the rule builds doesn't build without it, so the page says why rather than approve it.
+      const unsigned = planned.kind === "plan" && planned.tap.kind === "ready" ? planned.plan.unsigned ?? [] : [];
+      const held = prepared.kind === "admit" ? prepared.held : prepared.ask.held;
+      if (held !== null && unsigned.some(needsSource)) return stop(held.reason);
+      const sourced = prepared.kind === "ask" ? prepared.ask.draft.source?.summary.services.map(({ name }) => name) : undefined;
+      const unbuilt = unsourced(unsigned, new Set(sourced));
+      if (unbuilt !== null) return stop(unbuilt);
+      setPage({ kind: "ready", prepared });
     };
     plan().catch((error) => stop(error instanceof Error && error.message ? error.message : "Couldn't plan this deploy. Try again."));
     return () => { live = false; };
@@ -82,13 +94,14 @@ export function ApproveDeploy({ organizationSlug, id }: { organizationSlug: stri
   const { prepared } = page;
   const destroys = review !== undefined && (review.effects.length > 0 || prunes(review));
   const places = command?.services?.length ? command.services.join(", ") : "every service";
+  const summary = prepared.kind === "ask" ? prepared.ask.draft.source?.summary : undefined;
   const approve = async () => {
     setProblem(null);
-    let versions;
+    let answer;
     try {
       if (prepared.kind === "ask") {
         setBusy("passkey");
-        ({ versions } = await signVersions(prepared.ask));
+        answer = await signVersions(prepared.ask);
       }
     } catch (error) {
       setBusy(null);
@@ -98,9 +111,9 @@ export function ApproveDeploy({ organizationSlug, id }: { organizationSlug: stri
     }
     setBusy("sending");
     try {
-      const answer = await decideProposal(organizationSlug, id, { approve: versions === undefined ? {} : { versions } });
-      if (answer.ok) return await landProposal(queryClient, organizationSlug, id, answer.decided);
-      setProblem(answer.message);
+      const decided = await decideProposal(organizationSlug, id, { approve: answer ?? {} });
+      if (decided.ok) return await landProposal(queryClient, organizationSlug, id, decided.decided);
+      setProblem(decided.message);
     } catch {
       setProblem("Couldn't reach Ployz Cloud. Try again.");
     } finally {
@@ -121,10 +134,12 @@ export function ApproveDeploy({ organizationSlug, id }: { organizationSlug: stri
         <CardDescription>
           {proposal.asker ? `${proposal.asker} asked for this deploy.` : "Someone asked for this deploy."}
           {prepared.kind === "ask" ? " Check each line. Your passkey signs exactly this." : ""}
+          {summary === undefined ? "" : ` Then each push to ${summary.branch} deploys these settings with no prompt.`}
           {review?.protected ? " Only an owner or admin can approve a deploy to a Protected Environment." : ""}
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
+        {summary !== undefined && <RuleSummaryList summary={summary} />}
         {prepared.kind === "ask" && <SignedLines draft={prepared.ask.draft} />}
         {review !== undefined && <ReviewDestroys command="admit" review={review} />}
         {problem !== null && <p role="alert" className="text-sm text-destructive">{problem}</p>}

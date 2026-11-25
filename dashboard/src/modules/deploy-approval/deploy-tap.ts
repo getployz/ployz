@@ -57,6 +57,19 @@ export function namesReview(current: string, given: string) {
  */
 export const underRule = ({ needs, ended }: Unsigned) => (needs === "rule" || needs === "rebuild") && ended !== true;
 
+/** Whether `entry`'s Service builds from source and no rule that stands covers it, so only a signed Source step builds it. */
+export const needsSource = ({ needs, ended }: Unsigned) => needs === "rule" && ended !== true;
+
+/**
+ * Why a Service of `unsigned` that builds from source won't build, as `ployz deploy` says it, when no Source step names it
+ * among `sourced`; null when each will.
+ */
+export function unsourced(unsigned: readonly Unsigned[], sourced: ReadonlySet<string>) {
+  const service = unsigned.find((entry) => needsSource(entry) && !sourced.has(entry.service))?.service;
+  return service === undefined ? null
+    : `No automatic deploy rule covers ${service} as it stands, so your servers won't build it. Turn on Deploy every push, then deploy again.`;
+}
+
 /** Why a Service no passkey can sign keeps the Deploy from asking, or null when a passkey can sign each of `unsigned`. */
 export function blocked(unsigned: readonly Unsigned[]) {
   for (const { service, needs, ended } of unsigned) {

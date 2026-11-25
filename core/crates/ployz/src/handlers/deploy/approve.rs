@@ -453,8 +453,9 @@ fn source(
         changed: view.changed.clone(),
         unread: None,
     };
-    // An owner or admin decides this Deploy and approves no rule with it, so this Device
-    // signs none. An older Store says only whether the Environment is Protected.
+    // An owner or admin decides this Deploy and signs the rule with it on its approval
+    // page, so this Device signs none. An older Store says only whether the Environment is
+    // Protected.
     if view
         .protector_decides
         .unwrap_or(view.protected != Some(false))

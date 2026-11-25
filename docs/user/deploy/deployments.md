@@ -404,6 +404,11 @@ deploy. Open it, check what it destroys and the lines your passkey signs, and ta
 deploy then starts as whoever asked. See [Deploy without a key](../cli/overview.md#deploy-without-a-key)
 for how the CLI waits.
 
+When a service builds from GitHub and no [automatic deploy rule](github.md#approve-a-rule-for-deploys-on-push)
+approves it as it stands, the page shows the rule too, and the same tap signs it. The deploy then
+builds that service, and later pushes to its branch deploy with no prompt. A deploy with only such
+services to sign still gets a link.
+
 Otherwise it's refused with what to do. A service built from source, as `ployz up` builds one,
 needs an automatic deploy rule, and a private tag needs its image written by digest. When Ployz
 Cloud can't reach every server, the deploy queues as before and each server checks it. A coding
