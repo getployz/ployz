@@ -312,18 +312,24 @@ impl SwitchGuard {
                 let placed = self
                     .place_start_image(copy.as_ref(), epoch, start.as_ref(), admitted)
                     .await?;
+                let image = placed.as_ref().and_then(|placed| placed.record(epoch));
+                // The holder starts only beside a root whose own record names this start's
+                // image. A root promoted at `epoch` without it, by a plugin from before the
+                // record or under a mark that doesn't parse, is promoted again: the Writer
+                // route is idempotent at `epoch` and writes the record.
                 let copy = match copy {
                     Some(VolumeCopy::Root {
                         readonly,
                         epoch: held,
+                        placed: on_root,
                         ..
-                    }) if readonly || held != epoch => {
+                    }) if readonly || held != epoch || image.is_some() && on_root != image => {
                         let request = WriterRequest {
                             name: name.clone(),
                             at,
                             epoch,
                             r#gen,
-                            image: placed.as_ref().and_then(|placed| placed.record(epoch)),
+                            image,
                         };
                         recorded(
                             self.plugin_copy(WRITER_ROUTE, &request).await?,
@@ -763,7 +769,7 @@ impl LocalMachine {
             Some(VolumeCopy::Root {
                 placed: Some(placed),
                 ..
-            }) if placed.epoch() == epoch && *placed.spec() == admitted.digest() => {
+            }) if placed.epoch() == epoch && *placed.spec() == admitted.placement() => {
                 Some(placed.id())
             }
             _ => None,

@@ -2805,6 +2805,21 @@ describe("volume runs", () => {
       ]);
     });
 
+    it("on a committed row, a forward release onto a Server whose Ployz would pull the start's image again creates nothing there", async () => {
+      const G = newSnap("f-1");
+      named("fsn-1").copy = slotCopy(G);
+      for (const container of containers) container.running = false;
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(G, null, "2"), capabilities: ON_PLOYZ_04.filter((capability) => capability !== requirements.volumeStartImage.capability) };
+      await owned("committed");
+      await runEffect(closeVolumeRun("run-1", "failure"));
+      verbs = [];
+
+      const failed = await execute((await releaseRow()).id, "run-2");
+
+      expect(failed.error).toMatchObject({ message: expect.stringContaining("Volume move is not available on fsn-2.") });
+      expect(verbs.filter((verb) => verb.startsWith("writer@"))).toEqual([]);
+    });
+
     describe("a committed Move whose release failed", () => {
       const A = idOf("fsn-1");
       const volume = { environmentId: "env-1", volumeName: "data", dockerVolume, refquotaBytes: 5_000_000, recordedBytes: 0 };

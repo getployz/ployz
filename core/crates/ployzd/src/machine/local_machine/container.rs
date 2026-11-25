@@ -2601,7 +2601,7 @@ impl PlacedHolder {
     /// The record a promote to `epoch` writes, so a resend after it at that epoch, for
     /// the same admitted spec, takes the same image.
     pub(crate) fn record(&self, epoch: ployz_core::WriterEpoch) -> Option<ployz_core::PlacedImage> {
-        ployz_core::PlacedImage::new(epoch, self.admitted.digest(), &self.id).ok()
+        ployz_core::PlacedImage::new(epoch, self.admitted.placement(), &self.id).ok()
     }
 }
 

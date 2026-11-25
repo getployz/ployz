@@ -972,16 +972,18 @@ async fn a_start_resent_with_another_spec_places_its_own_image() {
 
     let resent = try_set_copy(&destination, start("example.test/api:2")).await;
     assert!(resent.is_ok(), "{resent:?}");
-    assert_eq!(promotes(&plugin), 1);
+    // The root's record named the first spec's image, so the start promoted again to record its own.
+    assert_eq!(promotes(&plugin), 2);
     let holder = only_container(node);
     assert_eq!(node.container(holder).unwrap()["Image"], second.as_str());
 }
 
 /// A volume plugin that promotes without recording the start's image runs an older
 /// build than its daemon. The start is refused, naming the plugin to restart, rather
-/// than run with no record a resend after a stop could take.
+/// than run with no record a resend after a stop could take. A retry finds the root
+/// already writable at its epoch, still with no record, and is refused the same way.
 #[tokio::test]
-async fn a_start_refuses_a_promote_that_recorded_no_image() {
+async fn a_start_refuses_a_promote_that_recorded_no_image_and_its_retry() {
     let fleet = Fleet::start().await;
     let node = fleet.node(1);
     let plugin = plugin(
@@ -997,17 +999,74 @@ async fn a_start_refuses_a_promote_that_recorded_no_image() {
             "creation_key":"move-1", "gen":2,
             "rotation":{"in":{"run":null, "expect":"pending"}}}}});
 
-    let refused = try_set_copy(&destination, start)
-        .await
-        .expect_err("the promote recorded no image");
-    assert!(refused.contains("Restart ployz-volume-plugin"), "{refused}");
-    assert!(
-        node.fake
-            .named_containers
-            .as_ref()
-            .unwrap()
-            .lock()
-            .unwrap()
-            .is_empty()
+    for attempt in 1..=2 {
+        let refused = try_set_copy(&destination, start.clone())
+            .await
+            .expect_err("the promote recorded no image");
+        assert!(refused.contains("Restart ployz-volume-plugin"), "{refused}");
+        assert_eq!(promotes(&plugin), attempt);
+        assert!(
+            node.fake
+                .named_containers
+                .as_ref()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
+
+/// Pull policy says how a start's image is placed, not what runs, so the record binds
+/// the spec without it. A Move records the image under `never`; its forward Release
+/// resends the spec under `missing` with the registry down and the tag moved, and
+/// starts the holder from the recorded image.
+#[tokio::test]
+async fn a_release_under_another_pull_policy_runs_the_image_its_move_recorded() {
+    let fleet = Fleet::start().await;
+    let node = fleet.node(1);
+    let service = spec("api");
+    let tag = service.container.image.clone();
+    let (recorded, moved_to) = (
+        format!("sha256:{}", "a".repeat(64)),
+        format!("sha256:{}", "b".repeat(64)),
     );
+    node.fake
+        .images
+        .lock()
+        .unwrap()
+        .insert(tag.clone(), Some(recorded.clone()));
+    let plugin = plugin(
+        slot(Some(snapshot())),
+        WRITER_ROUTE,
+        writer_root(1, Some(snapshot())),
+    );
+    let destination = fleet.with_plugin(1, &plugin);
+    let start = |policy: &str| {
+        let mut moved = service.clone();
+        moved.container.pull_policy = serde_json::from_value(json!(policy)).unwrap();
+        json!({"name":VOLUME, "expect":{"kind":"mirror", "newest":"7", "slot":"1"},
+            "want":{"kind":"writer", "at":"7", "epoch":1, "start":{
+                "kind":"create", "namespace":"app", "resolved_spec":moved,
+                "creation_key":"move-1", "gen":2,
+                "rotation":{"in":{"run":null, "expect":"pending"}}}}})
+    };
+
+    node.fake
+        .refuse_create_of
+        .lock()
+        .unwrap()
+        .insert("api".into());
+    try_set_copy(&destination, start("never"))
+        .await
+        .expect_err("the Create fails after the promote");
+    node.fake.refuse_create_of.lock().unwrap().clear();
+    *node.fake.pulls_left.lock().unwrap() = Some(0);
+    node.fake.images.lock().unwrap().insert(tag, Some(moved_to));
+
+    let released = try_set_copy(&destination, start("missing")).await;
+    assert!(released.is_ok(), "{released:?}");
+    assert_eq!(promotes(&plugin), 1);
+    let holder = only_container(node);
+    assert_eq!(node.container(holder).unwrap()["Image"], recorded.as_str());
 }

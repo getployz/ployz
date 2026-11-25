@@ -23,8 +23,11 @@ export const requirements = {
   ensureContainer: { capability: "ployz.container.ensure.v1", feature: "Deploys", plural: true },
 } as const satisfies Record<string, Requirement>;
 
-/** What a Server must list to start a Move's Writer: the moved Service from its approval's proof, from the image its promote records. */
-export const moveStart: readonly Requirement[] = [requirements.volumeStart, requirements.volumeStartImage];
+/**
+ * What a Server must list to take a Writer Create, a Move's or a Release's: it starts the Service from its approval's
+ * proof, from the image its promote records.
+ */
+export const writerStart: readonly Requirement[] = [requirements.volumeStart, requirements.volumeStartImage];
 
 export function requirementFor(capability: string): Requirement | null {
   return Object.values(requirements).find((requirement) => requirement.capability === capability) ?? null;

@@ -285,8 +285,9 @@ and doesn't pull again, so a registry outage or a tag pushed since can't change 
 message means the image was deleted from `web-2` in between. Deploy the service, and the deploy
 starts it on `web-2` with its image.
 
-A move onto a server whose Ployz doesn't remember the image this way stops before it starts and
-asks you to upgrade that server: `Volume move needs a newer Ployz on web-2`.
+A move or a release that would start your service on a server whose Ployz doesn't remember the
+image this way starts nothing there and asks you to upgrade that server: `Volume move needs a newer
+Ployz on web-2`. A move stops before it copies anything.
 
 ## A move says the volume plugin runs an older build
 
