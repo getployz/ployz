@@ -375,6 +375,8 @@ impl Daemon {
         let rediscovery = crate::machine::LocalMachine::new(local.clone());
         let rediscovery_shutdown = shutdown.clone();
         tokio::spawn(async move { rediscovery.rediscover_addresses(rediscovery_shutdown).await });
+        let closes = serving_local.clone();
+        tokio::spawn(async move { closes.resume_preview_closes().await });
         tokio::spawn(crate::storage::sweep_trash_hourly(
             plugin.clone(),
             shutdown.clone(),

@@ -392,6 +392,38 @@ impl Volumes {
         Ok(inventory)
     }
 
+    /// Every Docker Volume of `namespace`, and whether this Machine's plugin serves it.
+    ///
+    /// # Errors
+    /// Returns an error when Docker refuses the list or names a Volume it can't hold.
+    pub(crate) async fn in_namespace(
+        &self,
+        namespace: &ployz_core::Namespace,
+    ) -> Result<Vec<(DockerVolumeName, bool)>, Error> {
+        let prefix = format!("{namespace}_");
+        let listed = decode_volume_list(
+            self.docker
+                .client
+                .list_volumes(None::<bollard::query_parameters::ListVolumesOptions>)
+                .await,
+        )?;
+        listed
+            .volumes
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|volume| volume.name.starts_with(&prefix))
+            .map(|volume| {
+                let name = DockerVolumeName::parse(&volume.name).map_err(|source| {
+                    Error::InvalidValue {
+                        field: "Docker Volume name",
+                        source,
+                    }
+                })?;
+                Ok((name, volume.driver == "ployz"))
+            })
+            .collect()
+    }
+
     /// Observe one named Docker Volume directly.
     ///
     /// # Errors

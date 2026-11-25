@@ -101,6 +101,7 @@ macro_rules! rpc_catalog {
                 ListTrash: (list_trash, ListTrashRequest, TrashList, LIST_TRASH_CAPABILITY, "ployz.volume.trash.v1", Container, Full),
                 RestoreTrash: (restore_trash, RestoreTrashRequest, TrashRestored, RESTORE_TRASH_CAPABILITY, "ployz.volume.trash-restore.v1", Container, Full),
                 EmptyTrash: (empty_trash, EmptyTrashRequest, TrashEmptied, EMPTY_TRASH_CAPABILITY, "ployz.volume.trash-empty.v1", Container, Full),
+                ClosePreview: (close_preview, ClosePreviewRequest, PreviewClosed, CLOSE_PREVIEW_CAPABILITY, "ployz.preview.close.v1", Container, Operator),
                 ListImages: (list_images, ListImagesRequest, MachineImages, LIST_IMAGES_CAPABILITY, "ployz.image.list.v1", Container, Operator),
                 PruneImages: (prune_images, PruneImagesRequest, ImagesRemoved, PRUNE_IMAGES_CAPABILITY, "ployz.image.prune.v1", Container, Operator),
                 EnsureImageIngest: (ensure_image_ingest, EnsureImageIngestRequest, ImageIngestOpened, ENSURE_IMAGE_INGEST_CAPABILITY, "ployz.image.ingest.ensure.v1", Container, Operator),

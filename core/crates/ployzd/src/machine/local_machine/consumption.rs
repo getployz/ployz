@@ -1,6 +1,7 @@
 //! The record of what this Machine has consumed, kept in `restart-approvals.json`: joins,
 //! GitHub tokens, rule marks, the hook each rule's Service last ran, each Service's
-//! floor, and each Copy step taken.
+//! floor, each Copy step taken, and each preview this Machine opened and how far its
+//! Close got.
 //! Every verb goes through [`ConsumptionLog::transact`] or [`ConsumptionLog::read`], so the
 //! lock, the lazy load, the write and the cache reset after a failed write are one piece
 //! of code.
@@ -14,7 +15,7 @@ use std::{
 };
 
 use ployz_core::{
-    QualifiedService, SealingPublicKey, ServiceName,
+    Namespace, PreviewRefusal, QualifiedService, SealingPublicKey, ServiceName,
     authority::{
         AuthorityRefusal, AutoDeployRule, BuildClaim, CopyVerified, CopyWindow, ProposalRef,
         RuleId, RuleIdentity, Signed, StepDigest, Timestamp, version::Forget,
@@ -60,6 +61,21 @@ struct Consumption {
     /// Each Copy step taken here, by its operation and index.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     copies: BTreeMap<String, CopyTaken>,
+    /// Each preview Namespace this Machine created a Container in, and whether it closed.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    previews: BTreeMap<Namespace, PreviewState>,
+}
+
+/// How far a preview got on this Machine. It only moves forward, so a closed preview
+/// never runs here again.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum PreviewState {
+    Open,
+    /// A Close began: nothing more starts or arrives, and the sweep may be half done.
+    Closing,
+    /// The sweep finished.
+    Closed,
 }
 
 /// A Copy step this Machine took, as its bundle listed it.
@@ -641,6 +657,97 @@ impl ConsumptionLog {
         })
     }
 
+    /// Open `preview` for a Container about to be created in it, refusing one whose Close
+    /// began.
+    ///
+    /// # Errors
+    /// Returns [`Error::ApprovalRecord`] when the record cannot be read or written.
+    pub(crate) fn open_preview(
+        &self,
+        preview: &Namespace,
+    ) -> Result<Result<(), PreviewRefusal>, Error> {
+        self.transact(Error::ApprovalRecord, |log| {
+            Ok(match log.previews.get(preview) {
+                Some(PreviewState::Open) => Edit::Keep(Ok(())),
+                Some(PreviewState::Closing | PreviewState::Closed) => {
+                    Edit::Keep(Err(closed(preview)))
+                }
+                None => {
+                    log.previews.insert(preview.clone(), PreviewState::Open);
+                    Edit::Write(Ok(()))
+                }
+            })
+        })
+    }
+
+    /// Refuse a start of, or data arriving into, `preview` once its Close began. A
+    /// Namespace this Machine never opened passes: its create opens it, or refuses.
+    ///
+    /// # Errors
+    /// Returns [`Error::ApprovalRecord`] when the record cannot be read.
+    pub(crate) fn preview_runs(
+        &self,
+        preview: &Namespace,
+    ) -> Result<Result<(), PreviewRefusal>, Error> {
+        self.read(Error::ApprovalRecord, |log| {
+            match log.previews.get(preview) {
+                Some(PreviewState::Closing | PreviewState::Closed) => Err(closed(preview)),
+                Some(PreviewState::Open) | None => Ok(()),
+            }
+        })
+    }
+
+    /// Begin closing `preview`, written before anything of it is removed. Refuses a
+    /// preview this Machine never opened, which leaves nothing here.
+    ///
+    /// # Errors
+    /// Returns [`Error::ApprovalRecord`] when the record cannot be read or written.
+    pub(crate) fn begin_close(
+        &self,
+        preview: &Namespace,
+    ) -> Result<Result<(), PreviewRefusal>, Error> {
+        self.transact(Error::ApprovalRecord, |log| {
+            Ok(match log.previews.get(preview) {
+                None => Edit::Keep(Err(PreviewRefusal::NeverOpened {
+                    namespace: preview.clone(),
+                })),
+                Some(PreviewState::Closing | PreviewState::Closed) => Edit::Keep(Ok(())),
+                Some(PreviewState::Open) => {
+                    log.previews.insert(preview.clone(), PreviewState::Closing);
+                    Edit::Write(Ok(()))
+                }
+            })
+        })
+    }
+
+    /// Mark `preview` closed once its sweep finished, and drop the hook record each of its
+    /// Services kept, which no later push reads.
+    ///
+    /// # Errors
+    /// Returns [`Error::ApprovalRecord`] when the record cannot be read or written.
+    pub(crate) fn finish_close(&self, preview: &Namespace) -> Result<(), Error> {
+        let infix = format!("/{preview}/");
+        self.transact(Error::ApprovalRecord, |log| {
+            log.previews.insert(preview.clone(), PreviewState::Closed);
+            log.rule_hooks.retain(|key, _| !key.contains(&infix));
+            Ok(Edit::Write(()))
+        })
+    }
+
+    /// Every preview whose Close began and never finished, which a daemon start resumes.
+    ///
+    /// # Errors
+    /// Returns [`Error::ApprovalRecord`] when the record cannot be read.
+    pub(crate) fn closing_previews(&self) -> Result<Vec<Namespace>, Error> {
+        self.read(Error::ApprovalRecord, |log| {
+            log.previews
+                .iter()
+                .filter(|(_, state)| **state == PreviewState::Closing)
+                .map(|(preview, _)| preview.clone())
+                .collect()
+        })
+    }
+
     /// Take the hook place of `claim`'s push under `place`, a rule and for a preview rule
     /// the preview, for the slot named `slot`, refusing one taken for another slot. A
     /// request resent for the same slot passes: the Machine adopts the hook that ran. A
@@ -677,6 +784,12 @@ impl ConsumptionLog {
             );
             Ok(Edit::Write(()))
         })
+    }
+}
+
+fn closed(preview: &Namespace) -> PreviewRefusal {
+    PreviewRefusal::Closed {
+        namespace: preview.clone(),
     }
 }
 

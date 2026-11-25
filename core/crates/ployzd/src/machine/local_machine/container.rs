@@ -1894,6 +1894,11 @@ impl LocalMachine {
             &spec.to_requested(),
         )
         .map_err(Error::PreviewRefused)?;
+        if ployz_core::PreviewNamespace::of(namespace).is_some() {
+            self.approvals
+                .open_preview(namespace)?
+                .map_err(Error::PreviewRefused)?;
+        }
         // Only a key or a rule keeps a name: Cloud never learns of a deploy through this
         // Server's own socket, so a name it kept would refuse every later Cloud deploy of a
         // Service that reaches no data. System Containers are skipped: the replica may be

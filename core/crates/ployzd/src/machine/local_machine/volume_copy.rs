@@ -39,12 +39,18 @@ enum StartState {
 }
 
 impl LocalMachine {
-    /// Refuse data arriving into `name` when it belongs to another Server's preview.
+    /// Refuse data arriving into `name` when it belongs to another Server's preview, or to
+    /// a preview whose Close began. A caller checks it under the switch, which a Close holds.
     ///
     /// # Errors
-    /// Returns [`Error::PreviewRefused`] for another Server's preview.
+    /// Returns [`Error::PreviewRefused`] for another Server's preview or a closing one.
     pub(crate) fn admit_preview_arrival(&self, name: &DockerVolumeName) -> Result<(), Error> {
-        ployz_core::admit_preview_arrival(&self.record().id(), name).map_err(Error::PreviewRefused)
+        ployz_core::admit_preview_arrival(&self.record().id(), name)
+            .map_err(Error::PreviewRefused)?;
+        match ployz_core::PreviewNamespace::holding(name) {
+            Some(preview) => self.admit_preview_runs(preview.namespace()),
+            None => Ok(()),
+        }
     }
 
     /// SetVolumeCopy: move the copy of `request.name` to its want, under the switch lock
@@ -117,6 +123,7 @@ impl LocalMachine {
     ) -> Result<VolumeCopyView, Error> {
         self.admit_preview_arrival(&request.into)?;
         let switch = self.lock_switch().await?;
+        switch.admit_preview_arrival(&request.into)?;
         // Only a Full caller seeds, checked under the switch: the Machine API refused an
         // Operator on arrival, and a key that lost its Device slot since is one now.
         switch.full_caller()?;
@@ -151,6 +158,7 @@ impl LocalMachine {
     ) -> Result<VolumeCopyView, Error> {
         self.admit_preview_arrival(&request.seed.into)?;
         let switch = self.lock_switch().await?;
+        switch.admit_preview_arrival(&request.seed.into)?;
         if let Some(r#gen) = request.seed.r#gen {
             switch.check_gen(&request.seed.into, r#gen).await?;
         }
@@ -242,6 +250,7 @@ impl LocalMachine {
         &self,
         request: &ployz_core::RestoreTrashRequest,
     ) -> Result<ployz_core::TrashRestored, Error> {
+        let _switch = self.lock_switch().await?;
         let trash: ployz_core::TrashList = self
             .volume_verb(
                 "ListTrash",
@@ -309,6 +318,9 @@ impl SwitchGuard {
             want,
             r#gen,
         } = request;
+        if !matches!(want, WantedCopy::Forget | WantedCopy::Floor) {
+            self.admit_preview_arrival(&name)?;
+        }
         // Checked again at the scope the caller holds under the switch, before any effect:
         // a caller that lost its Device slot while this queued promotes nothing for a start
         // an Operator may not make.

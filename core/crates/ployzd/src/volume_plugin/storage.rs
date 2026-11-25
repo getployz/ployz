@@ -457,7 +457,7 @@ impl VolumeStorage {
     pub(super) async fn destroy(&self, dataset: &str, holds: Holds) -> Result<()> {
         let recursive = match holds {
             Holds::Nothing => false,
-            Holds::Unreceived | Holds::Expired => true,
+            Holds::Unreceived | Holds::Expired | Holds::ClosedPreview => true,
         };
         self.bury(dataset, recursive).await?;
         let mut args = vec!["destroy"];
@@ -706,6 +706,9 @@ pub(super) enum Holds {
     Unreceived,
     /// A Trash entry the sweep or an Empty destroys.
     Expired,
+    /// A closed preview's copy carrying exactly the origin the preview's own birth derives:
+    /// data the preview made on this Server, which no one else holds.
+    ClosedPreview,
 }
 
 /// What Docker's Create asks of a Provisioned Volume: its bound, and its origin when born.

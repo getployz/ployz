@@ -86,6 +86,8 @@ pub(crate) struct FakeDocker {
     pub(crate) inspect_gate: Arc<tokio::sync::RwLock<()>>,
     pub(crate) on_stop: Arc<Mutex<Option<StopHook>>>,
     pub(crate) list_warnings: Arc<Mutex<Vec<String>>>,
+    /// Docker Volumes a list answers beside its fixed ones.
+    pub(crate) listed_volumes: Arc<Mutex<Vec<serde_json::Value>>>,
     /// Another start attaches the network first, so this connect finds it attached.
     pub(crate) connect_raced: Arc<AtomicBool>,
     /// Named mode: a list answers with the named Containers its label filters match,
@@ -629,15 +631,17 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
             serde_json::json!({"message":"collection unavailable"}),
         )
     } else if method == Method::GET && path.ends_with("/volumes") {
+        let mut volumes = vec![
+            serde_json::json!({"Name":"plain","Driver":"local","Mountpoint":"/var/lib/docker/volumes/plain/_data"}),
+            serde_json::json!({"Name":"healthy","Driver":"ployz","Mountpoint":"/var/lib/ployz-volumes/healthy"}),
+            serde_json::json!({"Name":"malformed","Driver":"ployz","Mountpoint":"/var/lib/ployz-volumes/malformed"}),
+            serde_json::json!({"Name":"unavailable","Driver":"ployz","Mountpoint":"/var/lib/ployz-volumes/unavailable"}),
+            serde_json::json!({"Name":"mismatched","Driver":"ployz","Mountpoint":"/var/lib/ployz-volumes/mismatched"}),
+        ];
+        volumes.extend(fake.listed_volumes.lock().unwrap().iter().cloned());
         (
             StatusCode::OK,
-            serde_json::json!({"Volumes":[
-                {"Name":"plain","Driver":"local","Mountpoint":"/var/lib/docker/volumes/plain/_data"},
-                {"Name":"healthy","Driver":"ployz","Mountpoint":"/var/lib/ployz-volumes/healthy"},
-                {"Name":"malformed","Driver":"ployz","Mountpoint":"/var/lib/ployz-volumes/malformed"},
-                {"Name":"unavailable","Driver":"ployz","Mountpoint":"/var/lib/ployz-volumes/unavailable"},
-                {"Name":"mismatched","Driver":"ployz","Mountpoint":"/var/lib/ployz-volumes/mismatched"}
-            ],"Warnings":*fake.list_warnings.lock().unwrap()}),
+            serde_json::json!({"Volumes":volumes,"Warnings":*fake.list_warnings.lock().unwrap()}),
         )
     } else if method == Method::GET && path.contains("/volumes/") {
         let name = path.rsplit('/').next().unwrap();
@@ -801,6 +805,10 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
         } else {
             fake.volume_users.lock().unwrap().remove(name);
             fake.volumes.lock().unwrap().remove(name);
+            fake.listed_volumes
+                .lock()
+                .unwrap()
+                .retain(|volume| volume["Name"] != name);
             (StatusCode::NO_CONTENT, serde_json::Value::Null)
         }
     } else if method == Method::POST && path.ends_with("/connect") {

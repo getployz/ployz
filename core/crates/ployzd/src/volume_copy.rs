@@ -46,6 +46,8 @@ pub const TRASH_RESTORE_ROUTE: &str = "Ployz.Trash.Restore";
 pub const TRASH_EMPTY_ROUTE: &str = "Ployz.Trash.Empty";
 /// The hourly sweep: one hour counted, and the entries 168 hours old destroyed.
 pub const TRASH_SWEEP_ROUTE: &str = "Ployz.Trash.Sweep";
+/// A preview's Volumes swept from the Pool: its own data destroyed, any other to the Trash.
+pub const PREVIEW_CLOSE_ROUTE: &str = "Ployz.Preview.Close";
 /// The copy as it is now, with no effect.
 pub const INSPECT_ROUTE: &str = "Volume.Copy.Inspect";
 /// The cut: the writer root becomes the slot's read-only copy at `target`.

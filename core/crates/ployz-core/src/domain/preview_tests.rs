@@ -262,3 +262,23 @@ fn a_preview_runs_an_image_only_over_the_volumes_it_declares() {
         Ok(())
     );
 }
+
+/// A Close destroys a copy only when it carries the origin the preview's own Volume of that
+/// name was born with: the one a mount of it expects. A Volume of the Namespace under
+/// another name, or another preview's, never matches.
+#[test]
+fn a_preview_names_the_origin_only_its_own_volume_carries() {
+    let namespace = namespace_on(&machine('a'));
+    let preview = PreviewNamespace::of(&namespace).unwrap();
+    let db = physical(&namespace);
+    let born = preview.birth("db");
+    let own = preview.own_origin(db.as_str()).unwrap();
+    assert_eq!(own, VolumeOrigin::expected(Some(&born), &db).unwrap());
+    assert!(own.is_preview());
+    let other = namespace.volume_name(&DockerVolumeName::parse("cache").unwrap());
+    assert_ne!(preview.own_origin(other.as_str()), Some(own));
+    let sibling = PreviewNamespace::of(&namespace_on(&machine('b'))).unwrap();
+    assert_eq!(sibling.own_origin(db.as_str()), None);
+    assert_eq!(preview.own_origin(namespace.as_str()), None);
+    assert_eq!(preview.own_origin(&format!("{namespace}_")), None);
+}
