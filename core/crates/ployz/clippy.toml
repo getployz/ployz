@@ -6,6 +6,6 @@ disallowed-methods = [
     { path = "clap::Command::print_help", reason = "print clap's render_help through crate::ui so a closed stdout dies of SIGPIPE" },
     { path = "ployz_core::Hint::from_details", reason = "reads hints another process wrote, a retry among them; a hint this CLI gives is typed: a retry comes from crate::cli::Rerun" },
     { path = "ployz_core::RetryCommand::rendered", reason = "build a retry from the command line clap parsed: crate::cli::Rerun, which keeps the flags given and withholds secrets" },
-    { path = "ployz::cli::shown::Shown::verbatim", reason = "output repeats a value typed only as the parts known not to be secret: a Shown constructor that keeps those, or a placeholder" },
+    { path = "ployz::cli::shown::Shown::verbatim", allow-invalid = true, reason = "a Shown never comes from text: output repeats a value only once it parsed into a Public type, else its placeholder" },
     { path = "clap::Command::print_long_help", reason = "print clap's render_long_help through crate::ui so a closed stdout dies of SIGPIPE" },
 ]

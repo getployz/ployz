@@ -1,7 +1,11 @@
 //! The Cloud a command talks to, written once: a bare host is https, a URL is kept as given,
 //! and nothing else about it is spelled anywhere else.
 
+use crate::cli::Shown;
 use crate::env;
+
+/// The schemes a Cloud is reached by.
+const WEB: &[&str] = &["http", "https"];
 
 /// The Cloud a sign-in goes to when none is named or stored.
 pub(crate) const DEFAULT_CLOUD: &str = "ployz.dev";
@@ -13,7 +17,8 @@ pub(crate) struct CloudOrigin(String);
 /// A Cloud written with a scheme that is neither `http` nor `https`.
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct NotWebUrl {
-    pub(crate) given: String,
+    /// What was given, as an error names it: its scheme as `SCHEME`.
+    pub(crate) given: Shown,
 }
 
 impl CloudOrigin {
@@ -29,10 +34,10 @@ impl CloudOrigin {
     /// [`Self::new`], refusing a scheme the Cloud is not reached by.
     pub(crate) fn checked(text: &str) -> Result<Self, NotWebUrl> {
         if let Some((scheme, _)) = text.split_once("://")
-            && !["http", "https"].contains(&scheme.to_ascii_lowercase().as_str())
+            && !WEB.contains(&scheme.to_ascii_lowercase().as_str())
         {
             return Err(NotWebUrl {
-                given: text.to_owned(),
+                given: Self(text.to_owned()).shown(),
             });
         }
         Ok(Self::new(text))
@@ -54,6 +59,24 @@ impl CloudOrigin {
 
     pub(crate) fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// As an error names it: its scheme, host and port, with any user info, path, query or
+    /// fragment marked in place (`https://USER@cloud.example/PATH`), and `CLOUD_URL` when it
+    /// isn't a URL at all.
+    pub(crate) fn shown(&self) -> Shown {
+        url::Url::parse(&self.0).map_or_else(
+            |_| Shown::placeholder("CLOUD_URL"),
+            |url| Shown::url_redacted(&url, WEB),
+        )
+    }
+
+    /// As a command shows it again: whole when it is a scheme, a host and a port alone,
+    /// else none, so the command names `CLOUD_URL` rather than reaching another Cloud.
+    pub(crate) fn whole(&self) -> Option<Shown> {
+        url::Url::parse(&self.0)
+            .ok()
+            .and_then(|url| Shown::url(&url, WEB))
     }
 
     pub(crate) fn into_string(self) -> String {
@@ -124,10 +147,11 @@ mod tests {
             "https://ployz.dev"
         );
         assert_eq!(
-            CloudOrigin::checked("ftp://ployz.dev"),
-            Err(NotWebUrl {
-                given: "ftp://ployz.dev".into()
-            })
+            CloudOrigin::checked("ftp://EXAMPLE@ployz.dev/EXAMPLE")
+                .map_err(|refused| refused.given),
+            Err(crate::cli::Shown::placeholder(
+                "SCHEME://USER@ployz.dev/PATH"
+            ))
         );
     }
 }

@@ -1,21 +1,41 @@
 //! What output may repeat of a value typed. A hint, an error or `--json` repeats one only
-//! as a [`Shown`], whose constructors keep the parts whose kind is never a secret and put a
-//! named placeholder in place of everything else. Nothing typed is recognized as a secret:
-//! what isn't known to be safe is withheld.
+//! as a [`Shown`], built from a value already parsed into a [`Public`] type, or as a named
+//! placeholder. Text is never shown because of the argument it was typed for: it shows only
+//! once it parsed as that argument's kind, and the parse refused every other shape.
 
 use std::fmt;
+use std::net::{IpAddr, SocketAddr};
+use std::path::{Path, PathBuf};
 
-use ployz_core::ServiceName;
 use ployz_core::config::{ValuePart, parse_variable_template};
+use ployz_core::{
+    ClusterName, ConfigFileName, ConfigName, DomainPrefix, IngressHost, MachineId, MachineLabelKey,
+    MachineRelease, Namespace, ServiceName, StorageChoice, StoragePreparation,
+};
+use ployz_store::{
+    BranchName, EnvironmentName, PlainValue, ProjectName, RegionName, RepositoryName,
+    ReviewVersion, SettingPath, SyncId, VolumeName,
+};
 use serde::Serialize;
+use url::Url;
 
 /// A value typed, as output may repeat it.
 #[derive(Clone, Eq, PartialEq, Serialize)]
 #[serde(transparent)]
 pub struct Shown(String);
 
+/// A parsed type whose every value output may repeat: its parse refuses any text but a
+/// number, a choice, a name, an ID Ployz printed, or a path or URL with nothing in it but
+/// where it points. It is sealed: the list at the end of this file is every such type.
+pub(crate) trait Public: fmt::Display + sealed::Sealed {}
+
+mod sealed {
+    pub trait Sealed {}
+}
+
 impl Shown {
-    /// A placeholder for a value withheld whole, named for what goes there: `VALUE`.
+    /// Text compiled into Ployz: a placeholder for a value withheld whole, named for what
+    /// goes there (`VALUE`), or a fixed word such as `tcp`.
     pub(crate) fn placeholder(name: &'static str) -> Self {
         Self(name.to_owned())
     }
@@ -29,75 +49,70 @@ impl Shown {
         ))
     }
 
-    /// `typed` whole, for a value whose kind is never a secret, such as a name, a number,
-    /// a choice or a path. `clippy.toml` refuses it except where the kind is known.
-    pub(crate) fn verbatim(typed: &str) -> Self {
-        Self(typed.to_owned())
+    /// `value`, which parsed into a type output may repeat.
+    pub(crate) fn of(value: &impl Public) -> Self {
+        Self(value.to_string())
     }
 
-    /// A value of Ployz references alone, such as `${{ db.PLOYZ_PRIVATE_DOMAIN }}`; none
-    /// when any text was typed around them or a reference names no Service.
-    pub(crate) fn references(typed: &str) -> Option<Self> {
-        let parsed = parse_variable_template(typed, |name, _| {
-            ServiceName::parse(name).ok().map(|_| name.to_owned())
-        });
-        let only = !parsed.parts.is_empty()
-            && parsed
-                .parts
-                .iter()
-                .all(|part| matches!(part, ValuePart::Ref { .. }));
-        only.then(|| Self(typed.to_owned()))
+    /// `left`, `between` and `right`, as `SERVICE=IMAGE` or `OWNER/REPO@BRANCH` joins them.
+    pub(crate) fn joined(left: Self, between: &'static str, right: Self) -> Self {
+        Self(format!("{}{between}{}", left.0, right.0))
     }
 
-    /// A URL or a bare host: its scheme when it is one of `schemes`, else `SCHEME`; its
-    /// host and port when each has that shape, else `HOST` and `PORT`; its user info as
-    /// `USER` or `USER:PASSWORD`; never its path, query or fragment.
-    pub(crate) fn url(typed: &str, schemes: &[&str]) -> Self {
-        let (scheme, rest) = match typed.split_once("://") {
-            Some((scheme, rest)) => (Some(scheme), rest),
-            None => (None, typed),
+    /// `url` whole, when it is a scheme of `schemes`, a host and a port alone; none when it
+    /// has user info, a path, a query or a fragment, which output never repeats, so a
+    /// command that showed the rest would reach somewhere else.
+    pub(crate) fn url(url: &Url, schemes: &[&str]) -> Option<Self> {
+        let shown = Self::url_redacted(url, schemes);
+        (shown.0 == origin(url)).then_some(shown)
+    }
+
+    /// `url` as an error names it: its scheme, host and port, with each other part it has
+    /// named in its place, as in `https://USER:PASSWORD@cloud.example/PATH?QUERY#FRAGMENT`.
+    /// A scheme not in `schemes` shows as `SCHEME`. When an `@` follows the authority, user
+    /// info may have held a `/`, so what parsed as the host and port shows as `HOST`.
+    pub(crate) fn url_redacted(url: &Url, schemes: &[&str]) -> Self {
+        let scheme = url.scheme();
+        let mut shown = match schemes.contains(&scheme) {
+            true => format!("{scheme}://"),
+            false => "SCHEME://".to_owned(),
         };
-        let (authority, after) = rest.split_at(rest.find(['/', '?', '#']).unwrap_or(rest.len()));
-        let (user_info, host) = match authority.rsplit_once('@') {
-            Some((user_info, host)) => (Some(user_info), host),
-            None => (None, authority),
-        };
-        let mut shown = String::new();
-        if let Some(scheme) = scheme {
-            shown.push_str(if schemes.contains(&scheme) {
-                scheme
-            } else {
-                "SCHEME"
-            });
-            shown.push_str("://");
+        match (url.username().is_empty(), url.password().is_some()) {
+            (_, true) => shown.push_str("USER:PASSWORD@"),
+            (false, false) => shown.push_str("USER@"),
+            (true, false) => {}
         }
-        shown.push_str(match user_info {
-            Some(user_info) if user_info.contains(':') => "USER:PASSWORD@",
-            Some(_) => "USER@",
-            None => "",
-        });
-        // An `@` past the authority may close user info that holds a `/`, `?` or `#`, so
-        // what reads as the host may be part of a password.
-        if after.contains('@') {
-            shown.push_str("HOST");
-            return Self(shown);
+        match url[url::Position::BeforePath..].contains('@') {
+            true => shown.push_str("HOST"),
+            false => shown.push_str(&host_and_port(url)),
         }
-        let (host, port) = split_port(host);
-        shown.push_str(if is_host(host) { host } else { "HOST" });
-        if let Some(port) = port {
-            shown.push(':');
-            shown.push_str(if is_port(port) { port } else { "PORT" });
+        if !matches!(url.path(), "" | "/") {
+            shown.push_str("/PATH");
+        }
+        if url.query().is_some() {
+            shown.push_str("?QUERY");
+        }
+        if url.fragment().is_some() {
+            shown.push_str("#FRAGMENT");
         }
         Self(shown)
     }
 
-    /// `name=value`.
-    pub(crate) fn assignment(name: Self, value: Self) -> Self {
-        Self(format!("{}={}", name.0, value.0))
-    }
-
     pub(crate) fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+/// `scheme://host[:port]`, the parts of `url` a person reads as where it points.
+fn origin(url: &Url) -> String {
+    format!("{}://{}", url.scheme(), host_and_port(url))
+}
+
+fn host_and_port(url: &Url) -> String {
+    let host = url.host_str().unwrap_or("HOST");
+    match url.port() {
+        Some(port) => format!("{host}:{port}"),
+        None => host.to_owned(),
     }
 }
 
@@ -113,82 +128,274 @@ impl fmt::Display for Shown {
     }
 }
 
-/// `host` and the port after its last `:`; a bracketed IPv6 address keeps its own.
-fn split_port(text: &str) -> (&str, Option<&str>) {
-    let close = text.starts_with('[').then(|| text.find(']')).flatten();
-    let from = close.unwrap_or(0);
-    match text.get(from..).and_then(|rest| rest.rfind(':')) {
-        Some(colon) => (
-            text.get(..from + colon).unwrap_or_default(),
-            text.get(from + colon + 1..),
-        ),
-        None => (text, None),
+/// One lowercase DNS label: the rule Ployz names Servers, Contexts, Organizations,
+/// Containers and Branch nodes by, where no narrower type parses the argument.
+#[derive(Clone, Debug)]
+pub(crate) struct Label(ServiceName);
+
+impl Label {
+    pub(crate) fn parse(text: &str) -> Option<Self> {
+        ServiceName::parse(text).ok().map(Self)
     }
 }
 
-fn is_host(host: &str) -> bool {
-    let bracketed = host
-        .strip_prefix('[')
-        .and_then(|inner| inner.strip_suffix(']'))
-        .is_some_and(|inner| {
-            !inner.is_empty()
-                && inner
-                    .chars()
-                    .all(|c| c.is_ascii_hexdigit() || c == ':' || c == '.')
-        });
-    bracketed
-        || (!host.is_empty()
-            && host.len() <= 253
-            && host
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-'))
+impl fmt::Display for Label {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
 }
 
-fn is_port(port: &str) -> bool {
-    !port.is_empty() && port.len() <= 5 && port.bytes().all(|b| b.is_ascii_digit())
+/// An ID or digest Cloud or a Store minted and printed, such as an approval digest or a
+/// Deployment's `#12`: ASCII letters, digits and `-_.:#`, at most 128.
+#[derive(Clone, Debug)]
+pub(crate) struct Minted(String);
+
+impl Minted {
+    pub(crate) fn parse(text: &str) -> Option<Self> {
+        let minted = (1..=128).contains(&text.len())
+            && text
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"-_.:#".contains(&byte));
+        minted.then(|| Self(text.to_owned()))
+    }
 }
+
+impl fmt::Display for Minted {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+/// An image reference Docker can pull, such as `nginx:1.27`: the rule the Store checks.
+#[derive(Clone, Debug)]
+pub(crate) struct ImageReference(String);
+
+impl ImageReference {
+    pub(crate) fn parse(text: &str) -> Option<Self> {
+        ployz_core::is_image_reference(text).then(|| Self(text.to_owned()))
+    }
+}
+
+impl fmt::Display for ImageReference {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+/// A path that names a file or directory on this machine, as a command reads one, or `-`
+/// for stdin. Ployz names the files it reads in its own errors.
+#[derive(Clone, Debug)]
+pub(crate) struct ExistingPath(PathBuf);
+
+impl ExistingPath {
+    pub(crate) fn parse(text: &str) -> Option<Self> {
+        let path = Path::new(text);
+        (text == "-" || path.try_exists().is_ok_and(|exists| exists)).then(|| Self(path.to_owned()))
+    }
+}
+
+impl fmt::Display for ExistingPath {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.display().fmt(formatter)
+    }
+}
+
+/// A Server name, ID or glob over names, such as `web-*`: lowercase letters, digits, `-`,
+/// `.`, `*` and `?`, at most 253.
+#[derive(Clone, Debug)]
+pub(crate) struct NameGlob(String);
+
+impl NameGlob {
+    pub(crate) fn parse(text: &str) -> Option<Self> {
+        let named = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || "-.*?".contains(c);
+        (!text.is_empty() && text.len() <= 253 && text.chars().all(named))
+            .then(|| Self(text.to_owned()))
+    }
+}
+
+impl fmt::Display for NameGlob {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+/// A Ployz config path: a YAML file by its name, or one this computer keeps Ployz state
+/// at, the config or a file Ployz writes beside it such as the Cloud sign-in.
+#[derive(Clone, Debug)]
+pub(crate) struct ConfigPath(PathBuf);
+
+impl ConfigPath {
+    pub(crate) fn parse(text: &str) -> Option<Self> {
+        let path = Path::new(text);
+        let yaml = path
+            .extension()
+            .is_some_and(|extension| extension == "yaml" || extension == "yml");
+        (yaml || crate::config_dir::ConfigDir::new(path).kept()).then(|| Self(path.to_owned()))
+    }
+}
+
+impl fmt::Display for ConfigPath {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.display().fmt(formatter)
+    }
+}
+
+/// A value of Ployz references alone, such as `${{ db.PLOYZ_PRIVATE_DOMAIN }}`.
+#[derive(Clone, Debug)]
+pub(crate) struct References(String);
+
+impl References {
+    /// None when any text was typed around the references or one names no Service.
+    pub(crate) fn parse(typed: &str) -> Option<Self> {
+        let parsed = parse_variable_template(typed, |name, _| {
+            ServiceName::parse(name).ok().map(|_| name.to_owned())
+        });
+        let only = !parsed.parts.is_empty()
+            && parsed
+                .parts
+                .iter()
+                .all(|part| matches!(part, ValuePart::Ref { .. }));
+        only.then(|| Self(typed.to_owned()))
+    }
+}
+
+impl fmt::Display for References {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+/// A choice the command tree declares, compiled or published by Cloud.
+pub(crate) struct Choice<'a>(pub(crate) &'a clap::builder::PossibleValue);
+
+impl fmt::Display for Choice<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.0.get_name())
+    }
+}
+
+/// A `--patch` whose every value validated as its Setting's type, as JSON again.
+pub(crate) struct PlainPatch(pub(crate) serde_json::Map<String, serde_json::Value>);
+
+impl fmt::Display for PlainPatch {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        serde_json::Value::Object(self.0.clone()).fmt(formatter)
+    }
+}
+
+macro_rules! public {
+    ($($kind:ty),+ $(,)?) => {
+        $(
+            impl sealed::Sealed for $kind {}
+            impl Public for $kind {}
+        )+
+    };
+}
+
+public!(
+    Choice<'_>,
+    Label,
+    Minted,
+    ImageReference,
+    ExistingPath,
+    ConfigPath,
+    NameGlob,
+    References,
+    u16,
+    u32,
+    u64,
+    usize,
+    i64,
+    IpAddr,
+    SocketAddr,
+    ipnet::Ipv4Net,
+    ServiceName,
+    ClusterName,
+    ConfigName,
+    ConfigFileName,
+    DomainPrefix,
+    IngressHost,
+    MachineId,
+    MachineLabelKey,
+    Namespace,
+    MachineRelease,
+    StorageChoice,
+    StoragePreparation,
+    BranchName,
+    EnvironmentName,
+    ProjectName,
+    RegionName,
+    RepositoryName,
+    ReviewVersion,
+    SyncId,
+    VolumeName,
+    SettingPath,
+    PlainValue,
+    PlainPatch,
+);
 
 #[cfg(test)]
 mod tests {
-    use super::Shown;
+    use super::{References, Shown};
 
-    /// A URL keeps its scheme, host and port alone, wherever a secret hides in the rest.
+    /// A URL shows whole only when it is where it points and nothing else; otherwise an
+    /// error names each part withheld, and a command has none to run.
     #[test]
-    fn a_url_shows_its_scheme_host_and_port_and_nothing_else_typed() {
-        let schemes = &["https", "ssh"];
-        for (typed, shown) in [
-            ("https://cloud.example:8443", "https://cloud.example:8443"),
-            ("cloud.example", "cloud.example"),
-            ("[::1]:22", "[::1]:22"),
-            // A password that holds `://`.
-            ("ssh://root:x://EXAMPLE@203.0.113.7", "ssh://HOST"),
+    fn a_url_shows_whole_only_with_nothing_in_it_but_where_it_points() {
+        for (typed, whole, redacted) in [
             (
-                "ssh://root:EXAMPLE@203.0.113.7:22",
-                "ssh://USER:PASSWORD@203.0.113.7:22",
+                "https://cloud.example:8443",
+                Some("https://cloud.example:8443"),
+                "https://cloud.example:8443",
             ),
-            // A token in the path, the query or the fragment.
             (
-                "https://cloud.example/EXAMPLE?t=EXAMPLE#EXAMPLE",
+                "https://cloud.example/",
+                Some("https://cloud.example"),
                 "https://cloud.example",
             ),
-            // A token as the user.
+            (
+                "http://[::1]:3000",
+                Some("http://[::1]:3000"),
+                "http://[::1]:3000",
+            ),
+            // A path a Cloud is served under: where the retry would point is elsewhere.
+            (
+                "https://example.test/ployz",
+                None,
+                "https://example.test/PATH",
+            ),
+            (
+                "https://EXAMPLE:EXAMPLE@cloud.example:8443/EXAMPLE?t=EXAMPLE#EXAMPLE",
+                None,
+                "https://USER:PASSWORD@cloud.example:8443/PATH?QUERY#FRAGMENT",
+            ),
             (
                 "https://EXAMPLE@cloud.example",
+                None,
                 "https://USER@cloud.example",
             ),
-            // A URL in the query, with a user of its own.
             (
                 "https://cloud.example/?next=https://EXAMPLE@x.example/",
-                "https://HOST",
+                None,
+                "https://HOST?QUERY",
             ),
-            // A password that holds a `/`, so its `@` sits past the authority.
-            ("root:EXAMPLE/EXAMPLE@203.0.113.7", "HOST"),
-            // A scheme of its own, a host and a port that aren't one.
-            ("EXAMPLE://cloud.example", "SCHEME://cloud.example"),
-            ("ssh://EXAMPLE EXAMPLE", "ssh://HOST"),
-            ("ssh://203.0.113.7:EXAMPLE", "ssh://203.0.113.7:PORT"),
+            // A password with a `/` and digits before it, which parse as a port.
+            (
+                "https://EXAMPLE:1234/EXAMPLE@cloud.example",
+                None,
+                "https://HOST/PATH",
+            ),
+            ("ftp://cloud.example", None, "SCHEME://cloud.example"),
         ] {
-            assert_eq!(Shown::url(typed, schemes).as_str(), shown, "{typed}");
+            let url = url::Url::parse(typed).unwrap();
+            let schemes = &["http", "https"];
+            let shown = Shown::url(&url, schemes);
+            assert_eq!(shown.as_ref().map(Shown::as_str), whole, "{typed}");
+            assert_eq!(
+                Shown::url_redacted(&url, schemes).as_str(),
+                redacted,
+                "{typed}"
+            );
         }
     }
 
@@ -205,7 +412,7 @@ mod tests {
             ("EXAMPLE", false),
             ("", false),
         ] {
-            assert_eq!(Shown::references(typed).is_some(), shown, "{typed}");
+            assert_eq!(References::parse(typed).is_some(), shown, "{typed}");
         }
     }
 }

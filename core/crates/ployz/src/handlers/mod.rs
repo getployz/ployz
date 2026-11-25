@@ -726,11 +726,15 @@ mod tests {
 
     #[test]
     fn setup_recovery_preserves_config_and_context_and_parses_as_a_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("a config.yaml");
+        std::fs::write(&config, "").unwrap();
+        let config = config.to_str().unwrap();
         let matches = command()
             .try_get_matches_from([
                 "ployz",
                 "--ployz-config",
-                "/tmp/a config.yaml",
+                config,
                 "server",
                 "add",
                 "--standalone",
@@ -754,7 +758,7 @@ mod tests {
         );
         assert_eq!(
             leaf.get_one::<String>("ployz-config").map(String::as_str),
-            Some("/tmp/a config.yaml")
+            Some(config)
         );
     }
 
@@ -834,11 +838,15 @@ mod tests {
         use ployz_core::{MachineId, QualifiedService};
         let failed = MachineId::random();
         let original = MachineId::random();
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("a config.yaml");
+        std::fs::write(&config, "").unwrap();
+        let config = config.to_str().unwrap();
         let matches = command()
             .try_get_matches_from([
                 "ployz",
                 "--ployz-config",
-                "/tmp/a config.yaml",
+                config,
                 "--connect",
                 "ssh://root@entry",
                 "server",
@@ -894,9 +902,9 @@ mod tests {
             let leaf = leaf_matches(&parsed);
             assert_eq!(
                 leaf.get_one::<String>("ployz-config").map(String::as_str),
-                Some("/tmp/a config.yaml")
+                Some(config)
             );
-            assert_eq!(crate::cli::connection(leaf), Some("ssh://USER@entry"));
+            assert_eq!(crate::cli::connection(leaf), Some("CONNECT"));
             assert_eq!(
                 leaf.get_one::<String>("context").map(String::as_str),
                 Some("staging")

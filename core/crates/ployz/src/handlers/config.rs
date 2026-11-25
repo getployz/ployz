@@ -24,7 +24,7 @@ use super::input::{self, InputError, Source};
 use super::shared::staged::{StagedReport, Then};
 use super::store::{Store, environment, scoped, store, with_refresh_hint};
 use super::{Error, leaf_matches};
-use crate::cli::{Shown, Withheld, positional, switch, value, withheld};
+use crate::cli::{References, Shown, Withheld, positional, switch, value, withheld};
 
 mod typed_address;
 
@@ -78,69 +78,45 @@ pub(super) fn set_command(command: Command) -> Command {
         .arg(expect())
 }
 
-/// A `PATH=VALUE` as output repeats it: the path when it parses, and the value only when
-/// it is Ployz references alone or the Setting's kind is never a secret, else `VALUE`.
-fn shown_assignment(typed: &str) -> Shown {
+/// A `PATH=VALUE` as output repeats it: the path when it parses, and the value when it is
+/// Ployz references alone or validates as the Setting's type and that type holds no
+/// secret, else `VALUE`. None when the path doesn't parse.
+fn shown_assignment(typed: &str) -> Option<Shown> {
     let (path, value) = match typed.split_once('=') {
         Some((path, value)) => (path, Some(value)),
         None => (typed, None),
     };
-    let Ok(path) = SettingPath::parse(path) else {
-        return Shown::placeholder("PATH=VALUE");
-    };
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "a path that parsed names a Setting"
-    )]
-    let named = Shown::verbatim(&path.to_string());
+    let path = SettingPath::parse(path).ok()?;
+    let named = Shown::of(&path);
     let Some(value) = value else {
-        return named;
+        return Some(named);
     };
-    let value = match Shown::references(value) {
-        Some(references) => references,
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "the Setting holds a number, a choice, a name or a path"
-        )]
-        None if path.shows_its_value() => Shown::verbatim(value),
-        None => Shown::placeholder("VALUE"),
-    };
-    Shown::assignment(named, value)
+    let value = References::parse(value)
+        .map(|references| Shown::of(&references))
+        .or_else(|| {
+            path.plain_value(&Value::String(value.to_owned()))
+                .map(|plain| Shown::of(&plain))
+        })
+        .unwrap_or_else(|| Shown::placeholder("VALUE"));
+    Some(Shown::joined(named, "=", value))
 }
 
-/// A `--patch` as output repeats it: `-` for stdin, whole when each Setting it sets holds
-/// a number, a choice, a name or a path, as one, else `JSON`.
-fn shown_patch(typed: &str) -> Shown {
+/// A `--patch` as output repeats it: `-` for stdin, and the object again when each value
+/// validates as its Setting's type and that type holds no secret. None otherwise.
+fn shown_patch(typed: &str) -> Option<Shown> {
     if typed == "-" {
-        return Shown::placeholder("-");
+        return Some(Shown::placeholder("-"));
     }
-    let plain = |value: &Value| match value {
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => true,
-        Value::Array(_) | Value::Object(_) => false,
-    };
-    let shows =
-        serde_json::from_str::<serde_json::Map<String, Value>>(typed).is_ok_and(|settings| {
-            settings.iter().all(|(setting, value)| {
-                let shown = |path: SettingPath| path.shows_its_value();
-                SettingPath::parse(&format!("web.{setting}")).is_ok_and(shown)
-                    && match value {
-                        Value::Array(items) => items.iter().all(plain),
-                        Value::Null
-                        | Value::Bool(_)
-                        | Value::Number(_)
-                        | Value::String(_)
-                        | Value::Object(_) => plain(value),
-                    }
-            })
-        });
-    match shows {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "each Setting it sets holds a number, a choice, a name or a path"
-        )]
-        true => Shown::verbatim(typed),
-        false => Shown::placeholder("JSON"),
-    }
+    let settings = serde_json::from_str::<serde_json::Map<String, Value>>(typed).ok()?;
+    let plain = settings
+        .into_iter()
+        .map(|(setting, value)| {
+            let path = SettingPath::parse(&format!("web.{setting}")).ok()?;
+            let plain = path.plain_value(&value)?;
+            Some((setting, plain.as_json().clone()))
+        })
+        .collect::<Option<serde_json::Map<_, _>>>()?;
+    Some(Shown::of(&crate::cli::shown::PlainPatch(plain)))
 }
 
 pub(super) fn unset_command(command: Command) -> Command {
@@ -756,11 +732,15 @@ mod tests {
     /// variable's value, which may be a secret.
     #[test]
     fn a_set_retry_keeps_its_flags_and_withholds_a_variables_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("a b.yaml");
+        std::fs::write(&config, "").unwrap();
+        let config = config.to_str().unwrap();
         let root = crate::cli::command()
             .try_get_matches_from([
                 "ployz",
                 "--ployz-config",
-                "/tmp/a b.yaml",
+                config,
                 "set",
                 "web.env.TOKEN=hunter2",
                 "web.replicas=3",
@@ -777,8 +757,11 @@ mod tests {
                 .get("retry")
                 .and_then(serde_json::Value::as_str),
             Some(
-                "ployz --ployz-config '/tmp/a b.yaml' set 'web.env.TOKEN=VALUE' 'web.replicas=3' \
-                 --env staging --expect 7"
+                format!(
+                    "ployz --ployz-config '{config}' set 'web.env.TOKEN=VALUE' 'web.replicas=3' \
+                     --env staging --expect 7"
+                )
+                .as_str()
             )
         );
     }

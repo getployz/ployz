@@ -14,7 +14,7 @@ pub use secret::{SecretCell, SecretInput};
 pub(crate) use path::{
     ConfigField, NodeField, Target, config_name, domains_are_read_only, name_a_setting,
 };
-pub use path::{EnvironmentSetting, NodeName, SettingPath};
+pub use path::{EnvironmentSetting, NodeName, PlainValue, SettingPath};
 pub use region::refuse_unknown as refuse_unknown_region;
 
 pub(crate) mod size;
@@ -710,6 +710,46 @@ impl ServiceSetting {
             ));
         }
         Ok(value)
+    }
+
+    /// Whether `value` validates as this Setting's type, as [`Self::set`] checks it, and that
+    /// type is a number, a choice, a Service's name or an image: none that holds a secret.
+    pub(crate) fn plain(self, value: Value) -> bool {
+        let checked = match self {
+            Self::MemLimit => self.mem_limit(value),
+            Self::CpuLimit | Self::MaxRetries => Ok(self.coerce_number(value)),
+            Self::Replicas => Ok(self.coerce(value)),
+            Self::PrivateDns | Self::RestartPolicy | Self::UpdateOrder | Self::Image => Ok(value),
+            Self::Healthcheck
+            | Self::PreDeployCommand
+            | Self::RegistryCredential
+            | Self::StartCommand
+            | Self::Template
+            | Self::Git(_)
+            | Self::Policy(_) => return false,
+        };
+        let Ok(value) = checked else {
+            return false;
+        };
+        let field = if self == Self::Image {
+            "imageReference"
+        } else {
+            self.name()
+        };
+        let of_its_kind = match (self, &value) {
+            (Self::PrivateDns, Value::String(name)) => ServiceName::parse(name.as_str()).is_ok(),
+            // A count for each region: the regions by name, each count a number.
+            (Self::Replicas, Value::Object(counts)) => counts.iter().all(|(region, count)| {
+                crate::region::RegionName::parse(region.as_str()).is_ok() && count.is_number()
+            }),
+            (Self::RestartPolicy | Self::UpdateOrder | Self::Image, Value::String(_))
+            | (
+                Self::CpuLimit | Self::MaxRetries | Self::MemLimit | Self::Replicas,
+                Value::Number(_),
+            ) => true,
+            _ => false,
+        };
+        of_its_kind && self.validated(field, value).is_ok()
     }
 
     /// Return this Setting to its [`default`](Self::default).

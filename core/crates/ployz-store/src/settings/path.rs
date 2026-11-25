@@ -10,10 +10,34 @@ use ts_rs::TS;
 use super::ServiceSetting;
 use crate::error;
 use crate::followup::FollowUp;
-use crate::git::GitSetting;
 use crate::id::{ConfigRef, VolumeName};
 use crate::policy::PolicySetting;
 use crate::variables::VariableKey;
+
+/// A value a Setting's type validated, which [`SettingPath::plain_value`] alone makes:
+/// text as it was typed, or the JSON it was given.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlainValue(serde_json::Value);
+
+impl PlainValue {
+    #[must_use]
+    pub fn as_json(&self) -> &serde_json::Value {
+        &self.0
+    }
+}
+
+impl fmt::Display for PlainValue {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.0 {
+            serde_json::Value::String(text) => formatter.write_str(text),
+            value @ (serde_json::Value::Null
+            | serde_json::Value::Bool(_)
+            | serde_json::Value::Number(_)
+            | serde_json::Value::Array(_)
+            | serde_json::Value::Object(_)) => value.fmt(formatter),
+        }
+    }
+}
 
 /// A node of an Environment: `SERVICE` for a Service, `volumes.VOLUME` for a
 /// Volume, `configs.CONFIG` for a Config by name or `configs.@UUID` by identity.
@@ -377,56 +401,18 @@ impl SettingPath {
         }
     }
 
-    /// Whether a value set here may show again in a hint: a number, a choice, a name or a
-    /// path. A variable, a command, a credential, a repository URL, a healthcheck and a
-    /// Config file are text that may hold a secret, and never show.
+    /// `value`, set here, as output may repeat it: when this Setting's type is a number, a
+    /// switch, a choice, a name or an image, and `value` validates as that type the way
+    /// `set` checks it. None for any other Setting, whose text may hold a secret, and for a
+    /// value its type refuses.
     #[must_use]
-    pub const fn shows_its_value(&self) -> bool {
-        match &self.0 {
-            Addressed::Service(_, Some(Target::Setting(setting))) => match setting {
-                ServiceSetting::CpuLimit
-                | ServiceSetting::Image
-                | ServiceSetting::MaxRetries
-                | ServiceSetting::MemLimit
-                | ServiceSetting::PrivateDns
-                | ServiceSetting::Replicas
-                | ServiceSetting::RestartPolicy
-                | ServiceSetting::Template
-                | ServiceSetting::UpdateOrder
-                | ServiceSetting::Git(
-                    GitSetting::Branch
-                    | GitSetting::RootDir
-                    | GitSetting::BuildMethod
-                    | GitSetting::DockerfilePath,
-                )
-                | ServiceSetting::Policy(_) => true,
-                ServiceSetting::Healthcheck
-                | ServiceSetting::PreDeployCommand
-                | ServiceSetting::RegistryCredential
-                | ServiceSetting::StartCommand
-                | ServiceSetting::Git(GitSetting::Repository | GitSetting::BuildCommand) => false,
-            },
-            Addressed::Service(
-                _,
-                Some(Target::Exported(_) | Target::Mount(_) | Target::ConfigMount(_)),
-            )
-            | Addressed::Volume(_, Some(_))
-            | Addressed::Config(_, Some(ConfigField::Name))
-            | Addressed::Environment(EnvironmentSetting::Region) => true,
-            Addressed::Service(
-                _,
-                None
-                | Some(
-                    Target::Source
-                    | Target::Variable(_)
-                    | Target::Description(_)
-                    | Target::Domains
-                    | Target::Setup,
-                ),
-            )
-            | Addressed::Volume(_, None)
-            | Addressed::Config(_, None | Some(ConfigField::File(_))) => false,
-        }
+    pub fn plain_value(&self, value: &serde_json::Value) -> Option<PlainValue> {
+        let Addressed::Service(_, Some(Target::Setting(setting))) = &self.0 else {
+            return None;
+        };
+        setting
+            .plain(value.clone())
+            .then(|| PlainValue(value.clone()))
     }
 
     /// Whether it is a Service's Preferred Builder, `SERVICE.preferredBuilder`.

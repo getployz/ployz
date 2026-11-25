@@ -219,5 +219,5 @@ fn unnamed_founding(root: &ArgMatches) -> Error {
         "A new Cluster needs a name. Pass --cluster-name.",
         json!({ "flag": "--cluster-name" }),
     )
-    .hint(crate::cli::Rerun::again(root).set("cluster-name", "<name>"))
+    .hint(crate::cli::Rerun::again(root).placeholder("cluster-name", "<name>"))
 }

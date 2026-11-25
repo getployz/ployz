@@ -154,7 +154,7 @@ pub(super) fn select(matches: &ArgMatches) -> Result<(), Error> {
                 current.unwrap_or(0),
                 || {
                     Error::usage("Choosing a context needs a terminal; name one instead.")
-                        .hint(Rerun::again(matches).set("context-name", "CONTEXT"))
+                        .hint(Rerun::again(matches).placeholder("context-name", "CONTEXT"))
                         .hint(Hint::valid(names.iter().map(|name| name.as_str())))
                 },
                 "Cancelled. The current context is unchanged.",

@@ -74,35 +74,101 @@ fn an_agent_is_refused_until_it_says_why() {
     );
 }
 
-/// The command a refusal prints names exec's command line, which may carry a secret in
-/// any word, instead of repeating it, in the terminal and under `--json`.
+/// The command a refusal prints shows a typed value only once it parsed as its argument's
+/// kind. Any value that didn't, or whose kind may hold a secret (a command line, a command a
+/// Setting runs, a Setting value its type refuses, a repository URL, a Cloud URL with
+/// anything but where it points), shows as a placeholder, and no part of it reaches stdout,
+/// stderr or `--json`.
 #[test]
 #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
-fn a_refusal_names_a_trailing_command_without_repeating_it() {
+fn a_refusal_repeats_no_value_that_did_not_parse_as_its_kind() {
     let home = tempfile::tempdir().unwrap();
-    let command = ["exec", "web", "--", "env", "AUTH_TOKEN=EXAMPLE", "true"];
-    let refused = ployz(home.path(), "some-agent", &command);
-    let stderr = text(&refused.stderr);
-    let line = stderr
-        .lines()
-        .find_map(|line| line.trim().strip_prefix("next: "))
-        .unwrap_or_else(|| panic!("no next line in {stderr}"));
-    assert_eq!(
-        line,
-        "ployz --why '<the goal this command serves>' exec web -- COMMAND"
-    );
-    assert!(!stderr.contains("EXAMPLE"), "{stderr}");
-    let json = ployz(
-        home.path(),
-        "some-agent",
-        &[&["--json"][..], &command].concat(),
-    );
-    let error: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
-    assert_eq!(
-        error["error"]["details"]["next"],
-        "ployz --json --why '<the goal this command serves>' exec web -- COMMAND"
-    );
-    assert!(!text(&json.stdout).contains("EXAMPLE"), "{error}");
+    for (command, next) in [
+        (
+            &["exec", "web", "--", "env", "AUTH_TOKEN=SENTINEL", "true"][..],
+            "exec web -- COMMAND",
+        ),
+        (
+            &[
+                "env",
+                "branch",
+                "fix",
+                "--setup",
+                "web=curl -H 'Bearer SENTINEL'",
+            ],
+            "env branch fix --setup 'SERVICE=COMMAND'",
+        ),
+        (
+            &["set", "web.startCommand=serve --token SENTINEL"],
+            "set 'web.startCommand=VALUE'",
+        ),
+        (
+            &["set", "web.preDeployCommand=migrate --password SENTINEL"],
+            "set 'web.preDeployCommand=VALUE'",
+        ),
+        (&["set", "setup.web=seed SENTINEL"], "set 'setup.web=VALUE'"),
+        // A number Setting given text: its value didn't validate as its type.
+        (
+            &["set", "web.replicas=SENTINEL"],
+            "set 'web.replicas=VALUE'",
+        ),
+        (
+            &["set", "web", "--patch", r#"{"replicas":"SENTINEL"}"#],
+            "set web --patch JSON",
+        ),
+        // A repository URL with a token, refused before the repository name parses.
+        (
+            &[
+                "service",
+                "add",
+                "web",
+                "--repo",
+                "https://x-access-token:SENTINEL@github.com/acme/web",
+            ],
+            "service add web --repo 'OWNER/REPO[@BRANCH]'",
+        ),
+        (
+            &[
+                "login",
+                "--cloud-url",
+                "https://SENTINEL:SENTINEL@cloud.example:8443/SENTINEL?t=SENTINEL#SENTINEL",
+            ],
+            "login --cloud-url CLOUD_URL",
+        ),
+        // A Cloud served under a path: the host alone would reach another endpoint.
+        (
+            &["login", "--cloud-url", "https://example.test/SENTINEL"],
+            "login --cloud-url CLOUD_URL",
+        ),
+    ] {
+        let refused = ployz(home.path(), "some-agent", command);
+        let stderr = text(&refused.stderr);
+        let line = stderr
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("next: "))
+            .unwrap_or_else(|| panic!("{command:?}: no next line in {stderr}"));
+        assert_eq!(
+            line,
+            format!("ployz --why '<the goal this command serves>' {next}"),
+            "{command:?}"
+        );
+        let said = format!("{stderr}{}", text(&refused.stdout));
+        assert!(!said.contains("SENTINEL"), "{command:?}: {said}");
+
+        let json = ployz(
+            home.path(),
+            "some-agent",
+            &[&["--json"][..], command].concat(),
+        );
+        let error: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+        assert_eq!(
+            error["error"]["details"]["next"],
+            format!("ployz --json --why '<the goal this command serves>' {next}"),
+            "{command:?}"
+        );
+        let said = format!("{}{}", text(&json.stdout), text(&json.stderr));
+        assert!(!said.contains("SENTINEL"), "{command:?}: {said}");
+    }
 
     let ran = ployz(
         home.path(),

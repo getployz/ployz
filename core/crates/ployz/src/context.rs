@@ -16,6 +16,7 @@ use ployz_core::{
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use thiserror::Error;
 
+use crate::cli::ExistingPath;
 use crate::cli::Shown;
 use crate::coded::Coded;
 
@@ -521,17 +522,27 @@ enum TransportFile {
 }
 
 impl Connection {
-    /// As a message names it: an SSH destination without its user, which may be a token.
+    /// As a message names it: an SSH destination as `ssh://USER@HOST`, without its user,
+    /// which may be a session token; a Management connection by its Machine ID; a TCP
+    /// address whole; a Unix socket by its path when that path exists here.
     pub(crate) fn shown(&self) -> Shown {
         match &self.transport {
-            Transport::Ssh { .. } => shown(&self.to_string()),
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "a Machine ID, a TCP address or a socket path, none of which is a secret"
-            )]
-            Transport::Management(_) | Transport::Tcp(_) | Transport::Unix(_) => {
-                Shown::verbatim(&self.to_string())
+            Transport::Ssh { .. } => redacted(&self.to_string()),
+            Transport::Management(_) => match &self.machine_id {
+                Some(machine_id) => {
+                    Shown::joined(Shown::placeholder("management"), ":", Shown::of(machine_id))
+                }
+                None => Shown::placeholder("CAPABILITY"),
+            },
+            Transport::Tcp(address) => {
+                Shown::joined(Shown::placeholder("tcp"), "://", Shown::of(address))
             }
+            Transport::Unix(path) => Shown::joined(
+                Shown::placeholder("unix"),
+                "://",
+                ExistingPath::parse(&path.to_string_lossy())
+                    .map_or_else(|| Shown::placeholder("PATH"), |path| Shown::of(&path)),
+            ),
         }
     }
 
@@ -665,20 +676,38 @@ impl fmt::Display for Connection {
     }
 }
 
-/// A connection as typed, the way an error or a hint repeats it: a Management Capability
-/// as `CAPABILITY`, a Unix socket by its path, and any other by its scheme, host and port.
-pub(crate) fn shown(typed: &str) -> Shown {
+/// A connection as typed, as `--connect` shows it again: whole when it parses and every
+/// part of it shows, a TCP address or an existing Unix socket. None for an SSH destination,
+/// whose user may be a session token, so the retry names `CONNECT` instead of reaching
+/// another user.
+pub(crate) fn shown(typed: &str) -> Option<Shown> {
+    match typed.parse::<Connection>().ok()?.transport {
+        Transport::Tcp(address) => Some(Shown::joined(
+            Shown::placeholder("tcp"),
+            "://",
+            Shown::of(&address),
+        )),
+        Transport::Unix(path) => ExistingPath::parse(&path.to_string_lossy())
+            .map(|path| Shown::joined(Shown::placeholder("unix"), "://", Shown::of(&path))),
+        Transport::Ssh { .. } | Transport::Management(_) => None,
+    }
+}
+
+/// A connection as typed, as an error names it: what parses of it as a URL, with its user
+/// info, path, query, fragment and any scheme Ployz doesn't know marked in their place. A
+/// Management Capability, or text that is no URL, as a placeholder.
+pub(crate) fn redacted(typed: &str) -> Shown {
     if typed.starts_with("management:") || is_management_capability(typed) {
         return Shown::placeholder("CAPABILITY");
     }
-    if typed.starts_with("unix://") {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "a Unix socket's path names a file on this host"
-        )]
-        return Shown::verbatim(typed);
-    }
-    Shown::url(typed, &["ssh", "tcp", "ssh+go", "ssh+cli", "http", "https"])
+    let url = match typed.contains("://") {
+        true => url::Url::parse(typed),
+        false => url::Url::parse(&format!("ssh://{typed}")),
+    };
+    url.map_or_else(
+        |_| Shown::placeholder("CONNECTION"),
+        |url| Shown::url_redacted(&url, &["ssh", "tcp", "ssh+go", "ssh+cli"]),
+    )
 }
 
 // Management Capabilities are `ployz1:`-prefixed secrets, not SSH destinations.
@@ -698,16 +727,16 @@ impl FromStr for Connection {
             return address
                 .parse()
                 .map(Self::tcp)
-                .map_err(|_| ConnectionError::TcpAddress(shown(value)));
+                .map_err(|_| ConnectionError::TcpAddress(redacted(value)));
         }
         if let Some(path) = value.strip_prefix("unix://") {
             return Self::unix(path);
         }
         if value.starts_with("ssh+go://") || value.starts_with("ssh+cli://") {
-            return Err(ConnectionError::RemovedScheme(shown(value)));
+            return Err(ConnectionError::RemovedScheme(redacted(value)));
         }
         if value.contains("://") && !value.starts_with("ssh://") {
-            return Err(ConnectionError::UnsupportedScheme(shown(value)));
+            return Err(ConnectionError::UnsupportedScheme(redacted(value)));
         }
         SshDestination::parse(value.strip_prefix("ssh://").unwrap_or(value)).map(Self::ssh)
     }
@@ -781,19 +810,19 @@ impl SshDestination {
             return Err(ConnectionError::ManagementConfigOnly);
         }
         let Some((user, destination)) = value.split_once('@') else {
-            return Err(ConnectionError::SshDestination(shown(&value)));
+            return Err(ConnectionError::SshDestination(redacted(&value)));
         };
         if !valid_ssh_user(user)
             || destination.is_empty()
             || destination.contains('@')
             || value.chars().any(char::is_whitespace)
         {
-            return Err(ConnectionError::SshDestination(shown(&value)));
+            return Err(ConnectionError::SshDestination(redacted(&value)));
         }
         let (host, port) = split_ssh_port(destination)
-            .ok_or_else(|| ConnectionError::SshDestination(shown(&value)))?;
+            .ok_or_else(|| ConnectionError::SshDestination(redacted(&value)))?;
         if !valid_ssh_host(host) {
-            return Err(ConnectionError::SshDestination(shown(&value)));
+            return Err(ConnectionError::SshDestination(redacted(&value)));
         }
         let target = format!("{user}@{host}");
         let copy_target = if host.contains(':') {

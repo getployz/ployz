@@ -65,7 +65,6 @@ pub(super) fn login(root: &ArgMatches) -> Result<(), Error> {
         .or(stored)
         .unwrap_or_else(|| DEFAULT_CLOUD.to_owned());
     if let Err(NotWebUrl { given }) = CloudOrigin::checked(&cloud) {
-        let given = crate::cli::Shown::url(&given, &["http", "https"]);
         let named = match matches.value_source("cloud-url") {
             Some(clap::parser::ValueSource::EnvVariable) => env::CLOUD_URL,
             Some(_) => "--cloud-url",

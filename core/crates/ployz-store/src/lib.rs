@@ -124,7 +124,9 @@ pub use review::{
 pub use rules::{BrokenReference, Missing, ReferenceAt};
 pub use scope::{EnvironmentRef, EnvironmentSummary, lists_projects};
 pub use sealing::SealingKey;
-pub use settings::{Apply, NodeName, SecretCell, SecretInput, SettingPath, refuse_unknown_region};
+pub use settings::{
+    Apply, NodeName, PlainValue, SecretCell, SecretInput, SettingPath, refuse_unknown_region,
+};
 pub use storage::Converted;
 pub use teardown::{
     AppliedVolume, EnvironmentRemoval, EnvironmentsQuery, EnvironmentsView, OrganizationRemoved,

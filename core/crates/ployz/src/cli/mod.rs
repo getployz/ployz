@@ -4,12 +4,12 @@ use ployz_store::ReviewVersion;
 use crate::{env, handlers, operator::input::TIME_FORMATS};
 
 mod rerun;
-mod shown;
+pub(crate) mod shown;
 
 #[cfg(test)]
 pub(crate) use rerun::retry_hint;
 pub(crate) use rerun::{Rerun, Withheld, withheld};
-pub(crate) use shown::Shown;
+pub(crate) use shown::{ExistingPath, References, Shown};
 
 #[must_use]
 /// The whole tree: every compiled command plus the ones the signed-in Cloud publishes,
@@ -94,7 +94,11 @@ pub(crate) fn cloud_url() -> Arg {
     value("cloud-url", None)
         .env(env::CLOUD_URL)
         .hide_env_values(true)
-        .value_parser(withheld(|typed| Shown::url(typed, &["http", "https"])))
+        .value_parser(withheld(|typed| {
+            crate::cloud::origin::CloudOrigin::checked(typed)
+                .ok()?
+                .whole()
+        }))
 }
 
 /// The Cloud `--cloud-url` or `PLOYZ_CLOUD_URL` names, as typed.
@@ -475,30 +479,31 @@ mod tests {
         (root, line)
     }
 
-    /// A retry shows where a command runs without what may reach it with a secret: a
-    /// Management Capability, and a destination's user info, path and query. The command
-    /// still reads it as typed.
+    /// A retry shows a connection only when it reaches the same place as typed and every
+    /// part of it shows: a TCP address, or a Unix socket that exists. Anything else, an SSH
+    /// user that may be a session token among it, makes the whole of it `CONNECT`, which
+    /// doesn't run. The command still reads it as typed.
     #[test]
     fn a_retry_never_repeats_a_connections_secret() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("ployz.sock");
+        std::fs::write(&socket, "").unwrap();
+        let socket = format!("unix://{}", socket.display());
         for (typed, shown) in [
-            ("ployz1:SENTINEL-4564", "CAPABILITY"),
-            ("management:SENTINEL-4564", "CAPABILITY"),
-            (
-                "ssh://root:SENTINEL-4564@203.0.113.7:22",
-                "ssh://USER:PASSWORD@203.0.113.7:22",
-            ),
-            (
-                "root:SENTINEL-4564@203.0.113.7",
-                "USER:PASSWORD@203.0.113.7",
-            ),
-            ("SENTINEL-4564@203.0.113.7", "USER@203.0.113.7"),
-            ("ssh://SENTINEL-4564@203.0.113.7", "ssh://USER@203.0.113.7"),
+            ("ployz1:SENTINEL-4564", "CONNECT"),
+            ("management:SENTINEL-4564", "CONNECT"),
+            ("ssh://root:SENTINEL-4564@203.0.113.7:22", "CONNECT"),
+            ("root:SENTINEL-4564@203.0.113.7", "CONNECT"),
+            ("SENTINEL-4564@203.0.113.7", "CONNECT"),
+            ("ssh://SENTINEL-4564@203.0.113.7", "CONNECT"),
             (
                 "tcp://203.0.113.7:7/SENTINEL-4564?t=SENTINEL-4564#SENTINEL-4564",
-                "tcp://203.0.113.7:7",
+                "CONNECT",
             ),
-            ("SENTINEL-4564://203.0.113.7", "SCHEME://203.0.113.7"),
-            ("unix:///run/ployz.sock", "unix:///run/ployz.sock"),
+            ("SENTINEL-4564://203.0.113.7", "CONNECT"),
+            ("unix:///SENTINEL-4564", "CONNECT"),
+            ("tcp://203.0.113.7:7", "tcp://203.0.113.7:7"),
+            (&socket, &socket),
         ] {
             let (root, line) = again(&["--connect", typed, "status"]);
             assert_eq!(line, format!("ployz --connect {shown} status"), "{typed}");

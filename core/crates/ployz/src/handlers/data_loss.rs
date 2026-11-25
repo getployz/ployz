@@ -410,7 +410,7 @@ mod tests {
         let labels = VolumeLabels::new();
         for named in [vec![], vec!["data".into()]] {
             let error = Request {
-                retry: removing(&["--context", "prod west"]),
+                retry: removing(&["--context", "prod-west"]),
                 ..request(&observed, &labels, &named, Some("worker"))
             }
             .check()
@@ -429,7 +429,7 @@ mod tests {
             assert!(
                 shell_words::split(&retry)
                     .unwrap()
-                    .contains(&"prod west".into())
+                    .contains(&"prod-west".into())
             );
         }
         let named = ["data".into(), "logs".into(), "data".into()];
@@ -502,6 +502,13 @@ mod tests {
 
     #[test]
     fn retry_preserves_effective_selection_and_quotes_arguments() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("socket name");
+        let config = dir.path().join("config's file");
+        std::fs::write(&socket, "").unwrap();
+        std::fs::write(&config, "").unwrap();
+        let connect = format!("unix://{}", socket.display());
+        let config = config.to_str().unwrap();
         let root = crate::cli::command()
             .try_get_matches_from([
                 "ployz",
@@ -509,9 +516,9 @@ mod tests {
                 "forget",
                 "edge",
                 "--connect",
-                "unix:///tmp/socket name",
+                &connect,
                 "--ployz-config",
-                "/tmp/config's file",
+                config,
             ])
             .unwrap();
         let line = retry_args(&root, &ConnectionSource::Direct).line();
@@ -521,13 +528,7 @@ mod tests {
         let leaf = leaf_matches(&parsed);
         assert_eq!(crate::cli::command_path(&parsed), "server forget", "{line}");
         assert_eq!(string_values(leaf, "server"), ["edge"]);
-        assert_eq!(
-            crate::cli::connection(leaf).unwrap(),
-            "unix:///tmp/socket name"
-        );
-        assert_eq!(
-            leaf.get_one::<String>("ployz-config").unwrap(),
-            "/tmp/config's file"
-        );
+        assert_eq!(crate::cli::connection(leaf).unwrap(), connect);
+        assert_eq!(leaf.get_one::<String>("ployz-config").unwrap(), config);
     }
 }

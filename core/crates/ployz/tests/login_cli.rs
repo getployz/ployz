@@ -612,6 +612,51 @@ fn org_leave_without_yes_and_no_terminal_refuses_before_cloud_hears_of_it() {
     );
 }
 
+/// A login that fails names the Cloud by its scheme, host and port, with each other part
+/// it was given marked in place: no user info, path, query or fragment reaches stdout,
+/// stderr or `--json`, whether this device is signed in to another Cloud or the one named
+/// doesn't answer.
+#[test]
+fn a_failed_login_names_the_cloud_without_its_secret() {
+    let (_signed_in, elsewhere) = signed_in(Arc::default());
+    let fresh = tempfile::tempdir().unwrap();
+    let fresh = fresh.path().join("config.yaml");
+    for (config, cloud, named) in [
+        (
+            &elsewhere,
+            "https://SENTINEL:SENTINEL@other.example:8443/SENTINEL?t=SENTINEL#SENTINEL",
+            "https://USER:PASSWORD@other.example:8443/PATH?QUERY#FRAGMENT",
+        ),
+        (
+            &elsewhere,
+            "https://SENTINEL@other.example/?next=SENTINEL",
+            "https://USER@other.example?QUERY",
+        ),
+        (
+            &fresh,
+            "http://SENTINEL:SENTINEL@127.0.0.1:9/SENTINEL?token=SENTINEL",
+            "http://USER:PASSWORD@127.0.0.1:9/PATH?QUERY",
+        ),
+    ] {
+        let human = ployz(config, &["login", "--cloud-url", cloud]);
+        let json = ployz(config, &["login", "--json", "--cloud-url", cloud]);
+        for output in [&human, &json] {
+            assert_eq!(output.status.code(), Some(1), "{cloud}");
+            let said = format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(said.contains(named), "{cloud}: {said}");
+            assert!(!said.contains("SENTINEL"), "{cloud}: {said}");
+        }
+        assert!(
+            json_of(&json).pointer("/error/message").is_some(),
+            "{cloud}"
+        );
+    }
+}
+
 /// `--help` names `PLOYZ_CLOUD_URL` without its value, which may carry a token in its user
 /// info, path or query.
 #[test]

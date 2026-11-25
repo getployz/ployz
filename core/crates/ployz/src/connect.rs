@@ -429,7 +429,7 @@ async fn connect_ssh(
             None => detail,
         };
         return Err(ConnectError::SshProbe {
-            target: crate::context::shown(destination.target()),
+            target: crate::context::redacted(destination.target()),
             status: output.status,
             failure,
             detail,

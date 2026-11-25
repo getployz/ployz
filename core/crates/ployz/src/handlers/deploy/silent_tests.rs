@@ -607,11 +607,15 @@ fn a_staged_region_move_refuses_and_names_the_service() {
 /// and adds the image the refusal names.
 #[test]
 fn a_named_image_retry_keeps_the_config_the_environment_and_yes() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("a b.yaml");
+    std::fs::write(&config, "").unwrap();
+    let config = config.to_str().unwrap();
     let root = crate::cli::command()
         .try_get_matches_from([
             "ployz",
             "--ployz-config",
-            "/tmp/a b.yaml",
+            config,
             "deploy",
             "web",
             "--env",
@@ -635,8 +639,11 @@ fn a_named_image_retry_keeps_the_config_the_environment_and_yes() {
             .get("retry")
             .and_then(serde_json::Value::as_str),
         Some(
-            "ployz --ployz-config '/tmp/a b.yaml' deploy web --env staging --yes \
-             --image 'web=nginx:2'"
+            format!(
+                "ployz --ployz-config '{config}' deploy web --env staging --yes \
+                 --image 'web=nginx:2'"
+            )
+            .as_str()
         )
     );
 }

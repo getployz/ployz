@@ -477,16 +477,16 @@ mod tests {
             .unwrap_or_else(|error| panic!("{argv:?}: {error}"))
     }
 
-    /// An approval's retry is the command again with its yes: every argument it names
-    /// something by, and the flags of the run, as typed; free text, such as a reason, as
-    /// its placeholder.
+    /// An approval's retry is the command again with its yes: the flags of the run, each
+    /// choice, and each value that parses as its kind, as typed; anything else, such as a
+    /// member or a reason, as its placeholder.
     #[test]
-    fn an_approval_retry_keeps_what_names_and_withholds_free_text() {
+    fn an_approval_retry_keeps_what_parses_and_withholds_free_text() {
         let published = gated();
         for (argv, line) in [
             (
                 &["ployz", "org", "member", "role", "Linus Torvalds", "admin"][..],
-                "ployz org member role 'Linus Torvalds' admin --approval a7e572f3",
+                "ployz org member role MEMBER admin --approval a7e572f3",
             ),
             (
                 &[
@@ -500,22 +500,22 @@ mod tests {
                     "--role",
                     "admin",
                 ],
-                "ployz --ployz-config '/tmp/ployz config.toml' org member invite \
-                 linus@example.com --role admin --approval a7e572f3",
+                "ployz --ployz-config PLOYZ_CONFIG org member invite EMAIL --role admin \
+                 --approval a7e572f3",
             ),
             (
                 &["ployz", "--json", "org", "member", "role", "Linus", "admin"],
-                "ployz --json org member role Linus admin --approval a7e572f3",
+                "ployz --json org member role MEMBER admin --approval a7e572f3",
             ),
             (
                 &[
                     "ployz", "org", "member", "role", "Linus", "admin", "--color", "always",
                 ],
-                "ployz --color always org member role Linus admin --approval a7e572f3",
+                "ployz --color always org member role MEMBER admin --approval a7e572f3",
             ),
             (
                 &["ployz", "org", "member", "rm", "--", "--json"],
-                "ployz org member rm --approval a7e572f3 -- --json",
+                "ployz org member rm MEMBER --approval a7e572f3",
             ),
             (
                 &["ployz", "uptime", "show", "web", "--env", "staging"],

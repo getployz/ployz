@@ -11,7 +11,7 @@ use ployz_core::config::{PRIVATE_DOMAIN_KEY, ValuePart, ValuePartOwner, render_v
 use ployz_store::{Edited, EnvironmentSummary, Instead, SettingNote, SettingPath, TypedAddresses};
 use serde::Serialize;
 
-use crate::cli::{Rerun, Shown};
+use crate::cli::{References, Rerun, Shown};
 use crate::ui;
 
 /// An edit's result as `--json` prints it: each Typed Address's references, never its value.
@@ -68,7 +68,7 @@ impl Reference {
         let Instead::Reference { value } = &typed.instead;
         Self {
             references: typed.services.iter().map(reference).collect(),
-            value: Shown::references(value),
+            value: References::parse(value).map(|references| Shown::of(&references)),
         }
     }
 }

@@ -1907,7 +1907,7 @@ fn server_reject_counts_a_refusal_it_cannot_read_as_uncertain() {
 }
 
 #[test]
-fn server_errors_print_a_hostile_selector_inert_and_retry_it_exactly() {
+fn server_errors_print_a_hostile_selector_inert_and_withhold_it_from_the_retry() {
     let hostile = "web\u{1b}[31mX\u{202E}'1";
     let routes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let cloud = waiting_cloud(
@@ -1938,11 +1938,7 @@ fn server_errors_print_a_hostile_selector_inert_and_retry_it_exactly() {
         .lines()
         .find(|line| line.contains("--yes"))
         .unwrap_or_else(|| panic!("{stderr:?}"));
-    assert!(
-        retry.contains(r"$'web\x1b[31mX\xe2\x80\xae\'1'"),
-        "{retry:?}"
-    );
-    assert!(!retry.contains('\u{FFFD}'), "{retry:?}");
+    assert!(retry.contains("server reject PATTERN --yes"), "{retry:?}");
     assert!(rejected_ids(&routes).is_empty());
 }
 

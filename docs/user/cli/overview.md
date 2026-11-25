@@ -416,21 +416,25 @@ A command prints its result on stdout and everything else on stderr: progress, w
 A `retry:` line is the command you ran, with every flag you typed, such as `--ployz-config`,
 `--json` and `--why`, plus what the retry adds, such as `--confirm` or `--approval`. Flags that
 pick where a command runs, `--context`, `--connect`, `--project` and `--env`, are spelled out
-even when they came from a variable. A retry repeats what you typed only when it can't be a
-secret: a name, a number, a choice, a file path or a `${{ service.VARIABLE }}` reference. Anything
-else shows as a placeholder that names what goes there:
+even when they came from a variable. A retry repeats a value you typed only when it reads as what
+the argument takes, such as a name, a number, a choice, an image, a file on this computer or a
+`${{ service.VARIABLE }}` reference. Anything else shows as a placeholder that names what goes
+there:
 
-- A variable's value or a registry token: `ployz set web.env.TOKEN=…` retries as
-  `ployz set 'web.env.TOKEN=VALUE'`, and a `--patch` that sets either retries as `--patch JSON`.
+- A variable's value, a registry token, or a value its Setting refuses:
+  `ployz set 'web.env.TOKEN=VALUE'`. A `--patch` with any of these: `--patch JSON`.
 - A command: a Setting that runs one, such as `web.startCommand=VALUE`, a Setup Command as
   `--setup 'SERVICE=COMMAND'`, and what `ployz exec` runs as `-- COMMAND`.
-- Text you wrote, such as `--why REASON`.
-- A URL, in `--connect` or `--cloud-url`, keeps only its scheme, host and port. A user becomes
-  `USER` and a user and password `USER:PASSWORD`, as in `ssh://USER:PASSWORD@203.0.113.7:22`, and
-  its path and query are dropped. An error about a connection that doesn't parse names it the same
-  way.
+- Free text, such as `--why REASON`, and a value of the wrong kind, such as a URL in `--repo`:
+  `--repo 'OWNER/REPO[@BRANCH]'`.
+- A `--connect` other than a `tcp://` address or a `unix://` socket on this computer, such as
+  `ssh://`: `--connect CONNECT`.
+- A Cloud URL with a user, a path, a query or a fragment: `--cloud-url CLOUD_URL`.
 
-Put them back before you run it. `--help` names `PLOYZ_CLOUD_URL` without showing its value.
+Put them back before you run it. An error that names a Cloud or a connection shows its scheme,
+host and port, and marks what it leaves out: `USER` or `USER:PASSWORD`, then `/PATH`, `?QUERY`
+and `#FRAGMENT`, as in `https://USER@cloud.example/PATH`. `--help` names `PLOYZ_CLOUD_URL`
+without showing its value.
 `ployz logs` reading your servers prints each line on the stream your app wrote it to, so add
 `2>&1` to pipe every line; see [Logs](../observe/logs.md#read-logs-from-the-cli).
 

@@ -612,18 +612,21 @@ fn login_rows() -> Vec<Row> {
         row(
             "login/unreachable",
             LoginError::Unreachable {
-                cloud: "c".into(),
+                cloud: crate::cli::Shown::placeholder("c"),
                 error: reqwest_error(),
             },
         ),
         row(
             "login/unanswered",
             LoginError::Unanswered {
-                cloud: "c".into(),
+                cloud: crate::cli::Shown::placeholder("c"),
                 error: reqwest_error(),
             },
         ),
-        row("login/unsupported", LoginError::Unsupported("u".into())),
+        row(
+            "login/unsupported",
+            LoginError::Unsupported(crate::cli::Shown::placeholder("u")),
+        ),
         row(
             "login/status-401",
             LoginError::Status {
@@ -688,8 +691,8 @@ fn login_rows() -> Vec<Row> {
         row(
             "login/other-cloud",
             LoginError::OtherCloud {
-                signed_in: "a".into(),
-                requested: "b".into(),
+                signed_in: crate::cli::Shown::placeholder("a"),
+                requested: crate::cli::Shown::placeholder("b"),
             },
         ),
         row("login/signed-out", LoginError::SignedOut),
@@ -896,7 +899,9 @@ fn provision_and_publish_rows() -> Vec<Row> {
         ),
         row(
             "publish/unsupported",
-            PublishError::Unsupported { cloud: "c".into() },
+            PublishError::Unsupported {
+                cloud: crate::cli::Shown::placeholder("c"),
+            },
         ),
         row("publish/unavailable", PublishError::Unavailable("u".into())),
         row(
@@ -907,7 +912,7 @@ fn provision_and_publish_rows() -> Vec<Row> {
         row(
             "publish/malformed",
             PublishError::Malformed {
-                cloud: "c".into(),
+                cloud: crate::cli::Shown::placeholder("c"),
                 reason: "r".into(),
             },
         ),
@@ -927,14 +932,14 @@ fn provision_and_publish_rows() -> Vec<Row> {
         row(
             "publish/other-cloud",
             PublishError::OtherCloud {
-                published: "a".into(),
-                acting: "b".into(),
+                published: crate::cli::Shown::placeholder("a"),
+                acting: crate::cli::Shown::placeholder("b"),
             },
         ),
         row(
             "publish/slow",
             PublishError::Slow {
-                cloud: "c".into(),
+                cloud: crate::cli::Shown::placeholder("c"),
                 budget: std::time::Duration::from_secs(2),
             },
         ),

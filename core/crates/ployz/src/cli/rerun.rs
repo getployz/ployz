@@ -1,19 +1,31 @@
 //! The commands a hint tells the reader to run, rebuilt from the command line clap parsed.
 //! A rerun keeps every argument the command line gave, in the order given, spelled as the
 //! command tree spells it; a hint adds, replaces or drops arguments by their id, never by
-//! text. Each value shows as a [`Shown`]: whole when its argument's kind is never a secret
-//! (a choice, a number, a path, or one of the [`NAMED`] arguments), as its [`Withheld`]
-//! view, or else as the placeholder its argument declares, so no hint repeats a secret.
+//! text. Each value shows as a [`Shown`] only once it parsed as its argument's kind: a
+//! choice the tree declares, a typed parser's value, a [`Withheld`] argument's own parse, or
+//! the domain type [`PARSED`] names for a text argument. Anything else shows as the
+//! placeholder its argument declares, so no hint repeats a value nothing has validated.
 
 use std::any::TypeId;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
+use std::str::FromStr;
 
 use clap::parser::ValueSource;
 use clap::{Arg, ArgAction, ArgMatches, Command};
-use ployz_core::{Hint, RetryCommand};
+use ployz_core::config::FileMode;
+use ployz_core::{
+    ClusterName, ConfigFileName, ConfigName, DomainPrefix, Hint, IngressHost, MachineId,
+    MachineLabelKey, MachineRelease, Namespace, ProvisionedVolumeMaximumBytes, RetryCommand,
+    ServiceName, StorageChoice, StoragePreparation,
+};
+use ployz_store::{
+    BranchName, EnvironmentName, ProjectName, RegionName, RepositoryName, ReviewVersion,
+    SettingPath, SyncId, VolumeName,
+};
 
 use super::Shown;
+use super::shown::{ConfigPath, ExistingPath, ImageReference, Label, Minted, NameGlob, Public};
 
 /// A command line to run: this one again, or another one that keeps this one's connection.
 #[derive(Clone, Debug)]
@@ -426,7 +438,9 @@ impl Given {
             Values::Text(typed.then(|| Shown::declared(arg)).into_iter().collect())
         } else if action.takes_values() {
             Values::Text(match matches.try_get_many::<Withheld>(id) {
-                Ok(Some(withheld)) => withheld.map(|value| value.shown.clone()).collect(),
+                Ok(Some(withheld)) => withheld
+                    .map(|value| value.shown.clone().unwrap_or_else(|| Shown::declared(arg)))
+                    .collect(),
                 Ok(None) | Err(_) => matches
                     .get_raw(id)
                     .into_iter()
@@ -450,130 +464,226 @@ const CARRIED: [&str; 3] = ["ployz-config", "connect", "context"];
 /// The arguments that choose where a command runs.
 const WHERE_IT_RUNS: [&str; 4] = ["context", "connect", "project", "env"];
 
-/// What a rerun shows of `typed`, given to `arg`, which doesn't parse to [`Withheld`]:
-/// all of it when the argument's kind is never a secret, else the placeholder it declares.
+/// What a rerun shows of `typed`, given to `arg`, which doesn't parse to [`Withheld`]: the
+/// choice it names, else the value it parses to as its argument's kind, else the
+/// placeholder the argument declares.
 fn shown(arg: &Arg, typed: &str) -> Shown {
     let parser = arg.get_value_parser().type_id();
-    let known = !arg.get_possible_values().is_empty()
-        || closed().into_iter().any(|kind| parser == kind)
-        || (parser == TypeId::of::<String>() && NAMED.contains(&arg.get_id().as_str()));
-    match known {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "a choice, a number, a path or a name, none of which is a secret"
-        )]
-        true => Shown::verbatim(typed),
-        false => Shown::declared(arg),
-    }
+    let parse = if let Some(choice) = arg
+        .get_possible_values()
+        .into_iter()
+        .find(|choice| choice.matches(typed, arg.is_ignore_case_set()))
+    {
+        return Shown::of(&super::shown::Choice(&choice));
+    } else if parser == TypeId::of::<String>() {
+        PARSED
+            .iter()
+            .find(|(id, _)| *id == arg.get_id().as_str())
+            .map(|(_, parse)| *parse)
+    } else {
+        typed_parsers()
+            .into_iter()
+            .find(|(kind, _)| parser == *kind)
+            .map(|(_, parse)| parse)
+    };
+    parse
+        .and_then(|parse| parse(typed))
+        .unwrap_or_else(|| Shown::declared(arg))
 }
 
-/// The parsed kinds no value of which is a secret: numbers, switches, paths and addresses.
-fn closed() -> [TypeId; 14] {
+/// How a value shows once it parsed: none when it doesn't parse as its kind.
+type Parse = fn(&str) -> Option<Shown>;
+
+/// `typed` as a `T`, shown.
+fn parsed<T: FromStr + Public>(typed: &str) -> Option<Shown> {
+    typed.parse::<T>().ok().map(|value| Shown::of(&value))
+}
+
+/// `typed` as a `T` the Store names things with, shown.
+fn named<T: TryFrom<String> + Public>(typed: &str) -> Option<Shown> {
+    T::try_from(typed.to_owned())
+        .ok()
+        .map(|value| Shown::of(&value))
+}
+
+/// The first of `parses` that `typed` parses as.
+fn any(typed: &str, parses: &[Parse]) -> Option<Shown> {
+    parses.iter().find_map(|parse| parse(typed))
+}
+
+/// `typed` as `LEFT` `between` `RIGHT`, each side parsed.
+fn pair(typed: &str, between: &'static str, left: Parse, right: Parse) -> Option<Shown> {
+    let (first, second) = typed.split_once(between)?;
+    Some(Shown::joined(left(first)?, between, right(second)?))
+}
+
+/// A Service by its name, or by its Namespace and name: `ployz-system/ingress`.
+fn service(typed: &str) -> Option<Shown> {
+    any(
+        typed,
+        &[parsed::<ServiceName>, |typed| {
+            pair(typed, "/", parsed::<Namespace>, parsed::<ServiceName>)
+        }],
+    )
+}
+
+fn label(typed: &str) -> Option<Shown> {
+    Label::parse(typed).map(|label| Shown::of(&label))
+}
+
+fn minted(typed: &str) -> Option<Shown> {
+    Minted::parse(typed).map(|minted| Shown::of(&minted))
+}
+
+fn path(typed: &str) -> Option<Shown> {
+    ExistingPath::parse(typed).map(|path| Shown::of(&path))
+}
+
+fn image(typed: &str) -> Option<Shown> {
+    ImageReference::parse(typed).map(|image| Shown::of(&image))
+}
+
+/// The parsers clap types a value with, each with the parse that shows one again.
+fn typed_parsers() -> [(TypeId, Parse); 12] {
     [
-        TypeId::of::<bool>(),
-        TypeId::of::<u16>(),
-        TypeId::of::<u32>(),
-        TypeId::of::<u64>(),
-        TypeId::of::<usize>(),
-        TypeId::of::<i64>(),
-        TypeId::of::<PathBuf>(),
-        TypeId::of::<ipnet::Ipv4Net>(),
-        TypeId::of::<ployz_core::config::FileMode>(),
-        TypeId::of::<ployz_core::ProvisionedVolumeMaximumBytes>(),
-        TypeId::of::<ployz_core::StorageChoice>(),
-        TypeId::of::<ployz_core::StoragePreparation>(),
-        TypeId::of::<ployz_core::MachineRelease>(),
-        TypeId::of::<ployz_core::ReleaseChannel>(),
+        (TypeId::of::<u16>(), parsed::<u16>),
+        (TypeId::of::<u32>(), parsed::<u32>),
+        (TypeId::of::<u64>(), parsed::<u64>),
+        (TypeId::of::<usize>(), parsed::<usize>),
+        (TypeId::of::<i64>(), parsed::<i64>),
+        (TypeId::of::<PathBuf>(), path),
+        (TypeId::of::<ipnet::Ipv4Net>(), parsed::<ipnet::Ipv4Net>),
+        (TypeId::of::<MachineRelease>(), parsed::<MachineRelease>),
+        (TypeId::of::<StorageChoice>(), parsed::<StorageChoice>),
+        (
+            TypeId::of::<StoragePreparation>(),
+            parsed::<StoragePreparation>,
+        ),
+        // Digits alone, as typed: an octal mode and a size in GB read back as they parsed.
+        (TypeId::of::<FileMode>(), |typed| {
+            FileMode::parse(typed).ok().and_then(|_| minted(typed))
+        }),
+        (TypeId::of::<ProvisionedVolumeMaximumBytes>(), |typed| {
+            ProvisionedVolumeMaximumBytes::parse_gb(typed)
+                .ok()
+                .and_then(|_| minted(typed))
+        }),
     ]
 }
 
-/// The text arguments whose every value names something Ployz shows anyway, such as a
-/// Project, a Service, a Server, a Deployment, a member, a version, a file or a domain,
-/// compiled or published by Cloud. Any other text argument, such as a message, a reason,
-/// a command, a key or a URL, shows as its placeholder.
-const NAMED: [&str; 82] = [
-    "accept-volume-loss",
-    "account",
-    "approval",
-    "build-concurrency",
-    "builder",
-    "builder-sha",
-    "cluster-name",
-    "code",
-    "commit",
-    "config",
-    "confirm",
-    "container",
-    "context",
-    "context-name",
-    "copy",
-    "cursor",
-    "deployment",
-    "dir",
-    "domain",
-    "email",
-    "env",
-    "environment",
-    "events",
-    "expect",
-    "expect-version",
-    "file",
-    "fingerprint",
-    "first",
-    "fix",
-    "from",
-    "from-env-file",
-    "host",
-    "id",
-    "image",
-    "label-add",
-    "label-rm",
-    "live",
-    "machine",
-    "match",
-    "member",
-    "mirror",
-    "mount",
-    "name",
-    "namespace",
-    "node",
-    "only",
-    "organization",
-    "path",
-    "pattern",
-    "platform",
-    "ployz-config",
-    "port",
-    "prefix",
-    "project",
-    "public-ip",
-    "ref",
-    "region",
-    "rename",
-    "repo",
-    "repository",
-    "run",
-    "server",
-    "service",
-    "service-or-container",
-    "signal",
-    "since",
-    "skip",
-    "slug",
-    "source",
-    "ssh-key",
-    "tail",
-    "take",
-    "timeout",
-    "to",
-    "undo",
-    "until",
-    "upload",
-    "value",
-    "version",
-    "volume",
-    "wait",
-    "wg-endpoint",
+/// The text arguments a rerun may show, each with the domain type it parses as: where an
+/// id means different things in different commands, every type it may be. Any other text
+/// argument, such as a message, a reason, a command, a key, a URL or a pattern, shows as
+/// its placeholder.
+const PARSED: [(&str, Parse); 58] = [
+    ("accept-volume-loss", named::<VolumeName>),
+    ("approval", minted),
+    ("build-concurrency", parsed::<u32>),
+    ("cluster-name", parsed::<ClusterName>),
+    ("config", parsed::<ConfigName>),
+    ("confirm", |typed| {
+        any(
+            typed,
+            &[label, |typed| {
+                pair(typed, "/", named::<ProjectName>, named::<EnvironmentName>)
+            }],
+        )
+    }),
+    ("container", label),
+    ("context", label),
+    ("context-name", label),
+    ("copy", label),
+    ("deployment", minted),
+    ("domain", parsed::<IngressHost>),
+    ("env", named::<EnvironmentName>),
+    ("environment", named::<EnvironmentName>),
+    ("expect", parsed::<u64>),
+    ("expect-version", parsed::<ReviewVersion>),
+    ("file", parsed::<ConfigFileName>),
+    ("first", label),
+    ("fix", minted),
+    ("from", |typed| any(typed, &[label, path])),
+    ("from-env-file", path),
+    ("host", parsed::<IngressHost>),
+    ("id", minted),
+    ("image", |typed| {
+        any(
+            typed,
+            &[image, |typed| {
+                pair(typed, "=", parsed::<ServiceName>, image)
+            }],
+        )
+    }),
+    ("label-add", |typed| {
+        pair(typed, "=", parsed::<MachineLabelKey>, label)
+    }),
+    ("label-rm", parsed::<MachineLabelKey>),
+    ("live", label),
+    ("machine", |typed| any(typed, &[label, parsed::<MachineId>])),
+    ("mirror", label),
+    ("name", label),
+    ("namespace", parsed::<Namespace>),
+    ("node", label),
+    ("only", named::<SettingPath>),
+    ("organization", label),
+    ("path", named::<SettingPath>),
+    ("pattern", |typed| {
+        NameGlob::parse(typed).map(|glob| Shown::of(&glob))
+    }),
+    ("ployz-config", |typed| {
+        ConfigPath::parse(typed).map(|path| Shown::of(&path))
+    }),
+    ("prefix", parsed::<DomainPrefix>),
+    ("project", named::<ProjectName>),
+    ("public-ip", |typed| {
+        any(
+            typed,
+            &[parsed::<std::net::IpAddr>, |typed| {
+                (typed == "none").then(|| Shown::placeholder("none"))
+            }],
+        )
+    }),
+    ("region", named::<RegionName>),
+    ("repo", |typed| {
+        any(
+            typed,
+            &[named::<RepositoryName>, |typed| {
+                pair(typed, "@", named::<RepositoryName>, named::<BranchName>)
+            }],
+        )
+    }),
+    ("repository", named::<RepositoryName>),
+    ("server", |typed| any(typed, &[label, parsed::<MachineId>])),
+    ("service", service),
+    ("service-or-container", |typed| {
+        any(typed, &[service, |typed| pair(typed, ":", service, label)])
+    }),
+    ("skip", named::<SettingPath>),
+    ("slug", label),
+    ("ssh-key", path),
+    ("take", named::<EnvironmentName>),
+    ("to", label),
+    ("undo", named::<SyncId>),
+    ("upload", path),
+    ("value", named::<SettingPath>),
+    ("version", |typed| {
+        any(typed, &[parsed::<ReviewVersion>, minted])
+    }),
+    ("volume", |typed| {
+        any(
+            typed,
+            &[named::<VolumeName>, |typed| {
+                pair(typed, "/", parsed::<ServiceName>, named::<VolumeName>)
+            }],
+        )
+    }),
+    ("wait", minted),
+    ("wg-endpoint", |typed| {
+        any(
+            typed,
+            &[parsed::<std::net::SocketAddr>, parsed::<std::net::IpAddr>],
+        )
+    }),
 ];
 
 /// A value whose kind may hold a secret: what was typed, which only the command reads, and
@@ -581,11 +691,11 @@ const NAMED: [&str; 82] = [
 #[derive(Clone)]
 pub(crate) struct Withheld {
     typed: String,
-    shown: Shown,
+    shown: Option<Shown>,
 }
 
 impl Withheld {
-    /// What was typed, for the command to run with; output shows [`Self::shown`].
+    /// What was typed, for the command to run with; output shows only what parsed.
     pub(crate) fn typed(&self) -> &str {
         &self.typed
     }
@@ -597,10 +707,10 @@ impl std::fmt::Debug for Withheld {
     }
 }
 
-/// The parser of an argument whose values may hold a secret: `shown` gives what output
-/// repeats of one.
+/// The parser of an argument whose values may hold a secret: `shown` parses one into what
+/// output repeats of it, and none shows the argument's placeholder.
 pub(crate) fn withheld(
-    shown: fn(&str) -> Shown,
+    shown: fn(&str) -> Option<Shown>,
 ) -> impl clap::builder::TypedValueParser<Value = Withheld> {
     clap::builder::TypedValueParser::map(clap::builder::StringValueParser::new(), move |typed| {
         Withheld {
