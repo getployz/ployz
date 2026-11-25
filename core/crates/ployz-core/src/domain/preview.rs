@@ -155,9 +155,7 @@ pub fn admit_preview(
         return Ok(());
     };
     preview.admit_on(machine)?;
-    if admission != Admission::Signed {
-        return Err(PreviewRefusal::Unsigned);
-    }
+    // What the spec asks is refused before who sent it: no signature makes it a preview's.
     let volumes = spec.volume_graph();
     for mount in volumes.mounts() {
         let target = || mount.target.clone();
@@ -178,11 +176,14 @@ pub fn admit_preview(
             }
         }
     }
-    match host_reach(spec).first() {
-        Some(what) => Err(PreviewRefusal::HostReach {
+    if let Some(what) = host_reach(spec).first() {
+        return Err(PreviewRefusal::HostReach {
             what: what.to_string(),
-        }),
-        None => Ok(()),
+        });
+    }
+    match admission {
+        Admission::Signed => Ok(()),
+        Admission::Free => Err(PreviewRefusal::Unsigned),
     }
 }
 
