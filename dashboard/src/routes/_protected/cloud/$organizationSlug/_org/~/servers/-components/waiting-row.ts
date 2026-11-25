@@ -22,6 +22,7 @@ const BLOCKER_LABELS = new Map(Object.entries({
   docker_unreadable: "Can't read Docker",
   buildx_too_old: "Buildx too old",
   docker_containerd_store_off: "Image store off",
+  docker_live_restore_off: "Live-restore off",
   unsupported_os: "Unsupported OS",
   secure_boot: "Secure Boot on",
   secure_boot_unknown: "Secure Boot unknown",

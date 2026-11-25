@@ -63,7 +63,7 @@ function Detail({ server, now, gate, onEnroll, onReject }: {
             ))}
           </Fact>
           <Fact label="Docker">
-            {report.docker.kind === "absent" ? "Not installed" : `${report.docker.version}${report.docker.compatible ? "" : " · too old"}`}
+            {report.docker.kind === "absent" ? "Not installed" : `${report.docker.version}${report.blockers.some((blocker) => blocker.code === "docker_too_old") ? " · too old" : ""}`}
           </Fact>
           <Fact label="Volumes">{volumes.bold} <span className="text-muted-foreground">· {volumes.detail}</span></Fact>
           <Fact label="Port 80">{server.probe === null ? "Not checked yet" : portText(server.probe["80"])}</Fact>
