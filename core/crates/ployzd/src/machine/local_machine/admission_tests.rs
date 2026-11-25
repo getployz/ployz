@@ -766,3 +766,45 @@ async fn a_trash_restore_of_another_servers_preview_changes_nothing() {
         "{calls:?}"
     );
 }
+
+/// An entry the Trash lists as unreadable, or not at all, could hold any Server's preview,
+/// so its restore never reaches the plugin.
+#[tokio::test]
+async fn a_trash_restore_of_an_entry_not_listed_readable_changes_nothing() {
+    let fixture = fixture().await;
+    let dir = crate::test_dir::TestDir::new("preview-trash-unread");
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let plugin = crate::storage::test_support::FakePlugin::default();
+    let id = "b".repeat(26);
+    plugin.reply(
+        crate::volume_copy::TRASH_LIST_ROUTE,
+        json!({"Ok": {"entries": []}}),
+    );
+    plugin.reply(
+        crate::volume_copy::TRASH_RESTORE_ROUTE,
+        json!({"Ok": {"id": id, "name": "pv-0123456789abcdef-00000000-00c0ffee_data",
+            "place": "root"}}),
+    );
+    let (served, _server) = plugin.serve(&dir.0);
+    let machine = fixture.machine.clone().with_plugin(served);
+    let request = ployz_core::RestoreTrashRequest {
+        id: ployz_core::TrashId::parse(&id).unwrap(),
+    };
+    let refused = machine.restore_trash(&request).await;
+    assert!(
+        matches!(
+            refused,
+            Err(Error::PreviewRefused(
+                ployz_core::PreviewRefusal::UnreadTrash { .. }
+            ))
+        ),
+        "{refused:?}"
+    );
+    let calls = plugin.calls.lock().unwrap().clone();
+    assert!(
+        calls
+            .iter()
+            .all(|(route, _)| route != crate::volume_copy::TRASH_RESTORE_ROUTE),
+        "{calls:?}"
+    );
+}

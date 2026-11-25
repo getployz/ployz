@@ -261,6 +261,9 @@ pub(crate) struct AdmittedSpec {
     /// What this Machine issued for a rule build it checked online to admit the spec.
     verified: Option<VerifiedBuild>,
     hook: Option<super::rule_deploy::HookPlace>,
+    /// A preview Writer's image, inspected once at its start's admission, which the check
+    /// before the promote and the create read again.
+    preview_image: Option<crate::docker::PreviewImage>,
 }
 
 impl std::fmt::Debug for AdmittedSpec {
@@ -298,6 +301,7 @@ impl AdmittedSpec {
             standing: None,
             verified: None,
             hook: None,
+            preview_image: None,
         })
     }
 
@@ -322,6 +326,11 @@ impl AdmittedSpec {
     /// The place a hook's push takes when its create runs, for a hook a rule admitted.
     pub(crate) fn hook(&self) -> Option<&super::rule_deploy::HookPlace> {
         self.hook.as_ref()
+    }
+
+    /// The image a preview Writer's start inspected, which its create runs by ID.
+    pub(crate) fn preview_image(&self) -> Option<&crate::docker::PreviewImage> {
+        self.preview_image.as_ref()
     }
 
     /// Whether the admission covers opening `value`: a version's signers covered the
@@ -390,6 +399,7 @@ impl AdmittedSpec {
             standing: None,
             verified: None,
             hook: None,
+            preview_image: None,
         }
     }
 
@@ -409,6 +419,7 @@ impl AdmittedSpec {
             standing: None,
             verified: None,
             hook: None,
+            preview_image: None,
         }
     }
 }
@@ -469,6 +480,7 @@ impl LocalMachine {
                 standing: Some(self.standing()),
                 verified,
                 hook,
+                preview_image: None,
             }))
         };
         // One budget for every signature this attempt opens, whichever proof carries it.
@@ -757,6 +769,22 @@ impl LocalMachine {
             resolved_spec,
             admitted.as_ref(),
         )?;
+        // Inspected once, here, before the cut or promote: the check under the switch and
+        // the create read this result, and the create runs this image by its ID.
+        let admitted = match admitted {
+            Some(mut admitted) if ployz_core::PreviewNamespace::of(namespace).is_some() => {
+                admitted.preview_image = self
+                    .docker()?
+                    .lifecycle()
+                    .prepare_preview_image(namespace, resolved_spec)
+                    .await?;
+                if let Some(image) = &admitted.preview_image {
+                    image.admit(namespace, resolved_spec)?;
+                }
+                Some(admitted)
+            }
+            admitted => admitted,
+        };
         if check {
             let record = self.record();
             let machine = record.cluster_machine().ok_or(Error::NotParticipating)?;
@@ -816,6 +844,16 @@ impl Checked {
                 ..
             } => {
                 admit_preview_start(&self.record().id(), namespace, resolved_spec, admitted)?;
+                if ployz_core::PreviewNamespace::of(namespace).is_some() {
+                    admitted
+                        .and_then(AdmittedSpec::preview_image)
+                        .ok_or_else(|| {
+                            Error::PreviewRefused(ployz_core::PreviewRefusal::ImageUnidentified {
+                                image: resolved_spec.container.image.clone(),
+                            })
+                        })?
+                        .admit(namespace, resolved_spec)?;
+                }
                 (resolved_spec, versions, rule)
             }
         };

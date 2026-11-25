@@ -14,6 +14,7 @@ mod inspect;
 use inspect::{Inspected, RawContainerConfig};
 mod lifecycle;
 pub use lifecycle::Lifecycle;
+pub(crate) use lifecycle::PreviewImage;
 mod limits;
 mod live_stats;
 mod managed_service;

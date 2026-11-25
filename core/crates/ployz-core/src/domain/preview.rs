@@ -133,6 +133,12 @@ pub enum PreviewRefusal {
     NotItsOwn { target: ContainerPath },
     #[error("The image keeps data at {target}, so a preview mounts its own Volume or tmpfs there.")]
     ImageVolume { target: String },
+    #[error("Docker didn't say which image {image} is, so a preview doesn't run it.")]
+    ImageUnidentified { image: String },
+    #[error(
+        "This Server lists no readable Trash entry {id}, so it can't tell whose data it holds and restores nothing."
+    )]
+    UnreadTrash { id: String },
 }
 
 /// Refuse a Container in a preview Namespace unless this Server is its home, a person's

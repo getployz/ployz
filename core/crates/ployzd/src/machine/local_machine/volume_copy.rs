@@ -232,11 +232,12 @@ impl LocalMachine {
     }
 
     /// Put Trash entry `request.id` back, refused before the plugin changes anything when
-    /// it holds the data of a preview whose home is another Server.
+    /// it holds the data of a preview whose home is another Server, or when the Trash lists
+    /// no readable entry by that ID, whose data could be anyone's.
     ///
     /// # Errors
-    /// Returns [`Error::PreviewRefused`] for another Server's preview, and the plugin's
-    /// error otherwise.
+    /// Returns [`Error::PreviewRefused`] for another Server's preview or an entry not
+    /// listed, and the plugin's error otherwise.
     pub(crate) async fn restore_trash(
         &self,
         request: &ployz_core::RestoreTrashRequest,
@@ -248,9 +249,16 @@ impl LocalMachine {
                 &ployz_core::ListTrashRequest {},
             )
             .await?;
-        if let Some(entry) = trash.entries.iter().find(|entry| entry.id == request.id) {
-            self.admit_preview_arrival(&entry.name)?;
-        }
+        let entry = trash
+            .entries
+            .iter()
+            .find(|entry| entry.id == request.id)
+            .ok_or_else(|| {
+                Error::PreviewRefused(ployz_core::PreviewRefusal::UnreadTrash {
+                    id: request.id.to_string(),
+                })
+            })?;
+        self.admit_preview_arrival(&entry.name)?;
         self.volume_verb(
             "RestoreTrash",
             crate::volume_copy::TRASH_RESTORE_ROUTE,

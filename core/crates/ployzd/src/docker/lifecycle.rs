@@ -112,6 +112,34 @@ struct Creating<'a> {
     plugin: &'a crate::storage::Plugin,
 }
 
+/// A preview Container's image, inspected once for its start: the immutable ID its create
+/// runs, and the `VOLUME` paths it declares, which every check of that start reads.
+#[derive(Clone, Debug)]
+pub(crate) struct PreviewImage {
+    id: String,
+    declared: Vec<String>,
+}
+
+impl PreviewImage {
+    /// Refuse `spec` when a `VOLUME` this image declares has no mount, as
+    /// [`ployz_core::admit_preview_image`] decides.
+    ///
+    /// # Errors
+    /// Returns [`Error::PreviewRefused`] naming the first uncovered path.
+    pub(crate) fn admit(
+        &self,
+        namespace: &Namespace,
+        spec: &ResolvedServiceSpec,
+    ) -> Result<(), Error> {
+        ployz_core::admit_preview_image(
+            namespace,
+            &spec.to_requested(),
+            self.declared.iter().map(String::as_str),
+        )
+        .map_err(Error::PreviewRefused)
+    }
+}
+
 /// Creating, starting, stopping and removing the managed Containers, and the marks and
 /// records those operations keep.
 #[derive(Clone)]
@@ -540,12 +568,22 @@ impl Lifecycle {
         {
             return Err(self.images.pull_failure(Error::ImagePull(error)).await);
         }
-        self.admit_preview_image(
-            namespace,
-            spec,
-            body.image.as_deref().unwrap_or(&spec.container.image),
-        )
-        .await?;
+        // A preview runs the image its checks read: the one its start inspected, or one
+        // inspected here, by its ID, so no tag pulled again in between changes it.
+        let preview = match creating.admitted.preview_image() {
+            Some(image) => Some(image.clone()),
+            None => {
+                self.preview_image(
+                    namespace,
+                    body.image.as_deref().unwrap_or(&spec.container.image),
+                )
+                .await?
+            }
+        };
+        if let Some(image) = preview {
+            image.admit(namespace, spec)?;
+            body.image = Some(image.id);
+        }
         let mut config_operation = self.specs.config_operation().await;
         // Another request may have won while admission and image preparation ran.
         if let Some(existing) = self
@@ -594,28 +632,59 @@ impl Lifecycle {
         result
     }
 
-    /// Refuse a preview's Container whose image `image` declares a `VOLUME` that no mount
-    /// of `spec` covers, as [`ployz_core::admit_preview_image`] decides.
-    async fn admit_preview_image(
+    /// Inspect `image` once for a Container in `namespace`, `None` outside a preview.
+    ///
+    /// # Errors
+    /// Returns [`Error::PreviewRefused`] for an image Docker names no ID for, and the
+    /// Docker error of an inspect that fails.
+    pub(crate) async fn preview_image(
+        &self,
+        namespace: &Namespace,
+        image: &str,
+    ) -> Result<Option<PreviewImage>, Error> {
+        if ployz_core::PreviewNamespace::of(namespace).is_none() {
+            return Ok(None);
+        }
+        let inspected = self.docker.client.inspect_image(image).await?;
+        let id = inspected.id.filter(|id| !id.is_empty()).ok_or_else(|| {
+            Error::PreviewRefused(ployz_core::PreviewRefusal::ImageUnidentified {
+                image: image.to_owned(),
+            })
+        })?;
+        Ok(Some(PreviewImage {
+            id,
+            declared: inspected
+                .config
+                .and_then(|config| config.volumes)
+                .unwrap_or_default(),
+        }))
+    }
+
+    /// Pull `spec`'s image as its create would, with no login, then inspect it once, for a
+    /// Writer's start in `namespace` checked before anything is promoted. `None` outside a
+    /// preview.
+    ///
+    /// # Errors
+    /// As [`Self::preview_image`], and the pull's failure.
+    pub(crate) async fn prepare_preview_image(
         &self,
         namespace: &Namespace,
         spec: &ResolvedServiceSpec,
-        image: &str,
-    ) -> Result<(), Error> {
+    ) -> Result<Option<PreviewImage>, Error> {
         if ployz_core::PreviewNamespace::of(namespace).is_none() {
-            return Ok(());
+            return Ok(None);
         }
-        let inspected = self.docker.client.inspect_image(image).await?;
-        let declared = inspected
-            .config
-            .and_then(|config| config.volumes)
-            .unwrap_or_default();
-        ployz_core::admit_preview_image(
-            namespace,
-            &spec.to_requested(),
-            declared.iter().map(String::as_str),
+        if let Err(error) = prepare_image(
+            &self.docker.client,
+            &spec.container.image,
+            spec.container.pull_policy,
+            None,
         )
-        .map_err(Error::PreviewRefused)
+        .await
+        {
+            return Err(self.images.pull_failure(Error::ImagePull(error)).await);
+        }
+        self.preview_image(namespace, &spec.container.image).await
     }
 
     /// The create body for Docker: the network it joins, the sysctls only the Ingress
