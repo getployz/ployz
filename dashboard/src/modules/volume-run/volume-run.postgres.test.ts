@@ -2437,6 +2437,18 @@ describe("volume runs", () => {
     });
 
     it.each([
+      ["a Move, which copied A's image there first, pulls nothing", { id: idOf("fsn-1"), name: "fsn-1" }, "never"],
+      ["a forward Release, which copied no image, pulls as the Service asks", null, "always"],
+    ] as const)("starts B so %s", async (_, from, pullPolicy) => {
+      const ctx = await owned();
+      containers = [{ machine: "fsn-1", id: "web-fsn-1", running: false }];
+
+      await runEffect(commitAndStart(ctx, "run-1", { to: { id: B, name: "fsn-2" }, from, expect: { kind: "none" }, at: base.guid, epoch: 1 }));
+
+      expect(sent.at(-1)?.want).toMatchObject({ kind: "writer", start: { kind: "create", resolved_spec: { container: { pull_policy: pullPolicy } } } });
+    });
+
+    it.each([
       ["the size a resize recorded since the Deploy", 20 * GB, 20 * GB],
       ["the spec's own size while none is recorded", 0, 5_000_000],
     ])("starts B at %s", async (_, recordedBytes, maximumBytes) => {
