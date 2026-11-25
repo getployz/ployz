@@ -62,10 +62,18 @@ describe("prepareSave", () => {
 
   // Catches the switch sending a Save with no rule, which reads as on to no one and stages nothing new.
   it("turning automatic deploys on saves nothing when it can't sign the rule", async () => {
-    const main = { repository_id: 11, branch: "main" };
+    const main = { repository_id: 11, branch: "main", shown: null };
 
     expect(await prepareSave(save, reads(view(), { kind: "off" }), owner, 1_000, main)).toMatchObject({ kind: "refused" });
     expect(await prepareSave({ ...save, version: "v0" }, reads(view(), ready), owner, 1_000, main)).toMatchObject({ kind: "refused" });
+  });
+
+  // Catches a stale tab's Approve again turning back on a rule another tab ended or moved since it loaded.
+  it("turning automatic deploys on signs nothing once the kept rule changed since the page showed it", async () => {
+    const stale = { repository_id: 11, branch: "main", shown: null };
+
+    expect(await prepareSave(save, reads(view(kept()), ready), owner, 1_000, stale))
+      .toEqual({ kind: "refused", message: "This environment changed since the page loaded. Reload." });
   });
 
   it("refuses only when the staged read fails", async () => {

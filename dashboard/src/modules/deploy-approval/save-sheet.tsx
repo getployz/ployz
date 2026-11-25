@@ -1,6 +1,5 @@
 import { useRef, useState } from "react";
 import type { SavedRule } from "@ployz/sdk";
-import type { PushBranch } from "@ployz/sdk/authority";
 import { KeyRoundIcon } from "lucide-react";
 import { toast } from "sonner";
 import { useCollectionScope } from "#/collections/use-collection-scope";
@@ -13,7 +12,7 @@ import { SignedLines } from "./deploy-sheet";
 import { prepareSaveTapServerFn } from "./deploy-tap.functions";
 import { RuleSummaryList } from "./rule-summary";
 import { ownerLookup } from "./source-step";
-import { type Answered, prepareSave, type Publish, type SaveAsk, type SaveSteps, saveWith, sendRule, signRule } from "./save-tap";
+import { type Answered, prepareSave, type Publish, type SaveAsk, type SaveSteps, saveWith, sendRule, signRule, type TurnOn } from "./save-tap";
 
 /** A Save that was not sent: refused before any prompt, or cancelled. Whoever said why already showed it. */
 class SaveNotSent extends Error {}
@@ -51,7 +50,7 @@ export function useSaveTap(organizationSlug: string) {
   };
 
   /** Saves `command`; with `on`, the Deploy every push switch's Save, which turns the rule on for that branch. */
-  const save = (command: Publish, handles: readonly string[] = [], on?: PushBranch) => saveWith(steps, command, handles, on);
+  const save = (command: Publish, handles: readonly string[] = [], on?: TurnOn) => saveWith(steps, command, handles, on);
 
   function close(sheet: Open, failed: Error | null) {
     sheet.settle(failed);
@@ -93,7 +92,7 @@ export function useSaveTap(organizationSlug: string) {
           <DialogTitle>Deploy every push to {summary.branch}?</DialogTitle>
           <DialogDescription>
             Each push to {summary.branch} deploys these settings with no prompt.
-            {open.ask.stops === null ? null : ` Pushes to ${open.ask.stops} stop deploying.`}
+            {open.ask.stops === null ? null : ` This moves the approval off ${open.ask.stops}. Services keep their Auto-deploy settings.`}
           </DialogDescription>
         </DialogHeader>
         <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">

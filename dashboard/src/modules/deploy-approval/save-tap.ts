@@ -13,6 +13,13 @@ import { namesReview } from "./deploy-tap";
 import type { SaveTap } from "./deploy-tap.server";
 import { draftSource, movedFrom, type OwnerOf, priorOf } from "./source-step";
 
+/** The branch Automatic deploys signs the rule for, and the rule the page showed when the person clicked. */
+export type TurnOn = PushBranch & { readonly shown: SavedRule["prior"] };
+
+/** Whether two reads name the same kept rule at the same generation. */
+const samePrior = (a: SavedRule["prior"], b: SavedRule["prior"]) =>
+  a === null || b === null ? a === b : a.rule === b.rule && a.generation === b.generation;
+
 /** A Save as the Store takes it. */
 export type Publish = Extract<ConfigCommand, { command: "publish" }>;
 
@@ -69,7 +76,7 @@ const saves = (view: RuleView, command: Publish): view is RuleView & { version: 
  * `on` is the branch Automatic deploys turns the rule on for or approves again: that Save always signs a rule, even one
  * the person ended, and saves nothing when it can't.
  */
-export async function prepareSave(command: Publish, read: ReadSave, ownerOf: OwnerOf, now = Date.now(), on?: PushBranch): Promise<SavePrepared> {
+export async function prepareSave(command: Publish, read: ReadSave, ownerOf: OwnerOf, now = Date.now(), on?: TurnOn): Promise<SavePrepared> {
   const plain = { kind: "save", command } as const;
   // Automatic deploys asked for the rule: anything short of signing it saves nothing.
   const skip = (reason: string): SavePrepared => on === undefined ? plain : { kind: "refused", message: reason };
@@ -99,6 +106,8 @@ export async function prepareSave(command: Publish, read: ReadSave, ownerOf: Own
   if (second.kind !== "view") return skip(READ);
   const { view, tap: gate } = second;
   if (!saves(view, command)) return skip(MOVED);
+  // A click on a page showing an older rule, such as one another tab has since ended or moved, signs nothing.
+  if (on !== undefined && !samePrior(priorOf(view), on.shown)) return skip(MOVED);
   if (gate === null || gate.kind === "off") return skip(NO_CHECK);
   if (gate.kind === "refused") return held(gate.message);
   const drafted = await draftSource({
@@ -133,7 +142,7 @@ export type Answered = { readonly review: string; readonly rule: SavedRule };
 export type SaveSteps = {
   readonly answered: { current: Answered | null };
   readonly commit: (command: Publish, handles: readonly string[]) => Promise<void>;
-  readonly prepare: (command: Publish, on?: PushBranch) => Promise<SavePrepared>;
+  readonly prepare: (command: Publish, on?: TurnOn) => Promise<SavePrepared>;
   /** Asks the person to sign `ask`'s rule; settles once their Save was sent, or throws why it wasn't. */
   readonly ask: (ask: SaveAsk, handles: readonly string[]) => Promise<void>;
   /** Tells the person the Save went without a rule, and why; `unchecked` when pushes may not wait. */
@@ -158,7 +167,7 @@ export async function sendRule(steps: Pick<SaveSteps, "answered" | "commit">, co
  * answered for carries that rule and the rule it read as kept, so the Store refuses the whole Save if the kept rule moved
  * since, rather than saving without it.
  */
-export async function saveWith(steps: SaveSteps, command: Publish, handles: readonly string[] = [], on?: PushBranch): Promise<void> {
+export async function saveWith(steps: SaveSteps, command: Publish, handles: readonly string[] = [], on?: TurnOn): Promise<void> {
   const answered = steps.answered.current;
   steps.answered.current = null;
   if (answered !== null && command.version !== null && command.version !== undefined && namesReview(answered.review, command.version)) {

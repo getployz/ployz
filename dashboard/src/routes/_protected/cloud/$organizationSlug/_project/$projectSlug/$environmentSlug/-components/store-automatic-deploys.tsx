@@ -12,6 +12,7 @@ import { Switch } from "#/components/ui/switch";
 import { diffQuery, ruleQuery, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { useSaveTap } from "#/modules/deploy-approval/save-sheet";
+import { priorOf } from "#/modules/deploy-approval/source-step";
 import { answerRule, draftEnd, keptRule, RuleRefused, ruleOn } from "./auto-deploy-rule";
 
 type Place = { organizationSlug: string; projectSlug: string; environmentSlug: string };
@@ -68,7 +69,7 @@ export function StoreAutomaticDeploys({ organizationSlug, projectSlug, environme
   const turnOn = ({ repository_id, branch }: Branch) => {
     if (clean === null) return;
     // Whatever stopped it already showed; the switch stays as the Store keeps the rule.
-    saveTap.save({ command: "publish", environment, version: clean, accept_volume_loss: [], message: null }, [], { repository_id, branch })
+    saveTap.save({ command: "publish", environment, version: clean, accept_volume_loss: [], message: null }, [], { repository_id, branch, shown: priorOf(view) })
       .catch(() => undefined);
   };
   return (

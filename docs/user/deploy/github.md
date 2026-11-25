@@ -147,7 +147,8 @@ changes first. When the services build from several branches, pick one under **B
 pushes to it deploy, and a Save leaves the rule on its branch. Picking another branch while the
 rule is on signs a new rule for that branch the same way. When every service with **Auto-deploy**
 on moves to one other branch, a Save signs a rule for that branch instead. Either way the sheet
-says `Pushes to main stop deploying.`, and they do.
+says the approval moves off `main`. Services that follow `main` keep their **Auto-deploy**
+setting, so turn it off there if pushes to `main` should start nothing.
 
 While the rule is on, **Approve again** signs its next generation in one prompt, for the services,
 settings and servers as they are now. Use it when pushes to the branch are on hold, after you add a
