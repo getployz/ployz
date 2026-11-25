@@ -289,22 +289,27 @@ fn a_registry_cache_is_no_policy() {
 fn a_build_fed_another_attest_key_never_writes_the_clusters_cache_scope() {
     let cluster = X25519Secret::generate().attest();
     let attacker = X25519Secret::generate().attest();
-    let rule = opened(&rule(lab_policy(&[])));
     assert_eq!(
-        cache_scope(&rule, &lab_policy(&[]), &cluster).unwrap(),
+        cache_scope(&lab_policy(&[]), &CommitAuthority::Head, &cluster).unwrap(),
         None
     );
     let cached = BuildPolicy {
         cache: PolicyCache::Actions,
         ..lab_policy(&[])
     };
-    let honest = cache_scope(&rule, &cached, &cluster).unwrap().unwrap();
+    let honest = cache_scope(&cached, &CommitAuthority::Head, &cluster)
+        .unwrap()
+        .unwrap();
     assert_eq!(
-        cache_scope(&rule, &cached, &cluster).unwrap().unwrap(),
+        cache_scope(&cached, &CommitAuthority::Head, &cluster)
+            .unwrap()
+            .unwrap(),
         honest
     );
     assert_ne!(
-        cache_scope(&rule, &cached, &attacker).unwrap().unwrap(),
+        cache_scope(&cached, &CommitAuthority::Head, &attacker)
+            .unwrap()
+            .unwrap(),
         honest
     );
     // Nor the scope of the policy alone, which any key could name.
@@ -314,7 +319,9 @@ fn a_build_fed_another_attest_key_never_writes_the_clusters_cache_scope() {
         ..cached
     };
     assert_ne!(
-        cache_scope(&rule, &other, &cluster).unwrap().unwrap(),
+        cache_scope(&other, &CommitAuthority::Head, &cluster)
+            .unwrap()
+            .unwrap(),
         honest
     );
 }
@@ -328,10 +335,34 @@ fn a_preview_rules_build_reads_and_writes_no_cache_whatever_its_policy_says() {
         pinned: Vec::new(),
     });
     let attest = X25519Secret::generate().attest();
+    let policy = opened(&preview).policy.unwrap();
     assert_eq!(
-        cache_scope(&opened(&preview), &golden_policy(), &attest).unwrap(),
+        cache_scope(&policy, &CommitAuthority::Head, &attest).unwrap(),
         None
     );
+}
+
+/// Cloud relays the rule with its preview terms stripped beside an approval, which only a
+/// preview rule admits: the build still reads and writes no cache.
+#[test]
+fn an_approved_commits_build_reads_and_writes_no_cache_whatever_rule_cloud_relays() {
+    let stripped = rule(golden_policy());
+    let signer = Signer::from_seed(&[7; 32]);
+    let approval = CommitApproval {
+        cluster: stripped.cluster,
+        rule: stripped.rule,
+        generation: stripped.generation,
+        repository_id: stripped.source.repository_id,
+        commit: CommitSha::parse(&"f".repeat(40)).unwrap(),
+        namespace: Namespace::parse("pv-1111111111111111-00000000-0000aaaa").unwrap(),
+        issued_at: stripped.issued_at,
+        signer: SignerKey::Device(signer.public().into()),
+    };
+    let approved = CommitAuthority::Approved(Signed::sign(&approval, &signer).unwrap());
+    let policy = opened(&stripped).policy.unwrap();
+    assert_eq!(policy.cache, PolicyCache::Actions);
+    let attest = X25519Secret::generate().attest();
+    assert_eq!(cache_scope(&policy, &approved, &attest).unwrap(), None);
 }
 
 #[test]
@@ -364,7 +395,7 @@ fn a_cache_scope_is_the_digest_of_its_own_domain_policy_and_attest_key() {
             .chain_update(attest.as_bytes())
             .finalize(),
     );
-    let scope = cache_scope(&opened(&rule(lab_policy(&[]))), &cached, &attest)
+    let scope = cache_scope(&cached, &CommitAuthority::Head, &attest)
         .unwrap()
         .unwrap();
     assert_eq!(scope, oracle);

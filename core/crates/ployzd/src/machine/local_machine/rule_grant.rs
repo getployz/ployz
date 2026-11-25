@@ -204,6 +204,9 @@ impl LocalMachine {
         let service = rule
             .service(&grant.service)
             .ok_or_else(|| refused(MismatchField::Service))?;
+        let policy = rule
+            .build_policy(&grant.service)
+            .ok_or_else(|| refused(MismatchField::Service))?;
         let qualified =
             ployz_core::QualifiedService::new(rule.namespace.clone(), grant.service.clone());
         self.rule_floor(cluster, &qualified, &rule, now)
@@ -218,8 +221,7 @@ impl LocalMachine {
             rule: rule.rule,
             generation: rule.generation,
             service: grant.service.clone(),
-            policy: PolicyDigest::of(&service.policy)
-                .map_err(|_| refused(MismatchField::Policy))?,
+            policy: PolicyDigest::of(&policy).map_err(|_| refused(MismatchField::Policy))?,
             commit: grant.commit,
             authority: grant.authority.clone(),
             stage: BuildStage::Grant {

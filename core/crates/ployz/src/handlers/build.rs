@@ -258,7 +258,7 @@ fn built_under_rule(
     let mut captured = prepared.capture(Some(opened))?.build;
     captured.pin_local(
         policy.platforms.iter().cloned().collect(),
-        rule::cache_scope(&relayed, &policy, &checked_in.attest)?,
+        rule::cache_scope(&policy, &authority, &checked_in.attest)?,
     );
     let pushed = runtime.block_on(run(captured, &grant, Arc::clone(events), cancellation))?;
     let image = ployz_core::authority::BuiltImageDigest::parse(&pushed.digest)

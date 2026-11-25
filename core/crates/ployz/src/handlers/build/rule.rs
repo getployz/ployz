@@ -61,10 +61,8 @@ impl CheckedIn {
 pub(super) struct Opened {
     pub(super) rule: RuleId,
     pub(super) generation: u64,
-    /// The policy it approves for the built Service; `None` when it names no such Service.
+    /// The policy a build of the Service runs under; `None` when it names no such Service.
     policy: Option<BuildPolicy>,
-    /// A preview rule's build, which runs code no one reviewed.
-    preview: bool,
 }
 
 /// Check the relayed rule's signature and take what the build needs for `service`.
@@ -81,10 +79,7 @@ pub(super) fn open(
     Ok(Opened {
         rule: rule.rule,
         generation: rule.generation,
-        policy: rule
-            .service(service)
-            .map(|approved| approved.policy.clone()),
-        preview: rule.preview.is_some(),
+        policy: rule.build_policy(service),
     })
 }
 
@@ -186,9 +181,10 @@ pub(super) fn built_claim(
 }
 
 /// The Actions cache scope of a rule build: a digest of its policy and of `attest`, the
-/// attest key its secrets opened with. `None` keeps the cache off, and a preview rule's
-/// build always has it off: GitHub lets a branch read the default branch's cache, and
-/// a preview's code would read what honest builds wrote, and write what they read.
+/// attest key its secrets opened with. `None` keeps the cache off. A preview rule's policy
+/// has it off ([`AutoDeployRule::build_policy`]), and the grant's audience binds that
+/// policy, so a rule relayed as no preview's gets no grant. A build of a commit a person
+/// approved, which only a preview rule admits, has it off whatever the relayed rule says.
 ///
 /// BuildKit leaves secret values out of its cache keys, so a scope shared with a build
 /// that opened values from another key would let that build's layers into honest
@@ -198,14 +194,13 @@ pub(super) fn built_claim(
 /// admitted, built with the Cluster's own values, and a build fed another key writes a
 /// scope no honest build reads.
 pub(super) fn cache_scope(
-    rule: &Opened,
     policy: &BuildPolicy,
+    authority: &CommitAuthority,
     attest: &AttestKey,
 ) -> Result<Option<String>, Error> {
-    match policy.cache {
-        PolicyCache::Actions if rule.preview => Ok(None),
-        PolicyCache::Off => Ok(None),
-        PolicyCache::Actions => {
+    match (policy.cache, authority) {
+        (PolicyCache::Off, _) | (PolicyCache::Actions, CommitAuthority::Approved(_)) => Ok(None),
+        (PolicyCache::Actions, CommitAuthority::Head) => {
             let policy = PolicyDigest::of(policy).map_err(Error::command)?;
             let scope = Sha256::new()
                 .chain_update(separation::BUILD_CACHE)

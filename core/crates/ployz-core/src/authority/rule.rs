@@ -440,6 +440,20 @@ impl AutoDeployRule {
         self.services.iter().find(|service| service.name == *name)
     }
 
+    /// The policy a build of `name` runs under, which its claim's digest binds: the one the
+    /// rule approves, with the Actions cache off under a preview rule. GitHub lets any
+    /// branch read the default branch's cache, so a preview's unreviewed code would read
+    /// what honest builds wrote, and write what they read. A builder told the rule is no
+    /// preview's digests the cache it would turn on, which the Machine refuses.
+    #[must_use]
+    pub fn build_policy(&self, name: &ServiceName) -> Option<BuildPolicy> {
+        let mut policy = self.service(name)?.policy.clone();
+        if self.preview.is_some() {
+            policy.cache = PolicyCache::Off;
+        }
+        Some(policy)
+    }
+
     /// Check a verified GitHub token's claims against this rule, in the order the body
     /// runs them. The audience is the caller's: it depends on the holder, recipient or
     /// image in hand. A build of a commit a person approved runs on Cloud's dispatch, so the
@@ -859,8 +873,8 @@ impl AutoDeployRule {
         }
         let requested = creation.spec.to_requested();
         let policy = self
-            .service(facts.service)
-            .map(|service| PolicyDigest::of(&service.policy));
+            .build_policy(facts.service)
+            .map(|policy| PolicyDigest::of(&policy));
         first_mismatch([
             (
                 MismatchField::Cluster,

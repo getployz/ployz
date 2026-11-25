@@ -1638,7 +1638,7 @@ async fn rule_proofs(
         if proofs.contains(service) {
             continue;
         }
-        let approved = rule.service(service);
+        let approved = rule.build_policy(service);
         let receipt = receipts.get(service);
         let commit = claimed
             .sources
@@ -1651,7 +1651,7 @@ async fn rule_proofs(
         };
         let (Ok(image), Ok(policy)) = (
             BuiltImageDigest::parse(&receipt.image.reference),
-            PolicyDigest::of(&approved.policy),
+            PolicyDigest::of(&approved),
         ) else {
             continue;
         };

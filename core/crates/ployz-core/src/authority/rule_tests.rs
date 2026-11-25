@@ -1119,7 +1119,12 @@ fn create_in(
     if pinned {
         rule.verify_pinned(&facts, creation)
     } else {
-        rule.verify_creation(&built(), &facts, creation).map(|_| ())
+        // A preview rule's build runs with its cache off, so its claim digests that policy.
+        let claim = BuildClaim {
+            policy: PolicyDigest::of(&rule.build_policy(&spec.name).unwrap()).unwrap(),
+            ..built()
+        };
+        rule.verify_creation(&claim, &facts, creation).map(|_| ())
     }
 }
 

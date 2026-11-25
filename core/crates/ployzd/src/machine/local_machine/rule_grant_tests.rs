@@ -702,6 +702,35 @@ async fn a_rule_a_passkey_answered_with_its_own_prompt_mints() {
     assert!(admitted.is_ok(), "{:?}", admitted.err());
 }
 
+/// A preview rule's build runs with the Actions cache off whatever its policy says, and the
+/// grant binds that: a builder Cloud told the rule is no preview's digests the cache on,
+/// and gets no grant, so no secrets and no build.
+#[tokio::test]
+async fn a_preview_rules_grant_binds_its_cache_off() {
+    let fixture = fixture().await;
+    let cached = |rule: &mut AutoDeployRule| {
+        previewing(rule);
+        rule.preview.as_mut().unwrap().pushers = Vec::new();
+        rule.services[0].policy.cache = PolicyCache::Actions;
+    };
+    fixture
+        .admit_changed("off", |rule, claim, _| {
+            cached(rule);
+            claim.policy = PolicyDigest::of(&rule.build_policy(&web()).unwrap()).unwrap();
+        })
+        .await
+        .unwrap();
+    refused(
+        fixture
+            .admit_changed("on", |rule, claim, _| {
+                cached(rule);
+                claim.policy = PolicyDigest::of(&rule.service(&web()).unwrap().policy).unwrap();
+            })
+            .await,
+        "an audience",
+    );
+}
+
 /// A fork's commit builds once a person approves it for one preview, though Cloud's
 /// dispatch ran on another commit, the branch head is a third, and the rule's pushers
 /// leave out the dispatcher. Without the approval the same build is refused, and an
