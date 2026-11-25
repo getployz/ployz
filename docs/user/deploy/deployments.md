@@ -323,8 +323,8 @@ that builds from source builds under its
 with the deploy when it needs to. When no rule can cover it, `ployz deploy` stops before it signs:
 `No automatic deploy rule covers web as it stands, so your servers won't build it. Turn on Deploy every push, then deploy again.`
 It also stops when you turned automatic deploys off, and when it can't read the rule, saying so.
-A Git push or a dashboard **Deploy** that builds from source with no rule, or under one you turned
-off, fails at its build: your servers refuse it with
+A Git push that builds from source with no rule, or under one you turned off, fails at its build,
+and so does a dashboard **Deploy** with no rule. Your servers refuse it with
 `This server runs only builds an approved device starts.`
 
 If `ployz deploy` can't reach your servers before it signs, it warns and deploys

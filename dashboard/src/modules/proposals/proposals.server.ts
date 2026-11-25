@@ -12,7 +12,7 @@ import { protector } from "#/modules/config-store/protected.server";
 import { OWNER_OR_ADMIN } from "#/modules/operations/gate.server";
 import { withoutSealedBefore } from "#/modules/config-store/store-diff";
 import { environmentProtected, findService } from "#/modules/config-store/store-lookup.server";
-import { isPending, moved, namesReview, versionService } from "#/modules/deploy-approval/deploy-tap";
+import { isPending, moved, namesReview, underRule, versionService } from "#/modules/deploy-approval/deploy-tap";
 import { prepareDeployTap } from "#/modules/deploy-approval/deploy-tap.server";
 import { refusal, refused, type StoreRefusal } from "#/lib/refusal";
 import { oauthCaller } from "#/modules/identity/caller.server";
@@ -631,7 +631,7 @@ const approvedDeploy = Effect.fn("Proposals.approvedDeploy")(function* (decider:
   const signed = new Set(versions.map(versionService));
   const kept = (command.versions ?? []).filter((version) => !signed.has(versionService(version)));
   const covered = new Set([...kept, ...versions].map(versionService));
-  const open = (planned.plan.unsigned ?? []).filter(({ service }) => !covered.has(service));
+  const open = (planned.plan.unsigned ?? []).filter((entry) => !covered.has(entry.service) && !underRule(entry));
   if (open.length > 0 && planned.tap.kind === "refused") return refuse(planned.tap.message);
   if (open.length > 0 && planned.tap.kind === "ready") return refuse("Sign this deploy with your passkey on its approval page.");
   return { step: { ...step, deploy: { ...step.deploy, command: { ...ruleless(command), versions: [...kept, ...versions] } } } satisfies DeployStep };

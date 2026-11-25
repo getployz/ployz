@@ -134,7 +134,8 @@ keep, or the one the deploy signs, covers it. When neither does, `ployz deploy` 
 signs:
 `No automatic deploy rule covers web as it stands, so your servers won't build it. Turn on Deploy every push, then deploy again.`
 **Deploy** in the dashboard starts, and the deployment fails at that service's build. Your servers
-refuse it with `This server runs only builds an approved device starts.`
+refuse it with `This server runs only builds an approved device starts.` When you turned automatic
+deploys off, **Deploy** stops before it starts instead.
 
 A deploy that waits for an owner or admin in a Protected Environment signs no rule, and approving
 it leaves the rule as it was.
