@@ -2,6 +2,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
+import { tolerateForeignDom } from "#/lib/foreign-dom";
 import { asTestDouble } from "#/lib/test-double";
 import type { ClusterNameControl } from "#/modules/cluster-name/cluster-name.hooks";
 import * as doorsFunctions from "#/modules/ingress/doors.functions";
@@ -86,6 +87,7 @@ function translate(root: HTMLElement) {
 }
 
 it("gets the install command on a page the browser translated", async () => {
+  tolerateForeignDom();
   let answer!: () => void;
   const token = { token: "pflt_first", id: "token-1", name: "brisk-otter", expiresAt: "2026-10-24T10:00:00Z", cloudOrigin: "https://ployz.dev", ployzVersion: "1.2.3" };
   vi.spyOn(fleetTokenFunctions, "createFleetTokenServerFn").mockReturnValue(new Promise((settle) => { answer = () => settle(token); }));
