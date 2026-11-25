@@ -62,9 +62,23 @@ pub struct SourceAsked {
     pub machines: Vec<MachineId>,
     /// The repository owner's GitHub ID.
     pub owner_id: u64,
-    /// The kept rule's builder when absent, else Ployz's own release.
+    /// When absent, the kept rule's builder, or Ployz's own release for a new rule or when
+    /// the person turns the rule on.
     #[serde(default)]
     pub builder: Option<Builder>,
+    /// The branch the person turns Deploy every push on for, or approves again. Only
+    /// Automatic deploys names one: it always signs the next generation, a rule they ended
+    /// starts again, and with several branches it follows this one.
+    #[serde(default)]
+    pub on: Option<PushBranch>,
+}
+
+/// A branch a rule follows: the repository's GitHub ID and the branch's name.
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PushBranch {
+    pub repository_id: u64,
+    pub branch: String,
 }
 
 impl SourceAsked {
@@ -86,8 +100,13 @@ impl SourceAsked {
             minted: Births::new(),
         };
         let kept = basis.kept();
+        // Turning the rule on pins Ployz's own release, so a builder Ployz stopped trusting
+        // is replaced there; a Save or Deploy keeps the builder someone approved.
         let builder = (self.builder)
-            .or_else(|| kept.as_ref().map(|kept| kept.source.builder.clone()))
+            .or_else(|| match self.on {
+                Some(_) => None,
+                None => kept.as_ref().map(|kept| kept.source.builder.clone()),
+            })
             .unwrap_or_else(Builder::pinned);
         let terms = RuleTerms {
             cluster,
@@ -101,7 +120,7 @@ impl SourceAsked {
             issued_at,
             signer: SignerKey::Passkey(super::OwnPrompt::Passkey),
         };
-        let Some(mut rule) = source_rule(&mut basis, terms)? else {
+        let Some(mut rule) = source_rule(&mut basis, terms, self.on.as_ref())? else {
             return Ok(None);
         };
         rule.proposal = Some(place);
@@ -111,7 +130,8 @@ impl SourceAsked {
 
 /// The rule a tap signs as its Source step for what `basis` reads, under `terms`, or none
 /// when the kept rule still approves every Service a push deploys on every Server it may
-/// place one on. A rule the person ended stays ended: only turning it on again signs one.
+/// place one on. A rule the person ended stays ended unless `on` turns it on again. With
+/// `on` the person asked for the rule, so it is signed even when the kept one approves.
 /// `terms.new_rule` names the rule when none is kept, and seeds the births it mints.
 ///
 /// # Errors
@@ -119,13 +139,15 @@ impl SourceAsked {
 pub fn source_rule(
     basis: &mut RuleBasis,
     terms: RuleTerms,
+    on: Option<&PushBranch>,
 ) -> Result<Option<AutoDeployRule>, RuleDraftError> {
-    let Some(names) = eligible(basis) else {
+    let Some(names) = eligible(basis, on) else {
         return Ok(None);
     };
     let kept = basis.kept();
     let rule = AutoDeployRule::draft(basis, &names, terms)?;
-    Ok((!kept.is_some_and(|kept| approves(&kept, &rule, &basis.target))).then_some(rule))
+    let approved = on.is_none() && kept.is_some_and(|kept| approves(&kept, &rule, &basis.target));
+    Ok((!approved).then_some(rule))
 }
 
 /// What a Save needs to keep pushes deploying, read from the Store's rule view alone,
@@ -148,7 +170,7 @@ pub enum SourceNeed {
 /// names stands in for the Cluster's, which only a Server reports.
 #[must_use]
 pub fn source_need(basis: &RuleBasis) -> SourceNeed {
-    let Some(names) = eligible(basis) else {
+    let Some(names) = eligible(basis, None) else {
         return SourceNeed::None;
     };
     let Some(kept) = basis.kept() else {
@@ -174,11 +196,22 @@ pub fn source_need(basis: &RuleBasis) -> SourceNeed {
     }
 }
 
-/// The Services a Save's Source step covers: those whose push deploys, on the one branch
-/// they build from. None when the person ended the rule, which stays ended until they turn
-/// it on again, or when they build from several branches, where a person picks the one
-/// that deploys on push.
-fn eligible(basis: &RuleBasis) -> Option<Vec<ServiceName>> {
+/// The Services a Source step covers: those whose push deploys, on the one branch they
+/// build from, or on `on` when the person turns the rule on for it. Without `on`, none
+/// when the person ended the rule, which stays ended until they turn it on again, or when
+/// they build from several branches, where the person picks one.
+fn eligible(basis: &RuleBasis, on: Option<&PushBranch>) -> Option<Vec<ServiceName>> {
+    if let Some(on) = on {
+        let names: Vec<ServiceName> = (basis.sources.iter())
+            .filter(|source| {
+                source.on_push
+                    && source.repository_id == on.repository_id
+                    && source.branch.as_deref() == Some(on.branch.as_str())
+            })
+            .map(|source| source.service.clone())
+            .collect();
+        return (!names.is_empty()).then_some(names);
+    }
     if basis.kept().is_some_and(|kept| kept.ended) {
         return None;
     }
@@ -194,10 +227,11 @@ fn eligible(basis: &RuleBasis) -> Option<Vec<ServiceName>> {
     (!names.is_empty() && branches.len() == 1).then_some(names)
 }
 
-/// Whether `kept` approves what `next` would: the same rule, branch, builder and Services,
-/// and every Server `next` names unless no Service it covers is placed by its spec.
+/// Whether `kept` approves what `next` would: on, with the same rule, branch, builder and
+/// Services, and every Server `next` names unless no Service it covers is placed by its spec.
 fn approves(kept: &AutoDeployRule, next: &AutoDeployRule, target: &[RequestedServiceSpec]) -> bool {
-    kept.rule == next.rule
+    !kept.ended
+        && kept.rule == next.rule
         && kept.namespace == next.namespace
         && kept.source.repository_id == next.source.repository_id
         && kept.source.branch == next.source.branch

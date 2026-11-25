@@ -472,7 +472,7 @@ fn source(
         issued_at,
         signer,
     };
-    let mut rule = match source_rule(&mut basis, terms) {
+    let mut rule = match source_rule(&mut basis, terms, None) {
         Ok(Some(rule)) => rule,
         Ok(None) => return ruled(None),
         Err(error) => {
@@ -524,8 +524,8 @@ fn forgetting(approved: &[ApprovedChange]) -> String {
          of one that opens a secret, mounts a volume, pulls its image with a login or reaches \
          its server. Running containers keep running. An automatic deploy rule for these \
          services stops, and Ployz Cloud can't move or drain the containers it built, until \
-         you approve it again with ployz github rule approve <service>..., which also \
-         approves the commit now at the head of its branch.",
+         you approve again under Automatic deploys in Ployz Cloud, which also approves \
+         the commit now at the head of its branch.",
         services.join(", ")
     )
 }

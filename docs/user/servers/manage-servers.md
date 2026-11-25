@@ -338,9 +338,9 @@ sudo ployz key add pk1_…
 It changes only the server you run it on, and names the servers that still don't trust the key.
 Run it on each of them. It also takes a device's key, as `ployz server add --command` prints it.
 It reaches the server through its local socket, which admits root and members of the `ployz`
-group, so anyone in that group can add a key. Until a server trusts your passkey, approve rules
-from an approved device with `ployz github rule approve`, and turn Private Access on with
-`ployz private-access on`.
+group, so anyone in that group can add a key. Until a server trusts your passkey, deploy from an
+approved device with `ployz deploy`, which also signs the automatic deploy rule unless you turned
+it off, and turn Private Access on with `ployz private-access on`.
 
 `ployz device ls` lists each passkey under your devices as `passkey, approve-only`, with its
 account and who approved it on each server: a device, or `on <server>` for that server's own

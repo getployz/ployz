@@ -18,8 +18,9 @@ use crate::id::{BranchName, RepositoryId};
 use crate::storage::Tx;
 use crate::{Actor, EnvironmentId, EnvironmentRef, EnvironmentSummary, Trusted, error, scope};
 
-/// Keep the rule a Device or passkey signed for an Environment. Cloud checks only that it fits
-/// the Environment; the Machines check the signature.
+/// Keep the generation a Device or passkey signed to turn an Environment's rule off. Cloud
+/// checks only that it fits the Environment; the Machines check the signature. A rule that
+/// deploys is signed with a Save or a Deploy, which carries it as [`SavedRule`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct ApproveRule {
@@ -140,13 +141,37 @@ pub(crate) fn opened(rule: &Signed<AutoDeployRule>) -> Option<AutoDeployRule> {
     rule.open().ok()
 }
 
-/// Keep `c.rule` as its Environment's rule. A rule for another Namespace, or one that
-/// doesn't supersede the one kept, is refused: every Machine would refuse it.
+/// Keep `c.rule`, which turns its Environment's rule off. A rule that deploys is refused,
+/// as an older CLI's `ployz github rule approve` sends it: only a Save or a Deploy signs
+/// one. Under the Environment's lock, only the kept rule's next generation ends it, so an
+/// Off read before the rule moved to another branch or generation saves nothing. So is a
+/// rule for another Namespace: every Machine would refuse it.
 pub(crate) fn approve(tx: &mut dyn Tx, who: &Actor, c: &ApproveRule) -> Result<RuleView, RpcError> {
+    if opened(&c.rule).is_some_and(|rule| !rule.ended) {
+        return Err(error::invalid(RULE_APPROVE_GONE, json!({})));
+    }
     let environment = scope::lock(tx, who, &c.environment)?;
+    let kept = stored(tx, &environment.summary.id)?
+        .as_ref()
+        .and_then(opened);
+    let ends_kept = opened(&c.rule).is_some_and(|rule| {
+        kept.as_ref().is_some_and(|kept| {
+            kept.rule == rule.rule && kept.generation.checked_add(1) == Some(rule.generation)
+        })
+    });
+    if !ends_kept {
+        return Err(error::conflict(
+            "The rule changed since this page loaded. Reload.",
+            json!({}),
+        ));
+    }
     keep(tx, who, &environment, (&c.rule, &c.births))?;
     view_of(tx, who, &environment, None, false)
 }
+
+/// What an older CLI's `ployz github rule approve` is told, and this one's hidden verb.
+pub const RULE_APPROVE_GONE: &str =
+    "ployz github rule approve is gone. Turn on Deploy every push in Ployz Cloud.";
 
 /// Keep the rule a Save's or Deploy's tap signed, once it saved under `environment`'s
 /// lock, unless the rule kept moved since the tap read it. A rule the person ended since
@@ -457,18 +482,9 @@ pub(crate) fn changed(
 
 /// Why a push waits for the rule's next approval.
 pub(crate) fn reapprove(changed: &[ServiceName]) -> String {
-    let names = changed
-        .iter()
-        .map(ServiceName::as_str)
-        .collect::<Vec<_>>()
-        .join(" ");
+    let names: Vec<&str> = changed.iter().map(ServiceName::as_str).collect();
     format!(
-        "{} changed since the automatic deploy rule was approved. Approve it again in the \
-         environment's settings, or run ployz github rule approve {names}.",
-        changed
-            .iter()
-            .map(ServiceName::as_str)
-            .collect::<Vec<_>>()
-            .join(", "),
+        "{} changed since the automatic deploy rule was approved. Approve again under Automatic deploys.",
+        names.join(", ")
     )
 }

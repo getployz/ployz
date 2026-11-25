@@ -356,7 +356,7 @@ mod tests {
                 blank.push(format!("{path} {}", arg.get_id()));
             }
         }
-        for sub in command.get_subcommands() {
+        for sub in command.get_subcommands().filter(|sub| !sub.is_hide_set()) {
             undescribed(sub, &format!("{path} {}", sub.get_name()), blank);
         }
     }
