@@ -324,6 +324,11 @@ impl SwitchGuard {
                         placed: on_root,
                         ..
                     }) if readonly || held != epoch || image.is_some() && on_root != image => {
+                        // Only the record would change: it names the image another holder may
+                        // run from, so it's rewritten only when nothing else holds the Volume.
+                        if !readonly && held == epoch {
+                            self.refuse_other_holder(start.as_ref(), &name).await?;
+                        }
                         let request = WriterRequest {
                             name: name.clone(),
                             at,
@@ -575,6 +580,27 @@ impl LocalMachine {
             .call::<Copy>(route, request)
             .await
             .map_err(Error::StoragePreparation)
+    }
+
+    /// Refuses while a Container other than `start`'s own runs on the Volume, before a
+    /// promote rewrites the record of the image that holder runs from.
+    async fn refuse_other_holder(
+        &self,
+        start: Option<&Start>,
+        name: &DockerVolumeName,
+    ) -> Result<(), Error> {
+        let me = match start {
+            Some(start) => self
+                .start_observed(start)
+                .await?
+                .map(|observed| observed.container_id),
+            None => None,
+        };
+        Ok(self
+            .docker()?
+            .volumes()
+            .refuse_beside_except(name, me.as_ref())
+            .await?)
     }
 
     /// Whether the Writer's start already runs. It runs when Docker runs the Container

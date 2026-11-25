@@ -1070,3 +1070,36 @@ async fn a_release_under_another_pull_policy_runs_the_image_its_move_recorded() 
     let holder = only_container(node);
     assert_eq!(node.container(holder).unwrap()["Image"], recorded.as_str());
 }
+
+/// A record names the image the holder on the root runs from, so a start of another
+/// spec at the same snapshot and epoch leaves it alone while that holder runs: it is
+/// refused before the promote, and the running holder's resend still finds its image.
+#[tokio::test]
+async fn a_start_beside_another_running_holder_keeps_that_holders_record() {
+    let fleet = Fleet::start().await;
+    let plugin = plugin(
+        slot(Some(snapshot())),
+        WRITER_ROUTE,
+        writer_root(1, Some(snapshot())),
+    );
+    let destination = fleet.with_plugin(1, &plugin);
+    let start = |service: &str| {
+        json!({"name":VOLUME, "expect":{"kind":"mirror", "newest":"7", "slot":"1"},
+            "want":{"kind":"writer", "at":"7", "epoch":1, "start":{
+                "kind":"create", "namespace":"app", "resolved_spec":spec(service),
+                "creation_key":format!("move-{service}"), "gen":2,
+                "rotation":{"in":{"run":null, "expect":"pending"}}}}})
+    };
+    let record = || plugin.replies.lock().unwrap()[INSPECT_ROUTE]["Ok"]["placed"].clone();
+
+    set_copy(&destination, start("api")).await;
+    let api = record();
+    assert!(api.is_string(), "{api}");
+
+    let refused = try_set_copy(&destination, start("worker"))
+        .await
+        .expect_err("api holds the Volume");
+    assert!(refused.contains("api"), "{refused}");
+    assert_eq!(promotes(&plugin), 1);
+    assert_eq!(record(), api);
+}
