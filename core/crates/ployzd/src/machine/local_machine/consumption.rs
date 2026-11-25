@@ -99,7 +99,11 @@ impl Consumption {
         if rule.branch != mark.branch {
             return refused(MismatchField::Branch);
         }
-        if rule.registry != mark.registry {
+        // A registry rule's newer generation may name another repository: the person
+        // switched it on Automatic deploys, which ends the one before.
+        let switched =
+            rule.generation > mark.generation && rule.registry.is_some() && mark.registry.is_some();
+        if rule.registry != mark.registry && !switched {
             return refused(MismatchField::Repository);
         }
         if rule.namespace != &mark.namespace {
@@ -116,7 +120,10 @@ impl Consumption {
             registry: rule.registry.clone(),
             namespace: rule.namespace.clone(),
         });
-        mark.generation = mark.generation.max(rule.generation);
+        if rule.generation > mark.generation {
+            mark.generation = rule.generation;
+            mark.registry.clone_from(&rule.registry);
+        }
     }
 
     /// `now`, raised to the highest time this log has taken, so a clock turned back
@@ -742,7 +749,9 @@ impl ConsumptionLog {
                 });
             if hooks.generation > generation {
                 // A newer approval landed after this one was admitted.
-                return Err(refused(AuthorityRefusal::Mismatch { field: run }));
+                return Err(refused(AuthorityRefusal::Mismatch {
+                    field: MismatchField::Generation,
+                }));
             }
             if hooks.generation < generation {
                 *hooks = RegistryHooks {

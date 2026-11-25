@@ -73,3 +73,35 @@ fn a_copy_step_is_taken_once_and_kept_across_a_restart() {
         Err(Error::CopyRefused(AuthorityRefusal::Expired))
     ));
 }
+
+/// A creation admitted under one approval whose hook place a newer approval took first is
+/// refused as superseded, not as a hook that already ran.
+#[test]
+fn a_registry_hook_under_an_older_approval_says_a_newer_one_replaced_it() {
+    use ployz_core::authority::{RegistryPin, RegistrySource, RuleId};
+    let dir = tempfile::tempdir().unwrap();
+    let log = ConsumptionLog::new(dir.path());
+    let rule = RuleId::from_bytes([0x11; 16]);
+    let service = ServiceName::parse("web").unwrap();
+    let pin = RegistryPin {
+        source: RegistrySource {
+            host: "ghcr.io".to_owned(),
+            repository: "acme/web".to_owned(),
+        },
+        digest: ployz_core::ImageDigest::parse(format!("sha256:{}", "a".repeat(64))).unwrap(),
+    };
+    let slot = |key: &str| ployz_core::CreationKey::try_from(key.to_owned()).unwrap();
+    log.consume_registry_hook((rule, 3), &service, &pin, &slot("k1"), Error::DeployRefused)
+        .unwrap();
+    let older =
+        log.consume_registry_hook((rule, 2), &service, &pin, &slot("k2"), Error::DeployRefused);
+    assert!(
+        matches!(
+            older,
+            Err(Error::DeployRefused(AuthorityRefusal::Mismatch {
+                field: MismatchField::Generation
+            }))
+        ),
+        "{older:?}"
+    );
+}

@@ -669,6 +669,11 @@ pub struct VersionsView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub rule: Option<Box<RuleProof>>,
+    /// The sealed login the Service's newest Deployment pulled with, when `rule` is a
+    /// registry rule: its Server pulls the image itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub registry_login: Option<ployz_core::SealedLogin>,
 }
 
 /// What `organization` keeps for the spec `query` names: its signed versions and, for an
@@ -683,17 +688,44 @@ pub(crate) fn versions(
 ) -> Result<VersionsView, RpcError> {
     let service = (&query.namespace, &query.service);
     let versions = versions_for(tx, organization, service, query.digest)?;
-    let rule = match query.image {
+    let (rule, registry_login) = match query.image {
         Some(image) => match crate::build::verified_proof(tx, organization, service, image)? {
-            Some(proof) => Some(proof),
-            None => registry_proof(tx, organization, service)?,
+            Some(proof) => (Some(proof), None),
+            None => match registry_proof(tx, organization, service)? {
+                Some(proof) => (Some(proof), frozen_login(tx, organization, service)?),
+                None => (None, None),
+            },
         },
-        None => None,
+        None => (None, None),
     };
     Ok(VersionsView {
         versions,
         rule: rule.map(Box::new),
+        registry_login,
     })
+}
+
+/// The sealed login `service`'s newest Deployment in `namespace` froze for it, if any.
+fn frozen_login(
+    tx: &mut dyn Tx,
+    organization: &str,
+    (namespace, service): (&Namespace, &ServiceName),
+) -> Result<Option<ployz_core::SealedLogin>, RpcError> {
+    let rows = tx.query(
+        "SELECT logins FROM config_deployment \
+         WHERE organization_id = ?1 AND namespace = ?2 AND number IS NOT NULL \
+         AND logins <> '{}' \
+         ORDER BY number DESC",
+        &[organization.into(), namespace.as_str().into()],
+    )?;
+    for row in &rows {
+        let mut logins: BTreeMap<ServiceName, ployz_core::SealedLogin> =
+            row.json(0, "Deployment logins")?;
+        if let Some(login) = logins.remove(service) {
+            return Ok(Some(login));
+        }
+    }
+    Ok(None)
 }
 
 /// The proof a copy of `service` in `namespace` takes under its Environment's registry

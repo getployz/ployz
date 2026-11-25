@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use ployz_core::{
-    MachineId, Namespace, Region, ResolvedServiceSpec, RpcError,
+    MachineId, Namespace, Region, ResolvedServiceSpec, RpcError, SealedLogin,
     authority::{RuleProof, ServiceVersion, Signed},
 };
 use ployz_store::{ConfigStore, OrganizationId, VersionsView};
@@ -36,6 +36,10 @@ pub enum VolumeStartProof {
         #[serde(skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         rule: Option<Box<RuleProof>>,
+        /// The sealed login a registry rule's start pulls the image with.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        registry_login: Option<SealedLogin>,
     },
     /// No version signs this spec and no rule built its image.
     Unsigned,
@@ -121,6 +125,7 @@ fn admitting(
                 spec: Box::new(spec),
                 versions: view.versions,
                 rule: view.rule,
+                registry_login: view.registry_login,
             };
         }
         off_rule |= view.rule.is_some();
@@ -317,7 +322,14 @@ mod tests {
                     Vec::new()
                 };
                 let rule = Some(Box::new(rule_omitting_every_machine()));
-                (spec, VersionsView { versions, rule })
+                (
+                    spec,
+                    VersionsView {
+                        versions,
+                        rule,
+                        registry_login: None,
+                    },
+                )
             })
             .collect();
 

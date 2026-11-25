@@ -1277,3 +1277,38 @@ async fn a_proof_of_one_source_admits_nothing_under_the_other() {
         source
     );
 }
+
+// Catches a rule switched to another repository on Automatic deploys leaving the
+// repository before it approved on a Server that took the switch.
+#[tokio::test]
+async fn switching_a_registry_rule_to_another_repository_ends_the_one_before() {
+    let fixture = fixture().await;
+    let web = fixture.registry_rule(3, &["web"]);
+    let proof = fixture.registry_proof(&web);
+    let deploy = |key| want("service_container", key, &registry_spec("web", IMAGE));
+    fixture
+        .pull_deploy(&deploy("k1"), &proof, &FixedRegistry::default())
+        .await
+        .unwrap();
+    let mut api = fixture.registry_rule(4, &["web"]);
+    api.source =
+        ployz_core::authority::RuleSource::Registry(ployz_core::authority::RegistrySource {
+            host: "ghcr.io".to_owned(),
+            repository: "acme/api".to_owned(),
+        });
+    fixture
+        .machine
+        .approvals
+        .mark_rule(&api, Admit::Record, |refusal| {
+            Error::RuleDeployRefused(RuleDeployRefusal::Rule(refusal))
+        })
+        .expect("a newer generation may move a registry rule to another repository");
+    assert_eq!(
+        refused_admission(
+            fixture
+                .pull_deploy(&deploy("k2"), &proof, &FixedRegistry::default())
+                .await
+        ),
+        "a generation"
+    );
+}

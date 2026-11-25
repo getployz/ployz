@@ -595,6 +595,8 @@ const createOn = Effect.fn("VolumeRun.createOn")(function* (
     rotation: container.rotation === "in" ? { in: { run: null, expect: "pending" } } : "pending",
     versions: proof.versions,
     ...(proof.rule !== undefined && { rule: proof.rule }),
+    // A registry rule's Server pulls the image itself, with the Service's login.
+    ...(proof.registry_login !== undefined && { registry_login: proof.registry_login }),
   };
   return { ok: true, start } as const;
 }, Effect.scoped);

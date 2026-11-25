@@ -475,8 +475,9 @@ impl AutoDeployRule {
     }
 
     /// The rule that deploys every image pushed to `source` for `names`, with their Saved
-    /// settings in `basis`: the kept rule's next generation when it is a registry rule for
-    /// the same repository and Environment, else a new rule's first. Births are minted as
+    /// settings in `basis`: the kept rule's next generation when it is a registry rule in
+    /// the same Environment, for this repository or another, so a Server that takes it
+    /// refuses the generation before; else a new rule's first. Births are minted as
     /// [`Self::draft`] mints them. The rule builds nothing, so `terms`' builder, platform
     /// and owner are not read.
     ///
@@ -535,9 +536,7 @@ impl AutoDeployRule {
         machines.sort_unstable();
         machines.dedup();
         let (rule, generation) = match basis.kept() {
-            Some(kept)
-                if kept.namespace == basis.namespace && kept.source.registry() == Some(source) =>
-            {
+            Some(kept) if kept.namespace == basis.namespace && kept.source.registry().is_some() => {
                 (kept.rule, kept.generation + 1)
             }
             _ => (terms.new_rule, 1),

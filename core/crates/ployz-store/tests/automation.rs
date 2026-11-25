@@ -3337,3 +3337,80 @@ fn a_registry_rule_covers_each_digest_of_its_repository_and_nothing_else() {
         assert!(worker(&store), "{image} needs a tap");
     }
 }
+
+// Catches a moved Volume's start, or any copy a registry rule admits away from its Deploy,
+// reaching its Server with no login, so the Server's own pull of a private image fails.
+#[test]
+fn a_registry_rules_proof_comes_with_the_login_the_services_deploy_froze() {
+    let (store, who) = shop();
+    let image = format!("ghcr.io/acme/worker@sha256:{}", "a".repeat(64));
+    store
+        .write(
+            &who,
+            &ployz_store::CreateService {
+                id: ployz_store::ServiceLineageId::parse("00000000-0000-4000-8000-000000000006")
+                    .unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("worker").unwrap(),
+                image: Some(image.clone()),
+                template: None,
+            },
+        )
+        .unwrap();
+    set(
+        &store,
+        &who,
+        "worker.registryCredential",
+        ployz_store::testing::sealed_login_for("ghcr.io", "worker"),
+    );
+    publish(&store, &who);
+    let rule = signed_registry_rule(&store, &who, 1);
+    save_with_rule(&store, &who, &staged_version(&store, &who), (rule, None)).unwrap();
+    store
+        .write_trusted(
+            &who,
+            &ployz_store::Admit::Deploy(ployz_store::Deploy {
+                id: ployz_store::DeploymentId::parse("00000000-0000-4000-8000-000000000108")
+                    .unwrap(),
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+                prune: false,
+                no_prune: false,
+                versions: Vec::new(),
+                copies: Vec::new(),
+                recreate: Vec::new(),
+                rule: None,
+            }),
+            &Trusted::default(),
+        )
+        .unwrap();
+    let view: ployz_store::RuleView = store
+        .read(
+            &who,
+            &ployz_store::RuleQuery {
+                environment: EnvironmentRef::default(),
+                staged: false,
+            },
+        )
+        .unwrap();
+    let kept = store
+        .versions(
+            &who.organization,
+            &ployz_store::VersionsQuery {
+                namespace: view.namespace,
+                service: ServiceName::parse("worker").unwrap(),
+                digest: ployz_core::authority::PayloadDigest::parse(&"0".repeat(64)).unwrap(),
+                image: ployz_core::authority::BuiltImageDigest::named_by(&image),
+            },
+        )
+        .unwrap();
+    assert!(kept.rule.is_some(), "the registry rule covers worker");
+    assert_eq!(
+        kept.registry_login,
+        Some(ployz_store::testing::login_for("ghcr.io", "worker"))
+    );
+}

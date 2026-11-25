@@ -245,10 +245,10 @@ pub fn source_need(basis: &RuleBasis) -> SourceNeed {
 /// when the person ended the rule, which stays ended until they turn it on again, or when
 /// they build from several branches, where the person picks one.
 ///
-/// A registry rule is only ever turned on: `on` names its repository, and the image
-/// Services of that repository are covered. Without `on`, a kept registry rule that is on
-/// covers the image Services of its repository, so a Save or Deploy that changes their
-/// settings signs its next generation; it never starts one.
+/// A registry rule is signed only on Automatic deploys: `on` names its repository, and
+/// the image Services of that repository are covered. Without `on`, a kept registry rule
+/// covers nothing, so a Save or Deploy signs no generation of it, nor a branch's rule in
+/// its place; a changed setting holds new images until the person approves it again.
 fn eligible(basis: &RuleBasis, on: Option<&SourceOn>) -> Option<Covered> {
     match on {
         Some(SourceOn::Images(on)) => {
@@ -258,11 +258,11 @@ fn eligible(basis: &RuleBasis, on: Option<&SourceOn>) -> Option<Covered> {
         Some(SourceOn::Branch(on)) => return branch_eligible(basis, Some(on)).map(Covered::Branch),
         None => {}
     }
-    if let Some(kept) = basis.kept().filter(|kept| !kept.ended)
-        && let RuleSource::Registry(source) = kept.source
+    if basis
+        .kept()
+        .is_some_and(|kept| kept.source.registry().is_some())
     {
-        let names = basis.image_services(&source);
-        return (!names.is_empty()).then_some(Covered::Images(source, names));
+        return None;
     }
     branch_eligible(basis, None).map(Covered::Branch)
 }

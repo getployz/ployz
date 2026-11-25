@@ -1,7 +1,8 @@
 //! Registry logins through the Store's interface only, on SQLite and on Postgres (see
 //! `backend`): a login arrives only sealed, a new one applies at once, turning
 //! credentials on or off is staged, a Deployment pulls with what it was admitted with,
-//! and the sealed login leaves the Store only through `claim`.
+//! and the sealed login leaves the Store only through `claim`, and beside a registry
+//! rule's proof for a copy the rule admits.
 #![expect(
     clippy::indexing_slicing,
     reason = "Fixed JSON results use indexing; missing entries must fail the test."

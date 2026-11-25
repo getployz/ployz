@@ -94,8 +94,10 @@ approved device, or click **Approve again** so it runs once more.
 
 A server needs to reach the registry whenever it creates a container under the rule, including when
 it takes over containers from a server that left. Changing a setting the rule covers holds new images
-until you click **Approve again**. Turning on **Deploy every push** for a branch turns this off, and
-the reverse: an environment keeps one rule. The switch only appears for an image on a public
+until you click **Approve again**. Saving or deploying never approves it for you. Turning the switch
+on for another repository replaces the approval, and servers then refuse images from the old one.
+Turning on **Deploy every push** for a branch turns this off, and the reverse: an environment keeps
+one rule. The switch only appears for an image on a public
 registry: `localhost`, an IP address or a Ployz host can't be approved. Servers older than this
 release refuse a deploy under the rule and say to upgrade them.
 

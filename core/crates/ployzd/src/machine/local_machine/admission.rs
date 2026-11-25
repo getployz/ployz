@@ -393,6 +393,19 @@ impl AdmittedSpec {
         Self::own(namespace, spec).unwrap()
     }
 
+    /// `spec` admitted with the image a registry rule's pull placed.
+    #[cfg(test)]
+    pub(crate) fn test_pinned(
+        namespace: &Namespace,
+        spec: &ResolvedServiceSpec,
+        pin: ployz_core::ImageDigest,
+    ) -> Self {
+        Self {
+            pin: Some(pin),
+            ..Self::test_signed(namespace, spec)
+        }
+    }
+
     /// `spec` admitted by a Device's signature, for a test that needs a Container another
     /// key made.
     #[cfg(test)]
@@ -741,7 +754,7 @@ impl LocalMachine {
         start: &Start,
     ) -> Result<Option<AdmittedSpec>, Error> {
         let operator = matches!(self.scope_now()?, Scope::Operator);
-        let (namespace, resolved_spec, creation_key, r#gen, rotation, versions, rule, check) =
+        let (namespace, resolved_spec, creation_key, r#gen, rotation, versions, rule, login, check) =
             match start {
                 Start::Kept { container_id } => {
                     if operator {
@@ -758,6 +771,7 @@ impl LocalMachine {
                     rotation,
                     versions,
                     rule,
+                    registry_login,
                     check,
                 } => (
                     namespace,
@@ -767,6 +781,7 @@ impl LocalMachine {
                     rotation,
                     versions,
                     rule,
+                    registry_login,
                     *check,
                 ),
             };
@@ -785,7 +800,8 @@ impl LocalMachine {
                 r#gen: *r#gen,
                 deployment_id: None,
                 registry_auth: None,
-                registry_login: None,
+                // A registry rule's pull opens it only for the image's own registry.
+                registry_login: login.clone(),
                 image_prepared: false,
                 answer: AnswerWhen::default(),
                 image_id: None,

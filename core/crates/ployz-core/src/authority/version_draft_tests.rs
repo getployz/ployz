@@ -508,11 +508,12 @@ fn turning_image_deploys_on_signs_a_registry_rule_over_that_repositorys_services
     assert_eq!(rule.well_formed(), Ok(()));
     // A Save of the same settings signs nothing more.
     assert_eq!(images_saved(Some(&rule), images.clone(), false), None);
-    // A changed setting signs the rule's next generation, still for the registry.
+    // A changed setting signs nothing on a Save: only the card approves it again.
     let mut changed = rule.clone();
     changed.services[0].template =
         crate::authority::PayloadDigest::parse(&"cd".repeat(32)).unwrap();
-    let next = images_saved(Some(&changed), images.clone(), false).unwrap();
+    assert_eq!(images_saved(Some(&changed), images.clone(), false), None);
+    let next = images_saved(Some(&changed), images.clone(), true).unwrap();
     assert_eq!(
         (next.rule, next.generation, next.source),
         (rule.rule, 2, RuleSource::Registry(registry()))
@@ -533,4 +534,31 @@ fn turning_image_deploys_on_signs_a_registry_rule_over_that_repositorys_services
         .map(|service| service.name.as_str())
         .collect();
     assert_eq!(services, ["cache", "web"]);
+}
+
+// Catches the card's switch to another repository starting a second rule, which leaves the
+// first one approving its repository on every Server.
+#[test]
+fn switching_image_deploys_to_another_repository_signs_the_kept_rules_next_generation() {
+    let web = json!([{"service": "web", "image": format!("ghcr.io/acme/web@{DIGEST}")}]);
+    let kept = images_saved(None, web, true).unwrap();
+    let mut asked = saving(Some(&kept), json!([]));
+    let source = asked.source.as_mut().unwrap();
+    source.images = serde_json::from_value(
+        json!([{"service": "web", "image": format!("ghcr.io/acme/api@{DIGEST}")}]),
+    )
+    .unwrap();
+    let api = RegistrySource {
+        host: "ghcr.io".to_owned(),
+        repository: "acme/api".to_owned(),
+    };
+    source.on = Some(SourceOn::Images(PushImages {
+        registry: api.clone(),
+    }));
+    let draft = asked.draft().unwrap().unwrap();
+    let next: AutoDeployRule = from_canonical(&draft.source.unwrap().body).unwrap();
+    assert_eq!(
+        (next.rule, next.generation, next.source),
+        (kept.rule, 2, RuleSource::Registry(api))
+    );
 }

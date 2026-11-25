@@ -199,8 +199,8 @@ impl RuleProofs {
             .collect()
     }
 
-    /// The proof a change of `want` carries: its Service's, or for a step on a Container
-    /// named only by ID, any of the Deploy's, since such a step needs only the rule's
+    /// The proof a change of `want` carries: its Service's, none for a Service no rule
+    /// covers, or for a step on a Container named only by ID, any of the Deploy's, since such a step needs only the rule's
     /// Environment. Once a Server issued a verified build for that Service, the proof
     /// carries it in place of the token, which may have expired since: a pre-deploy hook
     /// can outlast it.
@@ -222,9 +222,10 @@ impl RuleProofs {
                 ContainerLocator::Id(_) => None,
             },
         };
-        let (service, proof) = service
-            .and_then(|service| self.rules.get_key_value(service))
-            .or_else(|| self.rules.iter().next())?;
+        let (service, proof) = match service {
+            Some(service) => self.rules.get_key_value(service)?,
+            None => self.rules.iter().next()?,
+        };
         let mut proof = proof.clone();
         let issued = self
             .issued

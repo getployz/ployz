@@ -8,6 +8,7 @@ import type {
   ExpectedCopy,
   MachineId,
   RuntimeWatchView,
+  SealedLogin,
   SeedVolumeRequest,
   SetVolumeCopyReply,
   SetVolumeCopyRequest,
@@ -1729,6 +1730,17 @@ describe("volume runs", () => {
       expect(checks).toEqual(["fsn-2", "fsn-2"]);
       expect(sent.at(-1)?.want).toMatchObject({ kind: "writer", start: { kind: "create", versions: [] } });
       expect(sent.at(-1)?.want).not.toHaveProperty("start.check");
+    });
+
+    // Catches a Move of a Service a registry rule deploys from a private registry reaching B with no login, so B's own
+    // pull of the image fails.
+    it("carries the Service's registry login to B's Create", async () => {
+      const login: SealedLogin = { host: "registry.example", sealed: "c2VhbGVk" };
+      startProof = (query) => ({ kind: "admits", spec: query.spec, versions: [], registry_login: login });
+
+      await execute(await move());
+
+      expect(sent.at(-1)?.want).toMatchObject({ kind: "writer", start: { kind: "create", registry_login: login } });
     });
 
     it.each([
