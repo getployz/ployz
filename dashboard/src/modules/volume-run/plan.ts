@@ -1,4 +1,4 @@
-import type { ExpectedCopy, MachineName, SlotRole, Snapshot, SnapshotGuid, VolumeCopy } from "@ployz/sdk";
+import type { ExpectedCopy, MachineName, SlotRole, Snapshot, SnapshotGuid, VolumeCopy, WantedCopy } from "@ployz/sdk";
 import { originUpgradeMessage } from "#/modules/runtime/daemon-release";
 import { type DeploymentsSeen, planResize, planUnheld, type ResizePhase } from "#/modules/volume-run/resize";
 import { type AnsweredMember, type ConfirmedCopy, copyName, type Discard, heardFrom, type Member, namesServer, type ReleasePlan, type VolumeRunArgs, type VolumeRunInput } from "#/modules/volume-run/volume-run";
@@ -153,29 +153,37 @@ const isDestination = (args: VolumeRunArgs["move"], member: Member) => namesServ
 
 const refuse = (code: RefusalCode, message: string, next?: string): Planned => ({ ok: false, refusal: { code, message, ...(next !== undefined && { next }) } });
 
-/** Pure: Inngest re-runs it outside any step on every replay, so the same members must plan the same run. */
+/**
+ * Pure: Inngest re-runs it outside any step on every replay, so the same members must plan the same run. A run refused
+ * here on a Server without keep-written stops before any verb. Only a Server seen to lack it is refused, since a look a
+ * Ployz Cloud from before keep-written saved has no answer; `askCopy` reads it again as each delete or replace is sent.
+ */
 export function planFromCopies(input: PlanInput, observed: readonly Member[]): Planned {
   const planned = planCopies(input, observed);
   if (!planned.ok) return planned;
   const unchecked = originUnchecked(planned.phase);
   if (unchecked.length > 0) return refuse("server_lacks", originUpgradeMessage(input.volumeName, unchecked));
-  const older = destroys(planned.phase).find(({ on }) => on.keepsWritten !== true);
-  return older === undefined ? planned : refuse("server_lacks", upgradeFirst(input.volumeName, older));
+  const older = destroys(planned.phase).find(({ on }) => on.keepsWritten === false);
+  return older === undefined ? planned : refuse("server_lacks", upgradeFirst(input.volumeName, older.on.machine.name, older.by));
 }
 
-/** What a run would destroy on a Server: a Forget of a slot holding a copy, or a pull that may replace one. */
-type Destroys = { readonly on: AnsweredMember; readonly by: "forget" | "pull" };
+/** How a step deletes a copy or may replace it: a Forget of a slot holding one, or a pull onto it. */
+export type Destroy = "forget" | "pull";
+
+/** What a run would destroy on a Server. */
+type Destroys = { readonly on: AnsweredMember; readonly by: Destroy };
 
 /**
  * Every copy a run's steps may delete or replace, by the Server that would do it. Every run plans through here, so a
- * new kind says what it destroys. A Release's Forgets are chosen while it runs, so `releaseVolume` asks the same.
+ * new kind says what it destroys. A Release's Forgets are chosen while it runs, so only their send checks them.
  */
 function destroys(phase: Extract<Planned, { ok: true }>["phase"]): Destroys[] {
   switch (phase.kind) {
     case "delete_mirror":
       return phase.destroy.filter(holdsCopy).map((on) => ({ on, by: "forget" }));
+    // A full sync forgets the Mirror whatever it holds, a first pull still running included.
     case "sync":
-      return phase.full && holdsCopy(phase.mirror) ? [{ on: phase.mirror, by: "forget" }] : [];
+      return phase.full ? [{ on: phase.mirror, by: "forget" }] : [];
     case "mirror":
       return mayReplace(phase.target, phase.writer) ? [{ on: phase.target, by: "pull" }] : [];
     case "move":
@@ -205,16 +213,31 @@ export function mayReplace(onto: AnsweredMember, writer: AnsweredMember) {
 }
 
 /**
+ * What one SetVolumeCopy deletes or may replace on its Server, read from the request alone: a Forget that says discard
+ * or names a slot holding a snapshot, or a pull onto such a slot unless the slot's newest is `adds`, the Writer's
+ * snapshot the pull adds to. A Forget of a Writer drops only its run snapshots.
+ */
+export function destroyedBy(expect: ExpectedCopy, want: WantedCopy, adds?: SnapshotGuid): Destroy | null {
+  if (want.kind === "forget") return want.discard === true || expect.kind === "mirror" ? "forget" : null;
+  if (want.kind !== "mirror" || want.from === null || expect.kind !== "mirror") return null;
+  return expect.newest === adds ? null : "pull";
+}
+
+const keepless = (name: string, server: string, by: Destroy) => {
+  const copy = copyName(name, server);
+  const effect = by === "forget" ? `would delete ${copy}` : `would replace ${copy} with a fresh copy`;
+  return `Upgrade ${server} first. Its Ployz ${effect} even if it holds writes no other Server has`;
+};
+
+/**
  * Why a run stops before it destroys a copy on a Server whose Ployz can't keep one that may hold writes no other Server
  * has: it can't say whether its copy holds such writes, ignores which copy a delete confirmed, and replaces a copy it
  * can't pull onto.
  */
-export function upgradeFirst(name: string, { on, by }: Destroys) {
-  const server = on.machine.name;
-  const copy = copyName(name, server);
-  const effect = by === "forget" ? `would delete ${copy}` : `would replace ${copy} with a fresh copy`;
-  return `Upgrade ${server} first. Its Ployz ${effect} even if it holds writes no other Server has, so nothing was changed`;
-}
+export const upgradeFirst = (name: string, server: string, by: Destroy) => `${keepless(name, server, by)}, so nothing was changed`;
+
+/** Why a step wasn't sent: its Server, as it reports itself when the step would go, can't keep such a copy. */
+export const upgradeBeforeSend = (name: string, server: string, by: Destroy) => `${keepless(name, server, by)}, so it wasn't asked to`;
 
 /**
  * Whether a slot may hold writes no other Server has: its Server says so, or its Ployz can't say. A delete no one chose

@@ -1,4 +1,4 @@
-import type { ContainerId, ExpectedCopy, MachineId, SlotRole, Snapshot, VolumeCopy, WantedCopy } from "@ployz/sdk";
+import type { ContainerId, ExpectedCopy, MachineId, SlotRole, Snapshot, SnapshotGuid, VolumeCopy, WantedCopy } from "@ployz/sdk";
 import { Effect, Option } from "effect";
 import { NonRetriableError } from "inngest";
 import { attemptLifecycle } from "#/modules/inngest/attempt-lifecycle";
@@ -11,7 +11,7 @@ import { PATIENCE, PATIENCE_WAITS, waitsFor } from "#/modules/volume-run/patienc
 import { type DeploymentsSeen, gb, gbAtLeast, type ResizePhase, type ResizeStep, type SizeDirection, type SizeOutcome, undoOnRefusal } from "#/modules/volume-run/resize";
 import { type RecordAnswer, recordVolumeSize, resizeCopy } from "#/modules/volume-run/volume-size.server";
 import { fenceTaken } from "#/modules/volume-run/volume-run.deploy.server";
-import { alreadyOn, committedWriter, epochOf, expectOf, forgetExpect, type ForwardRelease, holdingNewest, keptMessage, observedEpoch, type Planned, planForwardRelease, planFromCopies, type Refusal, releaseKept, ROLE_NOUN, stillConfirmed, unconfirmedDelete, withdrawnMessage } from "#/modules/volume-run/plan";
+import { alreadyOn, committedWriter, epochOf, expectOf, forgetExpect, type ForwardRelease, holdingNewest, keptMessage, newestGuid, observedEpoch, type Planned, planForwardRelease, planFromCopies, type Refusal, releaseKept, ROLE_NOUN, stillConfirmed, unconfirmedDelete, withdrawnMessage } from "#/modules/volume-run/plan";
 import { type AnsweredMember, copyName, type MachineRef, type Member, type ReleasePlan } from "#/modules/volume-run/volume-run";
 import { claimVolumeRun, closeStaleVolumeRuns, closeVolumeRun, endRun, failAndRelease, failRun, laneTarget, noteRun, pinDestination, recordRestarted, refuseRun, releaseChangedMessage, runDeploymentsSeen, type RunContext, takeEpoch } from "#/modules/volume-run/volume-run.rows.server";
 import { cleanOrphans, organizationsWithMachines } from "#/modules/volume-run/volume-run.orphans.server";
@@ -192,8 +192,8 @@ async function settle({ step, runEffect, run, runId, attempt }: RunSteps, id: st
   throw new NonRetriableError(`${still} after ${BUSY_CHECKS} checks`);
 }
 
-const setCopy = (steps: RunSteps, id: string, machine: MachineRef, expect: ExpectedCopy, want: WantedCopy, still: string) =>
-  settle(steps, id, setVolumeCopy(steps.run, steps.runId, machine, expect, want), still);
+const setCopy = (steps: RunSteps, id: string, machine: MachineRef, expect: ExpectedCopy, want: WantedCopy, still: string, adds?: SnapshotGuid) =>
+  settle(steps, id, setVolumeCopy(steps.run, steps.runId, machine, expect, want, adds), still);
 
 /** A step whose refusal ends what the run is doing; the caller decides whether that fails the run or releases it. */
 async function mustSet(steps: RunSteps, id: string, machine: MachineRef, expect: ExpectedCopy, want: WantedCopy, still: string) {
@@ -214,10 +214,10 @@ const pulled = (copy: VolumeCopy | null, target: Snapshot) =>
 
 const MAX_DRIFTS = 3;
 
-async function askPullFollowingDrift(steps: RunSteps, id: string, B: MachineRef, copy: VolumeCopy | null, want: WantedCopy, still: string) {
+async function askPullFollowingDrift(steps: RunSteps, id: string, B: MachineRef, copy: VolumeCopy | null, want: WantedCopy, still: string, adds: SnapshotGuid | undefined) {
   let expect = expectOf(copy);
   for (let drift = 0; ; drift += 1) {
-    const answer = await setCopy(steps, drift === 0 ? id : `${id}-drift-${drift}`, B, expect, want, still);
+    const answer = await setCopy(steps, drift === 0 ? id : `${id}-drift-${drift}`, B, expect, want, still, adds);
     if (answer.ok) return answer.copy;
     if (answer.reason !== "mismatch" || answer.copy?.kind !== "slot" || drift === MAX_DRIFTS) throw new NonRetriableError(answer.message);
     expect = expectOf(answer.copy);
@@ -226,17 +226,18 @@ async function askPullFollowingDrift(steps: RunSteps, id: string, B: MachineRef,
 
 /**
  * B pulls `target` from A and the run asks again until the pull lands. Every check resends the same request: it finishes
- * a landed pull, leaves a running one alone, and resumes one a restart of B stopped.
+ * a landed pull, leaves a running one alone, and resumes one a restart of B stopped. `adds` is A's newest before it took
+ * `target`, which a pull onto a slot at that snapshot adds to.
  */
 async function pull(steps: RunSteps, prefix: string, ctx: {
-  readonly B: MachineRef; readonly copy: VolumeCopy | null; readonly from: string; readonly target: Snapshot;
+  readonly B: MachineRef; readonly copy: VolumeCopy | null; readonly from: string; readonly target: Snapshot; readonly adds: SnapshotGuid | undefined;
 }) {
   const { step, run } = steps;
-  const { B, target } = ctx;
+  const { B, target, adds } = ctx;
   const slot = copyName(run.volumeName, B.name);
   const want: WantedCopy = { kind: "mirror", from: ctx.from, target: target.name, drain: DRAIN_MS };
   const still = `${slot} is still busy`;
-  let copy = await askPullFollowingDrift(steps, `${prefix}-pull`, B, ctx.copy, want, still);
+  let copy = await askPullFollowingDrift(steps, `${prefix}-pull`, B, ctx.copy, want, still, adds);
   for (let check = 0; ; check += 1) {
     if (pulled(copy, target)) return copy;
     const failure = copy?.kind === "slot" ? copy.pull?.failure ?? null : null;
@@ -247,17 +248,19 @@ async function pull(steps: RunSteps, prefix: string, ctx: {
     const idle = copy?.kind === "slot" && copy.pull === null;
     // Ids apart from the 5 s checks' `-wait-`/`-repull-`, so a run they started replays none of them into this schedule.
     if (!idle) await step.sleep(`${prefix}-backoff-${check}`, `${wait}s`);
-    copy = await askPullFollowingDrift(steps, `${prefix}-ask-${check}`, B, copy, want, still);
+    copy = await askPullFollowingDrift(steps, `${prefix}-ask-${check}`, B, copy, want, still, adds);
   }
 }
 
 /**
  * Warm rounds: A snapshots `w-<epoch>-<round>` and B pulls it, until B already holds A's newest or the rounds run out.
- * A takes no snapshot when nothing was written, so its newest is then what B pulls.
+ * A takes no snapshot when nothing was written, so its newest is then what B pulls. Returns A's newest too, which the
+ * Move's final pull adds to.
  */
 async function runRounds(steps: RunSteps, ctx: { readonly A: AnsweredMember; readonly B: MachineRef; readonly copy: VolumeCopy | null; readonly epoch: number }) {
   const { A, B, epoch } = ctx;
   let copy = ctx.copy;
+  let newest = newestGuid(A.view.copy) ?? undefined;
   for (let round = 0; round < MAX_ROUNDS; round += 1) {
     const prefix = `03-r${round}`;
     const warmed = await mustSet(steps, `${prefix}-snapshot`, A.machine, { kind: "writer", epoch: epochOf(A) }, {
@@ -266,10 +269,11 @@ async function runRounds(steps: RunSteps, ctx: { readonly A: AnsweredMember; rea
     }, `${A.machine.name} is still busy with ${steps.run.volumeName}`);
     const target = warmed?.newest ?? null;
     if (target === null) throw new NonRetriableError(`${steps.run.volumeName}'s writer on ${A.machine.name} made no snapshot`);
-    if (pulled(copy, target)) return { rounds: round, copy };
-    copy = await pull(steps, prefix, { B, copy, from: A.address, target });
+    if (pulled(copy, target)) return { rounds: round, copy, newest: target.guid };
+    copy = await pull(steps, prefix, { B, copy, from: A.address, target, adds: newest });
+    newest = target.guid;
   }
-  return { rounds: MAX_ROUNDS, copy };
+  return { rounds: MAX_ROUNDS, copy, newest };
 }
 
 /** A full sync forgets the Mirror's copy first, then has the Writer drop its run snapshots. */
@@ -281,8 +285,8 @@ async function mirrorVolume(steps: RunSteps, phase: PhaseOf<"mirror"> | PhaseOf<
   let copy = target.view.copy;
   try {
     if (phase.kind === "sync") {
-      // A bare Forget: the Mirror's Server keeps a copy that may hold writes no other Server has. The plan sends it only
-      // to a Server that advertises so.
+      // A bare Forget: the Mirror's Server keeps a copy that may hold writes no other Server has, and `askCopy` sends it
+      // only to a Server that says it does.
       await mustSet(steps, "03-reset-forget-mirror", B, expectOf(copy), { kind: "forget" }, `${B.name} is still busy with ${run.volumeName}`);
       await mustSet(steps, "03-reset-forget-writer", A.machine, { kind: "writer", epoch: epochOf(A) }, { kind: "forget" }, `${A.machine.name} is still busy with ${run.volumeName}`);
       copy = null;
@@ -612,8 +616,8 @@ async function releaseVolume(steps: RunSteps, phase: PhaseOf<"release">, epoch: 
       epoch,
       start: { kind: "kept", container_id: source.containerId },
     });
-    const doomed: Array<{ machine: MachineRef; expect: ExpectedCopy; role: SlotRole | undefined; keepsWritten: boolean }> = [];
-    for (const { machine, keepsWritten } of from.slots.filter((slot) => slot !== owner)) {
+    const doomed: Array<{ machine: MachineRef; expect: ExpectedCopy; role: SlotRole | undefined }> = [];
+    for (const { machine } of from.slots.filter((slot) => slot !== owner)) {
       const now = await steps.step.run(`04-inspect-${machine.name}`, () => steps.runEffect(inspectCopy(run, steps.runId, machine)));
       if (now?.kind === "root") {
         throw new NonRetriableError(
@@ -621,21 +625,17 @@ async function releaseVolume(steps: RunSteps, phase: PhaseOf<"release">, epoch: 
             + `${run.volumeName}'s Service stays stopped on ${A.name}`,
         );
       }
-      if (now?.kind === "slot" && now.newest?.guid === at.guid) doomed.push({ machine, expect: expectOf(now), role: now.role, keepsWritten: keepsWritten === true });
+      if (now?.kind === "slot" && now.newest?.guid === at.guid) doomed.push({ machine, expect: expectOf(now), role: now.role });
     }
     if (plan !== undefined && doomed.some(({ machine }) => !plan.forgets.includes(machine.id))) throw changed();
     // No one chose these deletes, so a Server keeps a copy that may hold writes no other Server has, and one whose
     // Ployz would delete it whatever it holds is not asked. The release restarts the Service all the same: its floors
     // already keep any older run from making that copy a writer.
     const stays: string[] = [];
-    for (const { machine, expect, role, keepsWritten } of doomed) {
-      if (!keepsWritten) {
-        stays.push(releaseKept(run.volumeName, machine.name, role, true));
-        continue;
-      }
+    for (const { machine, expect, role } of doomed) {
       const forgot = await setCopy(steps, `04-forget-${machine.name}`, machine, expect, { kind: "forget" }, `${machine.name} is still busy with ${run.volumeName}`);
-      if (!forgot.ok && forgot.reason !== "written_here") throw new NonRetriableError(forgot.message);
-      if (!forgot.ok) stays.push(releaseKept(run.volumeName, machine.name, role));
+      if (!forgot.ok && forgot.reason !== "written_here" && forgot.reason !== "server_lacks") throw new NonRetriableError(forgot.message);
+      if (!forgot.ok) stays.push(releaseKept(run.volumeName, machine.name, role, forgot.reason === "server_lacks"));
     }
     const resumed = await resumeA("05-resume");
     if (!resumed.ok) throw new NonRetriableError(resumed.message);
@@ -772,6 +772,9 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, epoch: number
   let stoppedAt: number | null = null;
   let downtime: string | null = null;
   let stays: readonly string[] | null = null;
+  // A's newest before its cut, which B's final pull adds to: what the rounds pulled, or what the run saw when it
+  // resumes at the cut.
+  let adds = newestGuid(phase.writer.view.copy) ?? undefined;
   const note = (id: string, message: string) => step.run(id, () => runEffect(noteRun(run, runId, message)));
 
   if (phase.start === "rounds") {
@@ -790,7 +793,7 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, epoch: number
     service = found.holder.redactedSpec.name;
     await note("02-copying", `Copying to ${B.name}`);
     try {
-      ({ copy } = await runRounds(steps, { A: phase.writer, B, copy, epoch }));
+      ({ copy, newest: adds } = await runRounds(steps, { A: phase.writer, B, copy, epoch }));
     } catch (error) {
       return stopped(steps, "03-failed", error instanceof Error ? error : new Error(String(error)));
     }
@@ -836,7 +839,7 @@ async function moveVolume(steps: RunSteps, phase: PhaseOf<"move">, epoch: number
     }
     const cut = slotAt(source);
     if (cut === null) throw new NonRetriableError(`${copyName(name, A.name)} holds no final snapshot`);
-    if (phase.start !== "start") copy = await pull(steps, "06-final", { B, copy, from: phase.writer.address, target: cut.newest });
+    if (phase.start !== "start") copy = await pull(steps, "06-final", { B, copy, from: phase.writer.address, target: cut.newest, adds });
     const writerEpoch = copy?.kind === "root" ? copy.epoch : epoch;
     await note("07-starting", `Starting ${service} on ${B.name}`);
     const started = await settle(steps, "07-start", commitAndStart(run, runId, {

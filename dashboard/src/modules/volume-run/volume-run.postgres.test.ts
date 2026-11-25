@@ -40,7 +40,7 @@ import type { InngestRunStatus } from "#/modules/inngest/client";
 import { configDeploymentAdmitted } from "#/modules/config-store/config-store.events";
 import { createCloseFinishedVolumeRun, createCloseStaleVolumeRuns, createRunVolume } from "#/modules/volume-run/volume-run.inngest";
 import { operationsOn } from "#/modules/operations/operation-history.server";
-import { askCopy, commitAndStart, commitMove, type CopyAnswer, planVolumeRun, releaseLanesOff, sendSwitch, setVolumeCopy, SwitchAttemptError } from "#/modules/volume-run/volume-run.cluster.server";
+import { askCopy, commitAndStart, commitMove, type CopyAnswer, observeVolumeMembers, planVolumeRun, releaseLanesOff, sendSwitch, setVolumeCopy, SwitchAttemptError } from "#/modules/volume-run/volume-run.cluster.server";
 import { type Caller as RunCaller, closeStaleVolumeRuns, closeVolumeRun, insertRun, isVolumeOwed, listVolumeRuns, requestVolumeRun, requireOwner, resolveVolume, type RunContext, volumeBusyMessage } from "#/modules/volume-run/volume-run.rows.server";
 import { observeOrganization, observeOrganizationCopies, orphanSlotNames, startOrphanDeletes } from "#/modules/volume-run/volume-run.orphans.server";
 import { deleteLeftover, listLeftovers } from "#/modules/volume-run/volume-run.leftovers.server";
@@ -3257,6 +3257,83 @@ describe("volume runs", () => {
       expect(output.result).toEqual({ runId: run.id, rounds: 1 });
       expect(verbs.slice(0, 2)).toEqual(["snapshot@fsn-1(w-1-0)", "snapshot@fsn-1(w-1-0)"]);
       expect(sent[0]).toEqual(sent[1]);
+    });
+  });
+
+  describe("a step that deletes or may replace a copy is sent only to a Server that keeps one written there, as it says at the send", () => {
+    const withoutKeep = ON_PLOYZ_04.filter((capability) => capability !== requirements.volumeKeepWritten.capability);
+    /** The run's look, saved while fsn-2 kept such a copy, replayed after fsn-2 went back to a Ployz that doesn't. */
+    const lookThenDowngrade = async () => {
+      const looked = await runEffect(observeVolumeMembers(organizationId, dockerVolume));
+      named("fsn-2").capabilities = withoutKeep;
+      return [{ id: "01-observe", handler: () => looked }];
+    };
+
+    it("sends no sync --full's Forget", async () => {
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
+      const run = await requested({ kind: "sync", args: { full: true } });
+
+      await execute(run.id, "run-1", await lookThenDowngrade());
+
+      expect(verbs).toEqual([]);
+      expect(machines[1]?.copy).toEqual(slotCopy(base));
+      expect(await rows()).toMatchObject([{
+        state: "failed",
+        message: "Upgrade fsn-2 first. Its Ployz would delete data-fsn-2 even if it holds writes no other Server has, so it wasn't asked to",
+      }]);
+    });
+
+    it("sends no Forget that discards a copy someone confirmed", async () => {
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
+      const run = await confirmedDelete({ slot: "fsn-2", confirmed_name: null, role: "any" }, [
+        { machine: idOf("fsn-2"), slot: "1", newest: base.guid, written_here: false },
+      ]);
+
+      await execute(run.id, "run-1", await lookThenDowngrade());
+
+      expect(verbs).toEqual([]);
+      expect(machines[1]?.copy).toEqual(slotCopy(base));
+      expect(await rows()).toMatchObject([{ state: "failed", message: expect.stringMatching(/^Upgrade fsn-2 first\. Its Ployz would delete data-fsn-2 /) }]);
+    });
+
+    it("sends no pull onto a copy the Writer doesn't hold, and still sends one that adds to the Writer's newest", async () => {
+      const behind = slotCopy(snap("9", "w-0-9"));
+      machines[1] = { name: "fsn-2", pool: true, copy: behind };
+      const replacing = await requested({ kind: "mirror", args: { to: "fsn-2" } });
+
+      await execute(replacing.id, "run-1", await lookThenDowngrade());
+
+      expect(verbs).toEqual(["snapshot@fsn-1(w-1-0)"]);
+      expect(machines[1]?.copy).toEqual(behind);
+      expect((await rows()).at(-1)).toMatchObject({
+        state: "failed",
+        message: "Upgrade fsn-2 first. Its Ployz would replace data-fsn-2 with a fresh copy even if it holds writes no other Server has, so it wasn't asked to",
+      });
+
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
+      named("fsn-1").writes = 1;
+      verbs = [];
+      const adding = await requested({ kind: "mirror", args: { to: "fsn-2" } });
+
+      await execute(adding.id, "run-2", await lookThenDowngrade());
+
+      expect(verbs).toContain("pull@fsn-2(w-2-0)");
+      expect((await rows()).at(-1)).toMatchObject({ state: "done" });
+    });
+
+    it("a run a Ployz Cloud from before keep-written looked at asks the Server, which keeps such a copy now", async () => {
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base) };
+      const run = await requested({ kind: "sync", args: { full: true } });
+      const looked = (await runEffect(observeVolumeMembers(organizationId, dockerVolume))).map((each) => {
+        if (!each.answered) return each;
+        const { keepsWritten: _, ...unrecorded } = each;
+        return unrecorded;
+      });
+
+      await execute(run.id, "run-1", [{ id: "01-observe", handler: () => looked }]);
+
+      expect(verbs.slice(0, 2)).toEqual(["forget@fsn-2", "forget@fsn-1"]);
+      expect(await rows()).toMatchObject([{ state: "done" }]);
     });
   });
 

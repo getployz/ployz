@@ -349,6 +349,11 @@ copy it can't add to with a full one, whatever the copy holds. It can't say whet
 writes no other server has, so Ployz Cloud sends it nothing that would delete or replace a copy.
 Nothing was changed. Upgrade the server, then run the command again.
 
+Ployz Cloud checks the server's Ployz again as it sends each such step. If the server went back to
+such a Ployz after the command started, the command stops there with `..., so it wasn't asked to`
+in place of `so nothing was changed`. The copy is as it was, and steps that came before it, like a
+snapshot of the writer, stay done.
+
 That covers:
 
 - `ployz volume mirror rm`, **Delete copy** in Ployz Cloud and a deploy's delete of a copy there.

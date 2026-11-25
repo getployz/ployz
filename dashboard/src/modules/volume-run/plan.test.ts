@@ -90,6 +90,24 @@ describe("a Server whose Ployz deletes any slot a Forget names", () => {
     expect(outcome(sync(), [member("a", "writer"), older("b", "mirror")])).toBe("sync a->b");
   });
 
+  it("takes no sync --full of a mirror whose first pull hasn't landed yet", () => {
+    const each = older("b", "pulling");
+    if (!each.answered || each.view.copy?.kind !== "slot") throw new Error("a slot");
+    const first: Member = { ...each, view: { copy: { ...each.view.copy, newest: null } } };
+    expect(planFromCopies(sync(true), [member("a", "writer"), first])).toEqual(deletes);
+  });
+
+  it("leaves a Server a Ployz Cloud from before keep-written looked at to the check at each step's send", () => {
+    const unrecorded = (server: string, copy: Copy): Member => {
+      const each = member(server, copy);
+      if (!each.answered) throw new Error("an answered Server");
+      const { keepsWritten: _, ...looked } = each;
+      return looked;
+    };
+    expect(outcome(sync(true), [member("a", "writer"), unrecorded("b", "mirror")])).toBe("sync a->b full");
+    expect(outcome(mirror("b"), [member("a", "writer"), unrecorded("b", "behind")])).toBe("mirror a->b");
+  });
+
   it("takes no mirror or Move onto a copy its pull would replace whole, whatever the copy's snapshot is called", () => {
     for (const onto of [departed("b", false), cutAlone(false), older("b", "behind")]) {
       expect(planFromCopies(mirror("b"), [member("a", "writer"), onto])).toEqual(replaces);
