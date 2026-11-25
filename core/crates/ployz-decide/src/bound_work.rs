@@ -7,20 +7,22 @@
 //! leaves a doubt `D`. A Tie lets the work take another Bound until a key change ends it.
 //! The registry forgets the entry only once it is [`Entry::settled`], and a key change
 //! reports it while it is [`Entry::unconfirmed`], however many key changes later, until a
-//! later look that is evidence clears its doubts.
+//! later look that is evidence clears its doubts. What a change takes out of an entry comes
+//! back to the caller, which drops it only once it let the registry's lock go.
 
 /// What a look at bound work saw of it.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub enum Seen {
-    /// Docker reported the command exited, with its exit code.
-    ExitCode,
     /// The process itself is gone: a reaped child, its pidfd read readable, or its PID and
     /// start time no longer in `/proc`.
     Reaped,
+    /// A read of the cgroup the work ran in found no process the work could be.
+    Absent,
     /// The task that did the work returned and was joined.
     Joined,
-    /// Docker confirmed the Container or helper that ran the work removed, stopped or
-    /// replaced by a new process, so every process of the old one is gone.
+    /// Docker reports the helper Container that took the work (Image Ingest) gone, stopped or
+    /// started again. It runs in a PID namespace of its own, whose first process exits only
+    /// once the kernel ended every other, and Docker reports that exit only after it.
     ContainerGone,
     /// The holder never sent what would start the work.
     NeverSent,
@@ -29,6 +31,9 @@ pub enum Seen {
     /// The work's effect is in place: a look found what it stored. It ended, after the key
     /// change that ended it.
     Landed,
+    /// Docker reported the command exited, with its exit code. Docker also reports one when
+    /// its attach to the command fails while the command runs on.
+    ExitCode,
     /// Reported not running with no exit code, or not stored yet while the process that
     /// took it still runs: it may not have started.
     Pending,
@@ -46,26 +51,29 @@ impl Seen {
     #[must_use]
     pub const fn ended(self) -> bool {
         match self {
-            Self::ExitCode
-            | Self::Reaped
+            Self::Reaped
+            | Self::Absent
             | Self::Joined
             | Self::ContainerGone
             | Self::NeverSent
             | Self::Answered
             | Self::Landed => true,
-            Self::Pending | Self::Forgotten | Self::Unchecked | Self::Busy => false,
+            Self::ExitCode | Self::Pending | Self::Forgotten | Self::Unchecked | Self::Busy => {
+                false
+            }
         }
     }
 
     /// Every sighting, for a model to try each.
-    pub const ALL: [Self; 11] = [
-        Self::ExitCode,
+    pub const ALL: [Self; 12] = [
         Self::Reaped,
+        Self::Absent,
         Self::Joined,
         Self::ContainerGone,
         Self::NeverSent,
         Self::Answered,
         Self::Landed,
+        Self::ExitCode,
         Self::Pending,
         Self::Forgotten,
         Self::Unchecked,
@@ -104,12 +112,15 @@ impl<D> Entry<D> {
     }
 
     /// A Bound goes, its holder having last seen `seen`. Unless that is evidence the work
-    /// ended, `doubt` stays.
-    pub fn release(&mut self, seen: Seen, doubt: D) {
+    /// ended, `doubt` stays; otherwise it comes back.
+    #[must_use = "drop what comes back once the registry's lock is let go"]
+    pub fn release(&mut self, seen: Seen, doubt: D) -> Option<D> {
         self.holders = self.holders.saturating_sub(1);
-        if !seen.ended() {
-            self.doubts.push(doubt);
+        if seen.ended() {
+            return Some(doubt);
         }
+        self.doubts.push(doubt);
+        None
     }
 
     /// The last Tie went, so the work takes no Bound again.
@@ -123,14 +134,17 @@ impl<D> Entry<D> {
     }
 
     /// A later look saw `seen` of the work each doubt `looked` picks. Only evidence that it
-    /// ended clears them: whether it cleared any.
-    pub fn confirm(&mut self, seen: Seen, mut looked: impl FnMut(&D) -> bool) -> bool {
+    /// ended clears them: the doubts it cleared.
+    #[must_use = "drop what comes back once the registry's lock is let go"]
+    pub fn confirm(&mut self, seen: Seen, looked: impl FnMut(&D) -> bool) -> Vec<D> {
         if !seen.ended() {
-            return false;
+            return Vec::new();
         }
-        let before = self.doubts.len();
-        self.doubts.retain(|doubt| !looked(doubt));
-        self.doubts.len() != before
+        let (cleared, kept) = std::mem::take(&mut self.doubts)
+            .into_iter()
+            .partition(looked);
+        self.doubts = kept;
+        cleared
     }
 
     #[must_use]
@@ -173,14 +187,19 @@ mod tests {
     #[test]
     fn a_doubt_outlives_the_last_tie_and_a_key_change_until_a_look_clears_it() {
         let mut entry = Entry::bound();
-        entry.release(Seen::Unchecked, "unknown");
+        assert_eq!(entry.release(Seen::Unchecked, "unknown"), None);
         entry.untie();
         assert!(!entry.settled());
         assert!(entry.end());
         assert!(entry.unconfirmed());
         assert!(!entry.end(), "a second key change finds it already ended");
         assert!(entry.unconfirmed());
-        assert!(entry.confirm(Seen::Reaped, |_| true));
+        assert_eq!(entry.confirm(Seen::ExitCode, |_| true), Vec::<&str>::new());
+        assert!(
+            entry.unconfirmed(),
+            "an exit code Docker reported is no evidence"
+        );
+        assert_eq!(entry.confirm(Seen::Reaped, |_| true), ["unknown"]);
         assert!(entry.settled());
     }
 
@@ -190,9 +209,9 @@ mod tests {
         assert!(entry.hold());
         entry.end();
         assert!(!entry.hold());
-        entry.release(Seen::ExitCode, ());
+        assert_eq!(entry.release(Seen::Reaped, ()), Some(()));
         assert!(entry.unconfirmed(), "one Bound still holds it");
-        entry.release(Seen::Joined, ());
+        assert_eq!(entry.release(Seen::Joined, ()), Some(()));
         assert!(entry.settled());
     }
 }

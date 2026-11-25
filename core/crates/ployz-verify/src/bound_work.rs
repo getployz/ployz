@@ -14,13 +14,19 @@
 //! passed, runs each doubt's recheck, which sees what a look can see now, and reports the
 //! work while it is unconfirmed. A second key change does the same.
 //!
+//! A recheck can own the work's Tie, as a Build Grant's manifest recheck owns the grant
+//! (`build_grant::commit_manifest`). A key change that clears that doubt drops the recheck,
+//! and with it the Tie, whose drop takes the registry's lock (`Binding::drop`). The registry
+//! drops what a change took out only once it let the lock go (`registry::Locked`).
+//!
 //! The registry's facts about the piece are `ployz_decide::bound_work::Entry`, and which
 //! sighting is evidence the work ended is `ployz_decide::bound_work::Seen::ended`, both
 //! called here. Which sightings a look can make while the work is pending, acting or done is
 //! this model's own statement of the world, [`possible`].
 //!
-//! The property: a key change that reports nothing leaves the removed key's work acting
-//! nowhere and unable to start. Once ended, the work takes no Bound again.
+//! The properties: a key change that reports nothing leaves the removed key's work acting
+//! nowhere and unable to start, and no destructor waits for the registry's lock while its
+//! own key change holds it. Once ended, the work takes no Bound again.
 //!
 //! `Broken` replays earlier registries one flaw at a time. Round 1 (de1319aef3): the last
 //! Tie or Bound going removed the entry with its causes (`untie_forgets`), a key change took
@@ -28,7 +34,10 @@
 //! dropped without a report counted as stopped (`drop_is_evidence`). Round 2 (90fce71b2b)
 //! counted these sightings as an end: an exec Docker reported not running with no exit code
 //! (`pending_ends`), an exec Docker answered 404 for (`forgotten_ends`), a `/proc` read that
-//! failed (`unchecked_ends`), and a build slot another admission held (`busy_ends`).
+//! failed (`unchecked_ends`), and a build slot another admission held (`busy_ends`). Round 3
+//! (108f10b0c7) counted an exit code Docker reported as an end, which it also reports when
+//! its attach failed while the command runs on (`exit_code_ends`), and dropped a doubt it
+//! cleared while it held the registry's lock (`drops_under_lock`).
 //!
 //! Out of scope: more than one piece, more than two Bounds at once, three taken or two key
 //! changes, a recheck that runs while Bounds still go, and a key change that fails before it
@@ -39,11 +48,12 @@ use std::fmt::Write as _;
 use ployz_decide::bound_work::{Entry, Seen};
 use stateright::{Model, Property};
 
-/// A doubt a Bound left: whether a later look can clear it, as Docker can for an exec and
-/// the build slot can for a Build.
+/// A doubt a Bound left: whether a later look can clear it, as the kernel can for an exec
+/// and the build slot can for a Build, and whether that recheck owns the work's Tie.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 struct Doubt {
     recheck: bool,
+    owns_tie: bool,
 }
 
 /// Where the work itself is, whoever sees it.
@@ -56,17 +66,18 @@ enum Phase {
 }
 
 /// Whether a look can see `seen` while the work is in `phase`: a sighting of an end only
-/// once it ended, and absence any time.
+/// once it ended, and absence any time. Docker reports an exit code once its attach failed,
+/// while the command runs on.
 const fn possible(seen: Seen, phase: Phase) -> bool {
     match seen {
-        Seen::ExitCode
-        | Seen::Reaped
+        Seen::Reaped
+        | Seen::Absent
         | Seen::Joined
         | Seen::ContainerGone
         | Seen::NeverSent
         | Seen::Answered
         | Seen::Landed => matches!(phase, Phase::Done),
-        Seen::Pending | Seen::Forgotten | Seen::Unchecked | Seen::Busy => true,
+        Seen::ExitCode | Seen::Pending | Seen::Forgotten | Seen::Unchecked | Seen::Busy => true,
     }
 }
 
@@ -80,8 +91,9 @@ enum Action {
     Stop,
     /// `Bound::stopped`, its holder having last seen this.
     Stopped(Seen),
-    /// `Bound::unconfirmed`, with a recheck or without.
-    Unconfirmed { recheck: bool },
+    /// `Bound::unconfirmed`, with a recheck or without. A recheck that takes the Tie owns
+    /// it from then on, and the holder's own copy goes.
+    Unconfirmed { recheck: bool, takes_tie: bool },
     /// The Bound dropped: its task panicked or was aborted.
     Dropped,
     /// The work's own Tie goes.
@@ -104,6 +116,8 @@ struct State {
     /// Bounds the work ever took, its first included.
     taken: u8,
     tie_held: bool,
+    /// A doubt's recheck owns a Tie of the work.
+    tie_in_recheck: bool,
     changes: u8,
     changing: bool,
     /// A key change returned reporting nothing.
@@ -114,6 +128,10 @@ struct State {
     doubted_live: bool,
     /// A holder reported the work stopped on a sighting that wasn't true.
     misreported: bool,
+    /// A key change cleared the doubt whose recheck owned the Tie, which then went.
+    tie_let_go: bool,
+    /// A destructor waits for the registry's lock, which its own key change holds.
+    deadlocked: bool,
 }
 
 /// An earlier registry, one flaw at a time.
@@ -126,6 +144,8 @@ struct Broken {
     forgotten_ends: bool,
     unchecked_ends: bool,
     busy_ends: bool,
+    exit_code_ends: bool,
+    drops_under_lock: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -138,13 +158,20 @@ const MAX_TAKEN: u8 = 3;
 const MAX_CHANGES: u8 = 2;
 const CLEAN_MEANS_STOPPED: &str =
     "a key change that reports nothing leaves its work acting nowhere and unable to start";
+const NO_REENTRY: &str =
+    "no destructor waits for the registry's lock while its own key change holds it";
+
+/// Whether a Bound or a Tie of the work lives, so its binding does.
+const fn tied(state: &State) -> bool {
+    state.tie_held || state.tie_in_recheck || state.bounds > 0
+}
 
 impl BoundWork {
     /// The registry drops the entry when nothing keeps it: once settled, or in round 1 once
     /// the last Tie and Bound went.
     fn settle(self, state: &mut State) {
         let Some(entry) = &state.entry else { return };
-        let unreferenced = state.bounds == 0 && !state.tie_held;
+        let unreferenced = !tied(state);
         let gone = if self.broken.untie_forgets {
             unreferenced && !state.extracted
         } else {
@@ -162,15 +189,16 @@ impl BoundWork {
             Seen::Forgotten => self.broken.forgotten_ends,
             Seen::Unchecked => self.broken.unchecked_ends,
             Seen::Busy => self.broken.busy_ends,
-            Seen::ExitCode
-            | Seen::Reaped
+            Seen::ExitCode => self.broken.exit_code_ends,
+            Seen::Reaped
+            | Seen::Absent
             | Seen::Joined
             | Seen::ContainerGone
             | Seen::NeverSent
             | Seen::Answered
             | Seen::Landed => false,
         };
-        if ends { Seen::ExitCode } else { seen }
+        if ends { Seen::Reaped } else { seen }
     }
 
     /// A Bound goes, its holder having last seen `seen`, leaving `doubt` without evidence.
@@ -181,8 +209,10 @@ impl BoundWork {
             if !seen.ended() && !entry.is_ended() {
                 state.doubted_live = true;
             }
-            entry.release(seen, doubt);
-            if state.bounds == 0 && !state.tie_held {
+            let _ = entry.release(seen, doubt);
+            if !tied(state)
+                && let Some(entry) = &mut state.entry
+            {
                 entry.untie();
             }
         }
@@ -202,16 +232,23 @@ impl Model for BoundWork {
             bounds: 1,
             taken: 1,
             tie_held: true,
+            tie_in_recheck: false,
             changes: 0,
             changing: false,
             clean: false,
             reported: false,
             doubted_live: false,
             misreported: false,
+            tie_let_go: false,
+            deadlocked: false,
         }]
     }
 
     fn actions(&self, state: &State, actions: &mut Vec<Action>) {
+        // Every other step waits for the lock the stuck key change holds.
+        if state.deadlocked {
+            return;
+        }
         if (state.tie_held || state.bounds > 0)
             && state.bounds < MAX_BOUNDS
             && state.taken < MAX_TAKEN
@@ -231,10 +268,22 @@ impl Model for BoundWork {
                     .map(Action::Stopped),
             );
             actions.extend([
-                Action::Unconfirmed { recheck: true },
-                Action::Unconfirmed { recheck: false },
+                Action::Unconfirmed {
+                    recheck: true,
+                    takes_tie: false,
+                },
+                Action::Unconfirmed {
+                    recheck: false,
+                    takes_tie: false,
+                },
                 Action::Dropped,
             ]);
+            if state.tie_held && !state.tie_in_recheck {
+                actions.push(Action::Unconfirmed {
+                    recheck: true,
+                    takes_tie: true,
+                });
+            }
         }
         if state.tie_held {
             actions.push(Action::Untie);
@@ -283,22 +332,38 @@ impl Model for BoundWork {
                 if state.phase != Phase::Done {
                     state.misreported = true;
                 }
-                self.release(&mut state, seen, Doubt { recheck: true });
+                let doubt = Doubt {
+                    recheck: true,
+                    owns_tie: false,
+                };
+                self.release(&mut state, seen, doubt);
             }
-            Action::Unconfirmed { recheck } => {
-                self.release(&mut state, Seen::Unchecked, Doubt { recheck });
+            Action::Unconfirmed { recheck, takes_tie } => {
+                if takes_tie {
+                    state.tie_held = false;
+                    state.tie_in_recheck = true;
+                }
+                let doubt = Doubt {
+                    recheck,
+                    owns_tie: takes_tie,
+                };
+                self.release(&mut state, Seen::Unchecked, doubt);
             }
             Action::Dropped => {
                 let seen = if self.broken.drop_is_evidence {
-                    Seen::ExitCode
+                    Seen::Reaped
                 } else {
                     Seen::Unchecked
                 };
-                self.release(&mut state, seen, Doubt { recheck: false });
+                let doubt = Doubt {
+                    recheck: false,
+                    owns_tie: false,
+                };
+                self.release(&mut state, seen, doubt);
             }
             Action::Untie => {
                 state.tie_held = false;
-                if state.bounds == 0
+                if !tied(&state)
                     && let Some(entry) = &mut state.entry
                 {
                     entry.untie();
@@ -315,16 +380,34 @@ impl Model for BoundWork {
             }
             Action::Finish { timed_out, look } => {
                 state.changing = false;
+                let mut cleared = Vec::new();
                 let reported = state.entry.as_mut().is_some_and(|entry| {
                     if self.broken.end_extracts {
                         // Round 1 looked at nothing again: what the Bounds said, and the
                         // deadline.
                         !entry.doubts().is_empty() || timed_out && entry.holders() > 0
                     } else {
-                        entry.confirm(self.counted(look), |doubt| doubt.recheck);
+                        cleared = entry.confirm(self.counted(look), |doubt| doubt.recheck);
                         entry.unconfirmed()
                     }
                 });
+                if cleared.iter().any(|doubt| doubt.owns_tie) {
+                    if self.broken.drops_under_lock {
+                        // Round 3 dropped the cleared doubt while it held the registry's lock,
+                        // and the Tie its recheck owned took that lock again.
+                        state.changing = true;
+                        state.deadlocked = true;
+                        return Some(state);
+                    }
+                    // The cleared doubt drops once the key change let the lock go.
+                    state.tie_in_recheck = false;
+                    state.tie_let_go = true;
+                    if !tied(&state)
+                        && let Some(entry) = &mut state.entry
+                    {
+                        entry.untie();
+                    }
+                }
                 if state.extracted {
                     state.entry = None;
                     state.extracted = false;
@@ -345,6 +428,7 @@ impl Model for BoundWork {
             Property::always(CLEAN_MEANS_STOPPED, |_, state: &State| {
                 !(state.clean && state.phase != Phase::Done)
             }),
+            Property::always(NO_REENTRY, |_, state: &State| !state.deadlocked),
             Property::sometimes(
                 "a key change waits for the work to stop and reports nothing",
                 |_, state: &State| state.clean && !state.reported,
@@ -372,6 +456,10 @@ impl Model for BoundWork {
                     "a stop reported on a false sighting clears once a look sees the work end",
                     |_, state: &State| state.misreported && state.reported && state.clean,
                 ),
+                Property::sometimes(
+                    "a key change clears a doubt whose recheck owned the Tie, and the Tie goes",
+                    |_, state: &State| state.tie_let_go && state.clean,
+                ),
             ]);
         }
         properties
@@ -384,15 +472,17 @@ impl crate::harness::Narrated for BoundWork {
         for (n, (state, action)) in path.iter().enumerate() {
             let _ = writeln!(
                 story,
-                "{n:2}. entry={:?} extracted={} phase={:?} bounds={} tie={} changes={} clean={} reported={}{}",
+                "{n:2}. entry={:?} extracted={} phase={:?} bounds={} tie={} tie_in_recheck={} changes={} clean={} reported={} deadlocked={}{}",
                 state.entry,
                 state.extracted,
                 state.phase,
                 state.bounds,
                 state.tie_held,
+                state.tie_in_recheck,
                 state.changes,
                 state.clean,
                 state.reported,
+                state.deadlocked,
                 action.map_or_else(String::new, |action| format!("\n    then {action:?}")),
             );
         }
@@ -509,6 +599,42 @@ mod tests {
             ..Broken::default()
         });
         assert!(saw(&path, Seen::Unchecked));
+    }
+
+    /// Docker's attach to an exec fails while its command runs on, and Docker reports the
+    /// exec not running with exit code 126. Round 3 took the exit code for an end, so the
+    /// key change reported clean while the command ran.
+    #[test]
+    fn an_exit_code_docker_reported_is_no_evidence_the_command_ended() {
+        let path = earlier(Broken {
+            exit_code_ends: true,
+            ..Broken::default()
+        });
+        assert!(saw(&path, Seen::ExitCode));
+    }
+
+    /// A Build Grant's manifest went unanswered, so its doubt's recheck owns the grant and
+    /// its Tie, and the serve loop's own copy goes. Round 3 dropped the doubt a key change
+    /// cleared while it held the registry's lock, and the Tie's drop took that lock again:
+    /// the key change, holding the key-change locks, never returned.
+    #[test]
+    fn a_cleared_doubt_drops_the_tie_it_owns_only_after_the_lock() {
+        let path = breaks(
+            BoundWork {
+                broken: Broken {
+                    drops_under_lock: true,
+                    ..Broken::default()
+                },
+            },
+            NO_REENTRY,
+        );
+        assert!(took(
+            &path,
+            Action::Unconfirmed {
+                recheck: true,
+                takes_tie: true
+            }
+        ));
     }
 
     /// A Build ended Unknown, and its recheck finds the build slot held by an admission still

@@ -25,6 +25,7 @@ mod placement;
 mod recovery;
 pub(crate) use peer_pull::ImageProxy;
 mod private_access;
+mod processes;
 mod spec_store;
 mod standing;
 use standing::Standing;

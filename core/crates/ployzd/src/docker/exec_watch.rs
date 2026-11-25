@@ -1,13 +1,13 @@
 //! An exec's command, followed from its start until evidence that it ended, for the work a
 //! management key started ([`crate::machine::Bound`]).
 //!
-//! Docker answers an exec's attach before it marks the exec running, marks it running before
-//! its process exists, and forgets every exec when it restarts with live-restore while the
-//! command runs on. So the watch takes hold of the command's process, as a pidfd checked to
-//! be in the exec's Container, as soon as Docker reports it, and from then on asks only the
-//! kernel. The evidence an exec ended is an exit code Docker reported, the process seen
-//! gone, or its Container confirmed stopped or removed. Not running with no exit code, a
-//! 404, and a failed look are none.
+//! Docker answers an exec's attach before it marks the exec running, and marks it running
+//! before its process exists. It reports the exec not running, with exit code 126, once its
+//! attach failed while the command runs on, and it forgets every exec when it restarts with
+//! live-restore. So nothing Docker says of an exec is evidence it ended, only the kernel's
+//! word: its process's pidfd read readable, no process at the PID Docker named, or no
+//! process in the Container's cgroup that could be the command. Docker names the process,
+//! and the watch takes hold of it as a pidfd checked to be in the Container's cgroup.
 
 use std::{
     sync::{Arc, OnceLock},
@@ -15,9 +15,9 @@ use std::{
 };
 
 use bollard::models::ExecInspectResponse;
-use ployz_core::ContainerId;
 use rustix::fd::OwnedFd;
 
+use super::processes::Cgroup;
 use crate::machine::{Bound, Seen};
 
 /// How long the command of an exec being stopped has to exit after SIGTERM before SIGKILL,
@@ -40,8 +40,9 @@ const EXIT_CODE_WITHIN: Duration = Duration::from_secs(1);
 pub(super) struct ExecWatch {
     docker: bollard::Docker,
     exec: String,
-    container: ContainerId,
-    /// The command's process once a look saw it in the exec's Container.
+    /// The Container's cgroup, read before Docker was asked to start the command.
+    cgroup: Arc<Cgroup>,
+    /// The command's process once a look saw it in the Container's cgroup.
     process: Arc<OnceLock<OwnedFd>>,
 }
 
@@ -49,7 +50,7 @@ pub(super) struct ExecWatch {
 enum Looked {
     /// Its process, now held.
     Process,
-    /// Evidence it ended, with its exit code when Docker reported one.
+    /// Evidence it ended, with the exit code Docker reported, if any, for its client.
     Ended(Seen, Option<i64>),
     /// No evidence either way: what the look saw, and why.
     Unseen(Seen, ExecStopError),
@@ -78,6 +79,10 @@ pub(super) enum ExecStopError {
     },
     #[error("Docker reports exec {exec}'s process at PID {pid}, which is not in its Container")]
     Elsewhere { exec: String, pid: i64 },
+    #[error(
+        "Docker reports exec {exec} ended without naming its process, and its Container runs a process that may be it"
+    )]
+    Unnamed { exec: String },
     #[error("Could not signal exec {exec}'s command")]
     Signal {
         exec: String,
@@ -92,7 +97,7 @@ pub(super) enum ExecStopError {
     #[error("Docker has not started exec {exec}'s command yet")]
     Starting { exec: String },
     #[error(
-        "Docker no longer knows exec {exec}, as after it restarted, and its process was never seen"
+        "Docker no longer knows exec {exec}, as after it restarted, and its Container runs a process that may be it"
     )]
     Forgotten { exec: String },
 }
@@ -106,11 +111,12 @@ pub(super) enum Unanswered {
 }
 
 impl ExecWatch {
-    pub(super) fn new(docker: bollard::Docker, exec: String, container: ContainerId) -> Self {
+    /// Follow `exec`, whose Container's cgroup was read before Docker was asked to start it.
+    pub(super) fn new(docker: bollard::Docker, exec: String, cgroup: Cgroup) -> Self {
         Self {
             docker,
             exec,
-            container,
+            cgroup: Arc::new(cgroup),
             process: Arc::default(),
         }
     }
@@ -124,13 +130,14 @@ impl ExecWatch {
         format!("exec {}", self.exec.get(..12).unwrap_or(&self.exec))
     }
 
-    /// Completes once the command ended: through its process once held, before that by
-    /// Docker's exit code or its Container gone, looking every `every` while Docker has yet
-    /// to start it or doesn't answer. This watch outlives an `exec` call, bounded by the
-    /// command its caller started, and acts only to stop it.
+    /// Completes once the command ended: through its process once held, before that by the
+    /// Container's cgroup, looking every `every` while Docker has yet to start it or doesn't
+    /// answer. This watch outlives an `exec` call, bounded by the command its caller started,
+    /// and acts only to stop it.
     ///
     /// # Errors
-    /// Docker forgot the exec before its process was seen, so nothing can follow it.
+    /// Docker forgot the exec, or ended it without naming its process, while the Container
+    /// runs a process that may be it, so nothing can follow it.
     pub(super) async fn exited(&self, every: Duration) -> Result<Ended, ExecStopError> {
         loop {
             if let Some(process) = self.process.get() {
@@ -145,7 +152,8 @@ impl ExecWatch {
             match self.look().await {
                 Looked::Process => {}
                 Looked::Ended(seen, exit_code) => return Ok(Ended { seen, exit_code }),
-                Looked::Unseen(Seen::Forgotten, error) => return Err(error),
+                // Docker won't name the process now.
+                Looked::Unseen(Seen::Forgotten | Seen::ExitCode, error) => return Err(error),
                 // ponytail: one inspect per `every` until the process shows; use a Docker
                 // exec wait API if one appears.
                 Looked::Unseen(_, _) => tokio::time::sleep(every).await,
@@ -154,7 +162,7 @@ impl ExecWatch {
     }
 
     /// The exit code Docker reports once it handled the end of the command's process, or
-    /// `None` when it doesn't within [`EXIT_CODE_WITHIN`].
+    /// `None` when it doesn't within [`EXIT_CODE_WITHIN`]. Only the command's client sees it.
     pub(super) async fn exit_code(&self) -> Option<i64> {
         tokio::time::timeout(EXIT_CODE_WITHIN, async {
             loop {
@@ -222,8 +230,8 @@ impl ExecWatch {
         })
     }
 
-    /// Look at the command once, taking hold of its process when Docker reports one in the
-    /// exec's Container.
+    /// Look at the command once, taking hold of its process once Docker names one in the
+    /// Container's cgroup.
     async fn look(&self) -> Looked {
         if self.process.get().is_some() {
             return Looked::Process;
@@ -231,13 +239,33 @@ impl ExecWatch {
         let inspected = match self.inspect().await {
             Ok(Some(inspected)) => inspected,
             // Docker forgets every exec when it restarts, and the command may run on.
-            Ok(None) => return self.unless_container_gone(Seen::Forgotten).await,
+            Ok(None) => {
+                return self
+                    .unless_none_new(
+                        Seen::Forgotten,
+                        None,
+                        ExecStopError::Forgotten {
+                            exec: self.exec.clone(),
+                        },
+                    )
+                    .await;
+            }
             Err(error) => return Looked::Unseen(Seen::Unchecked, error),
         };
-        match (inspected.running, inspected.exit_code, inspected.pid) {
-            (Some(true), _, Some(pid)) if pid > 0 => self.hold(pid).await,
-            (running, Some(code), _) if running != Some(true) => {
-                Looked::Ended(Seen::ExitCode, Some(code))
+        match (inspected.pid.filter(|pid| *pid > 0), inspected.exit_code) {
+            // Docker reports the PID whether or not it says the command still runs.
+            (Some(pid), exit_code) => self.hold(pid, exit_code).await,
+            // Docker's start of the command returned without a process it knows of, and it
+            // starts the exec no more.
+            (None, Some(code)) if inspected.running != Some(true) => {
+                self.unless_none_new(
+                    Seen::ExitCode,
+                    Some(code),
+                    ExecStopError::Unnamed {
+                        exec: self.exec.clone(),
+                    },
+                )
+                .await
             }
             // Docker answers an attach before it marks the exec running, and marks it
             // running before its process exists.
@@ -250,10 +278,10 @@ impl ExecWatch {
         }
     }
 
-    /// Hold the process Docker reports at `pid`, once checked to be in the exec's Container.
-    /// Docker reports the PID until it handles the exit, and by then the PID may name
-    /// another process. Either way, a process gone from that PID means the command's is.
-    async fn hold(&self, pid: i64) -> Looked {
+    /// Hold the process Docker names at `pid`, once the kernel shows it in the Container's
+    /// cgroup. Docker names the PID even once the process is gone, when it may name another
+    /// process. Either way, no process at that PID means the command's is gone.
+    async fn hold(&self, pid: i64, exit_code: Option<i64>) -> Looked {
         let Some(raw) = i32::try_from(pid)
             .ok()
             .and_then(rustix::process::Pid::from_raw)
@@ -262,76 +290,40 @@ impl ExecWatch {
         };
         let process = match rustix::process::pidfd_open(raw, rustix::process::PidfdFlags::empty()) {
             Ok(process) => process,
-            Err(rustix::io::Errno::SRCH) => return Looked::Ended(Seen::Reaped, None),
+            Err(rustix::io::Errno::SRCH) => return Looked::Ended(Seen::Reaped, exit_code),
             Err(error) => {
                 return Looked::Unseen(Seen::Unchecked, self.unread_process(error.into()));
             }
         };
-        let container = match tokio::time::timeout(
-            DOCKER_ANSWER,
-            super::inspect::inspect(&self.docker, self.container.as_str()),
-        )
-        .await
-        {
-            Ok(Ok(Some(container))) if container.has_no_process() => {
-                return Looked::Ended(Seen::ContainerGone, None);
-            }
-            Ok(Ok(Some(container))) => container.pid(),
-            Ok(Ok(None)) => return Looked::Ended(Seen::ContainerGone, None),
-            Ok(Err(error)) => return Looked::Unseen(Seen::Unchecked, self.unread(error.into())),
-            Err(_) => return Looked::Unseen(Seen::Unchecked, self.unread(Unanswered::Late)),
-        };
-        let Some(init) = container else {
-            return Looked::Unseen(Seen::Unchecked, self.elsewhere(pid));
-        };
-        let cgroup = |pid: i64| std::fs::read_to_string(format!("/proc/{pid}/cgroup"));
-        match (cgroup(pid), cgroup(init)) {
-            (Ok(process), Ok(container)) if process == container => {}
-            (Ok(_), Ok(_)) => return Looked::Unseen(Seen::Unchecked, self.elsewhere(pid)),
-            (Err(cause), _) | (_, Err(cause)) => {
-                return Looked::Unseen(Seen::Unchecked, self.unread_process(cause));
-            }
-        }
-        match self.inspect().await {
-            Ok(Some(again)) if again.running == Some(true) && again.pid == Some(pid) => {
+        match self.cgroup.holds(raw.as_raw_nonzero().get()) {
+            Ok(Some(true)) => {
                 let _ = self.process.set(process);
                 Looked::Process
             }
-            Ok(Some(again)) if again.running != Some(true) && again.exit_code.is_some() => {
-                Looked::Ended(Seen::ExitCode, again.exit_code)
-            }
-            Ok(Some(_)) => Looked::Unseen(Seen::Unchecked, self.elsewhere(pid)),
-            Ok(None) => Looked::Unseen(
-                Seen::Forgotten,
-                ExecStopError::Forgotten {
-                    exec: self.exec.clone(),
-                },
-            ),
-            Err(error) => Looked::Unseen(Seen::Unchecked, error),
+            Ok(Some(false)) => Looked::Unseen(Seen::Unchecked, self.elsewhere(pid)),
+            Ok(None) => Looked::Ended(Seen::Reaped, exit_code),
+            Err(cause) => Looked::Unseen(Seen::Unchecked, self.unread_process(cause)),
         }
     }
 
-    /// `seen`, unless Docker confirms the exec's Container stopped or removed, which takes
-    /// every process in it.
-    async fn unless_container_gone(&self, seen: Seen) -> Looked {
-        match tokio::time::timeout(
-            DOCKER_ANSWER,
-            super::inspect::inspect(&self.docker, self.container.as_str()),
-        )
-        .await
-        {
-            Ok(Ok(None)) => Looked::Ended(Seen::ContainerGone, None),
-            Ok(Ok(Some(container))) if container.has_no_process() => {
-                Looked::Ended(Seen::ContainerGone, None)
-            }
-            Ok(Ok(Some(_))) => Looked::Unseen(
-                seen,
-                ExecStopError::Forgotten {
-                    exec: self.exec.clone(),
-                },
+    /// `seen` and `error`, unless the Container's cgroup holds no process that could be an
+    /// exec Docker started since this watch began, as the command's process would be. Asked
+    /// only once Docker will start the command no more.
+    async fn unless_none_new(
+        &self,
+        seen: Seen,
+        exit_code: Option<i64>,
+        error: ExecStopError,
+    ) -> Looked {
+        let cgroup = Arc::clone(&self.cgroup);
+        match tokio::task::spawn_blocking(move || cgroup.may_hold_new_exec()).await {
+            Ok(Ok(false)) => Looked::Ended(Seen::Absent, exit_code),
+            Ok(Ok(true)) => Looked::Unseen(seen, error),
+            Ok(Err(cause)) => Looked::Unseen(Seen::Unchecked, self.unread_process(cause)),
+            Err(failed) => Looked::Unseen(
+                Seen::Unchecked,
+                self.unread_process(std::io::Error::other(failed)),
             ),
-            Ok(Err(error)) => Looked::Unseen(Seen::Unchecked, self.unread(error.into())),
-            Err(_) => Looked::Unseen(Seen::Unchecked, self.unread(Unanswered::Late)),
         }
     }
 
@@ -433,7 +425,7 @@ mod tests {
         let watch = ExecWatch::new(
             docker,
             "slow".into(),
-            ContainerId::parse("a".repeat(64)).unwrap(),
+            Cgroup::read(std::process::id()).unwrap(),
         );
         let _ = watch
             .process

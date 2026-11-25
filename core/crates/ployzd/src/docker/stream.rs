@@ -17,6 +17,7 @@ use tokio::{io::AsyncWriteExt, sync::mpsc};
 use tonic::{Status, Streaming};
 
 use super::exec_watch::{self, ExecStopError, ExecWatch};
+use super::processes::Cgroup;
 use super::{ContainerRuntime, docker_error};
 use crate::logs::{
     JournalError, LogLineStream, LogSource, RawLogEntry, RpcStream, serve_logs, split_at_space,
@@ -207,10 +208,12 @@ impl ContainerRuntime {
         if config.options.command.is_empty() {
             return Err(Status::invalid_argument("exec command cannot be empty").into());
         }
-        self.observation()
+        let container = self
+            .observation()
             .ensure_managed(&config.container_id)
             .await
             .map_err(docker_status)?;
+        let cgroup = exec_cgroup(container.pid()).await?;
         let create = CreateExecOptions {
             attach_stdin: Some(config.options.attach_stdin),
             attach_stdout: Some(config.options.attach_stdout),
@@ -231,11 +234,7 @@ impl ContainerRuntime {
         if caller.is_closed() {
             return Err(Status::cancelled("exec client disconnected").into());
         }
-        let watch = ExecWatch::new(
-            self.docker.client.clone(),
-            created.id.clone(),
-            config.container_id,
-        );
+        let watch = ExecWatch::new(self.docker.client.clone(), created.id.clone(), cgroup);
         let started = self
             .docker
             .client
@@ -322,6 +321,26 @@ impl ContainerRuntime {
             });
         Ok(Box::pin(stream))
     }
+}
+
+/// An exec's command can't be followed without its Container's processes.
+#[derive(Debug, thiserror::Error)]
+#[error("Could not read the Container's processes, so an exec in it could not be followed")]
+struct Unfollowable(#[source] std::io::Error);
+
+/// The cgroup of the Container whose process Docker reports at `init`, read before an exec
+/// in it starts, so the exec's watch can tell the command's process from those already
+/// there. An exec that can't be followed doesn't start.
+async fn exec_cgroup(init: Option<i64>) -> Result<Cgroup, Unstarted> {
+    let init = init
+        .and_then(|pid| u32::try_from(pid).ok())
+        .ok_or_else(|| Status::failed_precondition("the Container has no process to exec in"))?;
+    let read = tokio::task::spawn_blocking(move || Cgroup::read(init))
+        .await
+        .unwrap_or_else(|failed| Err(std::io::Error::other(failed)));
+    read.map_err(|error| {
+        ployz_core::rpc::caused_status(tonic::Code::Internal, &Unfollowable(error)).into()
+    })
 }
 
 /// Forward an attached exec's output until its command ended or its client went away, and
