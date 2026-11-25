@@ -15,7 +15,7 @@ import { alreadyOn, committedWriter, epochOf, expectOf, forgetExpect, type Forwa
 import { type AnsweredMember, copyName, type MachineRef, type Member, type ReleasePlan } from "#/modules/volume-run/volume-run";
 import { claimVolumeRun, closeStaleVolumeRuns, closeVolumeRun, endRun, failAndRelease, failRun, laneTarget, noteRun, pinDestination, recordRestarted, refuseRun, releaseChangedMessage, runDeploymentsSeen, type RunContext, takeEpoch } from "#/modules/volume-run/volume-run.rows.server";
 import { cleanOrphans, organizationsWithMachines } from "#/modules/volume-run/volume-run.orphans.server";
-import { commitAndStart, type CopyAnswer, copyImage, DRAIN_MS, findHolder, findKept, type Holder, inspectCopy, observeMembers, observeReachable, removeContainer, removeKept, sendSwitch, setVolumeCopy, startRefusal, SwitchAttemptError } from "#/modules/volume-run/volume-run.cluster.server";
+import { commitAndStart, type CopyAnswer, copyImage, DRAIN_MS, findHolder, findKept, type Holder, inspectCopy, observeMembers, observeReachable, removeContainer, removeKept, seedFailureMessage, sendSwitch, setVolumeCopy, startRefusal, SwitchAttemptError } from "#/modules/volume-run/volume-run.cluster.server";
 import { type EffectRunner, runInngestEffect } from "#/modules/inngest/run.server";
 import { formatDuration } from "#/utils/relative-time";
 import type { AppServices } from "#/server/runtime.server";
@@ -881,8 +881,8 @@ async function seedVolume({ step, runEffect, run, runId }: RunSteps, phase: Phas
       Effect.catchIf((error) => error instanceof SwitchAttemptError && error.reason === "busy", () => Effect.succeed(null)),
     )));
     if (copy?.kind === "root") break;
-    const failure = copy?.kind === "slot" ? copy.pull?.failure : null;
-    if (failure) return failed("03-failed", `${args.into.name} could not copy ${args.name}: ${failure}`);
+    const failure = seedFailureMessage(copy, args.into.name, args.name, source);
+    if (failure !== null) return failed("03-failed", failure);
   }
 
   await step.run("04-finish", () => runEffect(endRun(run, runId, "done", `${args.into.name} copied from ${run.volumeName} on ${source.name}`)));

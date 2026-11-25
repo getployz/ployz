@@ -6,7 +6,7 @@ import type { AdmitDeploy } from "#/modules/config-store/admit-deploy";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { protector, protectorOnly } from "#/modules/config-store/protected.server";
 import { environmentProtected } from "#/modules/config-store/store-lookup.server";
-import { blocked, isPending, namesReview, versionService } from "#/modules/deploy-approval/deploy-tap";
+import { blocked, isPending, namesReview, underRule, versionService } from "#/modules/deploy-approval/deploy-tap";
 import { prepareDeployTap } from "#/modules/deploy-approval/deploy-tap.server";
 import { type Caller, callerEnvironments, callerPermissions } from "#/modules/identity/actor";
 import type { DeployReview } from "#/modules/proposals/proposal";
@@ -46,7 +46,7 @@ export const linkDeploy = Effect.fn("DeployLink.link")(function* (caller: Caller
   const pending = planned.kind === "refused" && isPending(planned.details);
   if (planned.kind === "refused" && !pending) return null;
   const plan = planned.kind === "plan" ? planned.plan : null;
-  const open = (plan?.unsigned ?? []).filter(({ service }) => !covered.has(service));
+  const open = (plan?.unsigned ?? []).filter((entry) => !covered.has(entry.service) && !underRule(entry));
   const tap = planned.kind === "plan" ? planned.tap : null;
   // Only an agent waits on a person here. Anyone else's Deploy queues as it always did, and each Server checks it.
   if (open.length > 0 && tap?.kind === "refused") return agent ? { refused: refusal("conflict", `${tap.message} Nothing deployed.`) } : null;

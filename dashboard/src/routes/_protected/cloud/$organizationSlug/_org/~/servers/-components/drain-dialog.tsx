@@ -1,10 +1,10 @@
 import { ConfirmDialog } from "#/components/confirm-dialog";
 import { Badge } from "#/components/ui/badge";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "#/components/ui/item";
-import type { DrainDialogRow } from "#/modules/machines/server-drain-view";
+import { type DrainDialogRow, globalsStopDrain } from "#/modules/machines/server-drain-view";
 
 const STAYS = {
-  stops: { badge: "Stops", variant: "destructive", why: "Its only copy runs here" },
+  global: { badge: "Global", variant: "destructive", why: "Runs on every server" },
   data: { badge: "Stays", variant: "warning", why: "Data on this server" },
   unowned: { badge: "Skipped", variant: "secondary", why: "No project owns it" },
 } as const satisfies Record<NonNullable<DrainDialogRow["stays"]>, { badge: string; variant: "destructive" | "warning" | "secondary"; why: string }>;
@@ -14,18 +14,18 @@ const WITH_DATA = { badge: "Moves with data", variant: "secondary", why: "Its vo
 /** "it mounts data and cache" as the dialog's line: "Stays: it mounts data and cache". */
 const staysWhy = (why: string) => `Stays: ${why}`;
 
-/** The plain confirm: what runs here, and which of it won't move or stops. No dry run. */
+/** The plain confirm: what runs here, and which of it won't move. A Global refuses the Drain, so it can't be confirmed. No dry run. */
 export function DrainDialog({ serverName, rows, open, onOpenChange, onConfirm }: {
   serverName: string;
   /** What runs here, the ones a Drain won't move last (`drainDialogRows`). */
   rows: readonly DrainDialogRow[];
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** Gets the Services the dialog showed as stopping: Cloud refuses a Drain that would now stop others. */
-  onConfirm: (stops: readonly string[]) => void;
+  onConfirm: () => void;
 }) {
   const moves = rows.some((row) => row.stays === null);
   const withData = rows.some((row) => row.withData);
+  const globals = rows.filter((row) => row.stays === "global").map((row) => row.name);
   return (
     <ConfirmDialog
       open={open}
@@ -56,16 +56,20 @@ export function DrainDialog({ serverName, rows, open, onOpenChange, onConfirm }:
               {moves ? null : <p>Nothing to move.</p>}
             </>
           )}
-          <p>
-            {withData
-              ? `A service with a volume here moves with its data, one at a time. It stops while its last changes copy.`
-              : `A service whose data can't move with it stays on ${serverName}.`}
-          </p>
+          {globals.length > 0 ? (
+            <p className="text-destructive">{globalsStopDrain(globals)}</p>
+          ) : (
+            <p>
+              {withData
+                ? `A service with a volume here moves with its data, one at a time. It stops while its last changes copy.`
+                : `A service whose data can't move with it stays on ${serverName}.`}
+            </p>
+          )}
         </div>
       }
       actionLabel="Drain"
-      variant={rows.some((row) => row.stays === "stops") ? "destructive" : "default"}
-      onConfirm={() => onConfirm(rows.filter((row) => row.stays === "stops").map((row) => row.key))}
+      actionDisabled={globals.length > 0}
+      onConfirm={onConfirm}
     />
   );
 }

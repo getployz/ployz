@@ -8,6 +8,7 @@ import { unreadable, unreadableEnvironment } from "#/modules/config-store/store-
 import { ownedNamespaces } from "#/modules/config-store/store-namespaces.server";
 import { machineUpdateForPolicyChange, type ServerPolicyChange } from "#/modules/machines/server-policy";
 import { dataCheck, type DataPlan, dataPlan } from "#/modules/machines/server-drain-volumes";
+import { globalsStopDrain } from "#/modules/machines/server-drain-view";
 import { SYSTEM_NAMESPACE, splitQualifiedService } from "#/modules/machines/server-services";
 import { needsAttention, serverStatus } from "#/modules/machines/server-status";
 import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
@@ -18,6 +19,7 @@ import {
   RUNTIME_FRAME_TIMEOUT_MS,
 } from "#/modules/runtime/organization-runtime.server";
 import { dockerVolumeName } from "#/modules/runtime/naming";
+import type { Settle } from "#/modules/runtime/ployz.server";
 import { Conflict } from "#/server/public-error";
 
 const unreachable = () => new Conflict({ userFacing: true, message: SERVERS_UNANSWERED_MESSAGE });
@@ -55,31 +57,59 @@ export function volumeMountLabel(frame: RuntimeWatchView, { id }: DataLossIdenti
 }
 
 /**
+ * Whether the frame's entry heard a Server's daemon answer: `answered`, or `unanswered` once it missed the entry's last
+ * probes, when its rows are only as it last reported them. `pending` until the entry has heard either way, as in a
+ * watch's first frame, sent before any probe. `unsaid` from an entry too old to name who answered, which names only who
+ * missed.
+ */
+export type Heard = "answered" | "unanswered" | "pending" | "unsaid";
+
+export const heardFrom = (frame: RuntimeWatchView, machineId: string): Heard =>
+  frame.unanswered.some((id) => id === machineId) ? "unanswered"
+  : frame.answered === undefined ? "unsaid"
+  : frame.answered.some((id) => id === machineId) ? "answered"
+  : "pending";
+
+/**
+ * How long a Drain reads frames for the entry to hear the drained Server. A watch's first frame comes before any probe,
+ * and the entry names a Server unanswered after two missed probes five seconds apart.
+ */
+const DRAIN_HEARD_MS = 20_000;
+
+/** The frame a Drain plans from: the first that says whether the drained Server answers, or that no longer lists it. */
+export const drainSettle = (machineId: string): Settle => ({
+  settled: (frame) => serverName(frame, machineId) === undefined || heardFrom(frame, machineId) !== "pending",
+  patienceMs: DRAIN_HEARD_MS,
+});
+
+/**
  * An operation as the gate weighs it, with the services a Drain of it acts on and those it moves to another Server.
- * `data` is what the frame says of each Service held by its data here: whether it may move with its Volume. It is a
- * forecast the drain checks again, so it stays out of the preview the approval signs.
+ * `globals` and `heard` refuse it (see `drainRefusal`). `data` is what the frame says of each Service held by its data
+ * here: whether it may move with its Volume. It is a forecast the drain checks again, so it stays out of the preview
+ * the approval signs.
  */
 export type DrainPlan = OperationAsked & {
   readonly targets: QualifiedService[];
   readonly moves: QualifiedService[];
+  readonly globals: QualifiedService[];
+  readonly heard: Heard;
   readonly data: Readonly<Record<string, DataPlan>>;
 };
 
 /**
  * What draining `machineId` does to the Services the Organization's Environments own there, from one frame: each moves,
- * stays (a Volume holds it, which the drain may then move with it), or retires (a Global slot). A Global with no running slot elsewhere
- * is removed outright. Null when the frame has no such Server.
+ * or stays (a Volume holds it, which the drain may then move with it). Any user Service there with a Global copy
+ * anywhere refuses the Drain, owned or not, as the Engine's does. Null when the frame has no such Server.
  */
 export function drainPlan(frame: RuntimeWatchView, owned: ReadonlySet<string>, machineId: string): DrainPlan | null {
   const name = serverName(frame, machineId);
   if (name === undefined) return null;
   const moves: QualifiedService[] = [];
   const stays: QualifiedService[] = [];
-  const retires: QualifiedService[] = [];
-  const effects: DestructiveEffect[] = [];
+  const globals: QualifiedService[] = [];
   for (const service of frame.services) {
     const { namespace } = splitQualifiedService(service.identity);
-    if (namespace === null || namespace === SYSTEM_NAMESPACE || !owned.has(namespace)) continue;
+    if (namespace === null || namespace === SYSTEM_NAMESPACE) continue;
     const slots = service.containers.filter((container) => container.kind === "service_container");
     const here = slots.filter((container) => container.machine_id === machineId);
     const newest = here.reduce<(typeof here)[number] | undefined>(
@@ -87,31 +117,51 @@ export function drainPlan(frame: RuntimeWatchView, owned: ReadonlySet<string>, m
       undefined,
     );
     if (newest === undefined) continue;
-    if (newest.resolved_spec.mode.mode === "global") {
-      retires.push(service.identity);
-      const runsElsewhere = slots.some((container) => container.machine_id !== machineId && container.runtime.state === "running");
-      if (!runsElsewhere) effects.push(removesService(service.identity, service.service_id));
+    if (service.containers.some((container) => container.resolved_spec.mode.mode === "global")) {
+      globals.push(service.identity);
+    } else if (!owned.has(namespace)) {
+      continue;
     } else if (newest.resolved_spec.volumes.length > 0) {
       stays.push(service.identity);
     } else {
       moves.push(service.identity);
     }
   }
-  [moves, stays, retires].forEach((list) => list.sort(byName));
+  [moves, stays, globals].forEach((list) => list.sort(byName));
   const data = Object.fromEntries(stays.map((service) => [service, dataPlan(dataCheck(frame, service, machineId))]));
-  effects.sort((a, b) => byName(a.path, b.path));
   return {
     subject: `server:${machineId}`,
     verb: "drain",
     name,
     // Its attempt keeps the approval, so carrying it again answers that drain.
-    preview: { server: machineId, moves, stays, retires },
-    effects,
-    targets: [...moves, ...stays, ...retires].sort(byName),
+    preview: { server: machineId, moves, stays },
+    effects: [],
+    targets: [...moves, ...stays].sort(byName),
     moves,
+    globals,
+    heard: heardFrom(frame, machineId),
     data,
   };
 }
+
+/** Why a Drain of a Server the frame doesn't list, or that didn't answer it, is refused: nothing says what runs there. */
+export const unseenDrain = (name: string | null) =>
+  `${name ?? "The server"} isn't answering, so Cloud can't tell what draining it would stop. Try again once it answers.`;
+
+/**
+ * Why a Drain of the Server can't go ahead from the frame `plan` read, or null when it may. A Server the entry didn't
+ * hear answer is refused, whether it missed the entry's probes or the entry hadn't heard it yet, as the Engine refuses
+ * one it can't list: its rows may miss a Global that runs there now. An entry too old to say leaves that to the
+ * Engine's listing. So is one that runs a Service with a Global copy: a copy stays routed while it crash-loops, so the
+ * one here could be the last that works.
+ */
+export const drainRefusal = (plan: DrainPlan) => {
+  if (plan.heard === "unanswered" || plan.heard === "pending") {
+    return new Conflict({ userFacing: true, message: unseenDrain(plan.name) });
+  }
+  if (plan.globals.length === 0) return null;
+  return new Conflict({ userFacing: true, message: globalsStopDrain(plan.globals.map((service) => splitQualifiedService(service).name)) });
+};
 
 const servesWeb = ({ machine }: RuntimeWatchView["machines"][number]) => machine.accepts_ingress && machine.public_ip !== null;
 const online = ({ machine, membership }: RuntimeWatchView["machines"][number], unanswered: readonly string[]) =>
@@ -230,13 +280,13 @@ export function removePlan(
   };
 }
 
-export const observe = (organizationId: string) => operationRuntimeFrame(organizationId).pipe(
+export const observe = (organizationId: string, settle?: Settle) => operationRuntimeFrame(organizationId, undefined, settle).pipe(
   Effect.mapError(unreachable),
   Effect.flatMap((frame) => frame === null ? Effect.fail(unreachable()) : Effect.succeed(frame)),
 );
 
 export const planDrain = Effect.fn("ServerOperations.planDrain")(function* (organizationId: string, machineId: string) {
-  const frame = yield* observe(organizationId);
+  const frame = yield* observe(organizationId, drainSettle(machineId));
   return drainPlan(frame, new Set(yield* ownedNamespaces(organizationId)), machineId);
 });
 

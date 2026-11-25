@@ -338,14 +338,14 @@ type RunningService = {
   readonly identity: string;
   readonly name: string;
   readonly namespace: string | null;
-  /** One copy per Server, and where a copy runs now (`servicesOnServers`). */
+  /** Some copy runs one per Server (`servicesOnServers`). */
   readonly global?: boolean;
-  readonly runningOn?: ReadonlySet<string>;
 };
 
-/** A Drain removes a Global it runs here when no other Server runs a copy, as its plan does. */
-const stopsOn = (service: RunningService, machineId: string) =>
-  service.global === true && ![...service.runningOn ?? []].some((id) => id !== machineId);
+/** Why a Drain of a Server running the Services `names`, each with a Global copy, is refused. */
+export const globalsStopDrain = (names: readonly string[]) => names.length === 1
+  ? `${names[0]} runs on every server, and draining could stop its last working copy. Remove it, deploy, then add it back with a replica count.`
+  : `${listNames([...names])} run on every server, and draining could stop their last working copies. Remove each, deploy, then add them back with a replica count.`;
 
 /**
  * What runs here split by whether a Drain acts on it: a Drain leaves Namespaces no Project owns (`strays`) alone. The
@@ -367,10 +367,10 @@ export type DrainDialogRow = {
   readonly name: string;
   readonly namespace: string | null;
   /**
-   * `stops`: a Global Service whose only running copy is here; a Drain stops it. `data`: its data here holds it, as the
-   * Drain's forecast or the latest Drain says. `unowned`: no Project owns it.
+   * `global`: some copy runs on every Server, which refuses the Drain. `data`: its data here holds it, as the Drain's
+   * forecast or the latest Drain says. `unowned`: no Project owns it.
    */
-  readonly stays: "stops" | "data" | "unowned" | null;
+  readonly stays: "global" | "data" | "unowned" | null;
   /** Why its data holds it here, when the forecast says; null otherwise. */
   readonly why: string | null;
   /** The forecast says it moves with its data. */
@@ -383,7 +383,6 @@ export type DrainDialogRow = {
  */
 export function drainDialogRows(
   view: DrainView,
-  machineId: string,
   services: readonly RunningService[],
   strays: ReadonlySet<string>,
   data: Readonly<Record<string, DataPlan>> = {},
@@ -398,8 +397,9 @@ export function drainDialogRows(
   };
   const rows = [
     ...split.drainable.map((service) => row(service,
-      stopsOn(service, machineId) ? "stops" : pinned.has(service.identity) ? "data" : null)),
-    ...split.unowned.map((service) => row(service, "unowned")),
+      service.global === true ? "global" : pinned.has(service.identity) ? "data" : null)),
+    // A Global refuses the Drain whoever owns it, as the Engine refuses one its scope leaves out.
+    ...split.unowned.map((service) => row(service, service.global === true ? "global" : "unowned")),
   ];
   return [...rows.filter((entry) => entry.stays === null), ...rows.filter((entry) => entry.stays !== null)];
 }

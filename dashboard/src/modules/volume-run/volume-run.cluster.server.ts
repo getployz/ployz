@@ -275,7 +275,7 @@ export function switchFailureMessage(
     case "restore_point_gone":
       return `the restore point is gone from ${name} on ${machine.name}`;
     case "stale":
-      return `a newer run took ${fenced} on ${machine.name}`;
+      return `a later run reached ${fenced} on ${machine.name} first`;
     case "foreign":
       return `${fenced} on ${machine.name} is mounted by a Service approved for other data`;
     case "docker_unavailable":
@@ -302,6 +302,20 @@ function unrecognizedMessage(error: PloyzSdkError, machine: MachineRef) {
   return Option.isSome(said) && said.value.message.length > 0
     ? `${machine.name} refused: ${said.value.message}`
     : `${machine.name} refused for a reason this Ployz Cloud doesn't know; upgrade Ployz Cloud`;
+}
+
+/**
+ * The failure a Seed's reply ends its run on, or `null` while the copy runs or once it landed. A copy that failed while
+ * part of it still runs shows as receiving with its failure: no Seed answers that failure until the part exits.
+ */
+export function seedFailureMessage(copy: VolumeCopy | null, into: string, name: string, machine: MachineRef): string | null {
+  if (copy?.kind !== "slot") return null;
+  if (copy.pull?.failure) return `${into} could not copy ${name}: ${copy.pull.failure}`;
+  const state = copy.pull_state;
+  if (state?.kind === "receiving" && state.failure) {
+    return `${into} could not copy ${name}: ${state.failure}. Part of the copy still runs on ${machine.name}; restart the Ployz daemon there or wait for it to exit`;
+  }
+  return null;
 }
 
 /** A cut refused before it stopped anything, since `holder` runs on the Volume beside the Service the run counted. */
@@ -442,7 +456,8 @@ const refused = (message: string): Refused => ({ ok: false, refusal: { code: "in
  * The one Container on `machine` that mounts this Volume, whose Service B starts: `chosen`, the one the run picked
  * before its cut, else a running one over stopped ones, since a Server that enforces device approval keeps the
  * Container an earlier Move's cut stopped. It must be a Service's, the only one running on the Volume, and mount no
- * other data, since only this Volume moves with it.
+ * other data, since only this Volume moves with it. It must not be a Global's copy: a copy stays routed while it
+ * crash-loops, so the one the cut stops could be the last that works.
  */
 const holderOn = (
   ctx: Pick<RunContext, "volumeName" | "dockerVolume">,
@@ -463,6 +478,9 @@ const holderOn = (
   }
   if (holder.kind !== "service_container") {
     return refused(`${holder.display_name} uses ${ctx.volumeName} on ${machine.name}, and a move takes only a Service. Stop it first`);
+  }
+  if (holder.resolved_spec.mode.mode === "global") {
+    return refused(`${holder.resolved_spec.name} runs on every server, and a move takes a Service with a replica count`);
   }
   const others = holder.resolved_spec.volumes.filter(({ source }) =>
     source.kind !== "tmpfs" && !(source.kind === "provisioned" && source.name === ctx.dockerVolume));

@@ -465,3 +465,192 @@ async fn the_start_limit_keeps_a_run_whose_check_in_committed_before_it_settled(
 
     own_server.abort();
 }
+
+/// Shop's `web` from acme/web under an automatic deploy rule a Device signed for
+/// linux/amd64, with Deployments `first` and `then` a person asked for, each pinned to
+/// one commit.
+fn ruled(first: &DeploymentId, then: &DeploymentId) -> (Arc<ConfigStore>, GithubBuildId) {
+    use ployz_core::authority::rule::{
+        BuildPolicy, Builder, PolicyCache, RuleEvent, RuleService, RuleSource, Runner, template,
+    };
+    use ployz_core::authority::{AutoDeployRule, RuleId, Signed, Signer, SignerKey, Timestamp};
+    let (store, who, _) = pinned();
+    store
+        .write_trusted(
+            &who,
+            &ployz_store::Publish {
+                id: None,
+                environment: EnvironmentRef::default(),
+                version: None,
+                message: None,
+                accept_volume_loss: Vec::new(),
+                rule: None,
+            },
+            &Trusted::default(),
+        )
+        .unwrap();
+    let view = store
+        .read(
+            &who,
+            &ployz_store::RuleQuery {
+                environment: EnvironmentRef::default(),
+                staged: false,
+            },
+        )
+        .unwrap();
+    let (Some(spec), Some(source)) = (view.target.first(), view.sources.first()) else {
+        panic!("web builds from acme/web: {view:?}");
+    };
+    let signer = Signer::from_seed(&[7; 32]);
+    let rule = AutoDeployRule {
+        proposal: None,
+        cluster: key(7),
+        rule: RuleId::from_bytes([9; 16]),
+        generation: 1,
+        namespace: view.namespace.clone(),
+        machines: Vec::new(),
+        source: RuleSource {
+            repository_id: 11,
+            owner_id: 1,
+            repository: "acme/web".into(),
+            branch: "main".into(),
+            workflow: ".github/workflows/ployz-build.yml".into(),
+            events: vec![RuleEvent::Push],
+            builder: Builder::pinned(),
+            runner: Runner::GithubHosted,
+        },
+        services: vec![RuleService {
+            name: spec.name.clone(),
+            template: template(spec, &view.namespace).unwrap(),
+            policy: BuildPolicy::derive(
+                &source.root_dir,
+                &source.build,
+                spec,
+                ["linux/amd64".to_owned()].into(),
+                PolicyCache::Off,
+            ),
+            secrets: None,
+        }],
+        issued_at: Timestamp::from_millis(1_800_000_000_000).unwrap(),
+        ended: false,
+        signer: SignerKey::Device(ployz_core::DeviceKey::from_bytes(
+            *signer.public().as_bytes(),
+        )),
+    };
+    store
+        .write(
+            &who,
+            &ployz_store::ApproveRule {
+                environment: EnvironmentRef::default(),
+                rule: Box::new(Signed::sign(&rule, &signer).unwrap()),
+                births: Default::default(),
+            },
+        )
+        .unwrap();
+    let person = Actor {
+        principal: Some(ployz_store::Principal::parse("ada").unwrap()),
+        ..who
+    };
+    let permitted = Trusted {
+        permissions: Some(ployz_store::Permission::ALL.iter().copied().collect()),
+        ..Trusted::default()
+    };
+    let web = ServiceName::parse("web").unwrap();
+    let commit = CommitSha::parse("a".repeat(40)).unwrap();
+    for id in [first, then] {
+        let deploy = Admit::Deploy(Deploy {
+            id: id.clone(),
+            environment: EnvironmentRef::default(),
+            services: Vec::new(),
+            version: None,
+            upload: None,
+            accept_volume_loss: Vec::new(),
+            message: None,
+            prune: false,
+            no_prune: false,
+            versions: Vec::new(),
+            copies: Vec::new(),
+            recreate: Vec::new(),
+            rule: None,
+        });
+        store.write_trusted(&person, &deploy, &permitted).unwrap();
+        store
+            .pin(
+                id,
+                &BTreeMap::from([(web.clone(), commit.clone())]),
+                &Trusted::default(),
+            )
+            .unwrap();
+    }
+    let then = GithubBuildId::parse(&format!("{then}.web")).unwrap();
+    (store, then)
+}
+
+#[tokio::test]
+async fn a_rule_build_needs_the_services_platforms_even_when_a_server_holds_an_unproven_image() {
+    let first = DeploymentId::parse("00000000-0000-4000-8000-000000000201").unwrap();
+    let then = DeploymentId::parse("00000000-0000-4000-8000-000000000202").unwrap();
+    let (store, id) = ruled(&first, &then);
+    // An arm64 Server holds web's image from before the rule, built for this commit; no
+    // Server verified it under the rule.
+    let mut observed = machine('c', "arm");
+    observed.machine.runtime.architecture = "aarch64".into();
+    let holder = observed.machine.id;
+    let image = format!("sha256:{}", "d".repeat(64));
+    let input = store.github_input(&id).unwrap();
+    let fingerprint = ployz::sdk::expected_fingerprints(
+        input.input,
+        BTreeMap::from([(ServiceName::parse("web").unwrap(), input.commit.to_string())]),
+    )
+    .unwrap()
+    .remove(&ServiceName::parse("web").unwrap())
+    .unwrap();
+    let receipt = serde_json::json!({
+        "fingerprint": fingerprint, "variables": "all", "machine_id": holder,
+        "image": { "reference": image, "tags": [], "platforms": ["linux/arm64"], "location": "local" },
+    });
+    let earlier = GithubBuildId::parse(&format!("{first}.web")).unwrap();
+    store
+        .github_end(&earlier, None, &ployz_store::GithubEnd::Built { receipt })
+        .unwrap();
+    let mut service = DeployService::new(observed).sealed_with(key(7));
+    let builds = BuildFixture::default();
+    builds.stores.lock().unwrap().insert(
+        holder,
+        ployz_core::MachineImages {
+            containerd_store: true,
+            images: vec![ployz_core::ImageSummary {
+                id: image.clone(),
+                repo_tags: Vec::new(),
+                created: 0,
+                size: 0,
+                containers: 0,
+                platforms: vec!["linux/arm64".into()],
+                last_tagged: None,
+            }],
+            docker_root: None,
+        },
+    );
+    service.builds = Some(Arc::new(builds));
+    let (address, server) = listening(service).await;
+
+    let started = ployz::sdk::github_start(
+        Arc::clone(&store),
+        id,
+        vec![Connection::tcp(address).with_machine_id(holder)],
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        started.outcome,
+        GithubStart::Skipped {
+            message: "Its automatic deploy rule builds web for linux/amd64, but its servers run \
+                      linux/arm64"
+                .into()
+        },
+        "an amd64 build under the rule couldn't run where web runs"
+    );
+
+    server.abort();
+}

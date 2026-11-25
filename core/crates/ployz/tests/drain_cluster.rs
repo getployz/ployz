@@ -263,11 +263,11 @@ async fn drain_keeps_the_running_image_when_its_tag_moved() {
     );
 }
 
-/// With web-1 taking no Services, draining web-2 retires its Global and leaves every
-/// replicated Service running there, each reported with why, and exits partial.
+/// With web-1 taking no Services, draining web-2 leaves every Service running there,
+/// each reported with why, and exits partial.
 #[tokio::test]
 #[ignore = "informing: requires the privileged Ployz testkit image"]
-async fn drain_leaves_what_it_cannot_move_and_retires_globals() {
+async fn drain_leaves_what_it_cannot_move() {
     let plan = ClusterPlan::new(&format!("l3-drain-stays-{}", process::id()), 2).unwrap();
     let cluster = Cluster::create(plan).unwrap();
     let [web1, web2] = cluster.initialize_two().await.unwrap();
@@ -317,22 +317,16 @@ async fn drain_leaves_what_it_cannot_move_and_retires_globals() {
     let mixed = spec("mixed", serde_json::json!({}));
     let mut newer = mixed.clone();
     newer.container.command = vec!["sleep".into(), "999999".into()];
-    let global = spec(
-        "metrics",
-        serde_json::json!({ "mode": { "mode": "global" } }),
-    );
     let ids = [
         volume.service_id,
         bind.service_id,
         free.service_id,
         mixed.service_id,
     ];
-    let global_id = global.service_id;
-    for spec in [volume, bind, free, mixed, newer, global] {
+    for spec in [volume, bind, free, mixed, newer] {
         create_and_start(&mut client, &web2, spec).await;
     }
     let before = running(&mut client, &ids, 5).await;
-    running(&mut client, &[global_id], 1).await;
 
     let (code, report) = cli_status(&direct, &["--json", "server", "drain", web2.name.as_str()]);
     assert_eq!(
@@ -359,7 +353,6 @@ async fn drain_leaves_what_it_cannot_move_and_retires_globals() {
         };
         reason.to_string()
     };
-    assert_eq!(result("metrics"), DrainOutcome::Retired);
     for (service, reason) in [
         ("volume", format!("its Volume is on {}", web2.name)),
         ("bind", format!("Bind Mount on {}", web2.name)),
@@ -382,9 +375,7 @@ async fn drain_leaves_what_it_cannot_move_and_retires_globals() {
     for service in ["volume", "bind", "free", "mixed"] {
         assert!(remaining.contains(&format!("app/{service}")), "{report}");
     }
-    assert!(!remaining.contains(&"app/metrics".to_owned()));
 
-    running(&mut client, &[global_id], 0).await;
     let after = running(&mut client, &ids, 5).await;
     assert_eq!(on(&after, &web2.id), 5, "nothing moved or was removed");
     assert_eq!(

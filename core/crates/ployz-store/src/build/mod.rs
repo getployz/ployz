@@ -9,11 +9,11 @@ mod sources;
 
 pub use github::{
     GithubBuild, GithubBuildId, GithubClaims, GithubEnd, GithubGrant, GithubHandOff, GithubInput,
-    GithubReport, GithubRun, RunEnd,
+    GithubReport, GithubRule, GithubRun, RunEnd,
 };
 pub(crate) use github::{
     github_authorize, github_build, github_by_run, github_check_in, github_dispatched, github_end,
-    github_input, github_outstanding, github_report, github_rule,
+    github_input, github_outstanding, github_proven, github_report, github_rule,
 };
 pub use proof::{ImageToken, VerifiedClaim};
 pub(crate) use proof::{image_tokens, keep_verified, verified, verified_proof};

@@ -201,11 +201,14 @@ describe("Drain dialog", () => {
     expect(screen.queryByText("Nothing to move.")).toBeNull();
   });
 
-  it("badges a Global Service whose only copy runs here as stopping, and makes Drain destructive", () => {
-    dialog([row("api"), row("agent", "stops")]);
-    expect(within(listed("shop/agent")).getByText("Stops")).toBeTruthy();
-    expect(within(listed("shop/agent")).getByText("Its only copy runs here")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Drain" }).getAttribute("data-variant")).toBe("destructive");
+  it("refuses a Drain of a Server running a Global Service: badges it, says why, and offers no Drain", () => {
+    const onConfirm = vi.fn();
+    dialog([row("api"), row("agent", "global")], onConfirm);
+    expect(within(listed("shop/agent")).getByText("Global")).toBeTruthy();
+    expect(within(listed("shop/agent")).getByText("Runs on every server")).toBeTruthy();
+    expect(screen.getByText(/agent runs on every server, and draining could stop its last working copy/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Drain" }));
+    expect(onConfirm).not.toHaveBeenCalled();
   });
 
   it("says so when nothing runs here", () => {

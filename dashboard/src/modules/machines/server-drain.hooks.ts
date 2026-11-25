@@ -11,7 +11,7 @@ import { usePendingAttempt } from "#/hooks/use-pending-attempt";
 export type ServerDrain = {
   readonly view: DrainView;
   readonly ask: () => void;
-  readonly dialog: { readonly open: boolean; readonly onOpenChange: (open: boolean) => void; readonly onConfirm: (stops: readonly string[]) => void };
+  readonly dialog: { readonly open: boolean; readonly onOpenChange: (open: boolean) => void; readonly onConfirm: () => void };
   /** What a Drain would do with each Service its data holds here, read while the dialog is open; empty until read. */
   readonly data: Readonly<Record<string, DataPlan>>;
 };
@@ -36,9 +36,9 @@ export function useServerDrain(
   const [open, setOpen] = useState(false);
   const preview = useQuery({ ...serverDrainPreview(organizationSlug, server.id), enabled: open });
 
-  const send = (requestId: string, stops: readonly string[]) => {
+  const send = (requestId: string) => {
     setRequested(requestId);
-    requestServerDrainServerFn({ data: { organizationSlug, machineId: server.id, requestId, stops: [...stops] } }).then(
+    requestServerDrainServerFn({ data: { organizationSlug, machineId: server.id, requestId } }).then(
       (answer) => {
         setRequested((current) => (current === requestId ? answer.drain.attemptId : current));
         // The change stream brings the row too; this covers a tab whose stream is reconnecting.
@@ -51,9 +51,9 @@ export function useServerDrain(
     );
   };
 
-  const confirm = (stops: readonly string[]) => {
+  const confirm = () => {
     setOpen(false);
-    send(crypto.randomUUID(), stops);
+    send(crypto.randomUUID());
   };
 
   return {

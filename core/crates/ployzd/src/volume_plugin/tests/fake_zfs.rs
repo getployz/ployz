@@ -136,8 +136,9 @@ require() {{
 }}
 # A test writes the exact argument line of the one command that must fail next into
 # props/fail-command; the command fails once and the marker goes with it. A count in
-# props/fail-skip lets that many matching runs through first.
-if [ -e '{props}/fail-command' ] && [ "$(cat '{props}/fail-command')" = "$*" ]; then
+# props/fail-skip lets that many matching runs through first. Each marker is read once,
+# and a marker removed meanwhile reads as absent.
+if fail=$(cat '{props}/fail-command' 2>/dev/null) && [ "$fail" = "$*" ]; then
   skip=$(cat '{props}/fail-skip' 2>/dev/null || echo 0)
   if [ "$skip" -gt 0 ]; then
     echo $((skip - 1)) > '{props}/fail-skip'
@@ -150,7 +151,7 @@ fi
 # A test writes the exact argument line of one command into props/stall-command; that
 # command waits until the marker goes, and writes props/stalled once it waits, so a test
 # can tell a stall that began after it wrote the marker from that command's earlier runs.
-if [ -e '{props}/stall-command' ] && [ "$(cat '{props}/stall-command')" = "$*" ]; then
+if stall=$(cat '{props}/stall-command' 2>/dev/null) && [ "$stall" = "$*" ]; then
   printf '%s\n' "$*" > '{props}/stalled'
   while [ -e '{props}/stall-command' ]; do sleep 0.01; done
 fi

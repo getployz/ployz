@@ -389,8 +389,16 @@ pub struct Pull {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PullState {
-    /// The receive of `target`, or a `zfs` child it dropped, is alive.
-    Receiving { target: SnapshotName },
+    /// The receive of `target`, or a `zfs` child it dropped, is alive. A Seed's reply sets
+    /// `failure` when the receive task failed and only a child it dropped is still alive:
+    /// that failure is answered once the child exits. A reader without the field reads the
+    /// copy as still receiving.
+    Receiving {
+        target: SnapshotName,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        failure: Option<String>,
+    },
     /// The slot's newest snapshot is `target`, and no receive of it is alive or failed.
     Landed { target: SnapshotName },
     /// The receive task of `target` ended with a failure, possibly after `target` arrived.
