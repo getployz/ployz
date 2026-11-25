@@ -307,8 +307,8 @@ pub enum VolumeCopy {
         origin: Option<crate::VolumeOrigin>,
         /// The slot may hold writes no other Machine has: it carries a departure's
         /// snapshot or a seed, promote, cut or epoch mark, or no pull is known to have
-        /// received its newest snapshot. A Forget with `keep_written` refuses it. Older
-        /// daemons never report it.
+        /// received its newest snapshot. A Forget without `discard` refuses it. A daemon
+        /// without [`crate::VOLUME_KEEP_WRITTEN_CAPABILITY`] never reports it.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         #[ts(optional, as = "Option<bool>")]
         written_here: bool,

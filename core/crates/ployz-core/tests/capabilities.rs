@@ -146,6 +146,10 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
         "gated: a drain sends a cut that needs its holder running only to a Server advertising it, and otherwise leaves the Service where it is, naming the Server to upgrade. An older daemon ignores `running` and cuts a stopped holder",
     ),
     (
+        "ployz.volume.keep-written.v1",
+        "gated: Cloud sends a full sync's Forget, or a mirror onto a slot a departure parked, only to a Server advertising it, and otherwise refuses naming the Server to upgrade. An older daemon ignores `discard` and destroys any slot a Forget names, as `mirror rm` asks",
+    ),
+    (
         "ployz.volume.seed-copy.v1",
         "gated: nothing sends it yet; Cloud must offer a restore into a new Volume only when every Member advertises it. An older daemon refuses the unknown call before any copy starts",
     ),

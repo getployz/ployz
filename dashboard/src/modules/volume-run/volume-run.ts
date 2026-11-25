@@ -119,6 +119,8 @@ export type Member =
       readonly boundBytes?: number | null;
       /** The Server checks where a copy's data began, so it may send or take a born Volume's copy. */
       readonly checksOrigins?: boolean;
+      /** The Server keeps a slot that may hold writes no other Server has: a bare Forget refuses it, and a pull never replaces it. */
+      readonly keepsWritten?: boolean;
     }
   | {
       readonly machine: { readonly id: MachineId; readonly name: MachineName };

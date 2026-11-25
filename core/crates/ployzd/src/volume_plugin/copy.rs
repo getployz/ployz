@@ -24,7 +24,7 @@ use super::{
     inspect::answering,
     marks::{Mark, Marks},
     pool::UnlabeledBacking,
-    transfer::{Busy, ReceiveFailure, Stop, pulling},
+    transfer::{Busy, Proof, ReceiveFailure, Stop, pulling},
 };
 
 type Copy = Option<VolumeCopy>;
@@ -620,9 +620,18 @@ impl VolumeStorage {
         if let Some(newest) = &newest
             && newest.name == request.target
         {
-            if pulling.as_deref() == Some(target.as_str()) && self.written_here(&fs).await? {
-                self.mark_proven_pull(request, (&parent, &fs), newest.guid)
-                    .await?;
+            if pulling.as_deref() == Some(target.as_str())
+                && self.written_here(&fs).await?
+                && let Some(failure) = self
+                    .mark_proven_pull(request, (&parent, &fs), newest.guid)
+                    .await?
+            {
+                // Nothing proved or refuted the landing, so `ployz:pull` stays for the next
+                // resend to prove.
+                return self
+                    .copy_now(&scope)
+                    .await
+                    .map(|copy| answering(copy, failure));
             }
             // An old copy already holding the target receives nothing, and is the mirror now.
             if self.marks(&parent).role().await? != SlotRole::Mirror {
@@ -777,27 +786,37 @@ impl VolumeStorage {
     /// A resend of a pull whose target landed, on a slot not marked pulled: a daemon that
     /// stopped between the receive and [`Self::mark_pulled`]. A slot a released version
     /// wrote can carry the same marks with no receive, so the writer must send the target
-    /// as the slot's newest guid before the slot is marked. A writer that can't leaves the
-    /// slot as it is, kept by a departure.
+    /// as the slot's newest guid before the slot is marked. A writer that says it can't
+    /// leaves the slot as it is, kept by a departure. A writer that gives no answer, such
+    /// as one that can't be reached, leaves why, and the slot unmarked.
     async fn mark_proven_pull(
         &self,
         request: &PullRequest,
         (parent, fs): (&str, &str),
         guid: ployz_core::SnapshotGuid,
-    ) -> Result<(), RpcError> {
+    ) -> Result<Option<String>, RpcError> {
         let stream = SendStream {
             name: request.name.clone(),
             source: SendSource::Full {
                 target: request.target.clone(),
             },
         };
-        if let Err(failure) = self.sends_as(request.from, &stream, guid).await {
-            tracing::warn!(%fs, %failure, "left a landed pull unmarked: its writer did not send its snapshot");
-            return Ok(());
+        match self.sends_as(request.from, &stream, guid).await {
+            Ok(Proof::Sent) => {
+                self.mark_pulled(parent, fs)
+                    .await
+                    .map_err(RpcError::internal)?;
+                Ok(None)
+            }
+            Ok(Proof::Refuted(failure)) => {
+                tracing::warn!(%fs, %failure, "left a landed pull unmarked: its writer did not send its snapshot");
+                Ok(None)
+            }
+            Err(failure) => Ok(Some(format!(
+                "could not confirm with its writer that {} landed: {failure}",
+                request.target
+            ))),
         }
-        self.mark_pulled(parent, fs)
-            .await
-            .map_err(RpcError::internal)
     }
 
     /// Marks the slot received from a writer elsewhere, and that writer's Mirror. A

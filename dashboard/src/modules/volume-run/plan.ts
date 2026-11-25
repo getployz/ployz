@@ -116,6 +116,9 @@ export function committedWriter(
 
 const SNAPSHOT_EPOCH = /^[wf]-(\d+)/;
 
+/** The prefix of the snapshot a departure takes of a copy before it parks it (`DEPARTURE_SNAPSHOT_PREFIX` in ployzd). */
+const DEPARTURE_SNAPSHOT = "dep-";
+
 /** The highest epoch any answered copy shows, in its root or in the run that named its newest snapshot. */
 export function observedEpoch(members: readonly Member[]): number {
   return Math.max(0, ...members.flatMap((member) => {
@@ -267,6 +270,11 @@ function planCopies(input: PlanInput, observed: readonly Member[]): Planned {
     if (input.args.full && copy?.kind === "slot" && (copy.role === "old_copy" || copy.written_here === true)) {
       return refuse("written_here", `${named(mirror)} may hold writes no other Server has, so sync --full keeps it`, `ployz volume mirror rm ${named(mirror)}${ifOldCopy(copy.role)}`);
     }
+    // An older Server neither reports `written_here` nor refuses a Forget of such a slot, so nothing tells a slot it
+    // must keep from one it may drop.
+    if (input.args.full && mirror.keepsWritten !== true) {
+      return refuse("server_lacks", `Upgrade ${mirror.machine.name} first. Its Ployz deletes ${named(mirror)} for sync --full even when that copy holds writes no other Server has`, `ployz volume mirror rm ${named(mirror)}${ifOldCopy(copy?.kind === "slot" ? copy.role : undefined)}`);
+    }
     return { ok: true, phase: { kind: "sync", writer: root, mirror, full: input.args.full } };
   }
 
@@ -276,6 +284,12 @@ function planCopies(input: PlanInput, observed: readonly Member[]): Planned {
   if (elsewhere !== undefined) return { ok: false, refusal: copyElsewhere(name, elsewhere) };
   const target = answered.find((member) => isDestination(input.args, member));
   if (target === undefined) return refuse("invalid", `${to} is not a Server of this cluster`);
+  // No Writer holds the snapshot a departure parks a copy at, so a pull finds no base there, and an older Server then
+  // replaces the copy with a full one.
+  const kept = target.view.copy;
+  if (kept?.kind === "slot" && kept.newest?.name.startsWith(DEPARTURE_SNAPSHOT) === true && target.keepsWritten !== true) {
+    return refuse("server_lacks", `Upgrade ${to} first. ${named(target)} holds writes from before ${to} left the cluster, and its Ployz would replace them with a fresh copy`, `ployz volume mirror rm ${named(target)}${ifOldCopy(kept.role)}`);
+  }
   return { ok: true, phase: { kind: "mirror", writer: root, target } };
 }
 

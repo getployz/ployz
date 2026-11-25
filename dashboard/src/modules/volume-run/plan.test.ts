@@ -56,6 +56,35 @@ function outcome(input: PlanInput, members: Member[]) {
   }
 }
 
+describe("a Server whose Ployz deletes any slot a Forget names", () => {
+  const older = (server: string, copy: Copy): Member => {
+    const each = member(server, copy);
+    if (!each.answered) throw new Error("an answered Server");
+    return { ...each, keepsWritten: false };
+  };
+  const departed = (server: string, keeps: boolean): Member => {
+    const each = member(server, "old");
+    if (!each.answered || each.view.copy?.kind !== "slot") throw new Error("a slot");
+    return { ...each, keepsWritten: keeps, view: { copy: { ...each.view.copy, newest: { name: "dep-1700000000", guid: "12", created_unix_seconds: 0 } } } };
+  };
+
+  it("takes no sync --full, since nothing tells it to keep a copy only it holds", () => {
+    const refused = planFromCopies(sync(true), [member("a", "writer"), older("b", "mirror")]);
+    expect(refused).toEqual({ ok: false, refusal: {
+      code: "server_lacks",
+      message: "Upgrade b first. Its Ployz deletes data-b for sync --full even when that copy holds writes no other Server has",
+      next: "ployz volume mirror rm data-b",
+    } });
+    expect(outcome(sync(), [member("a", "writer"), older("b", "mirror")])).toBe("sync a->b");
+  });
+
+  it("takes no mirror onto a copy it parked when it left, which its pull would replace", () => {
+    expect(outcome(mirror("b"), [member("a", "writer"), departed("b", false)])).toBe("refuse server_lacks");
+    expect(outcome(mirror("b"), [member("a", "writer"), departed("b", true)])).toBe("mirror a->b");
+    expect(outcome(mirror("b"), [member("a", "writer"), older("b", "old")])).toBe("mirror a->b");
+  });
+});
+
 describe("a born Volume's copies", () => {
   const born = (server: string, copy: "writer" | "mirror" | "empty", checks: boolean): Member => {
     const each = member(server, copy);
@@ -637,7 +666,7 @@ describe("follow every next step a refusal names", () => {
   type Complete<T> = T extends string | number | bigint | boolean | null | undefined ? T : { [K in keyof T]-?: Complete<T[K]> };
   const twin = (id: string, floorless: boolean, copy: Complete<VolumeCopy>): AnsweredMember => ({
     machine: { id: id.padEnd(32, "0") as MachineId, name: "twin" }, address: `fdcc::${id}`, answered: true, view: { copy }, floorless, boundBytes: floorless ? GB : null,
-    checksOrigins: !floorless,
+    checksOrigins: !floorless, keepsWritten: !floorless,
   } satisfies Required<AnsweredMember>);
   const at = (name: string, each: AnsweredMember): Member => ({ ...each, machine: { ...each.machine, name } });
   const newest = COPIES.mirror.newest;

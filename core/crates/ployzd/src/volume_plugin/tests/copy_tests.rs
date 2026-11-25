@@ -278,14 +278,14 @@ async fn a_pull_of_the_snapshot_an_old_copy_holds_makes_it_a_mirror() {
 
 /// What the daemon does for a `SetVolumeCopy` Forget want against a slot: plan against
 /// the inspected copy, and call the Destroy route only on `MirrorToForget`. `ployz volume
-/// mirror rm` keeps nothing; a full sync keeps a slot written here.
-async fn set_forget(socket: &Path, expect: &ployz_core::ExpectedCopy, keep_written: bool) -> Value {
+/// mirror rm` discards; a full sync's bare Forget keeps a slot written here.
+async fn set_forget(socket: &Path, expect: &ployz_core::ExpectedCopy, discard: bool) -> Value {
     let copy = parsed_copy(&post(socket, "/Volume.Copy.Inspect", json!({"name": "data"})).await);
     let plan = ployz_core::plan(
         copy.as_ref(),
         false,
         expect,
-        &ployz_core::WantedCopy::Forget { keep_written },
+        &ployz_core::WantedCopy::Forget { discard },
     );
     if plan != ployz_core::CopyPlan::Transition(ployz_core::CopyTransition::MirrorToForget) {
         return json!({"Planned": format!("{plan:?}")});
@@ -322,7 +322,7 @@ async fn a_delete_of_an_old_copy_refuses_the_mirror_a_late_pull_made_of_it() {
     assert_eq!(late.pointer("/Ok/role"), Some(&json!("mirror")), "{late}");
 
     assert_eq!(
-        set_forget(&socket, &delete, false).await,
+        set_forget(&socket, &delete, true).await,
         json!({"Planned": "Refuse(Mismatch)"})
     );
     assert_eq!(
@@ -1437,12 +1437,12 @@ async fn a_pull_keeps_an_old_copy_written_here_that_the_writer_cannot_send_onto(
     // A `ployz volume sync --full` forgets the mirror first; the parked copy refuses it.
     let full = mirror_expect(&copy);
     assert_eq!(
-        set_forget(&socket, &full, true).await,
+        set_forget(&socket, &full, false).await,
         json!({"Planned": "Refuse(WrittenHere)"})
     );
     assert_eq!(snapshot_names(&test, SLOT_FS), ["dep-1700000000"]);
     assert!(
-        set_forget(&socket, &full, false).await.get("Ok").is_some(),
+        set_forget(&socket, &full, true).await.get("Ok").is_some(),
         "mirror rm deletes it"
     );
     assert!(!test.0.join("mirror-fs").exists());
@@ -1506,6 +1506,41 @@ async fn a_resend_leaves_a_landed_pull_unmarked_when_its_writer_sends_another_sn
         json!({"Ok": {"demoted": [], "stuck": [], "failed": []}})
     );
     assert!(test.0.join("mirror-fs").exists());
+    server.abort();
+}
+
+/// The same resend while the writer can't answer proves nothing and refutes nothing, so
+/// it answers the pull failed and keeps `ployz:pull`, and a later resend marks the slot.
+#[tokio::test]
+async fn a_resend_whose_writer_does_not_answer_keeps_its_landed_pull_to_prove_later() {
+    let source = Source::start(Some(BOUND), "snapshot w-1-2 12\n").await;
+    source.answer(
+        "target=w-1-2",
+        StatusCode::SERVICE_UNAVAILABLE,
+        "the writer is not reachable",
+    );
+    let test = test_dir();
+    let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
+    set_snapshots(&test, SLOT_FS, &[("w-1-2", 12), ("w-1-1", 11)]);
+    set_property(&test, SLOT_FS, "ployz:pulled", "11");
+    set_property(&test, SLOT, "ployz:pull", "w-1-2");
+
+    let reply = post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
+    assert!(
+        reply
+            .pointer("/Ok/pull/failure")
+            .is_some_and(|failure| !failure.is_null()),
+        "{reply}"
+    );
+    assert_eq!(
+        property(&test, SLOT, "ployz:pull").as_deref(),
+        Some("w-1-2")
+    );
+
+    source.answer("target=w-1-2", StatusCode::OK, "snapshot w-1-2 12\n");
+    let reply = post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
+    assert_eq!(reply.pointer("/Ok/pull"), Some(&json!(null)), "{reply}");
+    assert_eq!(reply.pointer("/Ok/written_here"), None, "{reply}");
     server.abort();
 }
 
@@ -2007,15 +2042,21 @@ fn landed_before_a_restart(test: &TestDir, mark: &str, value: &str) {
     set_property(test, SLOT_FS, mark, value);
 }
 
+/// The resend's writer can't be reached, so nothing proves the slot's newest arrived from
+/// it: the slot keeps its marks and its pull, unmarked, and a departure keeps it.
 #[tokio::test]
-async fn a_resend_of_the_slots_newest_keeps_its_marks_and_marks_no_pull() {
+async fn a_resend_of_the_slots_newest_its_writer_cannot_answer_keeps_its_marks() {
     for (mark, value) in [("ployz:cut", "on"), ("ployz:epoch", "3")] {
         let test = test_dir();
         let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], 1);
         landed_before_a_restart(&test, mark, value);
 
         let reply = post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
-        assert_eq!(reply.pointer("/Ok/pull"), Some(&Value::Null), "{reply}");
+        assert_eq!(
+            reply.pointer("/Ok/pull/target"),
+            Some(&json!("w-1-2")),
+            "{reply}"
+        );
         assert_eq!(property(&test, SLOT_FS, mark).as_deref(), Some(value));
         assert_eq!(property(&test, SLOT_FS, "ployz:pulled"), None, "{mark}");
         let reply = post(&socket, "/Storage.Demote", json!(null)).await;
@@ -3652,9 +3693,7 @@ async fn every_request_of_a_move_replayed_late_through_the_planner_keeps_one_wri
         .send(Set {
             side: Side::A,
             expect: mirror_expect(&a),
-            want: ployz_core::WantedCopy::Forget {
-                keep_written: false,
-            },
+            want: ployz_core::WantedCopy::Forget { discard: true },
             run: None,
         })
         .await;
@@ -3692,9 +3731,7 @@ async fn every_request_of_a_move_replayed_late_through_the_planner_keeps_one_wri
         .send(Set {
             side: Side::B,
             expect: mirror_expect(&b),
-            want: ployz_core::WantedCopy::Forget {
-                keep_written: false,
-            },
+            want: ployz_core::WantedCopy::Forget { discard: true },
             run: None,
         })
         .await;
@@ -3718,9 +3755,7 @@ async fn every_request_of_a_move_replayed_late_through_the_planner_keeps_one_wri
         .send(Set {
             side: Side::B,
             expect: mirror_expect(&b),
-            want: ployz_core::WantedCopy::Forget {
-                keep_written: false,
-            },
+            want: ployz_core::WantedCopy::Forget { discard: true },
             run: None,
         })
         .await;

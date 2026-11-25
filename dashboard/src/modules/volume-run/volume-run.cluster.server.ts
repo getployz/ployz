@@ -14,7 +14,7 @@ import { resizeRequirements, sizeDirection } from "#/modules/volume-run/resize";
 import { isBehind, isCurrent, releaseLine } from "#/modules/server-upgrade/server-upgrade";
 import { channelRelease, organizationReleaseChannel } from "#/modules/server-upgrade/server-upgrade.server";
 import { volumeRun } from "#/modules/volume-run/tables";
-import { checksOrigins } from "#/modules/runtime/daemon-release";
+import { checksOrigins, keepsWritten } from "#/modules/runtime/daemon-release";
 import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, isDestination, type MachineRef, type Member, needsFloor, RUN_FEATURES, type ServiceSpec, type VolumeLaneInput } from "#/modules/volume-run/volume-run";
 import { managementAddress } from "#/modules/runtime/naming";
 import { type VolumeRunKind } from "#/modules/volume-run/volume-run-states";
@@ -813,6 +813,7 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
           view,
           floorless,
           checksOrigins: checksOrigins(capabilities),
+          keepsWritten: keepsWritten(capabilities),
           ...sized,
         })),
       Effect.catchTag("ServerLacks", (lack) => lacks(lack.capability, run?.kind)),

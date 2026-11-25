@@ -739,7 +739,7 @@ fn refusal(refused: SetVolumeCopyRefused, name: &DockerVolumeName) -> Error {
             )
         }
         CopyRefusal::WrittenHere => format!(
-            "Volume {name} here may hold writes no other Machine has; only `ployz volume mirror rm` deletes it"
+            "Volume {name} on this Machine may hold writes no other Machine has, so it was kept. To delete it, run `ployz volume mirror rm` (an older Ployz Cloud must be upgraded first)"
         ),
         CopyRefusal::Unrecognized => format!("Volume {name} was refused for an unknown reason"),
         CopyRefusal::Stale => format!(

@@ -201,10 +201,8 @@ fn every_root_mark_combination_parses_to_one_copy() {
         WantedCopy::Snapshot {
             name: "f-2".parse().unwrap(),
         },
-        WantedCopy::Forget {
-            keep_written: false,
-        },
-        WantedCopy::Forget { keep_written: true },
+        WantedCopy::Forget { discard: false },
+        WantedCopy::Forget { discard: true },
         WantedCopy::Floor,
     ];
     let expects = [

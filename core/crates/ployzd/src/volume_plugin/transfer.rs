@@ -410,6 +410,14 @@ pub(super) struct OpenedStream {
     response: reqwest::Response,
 }
 
+/// A writer's answer to [`VolumeStorage::sends_as`].
+pub(super) enum Proof {
+    /// It sends the target as the snapshot this Machine holds.
+    Sent,
+    /// It has no such snapshot, or sends another under its name.
+    Refuted(String),
+}
+
 /// Why a receive did not land its stream.
 #[derive(Debug, thiserror::Error)]
 pub(super) enum ReceiveFailure {
@@ -513,23 +521,31 @@ impl VolumeStorage {
     /// Whether `from` sends `stream`'s target as the snapshot `guid`. A send opens with a
     /// BEGIN record naming the snapshot it builds, and a receive keeps the sender's guid,
     /// so a match proves `from` holds the point this Machine holds as `guid`. Only that
-    /// record is read: dropping the response stops the send.
+    /// record is read: dropping the response stops the send. An error is no answer either
+    /// way, such as a writer that can't be reached.
     pub(super) async fn sends_as(
         &self,
         from: ManagementAddress,
         stream: &SendStream,
         guid: SnapshotGuid,
-    ) -> Result<(), ReceiveFailure> {
-        let OpenedStream { shown, response } = self.request_stream(from, stream).await?;
+    ) -> Result<Proof, ReceiveFailure> {
+        let OpenedStream { shown, response } = match self.request_stream(from, stream).await {
+            Ok(opened) => opened,
+            Err(ReceiveFailure::NoStream(failure)) => return Ok(Proof::Refuted(failure)),
+            Err(failure) => return Err(failure),
+        };
         let mut body = tokio_util::io::StreamReader::new(
             response
                 .bytes_stream()
                 .map(|chunk| chunk.map_err(std::io::Error::other)),
         );
-        crate::volume_send::begin::read(&mut body, guid.get(), self.receive_stall)
-            .await
-            .map(drop)
-            .map_err(|error| ReceiveFailure::Failed(format!("{shown}: {error}")))
+        match crate::volume_send::begin::read(&mut body, guid.get(), self.receive_stall).await {
+            Ok(_) => Ok(Proof::Sent),
+            Err(error @ crate::volume_send::begin::BeginError::OtherSnapshot { .. }) => {
+                Ok(Proof::Refuted(format!("{shown}: {error}")))
+            }
+            Err(error) => Err(ReceiveFailure::Failed(format!("{shown}: {error}"))),
+        }
     }
 
     async fn request_stream(

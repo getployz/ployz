@@ -276,8 +276,9 @@ async function mirrorVolume(steps: RunSteps, phase: PhaseOf<"mirror"> | PhaseOf<
   let copy = target.view.copy;
   try {
     if (phase.kind === "sync") {
-      // The Mirror's Server keeps a copy that may hold writes no other Server has.
-      await mustSet(steps, "03-reset-forget-mirror", B, expectOf(copy), { kind: "forget", keep_written: true }, `${B.name} is still busy with ${run.volumeName}`);
+      // A bare Forget: the Mirror's Server keeps a copy that may hold writes no other Server has. The plan sends it only
+      // to a Server that advertises so.
+      await mustSet(steps, "03-reset-forget-mirror", B, expectOf(copy), { kind: "forget" }, `${B.name} is still busy with ${run.volumeName}`);
       await mustSet(steps, "03-reset-forget-writer", A.machine, { kind: "writer", epoch: epochOf(A) }, { kind: "forget" }, `${A.machine.name} is still busy with ${run.volumeName}`);
       copy = null;
     }
@@ -305,7 +306,8 @@ async function deleteMirror(steps: RunSteps, phase: PhaseOf<"delete_mirror">) {
   try {
     for (const slot of phase.destroy) {
       const expect = deleteExpect(slot.view.copy, phase.role);
-      const answer = await setCopy(steps, `03-forget-${slot.machine.name}`, slot.machine, expect, { kind: "forget" }, `${slot.machine.name} is still busy with ${run.volumeName}`);
+      // The person chose to delete this copy, writes no other Server has included.
+      const answer = await setCopy(steps, `03-forget-${slot.machine.name}`, slot.machine, expect, { kind: "forget", discard: true }, `${slot.machine.name} is still busy with ${run.volumeName}`);
       if (answer.ok) continue;
       const { role } = phase;
       const reroled = role !== null && answer.reason === "mismatch" && answer.copy?.kind === "slot" && answer.copy.role !== role;
@@ -619,8 +621,9 @@ async function releaseVolume(steps: RunSteps, phase: PhaseOf<"release">, epoch: 
       if (now?.kind === "slot" && now.newest?.guid === at.guid) doomed.push({ machine, expect: expectOf(now) });
     }
     if (plan !== undefined && doomed.some(({ machine }) => !plan.forgets.includes(machine.id))) throw changed();
+    // Each holds the point A resumes writing at as its newest, so it holds nothing A lacks.
     for (const { machine, expect } of doomed) {
-      await mustSet(steps, `04-forget-${machine.name}`, machine, expect, { kind: "forget" }, `${machine.name} is still busy with ${run.volumeName}`);
+      await mustSet(steps, `04-forget-${machine.name}`, machine, expect, { kind: "forget", discard: true }, `${machine.name} is still busy with ${run.volumeName}`);
     }
     const resumed = await resumeA("05-resume");
     if (!resumed.ok) throw new NonRetriableError(resumed.message);

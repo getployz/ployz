@@ -175,6 +175,7 @@ const ON_PLOYZ_04 = [
   requirements.volumeSize.capability,
   requirements.volumeShrink.capability,
   requirements.volumeCutRunning.capability,
+  requirements.volumeKeepWritten.capability,
 ];
 describe("volume runs", () => {
   let harness: PostgresTestHarness;
@@ -1122,6 +1123,8 @@ describe("volume runs", () => {
 
       expect(output.result).toEqual({ runId: released.run.id, released: "fsn-1" });
       expect(verbs).toEqual(["floor@fsn-1", "floor@fsn-2", "forget@fsn-2", "writer@fsn-1(kept)"]);
+      // fsn-2 holds the point fsn-1 resumes at, so the release deletes it even if it may read as written there.
+      expect(sent.find(({ want }) => want.kind === "forget")?.want).toEqual({ kind: "forget", discard: true });
       expect(named("fsn-1").copy).toMatchObject({ kind: "root", readonly: false, newest: G });
       expect(containers).toEqual([{ machine: "fsn-1", id: "web-fsn-1", running: true }]);
     });
@@ -3142,9 +3145,20 @@ describe("volume runs", () => {
       expect(output.result).toEqual({ runId: run.id, rounds: 1 });
       expect(verbs).toEqual(["forget@fsn-2", "forget@fsn-1", "snapshot@fsn-1(w-1-0)", "pull@fsn-2(dep-10)", "pull@fsn-2(dep-10)", "snapshot@fsn-1(w-1-1)"]);
       expect(sent[0]).toMatchObject({ expect: { kind: "mirror", newest: "10", slot: "1" } });
-      // The Machine refuses it on a slot that may hold the only copy of some writes.
-      expect(sent[0]?.want).toEqual({ kind: "forget", keep_written: true });
+      // Bare, so the Machine refuses it on a slot that may hold the only copy of some writes.
+      expect(sent[0]?.want).toEqual({ kind: "forget" });
       expect(sent[1]).toMatchObject({ expect: { kind: "writer", epoch: 0 }, want: { kind: "forget" } });
+    });
+
+    it("sync --full onto a Server whose Ployz deletes any slot a Forget names ends the run saying to upgrade it, before any verb", async () => {
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(base), capabilities: ON_PLOYZ_04.filter((capability) => capability !== requirements.volumeKeepWritten.capability) };
+      const run = await requested({ kind: "sync", args: { full: true } });
+
+      const output = await execute(run.id);
+
+      expect(output.result).toMatchObject({ refused: { code: "server_lacks" } });
+      expect(verbs).toEqual([]);
+      expect(await rows()).toMatchObject([{ state: "failed", message: "Upgrade fsn-2 first. Its Ployz deletes data-fsn-2 for sync --full even when that copy holds writes no other Server has" }]);
     });
 
     it("a refusal ends the run with its message", async () => {
@@ -3179,7 +3193,7 @@ describe("volume runs", () => {
       expect(verbs).toEqual(["forget@fsn-2", "forget@fsn-1"]);
       expect(sent[0]?.expect).toEqual({ kind: "mirror", newest: base.guid, slot: "1" });
       // A removal deletes even a slot that may hold the only copy of some writes.
-      expect(sent[0]?.want).toEqual({ kind: "forget" });
+      expect(sent[0]?.want).toEqual({ kind: "forget", discard: true });
       expect(sent[1]).toMatchObject({ expect: { kind: "writer", epoch: 0 }, want: { kind: "forget" } });
       expect(machines[1]?.copy).toBeNull();
       expect(await rows()).toMatchObject([{ state: "done", epoch: null, message: "Deleted data-fsn-2; fsn-2 and fsn-1 recorded the removal" }]);

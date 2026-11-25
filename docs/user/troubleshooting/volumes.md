@@ -308,6 +308,10 @@ the writer can't send changes on top of it. Ployz keeps that copy and stops inst
 it. Delete it with `ployz volume mirror rm` only once you no longer need what it holds. The next
 move or mirror then copies the volume in full.
 
+A server running Ployz 0.4.0-beta.2 or earlier replaces such a copy with a full one instead. Ployz
+Cloud won't mirror onto a copy such a server parked when it was removed, and asks you to upgrade
+the server first.
+
 A mirror last refreshed by a Ployz before 0.3.0, such as a 0.3.0 beta, has no record of what it
 received, so Ployz counts it as a copy that may hold such writes. Once its writer drops that
 mirror's newest snapshot, every refresh stops with this message. Ployz before 0.3.0 is outside the
@@ -324,3 +328,24 @@ next: ployz volume mirror rm data-web-1 --if-old-copy
 won't run on an old copy or on a copy that may hold writes no other server has. Nothing was
 deleted. Run the `next:` line only once you no longer need what that copy holds, then mirror again.
 If the copy is a mirror, the line has no `--if-old-copy`.
+
+```
+error: Upgrade web-1 first. Its Ployz deletes data-web-1 for sync --full even when that copy holds writes no other Server has
+next: ployz volume mirror rm data-web-1
+```
+
+A server running Ployz 0.4.0-beta.2 or earlier can't tell Ployz Cloud whether its copy holds such
+writes, and deletes it for a full sync whatever it holds, so Ployz Cloud won't send it one. Upgrade
+the server and sync again, or run the `next:` line once you no longer need that copy.
+
+## Deleting a mirror says the copy was kept
+
+```
+Volume … on this Machine may hold writes no other Machine has, so it was kept. To delete it, run `ployz volume mirror rm` (an older Ployz Cloud must be upgraded first)
+```
+
+A server running a Ployz later than 0.4.0-beta.2 deletes a copy that may hold writes no other
+server has only when the request says to discard it, which `ployz volume mirror rm` from a current
+Ployz Cloud does. A self-hosted Ployz Cloud from before that sends every delete the same way, so
+the server keeps the copy whether you ran `ployz volume mirror rm`, `ployz volume sync --full` or
+`ployz volume release`. Nothing was deleted. Upgrade Ployz Cloud, then run the command again.
