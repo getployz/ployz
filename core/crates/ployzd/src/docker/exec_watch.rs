@@ -396,13 +396,55 @@ fn send(process: &OwnedFd, signal: rustix::process::Signal) -> std::io::Result<b
     }
 }
 
-/// Whether `process` exited within `grace`, or ever when `None`, read from its pidfd.
+/// Whether `process` exited within `grace`, or ever when `None`, read from its pidfd. Each
+/// wait reads its own copy, since epoll registers a descriptor once: an attached exec's
+/// watch still waits while a stop does.
 async fn exited_within(process: &OwnedFd, grace: Option<Duration>) -> std::io::Result<bool> {
-    use rustix::fd::AsFd as _;
-    let exited =
-        tokio::io::unix::AsyncFd::with_interest(process.as_fd(), tokio::io::Interest::READABLE)?;
+    let exited = tokio::io::unix::AsyncFd::with_interest(
+        process.try_clone()?,
+        tokio::io::Interest::READABLE,
+    )?;
     match grace {
         None => exited.readable().await.map(|_| true),
         Some(grace) => Ok(tokio::time::timeout(grace, exited.readable()).await.is_ok()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An attached exec's watch waits on its command while the client goes away, and the
+    /// exec then stops the command: the stop confirms the command ended.
+    #[tokio::test]
+    async fn a_stop_while_the_watch_waits_confirms_the_command_ended() {
+        let mut command = std::process::Command::new("sleep")
+            .arg("300")
+            .spawn()
+            .unwrap();
+        let pid = rustix::process::Pid::from_child(&command);
+        // Docker is never asked: the watch already holds the command's process.
+        let docker = bollard::Docker::connect_with_http(
+            "http://127.0.0.1:9",
+            5,
+            bollard::API_DEFAULT_VERSION,
+        )
+        .unwrap();
+        let watch = ExecWatch::new(
+            docker,
+            "slow".into(),
+            ContainerId::parse("a".repeat(64)).unwrap(),
+        );
+        let _ = watch
+            .process
+            .set(rustix::process::pidfd_open(pid, rustix::process::PidfdFlags::empty()).unwrap());
+        let waiting = watch.exited(Duration::from_secs(1));
+        tokio::pin!(waiting);
+        assert!(futures_util::FutureExt::now_or_never(&mut waiting).is_none());
+
+        let stopped = watch.stop().await;
+        let _ = command.kill();
+        let _ = command.wait();
+        assert!(matches!(stopped, Ok(Seen::Reaped)), "{stopped:?}");
     }
 }
