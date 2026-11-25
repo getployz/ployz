@@ -679,7 +679,9 @@ enum Unset {
     /// The daemon answered no, or the call never left this client: nothing changed.
     Refused(Stop),
     /// The call went out and no answer came back, or the caller cancelled while it was
-    /// pending. The daemon finishes an update it admitted, so the role may be off.
+    /// pending. The daemon finishes an update it admitted, so the role may be off. A
+    /// `Cancelled` status counts here even off the wire, since an HTTP/2 reset arrives in
+    /// that shape: erring this way offers an idempotent undo, the other way hides a change.
     Unknown(Stop),
 }
 
