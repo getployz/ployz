@@ -641,6 +641,12 @@ fn cloud_failure_recovery_keeps_selected_config_and_actual_runtime_identity() {
         .collect::<Vec<_>>();
     let selected = root.path().join("selected team.yaml");
     let config = selected.to_str().unwrap();
+    let events_path = root
+        .path()
+        .join("events.ndjson")
+        .to_str()
+        .unwrap()
+        .to_owned();
     assert_eq!(
         hints,
         [
@@ -655,15 +661,23 @@ fn cloud_failure_recovery_keeps_selected_config_and_actual_runtime_identity() {
                 "--env",
                 "production"
             ],
+            // The deploy again as typed: a retry that dropped a flag would run another deploy.
             vec![
                 "ployz",
                 "--ployz-config",
                 config,
+                "--json",
+                "--color",
+                "never",
+                "--why",
+                "<REASON>",
                 "deploy",
                 "--project",
                 "shop",
                 "--env",
-                "production"
+                "production",
+                "--events",
+                events_path.as_str(),
             ],
         ],
         "{stderr}"

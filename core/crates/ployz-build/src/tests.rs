@@ -692,7 +692,7 @@ esac
             sealed: false,
             cache_scope: None,
         };
-        execute(&request, &Cancellation::new(), None, &|_| ()).unwrap();
+        execute(&request, &Cancellation::new(), None, &|_| (), &|_| ()).unwrap();
         std::fs::remove_dir_all(directory).unwrap();
         Command::new("kill")
             .args([&signal, &std::process::id().to_string()])
@@ -984,7 +984,10 @@ fn a_cache_export_runs_nothing(
         cache_scope: None,
     };
     // Any Docker call would fail: this Docker does not exist.
-    assert_eq!(export_cache(&request, &Cancellation::new(), None), Ok(()));
+    assert_eq!(
+        export_cache(&request, &Cancellation::new(), None, &|_| ()),
+        Ok(())
+    );
 }
 
 #[test]

@@ -56,7 +56,7 @@ use std::collections::BTreeSet;
 
 use ployz_core::RpcError;
 
-pub use auto_rule::{ApproveRule, RulePrior, RuleQuery, RuleView, SavedRule};
+pub use auto_rule::{ApproveRule, RULE_APPROVE_GONE, RulePrior, RuleQuery, RuleView, SavedRule};
 pub use automation::{
     Automated, BranchHead, CheckConclusion, CheckStatus, CheckSuite, Skipped, SystemEvent,
 };
@@ -124,7 +124,9 @@ pub use review::{
 pub use rules::{BrokenReference, Missing, ReferenceAt};
 pub use scope::{EnvironmentRef, EnvironmentSummary, lists_projects};
 pub use sealing::SealingKey;
-pub use settings::{Apply, NodeName, SecretCell, SecretInput, SettingPath, refuse_unknown_region};
+pub use settings::{
+    Apply, NodeName, PlainValue, SecretCell, SecretInput, SettingPath, refuse_unknown_region,
+};
 pub use storage::Converted;
 pub use teardown::{
     AppliedVolume, EnvironmentRemoval, EnvironmentsQuery, EnvironmentsView, OrganizationRemoved,

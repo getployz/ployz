@@ -18,7 +18,7 @@ use ployz_core::{
 };
 
 use crate::checkin::{EnrollInstruction, EnrollStorage};
-use crate::cli::{leaf_matches, string_values};
+use crate::cli::{Rerun, leaf_matches, string_values};
 use crate::connect::Client;
 use crate::failure::Failure as Error;
 use crate::provisioning::RemoteTarget;
@@ -218,8 +218,8 @@ struct Destination {
 
 /// Where an enrollment reaches the Server it enrolls, and the config it keeps.
 pub(crate) enum Reach {
-    /// The command's connection options: `--ployz-config`, `--connect`, `--context` and
-    /// `--ssh-timeout`.
+    /// The command line, as its root matches: its connection options `--ployz-config`,
+    /// `--connect`, `--context` and `--ssh-timeout`, and what a rerun keeps.
     CommandLine(ArgMatches),
     /// This host's daemon over its socket, as the check-in loop enrolls it.
     ThisHost { config: PathBuf },
@@ -259,7 +259,7 @@ impl EnrollPlan {
             }),
             no_install: flag("no-install"),
             show_recovery_code: flag("show-recovery-code"),
-            reach: Reach::CommandLine(matches.clone()),
+            reach: Reach::CommandLine(root.clone()),
         }
     }
 
@@ -383,8 +383,8 @@ impl Reach {
     /// The config this enrollment reads and saves to.
     pub(crate) fn config(&self) -> PathBuf {
         match self {
-            Self::CommandLine(matches) => crate::context::expand_home(Path::new(
-                matches
+            Self::CommandLine(root) => crate::context::expand_home(Path::new(
+                leaf_matches(root)
                     .get_one::<String>("ployz-config")
                     .expect("ployz-config has a default"),
             )),
@@ -395,40 +395,42 @@ impl Reach {
     /// The connection asked for, which wins over the current context and the local socket.
     pub(crate) fn connect(&self) -> Option<String> {
         match self {
-            Self::CommandLine(matches) => matches.get_one::<String>("connect").cloned(),
+            Self::CommandLine(root) => {
+                crate::cli::connection(leaf_matches(root)).map(str::to_owned)
+            }
             Self::ThisHost { .. } => Some(this_host()),
         }
     }
 
     pub(crate) fn ssh_timeout(&self) -> Duration {
         match self {
-            Self::CommandLine(matches) => crate::cli::ssh_timeout(matches),
+            Self::CommandLine(root) => crate::cli::ssh_timeout(leaf_matches(root)),
             Self::ThisHost { .. } => crate::connect::DEFAULT_SSH_TIMEOUT,
         }
     }
 
     /// `args` as a command that reaches the same Cluster.
-    pub(crate) fn rerun(&self, args: &[&str]) -> String {
+    pub(crate) fn rerun(&self, args: &[&str]) -> Rerun {
         match self {
-            Self::CommandLine(matches) => crate::cli::rerun(matches, args),
-            Self::ThisHost { config } => shell_words::join(
-                [
-                    "ployz",
-                    "--ployz-config",
-                    &config.to_string_lossy(),
-                    "--connect",
-                    &this_host(),
-                ]
-                .into_iter()
-                .chain(args.iter().copied()),
-            ),
+            Self::CommandLine(root) => Rerun::then(root, args),
+            Self::ThisHost { config } => Rerun::for_this_host(config, &this_host(), args),
+        }
+    }
+
+    /// This command line again; the check-in loop has none.
+    pub(crate) fn again(&self) -> Option<Rerun> {
+        match self {
+            Self::CommandLine(root) => Some(Rerun::again(root)),
+            Self::ThisHost { .. } => None,
         }
     }
 
     /// The Cluster entry that signs a join waiting for approval.
     pub(crate) async fn entry(&self) -> Result<Client, Error> {
         match self {
-            Self::CommandLine(matches) => crate::handlers::route::connect(matches, None).await,
+            Self::CommandLine(root) => {
+                crate::handlers::route::connect(leaf_matches(root), None).await
+            }
             Self::ThisHost { config } => Ok(crate::connect::connect_with_ssh_timeout(
                 config,
                 Some(&this_host()),

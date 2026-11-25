@@ -13,6 +13,7 @@ use super::fence::{Forgotten, already_forgotten};
 use super::forget::{cloud_forgot, no_cloud_row};
 use super::{ConnectionOptions, target};
 use crate::approval;
+use crate::cli::Rerun;
 use crate::cloud::account::{Credential, Release, StoreCallError};
 use crate::cloud::login::{CredentialStore, LoginError};
 use crate::cluster::{
@@ -24,7 +25,7 @@ use crate::drain::{movable_services_on, replicated_services_on, services_on};
 use crate::handlers::{
     Error,
     data_loss::{Typed, VolumeEffect, VolumeLabels, volume_label},
-    leaf_matches, store, typed_with,
+    leaf_matches, store,
 };
 use ployz_core::{DataLoss, Departed, DockerVolumeName, EnvironmentValues};
 use ployz_store::OperationVerb;
@@ -90,10 +91,11 @@ impl Removal {
     /// answer goes to Cloud.
     async fn reach(
         self,
-        matches: &ArgMatches,
+        root: &ArgMatches,
         options: &ConnectionOptions,
         selector: &str,
     ) -> Result<Reached, Error> {
+        let matches = leaf_matches(root);
         match self {
             Self::Forget => {
                 super::super::route::connect_or_unanswered(matches, options.context()).await
@@ -101,7 +103,7 @@ impl Removal {
             Self::Reset => super::super::route::connect(matches, options.context())
                 .await
                 .map(Reached::Client)
-                .map_err(|error| unanswered_reset(error, matches, selector)),
+                .map_err(|error| unanswered_reset(error, root, selector)),
         }
     }
 
@@ -191,19 +193,17 @@ fn refuse_without_device(
 /// A reset needs its Server to answer. Servers that didn't answer may be gone, and one that
 /// is gone is forgotten instead; a Cloud that couldn't hand out the connections is retried.
 /// A Server's own refusal says what is wrong with it.
-fn unanswered_reset(error: Error, matches: &ArgMatches, selector: &str) -> Error {
+fn unanswered_reset(error: Error, root: &ArgMatches, selector: &str) -> Error {
     if super::super::route::refused(&error) {
         return error;
     }
     if super::super::route::servers_unanswered(&error) {
-        let forget = super::super::rerun(
-            matches,
-            &["server", "forget", selector, "--confirm", "dead"],
-        );
+        let forget =
+            super::super::rerun(root, &["server", "forget", selector, "--confirm", "dead"]);
         return error.hint(Hint::Next(forget));
     }
     if error.report().code == RpcErrorCode::Unavailable {
-        return error.hint(Hint::Retry(typed_with(&[])));
+        return error.hint(Rerun::again(root));
     }
     error
 }
@@ -237,7 +237,7 @@ struct Surveyed {
 /// What the operator typed, and the words that retry it.
 struct Confirmed {
     confirmation: ployz_core::DataLossConfirmation,
-    accepting: Vec<String>,
+    accepting: Rerun,
     labels: VolumeLabels,
     /// The Server did not answer, so `dead` is what it needs typed.
     dead: bool,
@@ -266,11 +266,11 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
     let machine_target = MachineTarget::parse(&selector)
         .map_err(|_| Error::usage("Name a Server by name or ID."))?;
     let runtime = runtime()?;
-    let reached = runtime.block_on(removal.reach(matches, &options, &selector))?;
+    let reached = runtime.block_on(removal.reach(root, &options, &selector))?;
     let mut client = match reached {
         Reached::Client(client) => client,
         Reached::Unanswered(credential) => {
-            return super::forget::forget_unanswered(&runtime, matches, &credential, &selector);
+            return super::forget::forget_unanswered(&runtime, root, &credential, &selector);
         }
     };
     // Before anything is listed or confirmed: a removal that can't happen asks nothing.
@@ -530,7 +530,7 @@ fn confirm(
                     "answered": !dead,
                 }),
             )
-            .hint(Hint::Retry(retry))
+            .hint(retry)
         },
     )?;
     Ok(Confirmed {
@@ -559,11 +559,7 @@ fn start(
         runtime,
         removal.verb(),
         matches.get_one::<String>("approval").cloned(),
-        |id| {
-            let mut command = confirmed.accepting.clone();
-            command.extend(["--approval".into(), id.to_owned()]);
-            shell_words::join(command)
-        },
+        &confirmed.accepting,
         async |approval| match removal {
             Removal::Reset => cloud::account::start_removal(
                 credential,
@@ -634,12 +630,7 @@ async fn depart(
                 if !late_dead {
                     return error;
                 }
-                let mut retry = confirmed.accepting.clone();
-                if let Some(at) = retry.iter().position(|word| word == "--confirm") {
-                    retry.truncate(at);
-                }
-                retry.extend(["--confirm".into(), "dead".into()]);
-                error.hint(Hint::Retry(shell_words::join(retry)))
+                error.hint(confirmed.accepting.clone().set("confirm", "dead"))
             })?;
     } else {
         let removed = client

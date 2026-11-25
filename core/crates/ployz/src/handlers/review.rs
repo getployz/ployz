@@ -583,7 +583,7 @@ pub(super) fn history(root: &ArgMatches) -> Result<(), Error> {
             let error = with_next(
                 error,
                 |refused| refused.code == RpcErrorCode::ConfirmationRequired,
-                || store.again(&[&revision.0.to_string(), "--accept-overwrite"]),
+                || store.again().switch("accept-overwrite").line(),
             );
             store.fail(with_refresh_hint(error, matches, "history"))
         })?;

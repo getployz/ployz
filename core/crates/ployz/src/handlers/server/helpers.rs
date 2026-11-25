@@ -51,7 +51,7 @@ pub(super) async fn reconnect_direct(
     crate::setup_retry::run(
         &mut (),
         &crate::ui::WaitNotices,
-        &format!("Reconnecting to {connection}"),
+        &format!("Reconnecting to {}", connection.shown()),
         crate::setup_retry::WAIT,
         ConnectError::is_setup_retryable,
         async |_| connect_direct(matches, connection).await,
@@ -69,7 +69,7 @@ pub(super) async fn wait_direct_participating(
     crate::setup_retry::run_expecting(
         &mut joining,
         &crate::ui::WaitNotices,
-        &format!("Waiting for {connection} to participate"),
+        &format!("Waiting for {} to participate", connection.shown()),
         Some(STARTING),
         MACHINE_START_WAIT,
         ConnectError::is_start_retryable,
@@ -114,7 +114,7 @@ mod tests {
         let refused = requested_name(&matches("MY-SERVER")).unwrap_err();
         assert_eq!(
             refused.to_string(),
-            "invalid Machine Name \"MY-SERVER\": a 1-63 character lowercase DNS label"
+            "invalid Machine Name: a 1-63 character lowercase DNS label"
         );
         assert_eq!(refused.report().code, RpcErrorCode::InvalidArgument);
         assert_eq!(refused.hints(), [Hint::Closest("my-server".into())]);

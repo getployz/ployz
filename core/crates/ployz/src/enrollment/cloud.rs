@@ -157,7 +157,8 @@ where
         let (command, plan, token, progress) = (self.command, self.plan, self.token, self.progress);
         let url = CloudOrigin::new(self.cloud_url).enroll_url();
         let (details, machine_token) = machine::inspect_token(client, token_request).await?;
-        let initial_policy = asked.settle(existing(&details), |args| plan.reach().rerun(args))?;
+        let initial_policy =
+            asked.settle(existing(&details), |args| plan.reach().rerun(args).line())?;
         let name = machine::machine_name(requested_name, &machine_token);
         let recovery_supported = cloud::enroll::recovery_compat::supported(client).await?;
         let identity = EnrollIdentity::from_machine_token(
@@ -516,7 +517,7 @@ where
         .await?;
 
         let unnamed = founding::name_cluster(&ready, plan.shaping().cluster_name()?, |args| {
-            plan.reach().rerun(args)
+            plan.reach().rerun(args).line()
         })
         .await
         .and_then(Result::err);
@@ -529,6 +530,7 @@ where
             let elsewhere = error.only_elsewhere(&machine.id);
             let error = ingress_incomplete(
                 command,
+                plan,
                 super::output::ingress_hints(error.into(), |args| plan.reach().rerun(args)),
             );
             if !elsewhere {
@@ -808,13 +810,21 @@ async fn sealing(client: &mut Client) -> Result<Option<ployz_core::Sealing>, Err
         .sealing)
 }
 
-/// The first Server is enrolled but its Ingress Proxy deploy failed.
-pub(crate) fn ingress_incomplete(command: EnrollCommand, error: Error) -> Error {
-    super::output::ingress_incomplete(
-        "Server initialized",
-        error,
-        Hint::Retry(command.retry().to_owned()),
-    )
+/// The first Server is enrolled but its Ingress Proxy deploy failed. `server add` finishes
+/// when run again without `--reset`; the check-in loop has no command line to name.
+pub(crate) fn ingress_incomplete(command: EnrollCommand, plan: &EnrollPlan, error: Error) -> Error {
+    match plan.reach().again() {
+        Some(again) => super::output::ingress_incomplete(
+            "Server initialized",
+            error,
+            again.without("reset").into(),
+        ),
+        None => super::output::ingress_incomplete(
+            "Server initialized",
+            error,
+            Hint::Next(command.retry().to_owned()),
+        ),
+    }
 }
 
 /// The first Server's result. Founding it, Cloud deploys the Organization's saved
@@ -1077,7 +1087,10 @@ async fn ensure_uninitialized(plan: &EnrollPlan, mut client: Client) -> Result<C
         ));
     }
     machine::confirm(
-        plan.shaping().yes(),
+        plan.reach()
+            .again()
+            .filter(|_| !plan.shaping().yes())
+            .map(|again| again.switch("yes")),
         "Reset this Server before joining the Cluster?",
     )?;
     machine::leave(&mut client, &details).await?;

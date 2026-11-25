@@ -7,7 +7,7 @@ use clap::{ArgMatches, Command, builder::PossibleValuesParser};
 use serde::Serialize;
 
 use super::{Error, config_path, leaf_matches, runtime};
-use crate::cli::{positional, switch, value};
+use crate::cli::{Rerun, positional, switch, value};
 use ployz_core::RpcErrorCode;
 
 use crate::approval;
@@ -248,11 +248,12 @@ pub(super) fn token_remove(root: &ArgMatches) -> Result<(), Error> {
         let id = cloud::account::credential_id(credential, target).await?;
         cloud::account::remove_token(credential, &id).await
     })?;
-    let next = retry_clears(&servers, &removed.id);
+    let next = retry_clears(&servers, || Rerun::again(root).set("id", &removed.id));
+    let line = next.as_ref().map(Rerun::line);
     let report = TokenRemoved {
         removed: &removed,
         servers: &servers,
-        next: next.as_deref(),
+        next: line.as_deref(),
     };
     ui::finish(&report, || {
         match removed.kind {
@@ -263,7 +264,7 @@ pub(super) fn token_remove(root: &ArgMatches) -> Result<(), Error> {
                 ui::stream(format_args!("Revoked token {}.", removed.id));
             }
         }
-        say_clears(&servers, next.as_deref());
+        say_clears(&servers, next.as_ref());
     })?;
     unconfirmed(&servers)
 }
@@ -285,12 +286,12 @@ struct TokenRemoved<'a> {
     next: Option<&'a str>,
 }
 
-/// The retry for Servers that haven't confirmed clearing credential `id`'s key.
-pub(super) fn retry_clears(servers: &ServerClears, id: &str) -> Option<String> {
-    (!servers.unconfirmed.is_empty()).then(|| format!("ployz token rm {id}"))
+/// `retry` while a Server hasn't confirmed clearing a credential's key.
+pub(super) fn retry_clears(servers: &ServerClears, retry: impl FnOnce() -> Rerun) -> Option<Rerun> {
+    (!servers.unconfirmed.is_empty()).then(retry)
 }
 
-pub(super) fn say_clears(servers: &ServerClears, retry: Option<&str>) {
+pub(super) fn say_clears(servers: &ServerClears, retry: Option<&Rerun>) {
     if !servers.confirmed.is_empty() {
         ui::note(format_args!(
             "Cleared its key on {} Server(s).",
@@ -302,7 +303,7 @@ pub(super) fn say_clears(servers: &ServerClears, retry: Option<&str>) {
             "{} did not confirm; Cloud already refuses it.",
             super::joined(&servers.unconfirmed)
         ));
-        ui::hint(&Hint::Retry(retry.to_owned()));
+        ui::hint(&retry.clone().into());
     }
 }
 
@@ -330,7 +331,7 @@ pub(super) fn org_list(root: &ArgMatches) -> Result<(), Error> {
 
 pub(super) fn org_build_order(root: &ArgMatches) -> Result<(), Error> {
     let order = leaf_matches(root).get_one::<String>("order");
-    let store = super::store::store(root)?.args(order.map(String::as_str));
+    let store = super::store::store(root)?;
     let view = match order {
         None => store.read(&ployz_store::BuildOrderQuery {})?,
         Some(order) => {
@@ -430,7 +431,7 @@ pub(super) fn org_leave(root: &ArgMatches) -> Result<(), Error> {
                         organization.slug
                     ),
                 )
-                .hint(Hint::Retry("ployz org leave --yes".to_owned()))
+                .hint(Rerun::again(root).switch("yes"))
             },
             "Cancelled. Nothing changed.",
         )?;
@@ -512,8 +513,7 @@ pub(super) fn org_remove(root: &ArgMatches) -> Result<(), Error> {
     let slug = matches
         .get_one::<String>("organization")
         .expect("organization is required");
-    let again = ["org", "rm", slug.as_str(), "--confirm", slug.as_str()];
-    let retry = shell_words::join(std::iter::once("ployz").chain(again));
+    let retry = Rerun::again(root).set("confirm", slug);
     super::shared::confirm::confirm(matches, slug, "Organization", retry.clone(), || {
         let refusal = Error::detailed(
             RpcErrorCode::ConfirmationRequired,
@@ -523,7 +523,7 @@ pub(super) fn org_remove(root: &ArgMatches) -> Result<(), Error> {
             ),
             serde_json::json!({ "organization": slug }),
         )
-        .hint(Hint::Retry(retry.clone()));
+        .hint(retry.clone());
         let loss = ui::Tree::new(
             format!("Removing Organization {slug} deletes, for good:"),
             vec![
@@ -559,7 +559,7 @@ pub(super) fn org_remove(root: &ArgMatches) -> Result<(), Error> {
                 )
                 .hint(Hint::Next(format!("ployz org use {slug}")))
             } else {
-                LoginError::UnknownOrganization(slug.clone()).into()
+                LoginError::unknown_organization(slug).into()
             });
         }
         // A device acts in the Organization it removes; afterwards Cloud refuses it
@@ -576,7 +576,7 @@ pub(super) fn org_remove(root: &ArgMatches) -> Result<(), Error> {
         &runtime,
         ployz_store::OperationVerb::Remove,
         matches.get_one::<String>("approval").cloned(),
-        |id| crate::cli::approved_rerun(matches, &again, id),
+        &retry,
         async |approval| {
             approved = approval.map(str::to_owned);
             cloud::account::remove_organization(&credential, &removing, approval).await
@@ -588,7 +588,7 @@ pub(super) fn org_remove(root: &ArgMatches) -> Result<(), Error> {
         None
     };
     let next = (!removal.removed).then(|| match &approved {
-        Some(id) => crate::cli::approved_rerun(matches, &again, id),
+        Some(id) => retry.set("approval", id),
         None => retry,
     });
     let value = serde_json::json!({
@@ -597,7 +597,7 @@ pub(super) fn org_remove(root: &ArgMatches) -> Result<(), Error> {
             "servers": removal.servers,
         "acting": acting.as_ref().and_then(|acting| acting.as_ref().ok()),
     });
-    let report = Next::new(&value, next.clone());
+    let report = Next::new(&value, next.as_ref().map(Rerun::line));
     ui::finish(&report, || {
         if !removal.servers.confirmed.is_empty() {
             ui::note(format_args!(
@@ -622,7 +622,7 @@ pub(super) fn org_remove(root: &ArgMatches) -> Result<(), Error> {
                     "{} did not confirm unpairing.",
                     super::joined(&removal.servers.unconfirmed)
                 ));
-                ui::hint(&Hint::Retry(next.clone()));
+                ui::hint(&next.clone().into());
             }
         }
     })?;

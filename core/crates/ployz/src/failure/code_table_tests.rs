@@ -100,7 +100,7 @@ fn connect_rows() -> Vec<Row> {
         row("connect/ssh-client-missing", ConnectError::SshClientMissing),
         row(
             "connect/proxy-unsupported",
-            ConnectError::ProxyUnsupported("p".into()),
+            ConnectError::ProxyUnsupported(crate::cli::Shown::placeholder("p")),
         ),
         row(
             "connect/unsupported-network",
@@ -167,13 +167,15 @@ fn plain_rows() -> Vec<Row> {
         row(
             "context/not-found",
             ContextError::ContextNotFound {
-                name: "n".into(),
+                name: crate::context::shown_context("n"),
                 path: "p".into(),
             },
         ),
         row(
             "context/no-connections",
-            ContextError::NoConnections { name: "n".into() },
+            ContextError::NoConnections {
+                name: crate::context::shown_context("n"),
+            },
         ),
         row(
             "context/connection",
@@ -528,28 +530,22 @@ fn operator_rows() -> Vec<Row> {
         row("operator/tty-requires-stdin", InputError::TtyRequiresStdin),
         row(
             "operator/invalid-service-selector",
-            InputError::InvalidServiceSelector("s".into()),
+            InputError::InvalidServiceSelector,
         ),
-        row("operator/invalid-tail", InputError::InvalidTail("t".into())),
+        row("operator/invalid-tail", InputError::InvalidTail),
         row(
             "operator/invalid-time",
-            InputError::InvalidTime {
-                flag: "since",
-                value: "v".into(),
-            },
+            InputError::InvalidTime { flag: "since" },
         ),
         row("operator/invalid-proxy-port", InputError::InvalidProxyPort),
-        row(
-            "operator/invalid-local-port",
-            InputError::InvalidLocalPort("p".into()),
-        ),
+        row("operator/invalid-local-port", InputError::InvalidLocalPort),
         row(
             "operator/invalid-remote-port",
-            InputError::InvalidRemotePort("p".into()),
+            InputError::InvalidRemotePort,
         ),
         row(
             "operator/input",
-            OperatorError::Input(InputError::InvalidTail("t".into())),
+            OperatorError::Input(InputError::InvalidTail),
         ),
         row(
             "operator/no-servable-container",
@@ -612,18 +608,21 @@ fn login_rows() -> Vec<Row> {
         row(
             "login/unreachable",
             LoginError::Unreachable {
-                cloud: "c".into(),
+                cloud: crate::cli::Shown::placeholder("c"),
                 error: reqwest_error(),
             },
         ),
         row(
             "login/unanswered",
             LoginError::Unanswered {
-                cloud: "c".into(),
+                cloud: crate::cli::Shown::placeholder("c"),
                 error: reqwest_error(),
             },
         ),
-        row("login/unsupported", LoginError::Unsupported("u".into())),
+        row(
+            "login/unsupported",
+            LoginError::Unsupported(crate::cli::Shown::placeholder("u")),
+        ),
         row(
             "login/status-401",
             LoginError::Status {
@@ -688,8 +687,8 @@ fn login_rows() -> Vec<Row> {
         row(
             "login/other-cloud",
             LoginError::OtherCloud {
-                signed_in: "a".into(),
-                requested: "b".into(),
+                signed_in: crate::cli::Shown::placeholder("a"),
+                requested: crate::cli::Shown::placeholder("b"),
             },
         ),
         row("login/signed-out", LoginError::SignedOut),
@@ -707,11 +706,11 @@ fn login_rows() -> Vec<Row> {
         row("login/token-bound", LoginError::TokenBound),
         row(
             "login/unknown-organization",
-            LoginError::UnknownOrganization("o".into()),
+            LoginError::UnknownOrganization(crate::cli::Shown::placeholder("o")),
         ),
         row(
             "login/unknown-credential",
-            LoginError::UnknownCredential("c".into()),
+            LoginError::UnknownCredential(crate::cli::Shown::placeholder("c")),
         ),
         row(
             "login/ambiguous-credential",
@@ -771,7 +770,7 @@ fn provision_and_publish_rows() -> Vec<Row> {
         ),
         row(
             "provision/remote-transport",
-            ProvisionError::RemoteTransport("t".into()),
+            ProvisionError::RemoteTransport(crate::cli::Shown::placeholder("t")),
         ),
         row(
             "provision/connection",
@@ -896,7 +895,9 @@ fn provision_and_publish_rows() -> Vec<Row> {
         ),
         row(
             "publish/unsupported",
-            PublishError::Unsupported { cloud: "c".into() },
+            PublishError::Unsupported {
+                cloud: crate::cli::Shown::placeholder("c"),
+            },
         ),
         row("publish/unavailable", PublishError::Unavailable("u".into())),
         row(
@@ -907,7 +908,7 @@ fn provision_and_publish_rows() -> Vec<Row> {
         row(
             "publish/malformed",
             PublishError::Malformed {
-                cloud: "c".into(),
+                cloud: crate::cli::Shown::placeholder("c"),
                 reason: "r".into(),
             },
         ),
@@ -927,14 +928,14 @@ fn provision_and_publish_rows() -> Vec<Row> {
         row(
             "publish/other-cloud",
             PublishError::OtherCloud {
-                published: "a".into(),
-                acting: "b".into(),
+                published: crate::cli::Shown::placeholder("a"),
+                acting: crate::cli::Shown::placeholder("b"),
             },
         ),
         row(
             "publish/slow",
             PublishError::Slow {
-                cloud: "c".into(),
+                cloud: crate::cli::Shown::placeholder("c"),
                 budget: std::time::Duration::from_secs(2),
             },
         ),

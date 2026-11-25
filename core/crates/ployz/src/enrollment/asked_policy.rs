@@ -114,7 +114,7 @@ pub(crate) fn parse_labels(
     for label in given {
         let (key, value) = label
             .split_once('=')
-            .ok_or_else(|| Error::usage(format!("invalid label {label:?}: expected KEY=VALUE")))?;
+            .ok_or_else(|| Error::usage("invalid label: expected KEY=VALUE"))?;
         if labels.insert(key.parse()?, value.parse()?).is_some() {
             return Err(Error::usage(format!("duplicate label key {key:?}")));
         }

@@ -2,16 +2,15 @@
 //! join Cloud hasn't sent, cancelling their attempt. Their check-in loop stops and they won't
 //! come back under the same Fleet Token.
 
-use std::io::IsTerminal;
-
 use clap::{ArgMatches, Command};
 use globset::Glob;
 use ployz_core::RpcErrorCode;
 use serde_json::json;
 
 use super::waiting::{self, Enrolling, Rejection, Stopped, Waiting};
-use crate::cli::{base, positional};
-use crate::handlers::{Error, leaf_matches, runtime, typed_with};
+use crate::cli::shown::NameGlob;
+use crate::cli::{Shown, base, positional};
+use crate::handlers::{Error, Rerun, leaf_matches, runtime};
 use crate::ui::{self, Cell, Table, printable};
 use ployz_core::Hint;
 
@@ -63,7 +62,7 @@ pub(crate) fn reject(root: &ArgMatches) -> Result<(), Error> {
         }
         return Err(Error::not_found(format!(
             "No waiting server matches {}. Nothing rejected.",
-            printable(pattern)
+            shown_pattern(pattern)
         ))
         .hint(Hint::Next("ployz server ls --waiting".into()))
         .hint(waiting::copied_hint(pattern)));
@@ -99,8 +98,7 @@ pub(crate) fn reject(root: &ArgMatches) -> Result<(), Error> {
                 Cell::from("-"),
             ]);
         }
-        let stderr = std::io::stderr();
-        let _ = table.write(&mut anstream::stderr(), stderr.is_terminal());
+        let _ = table.write(&mut ui::stderr(), ui::stderr_is_terminal());
         if !joining.is_empty() {
             let them = if joining.len() == 1 { "it" } else { "them" };
             ui::warn(format!(
@@ -120,7 +118,7 @@ pub(crate) fn reject(root: &ArgMatches) -> Result<(), Error> {
                     format!("Rejecting {described} needs confirmation. Nothing rejected."),
                     json!({ "waiting_servers": listed, "enrolling": listed_enrolling, "joining": listed_joining }),
                 )
-                .hint(Hint::Retry(typed_with(&["--yes"])))
+                .hint(Rerun::again(root).switch("yes"))
             },
             "Nothing rejected.",
         )?;
@@ -284,7 +282,7 @@ fn ambiguous(started: &Matched<'_>, pattern: &str) -> Error {
             format!(
                 "{} waiting servers have an id starting {}. Use more of the id",
                 started.waiting.len(),
-                printable(pattern)
+                shown_pattern(pattern)
             ),
             &started.waiting,
         );
@@ -306,7 +304,7 @@ fn ambiguous(started: &Matched<'_>, pattern: &str) -> Error {
         format!(
             "{} servers have an id starting {}. Use more of the id: {ids}",
             started.len(),
-            printable(pattern)
+            shown_pattern(pattern)
         ),
         json!({
             "waiting_servers": started
@@ -319,12 +317,19 @@ fn ambiguous(started: &Matched<'_>, pattern: &str) -> Error {
     )
 }
 
+/// The pattern as a refusal names it: whole when it reads as a name, an id or a glob of
+/// them, else `<PATTERN>`, since a word typed here may be a credential pasted in the wrong
+/// place.
+fn shown_pattern(pattern: &str) -> Shown {
+    NameGlob::parse(pattern).map_or_else(|| Shown::placeholder("PATTERN"), |glob| Shown::of(&glob))
+}
+
 fn glob(pattern: &str) -> Result<globset::GlobMatcher, Error> {
     Ok(Glob::new(pattern)
         .map_err(|error| {
             Error::usage(format!(
                 "{} is not a valid glob: {}",
-                printable(pattern),
+                shown_pattern(pattern),
                 error.kind()
             ))
         })?
