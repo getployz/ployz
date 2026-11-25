@@ -7,7 +7,9 @@
 //! the line: `snapshot <name> <guid>` lands that snapshot; `break` leaves a resume
 //! token behind and fails like an interrupted stream. The `readonly-lost` marker stands for
 //! a ZFS that does not keep `readonly=on` on the received copy, however it is set, and
-//! `props/receive-fails` a receive that fails outright. Like ZFS,
+//! `props/receive-fails` a receive that fails outright. `props/late`, holding a marker and
+//! a count, makes that marker's dataset appear once the count of dataset listings has run,
+//! as a dataset made between a read and an act. Like ZFS,
 //! a command naming a dataset no marker stands for fails with `dataset does not exist`.
 //!
 //! The Trash is the `trash` directory: it stands for `tank/ployz-trash`, and each
@@ -217,6 +219,12 @@ case "$*" in
     ;;
   'list -Hp -o name,refquota,used,usedbydataset,referenced,mountpoint,mounted,readonly -r tank')
     if [ -e '{list_fails}' ]; then echo 'pool is busy' >&2; exit 1; fi
+    late=
+    if [ -e '{props}/late' ]; then
+      read -r late_marker late_count < '{props}/late'
+      if [ "$late_count" -le 1 ]; then rm -f '{props}/late'; late=$late_marker
+      else printf '%s %s\n' "$late_marker" $((late_count - 1)) > '{props}/late'; fi
+    fi
     if [ -e '{props}/datasets-cut' ]; then
       printf 'tank\t0\t0\t0\t0\t/tank\tyes\toff\n'; echo 'cannot iterate filesystems: I/O error' >&2; exit 0
     fi
@@ -275,6 +283,7 @@ case "$*" in
       if [ "$d" = tank/ployz-trash ]; then printf 'tank/ployz-trash\t0\t0\t0\t0\tnone\tno\toff\n'; continue; fi
       printf '%s\t%s\t%s\t%s\t%s\tnone\tno\t%s\n' "$d" "$(prop "$d" refquota 0)" "$(prop "$d" used 0)" "$(prop "$d" usedbydataset 0)" "$(prop "$d" referenced 0)" "$(prop "$d" readonly off)"
     done
+    [ -z "$late" ] || touch '{fixtures}'/"$late"
     ;;
   'list -Hp -t snapshot -o name,guid,creation -S createtxg -d 1 '*)
     require "${{11}}"
@@ -586,8 +595,20 @@ case "$*" in
     ;;
   'destroy tank/ployz-mirror/{seed}')
     require tank/ployz-mirror/{seed}
-    if [ -e '{seed_fs}' ]; then echo 'filesystem has children' >&2; exit 1; fi
+    if [ -e '{seed_fs}' ] || [ -e '{seed_slot_child}' ]; then echo 'filesystem has children' >&2; exit 1; fi
+    if [ -s '{props}/tank/ployz-mirror/{seed}/snapshots' ]; then echo 'filesystem has children' >&2; exit 1; fi
     rm -rf '{seed_slot}' '{props}/tank/ployz-mirror/{seed}'
+    ;;
+  'destroy tank/ployz-mirror/{seed}/fs')
+    require tank/ployz-mirror/{seed}/fs
+    if [ -s '{props}/tank/ployz-mirror/{seed}/fs/snapshots' ]; then echo 'filesystem has children' >&2; exit 1; fi
+    rm -rf '{seed_fs}' '{props}/tank/ployz-mirror/{seed}/fs'
+    ;;
+  'destroy tank/ployz/{seed}')
+    require tank/ployz/{seed}
+    if [ -e '{seed_child}' ]; then echo 'filesystem has children' >&2; exit 1; fi
+    if [ -s '{props}/tank/ployz/{seed}/snapshots' ]; then echo 'filesystem has children' >&2; exit 1; fi
+    rm -rf '{seed_volume}' '{props}/tank/ployz/{seed}'
     ;;
   'destroy -r tank/ployz/{seed}')
     require tank/ployz/{seed}
@@ -740,6 +761,7 @@ esac
         seed_fs = seed_fs.display(),
         seed_volume = seed_volume.display(),
         seed_child = seed_child.display(),
+        fixtures = directory.display(),
         seed_slot_child = seed_slot_child.display(),
         slot_bound = SLOT_BOUND_BYTES,
         props = props.display(),

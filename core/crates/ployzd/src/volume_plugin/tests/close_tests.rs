@@ -40,6 +40,12 @@ async fn close(test: &TestDir, pools: &str, markers: &[&str]) -> Value {
 async fn a_close_destroys_a_root_the_preview_made_and_trashes_one_it_did_not() {
     let made = test_dir();
     set_property(&made, ROOT, "ployz:origin", &own_origin());
+    set_property(
+        &made,
+        ROOT,
+        "snapshots",
+        &format!("{ROOT}@w-1-2\t77\t1700000000"),
+    );
     let response = close(&made, USABLE_POOL, &["root", "seed-volume"]).await;
     assert_eq!(
         response,
@@ -98,6 +104,38 @@ async fn a_close_never_destroys_a_dataset_below_a_preview_copy() {
         );
         assert!(trashed(test).is_empty());
     }
+}
+
+/// A dataset made below a preview's own root after the Close read the Pool survives: the
+/// Close destroys only what it read, and ZFS refuses the root while the child is there.
+#[tokio::test]
+async fn a_close_never_destroys_a_child_that_appears_after_its_read() {
+    let test = test_dir();
+    set_property(&test, ROOT, "ployz:origin", &own_origin());
+    // After the listing that finds the Volume and the one taken once its receive stopped.
+    set_property(&test, "", "late", "seed-child 2");
+    let response = close(&test, USABLE_POOL, &["root", "seed-volume"]).await;
+    assert!(error_text(&response).contains("children"), "{response}");
+    assert!(test.0.join("seed-child").exists());
+    assert!(test.0.join("seed-volume").exists());
+    assert!(trashed(&test).is_empty());
+}
+
+/// A receive can make a slot's copy between the listing that finds the Volume and its
+/// stop. The Close reads the slot again once the receive stopped, and destroys the copy
+/// before the slot.
+#[tokio::test]
+async fn a_close_reads_a_slot_again_once_its_receive_stopped() {
+    let test = test_dir();
+    set_property(&test, SLOT, "ployz:pull-origin", &own_origin());
+    set_property(&test, "", "late", "seed-fs 1");
+    let response = close(&test, USABLE_POOL, &["seed-slot"]).await;
+    assert_eq!(
+        response,
+        json!({"Ok": {"destroyed": [VOLUME], "kept": [], "trashed": []}})
+    );
+    assert!(!test.0.join("seed-slot").exists());
+    assert!(!test.0.join("seed-fs").exists());
 }
 
 #[tokio::test]

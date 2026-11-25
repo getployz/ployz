@@ -142,7 +142,7 @@ impl LocalMachine {
     ) -> Result<VolumeCopyView, Error> {
         self.admit_preview_arrival(&request.into)?;
         let switch = self.lock_switch().await?;
-        switch.open_preview_arrival(&request.into)?;
+        switch.admit_preview_arrival(&request.into)?;
         // Only a Full caller seeds, checked under the switch: the Machine API refused an
         // Operator on arrival, and a key that lost its Device slot since is one now.
         switch.full_caller()?;
@@ -152,6 +152,8 @@ impl LocalMachine {
         if let Some(r#gen) = request.r#gen {
             switch.check_gen(&request.into, r#gen).await?;
         }
+        // Opened once the Seed is admitted, so a refused one opens no preview.
+        switch.open_preview_arrival(&request.into)?;
         switch
             .finish_verb("SeedVolume", VOLUME_SEED_ROUTE, request.clone())
             .await
@@ -177,7 +179,7 @@ impl LocalMachine {
     ) -> Result<VolumeCopyView, Error> {
         self.admit_preview_arrival(&request.seed.into)?;
         let switch = self.lock_switch().await?;
-        switch.open_preview_arrival(&request.seed.into)?;
+        switch.admit_preview_arrival(&request.seed.into)?;
         if let Some(r#gen) = request.seed.r#gen {
             switch.check_gen(&request.seed.into, r#gen).await?;
         }
@@ -202,6 +204,8 @@ impl LocalMachine {
                 problem: error.to_string(),
             })
         })?;
+        // Opened once the step is admitted, so a refused one opens no preview.
+        switch.open_preview_arrival(&request.seed.into)?;
         self.approvals.take_copy(&verified)?;
         let step = &verified.step;
         let seed = SeedCopy {

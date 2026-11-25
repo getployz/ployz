@@ -5,7 +5,8 @@
 //!
 //! The sweep refuses, and leaves the Close to run again, whenever it can't be sure what the
 //! Pool holds: a Pool this Machine held is not imported, ZFS stopped its listing early, or a
-//! dataset sits below a copy where a recursive destroy would take it along.
+//! dataset sits below a copy. It destroys with no `-r`, so ZFS refuses one that appears
+//! below a copy after the read.
 //!
 //! Each step reads the Pool afresh, so a Close stopped halfway is run again from the top.
 
@@ -30,8 +31,8 @@ impl VolumeStorage {
         };
         let layout = DatasetLayout::of(&pool);
         let prefix = format!("{}_", preview.namespace());
-        let datasets = self.complete_datasets(&pool).await?;
-        let names = datasets
+        let listed = self.complete_datasets(&pool).await?;
+        let names = listed
             .iter()
             .filter_map(|dataset| layout.place(&dataset.name).volume())
             .filter_map(|name| name.split('/').next())
@@ -41,21 +42,23 @@ impl VolumeStorage {
             let docker = DockerVolumeName::parse(name)
                 .map_err(|error| ployz_core::error_chain::inline(&error))?;
             let name = name.parse::<VolumeName>()?;
-            let root = Self::dataset(&datasets, &pool, &name)?;
-            let slot = Self::slot(&datasets, &pool, &name);
-            if slot.is_some() {
-                only_its_copy_below(&datasets, &layout, &name)?;
-            }
             if !self.receives.stop(&name, self.stop_deadline).await {
                 return Err(PluginError::from(format!(
                     "Volume {name} is still receiving, so the preview's Close stops until it is run again"
                 )));
             }
+            // Read again once its receive stopped, which may have made the slot's copy since.
+            let datasets = self.complete_datasets(&pool).await?;
+            let root = Self::dataset(&datasets, &pool, &name)?;
+            let slot = Self::slot(&datasets, &pool, &name);
+            if slot.is_some() {
+                only_its_copy_below(&datasets, &layout, &name)?;
+            }
             let own = preview.own_origin(name.as_str());
             if let Some(root) = root {
                 let origin = self.local_origin(&root.name, Mark::Origin).await;
                 if made_here(origin, own.as_ref()) {
-                    self.destroy(&root.name, Holds::ClosedPreview).await?;
+                    self.destroy_exactly(&root.name, None).await?;
                     closed.destroyed.push(docker.clone());
                 } else {
                     let id = self.discard(&root.name, TrashPlace::Root, &name).await?;
@@ -70,15 +73,15 @@ impl VolumeStorage {
                 let fs = Self::slot_fs(&datasets, &pool, &name).map(|fs| fs.name.as_str());
                 let origin = self.origin_of(Some(parent), fs.map(|fs| (fs, None))).await;
                 match fs {
-                    None => self.destroy(parent, Holds::Nothing).await?,
-                    Some(_) if made_here(origin, own.as_ref()) => {
-                        self.destroy(parent, Holds::ClosedPreview).await?;
+                    None => self.destroy_exactly(parent, None).await?,
+                    Some(fs) if made_here(origin, own.as_ref()) => {
+                        self.destroy_exactly(parent, Some(fs)).await?;
                         if closed.destroyed.last() != Some(&docker) {
                             closed.destroyed.push(docker.clone());
                         }
                     }
                     Some(fs) if self.newest_guid(fs).await?.is_none() => {
-                        self.destroy(parent, Holds::Unreceived).await?;
+                        self.destroy_exactly(parent, Some(fs)).await?;
                     }
                     Some(_) => {
                         let id = self.discard(parent, TrashPlace::Slot, &name).await?;
@@ -89,6 +92,29 @@ impl VolumeStorage {
             self.receives.forget(&name);
         }
         Ok(closed)
+    }
+
+    /// Destroys `top`, and the copy `below` it first when it has one, with no `-r`: each
+    /// one's snapshots, then the dataset. ZFS itself then refuses a dataset that gained a
+    /// child or a snapshot since the Pool was read, so nothing that appears under a closing
+    /// preview's copy is destroyed with it.
+    async fn destroy_exactly(&self, top: &str, below: Option<&str>) -> Result<()> {
+        self.bury(top, true).await?;
+        let below = match below {
+            Some(fs) if self.marks(fs).is_set(Mark::ResumeToken).await? => {
+                self.zfs(&["receive", "-A", fs]).await?;
+                // Aborting a first receive destroys the copy it began.
+                self.exists(fs).await?.then_some(fs)
+            }
+            below => below,
+        };
+        for dataset in below.into_iter().chain([top]) {
+            for snapshot in self.snapshot_names(dataset).await? {
+                self.zfs(&["destroy", &snapshot]).await?;
+            }
+            self.destroy(dataset, Holds::Nothing).await?;
+        }
+        Ok(())
     }
 }
 

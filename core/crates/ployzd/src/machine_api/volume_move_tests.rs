@@ -927,8 +927,10 @@ async fn a_close_of_a_preview_this_server_never_opened_touches_nothing() {
 #[tokio::test]
 async fn data_landing_before_any_create_opens_the_preview_for_its_close() {
     let fleet = Fleet::start().await;
-    let (namespace, _, volume) = preview_on(fleet.node(0));
+    let (namespace, spec, volume) = preview_on(fleet.node(0));
     let plugin = FakePlugin::default();
+    let root = preview_root(&spec, &volume, 0)["Ok"].clone();
+    plugin.reply(VOLUME_SEED_ROUTE, json!({"Ok": {"copy": root}}));
     plugin.reply(PREVIEW_CLOSE_ROUTE, json!({"Ok": {}}));
     let service = fleet.with_plugin(0, &plugin);
     let seed = ployz_core::SeedVolumeRequest {
@@ -937,28 +939,124 @@ async fn data_landing_before_any_create_opens_the_preview_for_its_close() {
         guid: ployz_core::SnapshotGuid::new(7),
         r#gen: None,
     };
-    let _ = service
+    let seeded = service
         .seed_volume(Request::new(
             op::SeedVolume::into_request(seed).encode().unwrap(),
         ))
-        .await;
-    assert_eq!(calls_to(&plugin, VOLUME_SEED_ROUTE), 1, "the Seed landed");
-    let seeded = close(&service, &namespace).await;
-    assert!(seeded.is_ok(), "{seeded:?}");
+        .await
+        .unwrap()
+        .into_inner()
+        .decode_response()
+        .unwrap();
+    assert!(
+        seeded.clone().decode::<op::SeedVolume>().is_ok(),
+        "{seeded:?}"
+    );
+    let closed = close(&service, &namespace).await;
+    assert!(closed.is_ok(), "{closed:?}");
     assert_eq!(calls_to(&plugin, PREVIEW_CLOSE_ROUTE), 1);
 
     let fleet = Fleet::start().await;
-    let (namespace, spec, _) = preview_on(fleet.node(0));
+    let (namespace, spec, volume) = preview_on(fleet.node(0));
     let plugin = FakePlugin::default();
+    plugin.reply("Volume.Inspect", json!({"Ok": {"copy": null}}));
+    plugin.reply("Storage.Prepare", json!({"Ok": [volume]}));
     plugin.reply(PREVIEW_CLOSE_ROUTE, json!({"Ok": {}}));
     let service = fleet.with_plugin(0, &plugin);
-    let _ = service
+    let prepared = service
         .local
         .prepare_volumes(vec![ployz_core::ServiceStorageSpec::from(&spec)])
         .await;
-    let prepared = close(&service, &namespace).await;
     assert!(prepared.is_ok(), "{prepared:?}");
+    let closed = close(&service, &namespace).await;
+    assert!(closed.is_ok(), "{closed:?}");
     assert_eq!(calls_to(&plugin, PREVIEW_CLOSE_ROUTE), 1);
+}
+
+/// A Seed or Seed copy this Server refuses, here a Seed below the Volume's floor and a step
+/// signed by a key it doesn't trust, opens no preview: a Close of it still answers that the
+/// preview never ran here.
+#[tokio::test]
+async fn a_refused_seed_or_seed_copy_opens_no_preview() {
+    use ployz_core::authority::{CopyStep, ProposalRef, Signed, Signer, Timestamp};
+    let fleet = Fleet::start().await;
+    let (namespace, _, volume) = preview_on(fleet.node(0));
+    let plugin = FakePlugin::default();
+    plugin.reply(PREVIEW_CLOSE_ROUTE, json!({"Ok": {}}));
+    plugin.reply(INSPECT_ROUTE, json!({"Ok": null}));
+    let service = fleet.with_plugin(0, &plugin);
+    let stranger = Signer::from_seed(&[42; 32]);
+    let source = DockerVolumeName::parse("app_data").unwrap();
+    let step = CopyStep {
+        cluster: crate::sealing_key::SealingKey::generate().public_key(),
+        namespace: namespace.clone(),
+        proposal: ProposalRef {
+            operation: ployz_core::OperationId::parse("0f8fad5bd9cb469fa16570867728950e").unwrap(),
+            index: 0,
+        },
+        signer: ployz_core::DeviceKey::from(stranger.public()).into(),
+        machine: fleet.node(0).row.id,
+        source: source.clone(),
+        origin: ployz_core::VolumeOrigin::legacy(&source),
+        point: ployz_core::SnapshotGuid::new(7),
+        taken_at: Timestamp::now(),
+        into: volume.clone(),
+        birth: ployz_core::PreviewNamespace::of(&namespace)
+            .unwrap()
+            .birth("data"),
+    };
+    let request = ployz_core::SeedCopyRequest {
+        seed: ployz_core::SeedVolumeRequest {
+            name: source,
+            into: volume,
+            guid: ployz_core::SnapshotGuid::new(7),
+            r#gen: None,
+        },
+        step: Signed::sign(&step, &stranger).unwrap(),
+    };
+    let floor = json!({"name":request.seed.into, "expect":{"kind":"none"}, "want":{"kind":"floor"}, "gen":5});
+    let floor = try_set_copy(&service, floor).await;
+    assert!(floor.is_ok(), "{floor:?}");
+    let stale = ployz_core::SeedVolumeRequest {
+        r#gen: Some(ployz_core::VolumeGen::new(1)),
+        ..request.seed.clone()
+    };
+    let stale = service
+        .seed_volume(Request::new(
+            op::SeedVolume::into_request(stale).encode().unwrap(),
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .decode_response()
+        .unwrap();
+    assert!(
+        stale.clone().decode::<op::SeedVolume>().is_err()
+            && format!("{stale:?}").contains("lane 5"),
+        "{stale:?}"
+    );
+    let refused = service
+        .seed_copy(Request::new(
+            op::SeedCopy::into_request(request).encode().unwrap(),
+        ))
+        .await
+        .map(|answer| answer.into_inner().decode_response().unwrap());
+    assert!(
+        refused.as_ref().map_or(true, |answer| answer
+            .clone()
+            .decode::<op::SeedCopy>()
+            .is_err()),
+        "{refused:?}"
+    );
+
+    let closed = close(&service, &namespace).await;
+    assert!(
+        closed
+            .as_ref()
+            .is_err_and(|error| error.contains("never ran")),
+        "{closed:?}"
+    );
+    assert_eq!(calls_to(&plugin, PREVIEW_CLOSE_ROUTE), 0);
 }
 
 /// A Seed that passed its early check while the preview was open, and then queued on the
