@@ -65,6 +65,12 @@ pub(super) fn set_command(command: Command) -> Command {
                 .help("Registry the credentials are for, like ghcr.io"),
         )
         .arg(
+            value("username", None)
+                .value_name("NAME")
+                .requires("secret")
+                .help("Registry username for the token, like octo"),
+        )
+        .arg(
             value("from-env-file", None)
                 .value_name("FILE")
                 .help("Set a Service's variables from a .env file; - reads stdin. Variables that are secret stay secret"),
@@ -349,14 +355,20 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
                 "--secret reads the value from stdin, never the command line: set web.env.KEY --secret",
             ));
         }
+        let setting = SettingPath::parse(&path)?;
+        let username = secret_username(&path, &setting, matches.get_one::<String>("username"))?;
         let stdin = std::io::stdin();
         let stdin_is_terminal = stdin.is_terminal();
         let secret = read_secret(&path, stdin, stdin_is_terminal)?;
+        let value = match username {
+            Some(username) => serde_json::json!({ "username": username, "secret": secret }),
+            None => SecretInput::Seal(secret).to_value(),
+        };
         return edit(
             root,
             vec![Change::Set {
-                path: SettingPath::parse(&path)?,
-                value: SecretInput::Seal(secret).to_value(),
+                path: setting,
+                value,
             }],
         );
     }
@@ -482,6 +494,27 @@ fn one_service(matches: &ArgMatches, usage: &'static str) -> Result<String, Erro
         Some(_) | None => None,
     }
     .ok_or_else(|| Error::usage(usage))
+}
+
+/// The username `set PATH --secret` seals with a registry login's token. Docker sends a
+/// login only with a username, so a login without one is refused before its token is
+/// read; `--username` names nothing for any other path.
+fn secret_username<'a>(
+    path: &str,
+    setting: &SettingPath,
+    username: Option<&'a String>,
+) -> Result<Option<&'a str>, Error> {
+    let username = username.map(|name| name.trim());
+    match (setting.names_registry_login(), username) {
+        (true, Some(name)) if !name.is_empty() => Ok(Some(name)),
+        (true, _) => Err(Error::usage(format!(
+            "{path} needs a username: add --username, like --username octo"
+        ))),
+        (false, None) => Ok(None),
+        (false, Some(_)) => Err(Error::usage(
+            "--username is only for registry credentials: set web.registryCredential --secret --username octo",
+        )),
+    }
 }
 
 /// The value for `set PATH --secret`. Typed at a terminal, it is asked for with

@@ -112,6 +112,14 @@ impl Store<'_> {
             seal(&recipient, &identity, secret.key(), plaintext).map(Some)
         })?;
         edit.map_plaintext_logins(refused, |service, set, login| {
+            // Docker sends a login only with a username, so one without would pull as
+            // if there were none.
+            if login.username.is_none() {
+                return Err(Error::usage(format!(
+                    "{service}.registryCredential needs a username: \
+                     set {service}.registryCredential --secret --username octo"
+                )));
+            }
             let named = services
                 .iter()
                 .find(|target| &target.name == service)
