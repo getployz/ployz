@@ -36,7 +36,7 @@ export function RegistryCredentialsField({
   changed: boolean;
   baselineLabel?: string;
   baselineValue?: string;
-  onSet: (value: { username: string | null; secret: string }) => Write;
+  onSet: (value: { username: string; secret: string }) => Write;
   onClear: () => void;
   /** Turns the stored credentials back on, when there are some to restore. */
   onRestore?: () => void;
@@ -48,10 +48,8 @@ export function RegistryCredentialsField({
   const registryHost = getRegistryHostFromImageReference(image);
   // Credentials seal for one registry host, so a host Docker can't reach takes none.
   const problem = registryHostProblem(image);
-  const usesSingleFieldUpdater =
-    provider.usernameLabel == null || fixedUsername != null;
 
-  function handleSubmit(value: { username: string | null; secret: string }) {
+  function handleSubmit(value: { username: string; secret: string }) {
     onSet(value);
     setMode(null);
   }
@@ -97,7 +95,7 @@ export function RegistryCredentialsField({
 
   return (
     <SettingsWorkspace label={label} hint={provider.description}>
-      {usesSingleFieldUpdater ? (
+      {fixedUsername != null ? (
         <ServiceRegistryCredentialSingleFieldEditor
           schema={registryCredentialSecretSchema}
           secretLabel={provider.secretLabel}
@@ -119,7 +117,7 @@ export function RegistryCredentialsField({
       ) : (
         <ServiceRegistryCredentialForm
           key={`${mode}:${username ?? ""}`}
-          usernameLabel={provider.usernameLabel ?? "Username"}
+          usernameLabel={provider.usernameLabel}
           secretLabel={provider.secretLabel}
           initialUsername={username ?? ""}
           baselineLabel={baselineLabel}

@@ -93,7 +93,7 @@ warning about ports the image exposes. Upgrade it.
 | Registry | What to enter |
 | --- | --- |
 | Docker Hub | Your Docker ID and a personal access token |
-| GitHub Container Registry | A personal access token with the `read:packages` scope |
+| GitHub Container Registry | Your GitHub username and a personal access token with the `read:packages` scope |
 | GitLab Container Registry | Your username and a token with the `read_registry` scope |
 | Quay.io | A robot username (`namespace+robotname`) and its token |
 | Google Artifact Registry | A service account's JSON key |
@@ -107,8 +107,9 @@ can't read them. Your servers use them only to pull from that registry. The **Re
 credentials** row shows the provider and registry, like **Docker Hub · docker.io**. To replace
 them, click the pencil. A new secret takes effect at once, not as a staged change, and Discard
 can't bring the old one back. **Disconnect** stops using credentials from your next deploy, and
-**Restore** undoes it until then. From the CLI, `ployz set web.registryCredential --secret`
-seals a token the same way. At a terminal the CLI shows the registry Ployz Cloud names for the
+**Restore** undoes it until then. From the CLI,
+`ployz set web.registryCredential --secret --username octo` seals a token and its username the
+same way. At a terminal the CLI shows the registry Ployz Cloud names for the
 service and asks you to confirm it. A script names it with `--registry ghcr.io`. If the
 same command sets the image, the token is sealed for that image's registry.
 

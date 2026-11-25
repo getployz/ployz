@@ -456,6 +456,12 @@ impl SettingPath {
         }
     }
 
+    /// Whether it addresses a Service's registry login, `SERVICE.registryCredential`.
+    #[must_use]
+    pub fn names_registry_login(&self) -> bool {
+        self.target() == Some(&Target::Setting(ServiceSetting::RegistryCredential))
+    }
+
     /// The path of `service` as a whole.
     pub(crate) fn whole(service: &ServiceName) -> Self {
         Self(Addressed::Service(service.clone(), None))

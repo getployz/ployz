@@ -156,8 +156,8 @@ Some things are not tools. Run these yourself in a terminal:
 - `exec`, `service port-forward`, `logs --follow` and `up`.
 - Branches, tokens and Fleet Tokens (`server token`).
 - Secrets and registry credentials. `ployz set web.env.KEY --secret` seals a secret on this
-  computer, and `ployz set web.registryCredential --secret` seals an image's token for its
-  registry. It takes the registry from the image the same command sets, or from
+  computer, and `ployz set web.registryCredential --secret --username octo` seals an image's
+  token and its username for its registry. It takes the registry from the image the same command sets, or from
   `--registry ghcr.io`. Otherwise Ployz Cloud names the service's registry, and you confirm it
   at a terminal; a script must pass `--registry`. A login reaches Cloud only sealed:
   a new token inline on the command line is refused before anything is sent, and one read
