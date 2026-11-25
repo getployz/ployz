@@ -292,7 +292,9 @@ the image stored, and the next key change names it as stored after the removal, 
 stops once the server process that took the push has restarted without storing it. An `exec`
 that Docker lost track of by restarting before the server saw the command start stays reported,
 because the command may still run. A build that can't confirm it stopped has the secret values it opened deleted at once,
-and starts no further step.
+and starts no further step. For an `exec`, "stops" means the command's own process. A child it
+started in the background, for example with `&` or `nohup`, can keep running in the container after
+the command exits; to be sure nothing a removed device started is left, redeploy the service.
 Every server that answers marks the key removed, including one that never
 trusted it, so an approval of that key still on its way there is refused. If no server can name
 the key in full, for example because every server that trusted or removed it is away, a server that never held
