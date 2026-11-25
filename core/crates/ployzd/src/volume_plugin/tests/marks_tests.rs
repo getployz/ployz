@@ -263,7 +263,6 @@ async fn a_landed_pull_marks_the_slot_in_this_order() {
             "zfs inherit ployz:epoch tank/ployz-mirror/data/fs",
             "zfs inherit ployz:promote tank/ployz-mirror/data/fs",
             "zfs inherit ployz:seed tank/ployz-mirror/data/fs",
-            "zfs inherit ployz:restored tank/ployz-mirror/data/fs",
             "zfs set ployz:pulled=12 tank/ployz-mirror/data/fs",
             "zfs inherit ployz:pull tank/ployz-mirror/data",
         ]

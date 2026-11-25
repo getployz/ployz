@@ -1200,7 +1200,7 @@ fn reads_as(model: &VolumeMarks, before: &State, action: Action, after: &State) 
             "A: mark_pulled sets ployz:pulled to the newest guid, keeping every mark (under Broken); the task ends (copy.rs)".to_owned()
         }
         Action::MarkPulled => {
-            "A: mark_pulled clears (zfs inherit) ployz:cut, epoch, promote, seed and restored and sets ployz:pulled to the newest guid; the task ends (copy.rs)".to_owned()
+            "A: mark_pulled clears (zfs inherit) ployz:cut, epoch, promote and seed and sets ployz:pulled to the newest guid; the task ends (copy.rs)".to_owned()
         }
     }
 }
