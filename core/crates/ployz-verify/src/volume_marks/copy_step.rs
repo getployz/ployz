@@ -301,8 +301,6 @@ struct State {
     restoring_call: bool,
     /// A restart cut a restore between its slot parent and its rename.
     restore_cut: bool,
-    /// A restore found the slot parent a cut restore made and refused it.
-    stranded: bool,
     /// A restore landed an entry in a slot parent it did not make.
     landed_other: bool,
     /// The sweep destroyed the entry.
@@ -861,12 +859,12 @@ impl CopyStep {
     }
 
     /// The first step of an old copy's restore: make the slot parent carrying the entry's
-    /// ID where nothing of `into` is, take up the one carrying it, or refuse.
+    /// ID where nothing of `into` is, take up the one carrying it, or refuse, which
+    /// changes nothing.
     fn restore_copy(&self, state: &mut State) {
-        let own = state.restoring && state.into == Into::EMPTY_OTHER;
-        if own && self.broken.restore_no_resume {
-            state.stranded = true;
-        } else if own || (self.broken.restore_adopts_any && state.into == Into::EMPTY_OTHER) {
+        let own =
+            state.restoring && state.into == Into::EMPTY_OTHER && !self.broken.restore_no_resume;
+        if own || (self.broken.restore_adopts_any && state.into == Into::EMPTY_OTHER) {
             state.restoring_call = true;
         } else if state.into == Into::Absent {
             state.into = Into::EMPTY_OTHER;
@@ -930,7 +928,6 @@ impl Model for CopyStep {
             restoring: false,
             restoring_call: false,
             restore_cut: false,
-            stranded: false,
             landed_other: false,
             expired: false,
             remade: false,
@@ -1046,7 +1043,14 @@ impl Model for CopyStep {
                 !state.falsely_deleted
             }),
             Property::always(ONE_ROOT, |_, state: &State| !state.two_roots),
-            Property::always(RESTORE_FINISHES, |_, state: &State| !state.stranded),
+            // A restore run while the slot parent carrying its ID stands goes on to its
+            // rename; one that changed nothing there was refused.
+            Property::always(RESTORE_FINISHES, |_, state: &State| {
+                !(state.last == Some(Action::Restore)
+                    && state.trash_copy
+                    && state.restoring
+                    && !state.restoring_call)
+            }),
             Property::always(RESTORE_OWN_SLOT, |_, state: &State| !state.landed_other),
         ];
         properties.extend(harness::sometimes(COVERAGE, self));

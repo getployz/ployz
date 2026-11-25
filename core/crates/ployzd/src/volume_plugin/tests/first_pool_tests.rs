@@ -475,6 +475,38 @@ async fn a_pool_never_grows_for_what_its_trash_holds() {
     assert!(!test.0.join("other").exists());
 }
 
+/// Prepare budgets the host for live data only, so a batch that fits only once the Trash
+/// is emptied gets the refusal that says so, not a host shortage.
+#[tokio::test]
+async fn prepare_refuses_what_fits_only_once_the_trash_is_emptied_with_the_trash_note() {
+    let test = test_dir();
+    let (socket, server) = start_pool_with_data(&test).await;
+    let id = ployz_core::TrashId::from_bytes([1; 16]);
+    fs::write(test.0.join("trash-entry"), format!("{id} {}\n", 2u64 << 30)).unwrap();
+    // The host has room for 1 GiB of growth: what live data needs beside a new 1 GiB
+    // Volume, but not the 3 GiB it would need with the Trash's 2 GiB counted.
+    fs::write(test.0.join("insufficient"), "").unwrap();
+
+    let prepared = post(
+        &socket,
+        "/Storage.Prepare",
+        json!({"data": 1073741824u64, "other": 1073741824u64}),
+    )
+    .await;
+    server.abort();
+
+    let refused = prepared.to_string();
+    assert!(
+        refused.contains("2.1 GB is in this Server's Trash until")
+            && refused.contains("sudo ployz volume trash empty"),
+        "{prepared}"
+    );
+    assert_eq!(
+        fs::read_to_string(test.0.join("allocated")).unwrap(),
+        "3221225472\n"
+    );
+}
+
 pub(super) async fn start_pool_with_data(
     test: &TestDir,
 ) -> (PathBuf, tokio::task::JoinHandle<std::io::Result<()>>) {

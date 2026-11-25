@@ -140,18 +140,26 @@ impl VolumeStorage {
         requested: &Volumes,
     ) -> Result<Vec<ployz_core::DockerVolumeName>, ployz_core::RpcError> {
         let _pool_guard = self.pool.lock_mutation().await.map_err(storage_error)?;
-        let capacity = self.capacity().await.map_err(unknown)?;
+        let mut capacity = self.capacity().await.map_err(unknown)?;
+        let existing_pool = self.pool.one_usable().await.map_err(storage_error)?;
+        let datasets = match &existing_pool {
+            Some(pool) => self.datasets(pool).await.map_err(storage_error)?,
+            None => Vec::new(),
+        };
+        let trash_bytes = existing_pool.as_ref().map_or(0, |pool| {
+            super::storage::Commitment::trash_of(pool, &datasets)
+        });
+        // The host is budgeted for live data only, as a Pool grows for nothing else; what
+        // fits only once the Trash is emptied is refused below, saying what it holds.
+        let unmanaged_used_bytes = capacity.unmanaged_used_bytes;
+        capacity.unmanaged_used_bytes = unmanaged_used_bytes.saturating_sub(trash_bytes);
         let budget = capacity
             .budget(requested)
             .map_err(StorageCapacityError::into_rpc_error)?;
         if requested.is_empty() {
             return Ok(Vec::new());
         }
-        let existing_pool = self.pool.one_usable().await.map_err(storage_error)?;
-        let mut trash_bytes = 0;
         if let Some(pool) = &existing_pool {
-            let datasets = self.datasets(pool).await.map_err(storage_error)?;
-            trash_bytes = super::storage::Commitment::trash_of(pool, &datasets);
             for (name, maximum) in requested {
                 let plugin_name =
                     VolumeName::try_from(name).map_err(|error| storage_error(error.into()))?;
@@ -175,7 +183,7 @@ impl VolumeStorage {
             Some(pool) => {
                 let commitment = super::storage::Commitment {
                     bytes: commitment,
-                    unmanaged_used_bytes: capacity.unmanaged_used_bytes,
+                    unmanaged_used_bytes,
                     trash_bytes,
                 };
                 self.ensure_pool_capacity(&pool, &commitment)

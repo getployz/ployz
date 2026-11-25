@@ -526,9 +526,12 @@ impl VolumeStorage {
         let datasets = self.datasets(&pool).await?;
         let path = layout.trash_entry(&id);
         let Some(dataset) = datasets.iter().find(|dataset| dataset.name == path) else {
-            return Err(RpcError::not_found(format!(
-                "This Server's Trash holds no {id}"
-            )));
+            return match self.landed_restore(&pool, &datasets, id).await? {
+                Some(restored) => Ok(restored),
+                None => Err(RpcError::not_found(format!(
+                    "This Server's Trash holds no {id}"
+                ))),
+            };
         };
         let entry = self.entry(id, dataset).await?.map_err(|why| {
             RpcError::conflict(format!("Trash entry {id} can't be restored: {why}"))
@@ -617,6 +620,7 @@ impl VolumeStorage {
                 crate::faults::kill_inside(crate::faults::Point::Verb("Trash.SlotMade"), None);
                 entry.was.put_back(self, &path).await?;
                 self.zfs(&["rename", &path, &layout.slot_fs(name)]).await?;
+                crate::faults::kill_inside(crate::faults::Point::Verb("Trash.CopyLanded"), None);
                 self.unmark(&layout.slot_fs(name)).await?;
                 self.marks(&parent)
                     .apply(&[Write::Inherit(Mark::TrashRestoring)])
@@ -643,6 +647,46 @@ impl VolumeStorage {
         }
         let mark = self.marks(&slot.name).local(Mark::TrashRestoring).await?;
         Ok(mark.as_deref() == Some(id.to_string().as_str()))
+    }
+
+    /// Finishes a restore of the old copy `id` that stopped after its rename: the slot
+    /// parent carrying its ID holds the copy, which loses its trash marks, and the parent
+    /// its ID.
+    async fn landed_restore(
+        &self,
+        pool: &MachinePool,
+        datasets: &[Dataset],
+        id: TrashId,
+    ) -> Result<Option<TrashRestored>> {
+        let layout = DatasetLayout::of(pool);
+        for slot in datasets {
+            let Place::Slot {
+                name,
+                at: crate::dataset_layout::SlotAt::Parent,
+            } = layout.place(&slot.name)
+            else {
+                continue;
+            };
+            let mark = self.marks(&slot.name).local(Mark::TrashRestoring).await?;
+            if mark.as_deref() != Some(id.to_string().as_str()) {
+                continue;
+            }
+            let name: VolumeName = name.parse()?;
+            let fs = layout.slot_fs(&name);
+            if !datasets.iter().any(|held| held.name == fs) {
+                return Ok(None);
+            }
+            self.unmark(&fs).await?;
+            self.marks(&slot.name)
+                .apply(&[Write::Inherit(Mark::TrashRestoring)])
+                .await?;
+            return Ok(Some(TrashRestored {
+                id,
+                name: name.wire(),
+                place: TrashPlace::Copy,
+            }));
+        }
+        Ok(None)
     }
 
     /// Takes the trash marks off a restored copy.

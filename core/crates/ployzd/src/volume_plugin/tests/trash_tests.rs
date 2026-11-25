@@ -544,6 +544,37 @@ async fn a_restore_of_a_copy_stopped_after_its_slot_finishes_when_run_again() {
     );
 }
 
+/// A restore of a copy stopped after its rename left the copy in the slot it made, so the
+/// entry is gone from the Trash; run again, it finishes there rather than answer that the
+/// Trash holds no such entry.
+#[tokio::test]
+async fn a_restore_of_a_copy_stopped_after_its_rename_finishes_when_run_again() {
+    let test = test_dir();
+    let plugin = Plugin::start(&test, &["root"], Ok(vec![]));
+    let entry = plant_trash(&test, &trash_id(1), "data", "copy", 0, false);
+    let fs = "tank/ployz-mirror/data/fs";
+    set_property(
+        &test,
+        "",
+        "fail-command",
+        &format!("inherit ployz:trash-name {fs}"),
+    );
+
+    let stopped = plugin.restore(&entry).await;
+    assert!(stopped.get("Err").is_some(), "{stopped}");
+    assert!(test.0.join("mirror-fs").exists());
+    assert_eq!(trashed(&test), Vec::<String>::new());
+
+    let again = plugin.restore(&entry).await;
+
+    assert_eq!(again.pointer("/Ok/place"), Some(&json!("copy")), "{again}");
+    assert_eq!(again.pointer("/Ok/name"), Some(&json!("data")), "{again}");
+    let parent = "tank/ployz-mirror/data";
+    assert_eq!(property(&test, parent, "ployz:trash-restoring"), None);
+    assert_eq!(property(&test, fs, "ployz:trash-name"), None);
+    assert_eq!(property(&test, fs, "ployz:trashed-hour"), None);
+}
+
 /// Docker may keep a record of a deleted name and mount it without a Create, so a root
 /// restored from the Trash mounts only once a Create of its own data registers it.
 #[tokio::test]
@@ -586,6 +617,25 @@ async fn a_restored_root_no_create_took_up_goes_back_to_the_trash() {
         property(&test, &again, "ployz:origin").as_deref(),
         Some(BORN)
     );
+}
+
+/// Forget moves a seed root Docker never adopted to the Trash with its `ployz:promote`, so
+/// that root restored still carries it; Remove takes it back all the same.
+#[tokio::test]
+async fn a_restored_seed_root_no_create_took_up_goes_back_to_the_trash() {
+    let test = test_dir();
+    let (plugin, entry) = deleted_root(&test).await;
+    set_property(&test, &entry, "ployz:promote", "on");
+    set_property(&test, &entry, "ployz:seed", "77");
+    assert!(plugin.restore(&entry).await.get("Ok").is_some());
+
+    let removed = plugin
+        .post("/VolumeDriver.Remove", json!({"Name": "data"}))
+        .await;
+
+    assert_eq!(removed, json!({"Err": ""}));
+    assert!(!test.0.join("volume").exists());
+    trashed_one(&test, "root");
 }
 
 /// A Create for other data refused at a restored root changes nothing on it, not even the

@@ -181,9 +181,18 @@ struct Stale {
 }
 
 impl Stale {
-    /// Destroys the slot so the copy starts over, unless its `fs` holds a point this Machine
-    /// may alone hold.
-    async fn clear(self, storage: &VolumeStorage, into: &VolumeName) -> Result<(), RpcError> {
+    /// Replaces the slot with a new one of `bound` so the copy starts over, unless its
+    /// `fs` holds a point this Machine may alone hold. The new slot is admitted before the
+    /// old one goes, as an absent slot's seed admits its own: the old bound leaves the
+    /// commitment, and a copy holding a point keeps its bytes in the Trash. A refusal of
+    /// either check leaves the slot, and the Pool, as they were.
+    async fn replace(
+        self,
+        storage: &VolumeStorage,
+        (pool, datasets): (&MachinePool, &[Dataset]),
+        into: &VolumeName,
+        bound: u64,
+    ) -> Result<(), RpcError> {
         if let Some(fs) = &self.fs
             && storage.written_here(fs).await?
         {
@@ -192,20 +201,6 @@ impl Stale {
                 self.parent
             )));
         }
-        storage.discard_slot(&self.parent, into).await?;
-        Ok(())
-    }
-
-    /// Admits a new slot of `bound` in place of this one before it goes, as an absent
-    /// slot's seed admits its own: this slot's bound leaves the commitment, and a copy
-    /// holding a point keeps its bytes in the Trash. On a refusal the slot stays.
-    async fn admit_replacement(
-        &self,
-        storage: &VolumeStorage,
-        pool: &MachinePool,
-        datasets: &[Dataset],
-        bound: u64,
-    ) -> Result<(), RpcError> {
         let mut commitment = Commitment::of(pool, datasets, bound)?;
         commitment.bytes = commitment.bytes.saturating_sub(self.bound);
         if let Some(fs) = &self.fs
@@ -225,6 +220,7 @@ impl Stale {
             }
         }
         storage.ensure_pool_capacity(pool, &commitment).await?;
+        storage.discard_slot(&self.parent, into).await?;
         Ok(())
     }
 
@@ -423,9 +419,8 @@ impl VolumeStorage {
                     }
                     None => {
                         stale
-                            .admit_replacement(self, &pool, &datasets, source.bound)
+                            .replace(self, (&pool, &datasets), &into, source.bound)
                             .await?;
-                        stale.clear(self, &into).await?;
                         self.copy_point(&held, &pool, &into, source).await
                     }
                 }
