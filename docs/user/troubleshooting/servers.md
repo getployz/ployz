@@ -111,6 +111,16 @@ fix Docker and run the command again. Or uninstall Docker, and Ployz installs a 
   `sudo systemctl restart docker`. Images you pulled before switching don't carry over, so pull
   them again.
 
+- `Docker's live-restore is off, so your Services stay stopped if Docker crashes. Add "live-restore": true to /etc/docker/daemon.json and run sudo systemctl reload docker (containers keep running), then run this again. Or uninstall Docker and run this again.`
+
+  Add `"live-restore": true` to `/etc/docker/daemon.json` and run `sudo systemctl reload docker`.
+  A reload keeps running containers up. Check it took with
+  `docker info -f '{{.LiveRestoreEnabled}}'`, which prints `true`. Older Docker refuses
+  live-restore while swarm mode is on, so leave swarm first.
+
+  A server that joined before this check can have live-restore off too. Run the same
+  `docker info` command on it, and turn live-restore on the same way if it prints `false`.
+
 ## See what Ployz reads from a server
 
 Once Ployz is installed, this prints what it reads from the server and what would stop it, without

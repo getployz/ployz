@@ -497,20 +497,22 @@ pub(super) fn read_docker() -> (DockerFacts, Option<Error>) {
         return (DockerFacts::Stopped, None);
     };
     let (version, api) = output.split_once(' ').unwrap_or((&output, ""));
-    let present = |buildx, containerd_store, error: Option<&Error>| DockerFacts::Present {
-        version: version.to_owned(),
-        api: api.to_owned(),
-        buildx,
-        containerd_store,
-        error: error.map(error_text),
-    };
+    let present =
+        |buildx, containerd_store, live_restore, error: Option<&Error>| DockerFacts::Present {
+            version: version.to_owned(),
+            api: api.to_owned(),
+            buildx,
+            containerd_store,
+            live_restore,
+            error: error.map(error_text),
+        };
     if !at_least(api, MINIMUM_DOCKER_API) {
-        return (present(None, None, None), None);
+        return (present(None, None, None, None), None);
     }
     // e.g. `github.com/docker/buildx v0.37.1 c8d4ec2`
     let output = match docker_output(["buildx", "version"]) {
         Ok(output) => output,
-        Err(error) => return (present(None, None, Some(&error)), Some(error)),
+        Err(error) => return (present(None, None, None, Some(&error)), Some(error)),
     };
     let buildx = output
         .split_whitespace()
@@ -518,14 +520,20 @@ pub(super) fn read_docker() -> (DockerFacts, Option<Error>) {
         .unwrap_or(&output)
         .to_owned();
     if !at_least(buildx.trim_start_matches('v'), MINIMUM_BUILDX) {
-        return (present(Some(buildx), None, None), None);
+        return (present(Some(buildx), None, None, None), None);
     }
-    match docker_output(["info", "-f", "{{.DriverStatus}}"]) {
-        Ok(status) => {
+    // e.g. `true [[driver-type io.containerd.snapshotter.v1]]`
+    match docker_output(["info", "-f", "{{.LiveRestoreEnabled}} {{.DriverStatus}}"]) {
+        Ok(output) => {
+            let (live_restore, status) = output.split_once(' ').unwrap_or((&output, ""));
             let containerd_store = status.contains("io.containerd.snapshotter.v1");
-            (present(Some(buildx), Some(containerd_store), None), None)
+            let live_restore = live_restore.parse().ok();
+            (
+                present(Some(buildx), Some(containerd_store), live_restore, None),
+                None,
+            )
         }
-        Err(error) => (present(Some(buildx), None, Some(&error)), Some(error)),
+        Err(error) => (present(Some(buildx), None, None, Some(&error)), Some(error)),
     }
 }
 
@@ -591,6 +599,7 @@ pub(super) fn docker_blocker(docker: &DockerFacts) -> Option<Blocker> {
         api,
         buildx,
         containerd_store,
+        live_restore,
         error,
     } = docker
     else {
@@ -624,13 +633,19 @@ pub(super) fn docker_blocker(docker: &DockerFacts) -> Option<Blocker> {
             ),
         ));
     }
-    (*containerd_store == Some(false)).then(|| {
-        Blocker::new(
+    if *containerd_store == Some(false) {
+        return Some(Blocker::new(
             BlockerCode::DockerContainerdStoreOff,
             r#"Docker isn't using the containerd image store, which Ployz needs to build and move images between Servers. Enable it in /etc/docker/daemon.json ("features": {"containerd-snapshotter": true}) and restart Docker, or uninstall Docker and run this again."#,
-        )
-    })
+        ));
+    }
+    (*live_restore == Some(false))
+        .then(|| Blocker::new(BlockerCode::DockerLiveRestoreOff, LIVE_RESTORE_OFF))
 }
+
+/// Without live-restore, a dockerd that crashes stops every container, and Docker counts that
+/// as a stop by hand, so an `unless-stopped` Service stays down when dockerd comes back.
+pub(super) const LIVE_RESTORE_OFF: &str = r#"Docker's live-restore is off, so your Services stay stopped if Docker crashes. Add "live-restore": true to /etc/docker/daemon.json and run sudo systemctl reload docker (containers keep running), then run this again. Or uninstall Docker and run this again."#;
 
 fn zfs_eligibility(facts: &HostFacts) -> ZfsEligibility {
     let route = match choose(
