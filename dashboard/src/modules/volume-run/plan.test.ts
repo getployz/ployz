@@ -755,10 +755,10 @@ describe("follow every next step a refusal names", () => {
     ...COPIES.mirror, slot: "2", resume_token: "tok", pull: { target: newest.name, failure: "no space" }, role: "old_copy",
     pull_state: { kind: "failed", target: newest.name, failure: "no space" }, origin: "sha256:b", written_here: true,
   });
-  const bareA = twin("c", false, { ...COPIES.cut, epoch: 9, newest: null, mark: "cut", origin: "sha256:c" });
-  const bareB = twin("d", true, { ...COPIES.cut, epoch: 9, newest: null, mark: "promote", origin: "sha256:d" });
-  const heldA = twin("c", false, { ...COPIES.cut, epoch: 9, newest: earlier, mark: "cut", origin: "sha256:c" });
-  const heldB = twin("d", true, { ...COPIES.cut, epoch: 9, mark: "promote", origin: "sha256:d" });
+  const bareA = twin("c", false, { ...COPIES.cut, epoch: 9, newest: null, mark: "cut", origin: "sha256:c", placed: { creation_key: "c", id: "sha256:ic" } });
+  const bareB = twin("d", true, { ...COPIES.cut, epoch: 9, newest: null, mark: "promote", origin: "sha256:d", placed: { creation_key: "d", id: "sha256:id" } });
+  const heldA = twin("c", false, { ...COPIES.cut, epoch: 9, newest: earlier, mark: "cut", origin: "sha256:c", placed: { creation_key: "c", id: "sha256:ic" } });
+  const heldB = twin("d", true, { ...COPIES.cut, epoch: 9, mark: "promote", origin: "sha256:d", placed: { creation_key: "d", id: "sha256:id" } });
 
   type Tree = string | number | bigint | boolean | null | undefined | { readonly [key: string]: Tree };
   const tied = (a: Tree, b: Tree, path = ""): string[] => {
