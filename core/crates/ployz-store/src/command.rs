@@ -204,6 +204,33 @@ macro_rules! commands {
                     })
             }
 
+            /// Refuses this command unless each registry login it sets is sealed, kept
+            /// or removed, as [`Edit::refuse_unsealed_logins`] reads an Edit, alone or
+            /// in a Batch. A client asks before it sends anything.
+            ///
+            /// # Errors
+            /// What [`Edit::refuse_unsealed_logins`] refuses.
+            pub fn refuse_unsealed_logins(&self) -> Result<(), RpcError> {
+                let edits: Vec<&Edit> = if let Self::Edit(edit) = self {
+                    vec![edit]
+                } else if let Self::Batch(batch) = self {
+                    batch
+                        .commands
+                        .iter()
+                        .filter_map(|command| {
+                            if let BatchCommand::Edit(edit) = command {
+                                Some(edit)
+                            } else {
+                                None
+                            }
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                edits.into_iter().try_for_each(Edit::refuse_unsealed_logins)
+            }
+
             /// Decode a command a caller sent.
             ///
             /// # Errors

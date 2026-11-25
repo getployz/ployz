@@ -457,3 +457,74 @@ fn a_login_for_another_registry_is_entered_again_before_admission() {
         "ployz set web.registryCredential --secret"
     );
 }
+
+/// A Store from before sealed logins still writes during a rollout. It deploys public
+/// images as before, but the database refuses any credential it would store or freeze,
+/// so a token Cloud can read never comes back.
+#[test]
+fn a_store_from_before_sealed_logins_never_writes_a_readable_credential_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let store = ConfigStore::open(&url, backend::key()).unwrap();
+    shop(&store);
+    admit(&store, 1);
+    // That Store's own statements, word for word: saving a rotated credential, and
+    // freezing one into a Deployment.
+    let stored = backend::try_execute(
+        &url,
+        "INSERT INTO config_registry_credential \
+         (environment_id, service_id, organization_id, credential) \
+         VALUES ('00000000-0000-4000-8000-000000000002', 'web', 'org', '{\"ciphertext\":\"token\"}') \
+         ON CONFLICT (environment_id, service_id) \
+         DO UPDATE SET credential = excluded.credential",
+    );
+    assert!(stored.is_err(), "{stored:?}");
+    let frozen = backend::try_execute(
+        &url,
+        "UPDATE config_deployment SET credentials = '{\"web\":{\"ciphertext\":\"token\"}}'",
+    );
+    assert!(frozen.is_err(), "{frozen:?}");
+    let copied = backend::try_execute(
+        &url,
+        "INSERT INTO config_deployment (id, organization_id, environment_id, status, \
+         saved_revision, services, nodes, namespace, run, credentials, admitted, listed) \
+         SELECT '00000000-0000-4000-8000-000000000150', organization_id, environment_id, status, saved_revision, services, \
+         nodes, namespace, run, '{\"web\":{\"ciphertext\":\"token\"}}', admitted, listed + 100 \
+         FROM config_deployment",
+    );
+    assert!(copied.is_err(), "{copied:?}");
+    // What it writes for a public image still lands.
+    backend::try_execute(
+        &url,
+        "INSERT INTO config_deployment (id, organization_id, environment_id, status, \
+         saved_revision, services, nodes, namespace, run, credentials, admitted, listed) \
+         SELECT '00000000-0000-4000-8000-000000000150', organization_id, environment_id, status, saved_revision, services, \
+         nodes, namespace, run, '{}', admitted, listed + 100 \
+         FROM config_deployment",
+    )
+    .unwrap();
+    backend::try_execute(&url, "UPDATE config_deployment SET credentials = '{}'").unwrap();
+    assert_eq!(
+        backend::count(&url, "SELECT COUNT(*) FROM config_registry_credential"),
+        0
+    );
+    assert_eq!(pulls_with(&store, &admit(&store, 2)), []);
+}
+
+/// Docker reads an image's registry with a capital letter as a host no login names, so
+/// admission says to write it in lowercase rather than let the pull fail.
+#[test]
+fn a_login_for_an_image_on_an_uppercase_registry_is_refused_at_admission() {
+    let store = backend::open();
+    shop(&store);
+    set(&store, PATH, sealed_login("first")).unwrap();
+    set(&store, "web.image", json!("GHCR.io/acme/web:1")).unwrap();
+    let refused = try_admit(&store, 1).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::InvalidArgument, "{refused:?}");
+    assert!(
+        refused
+            .message
+            .contains("web: write the image's registry in lowercase"),
+        "{refused:?}"
+    );
+}

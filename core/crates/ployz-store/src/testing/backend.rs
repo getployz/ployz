@@ -35,6 +35,27 @@ pub fn execute(url: &str, sql: &str) {
     }
 }
 
+/// Run `sql` on the database at `url`, beside the Store: Ok, or the database's
+/// message.
+pub fn try_execute(url: &str, sql: &str) -> Result<(), String> {
+    match url.strip_prefix("sqlite:") {
+        Some(path) => rusqlite::Connection::open(path)
+            .unwrap()
+            .execute(sql, [])
+            .map(drop)
+            .map_err(|error| error.to_string()),
+        None => postgres::Client::connect(url, postgres::NoTls)
+            .unwrap()
+            .execute(sql, &[])
+            .map(drop)
+            .map_err(|error| {
+                error
+                    .as_db_error()
+                    .map_or_else(|| error.to_string(), |db| db.message().to_owned())
+            }),
+    }
+}
+
 /// The number `sql`, a `SELECT COUNT(*)`, reads from the database at `url`.
 pub fn count(url: &str, sql: &str) -> i64 {
     match url.strip_prefix("sqlite:") {

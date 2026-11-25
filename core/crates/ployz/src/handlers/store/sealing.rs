@@ -7,8 +7,8 @@
 //! secret's plain text never goes to Cloud. The in-process Store seals every secret itself.
 
 use ployz_core::{
-    Hint, RpcErrorCode, SealedIdentity, SealingPublicKey, ServiceName, image_registry, login_host,
-    seal_login, seal_value,
+    Hint, RpcErrorCode, SealedIdentity, SealingPublicKey, ServiceName, image_registry,
+    is_image_reference, login_host, seal_login, seal_value,
 };
 use ployz_store::{
     Ask as _, Edit, EnvironmentSummary, SealingService, SealingTargetsQuery, SealingTargetsView,
@@ -268,14 +268,9 @@ fn login_host_for(
     if let Some(registry) = registry {
         return Ok(registry);
     }
-    let image = named.ok_or_else(|| {
-        Error::usage(format!(
-            "{path}: only an image service takes registry credentials."
-        ))
-    })?;
-    let host = host_of(image)?;
+    let (host, question) = named_host(service, named)?;
     ui::confirm(
-        &format!("{image} is on {host}. Seal {service}'s credentials for {host}?"),
+        &question,
         || {
             Error::usage(format!(
                 "{path}: name the registry these credentials are for, like --registry ghcr.io."
@@ -284,6 +279,27 @@ fn login_host_for(
         "Cancelled. Nothing sent.",
     )?;
     Ok(host)
+}
+
+/// The host of `named`, the image Cloud says `service` runs, and the question that asks
+/// to seal for it. Cloud's text is shown only as the host a whole image reference
+/// yields, so it can't hide where the token goes, such as behind terminal escapes.
+fn named_host(service: &ServiceName, named: Option<&str>) -> Result<(String, String), Error> {
+    let path = format!("{service}.registryCredential");
+    let image = named.ok_or_else(|| {
+        Error::usage(format!(
+            "{path}: only an image service takes registry credentials."
+        ))
+    })?;
+    if !is_image_reference(image) {
+        return Err(Error::usage(format!(
+            "{path}: Ployz Cloud named an image this CLI can't read, so nothing was sent. \
+             Name the registry, like --registry ghcr.io."
+        )));
+    }
+    let host = login_host(image).map_err(|error| Error::usage(format!("{path}: {error}.")))?;
+    let question = format!("Seal {service}'s registry credentials for {host}?");
+    Ok((host.to_owned(), question))
 }
 
 fn seal(
@@ -316,4 +332,22 @@ fn unexpected(what: &str) -> Error {
         RpcErrorCode::Internal,
         format!("Cloud answered with something other than {what}"),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Cloud names the image, so the question shows only the host a whole reference
+    /// yields: a reply holding terminal escapes is refused, never printed.
+    #[test]
+    fn the_question_never_shows_text_cloud_chose() {
+        let web = ServiceName::parse("web").unwrap();
+        let hidden = "ghcr.io/acme/web:1\x1b[2K\revil.example/acme/web:1";
+        assert!(named_host(&web, Some(hidden)).is_err());
+        let (host, question) = named_host(&web, Some("ghcr.io/acme/web:1")).unwrap();
+        assert_eq!(host, "ghcr.io");
+        assert!(!question.contains("acme"), "{question}");
+        assert!(question.chars().all(|c| !c.is_control()), "{question}");
+    }
 }

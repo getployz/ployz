@@ -6058,6 +6058,37 @@ fn a_login_the_cli_cannot_read_never_leaves_it() {
     }
 }
 
+/// A login leaves this CLI only through `--secret`'s sealing: an edit that sets one by
+/// any other path or key the Store reads, such as a patch on the Setting's own path, is
+/// refused here, and its token never reaches Cloud.
+#[test]
+fn a_login_reaches_cloud_only_sealed_whatever_path_sets_it() {
+    let store = &cloud_target();
+    ok(store, &["project", "new", "shop"]);
+    ok(
+        store,
+        &["service", "add", "web", "--image", "ghcr.io/acme/web:1"],
+    );
+    let writes = requests_to(store, "/api/config/write").len();
+    for (args, body) in [
+        (
+            &["set", "web.registryCredential", "--patch", "-"][..],
+            r#"{"username":"octo","password":"setting-path-token"}"#,
+        ),
+        (
+            &["set", "web.registryCredential", "--patch", "-"][..],
+            r#"{"secret":"setting-secret-token"}"#,
+        ),
+    ] {
+        let (code, refused) = ployz_with_stdin(store, args, body);
+        assert_eq!(code, Some(2), "{body}: {refused}");
+    }
+    assert_eq!(requests_to(store, "/api/config/write").len(), writes);
+    for token in ["setting-path-token", "setting-secret-token"] {
+        cloud_never_saw(store, token);
+    }
+}
+
 /// Over Cloud, `deploy --upload` hands Cloud the directory before admitting the
 /// Deployment it's for; Cloud names the uploader. With no upload to build from, the
 /// Deploy is refused up front.

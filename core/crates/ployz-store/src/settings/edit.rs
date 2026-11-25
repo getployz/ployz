@@ -101,6 +101,27 @@ impl Edit {
         Ok(())
     }
 
+    /// Refuses this edit unless each registry login it sets, by whatever path or key
+    /// the Store reads one from, is sealed, `{"secret": true}`, or null. A client sends
+    /// a login only as its sealing left it, so a token never leaves as text.
+    ///
+    /// # Errors
+    /// `invalid_argument` for any other login, and what the Store refuses in the
+    /// edit's shape, such as a patch on a Setting's path.
+    pub fn refuse_unsealed_logins(&self) -> Result<(), RpcError> {
+        for (path, step, _) in expand_from(&self.changes)? {
+            let (Some(Target::Setting(ServiceSetting::RegistryCredential)), Step::Set(value)) =
+                (path.target(), &step)
+            else {
+                continue;
+            };
+            if !value.is_null() && matches!(login_input(value)?, LoginInput::Plaintext(_)) {
+                return Err(registry::unsealed());
+            }
+        }
+        Ok(())
+    }
+
     /// Whether this edit carries a new registry login's plain text, which the Store
     /// refuses: `{"secret": "…"}` with an optional username, set or patched.
     ///

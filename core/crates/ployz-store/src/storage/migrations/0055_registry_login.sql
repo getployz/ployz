@@ -2,7 +2,7 @@
 -- host, which only the Cluster's Servers open. The credentials the Store sealed with its
 -- own key go, with the copy each Deployment froze. Their table and column stay, empty,
 -- so a Store from before this still deploys public images during a rollout; a later
--- release drops them.
+-- release drops them. Nothing may write to them again: see the backend scripts.
 DELETE FROM config_registry_credential;
 UPDATE config_deployment SET credentials = '{}';
 CREATE TABLE config_registry_login (

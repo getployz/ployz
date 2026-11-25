@@ -80,6 +80,11 @@ fn input(value: &Value, sealer: Sealer<'_>) -> Result<Option<SealedLogin>, RpcEr
     }
 }
 
+/// A registry login a client would send as text.
+pub(crate) fn unsealed() -> RpcError {
+    SETTING.invalid("set it with --secret, which seals it on your device first")
+}
+
 /// What a `registryCredential` value holds.
 pub(crate) enum LoginInput {
     /// `{"secret": true}`: keep the stored login.
@@ -190,18 +195,24 @@ pub(crate) fn freeze(
             )
         })?;
         // A login opens for one registry, so one for another image's would fail at pull.
-        if let ServiceSource::Image { image, .. } = &service.config.source
-            && let Ok(host) = ployz_core::login_host(image)
-            && host != login.host
-        {
-            return Err(set_one(
-                service,
-                format!(
-                    "{}: the registry credentials are for {}, and the image is on {host}. \
-                     Enter them again for {host}",
-                    service.slug, login.host
-                ),
-            ));
+        if let ServiceSource::Image { image, .. } = &service.config.source {
+            // A host Docker reads but no login names, such as one with a capital letter.
+            let host = ployz_core::login_host(image).map_err(|error| {
+                error::invalid(
+                    format!("{}: {error}", service.slug),
+                    serde_json::json!({ "service": service.slug }),
+                )
+            })?;
+            if host != login.host {
+                return Err(set_one(
+                    service,
+                    format!(
+                        "{}: the registry credentials are for {}, and the image is on {host}. \
+                         Enter them again for {host}",
+                        service.slug, login.host
+                    ),
+                ));
+            }
         }
         logins.insert(service.config.private_dns.clone(), login);
     }
