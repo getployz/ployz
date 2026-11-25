@@ -343,9 +343,10 @@ impl VolumeStorage {
         }
         let pool = self.one_pool().await?;
         let datasets = self.datasets(&pool).await?;
-        // A reply shows only a failure its decision answered: a receive ends outside the
-        // mutation, so the copy read for the reply can show a failure the decision found
-        // running, or whose dropped child it found alive, and no run is recorded for that.
+        // A reply records a run only for a failure its decision answered. A receive ends
+        // outside the mutation, so a failure the decision found still running is not shown.
+        // A failed receive whose dropped child the decision found alive is shown as
+        // receiving with its failure, recording no run, so Cloud can end the run.
         let view = match self
             .seed_progress(&held, &pool, &datasets, &into, (guid, copy), request.r#gen)
             .await?
