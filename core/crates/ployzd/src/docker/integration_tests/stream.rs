@@ -809,6 +809,56 @@ async fn a_removal_says_when_an_execs_container_cannot_be_read() {
     server.abort();
 }
 
+/// A Device whose key also holds Cloud's slot runs a command, and Docker's attach to it fails
+/// before the server took hold of its process. Docker then reports the exec not running with
+/// exit code 126 while the command runs on. The command is still the Device's: it has
+/// stopped by the time removing the Device returns.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_exec_whose_attach_failed_while_its_command_runs_stops_with_its_device() {
+    let root = TestDir::new("ployzd-exec-attach-failed");
+    let command = ExecCommand::spawn();
+    let stalls = Stalls {
+        attach_fails: true,
+        ..Stalls::default()
+    };
+    let (runtime, container_id, docker_server) =
+        stalling_exec_runtime(&root, &command, ExecStart::Attached, stalls.clone()).await;
+    let (local, device, address, server) = device_exec_server(&root, runtime).await;
+    let mut client = MachineRpcClient::connect(format!("http://{address}"))
+        .await
+        .unwrap();
+    let mut output = client
+        .exec(Request::new(tokio_stream::iter([exec_config(
+            &container_id,
+            ["sleep", "300"],
+            false,
+        )])))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        ExecResponseFrame::decode(&output.message().await.unwrap().unwrap()).unwrap(),
+        ExecResponseFrame::ExecId("slow".into())
+    );
+    // The server looked once Docker reported the exit code.
+    inspected(&stalls, 1).await;
+
+    local
+        .on_local_socket()
+        .set_device(ployz_core::SetDeviceRequest::Remove {
+            code: device.code(),
+        })
+        .await
+        .unwrap();
+
+    assert!(
+        command.exited().is_some(),
+        "an exec whose attach failed still runs once its Device's removal returned"
+    );
+    docker_server.abort();
+    server.abort();
+}
+
 /// Until the stand-in Docker answered `count` exec inspects in all.
 async fn inspected(stalls: &Stalls, count: usize) {
     while stalls.inspects.load(std::sync::atomic::Ordering::SeqCst) < count {
@@ -976,6 +1026,10 @@ struct Stalls {
     unreadable_init: bool,
     /// When set, an attached exec's output ends once this is notified.
     end_output: Option<Arc<tokio::sync::Notify>>,
+    /// When set, Docker's attach to an attached exec fails at once, and it reports the exec
+    /// not running with exit code 126 and its PID while the command runs on, as moby's
+    /// `ContainerExecStart` does.
+    attach_fails: bool,
 }
 
 /// Above the kernel's largest `pid_max`, so no process has it.
@@ -1062,7 +1116,9 @@ async fn stalling_exec_runtime(
                             .write_all(b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n")
                             .await
                             .unwrap();
-                        if matches!(start, ExecStart::Noisy) {
+                        if stalls.attach_fails {
+                            drop(stream);
+                        } else if matches!(start, ExecStart::Noisy) {
                             tokio::spawn(async move {
                                 let mut frame = b"\x01\0\0\0\0\0\x04\0".to_vec();
                                 frame.extend([b'x'; 1024]);
@@ -1105,6 +1161,10 @@ async fn stalling_exec_runtime(
                     None if stalls.pending.load(std::sync::atomic::Ordering::SeqCst) => {
                         r#"{"Running":false}"#.to_owned()
                     }
+                    None if stalls.attach_fails => format!(
+                        r#"{{"Running":false,"ExitCode":126,"Pid":{pid},"ContainerID":"{}"}}"#,
+                        "b".repeat(64)
+                    ),
                     None => format!(
                         r#"{{"Running":true,"Pid":{pid},"ContainerID":"{}"}}"#,
                         "b".repeat(64)

@@ -570,3 +570,104 @@ impl LocalMachine {
         }
     }
 }
+
+#[cfg(test)]
+impl BoundWork {
+    /// Whether a thread holds the registry's lock.
+    fn is_locked(&self) -> bool {
+        matches!(
+            self.open.try_lock(),
+            Err(std::sync::TryLockError::WouldBlock)
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+
+    /// Notes, once dropped, whether the registry's lock was held then. A destructor that
+    /// takes the lock, as a Tie's does, would wait there forever on its own thread.
+    struct Probe {
+        work: BoundWork,
+        under_lock: Arc<Mutex<Vec<&'static str>>>,
+        what: &'static str,
+    }
+
+    impl Drop for Probe {
+        fn drop(&mut self) {
+            if self.work.is_locked() {
+                self.under_lock.lock().unwrap().push(self.what);
+            }
+        }
+    }
+
+    impl std::fmt::Debug for Probe {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.what)
+        }
+    }
+
+    /// A cause that owns a [`Probe`].
+    #[derive(Debug, thiserror::Error)]
+    #[error("probed")]
+    struct Probed(Probe);
+
+    /// A doubt's recheck can own the last Tie of its own work, as a Build Grant's commit
+    /// owns the grant, and that Tie's drop takes the registry's lock. A key change that
+    /// clears a doubt, or replaces why one stands, drops what it took out only once it let
+    /// that lock go.
+    #[tokio::test]
+    async fn a_key_change_drops_what_it_takes_out_of_the_registry_after_its_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = crate::machine::test_support::founder(dir.path(), "probe");
+        let device = crate::machine::test_support::device_in_two_slots(&mut store);
+        let local = LocalMachine::new(crate::machine::RecordOwner::spawn(store).unwrap());
+        let from_device = local.clone().with_management_client(device.into());
+        let under_lock = Arc::new(Mutex::new(Vec::new()));
+        let probe = |what| Probe {
+            work: local.bound.clone(),
+            under_lock: Arc::clone(&under_lock),
+            what,
+        };
+
+        // Its look sees the work end, which clears the doubt.
+        let owned = probe("a cleared doubt's recheck");
+        from_device
+            .bind_full(Work::BuildGrant)
+            .unwrap()
+            .unconfirmed(
+                Probed(probe("a cleared doubt's cause")),
+                Some(Arc::new(move || {
+                    let _owned = &owned;
+                    Box::pin(async { Ok(Seen::Reaped) })
+                })),
+            );
+        // Its look fails, so a new cause replaces the old.
+        from_device.bind_full(Work::Exec).unwrap().unconfirmed(
+            Probed(probe("a replaced cause")),
+            Some(Arc::new(|| {
+                Box::pin(async { Err::<Seen, Cause>("still unread".into()) })
+            })),
+        );
+
+        let removed = local
+            .on_local_socket()
+            .set_device(ployz_core::SetDeviceRequest::Remove {
+                code: device.code(),
+            })
+            .await;
+
+        assert!(
+            matches!(removed, Err(Error::WorkNotStopped(_))),
+            "{removed:?}"
+        );
+        assert_eq!(
+            *under_lock.lock().unwrap(),
+            Vec::<&str>::new(),
+            "dropped while the registry's lock was held"
+        );
+    }
+}
