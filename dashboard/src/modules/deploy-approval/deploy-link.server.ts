@@ -40,7 +40,7 @@ export const linkDeploy = Effect.fn("DeployLink.link")(function* (caller: Caller
   const agent = caller.via === "agent";
   const covered = new Set((command.versions ?? []).map(versionService));
   const planned = yield* prepareDeployTap(caller, {
-    organizationSlug: caller.organization.slug, environment: command.environment, services: command.services ?? [], classify: true,
+    organizationSlug: caller.organization.slug, environment: command.environment, services: command.services ?? [], classify: true, rule: true,
   }).pipe(Effect.catchIf((error) => error instanceof Forbidden || error instanceof NotFound, () => Effect.succeed(null)));
   if (planned === null) return null;
   const pending = planned.kind === "refused" && isPending(planned.details);
@@ -53,7 +53,9 @@ export const linkDeploy = Effect.fn("DeployLink.link")(function* (caller: Caller
   if (open.length > 0 && tap?.kind === "refused") return agent ? { refused: refusal("conflict", `${tap.message} Nothing deployed.`) } : null;
   const cannot = tap?.kind === "ready" ? blocked(open) : null;
   if (cannot !== null) return { refused: refusal("conflict", cannot) };
-  const signs = tap?.kind === "ready" && open.length > 0;
+  // A Git build no rule covers needs one even when it reaches no data, so the approver's tap signs the rule for it.
+  const sources = planned.kind === "plan" && planned.source?.kind === "sign" && !planned.source.unchecked;
+  const signs = tap?.kind === "ready" && (open.length > 0 || sources);
   const makes = pending && covered.size === 0;
   if (!agent && !signs && !makes && !mayGuard) return null;
 

@@ -74,7 +74,7 @@ export function ApproveDeploy({ organizationSlug, id }: { organizationSlug: stri
       // A Service only the rule builds doesn't build without it, so the page says why rather than approve it.
       const unsigned = planned.kind === "plan" && planned.tap.kind === "ready" ? planned.plan.unsigned ?? [] : [];
       const held = prepared.kind === "admit" ? prepared.held : prepared.ask.held;
-      if (held !== null && unsigned.some(needsSource)) return stop(held.reason);
+      if (held !== null && (!held.unchecked || unsigned.some(needsSource))) return stop(held.reason);
       const sourced = prepared.kind === "ask" ? prepared.ask.draft.source?.summary.services.map(({ name }) => name) : undefined;
       const unbuilt = unsourced(unsigned, new Set(sourced));
       if (unbuilt !== null) return stop(unbuilt);

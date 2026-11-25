@@ -101,8 +101,8 @@ export const prepareDeployTap = Effect.fn("DeployTap.prepare")(function* (actor:
   const signer = input.classify === true ? null : actor.userId;
   const versions = unsigned.length === 0 || asks ? Effect.succeed<DeployTap>({ kind: "off" })
     : gate(signer, access.organization.id, tags, { namespace: plan.namespace, parents, needs: SIGNS });
-  // Only a member who signs here may sign the rule with the Deploy.
-  let source = input.rule !== true || signer === null || access.kind !== "member" ? null : yield* sourceOf(access, input.environment, plan.version, signer);
+  // Only a member who signs here may sign the rule with the Deploy. Classified, it says whether whoever approves it signs one.
+  let source = input.rule !== true || access.kind !== "member" ? null : yield* sourceOf(access, input.environment, plan.version, actor.userId, signer === null);
   let tap: DeployTap;
   if (source?.kind === "sign") {
     const ruled = yield* gate(signer, access.organization.id, tags, { namespace: plan.namespace, parents, needs: SIGNS_RULE });
@@ -127,9 +127,9 @@ export const prepareDeployTap = Effect.fn("DeployTap.prepare")(function* (actor:
 /**
  * What a Deploy at review `version` of `environment` needs for its Source step, read from the staged rule view alone,
  * before any Server or passkey is reached: null when it needs none, when nothing builds from GitHub, when the review
- * moved, or when a protector decides the member's writes here.
+ * moved, or when a protector decides the member's writes here, unless `classify`: someone else approves it then.
  */
-const sourceOf = Effect.fn("DeployTap.source")(function* (access: Access, environment: EnvironmentRef, version: string, userId: string) {
+const sourceOf = Effect.fn("DeployTap.source")(function* (access: Access, environment: EnvironmentRef, version: string, userId: string, classify: boolean) {
   const read = yield* callStore(access.organization.id, userId, {
     operation: "read", query: { query: "rule", environment, staged: true },
   }, { approval: "not_required", permissions: access.permissions, environments: access.environments });
@@ -137,7 +137,7 @@ const sourceOf = Effect.fn("DeployTap.source")(function* (access: Access, enviro
   if (!read.ok) return unread;
   const view = read.value;
   // Read with the view: a protection Cloud couldn't read never reads as none.
-  if (view.sources.length === 0 || view.version !== version || (view.protected !== false && !mayProtect(access, view.environment.name))) return null;
+  if (view.sources.length === 0 || view.version !== version || (!classify && view.protected !== false && !mayProtect(access, view.environment.name))) return null;
   let need: ReturnType<typeof sourceNeed>;
   try {
     need = sourceNeed(view);
