@@ -154,18 +154,22 @@ impl Images {
     ///
     /// # Errors
     ///
-    /// As [`Self::pull_image`], and when Docker names no ID for the image.
+    /// As [`Self::pull_image`], [`Error::ImageAbsent`] when `policy` pulls nothing and
+    /// the image isn't here, and when Docker names no ID for it.
     pub(crate) async fn place(&self, image: &str, policy: PullPolicy) -> Result<String, Error> {
         let docker = &self.docker.client;
         if let Err(error) = crate::docker_image::prepare_image(docker, image, policy, None).await {
             return Err(self.pull_failure(Error::ImagePull(error)).await);
         }
-        docker
-            .inspect_image(image)
-            .await
-            .map_err(Error::ImagePull)?
-            .id
-            .ok_or(Error::MissingField("image ID"))
+        match docker.inspect_image(image).await {
+            Ok(inspected) => inspected.id.ok_or(Error::MissingField("image ID")),
+            Err(error)
+                if policy == PullPolicy::Never && crate::docker_image::is_not_found(&error) =>
+            {
+                Err(Error::ImageAbsent(image.to_owned()))
+            }
+            Err(error) => Err(Error::ImagePull(error)),
+        }
     }
 
     /// [`Self::pull_free`] for a Deploy's pull phase: the ports the image it found exposes.

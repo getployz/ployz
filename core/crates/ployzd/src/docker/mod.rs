@@ -1459,6 +1459,9 @@ pub enum Error {
     ForeignTunnelNetwork,
     #[error("image pull failed")]
     ImagePull(#[source] bollard::errors::Error),
+    /// A start whose pull policy is `never` names an image this Server doesn't hold.
+    #[error("image {0} isn't on this Server, and its pull policy is never, so nothing pulls it")]
+    ImageAbsent(String),
     /// A sealed registry login this Machine won't pull with.
     #[error("this Server won't pull the image with its registry login")]
     RegistryLogin(#[from] crate::docker_image::LoginRefused),
@@ -1516,6 +1519,7 @@ impl Error {
             | Self::SpecNotFound(_)
             | Self::LimitsSpecNotFound(_)
             | Self::ExternalVolumeNotFound(_)
+            | Self::ImageAbsent(_)
             | Self::Docker(bollard::errors::Error::DockerResponseServerError {
                 status_code: 404,
                 ..

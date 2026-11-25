@@ -2535,6 +2535,7 @@ fn create_refusal(error: Error) -> Result<ContainerRefusal, Error> {
         Error::Docker(Docker::SlotNameOccupied(_)) => ContainerRefusalReason::SlotOccupied,
         Error::Docker(
             Docker::ImagePull(_)
+            | Docker::ImageAbsent(_)
             | Docker::UnsignedImage(_)
             | Docker::DiskFull { .. }
             | Docker::RegistryLogin(
