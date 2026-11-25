@@ -138,24 +138,13 @@ pub(crate) fn remove(root: &ArgMatches) -> Result<(), Error> {
         None => serde_json::json!({ "server": server }),
     };
     let path = format!("volume-leftovers/{volume}/rm");
-    let mut words = vec![
-        "volume",
-        "leftovers",
-        "rm",
-        volume.as_str(),
-        "--on",
-        server.as_str(),
-    ];
-    if let Some(confirm) = confirm {
-        words.extend(["--confirm", confirm.as_str()]);
-    }
     // Cloud asks a person before it deletes the copy. Only that ask leaves the outer
     // result; every other refusal comes back inner, with the store's hints.
     let asked = approval::approved(
         runtime,
         OperationVerb::RemoveMirror,
         matches.get_one::<String>("approval").cloned(),
-        |id| crate::cli::approved_rerun(matches, &words, id),
+        &crate::cli::Rerun::again(root),
         async |approval| {
             let answer = crate::cloud::account::approved_answer::<OneRun>(
                 credential,
