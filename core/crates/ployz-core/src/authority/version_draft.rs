@@ -85,9 +85,6 @@ impl SourceAsked {
             volumes: volumes.clone(),
             minted: Births::new(),
         };
-        let Some(names) = eligible(&basis) else {
-            return Ok(None);
-        };
         let kept = basis.kept();
         let builder = (self.builder)
             .or_else(|| kept.as_ref().map(|kept| kept.source.builder.clone()))
@@ -97,20 +94,38 @@ impl SourceAsked {
             machines: self.machines,
             owner_id: self.owner_id,
             builder,
-            platform: super::rule_draft::default_platform(),
+            platform: super::rule_draft::renewed_platform(kept.as_ref()),
             // The births the Version steps mint come from the same seed, so a Volume both
             // mount is born once.
             new_rule: RuleId::from_bytes(*seed),
             issued_at,
             signer: SignerKey::Passkey(super::OwnPrompt::Passkey),
         };
-        let mut rule = AutoDeployRule::draft(&mut basis, &names, terms)?;
-        if kept.is_some_and(|kept| approves(&kept, &rule, &basis.target)) {
+        let Some(mut rule) = source_rule(&mut basis, terms)? else {
             return Ok(None);
-        }
+        };
         rule.proposal = Some(place);
         Ok(Some(rule.drafted(&basis)?))
     }
+}
+
+/// The rule a tap signs as its Source step for what `basis` reads, under `terms`, or none
+/// when the kept rule still approves every Service a push deploys on every Server it may
+/// place one on. A rule the person ended stays ended: only turning it on again signs one.
+/// `terms.new_rule` names the rule when none is kept, and seeds the births it mints.
+///
+/// # Errors
+/// Whatever [`AutoDeployRule::draft`] refuses.
+pub fn source_rule(
+    basis: &mut RuleBasis,
+    terms: RuleTerms,
+) -> Result<Option<AutoDeployRule>, RuleDraftError> {
+    let Some(names) = eligible(basis) else {
+        return Ok(None);
+    };
+    let kept = basis.kept();
+    let rule = AutoDeployRule::draft(basis, &names, terms)?;
+    Ok((!kept.is_some_and(|kept| approves(&kept, &rule, &basis.target))).then_some(rule))
 }
 
 /// What a Save needs to keep pushes deploying, read from the Store's rule view alone,
@@ -144,7 +159,7 @@ pub fn source_need(basis: &RuleBasis) -> SourceNeed {
         machines: kept.machines.clone(),
         owner_id: kept.source.owner_id,
         builder: kept.source.builder.clone(),
-        platform: super::rule_draft::default_platform(),
+        platform: super::rule_draft::renewed_platform(Some(&kept)),
         new_rule: kept.rule,
         issued_at: kept.issued_at,
         signer: SignerKey::Passkey(super::OwnPrompt::Passkey),

@@ -1400,14 +1400,17 @@ impl LocalMachine {
         let pin = pinned(&want);
         let replan = (!self.in_switch).then(|| want.clone());
         let mut now = self.container_now(&locator).await?;
-        let mut step = plan_container(want, &now, &self.record().phase());
+        let admission = admitted
+            .as_ref()
+            .map_or(ployz_core::Admission::Free, AdmittedSpec::admission);
+        let mut step = plan_container(want, &now, &self.record().phase(), admission);
         // Planned again under the switch lock, which the start keeps until it ends, so a
         // start never lands inside a switch of that Volume.
         let switch = match replan {
             Some(want) if starts_provisioned_holder(&step, &now) => {
                 let guard = self.lock_switch().await;
                 now = self.container_now(&locator).await?;
-                step = plan_container(want, &now, &self.record().phase());
+                step = plan_container(want, &now, &self.record().phase(), admission);
                 Some(guard)
             }
             Some(_) | None => None,
@@ -1723,6 +1726,14 @@ impl LocalMachine {
         let containers = self.docker()?;
         let record = self.record();
         let machine = record.cluster_machine().ok_or(Error::NotParticipating)?;
+        // Only a key or a rule keeps a name: Cloud never learns of a deploy through this
+        // Server's own socket, so a name it kept would refuse every later Cloud deploy of a
+        // Service that reaches no data. System Containers are skipped: the replica may be
+        // one of them.
+        let keeps_name = admitted.admission() == ployz_core::Admission::Signed
+            && kind == ContainerKind::ServiceContainer
+            && *namespace != Namespace::system();
+        let by = admitted.by().clone();
         containers
             .lifecycle()
             .create_with_admission(
@@ -1766,6 +1777,23 @@ impl LocalMachine {
                         )
                         .await?;
                         Box::pin(self.refuse_second_holder(kind, spec)).await?;
+                        // Before Docker makes it, so no signed copy exists whose name its
+                        // own replica doesn't keep, even one removed before a scan sees it.
+                        // A create that fails later leaves the name kept, and a failed write
+                        // refuses the create. A Machine with no replica attached has no
+                        // Internal DNS to keep the name for.
+                        if keeps_name && let Ok(replicated) = self.replicated() {
+                            replicated.keep_signed_service(&identity).await?;
+                        }
+                        // Read again in this turn: a signed create may have kept the name
+                        // since the request's admission read it.
+                        if self.name_refuses(&by, kind, &identity).await? {
+                            return Err(Error::DeployRefused(
+                                ployz_core::authority::AuthorityRefusal::SignedName {
+                                    service: identity,
+                                },
+                            ));
+                        }
                         Ok(())
                     },
                     storage: self.observe_storage(),
@@ -1978,10 +2006,14 @@ fn starts_provisioned_holder(step: &ContainerStep, now: &ContainerNow) -> bool {
     })
 }
 
+/// `admission` is how this Machine admitted the request. A signed request never adopts a
+/// Container it didn't admit signed: that copy answers for no name a signed one keeps, and
+/// adopting it would skip the write that keeps the name.
 fn plan_container(
     want: ContainerWant,
     now: &ContainerNow,
     phase: &LocalMachinePhase,
+    admission: ployz_core::Admission,
 ) -> ContainerStep {
     let present = match now {
         ContainerNow::Present(observed) => Some(observed),
@@ -1999,6 +2031,12 @@ fn plan_container(
             ..
         } => match present {
             None => ContainerStep::CreateAndStart(new),
+            Some(observed) if admission == ployz_core::Admission::Signed && !observed.signed() => {
+                ContainerStep::Refuse(refuse(
+                    ContainerRefusalReason::SlotOccupied,
+                    "the slot holds a Container this server didn't admit from a signed deploy",
+                ))
+            }
             Some(observed)
                 if same_creation(
                     observed,

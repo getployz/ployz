@@ -22,6 +22,7 @@ use super::{
 };
 use crate::{
     corrosion::{MachineView, ReplicatedStore},
+    docker::MachineSpecStore,
     machine::{LocalMachineBody, LocalMachineRecord, RecordOwner},
 };
 
@@ -41,12 +42,16 @@ pub struct NetworkPlane {
     probed: watch::Sender<Vec<ProbedPeer>>,
     /// `None` until start installs it, and on a plane built only to clean up.
     firewall: Option<Installed>,
+    /// This Server's Container records, which say the part of a member that needs a new
+    /// address. `None` when the daemon runs without Containers.
+    records: Option<MachineSpecStore>,
 }
 
 impl NetworkPlane {
     pub async fn start(
         record: &LocalMachineRecord,
         data_dir: &Path,
+        records: Option<MachineSpecStore>,
     ) -> Result<Option<Self>, NetworkError> {
         let bootstrap = record.bootstrap();
         let machine = match record.body() {
@@ -95,6 +100,7 @@ impl NetworkPlane {
             paths: PathBook::default(),
             probed: watch::Sender::new(Vec::new()),
             firewall: None,
+            records,
         };
         // Boxed: settling the bridge is a large future, and inline it overflows the
         // stack of a daemon start.
@@ -224,6 +230,7 @@ impl NetworkPlane {
             paths: PathBook::default(),
             probed: watch::Sender::new(Vec::new()),
             firewall: None,
+            records: None,
         }
         .cleanup()
         .await
@@ -234,8 +241,14 @@ impl NetworkPlane {
         if let Err(error) = remove_firewall(self.machine.subnet).await {
             failures.push(ployz_core::error_chain::inline(&error));
         }
-        if let Err(error) = self.remove_docker_network().await {
-            failures.push(ployz_core::error_chain::inline(&error));
+        // The fence outlives the rest of the firewall until its bridge is gone.
+        match self.remove_docker_network().await {
+            Ok(()) => {
+                if let Err(error) = remove_bridge_fence().await {
+                    failures.push(ployz_core::error_chain::inline(&error));
+                }
+            }
+            Err(error) => failures.push(ployz_core::error_chain::inline(&error)),
         }
         if wireguard_device_exists()?
             && let Err(error) = self.wireguard.remove_interface()
@@ -259,13 +272,21 @@ impl NetworkPlane {
         )
     }
 
+    /// Undoes what this start created. The bridge fence stays while the bridge does: Docker
+    /// restored the bridge and its Containers before this start, and keeps them running.
     async fn rollback_start(&mut self, docker_created: bool, wireguard_created: bool) {
         if wireguard_created {
             let _ = remove_firewall(self.machine.subnet).await;
             let _ = self.wireguard.remove_interface();
         }
-        if docker_created {
-            let _ = self.docker.remove_network(DOCKER_NETWORK_NAME).await;
+        if docker_created
+            && self
+                .docker
+                .remove_network(DOCKER_NETWORK_NAME)
+                .await
+                .is_ok()
+        {
+            let _ = remove_bridge_fence().await;
         }
     }
 }
@@ -357,7 +378,7 @@ mod tests;
 mod wireguard;
 
 use bridge::{FoundNetwork, found_network, required_docker_network_options};
-use firewall_keeper::{keep_firewall, remove_firewall};
+use firewall_keeper::{keep_firewall, remove_bridge_fence, remove_firewall};
 use wireguard::{
     Lowered, PeerSet, peer_routes, read_device, read_retained_device, validate_retained_device,
     wireguard_device_exists,

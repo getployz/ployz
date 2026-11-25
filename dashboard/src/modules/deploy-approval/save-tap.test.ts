@@ -4,54 +4,10 @@ import { describe, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { StoreRefused } from "#/lib/refusal";
 import type { SaveTap } from "./deploy-tap.server";
+import { CLUSTER, kept, placed, ready, view } from "./rule-view.test-fixture";
 import { type Answered, prepareSave, type Publish, type SaveAsk, type SaveSteps, saveWith, sendRule } from "./save-tap";
 
 const here = { project: "shop", environment: "production" };
-const CLUSTER = "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=";
-const SEALED = "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQQ==";
-
-const spec = (name: string) => ({
-  name,
-  mode: { mode: "replicated", replicas: 1 },
-  container: {
-    image: `ployz-build/${name}`,
-    pull_policy: "never",
-    environment: { SECRET: { sealed: SEALED, scope: "shared", key: "SECRET" } },
-    sealed_identity: { organization: "org", environment: "11111111-1111-1111-1111-111111111111", service: "22222222-2222-2222-2222-222222222222" },
-  },
-});
-
-/** web with a Volume, which runs only on the Servers a rule names. */
-const placed = () => ({
-  ...spec("web"),
-  volumes: [{ reference: "data", source: { kind: "provisioned", name: "web-data", maximum_bytes: 1024 } }],
-  mounts: [{ volume: "data", target: "/data" }],
-});
-
-/** The Store's staged rule view of a Save of web, which builds from main, at review `v1`. */
-const view = (rule: RuleView["rule"] = null, web: ReturnType<typeof spec> = spec("web")): RuleView =>
-  // SAFETY: the fixture is the JSON the Store answers; ployz-core parses what it reads of it.
-  JSON.parse(JSON.stringify({
-    environment: { id: "env", project: "shop", name: "production", revision: 1 },
-    namespace: "app",
-    rule,
-    sources: [{
-      service: "web", repository: "acme/web", repository_id: 11, branch: "main", root_dir: ".",
-      build: { buildMethod: "dockerfile", dockerfilePath: "Dockerfile" },
-    }],
-    target: [web],
-    changed: [],
-    version: "v1",
-    protected: false,
-  })) as RuleView;
-
-const kept = () => ({
-  body: autoDeployRuleBody(view(), asTestDouble<RuleTerms>()({
-    cluster: CLUSTER, machines: ["1".repeat(32)], owner_id: 7, new_rule: "3".repeat(32), issued_at: 1_000, signer: "passkey",
-  })).body,
-  signatures: [],
-});
-
 const save: Publish = { command: "publish", environment: here, version: "v1", accept_volume_loss: [], message: null };
 
 /** Cloud's reads of `staged`, and the gate it answers once asked. */
@@ -77,10 +33,7 @@ describe("prepareSave", () => {
   });
 
   it("saves without the rule and says why when GitHub can't name the owner", async () => {
-    const read = reads(view(), asTestDouble<Extract<NonNullable<Extract<SaveTap, { kind: "view" }>["tap"]>, { kind: "ready" }>>()({
-      kind: "ready", cluster: CLUSTER, passkeys: [], pins: {}, members: ["1".repeat(32)],
-      against: { trusted: { devices: [], passkeys: [], grants: [] }, containers: [] },
-    }));
+    const read = reads(view(), ready);
     const unread = async () => ({ problem: "Couldn't read acme/web on GitHub." });
 
     expect(await prepareSave(save, read, unread)).toEqual({ kind: "save", command: save, held: "Couldn't read acme/web on GitHub." });

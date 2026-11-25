@@ -2,29 +2,49 @@
 //! gives dynamic addresses out anew each time it starts Containers, so after a restart
 //! a route to one Container would reach whichever came back at its address. With every
 //! address static, no Container takes another's at boot.
+//!
+//! Each new address lies in the [`AddressPart`] its Container belongs to, which the fence
+//! reads back from the address alone. A Container keeps the address it holds or is pinned
+//! to, unless its admission record puts it in another part.
 
-use std::{collections::BTreeSet, net::Ipv4Addr};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    net::Ipv4Addr,
+};
 
 use bollard::models::{ContainerSummary, EndpointIpamConfig, EndpointSettings};
-use ployz_core::MachineSubnet;
+use ployz_core::{AddressPart, MachineSubnet};
 
 use super::DOCKER_NETWORK_NAME;
 
-/// The ployz endpoint of a Container, with `ipv4` pinned. Only a Container that
+/// Why a Container got no new address on the bridge.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum NoAddress {
+    #[error("every {0} address on this Server's {DOCKER_NETWORK_NAME} network is taken")]
+    Full(AddressPart),
+    #[error("this Server's {DOCKER_NETWORK_NAME} network has no Machine Subnet Ployz can read")]
+    UnknownSubnet,
+    /// The daemon runs without its Container store, so it can't tell the part.
+    #[error(
+        "this Server keeps no Container records, so it can't tell which addresses a Container may take"
+    )]
+    NoRecords,
+    #[error("this Server's Container records could not be read")]
+    Unread,
+}
+
+/// The ployz endpoint of a Container, pinned at `ipv4`. Only a Container that
 /// [`super::takes_ipv6`] takes IPv6.
-pub(crate) fn endpoint(ipv6: bool, ipv4: Option<Ipv4Addr>) -> EndpointSettings {
+pub(crate) fn endpoint(ipv6: bool, ipv4: Ipv4Addr) -> EndpointSettings {
     pin(super::base_endpoint(ipv6).unwrap_or_default(), ipv4)
 }
 
-/// `endpoint` with `ipv4` pinned, keeping any other address it asks for.
-pub(crate) fn pin(mut endpoint: EndpointSettings, ipv4: Option<Ipv4Addr>) -> EndpointSettings {
-    let Some(address) = ipv4 else {
-        return endpoint;
-    };
+/// `endpoint` pinned at `ipv4`, keeping any other address it asks for.
+pub(crate) fn pin(mut endpoint: EndpointSettings, ipv4: Ipv4Addr) -> EndpointSettings {
     endpoint
         .ipam_config
         .get_or_insert_with(EndpointIpamConfig::default)
-        .ipv4_address = Some(address.to_string());
+        .ipv4_address = Some(ipv4.to_string());
     endpoint
 }
 
@@ -77,20 +97,47 @@ pub(crate) fn taken(containers: &[ContainerSummary]) -> BTreeSet<Ipv4Addr> {
         .collect()
 }
 
-/// The first free host address after `after`, wrapping, so a freed address is reused
-/// last, once routes to the Container that held it are long gone. Without `after` the
-/// search starts past the highest taken address.
-pub(crate) fn next(
+/// The last address handed out in each part, so a freed address is reused last, once
+/// routes to the Container that held it are long gone.
+#[derive(Debug, Default)]
+pub(crate) struct Handed(BTreeMap<AddressPart, Ipv4Addr>);
+
+impl Handed {
+    /// A free address in `part`, noted as handed out: the first after the last one handed
+    /// out there, wrapping. With none handed out yet the search starts past the highest
+    /// address taken in the part.
+    pub(crate) fn take(
+        &mut self,
+        subnet: MachineSubnet,
+        part: AddressPart,
+        taken: &BTreeSet<Ipv4Addr>,
+    ) -> Result<Ipv4Addr, NoAddress> {
+        let address =
+            next(subnet, part, taken, self.0.get(&part).copied()).ok_or(NoAddress::Full(part))?;
+        self.0.insert(part, address);
+        Ok(address)
+    }
+}
+
+fn next(
     subnet: MachineSubnet,
+    part: AddressPart,
     taken: &BTreeSet<Ipv4Addr>,
     after: Option<Ipv4Addr>,
 ) -> Option<Ipv4Addr> {
     // A Machine Subnet is a /24 whose first host is the gateway.
-    let gateway = u32::from(subnet.gateway().0);
-    let hosts = (gateway + 1..gateway + 254)
-        .map(Ipv4Addr::from)
+    let network = u32::from(subnet.gateway().0) - 1;
+    let hosts = part
+        .hosts()
+        .map(|last| Ipv4Addr::from(network + u32::from(last)))
         .collect::<Vec<_>>();
-    let after = after.or_else(|| taken.last().copied());
+    let after = after.or_else(|| {
+        taken
+            .iter()
+            .rev()
+            .find(|address| hosts.binary_search(address).is_ok())
+            .copied()
+    });
     let start = after.map_or(0, |after| hosts.partition_point(|host| *host <= after));
     hosts
         .iter()
@@ -120,26 +167,46 @@ mod tests {
         .unwrap()
     }
 
+    fn open(taken: &BTreeSet<Ipv4Addr>, after: Option<Ipv4Addr>) -> Option<Ipv4Addr> {
+        next(subnet(), AddressPart::Open, taken, after)
+    }
+
     #[test]
     fn a_new_container_takes_the_address_after_the_last_one_handed_out() {
         let taken = BTreeSet::from([address(2), address(3), address(5)]);
-        assert_eq!(next(subnet(), &taken, Some(address(3))), Some(address(4)));
-        assert_eq!(next(subnet(), &taken, Some(address(5))), Some(address(6)));
+        assert_eq!(open(&taken, Some(address(3))), Some(address(4)));
+        assert_eq!(open(&taken, Some(address(5))), Some(address(6)));
     }
 
     #[test]
-    fn a_freed_address_is_reused_only_after_the_rest_of_the_subnet() {
+    fn a_freed_address_is_reused_only_after_the_rest_of_its_part() {
         // .2 was just freed; the next Container takes .6, not .2.
-        let taken = BTreeSet::from([address(3), address(4), address(5)]);
-        assert_eq!(next(subnet(), &taken, None), Some(address(6)));
-        assert_eq!(next(subnet(), &taken, Some(address(254))), Some(address(2)));
+        let taken = BTreeSet::from([address(3), address(4), address(5), address(150)]);
+        assert_eq!(open(&taken, None), Some(address(6)));
+        assert_eq!(open(&taken, Some(address(127))), Some(address(2)));
     }
 
     #[test]
-    fn the_gateway_and_a_full_subnet_are_never_handed_out() {
-        assert_eq!(next(subnet(), &BTreeSet::new(), None), Some(address(2)));
-        let full = (2..=254).map(address).collect();
-        assert_eq!(next(subnet(), &full, None), None);
+    fn a_new_address_lies_in_its_part_and_a_full_part_is_refused() {
+        for part in AddressPart::ALL {
+            let mut handed = Handed::default();
+            let mut taken = BTreeSet::from([address(1)]);
+            let room = part.hosts().count();
+            for _ in 0..room {
+                let ipv4 = handed.take(subnet(), part, &taken).unwrap();
+                assert!(part.hosts().contains(&ipv4.octets()[3]), "{part}: {ipv4}");
+                taken.insert(ipv4);
+            }
+            assert_eq!(
+                handed.take(subnet(), part, &taken),
+                Err(NoAddress::Full(part))
+            );
+        }
+        let full_free = AddressPart::Free.hosts().map(address).collect();
+        assert_eq!(
+            Handed::default().take(subnet(), AddressPart::Open, &full_free),
+            Ok(address(2))
+        );
     }
 
     #[test]
@@ -154,7 +221,7 @@ mod tests {
             "NetworkID": "n",
         }))
         .unwrap();
-        let rejoined = serde_json::to_value(pin(reconnect(current), Some(address(9)))).unwrap();
+        let rejoined = serde_json::to_value(pin(reconnect(current), address(9))).unwrap();
         let at = |pointer: &str| rejoined.pointer(pointer).cloned();
         assert_eq!(at("/Aliases"), Some(serde_json::json!(["db"])));
         assert_eq!(

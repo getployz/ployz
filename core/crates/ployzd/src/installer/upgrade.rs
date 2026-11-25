@@ -483,7 +483,8 @@ async fn launch_worker(
         .arg("--property=ProtectKernelTunables=yes")
         .arg("--property=PrivateTmp=yes")
         .arg("--property=RestrictNamespaces=yes")
-        .arg("--property=RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX")
+        // Netlink for iptables-nft, which takes the fence down before an older release.
+        .arg("--property=RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK")
         .arg(format!("--property={writable}"))
         .args(
             ployz_core::release_mirror_overrides()

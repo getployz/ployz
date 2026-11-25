@@ -622,10 +622,19 @@ impl Run {
             .filter_map(|ended| ended.as_str().parse().ok())
             .collect();
         let recreate = std::mem::take(&mut claimed.intent.options.recreate);
+        // Each Service the claim hands signed versions for; a rule's proofs join them
+        // once its builds are verified.
+        let signed = claimed
+            .ran
+            .iter()
+            .filter(|(_, pinned)| !pinned.versions.is_empty())
+            .map(|(service, _)| service.clone())
+            .collect();
         claimed.intent.options = claimed.intent.options.as_runner(RunnerOptions {
             operator,
             ended_runs,
             recreate,
+            signed,
         });
         Ok(claimed)
     }
@@ -662,6 +671,11 @@ impl Run {
                 Ok(mut receipts) => {
                     receipts.extend(built);
                     rules = rule_proofs(session, &claimed, &receipts, self).await;
+                    claimed
+                        .intent
+                        .options
+                        .signed
+                        .extend(rules.services().cloned());
                     self.prepare(session, claimed, targets, (receipts, pins))
                         .await
                 }

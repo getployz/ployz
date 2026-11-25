@@ -15,6 +15,7 @@ import { removeOrganization } from "#/modules/organization-teardown/organization
 import { organizationPairing } from "#/modules/runtime/tables";
 import { analyticsSalt, analyticsSite } from "#/modules/web-analytics/tables";
 import { Database } from "#/server/database.server";
+import { checkedNow } from "#/db/tables";
 
 const CONSENT_ROUNDS = 3;
 
@@ -161,8 +162,8 @@ const waitOnServers = Effect.fn("AnonymousTeardown.waitOnServers")(function* (or
     const [row] = yield* drizzle.select({
       due: sql<boolean>`${anonymousTeardown.silentSince} is not null and greatest(
         ${anonymousTeardown.silentSince}, ${organizationPairing.createdAt}, ${organizationPairing.removalAnsweredAt}
-      ) <= clock_timestamp() - interval '1 hour'`,
-      stuck: sql<boolean>`${anonymousTeardown.waitingSince} <= clock_timestamp() - interval '24 hours' and ${anonymousTeardown.warnedAt} is null`,
+      ) <= ${checkedNow()} - interval '1 hour'`,
+      stuck: sql<boolean>`${anonymousTeardown.waitingSince} <= ${checkedNow()} - interval '24 hours' and ${anonymousTeardown.warnedAt} is null`,
     }).from(anonymousTeardown)
       .leftJoin(organizationPairing, eq(organizationPairing.organizationId, anonymousTeardown.organizationId))
       .where(eq(anonymousTeardown.organizationId, organizationId));

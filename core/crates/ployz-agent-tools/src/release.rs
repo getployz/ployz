@@ -311,6 +311,7 @@ impl Tool for DeployInput {
             versions: Vec::new(),
             copies: Vec::new(),
             recreate: Vec::new(),
+            rule: None,
         }))?;
         Ok(json!({
             "at": here.environment.to_string(),

@@ -152,6 +152,7 @@ impl ServiceRuntime for LocalDocker {
         self.create_container(
             Some(CreateContainerOptionsBuilder::default().name(name).build()),
             config,
+            None,
         )
         .await?;
         self.client.start_container(name, None).await?;

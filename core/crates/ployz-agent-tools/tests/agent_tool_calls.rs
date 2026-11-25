@@ -2200,6 +2200,7 @@ fn deploying() -> (ConfigStore, DeploymentId) {
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
         )
         .unwrap();
@@ -2267,6 +2268,7 @@ fn a_deployment_shows_what_it_left_out_and_what_its_servers_warned() {
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
         )
         .unwrap();
@@ -2615,6 +2617,7 @@ fn deployed_shop() -> ConfigStore {
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
         )
         .unwrap();
@@ -3234,6 +3237,7 @@ fn rolled_back_volume() -> (ConfigStore, Trusted) {
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
         )
         .unwrap();
@@ -3533,6 +3537,7 @@ fn a_deployments_metrics_refuse_a_service_it_did_not_deploy() {
                     versions: Vec::new(),
                     copies: Vec::new(),
                     recreate: Vec::new(),
+                    rule: None,
                 }),
             )
             .unwrap();
@@ -3821,6 +3826,7 @@ fn service_update_seals_a_secret_it_generates_and_refuses_one_it_is_sent() {
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
         )
         .unwrap();

@@ -161,6 +161,7 @@ fn admit_only(store: &ConfigStore, who: &Actor, n: u8, services: &[&str]) -> Res
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
             &Trusted::default(),
         )

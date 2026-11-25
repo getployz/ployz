@@ -22,6 +22,7 @@ import {
   type RateWindow,
 } from "#/server/rate-limit.server";
 import { ClientAddress } from "#/server/client-ip";
+import { checkedNow } from "#/db/tables";
 
 /** How many failed authentications one address gets before it waits. Successes never count. */
 export const FAILED_AUTHENTICATION_WINDOWS: ReadonlyArray<RateWindow> = [
@@ -182,7 +183,7 @@ export const oauthCaller = Effect.fn("Identity.oauthCaller")(function* (claims: 
       and(
         notExists(links(eq(oauthConsentSession.sessionId, sid))),
         exists(database.drizzle.select({ id: session.id }).from(session)
-          .where(and(eq(session.id, sid), eq(session.userId, sub), gt(session.expiresAt, new Date())))),
+          .where(and(eq(session.id, sid), eq(session.userId, sub), gt(session.expiresAt, checkedNow())))),
       ),
     );
   const rows = yield* database.drizzle

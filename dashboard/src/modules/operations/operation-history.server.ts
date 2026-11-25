@@ -126,12 +126,12 @@ const serverOperations = Effect.fn("OperationHistory.server")(function* (
     eq(machineRemoveAttempt.machineId, machine),
     uuid === null ? undefined : eq(machineRemoveAttempt.id, uuid),
   )).orderBy(desc(machineRemoveAttempt.createdAt), asc(machineRemoveAttempt.id)).limit(limit);
-  const upgrades = yield* drizzle.select({ row: serverUpgradeAttempt, at: micros(serverUpgradeAttempt.startedAt) }).from(serverUpgradeAttempt).where(and(
+  // Postgres stamps an attempt's start, so whether it outlived the observation limit is read on its clock.
+  const upgrades = yield* drizzle.select({ row: serverUpgradeAttempt, at: micros(serverUpgradeAttempt.startedAt), now: sql`now()`.mapWith(serverUpgradeAttempt.startedAt) }).from(serverUpgradeAttempt).where(and(
     eq(serverUpgradeAttempt.organizationId, organizationId),
     eq(serverUpgradeAttempt.machineId, machine),
     hex === null ? undefined : eq(serverUpgradeAttempt.attemptId, hex),
   )).orderBy(desc(serverUpgradeAttempt.startedAt), sql`${serverUpgradeAttempt.attemptId} collate "C"`).limit(limit);
-  const now = Date.now();
   // A row keeps the name its run started under, even on a replayed act; older rows have none, so Cloud looks it up for them.
   const looked = known || [...drains, ...removals, ...upgrades].every(({ row }) => row.serverName !== null)
     ? undefined
@@ -142,10 +142,10 @@ const serverOperations = Effect.fn("OperationHistory.server")(function* (
     ...removals.map(({ row, at }) => ({ at, operation: operation({
       attempt: row.id, run: `remove ${name(row)}`, state: row.state, requestedAt: row.createdAt, endedAt: row.terminalAt, reason: row.failureMessage,
     }) })),
-    ...upgrades.map(({ row, at }) => ({ at, operation: operation({
+    ...upgrades.map(({ row, at, now }) => ({ at, operation: operation({
       attempt: dashedAttempt(row.attemptId),
       run: `upgrade ${name(row)}`,
-      state: attemptState(row, now),
+      state: attemptState(row, now.getTime()),
       requestedAt: row.startedAt,
       endedAt: row.endedAt,
       reason: row.error,

@@ -11,7 +11,7 @@ import { PATIENCE, PATIENCE_WAITS, waitsFor } from "#/modules/volume-run/patienc
 import { type DeploymentsSeen, gb, gbAtLeast, type ResizePhase, type ResizeStep, type SizeDirection, type SizeOutcome, undoOnRefusal } from "#/modules/volume-run/resize";
 import { type RecordAnswer, recordVolumeSize, resizeCopy } from "#/modules/volume-run/volume-size.server";
 import { fenceTaken } from "#/modules/volume-run/volume-run.deploy.server";
-import { alreadyOn, committedWriter, epochOf, expectOf, holdingNewest, observedEpoch, type Planned, planForwardRelease, planFromCopies, type Refusal, ROLE_NOUN, withdrawnMessage } from "#/modules/volume-run/plan";
+import { alreadyOn, committedWriter, epochOf, expectOf, type ForwardRelease, holdingNewest, observedEpoch, type Planned, planForwardRelease, planFromCopies, type Refusal, ROLE_NOUN, withdrawnMessage } from "#/modules/volume-run/plan";
 import { type AnsweredMember, copyName, type MachineRef, type Member, type ReleasePlan } from "#/modules/volume-run/volume-run";
 import { claimVolumeRun, closeStaleVolumeRuns, closeVolumeRun, endRun, failAndRelease, failRun, laneTarget, noteRun, pinDestination, recordRestarted, refuseRun, releaseChangedMessage, runDeploymentsSeen, type RunContext, takeEpoch } from "#/modules/volume-run/volume-run.rows.server";
 import { cleanOrphans, organizationsWithMachines } from "#/modules/volume-run/volume-run.orphans.server";
@@ -675,24 +675,30 @@ async function finishRelease(steps: RunSteps, current: MachineId, plan: ReleaseP
     if (plan !== undefined && (pinned?.to !== current || pinned.removeOn.length !== removeOn.length || removeOn.some((machine) => !pinned.removeOn.includes(machine)))) {
       return fail(steps, "02-failed", releaseChangedMessage(run.volumeName));
     }
-    const { target, copy } = forward;
     const { epoch } = await step.run("02-epoch", () => runEffect(takeEpoch(run, runId, observedEpoch(members))));
-    let stays: readonly string[] | null;
-    try {
-      const started = await settle(steps, "03-start", commitAndStart(run, runId, {
-        to: target.machine,
-        from: null,
-        expect: expectOf(copy),
-        ...committedWriter(run, copy, epoch),
-      }), `${target.machine.name} is still starting ${run.volumeName}'s Service`);
-      if (!started.ok) throw new NonRetriableError(started.message);
-      stays = await step.run("04-remove", () => runEffect(removeKept(run, runId, forward.removeOn)));
-    } catch (error) {
-      return stopped(steps, "05-failed", error instanceof Error ? error : new Error(String(error)));
-    }
-    await finish(steps, "05-finish", doneMessage(stays));
-    return { runId: run.id, moved: target.machine.name };
+    return startForward(steps, forward, epoch);
   }
+}
+
+/** Once every Server answered: B starts the Service under the release's epoch, then the stopped Containers go. */
+async function startForward(steps: RunSteps, forward: Extract<ForwardRelease, { kind: "ready" }>, epoch: number) {
+  const { step, runEffect, run, runId } = steps;
+  const { target, copy } = forward;
+  let stays: readonly string[] | null;
+  try {
+    const started = await settle(steps, "03-start", commitAndStart(run, runId, {
+      to: target.machine,
+      from: null,
+      expect: expectOf(copy),
+      ...committedWriter(run, copy, epoch),
+    }), `${target.machine.name} is still starting ${run.volumeName}'s Service`);
+    if (!started.ok) throw new NonRetriableError(started.message);
+    stays = await step.run("04-remove", () => runEffect(removeKept(run, runId, forward.removeOn)));
+  } catch (error) {
+    return stopped(steps, "05-failed", error instanceof Error ? error : new Error(String(error)));
+  }
+  await finish(steps, "05-finish", doneMessage(stays));
+  return { runId: run.id, moved: target.machine.name };
 }
 
 /** B already writes at G, so the Move lacks only B's Service and A's kept Container gone; A is the slot keeping it. */

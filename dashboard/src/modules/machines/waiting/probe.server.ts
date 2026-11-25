@@ -11,6 +11,7 @@ import { waitingServer } from "#/modules/machines/waiting/tables";
 import { requireAccess } from "#/modules/organization/access.server";
 import { AppConfig } from "#/server/config.server";
 import { afterDatabaseCommit, Database } from "#/server/database.server";
+import { checkedNow } from "#/db/tables";
 
 const MAX_PEERS = 3;
 const READ_CAP_BYTES = 64;
@@ -229,15 +230,15 @@ export const openProbeSelection = Effect.fn("Probe.openSelection")(function* (
     inArray(waitingServer.id, [...input.ids]),
     isNull(waitingServer.rejectedAt),
   );
-  const reopenable = sql<boolean>`coalesce((${waitingServer.probe}->>'handedAt')::timestamptz <= clock_timestamp() - make_interval(secs => ${REOPEN_AFTER_SECONDS}), true)`;
+  const reopenable = sql<boolean>`coalesce((${waitingServer.probe}->>'handedAt')::timestamptz <= ${checkedNow()} - make_interval(secs => ${REOPEN_AFTER_SECONDS}), true)`;
   return yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
-    const hosts = yield* drizzle
+    const locked = yield* drizzle.select({ id: waitingServer.id }).from(waitingServer).where(selected).orderBy(waitingServer.id).for("update");
+    const hosts = locked.length === 0 ? [] : yield* drizzle
       .select({ id: waitingServer.id, observedIp: waitingServer.observedIp, reopenable })
       .from(waitingServer)
-      .where(selected)
-      .orderBy(waitingServer.id)
-      .for("update");
+      .where(inArray(waitingServer.id, locked.map((host) => host.id)))
+      .orderBy(waitingServer.id);
     if (hosts.length === 0 || hosts.some((host) => !host.reopenable)) return { probing: 0 };
     const nonce = randomBytes(16).toString("base64url");
     const pending: TcpObservation = { seen: "pending" };

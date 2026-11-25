@@ -546,6 +546,13 @@ async fn run_worker_case(root: &Path, case: &str) {
             assert_eq!(outcome, failed(&format!("{unready}; restored 1.2.2")));
             assert_eq!(installed, before);
             assert_eq!(unit_files(&paths), units_before);
+            // The restored release wrote no fence file, so it doesn't know the fence the
+            // failed one put in, which would drop its own traffic.
+            assert!(
+                fs::read_to_string(root.join("iptables.log"))
+                    .unwrap()
+                    .contains("-C DOCKER-USER -o ployz -j PLOYZ-FENCE"),
+            );
             assert_eq!(reloads(root), 2, "the release's activation and the restore");
             // The restored release's uninstall stays: it removes a superset of the units.
             assert_eq!(

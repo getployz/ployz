@@ -216,6 +216,7 @@ fn deploy_leaving(
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
             &Trusted::default(),
         )
@@ -481,6 +482,7 @@ fn a_copy_of_a_made_sealed_password_deploys_only_once_the_browser_makes_its_own(
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
             &Trusted::default(),
         )
@@ -598,6 +600,7 @@ fn a_deploy_reading_a_pending_password_through_a_config_file_is_refused() {
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
             &Trusted::default(),
         )
@@ -2434,6 +2437,7 @@ fn warnings(store: &ConfigStore, who: &Actor, environment: &str, n: u8) -> Value
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
             &Trusted::default(),
         )
@@ -2969,6 +2973,7 @@ fn copying_a_node_waits_for_a_settled_branch() {
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
             &Trusted::default(),
         )

@@ -437,12 +437,23 @@ dashboard is refused too: `This container was made before this server's upgrade 
 the service again with a current `ployz`, which signs it, and the new copy runs.
 Deploy each service once after you upgrade its server, so a restart never needs it.
 
+Upgrading from 0.4.0-beta.2 or earlier, upgrade every server first, then deploy each environment
+once with your passkey or `ployz deploy`. That deploy restarts each service once, including ones
+that hold a volume. Until then, names from before the upgrade aren't
+[kept signed](../services/private-networking.md#good-to-know).
+
 ### Deploy from the dashboard
 
 When your servers enforce device approval, **Deploy** at the bottom of an environment asks for
 your passkey once for the services a server runs only signed. A sheet lists what your passkey
 signs for each one, with its image by digest. Ployz Cloud looks up the digest of each tag, so
 check it. **Approve with passkey** signs them all in one prompt, and the deploy starts.
+
+When what the deploy saves isn't what your
+[automatic deploy rule](github.md#approve-a-rule-for-deploys-on-push) approves, the same prompt
+signs the rule too, and the sheet shows it the way Save does. A deploy with nothing else to sign
+asks for the rule alone. When the prompt can't sign the rule, the deploy goes on without it and
+tells you why, and pushes hold until you approve it.
 
 The sheet checks each mount the way [`ployz deploy` does](#deploy-from-an-approved-device), with your
 servers' keys and containers as Ployz Cloud relays them. Mounts that keep the data you approved
@@ -453,7 +464,9 @@ deploy before it asks, with the same words as the CLI.
 These need no prompt:
 
 - A service that reaches no data: no sealed value, no volume, no login for its image, and nothing
-  of its server beyond a plain container.
+  of its server beyond a plain container. Once it has run from a signed deploy or an automatic
+  deploy rule, even one that has since ended, it asks like the rest: its name
+  [stays signed](../services/private-networking.md#good-to-know).
 - A version someone already signed: a change of only replicas, placement or limits, and a
   rollback or redeploy of a signed deployment.
 
@@ -462,6 +475,7 @@ Deploy stops and says why, and deploys nothing, when:
 
 - a service builds from source and no rule covers it: `No automatic deploy rule covers web. Approve one, or run ployz deploy.`
 - its rule covers it but hasn't built it yet: `Push to web's branch first. Its rule hasn't built this version yet.`
+- you turned automatic deploys off: `Automatic deploys are off for web. Turn on Deploy every push to deploy it.`
 - a service pulls a private tag: `web pulls a private tag. Write its image by digest (image@sha256:…).`
 - a server runs an older `ployz`: `Upgrade web-1 first. Its ployz can't check your passkey.`
 - Ployz Cloud can't read your servers: `Couldn't reach your servers. Try again.` A server that
@@ -481,6 +495,9 @@ If Ployz Cloud doesn't answer after you approve, the sheet says
 
 **Create and deploy** on a new branch, **Deploy again** after a sync and **Redeploy** on a log
 card ask the same way.
+
+A [switch to or from a Cloudflare Tunnel](../services/cloudflare-tunnel.md) stops at a service
+that needs your passkey. Deploy that service from the dashboard, then switch again.
 
 A server refuses a container that reaches data from any deploy no person signed, and says what
 the service reaches:

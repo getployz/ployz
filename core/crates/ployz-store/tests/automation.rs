@@ -793,6 +793,7 @@ fn a_deploy_asks_to_delete_a_volume_a_deploy_in_flight_creates() {
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
             &Trusted {
                 volumes: Some(held_on_a()),
@@ -1314,6 +1315,7 @@ fn deploy_pr_5(store: &ConfigStore, who: &Actor, n: u8) -> ployz_store::Deployme
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
             &Trusted::default(),
         )
@@ -1458,6 +1460,7 @@ fn a_manual_deploy_never_pins_a_head_the_pull_request_has_not_approved() {
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
             &Trusted::default(),
         )
@@ -2051,11 +2054,21 @@ fn approve_rule(
     who: &Actor,
     generation: u64,
 ) -> Result<ployz_store::RuleView, ployz_core::RpcError> {
+    keep_rule(store, who, generation, false)
+}
+
+/// As [`approve_rule`], or ending the rule when `ended`.
+fn keep_rule(
+    store: &ConfigStore,
+    who: &Actor,
+    generation: u64,
+    ended: bool,
+) -> Result<ployz_store::RuleView, ployz_core::RpcError> {
     store.write(
         who,
         &ployz_store::ApproveRule {
             environment: EnvironmentRef::default(),
-            rule: signed_rule(store, who, (9, generation, "main"), false),
+            rule: rule_of(store, who, (9, generation, "main"), (false, ended)),
             births: Default::default(),
         },
     )
@@ -2068,8 +2081,18 @@ type SignedRule = Box<ployz_core::authority::Signed<ployz_core::authority::AutoD
 fn signed_rule(
     store: &ConfigStore,
     who: &Actor,
-    (id, generation, branch): (u8, u64, &str),
+    rule: (u8, u64, &str),
     staged: bool,
+) -> SignedRule {
+    rule_of(store, who, rule, (staged, false))
+}
+
+/// As [`signed_rule`], ending the rule when `ended`.
+fn rule_of(
+    store: &ConfigStore,
+    who: &Actor,
+    (id, generation, branch): (u8, u64, &str),
+    (staged, ended): (bool, bool),
 ) -> SignedRule {
     use ployz_core::authority::rule::{
         BuildPolicy, Builder, PolicyCache, RuleEvent, RuleService, RuleSource, Runner, template,
@@ -2133,7 +2156,7 @@ fn signed_rule(
         },
         services,
         issued_at: Timestamp::from_millis(1_800_000_000_000).unwrap(),
-        ended: false,
+        ended,
         signer: SignerKey::Device(ployz_core::DeviceKey::from_bytes(
             *signer.public().as_bytes(),
         )),
@@ -2289,9 +2312,108 @@ fn a_save_that_keeps_a_rule_without_its_review_saves_nothing_staged_after_the_ta
     assert_eq!(staged_version(&store, &who), moved, "nothing was saved");
 }
 
+/// End rule 9 at `generation`, as turning off Deploy every push does.
+fn end_rule(store: &ConfigStore, who: &Actor, generation: u64) {
+    use ployz_core::authority::{Signed, Signer};
+    let mut rule = signed_rule(store, who, (9, generation, "main"), false)
+        .open()
+        .unwrap();
+    rule.ended = true;
+    store
+        .write(
+            who,
+            &ployz_store::ApproveRule {
+                environment: EnvironmentRef::default(),
+                rule: Box::new(Signed::sign(&rule, &Signer::from_seed(&[7; 32])).unwrap()),
+                births: Default::default(),
+            },
+        )
+        .unwrap();
+}
+
+/// Deploy what is staged at review `version` with `rule`, which the Deploy's tap signed
+/// when `prior` was kept.
+fn deploy_with_rule(
+    store: &ConfigStore,
+    who: &Actor,
+    version: &str,
+    (rule, prior): (SignedRule, Option<(u8, u64)>),
+) -> Result<ployz_store::DeploymentSummary, ployz_core::RpcError> {
+    store.write(
+        who,
+        &ployz_store::Admit::Deploy(ployz_store::Deploy {
+            id: ployz_store::DeploymentId::parse("00000000-0000-4000-8000-000000000141").unwrap(),
+            environment: EnvironmentRef::default(),
+            services: Vec::new(),
+            version: Some(version.to_owned()),
+            upload: None,
+            accept_volume_loss: Vec::new(),
+            message: None,
+            prune: false,
+            no_prune: false,
+            versions: Vec::new(),
+            copies: Vec::new(),
+            recreate: Vec::new(),
+            rule: Some(Box::new(ployz_store::SavedRule {
+                rule,
+                births: Default::default(),
+                prior: prior.map(|(id, generation)| ployz_store::RulePrior {
+                    rule: ployz_core::authority::RuleId::from_bytes([id; 16]),
+                    generation,
+                }),
+            })),
+        }),
+    )
+}
+
+#[test]
+fn a_deploy_keeps_the_rule_its_tap_signed_and_the_next_push_deploys() {
+    let (store, who) = shop();
+    set(&store, &who, "web.env.GREETING", json!("hello"));
+    let version = staged_version(&store, &who);
+    let rule = signed_rule(&store, &who, (9, 1, "main"), true);
+
+    deploy_with_rule(&store, &who, &version, (rule, None)).unwrap();
+
+    assert_eq!(kept_rule(&store, &who), Some((9, 1, "main".to_owned())));
+    let pushed = system(&store, &push(None, Some(H1), None));
+    assert_eq!(pushed.admitted.len(), 1, "{pushed:?}");
+}
+
+#[test]
+fn a_deploy_whose_rule_was_ended_since_its_tap_deploys_nothing_and_leaves_it_ended() {
+    let (store, who) = shop();
+    publish(&store, &who);
+    approve_rule(&store, &who, 1).unwrap();
+    set(&store, &who, "web.env.GREETING", json!("hello"));
+    let version = staged_version(&store, &who);
+    let tapped = signed_rule(&store, &who, (9, 2, "main"), true);
+    end_rule(&store, &who, 2);
+
+    let refused = deploy_with_rule(&store, &who, &version, (tapped, Some((9, 1)))).unwrap_err();
+
+    assert_eq!(refused.code, RpcErrorCode::Conflict, "{refused:?}");
+    assert_eq!(
+        refused.message,
+        "Automatic deploys are off for api, web. Turn on Deploy every push to deploy them."
+    );
+    assert_eq!(staged_version(&store, &who), version, "nothing was saved");
+    let kept: ployz_store::RuleView = store
+        .read(
+            &who,
+            &ployz_store::RuleQuery {
+                environment: EnvironmentRef::default(),
+                staged: false,
+            },
+        )
+        .unwrap();
+    let kept = kept.rule.unwrap().open().unwrap();
+    assert!(kept.ended && kept.generation == 2, "{kept:?}");
+}
+
 /// What the plan says a person's Deploy needs for each built Service that reaches data.
-fn unsigned(store: &ConfigStore, who: &Actor) -> Vec<(String, ployz_store::Needs)> {
-    let plan: ployz_store::PlanView = store
+fn plan(store: &ConfigStore, who: &Actor) -> ployz_store::PlanView {
+    store
         .read(
             who,
             &ployz_store::PlanQuery {
@@ -2301,8 +2423,12 @@ fn unsigned(store: &ConfigStore, who: &Actor) -> Vec<(String, ployz_store::Needs
                 deployment: None,
             },
         )
-        .unwrap();
-    plan.unsigned
+        .unwrap()
+}
+
+fn unsigned(store: &ConfigStore, who: &Actor) -> Vec<(String, ployz_store::Needs)> {
+    plan(store, who)
+        .unsigned
         .into_iter()
         .map(|entry| (entry.service.as_str().to_owned(), entry.needs))
         .collect()
@@ -2334,7 +2460,14 @@ fn a_built_service_that_reaches_data_needs_a_build_its_rule_vouches_for() {
     publish(&store, &who);
     approve_rule(&store, &who, 1).unwrap();
     // The rule approves web as it stands, but a person's Deploy builds nothing under it.
-    assert_eq!(unsigned(&store, &who), [("web".to_owned(), Needs::Rebuild)]);
+    // It lists api too, which then runs only from its builds.
+    assert_eq!(
+        unsigned(&store, &who),
+        [
+            ("web".to_owned(), Needs::Rebuild),
+            ("api".to_owned(), Needs::Rebuild)
+        ]
+    );
     // Once a push built and deployed it, a person's Deploy of the same settings reuses
     // that build, and its Servers take the build's proof.
     let pushed = system(&store, &push(None, Some(H1), None)).admitted[0]
@@ -2351,12 +2484,62 @@ fn a_built_service_that_reaches_data_needs_a_build_its_rule_vouches_for() {
         .keep_verified(&pushed, &runner, &[(web, verified_web(1))].into())
         .unwrap();
     backend::finish(&store, &pushed, claimed);
-    assert_eq!(unsigned(&store, &who), []);
+    // No Server verified a build of api.
+    assert_eq!(unsigned(&store, &who), [("api".to_owned(), Needs::Rebuild)]);
     // A new generation of the rule refuses the proof the build kept under the last one.
     approve_rule(&store, &who, 2).unwrap();
-    assert_eq!(unsigned(&store, &who), [("web".to_owned(), Needs::Rebuild)]);
+    assert_eq!(
+        unsigned(&store, &who),
+        [
+            ("web".to_owned(), Needs::Rebuild),
+            ("api".to_owned(), Needs::Rebuild)
+        ]
+    );
     set(&store, &who, "web.env.GREETING", json!("hello"));
-    assert_eq!(unsigned(&store, &who), [("web".to_owned(), Needs::Rule)]);
+    assert_eq!(
+        unsigned(&store, &who),
+        [
+            ("web".to_owned(), Needs::Rule),
+            ("api".to_owned(), Needs::Rebuild)
+        ]
+    );
+    // Once the person turns automatic deploys off, only the switch turns them on again.
+    end_rule(&store, &who, 3);
+    assert_eq!(
+        unsigned(&store, &who),
+        [
+            ("web".to_owned(), Needs::Rule),
+            ("api".to_owned(), Needs::Rule)
+        ]
+    );
+    assert_eq!(
+        serde_json::to_value(&plan(&store, &who).unsigned).unwrap(),
+        json!([
+            { "service": "web", "needs": "rule", "ended": true },
+            { "service": "api", "needs": "rule", "ended": true }
+        ]),
+        "a client that predates `ended` still reads the need"
+    );
+}
+
+/// A Service a rule deployed ran signed, so every Server keeps its name for a signed
+/// Container. Once the rule ends, a person's Deploy of it needs approval even though it
+/// reaches no data.
+#[test]
+fn a_service_a_rule_deployed_needs_approval_once_the_rule_ends() {
+    use ployz_store::Needs;
+    let (store, who) = shop();
+    publish(&store, &who);
+    assert_eq!(unsigned(&store, &who), []);
+    approve_rule(&store, &who, 1).unwrap();
+    keep_rule(&store, &who, 2, true).unwrap();
+    assert_eq!(
+        unsigned(&store, &who),
+        [
+            ("web".to_owned(), Needs::Rule),
+            ("api".to_owned(), Needs::Rule)
+        ]
+    );
 }
 
 #[test]

@@ -9,34 +9,34 @@ use crate::{HttpProtocol, IngressHost, QualifiedService, ServiceId};
 ///
 /// Derived from Service Container observations that already replicate. Not a
 /// persisted record. Different observation sets may select different owners;
-/// the same observations always select the same owner.
+/// the same observations always select the same owner. A Container admitted signed
+/// outranks every other, so while one publishes a Hostname, no Container admitted any
+/// other way owns it.
 #[must_use]
 pub fn hostname_owners<'a>(
     observations: impl IntoIterator<Item = &'a ContainerObservation>,
 ) -> BTreeMap<IngressHost, QualifiedService> {
-    let mut winners: BTreeMap<IngressHost, (i64, QualifiedService, ServiceId)> = BTreeMap::new();
+    let mut winners: BTreeMap<IngressHost, (bool, i64, QualifiedService, ServiceId)> =
+        BTreeMap::new();
     for observation in observations {
         if observation.kind != ContainerKind::ServiceContainer {
             continue;
         }
-        let created_at = observation.created_at_unix_nanos;
-        let service_id = observation.service_id();
-        let identity = observation.identity();
+        let rank = (
+            !observation.signed(),
+            observation.created_at_unix_nanos,
+            observation.identity(),
+            observation.service_id(),
+        );
         for hostname in explicit_ingress_hosts(&observation.resolved_spec.ports) {
-            let better = match winners.get(hostname) {
-                Some((best_at, best_id, best_sid)) => {
-                    (created_at, &identity, service_id) < (*best_at, best_id, *best_sid)
-                }
-                None => true,
-            };
-            if better {
-                winners.insert(hostname.clone(), (created_at, identity.clone(), service_id));
+            if winners.get(hostname).is_none_or(|best| rank < *best) {
+                winners.insert(hostname.clone(), rank.clone());
             }
         }
     }
     winners
         .into_iter()
-        .map(|(hostname, (_, identity, _))| (hostname, identity))
+        .map(|(hostname, (_, _, identity, _))| (hostname, identity))
         .collect()
 }
 
@@ -93,6 +93,24 @@ mod tests {
         HttpProtocol, IngressHost, MachineId, Namespace, PortPublication, QualifiedService,
         ResolvedServiceSpec, ServiceId, ServiceName,
     };
+
+    #[test]
+    fn a_signed_publisher_owns_its_hostname_until_it_is_gone() {
+        let hostname = host("shop.example.com");
+        // Older, and first by name, but nothing signed it.
+        let squatter = observation("app", "evil", '1', 'a', 1, hostname.as_str());
+        let mut web = observation("app", "web", '2', 'b', 9, hostname.as_str());
+        web.try_update(|parts| parts.admission = Some(crate::Admission::Signed))
+            .unwrap();
+        assert_eq!(
+            hostname_owners([&squatter, &web]).get(&hostname),
+            Some(&QualifiedService::parse("app/web").unwrap())
+        );
+        assert_eq!(
+            hostname_owners([&squatter]).get(&hostname),
+            Some(&QualifiedService::parse("app/evil").unwrap())
+        );
+    }
 
     #[test]
     fn oldest_container_timestamp_wins_before_qualified_name() {
@@ -280,6 +298,7 @@ mod tests {
             stopped: false,
             run: None,
             log_driver: None,
+            admission: None,
         })
         .unwrap()
     }
