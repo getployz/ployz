@@ -33,8 +33,8 @@ pub use store::{LocalMachineStore, StoreError};
 #[cfg(test)]
 pub(crate) use local_machine::PeerInspect;
 pub(crate) use local_machine::{
-    Admit, AdmittedBy, AdmittedSpec, Call, Caller, RecoveryError, RuntimeWatchTelemetry, Scope,
-    SealingError,
+    Admit, AdmittedBy, AdmittedSpec, Call, Caller, KeyChangeHeld, RecoveryError,
+    RuntimeWatchTelemetry, Scope, SealingError,
 };
 #[cfg(test)]
 pub(crate) use local_machine::{EnsurePause, EnsurePausePoint};

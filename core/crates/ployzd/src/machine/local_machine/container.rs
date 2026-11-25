@@ -26,7 +26,10 @@ use ployz_core::{
 };
 
 use super::super::ingress::{admit_door, admit_router, admit_unreserved};
-use super::{AdmittedSpec, Error, LocalMachine, turns::Installed};
+use super::{
+    AdmittedSpec, Error, LocalMachine, Scope, SwitchGuard,
+    turns::{ExclusiveTurn, Installed},
+};
 use crate::docker::{
     ContainerCreated, ContainerRequest, ContainerRuntime, ImageIngest, RotationTurn, Withdrawal,
     same_creation,
@@ -140,7 +143,7 @@ impl LocalMachine {
         specs: Vec<ployz_core::ServiceStorageSpec>,
     ) -> Result<ployz_core::PreparedVolumes, Error> {
         use ployz_core::RawVolumeSource;
-        let switch = self.wait_out_switch().await;
+        let switch = self.lock_switch().await?;
         self.finish_mutation(move |local| async move {
             let _switch = switch;
             let containers = local.docker()?;
@@ -285,6 +288,33 @@ impl LocalMachine {
         deployment_id: Option<ployz_core::DeploymentLogId>,
         registry_auth: Option<ployz_core::RegistryAuth>,
     ) -> Result<ContainerCreated, Error> {
+        let admitted = AdmittedSpec::test_signed(namespace, spec);
+        self.create_container_for_test(
+            kind,
+            namespace,
+            spec,
+            creation_key,
+            admitted,
+            (deployment_id, registry_auth),
+        )
+        .await
+    }
+
+    /// [`Self::create_container`] under `admitted`, for a test that needs a Container
+    /// another key made.
+    #[cfg(test)]
+    pub(crate) async fn create_container_for_test(
+        &self,
+        kind: ContainerKind,
+        namespace: &Namespace,
+        spec: &ResolvedServiceSpec,
+        creation_key: Option<String>,
+        admitted: AdmittedSpec,
+        (deployment_id, registry_auth): (
+            Option<ployz_core::DeploymentLogId>,
+            Option<ployz_core::RegistryAuth>,
+        ),
+    ) -> Result<ContainerCreated, Error> {
         let (namespace, spec) = (namespace.clone(), spec.clone());
         self.finish_mutation(move |local| async move {
             local
@@ -297,7 +327,7 @@ impl LocalMachine {
                     deployment_id,
                     r#gen: Gen::FIRST,
                     image: ImagePull::Policy(registry_auth.as_ref()),
-                    admitted: AdmittedSpec::test_signed(&namespace, &spec),
+                    admitted,
                     replaces: None,
                 })
                 .await
@@ -319,7 +349,7 @@ impl LocalMachine {
     ) -> Result<(), Error> {
         self.finish_mutation(move |local| async move {
             let _switch = switch;
-            local.start_checked(local.docker()?, &container_id).await
+            local.start_kept(local.docker()?, &container_id).await
         })
         .await
     }
@@ -352,7 +382,10 @@ impl LocalMachine {
                 return Ok(Err(floor));
             }
             let container_id = match start {
-                Start::Kept { container_id } => container_id,
+                Start::Kept { container_id } => {
+                    local.start_kept(containers, &container_id).await?;
+                    return Ok(Ok(()));
+                }
                 Start::Create {
                     namespace,
                     resolved_spec,
@@ -505,7 +538,7 @@ impl Installed {
         if let Err(refused) = guard.drained().await? {
             return Ok(Err(refused));
         }
-        let turn = self.exclusive_turn().await;
+        let turn = self.exclusive_turn().await?;
         let held = match guard.check().await? {
             Ok(held) => held,
             Err(refused) => return Ok(Err(refused)),
@@ -573,7 +606,9 @@ impl LocalMachine {
             tokio::time::sleep(DRAIN_POLL).await;
         }
     }
+}
 
+impl SwitchGuard {
     /// The cut's Container half: drain and stop every holder of the Volume, then run
     /// `zfs` under the exclusive turn once no holder runs. The holders are listed again
     /// under the turn, so one started during the drain is `Busy` too, as is one the
@@ -595,7 +630,8 @@ impl LocalMachine {
     /// on, and a holder beside it then is `Busy`, not `Held`: the cut stopped something.
     ///
     /// Detached from the RPC with the installation held, so a caller that hangs up
-    /// does not abandon a half-stopped Container.
+    /// does not abandon a half-stopped Container. Only a request inside the switch cuts,
+    /// with its caller checked when it took the switch and again under each turn.
     pub(crate) async fn cut_volume_copy<Z, Fut>(
         &self,
         name: DockerVolumeName,
@@ -675,7 +711,7 @@ impl LocalMachine {
                     return Ok(Err(CutRefusal::Busy));
                 }
             }
-            let _turn = local.exclusive_turn().await;
+            let _turn = local.exclusive_turn().await?;
             // Every holder, whatever made it: the cut needs the Volume idle.
             if containers
                 .volumes()
@@ -693,7 +729,9 @@ impl LocalMachine {
         })
         .await
     }
+}
 
+impl LocalMachine {
     /// The Machine this one accepts whose management address is `address`. Volume sends
     /// and pulls go only to and from one, so a Mirror holds only data another Machine of
     /// this Cluster sent.
@@ -831,13 +869,18 @@ impl LocalMachine {
             .map_err(Error::StoragePreparation)
     }
 
-    /// Pull one image from its registry under shared admission, like a peer pull.
+    /// Pull one image from its registry under shared admission, like a peer pull, as
+    /// [`Self::pull_as`] lets the caller: refused before the turn at the scope the caller
+    /// holds now, and checked again under it.
     ///
     /// # Errors
     ///
-    /// Returns when Docker is unavailable, admission is busy, or the pull fails.
+    /// Returns when Docker is unavailable, admission is busy, an Operator names a tag, or
+    /// the pull fails.
     pub(crate) async fn pull_image(&self, request: PullImageRequest) -> Result<ImagePulled, Error> {
+        let request = self.pull_as(self.scope_now()?, request)?;
         self.finish_shared(move |local| async move {
+            let request = local.pull_as(local.scope(), request)?;
             let exposed_ports = local
                 .docker()?
                 .images()
@@ -852,8 +895,29 @@ impl LocalMachine {
         .await
     }
 
-    /// Pull one image as an unsigned creation does, under shared admission like
-    /// [`Self::pull_image`].
+    /// `request` as a caller at `scope` may pull it. An Operator names the content: a tag
+    /// is written only for a Full caller, and an image ID is only looked up.
+    fn pull_as(
+        &self,
+        scope: Scope,
+        mut request: PullImageRequest,
+    ) -> Result<PullImageRequest, Error> {
+        if let Scope::Operator = scope {
+            if !ployz_core::authority::deploy::content_addressed(&request.image) {
+                return Err(self.tag_refusal(ployz_core::PULL_IMAGE_CAPABILITY));
+            }
+            if request.image.starts_with("sha256:") {
+                // An image ID names no registry to pull from; it is only looked up.
+                request.policy = ployz_core::PullPolicy::Never;
+            }
+        }
+        Ok(request)
+    }
+
+    /// Pull one image as the creation it serves does, under shared admission like
+    /// [`Self::pull_image`]: a Full caller's creation runs the tag by name, so the tag is
+    /// what this places, and an Operator's runs what the tag names, which this pulls
+    /// without writing it.
     ///
     /// # Errors
     ///
@@ -864,27 +928,45 @@ impl LocalMachine {
         request: PullFreeImageRequest,
     ) -> Result<ImagePulled, Error> {
         self.finish_shared(move |local| async move {
-            let exposed_ports = local
-                .docker()?
-                .images()
-                .pull_free_image(&request.image, request.policy)
-                .await?;
+            let images = local.docker()?.images();
+            let exposed_ports = match local.scope() {
+                Scope::Full(_) => {
+                    images
+                        .pull_image(
+                            &request.image,
+                            request.policy,
+                            request.registry_auth.as_ref(),
+                        )
+                        .await?
+                }
+                Scope::Operator => {
+                    images
+                        .pull_free_image(&request.image, request.policy)
+                        .await?
+                }
+            };
             Ok(ImagePulled { exposed_ports })
         })
         .await
     }
 
     /// Pull one image from peer ingest under shared admission: transfers run side by
-    /// side, and exclusive work, such as Reset or image removal, waits for them.
+    /// side, and exclusive work, such as Reset or image removal, waits for them. An
+    /// Operator's names its content, so it writes no name, staging or final, that a
+    /// creation could run: refused before the turn at the scope the caller holds now, and
+    /// checked again under it.
     ///
     /// # Errors
     ///
-    /// Returns when Docker is unavailable, admission is busy, or the image transfer fails.
+    /// Returns when Docker is unavailable, admission is busy, an Operator names a tag, or
+    /// the image transfer fails.
     pub(crate) async fn pull_image_from_machine(
         &self,
         request: PullImageFromMachineRequest,
     ) -> Result<ImagePulled, Error> {
+        self.peer_pull_as(self.scope_now()?, &request)?;
         self.finish_shared(move |local| async move {
+            local.peer_pull_as(local.scope(), &request)?;
             let containers = local.docker()?;
             if let Err(error) = crate::docker::pull_from_ingest(
                 &containers.local_docker(),
@@ -900,6 +982,33 @@ impl LocalMachine {
             Ok(ImagePulled::default())
         })
         .await
+    }
+
+    /// Whether a caller at `scope` may pull `request`: an Operator only by its content.
+    fn peer_pull_as(
+        &self,
+        scope: Scope,
+        request: &PullImageFromMachineRequest,
+    ) -> Result<(), Error> {
+        match scope {
+            Scope::Operator if !names_content(&request.pull) => {
+                Err(self.tag_refusal(ployz_core::PULL_IMAGE_FROM_MACHINE_CAPABILITY))
+            }
+            Scope::Operator | Scope::Full(_) => Ok(()),
+        }
+    }
+
+    /// Why this Server writes no tag for an Operator, naming the route's `capability`.
+    fn tag_refusal(&self, capability: &str) -> Error {
+        Error::TagRefused(
+            ployz_core::RpcError::unsupported(
+                "This Server writes an image tag only for a caller with Full access.",
+            )
+            .with_details(serde_json::json!({
+                "target": self.record().id().to_string(),
+                "capability": capability,
+            })),
+        )
     }
 
     /// Apply `spec`'s CPU and memory limits to Container `container_id` in place
@@ -1402,7 +1511,7 @@ impl LocalMachine {
         let locator = want_locator(&want);
         let fence = start_fence(&want);
         let pin = pinned(&want);
-        let replan = (!self.in_switch).then(|| want.clone());
+        let replan = (!self.in_switch.held()).then(|| want.clone());
         let mut now = self.container_now(&locator).await?;
         let admission = admitted
             .as_ref()
@@ -1412,7 +1521,7 @@ impl LocalMachine {
         // start never lands inside a switch of that Volume.
         let switch = match replan {
             Some(want) if starts_provisioned_holder(&step, &now) => {
-                let guard = self.lock_switch().await;
+                let guard = self.lock_switch().await?;
                 now = self.container_now(&locator).await?;
                 step = plan_container(want, &now, &self.record().phase(), admission);
                 Some(guard)
@@ -1516,10 +1625,11 @@ impl LocalMachine {
                         Ok(Err(refusal)) => return Ok(Some(refusal)),
                         Err(error) => return Err(error),
                     }
-                    let _turn = local.exclusive_turn().await;
+                    let turn = local.exclusive_turn().await?;
                     let containers = local.docker()?;
                     removed(
                         remove_out_of_rotation(
+                            &turn,
                             containers,
                             &id,
                             anonymous_volumes.go_with_container(),
@@ -1536,10 +1646,11 @@ impl LocalMachine {
             } => {
                 self.finish_installed(move |local| async move {
                     local.await_log_read(&id, logs_to_read).await;
-                    let _turn = local.exclusive_turn().await;
+                    let turn = local.exclusive_turn().await?;
                     let containers = local.docker()?;
                     removed(
                         remove_out_of_rotation(
+                            &turn,
                             containers,
                             &id,
                             anonymous_volumes.go_with_container(),
@@ -1740,6 +1851,7 @@ impl LocalMachine {
             && kind == ContainerKind::ServiceContainer
             && *namespace != Namespace::system();
         let by = admitted.by().clone();
+        let hook = admitted.hook().cloned();
         containers
             .lifecycle()
             .create_with_admission(
@@ -1800,6 +1912,11 @@ impl LocalMachine {
                                     service: identity,
                                 },
                             ));
+                        }
+                        // Taken last, under the turn that checked the caller, so neither an
+                        // admission that never got here nor a create refused above keeps it.
+                        if let Some(hook) = &hook {
+                            hook.take(&self.approvals)?;
                         }
                         Ok(())
                     },
@@ -1998,9 +2115,6 @@ enum ContainerStep {
     },
 }
 
-/// What [`LocalMachine::lock_switch`] holds of the switch lock.
-pub(crate) type SwitchGuard = tokio::sync::OwnedMutexGuard<()>;
-
 /// Whether `step` starts a Container, the one `now` observes, that mounts a Provisioned
 /// Volume.
 fn starts_provisioned_holder(step: &ContainerStep, now: &ContainerNow) -> bool {
@@ -2019,10 +2133,40 @@ fn starts_provisioned_holder(step: &ContainerStep, now: &ContainerNow) -> bool {
     })
 }
 
+/// What to do for `want` against `now`. A reserved identity holds only a spec this daemon
+/// builds, and none mounts a Provisioned Volume, so a start of one that would is refused
+/// here: its ensure holds the doors lock, which a Volume step inside the switch takes too,
+/// so it must never wait for the switch.
+///
 /// `admission` is how this Machine admitted the request. A signed request never adopts a
 /// Container it didn't admit signed: that copy answers for no name a signed one keeps, and
 /// adopting it would skip the write that keeps the name.
 fn plan_container(
+    want: ContainerWant,
+    now: &ContainerNow,
+    phase: &LocalMachinePhase,
+    admission: ployz_core::Admission,
+) -> ContainerStep {
+    let step = plan_docker(want, now, phase, admission);
+    let reserved = match (&step, now) {
+        (ContainerStep::CreateAndStart(new), _) => {
+            QualifiedService::new(new.slot.namespace.clone(), new.slot.service.clone()).reserved()
+        }
+        (ContainerStep::Start(_), ContainerNow::Present(observed)) => {
+            observed.identity().reserved()
+        }
+        _ => None,
+    };
+    if reserved.is_some() && starts_provisioned_holder(&step, now) {
+        return ContainerStep::Refuse(refuse(
+            ContainerRefusalReason::InvalidIngress,
+            "a reserved Service mounts no Provisioned Volume",
+        ));
+    }
+    step
+}
+
+fn plan_docker(
     want: ContainerWant,
     now: &ContainerNow,
     phase: &LocalMachinePhase,
@@ -2171,6 +2315,7 @@ async fn leave_rotation<'a>(
 
 /// A Container Docker no longer has serves nothing, so only its records go.
 async fn remove_out_of_rotation(
+    _turn: &ExclusiveTurn,
     containers: &crate::docker::ContainerRuntime,
     container: &ContainerId,
     remove_volumes: bool,
@@ -2330,6 +2475,17 @@ fn create_refusal(error: Error) -> Result<ContainerRefusal, Error> {
         _ => return Err(error),
     };
     Ok(refuse(reason, ployz_core::error_chain::inline(&error)))
+}
+
+/// Whether a peer pull names its content: an image by digest, kept under no tag or only
+/// the tag Ployz keeps for that digest.
+pub(crate) fn names_content(pull: &ployz_core::PeerImagePull) -> bool {
+    let Some(digest) = ployz_core::ImageRef::new(pull.image()).digest else {
+        return false;
+    };
+    pull.tag().is_none_or(|tag| {
+        ployz_core::retained_digest(tag).is_some_and(|kept| kept.as_str() == digest)
+    })
 }
 
 #[path = "drain_idle.rs"]

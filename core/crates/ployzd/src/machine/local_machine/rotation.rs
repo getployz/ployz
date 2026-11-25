@@ -224,6 +224,7 @@ impl LocalMachine {
         self.finish_mutation(move |local| async move {
             let _switch = switch;
             let containers = local.docker()?;
+            local.refuse_operator_hook(&id).await?;
             start_fenced(&local, containers, &id, run, expect.as_ref()).await
         })
         .await
@@ -651,7 +652,7 @@ fn is_sibling(copy: &CopyState, observed: &ContainerObservation) -> bool {
 /// against this Machine's record, read under the copy's rotation turn, so a refused
 /// In starts nothing. The caller holds the admission turn.
 pub(super) async fn start_fenced(
-    local: &LocalMachine,
+    local: &crate::machine::local_machine::Checked,
     containers: &ContainerRuntime,
     id: &ContainerId,
     run: Option<DeploymentLogId>,
