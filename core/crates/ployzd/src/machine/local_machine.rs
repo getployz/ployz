@@ -100,9 +100,9 @@ pub use bound::{Bound, Cause, Recheck, Seen, Tie, Work};
 pub use call::FullCaller;
 pub(crate) use call::{Call, Caller, Checked, Scope};
 pub(crate) use consumption::ConsumptionLog;
-pub(crate) use container::CutRefusal;
 #[cfg(test)]
 pub(crate) use container::names_content;
+pub(crate) use container::{CutRefusal, PlacedImage};
 #[cfg(test)]
 pub(crate) use container::{EnsurePause, EnsurePausePoint};
 #[cfg(test)]

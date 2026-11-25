@@ -553,7 +553,10 @@ impl Lifecycle {
                         )
                         .await?;
                 }
-                ImagePull::Policy(_) | ImagePull::Prepared => {
+                ImagePull::Free(id) if self.images.is_free(id) => {
+                    body.image = Some(id.to_owned());
+                }
+                ImagePull::Policy(_) | ImagePull::Prepared | ImagePull::Free(_) => {
                     // By ID: the spec's tag here may name what a caller with Full access
                     // put under it, which this creation must not run.
                     let id = self

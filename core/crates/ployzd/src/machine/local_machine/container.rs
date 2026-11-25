@@ -355,10 +355,37 @@ impl LocalMachine {
         .await
     }
 
+    /// Pull `spec`'s image as a Writer start's Create would, under shared admission
+    /// like [`Self::pull_free_image`], so that Create, after the promote, reaches no
+    /// registry.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker is unavailable, admission is busy, or the pull is refused or
+    /// fails.
+    pub(crate) async fn place_holder_image(
+        &self,
+        spec: ResolvedServiceSpec,
+        signed: bool,
+    ) -> Result<PlacedImage, Error> {
+        self.finish_shared(move |local| async move {
+            let images = local.docker()?.images();
+            let (image, policy) = (&spec.container.image, spec.container.pull_policy);
+            if signed {
+                images.pull_image(image, policy, None).await?;
+                Ok(PlacedImage::Signed)
+            } else {
+                Ok(PlacedImage::Free(images.pull_free(image, policy).await?))
+            }
+        })
+        .await
+    }
+
     /// A Writer's start: create its Container when absent, then start it, under one
     /// exclusive turn. A floor raised above `gen` starts nothing, since the newer lane
     /// may have started its own holder of the Volume already. A start ordered after
-    /// the check waits for the turn, so it sees this holder running.
+    /// the check waits for the turn, so it sees this holder running. The Create runs
+    /// `placed` when the start placed its image before the promote.
     ///
     /// # Errors
     ///
@@ -369,7 +396,7 @@ impl LocalMachine {
         start: Start,
         name: DockerVolumeName,
         r#gen: VolumeGen,
-        admitted: Option<AdmittedSpec>,
+        (admitted, placed): (Option<AdmittedSpec>, Option<PlacedImage>),
     ) -> Result<Result<(), VolumeGen>, Error> {
         self.finish_mutation(move |local| async move {
             let containers = local.docker()?;
@@ -402,7 +429,9 @@ impl LocalMachine {
                             creation_key: creation_key.as_str().to_owned(),
                             deployment_id: None,
                             r#gen: copy_gen,
-                            image: ImagePull::Policy(None),
+                            image: placed
+                                .as_ref()
+                                .map_or(ImagePull::Policy(None), PlacedImage::pull),
                             admitted: admitted.ok_or_else(unadmitted)?,
                             replaces: None,
                         })
@@ -2552,6 +2581,24 @@ pub(crate) fn names_content(pull: &ployz_core::PeerImagePull) -> bool {
     pull.tag().is_none_or(|tag| {
         ployz_core::retained_digest(tag).is_some_and(|kept| kept.as_str() == digest)
     })
+}
+
+/// The image a Writer start placed before its promote, so its Create after the promote
+/// reaches no registry.
+pub(crate) enum PlacedImage {
+    /// A signed spec's tag, pulled as its policy asks.
+    Signed,
+    /// An unsigned spec's image, by the ID its free pull placed.
+    Free(String),
+}
+
+impl PlacedImage {
+    fn pull(&self) -> ImagePull<'_> {
+        match self {
+            Self::Signed => ImagePull::Prepared,
+            Self::Free(id) => ImagePull::Free(id),
+        }
+    }
 }
 
 #[path = "drain_idle.rs"]

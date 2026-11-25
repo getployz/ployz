@@ -59,7 +59,7 @@ async fn try_set_copy(
                 .unwrap(),
         ))
         .await
-        .unwrap()
+        .map_err(|status| status.message().to_owned())?
         .into_inner()
         .decode_response()
         .unwrap();
@@ -648,4 +648,59 @@ async fn a_cut_naming_only_its_holder_keeps_no_record_of_its_stop() {
         .await
         .expect_err("a Container beside the resend refuses it");
     assert!(held.contains("\"held\""), "{held}");
+}
+
+fn promotes(plugin: &FakePlugin) -> usize {
+    plugin
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(route, _)| route == WRITER_ROUTE)
+        .count()
+}
+
+/// A Move's Writer start pulls its image before the promote, and only then: a registry
+/// that refuses the pull leaves the Mirror as it was, and one that serves a single pull
+/// leaves the promoted copy with its holder running.
+#[tokio::test]
+async fn a_move_start_pulls_before_its_promote_so_no_refused_pull_follows_it() {
+    let fleet = Fleet::start().await;
+    let node = fleet.node(1);
+    let mut moved = spec("api");
+    moved.container.pull_policy = ployz_core::PullPolicy::Always;
+    let plugin = plugin(
+        slot(Some(snapshot())),
+        WRITER_ROUTE,
+        writer_root(1, Some(snapshot())),
+    );
+    let destination = fleet.with_plugin(1, &plugin);
+    let create = json!({"name":VOLUME, "expect":{"kind":"mirror", "newest":"7", "slot":"1"},
+        "want":{"kind":"writer", "at":"7", "epoch":1, "start":{
+            "kind":"create", "namespace":"app", "resolved_spec":moved,
+            "creation_key":"move-1", "gen":2,
+            "rotation":{"in":{"run":null, "expect":"pending"}}}}});
+
+    *node.fake.pulls_left.lock().unwrap() = Some(0);
+    let refused = try_set_copy(&destination, create.clone()).await;
+    assert!(
+        refused
+            .as_ref()
+            .is_err_and(|error| error.contains("toomanyrequests")),
+        "{refused:?}"
+    );
+    assert_eq!(
+        promotes(&plugin),
+        0,
+        "the copy was promoted before a pull the registry refused: {refused:?}"
+    );
+
+    *node.fake.pulls_left.lock().unwrap() = Some(1);
+    let started = try_set_copy(&destination, create).await;
+    assert!(
+        started.is_ok(),
+        "the start pulled again after the promote: {started:?}"
+    );
+    assert_eq!(promotes(&plugin), 1);
+    assert!(node.running(only_container(node)));
 }

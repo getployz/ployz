@@ -15,7 +15,7 @@ use ployz_core::authority::{
     AuthorityRefusal, CopyFacts, CopyVerified, CopyWindow, Purpose, Timestamp, copy,
 };
 
-use super::{AdmittedSpec, CutRefusal, Error, LocalMachine, SwitchGuard};
+use super::{AdmittedSpec, CutRefusal, Error, LocalMachine, PlacedImage, SwitchGuard};
 use crate::{
     docker::FloorTurn,
     faults::{Identity, Point, Want},
@@ -309,6 +309,9 @@ impl SwitchGuard {
         .await;
         match (transition, want) {
             (CopyTransition::WriterToWriter, WantedCopy::Writer { at, epoch, start }) => {
+                let placed = self
+                    .place_start_image(start.as_ref(), &name, admitted.as_ref())
+                    .await?;
                 let copy = match copy {
                     Some(VolumeCopy::Root {
                         readonly,
@@ -334,7 +337,7 @@ impl SwitchGuard {
                             return Err(refused(CopyRefusal::NoTransition, copy, &name));
                         }
                         StartState::Stopped => {
-                            self.run_start(start.clone(), &name, r#gen, admitted)
+                            self.run_start(start.clone(), &name, r#gen, (admitted, placed))
                                 .await?;
                         }
                     }
@@ -343,6 +346,9 @@ impl SwitchGuard {
                 Ok(copy)
             }
             (CopyTransition::MirrorToWriter, WantedCopy::Writer { at, epoch, start }) => {
+                let placed = self
+                    .place_start_image(start.as_ref(), &name, admitted.as_ref())
+                    .await?;
                 let request = WriterRequest {
                     name: name.clone(),
                     at,
@@ -359,7 +365,7 @@ impl SwitchGuard {
                     }),
                 );
                 if let Some(start) = start {
-                    self.run_start(start.clone(), &name, r#gen, admitted)
+                    self.run_start(start.clone(), &name, r#gen, (admitted, placed))
                         .await?;
                     self.route_created(&start, &name).await?;
                 }
@@ -728,12 +734,37 @@ impl LocalMachine {
     /// Create the Container when `start` asks for one and it is absent, then start it.
     /// Both halves are idempotent, so a resend after either converges. `Stale` when a
     /// newer lane raised the floor after this request was admitted.
+    /// Pull a Create's image before the promote, as its Create would. A Move's Mirror is a
+    /// slot Docker never sees, so its holder can't be made before the promote, but a
+    /// refused pull then refuses the start with the copy as it was. `None` when no Create
+    /// will pull: a Kept start, a Container this start made already, or a replacement
+    /// running.
+    async fn place_start_image(
+        &self,
+        start: Option<&Start>,
+        name: &DockerVolumeName,
+        admitted: Option<&AdmittedSpec>,
+    ) -> Result<Option<PlacedImage>, Error> {
+        let (Some(start @ Start::Create { resolved_spec, .. }), Some(admitted)) = (start, admitted)
+        else {
+            return Ok(None);
+        };
+        if self.start_observed(start).await?.is_some()
+            || self.replacement_running(start, None, name).await?
+        {
+            return Ok(None);
+        }
+        self.place_holder_image(resolved_spec.clone(), admitted.signed())
+            .await
+            .map(Some)
+    }
+
     async fn run_start(
         &self,
         start: Start,
         name: &DockerVolumeName,
         r#gen: VolumeGen,
-        admitted: Option<AdmittedSpec>,
+        admitted: (Option<AdmittedSpec>, Option<PlacedImage>),
     ) -> Result<(), Error> {
         match self
             .start_volume_holder(start, name.clone(), r#gen, admitted)
