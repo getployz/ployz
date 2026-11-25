@@ -45,7 +45,7 @@ pub use railpack::Railpack;
 mod scrub;
 pub use scrub::OutputScrub;
 mod sealed;
-pub use sealed::{Staged, sealed_file, valid_name};
+pub use sealed::{SealedStaging, Staged, sealed_file, valid_name};
 mod solve;
 pub use solve::PlainRenderer;
 
@@ -1189,17 +1189,26 @@ impl<'a> Docker<'a> {
                 }
             }
         };
-        let mut child = command.spawn().map_err(|error| BuildError::Docker {
-            action,
-            diagnostic: error.to_string(),
-        })?;
+        let mut start = || {
+            let mut child = command.spawn().map_err(|error| BuildError::Docker {
+                action,
+                diagnostic: error.to_string(),
+            })?;
+            if let Some(recorder) = self.recorder
+                && let Err(error) = recorder.record(&mut child, &self.location())
+            {
+                let _ = child.wait();
+                return Err(error);
+            }
+            Ok(child)
+        };
+        // Set up, the process starts only under the lock a cancel takes, and checked there:
+        // a cancel that came first starts nothing.
+        let mut child = match self.cancellation {
+            Some(cancellation) => cancellation.spawn(start).ok_or(BuildError::Cancelled)??,
+            None => start()?,
+        };
         drop(command);
-        if let Some(recorder) = self.recorder
-            && let Err(error) = recorder.record(&mut child, &self.location())
-        {
-            let _ = child.wait();
-            return Err(error);
-        }
         started();
         let status = wait_controlled(&mut child, self.deadline, self.cancellation, &mut drain);
         if !status.as_ref().is_err_and(|error| error.is_unknown()) {

@@ -10,6 +10,7 @@ pub(crate) mod holder;
 mod http_health;
 mod images;
 pub use images::Images;
+mod exec_watch;
 mod inspect;
 mod kept_volumes;
 use inspect::{Inspected, RawContainerConfig};
@@ -25,6 +26,7 @@ mod placement;
 mod recovery;
 pub(crate) use peer_pull::ImageProxy;
 mod private_access;
+mod processes;
 mod spec_store;
 mod standing;
 use standing::Standing;
@@ -84,7 +86,7 @@ pub(crate) use managed_service::{DesiredContainer, Ensure, ManagedService};
 pub(crate) use peer_pull::pull_from_ingest;
 use ployz_core::{LimitsRefusal, PlacementRefusal};
 pub use spec_store::{Error as SpecStoreError, FloorTurn, MachineSpecStore};
-pub use unregistry::ImageIngest;
+pub use unregistry::{ImageIngest, ProcessUnread};
 
 #[cfg(test)]
 use create::{docker_healthcheck, docker_mounts, docker_ports, docker_resources};

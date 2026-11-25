@@ -616,7 +616,8 @@ you ran, not processes it started, so a shell like `sh -c 'a | b'` can leave `a`
 With a TTY, Ctrl-C reaches the command as a keypress first. When the connection drops, exec
 exits 1 with `Lost the connection to machine-1; exec ended, but the command may still be running
 there.` The server stops the command as above once it notices the connection is gone, and until
-then the command goes on.
+then the command goes on. When `ployz device rm` removes the device that ran it, the server stops
+the command the same way before the removal returns, also one started with `--detach`.
 
 A change can reach Ployz Cloud even when its answer never comes back. Then `ployz set`,
 `service add` and other changes exit 1 with `Cloud ... stopped answering after it got this

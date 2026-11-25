@@ -279,6 +279,22 @@ storage plugin is still working on after 2 minutes: the server stops waiting for
 can return before it does, and a resize like that can still finish afterward. If the same key also holds another connection slot on
 that server, such as Ployz Cloud's, the command goes on with Operator access only, so it can't start
 a container that only that device approved.
+What that device left running on a server stops there before `device rm` returns, even when its
+key holds another slot: an `exec`, with or without `--detach`, a `port-forward`, a build, queued or
+running, and a build grant, including an image push still on its way to the server. If any of it
+doesn't confirm it stopped within 90 seconds, for example because Docker stopped answering, that
+server reports the removal as failed and names each thing that didn't stop. The same goes for work
+that ended earlier without confirming it stopped, such as a build whose builder Docker couldn't
+remove. The device is removed there all the same, and every later key change on that server, such
+as another `device rm` or `ployz key add`, reports the same work again until the server sees it
+stopped. An image push whose last step got no answer stops being reported once the server finds
+the image stored, and the next key change names it as stored after the removal, once. It also
+stops once the server process that took the push has restarted without storing it. An `exec`
+that Docker lost track of by restarting before the server saw the command start stays reported,
+because the command may still run. A build that can't confirm it stopped has the secret values it opened deleted at once,
+and starts no further step. For an `exec`, "stops" means the command's own process. A child it
+started in the background, for example with `&` or `nohup`, can keep running in the container after
+the command exits; to be sure nothing a removed device started is left, redeploy the service.
 Every server that answers marks the key removed, including one that never
 trusted it, so an approval of that key still on its way there is refused. If no server can name
 the key in full, for example because every server that trusted or removed it is away, a server that never held

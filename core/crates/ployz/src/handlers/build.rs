@@ -278,7 +278,7 @@ async fn run(
     events: Arc<Events>,
     cancellation: &CancellationToken,
 ) -> Result<Pushed, Error> {
-    let token = cancellation.clone();
+    let token = ployz_build::Cancellation::from(cancellation.clone());
     let building = Arc::clone(&events);
     let (build, built) = tokio::task::spawn_blocking(move || {
         let built = build.execute_local(&token, &|event| building.write(event));
@@ -295,7 +295,7 @@ async fn run(
     .await?;
     // The pushed image and its printed result are final; uploading cache only speeds up
     // the next Build, so its failure is a warning and it never reaches the events file.
-    let export = cancellation.clone();
+    let export = ployz_build::Cancellation::from(cancellation.clone());
     let exported = tokio::task::spawn_blocking(move || build.export_local_cache(&export))
         .await
         .map_err(std::io::Error::other)?;
