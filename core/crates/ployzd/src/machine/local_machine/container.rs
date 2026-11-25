@@ -2598,15 +2598,10 @@ pub(crate) struct PlacedHolder {
 }
 
 impl PlacedHolder {
-    /// The ID the promote records for `start`, so a resend after it takes the same one.
-    pub(crate) fn record(&self, start: &Start) -> Option<ployz_core::PlacedImage> {
-        let Start::Create { creation_key, .. } = start else {
-            return None;
-        };
-        Some(ployz_core::PlacedImage {
-            creation_key: creation_key.clone(),
-            id: self.id.clone(),
-        })
+    /// The record a promote to `epoch` writes, so a resend after it at that epoch, for
+    /// the same admitted spec, takes the same image.
+    pub(crate) fn record(&self, epoch: ployz_core::WriterEpoch) -> Option<ployz_core::PlacedImage> {
+        ployz_core::PlacedImage::new(epoch, self.admitted.digest(), &self.id).ok()
     }
 }
 

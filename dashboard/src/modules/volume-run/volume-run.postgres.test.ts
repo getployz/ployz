@@ -183,6 +183,7 @@ const label = (fake: FakeMachine, want: WantedCopy) => {
 /** What a fake Server lists unless a test names its own: every Volume verb. */
 const ON_PLOYZ_04 = [
   requirements.volumeStart.capability,
+  requirements.volumeStartImage.capability,
   requirements.volumeMove.capability,
   requirements.volumeFloor.capability,
   requirements.volumeSize.capability,

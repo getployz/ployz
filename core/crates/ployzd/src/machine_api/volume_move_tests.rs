@@ -829,16 +829,6 @@ async fn a_start_resent_after_its_promote_runs_the_image_the_promote_recorded() 
         WRITER_ROUTE,
         writer_root(1, Some(snapshot())),
     );
-    // The plugin records the request's image on the root it promotes.
-    let (calls, replies) = (plugin.calls.clone(), plugin.replies.clone());
-    plugin.on(WRITER_ROUTE, move || {
-        let image = calls.lock().unwrap().last().unwrap().1["image"].clone();
-        let mut root = writer_root(1, Some(snapshot()));
-        root["Ok"]["placed"] = image;
-        let mut replies = replies.lock().unwrap();
-        replies.insert(WRITER_ROUTE.into(), root.clone());
-        replies.insert(INSPECT_ROUTE.into(), root);
-    });
     let destination = fleet.with_plugin(1, &plugin);
     let start = json!({"name":VOLUME, "expect":{"kind":"mirror", "newest":"7", "slot":"1"},
         "want":{"kind":"writer", "at":"7", "epoch":1, "start":{
@@ -899,15 +889,6 @@ async fn a_release_starts_the_holder_its_move_made_under_another_pull_policy() {
         WRITER_ROUTE,
         writer_root(1, Some(snapshot())),
     );
-    let (calls, replies) = (plugin.calls.clone(), plugin.replies.clone());
-    plugin.on(WRITER_ROUTE, move || {
-        let image = calls.lock().unwrap().last().unwrap().1["image"].clone();
-        let mut root = writer_root(1, Some(snapshot()));
-        root["Ok"]["placed"] = image;
-        let mut replies = replies.lock().unwrap();
-        replies.insert(WRITER_ROUTE.into(), root.clone());
-        replies.insert(INSPECT_ROUTE.into(), root);
-    });
     let destination = fleet.with_plugin(1, &plugin);
     let service = spec("api");
     let start = |policy: &str| {
@@ -937,4 +918,96 @@ async fn a_release_starts_the_holder_its_move_made_under_another_pull_policy() {
     assert_eq!(only_container(node), made);
     assert!(node.running(made));
     assert_eq!(node.rotation(made).await, CopyRotation::In);
+}
+
+/// The record binds an image to the admitted spec, not to the start's creation key. A
+/// start whose spec changed under the same key and epoch after the promote, such as a
+/// redeploy to another tag, places its own image rather than run the one the promote
+/// recorded for the spec before it.
+#[tokio::test]
+async fn a_start_resent_with_another_spec_places_its_own_image() {
+    let fleet = Fleet::start().await;
+    let node = fleet.node(1);
+    let mut service = spec("api");
+    service.container.pull_policy = ployz_core::PullPolicy::Always;
+    let (first, second) = (
+        format!("sha256:{}", "a".repeat(64)),
+        format!("sha256:{}", "b".repeat(64)),
+    );
+    for (tag, id) in [
+        ("example.test/api:1", &first),
+        ("example.test/api:2", &second),
+    ] {
+        node.fake
+            .registry
+            .lock()
+            .unwrap()
+            .insert(tag.to_owned(), id.clone());
+    }
+    let plugin = plugin(
+        slot(Some(snapshot())),
+        WRITER_ROUTE,
+        writer_root(1, Some(snapshot())),
+    );
+    let destination = fleet.with_plugin(1, &plugin);
+    let start = |image: &str| {
+        let mut moved = service.clone();
+        moved.container.image = image.to_owned();
+        json!({"name":VOLUME, "expect":{"kind":"mirror", "newest":"7", "slot":"1"},
+            "want":{"kind":"writer", "at":"7", "epoch":1, "start":{
+                "kind":"create", "namespace":"app", "resolved_spec":moved,
+                "creation_key":"move-1", "gen":2,
+                "rotation":{"in":{"run":null, "expect":"pending"}}}}})
+    };
+
+    node.fake
+        .refuse_create_of
+        .lock()
+        .unwrap()
+        .insert("api".into());
+    try_set_copy(&destination, start("example.test/api:1"))
+        .await
+        .expect_err("the Create fails after the promote");
+    node.fake.refuse_create_of.lock().unwrap().clear();
+
+    let resent = try_set_copy(&destination, start("example.test/api:2")).await;
+    assert!(resent.is_ok(), "{resent:?}");
+    assert_eq!(promotes(&plugin), 1);
+    let holder = only_container(node);
+    assert_eq!(node.container(holder).unwrap()["Image"], second.as_str());
+}
+
+/// A volume plugin that promotes without recording the start's image runs an older
+/// build than its daemon. The start is refused, naming the plugin to restart, rather
+/// than run with no record a resend after a stop could take.
+#[tokio::test]
+async fn a_start_refuses_a_promote_that_recorded_no_image() {
+    let fleet = Fleet::start().await;
+    let node = fleet.node(1);
+    let plugin = plugin(
+        slot(Some(snapshot())),
+        WRITER_ROUTE,
+        writer_root(1, Some(snapshot())),
+    );
+    plugin.records_no_image();
+    let destination = fleet.with_plugin(1, &plugin);
+    let start = json!({"name":VOLUME, "expect":{"kind":"mirror", "newest":"7", "slot":"1"},
+        "want":{"kind":"writer", "at":"7", "epoch":1, "start":{
+            "kind":"create", "namespace":"app", "resolved_spec":spec("api"),
+            "creation_key":"move-1", "gen":2,
+            "rotation":{"in":{"run":null, "expect":"pending"}}}}});
+
+    let refused = try_set_copy(&destination, start)
+        .await
+        .expect_err("the promote recorded no image");
+    assert!(refused.contains("Restart ployz-volume-plugin"), "{refused}");
+    assert!(
+        node.fake
+            .named_containers
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .is_empty()
+    );
 }

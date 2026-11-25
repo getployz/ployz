@@ -2980,6 +2980,15 @@ mod set_volume_copy {
             .unwrap()
     }
 
+    /// The reply without the image its promote recorded, which every Create start places.
+    fn unplaced(reply: &SetVolumeCopyReply) -> Value {
+        let mut reply = serde_json::to_value(reply).unwrap();
+        if let Some(copy) = reply.get_mut("copy").and_then(Value::as_object_mut) {
+            copy.remove("placed");
+        }
+        reply
+    }
+
     fn reply(response: &RpcResponse) -> SetVolumeCopyReply {
         response
             .clone()
@@ -3590,7 +3599,7 @@ mod set_volume_copy {
         let raised = reply(&set_copy(&service, raise).await);
 
         assert_eq!(
-            serde_json::to_value(&raised).unwrap(),
+            unplaced(&raised),
             json!({"copy": writer_root(2, Some(snapshot("f-1", 7))).get("Ok")})
         );
         assert_eq!(effects(&plugin), vec![WRITER_ROUTE]);
@@ -4799,7 +4808,7 @@ mod set_volume_copy {
         let late = reply(&set_copy(&service, step_five).await);
 
         assert_eq!(
-            serde_json::to_value(&late).unwrap(),
+            unplaced(&late),
             json!({"copy": writer_root(1, Some(snapshot("f-1", 900)))["Ok"]})
         );
         assert_eq!(holder_status(&fake), vec![json!("running")]);

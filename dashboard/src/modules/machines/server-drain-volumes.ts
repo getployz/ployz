@@ -1,6 +1,6 @@
 import type { ContainerId, DrainReport, MachineId, MachineRef, QualifiedService, RuntimeWatchView, ServiceDrain } from "@ployz/sdk";
 import { listNames } from "#/lib/plural";
-import { requirements, serverSupports } from "#/modules/runtime/daemon-compat";
+import { moveStart, serverSupports } from "#/modules/runtime/daemon-compat";
 import { REGION_LABEL } from "#/modules/runtime/runtime-watch-frame";
 import { splitQualifiedService } from "#/modules/machines/server-services";
 import type { VolumeRunState } from "#/modules/volume-run/volume-run-states";
@@ -85,7 +85,7 @@ export function candidateServers(frame: RuntimeWatchView, input: {
   const home = source === undefined ? null : regionOf(source.machine.labels);
   const fits = frame.machines.filter(({ machine, storage }) => {
     if (machine.id === input.from || unanswered.has(machine.id) || input.draining.has(machine.id) || !machine.accepts_services) return false;
-    if (serverSupports({ capabilities: machine.runtime.capabilities ?? [] }, requirements.volumeStart) !== true) return false;
+    if (moveStart.some((requirement) => serverSupports({ capabilities: machine.runtime.capabilities ?? [] }, requirement) !== true)) return false;
     // A Server makes its Machine Pool with its first Managed volume, so one that never held one reads `ready`.
     if (storage === null || storage === undefined || storage.state === "stateless") return false;
     const region = regionOf(machine.labels);

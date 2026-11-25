@@ -301,6 +301,11 @@ impl AdmittedSpec {
         })
     }
 
+    /// The hash of the namespace and the whole spec this admits.
+    pub(crate) const fn digest(&self) -> [u8; 32] {
+        self.spec
+    }
+
     /// Whether a signature or Full access stands behind the spec.
     pub(crate) fn signed(&self) -> bool {
         self.by != AdmittedBy::Free

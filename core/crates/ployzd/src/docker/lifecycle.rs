@@ -878,11 +878,7 @@ impl Lifecycle {
         let ImagePull::Placed(id) = image else {
             return Ok(existing);
         };
-        let made = inspect(&self.docker.client, existing.container_id.as_str())
-            .await
-            .map_err(inspect::failed)?
-            .and_then(|inspected| inspected.image);
-        if made.as_deref() == Some(id) {
+        if self.image_of(&existing.container_id).await?.as_deref() == Some(id) {
             Ok(existing)
         } else {
             Err(Error::SlotNameOccupied(existing.display_name))

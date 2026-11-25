@@ -7,7 +7,7 @@ import type { OperationAsked, OperationVerb } from "#/modules/operations/asked";
 import { volumeRunTaken } from "#/modules/volume-run/volume-run.events";
 import { enqueueEvent } from "#/modules/inngest/outbox.server";
 import { ClusterOutOfTime, clusterRead, PLAN_CLUSTER_BUDGET_MS, requireClusterTime, RUNTIME_FRAME_TIMEOUT_MS, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
-import { type Requirement, requirementFor, requirements, serverSupports } from "#/modules/runtime/daemon-compat";
+import { moveStart, type Requirement, requirementFor, requirements, serverSupports } from "#/modules/runtime/daemon-compat";
 import { type PloyzSdkError, RpcError, sdkFailureMessage, setVolumeCopyRefusal } from "#/modules/runtime/ployz.server";
 import { alreadyOn, confirmedCopy, destroyedBy, holdingNewest, type PlanInput, planForwardRelease, planFromCopies, restoreSource, roleOf, upgradeBeforeSend, writerRemovedMessage } from "#/modules/volume-run/plan";
 import { resizeRequirements, sizeDirection } from "#/modules/volume-run/resize";
@@ -855,11 +855,12 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
       ? resizeRequirements(run.recordedBytes, run.args.maximum_bytes).find((requirement) => serverSupports(capabilities, requirement) !== true)
       : undefined;
     const sized = run?.kind === "resize" ? { boundBytes: boundOf(frame.volumes, machine.id, dockerVolume) } : {};
-    // A destination starts the moved Service from the proof its Service's approval left, so it must list the verb:
-    // one that lists nothing predates it.
-    if (run?.kind === "move" && isDestination(run, ref) && serverSupports(capabilities, requirements.volumeStart) !== true) {
-      return lacks(requirements.volumeStart.capability, run.kind);
-    }
+    // A destination starts the moved Service from the proof its Service's approval left, and from the image its promote
+    // recorded, so it must list both verbs: one that lists neither predates them.
+    const unstartable = run?.kind === "move" && isDestination(run, ref)
+      ? moveStart.find((requirement) => serverSupports(capabilities, requirement) !== true)
+      : undefined;
+    if (unstartable !== undefined) return lacks(unstartable.capability, "move");
     return session.volumeSwitch(machine.id, { command: "inspect_volume_copy", payload: { name: dockerVolume } }).pipe(
       clusterRead,
       Effect.timeout(OBSERVE_TIMEOUT),

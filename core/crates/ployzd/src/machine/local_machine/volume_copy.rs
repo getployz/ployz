@@ -5,10 +5,10 @@
 use ployz_core::{
     ContainerKind, ContainerLocator, ContainerNow, ContainerObservation, ContainerRefusalReason,
     ContainerWant, CopyPlan, CopyRefusal, CopyRotation, CopyTransition, DockerVolumeName,
-    EnsuredContainer, HealthVerdict, PlacedImage, QualifiedService, RpcError, RunRotation,
-    RunTarget, SeedCopyRequest, SeedVolumeRequest, SetVolumeCopyRefused, SetVolumeCopyRequest,
-    SetVolumeSizeReply, SetVolumeSizeRequest, Start, VolumeCopy, VolumeCopyView, VolumeGen,
-    WantedCopy, WriterEpoch,
+    EnsuredContainer, HealthVerdict, PlacedImage, QualifiedService, RpcError, RpcErrorCode,
+    RunRotation, RunTarget, SeedCopyRequest, SeedVolumeRequest, SetVolumeCopyRefused,
+    SetVolumeCopyRequest, SetVolumeSizeReply, SetVolumeSizeRequest, Start, VolumeCopy,
+    VolumeCopyView, VolumeGen, WantedCopy, WriterEpoch,
 };
 
 use ployz_core::authority::{
@@ -36,13 +36,6 @@ enum StartState {
     Running,
     Stopped,
     Gone,
-}
-
-/// What a promote records of the image `placed` for `start`.
-fn placed_record(placed: Option<&PlacedHolder>, start: Option<&Start>) -> Option<PlacedImage> {
-    placed
-        .zip(start)
-        .and_then(|(placed, start)| placed.record(start))
 }
 
 impl LocalMachine {
@@ -330,9 +323,12 @@ impl SwitchGuard {
                             at,
                             epoch,
                             r#gen,
-                            image: placed_record(placed.as_ref(), start.as_ref()),
+                            image: placed.as_ref().and_then(|placed| placed.record(epoch)),
                         };
-                        self.plugin_copy(WRITER_ROUTE, &request).await?
+                        recorded(
+                            self.plugin_copy(WRITER_ROUTE, &request).await?,
+                            request.image.as_ref(),
+                        )?
                     }
                     copy => copy,
                 };
@@ -361,9 +357,12 @@ impl SwitchGuard {
                     at,
                     epoch,
                     r#gen,
-                    image: placed_record(placed.as_ref(), start.as_ref()),
+                    image: placed.as_ref().and_then(|placed| placed.record(epoch)),
                 };
-                let copy = self.plugin_copy(WRITER_ROUTE, &request).await?;
+                let copy = recorded(
+                    self.plugin_copy(WRITER_ROUTE, &request).await?,
+                    request.image.as_ref(),
+                )?;
                 crate::faults::kill_inside(
                     Point::Copy(CopyTransition::MirrorToWriter),
                     Some(Identity {
@@ -745,10 +744,11 @@ impl LocalMachine {
     /// since it can exit while the promote runs. `None` for a Kept start, which creates
     /// nothing.
     ///
-    /// The promote records the ID on the copy beside its epoch. A resend that finds
-    /// `copy` promoted at `epoch` for this start takes the recorded ID and pulls
-    /// nothing: the image was chosen before the promote, and a stop since changes
-    /// neither it nor what the tag named then.
+    /// The promote records the ID on the copy with its epoch and the admitted spec's
+    /// digest. A resend that finds a record for `epoch` and this same spec takes the
+    /// recorded ID and pulls nothing: the image was chosen before the promote, and a
+    /// stop since changes neither it nor what the tag named then. Any other spec, even
+    /// one under the same creation key, places its own.
     async fn place_start_image(
         &self,
         copy: Option<&VolumeCopy>,
@@ -756,23 +756,16 @@ impl LocalMachine {
         start: Option<&Start>,
         admitted: Option<AdmittedSpec>,
     ) -> Result<Option<PlacedHolder>, Error> {
-        let (
-            Some(Start::Create {
-                resolved_spec,
-                creation_key,
-                ..
-            }),
-            Some(admitted),
-        ) = (start, admitted)
-        else {
+        let (Some(Start::Create { resolved_spec, .. }), Some(admitted)) = (start, admitted) else {
             return Ok(None);
         };
         let recorded = match copy {
             Some(VolumeCopy::Root {
-                epoch: held,
                 placed: Some(placed),
                 ..
-            }) if *held == epoch && placed.creation_key == *creation_key => Some(placed.id.clone()),
+            }) if placed.epoch() == epoch && *placed.spec() == admitted.digest() => {
+                Some(placed.id())
+            }
             _ => None,
         };
         self.place_holder_image(resolved_spec.clone(), admitted, recorded)
@@ -859,6 +852,29 @@ fn refusal(refused: SetVolumeCopyRefused, name: &DockerVolumeName) -> Error {
         ),
     };
     Error::StoragePreparation(refused.rpc_error(message))
+}
+
+/// The promote's reply, when it carries the image the promote was asked to record. A
+/// volume plugin from before `ployz:image` promotes but ignores the image, so a resend
+/// after a stop would find no record and pull again. The start is refused instead, while
+/// that plugin still runs beside this daemon.
+fn recorded(copy: Copy, image: Option<&PlacedImage>) -> Result<Copy, Error> {
+    match (&copy, image) {
+        (_, None) => Ok(copy),
+        (
+            Some(VolumeCopy::Root {
+                placed: Some(placed),
+                ..
+            }),
+            Some(image),
+        ) if placed == image => Ok(copy),
+        (_, Some(_)) => Err(Error::StoragePreparation(RpcError::new(
+            RpcErrorCode::Unsupported,
+            "the volume plugin on this Server promoted the copy without recording the start's \
+             image, so it runs an older build than this daemon. Restart \
+             ployz-volume-plugin on this Server, then retry",
+        ))),
+    }
 }
 
 fn not_routed(message: String) -> RpcError {

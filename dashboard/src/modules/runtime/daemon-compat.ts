@@ -12,6 +12,7 @@ export const requirements = {
   volumeSize: { capability: "ployz.volume.size.set.v1", feature: "Volume resize" },
   volumeOrigin: { capability: "ployz.volume.origin.v1", feature: "Volume move" },
   volumeStart: { capability: "ployz.volume.start.v1", feature: "Volume move" },
+  volumeStartImage: { capability: "ployz.volume.start.image.v1", feature: "Volume move" },
   volumeCutRunning: { capability: "ployz.volume.cut.running.v1", feature: "Volume move" },
   volumeKeepWritten: { capability: "ployz.volume.keep-written.v1", feature: "Volume sync" },
   volumeShrink: { capability: "ployz.volume.size.shrink.v1", feature: "Volume shrink" },
@@ -21,6 +22,9 @@ export const requirements = {
   forget: { capability: "ployz.machine.forget.v1", feature: "Server removal" },
   ensureContainer: { capability: "ployz.container.ensure.v1", feature: "Deploys", plural: true },
 } as const satisfies Record<string, Requirement>;
+
+/** What a Server must list to start a Move's Writer: the moved Service from its approval's proof, from the image its promote records. */
+export const moveStart: readonly Requirement[] = [requirements.volumeStart, requirements.volumeStartImage];
 
 export function requirementFor(capability: string): Requirement | null {
   return Object.values(requirements).find((requirement) => requirement.capability === capability) ?? null;
