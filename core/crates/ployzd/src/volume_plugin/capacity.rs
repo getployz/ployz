@@ -148,8 +148,10 @@ impl VolumeStorage {
             return Ok(Vec::new());
         }
         let existing_pool = self.pool.one_usable().await.map_err(storage_error)?;
+        let mut trash_bytes = 0;
         if let Some(pool) = &existing_pool {
             let datasets = self.datasets(pool).await.map_err(storage_error)?;
+            trash_bytes = super::storage::Commitment::trash_of(pool, &datasets);
             for (name, maximum) in requested {
                 let plugin_name =
                     VolumeName::try_from(name).map_err(|error| storage_error(error.into()))?;
@@ -171,7 +173,12 @@ impl VolumeStorage {
             .ok_or_else(|| unknown("Volume commitments overflow u64"))?;
         match existing_pool {
             Some(pool) => {
-                self.ensure_pool_capacity(&pool, commitment, capacity.unmanaged_used_bytes)
+                let commitment = super::storage::Commitment {
+                    bytes: commitment,
+                    unmanaged_used_bytes: capacity.unmanaged_used_bytes,
+                    trash_bytes,
+                };
+                self.ensure_pool_capacity(&pool, &commitment)
                     .await
                     .map_err(storage_error)?;
             }

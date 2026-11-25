@@ -331,7 +331,7 @@ const ROWS: &[(&str, &str, &str, &str, &str, &str)] = &[
         "list_trash",
         "ployz.volume.trash.v1",
         "Container",
-        "Operator",
+        "Full",
         "Unary",
     ),
     (

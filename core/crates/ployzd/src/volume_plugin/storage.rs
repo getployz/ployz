@@ -70,6 +70,9 @@ pub(super) fn committed_bytes(dataset: &Dataset, pool: &str) -> u64 {
 pub(super) struct Commitment {
     pub(super) bytes: u64,
     pub(super) unmanaged_used_bytes: u64,
+    /// The part of the unmanaged bytes the Trash's entries hold: admission never grows a
+    /// Pool for them ([`VolumeStorage::ensure_pool_capacity`]).
+    pub(super) trash_bytes: u64,
 }
 
 impl Commitment {
@@ -90,7 +93,18 @@ impl Commitment {
         Ok(Self {
             bytes,
             unmanaged_used_bytes: pool.used_bytes().saturating_sub(managed_used),
+            trash_bytes: Self::trash_of(pool, datasets),
         })
+    }
+
+    /// The bytes the Trash's entries of `pool` hold, without the Trash parent's slack.
+    pub(super) fn trash_of(pool: &MachinePool, datasets: &[Dataset]) -> u64 {
+        let layout = DatasetLayout::of(pool);
+        datasets
+            .iter()
+            .filter(|dataset| matches!(layout.place(&dataset.name), Place::Trash(id) if !id.contains('/')))
+            .map(|dataset| dataset.used_bytes)
+            .fold(0, u64::saturating_add)
     }
 }
 
@@ -188,17 +202,19 @@ impl VolumeStorage {
         if let Some(existing) = Self::dataset(&datasets, pool, name)? {
             existing.require_requested(name, requested)?;
             let marks = self.marks(&existing.name);
+            // A root restored from the Trash registers only for the data it holds; a Create
+            // for other data changes nothing on it.
+            let restored = marks.is_set(Mark::Restored).await?;
+            if restored && self.local_origin(&existing.name, Mark::Origin).await? != origin {
+                return Err(PluginError::RestoredForOtherData {
+                    name: name.to_string(),
+                });
+            }
             if marks.unregistered().await? {
                 marks.clear_promote().await?;
                 crate::faults::kill_inside(crate::faults::Point::Verb("Create"), None);
             }
-            // A root restored from the Trash registers only for the data it holds.
-            if marks.is_set(Mark::Restored).await? {
-                if self.local_origin(&existing.name, Mark::Origin).await? != origin {
-                    return Err(PluginError::RestoredForOtherData {
-                        name: name.to_string(),
-                    });
-                }
+            if restored {
                 marks
                     .apply(&[super::marks::Write::Inherit(Mark::Restored)])
                     .await?;
@@ -262,10 +278,8 @@ impl VolumeStorage {
         datasets: &[Dataset],
         requested: u64,
     ) -> Result<()> {
-        let commitment = Commitment::of(pool, datasets, requested)?;
-        self.ensure_pool_capacity(pool, commitment.bytes, commitment.unmanaged_used_bytes)
-            .await?;
-        Ok(())
+        self.ensure_pool_capacity(pool, &Commitment::of(pool, datasets, requested)?)
+            .await
     }
 
     /// Raises the bound `dataset` carries from `held` to `wanted`: the difference is
@@ -342,6 +356,11 @@ impl VolumeStorage {
             .ok_or_else(|| format!("Provisioned Volume {name} does not exist"))?;
         dataset.require_provisioned(name)?;
         dataset.require_not_switching(name)?;
+        if self.marks(&dataset.name).is_set(Mark::Restored).await? {
+            return Err(PluginError::RestoredUnregistered {
+                name: name.to_string(),
+            });
+        }
         if dataset.mounted {
             return Ok(dataset.mountpoint.clone());
         }

@@ -373,7 +373,7 @@ mod tests {
         for (property, value) in [
             ("ployz:trash-name", name.to_owned()),
             ("ployz:trash-place", place.to_owned()),
-            ("ployz:trash-was", "readonly=-,canmount=-".to_owned()),
+            ("ployz:trash-was", "canmount=-".to_owned()),
             ("ployz:trashed-hour", hour.to_string()),
             ("ployz:trashed-at", "1700000000".to_owned()),
             ("canmount", "off".to_owned()),

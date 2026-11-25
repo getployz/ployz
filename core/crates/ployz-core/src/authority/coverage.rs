@@ -188,7 +188,7 @@ pub const AUTHORIZATION: &[(&str, Authorization)] = &[
         SET_VOLUME_SIZE_CAPABILITY,
         Bound("residual: a bound can refuse writes, a drop"),
     ),
-    (LIST_TRASH_CAPABILITY, Read),
+    (LIST_TRASH_CAPABILITY, Full),
     (RESTORE_TRASH_CAPABILITY, Full),
     (EMPTY_TRASH_CAPABILITY, Full),
     (LIST_IMAGES_CAPABILITY, Read),
@@ -626,6 +626,12 @@ pub const CASES: &[Case] = &[
         "grow, or a shrink",
         "a SetVolumeSize growing a Volume",
         Expected::Served,
+    ),
+    case(
+        LIST_TRASH_CAPABILITY,
+        "from the mesh",
+        "a ListTrash of the deleted Volumes' names and sizes, from Cloud",
+        Expected::Refused(&[LIST_TRASH_CAPABILITY]),
     ),
     case(
         RESTORE_TRASH_CAPABILITY,

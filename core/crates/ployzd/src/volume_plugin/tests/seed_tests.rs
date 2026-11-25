@@ -877,6 +877,44 @@ async fn a_seed_replaces_a_slot_parent_with_no_fs() {
     assert_landed(&test);
 }
 
+/// A stale slot whose copy holds a point keeps its bytes in the Trash, so a seed admits the
+/// new slot beside them before it moves the old one, and keeps it when the Pool can't.
+#[tokio::test]
+async fn a_seed_keeps_a_stale_slot_the_pool_cannot_replace_beside_the_trash() {
+    let test = test_dir();
+    let (socket, _server) = start(
+        &test,
+        USABLE_POOL,
+        &["root", "volume", "seed-slot", "seed-fs"],
+    );
+    set_property(&test, "tank/ployz/data", "snapshots", POINT);
+    let (parent, fs) = ("tank/ployz-mirror/seed", "tank/ployz-mirror/seed/fs");
+    set_property(&test, parent, "refquota", &(1u64 << 30).to_string());
+    set_property(
+        &test,
+        fs,
+        "snapshots",
+        &format!("{fs}@w-1-0\t70\t1690000000"),
+    );
+    set_property(&test, fs, "ployz:pulled", "70");
+    set_property(&test, fs, "used", &(3u64 << 29).to_string());
+    set_property(&test, fs, "usedbydataset", &(3u64 << 29).to_string());
+    super::trash_tests::pool_using(&test, 966_367_642 + (3 << 29));
+
+    let refused = post(&socket, "/Volume.Seed", seed(77)).await;
+
+    assert!(
+        refused
+            .pointer("/Err/message")
+            .and_then(Value::as_str)
+            .is_some_and(|message| message.contains("Machine Pool needs")),
+        "{refused}"
+    );
+    assert!(test.0.join("seed-slot").exists() && test.0.join("seed-fs").exists());
+    assert_eq!(snapshot_names(&test, fs), ["w-1-0"]);
+    assert_eq!(trashed(&test), Vec::<String>::new());
+}
+
 /// Docker's Create leaves `ployz:seed` on the root it adopts, so the same Seed resent
 /// still finds its own root.
 #[tokio::test]

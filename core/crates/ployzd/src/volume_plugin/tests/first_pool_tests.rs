@@ -441,6 +441,40 @@ async fn remove_releases_a_commitment_and_usage_is_not_a_growth_input() {
     );
 }
 
+/// The backing file never shrinks, so a Pool grows for live data only: a Create that fits
+/// only once the Trash is emptied keeps the file at what live data needs and says what the
+/// Trash holds.
+#[tokio::test]
+async fn a_pool_never_grows_for_what_its_trash_holds() {
+    let test = test_dir();
+    let (socket, server) = start_pool_with_data(&test).await;
+    let id = ployz_core::TrashId::from_bytes([1; 16]);
+    fs::write(test.0.join("trash-entry"), format!("{id} {}\n", 1u64 << 30)).unwrap();
+
+    let created = post(
+        &socket,
+        "/VolumeDriver.Create",
+        json!({"Name":"other","Opts":{"size":"2g"}}),
+    )
+    .await;
+    server.abort();
+
+    let refused = created
+        .get("Err")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        refused.contains("1.1 GB is in this Server's Trash until")
+            && refused.contains("sudo ployz volume trash empty"),
+        "{created}"
+    );
+    assert_eq!(
+        fs::read_to_string(test.0.join("allocated")).unwrap(),
+        "4294967296\n"
+    );
+    assert!(!test.0.join("other").exists());
+}
+
 pub(super) async fn start_pool_with_data(
     test: &TestDir,
 ) -> (PathBuf, tokio::task::JoinHandle<std::io::Result<()>>) {
@@ -852,6 +886,8 @@ pub(super) fn fake_first_pool(directory: &Path, physical_block_size: u64) -> Vol
     let slot_pull = directory.join("slot-pull");
     let slot_role = directory.join("slot-role");
     let fail_slot_once = directory.join("fail-slot-once");
+    // `<id> <bytes>`: one Trash entry of that size, which the Pool counts as used.
+    let trash_entry = directory.join("trash-entry");
     let script_body = format!(
         r#"#!/bin/sh
 set -eu
@@ -898,7 +934,9 @@ case "$name" in
             [ ! -e '{claimed}' ] || capacity='{claimed}'
             capacity=$(cat "$capacity")
             [ ! -e '{pool_overhead}' ] || capacity=$((capacity - $(cat '{pool_overhead}')))
-            printf 'ployz\t%s\t0\t%s\tONLINE\toff\n' "$capacity" "$capacity"
+            used=0
+            [ ! -e '{trash_entry}' ] || used=$(cut -d' ' -f2 '{trash_entry}')
+            printf 'ployz\t%s\t%s\t%s\tONLINE\toff\n' "$capacity" "$used" "$((capacity - used))"
           fi
         fi
         ;;
@@ -940,6 +978,11 @@ case "$name" in
         [ ! -e '{other}' ] || printf 'ployz/ployz/other\t%s\t0\t0\t0\t/var/lib/ployz-volumes/other\tno\toff\n' "$(cat '{other_bound}')"
         [ ! -e '{mirror_root}' ] || printf 'ployz/ployz-mirror\t0\t0\t0\t0\t/var/lib/ployz-mirror\tno\ton\n'
         [ ! -e '{slot}' ] || printf 'ployz/ployz-mirror/data\t%s\t0\t0\t0\t/var/lib/ployz-mirror/data\tno\ton\n' "$(cat '{slot}')"
+        if [ -e '{trash_entry}' ]; then
+          read -r id used < '{trash_entry}'
+          printf 'ployz/ployz-trash\t0\t%s\t0\t0\tnone\tno\toff\n' "$used"
+          printf 'ployz/ployz-trash/%s\t0\t%s\t%s\t0\tnone\tno\toff\n' "$id" "$used" "$used"
+        fi
         ;;
       'create -o canmount=off -o mountpoint=/var/lib/ployz-volumes ployz/ployz') touch '{root}' ;;
       'create -o mountpoint=none -o canmount=off ployz/ployz-trash') touch '{other}.trash' ;;
@@ -1024,6 +1067,7 @@ esac
         slot_pull = slot_pull.display(),
         slot_role = slot_role.display(),
         fail_slot_once = fail_slot_once.display(),
+        trash_entry = trash_entry.display(),
         backing = directory.join(POOL_BACKING_FILE).display(),
     );
     fs::write(&script, script_body).unwrap();

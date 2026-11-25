@@ -42,8 +42,10 @@ The limit starts at 5 GB. A volume can't grow past it: once it's full, writes fa
 limit is set aside on the server's disk, so a deploy fails if no server has room for it.
 Volumes a deploy deletes free their space only after it succeeds, so they don't make room for new
 volumes in the same deploy. To make room, remove the new volumes, deploy, then add them again.
-A deleted volume's data waits in its server's trash for 7 days and keeps its space until then,
-so a server that is short of room says how much its trash holds and until when.
+A deleted volume's data waits in its server's trash for 7 days and keeps its space until then.
+Ployz never grows a server's storage to hold its trash: when a volume fits only once the trash
+is emptied, the deploy fails and says how much the trash holds, until when, and how to empty it.
+A server whose own disk has no room left to grow its storage says only that.
 `--size` refuses a limit under 0.1 GB, whether you add a volume or change one.
 
 You can change the limit in the volume's **Settings**, under **Space**, or with

@@ -76,8 +76,8 @@ pub(super) enum Mark {
     TrashName,
     /// On a Trash entry: `root`, `slot` or `copy`, the place the copy was taken from.
     TrashPlace,
-    /// On a Trash entry: the copy's own `readonly` and `canmount` before the move, each
-    /// `-` when the copy inherited it.
+    /// On a Trash entry: the copy's own `canmount` before the move, `-` when it had the
+    /// default.
     TrashWas,
     /// On a Trash entry: the Trash's sweep hours when the move committed.
     TrashedHour,
@@ -85,8 +85,12 @@ pub(super) enum Mark {
     TrashedAt,
     /// On the Trash parent: how many hourly sweeps advanced it.
     TrashHours,
-    /// On the Trash parent: Unix seconds of the sweep that last advanced it.
+    /// On the Trash parent: Unix seconds of the wall hour the last advance counted.
     TrashLast,
+    /// On a slot parent a restore of a Trash entry taken from `copy` made, until the copy
+    /// lands under it: the entry's ID. A restore stopped before its rename finds the
+    /// parent by it and finishes ([`super::trash`]).
+    TrashRestoring,
 }
 
 impl Mark {
@@ -111,6 +115,7 @@ impl Mark {
             Self::TrashedAt => "ployz:trashed-at",
             Self::TrashHours => "ployz:trash-hours",
             Self::TrashLast => "ployz:trash-last",
+            Self::TrashRestoring => "ployz:trash-restoring",
         }
     }
 }

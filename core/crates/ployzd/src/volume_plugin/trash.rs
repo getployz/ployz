@@ -8,9 +8,9 @@
 //! In order:
 //!
 //! 1. The trash marks go on the live copy, set locally: its Docker Volume name, its place,
-//!    its own `readonly` and `canmount` (`ployz:trash-was`), and the sweep hour. Nothing on a
-//!    live copy reads them, so a stop here leaves a working Volume, and the next delete
-//!    keeps the `trash-was` of the first attempt.
+//!    its own `canmount` (`ployz:trash-was`), and the sweep hour. Nothing on a live copy
+//!    reads them, so a stop here leaves a working Volume. Nothing changes `canmount` before
+//!    the rename, so a delete run again reads the value the first attempt read.
 //! 2. The rename into the Trash. It unmounts a mounted copy, since the Trash parent mounts
 //!    nowhere, and refuses one in use. Nothing touched the live copy's mounts before it.
 //! 3. `canmount=off` on the entry, which the sweep sets on any entry missing it.
@@ -60,55 +60,41 @@ const ENTRY_MARKS: [Mark; 5] = [
     Mark::TrashedAt,
 ];
 
-/// What a copy set on itself before the move: its own `readonly` and `canmount`, each
-/// `None` when it inherited the value.
+/// The `canmount` a copy set on itself before the move, `None` when it had the default.
+/// The move keeps the copy's `readonly`, so a restore has nothing of it to put back.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Was {
-    readonly: Option<String>,
     canmount: Option<String>,
 }
 
 impl Was {
     async fn read(storage: &VolumeStorage, dataset: &str) -> Result<Self> {
         Ok(Self {
-            readonly: storage.local_property(dataset, "readonly").await?,
             canmount: storage.local_property(dataset, "canmount").await?,
         })
     }
 
     fn parse(value: &str) -> Option<Self> {
-        let (readonly, canmount) = value.split_once(',')?;
-        let field = |pair: &str, key: &str| {
-            let value = pair.strip_prefix(key)?.strip_prefix('=')?;
-            Some((value != "-").then(|| value.to_owned()))
-        };
+        let value = value.strip_prefix("canmount=")?;
         Some(Self {
-            readonly: field(readonly, "readonly")?,
-            canmount: field(canmount, "canmount")?,
+            canmount: (value != "-").then(|| value.to_owned()),
         })
     }
 
-    /// The writes that put each value back on a restored copy.
-    fn writes(&self) -> [Vec<String>; 2] {
-        [("readonly", &self.readonly), ("canmount", &self.canmount)].map(|(property, value)| {
-            match value {
-                Some(value) => vec!["set".to_owned(), format!("{property}={value}")],
-                // canmount isn't inherited: its default is on.
-                None if property == "canmount" => vec!["set".to_owned(), "canmount=on".to_owned()],
-                None => vec!["inherit".to_owned(), property.to_owned()],
-            }
-        })
+    /// Puts the `canmount` back on `dataset`, a restored copy. It isn't inherited: its
+    /// default is on.
+    async fn put_back(&self, storage: &VolumeStorage, dataset: &str) -> Result<()> {
+        let canmount = format!("canmount={}", self.canmount.as_deref().unwrap_or("on"));
+        storage.zfs(&["set", &canmount, dataset]).await.map(drop)
     }
 }
 
 impl fmt::Display for Was {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let shown = |value: &Option<String>| value.clone().unwrap_or_else(|| "-".to_owned());
         write!(
             formatter,
-            "readonly={},canmount={}",
-            shown(&self.readonly),
-            shown(&self.canmount)
+            "canmount={}",
+            self.canmount.as_deref().unwrap_or("-")
         )
     }
 }
@@ -258,25 +244,12 @@ impl VolumeStorage {
             self.ensure_trash_parent(pool, &[]).await?;
         }
         let hour = self.sweep_hours(&parent).await?;
-        let marks = self.marks(dataset);
-        let earlier = (
-            marks.local(Mark::TrashWas).await?,
-            marks.local(Mark::TrashName).await?,
-            marks.local(Mark::TrashPlace).await?,
-        );
-        let was = match earlier {
-            (Some(was), Some(earlier_name), Some(earlier_place))
-                if earlier_name == name.as_str() && earlier_place == place.as_str() =>
-            {
-                was
-            }
-            _ => Was::read(self, dataset).await?.to_string(),
-        };
-        marks
+        let was = Was::read(self, dataset).await?;
+        self.marks(dataset)
             .apply(&[
                 Write::Set(Mark::TrashName, name.to_string()),
                 Write::Set(Mark::TrashPlace, place.as_str().to_owned()),
-                Write::Set(Mark::TrashWas, was),
+                Write::Set(Mark::TrashWas, was.to_string()),
                 Write::Set(Mark::TrashedHour, hour.to_string()),
                 Write::Set(Mark::TrashedAt, self.now_seconds().to_string()),
             ])
@@ -366,17 +339,17 @@ impl VolumeStorage {
         };
         let pool = self.one_pool().await?;
         let datasets = self.datasets(&pool).await?;
-        let used = datasets
-            .iter()
-            .find(|dataset| dataset.name == fs)
-            .map_or(0, |dataset| dataset.used_bytes);
-        let commitment = Commitment::of(&pool, &datasets, 0)?;
-        self.ensure_pool_capacity(
-            &pool,
-            commitment.bytes,
-            commitment.unmanaged_used_bytes.saturating_add(used),
-        )
-        .await?;
+        // The copy's own bytes leave the managed count and join the Trash; its snapshots'
+        // bytes were never managed and only change sides.
+        let copy = datasets.iter().find(|dataset| dataset.name == fs);
+        let mut commitment = Commitment::of(&pool, &datasets, 0)?;
+        commitment.unmanaged_used_bytes = commitment
+            .unmanaged_used_bytes
+            .saturating_add(copy.map_or(0, |copy| copy.active_used_bytes));
+        commitment.trash_bytes = commitment
+            .trash_bytes
+            .saturating_add(copy.map_or(0, |copy| copy.used_bytes));
+        self.ensure_pool_capacity(&pool, &commitment).await?;
         if let Some(origin) = origin
             && self.local_origin(fs, Mark::Origin).await? != Some(origin)
         {
@@ -498,10 +471,19 @@ impl VolumeStorage {
         (held.bytes > 0).then_some(held)
     }
 
+    /// The Pool whose Trash List and Empty read: none on a Machine that never held one,
+    /// and a refusal on one whose Pool isn't imported, whose Trash is unknown, not empty.
+    async fn trash_pool(&self) -> Result<Option<MachinePool>> {
+        match self.pool.one_usable().await? {
+            None if self.pool.has_held_a_pool()? => Err(PluginError::HeldPoolNotImported),
+            pool => Ok(pool),
+        }
+    }
+
     async fn list_trash(&self) -> Result<TrashList> {
         let _held = self.admit_mutation().await?;
         let _pool_guard = self.pool.lock_mutation().await?;
-        let Some(pool) = self.pool.one_usable().await? else {
+        let Some(pool) = self.trash_pool().await? else {
             return Ok(TrashList::default());
         };
         let datasets = self.datasets(&pool).await?;
@@ -552,9 +534,16 @@ impl VolumeStorage {
             RpcError::conflict(format!("Trash entry {id} can't be restored: {why}"))
         })?;
         let name = &entry.name;
-        if Self::dataset(&datasets, &pool, name)?.is_some()
-            || Self::slot(&datasets, &pool, name).is_some()
-        {
+        let slot = Self::slot(&datasets, &pool, name);
+        // A restore of a copy that stopped before its rename left the slot parent it made,
+        // which it takes up again.
+        let resumed = match slot {
+            Some(slot) if entry.place == TrashPlace::Copy => {
+                self.restoring_into(&datasets, slot, id).await?
+            }
+            _ => false,
+        };
+        if Self::dataset(&datasets, &pool, name)?.is_some() || (slot.is_some() && !resumed) {
             return Err(RpcError::conflict(format!(
                 "Volume {name} already has a copy on this Server; delete it or restore this entry after it is gone"
             )));
@@ -575,26 +564,26 @@ impl VolumeStorage {
                     RpcError::unavailable(copy_unlisted(&name.wire(), &cause))
                 }
             })?;
-        let commitment = Commitment::of(&pool, &datasets, dataset.refquota)?;
-        self.ensure_pool_capacity(
-            &pool,
-            commitment.bytes,
-            commitment
-                .unmanaged_used_bytes
-                .saturating_sub(dataset.used_bytes),
-        )
-        .await?;
+        // The entry's own bytes join the managed count, as `Commitment::of` reads a live
+        // copy; its snapshots' bytes only leave the Trash.
+        let within = format!("{path}/");
+        let active = datasets
+            .iter()
+            .filter(|held| held.name == path || held.name.starts_with(&within))
+            .map(|held| held.active_used_bytes)
+            .fold(0u64, u64::saturating_add);
+        let bound = if resumed { 0 } else { dataset.refquota };
+        let mut commitment = Commitment::of(&pool, &datasets, bound)?;
+        commitment.unmanaged_used_bytes = commitment.unmanaged_used_bytes.saturating_sub(active);
+        commitment.trash_bytes = commitment.trash_bytes.saturating_sub(dataset.used_bytes);
+        self.ensure_pool_capacity(&pool, &commitment).await?;
         match entry.place {
             TrashPlace::Root => {
                 self.ensure_root(&datasets, &layout.root_parent()).await?;
                 self.marks(&path)
                     .apply(&[Write::Set(Mark::Restored, "on".to_owned())])
                     .await?;
-                for write in entry.was.writes() {
-                    let mut args: Vec<&str> = write.iter().map(String::as_str).collect();
-                    args.push(&path);
-                    self.zfs(&args).await?;
-                }
+                entry.was.put_back(self, &path).await?;
                 self.zfs(&["rename", &path, &layout.root(name)]).await?;
                 self.unmark(&layout.root(name)).await?;
             }
@@ -614,19 +603,24 @@ impl VolumeStorage {
             TrashPlace::Copy => {
                 self.ensure_mirror_root(&pool, &datasets).await?;
                 let parent = layout.slot_parent(name);
-                self.create_marked_slot(
-                    &parent,
-                    dataset.refquota,
-                    &[(Mark::Role, SlotRole::OldCopy.as_str().to_owned())],
-                )
-                .await?;
-                for write in entry.was.writes() {
-                    let mut args: Vec<&str> = write.iter().map(String::as_str).collect();
-                    args.push(&path);
-                    self.zfs(&args).await?;
+                if !resumed {
+                    self.create_marked_slot(
+                        &parent,
+                        dataset.refquota,
+                        &[
+                            (Mark::Role, SlotRole::OldCopy.as_str().to_owned()),
+                            (Mark::TrashRestoring, id.to_string()),
+                        ],
+                    )
+                    .await?;
                 }
+                crate::faults::kill_inside(crate::faults::Point::Verb("Trash.SlotMade"), None);
+                entry.was.put_back(self, &path).await?;
                 self.zfs(&["rename", &path, &layout.slot_fs(name)]).await?;
                 self.unmark(&layout.slot_fs(name)).await?;
+                self.marks(&parent)
+                    .apply(&[Write::Inherit(Mark::TrashRestoring)])
+                    .await?;
             }
         }
         Ok(TrashRestored {
@@ -634,6 +628,21 @@ impl VolumeStorage {
             name: name.wire(),
             place: entry.place,
         })
+    }
+
+    /// Whether `slot` is the parent a restore of entry `id` made, with no copy under it yet.
+    async fn restoring_into(
+        &self,
+        datasets: &[Dataset],
+        slot: &Dataset,
+        id: TrashId,
+    ) -> Result<bool> {
+        let within = format!("{}/", slot.name);
+        if datasets.iter().any(|held| held.name.starts_with(&within)) {
+            return Ok(false);
+        }
+        let mark = self.marks(&slot.name).local(Mark::TrashRestoring).await?;
+        Ok(mark.as_deref() == Some(id.to_string().as_str()))
     }
 
     /// Takes the trash marks off a restored copy.
@@ -647,7 +656,7 @@ impl VolumeStorage {
         let _held = self.admit_mutation().await?;
         let _pool_guard = self.pool.lock_mutation().await?;
         let mut emptied = TrashEmptied::default();
-        let Some(pool) = self.pool.one_usable().await? else {
+        let Some(pool) = self.trash_pool().await? else {
             emptied.missing = ids.to_vec();
             return Ok(emptied);
         };
@@ -690,11 +699,21 @@ impl VolumeStorage {
         let last = self.marks(&parent).local(Mark::TrashLast).await?;
         let last = last.and_then(|last| last.parse::<i64>().ok());
         let advanced = last.is_some_and(|last| now.saturating_sub(last) >= HOUR_SECONDS);
-        if last.is_none_or(|last| advanced || now < last) {
+        // An advance counts the hour after `last`, so a sweep that runs late loses no hour.
+        // A gap of two hours or more, or a clock behind `last`, starts again from now: the
+        // hours never run ahead of the wall time the sweep saw pass.
+        let counted = match last {
+            Some(last) if advanced && now.saturating_sub(last) < 2 * HOUR_SECONDS => {
+                Some(last + HOUR_SECONDS)
+            }
+            Some(last) if !advanced && now >= last => None,
+            _ => Some(now),
+        };
+        if let Some(counted) = counted {
             // The time goes first: a stop between the two writes loses an hour rather than
             // adding one.
             self.marks(&parent)
-                .apply(&[Write::Set(Mark::TrashLast, now.to_string())])
+                .apply(&[Write::Set(Mark::TrashLast, counted.to_string())])
                 .await?;
         }
         if advanced {

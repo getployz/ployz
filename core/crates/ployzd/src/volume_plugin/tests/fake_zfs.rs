@@ -80,8 +80,9 @@ pub(super) fn fake_zfs_seeding(directory: &Path, pools: &str, seed: &str) -> (Pa
 set -eu
 name=${{0##*/}}
 printf '%s %s\n' "$name" "$*" >> '{commands}'
+# props/pools, when a test writes it, stands for the Pools in place of the given ones.
 if [ "$name" = zpool ]; then
-  printf '{pools}'
+  if [ -e '{props}/pools' ]; then cat '{props}/pools'; else printf '{pools}'; fi
   exit 0
 fi
 # ZFS refuses a user property (a name with a colon) holding anything but a-z, 0-9 and :._-
@@ -256,7 +257,7 @@ case "$*" in
     if [ -e '{seed_slot}' ]; then
       printf 'tank/ployz-mirror/{seed}\t%s\t0\t0\t0\t/var/lib/ployz-mirror/{seed}\tno\ton\n' "$(prop tank/ployz-mirror/{seed} refquota {slot_bound})"
       if [ -e '{seed_fs}' ]; then
-        printf 'tank/ployz-mirror/{seed}/fs\t%s\t0\t0\t0\t/var/lib/ployz-mirror/{seed}/fs\tno\t%s\n' "$(prop tank/ployz-mirror/{seed}/fs refquota {slot_bound})" "$(prop tank/ployz-mirror/{seed}/fs readonly on)"
+        printf 'tank/ployz-mirror/{seed}/fs\t%s\t%s\t%s\t0\t/var/lib/ployz-mirror/{seed}/fs\tno\t%s\n' "$(prop tank/ployz-mirror/{seed}/fs refquota {slot_bound})" "$(prop tank/ployz-mirror/{seed}/fs used 0)" "$(prop tank/ployz-mirror/{seed}/fs usedbydataset 0)" "$(prop tank/ployz-mirror/{seed}/fs readonly on)"
       fi
     fi
     for d in $(trash_datasets); do
@@ -398,6 +399,14 @@ case "$*" in
   'create -o canmount=off -o mountpoint=/var/lib/ployz-mirror -o readonly=on tank/ployz-mirror')
     if exists tank/ployz-mirror; then echo "cannot create 'tank/ployz-mirror': dataset already exists" >&2; exit 1; fi
     touch '{mirror_root}'
+    ;;
+  'create -o canmount=off -o readonly=on -o refquota='*' -o ployz:role='*' -o ployz:trash-restoring='*' tank/ployz-mirror/data')
+    if [ -e '{mirror}' ]; then echo "cannot create 'tank/ployz-mirror/data': dataset already exists" >&2; exit 1; fi
+    touch '{mirror}'
+    mkdir -p '{props}/tank/ployz-mirror/data'
+    printf '%s\n' "${{7#refquota=}}" > '{props}/tank/ployz-mirror/data/refquota'
+    printf '%s\n' "${{9#ployz:role=}}" > '{props}/tank/ployz-mirror/data/ployz:role'
+    printf '%s\n' "${{11#ployz:trash-restoring=}}" > '{props}/tank/ployz-mirror/data/ployz:trash-restoring'
     ;;
   'create -o canmount=off -o readonly=on -o refquota='*' tank/ployz-mirror/data')
     if [ -e '{mirror}' ]; then echo "cannot create 'tank/ployz-mirror/data': dataset already exists" >&2; exit 1; fi

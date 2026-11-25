@@ -98,7 +98,7 @@ macro_rules! rpc_catalog {
                 SeedCopy: (seed_copy, SeedCopyRequest, VolumeCopyView, SEED_COPY_CAPABILITY, "ployz.volume.seed-copy.v1", Container, Operator),
                 SetVolumeCopy: (set_volume_copy, SetVolumeCopyRequest, SetVolumeCopyReply, SET_VOLUME_COPY_CAPABILITY, "ployz.volume.copy.set.v1", Container, Operator),
                 SetVolumeSize: (set_volume_size, SetVolumeSizeRequest, SetVolumeSizeReply, SET_VOLUME_SIZE_CAPABILITY, "ployz.volume.size.set.v1", Container, Operator),
-                ListTrash: (list_trash, ListTrashRequest, TrashList, LIST_TRASH_CAPABILITY, "ployz.volume.trash.v1", Container, Operator),
+                ListTrash: (list_trash, ListTrashRequest, TrashList, LIST_TRASH_CAPABILITY, "ployz.volume.trash.v1", Container, Full),
                 RestoreTrash: (restore_trash, RestoreTrashRequest, TrashRestored, RESTORE_TRASH_CAPABILITY, "ployz.volume.trash-restore.v1", Container, Full),
                 EmptyTrash: (empty_trash, EmptyTrashRequest, TrashEmptied, EMPTY_TRASH_CAPABILITY, "ployz.volume.trash-empty.v1", Container, Full),
                 ListImages: (list_images, ListImagesRequest, MachineImages, LIST_IMAGES_CAPABILITY, "ployz.image.list.v1", Container, Operator),

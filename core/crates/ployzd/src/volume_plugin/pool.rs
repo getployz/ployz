@@ -14,7 +14,7 @@ use ployz_core::MachineLayout;
 use super::{
     CapacityAdmission, PluginError, Result, VolumeName, VolumeStorage, checked_command,
     checked_output,
-    storage::{CreateOptions, parse_create},
+    storage::{Commitment, CreateOptions, parse_create},
 };
 
 /// Filename of the root-backed Machine Pool vdev.
@@ -65,15 +65,18 @@ impl CreatedPool<'_> {
 
 impl VolumeStorage {
     /// Grows the Pool for `commitment` after opting a managed Pool out of periodic trim.
+    /// Growth counts live data only: a Pool that holds the request only once its Trash is
+    /// emptied keeps its size and refuses, saying what the Trash holds, since a backing
+    /// file never shrinks.
     ///
     /// # Errors
     ///
-    /// Returns an error when the trim opt-out or growth fails.
+    /// Returns an error when the trim opt-out or growth fails, or the Pool can't hold
+    /// `commitment` beside what it holds.
     pub(super) async fn ensure_pool_capacity(
         &self,
         pool: &MachinePool,
-        commitment: u64,
-        unmanaged_used_bytes: u64,
+        commitment: &Commitment,
     ) -> Result<()> {
         if pool.name() == POOL_NAME
             && self
@@ -85,11 +88,35 @@ impl VolumeStorage {
             self.zfs(&["set", PERIODIC_TRIM_DISABLED, POOL_NAME])
                 .await?;
         }
-        match self
+        // Only a root-backed Pool grows; any other refuses on the whole count.
+        let trash = if pool.name() == POOL_NAME {
+            commitment.trash_bytes.min(commitment.unmanaged_used_bytes)
+        } else {
+            0
+        };
+        let live = commitment.unmanaged_used_bytes - trash;
+        let fits = match self
             .pool
-            .ensure_capacity(pool, commitment, unmanaged_used_bytes)
+            .ensure_capacity(pool, commitment.bytes, live)
             .await
         {
+            Ok(size) => {
+                let required = ployz_core::storage_with_headroom(commitment.bytes)?
+                    .checked_add(commitment.unmanaged_used_bytes)
+                    .ok_or("Pool occupancy overflows u64")?;
+                if size < required {
+                    Err(ployz_core::StorageCapacityError::PoolCannotGrow {
+                        required_bytes: required,
+                        capacity_bytes: size,
+                    }
+                    .into())
+                } else {
+                    Ok(())
+                }
+            }
+            Err(error) => Err(error),
+        };
+        match fits {
             Err(PluginError::Capacity(error, _)) => {
                 Err(PluginError::Capacity(error, self.trash_held(pool).await))
             }
@@ -477,7 +504,8 @@ impl PoolStorage {
         }
     }
 
-    /// Makes the managed backing Pool large enough for all requested bounds.
+    /// Makes the managed backing Pool large enough for all requested bounds; returns the
+    /// Pool's usable size.
     ///
     /// # Errors
     ///
@@ -487,7 +515,7 @@ impl PoolStorage {
         pool: &MachinePool,
         commitment: u64,
         unmanaged_used_bytes: u64,
-    ) -> Result<()> {
+    ) -> Result<u64> {
         let minimum = ployz_core::storage_with_headroom(commitment)?
             .checked_add(unmanaged_used_bytes)
             .ok_or("Pool occupancy overflows u64")?;
@@ -501,7 +529,7 @@ impl PoolStorage {
             }
         }
         if pool.size_bytes().get() >= minimum {
-            return Ok(());
+            return Ok(pool.size_bytes().get());
         }
         if pool.name() != POOL_NAME {
             return Err(ployz_core::StorageCapacityError::PoolCannotGrow {
@@ -550,7 +578,7 @@ impl PoolStorage {
             }
             let expanded_size = expanded.size_bytes().get();
             if expanded_size >= minimum {
-                return Ok(());
+                return Ok(expanded_size);
             }
             if expanded_size < observed || (expanded_size == observed && newly_allocated) {
                 return Err(format!(

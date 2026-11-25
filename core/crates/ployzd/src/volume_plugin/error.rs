@@ -38,6 +38,12 @@ pub(super) enum PluginError {
         "Volume {name} was restored from the Trash holding other data than this Deploy expects, so Docker doesn't get it; deploy the Volume it held"
     )]
     RestoredForOtherData { name: String },
+    /// A root restored from the Trash that no Create registered yet: Docker may still hold
+    /// a record of the name from before the delete, so it doesn't mount it.
+    #[error(
+        "Volume {name} was restored from the Trash and no Deploy has taken it up yet, so Docker doesn't mount it; deploy the Volume it held"
+    )]
+    RestoredUnregistered { name: String },
     /// Docker did not list the Containers that mount the name, so no fresh root goes under
     /// it yet.
     #[error(

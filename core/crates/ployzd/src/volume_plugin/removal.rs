@@ -51,7 +51,8 @@ impl VolumeStorage {
         let dataset = Self::dataset(&datasets, &pool, name)?
             .expect("the requested dataset was just observed");
         dataset.require_provisioned(name)?;
-        if self.marks(&dataset.name).hidden().await? {
+        // A root restored from the Trash that no Create took up goes back to the Trash.
+        if self.marks(&dataset.name).unregistered().await? {
             return Err(PluginError::UnregisteredRoot {
                 name: name.to_string(),
                 dataset: dataset.name.clone(),

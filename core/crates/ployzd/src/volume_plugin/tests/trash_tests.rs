@@ -478,3 +478,171 @@ async fn empty_destroys_the_entries_it_names_and_keeps_one_whose_marks_do_not_re
             .exists()
     );
 }
+
+/// Writes the fake's one Pool, `tank`, as 4 GiB holding `used` bytes.
+pub(super) fn pool_using(test: &TestDir, used: u64) {
+    let free = (4u64 << 30) - used;
+    fs::create_dir_all(test.0.join("props")).unwrap();
+    fs::write(
+        test.0.join("props/pools"),
+        format!("tank\t{}\t{used}\t{free}\tONLINE\toff\n", 4u64 << 30),
+    )
+    .unwrap();
+}
+
+/// A restored copy's snapshots stay on the Pool beside it, as a live copy's do: a restore
+/// counts them, so it refuses an entry the Pool holds only while it is in the Trash.
+#[tokio::test]
+async fn a_restore_counts_the_snapshots_the_entry_brings_back() {
+    let test = test_dir();
+    let plugin = Plugin::start(&test, &["root"], Ok(vec![]));
+    let entry = plant_trash(&test, &trash_id(1), "data", "root", 0, false);
+    set_property(&test, &entry, "used", &(3u64 << 30).to_string());
+    set_property(&test, &entry, "usedbydataset", &(1u64 << 29).to_string());
+    pool_using(&test, 3 << 30);
+
+    let reply = plugin.restore(&entry).await;
+
+    assert!(refusal(&reply).contains("Machine Pool needs"), "{reply}");
+    assert!(!test.0.join("volume").exists());
+    assert_eq!(trashed(&test), [entry]);
+}
+
+/// A restore of a copy taken from a slot makes the slot first and moves the copy into it
+/// after; one stopped between the two takes up the slot it made when run again.
+#[tokio::test]
+async fn a_restore_of_a_copy_stopped_after_its_slot_finishes_when_run_again() {
+    let test = test_dir();
+    let plugin = Plugin::start(&test, &["root"], Ok(vec![]));
+    let entry = plant_trash(&test, &trash_id(1), "data", "copy", 0, false);
+    set_property(
+        &test,
+        "",
+        "fail-command",
+        &format!("rename {entry} tank/ployz-mirror/data/fs"),
+    );
+
+    let stopped = plugin.restore(&entry).await;
+    assert!(stopped.get("Err").is_some(), "{stopped}");
+    assert!(test.0.join("mirror").exists() && !test.0.join("mirror-fs").exists());
+    assert_eq!(trashed(&test).as_slice(), std::slice::from_ref(&entry));
+
+    let again = plugin.restore(&entry).await;
+
+    assert_eq!(again.pointer("/Ok/place"), Some(&json!("copy")), "{again}");
+    assert!(test.0.join("mirror-fs").exists());
+    assert_eq!(trashed(&test), Vec::<String>::new());
+    let parent = "tank/ployz-mirror/data";
+    assert_eq!(
+        property(&test, parent, "ployz:role").as_deref(),
+        Some("old_copy")
+    );
+    assert_eq!(property(&test, parent, "ployz:trash-restoring"), None);
+    assert_eq!(
+        property(&test, "tank/ployz-mirror/data/fs", "ployz:trash-name"),
+        None
+    );
+}
+
+/// Docker may keep a record of a deleted name and mount it without a Create, so a root
+/// restored from the Trash mounts only once a Create of its own data registers it.
+#[tokio::test]
+async fn a_restored_root_mounts_only_once_a_create_registers_it() {
+    let test = test_dir();
+    let (plugin, entry) = deleted_root(&test).await;
+    assert!(plugin.restore(&entry).await.get("Ok").is_some());
+
+    for route in ["/VolumeDriver.Mount", "/VolumeDriver.Path"] {
+        let refused = plugin.post(route, json!({"Name": "data", "ID": "c"})).await;
+        assert!(
+            error(&refused).contains("restored from the Trash"),
+            "{route}: {refused}"
+        );
+    }
+    assert!(!test.0.join("mounted").exists());
+
+    assert_eq!(plugin.create(BORN).await, json!({"Err": ""}));
+    let mounted = plugin
+        .post("/VolumeDriver.Mount", json!({"Name": "data", "ID": "c"}))
+        .await;
+    assert_eq!(error(&mounted), "", "{mounted}");
+}
+
+/// A restored root no Create took up can be deleted again, back into the Trash.
+#[tokio::test]
+async fn a_restored_root_no_create_took_up_goes_back_to_the_trash() {
+    let test = test_dir();
+    let (plugin, entry) = deleted_root(&test).await;
+    assert!(plugin.restore(&entry).await.get("Ok").is_some());
+
+    let removed = plugin
+        .post("/VolumeDriver.Remove", json!({"Name": "data"}))
+        .await;
+
+    assert_eq!(removed, json!({"Err": ""}));
+    assert!(!test.0.join("volume").exists());
+    let again = trashed_one(&test, "root");
+    assert_eq!(
+        property(&test, &again, "ployz:origin").as_deref(),
+        Some(BORN)
+    );
+}
+
+/// A Create for other data refused at a restored root changes nothing on it, not even the
+/// promote mark a seed left there.
+#[tokio::test]
+async fn a_create_refused_at_a_restored_root_leaves_its_marks() {
+    let test = test_dir();
+    let (plugin, entry) = deleted_root(&test).await;
+    set_property(&test, &entry, "ployz:promote", "on");
+    assert!(plugin.restore(&entry).await.get("Ok").is_some());
+
+    let other = plugin.create(&"1".repeat(64)).await;
+
+    assert!(error(&other).contains("restored from the Trash"), "{other}");
+    assert_eq!(
+        property(&test, ROOT, "ployz:promote").as_deref(),
+        Some("on")
+    );
+    assert_eq!(
+        property(&test, ROOT, "ployz:restored").as_deref(),
+        Some("on")
+    );
+}
+
+/// A Machine whose Pool isn't imported doesn't know what its Trash holds, so List and
+/// Empty refuse rather than answer an empty Trash.
+#[tokio::test]
+async fn list_and_empty_refuse_while_a_held_pool_is_not_imported() {
+    let test = test_dir();
+    let plugin = Plugin::start(&test, &[], Ok(vec![]));
+    fs::create_dir_all(test.0.join("props")).unwrap();
+    fs::write(test.0.join("props/pools"), "").unwrap();
+    fs::create_dir(test.0.join("ployz-volumes")).unwrap();
+
+    let listed = plugin.post("/Ployz.Trash.List", json!(null)).await;
+    let emptied = plugin
+        .post("/Ployz.Trash.Empty", json!({"ids": [trash_id(1)]}))
+        .await;
+
+    for reply in [listed, emptied] {
+        assert!(refusal(&reply).contains("not imported"), "{reply}");
+    }
+}
+
+/// A sweep that runs late counts the hour after the last one it counted, so sweeps half
+/// an hour off the hour still count every hour.
+#[tokio::test]
+async fn a_late_sweep_loses_no_hour() {
+    let test = test_dir();
+    let (plugin, _) = deleted_root(&test).await;
+    plugin.sweep().await;
+
+    plugin.clock.fetch_add(HOUR_MS * 3 / 2, Ordering::SeqCst);
+    let late = plugin.sweep().await;
+    plugin.clock.fetch_add(HOUR_MS / 2, Ordering::SeqCst);
+    let next = plugin.sweep().await;
+
+    assert_eq!(late.pointer("/Ok/hours"), Some(&json!(1)), "{late}");
+    assert_eq!(next.pointer("/Ok/hours"), Some(&json!(2)), "{next}");
+}

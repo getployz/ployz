@@ -487,10 +487,7 @@ async fn remove_reads_promote_as_an_effective_value() {
 
         let reply = post(&socket, "/VolumeDriver.Remove", json!({"Name": "data"})).await;
         let trace = trace(&commands(&test));
-        let mut read = vec!["zfs get -H -o value ployz:promote tank/ployz/data"];
-        if !inherited {
-            read.push("zfs get -H -o value ployz:restored tank/ployz/data");
-        }
+        let read = ["zfs get -H -o value ployz:promote tank/ployz/data"];
         assert_eq!(
             trace.iter().take(read.len()).collect::<Vec<_>>(),
             read,
@@ -519,9 +516,9 @@ async fn create_of_an_existing_unregistered_root_clears_its_promote() {
     assert_eq!(
         trace(&commands(&test)),
         [
+            "zfs get -H -o value ployz:restored tank/ployz/data",
             "zfs get -H -o value ployz:promote tank/ployz/data",
             "zfs inherit ployz:promote tank/ployz/data",
-            "zfs get -H -o value ployz:restored tank/ployz/data",
         ]
     );
     assert_eq!(property(&test, ROOT, "ployz:promote"), None);

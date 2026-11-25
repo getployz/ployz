@@ -1388,6 +1388,7 @@ async fn a_full_send_the_pool_cannot_hold_beside_the_old_copy_keeps_it() {
     let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
     set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
     set_property(&test, SLOT_FS, "used", &(2u64 << 30).to_string());
+    set_property(&test, SLOT_FS, "usedbydataset", &(2u64 << 30).to_string());
     let held = plant_trash(&test, &trash_id(1), "logs", "root", 0, false);
     set_property(&test, &held, "used", "500000000");
 
@@ -1406,6 +1407,42 @@ async fn a_full_send_the_pool_cannot_hold_beside_the_old_copy_keeps_it() {
     assert_eq!(snapshot_names(&test, SLOT_FS), ["w-1-1"]);
     assert_eq!(trashed(&test), [held]);
     assert!(!commands(&test).contains("zfs rename tank/ployz-mirror/data/fs"));
+    server.abort();
+}
+
+/// The old copy's snapshots already count as the Pool's own bytes, so moving it to the
+/// Trash adds only its own: a full send that fits beside it goes ahead.
+#[tokio::test]
+async fn a_full_send_that_fits_beside_the_old_copy_moves_it_to_the_trash() {
+    let source = Source::start(Some(BOUND), "snapshot w-1-2 12\n").await;
+    source.answer(
+        "base=",
+        StatusCode::NOT_FOUND,
+        "snapshot 11 is not on tank/ployz/data",
+    );
+    let test = test_dir();
+    let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
+    set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
+    set_property(
+        &test,
+        "tank/ployz-mirror/data",
+        "refquota",
+        &(1u64 << 30).to_string(),
+    );
+    set_property(&test, SLOT_FS, "used", &(3u64 << 29).to_string());
+    set_property(&test, SLOT_FS, "usedbydataset", &(1u64 << 29).to_string());
+    super::trash_tests::pool_using(&test, 3 << 29);
+
+    post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
+    let copy = landed(&socket, "w-1-2").await;
+
+    assert_eq!(
+        copy.pointer("/Ok/newest/guid"),
+        Some(&json!("12")),
+        "{copy}"
+    );
+    let old = trashed_one(&test, "copy");
+    assert_eq!(snapshot_names(&test, &old), ["w-1-1"]);
     server.abort();
 }
 

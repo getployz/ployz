@@ -20,7 +20,10 @@
 //! with a restart possible between any two. A seed into an absent `into` buries the steps
 //! the Trash holds before it reads its own (`bury_trash`). The person can restore the entry
 //! where nothing of `into` is (`restore_trash`), never a slot still carrying its step, and the
-//! sweep can destroy it (`sweep_trash`), burying first.
+//! sweep can destroy it (`sweep_trash`), burying first. An old copy a full receive moved to
+//! the Trash (`discard_copy`) comes back in two steps: ZFS makes a slot parent carrying the
+//! entry's ID (`ployz:trash-restoring`), then the copy is renamed under it; a restore run
+//! again after a restart between the two takes up the parent carrying its ID, and only that.
 //! The daemon and the plugin can restart between any two steps, which kills the receive
 //! and loses the request in hand, but keeps the record, the tombstones and the datasets.
 //! The step's window closes once, and the plugin's wall clock may step back once after.
@@ -33,7 +36,8 @@
 //! receive only inside the step's window on the plugin's clock; a call the daemon found
 //! past the window starts no new copy; a copy is refused as deleted only after `into`
 //! was deleted, so no call that ended or failed partway costs the approval; and `into`
-//! never holds two roots.
+//! never holds two roots; a restore cut after it made its slot finishes when run again,
+//! and lands an entry only in a slot it made.
 //!
 //! Out of scope: a receive that fails (its answer is the same `Failed` arm the unbound seed
 //! has), the zfs calls inside a landing (the `volume_marks` model checks their order), a
@@ -199,8 +203,12 @@ enum Action {
     Trashed,
     /// `discard` buries the step the entry carries, after the rename.
     Buried,
-    /// The person restores the entry (`restore_trash`, under `admit_mutation`).
+    /// The person restores the entry (`restore_trash`, under `admit_mutation`). For an old
+    /// copy, ZFS makes the slot parent carrying the entry's ID, or the call takes up the one
+    /// a cut restore made.
     Restore,
+    /// The restore of an old copy renames it under the slot parent it made.
+    RestoreLand,
     /// The sweep, or an Empty, destroys the entry, burying first.
     Expire,
     /// Another approval makes a Volume named `into`, which carries another origin.
@@ -220,6 +228,11 @@ enum Scenario {
     TakenSlot,
     /// An empty slot parent of `into` an interrupted mirror pull left.
     EmptySlot,
+    /// No `into`, and the Trash holds an old copy of it a full receive moved there.
+    TrashedCopy,
+    /// That old copy in the Trash, and an empty slot parent of `into` an interrupted
+    /// mirror pull left.
+    TrashedCopyOverEmpty,
 }
 
 const ALL: &[Scenario] = &[
@@ -227,7 +240,16 @@ const ALL: &[Scenario] = &[
     Scenario::TakenRoot,
     Scenario::TakenSlot,
     Scenario::EmptySlot,
+    Scenario::TrashedCopy,
+    Scenario::TrashedCopyOverEmpty,
 ];
+
+/// The old copy a full receive moved to the Trash, as it comes back: a slot no step made.
+const OLD_COPY: Into = Into::Slot {
+    ours: false,
+    record: Some(Origin::Other),
+    fs: Some(Fill::Point),
+};
 
 const MAX_SENDS: u8 = 3;
 
@@ -271,6 +293,18 @@ struct State {
     bury_cut: bool,
     /// The entry came back from the Trash.
     restored: bool,
+    /// The entry is an old copy, restored in two steps.
+    trash_copy: bool,
+    /// The empty slot parent of `into` carries the entry's ID.
+    restoring: bool,
+    /// A restore call is between its slot parent and its rename.
+    restoring_call: bool,
+    /// A restart cut a restore between its slot parent and its rename.
+    restore_cut: bool,
+    /// A restore found the slot parent a cut restore made and refused it.
+    stranded: bool,
+    /// A restore landed an entry in a slot parent it did not make.
+    landed_other: bool,
     /// The sweep destroyed the entry.
     expired: bool,
     /// A copy made, refilled or landed `into` after it was deleted carrying the birth.
@@ -336,6 +370,10 @@ struct Broken {
     restores_unlanded: bool,
     /// A restore goes ahead while `into` has a copy.
     restores_over_taken: bool,
+    /// A restore of an old copy refuses any slot parent of `into`, its own included.
+    restore_no_resume: bool,
+    /// A restore of an old copy takes up any empty slot parent of `into`.
+    restore_adopts_any: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -369,6 +407,16 @@ const STARTS_IN_WINDOW: &str = "a new copy makes its slot and starts its receive
 const CLOSED_STAYS_CLOSED: &str = "a call the daemon found past the window starts no new copy";
 const DELETED_ONLY_AFTER_DELETE: &str = "a copy is refused as deleted only after into was deleted";
 const ONE_ROOT: &str = "into never holds two roots";
+const RESTORE_FINISHES: &str = "a restore cut after it made its slot finishes when run again";
+const RESTORE_OWN_SLOT: &str = "a restore lands an entry only in a slot it made";
+
+fn trashed_copy(model: &CopyStep) -> bool {
+    model.scenario == Scenario::TrashedCopy
+}
+
+fn trashed_copy_over_empty(model: &CopyStep) -> bool {
+    model.scenario == Scenario::TrashedCopyOverEmpty
+}
 
 /// Each branch the bounds reach, once. `every_copy_sometimes_needs_what_it_names` takes each
 /// row's `omit` out and expects its `name` unreached.
@@ -491,6 +539,28 @@ const COVERAGE: &[Coverage] = &[
         omit: Some(Omit::Actions(&[Action::ReuseEmpty])),
         reached: |_, state| {
             took(state, Path::Taken) && state.deleted && state.into == Into::EMPTY_OTHER
+        },
+    },
+    Coverage {
+        name: "a restore of an old copy lands it in the slot it made",
+        on: trashed_copy,
+        omit: Some(Omit::Actions(&[Action::RestoreLand])),
+        reached: |_, state| state.last == Some(Action::RestoreLand) && state.restored,
+    },
+    Coverage {
+        name: "a restore run again after a restart cut it takes up the slot it made",
+        on: trashed_copy,
+        omit: Some(Omit::Actions(&[Action::Restart])),
+        reached: |_, state| state.last == Some(Action::RestoreLand) && state.restore_cut,
+    },
+    Coverage {
+        name: "a restore refuses an empty slot parent it did not make",
+        on: trashed_copy_over_empty,
+        omit: Some(Omit::Actions(&[Action::Restore])),
+        reached: |_, state| {
+            state.last == Some(Action::Restore)
+                && state.into == Into::EMPTY_OTHER
+                && !state.restoring_call
         },
     },
     Coverage {
@@ -715,6 +785,8 @@ impl CopyStep {
             }
             Action::Restart => {
                 state.restarted = true;
+                state.restore_cut |= state.restoring_call;
+                state.restoring_call = false;
                 Self::cut(state);
                 state.receiving = false;
                 state.delete_cut |= state.deleting && !state.renamed;
@@ -741,6 +813,8 @@ impl CopyStep {
             Action::Trashed => {
                 state.deleted |= state.into.carries_birth();
                 state.trash = Some(state.into);
+                state.trash_copy = false;
+                state.restoring = false;
                 state.into = Into::Absent;
                 state.renamed = true;
             }
@@ -749,6 +823,16 @@ impl CopyStep {
                     state.trash.is_some_and(Into::carries_step) && !self.broken.no_tombstone;
                 state.deleting = false;
                 state.renamed = false;
+            }
+            Action::Restore if state.trash_copy => self.restore_copy(state),
+            Action::RestoreLand => {
+                if let Some(entry) = state.trash.take() {
+                    state.landed_other |= !state.restoring;
+                    state.into = entry;
+                    state.restoring = false;
+                    state.restoring_call = false;
+                    state.restored = true;
+                }
             }
             Action::Restore => {
                 if let Some(entry) = state.trash.take() {
@@ -762,6 +846,7 @@ impl CopyStep {
                 state.tombstone |=
                     state.trash.is_some_and(Into::carries_step) && !self.broken.no_tombstone;
                 state.trash = None;
+                state.trash_copy = false;
                 state.expired = true;
             }
             Action::Reuse => {
@@ -772,6 +857,21 @@ impl CopyStep {
                 state.reused = true;
                 state.into = Into::EMPTY_OTHER;
             }
+        }
+    }
+
+    /// The first step of an old copy's restore: make the slot parent carrying the entry's
+    /// ID where nothing of `into` is, take up the one carrying it, or refuse.
+    fn restore_copy(&self, state: &mut State) {
+        let own = state.restoring && state.into == Into::EMPTY_OTHER;
+        if own && self.broken.restore_no_resume {
+            state.stranded = true;
+        } else if own || (self.broken.restore_adopts_any && state.into == Into::EMPTY_OTHER) {
+            state.restoring_call = true;
+        } else if state.into == Into::Absent {
+            state.into = Into::EMPTY_OTHER;
+            state.restoring = true;
+            state.restoring_call = true;
         }
     }
 
@@ -797,8 +897,13 @@ impl Model for CopyStep {
                 record: Some(Origin::Other),
                 fs: Some(Fill::Partial),
             },
-            Scenario::EmptySlot => Into::EMPTY_OTHER,
+            Scenario::EmptySlot | Scenario::TrashedCopyOverEmpty => Into::EMPTY_OTHER,
+            Scenario::TrashedCopy => Into::Absent,
         };
+        let trash_copy = matches!(
+            self.scenario,
+            Scenario::TrashedCopy | Scenario::TrashedCopyOverEmpty
+        );
         vec![State {
             open: true,
             plugin_open: true,
@@ -810,7 +915,7 @@ impl Model for CopyStep {
             held: Held::Idle,
             deleting: false,
             renamed: false,
-            trash: None,
+            trash: trash_copy.then_some(OLD_COPY),
             on_wire: 0,
             sends: 0,
             restarted: false,
@@ -821,6 +926,12 @@ impl Model for CopyStep {
             delete_cut: false,
             bury_cut: false,
             restored: false,
+            trash_copy,
+            restoring: false,
+            restoring_call: false,
+            restore_cut: false,
+            stranded: false,
+            landed_other: false,
             expired: false,
             remade: false,
             two_roots: false,
@@ -844,8 +955,10 @@ impl Model for CopyStep {
         match state.held {
             Held::Idle if state.on_wire > 0 => actions.push(Action::Take),
             Held::Idle => {}
-            // The plugin's call waits for the mutation a delete holds.
-            Held::Took { .. } if !state.deleting => actions.push(Action::Plugin),
+            // The plugin's call waits for the mutation a delete or a restore holds.
+            Held::Took { .. } if !state.deleting && !state.restoring_call => {
+                actions.push(Action::Plugin);
+            }
             Held::Took { .. } => {}
             Held::Plugin { .. } => actions.push(Action::Advance),
         }
@@ -885,13 +998,22 @@ impl Model for CopyStep {
         if let Some(entry) = state.trash
             && !state.deleting
             && !in_plugin
+            && !state.restoring_call
         {
             let free = state.into == Into::Absent || self.broken.restores_over_taken;
             let unlanded = matches!(entry, Into::Slot { ours: true, .. });
-            if free && !state.receiving && (!unlanded || self.broken.restores_unlanded) {
+            if state.trash_copy {
+                // Its first step decides between making, taking up and refusing.
+                if !state.receiving {
+                    actions.push(Action::Restore);
+                }
+            } else if free && !state.receiving && (!unlanded || self.broken.restores_unlanded) {
                 actions.push(Action::Restore);
             }
             actions.push(Action::Expire);
+        }
+        if state.restoring_call {
+            actions.push(Action::RestoreLand);
         }
         if state.into == Into::Absent && state.deleted && !state.reused {
             actions.push(Action::Reuse);
@@ -924,6 +1046,8 @@ impl Model for CopyStep {
                 !state.falsely_deleted
             }),
             Property::always(ONE_ROOT, |_, state: &State| !state.two_roots),
+            Property::always(RESTORE_FINISHES, |_, state: &State| !state.stranded),
+            Property::always(RESTORE_OWN_SLOT, |_, state: &State| !state.landed_other),
         ];
         properties.extend(harness::sometimes(COVERAGE, self));
         properties
@@ -968,6 +1092,10 @@ fn reads_as(action: Action, after: &State) -> String {
         ),
         Action::Restore => format!(
             "the person restores the entry (trash.rs restore_trash); into={:?}",
+            after.into
+        ),
+        Action::RestoreLand => format!(
+            "the restore renames the old copy under the slot parent (trash.rs restore_trash); into={:?}",
             after.into
         ),
         Action::Expire => format!(
@@ -1286,6 +1414,42 @@ mod tests {
                 },
             ),
             ONE_ROOT,
+        );
+    }
+
+    /// A restore stopped between the slot it made and its rename leaves an empty slot
+    /// parent; a restore that refuses every slot parent never finishes.
+    #[test]
+    fn a_restore_cut_after_its_slot_takes_it_up_when_run_again() {
+        let path = breaks(
+            broken(
+                Scenario::TrashedCopy,
+                Broken {
+                    restore_no_resume: true,
+                    ..Broken::default()
+                },
+            ),
+            RESTORE_FINISHES,
+        );
+        assert!(
+            harness::last(&path).restore_cut,
+            "a restart cut the restore"
+        );
+    }
+
+    /// The empty slot parent an interrupted mirror pull left is another Volume's: a
+    /// restore that takes up any empty parent lands the old copy in it.
+    #[test]
+    fn a_restore_takes_up_only_the_slot_parent_carrying_its_id() {
+        breaks(
+            broken(
+                Scenario::TrashedCopyOverEmpty,
+                Broken {
+                    restore_adopts_any: true,
+                    ..Broken::default()
+                },
+            ),
+            RESTORE_OWN_SLOT,
         );
     }
 
