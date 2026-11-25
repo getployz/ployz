@@ -114,6 +114,7 @@ pub(in crate::handlers) fn sign(
         services: services.to_vec(),
         target: true,
         deployment: None,
+        upload: false,
     };
     if let Some(key) = silent::key()? {
         silent::refuse_forget(matches, store.again())?;

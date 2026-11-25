@@ -2620,6 +2620,7 @@ fn plan(store: &ConfigStore, who: &Actor) -> ployz_store::PlanView {
                 services: Vec::new(),
                 target: true,
                 deployment: None,
+                upload: false,
             },
         )
         .unwrap()

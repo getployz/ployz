@@ -65,6 +65,11 @@ pub struct PlanQuery {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub deployment: Option<DeploymentId>,
+    /// The Deploy sends a new upload, which each Service without a source of its own
+    /// that it ships builds from.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(optional, as = "Option<bool>")]
+    pub upload: bool,
 }
 
 /// The authored review of a Deploy. What only the Servers can decide is `unresolved`.
@@ -109,6 +114,13 @@ pub struct PlanView {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(optional, as = "Option<Vec<Unsigned>>")]
     pub unsigned: Vec<Unsigned>,
+    /// When the query asked for `target`: each Service this Deploy ships that builds from
+    /// an upload, the one it sends or else the one it last built from, whether or not it
+    /// reaches data. A Server that enforces Device approval builds none of them. Absent
+    /// from an older Store.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<Vec<ServiceName>>")]
+    pub uploads: Vec<ServiceName>,
 }
 
 /// A Service a Deploy ships that its Servers run only signed, and nothing signed covers.
@@ -370,7 +382,7 @@ pub(crate) fn plan(
         namespace.clone(),
         None,
     )?;
-    let (lowered, volumes, unsigned) = match query.target {
+    let (lowered, volumes, unsigned, uploads) = match query.target {
         true => {
             // The specs of the Services it ships, for a Device to approve before it
             // admits the Deploy.
@@ -387,9 +399,16 @@ pub(crate) fn plan(
                 (&frozen.nodes, &lowered),
             )?;
             let volumes = crate::volume::birth::planned(tx, &environment.summary.id, &target)?;
-            (Some(lowered), volumes, unsigned)
+            let uploads = deployment::uploads::building(
+                tx,
+                &environment.summary.id,
+                &target,
+                &frozen,
+                query.upload,
+            )?;
+            (Some(lowered), volumes, unsigned, uploads)
         }
-        false => (None, PlannedVolumes::new(), Vec::new()),
+        false => (None, PlannedVolumes::new(), Vec::new(), Vec::new()),
     };
     let regions = target
         .services
@@ -429,6 +448,7 @@ pub(crate) fn plan(
         replicas,
         volumes,
         unsigned,
+        uploads,
     })
 }
 
@@ -479,6 +499,7 @@ fn redeploy_plan(
         replicas: BTreeMap::new(),
         volumes,
         unsigned: Vec::new(),
+        uploads: Vec::new(),
     })
 }
 

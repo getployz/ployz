@@ -65,20 +65,32 @@ export const unsourced = (unsigned: readonly Unsigned[], sourced: ReadonlySet<st
   unsigned.find((entry) => needsSource(entry) && !sourced.has(entry.service))?.service ?? null;
 
 /**
- * Why no tap can build a Service of `unsigned` that only a Source step builds, as the asker hears it before any link:
- * `source`'s reason when it can't be signed, or what to deploy instead when its rule can't name the Service. Null when
- * it names each.
+ * Why no tap can build what a Deploy ships, as the asker hears it before any link, on Servers that enforce device
+ * approval: a Service of `uploads`, which builds from an upload, or one of `unsigned` that only a Source step builds
+ * when `source` can't be signed. Null when nothing stops it.
  */
-export function unbuildable(unsigned: readonly Unsigned[], source: DeploySource | undefined) {
-  const service = unsourced(unsigned, new Set(source?.kind === "sign" ? source.view.sources.map(({ service }) => service) : []));
-  if (service === null) return null;
-  if (source?.kind === "held") return `${source.reason} Nothing deployed.`;
-  return `No automatic deploy rule can cover ${service}, so your servers won't build it. Deploy a prebuilt image by digest, or connect the service to a GitHub repository.`;
+export function unbuildable(uploads: readonly string[], unsigned: readonly Unsigned[], source: DeploySource | undefined) {
+  const [upload] = uploads;
+  if (upload !== undefined) return `Your servers won't build ${upload} from an upload. Deploy a prebuilt image by digest, or connect the service to a GitHub repository.`;
+  if (source?.kind === "held" && unsigned.some(needsSource)) return `${source.reason} Nothing deployed.`;
+  return null;
 }
 
-/** Whether a Deploy of `services`, or of every Service when it names none, ships one whose rule `source` signs. */
-export const shipsSource = (services: readonly string[], source: DeploySource | undefined) =>
-  source?.kind === "sign" && !source.unchecked && (services.length === 0 || source.view.sources.some(({ service }) => services.includes(service)));
+/** The Services a Deploy of `services`, or of every Service when it names none, ships that `source`'s rule must name. */
+export const sourceRequires = (services: readonly string[], source: DeploySource | undefined) =>
+  source?.kind === "sign" && !source.unchecked
+    ? source.view.sources.map(({ service }) => service).filter((service) => services.length === 0 || services.includes(service))
+    : [];
+
+/** Whether a Deploy of `services` ships a Service whose rule `source` signs. */
+export const shipsSource = (services: readonly string[], source: DeploySource | undefined) => sourceRequires(services, source).length > 0;
+
+/**
+ * The first Service a Deploy of `services` ships that its Source step must name and `sourced` leaves out: one the
+ * rule view `source` requires, or one of `unsigned` that only a Source step builds. Null when it names each.
+ */
+export const unsourcedShipped = (services: readonly string[], unsigned: readonly Unsigned[], source: DeploySource | undefined, sourced: ReadonlySet<string>) =>
+  sourceRequires(services, source).find((service) => !sourced.has(service)) ?? unsourced(unsigned, sourced);
 
 /** Why a Service no passkey can sign keeps the Deploy from asking, or null when a passkey can sign each of `unsigned`. */
 export function blocked(unsigned: readonly Unsigned[]) {

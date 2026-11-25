@@ -149,6 +149,10 @@ stops before anything changes. A build an approved device starts over its own co
 runs, and so does a push under an
 [automatic deploy rule](../deploy/github.md#approve-a-rule-for-deploys-on-push).
 
+A deploy through Ployz Cloud that builds a service from an upload, as `ployz up` sends one,
+stops before it starts instead:
+`Your servers won't build app from an upload. Deploy a prebuilt image by digest, or connect the service to a GitHub repository.`
+
 ## When a build fails
 
 A build moves to the next builder when a builder can't take it, or when a GitHub run ends early

@@ -2823,6 +2823,7 @@ fn hiding_a_sealed_value_changes_no_plan_version_or_effect() {
                 services: Vec::new(),
                 target: false,
                 deployment: None,
+                upload: false,
             },
         )
         .unwrap();
@@ -3729,6 +3730,7 @@ fn every_read(store: &ConfigStore, who: &Actor, environment: &str, parent: &str)
                         services: Vec::new(),
                         target: false,
                         deployment: None,
+                        upload: false,
                     },
                 )
                 .unwrap(),

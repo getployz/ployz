@@ -15,7 +15,7 @@ import { codeOfPasskeyKey } from "#/modules/passkeys/passkey-key";
 import { listOrganizationServers } from "#/modules/runtime/connections.server";
 import { firstRuntimeFrame, OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { pinImageDigests } from "#/modules/runtime/ployz.server";
-import { needsSource, underRule } from "#/modules/deploy-approval/deploy-tap";
+import { underRule } from "#/modules/deploy-approval/deploy-tap";
 import { Database } from "#/server/database.server";
 
 /** What a Server that enforces device approval needs to check a passkey's versions. */
@@ -70,14 +70,16 @@ type TapInput = {
   /** Classify a Deploy someone else will sign: the gate checks the Servers, not `actor`'s passkeys. */
   readonly classify?: true;
   /** Read whether the Deploy's own tap signs the automatic deploy rule with it. */
-  readonly rule?: true;
+  readonly rule?: boolean;
+  /** The Deploy sends a new upload, which each Service without a source of its own builds from. */
+  readonly upload?: boolean;
 };
 
 export const prepareDeployTap = Effect.fn("DeployTap.prepare")(function* (actor: Actor, input: TapInput) {
   const access = yield* requireAccess(actor, input.organizationSlug, "changes:deploy");
   const read = yield* callStore(access.organization.id, actor.userId, {
     operation: "read",
-    query: { query: "plan", environment: input.environment, services: [...input.services], target: true },
+    query: { query: "plan", environment: input.environment, services: [...input.services], target: true, upload: input.upload === true },
   }, { approval: "not_required", permissions: access.permissions, environments: access.environments });
   if (!read.ok) return { kind: "refused", message: read.refusal.message, details: read.refusal.details } satisfies DeployPlan;
   const plan = read.value;
@@ -101,11 +103,9 @@ export const prepareDeployTap = Effect.fn("DeployTap.prepare")(function* (actor:
   const signer = input.classify === true ? null : actor.userId;
   // Only a member who signs here may sign the rule with the Deploy. Classified, it says whether whoever approves it signs one.
   let source = input.rule !== true || access.kind !== "member" ? null : yield* sourceOf(access, input.environment, plan.version, actor.userId, signer === null);
-  // A Service only the rule builds that no Source step can name still reads whether any Server enforces it, so a link
-  // or its page can say it won't build.
-  const named = new Set(source?.kind === "sign" ? source.view.sources.map(({ service }) => service) : []);
-  const unnamed = input.rule === true && (plan.unsigned ?? []).some((entry) => needsSource(entry) && !named.has(entry.service));
-  const versions = (unsigned.length === 0 && !unnamed) || asks ? Effect.succeed<DeployTap>({ kind: "off" })
+  // Classified, a build from an upload still reads whether any Server enforces device approval: none builds one then.
+  const uploads = input.classify === true && (plan.uploads ?? []).length > 0;
+  const versions = (unsigned.length === 0 && !uploads) || asks ? Effect.succeed<DeployTap>({ kind: "off" })
     : gate(signer, access.organization.id, tags, { namespace: plan.namespace, parents, needs: SIGNS });
   let tap: DeployTap;
   if (source?.kind === "sign") {
