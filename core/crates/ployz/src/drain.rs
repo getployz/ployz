@@ -1,6 +1,8 @@
-//! Drain: turn a Machine's services role off, retire its chosen Globals there, run
-//! Placement convergence for each chosen replicated Service with a Container on it, then
-//! observe what still runs there. One bounded command.
+//! Drain: turn a Machine's services role off, run Placement convergence for each chosen
+//! replicated Service with a Container on it, then observe what still runs there. One
+//! bounded command. A user Service on the Server with a Global copy anywhere, chosen or not,
+//! refuses the Drain in its preflight: a Drain retires no Global, and lets go of no Global's
+//! copy.
 //!
 //! Each move's old copy retires alongside the moves after it; the report waits for every
 //! retirement and still lists the Services in the order they were handled.
@@ -31,14 +33,13 @@ use ts_rs::TS;
 use crate::cluster::{Call, Deadline, RoleSetting, RoleWaitError, visible_machine, wait_for_role};
 use crate::connect::{Client, ConnectError, TARGET_RPC_TIMEOUT};
 use crate::deploy::cleanup::Copy;
-use crate::deploy::{Approvals, Approved, DeploySnapshot};
+use crate::deploy::{Approvals, Approved, CopyLifecycle, DeploySnapshot};
 
 pub(crate) mod placement;
 pub(crate) mod retirement;
 
-use crate::global_slot::copies_on;
 use placement::{Converged, LastIn, Moving, can_move, converge, named};
-use retirement::{Retirement, let_go, retire_globals};
+use retirement::let_go;
 
 pub use placement::{
     DrainStop, MachineRef, Move, MoveFailure, OldCopyEnd, StayReason, Unconfirmed,
@@ -88,9 +89,8 @@ pub enum DrainStep<'a> {
 /// What one Drain observed and did, in order.
 ///
 /// `services` lists each chosen Service that had a Container on `server` when the Drain
-/// looked: Globals first, then replicated Services, in the order handled. When `stopped` is
-/// set, the Service it stopped at reads `interrupted` or `not_attempted`, and every one
-/// after it reads `not_attempted`.
+/// looked, in the order handled. When `stopped` is set, the Service it stopped at reads
+/// `interrupted` or `not_attempted`, and every one after it reads `not_attempted`.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(into = "DrainReportWire")]
 #[ts(as = "DrainReportWire")]
@@ -242,8 +242,9 @@ pub enum DrainOutcome {
     /// by every live proxy and then removed. Never empty.
     OldCopies { ends: Vec<OldCopyEnd> },
     /// Global: its removal from the Server was acknowledged, or none of it was left there.
+    /// Only a Drain from before user Globals refused it made one; Cloud keeps their reports.
     Retired,
-    /// Global: it may still run on the Server, and why.
+    /// Global: it may still run on the Server, and why. Only made as `Retired` is.
     NotRetired { error: String },
     /// Replicated: the Drain stopped while handling it, after `moves`. The report's
     /// `stopped` says why.
@@ -310,37 +311,97 @@ pub enum Remaining {
     Unobserved { error: String },
 }
 
-/// Why a Drain did nothing past, at most, turning the services role off. The role is
-/// idempotent; a rerun finds it off.
+/// Why a Drain stopped before anything moved. A Drain that had turned the services role
+/// off says so in every error after that, by its type.
 #[derive(Debug, thiserror::Error)]
 pub enum DrainError {
-    /// The target names no visible Server, or more than one, or turning its services role
-    /// off failed.
+    /// Nothing changed.
+    #[error(transparent)]
+    Unchanged(Stop),
+    /// This Drain turned `server`'s services role off, then stopped before anything moved.
+    /// The role stays off until someone turns it back on. The role is idempotent; a rerun
+    /// finds it off.
+    #[error("{}", left_off(.server, .stop))]
+    LeftOff { server: MachineName, stop: Stop },
+    /// Turning `server`'s services role off timed out or was cancelled, so the daemon may
+    /// have turned it off anyway.
+    #[error("{}", maybe_off(.server, .stop))]
+    MaybeOff { server: MachineName, stop: Stop },
+}
+
+/// What stopped a Drain before anything moved.
+#[derive(Debug, thiserror::Error)]
+pub enum Stop {
+    /// The target names no visible Server, or more than one, a user Global runs on it, or
+    /// turning its services role off failed.
     #[error(transparent)]
     Refused(RpcError),
     /// The entry did not observe the services role off within 30 s.
-    #[error("this entry Server has not yet observed the new services role")]
+    #[error("This entry Server has not yet observed the new services role.")]
     RoleNotObserved,
     /// The Server's Containers could not be listed.
     #[error("Cannot observe Services on Server {server}: {detail}")]
     Unobservable { server: MachineName, detail: String },
     /// Cancellation came before anything moved.
-    #[error("cancelled before the Drain began")]
+    #[error("Cancelled before anything moved.")]
     Cancelled,
     /// The entry could not be reached.
     #[error(transparent)]
     Connect(#[from] ConnectError),
 }
 
+impl From<ConnectError> for DrainError {
+    fn from(error: ConnectError) -> Self {
+        Self::Unchanged(error.into())
+    }
+}
+
+/// What a Drain that turned `server`'s services off says when `stop` ended it.
+fn left_off(server: &MachineName, stop: &Stop) -> String {
+    let stopped = stop.to_string();
+    let end = if stopped.ends_with('.') { "" } else { "." };
+    format!(
+        "{stopped}{end} Services are now off on {server}: turn them back on to let it run \
+         services again."
+    )
+}
+
+/// What a Drain says when `stop` ended its turning `server`'s services off without an
+/// answer.
+fn maybe_off(server: &MachineName, stop: &Stop) -> String {
+    let stopped = stop.to_string();
+    let end = if stopped.ends_with('.') { "" } else { "." };
+    format!(
+        "{stopped}{end} Services may now be off on {server}: if they are, turn them back on \
+         to let it run services again."
+    )
+}
+
+impl From<Stop> for RpcError {
+    fn from(stop: Stop) -> Self {
+        let coded = |code, stop: &Stop| Self::new(code, stop.to_string());
+        match stop {
+            Stop::Refused(error) => error,
+            Stop::Connect(error) => error.into(),
+            stop @ (Stop::RoleNotObserved | Stop::Unobservable { .. } | Stop::Cancelled) => {
+                coded(RpcErrorCode::Unavailable, &stop)
+            }
+        }
+    }
+}
+
 impl From<DrainError> for RpcError {
     fn from(error: DrainError) -> Self {
-        let coded = |code, error: &DrainError| Self::new(code, error.to_string());
         match error {
-            DrainError::Refused(error) => error,
-            DrainError::Connect(error) => error.into(),
-            error @ (DrainError::RoleNotObserved
-            | DrainError::Unobservable { .. }
-            | DrainError::Cancelled) => coded(RpcErrorCode::Unavailable, &error),
+            DrainError::Unchanged(stop) => stop.into(),
+            DrainError::LeftOff { server, stop } => {
+                let message = left_off(&server, &stop);
+                Self::from(stop).with_message(message)
+            }
+            DrainError::MaybeOff { server, stop } => {
+                let message = maybe_off(&server, &stop);
+                Self::from(stop).with_message(message)
+            }
         }
     }
 }
@@ -386,7 +447,7 @@ pub(crate) async fn needing_versions(
 ) -> Result<Vec<QualifiedService>, DrainError> {
     let machines = client.machines().await?;
     let server = visible_machine(target, &machines)
-        .map_err(DrainError::Refused)?
+        .map_err(|error| DrainError::Unchanged(Stop::Refused(error)))?
         .machine
         .clone();
     let enforced = machines.iter().any(|observed| {
@@ -397,9 +458,11 @@ pub(crate) async fn needing_versions(
         return Ok(Vec::new());
     }
     let snapshot = client.deploy_snapshot(machines).await?;
-    unsigned_moves(snapshot, &server.id, scope).map_err(|detail| DrainError::Unobservable {
-        server: server.name,
-        detail,
+    unsigned_moves(snapshot, &server.id, scope).map_err(|detail| {
+        DrainError::Unchanged(Stop::Unobservable {
+            server: server.name,
+            detail,
+        })
     })
 }
 
@@ -452,11 +515,13 @@ struct Ready {
     server: Machine,
     scope: DrainScope,
     services_role: ServicesRole,
-    globals: Vec<QualifiedService>,
     replicated: Vec<QualifiedService>,
 }
 
 /// Select, turn the role off, wait until the entry observes it, list the chosen Services.
+/// Each listing must answer for the Server, and each refuses a user Service there with a
+/// Global copy, so no Drain retires one. Once this Drain turned the role off, every error
+/// says so.
 async fn preflight(
     client: &mut Client,
     target: &MachineTarget,
@@ -466,50 +531,166 @@ async fn preflight(
 ) -> Result<Ready, DrainError> {
     let machines = client.machines().await?;
     let server = visible_machine(target, &machines)
-        .map_err(DrainError::Refused)?
+        .map_err(|error| DrainError::Unchanged(Stop::Refused(error)))?
         .machine
         .clone();
     if cancellation.is_cancelled() {
-        return Err(DrainError::Cancelled);
+        return Err(DrainError::Unchanged(Stop::Cancelled));
     }
+    let live = client
+        .live_services_from(&machines, EnvironmentValues::Redacted)
+        .await?;
+    chosen_on(&server, &live, scope).map_err(DrainError::Unchanged)?;
     let services_role = if server.accepts_services {
-        turn_services_off(client, &server.id, cancellation).await?;
+        turn_services_off(client, &server.id, cancellation)
+            .await
+            .map_err(|unset| match unset {
+                Unset::Refused(stop) => DrainError::Unchanged(stop),
+                Unset::Unknown(stop) => DrainError::MaybeOff {
+                    server: server.name.clone(),
+                    stop,
+                },
+            })?;
         ServicesRole::TurnedOff
     } else {
         ServicesRole::AlreadyOff
     };
-    progress(DrainStep::ServicesOff {
-        server: &server,
-        role: services_role,
-    });
-    let machines = client.machines().await?;
-    let live = client
-        .live_services_from(&machines, EnvironmentValues::Redacted)
-        .await?;
-    observed(&live, &server.id).map_err(|detail| DrainError::Unobservable {
-        server: server.name.clone(),
-        detail,
+    let replicated = services_off(
+        client,
+        &server,
+        scope,
+        services_role,
+        cancellation,
+        progress,
+    )
+    .await
+    .map_err(|stop| match services_role {
+        ServicesRole::TurnedOff => DrainError::LeftOff {
+            server: server.name.clone(),
+            stop,
+        },
+        ServicesRole::AlreadyOff => DrainError::Unchanged(stop),
     })?;
-    let replicated = replicated_services_on(&server.id, &live);
-    let (replicated, globals) = services_on(&server.id, &live)
-        .into_iter()
-        .filter(|service| scope.includes(service))
-        .partition(|service| replicated.contains(service));
     Ok(Ready {
         server,
         scope: scope.clone(),
         services_role,
-        globals,
         replicated,
     })
 }
 
-/// Turn the services role off on `id`, then wait until the entry observes it off.
+/// The preflight once `server`'s services role is off as `role` says: wait until the entry
+/// observes a role this Drain turned off, then list the chosen Services again.
+async fn services_off(
+    client: &mut Client,
+    server: &Machine,
+    scope: &DrainScope,
+    role: ServicesRole,
+    cancellation: &CancellationToken,
+    progress: &mut (dyn FnMut(DrainStep<'_>) + Send),
+) -> Result<Vec<QualifiedService>, Stop> {
+    if role == ServicesRole::TurnedOff {
+        wait_for_role(client, &server.id, RoleSetting::ServicesOff, cancellation)
+            .await
+            .map_err(|error| match error {
+                RoleWaitError::NotObserved(_) | RoleWaitError::ChangeNotObserved => {
+                    Stop::RoleNotObserved
+                }
+                RoleWaitError::Cancelled => Stop::Cancelled,
+                RoleWaitError::Connect(error) => Stop::Connect(error),
+            })?;
+    }
+    progress(DrainStep::ServicesOff { server, role });
+    let machines = client.machines().await?;
+    let live = client
+        .live_services_from(&machines, EnvironmentValues::Redacted)
+        .await?;
+    chosen_on(server, &live, scope)
+}
+
+/// The Services of `scope` with a Container on `server`. Refuses when `server` did not
+/// answer the listing, or when any user Service there has a Global copy anywhere, whether
+/// `scope` chose it or not: a copy stays In while it crash-loops, so the copy on `server`
+/// could be the last that serves, and one left Out there would be let go. One the scope
+/// left out would still be left on a Server whose services are off.
+fn chosen_on(
+    server: &Machine,
+    live: &LiveServices<RpcError>,
+    scope: &DrainScope,
+) -> Result<Vec<QualifiedService>, Stop> {
+    observed(live, &server.id).map_err(|detail| Stop::Unobservable {
+        server: server.name.clone(),
+        detail,
+    })?;
+    let (globals, replicated): (Vec<_>, Vec<_>) = live
+        .services()
+        .into_iter()
+        .filter(|service| {
+            DrainScope::EveryNamespace.includes(&service.identity)
+                && service
+                    .containers
+                    .iter()
+                    .any(|container| container.as_observation().machine_id == server.id)
+        })
+        .partition(|service| {
+            service
+                .members()
+                .any(|member| member.as_observation().resolved_spec.mode == ServiceMode::Global)
+        });
+    if globals.is_empty() {
+        return Ok(replicated
+            .into_iter()
+            .map(|service| service.identity)
+            .filter(|service| scope.includes(service))
+            .collect());
+    }
+    let globals = globals
+        .into_iter()
+        .map(|service| service.identity)
+        .collect::<Vec<_>>();
+    Err(Stop::Refused(user_globals(server, &globals)))
+}
+
+/// The refusal of a Drain whose Server runs `globals`. Compose made a user Global until
+/// 0.1.2-beta.42.
+fn user_globals(server: &Machine, globals: &[QualifiedService]) -> RpcError {
+    let names = globals
+        .iter()
+        .map(|service| format!("`{service}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let (copies, each, them) = if globals.len() == 1 {
+        ("its last working copy", "it", "it")
+    } else {
+        ("their last working copies", "each", "them")
+    };
+    RpcError::new(
+        RpcErrorCode::Conflict,
+        format!(
+            "Server {} runs {names} on every Server, and draining could stop {copies}. \
+             Remove {each}, deploy, then add {them} back with a replica count.",
+            server.name
+        ),
+    )
+}
+
+/// How turning the services role off failed.
+enum Unset {
+    /// The daemon answered no, or the call never left this client: nothing changed.
+    Refused(Stop),
+    /// The call went out and no answer came back, or the caller cancelled while it was
+    /// pending. The daemon finishes an update it admitted, so the role may be off. A
+    /// `Cancelled` status counts here even off the wire, since an HTTP/2 reset arrives in
+    /// that shape: erring this way offers an idempotent undo, the other way hides a change.
+    Unknown(Stop),
+}
+
+/// Turn the services role off on `id`. Whether the entry observes it is the next phase's.
 async fn turn_services_off(
     client: &mut Client,
     id: &MachineId,
     cancellation: &CancellationToken,
-) -> Result<(), DrainError> {
+) -> Result<(), Unset> {
     let target = MachineTarget::from(id);
     let update = client.call_shared::<op::UpdateMachine>(
         UpdateMachineRequest {
@@ -524,35 +705,30 @@ async fn turn_services_off(
     );
     tokio::select! {
         biased;
-        () = cancellation.cancelled() => return Err(DrainError::Cancelled),
-        updated = update => updated.map_err(|error| DrainError::Refused(crate::connect::rpc_error(error)))?,
-    };
-    wait_for_role(client, id, RoleSetting::ServicesOff, cancellation)
-        .await
-        .map_err(|error| match error {
-            RoleWaitError::NotObserved(_) | RoleWaitError::ChangeNotObserved => {
-                DrainError::RoleNotObserved
+        () = cancellation.cancelled() => Err(Unset::Unknown(Stop::Cancelled)),
+        updated = update => updated.map(drop).map_err(|error| {
+            let unreplied = error.unreplied();
+            let stop = Stop::Refused(crate::connect::rpc_error(error));
+            if unreplied {
+                Unset::Unknown(stop)
+            } else {
+                Unset::Refused(stop)
             }
-            RoleWaitError::Cancelled => DrainError::Cancelled,
-            RoleWaitError::Connect(error) => DrainError::Connect(error),
-        })
+        }),
+    }
 }
 
 /// What a Drain's execution needs from a Cluster.
 trait DrainClient {
     /// The Services with a Container on `id`, from a fresh observation.
     async fn still_on(&mut self, id: &MachineId) -> Result<Vec<QualifiedService>, Lost>;
-    async fn retire(
-        &mut self,
-        server: &Machine,
-        globals: &[QualifiedService],
-        cancellation: &CancellationToken,
-    ) -> Vec<(QualifiedService, Retirement)>;
     async fn converge(
         &mut self,
         service: &QualifiedService,
         cancellation: &CancellationToken,
     ) -> Converged<Moving>;
+    /// `service`'s copies on `server`, leaving out any Global copy, which may be the last
+    /// that serves.
     async fn copies_on(
         &mut self,
         server: &MachineId,
@@ -577,15 +753,6 @@ impl DrainClient for Approved {
         Ok(services_on(id, &live))
     }
 
-    async fn retire(
-        &mut self,
-        server: &Machine,
-        globals: &[QualifiedService],
-        cancellation: &CancellationToken,
-    ) -> Vec<(QualifiedService, Retirement)> {
-        retire_globals(&mut self.client, server, globals, cancellation).await
-    }
-
     async fn converge(
         &mut self,
         service: &QualifiedService,
@@ -599,7 +766,16 @@ impl DrainClient for Approved {
         server: &MachineId,
         service: &QualifiedService,
     ) -> Result<Vec<Copy>, RpcError> {
-        copies_on(self, server, service).await
+        Ok(self
+            .service_containers(service)
+            .await?
+            .iter()
+            .filter(|observation| {
+                observation.machine_id == *server
+                    && observation.resolved_spec.mode != ServiceMode::Global
+            })
+            .map(Copy::observed)
+            .collect())
     }
 
     async fn let_go(&mut self, copy: &Copy, cancellation: &CancellationToken) -> OldCopyEnd {
@@ -616,8 +792,8 @@ impl DrainClient for Approved {
     }
 }
 
-/// Globals, then each replicated Service, then what remains. Infallible: every problem
-/// here is recorded, never propagated.
+/// Each replicated Service, then what remains. Infallible: every problem here is recorded,
+/// never propagated.
 async fn execute<C: DrainClient>(
     client: &mut C,
     ready: Ready,
@@ -628,7 +804,6 @@ async fn execute<C: DrainClient>(
         server,
         scope,
         services_role,
-        globals,
         replicated,
     } = ready;
     let mut record = Record {
@@ -639,40 +814,6 @@ async fn execute<C: DrainClient>(
     };
     let mut behind = Behind::default();
     'work: {
-        if !globals.is_empty() {
-            if cancellation.is_cancelled() {
-                record.stop(DrainStop::Cancelled, globals.iter().chain(&replicated));
-                break 'work;
-            }
-            let retirements = client.retire(&server, &globals, cancellation).await;
-            let still = client.still_on(&server.id).await;
-            let cancelled = retirements
-                .iter()
-                .any(|(_, retirement)| *retirement == Retirement::NotAttempted);
-            for (global, retirement) in retirements {
-                let outcome = match retirement {
-                    // Only a fresh observation that still finds it undoes an acknowledged
-                    // retirement; a lost one leaves that to `remaining`.
-                    Retirement::Retired => match &still {
-                        Ok(still) if still.contains(&global) => DrainOutcome::NotRetired {
-                            error: format!("still running on {}", server.name),
-                        },
-                        Ok(_) | Err(_) => DrainOutcome::Retired,
-                    },
-                    Retirement::NotRetired(error) => DrainOutcome::NotRetired { error },
-                    Retirement::NotAttempted => DrainOutcome::NotAttempted,
-                };
-                record.push(global, outcome);
-            }
-            if cancelled {
-                record.stop(DrainStop::Cancelled, &replicated);
-                break 'work;
-            }
-            if let Err(Lost::Entry(detail)) = still {
-                record.stop(DrainStop::EntryUnreachable { detail }, &replicated);
-                break 'work;
-            }
-        }
         let mut rest = replicated.as_slice();
         while let Some((service, after)) = rest.split_first() {
             if cancellation.is_cancelled() {
@@ -1007,8 +1148,17 @@ enum Lost {
     Server(String),
 }
 
-/// Whether `id` answered the Container listing; the detail when it didn't.
+/// Whether `id` answered the Container listing; the detail when it didn't. A listing that
+/// never asked `id`, because the Machine list left it out, has no answer from it either.
 fn observed(live: &LiveServices<RpcError>, id: &MachineId) -> Result<(), String> {
+    if live
+        .containers
+        .successes
+        .iter()
+        .any(|success| success.machine_id == *id)
+    {
+        return Ok(());
+    }
     if let Some(failure) = live
         .containers
         .failures
@@ -1020,7 +1170,7 @@ fn observed(live: &LiveServices<RpcError>, id: &MachineId) -> Result<(), String>
     if live.containers.omissions.contains(id) {
         return Err("no terminal response".into());
     }
-    Ok(())
+    Err("not in the Machine list".into())
 }
 
 pub(crate) fn services_on(

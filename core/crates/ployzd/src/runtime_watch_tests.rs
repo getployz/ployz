@@ -809,7 +809,7 @@ async fn semantic_telemetry_change_yields_a_new_complete_frame() {
     let (ticks, tick_rx) = mpsc::channel(1);
     let mut stream = serve_sampled(entry.id, &fixture, changes, tick_rx);
 
-    let frame = next_frame(&mut stream).await;
+    let frame = heard_frame(&mut stream).await;
     assert_eq!(
         frame.machines.get(1).expect("peer Machine").membership,
         MembershipObservation::Up
@@ -837,7 +837,7 @@ async fn unchanged_telemetry_sample_does_not_yield_when_observed_at_advances() {
     let (ticks, tick_rx) = mpsc::channel(1);
     let mut stream = serve_sampled(entry.id, &fixture, changes, tick_rx);
 
-    let first = next_frame(&mut stream).await;
+    let first = heard_frame(&mut stream).await;
     assert_eq!(first.observed_at, OBSERVED_AT);
 
     fixture.set_sample(Some(telemetry), "2024-01-01T00:00:01Z");
@@ -861,7 +861,7 @@ async fn unavailable_sample_after_telemetry_keeps_replicated_rows() {
     let (ticks, tick_rx) = mpsc::channel(1);
     let mut stream = serve_sampled(entry.id, &fixture, changes, tick_rx);
 
-    let frame = next_frame(&mut stream).await;
+    let frame = heard_frame(&mut stream).await;
     assert_eq!(
         frame.machines.get(1).expect("peer Machine").membership,
         MembershipObservation::Up
@@ -890,12 +890,20 @@ async fn a_peer_whose_daemon_stops_answering_is_named_until_it_answers() {
     let (_ticks, tick_rx) = mpsc::channel(1);
     let mut stream = serve_sampled(entry.id, &fixture, changes, tick_rx);
 
+    let mut both = vec![entry.id, peer.id];
+    both.sort_unstable();
+
+    // Sent before any probe: the peer is in neither list, never read as answering.
     let first = next_frame(&mut stream).await;
     assert!(first.unanswered.is_empty());
+    assert_eq!(first.answered, Some(vec![entry.id]));
+    let heard = next_frame(&mut stream).await;
+    assert_eq!(heard.answered.as_ref(), Some(&both));
 
     fixture.silence(&peer, true);
     let silent = next_frame(&mut stream).await;
     assert_eq!(silent.unanswered, vec![peer.id]);
+    assert_eq!(silent.answered, Some(vec![entry.id]));
     assert_eq!(
         silent.machines.get(1).expect("peer Machine").membership,
         MembershipObservation::Up,
@@ -905,6 +913,7 @@ async fn a_peer_whose_daemon_stops_answering_is_named_until_it_answers() {
     fixture.silence(&peer, false);
     let back = next_frame(&mut stream).await;
     assert!(back.unanswered.is_empty());
+    assert_eq!(back.answered, Some(both));
 }
 
 #[tokio::test(start_paused = true)]
@@ -919,6 +928,8 @@ async fn one_missed_probe_names_no_one() {
     let (_wake, changes) = mpsc::channel(1);
     let (_ticks, tick_rx) = mpsc::channel(1);
     let mut stream = serve_sampled(entry.id, &fixture, changes, tick_rx);
+    next_frame(&mut stream).await;
+    // The first probe's answer.
     next_frame(&mut stream).await;
 
     // Silent for exactly one probe, then answering: never two misses in a row.
@@ -956,6 +967,7 @@ async fn a_peer_membership_already_reads_down_is_not_named() {
 
     let first = next_frame(&mut stream).await;
     assert!(first.unanswered.is_empty());
+    assert_eq!(first.answered, Some(vec![entry.id]));
     assert!(
         tokio::time::timeout(PROBE_EVERY * 10, stream.next())
             .await
@@ -1078,6 +1090,18 @@ async fn next_frame(
         .expect("open stream")
         .expect("Watch status");
     decode_runtime_watch_frame(&payload).unwrap()
+}
+
+/// The frame after the first, which the first probe's answers yield: a test that changes
+/// something next starts from it, so that frame is not read as the change's.
+async fn heard_frame(
+    stream: &mut (
+             impl futures_util::Stream<Item = Result<ployz_core::OpaquePayload, tonic::Status>> + Unpin
+         ),
+) -> ployz_core::RuntimeWatchFrame {
+    let first = next_frame(stream).await;
+    assert_eq!(first.answered.map(|answered| answered.len()), Some(1));
+    next_frame(stream).await
 }
 
 async fn next_status(

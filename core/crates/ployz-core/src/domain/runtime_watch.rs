@@ -149,6 +149,13 @@ pub struct RuntimeWatchFrame {
     /// entry's view, not Cluster truth; empty from daemons that don't probe.
     #[serde(default)]
     pub unanswered: Vec<MachineId>,
+    /// Machines whose daemon answered the entry: the entry itself, and each peer that
+    /// answered a probe since it was last named `unanswered`. A peer in neither list is
+    /// not known either way yet, as every peer is in a watch's first frame, sent before
+    /// any probe. Absent from daemons that don't say, where only `unanswered` is known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub answered: Option<Vec<MachineId>>,
     /// Freshness of the entry-local membership/RTT sample. Not Cluster truth.
     pub observed_at: String,
 }

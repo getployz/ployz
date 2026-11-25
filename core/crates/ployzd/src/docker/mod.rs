@@ -500,6 +500,11 @@ impl ContainerRuntime {
         self.specs.path_for_test()
     }
 
+    #[cfg(test)]
+    pub(crate) fn floor_writes_for_test(&self) -> tokio::sync::watch::Receiver<usize> {
+        self.specs.floor_writes_for_test()
+    }
+
     #[must_use]
     pub(crate) fn local_docker(&self) -> LocalDocker {
         self.docker.clone()
@@ -3618,6 +3623,7 @@ mod sealed_output_tests {
             certificates: Vec::new(),
             incomplete_ids: Default::default(),
             unanswered: Vec::new(),
+            answered: None,
             observed_at: chrono::Utc::now().to_rfc3339(),
         })
         .unwrap();

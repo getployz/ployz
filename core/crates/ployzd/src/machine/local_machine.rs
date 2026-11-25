@@ -46,8 +46,16 @@ pub struct LocalMachine {
     /// switch, and every create or start of a Provisioned Volume's holder waits out.
     switch: Arc<tokio::sync::Mutex<()>>,
     /// This handle runs inside a switch whose guard its caller holds, so it takes no
-    /// switch lock of its own.
-    in_switch: bool,
+    /// switch lock of its own. A clone never carries it.
+    in_switch: switch::InSwitch,
+    /// How many calls have asked for the switch lock, which a test awaits to know a call
+    /// queued behind it.
+    #[cfg(test)]
+    switch_asked: Arc<tokio::sync::watch::Sender<usize>>,
+    /// How many floor raises and key changes have asked for the floor lock, which a test
+    /// awaits to know a call queued behind it.
+    #[cfg(test)]
+    floor_asked: Arc<tokio::sync::watch::Sender<usize>>,
     #[cfg(test)]
     peers: Option<PeerInspect>,
     #[cfg(test)]
@@ -83,13 +91,16 @@ mod register;
 mod reserved;
 pub(crate) use admission::{Admit, AdmittedBy, AdmittedSpec};
 pub use call::FullCaller;
-pub(crate) use call::{Call, Caller, Scope};
+pub(crate) use call::{Call, Caller, Checked, Scope};
 pub(crate) use consumption::ConsumptionLog;
-pub(crate) use container::{CutRefusal, SwitchGuard};
+pub(crate) use container::CutRefusal;
+#[cfg(test)]
+pub(crate) use container::names_content;
 #[cfg(test)]
 pub(crate) use container::{EnsurePause, EnsurePausePoint};
 #[cfg(test)]
 pub(crate) use private_access::Pacing;
+pub(crate) use switch::{KeyChangeHeld, SwitchGuard};
 mod join_approval;
 mod management_client;
 mod push_target;
@@ -98,6 +109,7 @@ pub(crate) mod rule_grant;
 mod sealing;
 pub(crate) use sealing::Error as SealingError;
 mod sealing_recovery;
+mod switch;
 pub(crate) use sealing_recovery::Error as RecoveryError;
 #[cfg(test)]
 pub(crate) use sealing_recovery::back_up;
@@ -263,6 +275,10 @@ pub enum Error {
     /// An upgrade is running; the fence is retried once it ends.
     #[error(transparent)]
     FenceRefused(RpcError),
+    /// An Operator's pull named an image by tag, which this Server writes only for a
+    /// caller with Full access. The refusal names the route's capability in its details.
+    #[error(transparent)]
+    TagRefused(RpcError),
     #[error("local operation task failed")]
     OperationTask(#[from] tokio::task::JoinError),
     #[error("Register requires a client-selected Machine Subnet")]
@@ -304,7 +320,11 @@ impl LocalMachine {
             settled: container::SettledCreations::default(),
             pacing: private_access::Pacing::default(),
             switch: Arc::default(),
-            in_switch: false,
+            in_switch: switch::InSwitch::default(),
+            #[cfg(test)]
+            switch_asked: Arc::new(tokio::sync::watch::channel(0).0),
+            #[cfg(test)]
+            floor_asked: Arc::new(tokio::sync::watch::channel(0).0),
             #[cfg(test)]
             peers: None,
             #[cfg(test)]
@@ -357,36 +377,6 @@ impl LocalMachine {
 
     pub(crate) fn plugin(&self) -> &crate::storage::Plugin {
         &self.plugin
-    }
-
-    /// Wait out any switch on this Machine and hold it off until the guard drops. The lock
-    /// is one for the Machine, not one per Volume: a create reads each Volume's origin,
-    /// and no promote or seed may land between that read and Docker.
-    pub(crate) async fn lock_switch(&self) -> SwitchGuard {
-        Arc::clone(&self.switch).lock_owned().await
-    }
-
-    /// This handle for work inside the switch `held` keeps, whose creates and starts of a
-    /// Provisioned Volume's holder take no lock of their own.
-    #[must_use]
-    fn inside_switch(&self, held: &SwitchGuard) -> Self {
-        debug_assert!(Arc::ptr_eq(
-            tokio::sync::OwnedMutexGuard::mutex(held),
-            &self.switch
-        ));
-        Self {
-            in_switch: true,
-            ..self.clone()
-        }
-    }
-
-    /// The switch guard a create or start of a Provisioned Volume's holder takes, or
-    /// `None` inside a switch its caller holds.
-    async fn wait_out_switch(&self) -> Option<SwitchGuard> {
-        if self.in_switch {
-            return None;
-        }
-        Some(self.lock_switch().await)
     }
 
     #[must_use]
@@ -823,11 +813,13 @@ impl LocalMachine {
         &self,
         request: UpdateMachineRequest,
     ) -> Result<MachineUpdated, Error> {
-        // Policy edits affect new admission without waiting for active Builds.
-        // Ordinary mutations remain serialized; all updates exclude installation.
+        // Policy edits run beside other shared work, and a Build takes no turn, so they
+        // affect new admission without waiting for one. The shared turn still checks the
+        // caller under a lock every key change takes. Ordinary mutations remain serialized;
+        // all updates exclude installation.
         if request.update.is_policy_edit() {
             return self
-                .finish_installed(move |local| async move { local.update_admitted(request).await })
+                .finish_shared(move |local| async move { local.update_admitted(request).await })
                 .await;
         }
         self.finish_mutation(move |local| async move { local.update_admitted(request).await })

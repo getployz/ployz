@@ -190,14 +190,6 @@ impl MachineService {
     /// An Operator's request to write an image tag here, refused before anything is
     /// pulled: a Full creation runs whatever a tag names, with the Service's Sealed
     /// values and Volumes, so only a caller with Full access here writes one.
-    fn tag_refusal(&self, capability: &str) -> RpcError {
-        RpcError::unsupported("This Server writes an image tag only for a caller with Full access.")
-            .with_details(serde_json::json!({
-                "target": self.local_record().id().to_string(),
-                "capability": capability,
-            }))
-    }
-
     fn replicated(&self) -> Result<&ReplicatedStore, RpcError> {
         self.local
             .replicated()
@@ -460,7 +452,8 @@ impl MachineRpc for MachineService {
             .await
         {
             Ok(mut details) => {
-                if let Scope::Operator = local.scope() {
+                // A read, so the scope as the keys stand now.
+                if !matches!(local.scope_now(), Ok(Scope::Full(_))) {
                     match self.opened_keys(request.container_id).await {
                         Ok(opened) => withhold_opened(&mut details.environment, &opened),
                         Err(_) => details.environment = None,
@@ -569,18 +562,21 @@ impl MachineRpc for MachineService {
     }
 
     async fn seed_volume(&self, request: Request<OpaquePayload>) -> Answer {
+        let local = self.at(&request);
         let request = expect::<op::SeedVolume>(request)?;
-        finish(self.local.seed_volume(&request).await)
+        finish(local.seed_volume(&request).await)
     }
 
     async fn seed_copy(&self, request: Request<OpaquePayload>) -> Answer {
+        let local = self.at(&request);
         let request = expect::<op::SeedCopy>(request)?;
-        finish(self.local.seed_copy(request).await)
+        finish(local.seed_copy(request).await)
     }
 
     async fn set_volume_size(&self, request: Request<OpaquePayload>) -> Answer {
+        let local = self.at(&request);
         let request = expect::<op::SetVolumeSize>(request)?;
-        finish(self.local.set_volume_size(&request).await)
+        finish(local.set_volume_size(&request).await)
     }
 
     async fn list_trash(&self, request: Request<OpaquePayload>) -> Answer {
@@ -758,18 +754,9 @@ impl MachineRpc for MachineService {
 
     async fn pull_image(&self, request: Request<OpaquePayload>) -> Answer {
         let local = self.at(&request);
-        let mut request = expect::<op::PullImage>(request)?;
+        let request = expect::<op::PullImage>(request)?;
         if request.image.is_empty() {
             return respond(RpcError::invalid_argument("image is required"));
-        }
-        if let Scope::Operator = local.scope() {
-            if !ployz_core::authority::deploy::content_addressed(&request.image) {
-                return respond(self.tag_refusal(ployz_core::PULL_IMAGE_CAPABILITY));
-            }
-            if request.image.starts_with("sha256:") {
-                // An image ID names no registry to pull from; it is only looked up.
-                request.policy = ployz_core::PullPolicy::Never;
-            }
         }
         finish(local.pull_image(request).await)
     }
@@ -780,19 +767,7 @@ impl MachineRpc for MachineService {
         if request.image.is_empty() {
             return respond(RpcError::invalid_argument("image is required"));
         }
-        match local.scope() {
-            // A Full creation runs the tag by name, so the tag is what this pull must place.
-            Scope::Full(_) => finish(
-                local
-                    .pull_image(ployz_core::PullImageRequest {
-                        image: request.image,
-                        policy: request.policy,
-                        registry_auth: request.registry_auth,
-                    })
-                    .await,
-            ),
-            Scope::Operator => finish(local.pull_free_image(request).await),
-        }
+        finish(local.pull_free_image(request).await)
     }
 
     async fn pull_image_from_machine(&self, request: Request<OpaquePayload>) -> Answer {
@@ -800,12 +775,6 @@ impl MachineRpc for MachineService {
         let request = expect::<op::PullImageFromMachine>(request)?;
         if request.pull.image().is_empty() {
             return respond(RpcError::invalid_argument("image is required"));
-        }
-        // Refused before the copy starts, so no name, staging or final, is written.
-        if let Scope::Operator = local.scope()
-            && !names_content(&request.pull)
-        {
-            return respond(self.tag_refusal(ployz_core::PULL_IMAGE_FROM_MACHINE_CAPABILITY));
         }
         finish(local.pull_image_from_machine(request).await)
     }
@@ -815,7 +784,11 @@ impl MachineRpc for MachineService {
         let request = expect::<op::MintBuildGrant>(request)?;
         // Refused before the mint, which opens the Sealed record to check it. A rule
         // build's grant passes enforcement only once every check of its proof passed.
-        let minter = match (&request.rule, local.scope()) {
+        let scope = match local.scope_now() {
+            Ok(scope) => scope,
+            Err(error) => return local_error(error),
+        };
+        let minter = match (&request.rule, scope) {
             (None, Scope::Operator) => {
                 return local_error(LocalMachineError::BuildRefused {
                     capability: ployz_core::MINT_BUILD_GRANT_CAPABILITY,
@@ -1082,15 +1055,6 @@ fn pinned_shape(want: &ployz_core::ContainerWant) -> Option<RpcError> {
 /// Whether every name `pull` writes is the retention name of the content it copies, which
 /// the copy checks against the content before writing. Image Cleanup alone reads those
 /// names, so an Operator may write them; any other name a Full creation may run.
-fn names_content(pull: &ployz_core::PeerImagePull) -> bool {
-    let Some(digest) = ployz_core::ImageRef::new(pull.image()).digest else {
-        return false;
-    };
-    pull.tag().is_none_or(|tag| {
-        ployz_core::retained_digest(tag).is_some_and(|kept| kept.as_str() == digest)
-    })
-}
-
 fn pinned_refusal(message: &str) -> RpcError {
     RpcError::invalid_argument(message).with_details(
         serde_json::json!({ "capability": ployz_core::ENSURE_PINNED_CONTAINER_CAPABILITY }),
@@ -1296,9 +1260,9 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
             Ok(RpcError::caused(RpcErrorCode::Internal, &error))
         }
         LocalMachineError::Docker(error) => Ok(RpcError::from(&error)),
-        LocalMachineError::StoragePreparation(error) | LocalMachineError::FenceRefused(error) => {
-            Ok(error)
-        }
+        LocalMachineError::StoragePreparation(error)
+        | LocalMachineError::FenceRefused(error)
+        | LocalMachineError::TagRefused(error) => Ok(error),
         LocalMachineError::Cleanup(message) => Ok(RpcError::internal(message)),
         LocalMachineError::Admission(crate::mutation::Error::Busy) => Ok(RpcError::conflict(
             "a Ployz installation or upgrade is active",
@@ -1436,6 +1400,7 @@ fn store_error(error: StoreError) -> RpcError {
         | StoreError::GrantRemoved(_)
         | StoreError::LastKey(_)
         | StoreError::AmbiguousCode(_)
+        | StoreError::CodeHeld(_)
         | StoreError::GrantKind { .. }
         | StoreError::GrantHeld(_)
         | StoreError::GrantMoved(_)

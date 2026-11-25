@@ -1182,3 +1182,867 @@ mod private_access {
         machine.remove();
     }
 }
+
+mod revoked {
+    //! A Device's call admitted when it arrived, whose key is removed while it waits for
+    //! its turn: the turn it waited for finds the key gone and runs nothing.
+
+    use super::*;
+    use crate::storage::test_support::FakePlugin;
+    use crate::volume_copy::{INSPECT_ROUTE, WRITER_ROUTE};
+
+    /// This Machine's API served to the management connection `key` authenticated.
+    async fn served_to(machine: &Enforcing, key: ployz_core::ClientKey) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = format!("http://{}", listener.local_addr().unwrap());
+        let api = crate::machine_api::MachineApi::from_local(
+            machine.service.clone().with_management_client(key),
+        );
+        tokio::spawn(Server::builder().serve_with_incoming(api, TcpListenerStream::new(listener)));
+        address
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_device_removed_while_its_removal_drains_stops_and_deletes_nothing() {
+        let machine = Enforcing::new().await;
+        let id = running_container(&machine).await;
+        machine
+            .service
+            .local
+            .docker()
+            .unwrap()
+            .lifecycle()
+            .start(&id)
+            .await
+            .unwrap();
+        let device = DeviceKey::from(Signer::from_seed(&[7; 32]).public());
+        let kept = DeviceKey::from(Signer::from_seed(&[9; 32]).public());
+        machine
+            .store
+            .mutate(move |store| store.approve_device(kept).unwrap())
+            .await
+            .unwrap();
+        let address = served_to(&machine, device.into()).await;
+        let mut withdrawn = machine
+            .service
+            .local
+            .docker()
+            .unwrap()
+            .subscribe_stopping_for_test();
+        let turn = machine.store.admission_lock().write_owned().await;
+        let removal = op::EnsureContainer::into_request(
+            serde_json::from_value(json!({"want": {
+                "state": "gone", "container": {"id": id}, "drain": 0,
+                "anonymous_volumes": "remove",
+            }}))
+            .unwrap(),
+        );
+        let call = tokio::spawn(async move {
+            unary_at(address, op::EnsureContainer::PATH, &removal, false).await
+        });
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            withdrawn.wait_for(|stopping| stopping.contains_key(&id)),
+        )
+        .await
+        .expect("the removal was admitted and waits for its turn")
+        .unwrap();
+        let before = machine.fake.requests.lock().unwrap().len();
+        machine
+            .store
+            .mutate(move |store| {
+                assert!(
+                    store
+                        .remove_by_code(&crate::machine::KeyChangeHeld::for_test(), device.code())
+                        .unwrap()
+                )
+            })
+            .await
+            .unwrap();
+        drop(turn);
+        let answer = call.await.unwrap();
+        let effects: Vec<_> = machine
+            .fake
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .skip(before)
+            .filter(|(method, path)| *method == http::Method::DELETE || path.ends_with("/stop"))
+            .cloned()
+            .collect();
+        assert!(effects.is_empty(), "{answer:?} after {effects:?}");
+        assert!(
+            matches!(&answer, Answer::Refused { code, .. } if code == "Unauthenticated"),
+            "{answer:?}"
+        );
+        machine.remove();
+    }
+
+    /// The Docker calls since `before` that `method` sent to a path ending in `suffix`.
+    fn sent(machine: &Enforcing, before: usize, method: http::Method, suffix: &str) -> usize {
+        machine
+            .fake
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .skip(before)
+            .filter(|(sent, path)| *sent == method && path.ends_with(suffix))
+            .count()
+    }
+
+    /// Until Docker has seen a call since `before` that `method` sent to a path ending in
+    /// `suffix`.
+    async fn until_sent(machine: &Enforcing, before: usize, method: http::Method, suffix: &str) {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while sent(machine, before, method.clone(), suffix) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("Docker never saw {method} {suffix}"));
+    }
+
+    fn ensure(want: Value) -> RpcRequest {
+        op::EnsureContainer::into_request(serde_json::from_value(json!({ "want": want })).unwrap())
+    }
+
+    /// What this Machine answers `want` with when the management connection `key`
+    /// authenticated asks at Full access, as a Device's own connection does.
+    async fn ensure_from(
+        machine: &Enforcing,
+        key: ployz_core::ClientKey,
+        want: Value,
+    ) -> Result<RpcResponse, Status> {
+        use ployz_core::MachineRpc;
+        machine
+            .service
+            .clone()
+            .with_management_client(key)
+            .ensure_container(Request::new(ensure(want).encode().unwrap()))
+            .await
+            .map(|reply| reply.into_inner().decode_response().unwrap())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_full_start_queued_while_its_device_slot_goes_is_held_to_the_operator_slot_left() {
+        let machine = Enforcing::new().await;
+        let device = DeviceKey::from(Signer::from_seed(&[7; 32]).public());
+        let kept = DeviceKey::from(Signer::from_seed(&[9; 32]).public());
+        machine
+            .store
+            .mutate(move |store| {
+                store.approve_device(kept).unwrap();
+                let cloud = ployz_core::ManagementClientLabel::cloud();
+                store
+                    .stage_management_client(
+                        &crate::machine::KeyChangeHeld::for_test(),
+                        cloud,
+                        device.into(),
+                    )
+                    .unwrap();
+                store
+                    .activate_management_client(
+                        &crate::machine::KeyChangeHeld::for_test(),
+                        device.into(),
+                    )
+                    .unwrap();
+            })
+            .await
+            .unwrap();
+        // Created at Full access, so the Container is kept under the Device's own key.
+        let created = ensure_from(
+            &machine,
+            device.into(),
+            new_want("api", "nginx:1.29-alpine"),
+        )
+        .await
+        .unwrap();
+        let ployz_core::EnsuredContainer::Ensured {
+            now: ployz_core::ContainerNow::Present(observed),
+            ..
+        } = created.decode::<op::EnsureContainer>().unwrap()
+        else {
+            panic!("the Device's create made no Container");
+        };
+        let id = observed.container_id;
+        let containers = machine.service.local.docker().unwrap();
+        containers.lifecycle().stop(&id, None, None).await.unwrap();
+        let before = machine.fake.requests.lock().unwrap().len();
+        let turn = machine.store.admission_lock().write_owned().await;
+        let call = tokio::spawn({
+            let service = machine.service.clone();
+            async move {
+                use ployz_core::MachineRpc;
+                let start = ensure(json!({
+                    "state": "running", "rotation": "pending",
+                    "container": {"existing": {"id": id}},
+                }));
+                service
+                    .with_management_client(device.into())
+                    .ensure_container(Request::new(start.encode().unwrap()))
+                    .await
+                    .map(|reply| reply.into_inner().decode_response().unwrap())
+            }
+        });
+        until_sent(&machine, before, http::Method::GET, &format!("{id}/json")).await;
+        machine
+            .store
+            .mutate(move |store| {
+                assert!(
+                    store
+                        .remove_by_code(&crate::machine::KeyChangeHeld::for_test(), device.code())
+                        .unwrap()
+                )
+            })
+            .await
+            .unwrap();
+        assert!(
+            machine
+                .store
+                .record()
+                .accepts_management_client(&device.into())
+        );
+        drop(turn);
+        let answer = call.await.unwrap();
+        assert_eq!(
+            sent(&machine, before, http::Method::POST, "/start"),
+            0,
+            "{answer:?}"
+        );
+        assert!(
+            matches!(&answer, Ok(response) if matches!(response.body, RpcResponseBody::Error(_)))
+                || answer.is_err(),
+            "{answer:?}"
+        );
+        machine.remove();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_device_removed_between_its_stop_and_its_removal_deletes_nothing() {
+        let machine = Enforcing::new().await;
+        let id = running_container(&machine).await;
+        machine
+            .service
+            .local
+            .docker()
+            .unwrap()
+            .lifecycle()
+            .start(&id)
+            .await
+            .unwrap();
+        let device = DeviceKey::from(Signer::from_seed(&[7; 32]).public());
+        let kept = DeviceKey::from(Signer::from_seed(&[9; 32]).public());
+        machine
+            .store
+            .mutate(move |store| store.approve_device(kept).unwrap())
+            .await
+            .unwrap();
+        let address = served_to(&machine, device.into()).await;
+        let before = machine.fake.requests.lock().unwrap().len();
+        let stopping = machine.fake.stop_gate.clone().write_owned().await;
+        let removal = ensure(json!({
+            "state": "gone", "container": {"id": id}, "drain": 0,
+            "anonymous_volumes": "remove",
+        }));
+        let call = tokio::spawn(async move {
+            unary_at(address, op::EnsureContainer::PATH, &removal, false).await
+        });
+        until_sent(&machine, before, http::Method::POST, "/stop").await;
+        machine
+            .store
+            .mutate(move |store| {
+                assert!(
+                    store
+                        .remove_by_code(&crate::machine::KeyChangeHeld::for_test(), device.code())
+                        .unwrap()
+                )
+            })
+            .await
+            .unwrap();
+        drop(stopping);
+        let answer = call.await.unwrap();
+        assert_eq!(
+            sent(&machine, before, http::Method::DELETE, ""),
+            0,
+            "{answer:?}"
+        );
+        assert!(
+            matches!(&answer, Answer::Refused { code, .. } if code == "Unauthenticated"),
+            "{answer:?}"
+        );
+        machine.remove();
+    }
+
+    /// The Device key `Enforcing` approves, held in Cloud's slot too, as a key Cloud also
+    /// connects with is: losing its Device slot leaves it an Operator's.
+    async fn device_in_two_slots(machine: &Enforcing) -> DeviceKey {
+        let device = DeviceKey::from(Signer::from_seed(&[7; 32]).public());
+        let kept = DeviceKey::from(Signer::from_seed(&[9; 32]).public());
+        machine
+            .store
+            .mutate(move |store| {
+                store.approve_device(kept).unwrap();
+                let cloud = ployz_core::ManagementClientLabel::cloud();
+                store
+                    .stage_management_client(
+                        &crate::machine::KeyChangeHeld::for_test(),
+                        cloud,
+                        device.into(),
+                    )
+                    .unwrap();
+                store
+                    .activate_management_client(
+                        &crate::machine::KeyChangeHeld::for_test(),
+                        device.into(),
+                    )
+                    .unwrap();
+            })
+            .await
+            .unwrap();
+        device
+    }
+
+    /// The Device key `Enforcing` approves, in no other slot, beside another Device so its
+    /// removal is not the last key's: removing it removes the key.
+    async fn device_alone(machine: &Enforcing) -> DeviceKey {
+        let kept = DeviceKey::from(Signer::from_seed(&[9; 32]).public());
+        machine
+            .store
+            .mutate(move |store| store.approve_device(kept).unwrap())
+            .await
+            .unwrap();
+        DeviceKey::from(Signer::from_seed(&[7; 32]).public())
+    }
+
+    /// What `call` answers when it arrived at Full access from `device`'s own connection
+    /// and `device`'s Device slot went before it took its turn.
+    async fn removed_before_its_turn(
+        machine: &Enforcing,
+        device: DeviceKey,
+        call: impl std::future::Future<Output = Result<tonic::Response<OpaquePayload>, Status>>,
+    ) -> Answer {
+        let turn = machine.store.admission_lock().write_owned().await;
+        removed_while(machine, device, turn, call).await
+    }
+
+    /// What `call` answers when it arrived at Full access from `device`'s own connection
+    /// and `device`'s Device slot went while `held` kept it queued.
+    async fn removed_while(
+        machine: &Enforcing,
+        device: DeviceKey,
+        held: impl Sized,
+        call: impl std::future::Future<Output = Result<tonic::Response<OpaquePayload>, Status>>,
+    ) -> Answer {
+        tokio::pin!(call);
+        if let std::task::Poll::Ready(answered) = futures_util::poll!(&mut call) {
+            panic!(
+                "answered before the lock it queues on: {:?}",
+                Answer::of(answered.map(|reply| reply.into_inner().decode_response().unwrap()))
+            );
+        }
+        machine
+            .store
+            .mutate(move |store| {
+                assert!(
+                    store
+                        .remove_by_code(&crate::machine::KeyChangeHeld::for_test(), device.code())
+                        .unwrap()
+                )
+            })
+            .await
+            .unwrap();
+        drop(held);
+        Answer::of(
+            call.await
+                .map(|reply| reply.into_inner().decode_response().unwrap()),
+        )
+    }
+
+    /// [`removed_before_its_turn`] for a key that keeps Cloud's slot.
+    async fn downgraded_before_its_turn(
+        machine: &Enforcing,
+        device: DeviceKey,
+        call: impl std::future::Future<Output = Result<tonic::Response<OpaquePayload>, Status>>,
+    ) -> Answer {
+        let answer = removed_before_its_turn(machine, device, call).await;
+        assert!(
+            machine
+                .store
+                .record()
+                .accepts_management_client(&device.into())
+        );
+        answer
+    }
+
+    fn request<T: Rpc>(payload: Value) -> Request<OpaquePayload>
+    where
+        T::Request: serde::de::DeserializeOwned,
+    {
+        Request::new(
+            T::into_request(serde_json::from_value(payload).unwrap())
+                .encode()
+                .unwrap(),
+        )
+    }
+
+    /// Whether Docker holds an image under `tag`, which a tag pull writes.
+    fn tagged(machine: &Enforcing, tag: &str) -> bool {
+        machine.fake.images.lock().unwrap().contains_key(tag)
+    }
+
+    #[track_caller]
+    fn refused_naming(answer: &Answer, capability: &str) {
+        assert!(
+            matches!(answer, Answer::Refused { capability: Some(named), .. } if named == capability),
+            "{answer:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_tag_pull_queued_while_its_device_slot_goes_writes_no_tag() {
+        use ployz_core::MachineRpc;
+        let machine = Enforcing::new().await;
+        let device = device_in_two_slots(&machine).await;
+        let caller = machine
+            .service
+            .clone()
+            .with_management_client(device.into());
+        let pull = request::<op::PullImage>(json!({
+            "image": "redis:7-alpine", "policy": "always", "registry_auth": null,
+        }));
+        let answer = downgraded_before_its_turn(&machine, device, caller.pull_image(pull)).await;
+        assert!(!tagged(&machine, "redis:7-alpine"), "{answer:?}");
+        refused_naming(&answer, ployz_core::PULL_IMAGE_CAPABILITY);
+        machine.remove();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_free_pull_queued_while_its_device_slot_goes_pulls_as_an_operator() {
+        use ployz_core::MachineRpc;
+        let machine = Enforcing::new().await;
+        let device = device_in_two_slots(&machine).await;
+        let caller = machine
+            .service
+            .clone()
+            .with_management_client(device.into());
+        let pull = request::<op::PullFreeImage>(json!({
+            "image": "redis:7-alpine", "policy": "always",
+        }));
+        let before = machine.fake.requests.lock().unwrap().len();
+        let answer =
+            downgraded_before_its_turn(&machine, device, caller.pull_free_image(pull)).await;
+        assert!(matches!(answer, Answer::Served), "{answer:?}");
+        assert!(!tagged(&machine, "redis:7-alpine"), "{answer:?}");
+        // Only an Operator's pull asks the registry what the tag names, then pulls that.
+        let resolved = machine
+            .fake
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .skip(before)
+            .filter(|(method, path)| {
+                *method == http::Method::GET && path.contains("/distribution/redis:7-alpine/")
+            })
+            .count();
+        assert_eq!(resolved, 1, "{answer:?}");
+        machine.remove();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_peer_tag_pull_queued_while_its_device_slot_goes_is_refused() {
+        use ployz_core::MachineRpc;
+        let machine = Enforcing::new().await;
+        let device = device_in_two_slots(&machine).await;
+        let caller = machine
+            .service
+            .clone()
+            .with_management_client(device.into());
+        let pull = request::<op::PullImageFromMachine>(json!({
+            "pull": {"mode": "reference", "image": "redis:7-alpine"},
+            "source": {"management_address": "fd00::1", "port": 7570},
+            "platform": "linux/amd64",
+        }));
+        let answer =
+            downgraded_before_its_turn(&machine, device, caller.pull_image_from_machine(pull))
+                .await;
+        refused_naming(&answer, ployz_core::PULL_IMAGE_FROM_MACHINE_CAPABILITY);
+        machine.remove();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture")]
+    async fn a_hook_start_queued_while_its_device_slot_goes_runs_no_hook_again() {
+        use ployz_core::MachineRpc;
+        let machine = Enforcing::new().await;
+        let mut hooked = spec("migrate", "nginx:1.29-alpine");
+        hooked["pre_deploy"] = json!({ "command": ["migrate"] });
+        let spec: ployz_core::ResolvedServiceSpec = serde_json::from_value(hooked).unwrap();
+        let hook = machine
+            .service
+            .local
+            .create_container(
+                ployz_core::ContainerKind::PreDeployHook,
+                &ployz_core::Namespace::parse("app").unwrap(),
+                &spec,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap()
+            .container_id;
+        let device = device_in_two_slots(&machine).await;
+        let caller = machine
+            .service
+            .clone()
+            .with_management_client(device.into());
+        let before = machine.fake.requests.lock().unwrap().len();
+        let start = request::<op::EnsureContainer>(json!({"want": {
+            "state": "running", "rotation": "pending",
+            "container": {"existing": {"id": hook}},
+        }}));
+        let answer =
+            downgraded_before_its_turn(&machine, device, caller.ensure_container(start)).await;
+        assert_eq!(
+            sent(&machine, before, http::Method::POST, "/start"),
+            0,
+            "{answer:?}"
+        );
+        refused_naming(&answer, ployz_core::SIGNED_VERSION_CAPABILITY);
+        machine.remove();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture")]
+    async fn a_full_create_queued_while_its_device_slot_goes_pulls_nothing() {
+        use ployz_core::MachineRpc;
+        let machine = Enforcing::new().await;
+        let device = device_in_two_slots(&machine).await;
+        let caller = machine
+            .service
+            .clone()
+            .with_management_client(device.into());
+        let mut resolved = spec("cache", "redis:7-alpine");
+        resolved["container"]["pull_policy"] = json!("always");
+        let create =
+            request::<op::EnsureContainer>(json!({ "want": want_of("cache", resolved, false) }));
+        let before = machine.fake.requests.lock().unwrap().len();
+        let answer =
+            downgraded_before_its_turn(&machine, device, caller.ensure_container(create)).await;
+        assert_eq!(
+            sent(&machine, before, http::Method::POST, "/images/create"),
+            0,
+            "{answer:?}"
+        );
+        assert!(answer.for_authority(), "{answer:?}");
+        machine.remove();
+    }
+
+    fn answered(result: Result<tonic::Response<OpaquePayload>, Status>) -> Answer {
+        Answer::of(result.map(|reply| reply.into_inner().decode_response().unwrap()))
+    }
+
+    /// `machine`'s service with a fake volume plugin whose Volume is a Mirror at snapshot
+    /// 7, and whose Writer route promotes it, served from a directory that lives as long as
+    /// the guard: a socket path under the Machine's own would be too long.
+    fn with_mirror(
+        machine: &Enforcing,
+        plugin: &FakePlugin,
+    ) -> (MachineService, tempfile::TempDir) {
+        let snapshot = json!({"name":"f-1", "guid":"7", "created_unix_seconds":1_700_000_000});
+        plugin.reply(
+            INSPECT_ROUTE,
+            json!({"Ok": {"kind":"slot", "slot":"1", "readonly":true,
+                "newest":snapshot, "resume_token":null, "pull":null}}),
+        );
+        plugin.reply(
+            WRITER_ROUTE,
+            json!({"Ok": {"kind":"root", "readonly":false, "newest":snapshot, "epoch":1,
+                "seed":false}}),
+        );
+        let directory = tempfile::tempdir().unwrap();
+        let (socket, _server) = plugin.serve(directory.path());
+        (
+            machine.service.clone().with_volume_plugin(socket),
+            directory,
+        )
+    }
+
+    /// A promote of the Mirror [`with_mirror`] serves, with `start` when one is given.
+    fn promote(start: Option<Value>) -> Request<OpaquePayload> {
+        request::<op::SetVolumeCopy>(json!({"name":"app_data",
+            "expect":{"kind":"mirror", "newest":"7", "slot":"1"},
+            "want":{"kind":"writer", "at":"7", "epoch":1, "start":start}}))
+    }
+
+    /// Until `asked` counts a request for the switch past `before`.
+    async fn until_switch_asked(asked: &mut tokio::sync::watch::Receiver<usize>, before: usize) {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            asked.wait_for(|asked| *asked > before),
+        )
+        .await
+        .expect("the call asks for the switch")
+        .unwrap();
+    }
+
+    /// A Writer whose start mounts no Volume it promotes, which a Full caller may send and
+    /// an Operator may not, queued on the switch while the key loses its Device slot.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_promote_queued_while_its_device_slot_goes_promotes_nothing_an_operator_may_not() {
+        use ployz_core::MachineRpc;
+        let machine = Enforcing::new().await;
+        let device = device_in_two_slots(&machine).await;
+        let plugin = FakePlugin::default();
+        let (served, _plugin_dir) = with_mirror(&machine, &plugin);
+        let caller = served.with_management_client(device.into());
+        let local = machine.service.local.clone();
+        let held = local.lock_switch().await.unwrap();
+        let mut asked = local.switch_asked();
+        let before = *asked.borrow();
+        let start = json!({"kind":"create", "namespace":"app",
+            "resolved_spec":spec("api", "nginx:1.29-alpine"), "creation_key":"move-1",
+            "gen":2, "rotation":"pending"});
+        let call =
+            tokio::spawn(
+                async move { answered(caller.set_volume_copy(promote(Some(start))).await) },
+            );
+        until_switch_asked(&mut asked, before).await;
+        machine
+            .store
+            .mutate(move |store| {
+                assert!(
+                    store
+                        .remove_by_code(&crate::machine::KeyChangeHeld::for_test(), device.code())
+                        .unwrap()
+                )
+            })
+            .await
+            .unwrap();
+        drop(held);
+        let answer = call.await.unwrap();
+        assert!(
+            !plugin
+                .routes_called()
+                .iter()
+                .any(|route| route == WRITER_ROUTE),
+            "{answer:?}"
+        );
+        assert!(answer.for_authority(), "{answer:?}");
+        machine.remove();
+    }
+
+    /// A floor raise takes no turn and no switch, so it checks its caller under the floor
+    /// lock it queued on.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_floor_raise_queued_while_its_device_goes_raises_nothing() {
+        use ployz_core::MachineRpc;
+        let machine = Enforcing::new().await;
+        let device = device_alone(&machine).await;
+        let caller = machine
+            .service
+            .clone()
+            .with_management_client(device.into());
+        let floor = request::<op::SetVolumeCopy>(json!({"name":"app_data",
+            "expect":{"kind":"none"}, "want":{"kind":"floor"}, "gen":5}));
+        let lifecycle = machine.service.local.docker().unwrap().lifecycle();
+        let held = lifecycle.floor_turn().await;
+        let answer = removed_while(&machine, device, held, caller.set_volume_copy(floor)).await;
+        let below = lifecycle
+            .floor_turn()
+            .await
+            .check(&"app_data".parse().unwrap(), ployz_core::VolumeGen::new(4))
+            .await
+            .unwrap();
+        assert_eq!(below, Ok(()), "{answer:?}");
+        assert!(
+            matches!(&answer, Answer::Refused { code, .. } if code == "Unauthenticated"),
+            "{answer:?}"
+        );
+        machine.remove();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_policy_edit_queued_while_its_device_goes_changes_nothing() {
+        use ployz_core::MachineRpc;
+        let machine = Enforcing::new().await;
+        let device = device_alone(&machine).await;
+        let caller = machine
+            .service
+            .clone()
+            .with_management_client(device.into());
+        let edit = request::<op::UpdateMachine>(json!({"update": {"accepts_builds": false}}));
+        let answer = removed_before_its_turn(&machine, device, caller.update_machine(edit)).await;
+        assert!(
+            machine.store.record().machine().unwrap().accepts_builds,
+            "{answer:?}"
+        );
+        assert!(
+            matches!(&answer, Answer::Refused { code, .. } if code == "Unauthenticated"),
+            "{answer:?}"
+        );
+        machine.remove();
+    }
+
+    /// A hook another Device created and never started, in the slot a Device's create
+    /// names with the same spec, sent at Full access while the Device slot goes.
+    #[tokio::test(flavor = "multi_thread")]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture")]
+    async fn a_create_queued_while_its_device_slot_goes_adopts_no_hook_another_key_made() {
+        use ployz_core::MachineRpc;
+        let machine = Enforcing::new().await;
+        let mut hooked = spec("migrate", "nginx:1.29-alpine");
+        hooked["pre_deploy"] = json!({ "command": ["migrate"] });
+        let resolved: ployz_core::ResolvedServiceSpec =
+            serde_json::from_value(hooked.clone()).unwrap();
+        let mut want = want_of("migrate", hooked, false);
+        want["container"]["new"]["slot"]["kind"] = json!("pre_deploy_hook");
+        let namespace = ployz_core::Namespace::parse("app").unwrap();
+        machine
+            .service
+            .local
+            .create_container_for_test(
+                ployz_core::ContainerKind::PreDeployHook,
+                &namespace,
+                &resolved,
+                Some("attacker-0001".to_owned()),
+                crate::machine::local_machine::AdmittedSpec::test_keyed(&namespace, &resolved),
+                (None, None),
+            )
+            .await
+            .unwrap();
+        let device = device_in_two_slots(&machine).await;
+        let caller = machine
+            .service
+            .clone()
+            .with_management_client(device.into());
+        let before = machine.fake.requests.lock().unwrap().len();
+        let create = request::<op::EnsureContainer>(json!({ "want": want }));
+        let answer =
+            downgraded_before_its_turn(&machine, device, caller.ensure_container(create)).await;
+        assert_eq!(
+            sent(&machine, before, http::Method::POST, "/start"),
+            0,
+            "{answer:?}"
+        );
+        assert!(answer.for_authority(), "{answer:?}");
+        machine.remove();
+    }
+
+    /// Cloud's key handed over to its next key while the old key's promote runs inside the
+    /// switch: the handover retires the old key only once that step ends.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_handover_waits_out_the_retiring_keys_volume_step() {
+        use ployz_core::MachineRpc;
+        let machine = Enforcing::new().await;
+        let retiring: ployz_core::ClientKey =
+            DeviceKey::from(Signer::from_seed(&[11; 32]).public()).into();
+        let next: ployz_core::ClientKey =
+            DeviceKey::from(Signer::from_seed(&[12; 32]).public()).into();
+        machine
+            .store
+            .mutate(move |store| {
+                let cloud = ployz_core::ManagementClientLabel::cloud();
+                store
+                    .stage_management_client(
+                        &crate::machine::KeyChangeHeld::for_test(),
+                        cloud.clone(),
+                        retiring,
+                    )
+                    .unwrap();
+                store
+                    .activate_management_client(
+                        &crate::machine::KeyChangeHeld::for_test(),
+                        retiring,
+                    )
+                    .unwrap();
+                store
+                    .stage_management_client(
+                        &crate::machine::KeyChangeHeld::for_test(),
+                        cloud,
+                        next,
+                    )
+                    .unwrap();
+            })
+            .await
+            .unwrap();
+        let plugin = FakePlugin::default();
+        let (served, _plugin_dir) = with_mirror(&machine, &plugin);
+        let caller = served.with_management_client(retiring);
+        let promoting = plugin.hold(WRITER_ROUTE).await;
+        let step =
+            tokio::spawn(async move { answered(caller.set_volume_copy(promote(None)).await) });
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while !plugin
+                .routes_called()
+                .iter()
+                .any(|route| route == WRITER_ROUTE)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the old key's promote reaches the plugin");
+        let local = machine.service.local.clone();
+        let mut asked = local.switch_asked();
+        let before = *asked.borrow();
+        let mut handover =
+            tokio::spawn(async move { local.activate_management_client(next).await });
+        tokio::select! {
+            done = &mut handover => {
+                panic!("the handover ended while the old key's promote still runs: {done:?}");
+            }
+            () = until_switch_asked(&mut asked, before) => {}
+        }
+        drop(promoting);
+        let promoted = step.await.unwrap();
+        assert!(matches!(promoted, Answer::Served), "{promoted:?}");
+        handover.await.unwrap().unwrap();
+        assert!(!machine.store.record().accepts_management_client(&retiring));
+        machine.remove();
+    }
+
+    /// A Full caller's Container in the Private Access router's slot, whose spec mounts a
+    /// Provisioned Volume. Its ensure holds the doors lock, which a Volume step inside the
+    /// switch takes too, so it must not wait for the switch.
+    #[tokio::test(flavor = "multi_thread")]
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture")]
+    async fn a_reserved_slot_mounting_a_volume_is_refused_before_the_switch() {
+        use ployz_core::MachineRpc;
+        let machine = Enforcing::new().await;
+        let mut mounting =
+            serde_json::to_value(crate::docker::test_support::spec_with_sources(vec![
+                crate::docker::test_support::provisioned_source("data", 1_073_741_824),
+            ]))
+            .unwrap();
+        mounting["name"] = json!("tailscale");
+        let want = json!({"state":"running", "rotation":"pending", "container":{"new":{
+            "slot": {"namespace": "ployz-system", "service": "tailscale",
+                     "kind": "service_container", "creation_key": "attacker-0001"},
+            "resolved_spec": mounting, "gen": 1}}});
+        let local = machine.service.local.clone();
+        let held = local.lock_switch().await.unwrap();
+        let mut asked = local.switch_asked();
+        let before = *asked.borrow();
+        let service = machine.service.clone();
+        let mut ensure = tokio::spawn(async move {
+            let create = request::<op::EnsureContainer>(json!({ "want": want }));
+            answered(service.ensure_container(create).await)
+        });
+        let answer = tokio::select! {
+            answer = &mut ensure => answer.unwrap(),
+            () = until_switch_asked(&mut asked, before) => {
+                panic!("the reserved ensure asks for the switch while it holds the doors lock");
+            }
+        };
+        drop(held);
+        assert!(
+            matches!(&answer, Answer::Refused { code, .. } if code == "refused"),
+            "{answer:?}"
+        );
+        machine.remove();
+    }
+}

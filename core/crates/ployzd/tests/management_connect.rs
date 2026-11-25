@@ -1707,7 +1707,8 @@ impl GrantMachine {
         self.grants
             .mint(
                 self.local.record().management_secret().public_key(),
-                ployzd::management::Mint::check(request, None, self.local.full().unwrap()).unwrap(),
+                ployzd::management::Mint::check(request, None, self.local.full_now().unwrap())
+                    .unwrap(),
                 self.ingest,
             )
             .unwrap()

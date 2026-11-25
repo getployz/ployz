@@ -271,30 +271,34 @@ impl LocalMachine {
         &self,
         request: ConfirmJoinRequest,
     ) -> Result<JoinConfirmed, Error> {
-        self.finish_mutation(move |local| async move {
-            let record = local.record();
-            let approval = record
-                .machine()
-                .and_then(|machine| machine.join_approval.clone())
-                .ok_or(Error::Store(crate::machine::StoreError::NotJoining))?;
-            let key = crate::sealing_key::SealingKey::load(local.owner.data_dir())
-                .map_err(Error::JoinRecord)?
-                .ok_or(Error::JoinRefused(AuthorityRefusal::NoClusterIdentity))?;
-            let confirmation = key.confirm_join(&approval);
-            if !key.restricts_join(&approval, &confirmation, &request.restrictions) {
-                return Err(Error::JoinRefused(AuthorityRefusal::Mismatch {
-                    field: MismatchField::JoinRestrictions,
-                }));
-            }
-            let set = request.restrictions.set;
-            local
-                .approvals
-                .install_floors(key.public_key(), &set.floors)?;
-            local
-                .owner
-                .mutate(move |store| store.apply_join_restrictions(&set))
-                .await??;
-            Ok(JoinConfirmed {})
+        // The restrictions stop trusting keys, so taking them is a key change.
+        self.finish_key_change(move |local, key_change| {
+            Box::pin(async move {
+                let record = local.record();
+                let approval = record
+                    .machine()
+                    .and_then(|machine| machine.join_approval.clone())
+                    .ok_or(Error::Store(crate::machine::StoreError::NotJoining))?;
+                let key = crate::sealing_key::SealingKey::load(local.owner.data_dir())
+                    .map_err(Error::JoinRecord)?
+                    .ok_or(Error::JoinRefused(AuthorityRefusal::NoClusterIdentity))?;
+                let confirmation = key.confirm_join(&approval);
+                if !key.restricts_join(&approval, &confirmation, &request.restrictions) {
+                    return Err(Error::JoinRefused(AuthorityRefusal::Mismatch {
+                        field: MismatchField::JoinRestrictions,
+                    }));
+                }
+                let set = request.restrictions.set;
+                local
+                    .approvals
+                    .install_floors(key.public_key(), &set.floors)?;
+                key_change
+                    .mutate(&local.owner, move |store, key_change| {
+                        store.apply_join_restrictions(key_change, &set)
+                    })
+                    .await??;
+                Ok(JoinConfirmed {})
+            })
         })
         .await
     }

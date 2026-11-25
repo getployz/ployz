@@ -224,8 +224,8 @@ export const startStoreGithubBuild = Effect.fn("StoreGithub.start")(function* (o
       return { kind: "dispatched", runId: run.runId } satisfies StoreGithubStart;
     }
     if (start.kind === "approved") {
-      // A commit a person approved or reviewed under a rule builds on the rule's workflow, on its branch, at that
-      // commit; the grant Machine checks the commit is the one the person signed for.
+      // A person's Deploy under a rule builds on the rule's workflow, on its branch, at the commit it pinned; the grant
+      // Machine builds it only while it is that branch's head.
       const run = yield* dispatchApprovedGithubBuild({
         access, repositoryId: target.repositoryId, branch: start.branch, workflow: start.workflow, commit: start.commit,
       });

@@ -3,8 +3,9 @@
 //! Corrosion runs in its own container, so a stopped daemon leaves gossip Up and its
 //! rows as they last were. While a watch is open, the entry asks each peer it would call
 //! a cheap read; a peer that misses `MISSES` probes in a row, an interval apart, is named
-//! unanswered until it answers again. One prober serves every open stream, since they
-//! share one producer.
+//! unanswered until it answers again, and one that answered is named answered until then.
+//! A peer not yet probed is neither. One prober serves every open stream, since they share
+//! one producer.
 
 use std::{collections::BTreeMap, future::Future, time::Duration};
 
@@ -27,20 +28,32 @@ struct Run {
     address: ManagementAddress,
     misses: u32,
     counted: Option<Instant>,
+    /// It answered a probe at `address`.
+    answered: bool,
+}
+
+/// What the probes heard of the peers: those that answered, and those named for their
+/// misses. A peer in neither is not known either way yet.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Heard {
+    pub answered: Vec<MachineId>,
+    pub unanswered: Vec<MachineId>,
 }
 
 impl Misses {
     /// Record one round of `replies`, each a peer, the address probed and whether it
-    /// answered, made at `at`. Returns the peers that have now missed `MISSES` probes in a
-    /// row. A miss counts only once `interval` has passed since that peer's last counted
-    /// one, so a round brought forward by a new peer list can't hurry a name. A peer not
-    /// in `replies`, or probed at a new address, starts again from zero.
+    /// answered, made at `at`. Returns what the probes heard: the peers that have now missed
+    /// `MISSES` probes in a row are unanswered, and the others that answered at least once
+    /// are answered, a single miss since included. A miss counts only once `interval` has
+    /// passed since that peer's last counted one, so a round brought forward by a new peer
+    /// list can't hurry a name. A peer not in `replies`, or probed at a new address, starts
+    /// again from zero.
     pub(crate) fn round(
         &mut self,
         replies: &[(MachineId, ManagementAddress, bool)],
         at: Instant,
         interval: Duration,
-    ) -> Vec<MachineId> {
+    ) -> Heard {
         self.0.retain(|machine, run| {
             replies
                 .iter()
@@ -51,10 +64,12 @@ impl Misses {
                 address: *address,
                 misses: 0,
                 counted: None,
+                answered: false,
             });
             if *answered {
                 run.misses = 0;
                 run.counted = None;
+                run.answered = true;
             } else if run
                 .counted
                 .is_none_or(|counted| at.saturating_duration_since(counted) >= interval)
@@ -63,19 +78,23 @@ impl Misses {
                 run.counted = Some(at);
             }
         }
-        self.0
-            .iter()
-            .filter(|(_, run)| run.misses >= MISSES)
-            .map(|(machine, _)| *machine)
-            .collect()
+        let mut heard = Heard::default();
+        for (machine, run) in &self.0 {
+            if run.misses >= MISSES {
+                heard.unanswered.push(*machine);
+            } else if run.answered {
+                heard.answered.push(*machine);
+            }
+        }
+        heard
     }
 }
 
-/// Probe the peers `peers` names every `PROBE_INTERVAL`, publishing the unanswered ones
-/// on `unanswered` whenever that list changes. Runs until dropped.
+/// Probe the peers `peers` names every `PROBE_INTERVAL`, publishing what the probes heard
+/// on `heard` whenever it changes. Runs until dropped.
 pub(crate) async fn probe_peers<P, F>(
     mut peers: watch::Receiver<Vec<(MachineId, ManagementAddress)>>,
-    unanswered: watch::Sender<Vec<MachineId>>,
+    heard: watch::Sender<Heard>,
     interval: Duration,
     answers: P,
 ) where
@@ -101,11 +120,11 @@ pub(crate) async fn probe_peers<P, F>(
             async move { (*machine, *address, reply.await) }
         }))
         .await;
-        let named = misses.round(&replies, at, interval);
-        unanswered.send_if_modified(|current| {
-            let changed = *current != named;
+        let now = misses.round(&replies, at, interval);
+        heard.send_if_modified(|current| {
+            let changed = *current != now;
             if changed {
-                current.clone_from(&named);
+                *current = now;
             }
             changed
         });

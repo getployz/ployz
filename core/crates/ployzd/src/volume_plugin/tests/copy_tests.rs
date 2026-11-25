@@ -2322,7 +2322,7 @@ async fn a_receive_task_that_panics_with_a_live_child_finishes_once_it_exits() {
 
 /// A child the kill leaves running until the test removes `gate`, as a `zfs` blocked in
 /// the kernel is until the kernel lets it go.
-fn held_child(stop: &Stop, gate: &Path) -> ZfsChild {
+pub(super) fn held_child(stop: &Stop, gate: &Path) -> ZfsChild {
     let mut child = gated_child(stop, gate);
     child.spare_from_kill();
     child

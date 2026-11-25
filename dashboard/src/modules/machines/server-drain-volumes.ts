@@ -24,7 +24,8 @@ const serviceName = (container: Container) => container.resolved_spec.name;
 
 /**
  * The Service's data on `machineId` may move with it when it mounts one Managed volume and nothing else that lasts, one
- * Container runs on that Volume and it is this Service's, and no Container of anything else uses it on any Server.
+ * Container runs on that Volume and it is this Service's, no Container of anything else uses it on any Server, and no
+ * copy of it runs on every Server: a Deploy may have made it a Global since the Engine left it here.
  */
 export function dataCheck(frame: RuntimeWatchView, service: QualifiedService, machineId: string): DataCheck {
   const { namespace, name } = splitQualifiedService(service);
@@ -32,6 +33,9 @@ export function dataCheck(frame: RuntimeWatchView, service: QualifiedService, ma
   const here = frame.containers.filter((container) => container.machine_id === machineId && container.kind === "service_container" && own(container));
   const [spec] = [...here].sort((a, b) => b.created_at_unix_nanos - a.created_at_unix_nanos);
   if (spec === undefined) return { kind: "stays", why: "it no longer runs here" };
+  if (frame.containers.some((container) => own(container) && container.resolved_spec.mode.mode === "global")) {
+    return { kind: "stays", why: "it runs on every server, and a move takes a Service with a replica count" };
+  }
   const lasting = spec.resolved_spec.volumes.filter(({ source }) => source.kind !== "tmpfs");
   if (lasting.some(({ source }) => source.kind !== "provisioned")) return { kind: "engine" };
   const [one, ...more] = lasting;
