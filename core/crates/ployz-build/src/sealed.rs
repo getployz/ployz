@@ -27,6 +27,35 @@ pub fn valid_name(name: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || b"_+-".contains(&byte))
 }
 
+/// Where one attempt stages its opened Sealed values.
+pub struct SealedStaging(PathBuf);
+
+impl SealedStaging {
+    pub(crate) fn under(root: &Path) -> Self {
+        Self(root.join(DIRECTORY))
+    }
+
+    /// Remove every value staged here, so a solve still running reads none of them again.
+    /// The directory itself stays for [`Staged`]'s own drop.
+    ///
+    /// # Errors
+    /// A staged file that could not be removed.
+    pub fn revoke(&self) -> io::Result<()> {
+        let entries = match fs::read_dir(&self.0) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        for entry in entries {
+            match fs::remove_file(entry?.path()) {
+                Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+                Ok(()) | Err(_) => {}
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Opened values written for one solve. Dropping removes them on every
 /// outcome, including a retained Unknown root and a dropped cancelled Build.
 pub struct Staged {

@@ -601,7 +601,10 @@ impl MachineRpc for MachineService {
         let containers = self
             .containers()
             .map_err(|error| Status::unavailable(error.message))?;
-        let bound = self.at(&request).bind_full().map_err(local_status)?;
+        let bound = self
+            .at(&request)
+            .bind_full(crate::machine::Work::Exec)
+            .map_err(local_status)?;
         containers
             .exec(request.into_inner(), bound)
             .await
@@ -756,10 +759,11 @@ impl MachineRpc for MachineService {
                     capability: ployz_core::MINT_BUILD_GRANT_CAPABILITY,
                 });
             }
-            // Bound before ingest opens, so a key change while it opens leaves the grant
-            // serving nothing.
-            (None, Scope::Full(_)) => match local.bind_full() {
-                Ok(bound) => Minter::Full(bound.into_tie()),
+            // Bound before the mint opens the Sealed record, which it does only while a key
+            // change would wait for it. A key change once it opened leaves the grant serving
+            // nothing.
+            (None, Scope::Full(_)) => match local.bind_full(crate::machine::Work::BuildGrant) {
+                Ok(bound) => Minter::Full(bound),
                 Err(error) => return local_error(error),
             },
             (Some(grant), _) => {
@@ -1153,6 +1157,9 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
         }
         LocalMachineError::ClusterUnavailable => {
             Err(Status::unavailable("Cluster is not available"))
+        }
+        LocalMachineError::WorkNotStopped(_) => {
+            Ok(RpcError::caused(RpcErrorCode::Internal, &error))
         }
         LocalMachineError::DockerUnavailable => {
             Ok(RpcError::unavailable("Docker is not available"))

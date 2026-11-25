@@ -38,7 +38,7 @@ pub use railpack::Railpack;
 mod scrub;
 pub use scrub::OutputScrub;
 mod sealed;
-pub use sealed::{Staged, sealed_file, valid_name};
+pub use sealed::{SealedStaging, Staged, sealed_file, valid_name};
 mod solve;
 pub use solve::PlainRenderer;
 

@@ -124,7 +124,9 @@ impl LocalMachine {
     /// returns only once no step its caller asked for still runs. Once the change is
     /// written, the work a key it left short of Full scope started ends, and the change
     /// returns only once that work has stopped: an exec, a tunnel or a Build closes, and a
-    /// Build Grant serves nothing more.
+    /// Build Grant serves nothing more. Work that doesn't confirm it stopped within
+    /// [`super::bound::STOP_WITHIN`] fails the change with [`Error::WorkNotStopped`], though the
+    /// change itself is written.
     pub(super) async fn finish_key_change<T, F>(&self, work: F) -> Result<T, Error>
     where
         T: Send + 'static,
@@ -145,8 +147,10 @@ impl LocalMachine {
             let bound = local.bound.clone();
             let held = KeyChangeHeld(());
             let changed = work(local, &held).await;
-            bound.end_unheld().await;
-            changed
+            let stopped = bound.end_unheld().await;
+            let changed = changed?;
+            stopped?;
+            Ok(changed)
         })
         .await
     }

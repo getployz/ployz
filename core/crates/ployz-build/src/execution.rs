@@ -268,6 +268,12 @@ impl Admission {
             fence: None,
         })
     }
+    /// Where this attempt stages the Sealed values it opens, so its owner can take them back
+    /// while the attempt still runs.
+    #[must_use]
+    pub fn sealed_staging(&self) -> crate::SealedStaging {
+        crate::SealedStaging::under(&self.lock.upload_directory())
+    }
     /// A shared handle to this attempt's [`Cancellation`]; cancelling it makes [`Self::check`]
     /// fail with [`BuildError::Cancelled`].
     #[must_use]

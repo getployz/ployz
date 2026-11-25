@@ -1459,6 +1459,98 @@ async fn a_running_build_whose_device_goes_has_stopped_when_its_removal_returns(
     assert!(result.is_err(), "the Build went on for its removed Device");
 }
 
+/// A Device whose key also holds Cloud's slot queues a Build behind another and is removed:
+/// the queued Build ends before `device rm` returns, without waiting for a build slot.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_queued_build_ends_with_its_device() {
+    let cluster = crate::sealed_env::test_support::Cluster::new();
+    let fixture = Fixture::with(|_| {}, Some(cluster.dir.0.clone())).await;
+    let (device, address) = fixture.device_in_two_slots().await;
+    let (_active, mut response) = fixture.request(Output::Load).await;
+    assert!(matches!(event(&mut response).await, Event::Admitted { .. }));
+    let capture = fixture.capture_with(Some(&cluster));
+    let client = ployz::connect::connect(Path::new("/missing-test-config"), Some(&address), None)
+        .await
+        .unwrap();
+    let (queued, mut waiting) = mpsc::channel(1);
+    let selected = fixture.machine.id;
+    let execution = tokio::spawn(async move {
+        capture
+            .execute_remote_images(&client, selected, None, Default::default(), |event| {
+                if matches!(event, Progress::Stage(Stage::Queued)) {
+                    queued.try_send(()).unwrap();
+                }
+            })
+            .await
+    });
+    waiting.recv().await.unwrap();
+
+    fixture.remove(device).await;
+
+    let result = tokio::time::timeout(Duration::from_secs(10), execution)
+        .await
+        .expect("the queued Build waited for a slot once its Device's removal returned")
+        .unwrap();
+    assert!(
+        matches!(failure(result), ployz::build::RemoteBuildFailure::Failed { stage: Stage::Queued, message, .. } if message.contains("no longer has Full access"))
+    );
+    assert!(!fixture.root.join("executed").exists());
+}
+
+/// A Device whose key also holds Cloud's slot is removed while its Build runs, and the
+/// builder doesn't confirm it stopped. `device rm` says so rather than that the Build
+/// stopped, and the Build holds no opened value.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_removal_says_when_a_build_cannot_confirm_it_stopped() {
+    let cluster = crate::sealed_env::test_support::Cluster::new();
+    let fixture = Fixture::with(|_| {}, Some(cluster.dir.0.clone())).await;
+    let (device, address) = fixture.device_in_two_slots().await;
+    let capture = fixture.capture_with(Some(&cluster));
+    let client = ployz::connect::connect(Path::new("/missing-test-config"), Some(&address), None)
+        .await
+        .unwrap();
+    fs::write(fixture.root.join("hold-build"), "").unwrap();
+    fs::write(fixture.root.join("fail-cleanup"), "").unwrap();
+    let remove = async {
+        until_fake_docker(Duration::from_secs(10), || {
+            fixture.root.join("executed").exists()
+        })
+        .await
+        .unwrap();
+        let removed = fixture
+            .local
+            .clone()
+            .on_local_socket()
+            .set_device(ployz_core::SetDeviceRequest::Remove {
+                code: device.code(),
+            })
+            .await;
+        let mut opened = Vec::new();
+        files_named(&fixture.root, "NPM_TOKEN", &mut opened);
+        fs::remove_file(fixture.root.join("hold-build")).unwrap();
+        (removed, opened)
+    };
+    let (result, (removed, opened)) = tokio::join!(
+        capture.execute_remote_images(
+            &client,
+            fixture.machine.id,
+            None,
+            Default::default(),
+            |_| {}
+        ),
+        remove,
+    );
+    let Err(crate::machine::LocalMachineError::WorkNotStopped(unstopped)) = removed else {
+        panic!("the removal said the Build stopped without knowing: {removed:?}");
+    };
+    assert_eq!(unstopped.first().0, crate::machine::Work::Build);
+    assert!(opened.is_empty(), "{opened:?}");
+    assert!(matches!(
+        failure(result),
+        ployz::build::RemoteBuildFailure::Unknown { .. }
+    ));
+}
+
 #[tokio::test]
 async fn a_sealed_value_this_machine_cannot_open_fails_closed_before_docker() {
     let sealed_by = crate::sealed_env::test_support::Cluster::new();

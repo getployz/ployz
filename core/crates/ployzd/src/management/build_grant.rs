@@ -11,7 +11,9 @@
 //!
 //! Only a [`Minter`] mints: a Full caller, or a rule build every `rule_grant` check
 //! passed. An Operator is neither. A Full caller's grant ends with its key's Full scope:
-//! once a key change that took it returns, the grant serves nothing more.
+//! once a key change that took it returns, the grant serves nothing more. Its Sealed values
+//! open only inside work that key change waits for: the mint, or a request on a connection
+//! that holds the grant's [`Bound`].
 //!
 //! A grant minted for a holder can carry the built Service's Sealed values, still
 //! sealed. Its holder reads them opened from `GET /ployz/sealed` once, before the push.
@@ -48,7 +50,7 @@ use sha2::{Digest as _, Sha256};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use crate::machine::{Tie, local_machine::rule_grant::AdmittedRule};
+use crate::machine::{Bound, Tie, local_machine::rule_grant::AdmittedRule};
 use crate::sealed_env::SealingKeyStore;
 
 /// How long a grant lives. Ployz Cloud mints it at
@@ -113,7 +115,7 @@ enum Push {
 /// Who a mint is for: a caller at Full access, or a rule build that passed every
 /// `rule_grant` check. An Operator is neither, so no Operator reaches a mint.
 pub(crate) enum Minter {
-    Full(Tie),
+    Full(Bound),
     Rule(AdmittedRule),
 }
 
@@ -142,7 +144,7 @@ impl Mint {
     pub fn check(
         request: MintBuildGrantRequest,
         sealing: Option<&SealingKeyStore>,
-        full: Tie,
+        full: Bound,
     ) -> Result<Mint, RpcError> {
         Self::check_admitted(request, sealing, Minter::Full(full))
     }
@@ -189,18 +191,23 @@ impl Mint {
             })
         };
         if let Some(record) = &request.sealed {
-            sealing()?
-                .open_for_build(record)
-                .map_err(|error| RpcError::new(RpcErrorCode::Conflict, error.to_string()))?;
+            let sealing = sealing()?;
+            let opened = match &minter {
+                Minter::Full(bound) => bound
+                    .read(|| sealing.open_for_build(record))
+                    .map_err(|_| ended())?,
+                Minter::Rule(_) => sealing.open_for_build(record),
+            };
+            opened.map_err(|error| RpcError::new(RpcErrorCode::Conflict, error.to_string()))?;
         }
         let (release, tie) = match (minter, request.sealed) {
-            (Minter::Full(tie), None) => (None, Some(tie)),
-            (Minter::Full(tie), Some(record)) => (
+            (Minter::Full(bound), None) => (None, Some(bound.into_tie())),
+            (Minter::Full(bound), Some(record)) => (
                 Some(Release::Plain {
                     record,
                     sealing: sealing()?.clone(),
                 }),
-                Some(tie),
+                Some(bound.into_tie()),
             ),
             (Minter::Rule(admitted), record) => (
                 Some(Release::Attested {
@@ -233,6 +240,9 @@ impl BuildGrants {
         mint: Mint,
         ingest: SocketAddr,
     ) -> Result<BuildGrantMinted, RpcError> {
+        if mint.tie.as_ref().is_some_and(Tie::is_ended) {
+            return Err(ended());
+        }
         let (id, key) = match mint.key {
             Key::Made(secret) => (
                 grant_id(secret.public().as_bytes()),
@@ -356,6 +366,33 @@ impl Grant {
     }
 }
 
+/// A grant as one connection serves it. A Full caller's carries the [`Bound`] a key change
+/// that ends the grant waits for, and opens its Sealed values only under it.
+#[derive(Clone)]
+struct Serving {
+    grant: Arc<Grant>,
+    hold: Option<Arc<Bound>>,
+}
+
+impl Serving {
+    /// `None` once a key change ended a Full caller's grant.
+    fn new(grant: Arc<Grant>) -> Option<Self> {
+        let hold = match &grant.tie {
+            Some(tie) => Some(Arc::new(tie.hold().ok()?)),
+            None => None,
+        };
+        Some(Self { grant, hold })
+    }
+}
+
+/// The refusal for a grant whose minter no longer holds Full scope.
+fn ended() -> RpcError {
+    RpcError::new(
+        RpcErrorCode::Unauthenticated,
+        "this Device no longer has Full access to this Server",
+    )
+}
+
 /// Serve one connection on the grant ALPN until its grant ends. Each bidirectional
 /// stream carries one HTTP/1.1 connection of the pusher's registry client.
 pub(super) async fn serve(
@@ -363,7 +400,10 @@ pub(super) async fn serve(
     grants: &BuildGrants,
     shutdown: CancellationToken,
 ) {
-    let Some(grant) = grants.admit(connection.remote_id().as_bytes()) else {
+    let Some(serving) = grants
+        .admit(connection.remote_id().as_bytes())
+        .and_then(Serving::new)
+    else {
         connection.close(
             VarInt::from_u32(BUILD_GRANT_REFUSED),
             b"build grant refused",
@@ -374,8 +414,8 @@ pub(super) async fn serve(
     let mut streams = tokio::task::JoinSet::new();
     loop {
         let (send, recv) = tokio::select! {
-            () = tokio::time::sleep_until(grant.expires) => break,
-            () = grant.ended() => break,
+            () = tokio::time::sleep_until(serving.grant.expires) => break,
+            () = serving.grant.ended() => break,
             () = shutdown.cancelled() => break,
             _ = streams.join_next(), if !streams.is_empty() => continue,
             accepted = connection.accept_bi() => match accepted {
@@ -383,15 +423,13 @@ pub(super) async fn serve(
                 Err(_) => return,
             },
         };
-        let grant = Arc::clone(&grant);
+        let serving = serving.clone();
         let client = client.clone();
         streams.spawn(async move {
             let service = service_fn(move |request| {
-                let grant = Arc::clone(&grant);
+                let serving = serving.clone();
                 let client = client.clone();
-                async move {
-                    Ok::<_, Infallible>(handle(request, &grant, &client).await)
-                }
+                async move { Ok::<_, Infallible>(handle(request, &serving, &client).await) }
             });
             if let Err(error) = http1::Builder::new()
                 .serve_connection(TokioIo::new(tokio::io::join(recv, send)), service)
@@ -401,9 +439,12 @@ pub(super) async fn serve(
             }
         });
     }
-    // Dropping the set aborts in-flight requests: an ended grant pushes nothing more.
-    drop(streams);
+    // An ended grant pushes and opens nothing more: its requests stop before the hold that
+    // a key change waits for drops.
+    streams.abort_all();
+    while streams.join_next().await.is_some() {}
     connection.close(VarInt::from_u32(BUILD_GRANT_ENDED), b"build grant ended");
+    drop(serving);
 }
 
 /// One call a grant allows.
@@ -479,11 +520,16 @@ fn tagged(reference: &str) -> Option<ImageDigest> {
     ImageDigest::parse(format!("sha256:{hex}")).ok()
 }
 
-async fn handle<B>(request: Request<B>, grant: &Grant, client: &reqwest::Client) -> Response<Body>
+async fn handle<B>(
+    request: Request<B>,
+    serving: &Serving,
+    client: &reqwest::Client,
+) -> Response<Body>
 where
     B: hyper::body::Body<Data = Bytes> + Send + 'static,
     B::Error: Into<axum::BoxError>,
 {
+    let grant = &*serving.grant;
     let uri = request.uri();
     let Some(route) = Route::parse(request.method(), uri.path(), uri.query(), &grant.repository)
     else {
@@ -500,7 +546,7 @@ where
     }
     let (parts, body) = request.into_parts();
     let (digest, tagged) = match route {
-        Route::Sealed => return sealed(grant),
+        Route::Sealed => return sealed(serving),
         Route::Ping | Route::Blob | Route::Upload | Route::ManifestHead => {
             let body = reqwest::Body::wrap_stream(Body::new(body).into_data_stream());
             return forward(client, grant.ingest, &parts, body).await;
@@ -561,7 +607,8 @@ where
 
 /// The grant's Sealed values, opened, for its holder once, while the grant is live and
 /// nothing is pushing or pushed.
-fn sealed(grant: &Grant) -> Response<Body> {
+fn sealed(serving: &Serving) -> Response<Body> {
+    let grant = &*serving.grant;
     let sealed = {
         let push = grant.push.lock().expect("grant push lock");
         if !matches!(*push, Push::Open) || !grant.live() {
@@ -586,9 +633,9 @@ fn sealed(grant: &Grant) -> Response<Body> {
         }
     };
     // Opened only while its minter still holds Full scope, under the lock a key change
-    // ends grants under.
-    let released = match &grant.tie {
-        Some(tie) => tie.read(|| release(sealed)),
+    // ends grants under, inside the request it waits for.
+    let released = match &serving.hold {
+        Some(hold) => hold.read(|| release(sealed)),
         None => Ok(release(sealed)),
     };
     let (body, content_type) = match released {
@@ -729,7 +776,7 @@ mod tests {
         grants
             .mint(
                 machine,
-                Mint::check(request, None, Tie::for_test()).unwrap(),
+                Mint::check(request, None, Bound::for_test()).unwrap(),
                 ingest,
             )
             .unwrap()
@@ -757,7 +804,7 @@ mod tests {
         let mint = Mint::check(
             sealed_request(cluster),
             Some(&cluster.store()),
-            Tie::for_test(),
+            Bound::for_test(),
         )
         .unwrap();
         grants
@@ -770,6 +817,11 @@ mod tests {
         grants.admit(holder().as_bytes()).unwrap()
     }
 
+    /// `GET /ployz/sealed` of `grant`, from a connection admitted to it now.
+    fn sealed_of(grant: &Arc<Grant>) -> Response<Body> {
+        sealed(&Serving::new(Arc::clone(grant)).expect("a live grant serves"))
+    }
+
     async fn read(response: Response<Body>) -> (StatusCode, String) {
         let status = response.status();
         let body = response.into_body().collect().await.unwrap().to_bytes();
@@ -779,7 +831,7 @@ mod tests {
     #[tokio::test]
     async fn a_holder_reads_its_grants_sealed_values_opened() {
         let cluster = Cluster::new();
-        let (status, body) = read(sealed(&sealed_grant(&cluster))).await;
+        let (status, body) = read(sealed_of(&sealed_grant(&cluster))).await;
         assert_eq!(status, StatusCode::OK);
         let opened: OpenedSealed = serde_json::from_str(&body).unwrap();
         assert_eq!(opened.get("NPM_TOKEN"), Some(MARKER));
@@ -794,7 +846,7 @@ mod tests {
         *pushed.push.lock().unwrap() =
             Push::Pushed(ImageDigest::parse(format!("sha256:{}", "a".repeat(64))).unwrap());
         let live = sealed_grant(&cluster);
-        let expired = Grant {
+        let expired = Arc::new(Grant {
             repository: live.repository.clone(),
             ingest: live.ingest,
             expires: Instant::now(),
@@ -804,9 +856,9 @@ mod tests {
                 sealing: cluster.store(),
             })),
             tie: None,
-        };
-        for grant in [&*pushing, &*pushed, &expired] {
-            let (status, body) = read(sealed(grant)).await;
+        });
+        for grant in [&pushing, &pushed, &expired] {
+            let (status, body) = read(sealed_of(grant)).await;
             assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
             assert!(!body.contains(MARKER));
         }
@@ -818,7 +870,7 @@ mod tests {
         let mint = Mint::check(
             sealed_request(cluster),
             Some(&cluster.store()),
-            Tie::for_test(),
+            Bound::for_test(),
         )
         .unwrap();
         grants
@@ -833,13 +885,13 @@ mod tests {
 
     /// The holder's `GET /ployz/sealed` through the request handler, as a connection
     /// admitted earlier would send it.
-    async fn get_sealed(grant: &Grant) -> (StatusCode, String) {
+    async fn get_sealed(serving: &Serving) -> (StatusCode, String) {
         let request = Request::builder()
             .method(Method::GET)
             .uri("/ployz/sealed")
             .body(http_body_util::Empty::<Bytes>::new())
             .unwrap();
-        read(handle(request, grant, &reqwest::Client::new()).await).await
+        read(handle(request, serving, &reqwest::Client::new()).await).await
     }
 
     #[tokio::test]
@@ -847,7 +899,7 @@ mod tests {
         let cluster = Cluster::new();
         let grants = sealed_grants(&cluster);
         let admitted = grants.admit(holder().as_bytes()).unwrap();
-        let (status, body) = get_sealed(&admitted).await;
+        let (status, body) = get_sealed(&Serving::new(admitted).unwrap()).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         let opened: OpenedSealed = serde_json::from_str(&body).unwrap();
         assert_eq!(opened.get("NPM_TOKEN"), Some(MARKER));
@@ -857,8 +909,8 @@ mod tests {
     async fn a_holder_reads_sealed_values_once() {
         let cluster = Cluster::new();
         let grant = sealed_grant(&cluster);
-        assert_eq!(read(sealed(&grant)).await.0, StatusCode::OK);
-        let (status, body) = read(sealed(&grant)).await;
+        assert_eq!(read(sealed_of(&grant)).await.0, StatusCode::OK);
+        let (status, body) = read(sealed_of(&grant)).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
         assert!(!body.contains(MARKER));
     }
@@ -873,16 +925,16 @@ mod tests {
             sealing: elsewhere.store(),
         });
         assert_eq!(
-            read(sealed(&grant)).await.0,
+            read(sealed_of(&grant)).await.0,
             StatusCode::PRECONDITION_FAILED
         );
-        let (status, body) = read(sealed(&grant)).await;
+        let (status, body) = read(sealed_of(&grant)).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
     }
 
-    /// A Device whose key also holds Cloud's slot mints a grant carrying Sealed values and is
-    /// removed before the holder reads them: once `device rm` returned, a holder connected
-    /// before reads nothing, and no new connection is admitted.
+    /// A Device whose key also holds Cloud's slot mints a grant carrying Sealed values, and a
+    /// holder connects. Removing the Device waits for that connection to stop serving, which
+    /// opens nothing more meanwhile, and once `device rm` returned no connection is admitted.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_removed_devices_grant_serves_nothing_once_its_removal_returns() {
         let cluster = Cluster::new();
@@ -896,7 +948,9 @@ mod tests {
         let mint = Mint::check(
             sealed_request(&cluster),
             Some(&cluster.store()),
-            from_device.bind_full().unwrap().into_tie(),
+            from_device
+                .bind_full(crate::machine::Work::BuildGrant)
+                .unwrap(),
         )
         .unwrap();
         grants
@@ -906,20 +960,29 @@ mod tests {
                 SocketAddr::from(([127, 0, 0, 1], 5000)),
             )
             .unwrap();
-        let connected = grants.admit(holder().as_bytes()).unwrap();
+        let admitted = grants.admit(holder().as_bytes()).unwrap();
+        let connected = Serving::new(Arc::clone(&admitted)).unwrap();
 
-        local
-            .clone()
-            .on_local_socket()
-            .set_device(ployz_core::SetDeviceRequest::Remove {
-                code: device.code(),
-            })
-            .await
-            .unwrap();
-
+        let removal = tokio::spawn(async move {
+            local
+                .on_local_socket()
+                .set_device(ployz_core::SetDeviceRequest::Remove {
+                    code: device.code(),
+                })
+                .await
+        });
+        admitted.ended().await;
         let (status, body) = get_sealed(&connected).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
         assert!(!body.contains(MARKER));
+        assert!(
+            !removal.is_finished(),
+            "the removal returned while a connection still served its grant"
+        );
+        drop(connected);
+        removal.await.unwrap().unwrap();
+
+        assert!(Serving::new(admitted).is_none());
         assert!(grants.admit(holder().as_bytes()).is_none());
     }
 
@@ -930,7 +993,7 @@ mod tests {
         let first = mint(&grants, request(Some(&holder)));
         let Err(refused) = grants.mint(
             ManagementIdentity::from_bytes([7; 32]),
-            Mint::check(request(Some(&holder)), None, Tie::for_test()).unwrap(),
+            Mint::check(request(Some(&holder)), None, Bound::for_test()).unwrap(),
             SocketAddr::from(([127, 0, 0, 1], 5000)),
         ) else {
             panic!("a second mint would replace the live grant");
@@ -944,7 +1007,7 @@ mod tests {
         let grants = BuildGrants::default();
         mint(&grants, request(Some(&hex::encode(holder().as_bytes()))));
         let grant = grants.admit(holder().as_bytes()).unwrap();
-        assert_eq!(read(sealed(&grant)).await.0, StatusCode::NOT_FOUND);
+        assert_eq!(read(sealed_of(&grant)).await.0, StatusCode::NOT_FOUND);
     }
 
     #[test]
@@ -954,16 +1017,19 @@ mod tests {
             holder: None,
             ..sealed_request(&cluster)
         };
-        let Err(refused) = Mint::check(holderless, Some(&cluster.store()), Tie::for_test()) else {
+        let Err(refused) = Mint::check(holderless, Some(&cluster.store()), Bound::for_test())
+        else {
             panic!("a holderless grant would return its key to Cloud");
         };
         assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
 
         let elsewhere = Cluster::new();
         for sealing in [Some(elsewhere.store()), None] {
-            let Err(refused) =
-                Mint::check(sealed_request(&cluster), sealing.as_ref(), Tie::for_test())
-            else {
+            let Err(refused) = Mint::check(
+                sealed_request(&cluster),
+                sealing.as_ref(),
+                Bound::for_test(),
+            ) else {
                 panic!("another Cluster's key opens nothing");
             };
             assert_eq!(refused.code, RpcErrorCode::Conflict);
@@ -1003,7 +1069,7 @@ mod tests {
     fn a_holder_that_is_not_a_public_key_is_refused() {
         let mut point = [0; 32];
         point[0] = 2;
-        let Err(refused) = Mint::check(request(Some(&hex::encode(point))), None, Tie::for_test())
+        let Err(refused) = Mint::check(request(Some(&hex::encode(point))), None, Bound::for_test())
         else {
             panic!("y = 2 is not on the curve");
         };
@@ -1197,7 +1263,7 @@ mod tests {
             let cluster = Cluster::new();
             let recipient = X25519Secret::generate();
             let grant = rule_grant(&cluster, sealed_request(&cluster).sealed, &recipient);
-            let (status, sealed) = body(sealed(&grant)).await;
+            let (status, sealed) = body(sealed_of(&grant)).await;
             assert_eq!(status, StatusCode::OK);
             assert!(
                 !sealed
@@ -1225,7 +1291,7 @@ mod tests {
             let cluster = Cluster::new();
             let recipient = X25519Secret::generate();
             let grant = rule_grant(&cluster, None, &recipient);
-            let (status, sealed) = body(sealed(&grant)).await;
+            let (status, sealed) = body(sealed_of(&grant)).await;
             assert_eq!(status, StatusCode::OK);
             let opened =
                 OpenedSealed::open_build(&sealed, &recipient, &attest(&cluster), AUDIENCE).unwrap();
@@ -1241,7 +1307,12 @@ mod tests {
                 .uri("/ployz/sealed")
                 .body(http_body_util::Empty::<Bytes>::new())
                 .unwrap();
-            let response = handle(request, &grant, &reqwest::Client::new()).await;
+            let response = handle(
+                request,
+                &Serving::new(Arc::clone(&grant)).unwrap(),
+                &reqwest::Client::new(),
+            )
+            .await;
             assert_eq!(response.status(), StatusCode::OK);
         }
     }

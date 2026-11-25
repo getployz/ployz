@@ -280,9 +280,11 @@ can return before it does, and a resize like that can still finish afterward. If
 that server, such as Ployz Cloud's, the command goes on with Operator access only, so it can't start
 a container that only that device approved.
 What that device left running on a server stops there before `device rm` returns, even when its
-key holds another slot: an `exec`, with or without `--detach`, a `port-forward`, and a build. A build
-that doesn't confirm it stopped within about a minute is reported as unknown, and the removal
-returns anyway.
+key holds another slot: an `exec`, with or without `--detach`, a `port-forward`, a build, queued or
+running, and a build grant. If any of it doesn't confirm it stopped within 90 seconds, for example
+because Docker stopped answering, that server reports the removal as failed and says what didn't
+stop. The device is removed there all the same. A build that can't confirm it stopped has the
+secret values it opened deleted at once, and starts no further step.
 Every server that answers marks the key removed, including one that never
 trusted it, so an approval of that key still on its way there is refused. If no server can name
 the key in full, for example because every server that trusted or removed it is away, a server that never held

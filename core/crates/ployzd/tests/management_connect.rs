@@ -1800,7 +1800,9 @@ impl GrantMachine {
                 ployzd::management::Mint::check(
                     request,
                     None,
-                    self.local.bind_full().unwrap().into_tie(),
+                    self.local
+                        .bind_full(ployzd::machine::Work::BuildGrant)
+                        .unwrap(),
                 )
                 .unwrap(),
                 self.ingest,

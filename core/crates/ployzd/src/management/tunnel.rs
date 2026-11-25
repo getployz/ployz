@@ -55,7 +55,7 @@ pub(super) async fn serve(
             ManagementScope::Full,
             false,
         ))
-        .bind_full()
+        .bind_full(crate::machine::Work::Tunnel)
     {
         Ok(bound) => bound,
         Err(LocalMachineError::ManagementRevoked) => {

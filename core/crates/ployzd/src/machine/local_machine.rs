@@ -94,7 +94,9 @@ mod private_access;
 mod register;
 mod reserved;
 pub(crate) use admission::{Admit, AdmittedBy, AdmittedSpec};
-pub use bound::{Bound, Tie};
+#[cfg(test)]
+pub(crate) use bound::STOP_WITHIN;
+pub use bound::{Bound, Tie, Work};
 pub use call::FullCaller;
 pub(crate) use call::{Call, Caller, Checked, Scope};
 pub(crate) use consumption::ConsumptionLog;
@@ -183,6 +185,8 @@ pub enum Error {
     ClusterStoreEmpty,
     #[error("Cluster is not available")]
     ClusterUnavailable,
+    #[error(transparent)]
+    WorkNotStopped(#[from] bound::WorkNotStopped),
     #[error("Docker is not available")]
     DockerUnavailable,
     /// A Leave was removing this Machine from the Cluster as the call failed with
