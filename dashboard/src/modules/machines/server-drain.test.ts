@@ -279,11 +279,12 @@ describe("Drain hints", () => {
     expect(drainDialogRows(view({}), [postgres], none).map((row) => row.stays)).toEqual([null]);
   });
 
-  it("marks every Service with a Global copy as refusing the Drain, however many Servers run it", () => {
+  it("marks every Service with a Global copy as refusing the Drain, however many Servers run it, owned or not", () => {
     const api = { identity: "shop/api", name: "api", namespace: "shop", global: false };
     const global = (name: string) => ({ identity: `shop/${name}`, name, namespace: "shop", global: true });
-    const rows = drainDialogRows(view({}), [api, global("agent"), global("spread")], none);
-    expect(rows.map((row) => [row.name, row.stays])).toEqual([["api", null], ["agent", "global"], ["spread", "global"]]);
+    const strayGlobal = { ...stray, global: true };
+    const rows = drainDialogRows(view({}), [api, global("agent"), global("spread"), strayGlobal], strays);
+    expect(rows.map((row) => [row.name, row.stays])).toEqual([["api", null], ["agent", "global"], ["spread", "global"], ["old", "global"]]);
   });
 
   it("lists what a Drain under way still has to move, without what no Project owns", () => {

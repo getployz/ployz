@@ -1,7 +1,8 @@
 //! Drain: turn a Machine's services role off, run Placement convergence for each chosen
 //! replicated Service with a Container on it, then observe what still runs there. One
-//! bounded command. A chosen Service with a Global copy anywhere refuses the Drain in its
-//! preflight: a Drain retires no Global, and lets go of no Global's copy.
+//! bounded command. A user Service on the Server with a Global copy anywhere, chosen or not,
+//! refuses the Drain in its preflight: a Drain retires no Global, and lets go of no Global's
+//! copy.
 //!
 //! Each move's old copy retires alongside the moves after it; the report waits for every
 //! retirement and still lists the Services in the order they were handled.
@@ -321,9 +322,14 @@ pub enum DrainError {
     /// The entry did not observe the services role off within 30 s.
     #[error("this entry Server has not yet observed the new services role")]
     RoleNotObserved,
-    /// The Server's Containers could not be listed.
-    #[error("Cannot observe Services on Server {server}: {detail}")]
-    Unobservable { server: MachineName, detail: String },
+    /// The Server's Containers could not be listed. `turned_off` when this Drain had turned
+    /// its services role off first, which the refusal leaves off.
+    #[error("Cannot observe Services on Server {server}{}: {detail}", after_turning_off(.turned_off))]
+    Unobservable {
+        server: MachineName,
+        detail: String,
+        turned_off: bool,
+    },
     /// Cancellation came before anything moved.
     #[error("cancelled before the Drain began")]
     Cancelled,
@@ -400,6 +406,7 @@ pub(crate) async fn needing_versions(
     unsigned_moves(snapshot, &server.id, scope).map_err(|detail| DrainError::Unobservable {
         server: server.name,
         detail,
+        turned_off: false,
     })
 }
 
@@ -456,8 +463,8 @@ struct Ready {
 }
 
 /// Select, turn the role off, wait until the entry observes it, list the chosen Services.
-/// Each listing must answer for the Server, and each refuses a chosen Service with a Global
-/// copy, so no Drain retires one.
+/// Each listing must answer for the Server, and each refuses a user Service there with a
+/// Global copy, so no Drain retires one.
 async fn preflight(
     client: &mut Client,
     target: &MachineTarget,
@@ -501,24 +508,28 @@ async fn preflight(
 }
 
 /// The Services of `scope` with a Container on `server`. Refuses when `server` did not
-/// answer the listing, or when any of them has a Global copy anywhere: a copy stays In while
-/// it crash-loops, so the copy on `server` could be the last that serves, and one left Out
-/// there would be let go. `role` is what this Drain already did to its services role.
+/// answer the listing, or when any user Service there has a Global copy anywhere, whether
+/// `scope` chose it or not: a copy stays In while it crash-loops, so the copy on `server`
+/// could be the last that serves, and one left Out there would be let go. One the scope
+/// left out would still be left on a Server whose services are off. `role` is what this
+/// Drain already did to its services role, which every refusal reports.
 fn chosen_on(
     server: &Machine,
     live: &LiveServices<RpcError>,
     scope: &DrainScope,
     role: Option<ServicesRole>,
 ) -> Result<Vec<QualifiedService>, DrainError> {
+    let turned_off = role == Some(ServicesRole::TurnedOff);
     observed(live, &server.id).map_err(|detail| DrainError::Unobservable {
         server: server.name.clone(),
         detail,
+        turned_off,
     })?;
     let (globals, replicated): (Vec<_>, Vec<_>) = live
         .services()
         .into_iter()
         .filter(|service| {
-            scope.includes(&service.identity)
+            DrainScope::EveryNamespace.includes(&service.identity)
                 && service
                     .containers
                     .iter()
@@ -529,25 +540,23 @@ fn chosen_on(
                 .members()
                 .any(|member| member.as_observation().resolved_spec.mode == ServiceMode::Global)
         });
-    let identities = |services: Vec<ployz_core::ServiceObservation>| {
-        services
+    if globals.is_empty() {
+        return Ok(replicated
             .into_iter()
             .map(|service| service.identity)
-            .collect::<Vec<_>>()
-    };
-    if globals.is_empty() {
-        return Ok(identities(replicated));
+            .filter(|service| scope.includes(service))
+            .collect());
     }
-    Err(user_globals(server, &identities(globals), role))
+    let globals = globals
+        .into_iter()
+        .map(|service| service.identity)
+        .collect::<Vec<_>>();
+    Err(user_globals(server, &globals, turned_off))
 }
 
 /// The refusal of a Drain whose Server runs `globals`. Compose made a user Global until
 /// 0.1.2-beta.42.
-fn user_globals(
-    server: &Machine,
-    globals: &[QualifiedService],
-    role: Option<ServicesRole>,
-) -> DrainError {
+fn user_globals(server: &Machine, globals: &[QualifiedService], turned_off: bool) -> DrainError {
     let names = globals
         .iter()
         .map(|service| format!("`{service}`"))
@@ -558,9 +567,10 @@ fn user_globals(
     } else {
         ("their last working copies", "each", "them")
     };
-    let role = match role {
-        Some(ServicesRole::TurnedOff) => format!(" Services are now off on {}.", server.name),
-        Some(ServicesRole::AlreadyOff) | None => String::new(),
+    let role = if turned_off {
+        format!(" Services are now off on {}.", server.name)
+    } else {
+        String::new()
     };
     DrainError::Refused(RpcError::new(
         RpcErrorCode::Conflict,
@@ -570,6 +580,15 @@ fn user_globals(
             server.name
         ),
     ))
+}
+
+/// What an Unobservable refusal adds once this Drain turned the services role off.
+fn after_turning_off(turned_off: &bool) -> &'static str {
+    if *turned_off {
+        " after turning its services off"
+    } else {
+        ""
+    }
 }
 
 /// Turn the services role off on `id`, then wait until the entry observes it off.

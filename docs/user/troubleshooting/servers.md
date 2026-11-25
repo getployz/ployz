@@ -358,8 +358,10 @@ The server has joined and stays joined. To finish:
 ## Move a service off `deploy.mode: global`
 
 A service deployed from a Compose file with `deploy.mode: global` before 0.1.2-beta.42 runs on
-every server. Draining a server that runs it stops before it changes anything, and a deploy can't
-switch it to a replica count (`service mode cannot be changed`). To run it like your other
+every server. Draining a server that runs it stops before it moves anything, and a deploy can't
+switch it to a replica count (`service mode cannot be changed`). A drain that finds it only after
+turning the server's services off says so in its error, and leaves them off: turn **Run services
+here** back on, or run `ployz server set SERVER --accepts-services=true`. To run it like your other
 services, remove it and add it back:
 
 1. If its image keeps data in a volume, find that volume first. `ployz ps SERVICE` lists each of

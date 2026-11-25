@@ -398,7 +398,8 @@ export function drainDialogRows(
   const rows = [
     ...split.drainable.map((service) => row(service,
       service.global === true ? "global" : pinned.has(service.identity) ? "data" : null)),
-    ...split.unowned.map((service) => row(service, "unowned")),
+    // A Global refuses the Drain whoever owns it, as the Engine refuses one its scope leaves out.
+    ...split.unowned.map((service) => row(service, service.global === true ? "global" : "unowned")),
   ];
   return [...rows.filter((entry) => entry.stays === null), ...rows.filter((entry) => entry.stays !== null)];
 }

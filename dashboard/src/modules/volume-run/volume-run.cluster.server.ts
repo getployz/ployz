@@ -422,7 +422,8 @@ const refused = (message: string): Refused => ({ ok: false, refusal: { code: "in
  * The one Container on `machine` that mounts this Volume, whose Service B starts: `chosen`, the one the run picked
  * before its cut, else a running one over stopped ones, since a Server that enforces device approval keeps the
  * Container an earlier Move's cut stopped. It must be a Service's, the only one running on the Volume, and mount no
- * other data, since only this Volume moves with it.
+ * other data, since only this Volume moves with it. It must not be a Global's copy: a copy stays routed while it
+ * crash-loops, so the one the cut stops could be the last that works.
  */
 const holderOn = (
   ctx: Pick<RunContext, "volumeName" | "dockerVolume">,
@@ -443,6 +444,9 @@ const holderOn = (
   }
   if (holder.kind !== "service_container") {
     return refused(`${holder.display_name} uses ${ctx.volumeName} on ${machine.name}, and a move takes only a Service. Stop it first`);
+  }
+  if (holder.resolved_spec.mode.mode === "global") {
+    return refused(`${holder.resolved_spec.name} runs on every server, and a move takes a Service with a replica count`);
   }
   const others = holder.resolved_spec.volumes.filter(({ source }) =>
     source.kind !== "tmpfs" && !(source.kind === "provisioned" && source.name === ctx.dockerVolume));

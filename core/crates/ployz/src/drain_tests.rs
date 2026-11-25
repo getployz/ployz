@@ -1228,21 +1228,22 @@ struct Metrics {
     replicated: ployz_core::ContainerObservation,
 }
 
-/// The Drain of Server `web-2` against a Cluster that answers only reads, and every other
-/// call it sent. Its peer `web-1` runs a copy of `app/metrics`, a user Global left from
-/// Compose before 0.1.2-beta.42. `look` answers for `web-2` by how many Machine listings
-/// came before it.
+/// The Drain of Server `web-2` within `scope` against a Cluster that answers reads and the
+/// services role, and every other call it sent, turning that role off included. Its peer
+/// `web-1` runs a copy of `app/metrics`, a user Global left from Compose before
+/// 0.1.2-beta.42. `look` answers for `web-2` by how many Machine listings came before it.
 async fn drain_reading_only(
     accepts_services: bool,
+    scope: DrainScope,
     look: fn(usize, &Metrics) -> Look,
 ) -> (Result<DrainReport, super::DrainError>, Vec<String>) {
     use crate::global_fixtures::{global_service, machine, qualified, running_on};
     use ployz_core::{
-        ContainerList, MachineList, MachineObservation, MachineTarget, MembershipObservation,
-        OpaquePayload, Placement, RpcRequestBody, RpcResponse,
+        ContainerList, MachineList, MachineObservation, MachineTarget, MachineUpdated,
+        MembershipObservation, OpaquePayload, Placement, RpcRequestBody, RpcResponse,
     };
     use std::num::NonZeroU32;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use tonic::{Request, Response};
 
     let drained = Machine {
@@ -1282,6 +1283,7 @@ async fn drain_reading_only(
     let (drained_id, peer_id) = (drained.id, peer.id);
     let asked = Arc::new(Mutex::new(Vec::new()));
     let listings = Arc::new(AtomicUsize::new(0));
+    let turned_off = Arc::new(AtomicBool::new(false));
     let machines = [drained.clone(), peer]
         .map(|machine| MachineObservation::new(machine, MembershipObservation::Up));
     let (mut client, server) = crate::connect::test_support::rpc_client({
@@ -1289,6 +1291,7 @@ async fn drain_reading_only(
         move |rpc: Request<OpaquePayload>| {
             let (asked, listings, machines) = (asked.clone(), listings.clone(), machines.clone());
             let (metrics, elsewhere) = (metrics.clone(), elsewhere.clone());
+            let turned_off = turned_off.clone();
             let selected = rpc
                 .metadata()
                 .get(ployz_core::ONE_TARGET_HEADER)
@@ -1300,14 +1303,30 @@ async fn drain_reading_only(
                     reason = "fixture answers only the reads a Drain makes"
                 )]
                 let response = match rpc.into_inner().decode_request().unwrap().body {
+                    RpcRequestBody::UpdateMachine(update)
+                        if update.update.accepts_services == Some(false) =>
+                    {
+                        turned_off.store(true, Ordering::SeqCst);
+                        asked.lock().unwrap().push("services off".to_owned());
+                        let mut machine = machines[0].machine.clone();
+                        machine.accepts_services = false;
+                        RpcResponse::from(MachineUpdated { machine })
+                    }
                     RpcRequestBody::ListMachines(_) => {
                         let before = listings.fetch_add(1, Ordering::SeqCst) + 1;
                         let unlisted = matches!(look(before, &metrics), Look::Unlisted);
+                        let off = turned_off.load(Ordering::SeqCst);
                         RpcResponse::from(MachineList {
                             enrollment: None,
                             machines: machines
                                 .into_iter()
                                 .filter(|seen| !(unlisted && seen.machine.id == drained_id))
+                                .map(|mut seen| {
+                                    if off && seen.machine.id == drained_id {
+                                        seen.machine.accepts_services = false;
+                                    }
+                                    seen
+                                })
                                 .collect(),
                         })
                     }
@@ -1345,7 +1364,7 @@ async fn drain_reading_only(
     let drained = client
         .drain(
             &MachineTarget::from(&drained.id),
-            &DrainScope::EveryNamespace,
+            &scope,
             crate::deploy::Approvals::default(),
             &CancellationToken::new(),
             &mut |_| {},
@@ -1379,8 +1398,10 @@ fn assert_refused_for_metrics(drained: Result<DrainReport, super::DrainError>) {
 /// A user Global refuses the Drain before its services role changes.
 #[tokio::test]
 async fn a_user_global_refuses_the_drain_before_the_role_changes() {
-    let (drained, asked) =
-        drain_reading_only(true, |_, metrics| Look::Lists(vec![metrics.global.clone()])).await;
+    let (drained, asked) = drain_reading_only(true, DrainScope::EveryNamespace, |_, metrics| {
+        Look::Lists(vec![metrics.global.clone()])
+    })
+    .await;
 
     assert_refused_for_metrics(drained);
     assert!(asked.is_empty(), "{asked:?}");
@@ -1392,13 +1413,17 @@ async fn a_user_global_refuses_the_drain_before_the_role_changes() {
 #[tokio::test]
 async fn a_drain_that_cannot_list_the_server_changes_nothing() {
     for accepts_services in [true, false] {
-        let (drained, asked) = drain_reading_only(accepts_services, |before, metrics| {
-            if before > 1 {
-                Look::Lists(vec![metrics.global.clone()])
-            } else {
-                Look::Fails
-            }
-        })
+        let (drained, asked) = drain_reading_only(
+            accepts_services,
+            DrainScope::EveryNamespace,
+            |before, metrics| {
+                if before > 1 {
+                    Look::Lists(vec![metrics.global.clone()])
+                } else {
+                    Look::Fails
+                }
+            },
+        )
         .await;
 
         assert!(
@@ -1416,14 +1441,15 @@ async fn a_drain_that_cannot_list_the_server_changes_nothing() {
 /// observation of one reaches a retirement.
 #[tokio::test]
 async fn a_user_global_seen_after_the_role_is_off_still_refuses() {
-    let (drained, asked) = drain_reading_only(false, |before, metrics| {
-        Look::Lists(if before > 1 {
-            vec![metrics.global.clone()]
-        } else {
-            Vec::new()
+    let (drained, asked) =
+        drain_reading_only(false, DrainScope::EveryNamespace, |before, metrics| {
+            Look::Lists(if before > 1 {
+                vec![metrics.global.clone()]
+            } else {
+                Vec::new()
+            })
         })
-    })
-    .await;
+        .await;
 
     assert_refused_for_metrics(drained);
     assert!(asked.is_empty(), "{asked:?}");
@@ -1434,7 +1460,7 @@ async fn a_user_global_seen_after_the_role_is_off_still_refuses() {
 /// copy In elsewhere may crash-loop.
 #[tokio::test]
 async fn a_service_with_any_global_copy_refuses_the_drain() {
-    let (drained, asked) = drain_reading_only(true, |_, metrics| {
+    let (drained, asked) = drain_reading_only(true, DrainScope::EveryNamespace, |_, metrics| {
         Look::Lists(vec![metrics.replicated.clone(), metrics.out_global.clone()])
     })
     .await;
@@ -1447,7 +1473,7 @@ async fn a_service_with_any_global_copy_refuses_the_drain() {
 /// then, so the Drain can't read it as empty.
 #[tokio::test]
 async fn a_server_left_out_of_the_machine_list_is_not_read_as_empty() {
-    let (drained, asked) = drain_reading_only(false, |before, _| {
+    let (drained, asked) = drain_reading_only(false, DrainScope::EveryNamespace, |before, _| {
         if before > 1 {
             Look::Unlisted
         } else {
@@ -1461,4 +1487,45 @@ async fn a_server_left_out_of_the_machine_list_is_not_read_as_empty() {
         "{drained:?}"
     );
     assert!(asked.is_empty(), "{asked:?}");
+}
+
+/// A user Global the Drain's scope leaves out still refuses it, as Cloud's saved services
+/// would leave out one that appeared after Cloud read its frame. Its copy would otherwise
+/// sit on a Server whose services are off.
+#[tokio::test]
+async fn a_user_global_outside_the_scope_still_refuses() {
+    let scope = DrainScope::Services {
+        services: Vec::new(),
+    };
+    let (drained, asked) = drain_reading_only(false, scope, |_, metrics| {
+        Look::Lists(vec![metrics.global.clone()])
+    })
+    .await;
+
+    assert_refused_for_metrics(drained);
+    assert!(asked.is_empty(), "{asked:?}");
+}
+
+/// A Drain whose Server answered before it turned services off, then went unlisted, says
+/// it left services off: Cloud and the CLI record what changed, not a plain refusal.
+#[tokio::test]
+async fn a_server_unlisted_after_its_services_went_off_says_they_are_off() {
+    let (drained, asked) = drain_reading_only(true, DrainScope::EveryNamespace, |before, _| {
+        if before > 1 {
+            Look::Fails
+        } else {
+            Look::Lists(Vec::new())
+        }
+    })
+    .await;
+
+    let Err(error @ super::DrainError::Unobservable { .. }) = drained else {
+        panic!("expected Unobservable, got {drained:?}");
+    };
+    assert_eq!(
+        error.to_string(),
+        "Cannot observe Services on Server web-2 after turning its services off: \
+         the Server did not list its Containers"
+    );
+    assert_eq!(asked, ["services off"]);
 }

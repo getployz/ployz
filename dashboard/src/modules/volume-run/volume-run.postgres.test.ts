@@ -111,6 +111,8 @@ type FakeContainer = {
   unframed?: true;
   /** The regions its signed spec runs in; none names any region. */
   regions?: Record<string, number>;
+  /** Its spec runs one copy per Server. */
+  global?: true;
 };
 
 /**
@@ -380,7 +382,7 @@ describe("volume runs", () => {
     resolved_spec: { name: "web", container: { pull_policy: "always", environment: {} }, volumes: [
       { reference: dockerVolume, source: { kind: "provisioned", name: dockerVolume } },
       ...(container.binds === undefined ? [] : [{ reference: container.binds, source: { kind: "bind", machine_path: container.binds } }]),
-    ], regions: container.regions ?? {} },
+    ], regions: container.regions ?? {}, mode: { mode: container.global === true ? "global" : "replicated" } },
     display_name: container.id,
     runtime: { state: container.running ? "running" : "exited" },
     rotation: container.rotation,
@@ -1715,6 +1717,17 @@ describe("volume runs", () => {
       expect((await rows())[0]?.message).toContain(message);
     });
 
+    // Catches a Move whose cut stops a Global's copy, which could be its last that works while the others crash-loop.
+    it("refuses before the rounds, stopping nothing, when the Service on A runs on every server", async () => {
+      containers = [{ machine: "fsn-1", id: "web-fsn-1", running: true, global: true }];
+
+      await execute(await move());
+
+      expect(verbs.filter((verb) => verb.startsWith("cut@") || verb.startsWith("writer@"))).toEqual([]);
+      expect(containers.filter((container) => container.running).map((container) => container.id)).toEqual(["web-fsn-1"]);
+      expect((await rows())[0]?.message).toContain("web runs on every server, and a move takes a Service with a replica count");
+    });
+
     it("refuses before the rounds when B's check of the start refuses", async () => {
       checkRefusals.set("fsn-2", refusal);
 
@@ -1983,6 +1996,8 @@ describe("volume runs", () => {
       ["two of its Containers run on the Volume", () => { containers.push({ machine: "fsn-1", id: "web-fsn-1-b", running: true }); }, /2 of its containers run on its volume/],
       ["another Server runs a Container on the Volume", () => { containers.push({ machine: "fsn-2", id: "web-fsn-2", running: false }); }, /shares its volume with web-fsn-2/],
       ["the Volume allows shared writes", () => { storeVolumes = [{ ...first(storeVolumes), shared_writes: true }]; }, /data allows shared writes/],
+      // Catches a drain that cuts the Global a Deploy made of the Service after the Engine left it for its Volume.
+      ["a Deploy made the Service a Global since the Engine left it", () => { first(containers).global = true; }, /runs on every server/],
     ])("names the stay, admitting nothing, when %s", async (_, arrange, why) => {
       arrange();
       await answered();

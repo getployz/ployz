@@ -57,7 +57,7 @@ export function volumeMountLabel(frame: RuntimeWatchView, { id }: DataLossIdenti
 
 /**
  * An operation as the gate weighs it, with the services a Drain of it acts on and those it moves to another Server.
- * `globals` are those that refuse it (see `drainRefusal`). `data` is what the frame says of each Service held by its
+ * `globals` and `unanswered` refuse it (see `drainRefusal`). `data` is what the frame says of each Service held by its
  * data here: whether it may move with its Volume. It is a forecast the drain checks again, so it stays out of the
  * preview the approval signs.
  */
@@ -65,13 +65,15 @@ export type DrainPlan = OperationAsked & {
   readonly targets: QualifiedService[];
   readonly moves: QualifiedService[];
   readonly globals: QualifiedService[];
+  /** The Server didn't answer the frame's last probes, so its rows are only as it last reported them. */
+  readonly unanswered: boolean;
   readonly data: Readonly<Record<string, DataPlan>>;
 };
 
 /**
  * What draining `machineId` does to the Services the Organization's Environments own there, from one frame: each moves,
- * or stays (a Volume holds it, which the drain may then move with it). One with a Global copy anywhere refuses the
- * Drain, as the Engine's does. Null when the frame has no such Server.
+ * or stays (a Volume holds it, which the drain may then move with it). Any user Service there with a Global copy
+ * anywhere refuses the Drain, owned or not, as the Engine's does. Null when the frame has no such Server.
  */
 export function drainPlan(frame: RuntimeWatchView, owned: ReadonlySet<string>, machineId: string): DrainPlan | null {
   const name = serverName(frame, machineId);
@@ -81,7 +83,7 @@ export function drainPlan(frame: RuntimeWatchView, owned: ReadonlySet<string>, m
   const globals: QualifiedService[] = [];
   for (const service of frame.services) {
     const { namespace } = splitQualifiedService(service.identity);
-    if (namespace === null || namespace === SYSTEM_NAMESPACE || !owned.has(namespace)) continue;
+    if (namespace === null || namespace === SYSTEM_NAMESPACE) continue;
     const slots = service.containers.filter((container) => container.kind === "service_container");
     const here = slots.filter((container) => container.machine_id === machineId);
     const newest = here.reduce<(typeof here)[number] | undefined>(
@@ -91,6 +93,8 @@ export function drainPlan(frame: RuntimeWatchView, owned: ReadonlySet<string>, m
     if (newest === undefined) continue;
     if (service.containers.some((container) => container.resolved_spec.mode.mode === "global")) {
       globals.push(service.identity);
+    } else if (!owned.has(namespace)) {
+      continue;
     } else if (newest.resolved_spec.volumes.length > 0) {
       stays.push(service.identity);
     } else {
@@ -109,17 +113,26 @@ export function drainPlan(frame: RuntimeWatchView, owned: ReadonlySet<string>, m
     targets: [...moves, ...stays].sort(byName),
     moves,
     globals,
+    unanswered: frame.unanswered.some((id) => id === machineId),
     data,
   };
 }
 
+/** Why a Drain of a Server the frame doesn't list, or that didn't answer it, is refused: nothing says what runs there. */
+export const unseenDrain = (name: string | null) =>
+  `${name ?? "The server"} isn't answering, so Cloud can't tell what draining it would stop. Try again once it answers.`;
+
 /**
- * The refusal of a Drain whose Server runs a Service with a Global copy: a copy stays routed while it crash-loops, so
- * the one here could be the last that works. Null when none does.
+ * Why a Drain of the Server can't go ahead from the frame `plan` read, or null when it may. A Server that didn't answer
+ * is refused, as the Engine refuses one it can't list: its rows may miss a Global that runs there now. So is one that
+ * runs a Service with a Global copy: a copy stays routed while it crash-loops, so the one here could be the last that
+ * works.
  */
-export const drainRefusal = (plan: DrainPlan) => plan.globals.length === 0
-  ? null
-  : new Conflict({ userFacing: true, message: globalsStopDrain(plan.globals.map((service) => splitQualifiedService(service).name)) });
+export const drainRefusal = (plan: DrainPlan) => {
+  if (plan.unanswered) return new Conflict({ userFacing: true, message: unseenDrain(plan.name) });
+  if (plan.globals.length === 0) return null;
+  return new Conflict({ userFacing: true, message: globalsStopDrain(plan.globals.map((service) => splitQualifiedService(service).name)) });
+};
 
 const servesWeb = ({ machine }: RuntimeWatchView["machines"][number]) => machine.accepts_ingress && machine.public_ip !== null;
 const online = ({ machine, membership }: RuntimeWatchView["machines"][number], unanswered: readonly string[]) =>

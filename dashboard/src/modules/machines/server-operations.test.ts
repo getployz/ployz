@@ -20,7 +20,7 @@ type Slot = {
   at?: number;
 };
 
-const frame = (services: Record<string, Slot[]>) => {
+const frame = (services: Record<string, Slot[]>, unanswered: string[] = []) => {
   const listed = Object.entries(services).map(([identity, slots]) => {
     const [namespace, name] = identity.split("/");
     return {
@@ -49,6 +49,7 @@ const frame = (services: Record<string, Slot[]>) => {
     machines: [{ machine: { id: here, name: "fra-1" } }, { machine: { id: there, name: "fra-2" } }],
     services: listed,
     containers: listed.flatMap((service) => service.containers),
+    unanswered,
   });
 };
 
@@ -71,22 +72,34 @@ describe("drainPlan", () => {
       targets: ["shop/db", "shop/web"],
       moves: ["shop/web"],
       globals: [],
+      unanswered: false,
       data: { "shop/db": { kind: "stays", why: "it uses a folder or a Docker volume here" } },
     });
     expect(plan === null ? "no plan" : drainRefusal(plan)).toBeNull();
   });
 
-  it("refuses for each owned Service with a Global copy anywhere, even beside a replicated copy here", () => {
+  // Catches a Global no Project owns slipping past Cloud's gate, which the Engine refuses, as it refuses every one.
+  it("refuses for each Service with a Global copy anywhere, owned or not, even beside a replicated copy here", () => {
     const plan = drainPlan(frame({
       "shop/web": [{ machine: here }],
       "shop/edge": [{ machine: here, mode: "global" }, { machine: there, mode: "global" }],
       "shop/metrics": [{ machine: here, at: 2 }, { machine: there, mode: "global", state: "exited" }],
       "other/agent": [{ machine: here, mode: "global" }],
+      "other/far": [{ machine: there, mode: "global" }],
     }), new Set(["shop"]), here);
 
-    expect(plan?.globals).toEqual(["shop/edge", "shop/metrics"]);
+    expect(plan?.globals).toEqual(["other/agent", "shop/edge", "shop/metrics"]);
     expect(plan === null ? "no plan" : drainRefusal(plan)?.message).toBe(
-      "edge and metrics run on every server, and draining could stop their last working copies. Remove each, deploy, then add them back with a replica count.",
+      "agent, edge and metrics run on every server, and draining could stop their last working copies. Remove each, deploy, then add them back with a replica count.",
+    );
+  });
+
+  // Catches a Drain admitted from rows a Server last reported, which may miss a Global it runs now.
+  it("refuses a Server the frame lists as not answering, as the Engine refuses one it can't list", () => {
+    const plan = drainPlan(frame({ "shop/web": [{ machine: here }] }, [here]), new Set(["shop"]), here);
+
+    expect(plan === null ? "no plan" : drainRefusal(plan)?.message).toBe(
+      "fra-1 isn't answering, so Cloud can't tell what draining it would stop. Try again once it answers.",
     );
   });
 

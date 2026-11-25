@@ -17,7 +17,7 @@ import {
   type DrainEndCodeWithoutMessage,
   type DrainState,
 } from "#/modules/machines/server-drain-states";
-import { drainPlan, drainRefusal, planDrain } from "#/modules/machines/server-operations.server";
+import { drainPlan, drainRefusal, planDrain, unseenDrain } from "#/modules/machines/server-operations.server";
 import { untried } from "#/modules/machines/server-drain-volumes";
 import { readVolumeLines, targetedMessage, volumeRunTargeting } from "#/modules/machines/server-drain-volumes.server";
 import { serverDrainAttempt } from "#/modules/machines/tables";
@@ -306,8 +306,9 @@ function refusalMessage(cause: Error) {
 
 /**
  * A Drain waits its turn after its gate, and what runs may change meanwhile. So it plans again before it runs, and runs
- * only if what it would destroy now is what its gate admitted and no Global refuses it. One a person said yes to runs
- * only its exact plan, as its gate did. Also whether the plan moves anything, which decides the Servers it may land on.
+ * only if what it would destroy now is what its gate admitted and nothing refuses it (`drainRefusal`), its Server still
+ * in the frame. One a person said yes to runs only its exact plan, as its gate did. Also whether the plan moves
+ * anything, which decides the Servers it may land on.
  */
 const stillCovered = Effect.fn("ServerDrain.stillCovered")(function* (
   request: DrainRequest,
@@ -315,12 +316,11 @@ const stillCovered = Effect.fn("ServerDrain.stillCovered")(function* (
   admitted: { readonly planDigest: string | null; readonly approved: boolean },
 ) {
   const plan = drainPlan(frame, new Set(yield* ownedNamespaces(request.organizationId)), request.machineId);
-  const refusal = plan === null ? null : drainRefusal(plan);
+  if (plan === null) return { covered: false, refusal: unseenDrain(null), moves: false };
+  const refusal = drainRefusal(plan);
   if (refusal !== null) return { covered: false, refusal: refusal.message, moves: false };
-  const moves = plan === null || plan.moves.length > 0;
-  // A yes covers only the plan it was given: one whose Server left the frame, so nothing plans, runs nothing.
-  if (admitted.approved) return { covered: plan !== null && admitted.planDigest === operationDigest(plan), refusal: null, moves };
-  const harmless = plan === null || plan.effects.length === 0;
+  const moves = plan.moves.length > 0;
+  const harmless = !admitted.approved && plan.effects.length === 0;
   return { covered: harmless || admitted.planDigest === operationDigest(plan), refusal: null, moves };
 });
 

@@ -514,24 +514,26 @@ next: ployz login
 To move everything off now, click **Drain** and confirm. The dialog lists what runs on the server and
 badges what won't move as planned: **Moves with data** when its volume moves with it, **Skipped**
 when no project owns it, which draining leaves where it is, **Stays** with the reason when its
-data can't move with it, and **Global** for a service that runs on every server, which stops the
-drain, as below.
+data can't move with it, and **Global** for a service that runs on every server, in a project or
+not, which stops the drain, as below.
 Draining turns services off for the server, then moves each replicated service's containers to
 your other servers one at a time. Each new container runs
 the same image, and each one starts, is healthy and is routed by every server's proxy before the
 old container is taken out of routing and removed.
 
 A service set to run on every server, from a Compose file with `deploy.mode: global` deployed
-before 0.1.2-beta.42, stops the drain before it changes anything, because its copy on this server
-could be the last one working. The drain also stops when Ployz can't ask the server what it runs:
+before 0.1.2-beta.42, stops the drain before it moves anything, because its copy on this server
+could be the last one working. The drain also stops when Ployz can't ask the server what it runs,
+and Ployz Cloud won't start one for a server that isn't answering:
 
 ```text
 error: Server web-2 runs `shop-production/metrics` on every Server, and draining could stop its last working copy. Remove it, deploy, then add it back with a replica count.
 ```
 
 [Move that service off `deploy.mode: global`](../troubleshooting/servers.md#move-a-service-off-deploymode-global),
-then drain again. A drain that turned the server's services off before it found such a service
-says so, and the server takes no new services until you turn them on again.
+then drain again. A drain that turned the server's services off before it found such a service,
+or before the server stopped answering, says so, and the server takes no new services until you
+turn them on again.
 
 The new container runs exactly the image the old one ran, even when its tag, like `app:v1`, names
 another image on the other server by then. A service whose image is named by a tag therefore moves

@@ -37,9 +37,10 @@ const web2 = { id: machineId, name: "web-2" };
 
 /**
  * The cluster a Drain plans from: web-2 runs one owned Service, which moves; nothing is destroyed. Every Server takes
- * services and lists `capabilities` by id, none (unknown) when absent.
+ * services, lists `capabilities` by id, none (unknown) when absent, and answers but `unanswered`.
  */
-const frameOf = (mode: "replicated" | "global", capabilities: Record<string, string[]> = {}) => asTestDouble<RuntimeWatchView>()({
+const frameOf = (mode: "replicated" | "global", capabilities: Record<string, string[]> = {}, unanswered: string[] = []) => asTestDouble<RuntimeWatchView>()({
+  unanswered,
   machines: [web1, web2, { id: otherMachineId, name: "web-3" }].map((machine) => ({
     machine: { ...machine, accepts_services: true, runtime: { capabilities: capabilities[machine.id] ?? [] } },
   })),
@@ -404,6 +405,33 @@ describe("drain-server", () => {
       refusal_message: "api runs on every server, and draining could stop its last working copy. Remove it, deploy, then add it back with a replica count.",
       started_at: null,
     }]);
+  });
+
+  // Catches a Drain admitted, and run, from rows its Server last reported, which may miss a Global it runs now.
+  it("refuses a Server the frame lists as not answering, at the request and at its turn, without asking the Engine", async () => {
+    frame = frameOf("replicated", {}, [machineId]);
+    await expect(request()).rejects.toThrow("web-2 isn't answering, so Cloud can't tell what draining it would stop.");
+    expect(await rows()).toEqual([]);
+
+    frame = frameOf("replicated");
+    await request();
+    frame = frameOf("replicated", {}, [machineId]);
+    await drain();
+
+    expect(drainCalls).toEqual([]);
+    expect(await rows()).toMatchObject([{ end_code: "refused", refusal_message: expect.stringContaining("web-2 isn't answering") }]);
+  });
+
+  // Catches a Drain nobody said yes to reaching the Engine once its Server left the frame, read as destroying nothing.
+  it("runs nothing for a Drain that needed no yes once its Server is gone from the frame", async () => {
+    await request();
+    const replicated = frameOf("replicated");
+    frame = asTestDouble<RuntimeWatchView>()({ ...replicated, machines: replicated.machines.filter(({ machine }) => machine.id !== machineId) });
+
+    await drain();
+
+    expect(drainCalls).toEqual([]);
+    expect(await rows()).toMatchObject([{ end_code: "refused", refusal_message: "The server isn't answering, so Cloud can't tell what draining it would stop. Try again once it answers." }]);
   });
 
   it("passes a plan with nothing owned as no services, so the Engine selects nothing rather than everything", async () => {
