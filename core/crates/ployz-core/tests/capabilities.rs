@@ -138,10 +138,6 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
         "gated: a caller checks the contract on every Machine holding a copy and refuses the shrink, naming the Server whose daemon lacks it",
     ),
     (
-        "ployz.preview.home.v1",
-        "gated: nothing places a preview yet; Cloud must place one only on a Server advertising it. An older daemon admits a preview Namespace as an ordinary one",
-    ),
-    (
         "ployz.volume.start.v1",
         "gated: nothing sends an Operator's Create with versions yet; Cloud must send one only to a Server advertising it. An older daemon ignores `versions`, `rule` and `check` and refuses an Operator's Create before any copy changes, so a Move there fails closed",
     ),

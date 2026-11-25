@@ -1116,11 +1116,6 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
             &error,
             &Gate::new(ployz_core::SEED_COPY_CAPABILITY),
         )),
-        LocalMachineError::PreviewRefused(_) => Err(gated(
-            tonic::Code::PermissionDenied,
-            &error,
-            &Gate::new(ployz_core::PREVIEW_HOME_CAPABILITY),
-        )),
         LocalMachineError::ForgetRefused(_) => Err(gated(
             tonic::Code::PermissionDenied,
             &error,

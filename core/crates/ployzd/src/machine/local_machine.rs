@@ -158,10 +158,6 @@ pub enum Error {
     /// [`ployz_core::SEED_COPY_CAPABILITY`] in its details.
     #[error("This Server refused the copy of a Volume: {0}")]
     CopyRefused(ployz_core::authority::AuthorityRefusal),
-    /// A preview this Server may not hold. The refusal names
-    /// [`ployz_core::PREVIEW_HOME_CAPABILITY`] in its details.
-    #[error("{0}")]
-    PreviewRefused(ployz_core::PreviewRefusal),
     /// No version of a forget opened here. The refusal names
     /// [`ployz_core::FORGET_VERSIONS_CAPABILITY`] in its details.
     #[error("This Server refused to forget older versions: {}", forget::refusal_text(.0))]

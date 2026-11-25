@@ -4,7 +4,7 @@
 
 use std::ops::RangeInclusive;
 
-use crate::{Admission, PreviewNamespace, QualifiedService, RawVolumeSource, ServiceVolumeGraph};
+use crate::{Admission, QualifiedService, RawVolumeSource, ServiceVolumeGraph};
 
 /// Where in a Machine Subnet a Container's address lies.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -12,7 +12,7 @@ pub enum AddressPart {
     /// Signed workloads with no data Volume mounted, and the reserved infrastructure
     /// Containers whatever they mount.
     Open,
-    /// Signed workloads in a preview Namespace, whatever they mount.
+    /// Kept for preview Containers. Nothing takes an address here yet.
     Preview,
     /// Signed workloads, hooks included, with a data Volume mounted.
     SignedData,
@@ -89,9 +89,6 @@ pub fn part_of(
     match admission {
         None | Some(Admission::Free) => AddressPart::Free,
         Some(Admission::Signed) if identity.reserved().is_some() => AddressPart::Open,
-        Some(Admission::Signed) if PreviewNamespace::of(&identity.namespace).is_some() => {
-            AddressPart::Preview
-        }
         Some(Admission::Signed) => {
             let holds_data = volumes
                 .mounted_volumes()
@@ -168,27 +165,6 @@ mod tests {
                 AddressPart::Free
             );
         }
-    }
-
-    #[test]
-    fn a_signed_preview_container_takes_a_preview_address_whatever_it_mounts() {
-        let home = crate::PreviewHome::of(&crate::MachineId::parse("a".repeat(32)).unwrap());
-        let preview = service(&format!("pv-0123456789abcdef-{home}-00c0ffee"), "postgres");
-        for mounted in [&["data"][..], &[]] {
-            assert_eq!(
-                part_of(&preview, Some(Admission::Signed), &volumes(mounted)),
-                AddressPart::Preview
-            );
-        }
-        assert_eq!(
-            part_of(&preview, Some(Admission::Free), &volumes(&[])),
-            AddressPart::Free
-        );
-        let lookalike = service("pv-production", "postgres");
-        assert_eq!(
-            part_of(&lookalike, Some(Admission::Signed), &volumes(&["data"])),
-            AddressPart::SignedData
-        );
     }
 
     #[test]

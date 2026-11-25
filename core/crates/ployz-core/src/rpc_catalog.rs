@@ -139,8 +139,6 @@ macro_rules! rpc_catalog {
                 VOLUME_SHRINK_CAPABILITY: ("ployz.volume.size.shrink.v1", Container),
                 /// The Machine opens a Volume's data only for a Container whose spec expects the origin it carries, and its pulls take born data.
                 VOLUME_ORIGIN_CAPABILITY: ("ployz.volume.origin.v1", Container),
-                /// The Machine admits a create, start or data arrival in a preview Namespace only when the Namespace names it as home, and a preview Container only when it is signed and mounts only tmpfs and the preview's own Volumes.
-                PREVIEW_HOME_CAPABILITY: ("ployz.preview.home.v1", Container),
                 /// `SetVolumeCopy` creates an Operator's Writer from the signed versions or rule proof its `Create` carries, for a spec that mounts the Volume, and answers a `check` without changing anything.
                 VOLUME_START_CAPABILITY: ("ployz.volume.start.v1", Container),
                 /// `SetVolumeCopy`'s cut with a `holder` takes `running`: it refuses `stopped` when that Container no longer runs, and records a stop it makes before making it, so a resent cut knows the stop as its own.
