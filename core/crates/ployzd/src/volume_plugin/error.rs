@@ -21,7 +21,7 @@ pub(super) enum PluginError {
     #[error("ZFS dataset {dataset} has no Provisioned Volume bound; refusing to use it")]
     NotProvisioned { dataset: String },
     /// The Pool has no room, with what this Server's Trash holds when it holds anything.
-    #[error("{0}{note}", note = trash_note(.1.as_ref()))]
+    #[error("{0}{note}", note = trash_note(&.0.to_string(), .1.as_ref()))]
     Capacity(
         ployz_core::StorageCapacityError,
         Option<super::trash::TrashHeld>,
@@ -54,8 +54,12 @@ pub(super) enum PluginError {
     Message(String),
 }
 
-fn trash_note(trash: Option<&super::trash::TrashHeld>) -> String {
-    trash.map(|trash| format!(". {trash}")).unwrap_or_default()
+/// The Trash's sentence after `text`, which may already end its own sentence.
+fn trash_note(text: &str, trash: Option<&super::trash::TrashHeld>) -> String {
+    let joint = if text.ends_with('.') { " " } else { ". " };
+    trash
+        .map(|trash| format!("{joint}{trash}"))
+        .unwrap_or_default()
 }
 
 impl From<ployz_core::StorageCapacityError> for PluginError {
@@ -86,10 +90,9 @@ impl From<&str> for PluginError {
 impl From<PluginError> for ployz_core::RpcError {
     fn from(error: PluginError) -> Self {
         if let PluginError::Capacity(capacity, trash) = error {
-            Self::refused(
-                &capacity,
-                format!("{capacity}{}", trash_note(trash.as_ref())),
-            )
+            let text = capacity.to_string();
+            let note = trash_note(&text, trash.as_ref());
+            Self::refused(&capacity, format!("{text}{note}"))
         } else {
             Self::internal(error.to_string())
         }
@@ -110,7 +113,7 @@ impl PluginError {
     /// The sentence naming what the Trash holds, after a capacity refusal; empty otherwise.
     pub(super) fn trash_note(&self) -> String {
         if let Self::Capacity(_, trash) = self {
-            trash_note(trash.as_ref())
+            trash_note("", trash.as_ref())
         } else {
             String::new()
         }

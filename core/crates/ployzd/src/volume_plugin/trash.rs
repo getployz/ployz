@@ -149,10 +149,14 @@ impl fmt::Display for TrashHeld {
             || self.until.to_string(),
             |at| at.format("%Y-%m-%d").to_string(),
         );
+        let held = if self.bytes < 100_000_000 {
+            format!("{} MB", self.bytes.div_ceil(1_000_000))
+        } else {
+            format!("{:.1} GB", self.bytes as f64 / 1e9)
+        };
         write!(
             formatter,
-            "{:.1} GB is in this Server's Trash until {until}. Run `sudo ployz volume trash empty` on this Server to free it.",
-            self.bytes as f64 / 1e9
+            "{held} is in this Server's Trash until {until}. Run `sudo ployz volume trash empty` on this Server to free it."
         )
     }
 }
