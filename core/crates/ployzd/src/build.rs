@@ -239,7 +239,7 @@ async fn attempt(
         Ok(admitted) => admitted,
         Err(outcome) => {
             // Nothing of this Build ran before its admission.
-            bound.stopped();
+            bound.stopped(crate::machine::Seen::NeverSent);
             return outcome;
         }
     };
@@ -295,10 +295,17 @@ async fn attempt(
                 Some(Arc::new(move || {
                     let policy = policy.clone();
                     Box::pin(async move {
-                        tokio::task::spawn_blocking(move || policy.confirm_ended(slot))
-                            .await
-                            .map_err(|_| Unconfirmed("the Build slot's check failed".into()))?
-                            .map_err(Into::into)
+                        let confirmed =
+                            tokio::task::spawn_blocking(move || policy.confirm_ended(slot))
+                                .await
+                                .map_err(|_| Unconfirmed("the Build slot's check failed".into()))?;
+                        match confirmed {
+                            Ok(()) => Ok(crate::machine::Seen::Reaped),
+                            // Another admission holds the slot, perhaps recovering it in
+                            // vain while the Build's processes still run.
+                            Err(ployz_build::BuildError::Busy) => Ok(crate::machine::Seen::Busy),
+                            Err(error) => Err(error.into()),
+                        }
                     })
                 })),
             ),
@@ -306,7 +313,7 @@ async fn attempt(
             | Outcome::CapabilitiesChecked { .. }
             | Outcome::Images { .. }
             | Outcome::Validated { .. }
-            | Outcome::Published { .. } => bound.stopped(),
+            | Outcome::Published { .. } => bound.stopped(crate::machine::Seen::Joined),
         }
         outcome
     });

@@ -50,7 +50,7 @@ use sha2::{Digest as _, Sha256};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use crate::machine::{Bound, Tie, local_machine::rule_grant::AdmittedRule};
+use crate::machine::{Bound, Cause, Seen, Tie, local_machine::rule_grant::AdmittedRule};
 use crate::sealed_env::SealingKeyStore;
 
 /// How long a grant lives. Ployz Cloud mints it at
@@ -70,13 +70,46 @@ pub struct BuildGrants {
 
 struct Grant {
     repository: BuildGrantRepository,
-    ingest: SocketAddr,
+    ingest: IngestAt,
     expires: Instant,
     push: Mutex<Push>,
     /// Locked only under `push`.
     sealed: Mutex<Sealing>,
     /// The key of the Full caller that minted it; `None` for a rule build's.
     tie: Option<Tie>,
+}
+
+/// Where a grant's pushes go: Image Ingest's address, and which of its processes runs.
+#[derive(Clone)]
+pub struct IngestAt {
+    address: SocketAddr,
+    process: IngestProcess,
+}
+
+/// Which process of Image Ingest runs now, `None` when none does. A request one process
+/// took can't land once another runs or none does.
+pub type IngestProcess = Arc<
+    dyn Fn() -> futures_util::future::BoxFuture<'static, Result<Option<String>, Cause>>
+        + Send
+        + Sync,
+>;
+
+impl IngestAt {
+    #[must_use]
+    pub fn new(address: SocketAddr, process: IngestProcess) -> Self {
+        Self { address, process }
+    }
+}
+
+/// An Image Ingest at `address` whose processes nothing can name, so a manifest it never
+/// answered stays in doubt.
+impl From<SocketAddr> for IngestAt {
+    fn from(address: SocketAddr) -> Self {
+        Self::new(
+            address,
+            Arc::new(|| Box::pin(async { Err("no Docker to name Image Ingest's process".into()) })),
+        )
+    }
 }
 
 enum Sealing {
@@ -248,7 +281,7 @@ impl BuildGrants {
         &self,
         machine: ManagementIdentity,
         mint: Mint,
-        ingest: SocketAddr,
+        ingest: impl Into<IngestAt>,
     ) -> Result<BuildGrantMinted, RpcError> {
         if mint.tie.as_ref().is_some_and(Tie::is_ended) {
             return Err(ended());
@@ -264,7 +297,7 @@ impl BuildGrants {
         };
         let grant = Arc::new(Grant {
             repository: mint.repository,
-            ingest,
+            ingest: ingest.into(),
             expires: Instant::now() + GRANT_LIFETIME,
             push: Mutex::new(Push::Open),
             sealed: Mutex::new(mint.release.map_or(Sealing::None, Sealing::Ready)),
@@ -345,11 +378,21 @@ pub(crate) async fn mint(
         Ok(mint) => mint,
         Err(refused) => return Ok(Err(refused)),
     };
-    let opened = local.ensure_image_ingest(ingest).await?.destination;
+    let opened = local
+        .ensure_image_ingest(Arc::clone(&ingest))
+        .await?
+        .destination;
+    let process: IngestProcess = Arc::new(move || {
+        let ingest = Arc::clone(&ingest);
+        Box::pin(async move { ingest.process().await.map_err(Into::into) })
+    });
     Ok(grants.mint(
         local.record().management_secret().public_key(),
         mint,
-        SocketAddr::from((opened.management_address.0, opened.port)),
+        IngestAt::new(
+            SocketAddr::from((opened.management_address.0, opened.port)),
+            process,
+        ),
     ))
 }
 
@@ -397,7 +440,7 @@ impl Serving {
     /// Stop serving, once every request that read under the hold has ended.
     fn stop(self) {
         if let Some(hold) = self.hold.and_then(Arc::into_inner) {
-            hold.stopped();
+            hold.stopped(Seen::Joined);
         }
     }
 }
@@ -566,10 +609,16 @@ where
         Route::Sealed => return sealed(serving),
         Route::Ping | Route::Blob | Route::Upload | Route::ManifestHead => {
             let body = reqwest::Body::wrap_stream(Body::new(body).into_data_stream());
-            return forward(client, grant.ingest, &parts, body).await;
+            return forward(client, grant.ingest.address, &parts, body).await;
         }
         Route::ManifestTagHead(digest) => {
-            let response = forward(client, grant.ingest, &parts, reqwest::Body::from("")).await;
+            let response = forward(
+                client,
+                grant.ingest.address,
+                &parts,
+                reqwest::Body::from(""),
+            )
+            .await;
             // containerd's pusher HEADs the tag and never PUTs a manifest the Machine
             // already holds under it; the ingest confirming that digest is the push.
             let held = response.status() == StatusCode::OK
@@ -616,7 +665,7 @@ where
         if !matches!(*push, Push::Open) {
             drop(push);
             if let Some(commit) = commit {
-                commit.stopped();
+                commit.stopped(Seen::NeverSent);
             }
             return denied(StatusCode::CONFLICT, "the Build Grant is already pushing");
         }
@@ -643,6 +692,9 @@ where
 /// How long Image Ingest has to answer a manifest it was sent.
 const COMMIT_WITHIN: Duration = Duration::from_secs(60);
 
+/// How long Image Ingest has to answer whether it holds a manifest.
+const LOOK_WITHIN: Duration = Duration::from_secs(5);
+
 /// Why a manifest's commit has no answer from Image Ingest.
 #[derive(Debug, thiserror::Error)]
 enum Uncommitted {
@@ -653,7 +705,8 @@ enum Uncommitted {
 }
 
 /// Send `manifest` to `grant`'s Image Ingest, and spend the grant on a stored `tag`. `bound`
-/// goes once Image Ingest answered, or once nothing reached it.
+/// goes once Image Ingest answered, or once nothing reached it. Without an answer it stays
+/// in doubt, and a key change looks for the manifest again ([`manifest_landed`]).
 async fn commit_manifest(
     client: reqwest::Client,
     grant: Arc<Grant>,
@@ -664,34 +717,48 @@ async fn commit_manifest(
 ) -> Response<Body> {
     let sent = tokio::time::timeout(
         COMMIT_WITHIN,
-        send(&client, grant.ingest, &parts, manifest.into()),
+        send(&client, grant.ingest.address, &parts, manifest.into()),
     )
     .await;
-    let response = match sent {
-        Ok(Ok(upstream)) => {
-            if let Some(bound) = bound {
-                bound.stopped();
-            }
-            relayed(upstream)
-        }
+    // What the commit saw: Image Ingest's answer, nothing sent, or neither.
+    let (seen, response) = match sent {
+        Ok(Ok(upstream)) => (Ok(Seen::Answered), relayed(upstream)),
         Ok(Err(error)) => {
             tracing::debug!(error = %ployz_core::error_chain::inline(&error), "build grant ingest request failed");
-            if let Some(bound) = bound {
-                if error.is_connect() {
-                    bound.stopped();
-                } else {
-                    bound.unconfirmed(Uncommitted::Lost(error), None);
-                }
+            let response = denied(StatusCode::BAD_GATEWAY, "image ingest is unavailable");
+            if error.is_connect() {
+                (Ok(Seen::NeverSent), response)
+            } else {
+                (Err(Uncommitted::Lost(error)), response)
             }
-            denied(StatusCode::BAD_GATEWAY, "image ingest is unavailable")
         }
-        Err(_) => {
-            if let Some(bound) = bound {
-                bound.unconfirmed(Uncommitted::Late, None);
-            }
-            denied(StatusCode::GATEWAY_TIMEOUT, "image ingest did not answer")
-        }
+        Err(_) => (
+            Err(Uncommitted::Late),
+            denied(StatusCode::GATEWAY_TIMEOUT, "image ingest did not answer"),
+        ),
     };
+    match (bound, seen) {
+        (None, _) => {}
+        (Some(bound), Ok(seen)) => bound.stopped(seen),
+        (Some(bound), Err(uncommitted)) => {
+            let reference = parts.uri.path().rsplit('/').next().unwrap_or_default();
+            bound.name(format!(
+                "a Build Grant's manifest {}:{reference}",
+                grant.repository.as_str()
+            ));
+            // Which process took it, so a later look knows when it can no longer land.
+            let took = (grant.ingest.process)().await.map_err(drop);
+            let (grant, path) = (Arc::clone(&grant), parts.uri.path().to_owned());
+            bound.unconfirmed(
+                uncommitted,
+                Some(Arc::new(move || {
+                    let (grant, path, took) = (Arc::clone(&grant), path.clone(), took.clone());
+                    let client = client.clone();
+                    Box::pin(async move { manifest_landed(&client, &grant, &path, took).await })
+                })),
+            );
+        }
+    }
     if let Some(digest) = tag {
         // Only a stored manifest spends the grant; a refused one may be retried.
         *grant.push.lock().expect("grant push lock") = if response.status().is_success() {
@@ -702,6 +769,54 @@ async fn commit_manifest(
     }
     response
 }
+
+/// Whether the manifest a grant PUT to `path`, unanswered, landed. Image Ingest holding it
+/// is [`Seen::Landed`]. Not holding it ends the doubt only once the process that took it,
+/// `took`, no longer runs, since that process may still store it; until then it is
+/// [`Seen::Pending`]. The grant was ended by the key change that looks, so no other PUT
+/// reaches Image Ingest for it.
+async fn manifest_landed(
+    client: &reqwest::Client,
+    grant: &Grant,
+    path: &str,
+    took: Result<Option<String>, ()>,
+) -> Result<Seen, Cause> {
+    let now = (grant.ingest.process)().await?;
+    let gone = match took {
+        Ok(Some(took)) => now.as_ref() != Some(&took),
+        Ok(None) => true,
+        Err(()) => false,
+    };
+    // Looked at once its process is known gone, so a commit landing before then is seen.
+    let held = tokio::time::timeout(
+        LOOK_WITHIN,
+        client
+            .head(format!("http://{}{path}", grant.ingest.address))
+            .header(header::ACCEPT, MANIFEST_TYPES)
+            .send(),
+    )
+    .await;
+    match held {
+        Ok(Ok(answer)) if answer.status() == StatusCode::OK => Ok(Seen::Landed),
+        Ok(Ok(answer)) if answer.status() == StatusCode::NOT_FOUND => Ok(if gone {
+            Seen::ContainerGone
+        } else {
+            Seen::Pending
+        }),
+        // No Image Ingest runs to ask, and none that took the manifest can store it.
+        Ok(Err(error)) if gone && now.is_none() && error.is_connect() => Ok(Seen::ContainerGone),
+        Ok(Ok(answer)) => Err(format!("Image Ingest answered {}", answer.status()).into()),
+        Ok(Err(error)) => Err(error.into()),
+        Err(_) => Err(format!(
+            "Image Ingest did not say within {} s whether it holds the manifest",
+            LOOK_WITHIN.as_secs()
+        )
+        .into()),
+    }
+}
+
+/// The manifest types a push writes, which a look asks for.
+const MANIFEST_TYPES: &str = "application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json";
 
 /// The grant's Sealed values, opened, for its holder once, while the grant is live and
 /// nothing is pushing or pushed.
@@ -958,7 +1073,7 @@ mod tests {
         let live = sealed_grant(&cluster);
         let expired = Arc::new(Grant {
             repository: live.repository.clone(),
-            ingest: live.ingest,
+            ingest: live.ingest.clone(),
             expires: Instant::now(),
             push: Mutex::new(Push::Open),
             sealed: Mutex::new(Sealing::Ready(Release::Plain {
@@ -1105,8 +1220,9 @@ mod tests {
     }
 
     /// An [`Ingest`] that answers each request it read with `201 Created`, or with `lose`,
-    /// drops it unanswered once `lose` is notified.
-    async fn ingest(lose: Option<Arc<tokio::sync::Notify>>) -> Ingest {
+    /// drops it unanswered once `lose` is notified. A PUT it read is stored when `stores`,
+    /// and a HEAD finds what it stored.
+    async fn ingest(lose: Option<Arc<tokio::sync::Notify>>, stores: bool) -> Ingest {
         use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1116,9 +1232,11 @@ mod tests {
             read: Arc::default(),
         };
         let (received, read) = (Arc::clone(&ingest.received), Arc::clone(&ingest.read));
+        let stored = Arc::new(std::sync::Mutex::new(std::collections::BTreeSet::new()));
         tokio::spawn(async move {
             while let Ok((mut stream, _)) = listener.accept().await {
                 let (received, read, lose) = (received.clone(), read.clone(), lose.clone());
+                let stored = Arc::clone(&stored);
                 tokio::spawn(async move {
                     let mut request = Vec::new();
                     let mut chunk = [0; 4096];
@@ -1139,6 +1257,28 @@ mod tests {
                         if request.len() >= end + 4 + length {
                             break;
                         }
+                    }
+                    let line = String::from_utf8_lossy(&request)
+                        .lines()
+                        .next()
+                        .unwrap_or_default()
+                        .to_owned();
+                    let mut words = line.split_whitespace();
+                    let (method, path) = (
+                        words.next().unwrap_or_default(),
+                        words.next().unwrap_or_default(),
+                    );
+                    if method == "HEAD" {
+                        let found: &[u8] = if stored.lock().unwrap().contains(path) {
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        } else {
+                            b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        };
+                        let _ = stream.write_all(found).await;
+                        return;
+                    }
+                    if stores && method == "PUT" {
+                        stored.lock().unwrap().insert(path.to_owned());
                     }
                     received.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     read.notify_one();
@@ -1169,7 +1309,7 @@ mod tests {
     /// Cloud's slot, with the Machine that minted it and the Device.
     fn device_grant(
         dir: &std::path::Path,
-        ingest: SocketAddr,
+        ingest: impl Into<IngestAt>,
     ) -> (
         crate::machine::LocalMachine,
         ployz_core::DeviceKey,
@@ -1201,7 +1341,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_manifest_still_arriving_when_its_devices_removal_began_reaches_no_ingest() {
         let dir = tempfile::tempdir().unwrap();
-        let ingest = ingest(None).await;
+        let ingest = ingest(None, false).await;
         let (local, device, admitted) = device_grant(dir.path(), ingest.address);
         let connected = Serving::new(Arc::clone(&admitted)).unwrap();
         let (arriving, body) =
@@ -1259,7 +1399,7 @@ mod tests {
     async fn a_removal_says_when_a_manifest_in_flight_may_have_landed() {
         let dir = tempfile::tempdir().unwrap();
         let lose = Arc::new(tokio::sync::Notify::new());
-        let ingest = ingest(Some(Arc::clone(&lose))).await;
+        let ingest = ingest(Some(Arc::clone(&lose)), false).await;
         let (local, device, admitted) = device_grant(dir.path(), ingest.address);
         let connected = Serving::new(Arc::clone(&admitted)).unwrap();
         let request = Request::builder()
@@ -1293,6 +1433,150 @@ mod tests {
             panic!("the removal said a push in flight stopped without knowing: {removed:?}");
         };
         assert_eq!(unstopped.works(), [crate::machine::Work::BuildGrant]);
+    }
+
+    /// A Device's grant has a manifest at Image Ingest when the Device is removed, and Image
+    /// Ingest stores it but its answer never comes. `device rm` says it may have landed; the
+    /// next key change finds it did and says so by name, once: the one after has nothing left
+    /// to report.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_manifest_that_landed_after_its_devices_removal_is_reported_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let lose = Arc::new(tokio::sync::Notify::new());
+        let ingest = ingest(Some(Arc::clone(&lose)), true).await;
+        let (local, device, admitted) = device_grant(
+            dir.path(),
+            IngestAt::new(ingest.address, ingest_process(&running("ingest@1"))),
+        );
+
+        let removed = lose_manifest(&local, device, &admitted, &ingest, &lose).await;
+        assert!(
+            matches!(
+                removed,
+                Err(crate::machine::LocalMachineError::WorkNotStopped(_))
+            ),
+            "{removed:?}"
+        );
+
+        let looked = approve_key(&local, 11).await;
+        let Err(crate::machine::LocalMachineError::WorkNotStopped(unstopped)) = looked else {
+            panic!("a key change hid a manifest that landed after its grant ended: {looked:?}");
+        };
+        assert_eq!(unstopped.works(), [crate::machine::Work::BuildGrant]);
+        let reported = ployz_core::error_chain::inline(&unstopped);
+        let reference = manifest_tag().rsplit('/').next().unwrap().to_owned();
+        assert!(reported.contains(&reference), "{reported}");
+        assert!(reported.contains("landed after"), "{reported}");
+        approve_key(&local, 12)
+            .await
+            .expect("a key change reported again a manifest already reported landed");
+    }
+
+    /// A Device's grant has a manifest at Image Ingest when the Device is removed, and the
+    /// answer never comes, nor does Image Ingest hold it yet. While the Image Ingest that took
+    /// it runs, it may still store it, so each key change reports it; once another Image
+    /// Ingest runs in its place, it never will.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_lost_manifest_stays_reported_until_the_ingest_that_took_it_is_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let lose = Arc::new(tokio::sync::Notify::new());
+        let ingest = ingest(Some(Arc::clone(&lose)), false).await;
+        let process = running("ingest@1");
+        let (local, device, admitted) = device_grant(
+            dir.path(),
+            IngestAt::new(ingest.address, ingest_process(&process)),
+        );
+
+        let removed = lose_manifest(&local, device, &admitted, &ingest, &lose).await;
+        assert!(
+            matches!(
+                removed,
+                Err(crate::machine::LocalMachineError::WorkNotStopped(_))
+            ),
+            "{removed:?}"
+        );
+        let again = approve_key(&local, 11).await;
+        assert!(
+            matches!(
+                again,
+                Err(crate::machine::LocalMachineError::WorkNotStopped(_))
+            ),
+            "a key change forgot a manifest the running Image Ingest may still store: {again:?}"
+        );
+
+        *process.lock().unwrap() = Some("ingest@2".to_owned());
+        approve_key(&local, 12)
+            .await
+            .expect("a key change still reported a manifest whose Image Ingest is gone");
+    }
+
+    /// Which process of Image Ingest runs, as a test turns it.
+    fn running(process: &str) -> Arc<std::sync::Mutex<Option<String>>> {
+        Arc::new(std::sync::Mutex::new(Some(process.to_owned())))
+    }
+
+    fn ingest_process(running: &Arc<std::sync::Mutex<Option<String>>>) -> IngestProcess {
+        let running = Arc::clone(running);
+        Arc::new(move || {
+            let now = running.lock().unwrap().clone();
+            Box::pin(async move { Ok(now) })
+        })
+    }
+
+    /// PUT [`MANIFEST`] through `admitted`, remove `device` once `ingest` read it, and lose
+    /// Image Ingest's answer: what the removal returned.
+    async fn lose_manifest(
+        local: &crate::machine::LocalMachine,
+        device: ployz_core::DeviceKey,
+        admitted: &Arc<Grant>,
+        ingest: &Ingest,
+        lose: &tokio::sync::Notify,
+    ) -> Result<ployz_core::DeviceSet, crate::machine::LocalMachineError> {
+        let connected = Serving::new(Arc::clone(admitted)).unwrap();
+        let request = Request::builder()
+            .method(Method::PUT)
+            .uri(manifest_tag())
+            .body(http_body_util::Full::new(Bytes::from_static(MANIFEST)))
+            .unwrap();
+        let pushing = tokio::spawn({
+            let connected = connected.clone();
+            async move { handle(request, &connected, &reqwest::Client::new()).await }
+        });
+        ingest.read.notified().await;
+        let removal = tokio::spawn({
+            let local = local.clone();
+            async move {
+                local
+                    .on_local_socket()
+                    .set_device(ployz_core::SetDeviceRequest::Remove {
+                        code: device.code(),
+                    })
+                    .await
+            }
+        });
+        admitted.ended().await;
+        pushing.abort();
+        let _ = pushing.await;
+        connected.stop();
+        lose.notify_one();
+        removal.await.unwrap()
+    }
+
+    /// Approve the Device key of `seed`, which nothing else holds: a key change that ends no
+    /// work.
+    async fn approve_key(
+        local: &crate::machine::LocalMachine,
+        seed: u8,
+    ) -> Result<ployz_core::DeviceSet, crate::machine::LocalMachineError> {
+        local
+            .clone()
+            .on_local_socket()
+            .set_device(ployz_core::SetDeviceRequest::Approve {
+                key: ployz_core::DeviceKey::from(
+                    ployz_core::authority::Signer::from_seed(&[seed; 32]).public(),
+                ),
+            })
+            .await
     }
 
     #[test]

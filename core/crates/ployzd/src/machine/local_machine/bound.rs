@@ -5,11 +5,14 @@
 //! most [`STOP_WITHIN`] for it to stop.
 //!
 //! The registry forgets work only on evidence that it ended: a [`Bound`] goes through
-//! [`Bound::stopped`] once its holder saw the work end, and any other way leaves a doubt.
-//! Work that still runs or left a doubt stays, past the key change that ended it. Every key
-//! change that finds its key short of Full reports it by name, until a [`Recheck`] sees it
-//! end. [`ployz_decide::bound_work`] holds the rules; `ployz-verify`'s `bound_work` model
-//! explores them against key changes.
+//! [`Bound::stopped`] with what its holder last [`Seen`] of the work, and only a sighting
+//! [`Seen::ended`] calls evidence (an exit code, a reaped process, a joined task, a confirmed
+//! Container removal) lets it go clean. Absence (not running with no exit code, a 404, a
+//! busy lock, a failed read) and any other way a Bound goes leave a doubt. Work that still
+//! runs or left a doubt stays, past the key change that ended it. Every key change that
+//! finds its key short of Full reports it by name, until a [`Recheck`] sees evidence it
+//! ended. [`ployz_decide::bound_work`] holds the rules; `ployz-verify`'s `bound_work` model
+//! explores them against key changes and false reports of an end.
 //!
 //! A secret is read, and an effect starts, for bound work only under the lock a key change
 //! ends work under: through [`Bound::read`], or by taking a fresh [`Bound`] with
@@ -27,7 +30,8 @@ use std::{
 
 use futures_util::future::BoxFuture;
 use ployz_core::{ClientKey, ManagementScope};
-use ployz_decide::bound_work::{Entry, Release};
+use ployz_decide::bound_work::Entry;
+pub use ployz_decide::bound_work::Seen;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
@@ -39,9 +43,9 @@ use crate::machine::LocalMachineRecord;
 /// work that bound failed.
 pub(crate) const STOP_WITHIN: Duration = Duration::from_secs(90);
 
-/// A later look at work that went without evidence it ended, which a key change runs:
-/// `Ok` once it saw the work end.
-pub type Recheck = Arc<dyn Fn() -> BoxFuture<'static, Result<(), Cause>> + Send + Sync>;
+/// A later look at work that went without evidence it ended, which a key change runs: what
+/// it saw, which clears the doubt only when [`Seen::ended`], or why it could not look.
+pub type Recheck = Arc<dyn Fn() -> BoxFuture<'static, Result<Seen, Cause>> + Send + Sync>;
 
 /// Why work could not confirm it stopped, in its own words.
 pub type Cause = Box<dyn std::error::Error + Send + Sync>;
@@ -151,6 +155,10 @@ pub enum StopCause {
     Panicked,
     #[error("its task went without seeing it end")]
     Dropped,
+    #[error("{}", unseen(*.0))]
+    Unseen(Seen),
+    #[error("it landed after the key change that ended it")]
+    Landed,
     /// The work's own account of why it can't confirm it stopped.
     #[error(transparent)]
     Reported(Cause),
@@ -167,6 +175,27 @@ pub struct WorkNotStopped {
     pieces: Vec<(Work, String)>,
     #[source]
     cause: Arc<StopCause>,
+}
+
+/// Why a sighting that is no evidence the work ended leaves it in doubt.
+fn unseen(seen: Seen) -> &'static str {
+    match seen {
+        Seen::Pending => {
+            "it was reported not running with no exit code, or not stored yet, so it may not have started"
+        }
+        Seen::Forgotten => {
+            "the record of it was lost, as Docker forgets every exec when it restarts"
+        }
+        Seen::Unchecked => "the look at it failed",
+        Seen::Busy => "another holder had the lock a look at it takes",
+        Seen::ExitCode
+        | Seen::Reaped
+        | Seen::Joined
+        | Seen::ContainerGone
+        | Seen::NeverSent
+        | Seen::Answered
+        | Seen::Landed => "it ended",
+    }
 }
 
 fn names(pieces: &[(Work, String)]) -> String {
@@ -280,34 +309,48 @@ impl BoundWork {
         ))
         .await;
         let mut open = self.open.lock().expect("bound work lock");
+        let mut pieces = Vec::new();
+        let mut landed = Vec::new();
+        let mut cause = None;
         for (id, doubt, seen) in looked {
             let Some(piece) = open.work.get_mut(&id) else {
                 continue;
             };
-            match seen {
-                Ok(()) => piece.facts.confirm(|held| held.id == doubt),
-                // The latest look says best why the work still can't confirm it ended.
-                Err(cause) => {
-                    if let Some(held) = piece
-                        .facts
-                        .doubts_mut()
-                        .iter_mut()
-                        .find(|held| held.id == doubt)
-                    {
-                        held.cause = Arc::new(StopCause::Reported(cause));
+            let unseen = match seen {
+                Ok(seen) if piece.facts.confirm(seen, |held| held.id == doubt) => {
+                    // Its effect landed after the key change that ended it: this change
+                    // reports it once, by name.
+                    if seen == Seen::Landed && !landed.contains(&id) {
+                        landed.push(id);
+                        pieces.push((piece.work, piece.named()));
+                        cause.get_or_insert_with(|| Arc::new(StopCause::Landed));
                     }
+                    None
                 }
+                Ok(seen) => Some(StopCause::Unseen(seen)),
+                Err(cause) => Some(StopCause::Reported(cause)),
+            };
+            // The latest look says best why the work still can't confirm it ended.
+            if let Some(unseen) = unseen
+                && let Some(held) = piece
+                    .facts
+                    .doubts_mut()
+                    .iter_mut()
+                    .find(|held| held.id == doubt)
+            {
+                held.cause = Arc::new(unseen);
             }
             piece.publish();
         }
         let record = self.records.borrow().clone();
-        let mut pieces = Vec::new();
-        let mut cause = None;
-        open.work.retain(|_, piece| {
+        open.work.retain(|id, piece| {
             if piece.facts.settled() {
                 return false;
             }
-            if holds_full(&record, &piece.key).is_err() && piece.facts.unconfirmed() {
+            if holds_full(&record, &piece.key).is_err()
+                && piece.facts.unconfirmed()
+                && !landed.contains(id)
+            {
                 pieces.push((piece.work, piece.named()));
                 cause.get_or_insert_with(|| match piece.facts.doubts().first() {
                     Some(doubt) => Arc::clone(&doubt.cause),
@@ -350,11 +393,11 @@ impl Bound {
         &self.tie
     }
 
-    /// The tie alone, once this Bound's own part of the work is done, such as a read.
+    /// The tie alone, once this Bound's own part of the work, such as a read, returned.
     #[must_use]
     pub fn into_tie(self) -> Tie {
         let tie = self.tie.clone();
-        self.stopped();
+        self.stopped(Seen::Joined);
         tie
     }
 
@@ -403,9 +446,11 @@ impl Bound {
         Ok(read())
     }
 
-    /// Stop holding the work up: its holder saw it end.
-    pub fn stopped(mut self) {
-        self.release(Release::Ended);
+    /// Stop holding the work up, its holder having last seen `seen` of it. Unless that is
+    /// evidence the work ended ([`Seen::ended`]), it stays in doubt with no recheck, and a
+    /// key change that finds its key short of Full reports it.
+    pub fn stopped(mut self, seen: Seen) {
+        self.release(seen, StopCause::Unseen(seen), None);
     }
 
     /// Stop holding the work up without having seen it end, for `cause`. A key change that
@@ -416,32 +461,36 @@ impl Bound {
         cause: impl std::error::Error + Send + Sync + 'static,
         recheck: Option<Recheck>,
     ) {
-        self.doubt(StopCause::Reported(Box::new(cause)), recheck);
-    }
-
-    fn doubt(&mut self, cause: StopCause, recheck: Option<Recheck>) {
-        let Some(keyed) = &self.tie.0.key else {
-            self.released = true;
-            return;
-        };
-        let id = {
-            let mut open = keyed.work.open.lock().expect("bound work lock");
-            open.next += 1;
-            open.next
-        };
-        self.release(Release::Unconfirmed(Doubt {
-            id,
-            cause: Arc::new(cause),
+        self.release(
+            Seen::Unchecked,
+            StopCause::Reported(Box::new(cause)),
             recheck,
-        }));
+        );
     }
 
-    fn release(&mut self, how: Release<Doubt>) {
+    /// Let this Bound go, its holder having last seen `seen`, leaving a doubt for `cause`
+    /// unless that is evidence the work ended.
+    fn release(&mut self, seen: Seen, cause: StopCause, recheck: Option<Recheck>) {
         if std::mem::replace(&mut self.released, true) {
             return;
         }
-        if let Some(keyed) = &self.tie.0.key {
-            keyed.work.settle(keyed.id, |facts| facts.release(how));
+        let Some(keyed) = &self.tie.0.key else {
+            return;
+        };
+        let mut open = keyed.work.open.lock().expect("bound work lock");
+        open.next += 1;
+        let doubt = Doubt {
+            id: open.next,
+            cause: Arc::new(cause),
+            recheck,
+        };
+        let Some(piece) = open.work.get_mut(&keyed.id) else {
+            return;
+        };
+        piece.facts.release(seen, doubt);
+        piece.publish();
+        if piece.facts.settled() {
+            open.work.remove(&keyed.id);
         }
     }
 }
@@ -462,7 +511,7 @@ impl Drop for Bound {
             } else {
                 StopCause::Dropped
             };
-            self.doubt(cause, None);
+            self.release(Seen::Unchecked, cause, None);
         }
     }
 }

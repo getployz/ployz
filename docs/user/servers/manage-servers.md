@@ -287,7 +287,11 @@ server reports the removal as failed and names each thing that didn't stop. The 
 that ended earlier without confirming it stopped, such as a build whose builder Docker couldn't
 remove. The device is removed there all the same, and every later key change on that server, such
 as another `device rm` or `ployz key add`, reports the same work again until the server sees it
-stopped. A build that can't confirm it stopped has the secret values it opened deleted at once,
+stopped. An image push whose last step got no answer stops being reported once the server finds
+the image stored, and the next key change names it as stored after the removal, once. It also
+stops once the server process that took the push has restarted without storing it. An `exec`
+that Docker lost track of by restarting before the server saw the command start stays reported,
+because the command may still run. A build that can't confirm it stopped has the secret values it opened deleted at once,
 and starts no further step.
 Every server that answers marks the key removed, including one that never
 trusted it, so an approval of that key still on its way there is refused. If no server can name

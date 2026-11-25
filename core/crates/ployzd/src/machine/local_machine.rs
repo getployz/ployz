@@ -96,7 +96,7 @@ mod reserved;
 pub(crate) use admission::{Admit, AdmittedBy, AdmittedSpec};
 #[cfg(test)]
 pub(crate) use bound::STOP_WITHIN;
-pub use bound::{Bound, Tie, Work};
+pub use bound::{Bound, Cause, Recheck, Seen, Tie, Work};
 pub use call::FullCaller;
 pub(crate) use call::{Call, Caller, Checked, Scope};
 pub(crate) use consumption::ConsumptionLog;

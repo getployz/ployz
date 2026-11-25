@@ -80,7 +80,7 @@ pub(super) async fn serve(
     )
     .await;
     // `relay` dropped every socket the tunnel opened before it returned.
-    bound.stopped();
+    bound.stopped(crate::machine::Seen::Joined);
 }
 
 /// Open the tunnel `bound` ties to `remote` and relay it until either side ends it, the key

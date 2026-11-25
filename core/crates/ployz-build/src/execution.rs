@@ -216,17 +216,14 @@ impl HostPolicy {
     }
 
     /// Whether every process the last Build in `slot` started is gone, asked by the process
-    /// that ran it: the slot recovers, its Build here known to have returned, or another
-    /// attempt already holds it, which it could take only by recovering it.
+    /// that ran it: the slot recovers, its Build here known to have returned.
     ///
     /// # Errors
     /// The slot stays quarantined: a process of its last Build may still run, or Docker
-    /// didn't confirm its builder removed.
+    /// didn't confirm its builder removed. [`BuildError::Busy`] when another admission holds
+    /// the slot, which says nothing: it may be recovering the slot and fail to.
     pub fn confirm_ended(&self, slot: usize) -> Result<(), BuildError> {
-        match Lock::try_acquire_own_slot(&self.state_directory, slot, &self.docker) {
-            Ok(_) | Err(BuildError::Busy) => Ok(()),
-            Err(error) => Err(error),
-        }
+        Lock::try_acquire_own_slot(&self.state_directory, slot, &self.docker).map(drop)
     }
 
     /// Validate before allocating queue state or computing deadlines.
@@ -535,6 +532,25 @@ mod tests {
             !root.join("build-upload-1").exists(),
             "startup skipped a later slot's abandoned upload"
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_build_slot_another_admission_holds_is_never_confirmed_ended() {
+        let root = std::env::temp_dir().join(format!("ployz-build-busy-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let policy = HostPolicy {
+            state_directory: root.clone(),
+            docker: root.join("docker"),
+            ..Default::default()
+        };
+        // The Build that last used the slot never confirmed its end, and another admission
+        // holds the slot to recover it, which it may fail to.
+        let mut lock = Lock::try_acquire_in(&root).unwrap();
+        lock.quarantine().unwrap();
+        assert!(matches!(policy.confirm_ended(0), Err(BuildError::Busy)));
+        drop(lock);
         std::fs::remove_dir_all(root).unwrap();
     }
 

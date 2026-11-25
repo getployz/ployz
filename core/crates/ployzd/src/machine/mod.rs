@@ -36,7 +36,9 @@ pub(crate) use local_machine::{
     Admit, AdmittedBy, AdmittedSpec, Call, Caller, KeyChangeHeld, RecoveryError,
     RuntimeWatchTelemetry, Scope, SealingError,
 };
-pub use local_machine::{Bound, Error as LocalMachineError, LocalMachine, Tie, Work};
+pub use local_machine::{
+    Bound, Cause, Error as LocalMachineError, LocalMachine, Recheck, Seen, Tie, Work,
+};
 #[cfg(test)]
 pub(crate) use local_machine::{EnsurePause, EnsurePausePoint, STOP_WITHIN};
 
