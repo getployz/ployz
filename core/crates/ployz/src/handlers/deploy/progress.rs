@@ -2074,7 +2074,6 @@ mod tests {
                     container_id: ployz_core::ContainerId::parse("c".repeat(64)).unwrap(),
                     machine: "one".into(),
                     reason: "one did not answer".into(),
-                    purpose: ployz_core::RemoveContainerPurpose::Retire,
                 },
             },
             DeploymentWarning::Deploy {
@@ -2194,7 +2193,6 @@ mod tests {
                 reason:
                     "machine-3 didn't answer, the next full deploy removes its copy once it is back"
                         .into(),
-                purpose: ployz_core::RemoveContainerPurpose::Retire,
             },
         }];
         let text = crate::ui::progress::settled_text(&frame(&view));

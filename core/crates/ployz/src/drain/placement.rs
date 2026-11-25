@@ -19,11 +19,12 @@ use futures_util::FutureExt;
 use futures_util::future::{BoxFuture, ready};
 use ployz_core::authority::deploy::content_addressed;
 use ployz_core::{
-    Claim, ContainerId, ContainerKind, ContainerObservation, ContainerRefusalReason,
-    ContainerRuntimeObservation, CopyRotation, CreationKey, ENSURE_PINNED_CONTAINER_CAPABILITY,
-    HealthObservation, ImageDigest, InspectContainerRequest, Machine, MachineId, MachineName,
-    MachineTarget, Namespace, QualifiedService, RawVolumeSource, Region, RemoveContainerPurpose,
-    RequestedServiceSpec, ResolvedServiceSpec, ServiceMode, ServicePlacementEligibility, op,
+    AnonymousVolumes, Claim, ContainerId, ContainerKind, ContainerObservation,
+    ContainerRefusalReason, ContainerRuntimeObservation, CopyRotation, CreationKey,
+    ENSURE_PINNED_CONTAINER_CAPABILITY, HealthObservation, ImageDigest, InspectContainerRequest,
+    Machine, MachineId, MachineName, MachineTarget, Namespace, QualifiedService, RawVolumeSource,
+    Region, RequestedServiceSpec, ResolvedServiceSpec, ServiceMode, ServicePlacementEligibility,
+    op,
 };
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
@@ -960,7 +961,7 @@ pub(crate) async fn retire_old<C: MachineOperations>(
         client,
         old,
         EmptyPolicy::RequireOtherIn,
-        RemoveContainerPurpose::Retire,
+        AnonymousVolumes::keep(),
         cancellation,
     )
     .await;
@@ -1645,6 +1646,7 @@ mod tests {
             run: None,
             log_driver: None,
             admission: None,
+            replaced_by: None,
         })
         .unwrap()
     }

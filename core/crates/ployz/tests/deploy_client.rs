@@ -715,7 +715,7 @@ async fn confirm_ignores_changed_preview_payload_and_replays_with_fresh_pending_
         machine_id: row.machine_id,
         container_id: ContainerId::parse("f".repeat(64)).unwrap(),
         purpose: ployz_core::RemoveContainerPurpose::Rollout,
-        service_stays: false,
+        anonymous_volumes: ployz_core::AnonymousVolumes::keep(),
     };
 
     for _ in 0..2 {

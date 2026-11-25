@@ -39,14 +39,8 @@ impl TaskKind {
     pub(crate) fn of(operation: &DeployOperation) -> Self {
         match operation {
             DeployOperation::RunHook { .. } => Self::Hook,
-            // A removal its Service outlives: the copy leaves routing once the Service's
-            // new copies are published.
             DeployOperation::RemoveContainer {
                 purpose: RemoveContainerPurpose::Rollout,
-                ..
-            }
-            | DeployOperation::RemoveContainer {
-                service_stays: true,
                 ..
             } => Self::Unroute,
             DeployOperation::RunContainer { .. } | DeployOperation::ReplaceContainer(_) => {

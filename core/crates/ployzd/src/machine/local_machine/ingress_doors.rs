@@ -600,7 +600,11 @@ impl LocalMachine {
         };
         let mut connector_stays = false;
         for retiree in plan.retirees() {
-            match containers.lifecycle().remove(&retiree.id, true, true).await {
+            match containers
+                .lifecycle()
+                .remove(&retiree.id, crate::docker::VolumeDisposal::System, true)
+                .await
+            {
                 Ok(()) => set.retired.push(retiree.id),
                 Err(crate::docker::Error::ContainerNotFound(_)) => {}
                 // Stopped and held, it serves nothing, and the next call retires it.

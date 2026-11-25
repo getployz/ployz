@@ -192,7 +192,11 @@ async fn l3_061_default_spec_creates_and_removes_from_docker_and_machine_db() {
 
     runtime
         .lifecycle()
-        .remove(&created.container_id, true, true)
+        .remove(
+            &created.container_id,
+            crate::docker::VolumeDisposal::Keep,
+            true,
+        )
         .await
         .unwrap();
     assert!(specs.get(&created.container_id).await.unwrap().is_none());
@@ -217,12 +221,15 @@ async fn l3_061_default_spec_creates_and_removes_from_docker_and_machine_db() {
         .unwrap();
     runtime
         .lifecycle()
-        .remove(&orphan, true, true)
+        .remove(&orphan, crate::docker::VolumeDisposal::Keep, true)
         .await
         .unwrap();
     assert!(specs.get(&orphan).await.unwrap().is_none());
     assert!(matches!(
-        runtime.lifecycle().remove(&orphan, true, true).await,
+        runtime
+            .lifecycle()
+            .remove(&orphan, crate::docker::VolumeDisposal::Keep, true)
+            .await,
         Err(Error::ContainerNotFound(_))
     ));
 
@@ -287,7 +294,10 @@ async fn l3_061_default_spec_creates_and_removes_from_docker_and_machine_db() {
         Err(Error::NotManaged)
     ));
     assert!(matches!(
-        runtime.lifecycle().remove(&unmanaged, true, true).await,
+        runtime
+            .lifecycle()
+            .remove(&unmanaged, crate::docker::VolumeDisposal::Keep, true)
+            .await,
         Err(Error::NotManaged)
     ));
     docker
@@ -468,7 +478,7 @@ async fn update_limits_changes_a_running_container_in_place() {
 
     runtime
         .lifecycle()
-        .remove(&container_id, true, true)
+        .remove(&container_id, crate::docker::VolumeDisposal::Keep, true)
         .await
         .unwrap();
     cleanup_ployz_network(&docker.client, created_network).await;
@@ -714,7 +724,11 @@ async fn l3_062_full_spec_reaches_docker_and_machine_db() {
 
     runtime
         .lifecycle()
-        .remove(&created.container_id, true, true)
+        .remove(
+            &created.container_id,
+            crate::docker::VolumeDisposal::Keep,
+            true,
+        )
         .await
         .unwrap();
     let mut failed_spec = spec.clone();
@@ -1427,6 +1441,7 @@ fn fixture_observation(
         run: None,
         log_driver: None,
         admission: None,
+        replaced_by: None,
     })
     .unwrap()
 }

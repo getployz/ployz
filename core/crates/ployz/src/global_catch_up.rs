@@ -17,11 +17,11 @@
 use crate::cluster::Call;
 use ployz_core::error_chain;
 use ployz_core::{
-    BridgeEndpointCapacity, Ciphertext, ContainerKind, ContainerNow, ContainerObservation,
-    ContainerRuntimeObservation, ContainerWant, CopyRotation, CreationKey, EnvironmentValues,
-    HealthFailure, HealthVerdict, IngressDoors, IngressDoorsSet, ListContainersRequest,
-    LiveServices, Machine, MachineId, MachineTarget, NewContainer, PartialResult, PrivateAccessSet,
-    QualifiedService, RemoveContainerPurpose, ResolvedServiceSpec, RpcError, RunRotation,
+    AnonymousVolumes, BridgeEndpointCapacity, Ciphertext, ContainerKind, ContainerNow,
+    ContainerObservation, ContainerRuntimeObservation, ContainerWant, CopyRotation, CreationKey,
+    EnvironmentValues, HealthFailure, HealthVerdict, IngressDoors, IngressDoorsSet,
+    ListContainersRequest, LiveServices, Machine, MachineId, MachineTarget, NewContainer,
+    PartialResult, PrivateAccessSet, QualifiedService, ResolvedServiceSpec, RpcError, RunRotation,
     RunTarget, ServiceId, ServiceMode, ServiceObservation, SetIngressDoorsRequest,
     SetPrivateAccessRequest, SlotKey, op,
 };
@@ -91,12 +91,12 @@ pub(crate) trait SlotIo {
         new: &NewContainer,
         cancel: &CancellationToken,
     ) -> Result<bool, RpcError>;
-    /// Take `copy` out of routing and remove it, its anonymous Volumes as `purpose`
-    /// says.
+    /// Take `copy` out of routing and remove it, asking `anonymous_volumes` of its
+    /// anonymous Volumes.
     async fn retire_copy(
         &mut self,
         copy: &Copy,
-        purpose: RemoveContainerPurpose,
+        anonymous_volumes: AnonymousVolumes,
         cancel: &CancellationToken,
     ) -> Result<Rotated, RpcError>;
     /// Ask `container` run Pending on `target`, resending until it answers.
@@ -114,7 +114,7 @@ pub(crate) trait CatchUpClient: SlotIo {
         machine_id: &MachineId,
         new: NewContainer,
         cancel: &CancellationToken,
-    ) -> Result<Option<Placed>, RpcError>;
+    ) -> Result<Option<Copy>, RpcError>;
     /// Set `machine_id`'s Doors to the Cluster's for the Ingress Proxy `proxy_service`,
     /// or remove its Ingress Proxy when it doesn't hold the ingress role, answering `None`.
     async fn run_doors(
@@ -135,11 +135,7 @@ pub(crate) trait CatchUpClient: SlotIo {
         copy: &Copy,
         spec: &ResolvedServiceSpec,
     ) -> Result<BroughtIn, RpcError>;
-    async fn remove_copy(
-        &mut self,
-        copy: &Copy,
-        purpose: RemoveContainerPurpose,
-    ) -> Result<Removal, RpcError>;
+    async fn remove_copy(&mut self, copy: &Copy) -> Result<Removal, RpcError>;
     async fn target_containers(
         &mut self,
         machine_id: &MachineId,
@@ -192,10 +188,17 @@ impl SlotIo for Client {
     async fn retire_copy(
         &mut self,
         copy: &Copy,
-        purpose: RemoveContainerPurpose,
+        anonymous_volumes: AnonymousVolumes,
         cancel: &CancellationToken,
     ) -> Result<Rotated, RpcError> {
-        cleanup::retire(&*self, copy, EmptyPolicy::RequireOtherIn, purpose, cancel).await
+        cleanup::retire(
+            &*self,
+            copy,
+            EmptyPolicy::RequireOtherIn,
+            anonymous_volumes,
+            cancel,
+        )
+        .await
     }
 
     async fn ensure_pending(
@@ -211,16 +214,6 @@ impl SlotIo for Client {
     }
 }
 
-/// The copy [`place_slot`] put in a slot, and how removing it ends should it not come
-/// In.
-#[derive(Debug)]
-pub(crate) struct Placed {
-    pub(crate) copy: Copy,
-    /// `Rollout` for a copy this attempt made, which it undoes. `Retire` for one an earlier
-    /// attempt left, which may hold data and keeps its anonymous Volumes.
-    pub(crate) undo: RemoveContainerPurpose,
-}
-
 /// Place `new`, the copy of one observed Global, on `machine_id`: nothing when the Machine
 /// rules the slot out, the copy already there when one of the same shape runs, and
 /// otherwise a keyed create that names the routed copy of an older spec it replaces.
@@ -229,7 +222,7 @@ async fn place_slot<C: SlotIo>(
     machine_id: &MachineId,
     mut new: NewContainer,
     cancel: &CancellationToken,
-) -> Result<Option<Placed>, RpcError> {
+) -> Result<Option<Copy>, RpcError> {
     let target = MachineTarget::from(machine_id);
     if client
         .retire_if_ineligible(machine_id, &new, cancel)
@@ -279,11 +272,7 @@ async fn place_slot<C: SlotIo>(
         Some(existing) if *existing.rotation() == CopyRotation::Out => {
             step_error(
                 client
-                    .retire_copy(
-                        &Copy::observed(&existing),
-                        RemoveContainerPurpose::Retire,
-                        cancel,
-                    )
+                    .retire_copy(&Copy::observed(&existing), AnonymousVolumes::keep(), cancel)
                     .await?,
             )?;
             None
@@ -297,12 +286,10 @@ async fn place_slot<C: SlotIo>(
                 RunTarget::Existing(ployz_core::ContainerLocator::Id(existing.container_id)),
             )
             .await?;
-        return Ok(Some(Placed {
-            copy: now
-                .present()
+        return Ok(Some(
+            now.present()
                 .map_or_else(|| Copy::observed(&existing), Copy::observed),
-            undo: RemoveContainerPurpose::Retire,
-        }));
+        ));
     }
     let capacity = client
         .bridge_capacity(machine_id)
@@ -313,10 +300,7 @@ async fn place_slot<C: SlotIo>(
     }
     new.replaces = replaces;
     let now = client.ensure_pending(&target, RunTarget::New(new)).await?;
-    Ok(now.present().map(|copy| Placed {
-        copy: Copy::observed(copy),
-        undo: RemoveContainerPurpose::Rollout,
-    }))
+    Ok(now.present().map(Copy::observed))
 }
 
 impl CatchUpClient for Client {
@@ -343,7 +327,7 @@ impl CatchUpClient for Client {
         machine_id: &MachineId,
         new: NewContainer,
         cancel: &CancellationToken,
-    ) -> Result<Option<Placed>, RpcError> {
+    ) -> Result<Option<Copy>, RpcError> {
         place_slot(self, machine_id, new, cancel).await
     }
 
@@ -398,12 +382,8 @@ impl CatchUpClient for Client {
         cleanup::bring_in(&*self, copy, spec, None).await
     }
 
-    async fn remove_copy(
-        &mut self,
-        copy: &Copy,
-        purpose: RemoveContainerPurpose,
-    ) -> Result<Removal, RpcError> {
-        cleanup::remove(&*self, copy, purpose).await
+    async fn remove_copy(&mut self, copy: &Copy) -> Result<Removal, RpcError> {
+        cleanup::remove(&*self, copy, AnonymousVolumes::keep()).await
     }
 
     async fn target_containers(
@@ -568,12 +548,8 @@ fn new_copy(source: &ContainerObservation) -> NewContainer {
 
 /// A copy that did not come In is removed; `message` is why, and what the removal did
 /// follows it when it did not finish.
-async fn remove_started<C: CatchUpClient>(
-    client: &mut C,
-    placed: &Placed,
-    message: String,
-) -> String {
-    match client.remove_copy(&placed.copy, placed.undo).await {
+async fn remove_started<C: CatchUpClient>(client: &mut C, copy: &Copy, message: String) -> String {
+    match client.remove_copy(copy).await {
         Ok(Removal::Removed) => message,
         Ok(removal) => format!("{message}; the started copy stays: {removal:?}"),
         Err(error) => format!("{message}; {}", error_chain::row(&error)),
@@ -811,24 +787,20 @@ async fn start_copy<C: CatchUpClient>(
     cancel: &CancellationToken,
 ) -> Result<Started, SlotOutcome> {
     let spec = origin.resolved_spec.clone();
-    let placed = match client.run_slot(machine_id, new_copy(origin), cancel).await {
-        Ok(Some(placed)) => placed,
+    let copy = match client.run_slot(machine_id, new_copy(origin), cancel).await {
+        Ok(Some(copy)) => copy,
         Ok(None) => return Err(SlotOutcome::Excluded),
         Err(error) => return Err(SlotOutcome::failed(error_chain::row(&error))),
     };
-    if placed.copy.rotation != CopyRotation::In {
-        let message = match client
-            .bring_in(&placed.copy, &spec)
-            .await
-            .map(BroughtIn::not_in)
-        {
+    if copy.rotation != CopyRotation::In {
+        let message = match client.bring_in(&copy, &spec).await.map(BroughtIn::not_in) {
             Ok(Ok(())) => None,
             Ok(Err(NotIn::Health(health))) => Some(not_in_message(health)),
             Ok(Err(NotIn::OlderThanIn(_))) => {
-                Some(remove_started(client, &placed, OUTDATED.to_owned()).await)
+                Some(remove_started(client, &copy, OUTDATED.to_owned()).await)
             }
             Ok(Err(NotIn::Refused(refusal))) => {
-                Some(remove_started(client, &placed, refusal.message).await)
+                Some(remove_started(client, &copy, refusal.message).await)
             }
             Err(error) => Some(error_chain::row(&error)),
         };
@@ -838,7 +810,7 @@ async fn start_copy<C: CatchUpClient>(
     }
     Ok(Started {
         identity,
-        copy: placed.copy,
+        copy,
         spec,
     })
 }
@@ -877,13 +849,11 @@ async fn settle<C: CatchUpClient>(
         if cancel.is_cancelled() {
             break;
         }
-        // The started copy runs In in this slot on this Machine, so it replaces `old`.
+        // The started copy runs In in this slot on this Machine. The old copy's anonymous
+        // Volumes go only when its Machine made the started copy to replace it.
+        let anonymous_volumes = AnonymousVolumes::of(old, |id| *id == copy.container_id);
         let left = match client
-            .retire_copy(
-                &Copy::observed(old),
-                RemoveContainerPurpose::Rollout,
-                cancel,
-            )
+            .retire_copy(&Copy::observed(old), anonymous_volumes, cancel)
             .await
             .map(Rotated::failure)
         {

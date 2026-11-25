@@ -772,7 +772,7 @@ fn plan_operations(intent: &DeployIntent, snapshot: &DeploySnapshot) -> Result<P
             machine_id: container.machine_id,
             container_id: container.container_id,
             purpose: ployz_core::RemoveContainerPurpose::Rollout,
-            service_stays: false,
+            anonymous_volumes: ployz_core::AnonymousVolumes::keep(),
         });
     }
     planned.groups.insert(
@@ -1666,7 +1666,7 @@ fn removal_operations(
                 machine_id: observation.machine_id,
                 container_id: observation.container_id,
                 purpose: ployz_core::RemoveContainerPurpose::Retire,
-                service_stays: false,
+                anonymous_volumes: ployz_core::AnonymousVolumes::keep(),
             }
         })
         .collect();
@@ -2313,7 +2313,7 @@ fn pre_deploy_operations(
                 machine_id: observation.machine_id,
                 container_id: observation.container_id,
                 purpose: ployz_core::RemoveContainerPurpose::Retire,
-                service_stays: false,
+                anonymous_volumes: ployz_core::AnonymousVolumes::keep(),
             })
             .collect();
     }

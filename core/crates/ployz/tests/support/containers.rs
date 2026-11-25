@@ -91,7 +91,7 @@ pub async fn remove(
         ContainerWant::Gone {
             container: ContainerLocator::Id(container_id),
             drain: Drain::NONE,
-            anonymous_volumes: ployz_core::RemoveContainerPurpose::Rollout.into(),
+            anonymous_volumes: ployz_core::AnonymousVolumes::keep(),
         },
     )
     .await

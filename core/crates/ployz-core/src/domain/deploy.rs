@@ -722,32 +722,17 @@ pub enum StopContainerPurpose {
     FreeHostPorts,
 }
 
-/// Why Ployz removes a Container: whether a new copy takes its slot on its Server. A
-/// `Retire` keeps the Container's anonymous Volumes on every Machine. A `Rollout` asks to
-/// remove them, which a Machine advertising [`crate::CONTAINER_REPLACES_CAPABILITY`] does
-/// only while it runs the copy it recorded as made to replace this one, and an older one
-/// does whenever asked (see [`crate::AnonymousVolumes`]). So a caller sends `Rollout` to
-/// an older Machine only when a new copy took this one's slot.
+/// Why a Deploy removes a Container. What happens to its anonymous Volumes is the
+/// removal's [`crate::AnonymousVolumes`], never this.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum RemoveContainerPurpose {
-    /// A new copy took the copy's slot, or the copy is one the same run made and undoes:
-    /// its anonymous Volumes may go with the Container.
+    /// Roll a Service out: it keeps serving from its other copies, so the copy leaves
+    /// routing only beside another In copy.
     #[default]
     Rollout,
-    /// Take the copy off its Server with nothing in its slot after it: a removed
-    /// Service, a scale-down, a placement that no longer allows the Server, a Drain or
-    /// a user's remove. Its anonymous Volumes stay, since deleting data is a Volume
-    /// decision.
+    /// Retire a Service the Deploy removes: the copy may be its last.
     Retire,
-}
-
-impl RemoveContainerPurpose {
-    /// The purpose of a removal whose record does not say: its anonymous Volumes stay.
-    #[must_use]
-    pub fn unrecorded() -> Self {
-        Self::Retire
-    }
 }
 
 /// One step in a Deploy Plan.
@@ -785,11 +770,11 @@ pub enum DeployOperation {
         container_id: ContainerId,
         #[serde(default)]
         purpose: RemoveContainerPurpose,
-        /// The Service keeps serving from its other copies, as after a scale-down. A
-        /// `Rollout` always does, so only a `Retire` sets it.
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        #[ts(optional, as = "Option<bool>")]
-        service_stays: bool,
+        /// What the removal asks for the Container's anonymous Volumes, which the plan
+        /// decides from the copies it keeps ([`crate::AnonymousVolumes::of`]).
+        #[serde(flatten)]
+        #[ts(flatten)]
+        anonymous_volumes: crate::AnonymousVolumes,
     },
     /// Replace `old_container_id` with a new container from the replacement spec.
     ReplaceContainer(ReplacementOperation),
@@ -1184,11 +1169,6 @@ pub enum DeployWarning {
         /// The Machine's name when the plan knows it, else its id.
         machine: String,
         reason: String,
-        /// Why the run removed the copy, so the cleanup that retries it decides its
-        /// anonymous Volumes the same way. A record without it keeps them.
-        #[serde(default = "RemoveContainerPurpose::unrecorded")]
-        #[ts(optional, as = "Option<RemoveContainerPurpose>")]
-        purpose: RemoveContainerPurpose,
     },
     /// Cleanup could not reach or confirm `machine` (cut off or powered off).
     /// If it restarts and confirms the new copies within its boot pass, it takes
@@ -1223,7 +1203,6 @@ impl DeployWarning {
                 container_id,
                 machine,
                 reason,
-                ..
             } => Some((service, container_id, machine, reason)),
             Self::StorageHeadroom { .. }
             | Self::UnbudgetedDiskUsage
@@ -1317,7 +1296,6 @@ impl Display for DeployWarning {
                 container_id,
                 machine,
                 reason,
-                ..
             } => write!(
                 f,
                 "{service} copy {} left running on {machine} ({reason}). The next deploy cleans it up.",

@@ -310,7 +310,11 @@ impl LocalMachine {
     ) -> Error {
         let mut cleared = true;
         for id in effects.created.iter().rev() {
-            if let Err(removal) = containers.lifecycle().remove(id, true, true).await {
+            if let Err(removal) = containers
+                .lifecycle()
+                .remove(id, crate::docker::VolumeDisposal::System, true)
+                .await
+            {
                 cleared = false;
                 error = Error::Cleanup(format!(
                     "{}; removing the new Ingress door {id} failed too: {}",

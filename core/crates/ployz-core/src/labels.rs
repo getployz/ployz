@@ -37,9 +37,6 @@ pub const DEPLOYMENT_ID: &str = "ployz.deployment.id";
 pub const CREATION_KEY: &str = "ployz.creation.key";
 /// The rotation generation of a container's copy.
 pub const GEN: &str = "ployz.gen";
-/// Written empty on every container a Machine creates, so a label the image carries
-/// never says which container one replaces. Only the Machine's own record says that.
-pub const REPLACES: &str = "ployz.replaces";
 /// `true` on a container whose spec publishes no host port, else `false`. Written
 /// either way so a label the image carries can't decide it.
 pub const BRIDGE_IPV6: &str = "ployz.network.ipv6";
@@ -232,8 +229,8 @@ impl Stamp<'_> {
     }
 }
 
-/// Write which Deploy run, creation key and generation a container was made under, and
-/// [`REPLACES`] empty. A missing run or key leaves its label off.
+/// Write which Deploy run, creation key and generation a container was made under. A
+/// missing run or key leaves its label off.
 pub fn stamp_run(
     labels: &mut HashMap<String, String>,
     deployment: Option<&DeploymentLogId>,
@@ -247,7 +244,6 @@ pub fn stamp_run(
         labels.insert(CREATION_KEY.to_owned(), key.to_owned());
     }
     labels.insert(GEN.to_owned(), generation.to_string());
-    labels.insert(REPLACES.to_owned(), String::new());
 }
 
 /// The generation a container's labels record; [`Gen::FIRST`] when absent or unreadable.
@@ -275,7 +271,6 @@ mod tests {
             (DEPLOYMENT_ID, "ployz.deployment.id"),
             (CREATION_KEY, "ployz.creation.key"),
             (GEN, "ployz.gen"),
-            (REPLACES, "ployz.replaces"),
             (BRIDGE_IPV6, "ployz.network.ipv6"),
             (SEALED_ENV, "ployz.env.sealed"),
             (SYSTEM_MANAGED, "ployzd.managed"),
@@ -356,14 +351,13 @@ mod tests {
                 ("ployz.deployment.id", "deploy-7"),
                 ("ployz.creation.key", "plan:0"),
                 ("ployz.gen", "3"),
-                ("ployz.replaces", ""),
             ])
         );
         assert_eq!(generation(&labels), Gen::new(3));
-        // A spec's own label never names a container this one replaces.
-        let mut bare = map(&[(REPLACES, &"b".repeat(64))]);
+        let mut bare = HashMap::new();
         stamp_run(&mut bare, None, None, Gen::FIRST);
-        assert_eq!(bare, map(&[(GEN, "1"), (REPLACES, "")]));
+        assert_eq!(bare.len(), 1);
+        assert_eq!(generation(&bare), Gen::FIRST);
     }
 
     #[test]

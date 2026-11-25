@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
     ContainerId, ContainerRefusal, DeployWarning, ExecutionError, MachineAction, MachineId,
-    MachineName, QualifiedService, RemoveContainerPurpose, RpcError, RpcErrorCode,
+    MachineName, QualifiedService, RpcError, RpcErrorCode,
 };
 
 use super::machine_error;
@@ -121,32 +121,28 @@ impl<'a> Report<'a> {
             .map_or_else(|| id.to_string(), |name| name.to_string())
     }
 
-    /// A copy this run couldn't remove that was not In when it last read it: its own
-    /// new one, or one an ended run left. No proxy routes it once its Machine is back,
-    /// and the next Deploy removes it.
+    /// A copy this run couldn't remove that never went In: its own new one, or one an
+    /// ended run left. No proxy routes it once its Machine is back, and the next
+    /// Deploy removes it.
     pub(super) fn leave_unrouted(
         &self,
         progress: &Progress,
-        (service, machine_id, container_id): (&QualifiedService, MachineId, ContainerId),
-        purpose: RemoveContainerPurpose,
+        service: &QualifiedService,
+        machine_id: MachineId,
+        container_id: ContainerId,
         error: RpcError,
     ) {
         let (reason, _) = self.failed_on(machine_id, error);
-        self.name_left(
-            progress,
-            (service, machine_id, container_id),
-            purpose,
-            reason,
-        );
+        self.name_left(progress, service, machine_id, container_id, reason);
     }
 
-    /// A copy this run couldn't remove, for `reason`, which keeps running, with
-    /// `purpose` for the cleanup that retries its removal.
+    /// A copy this run couldn't remove, for `reason`, which keeps running.
     pub(super) fn name_left(
         &self,
         progress: &Progress,
-        (service, machine_id, container_id): (&QualifiedService, MachineId, ContainerId),
-        purpose: RemoveContainerPurpose,
+        service: &QualifiedService,
+        machine_id: MachineId,
+        container_id: ContainerId,
         reason: String,
     ) {
         progress.warn(DeployWarning::LeftRunning {
@@ -154,43 +150,28 @@ impl<'a> Report<'a> {
             container_id,
             machine: self.machine_name(&machine_id),
             reason,
-            purpose,
         });
     }
 
-    /// Names each copy a removal leaves on a Machine it could not reach, once. No new
-    /// copy reached that Machine either, so each one is a Retire.
+    /// Names each copy a removal leaves on a Machine it could not reach, once.
     pub(super) fn leave_unreached(&self, progress: &Progress, copies: &[cleanup::Copy]) {
         let mut named = self.unreached.lock().expect("unreached copies lock");
         for copy in copies {
             if named.insert(copy.container_id) {
-                self.leave_running(
-                    progress,
-                    copy,
-                    RemoveContainerPurpose::Retire,
-                    Left::Unreached,
-                );
+                self.leave_running(progress, copy, Left::Unreached);
             }
         }
     }
 
     /// A Machine that was cut off or powered off can route the copy again once
-    /// it is back, so the report names each one, with `purpose` for the cleanup
-    /// that retries its removal.
-    pub(super) fn leave_running(
-        &self,
-        progress: &Progress,
-        copy: &cleanup::Copy,
-        purpose: RemoveContainerPurpose,
-        left: Left,
-    ) {
+    /// it is back, so the report names each one.
+    pub(super) fn leave_running(&self, progress: &Progress, copy: &cleanup::Copy, left: Left) {
         let (reason, away) = self.explain(copy, left);
         progress.warn(DeployWarning::LeftRunning {
             service: copy.service.clone(),
             container_id: copy.container_id,
             machine: self.machine_name(&copy.machine_id),
             reason,
-            purpose,
         });
         for machine in away {
             progress.warn(DeployWarning::MixedAfterReturn {

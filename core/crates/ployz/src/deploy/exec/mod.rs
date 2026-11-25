@@ -6,13 +6,13 @@ use futures_util::{
     stream::FuturesUnordered,
 };
 use ployz_core::{
-    ContainerDetails, ContainerId, ContainerKind, ContainerLocator, ContainerUpdateOperation,
-    ContainerWant, CopyRotation, CreationKey, DependencyHealthFailure, DeployEvent, DeployWarning,
-    DeploymentLogId, Drain, ExecutionError, ExposedPort, FailedOperation, HealthFailure,
-    HealthVerdict, InPlaceChange, MachineAction, MachineId, Namespace, OperationPhase,
-    PortPublication, PullPolicy, QualifiedService, RegistryAuth, RemoveContainerPurpose,
-    ResolvedServiceSpec, RpcError, RpcErrorCode, ServiceId, ServiceName, ServiceOutcome, SlotKey,
-    StopOptions, TransportProtocol,
+    AnonymousVolumes, ContainerDetails, ContainerId, ContainerKind, ContainerLocator,
+    ContainerUpdateOperation, ContainerWant, CopyRotation, CreationKey, DependencyHealthFailure,
+    DeployEvent, DeployWarning, DeploymentLogId, Drain, ExecutionError, ExposedPort,
+    FailedOperation, HealthFailure, HealthVerdict, InPlaceChange, MachineAction, MachineId,
+    Namespace, OperationPhase, PortPublication, PullPolicy, QualifiedService, RegistryAuth,
+    RemoveContainerPurpose, ResolvedServiceSpec, RpcError, RpcErrorCode, ServiceId, ServiceName,
+    ServiceOutcome, SlotKey, StopOptions, TransportProtocol,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc::UnboundedSender;
@@ -25,7 +25,7 @@ use super::{
     schedule::{Action, Event, GroupRole, Schedule, Stage, Task, TaskKind},
 };
 
-use super::cleanup::{self, ACK_WAIT, EmptyPolicy};
+use super::cleanup::{self, ACK_WAIT};
 pub(super) use super::progress::Progress;
 
 mod gens;
@@ -791,7 +791,13 @@ impl<'a> PlanFacts<'a> {
                     .map(move |index| (*index, service))
             })
             .filter(|(index, _)| {
-                TaskKind::of(operation_at(operations, *index)) == TaskKind::Unroute
+                matches!(
+                    operation_at(operations, *index),
+                    DeployOperation::RemoveContainer {
+                        purpose: RemoveContainerPurpose::Rollout,
+                        ..
+                    }
+                )
             })
             .collect();
         Self {
@@ -951,18 +957,13 @@ async fn execute_operation<C: MachineOperations>(
             machine_id,
             container_id,
             purpose,
-            ..
+            anonymous_volumes,
         } => {
-            let empty = if TaskKind::of(operation) == TaskKind::Unroute {
-                EmptyPolicy::RequireOtherIn
-            } else {
-                EmptyPolicy::MayEmpty
-            };
             remove_container(
                 client,
                 index,
                 progress,
-                (machine_id, container_id, *purpose, empty),
+                (machine_id, container_id, *purpose, *anonymous_volumes),
                 shared,
                 cancellation,
             )
@@ -1112,8 +1113,8 @@ async fn stop<C: MachineOperations>(
     .map_err(|error| machine_error(MachineAction::StopContainer, error))
 }
 
-/// Remove a Container by its id, with its anonymous Volumes: an old hook, or a new
-/// copy that failed its health.
+/// Remove a Container by its id, keeping its anonymous Volumes: an old hook, or a new
+/// copy that failed its health, neither of which a copy replaced.
 async fn remove_by_id<C: MachineOperations>(
     client: &C,
     machine_id: &MachineId,
@@ -1126,7 +1127,7 @@ async fn remove_by_id<C: MachineOperations>(
             ContainerWant::Gone {
                 container: ContainerLocator::Id(*container_id),
                 drain,
-                anonymous_volumes: RemoveContainerPurpose::Rollout.into(),
+                anonymous_volumes: AnonymousVolumes::keep(),
             },
         )
         .await

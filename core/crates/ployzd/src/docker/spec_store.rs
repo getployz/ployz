@@ -209,6 +209,28 @@ impl MachineSpecStore {
         )))
     }
 
+    /// The Container this Machine recorded as made to take `container_id`'s place, if any.
+    pub async fn replaced_by(
+        &self,
+        container_id: &ContainerId,
+    ) -> Result<Option<ContainerId>, Error> {
+        let container_id = container_id.to_string();
+        let replacement = self
+            .run(move |connection| {
+                connection
+                    .query_row(
+                        "SELECT id FROM replacements WHERE replaces = ?1",
+                        [container_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()
+                    .map_err(Error::from)
+            })
+            .await?;
+        // A row this store wrote holds a Docker ID; one that doesn't parse names nothing.
+        Ok(replacement.and_then(|id| ContainerId::parse(id).ok()))
+    }
+
     /// This Machine's record of a copy's rotation, `None` when it never left Pending.
     pub async fn rotation(
         &self,
@@ -619,27 +641,12 @@ impl ConfigOperation<'_> {
             .await
     }
 
-    /// The Container recorded as made to take `container_id`'s place, if any.
+    /// [`MachineSpecStore::replaced_by`], read under the config lock.
     pub(super) async fn replacement(
         &mut self,
         container_id: &ContainerId,
     ) -> Result<Option<ContainerId>, Error> {
-        let container_id = container_id.to_string();
-        let replacement = self
-            .store
-            .run(move |connection| {
-                connection
-                    .query_row(
-                        "SELECT id FROM replacements WHERE replaces = ?1",
-                        [container_id],
-                        |row| row.get::<_, String>(0),
-                    )
-                    .optional()
-                    .map_err(Error::from)
-            })
-            .await?;
-        // A row this store wrote holds a Docker ID; one that doesn't parse names nothing.
-        Ok(replacement.and_then(|id| ContainerId::parse(id).ok()))
+        self.store.replaced_by(container_id).await
     }
 
     /// Point each listed slot with no holder at the listed Container holding its spec.
@@ -679,6 +686,11 @@ impl ConfigOperation<'_> {
                             params![restored.old, restored.new.as_str()],
                         )?;
                     }
+                    // A replacement record names the copy it replaced by ID too.
+                    transaction.execute(
+                        "UPDATE replacements SET replaces = ?2 WHERE replaces = ?1",
+                        params![restored.old, restored.new.as_str()],
+                    )?;
                     transaction.execute(
                         "UPDATE creations SET id = ?2 WHERE slot = ?1",
                         params![restored.slot, restored.new.as_str()],
@@ -704,7 +716,12 @@ impl ConfigOperation<'_> {
                     )?;
                     removed |= *table == SPEC_TABLE && rows > 0;
                 }
-                connection.execute("DELETE FROM creations WHERE id = ?1", [container_id])?;
+                connection.execute("DELETE FROM creations WHERE id = ?1", [&container_id])?;
+                // Nothing replaces a Container that is gone.
+                connection.execute(
+                    "DELETE FROM replacements WHERE replaces = ?1",
+                    [container_id],
+                )?;
                 if removed
                     && let Err(error) = referenced_config_names(connection)
                         .and_then(|retained| garbage_collect_config_files(&path, &retained))
@@ -1615,9 +1632,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_restored_copy_keeps_its_spec_and_rotation_under_its_new_id() {
+    async fn a_restored_copy_keeps_its_spec_rotation_and_replacement_under_its_new_id() {
         let copy = keyed_copy_in_rotation().await;
         let restored = other_id(&copy.id);
+        // A Container this Machine made to take the copy's place.
+        let replacement = ContainerId::parse("c".repeat(64)).unwrap();
+        connect(copy.runtime.spec_store_path_for_test())
+            .unwrap()
+            .execute(
+                "INSERT INTO replacements (id, replaces) VALUES (?1, ?2)",
+                params![replacement.as_str(), copy.id.as_str()],
+            )
+            .unwrap();
         for container in copy.containers.lock().unwrap().values_mut() {
             container
                 .as_object_mut()
@@ -1638,11 +1664,13 @@ mod tests {
             .expect("the restored copy is observed");
         assert_eq!(observed.resolved_spec, copy.spec);
         assert_eq!(observed.rotation(), &copy.rotation);
+        assert_eq!(observed.replaced_by, Some(replacement));
         let store = MachineSpecStore::open(copy.runtime.spec_store_path_for_test())
             .await
             .unwrap();
         assert_eq!(store.get(&restored).await.unwrap(), Some(copy.spec));
         assert_eq!(store.get(&copy.id).await.unwrap(), None);
+        assert_eq!(store.replaced_by(&copy.id).await.unwrap(), None);
     }
 
     /// A restore made the copy again under a new ID and never started it, and nothing
@@ -1832,7 +1860,7 @@ mod tests {
             .unwrap();
         copy.runtime
             .lifecycle()
-            .remove(&restored, false, true)
+            .remove(&restored, crate::docker::VolumeDisposal::Keep, true)
             .await
             .unwrap();
         let mut machine = machine();
@@ -1953,7 +1981,11 @@ mod tests {
             .write(&CopyRotation::Out)
             .await
             .unwrap();
-        runtime.lifecycle().remove(&id, false, true).await.unwrap();
+        runtime
+            .lifecycle()
+            .remove(&id, crate::docker::VolumeDisposal::Keep, true)
+            .await
+            .unwrap();
         let store = MachineSpecStore::open(runtime.spec_store_path_for_test())
             .await
             .unwrap();
@@ -1983,7 +2015,11 @@ mod tests {
         assert_eq!(rotation, Some(CopyRotation::Out));
         assert_eq!(Some(spec), store.get(&id).await.unwrap());
 
-        runtime.lifecycle().remove(&id, false, true).await.unwrap();
+        runtime
+            .lifecycle()
+            .remove(&id, crate::docker::VolumeDisposal::Keep, true)
+            .await
+            .unwrap();
         assert!(store.spec_and_rotation(&id).await.unwrap().is_none());
         assert_eq!(store.stopped_run(&id).await.unwrap(), None);
     }

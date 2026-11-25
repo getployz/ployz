@@ -7,8 +7,8 @@ use crate::deploy::progress::Progress;
 use crate::deploy::schedule::{ServiceGroup, Stage};
 use futures_util::future::join_all;
 use ployz_core::{
-    ContainerId, CopyRotation, ExecutionError, MachineAction, MachineId, QualifiedService,
-    RemoveContainerPurpose, RpcError, RpcErrorCode, ServiceName, UpdateOrder,
+    AnonymousVolumes, ContainerId, CopyRotation, ExecutionError, MachineAction, MachineId,
+    QualifiedService, RpcError, RpcErrorCode, ServiceName, UpdateOrder,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use tokio::time::Instant;
@@ -110,6 +110,9 @@ pub(super) async fn publish_group<C: MachineOperations>(
         .into_iter()
         .collect();
     let (mut outs, mut gone) = (Vec::new(), Vec::new());
+    // What each old copy's removal asks for its anonymous Volumes: they go only with a
+    // copy its Machine made to take its place that this Deploy keeps.
+    let mut asks = BTreeMap::new();
     let inspected = join_all(
         old.iter()
             .map(|(machine_id, container_id)| inspect(client, machine_id, container_id)),
@@ -117,7 +120,13 @@ pub(super) async fn publish_group<C: MachineOperations>(
     .await;
     for ((machine_id, container_id), inspected) in old.iter().zip(inspected) {
         let copy = match inspected {
-            Ok(details) => cleanup::Copy::observed(&details.container),
+            Ok(details) => {
+                asks.insert(
+                    *container_id,
+                    AnonymousVolumes::of(&details.container, |id| ids.contains(id)),
+                );
+                cleanup::Copy::observed(&details.container)
+            }
             Err(ExecutionError::Machine { error, .. }) if error.code == RpcErrorCode::NotFound => {
                 continue;
             }
@@ -128,12 +137,7 @@ pub(super) async fn publish_group<C: MachineOperations>(
                     container_id: *container_id,
                     rotation: CopyRotation::Pending,
                 };
-                shared.report.leave_running(
-                    progress,
-                    &copy,
-                    RemoveContainerPurpose::Rollout,
-                    left_by(error),
-                );
+                shared.report.leave_running(progress, &copy, left_by(error));
                 continue;
             }
         };
@@ -149,12 +153,9 @@ pub(super) async fn publish_group<C: MachineOperations>(
             && let Some(routing) =
                 gaps_still_routing(client, &copy, gapped.machines.iter().copied()).await
         {
-            shared.report.leave_running(
-                progress,
-                &copy,
-                RemoveContainerPurpose::Rollout,
-                Left::NotConfirmed(routing),
-            );
+            shared
+                .report
+                .leave_running(progress, &copy, Left::NotConfirmed(routing));
             continue;
         }
         // The owner refuses this Out (LastIn) until its own view lists a new copy.
@@ -181,9 +182,7 @@ pub(super) async fn publish_group<C: MachineOperations>(
                 Err(error) => Some(Left::Failed(error)),
             };
             if let Some(left) = left {
-                shared
-                    .report
-                    .leave_running(progress, &copy, RemoveContainerPurpose::Rollout, left);
+                shared.report.leave_running(progress, &copy, left);
                 continue;
             }
             listed_on.insert(copy.machine_id);
@@ -205,23 +204,17 @@ pub(super) async fn publish_group<C: MachineOperations>(
         match sent {
             Ok(None) => unlisting.push(copy),
             Ok(Some(refusal)) => {
-                shared.report.leave_running(
-                    progress,
-                    &copy,
-                    RemoveContainerPurpose::Rollout,
-                    Left::Refused(refusal),
-                );
+                shared
+                    .report
+                    .leave_running(progress, &copy, Left::Refused(refusal));
             }
             Err(error) => {
                 unconfirmed.get_or_insert_with(|| {
                     machine_error(MachineAction::StopContainer, error.clone())
                 });
-                shared.report.leave_running(
-                    progress,
-                    &copy,
-                    RemoveContainerPurpose::Rollout,
-                    Left::Failed(error),
-                );
+                shared
+                    .report
+                    .leave_running(progress, &copy, Left::Failed(error));
             }
         }
     }
@@ -245,12 +238,7 @@ pub(super) async fn publish_group<C: MachineOperations>(
             None => gone.append(&mut unlisting),
             Some(left) => {
                 for copy in &unlisting {
-                    shared.report.leave_running(
-                        progress,
-                        copy,
-                        RemoveContainerPurpose::Rollout,
-                        left.clone(),
-                    );
+                    shared.report.leave_running(progress, copy, left.clone());
                 }
             }
         }
@@ -259,16 +247,17 @@ pub(super) async fn publish_group<C: MachineOperations>(
         }
     }
     // Each Gone drains on its own Machine; they overlap and are all reported.
-    let removed = join_all(
-        gone.iter()
-            .map(|copy| cleanup::remove(client, copy, RemoveContainerPurpose::Rollout)),
-    )
+    let removed = join_all(gone.iter().map(|copy| {
+        let ask = asks
+            .get(&copy.container_id)
+            .copied()
+            .unwrap_or(AnonymousVolumes::keep());
+        cleanup::remove(client, copy, ask)
+    }))
     .await;
     for (copy, removed) in gone.iter().zip(removed) {
         if let Some(left) = left_unless_done(removed.map(cleanup::Rotated::from)) {
-            shared
-                .report
-                .leave_running(progress, copy, RemoveContainerPurpose::Rollout, left);
+            shared.report.leave_running(progress, copy, left);
         }
     }
     match (unconfirmed, gapped) {

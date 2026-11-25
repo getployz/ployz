@@ -586,6 +586,52 @@ async fn own_superseded_copies_retire_after_in() {
     assert!(client.removed.is_empty());
 }
 
+/// This Machine's own record of which copy replaced `observed`, as its daemon reports it.
+fn replaced_by(mut observed: ContainerObservation, by: char) -> ContainerObservation {
+    observed
+        .try_update(|parts| parts.replaced_by = Some(container_id(by)))
+        .unwrap();
+    observed
+}
+
+#[tokio::test(start_paused = true)]
+async fn only_the_copy_the_started_one_replaced_loses_its_anonymous_volumes() {
+    let joiner = machine('1', "joiner");
+    let founder = machine('f', "founder");
+    let identity = qualified("app", "api");
+    let service = |observed| global_service(identity.clone(), 'a', Placement::default(), observed);
+    let source = service(rotated(running_on(&founder, 'b'), CopyRotation::In));
+    // `a` is the copy this Machine made `c` to replace. `d` is an unrelated leftover that
+    // a copy no longer here once replaced, and `e` one whose daemon keeps no record.
+    let leftovers = [
+        replaced_by(running_on(&joiner, 'a'), 'c'),
+        replaced_by(running_on(&joiner, 'd'), '9'),
+        running_on(&joiner, 'e'),
+    ];
+    let mut client = fake(&joiner, vec![source]);
+    client.target_services = Some(
+        std::iter::once(running_on(&joiner, 'c'))
+            .chain(leftovers)
+            .map(service)
+            .collect(),
+    );
+    client.run_result = Ok(Some(container_id('c')));
+    catch_up(&mut client, &joiner).await.unwrap();
+    let asks = client
+        .volume_asks
+        .iter()
+        .map(|(id, ask)| (*id, ask.replaced_by()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        asks,
+        std::collections::BTreeMap::from([
+            (container_id('a'), Some(container_id('c'))),
+            (container_id('d'), None),
+            (container_id('e'), None),
+        ])
+    );
+}
+
 fn unconfirmed(ids: &[MachineId]) -> cleanup::Unconfirmed {
     cleanup::Unconfirmed {
         machines: ids.to_vec(),
@@ -1112,6 +1158,8 @@ struct FakeCatchUpClient {
     bring_in: FakeBringIn,
     brought_in: Vec<Copy>,
     retired: Vec<Copy>,
+    /// What each retire asked of the copy's anonymous Volumes, by copy.
+    volume_asks: Vec<(ContainerId, AnonymousVolumes)>,
     removed: Vec<Copy>,
     retire_step: fn() -> Rotated,
     remove_step: fn() -> Removal,
@@ -1140,6 +1188,7 @@ fn fake(joiner: &Machine, services: Vec<ServiceObservation>) -> FakeCatchUpClien
         bring_in: FakeBringIn::In,
         brought_in: Vec::new(),
         retired: Vec::new(),
+        volume_asks: Vec::new(),
         removed: Vec::new(),
         retire_step: || Rotated::Done,
         remove_step: || Removal::Removed,
@@ -1232,10 +1281,12 @@ impl SlotIo for FakeCatchUpClient {
     async fn retire_copy(
         &mut self,
         copy: &Copy,
-        _purpose: RemoveContainerPurpose,
+        anonymous_volumes: AnonymousVolumes,
         _cancel: &tokio_util::sync::CancellationToken,
     ) -> Result<Rotated, RpcError> {
         self.retired.push(copy.clone());
+        self.volume_asks
+            .push((copy.container_id, anonymous_volumes));
         Ok((self.retire_step)())
     }
 
@@ -1284,19 +1335,16 @@ impl CatchUpClient for FakeCatchUpClient {
         machine_id: &MachineId,
         new: NewContainer,
         _cancel: &tokio_util::sync::CancellationToken,
-    ) -> Result<Option<Placed>, RpcError> {
+    ) -> Result<Option<Copy>, RpcError> {
         assert_eq!(machine_id, &self.machine_id);
         let service =
             QualifiedService::new(new.slot.namespace.clone(), new.resolved_spec.name.clone());
         self.run_calls.push(new);
-        Ok(self.run_result.clone()?.map(|container_id| Placed {
-            copy: Copy {
-                machine_id: self.machine_id,
-                service,
-                container_id,
-                rotation: CopyRotation::Pending,
-            },
-            undo: RemoveContainerPurpose::Rollout,
+        Ok(self.run_result.clone()?.map(|container_id| Copy {
+            machine_id: self.machine_id,
+            service,
+            container_id,
+            rotation: CopyRotation::Pending,
         }))
     }
 
@@ -1338,11 +1386,7 @@ impl CatchUpClient for FakeCatchUpClient {
         })
     }
 
-    async fn remove_copy(
-        &mut self,
-        copy: &Copy,
-        _purpose: RemoveContainerPurpose,
-    ) -> Result<Removal, RpcError> {
+    async fn remove_copy(&mut self, copy: &Copy) -> Result<Removal, RpcError> {
         self.removed.push(copy.clone());
         Ok((self.remove_step)())
     }
@@ -1467,7 +1511,7 @@ impl SlotIo for FakeSlot {
     async fn retire_copy(
         &mut self,
         copy: &Copy,
-        _purpose: RemoveContainerPurpose,
+        _anonymous_volumes: AnonymousVolumes,
         _cancel: &CancellationToken,
     ) -> Result<Rotated, RpcError> {
         self.retired.push(copy.container_id);
@@ -1496,7 +1540,7 @@ async fn placed(
     slot: &mut FakeSlot,
     joiner: &Machine,
     origin: &ContainerObservation,
-) -> Result<Option<Placed>, RpcError> {
+) -> Result<Option<Copy>, RpcError> {
     place_slot(
         slot,
         &joiner.id,
@@ -1531,14 +1575,9 @@ async fn a_slot_whose_copy_runs_here_is_adopted_not_recreated() {
     let origin = running_on(&peer, 'a');
     let here = running_on(&joiner, 'b');
     let mut slot = FakeSlot::listing(vec![here.clone()]);
-    let placed = placed(&mut slot, &joiner, &origin).await.unwrap().unwrap();
-    assert_eq!(placed.copy.container_id, here.container_id);
+    let copy = placed(&mut slot, &joiner, &origin).await.unwrap().unwrap();
+    assert_eq!(copy.container_id, here.container_id);
     assert_eq!(slot.ensured, ["existing"]);
-    assert_eq!(
-        placed.undo,
-        RemoveContainerPurpose::Retire,
-        "a copy an earlier attempt left keeps its anonymous Volumes if it does not come In"
-    );
 }
 
 #[tokio::test]

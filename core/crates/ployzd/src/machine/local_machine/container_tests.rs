@@ -100,7 +100,11 @@ async fn fresh_service_revocation_preserves_management_and_trusted_ingress() {
         .unwrap();
     runtime
         .lifecycle()
-        .remove(&existing.container_id, false, false)
+        .remove(
+            &existing.container_id,
+            crate::docker::VolumeDisposal::Keep,
+            false,
+        )
         .await
         .unwrap();
     assert!(fake.existing_container.lock().unwrap().is_none());
@@ -389,11 +393,11 @@ mod plan {
     use std::collections::BTreeMap;
 
     use ployz_core::{
-        Admission, ContainerAddress, ContainerId, ContainerKind, ContainerLocator, ContainerNow,
-        ContainerObservation, ContainerObservationParts, ContainerRefusalReason,
-        ContainerRuntimeObservation, ContainerWant, CreationKey, Drain, HealthObservation,
-        LocalMachinePhase, MachineId, Namespace, NewContainer, ResolvedServiceSpec, RunRotation,
-        RunTarget, ServiceName, SlotKey, StopOptions,
+        Admission, AnonymousVolumes, ContainerAddress, ContainerId, ContainerKind,
+        ContainerLocator, ContainerNow, ContainerObservation, ContainerObservationParts,
+        ContainerRefusalReason, ContainerRuntimeObservation, ContainerWant, CreationKey, Drain,
+        HealthObservation, LocalMachinePhase, MachineId, Namespace, NewContainer,
+        ResolvedServiceSpec, RunRotation, RunTarget, ServiceName, SlotKey, StopOptions,
     };
     use serde_json::json;
 
@@ -450,6 +454,7 @@ mod plan {
                 run: None,
                 log_driver: None,
                 admission: None,
+                replaced_by: None,
             })
             .unwrap(),
         )
@@ -532,11 +537,17 @@ mod plan {
         }
     }
 
+    /// A removal that names `b` as the copy that took this one's place.
+    fn named() -> AnonymousVolumes {
+        serde_json::from_value(json!({"anonymous_volumes": "remove", "replaced_by": id('b')}))
+            .unwrap()
+    }
+
     fn gone() -> ContainerWant {
         ContainerWant::Gone {
             container: ContainerLocator::Key(slot()),
             drain: Drain::DEFAULT,
-            anonymous_volumes: ployz_core::RemoveContainerPurpose::Rollout.into(),
+            anonymous_volumes: named(),
         }
     }
 
@@ -575,14 +586,14 @@ mod plan {
                 ContainerWant::Gone {
                     container: ContainerLocator::Id(id('a')),
                     drain: Drain::DEFAULT,
-                    anonymous_volumes: ployz_core::RemoveContainerPurpose::Retire.into(),
+                    anonymous_volumes: AnonymousVolumes::keep(),
                 },
                 ContainerNow::Absent {
                     of: ContainerLocator::Id(id('a')),
                 },
                 ContainerStep::Remove {
                     id: id('a'),
-                    anonymous_volumes: ployz_core::RemoveContainerPurpose::Retire.into(),
+                    anonymous_volumes: AnonymousVolumes::keep(),
                     logs_to_read: false,
                 },
             ),
@@ -592,7 +603,7 @@ mod plan {
                 ContainerStep::StopThenRemove {
                     id: id('a'),
                     drain: Drain::DEFAULT,
-                    anonymous_volumes: ployz_core::RemoveContainerPurpose::Rollout.into(),
+                    anonymous_volumes: named(),
                     logs_to_read: true,
                 },
             ),
@@ -601,7 +612,7 @@ mod plan {
                 exited("img"),
                 ContainerStep::Remove {
                     id: id('a'),
-                    anonymous_volumes: ployz_core::RemoveContainerPurpose::Rollout.into(),
+                    anonymous_volumes: named(),
                     logs_to_read: true,
                 },
             ),
@@ -636,7 +647,7 @@ mod plan {
         let discarded = |drain| ContainerWant::Gone {
             container: ContainerLocator::Key(slot()),
             drain,
-            anonymous_volumes: ployz_core::RemoveContainerPurpose::Rollout.into(),
+            anonymous_volumes: named(),
         };
         let logs_to_read = |want, now: ContainerNow| {
             let step = plan_container(want, &now, participating, Admission::Free);
@@ -764,7 +775,7 @@ mod plan {
                 plan_container(gone(), &exited("img"), &phase, Admission::Free),
                 ContainerStep::Remove {
                     id: id('a'),
-                    anonymous_volumes: ployz_core::RemoveContainerPurpose::Rollout.into(),
+                    anonymous_volumes: named(),
                     logs_to_read: true,
                 }
             );
@@ -1155,7 +1166,7 @@ mod settled {
                     .ensure_full_access(ContainerWant::Gone {
                         container: ployz_core::ContainerLocator::Key(new.slot),
                         drain: ployz_core::Drain::NONE,
-                        anonymous_volumes: ployz_core::RemoveContainerPurpose::Rollout.into(),
+                        anonymous_volumes: ployz_core::AnonymousVolumes::keep(),
                     })
                     .await
             }
@@ -1224,7 +1235,7 @@ mod settled {
                     .ensure_full_access(ContainerWant::Gone {
                         container: ployz_core::ContainerLocator::Key(new.slot),
                         drain: ployz_core::Drain::NONE,
-                        anonymous_volumes: ployz_core::RemoveContainerPurpose::Rollout.into(),
+                        anonymous_volumes: ployz_core::AnonymousVolumes::keep(),
                     })
                     .await
             }
@@ -2012,7 +2023,7 @@ mod stopped_on_request {
         fixture
             .runtime
             .lifecycle()
-            .remove(&fixture.id, true, false)
+            .remove(&fixture.id, crate::docker::VolumeDisposal::Keep, false)
             .await
             .unwrap();
         assert_eq!(
@@ -2052,7 +2063,7 @@ mod stopped_on_request {
             ContainerWant::Gone {
                 container: ContainerLocator::Id(fixture.id),
                 drain,
-                anonymous_volumes: ployz_core::RemoveContainerPurpose::Rollout.into(),
+                anonymous_volumes: ployz_core::AnonymousVolumes::keep(),
             }
         }
 
@@ -2560,7 +2571,7 @@ mod reserved_lifecycle {
         ContainerWant::Gone {
             container: ContainerLocator::Id(id),
             drain: Drain::NONE,
-            anonymous_volumes: ployz_core::RemoveContainerPurpose::Rollout.into(),
+            anonymous_volumes: ployz_core::AnonymousVolumes::keep(),
         }
     }
 
@@ -2668,16 +2679,15 @@ mod anonymous_volumes {
     use std::{collections::BTreeMap, path::PathBuf, sync::Mutex};
 
     use ployz_core::{
-        ContainerId, ContainerKind, ContainerLocator, ContainerNow, ContainerWant, CopyRotation,
-        DeploymentLogId, Drain, EnsuredContainer, MachineName, NewContainer,
-        RemoveContainerPurpose, RunRotation, RunTarget, ServiceName, StopOptions, labels,
+        AnonymousVolumes, ContainerId, ContainerKind, ContainerLocator, ContainerNow,
+        ContainerWant, CopyRotation, DeploymentLogId, Drain, EnsuredContainer, MachineName,
+        NewContainer, RunRotation, RunTarget, ServiceName, StopOptions,
     };
 
     use super::*;
-    use crate::docker::test_support::{FakeDocker, fake_runtime_with, image_id, spec_with_sources};
+    use crate::docker::test_support::{FakeDocker, fake_runtime_with, spec_with_sources};
 
     use ContainerKind::{PreDeployHook as Hook, ServiceContainer as Copy};
-    use RemoveContainerPurpose::{Retire, Rollout};
 
     struct Machine {
         local: LocalMachine,
@@ -2801,16 +2811,26 @@ mod anonymous_volumes {
                 .unwrap();
         }
 
-        /// Take `id` out of routing and remove it for `purpose`, as cleanup does, and
-        /// answer whether its anonymous volumes went too.
-        async fn remove(&self, id: ContainerId, purpose: RemoveContainerPurpose) -> bool {
+        /// Take `id` out of routing and remove it, as cleanup does, naming `replaced_by`
+        /// as the copy that took its place, and answer whether its anonymous volumes went
+        /// too. Naming none asks to keep them.
+        async fn remove(&self, id: ContainerId, replaced_by: Option<ContainerId>) -> bool {
             self.rotate(id, CopyRotation::Out).await;
+            // The wire form, since a caller may name any copy.
+            let anonymous_volumes: AnonymousVolumes = match replaced_by {
+                Some(by) => serde_json::from_value(serde_json::json!({
+                    "anonymous_volumes": "remove",
+                    "replaced_by": by,
+                }))
+                .unwrap(),
+                None => AnonymousVolumes::keep(),
+            };
             let reply = self
                 .local
                 .ensure_full_access(ContainerWant::Gone {
                     container: ContainerLocator::Id(id),
                     drain: Drain::NONE,
-                    anonymous_volumes: purpose.into(),
+                    anonymous_volumes,
                 })
                 .await
                 .unwrap();
@@ -2844,14 +2864,18 @@ mod anonymous_volumes {
     }
 
     #[tokio::test]
-    async fn a_removal_with_nothing_in_its_slot_keeps_them() {
+    async fn a_removal_naming_a_copy_that_replaced_nothing_keeps_them() {
         let machine = Machine::new().await;
         // A copy taken off its Server, an earlier run's Pending copy, and an old hook
-        // removed before the new hook is made: nothing was made to replace any of them.
+        // removed before the new hook is made: nothing was made to replace any of them,
+        // whatever copy the removal names.
         for (kind, key) in [(Copy, "copy"), (Hook, "hook")] {
             let old = machine.run(("api", kind), key, None).await;
+            let beside = machine
+                .run(("api", kind), &format!("{key}-beside"), None)
+                .await;
             assert!(
-                !machine.remove(old, Rollout).await,
+                !machine.remove(old, Some(beside)).await,
                 "the {key}'s anonymous volumes went with nothing in its place"
             );
         }
@@ -2859,12 +2883,12 @@ mod anonymous_volumes {
     }
 
     #[tokio::test]
-    async fn a_running_replacement_in_its_slot_takes_them() {
+    async fn a_removal_naming_its_running_replacement_takes_them() {
         let machine = Machine::new().await;
         let old = machine.run(("api", Copy), "old", None).await;
-        machine.run(("api", Copy), "new", Some(old)).await;
+        let new = machine.run(("api", Copy), "new", Some(old)).await;
 
-        assert!(machine.remove(old, Rollout).await);
+        assert!(machine.remove(old, Some(new)).await);
         machine.finish();
     }
 
@@ -2875,9 +2899,26 @@ mod anonymous_volumes {
         let old = machine.run(("api", Copy), "old", None).await;
         machine.rotate(old, held()).await;
         machine.stop(old).await;
-        machine.run(("api", Copy), "new", Some(old)).await;
+        let new = machine.run(("api", Copy), "new", Some(old)).await;
 
-        assert!(machine.remove(old, Rollout).await);
+        assert!(machine.remove(old, Some(new)).await);
+        machine.finish();
+    }
+
+    #[tokio::test]
+    async fn a_removal_naming_a_copy_other_than_its_recorded_replacement_keeps_them() {
+        let machine = Machine::new().await;
+        // `b` was made to replace `a`, and `c` is an unrelated copy beside them, as a
+        // scale-down that keeps only `c` finds them.
+        let a = machine.run(("api", Copy), "a", None).await;
+        let b = machine.run(("api", Copy), "b", Some(a)).await;
+        let c = machine.run(("api", Copy), "c", None).await;
+
+        assert!(
+            !machine.remove(a, Some(c)).await,
+            "a copy that replaced nothing freed a's data"
+        );
+        assert!(!machine.remove(b, Some(c)).await);
         machine.finish();
     }
 
@@ -2890,14 +2931,13 @@ mod anonymous_volumes {
         let new = machine.run(("api", Copy), "new", Some(first)).await;
 
         assert!(
-            !machine.remove(second, Rollout).await,
+            !machine.remove(second, Some(new)).await,
             "a copy made to replace another took this one's place"
         );
-        // Undoing the new copy while the old one still runs: the old one replaces nothing.
+        // Undoing a later copy while the old one still runs: the old one replaces nothing.
         let undone = machine.run(("api", Copy), "undone", Some(first)).await;
-        assert!(!machine.remove(undone, Rollout).await);
-        assert!(machine.remove(first, Rollout).await);
-        assert!(!machine.remove(new, Rollout).await);
+        assert!(!machine.remove(undone, Some(first)).await);
+        assert!(machine.remove(first, Some(new)).await);
         machine.finish();
     }
 
@@ -2907,11 +2947,11 @@ mod anonymous_volumes {
         let old = machine.run(("api", Copy), "old", None).await;
         let first = machine.run(("api", Copy), "first", Some(old)).await;
         // A second copy names the same old one, then the first copy goes.
-        machine.run(("api", Copy), "second", Some(old)).await;
-        machine.remove(first, Rollout).await;
+        let second = machine.run(("api", Copy), "second", Some(old)).await;
+        machine.remove(first, None).await;
 
         assert!(
-            !machine.remove(old, Rollout).await,
+            !machine.remove(old, Some(second)).await,
             "a second copy made for a slot already taken freed the old copy's data"
         );
         machine.finish();
@@ -2920,11 +2960,13 @@ mod anonymous_volumes {
     #[tokio::test]
     async fn a_replacement_of_another_service_or_kind_keeps_them() {
         let machine = Machine::new().await;
-        let old = machine.run(("api", Copy), "old", None).await;
-        machine.run(("web", Copy), "web", Some(old)).await;
-        machine.run(("api", Hook), "hook", Some(old)).await;
-
-        assert!(!machine.remove(old, Rollout).await);
+        for (replacement, key) in [(("web", Copy), "web"), (("api", Hook), "hook")] {
+            let old = machine
+                .run(("api", Copy), &format!("{key}-old"), None)
+                .await;
+            let new = machine.run(replacement, key, Some(old)).await;
+            assert!(!machine.remove(old, Some(new)).await, "{key}");
+        }
         machine.finish();
     }
 
@@ -2933,15 +2975,15 @@ mod anonymous_volumes {
         let machine = Machine::new().await;
         // A replacement that never came In, and one taken Out while it still runs.
         let pending = machine.run(("api", Copy), "pending", None).await;
-        machine
+        let new = machine
             .create(("api", Copy), "pending-new", Some(pending))
             .await;
-        assert!(!machine.remove(pending, Rollout).await);
+        assert!(!machine.remove(pending, Some(new)).await);
 
         let out = machine.run(("api", Copy), "out", None).await;
         let new = machine.run(("api", Copy), "out-new", Some(out)).await;
         machine.rotate(new, CopyRotation::Out).await;
-        assert!(!machine.remove(out, Rollout).await);
+        assert!(!machine.remove(out, Some(new)).await);
         machine.finish();
     }
 
@@ -2959,7 +3001,7 @@ mod anonymous_volumes {
             .withdraw_locked(new)
             .await;
 
-        assert!(!machine.remove(old, Rollout).await);
+        assert!(!machine.remove(old, Some(new)).await);
         machine.finish();
     }
 
@@ -2972,29 +3014,13 @@ mod anonymous_volumes {
             .await;
         machine.rotate(new, held()).await;
         machine.stop(new).await;
-        assert!(!machine.remove(stopped, Rollout).await);
+        assert!(!machine.remove(stopped, Some(new)).await);
 
-        // Cleanup acting on a Rollout it decided before the new copy was removed.
+        // A scale-down that removes the replacement first, then the copy it replaced.
         let left = machine.run(("api", Copy), "left", None).await;
         let removed = machine.run(("api", Copy), "left-new", Some(left)).await;
-        machine.remove(removed, Rollout).await;
-        assert!(!machine.remove(left, Rollout).await);
-        machine.finish();
-    }
-
-    #[tokio::test]
-    async fn a_label_the_image_carries_names_no_copy_it_replaces() {
-        let machine = Machine::new().await;
-        let old = machine.run(("api", Copy), "old", None).await;
-        // The next copy's image says it replaces `old`; the request names nothing.
-        let image = spec_with_sources(vec![]).container.image;
-        machine.fake.image_labels.lock().unwrap().insert(
-            image_id(&image),
-            BTreeMap::from([(labels::REPLACES.to_owned(), old.to_string())]),
-        );
-        machine.run(("api", Copy), "new", None).await;
-
-        assert!(!machine.remove(old, Rollout).await);
+        machine.remove(removed, None).await;
+        assert!(!machine.remove(left, Some(removed)).await);
         machine.finish();
     }
 
@@ -3002,20 +3028,20 @@ mod anonymous_volumes {
     async fn a_replacement_on_another_server_keeps_them() {
         let (here, there) = (Machine::new().await, Machine::new().await);
         let old = here.run(("api", Copy), "old", None).await;
-        there.run(("api", Copy), "moved", Some(old)).await;
+        let moved = there.run(("api", Copy), "moved", Some(old)).await;
 
-        assert!(!here.remove(old, Rollout).await);
+        assert!(!here.remove(old, Some(moved)).await);
         here.finish();
         there.finish();
     }
 
     #[tokio::test]
-    async fn a_removal_asked_to_keep_them_keeps_them_beside_its_replacement() {
+    async fn a_removal_that_names_no_copy_keeps_them_beside_its_replacement() {
         let machine = Machine::new().await;
         let old = machine.run(("api", Copy), "old", None).await;
         machine.run(("api", Copy), "new", Some(old)).await;
 
-        assert!(!machine.remove(old, Retire).await);
+        assert!(!machine.remove(old, None).await);
         machine.finish();
     }
 }

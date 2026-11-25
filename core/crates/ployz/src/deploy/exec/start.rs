@@ -10,12 +10,12 @@ use crate::deploy::machine_calls::SlotPolicy;
 use crate::deploy::machine_calls::{Outstanding, RESTART_WAIT, RestartTolerant};
 use crate::deploy::progress::Progress;
 use ployz_core::{
-    AnswerWhen, ContainerId, ContainerKind, ContainerLocator, ContainerNow, ContainerRefusalReason,
-    ContainerWant, CopyRotation, CreationKey, DeploymentLogId, Drain,
+    AnonymousVolumes, AnswerWhen, ContainerId, ContainerKind, ContainerLocator, ContainerNow,
+    ContainerRefusalReason, ContainerWant, CopyRotation, CreationKey, DeploymentLogId, Drain,
     ENSURE_PINNED_CONTAINER_CAPABILITY, EnsuredContainer, ExecutionError, Gen, HealthVerdict,
     ImageDigest, LastRun, MachineAction, MachineId, Namespace, NewContainer, OperationPhase,
-    OutOfMemory, QualifiedService, RemoveContainerPurpose, ResolvedServiceSpec, RpcError,
-    RpcErrorCode, RunRotation, RunTarget, SlotKey, error_chain,
+    OutOfMemory, QualifiedService, ResolvedServiceSpec, RpcError, RpcErrorCode, RunRotation,
+    RunTarget, SlotKey, error_chain,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -36,7 +36,7 @@ pub(super) async fn discard_new<C: MachineOperations>(
         machine_id,
         ContainerLocator::Id(container_id),
         Drain::NONE,
-        RemoveContainerPurpose::Rollout,
+        AnonymousVolumes::keep(),
         None,
     )
     .await;
@@ -46,12 +46,9 @@ pub(super) async fn discard_new<C: MachineOperations>(
         Ok(cleanup::Gone::Refused(_)) => return running(),
         Err(error) => {
             if let Some(service) = service {
-                shared.report.leave_unrouted(
-                    progress,
-                    (service, *machine_id, container_id),
-                    RemoveContainerPurpose::Rollout,
-                    error,
-                );
+                shared
+                    .report
+                    .leave_unrouted(progress, service, *machine_id, container_id, error);
             }
             return running();
         }
@@ -67,7 +64,7 @@ pub(super) async fn discard_new<C: MachineOperations>(
                 client,
                 &copy,
                 EmptyPolicy::MayEmpty,
-                RemoveContainerPurpose::Rollout,
+                AnonymousVolumes::keep(),
                 cancellation,
             )
             .await
@@ -92,9 +89,7 @@ pub(super) async fn discard_new<C: MachineOperations>(
             }
         }
         (None, Some(left)) => {
-            shared
-                .report
-                .leave_running(progress, &copy, RemoveContainerPurpose::Rollout, left);
+            shared.report.leave_running(progress, &copy, left);
             running()
         }
         (Some(run), Some(left)) => {
@@ -109,19 +104,13 @@ pub(super) async fn discard_new<C: MachineOperations>(
 /// In or Held, which the run's runner may have made it after losing its claim: that
 /// copy serves, so it stays, named because it serves beside this Deploy's new copies.
 /// One that stays for any other reason is named too, and the Deploy goes on without it.
-///
-/// The Gone undoes the ended run's own attempt, as that run would have, so it takes the
-/// anonymous Volumes. A copy it leaves may have come In and served since, so the cleanup
-/// that retries it keeps them.
 pub(super) async fn remove_stray<C: MachineOperations>(
     client: &C,
     progress: &Progress,
     shared: &Shared<'_>,
-    stray: (&QualifiedService, &MachineId, ContainerId),
+    (service, machine_id, container_id): (&QualifiedService, &MachineId, ContainerId),
     cancellation: &CancellationToken,
 ) {
-    let (service, machine_id, container_id) = stray;
-    let stray = (service, *machine_id, container_id);
     let removed = within_restart(
         machine_id,
         cleanup::gone(
@@ -129,15 +118,14 @@ pub(super) async fn remove_stray<C: MachineOperations>(
             machine_id,
             ContainerLocator::Id(container_id),
             Drain::NONE,
-            RemoveContainerPurpose::Rollout,
+            AnonymousVolumes::keep(),
             Some(RESTART_WAIT),
         ),
     );
-    let retire = RemoveContainerPurpose::Retire;
     let answer = tokio::select! {
         answer = removed => answer,
         () = cancellation.cancelled() => {
-            shared.report.name_left(progress, stray, retire, "interrupted".into());
+            shared.report.name_left(progress, service, *machine_id, container_id, "interrupted".into());
             return;
         }
     };
@@ -146,8 +134,9 @@ pub(super) async fn remove_stray<C: MachineOperations>(
         Ok(cleanup::Gone::InRotation { .. }) => {
             shared.report.name_left(
                 progress,
-                stray,
-                retire,
+                service,
+                *machine_id,
+                container_id,
                 "it came into routing after this deploy planned".into(),
             );
             return;
@@ -155,7 +144,9 @@ pub(super) async fn remove_stray<C: MachineOperations>(
         Ok(cleanup::Gone::Refused(refusal)) => refusal.into_error(),
         Err(error) => error,
     };
-    shared.report.leave_unrouted(progress, stray, retire, error);
+    shared
+        .report
+        .leave_unrouted(progress, service, *machine_id, container_id, error);
 }
 
 /// Why a move's replacement never served, and whether none of it is left on its
@@ -347,7 +338,7 @@ async fn emptied<C: CopyLifecycle>(
     let want = ContainerWant::Gone {
         container: ContainerLocator::Key(slot),
         drain: Drain::NONE,
-        anonymous_volumes: RemoveContainerPurpose::Rollout.into(),
+        anonymous_volumes: AnonymousVolumes::keep(),
     };
     let gone = client.ensure_unsettled(machine_id, want, Some(RESTART_WAIT));
     match tokio::time::timeout(RESTART_WAIT, gone).await {
@@ -371,7 +362,7 @@ pub(super) enum FailedStart {
 /// Who made the Container a start answered with.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Origin {
-    /// This run made it, so undoing the start removes it with its anonymous Volumes.
+    /// This run made it, so undoing the start removes it.
     Made,
     /// A Global start found a running Container of its spec in the slot, or could not
     /// rule one out, and took it over. It may predate this run, so undoing the start
@@ -526,7 +517,7 @@ pub(super) async fn discard_attempt<C: MachineOperations>(
         ContainerWant::Gone {
             container: ContainerLocator::Key(slot),
             drain: Drain::NONE,
-            anonymous_volumes: RemoveContainerPurpose::Rollout.into(),
+            anonymous_volumes: AnonymousVolumes::keep(),
         },
     );
     within_restart(machine_id, discarded).await.map(|_| ())

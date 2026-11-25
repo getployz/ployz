@@ -59,10 +59,31 @@ impl Departure {
     }
 }
 
+/// What a removal does with the Container's anonymous volumes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VolumeDisposal {
+    /// They stay.
+    Keep,
+    /// They go when this Machine recorded the named Container as made to replace this one,
+    /// and it still runs in the slot (see [`Lifecycle::replaced`]).
+    ReplacedBy(ContainerId),
+    /// They go with a system Container, whose spec is the daemon's own.
+    System,
+}
+
+impl From<ployz_core::AnonymousVolumes> for VolumeDisposal {
+    fn from(asked: ployz_core::AnonymousVolumes) -> Self {
+        asked.replaced_by().map_or(Self::Keep, Self::ReplacedBy)
+    }
+}
+
 /// How a Container leaves through [`Lifecycle::retire`].
 pub(super) enum How {
     /// A request to remove it, as asked.
-    Asked { remove_volumes: bool, force: bool },
+    Asked {
+        volumes: VolumeDisposal,
+        force: bool,
+    },
     /// The Machine is leaving: stopped, then removed with its anonymous volumes.
     Departing,
 }
@@ -1119,17 +1140,16 @@ impl Lifecycle {
         Ok(true)
     }
 
-    /// Removes `container_id` and its records. Its anonymous volumes go only when
-    /// `remove_volumes` asks and a Container made to replace it runs here (see
-    /// [`Self::replaced`]).
+    /// Removes `container_id` and its records. Its anonymous volumes go only as
+    /// [`Self::replaced`] decides from `volumes`.
     pub async fn remove(
         &self,
         container_id: &ContainerId,
-        remove_volumes: bool,
+        volumes: VolumeDisposal,
         force: bool,
     ) -> Result<(), Error> {
         let mut config_operation = self.specs.config_operation().await;
-        self.remove_locked(&mut config_operation, container_id, remove_volumes, force)
+        self.remove_locked(&mut config_operation, container_id, volumes, force)
             .await
     }
 
@@ -1137,16 +1157,13 @@ impl Lifecycle {
         &self,
         config_operation: &mut super::spec_store::ConfigOperation<'_>,
         container_id: &ContainerId,
-        remove_volumes: bool,
+        volumes: VolumeDisposal,
         force: bool,
     ) -> Result<(), Error> {
         self.retire(
             config_operation,
             container_id,
-            How::Asked {
-                remove_volumes,
-                force,
-            },
+            How::Asked { volumes, force },
         )
         .await
     }
@@ -1182,27 +1199,25 @@ impl Lifecycle {
         how: How,
     ) -> Result<(), Error> {
         let removed = match how {
-            How::Asked {
-                remove_volumes,
-                force,
-            } => match self.observation.ensure_managed(container_id).await {
-                Ok(inspected) => {
-                    let remove_volumes = remove_volumes
-                        && self
-                            .replaced(config_operation, container_id, &inspected)
+            How::Asked { volumes, force } => {
+                match self.observation.ensure_managed(container_id).await {
+                    Ok(inspected) => {
+                        let remove_volumes = self
+                            .replaced(config_operation, container_id, &inspected, volumes)
                             .await?;
-                    let options = RemoveContainerOptionsBuilder::default()
-                        .v(remove_volumes)
-                        .force(force)
-                        .build();
-                    self.docker
-                        .client
-                        .remove_container(container_id.as_str(), Some(options))
-                        .await
-                        .map_err(|error| docker_error(container_id, error))
+                        let options = RemoveContainerOptionsBuilder::default()
+                            .v(remove_volumes)
+                            .force(force)
+                            .build();
+                        self.docker
+                            .client
+                            .remove_container(container_id.as_str(), Some(options))
+                            .await
+                            .map_err(|error| docker_error(container_id, error))
+                    }
+                    Err(error) => Err(error),
                 }
-                Err(error) => Err(error),
-            },
+            }
             How::Departing => {
                 self.stop_if_running(container_id).await?;
                 self.remove_if_present(container_id).await
@@ -1219,27 +1234,33 @@ impl Lifecycle {
         Ok(())
     }
 
-    /// Whether `retiree`'s anonymous volumes may go with it: this Machine recorded,
-    /// when it made another Container, that it takes `retiree`'s place (see
-    /// [`Self::slot_taken`]), and that Container runs, In or Held, and no stop is taking
-    /// it out of routing. Read under the config lock, which every create, removal,
-    /// rotation write and stopping mark takes, so none lands between this read and the
-    /// removal. The removal of a system Container, whose spec is the daemon's own, takes
-    /// them as asked.
+    /// Whether `retiree`'s anonymous volumes go with it. Only when the removal names the
+    /// Container it relies on, this Machine recorded when it made that Container that it
+    /// takes `retiree`'s place (see [`Self::slot_taken`]), and that Container runs, In or
+    /// Held, and no stop is taking it out of routing. Read under the config lock, which
+    /// every create, removal, rotation write and stopping mark takes, so none lands
+    /// between this read and the removal. A system Container's, whose spec is the
+    /// daemon's own, go when the daemon asks.
     async fn replaced(
         &self,
         config_operation: &mut ConfigOperation<'_>,
         retiree: &ContainerId,
         inspected: &Inspected,
+        volumes: VolumeDisposal,
     ) -> Result<bool, Error> {
-        let labels = inspected.labels().ok_or(Error::NotManaged)?;
-        if labels::Class::of(labels) == Some(labels::Class::System) {
-            return Ok(true);
-        }
+        let named = match volumes {
+            VolumeDisposal::Keep => return Ok(false),
+            VolumeDisposal::System => {
+                let labels = inspected.labels().ok_or(Error::NotManaged)?;
+                return Ok(labels::Class::of(labels) == Some(labels::Class::System));
+            }
+            VolumeDisposal::ReplacedBy(named) => named,
+        };
         let Some(replacement) = config_operation.replacement(retiree).await? else {
             return Ok(false);
         };
-        if self.standing.is_withdrawn(&replacement)
+        if replacement != named
+            || self.standing.is_withdrawn(&replacement)
             || !self
                 .specs
                 .rotation(&replacement)
@@ -1644,7 +1665,6 @@ mod tests {
                 "ployz.deployment.id": "deploy-7",
                 "ployz.creation.key": "plan:0",
                 "ployz.gen": "3",
-                "ployz.replaces": "",
             })
         );
         let hook = stamped_labels(ContainerKind::PreDeployHook, "plan:1", None, Gen::FIRST).await;
@@ -1658,7 +1678,6 @@ mod tests {
                 "ployz.network.ipv6": "true",
                 "ployz.creation.key": "plan:1",
                 "ployz.gen": Gen::FIRST.to_string(),
-                "ployz.replaces": "",
             })
         );
     }
@@ -2594,7 +2613,7 @@ mod tests {
 
         runtime
             .lifecycle()
-            .remove(&container_id, false, true)
+            .remove(&container_id, VolumeDisposal::Keep, true)
             .await
             .unwrap();
 
@@ -2618,13 +2637,13 @@ mod tests {
 
         runtime
             .lifecycle()
-            .remove(&container_id, false, true)
+            .remove(&container_id, VolumeDisposal::Keep, true)
             .await
             .unwrap();
         assert!(runtime.specs.get(&container_id).await.unwrap().is_none());
 
         assert!(matches!(
-            runtime.lifecycle().remove(&container_id, false, true).await,
+            runtime.lifecycle().remove(&container_id, VolumeDisposal::Keep, true).await,
             Err(Error::ContainerNotFound(id)) if id == container_id
         ));
     }

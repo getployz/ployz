@@ -425,14 +425,14 @@ impl LocalMachine {
     pub(crate) async fn remove_container(
         &self,
         container_id: ContainerId,
-        remove_volumes: bool,
+        volumes: crate::docker::VolumeDisposal,
         force: bool,
     ) -> Result<(), Error> {
         self.finish_mutation(move |local| async move {
             local
                 .docker()?
                 .lifecycle()
-                .remove(&container_id, remove_volumes, force)
+                .remove(&container_id, volumes, force)
                 .await?;
             Ok(())
         })
@@ -1628,13 +1628,8 @@ impl LocalMachine {
                     let turn = local.exclusive_turn().await?;
                     let containers = local.docker()?;
                     removed(
-                        remove_out_of_rotation(
-                            &turn,
-                            containers,
-                            &id,
-                            anonymous_volumes.go_with_container(),
-                        )
-                        .await,
+                        remove_out_of_rotation(&turn, containers, &id, anonymous_volumes.into())
+                            .await,
                     )
                 })
                 .await?
@@ -1649,13 +1644,8 @@ impl LocalMachine {
                     let turn = local.exclusive_turn().await?;
                     let containers = local.docker()?;
                     removed(
-                        remove_out_of_rotation(
-                            &turn,
-                            containers,
-                            &id,
-                            anonymous_volumes.go_with_container(),
-                        )
-                        .await,
+                        remove_out_of_rotation(&turn, containers, &id, anonymous_volumes.into())
+                            .await,
                     )
                 })
                 .await?
@@ -2318,15 +2308,15 @@ async fn remove_out_of_rotation(
     _turn: &ExclusiveTurn,
     containers: &crate::docker::ContainerRuntime,
     container: &ContainerId,
-    remove_volumes: bool,
+    volumes: crate::docker::VolumeDisposal,
 ) -> Result<Option<ContainerRefusal>, Error> {
     match leave_rotation(containers, container, &RotationTarget::Gone).await {
-        Ok(Ok(turn)) => turn.remove(remove_volumes, false).await?,
+        Ok(Ok(turn)) => turn.remove(volumes, false).await?,
         Ok(Err(refusal)) => return Ok(Some(refusal)),
         Err(Error::Docker(crate::docker::Error::ContainerNotFound(_))) => {
             containers
                 .lifecycle()
-                .remove(container, remove_volumes, false)
+                .remove(container, volumes, false)
                 .await?;
         }
         Err(error) => return Err(error),

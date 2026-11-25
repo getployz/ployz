@@ -3,8 +3,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    CONTAINER_REPLACES_CAPABILITY, ContainerId, ContainerObservation, CopyRotation, HookContainer,
-    HostBind, MachineId, Namespace, PortPublication, Region, RegionWait, RequestedServiceSpec,
+    AnonymousVolumes, ContainerId, ContainerObservation, CopyRotation, HookContainer, HostBind,
+    MachineId, Namespace, PortPublication, Region, RegionWait, RequestedServiceSpec,
     ResolvedServiceSpec, ResolvedUpdateConfig, ServiceContainer, ServiceId, ServiceMode,
     ServiceName, ServiceObservation, SpecChange, UPDATE_CONTAINER_LIMITS_CAPABILITY,
     UPDATE_CONTAINER_PLACEMENT_CAPABILITY, UpdateOrder, compare_observed,
@@ -23,9 +23,6 @@ pub(super) struct PlacementState {
     sockets: HostSockets,
     reservations: BTreeMap<ServiceName, ReplicatedReservation>,
     updaters: InPlaceUpdaters,
-    /// Machines whose daemon removes a copy's anonymous Volumes only beside the copy it
-    /// recorded as made to replace it ([`CONTAINER_REPLACES_CAPABILITY`]).
-    replacement_provers: BTreeSet<MachineId>,
 }
 
 /// Shared Docker Volume trials own their budget and commit only accepted anchors.
@@ -98,18 +95,6 @@ impl PlacementReservations {
             sockets: HostSockets::from_snapshot(snapshot),
             reservations: self.reservations,
             updaters: self.updaters,
-            replacement_provers: snapshot
-                .machines
-                .iter()
-                .filter(|machine| {
-                    machine
-                        .machine
-                        .runtime
-                        .capabilities
-                        .contains(CONTAINER_REPLACES_CAPABILITY)
-                })
-                .map(|machine| machine.machine.id)
-                .collect(),
         }
     }
 }
@@ -1186,6 +1171,23 @@ fn remove_unused(
     used: &BTreeSet<ContainerId>,
     placement: &mut PlacementState,
 ) {
+    // A copy this Deploy replaces is used for its slot, but not kept.
+    let replaced: BTreeSet<ContainerId> = operations
+        .iter()
+        .filter_map(|operation| match operation {
+            DeployOperation::ReplaceContainer(replacement) => Some(replacement.old_container_id),
+            DeployOperation::PrepareVolumes { .. }
+            | DeployOperation::WaitHealthy { .. }
+            | DeployOperation::RunContainer { .. }
+            | DeployOperation::StopContainer { .. }
+            | DeployOperation::RemoveContainer { .. }
+            | DeployOperation::UpdateContainer(_)
+            | DeployOperation::StopHook { .. }
+            | DeployOperation::RunHook { .. }
+            | DeployOperation::RemoveVolume { .. } => None,
+        })
+        .collect();
+    let kept = |id: &ContainerId| used.contains(id) && !replaced.contains(id);
     for container in current {
         let observation = container.as_observation();
         let unknown_placement = placement
@@ -1207,42 +1209,16 @@ fn remove_unused(
             operations.push(DeployOperation::RemoveContainer {
                 machine_id: observation.machine_id,
                 container_id: observation.container_id,
-                purpose: leftover_purpose(
-                    observation,
-                    current,
-                    used,
-                    &placement.replacement_provers,
-                ),
-                service_stays: true,
+                purpose: ployz_core::RemoveContainerPurpose::Rollout,
+                // Only a copy this Deploy keeps can have taken this one's place, as one an
+                // earlier attempt made to replace it.
+                anonymous_volumes: AnonymousVolumes::of(observation, kept),
             });
             placement.capacity.release(&observation.machine_id);
             placement
                 .sockets
                 .release(observation.machine_id, observation.container_id);
         }
-    }
-}
-
-/// Why a copy this Deploy no longer uses goes. A new copy elsewhere is another slot, so
-/// only a copy the Deploy uses beside it on its Server can have taken its place: the one
-/// an earlier attempt made to replace it, say. A Server that proves that itself is asked
-/// to remove the copy's anonymous Volumes, and keeps them unless it recorded that copy
-/// as the replacement. Any other Server removes them as asked, so it is asked to keep
-/// them.
-fn leftover_purpose(
-    leftover: &ContainerObservation,
-    current: &[ServiceContainer],
-    used: &BTreeSet<ContainerId>,
-    provers: &BTreeSet<MachineId>,
-) -> ployz_core::RemoveContainerPurpose {
-    let beside = on_machine(current, leftover.machine_id).any(|container| {
-        let id = container.as_observation().container_id;
-        id != leftover.container_id && used.contains(&id)
-    });
-    if beside && provers.contains(&leftover.machine_id) {
-        ployz_core::RemoveContainerPurpose::Rollout
-    } else {
-        ployz_core::RemoveContainerPurpose::Retire
     }
 }
 

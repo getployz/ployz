@@ -304,7 +304,7 @@ fn gone(hex: char) -> ContainerWant {
     ContainerWant::Gone {
         container: ContainerLocator::Id(container(hex)),
         drain: ployz_core::Drain::DEFAULT,
-        anonymous_volumes: ployz_core::RemoveContainerPurpose::Retire.into(),
+        anonymous_volumes: ployz_core::AnonymousVolumes::keep(),
     }
 }
 
@@ -850,7 +850,7 @@ fn anonymous_volumes_deleted(cluster: &Cluster) -> Vec<bool> {
         .filter_map(|want| match want {
             ContainerWant::Gone {
                 anonymous_volumes, ..
-            } => Some(anonymous_volumes.go_with_container()),
+            } => Some(anonymous_volumes.replaced_by().is_some()),
             ContainerWant::Running { .. }
             | ContainerWant::Stopped { .. }
             | ContainerWant::Out { .. }

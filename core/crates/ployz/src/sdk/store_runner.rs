@@ -11,8 +11,8 @@ use std::time::Duration;
 
 use ployz_agent_tools::{LogText, SealedValues, Withheld};
 use ployz_core::{
-    ContainerId, ContainerRuntimeObservation, DeployOperation, DeployOutcome, DeployWarning,
-    ExecutionError, FailedOperation, HealthFailure, LastRun, MachineId, MachineName,
+    AnonymousVolumes, ContainerId, ContainerRuntimeObservation, DeployOperation, DeployOutcome,
+    DeployWarning, ExecutionError, FailedOperation, HealthFailure, LastRun, MachineId, MachineName,
     MachineObservation, Operator, QualifiedService, RemoveContainerPurpose, RpcError, RpcErrorCode,
     RunnerOptions, ServiceName,
 };
@@ -39,7 +39,7 @@ use super::{
 use crate::connect::{Client, SystemConnector};
 use crate::context::Connection;
 use crate::deploy::CopyLifecycle;
-use crate::deploy::cleanup::{self, Copy, EmptyPolicy, Rotated};
+use crate::deploy::cleanup::{self, Copy, Rotated};
 
 /// How often a running Deployment renews its lease and checks whether it was cancelled.
 const CANCEL_POLL: Duration = Duration::from_secs(2);
@@ -350,11 +350,9 @@ struct LeftCopy {
     service: ServiceName,
     container_id: ContainerId,
     machine: String,
-    /// What the run recorded about the copy's slot, which decides its anonymous Volumes.
+    /// Retire when the Deploy removed its Service, so it goes exactly as a plain
+    /// Service removal takes a copy out; Rollout when a new copy replaced it.
     purpose: RemoveContainerPurpose,
-    /// The Deploy removed the Service, so its last copy may go Out as a plain removal
-    /// takes it.
-    service_removed: bool,
 }
 
 /// Each copy the Deploy reported left running, with its Service's outcome.
@@ -376,7 +374,6 @@ fn reported_copies(view: &DeploymentView) -> impl Iterator<Item = (LeftCopy, Nod
             service,
             container_id,
             machine,
-            purpose,
             ..
         } = warning
         else {
@@ -391,8 +388,11 @@ fn reported_copies(view: &DeploymentView) -> impl Iterator<Item = (LeftCopy, Nod
             service: name.clone(),
             container_id: *container_id,
             machine: machine.clone(),
-            purpose: *purpose,
-            service_removed: outcome == NodeStatus::Removed,
+            purpose: if outcome == NodeStatus::Removed {
+                RemoveContainerPurpose::Retire
+            } else {
+                RemoveContainerPurpose::Rollout
+            },
         };
         Some((copy, outcome))
     })
@@ -492,12 +492,9 @@ async fn retire_copy<C: CopyLifecycle>(
     let step = cleanup::retire(
         client,
         &Copy::observed(&observed),
-        if copy.service_removed {
-            EmptyPolicy::MayEmpty
-        } else {
-            EmptyPolicy::RequireOtherIn
-        },
-        copy.purpose,
+        copy.purpose.into(),
+        // The cleanup comes after the Deploy, which keeps no copy any longer.
+        AnonymousVolumes::keep(),
         &CancellationToken::new(),
     )
     .await;

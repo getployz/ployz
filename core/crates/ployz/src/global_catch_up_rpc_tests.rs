@@ -365,8 +365,7 @@ async fn catch_up_uses_primitives_and_never_replaces_a_key_conflict_or_unknown_s
         )
         .await;
         assert_eq!(
-            ran.ok()
-                .map(|placed| placed.map(|placed| placed.copy.container_id)),
+            ran.ok().map(|copy| copy.map(|copy| copy.container_id)),
             match outcome {
                 "new" | "matching" => Some(Some(container_id('a'))),
                 "revision" => Some(Some(container_id('b'))),
@@ -1030,7 +1029,7 @@ async fn a_matching_out_copy_is_retired_before_a_new_copy_comes_in() {
     );
     assert_eq!(
         run.gones,
-        [(container_id('b'), RemoveContainerPurpose::Retire.into())],
+        [(container_id('b'), ployz_core::AnonymousVolumes::keep())],
         "the create, its health or its In can still fail and leave the slot empty, so \
          the Out copy's anonymous Volumes stay"
     );
@@ -1082,7 +1081,7 @@ async fn an_adopted_copy_kept_from_coming_in_keeps_its_anonymous_volumes() {
     assert_eq!(run.calls, ["start", "in", "gone"]);
     assert_eq!(
         run.gones,
-        [(container_id('b'), RemoveContainerPurpose::Retire.into())]
+        [(container_id('b'), ployz_core::AnonymousVolumes::keep())]
     );
 }
 

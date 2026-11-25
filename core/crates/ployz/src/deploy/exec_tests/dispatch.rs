@@ -38,7 +38,7 @@ async fn dispatches_the_complete_algebra() {
             machine_id: first,
             container_id: removed,
             purpose: ployz_core::RemoveContainerPurpose::Rollout,
-            service_stays: false,
+            anonymous_volumes: ployz_core::AnonymousVolumes::keep(),
         },
         DeployOperation::ReplaceContainer(ReplacementOperation {
             machine_id: first,
@@ -471,7 +471,7 @@ async fn standalone_stop_and_remove_tolerate_missing_targets() {
             machine_id: machine,
             container_id: removed,
             purpose: ployz_core::RemoveContainerPurpose::Rollout,
-            service_stays: false,
+            anonymous_volumes: ployz_core::AnonymousVolumes::keep(),
         },
         DeployOperation::RemoveVolume { id: volume.clone() },
         stop(&machine, &suffix),
@@ -584,8 +584,8 @@ async fn a_private_image_is_pulled_with_its_services_credentials_only() {
     );
 }
 
-/// What the Machine is asked to want for a Container removed for `purpose`.
-async fn removal_sent(purpose: ployz_core::RemoveContainerPurpose) -> Vec<ContainerWant> {
+/// What the Machine is asked to want for a Container a plan removes, asking `anonymous_volumes`.
+async fn removal_sent(anonymous_volumes: ployz_core::AnonymousVolumes) -> Vec<ContainerWant> {
     use ployz_core::{EnsureContainerRequest, EnsuredContainer, OpaquePayload, RpcRequestBody};
     use std::sync::Arc;
     use tonic::{Request, Response};
@@ -686,8 +686,8 @@ async fn removal_sent(purpose: ployz_core::RemoveContainerPurpose) -> Vec<Contai
         &[DeployOperation::RemoveContainer {
             machine_id: machine('1'),
             container_id: container('a'),
-            purpose,
-            service_stays: false,
+            purpose: ployz_core::RemoveContainerPurpose::Rollout,
+            anonymous_volumes,
         }],
         &client,
         &CancellationToken::new(),
@@ -702,34 +702,25 @@ async fn removal_sent(purpose: ployz_core::RemoveContainerPurpose) -> Vec<Contai
         .collect()
 }
 
+/// The Gone carries what the plan asked of the copy's anonymous Volumes: keep them, or
+/// remove them for the copy it names as having taken this one's place.
 #[tokio::test]
-async fn retiring_a_container_keeps_its_anonymous_volumes() {
-    let wants = removal_sent(ployz_core::RemoveContainerPurpose::Retire).await;
-    assert!(
-        matches!(
-            wants.as_slice(),
-            [ContainerWant::Gone {
-                anonymous_volumes,
-                ..
-            }] if !anonymous_volumes.go_with_container()
-        ),
-        "{wants:?}"
-    );
-}
-
-#[tokio::test]
-async fn a_rollout_removes_a_containers_anonymous_volumes_with_it() {
-    let wants = removal_sent(ployz_core::RemoveContainerPurpose::Rollout).await;
-    assert!(
-        matches!(
-            wants.as_slice(),
-            [ContainerWant::Gone {
-                anonymous_volumes,
-                ..
-            }] if anonymous_volumes.go_with_container()
-        ),
-        "{wants:?}"
-    );
+async fn a_removal_sends_what_its_plan_asked_of_the_anonymous_volumes() {
+    let named: ployz_core::AnonymousVolumes = serde_json::from_value(serde_json::json!({
+        "anonymous_volumes": "remove",
+        "replaced_by": container('b'),
+    }))
+    .unwrap();
+    for asked in [ployz_core::AnonymousVolumes::keep(), named] {
+        let wants = removal_sent(asked).await;
+        assert!(
+            matches!(
+                wants.as_slice(),
+                [ContainerWant::Gone { anonymous_volumes, .. }] if *anonymous_volumes == asked
+            ),
+            "{wants:?}"
+        );
+    }
 }
 
 #[test]
@@ -1368,7 +1359,7 @@ async fn stop_and_remove_rows_never_read_as_starting() {
             machine_id: machine,
             container_id: removed,
             purpose: ployz_core::RemoveContainerPurpose::Retire,
-            service_stays: false,
+            anonymous_volumes: ployz_core::AnonymousVolumes::keep(),
         },
         DeployOperation::StopHook {
             machine_id: machine,

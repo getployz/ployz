@@ -519,7 +519,7 @@ fn a_taken_over_run_reports_what_it_completed_and_leaves_the_stopped_operation_u
         machine_id: ployz_core::MachineId::parse("a".repeat(32)).unwrap(),
         container_id: ployz_core::ContainerId::parse(id.to_string().repeat(64)).unwrap(),
         purpose: ployz_core::RemoveContainerPurpose::Rollout,
-        service_stays: false,
+        anonymous_volumes: ployz_core::AnonymousVolumes::keep(),
     };
     let outcome = DeployOutcome::Failed {
         completed: vec![operation('a')],
@@ -1447,7 +1447,6 @@ fn left_running(
                 container_id: container_id(*copy),
                 machine: "one".into(),
                 reason: "proxy on two did not confirm".into(),
-                purpose: ployz_core::RemoveContainerPurpose::Rollout,
             },
         });
     }
@@ -1666,57 +1665,37 @@ async fn a_failed_services_left_copy_is_kept_on_every_try_without_a_retry() {
     }
 }
 
-/// A left copy goes as its run recorded its removal: a copy replaced in its slot takes
-/// its anonymous volumes with it, and any other keeps them, as a scale-down's does. A
-/// record from before runs wrote that keeps them. Only a removed Service's copy may
-/// leave the Service empty.
+/// A removed Service's left copy goes exactly as a plain Service removal takes
+/// one out: it may leave the Service empty. Every left copy keeps its anonymous volumes:
+/// the cleanup runs after its Deploy, which keeps no copy that took its place.
 #[tokio::test]
-async fn a_left_copy_goes_as_its_run_recorded_and_only_a_removed_services_may_empty_it() {
-    use ployz_core::RemoveContainerPurpose::{Retire, Rollout};
+async fn only_a_removed_services_left_copy_may_leave_it_empty_and_each_keeps_its_volumes() {
     let (run, actor) = run();
-    for (outcome, recorded, allow_empty, volumes_deleted) in [
-        (NodeStatus::Removed, Some(Retire), true, false),
-        (NodeStatus::Deployed, Some(Retire), false, false),
-        (NodeStatus::Deployed, Some(Rollout), false, true),
-        (NodeStatus::Deployed, None, false, false),
-    ] {
-        let mut view = left_running(&run, &actor, &[("web", outcome, 'c')]);
-        let DeploymentWarning::Deploy { warning } = view.deployment.warnings.last_mut().unwrap()
-        else {
-            unreachable!("left_running records a Deploy warning");
-        };
-        let mut json = serde_json::to_value(&*warning).unwrap();
-        let fields = json.as_object_mut().unwrap();
-        match recorded {
-            Some(purpose) => {
-                fields.insert("purpose".into(), serde_json::to_value(purpose).unwrap());
-            }
-            None => drop(fields.remove("purpose")),
-        }
-        *warning = serde_json::from_value(json).unwrap();
+    let anonymous_volumes = ployz_core::AnonymousVolumes::keep();
+    for (outcome, allow_empty) in [(NodeStatus::Removed, true), (NodeStatus::Deployed, false)] {
+        let view = left_running(&run, &actor, &[("web", outcome, 'c')]);
         let retired = retire(&view, holding_c()).await;
-        let case = format!("{outcome:?} {recorded:?}");
-        assert_eq!(retired.outcome, RetireOutcome::default(), "{case}");
+        assert_eq!(retired.outcome, RetireOutcome::default(), "{outcome:?}");
         assert!(
             matches!(
                 retired.wants.first(),
                 Some(ployz_core::ContainerWant::Out { allow_empty: sent, .. }) if *sent == allow_empty
             ),
-            "{case}: {:?}",
+            "{outcome:?}: {:?}",
             retired.wants
         );
         assert!(
             matches!(
                 retired.wants.last(),
-                Some(ployz_core::ContainerWant::Gone { anonymous_volumes: sent, .. }) if sent.go_with_container() == volumes_deleted
+                Some(ployz_core::ContainerWant::Gone { anonymous_volumes: sent, .. }) if *sent == anonymous_volumes
             ),
-            "{case}: {:?}",
+            "{outcome:?}: {:?}",
             retired.wants
         );
         assert_eq!(
             retired.removed,
             BTreeSet::from([crate::global_fixtures::container_id('c')]),
-            "{case}"
+            "{outcome:?}"
         );
     }
 }
