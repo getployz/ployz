@@ -11,16 +11,18 @@
 //!
 //! DESIGN.md bet 6 needs one writer: no two Servers hold a root of the Volume. On one Server,
 //! the promote's check for a root holds it, whatever lands late, even for a caller that sends
-//! the promote without asking anyone (`direct`). Across Servers, a restore
-//! whose promote is still in flight is invisible to another restore's reads unless each
-//! Server's answer lists the pins it holds (`ProofReadsPins`), which it doesn't carry yet:
-//! every restore pins before it reads, so of two in flight, one then reads the other's pin.
+//! the promote without asking anyone (`direct`). Across Servers, a restore whose promote is
+//! still in flight is invisible to another restore's reads unless each Server's answer lists
+//! the pins it holds, which a proof asks for (`prove_copy` in
+//! core/crates/ployzd/src/volume_plugin/inspect.rs, `proven` in
+//! core/crates/ployz/src/handlers/volume/trash.rs): every restore pins before it reads, so of
+//! two in flight, one then reads the other's pin.
 
 use std::fmt::Write as _;
 
 use stateright::{Model, Property};
 
-use crate::harness::{Narrated, Variant};
+use crate::harness::Narrated;
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub(crate) enum Server {
@@ -127,24 +129,17 @@ impl Action {
     }
 }
 
-/// A change proposed to the restore.
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-pub(crate) enum Fix {
-    /// Each Server's answer lists the entries of the Volume it holds pinned, and a pin other
-    /// than this restore's own refuses it.
-    ProofReadsPins,
-}
-
 /// A guard taken out, to show it is what holds the property.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub(crate) enum Broken {
     /// The promote skips its check for a root of the Volume on its Server.
     NoLocalRootCheck,
+    /// The answers leave out the pins, as before a proof asked for them.
+    AnswersWithoutPins,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct TrashRestore {
-    variant: Variant<Fix>,
     broken: Option<Broken>,
     entries: &'static [Entry],
     /// A caller may send the promote right after the pin, skipping the reads.
@@ -154,7 +149,6 @@ pub(crate) struct TrashRestore {
 impl TrashRestore {
     const fn on(entries: &'static [Entry]) -> Self {
         Self {
-            variant: Variant::Shipped,
             broken: None,
             entries,
             direct: false,
@@ -237,7 +231,7 @@ impl Model for TrashRestore {
                 };
             }
             Action::Read(entry, server) => {
-                let pinned = self.variant.proposal() == Some(Fix::ProofReadsPins)
+                let pinned = self.broken != Some(Broken::AnswersWithoutPins)
                     && Self::pinned_beside(state, server, entry);
                 if Self::roots(state, server) || pinned {
                     slot.run = Run::Done;
@@ -298,8 +292,8 @@ impl Narrated for TrashRestore {
 
 #[cfg(test)]
 mod tests {
-    use super::{Broken, Entry, Fix, TrashRestore};
-    use crate::harness::{Variant, breaks, check};
+    use super::{Broken, Entry, TrashRestore};
+    use crate::harness::{breaks, check};
     use stateright::Checker;
 
     const ONE_SERVER: &[Entry] = &[Entry::E1, Entry::E3];
@@ -324,15 +318,18 @@ mod tests {
         );
     }
 
-    /// Across Servers, a restore whose promote is still in flight is invisible to another
-    /// restore's reads, so both can land. Reading pins in each answer closes it.
+    /// Across Servers, each answer lists its pins, so of two restores in flight one reads the
+    /// other's pin and leaves one writer. Without the pins in the answers, a restore whose
+    /// promote is still in flight is invisible to the other's reads, and both land.
     #[test]
-    fn restores_across_servers_need_the_answers_to_carry_pins() {
-        breaks(TrashRestore::on(BOTH), "one writer");
-        let fixed = TrashRestore {
-            variant: Variant::Proposed(Fix::ProofReadsPins),
-            ..TrashRestore::on(BOTH)
-        };
-        check(fixed).assert_properties();
+    fn restores_across_servers_leave_one_writer_through_the_pins_in_each_answer() {
+        check(TrashRestore::on(BOTH)).assert_properties();
+        breaks(
+            TrashRestore {
+                broken: Some(Broken::AnswersWithoutPins),
+                ..TrashRestore::on(BOTH)
+            },
+            "one writer",
+        );
     }
 }
