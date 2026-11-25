@@ -951,7 +951,12 @@ async fn a_seed_answers_once_a_failed_copy_whose_receive_already_ended() {
     let (socket, _server) = start(&test, USABLE_POOL, &["root", "volume"]);
     set_property(&test, "tank/ployz/data", "snapshots", POINT);
     fs::write(test.0.join("props").join("receive-fails"), "").unwrap();
+    // Held until the first Seed has answered, so that answer cannot show and take the
+    // failure before Inspect reads it.
+    fs::write(test.0.join("props").join("stall-read"), "").unwrap();
     post(&socket, "/Volume.Seed", seed(77)).await;
+    receive_ready(&test).await;
+    fs::remove_file(test.0.join("props").join("stall-read")).unwrap();
     let ended = poll(async || {
         let copy = post(&socket, "/Volume.Copy.Inspect", json!({"name": "seed"})).await;
         (copy.pointer("/Ok/pull_state/kind") == Some(&json!("failed"))).then_some(copy)

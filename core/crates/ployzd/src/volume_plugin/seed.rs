@@ -31,8 +31,8 @@ use crate::{
 use axum::{Json, extract::State};
 use ployz_core::authority::{StepDigest, Timestamp};
 use ployz_core::{
-    DockerVolumeName, RpcError, SeedVolumeRequest, Snapshot, SnapshotGuid, SwitchError,
-    VolumeCopyView, VolumeOrigin,
+    DockerVolumeName, Pull, RpcError, SeedVolumeRequest, Snapshot, SnapshotGuid, SwitchError,
+    VolumeCopy, VolumeCopyView, VolumeOrigin,
 };
 use tokio::{io::AsyncWriteExt as _, process::Command};
 
@@ -629,12 +629,30 @@ impl VolumeStorage {
     }
 
     /// The copy of `into` as the datasets stand now: a slot while it copies, a root once landed.
+    ///
+    /// A receive ends outside the mutation, so it can fail after [`Self::seed_progress`]
+    /// found it running or after this call spawned it, and before this read. The failure
+    /// this answer shows is then taken with it, so it is answered once and the next call
+    /// starts over. A failure whose dropped child outlives the hold shows and stays, since
+    /// that child can still hold the slot.
     async fn seeded(
         &self,
         pool: &MachinePool,
         into: &VolumeName,
     ) -> Result<VolumeCopyView, RpcError> {
         let copy = self.current_copy(pool, into).await?;
+        if let Some(VolumeCopy::Slot {
+            pull:
+                Some(Pull {
+                    target,
+                    failure: Some(_),
+                }),
+            ..
+        }) = &copy
+        {
+            // `Busy` only for the stuck child: its failure stays until the child exits.
+            let _ = self.receives.take_failure(into, Some(target));
+        }
         Ok(VolumeCopyView { copy })
     }
 
