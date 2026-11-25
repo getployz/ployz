@@ -2,8 +2,6 @@
 //! copy replaced, and `prune`, which deletes the ones no container uses. The Server
 //! decides what it may delete; this command only picks which to ask for.
 
-use std::io::IsTerminal;
-
 use chrono::{DateTime, Utc};
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use ployz_core::{
@@ -13,11 +11,11 @@ use ployz_core::{
 };
 use serde_json::json;
 
-use crate::cli::{base, positional, rerun, value};
+use crate::cli::{Rerun, base, positional, rerun, value};
 use crate::cluster::Call;
 use crate::connect::{Client, ConnectError};
 use crate::handlers::shared::disk::size;
-use crate::handlers::{Error, leaf_matches, route, runtime, typed_with};
+use crate::handlers::{Error, leaf_matches, route, runtime};
 use crate::ui::{self, Table, printable, short_id};
 
 pub(crate) fn command(command: Command) -> Command {
@@ -97,8 +95,7 @@ pub(crate) fn volumes(root: &ArgMatches) -> Result<(), Error> {
     };
     if !matches.get_flag("yes") {
         if !ui::json() {
-            let stderr = std::io::stderr();
-            let _ = table(&chosen, "").write(&mut anstream::stderr(), stderr.is_terminal());
+            let _ = table(&chosen, "").write(&mut ui::stderr(), ui::stderr_is_terminal());
         }
         ui::confirm(
             &format!("Delete {described} and their data?"),
@@ -108,7 +105,7 @@ pub(crate) fn volumes(root: &ArgMatches) -> Result<(), Error> {
                     format!("Deleting {described} needs confirmation. Nothing deleted."),
                     json!({ "kept_volumes": chosen }),
                 )
-                .hint(Hint::Retry(typed_with(&["--yes"])))
+                .hint(Rerun::again(root).switch("yes"))
             },
             "Nothing deleted.",
         )?;
