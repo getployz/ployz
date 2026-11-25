@@ -191,8 +191,12 @@ pub fn parse_log_time(
     })
 }
 
-/// Go duration syntax plus days, such as `1m30s`, `500ms` or `30d`.
+/// Go duration syntax plus days, such as `1m30s`, `500ms` or `30d`. An empty value is
+/// none.
 pub(crate) fn go_duration(value: &str) -> Option<std::time::Duration> {
+    if value.is_empty() {
+        return None;
+    }
     let mut remaining = value;
     let mut seconds = 0_f64;
     while !remaining.is_empty() {

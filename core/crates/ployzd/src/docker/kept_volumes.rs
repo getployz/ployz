@@ -1,11 +1,13 @@
 //! Kept Volumes: the anonymous Docker Volumes a removal left behind because no copy took
 //! the removed Container's place, recorded so this Machine can list and remove them.
 //!
-//! The record is the only proof that Ployz kept a Volume. A removal here touches only a
-//! Volume this Machine recorded, and only while no Container mounts it: checked under the
-//! config lock, which every Container create and removal takes, so no create can mount it
-//! between the check and Docker's removal. Docker refuses to remove a Volume any Container
-//! mounts as well, which covers a Container made outside Ployz.
+//! The record is the only proof that Ployz kept a Volume. A prune deletes only the exact
+//! Docker Volume the record saw, told by the creation time Docker gave it, and only while
+//! no Ployz spec on this Machine could still mount it: no Container mounts it and no stored
+//! spec names it. A Volume a spec mounts by name is never recorded. All of it is checked
+//! under the config lock, which every Container create and removal takes, so no create can
+//! mount it between the check and Docker's removal. Docker refuses to remove a Volume any
+//! Container mounts as well, which covers a Container made outside Ployz.
 
 use std::{
     os::unix::fs::MetadataExt as _,
@@ -13,6 +15,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use chrono::{DateTime, Utc};
 use ployz_core::{
     ContainerId, ContainerPath, DockerVolumeName, KeptVolume, KeptVolumeRemoval,
     KeptVolumeRemovalOutcome, labels::ServiceLabels,
@@ -22,6 +25,7 @@ use super::{
     Error, Lifecycle,
     error::{Status, classify},
     inspect::Inspected,
+    spec_store::KeptRecord,
 };
 
 /// Docker's mark on a Volume it made for a Container's anonymous mount.
@@ -36,13 +40,13 @@ const BLOCK_BYTES: u64 = 512;
 impl Lifecycle {
     /// The anonymous Volumes `inspected` mounts, as Docker marked them when it made them,
     /// which removing `container_id` without its Volumes keeps. A Volume Docker can't read
-    /// now, or one a Container that isn't a Service's mounts, is left out, so it is never
-    /// recorded as kept.
+    /// now or gave no creation time, or one a Container that isn't a Service's mounts, is
+    /// left out, so it is never recorded as kept.
     pub(super) async fn anonymous_volumes(
         &self,
         container_id: &ContainerId,
         inspected: &Inspected,
-    ) -> Vec<KeptVolume> {
+    ) -> Vec<KeptRecord> {
         let Some(identity) = inspected
             .labels()
             .and_then(|labels| ServiceLabels::parse(labels).ok())
@@ -50,7 +54,7 @@ impl Lifecycle {
         else {
             return Vec::new();
         };
-        let kept_at = chrono::Utc::now().timestamp();
+        let kept_at = Utc::now().timestamp();
         let mut kept = Vec::new();
         for mount in inspected.mounts.iter().flatten() {
             let (Some("volume"), Some(name), Some(path)) = (
@@ -60,8 +64,9 @@ impl Lifecycle {
             ) else {
                 continue;
             };
-            let anonymous = match self.docker.client.inspect_volume(name).await {
-                Ok(volume) => volume.labels.contains_key(ANONYMOUS_LABEL),
+            let created = match self.docker.client.inspect_volume(name).await {
+                Ok(volume) if volume.labels.contains_key(ANONYMOUS_LABEL) => created(&volume),
+                Ok(_) => None,
                 Err(error) => {
                     tracing::warn!(
                         container = container_id.as_str(),
@@ -69,51 +74,64 @@ impl Lifecycle {
                         error = %ployz_core::error_chain::inline(&error),
                         "could not read a volume the removed container mounts; it is not recorded as kept"
                     );
-                    false
+                    None
                 }
             };
-            let (true, Ok(name), Ok(path)) = (
-                anonymous,
+            let (Some(created), Ok(name), Ok(path)) = (
+                created,
                 DockerVolumeName::parse(name),
                 ContainerPath::parse(path),
             ) else {
                 continue;
             };
-            kept.push(KeptVolume {
-                name,
-                namespace: identity.namespace.clone(),
-                service: identity.name.clone(),
-                container: *container_id,
-                path,
-                kept_at,
-                size_bytes: None,
+            kept.push(KeptRecord {
+                volume: KeptVolume {
+                    name,
+                    namespace: identity.namespace.clone(),
+                    service: identity.name.clone(),
+                    container: *container_id,
+                    path,
+                    kept_at,
+                    size_bytes: None,
+                },
+                created,
             });
         }
         kept
     }
 
     /// This Machine's Kept Volumes that Docker still has, oldest first, each measured
-    /// while [`MEASURE_BUDGET`] lasts.
+    /// while [`MEASURE_BUDGET`] lasts. A record whose Volume Docker no longer has, under
+    /// its name or at all, is forgotten.
     ///
     /// # Errors
     ///
-    /// Returns when the record can't be read.
+    /// Returns when the record can't be read or written.
     pub async fn kept_volumes(&self) -> Result<Vec<KeptVolume>, Error> {
         let mut listed = Vec::new();
         let mut roots = Vec::new();
-        for volume in self.specs.kept_volumes().await? {
+        for record in self.specs.kept_volumes().await? {
             match self
                 .docker
                 .client
-                .inspect_volume(volume.name.as_str())
+                .inspect_volume(record.volume.name.as_str())
                 .await
             {
-                Ok(found) => roots.push(Some(PathBuf::from(found.mountpoint))),
-                Err(error) if classify(&error) == Status::Absent => continue,
+                Ok(found) if is_kept(&record, &found) => {
+                    roots.push(Some(PathBuf::from(found.mountpoint)));
+                }
+                Ok(_) => {
+                    self.specs.forget_kept(&record).await?;
+                    continue;
+                }
+                Err(error) if classify(&error) == Status::Absent => {
+                    self.specs.forget_kept(&record).await?;
+                    continue;
+                }
                 // Still recorded, so still listed; its size is unknown.
                 Err(_) => roots.push(None),
             }
-            listed.push(volume);
+            listed.push(record.volume);
         }
         let sizes = tokio::task::spawn_blocking(move || {
             let until = Instant::now() + MEASURE_BUDGET;
@@ -130,13 +148,15 @@ impl Lifecycle {
         Ok(listed)
     }
 
-    /// Removes each of `names` that this Machine recorded as kept and no Container,
-    /// running or not, mounts. Never forced.
+    /// Removes each of `names` that is still the exact Volume this Machine recorded as
+    /// kept, and that no Container, running or not, mounts and no stored spec names. Never
+    /// forced.
     ///
     /// # Errors
     ///
-    /// Returns when the record can't be read or written, or Docker can't list who mounts
-    /// a Volume. Results for the names before it stand.
+    /// Returns when the record or the stored specs can't be read, the record can't be
+    /// written, or Docker can't list who mounts a Volume. Results for the names before it
+    /// stand.
     pub async fn remove_kept_volumes(
         &self,
         names: Vec<DockerVolumeName>,
@@ -154,12 +174,36 @@ impl Lifecycle {
         name: &DockerVolumeName,
     ) -> Result<KeptVolumeRemovalOutcome, Error> {
         let mut operation = self.specs.config_operation().await;
-        if operation.kept_volume(name).await?.is_none() {
+        let Some(record) = operation.kept_volume(name).await? else {
             return Ok(KeptVolumeRemovalOutcome::NotKept);
+        };
+        // A spec whose Container Docker lost, or that has not started it again, still
+        // mounts the Volume by name when it runs.
+        let naming = operation.specs_naming(name).await?;
+        if !naming.is_empty() {
+            return Ok(in_use(naming));
         }
         let holders = self.volumes.volume_holder_ids(name).await?;
         if !holders.is_empty() {
             return Ok(in_use(holders));
+        }
+        match self.docker.client.inspect_volume(name.as_str()).await {
+            Ok(found) if is_kept(&record, &found) => {}
+            Ok(_) => {
+                self.specs.forget_kept(&record).await?;
+                return Ok(KeptVolumeRemovalOutcome::NotKept);
+            }
+            Err(error) => match classify(&error) {
+                Status::Absent => {
+                    self.specs.forget_kept(&record).await?;
+                    return Ok(KeptVolumeRemovalOutcome::Removed);
+                }
+                Status::Conflict | Status::Unchanged | Status::Other => {
+                    return Ok(KeptVolumeRemovalOutcome::Failed {
+                        message: ployz_core::error_chain::inline(&error),
+                    });
+                }
+            },
         }
         let outcome = match self
             .docker
@@ -184,9 +228,22 @@ impl Lifecycle {
                 }
             },
         };
-        operation.forget_kept_volume(name).await?;
+        self.specs.forget_kept(&record).await?;
         Ok(outcome)
     }
+}
+
+/// Whether `found` is the exact Volume `record` kept, not one made later under its name.
+fn is_kept(record: &KeptRecord, found: &bollard::models::Volume) -> bool {
+    created(found) == Some(record.created)
+}
+
+/// When Docker made `volume`, compared as an instant so a daemon that formats it in
+/// another time zone still reads the same Volume.
+fn created(volume: &bollard::models::Volume) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(volume.created_at.as_deref()?)
+        .ok()
+        .map(|created| created.with_timezone(&Utc))
 }
 
 fn in_use(containers: Vec<ContainerId>) -> KeptVolumeRemovalOutcome {

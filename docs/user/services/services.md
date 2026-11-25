@@ -94,7 +94,9 @@ where that service mounted it, when the server kept it and how much space it tak
 `ployz server volumes <server> prune` deletes them. It shows which ones go and asks first; `--yes`
 skips the ask. Name volumes after `prune` to delete only those, or add `--older-than 30d` to keep
 the ones the server kept in the last 30 days. Prune never deletes a volume a container uses, even a
-stopped one, or one the server didn't keep, like the volume of a service that still runs.
+stopped one, a volume a service mounts by name, or one the server didn't keep, like the volume of a
+service that still runs. If you delete a kept volume yourself, the server forgets it, and a new volume
+made under the same name isn't one it kept.
 
 A server on `ployz` 0.4.0-beta.2 or earlier says it needs an upgrade first. After the upgrade it
 lists only the volumes it keeps from then on. To find the older ones, run

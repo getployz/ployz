@@ -457,7 +457,7 @@ A machine-local Docker storage resource and possible placement anchor. Its name 
 _Avoid_: Cluster volume, replicated volume, CSI volume
 
 **Kept Volume**:
-An anonymous Docker Volume a Machine kept when it removed a Container no copy replaced, recorded in that Machine's own store with the Namespace, Service, Container and path it came from. The record is the only proof Ployz kept it: a Machine deletes only a Volume it recorded, and only while no Container, running or not, mounts it, checked under the lock every Container create and removal takes. A Volume kept before its Machine recorded them is not one.
+An anonymous Docker Volume a Machine kept when it removed a Container no copy replaced, recorded in that Machine's own store with the Namespace, Service, Container and path it came from, and the time Docker made it. The record is the only proof Ployz kept it: a Machine deletes only the exact Volume it recorded, told by that time, and only while no Container, running or not, mounts it and no spec the Machine stores names it, checked under the lock every Container create and removal takes. A Volume a spec mounts by name, such as an External Volume, is never one, nor is a Volume kept before its Machine recorded them.
 _Avoid_: dangling volume, orphan volume, leftover volume
 
 **Data Loss**:

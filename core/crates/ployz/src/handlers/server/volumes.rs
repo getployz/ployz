@@ -62,18 +62,9 @@ pub(crate) fn volumes(root: &ArgMatches) -> Result<(), Error> {
         .get_one::<String>("server")
         .ok_or_else(|| Error::usage("server is required"))?;
     let target = MachineTarget::parse(server)?;
-    let older_than = matches
+    let kept_by = matches
         .get_one::<String>("older-than")
-        .map(|duration| {
-            crate::operator::input::go_duration(duration)
-                .and_then(|duration| chrono::Duration::from_std(duration).ok())
-                .ok_or_else(|| {
-                    Error::usage(format!(
-                        "--older-than takes a duration such as 30d or 12h, not {}",
-                        printable(duration)
-                    ))
-                })
-        })
+        .map(|age| kept_by(age, Utc::now()))
         .transpose()?;
     let context = matches.get_one::<String>("context").map(String::as_str);
     let runtime = runtime()?;
@@ -91,10 +82,10 @@ pub(crate) fn volumes(root: &ArgMatches) -> Result<(), Error> {
         .flatten()
         .map(String::as_str)
         .collect();
-    let chosen = choose(&kept, &named, older_than, Utc::now(), server)
+    let chosen = choose(&kept, &named, kept_by, server)
         .map_err(|error| error.hint(Hint::Next(rerun(matches, &["server", "volumes", server]))))?;
     if chosen.is_empty() {
-        let why = match older_than {
+        let why = match kept_by {
             Some(_) => format!("{server} kept no volume that long ago. Nothing deleted."),
             None => format!("{server} has no kept volumes. Nothing deleted."),
         };
@@ -191,13 +182,27 @@ fn refused(
     Error::from(error).context(format!("{failed} {}.", printable(server)))
 }
 
-/// The kept volumes a prune deletes: those `named`, or every one, kept at least `older_than`
-/// before `now`. A name matches exactly or as the start of one kept volume's name.
+/// When a volume was kept at the latest to be at least `age` old at `now`. An age that is
+/// zero or reaches past the calendar is refused: it would pick every volume, or none.
+fn kept_by(age: &str, now: DateTime<Utc>) -> Result<DateTime<Utc>, Error> {
+    crate::operator::input::go_duration(age)
+        .filter(|age| !age.is_zero())
+        .and_then(|age| chrono::Duration::from_std(age).ok())
+        .and_then(|age| now.checked_sub_signed(age))
+        .ok_or_else(|| {
+            Error::usage(format!(
+                "--older-than takes a duration longer than zero, such as 30d or 12h, not '{}'",
+                printable(age)
+            ))
+        })
+}
+
+/// The kept volumes a prune deletes: those `named`, or every one, kept at or before
+/// `kept_by`. A name matches exactly or as the start of one kept volume's name.
 fn choose(
     kept: &[KeptVolume],
     named: &[&str],
-    older_than: Option<chrono::Duration>,
-    now: DateTime<Utc>,
+    kept_by: Option<DateTime<Utc>>,
     server: &str,
 ) -> Result<Vec<KeptVolume>, Error> {
     let mut chosen: Vec<&KeptVolume> = if named.is_empty() {
@@ -239,9 +244,8 @@ fn choose(
     };
     chosen.sort_by(|left, right| left.name.cmp(&right.name));
     chosen.dedup_by(|left, right| left.name == right.name);
-    if let Some(older_than) = older_than {
-        let before = (now - older_than).timestamp();
-        chosen.retain(|volume| volume.kept_at <= before);
+    if let Some(kept_by) = kept_by {
+        chosen.retain(|volume| volume.kept_at <= kept_by.timestamp());
     }
     chosen.sort_by_key(|volume| volume.kept_at);
     Ok(chosen.into_iter().cloned().collect())
@@ -355,23 +359,23 @@ mod tests {
     fn older_than_leaves_out_a_volume_kept_more_recently() {
         let now = DateTime::from_timestamp(100 * 86_400, 0).unwrap();
         let kept = [kept("aaa", 10 * 86_400), kept("bbb", 99 * 86_400)];
-        let chosen = choose(&kept, &[], Some(chrono::Duration::days(30)), now, "web-1").unwrap();
+        let kept_by = kept_by("30d", now).unwrap();
+        let chosen = choose(&kept, &[], Some(kept_by), "web-1").unwrap();
         assert_eq!(names(&chosen), ["aaa"]);
     }
 
     #[test]
     fn a_name_the_server_did_not_keep_deletes_nothing() {
-        let now = Utc::now();
         let kept = [kept("aaa", 0), kept("abb", 0)];
         assert_eq!(
-            choose(&kept, &["aaa", "zzz"], None, now, "web-1")
+            choose(&kept, &["aaa", "zzz"], None, "web-1")
                 .unwrap_err()
                 .report()
                 .code,
             RpcErrorCode::NotFound
         );
         assert_eq!(
-            choose(&kept, &["a"], None, now, "web-1")
+            choose(&kept, &["a"], None, "web-1")
                 .unwrap_err()
                 .report()
                 .code,
@@ -379,7 +383,7 @@ mod tests {
             "a start two names share picks neither"
         );
         assert_eq!(
-            names(&choose(&kept, &["ab"], None, now, "web-1").unwrap()),
+            names(&choose(&kept, &["ab"], None, "web-1").unwrap()),
             ["abb"]
         );
     }

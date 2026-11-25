@@ -846,19 +846,10 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
                     "message": format!("remove {name}: volume is in use - {ids:?}")
                 }),
             )
-        } else if [
-            fake.volumes.lock().unwrap().remove(name).is_some(),
-            fake.volume_users.lock().unwrap().remove(name).is_some(),
-            fake.named_containers.is_none(),
-        ]
-        .contains(&true)
-        {
-            (StatusCode::NO_CONTENT, serde_json::Value::Null)
         } else {
-            (
-                StatusCode::NOT_FOUND,
-                serde_json::json!({"message": format!("get {name}: no such volume")}),
-            )
+            fake.volume_users.lock().unwrap().remove(name);
+            fake.volumes.lock().unwrap().remove(name);
+            (StatusCode::NO_CONTENT, serde_json::Value::Null)
         }
     } else if method == Method::POST && path.ends_with("/connect") {
         let network = path
