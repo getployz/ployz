@@ -1347,6 +1347,7 @@ impl MachineState {
             stopped: false,
             run: None,
             log_driver: None,
+            admission: None,
         })
         .map_err(internal)
     }

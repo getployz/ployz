@@ -18,9 +18,10 @@ use futures_util::Stream;
 use ipnet::Ipv4Net;
 use ployz_core::{
     CERTIFICATE_POLICY_CLUSTER_KEY, CertificateHost, ClusterName, ClusterRoute, ContainerId,
-    ContainerObservation, DockerVolume, DockerVolumeId, DockerVolumeName, ForgottenAnswer,
-    IngressDoors, IngressHost, IssuanceClock, Machine, MachineId, ManagementIdentity,
-    QualifiedService, RecoverySeed, SealingPublicKey,
+    ContainerKind, ContainerObservation, DockerVolume, DockerVolumeId, DockerVolumeName,
+    ForgottenAnswer, IngressDoors, IngressHost, IssuanceClock, KeptNames, Machine, MachineId,
+    ManagementIdentity, QualifiedService, RecoverySeed, SIGNED_SERVICE_KEY_PREFIX,
+    SealingPublicKey, signed_service_key,
 };
 use serde_json::json;
 
@@ -193,6 +194,10 @@ impl MachinePublicationGuard<'_> {
             .collect::<Vec<_>>();
         for observation in upserts {
             statements.push(container_upsert(observation)?);
+            // In the same transaction, so no replica holds a signed copy without its name.
+            if observation.kind == ContainerKind::ServiceContainer && observation.signed() {
+                statements.push(signed_service_insert(&observation.identity()));
+            }
         }
         if !statements.is_empty() {
             self.store.api.execute(statements).await?;
@@ -695,6 +700,54 @@ impl ReplicatedStore {
             })
     }
 
+    /// Keep `service` signed on every replica, for good. The row is only ever inserted,
+    /// so replicas that wrote it apart agree, and nothing takes it back.
+    ///
+    /// # Errors
+    /// Returns an error when the Corrosion write fails.
+    pub(crate) async fn keep_signed_service(
+        &self,
+        service: &QualifiedService,
+    ) -> Result<(), Error> {
+        self.api.execute([signed_service_insert(service)]).await
+    }
+
+    /// Whether this replica holds `service` signed.
+    ///
+    /// # Errors
+    /// Returns an error when the Corrosion query fails.
+    pub(crate) async fn signed_service_kept(
+        &self,
+        service: &QualifiedService,
+    ) -> Result<bool, Error> {
+        let query = self
+            .api
+            .query(Statement::new(
+                "SELECT 1 AS kept FROM cluster WHERE key = ?",
+                [json!(signed_service_key(service))],
+            ))
+            .await?;
+        Ok(!query.rows(["kept"])?.is_empty())
+    }
+
+    /// Every name this replica holds signed.
+    ///
+    /// # Errors
+    /// Returns an error when the Corrosion query fails.
+    pub(crate) async fn signed_services(&self) -> Result<KeptNames, Error> {
+        let query = self
+            .api
+            .query(Statement::new(
+                "SELECT key AS name FROM cluster WHERE key LIKE ?",
+                [json!(format!("{SIGNED_SERVICE_KEY_PREFIX}%"))],
+            ))
+            .await?;
+        let rows = query.rows(["name"])?;
+        let mut kept = KeptNames::default();
+        kept.keep_keys(rows.iter().filter_map(|[name]| name.as_str()));
+        Ok(kept)
+    }
+
     /// The Cluster Name on this replica, or `None` when the Cluster has none or
     /// its row has not replicated here yet.
     ///
@@ -930,6 +983,23 @@ impl ReplicatedStore {
     pub(crate) async fn subscribe_machine_changes(&self) -> Result<Subscription, Error> {
         self.api
             .subscribe(Statement::new("SELECT id, info FROM machines", []))
+            .await
+    }
+
+    /// Wake when this replica gains a name kept signed. The payload is discarded;
+    /// callers re-read with [`Self::signed_services`].
+    ///
+    /// # Errors
+    ///
+    /// Returns if the subscription cannot be opened.
+    pub(crate) async fn subscribe_signed_service_changes(&self) -> Result<Subscription, Error> {
+        self.api
+            .subscribe(Statement::new(
+                format!(
+                    "SELECT key AS name FROM cluster WHERE key LIKE '{SIGNED_SERVICE_KEY_PREFIX}%'"
+                ),
+                [],
+            ))
             .await
     }
 
@@ -1600,6 +1670,14 @@ impl LocalVolumeSnapshot {
             .iter()
             .map(|(name, volume)| (name, volume.as_ref()))
     }
+}
+
+/// The row that keeps `service` signed: inserted once, never changed or deleted.
+fn signed_service_insert(service: &QualifiedService) -> Statement {
+    Statement::new(
+        "INSERT INTO cluster (key, value) VALUES (?, 1) ON CONFLICT (key) DO NOTHING",
+        [json!(signed_service_key(service))],
+    )
 }
 
 fn container_upsert(observation: &ContainerObservation) -> Result<Statement, Error> {
