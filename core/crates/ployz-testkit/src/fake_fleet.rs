@@ -1208,6 +1208,7 @@ impl Fleet {
             certificates: Vec::new(),
             incomplete_ids: Default::default(),
             unanswered: Vec::new(),
+            answered: None,
             observed_at: time::OffsetDateTime::now_utc()
                 .format(&time::format_description::well_known::Rfc3339)
                 .map_err(internal)?,

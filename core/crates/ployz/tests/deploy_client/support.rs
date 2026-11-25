@@ -932,6 +932,7 @@ impl FakeMachine for DeployService {
                 ..Default::default()
             },
             unanswered: Vec::new(),
+            answered: None,
             observed_at: String::new(),
         };
         let frame = ployz_core::encode_runtime_watch_frame(&frame)

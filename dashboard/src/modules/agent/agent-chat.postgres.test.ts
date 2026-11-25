@@ -292,7 +292,7 @@ it.live("a turn that posts the client's whole transcript back stores each tool r
     expect(roles).toEqual(["user", "assistant", "tool", "assistant", "user", "assistant", "tool", "assistant"]);
   }));
 
-/** Shop's one Server, fra-1, runs the only copy of web, a Global: draining it retires web. */
+/** Shop's one Server, fra-1, runs the only copy of web, a Global, which refuses a drain of it. */
 const lastGlobalCopy = Effect.provideService(OrganizationRuntime, {
   cancel: () => Effect.void,
   open: () => Effect.succeed({ status: "connected" as const, connected: asTestDouble<PloyzSession>()({
@@ -429,24 +429,6 @@ it.live("a Service restart from the sidebar answers a link to a proposal and run
     expect(asked.interrupts).toEqual([]);
     expect(asked.results).toMatchObject([{ ok: true, value: { proposal_id: expect.any(String), status: "presented", next: expect.stringContaining("proposal_status") } }]);
     expect(yield* provided(Effect.flatMap(Database, ({ drizzle }) => drizzle.select().from(serviceAct)))).toEqual([]);
-  }));
-
-// Catches a sidebar drain that destroys something running, even with a person's dashboard caller behind the request.
-it.live("the sidebar refuses a Drain that destroys something with where a person does it, even when its request came with a person's dashboard caller", () =>
-  Effect.gen(function* () {
-    const { provided, caller } = yield* sidebar({ removeWeb: false });
-    const model = scriptedAgent();
-    model.setResponses([{ toolCalls: [{ name: "server_drain", input: { server: "fra-1", wait_seconds: 0 } }] }, { text: "A person drains it." }]);
-    const person: Caller = { ...caller, via: "dashboard" };
-    const asked = yield* provided(agentChat(person, { messages: [{ role: "user", content: "drain fra-1" }], threadId: THREAD, runId: "run-drain", forwardedProps: {} }, model)
-      .pipe(lastGlobalCopy, Effect.flatMap(drain)));
-
-    expect(asked.interrupts).toEqual([]);
-    expect(asked.results).toMatchObject([{ ok: false, refusal: {
-      code: "forbidden",
-      // The sidebar leaves out the CLI command: a person does it in Ployz Cloud.
-      message: "This drain of fra-1 needs a person. Do it in Ployz Cloud",
-    } }]);
   }));
 
 /**

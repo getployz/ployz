@@ -114,7 +114,7 @@ else you can, including a value it can't read, but it can't delete the organizat
 ## Destructive actions ask first
 
 Some changes remove things: a save or deploy that removes a running service, deletes a volume and
-its data, detaches a volume or removes a domain. So do draining or removing a server, renaming the
+its data, detaches a volume or removes a domain. So do removing a server, renaming the
 cluster, cleaning up what a deleted environment left on your servers, removing a project, an
 environment or the organization, forgetting every server, and turning an environment's protection
 off. Before one runs, Ployz shows what it removes and a person says yes. Every organization works
@@ -154,9 +154,8 @@ Which commands ask:
   off the servers. `ployz org rm`, `ployz server forget` with no server named and
   `ployz env protect --off` always ask.
 - Removing or forgetting a server Ployz Cloud manages with `ployz server rm` or
-  `ployz server forget SERVER` always asks. `ployz server drain` asks when a global service would
-  run on no other server, and `ployz server clean` asks when it would stop a service or delete
-  volume data. `ployz server upgrade` never asks.
+  `ployz server forget SERVER` always asks. `ployz server clean` asks when it would stop a service
+  or delete volume data. `ployz server drain` and `ployz server upgrade` never ask.
 - `ployz service stop`, `ployz service restart` and starting a service don't ask.
 - In a [Protected environment](../environments/environments.md#protect-an-environment), a
   member's deploy, and their stop or restart from the dashboard or an agent, wait for an owner or

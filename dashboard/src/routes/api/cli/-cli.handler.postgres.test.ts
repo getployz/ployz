@@ -2230,6 +2230,8 @@ const leftBehindClusterOf = (cluster: LeftBehind) => Layer.succeed(OrganizationR
     status: "connected" as const,
     connected: asTestDouble<PloyzSession>()({
       watchFirstFrame: () => Effect.succeed(asTestDouble<RuntimeWatchView>()({
+        unanswered: [],
+        answered: [fra1],
         machines: cluster.observesFra1 ? [{ machine: { id: fra1, name: "fra-1" } }] : [],
         volumes: [],
         services: [{
@@ -2576,6 +2578,8 @@ const operationClusterOf = (plan: FraRunsGlobal) => Layer.succeed(OrganizationRu
     status: "connected" as const,
     connected: asTestDouble<PloyzSession>()({
       watchFirstFrame: () => Effect.succeed(asTestDouble<RuntimeWatchView>()({
+        unanswered: [],
+        answered: [fra1],
         machines: [{ machine: { id: fra1, name: "fra-1" } }],
         volumes: plan.holdsOnlyCopy === undefined
           ? []
@@ -2624,7 +2628,8 @@ const ownerOf = Effect.fn(function* (organizationId: string) {
   return owner?.userId ?? assert.fail("no member");
 });
 
-for (const operation of operations) {
+// A drain destroys nothing, so it never asks.
+for (const operation of operations.filter(({ verb }) => verb !== "drain")) {
   it.live(
     `a ${operation.verb} resent with a yes to a plan that moved since asks again and runs nothing`,
     () =>
@@ -2635,7 +2640,6 @@ for (const operation of operations) {
         const layer = yield* cliLayer(fakeServers().layer, { runtime: operationClusterOf(plan), inngest });
         yield* Effect.gen(function* () {
           const alice = yield* signUp("alice");
-          if (operation.verb === "drain") plan.namespace = yield* ownNamespace(alice.organization.id, yield* ownerOf(alice.organization.id));
           const keyed = { ...alice, key: `${operation.verb}-moved-attempt` };
           const earlier = yesTo(yield* cli(operation.method, operation.path, keyed, operation.body));
           // Another Service and Volume now on the line: the plan a person said yes to is not this one.
@@ -2673,8 +2677,9 @@ it.live(
   60_000,
 );
 
+// Catches a CLI yes offered to a drain the Engine refuses: a Global's copy on the Server may be the last that works.
 it.live(
-  "a CLI drain that loses the last copy of a Global asks, and the resend with a yes starts one drain",
+  "a CLI drain of a Server running a Global is refused without asking, and starts nothing",
   () =>
     Effect.gen(function* () {
       const inngest = new Inngest({ id: "cli-drain-global-test" });
@@ -2684,41 +2689,10 @@ it.live(
       yield* Effect.gen(function* () {
         const alice = yield* signUp("alice");
         plan.namespace = yield* ownNamespace(alice.organization.id, yield* ownerOf(alice.organization.id));
-        const drain = operations[2];
 
-        const asked = yield* cli(drain.method, drain.path, alice);
-        assert.deepStrictEqual([asked.status, asked.json.error?.code], [409, "approval_required"], asked.text);
-        const details = asked.json.error?.details ?? assert.fail("no details");
-        assert.deepInclude(details.operation, { verb: "drain", name: "fra-1" });
-        assert.isNotEmpty(details.effects ?? []);
-        assert.lengthOf(sent.mock.calls, 0);
-
-        const started = yield* cli(drain.method, drain.path, { ...alice, approval: yesTo(asked) });
-        assert.strictEqual(started.status, 202, started.text);
-        assert.lengthOf(sent.mock.calls, 1);
-      }).pipe(Effect.provide(layer));
-    }),
-  60_000,
-);
-
-// Catches a yes to a drain that would retire a Global's last copy running a different drain once another copy started.
-it.live(
-  "a CLI drain resent with a yes after its plan stopped destroying anything asks again and starts nothing",
-  () =>
-    Effect.gen(function* () {
-      const inngest = new Inngest({ id: "cli-drain-harmless-test" });
-      const sent = vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
-      const plan: FraRunsGlobal = { destroys: true, namespace: "left-behind" };
-      const layer = yield* cliLayer(fakeServers().layer, { runtime: operationClusterOf(plan), inngest });
-      yield* Effect.gen(function* () {
-        const alice = yield* signUp("alice");
-        plan.namespace = yield* ownNamespace(alice.organization.id, yield* ownerOf(alice.organization.id));
-        const drain = operations[2];
-        const earlier = yesTo(yield* cli(drain.method, drain.path, alice));
-        plan.destroys = false;
-
-        const resent = yield* cli(drain.method, drain.path, { ...alice, approval: earlier });
-        assert.deepStrictEqual([resent.status, resent.json.error?.code, resent.json.error?.details?.effects], [409, "approval_required", []], resent.text);
+        const refused = yield* cli("POST", `servers/${fra1}/drain`, alice);
+        assert.strictEqual(refused.status, 409, refused.text);
+        assert.include(refused.text, "web runs on every server, and draining could stop its last working copy.");
         assert.lengthOf(sent.mock.calls, 0);
       }).pipe(Effect.provide(layer));
     }),
@@ -2726,7 +2700,7 @@ it.live(
 );
 
 it.live(
-  "a CLI drain that loses no Global's last copy goes ahead without asking",
+  "a CLI drain goes ahead without asking",
   () =>
     Effect.gen(function* () {
       const inngest = new Inngest({ id: "cli-drain-quiet-test" });
@@ -2777,6 +2751,8 @@ const renamedCluster = Layer.succeed(OrganizationRuntime, {
     status: "connected" as const,
     connected: asTestDouble<PloyzSession>()({
       watchFirstFrame: () => Effect.succeed(asTestDouble<RuntimeWatchView>()({
+        unanswered: [],
+        answered: [fra1],
         machines: [runtimeWatchMachineObservationFixture({ machine: runtimeWatchMachineFixture(fra1, "new"), membership: "up" })],
         volumes: [],
         services: [],

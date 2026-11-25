@@ -1,5 +1,5 @@
-//! Retiring a Global's copies from one Machine: whether the Machine still takes the slot,
-//! the copies it holds, and the sentence a failed retirement is told in.
+//! Retiring a Global's copies from a joining Machine that rules the slot out, and the
+//! sentence a failed retirement is told in.
 
 use ployz_core::error_chain;
 use ployz_core::{
@@ -9,12 +9,11 @@ use ployz_core::{
 };
 use tokio_util::sync::CancellationToken;
 
-use super::observe::ServerNames;
 use super::slot::unknown_eligibility;
 use crate::cluster::Call;
 use crate::connect::Client;
 use crate::deploy::CopyLifecycle;
-use crate::deploy::cleanup::{self, ACK_WAIT, Copy, EmptyPolicy, Removal, RotationFailure};
+use crate::deploy::cleanup::{self, Copy, EmptyPolicy, Removal, RotationFailure};
 use crate::failure::Failure;
 
 /// A Machine's own view of itself while it participates.
@@ -64,54 +63,23 @@ pub(crate) enum Eligibility {
     StillEligible,
 }
 
-/// The words a failed retirement is told in. Each caller keeps its own, because what a
-/// person is told depends on whose command it was.
-pub(crate) enum Sentence<'names> {
-    /// A Drain, which names each proxy that did not confirm by its Server's name and stops
-    /// before it takes another copy out once cancelled.
-    Drain(&'names ServerNames),
-    /// Catch-up, which names each such proxy by id and reports a cancel as internal.
-    CatchUp,
-}
-
-impl Sentence<'_> {
-    pub(crate) fn error(&self, failure: RotationFailure) -> RpcError {
-        match (self, failure) {
-            (_, RotationFailure::Refused(refusal)) => refusal.into_error(),
-            (Self::Drain(names), RotationFailure::NotConfirmed(unconfirmed)) => {
-                RpcError::unavailable(format!(
-                    "not unlisted after {} s; the proxies on {} did not confirm",
-                    ACK_WAIT.as_secs(),
-                    unconfirmed
-                        .machines
-                        .iter()
-                        .map(|id| names.name(id))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ))
-            }
-            (Self::CatchUp, RotationFailure::NotConfirmed(unconfirmed)) => {
-                RpcError::unavailable(format!(
-                    "{} did not confirm the copy left its routes",
-                    unconfirmed
-                        .machines
-                        .iter()
-                        .map(MachineId::to_string)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ))
-            }
-            (Self::Drain(_), RotationFailure::Cancelled) => {
-                RpcError::unavailable("the drain was cancelled while it retired")
-            }
-            (Self::CatchUp, RotationFailure::Cancelled) => {
-                error_chain::rpc_error(ployz_core::RpcErrorCode::Internal, &Failure::cancelled())
-            }
+/// What a catch-up retirement that did not finish is told as: each proxy that did not
+/// confirm by id, and a cancel as internal.
+pub(crate) fn retirement_error(failure: RotationFailure) -> RpcError {
+    match failure {
+        RotationFailure::Refused(refusal) => refusal.into_error(),
+        RotationFailure::NotConfirmed(unconfirmed) => RpcError::unavailable(format!(
+            "{} did not confirm the copy left its routes",
+            unconfirmed
+                .machines
+                .iter()
+                .map(MachineId::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+        RotationFailure::Cancelled => {
+            error_chain::rpc_error(ployz_core::RpcErrorCode::Internal, &Failure::cancelled())
         }
-    }
-
-    fn stops_between_copies(&self) -> bool {
-        matches!(self, Self::Drain(_))
     }
 }
 
@@ -128,7 +96,6 @@ pub(crate) async fn retire_if_ineligible(
     namespace: &Namespace,
     spec: &ResolvedServiceSpec,
     cancellation: &CancellationToken,
-    sentence: &Sentence<'_>,
 ) -> Result<Eligibility, RpcError> {
     let view = participating(client, machine_id, true).await?;
     match spec.placement_eligibility_in_namespace(namespace, &view.machine, view.storage.as_ref()) {
@@ -136,23 +103,19 @@ pub(crate) async fn retire_if_ineligible(
         ServicePlacementEligibility::Unknown(reason) => Err(unknown_eligibility(reason)),
         ServicePlacementEligibility::Ineligible(_) => {
             let service = QualifiedService::new(namespace.clone(), spec.name.clone());
-            retire_copies(&*client, machine_id, &service, cancellation, sentence).await?;
+            retire_copies(&*client, machine_id, &service, cancellation).await?;
             Ok(Eligibility::Retired)
         }
     }
 }
 
-pub(crate) async fn retire_copies<C: CopyLifecycle>(
+async fn retire_copies<C: CopyLifecycle>(
     client: &C,
     machine_id: &MachineId,
     service: &QualifiedService,
     cancellation: &CancellationToken,
-    sentence: &Sentence<'_>,
 ) -> Result<(), RpcError> {
     for observed in client.target_copies(machine_id, service).await? {
-        if sentence.stops_between_copies() && cancellation.is_cancelled() {
-            return Err(sentence.error(RotationFailure::Cancelled));
-        }
         cleanup::retire(
             client,
             &Copy::observed(&observed),
@@ -162,7 +125,7 @@ pub(crate) async fn retire_copies<C: CopyLifecycle>(
         )
         .await?
         .failure()
-        .map_err(|failure| sentence.error(failure))?;
+        .map_err(retirement_error)?;
     }
     Ok(())
 }

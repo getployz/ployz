@@ -31,8 +31,8 @@ use crate::deploy::cleanup::{
     self, BroughtIn, Copy, EmptyPolicy, NotIn, Removal, Rotated, RotationFailure,
 };
 use crate::global_slot::{
-    Eligibility, Live, Sentence, ServerNames, participating, retire_if_ineligible,
-    retire_ingress_proxy,
+    Eligibility, Live, ServerNames, participating, retire_if_ineligible, retire_ingress_proxy,
+    retirement_error,
 };
 use crate::ingress::{ClusterDoors, DoorMachine};
 use crate::private_access::AccessMachine;
@@ -179,7 +179,6 @@ impl SlotIo for Client {
             &new.slot.namespace,
             &new.resolved_spec,
             cancel,
-            &Sentence::CatchUp,
         )
         .await?;
         Ok(retired == Eligibility::Retired)
@@ -395,9 +394,7 @@ impl CatchUpClient for Client {
 }
 
 fn step_error(rotated: Rotated) -> Result<(), RpcError> {
-    rotated
-        .failure()
-        .map_err(|failure| Sentence::CatchUp.error(failure))
+    rotated.failure().map_err(retirement_error)
 }
 
 /// A factual stage of target-only catch-up, adapted by the owning command.

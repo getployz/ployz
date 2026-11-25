@@ -62,7 +62,7 @@ const gates: ReadonlyArray<readonly [string, Gated, string | RegExp, ReadonlyArr
     requestServerPolicyChange(actor, { organizationSlug: SLUG, machineId: MACHINE, change: { acceptsServices: true } } as never) as never, "undefined", ["machine/policy-change.requested"]],
   ["planKeyedServerPolicyChange", (actor) => planKeyedServerPolicyChange(caller(actor.userId), MACHINE as never, { acceptsServices: true }) as never, "a plan", []],
   ["requestServerDrain", (actor) =>
-    requestServerDrain(caller(actor.userId), { organizationSlug: SLUG, machineId: MACHINE, requestId: MISSING, stops: [] } as never) as never, "Error: Service not found: ployz/OrganizationRuntime", []],
+    requestServerDrain(caller(actor.userId), { organizationSlug: SLUG, machineId: MACHINE, requestId: MISSING } as never) as never, "Error: Service not found: ployz/OrganizationRuntime", []],
   ["loadNamespaceDataLoss", (actor) => loadNamespaceDataLoss(actor, { organizationSlug: SLUG, namespace: "stray" }) as never, "Error: Service not found: ployz/CloudStore", []],
   ["removeNamespace", (actor) => removeNamespace(actor, { organizationSlug: SLUG, namespace: "stray", confirmDataLoss: [] }) as never, "Error: Service not found: ployz/CloudStore", []],
   ["loadMachineDataLoss", (actor) => loadMachineDataLoss(actor, at) as never, "Error: Service not found: ployz/OrganizationRuntime", []],

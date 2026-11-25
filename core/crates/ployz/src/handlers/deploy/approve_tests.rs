@@ -5,7 +5,8 @@ use ployz_core::{Hint, Namespace, RequestedServiceSpec, ServiceName};
 use serde_json::json;
 
 use super::{
-    Behind, Enforcing, Needs, Probe, consent, enforced, outdated, pin_tags, signable, unpinnable,
+    Behind, Enforcing, Needs, Probe, Ruled, consent, enforced, outdated, pin_tags, signable,
+    unpinnable,
 };
 use crate::image::PinError;
 
@@ -192,6 +193,165 @@ fn a_built_service_is_refused_plainly_with_no_pin_hint() {
          yet. Deploy it from an image pinned by digest."
     );
     assert!(next_hints(&error).is_empty(), "{:?}", error.hints());
+}
+
+/// An automatic deploy rule over web, built from main, ended or not.
+fn rule_over_web(ended: bool) -> ployz_core::authority::AutoDeployRule {
+    use ployz_core::authority::rule::{
+        BuildPolicy, Builder, PolicyCache, PolicyMethod, RuleEvent, RuleSource, Runner,
+    };
+    use ployz_core::authority::{AutoDeployRule, RuleId, RuleService, SignerKey, Timestamp};
+    AutoDeployRule {
+        proposal: None,
+        cluster: ployz_core::SealingPublicKey::from_bytes([9; 32]),
+        rule: RuleId::from_bytes([0x11; 16]),
+        generation: 1,
+        namespace: Namespace::parse("app").unwrap(),
+        machines: Vec::new(),
+        source: RuleSource {
+            repository_id: 1,
+            owner_id: 1,
+            repository: "acme/web".to_owned(),
+            branch: "main".to_owned(),
+            workflow: ".github/workflows/ployz-build.yml".to_owned(),
+            events: vec![RuleEvent::Push],
+            builder: Builder::pinned(),
+            runner: Runner::GithubHosted,
+        },
+        services: vec![RuleService {
+            name: ServiceName::parse("web").unwrap(),
+            template: PayloadDigest::parse(&"ab".repeat(32)).unwrap(),
+            policy: BuildPolicy {
+                method: PolicyMethod::Dockerfile {
+                    path: "Dockerfile".to_owned(),
+                },
+                context: ".".to_owned(),
+                target: None,
+                args: BTreeMap::new(),
+                secrets: Default::default(),
+                platforms: ["linux/amd64".to_owned()].into(),
+                cache: PolicyCache::Off,
+            },
+            secrets: None,
+        }],
+        issued_at: Timestamp::from_millis(1_800_000_000_000).unwrap(),
+        ended,
+        signer: SignerKey::Device(ployz_core::DeviceKey::from_bytes([7; 32])),
+    }
+}
+
+/// web's source as the review reads it: repository 1, on `branch`.
+fn web_on(branch: &str) -> ployz_core::authority::rule_draft::RuleSourceView {
+    serde_json::from_value(json!({
+        "service": "web", "repository": "acme/web", "repository_id": 1, "branch": branch,
+        "root_dir": ".", "build": {"buildMethod": "dockerfile"},
+    }))
+    .unwrap()
+}
+
+/// The kept rule over web, ended or not, with web built from main.
+fn kept_over_web(ended: bool) -> Ruled {
+    Ruled {
+        kept: Some(rule_over_web(ended)),
+        sources: vec![web_on("main")],
+        ..Ruled::default()
+    }
+}
+
+/// web built from source beside api, an image by digest.
+fn web_and_api() -> Option<Vec<RequestedServiceSpec>> {
+    let mut api = spec(PINNED);
+    api.name = ServiceName::parse("api").unwrap();
+    Some(vec![spec("ployz-build/web:pending"), api])
+}
+
+fn refusal(ruled: &Ruled) -> String {
+    ruled.building(web_and_api()).unwrap_err().report().message
+}
+
+const UNCOVERED: &str = "No automatic deploy rule covers web as it stands, so your servers \
+                         won't build it. Turn on Deploy every push, then deploy again.";
+
+#[test]
+fn a_built_service_the_kept_rule_approves_builds_under_it_and_only_the_rest_is_signed() {
+    let signed = kept_over_web(false)
+        .building(web_and_api())
+        .unwrap()
+        .unwrap();
+
+    let names: Vec<&str> = signed.iter().map(|spec| spec.name.as_str()).collect();
+    assert_eq!(names, ["api"]);
+}
+
+#[test]
+fn a_built_service_the_kept_rule_no_longer_approves_is_refused_before_signing() {
+    let changed = Ruled {
+        changed: vec![ServiceName::parse("web").unwrap()],
+        ..kept_over_web(false)
+    };
+    let moved = Ruled {
+        sources: vec![web_on("release")],
+        ..kept_over_web(false)
+    };
+
+    for ruled in [changed, moved, Ruled::default()] {
+        let error = ruled.building(web_and_api()).unwrap_err();
+        assert_eq!(
+            error.report().code,
+            ployz_core::RpcErrorCode::InvalidArgument
+        );
+        assert_eq!(error.report().message, UNCOVERED);
+    }
+}
+
+#[test]
+fn a_drafted_rule_that_drops_a_built_service_refuses_it_though_the_kept_rule_covers_it() {
+    let mut rule = rule_over_web(false);
+    rule.services.clear();
+    let summary = ployz_core::authority::RuleSummary {
+        namespace: "app".to_owned(),
+        repository: "acme/web".to_owned(),
+        branch: "main".to_owned(),
+        workflow: rule.source.workflow.clone(),
+        builder: String::new(),
+        pinned: true,
+        servers: 0,
+        generation: 2,
+        ended: false,
+        services: Vec::new(),
+    };
+    let ruled = Ruled {
+        drafted: Some(super::Drafted {
+            rule,
+            births: Default::default(),
+            prior: None,
+            summary,
+        }),
+        ..kept_over_web(false)
+    };
+
+    assert_eq!(refusal(&ruled), UNCOVERED);
+}
+
+#[test]
+fn a_built_service_whose_rule_was_ended_is_refused_until_the_switch_turns_it_on() {
+    assert_eq!(
+        refusal(&kept_over_web(true)),
+        "Automatic deploys are off for web. Turn on Deploy every push to deploy it."
+    );
+}
+
+#[test]
+fn a_rule_that_couldnt_be_read_says_so_rather_than_that_none_covers() {
+    let unread = Ruled {
+        unread: Some("Couldn't read the automatic deploy rule"),
+        ..Ruled::default()
+    };
+
+    assert_eq!(
+        refusal(&unread),
+        "Couldn't read the automatic deploy rule, so web can't build under it. Nothing deployed."
+    );
 }
 
 #[test]

@@ -21,7 +21,7 @@ use ployz_core::{
 };
 use ployz_store::{
     BuildStatus, ConfigStore, GithubBuildId, GithubClaims, GithubEnd, GithubGrant, GithubHandOff,
-    GithubReport, RunEnd,
+    GithubReport, GithubRule, RunEnd,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -52,12 +52,25 @@ pub enum GithubStart {
         /// The pushed commit the build pins.
         commit: String,
     },
+    /// It builds under an automatic deploy rule for a person's Deploy: dispatch
+    /// `workflow` on `branch` with `commit` as its input. Its builder job's OIDC token
+    /// names `workflow_ref`.
+    Approved {
+        workflow: String,
+        workflow_ref: String,
+        branch: String,
+        commit: String,
+    },
 }
 
 /// Decide how GitHub build `id` starts: reuse the Service's latest image when a
 /// Machine still holds it for this commit, else dispatch to the runner of its one
 /// platform. A Service that needs several platforms, or a Cluster Cloud can't read,
-/// skips GitHub. With `expect`, it reads only an entry of that Cluster, as [`super::run_deployment_expecting`] runs, naming the
+/// skips GitHub. A push under an automatic deploy rule follows the push's own run. A
+/// person's Deploy under it reuses only an image a Server verified under the rule as it
+/// stands, and otherwise dispatches the rule's workflow when the rule's platforms are
+/// what the Service's Servers run, else skips GitHub saying why.
+/// With `expect`, it reads only an entry of that Cluster, as [`super::run_deployment_expecting`] runs, naming the
 /// Machines it left.
 ///
 /// # Errors
@@ -80,21 +93,37 @@ pub async fn github_start(
         move |store| store.github_input(&id)
     })
     .await?;
-    if let Some(rule) = rule.as_ref().and_then(|signed| signed.open().ok()) {
-        return Ok(Dialed {
-            outcome: GithubStart::Follow {
-                workflow: rule.source.workflow,
-                workflow_ref: rule.source.builder.r#ref,
-                commit: built.commit.to_string(),
-            },
-            foreign: Vec::new(),
-        });
-    }
+    let approved = match rule {
+        Some(GithubRule::Push(signed)) => {
+            if let Ok(rule) = signed.open() {
+                return Ok(Dialed {
+                    outcome: GithubStart::Follow {
+                        workflow: rule.source.workflow,
+                        workflow_ref: rule.source.builder.r#ref,
+                        commit: built.commit.to_string(),
+                    },
+                    foreign: Vec::new(),
+                });
+            }
+            None
+        }
+        Some(GithubRule::Dispatch(signed)) => signed.open().ok(),
+        None => None,
+    };
     let deployment = only(&built.input, &id.service)?;
     let commit = built.commit;
-    let receipt = built
+    let mut receipt: Option<BuildReceipt> = built
         .receipt
         .and_then(|receipt| serde_json::from_value(receipt).ok());
+    // A person's Deploy under the rule reuses only an image a Server verified under the
+    // rule as it stands. Any other receipt is left out before the Servers are asked, so
+    // the platforms they answer are the Service's own, not the rejected image's.
+    if let (Some(_), Some(offered)) = (&approved, &receipt) {
+        let (id, image) = (id.clone(), offered.image.reference.clone());
+        if !store_call(&store, move |store| store.github_proven(&id, &image)).await? {
+            receipt = None;
+        }
+    }
     let mut foreign = Vec::new();
     let outside = match session(connections, expect).await {
         Ok(session) => {
@@ -105,11 +134,36 @@ pub async fn github_start(
         }
         Err(error) => Err(error),
     };
-    let end = match outside {
-        Ok(OutsideBuild::Reuse { receipt, .. }) => GithubEnd::Built {
+    // Any other build under the rule is for the platforms it signed, when those are what
+    // the Service's Servers run.
+    let mut refused = None;
+    if let Some(rule) = approved
+        && !matches!(outside, Ok(OutsideBuild::Reuse { .. }))
+    {
+        let signed = (rule.service(&id.service))
+            .map(|approved| approved.policy.platforms.clone())
+            .unwrap_or_default();
+        match unbuildable(&signed, &id.service, &outside) {
+            None => {
+                return Ok(Dialed {
+                    outcome: GithubStart::Approved {
+                        workflow: rule.source.workflow,
+                        workflow_ref: rule.source.builder.r#ref,
+                        branch: rule.source.branch,
+                        commit: commit.to_string(),
+                    },
+                    foreign,
+                });
+            }
+            Some(message) => refused = Some(GithubEnd::Skipped { message }),
+        }
+    }
+    let end = match (refused, outside) {
+        (Some(end), _) => end,
+        (None, Ok(OutsideBuild::Reuse { receipt, .. })) => GithubEnd::Built {
             receipt: serde_json::to_value(receipt).expect("a build receipt is JSON"),
         },
-        Ok(OutsideBuild::Build { platforms }) => match platforms.as_slice() {
+        (None, Ok(OutsideBuild::Build { platforms })) => match platforms.as_slice() {
             [platform] => {
                 let runner = if platform == "linux/arm64" {
                     "ubuntu-24.04-arm"
@@ -130,7 +184,7 @@ pub async fn github_start(
                 ),
             },
         },
-        Err(error) => GithubEnd::Skipped {
+        (None, Err(error)) => GithubEnd::Skipped {
             message: format!(
                 "Cloud couldn't read your Servers: {}",
                 error_chain::row(&error)
@@ -150,6 +204,34 @@ pub async fn github_start(
         outcome: start,
         foreign,
     })
+}
+
+/// Why GitHub can't build `service` under its automatic deploy rule, which signed the
+/// `signed` platforms its builder builds, for what `outside` observed of its Servers, or
+/// none when it can. A Service whose Servers run other platforms, or whose Servers Cloud
+/// couldn't read, isn't dispatched to a build no Server could run.
+fn unbuildable(
+    signed: &BTreeSet<String>,
+    service: &ServiceName,
+    outside: &Result<OutsideBuild, RpcError>,
+) -> Option<String> {
+    match outside {
+        Ok(OutsideBuild::Reuse { .. }) => None,
+        Ok(OutsideBuild::Build { platforms })
+            if platforms.iter().collect::<BTreeSet<_>>() == signed.iter().collect() =>
+        {
+            None
+        }
+        Ok(OutsideBuild::Build { platforms }) => Some(format!(
+            "Its automatic deploy rule builds {service} for {}, but its servers run {}",
+            signed.iter().cloned().collect::<Vec<_>>().join(" and "),
+            platforms.join(" and ")
+        )),
+        Err(error) => Some(format!(
+            "Cloud couldn't read your Servers: {}",
+            error_chain::row(error)
+        )),
+    }
 }
 
 /// A receipt that can't be checked is only a missed shortcut: GitHub builds.
@@ -512,6 +594,7 @@ async fn rule_build(
         let rule = store.github_rule(&id)?.ok_or_else(|| {
             ployz_core::RpcError::conflict("This build runs under no automatic deploy rule")
         })?;
+        let rule = rule.signed().clone();
         let built = store.github_input(&id)?;
         if built.commit.as_str() != commit {
             return Err(ployz_core::RpcError::conflict(
@@ -896,6 +979,28 @@ async fn session(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_rule_build_dispatches_only_for_the_platforms_the_rule_signed() {
+        let web = ServiceName::parse("web").unwrap();
+        let signed = BTreeSet::from(["linux/amd64".to_owned()]);
+        let build = |platforms: &[&str]| -> Result<OutsideBuild, RpcError> {
+            Ok(OutsideBuild::Build {
+                platforms: platforms.iter().map(|p| (*p).to_owned()).collect(),
+            })
+        };
+
+        assert_eq!(unbuildable(&signed, &web, &build(&["linux/amd64"])), None);
+        assert_eq!(
+            unbuildable(&signed, &web, &build(&["linux/amd64", "linux/arm64"])).as_deref(),
+            Some(
+                "Its automatic deploy rule builds web for linux/amd64, but its servers run \
+                 linux/amd64 and linux/arm64"
+            )
+        );
+        assert!(unbuildable(&signed, &web, &build(&["linux/arm64"])).is_some());
+        assert!(unbuildable(&signed, &web, &Err(RpcError::unavailable("down"))).is_some());
+    }
 
     #[test]
     fn only_a_sealed_build_without_a_holder_mint_skips_github() {

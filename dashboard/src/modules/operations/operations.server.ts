@@ -11,7 +11,7 @@ import { requestNamespaceCleanup } from "#/modules/machines/namespace-cleanup.se
 import { requestCliServerDrain } from "#/modules/machines/server-drain.server";
 import type { ServerPolicyChange } from "#/modules/machines/server-policy";
 import { planKeyedServerPolicyChange } from "#/modules/machines/server-policy.server";
-import { planClean, planDrain, planIngressOff, planRemove } from "#/modules/machines/server-operations.server";
+import { drainRefusal, planClean, planDrain, planIngressOff, planRemove } from "#/modules/machines/server-operations.server";
 import { admitOperation, type Admission, replayed } from "#/modules/operations/keyed.server";
 import { OPERATIONS, VOLUME_OPERATIONS } from "#/modules/operations/operations";
 import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
@@ -101,6 +101,8 @@ export const drainServer = (caller: Caller, machineId: MachineId, call: Operatio
     if (answered !== undefined) return answered;
     const plan = yield* planDrain(caller.organization.id, machineId);
     if (plan === null) return null;
+    const refusal = drainRefusal(plan);
+    if (refusal !== null) return yield* refusal;
     return yield* admitOperation(caller.organization.id, request, Effect.gen(function* () {
       const gated = yield* gate(caller, call, { ...plan, ployz: `ployz server drain ${plan.name}` });
       if (!gated.ok) return refused(gated.refusal);
