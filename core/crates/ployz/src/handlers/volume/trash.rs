@@ -239,30 +239,39 @@ fn owner(root: &ArgMatches, name: &DockerVolumeName) -> Option<OwnedNamespace> {
         .find(|owned| owned.namespace.as_str() == namespace)
 }
 
-/// The IDs `trash empty` names, and whether it keeps entries a restore pinned: with no
-/// IDs, or with `--keep-restoring`, the Server skips them under its lock.
-fn emptying(root: &ArgMatches) -> (Vec<TrashId>, bool) {
-    let matches = leaf_matches(root);
-    let named: Vec<TrashId> = matches
+/// The IDs `trash empty` names.
+fn named(root: &ArgMatches) -> Vec<TrashId> {
+    leaf_matches(root)
         .get_many::<TrashId>("id")
         .into_iter()
         .flatten()
         .copied()
-        .collect();
-    let bulk = named.is_empty() || matches.get_flag("keep-restoring");
-    (named, bulk)
-}
-
-/// What a refused `trash empty` with no IDs offers to run: the entries it would have
-/// deleted, still keeping any a restore pins before the retry reaches the Server.
-fn retry_args(ids: &[TrashId]) -> Vec<String> {
-    std::iter::once("--keep-restoring".to_owned())
-        .chain(ids.iter().map(ToString::to_string))
         .collect()
 }
 
+/// What `trash empty` sends for `ids`. With no IDs named, or with `--keep-restoring`, the
+/// Server keeps any of them a restore pinned, judged under its lock.
+fn empty_request(root: &ArgMatches, ids: Vec<TrashId>) -> EmptyTrashRequest {
+    EmptyTrashRequest {
+        bulk: named(root).is_empty() || leaf_matches(root).get_flag("keep-restoring"),
+        ids,
+    }
+}
+
+/// What a refused `trash empty` with no IDs offers to run, rebuilt from what it parsed:
+/// the entries it would have deleted, still keeping any a restore pins before the retry
+/// reaches the Server.
+fn empty_retry(root: &ArgMatches, ids: &[TrashId]) -> String {
+    let ids: Vec<String> = ids.iter().map(ToString::to_string).collect();
+    let args: Vec<&str> = ["volume", "trash", "empty", "--keep-restoring"]
+        .into_iter()
+        .chain(ids.iter().map(String::as_str))
+        .collect();
+    crate::cli::rerun(leaf_matches(root), &args)
+}
+
 pub(in crate::handlers) fn empty(root: &ArgMatches) -> Result<(), Error> {
-    let (named, bulk) = emptying(root);
+    let named = named(root);
     let runtime = runtime()?;
     let (server, ids, kept, restoring) = runtime.block_on(async {
         let server = connect(root).await?;
@@ -312,7 +321,7 @@ pub(in crate::handlers) fn empty(root: &ArgMatches) -> Result<(), Error> {
         return unread;
     }
     if named.is_empty()
-        && let Err(refused) = confirm_all(&server.name, &ids)
+        && let Err(refused) = confirm_all(&server.name, &empty_retry(root, &ids), ids.len())
     {
         // With unreadable entries left, the result says nothing was deleted and the
         // refusal, with its retry naming the readable entries, ends it partial.
@@ -324,7 +333,7 @@ pub(in crate::handlers) fn empty(root: &ArgMatches) -> Result<(), Error> {
     let mut emptied = runtime.block_on(async {
         server
             .client
-            .call_shared::<op::EmptyTrash>(EmptyTrashRequest { ids, bulk }, once())
+            .call_shared::<op::EmptyTrash>(empty_request(root, ids), once())
             .await
             .map_err(crate::connect::rpc_error)
     })?;
@@ -384,21 +393,16 @@ fn unreadable(server: &str, kept: &[UnreadableTrash]) -> Result<(), Error> {
     }
 }
 
-/// Ask before emptying every entry; `--json` and a script get the command naming each one.
-fn confirm_all(server: &str, ids: &[TrashId]) -> Result<(), Error> {
-    let retry = retry_args(ids);
-    let named: Vec<&str> = retry.iter().map(String::as_str).collect();
+/// Ask before emptying every entry; `--json` and a script get `retry`, which names each one.
+fn confirm_all(server: &str, retry: &str, count: usize) -> Result<(), Error> {
     crate::ui::confirm(
-        &format!(
-            "Delete {} in {server}'s Trash for good?",
-            entries(ids.len())
-        ),
+        &format!("Delete {} in {server}'s Trash for good?", entries(count)),
         || {
             Error::coded(
                 RpcErrorCode::ConfirmationRequired,
                 "Emptying the Trash needs confirmation. Nothing deleted.",
             )
-            .hint(Hint::Retry(sudo(&crate::cli::typed_with(&named))))
+            .hint(Hint::Retry(sudo(retry)))
         },
         "Nothing deleted.",
     )

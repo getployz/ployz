@@ -3,7 +3,7 @@ use ployz_core::{
     RuntimeWatchFrame, SlotId, SlotRole, VolumeCopy,
 };
 
-use super::{emptying, no_copy, retry_args};
+use super::{empty_request, empty_retry, named, no_copy};
 use crate::global_fixtures::machine;
 use crate::handlers::volume::restore::{Seen, Unseen};
 
@@ -80,24 +80,34 @@ fn a_deleted_volume_comes_back_only_when_every_server_of_the_frame_answers_with_
 }
 
 /// The retry a refused `trash empty` prints names the entries it would delete, and still
-/// keeps any a restore pins before the retry runs.
+/// keeps any a restore pins before the retry runs, however the refused command was typed.
 #[test]
 fn the_retry_of_a_refused_empty_still_keeps_entries_being_restored() {
     let ids = [
         ployz_core::TrashId::parse("aeaqcaibaeaqcaibaeaqcaibae").unwrap(),
         ployz_core::TrashId::parse("aiaqcaibaeaqcaibaeaqcaibae").unwrap(),
     ];
-    let argv = ["ployz", "volume", "trash", "empty"]
-        .map(str::to_owned)
-        .into_iter()
-        .chain(retry_args(&ids));
-    let root = crate::cli::command().try_get_matches_from(argv).unwrap();
+    let parse = |argv: Vec<String>| crate::cli::command().try_get_matches_from(argv).unwrap();
+    for typed in [
+        "ployz volume trash empty",
+        "ployz volume trash empty --keep-restoring",
+        "ployz volume trash empty --",
+        "ployz --connect ssh://root@web-1 volume trash empty",
+    ] {
+        let refused = parse(shell_words::split(typed).unwrap());
+        let retry = parse(shell_words::split(&empty_retry(&refused, &ids)).unwrap());
 
-    let (named, bulk) = emptying(&root);
-
-    assert_eq!(named, ids);
-    assert!(
-        bulk,
-        "a retry that names entries must still keep pinned ones"
-    );
+        assert_eq!(
+            empty_request(&retry, named(&retry)),
+            ployz_core::EmptyTrashRequest {
+                ids: ids.to_vec(),
+                bulk: true,
+            },
+            "the retry of `{typed}` must still keep pinned entries"
+        );
+        assert_eq!(
+            crate::cli::leaf_matches(&retry).get_one::<String>("connect"),
+            crate::cli::leaf_matches(&refused).get_one::<String>("connect"),
+        );
+    }
 }
