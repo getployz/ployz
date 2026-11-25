@@ -6,14 +6,15 @@
 use std::fmt::Display;
 
 use chrono::{Local, SecondsFormat, TimeZone};
+use ployz_core::RpcError;
 use ployz_core::domain::private_dns;
-use ployz_core::{Hint, RpcError};
 use ployz_store::{
     ApprovalOperation, ApprovalRequired, ApprovalSubject, DestructiveEffect, DestructiveKind,
     DiffView, OperationVerb, SettingPath,
 };
 use serde::Deserialize;
 
+use crate::cli::Rerun;
 use crate::cloud::account::StoreCallError;
 use crate::failure::Failure;
 
@@ -385,7 +386,7 @@ pub(crate) fn line(effect: &DestructiveEffect) -> String {
 
 /// Shows what `asked` would do and asks yes or no: the digest to send again on a yes.
 /// Without a terminal nothing asks, and the failure names `retry`.
-pub(crate) fn settle(verb: Verb, asked: &Asked, retry: String) -> Result<String, StoreCallError> {
+pub(crate) fn settle(verb: Verb, asked: &Asked, retry: Rerun) -> Result<String, StoreCallError> {
     for line in asked.review(verb) {
         crate::ui::note(line);
     }
@@ -396,7 +397,7 @@ pub(crate) fn settle(verb: Verb, asked: &Asked, retry: String) -> Result<String,
                 "Nothing {}. Saying yes needs a terminal.",
                 verb.past()
             ))
-            .hint(Hint::Retry(retry))
+            .hint(retry)
         },
         &format!("Nothing {}.", verb.past()),
     )
@@ -415,12 +416,12 @@ pub(crate) fn moved(verb: Verb, refused: RpcError) -> Failure {
 /// Run `attempt` with `approval`, the digest a person already said yes to, if any. When
 /// Cloud asks, [`settle`] gets a yes and `attempt` runs once more carrying its digest. An
 /// ask after a yes means the plan moved, and nothing runs. Under `--json` nothing asks;
-/// the refusal comes back naming `retry` of the digest.
+/// the refusal comes back naming `again` carrying the digest.
 pub(crate) fn approved<T>(
     runtime: &tokio::runtime::Runtime,
     verb: impl Into<Verb>,
     mut approval: Option<String>,
-    retry: impl Fn(&str) -> String,
+    again: &Rerun,
     mut attempt: impl AsyncFnMut(Option<&str>) -> Result<T, StoreCallError>,
 ) -> Result<T, Failure> {
     let verb = verb.into();
@@ -434,12 +435,16 @@ pub(crate) fn approved<T>(
             return Err(refused.into());
         };
         if crate::ui::json() {
-            return Err(Failure::from(refused).hint(Hint::Retry(retry(asked.digest()))));
+            return Err(Failure::from(refused).hint(again.clone().set("approval", asked.digest())));
         }
         if said_yes {
             return Err(moved(verb, refused));
         }
-        approval = Some(settle(verb, &asked, retry(asked.digest()))?);
+        approval = Some(settle(
+            verb,
+            &asked,
+            again.clone().set("approval", asked.digest()),
+        )?);
         said_yes = true;
     }
 }

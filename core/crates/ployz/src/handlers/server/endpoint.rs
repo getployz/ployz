@@ -166,7 +166,7 @@ async fn enter(
             if unreachable {
                 error.code = RpcErrorCode::Unavailable;
             }
-            return missed(connection.to_string(), error);
+            return missed(connection.shown().to_string(), error);
         }
     };
     let observed = match (client.entry_id().await, client.machines().await) {
@@ -176,12 +176,12 @@ async fn enter(
             .map(|observation| observation.machine.name.clone())
             .map(|name| (Dialer { id, name }, machines)),
         (Err(error), _) | (_, Err(error)) => {
-            return missed(connection.to_string(), rpc_error(error));
+            return missed(connection.shown().to_string(), rpc_error(error));
         }
     };
     let Some((observer, machines)) = observed else {
         return missed(
-            connection.to_string(),
+            connection.shown().to_string(),
             rpc_error(crate::connect::ConnectError::MissingMachineDetails),
         );
     };

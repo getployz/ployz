@@ -51,7 +51,10 @@ pub(crate) fn stored<T: DeserializeOwned>(
             return Err(StoreCallError::Refused(refused));
         }
         if status == StatusCode::NOT_FOUND {
-            return Err(LoginError::Unsupported(credential.cloud().to_owned()).into());
+            return Err(LoginError::Unsupported(
+                crate::cloud::origin::CloudOrigin::new(credential.cloud()).shown(),
+            )
+            .into());
         }
     }
     Ok(answer(credential, status, bytes)?)

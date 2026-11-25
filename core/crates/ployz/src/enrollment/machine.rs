@@ -65,7 +65,7 @@ pub(crate) fn public_ip(value: &str) -> Result<IpAddr, Error> {
 fn reachable_public_ip(value: &str) -> Result<IpAddr, Error> {
     let ip = value
         .parse::<IpAddr>()
-        .map_err(|_| Error::usage(format!("invalid public IP {value:?}")))?;
+        .map_err(|_| Error::usage("invalid public IP: expected an IPv4 or IPv6 address"))?;
     let unreachable = match ip.to_canonical() {
         ip if ip.is_unspecified() => Some("an unspecified"),
         ip if ip.is_loopback() => Some("a loopback"),
@@ -152,7 +152,10 @@ pub(crate) fn machine_name_requested(
     };
     MachineName::parse(requested).map(Some).map_err(|error| {
         let failure = Error::from(error);
-        match MachineName::from_hostname(requested) {
+        // A suggestion fixes a hostname's case and separators. Text with `:`, `/` or `@`
+        // is no hostname, and may be a URL whose user info the suggestion would keep.
+        let hostname = !requested.contains([':', '/', '@']);
+        match MachineName::from_hostname(requested).filter(|_| hostname) {
             Some(suggested) => failure.hint(Hint::Closest(suggested.into())),
             None => failure,
         }
@@ -398,10 +401,11 @@ pub(crate) fn readiness_timeout_message(message: &str) -> String {
     )
 }
 
-pub(crate) fn confirm(yes: bool, question: &str) -> Result<(), Error> {
-    if yes {
+/// Ask `question` before a reset, unless `--yes` was given: `ask` is this command with `--yes`.
+pub(crate) fn confirm(ask: Option<crate::cli::Rerun>, question: &str) -> Result<(), Error> {
+    let Some(yes) = ask else {
         return Ok(());
-    }
+    };
     crate::ui::note(
         "This removes Ployz-managed containers and resets this machine's cluster membership.",
     );
@@ -415,7 +419,7 @@ pub(crate) fn confirm(yes: bool, question: &str) -> Result<(), Error> {
                 RpcErrorCode::ConfirmationRequired,
                 "Resetting the Server needs confirmation. No changes made.",
             )
-            .hint(Hint::Retry(crate::cli::typed_with(&["--yes"])))
+            .hint(yes)
         },
         "Cancelled. The Server was not reset.",
     )
@@ -433,7 +437,7 @@ pub(crate) fn parse_endpoints(values: &[String]) -> Result<Vec<AdvertisedEndpoin
                         .map(|address| SocketAddr::new(address, ployz_core::WIREGUARD_PORT))
                 })
                 .map(AdvertisedEndpoint)
-                .map_err(|_| Error::usage(format!("invalid WireGuard endpoint {value:?}")))
+                .map_err(|_| Error::usage("invalid WireGuard endpoint: expected IP or IP:PORT"))
         })
         .collect()
 }

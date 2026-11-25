@@ -149,7 +149,7 @@ pub(crate) fn inspect(root: &ArgMatches) -> Result<(), Error> {
         })?;
         Ok((view, Some((settings, domains))))
     };
-    let (view, rest) = store::at_one_revision("service inspect", read, torn)?;
+    let (view, rest) = store.at_one_revision("service inspect", read, torn)?;
     let removed = rest.is_none();
     let (settings, domains) = rest.map_or_else(Default::default, |(settings, domains)| {
         (settings.settings, domains.domains)
@@ -266,7 +266,7 @@ mod tests {
         let root = crate::cli::command()
             .try_get_matches_from(["ployz", "service", "inspect", "web1"])
             .unwrap();
-        let (store, edit) = store::store_with_edits(leaf_matches(&root));
+        let (store, edit) = store::store_with_edits(&root);
         edit();
         let web = ployz_core::ServiceName::parse("web1").unwrap();
         let settings = || {

@@ -5,8 +5,12 @@ use crate::sdk::test_support as support;
 #[test]
 fn an_ingress_failure_without_deploy_evidence_keeps_its_headline() {
     let failure = || crate::failure::Failure::unavailable("down");
+    let root = crate::cli::command()
+        .try_get_matches_from(["ployz", "server", "add", "root@host"])
+        .unwrap();
     let cloud = crate::enrollment::cloud::ingress_incomplete(
         crate::cloud::enroll::Command::ServerAdd,
+        &crate::enrollment::EnrollPlan::from_matches(&root),
         failure(),
     );
     assert_eq!(
@@ -116,7 +120,8 @@ async fn renamed_web_traffic_reruns_by_machine_id() {
         "server",
         "set",
         id.as_str(),
-        "--accepts-ingress=true",
+        "--accepts-ingress",
+        "true",
     ];
     // Back off (the command turned it on), and left on (it was already on).
     for on_before in [false, true] {
@@ -345,7 +350,8 @@ async fn web_traffic_that_cannot_go_back_off_says_both_failures() {
             "server",
             "set",
             id.as_str(),
-            "--accepts-ingress=false"
+            "--accepts-ingress",
+            "false"
         ]
     );
 }

@@ -44,7 +44,7 @@ pub(crate) fn fix_broken(matches: &ArgMatches, reference: &ployz_store::BrokenRe
     match &reference.at {
         ployz_store::ReferenceAt::Variable { service, variable } => next(
             matches,
-            &["set", &format!("{service}.env.{variable}=VALUE")],
+            &["set", &format!("{service}.env.{variable}=<VALUE>")],
         ),
         ployz_store::ReferenceAt::File { config, file } => next(
             matches,
@@ -54,7 +54,7 @@ pub(crate) fn fix_broken(matches: &ArgMatches, reference: &ployz_store::BrokenRe
                 config.as_str(),
                 file.as_str(),
                 "--from",
-                "PATH",
+                "<PATH>",
             ],
         ),
     }

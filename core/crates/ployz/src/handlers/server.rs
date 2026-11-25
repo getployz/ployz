@@ -5,7 +5,8 @@ use std::{collections::BTreeMap, path::PathBuf};
 use clap::{Arg, ArgAction, ArgMatches, Command, ValueHint};
 
 use crate::cli::{
-    base, log_flags, machine_policy_flags, many, positional, switch, value, volume_acceptance,
+    Rerun, base, log_flags, machine_policy_flags, many, positional, switch, value,
+    volume_acceptance,
 };
 use crate::env;
 use ployz_core::{
@@ -169,16 +170,18 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
         .as_ref()
         .and_then(|endpoints| endpoints.first())
         .map(|endpoint| SelectedEndpoint(endpoint.0));
-    let recovery = matches.clone();
+    let recovery = root.clone();
     // `--yes` reads nothing: on the `--wg-endpoint` path the Cluster may be too degraded to list.
-    let ask = update.accepts_ingress == Some(false) && !matches.get_flag("yes");
+    let ask = (update.accepts_ingress == Some(false) && !matches.get_flag("yes"))
+        .then(|| Rerun::again(root).switch("yes"));
     let Some(address) = seed else {
         return with_client(root, |client| {
+            let ask = ask.clone();
             Box::pin(async move {
-                if ask {
+                if let Some(yes) = ask {
                     let machines = client.machines().await?;
                     let doors = open_doors(client, &machines).await?;
-                    confirm_ingress_off(&machines, &doors, &selector)?;
+                    confirm_ingress_off(&machines, &doors, &selector, yes)?;
                 }
                 apply_update(client, selector, update, None, rerun, recovery).await
             })
@@ -187,11 +190,11 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
     super::runtime()?.block_on(async {
         let context = matches.get_one::<String>("context").map(String::as_str);
         // Ask before seeding: a refusal leaves every Server unchanged.
-        if ask {
+        if let Some(yes) = ask {
             let mut client = route::connect(matches, context).await?;
             let machines = client.machines().await?;
             let doors = open_doors(&client, &machines).await?;
-            confirm_ingress_off(&machines, &doors, &selector)?;
+            confirm_ingress_off(&machines, &doors, &selector, yes)?;
         }
         let entries = route::entries(matches, context).await?;
         let connector = crate::cli::connector(matches);
@@ -236,8 +239,8 @@ struct IngressFollowUp<'a> {
 }
 
 impl IngressFollowUp<'_> {
-    fn command(&self, args: &[&str]) -> String {
-        super::rerun(self.recovery, args)
+    fn command(&self, args: &[&str]) -> Rerun {
+        Rerun::then(self.recovery, args)
     }
 
     /// How a hint selects Server `id`: as the reader selected `machine`, which already
@@ -264,8 +267,8 @@ impl IngressFollowUp<'_> {
                     "--accepts-ingress=true",
                 ])
             })
-            .filter(|retry| retry != next)
-            .map(Hint::Retry);
+            .filter(|retry| retry.line() != next)
+            .map(Hint::from);
         self.log_hints(error).hint(retry)
     }
 
@@ -297,6 +300,7 @@ fn confirm_ingress_off(
     machines: &[MachineObservation],
     doors: &BTreeMap<MachineId, IngressDoors>,
     selector: &MachineTarget,
+    yes: Rerun,
 ) -> Result<(), Error> {
     let target = crate::cluster::visible_machine(selector, machines)?;
     let serves_web = |observed: &MachineObservation| {
@@ -333,7 +337,7 @@ fn confirm_ingress_off(
                      made."
                 ),
             )
-            .hint(Hint::Retry(super::typed_with(&["--yes"])))
+            .hint(yes)
         },
         "Cancelled. Web traffic stays on.",
     )
@@ -413,7 +417,7 @@ pub(crate) async fn apply_update(
                 .context(format!(
                     "Server {selector} answered but couldn't take the change, so nothing changed."
                 ))
-                .hint(Hint::Retry(super::typed_with(&[]))));
+                .hint(Rerun::again(&recovery)));
         }
         (Err((_, error)), _) => return Err(error.into()),
     };
@@ -890,6 +894,7 @@ pub(super) fn provisioning_flags(command: Command) -> Command {
         .arg(
             value("version", None)
                 .env(env::DAEMON_VERSION)
+                .hide_env_values(true)
                 .default_value(env!("CARGO_PKG_VERSION"))
                 .value_parser(clap::value_parser!(ployz_core::MachineRelease))
                 .help("Daemon release to install: stable, beta, or an exact version"),
@@ -985,11 +990,7 @@ mod tests {
                     },
                 ])
                 .unwrap();
-            let recovery = root
-                .subcommand_matches("server")
-                .and_then(|server| server.subcommand_matches("set"))
-                .unwrap()
-                .clone();
+            let recovery = root.clone();
             let setting = apply_update(
                 &mut client,
                 MachineTarget::from(&id),
@@ -1141,11 +1142,7 @@ mod tests {
                     id.as_str(),
                     "--accepts-builds=false",
                 ])
-                .unwrap()
-                .subcommand_matches("server")
-                .and_then(|server| server.subcommand_matches("set"))
-                .unwrap()
-                .clone();
+                .unwrap();
             let setting = apply_update(
                 &mut client,
                 MachineTarget::from(&id),
@@ -1230,11 +1227,7 @@ mod tests {
                         "--json",
                     ])
                     .unwrap();
-                let recovery = root
-                    .subcommand_matches("server")
-                    .and_then(|server| server.subcommand_matches("set"))
-                    .unwrap()
-                    .clone();
+                let recovery = root.clone();
                 let started = tokio::time::Instant::now();
                 let result = tokio::time::timeout(
                     std::time::Duration::from_secs(41),
@@ -1315,11 +1308,11 @@ mod tests {
         let leaf = leaf_matches(&root);
         assert_eq!(
             ingress_set(leaf, "edge", true),
-            "ployz server set edge '--accepts-ingress=true'"
+            "ployz server set edge --accepts-ingress true"
         );
         assert_eq!(
             ingress_set(leaf, "edge", false),
-            "ployz server set edge '--accepts-ingress=false'"
+            "ployz server set edge --accepts-ingress false"
         );
     }
 
@@ -1378,14 +1371,14 @@ mod tests {
             ),
             [
                 Hint::Inspect("ployz logs ployz-system/ingress --machine machine-3".into()),
-                Hint::Retry("ployz server set machine-3 '--accepts-ingress=true'".into()),
+                crate::cli::retry_hint("ployz server set machine-3 --accepts-ingress true"),
             ]
         );
         assert_eq!(
             hints(failed_on(other), &next),
             [
                 Hint::Inspect(format!("ployz logs ployz-system/ingress --machine {other}")),
-                Hint::Retry(format!("ployz server set {other} '--accepts-ingress=true'")),
+                crate::cli::retry_hint(&format!("ployz server set {other} --accepts-ingress true")),
             ]
         );
     }
@@ -1636,6 +1629,14 @@ mod tests {
         )
     }
 
+    /// `server set fra-1 --accepts-ingress=false` again, confirmed.
+    fn turning_off() -> Rerun {
+        let root = crate::cli::command()
+            .try_get_matches_from(["ployz", "server", "set", "fra-1", "--accepts-ingress=false"])
+            .unwrap();
+        Rerun::again(&root).switch("yes")
+    }
+
     #[test]
     fn web_traffic_off_asks_only_when_no_other_online_server_takes_it() {
         use ployz_core::MembershipObservation::{Down, Suspect, Unknown, Up};
@@ -1643,7 +1644,8 @@ mod tests {
         let unlisted = BTreeMap::new();
         let off = |other: MachineObservation| {
             let machines = [web("fra-1", true, Some("203.0.113.1"), Down), other];
-            confirm_ingress_off(&machines, &unlisted, &fra1).map_err(|error| error.report())
+            confirm_ingress_off(&machines, &unlisted, &fra1, turning_off())
+                .map_err(|error| error.report())
         };
 
         // Tests run in Plain mode, so the question is a refusal naming --yes.
@@ -1674,7 +1676,7 @@ mod tests {
             off(web("fra-2", true, Some("203.0.113.2"), online)).unwrap();
         }
         let already_off = [web("fra-1", false, Some("203.0.113.1"), Up)];
-        confirm_ingress_off(&already_off, &unlisted, &fra1).unwrap();
+        confirm_ingress_off(&already_off, &unlisted, &fra1, turning_off()).unwrap();
     }
 
     #[test]
@@ -1684,13 +1686,13 @@ mod tests {
         let other = web("fra-2", true, None, Up);
         let machines = [web("fra-1", true, Some("203.0.113.1"), Down), other.clone()];
         let tunnel = BTreeMap::from([(other.machine.id, IngressDoors::tunnel())]);
-        confirm_ingress_off(&machines, &tunnel, &fra1)
+        confirm_ingress_off(&machines, &tunnel, &fra1, turning_off())
             .expect("a Server with no public IP takes web traffic through its tunnel");
 
         let other = web("fra-2", true, Some("203.0.113.2"), Up);
         let machines = [web("fra-1", true, Some("203.0.113.1"), Down), other.clone()];
         let closed = BTreeMap::from([(other.machine.id, IngressDoors(Default::default()))]);
-        let refused = confirm_ingress_off(&machines, &closed, &fra1)
+        let refused = confirm_ingress_off(&machines, &closed, &fra1, turning_off())
             .map_err(|error| error.report())
             .unwrap_err();
         assert_eq!(
@@ -1702,7 +1704,7 @@ mod tests {
         let last = web("fra-1", true, None, Up);
         let machines = [last.clone(), web("fra-2", false, None, Up)];
         let tunnel = BTreeMap::from([(last.machine.id, IngressDoors::tunnel())]);
-        let refused = confirm_ingress_off(&machines, &tunnel, &fra1)
+        let refused = confirm_ingress_off(&machines, &tunnel, &fra1, turning_off())
             .map_err(|error| error.report())
             .unwrap_err();
         assert_eq!(

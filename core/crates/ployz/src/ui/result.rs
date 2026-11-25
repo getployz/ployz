@@ -47,7 +47,7 @@ fn aligned() -> bool {
 /// One line of the result on stdout; under `--json`, on stderr beside the object.
 pub(crate) fn stream(line: impl Display) {
     if json() {
-        let _ = writeln!(anstream::stderr(), "{line}");
+        let _ = writeln!(super::stderr(), "{line}");
     } else {
         let _ = writeln!(super::stdout(), "{line}");
     }
@@ -55,12 +55,12 @@ pub(crate) fn stream(line: impl Display) {
 
 /// One line beside the result, on stderr: progress, a heads-up, a prompt's context.
 pub(crate) fn note(line: impl Display) {
-    let _ = writeln!(anstream::stderr(), "{line}");
+    let _ = writeln!(super::stderr(), "{line}");
 }
 
 /// Text on stderr with no newline, flushed: a prompt, or a line that finishes later.
 pub(crate) fn note_inline(text: impl Display) {
-    let mut stderr = anstream::stderr();
+    let mut stderr = super::stderr();
     let _ = write!(stderr, "{text}");
     let _ = stderr.flush();
 }
@@ -68,7 +68,7 @@ pub(crate) fn note_inline(text: impl Display) {
 /// A hint line on stderr. `--json` carries hints as result keys instead.
 pub(crate) fn hint(hint: &Hint) {
     if !json() {
-        let _ = super::error::write_hint(&mut anstream::stderr(), hint);
+        let _ = super::error::write_hint(&mut super::stderr(), hint);
     }
 }
 
@@ -110,7 +110,7 @@ pub(crate) fn record_warning(warning: String) {
 /// A warning on stderr that the JSON result already carries elsewhere.
 fn flag(warning: &str) {
     let _ = writeln!(
-        anstream::stderr(),
+        super::stderr(),
         "{} {}",
         Tone::Change.paint("!"),
         escaped_lines(warning)
@@ -214,9 +214,7 @@ pub(crate) fn show<T: Serialize + ?Sized>(value: &T) -> Result<(), Failure> {
         CAPTURED.set(Some(Some(value)));
         return Ok(());
     }
-    let mut stdout = super::stdout_bytes();
-    serde_json::to_writer_pretty(&mut stdout, &value)?;
-    writeln!(stdout)?;
+    super::Json::stdout().write(&value, true)?;
     EMITTED.set(true);
     Ok(())
 }
@@ -259,10 +257,7 @@ pub(crate) fn emit_committed(
 /// Returns a serialization or stdout write error.
 pub(crate) fn emit_line<T: Serialize + ?Sized>(value: &T) -> Result<(), Failure> {
     if json() {
-        let mut stdout = super::stdout_bytes();
-        serde_json::to_writer(&mut stdout, value)?;
-        writeln!(stdout)?;
-        stdout.flush()?;
+        super::Json::stdout().write(value, false)?;
     }
     EMITTED.set(true);
     Ok(())

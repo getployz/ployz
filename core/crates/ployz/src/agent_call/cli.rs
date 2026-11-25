@@ -1,7 +1,6 @@
 //! The CLI's one wrapper: a reason is required when a coding agent runs a command, and the
 //! run is reported once it ends. A run with no agent behind it is neither.
 
-use std::ffi::OsString;
 use std::path::PathBuf;
 
 use clap::{ArgMatches, Command};
@@ -19,7 +18,7 @@ pub(crate) const WHY: &str = "why";
 
 const REASON_REQUIRED: &str =
     "Say why you are running this. Add `--why \"<the goal this command serves>\"`.";
-const PLACEHOLDER: &str = "<the goal this command serves>";
+const PLACEHOLDER: &str = "the goal this command serves";
 
 /// One CLI run, from before its command dispatches to after it ends.
 pub(crate) struct Run {
@@ -49,11 +48,11 @@ impl Run {
             .ok()
             .flatten()
             .map(|why| why.trim().to_owned())
-            .filter(|why| !why.is_empty());
+            // The refusal's own placeholder, pasted as printed, gives no reason either.
+            .filter(|why| !why.is_empty() && *why != format!("<{PLACEHOLDER}>"));
         let agent = agent::name().filter(|_| !internal && !exempt(matches, command, &tool));
-        let separate = ["connect", "context"]
-            .into_iter()
-            .any(|flag| matches.try_get_one::<String>(flag).ok().flatten().is_some());
+        let separate = crate::cli::connection(matches).is_some()
+            || matches!(matches.try_get_one::<String>("context"), Ok(Some(_)));
         let report = agent.filter(|_| !separate).and_then(|agent| {
             let config = crate::cli::config_path(crate::cli::leaf_matches(matches)).ok()?;
             Some(Reported { config, agent })
@@ -67,13 +66,15 @@ impl Run {
         }
     }
 
-    /// The refusal when a reason is required and none was given, with the same command
-    /// line shown with `--why` added.
-    pub(crate) fn refusal(&self, args: &[OsString]) -> Option<Failure> {
+    /// The refusal when a reason is required and none was given, with the command line
+    /// `command` parsed into `matches` shown again with `--why` added.
+    pub(crate) fn refusal(&self, matches: &ArgMatches, command: &Command) -> Option<Failure> {
         if !self.required || self.why.is_some() {
             return None;
         }
-        Some(Failure::usage(REASON_REQUIRED).hint(Hint::Next(with_why(args))))
+        let again =
+            crate::cli::Rerun::again_in(command.clone(), matches).placeholder(WHY, PLACEHOLDER);
+        Some(Failure::usage(REASON_REQUIRED).hint(Hint::Next(again.line())))
     }
 
     /// Report the run, when it counts: after the command ended, within one short wait.
@@ -127,37 +128,6 @@ fn exempt(matches: &ArgMatches, command: &Command, path: &str) -> bool {
         .is_some_and(Command::has_subcommands)
 }
 
-/// The command line as typed, with `--why` added straight after `ployz`: a command that
-/// takes trailing words, like `exec`, would read it at the end as part of its own command.
-fn with_why(args: &[OsString]) -> String {
-    let mut line = vec!["ployz".to_owned(), format!("--why \"{PLACEHOLDER}\"")];
-    let mut args = args.iter().map(|arg| arg.to_string_lossy().into_owned());
-    // Past `--` every word is the command's own, a `--why` among them too.
-    let mut own = false;
-    while let Some(arg) = args.next() {
-        if !own && arg == "--why" {
-            args.next();
-            continue;
-        }
-        if !own && arg.starts_with("--why=") {
-            continue;
-        }
-        own = own || arg == "--";
-        line.push(quoted(arg));
-    }
-    line.join(" ")
-}
-
-/// The word as a shell reads it back: bare when it is plain, else in single quotes, with
-/// each quote inside it closed, escaped and reopened.
-fn quoted(arg: String) -> String {
-    let plain = |c: char| c.is_ascii_alphanumeric() || "-_=+,./:@%".contains(c);
-    if !arg.is_empty() && arg.chars().all(plain) {
-        return arg;
-    }
-    format!("'{}'", arg.replace('\'', "'\\''"))
-}
-
 /// The credential this device holds, without going to Cloud for it: `PLOYZ_TOKEN`, else
 /// the sign-in stored beside the config.
 async fn credential(config: &std::path::Path) -> Option<Credential> {
@@ -174,32 +144,48 @@ async fn credential(config: &std::path::Path) -> Option<Credential> {
 mod tests {
     use super::*;
 
+    fn refused(words: &[&str]) -> String {
+        let command = crate::cli::command();
+        let matches = command
+            .clone()
+            .try_get_matches_from(std::iter::once("ployz").chain(words.iter().copied()))
+            .unwrap();
+        let run = Run {
+            tool: crate::cli::command_path(&matches),
+            why: None,
+            required: true,
+            report: None,
+            started: Started::now(),
+        };
+        let hints = run.refusal(&matches, &command).unwrap().hints();
+        let [Hint::Next(line)] = hints.as_slice() else {
+            panic!("{hints:?}");
+        };
+        line.clone()
+    }
+
+    /// The line keeps every flag typed and never repeats a secret it carried.
     #[test]
-    fn the_next_line_is_the_same_command_with_why_added() {
-        let args = |words: &[&str]| words.iter().map(OsString::from).collect::<Vec<_>>();
+    fn the_next_line_is_the_same_command_with_why_added_and_no_secret() {
         assert_eq!(
-            with_why(&args(&["status", "--json"])),
-            "ployz --why \"<the goal this command serves>\" status --json"
+            refused(&["set", "web.env.TOKEN=hunter2", "--env", "staging"]),
+            "ployz --why '<the goal this command serves>' set 'web.env.TOKEN=<VALUE>' --env staging"
         );
         assert_eq!(
-            with_why(&args(&[
+            refused(&["--connect", "ssh://root:hunter2@203.0.113.7", "status"]),
+            "ployz --connect '<CONNECT>' --why '<the goal this command serves>' status"
+        );
+        assert_eq!(
+            refused(&[
                 "exec",
                 "web",
                 "--",
-                "echo",
-                "it's ready",
+                "env",
+                "AUTH_TOKEN=hunter2",
                 "--why",
                 "x"
-            ])),
-            "ployz --why \"<the goal this command serves>\" exec web -- echo 'it'\\''s ready' --why x"
-        );
-        assert_eq!(
-            with_why(&args(&["--why", "", "set", "web.image=x y"])),
-            "ployz --why \"<the goal this command serves>\" set 'web.image=x y'"
-        );
-        assert_eq!(
-            with_why(&args(&["--why=", "docs"])),
-            "ployz --why \"<the goal this command serves>\" docs"
+            ]),
+            "ployz --why '<the goal this command serves>' exec web -- '<COMMAND>'"
         );
     }
 }

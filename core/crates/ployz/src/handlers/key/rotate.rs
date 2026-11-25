@@ -17,7 +17,7 @@ use ployz_core::authority::{
     Approver, KeyChange, KeyKind, KeyMember, PayloadDigest, Prior, ServiceVersion, Signed,
     SignerKey, SigningPublicKey, Timestamp, TrustedGrant, TrustedKeys,
 };
-use ployz_core::{DeviceCode, DeviceKey, Hint, MachineId, Namespace, Retired, ServiceName};
+use ployz_core::{DeviceCode, DeviceKey, MachineId, Namespace, Retired, ServiceName};
 use ployz_store::{
     Admit, Deploy, DeploymentId, EnvironmentRef, NamespaceQuery, NamespacesQuery, PlanQuery,
     PostedVersion, Running, RunningQuery, TagPin,
@@ -199,7 +199,7 @@ pub(crate) fn rotate(root: &ArgMatches) -> Result<(), Error> {
             .context(format!(
                 "Couldn't remove key {code} once its redeploys applied, so the old key still works."
             ))
-            .hint(Hint::Retry(format!("ployz key rotate {code}")))
+            .hint(crate::cli::Rerun::again(root))
     };
     let mut client = runtime
         .block_on(route::connect_full(leaf, context(leaf)))

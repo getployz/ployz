@@ -148,7 +148,7 @@ pub(super) fn connect(root: &ArgMatches) -> Result<(), Error> {
                 "No GitHub account connected yet",
                 json!({ "url": before.connect_url }),
             )
-            .hint(Hint::Retry("ployz github connect --wait".into())));
+            .hint(crate::cli::Rerun::again(root).switch("wait")));
         }
         let pending =
             json!({ "status": "pending", "url": before.connect_url, "connection": before });
@@ -260,7 +260,12 @@ pub(super) fn cat(root: &ArgMatches) -> Result<(), Error> {
     let file: GithubFileView = read_repository(root, "file", &query)?;
     crate::ui::finish(&file, || match &file.body {
         GithubFileBody::Text { content } => {
-            let _ = std::io::Write::write_all(&mut crate::ui::stdout(), content.as_bytes());
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "a file's bytes, printed exactly so a redirect keeps the file"
+            )]
+            let mut stdout = crate::ui::relayed_stdout();
+            let _ = std::io::Write::write_all(&mut stdout, content.as_bytes());
         }
         GithubFileBody::Withheld { note } => crate::ui::note(note),
     })?;

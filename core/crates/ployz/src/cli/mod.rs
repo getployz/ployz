@@ -4,8 +4,12 @@ use ployz_store::ReviewVersion;
 use crate::{env, handlers, operator::input::TIME_FORMATS};
 
 mod rerun;
+pub(crate) mod shown;
 
-pub(crate) use rerun::{approved_rerun, config_flag, recovery_command, rerun};
+#[cfg(test)]
+pub(crate) use rerun::retry_hint;
+pub(crate) use rerun::{Rerun, Withheld, withheld};
+pub(crate) use shown::{ExistingPath, References, Shown};
 
 #[must_use]
 /// The whole tree: every compiled command plus the ones the signed-in Cloud publishes,
@@ -59,6 +63,8 @@ fn connection_args() -> [Arg; 4] {
     [
         value("connect", None)
             .env(env::CONNECT)
+            .hide_env_values(true)
+            .value_parser(withheld(crate::context::shown))
             .help("Reach the Servers through this connection instead of Cloud or a context")
             .global(true),
         value("ssh-timeout", None)
@@ -71,6 +77,8 @@ fn connection_args() -> [Arg; 4] {
             .global(true),
         value("ployz-config", None)
             .env(env::CONFIG)
+            .hide_env_values(true)
+            .value_parser(config_path_arg)
             .default_value(crate::context::default_config_path())
             .value_hint(ValueHint::FilePath)
             // PLOYZ_CONFIG is the way to point elsewhere; the flag stays for tests.
@@ -78,8 +86,63 @@ fn connection_args() -> [Arg; 4] {
             .global(true),
         value("context", Some('c'))
             .env(env::CONTEXT)
+            .hide_env_values(true)
             .help("Act through this local context instead of the current one"),
     ]
+}
+
+/// A Ployz config path, handed on as typed: any text but a URL ([`ConfigPath::reads_as_url`]).
+fn config_path_arg(typed: &str) -> Result<String, &'static str> {
+    match shown::ConfigPath::reads_as_url(typed) {
+        true => Err("PLOYZ_CONFIG takes a file path, not a URL"),
+        false => Ok(typed.to_owned()),
+    }
+}
+
+/// `--cloud-url`, or `PLOYZ_CLOUD_URL`: output shows its scheme, host and port alone, and
+/// `--help` the variable's name without its value.
+pub(crate) fn cloud_url() -> Arg {
+    value("cloud-url", None)
+        .env(env::CLOUD_URL)
+        .hide_env_values(true)
+        .value_parser(withheld(|typed| {
+            crate::cloud::origin::CloudOrigin::checked(typed)
+                .ok()?
+                .whole()
+        }))
+}
+
+/// The Cloud `--cloud-url` or `PLOYZ_CLOUD_URL` names, as typed, refused when Ployz would
+/// not store it as given ([`CloudOrigin::checked`]). The refusal names which gave it.
+///
+/// [`CloudOrigin::checked`]: crate::cloud::origin::CloudOrigin::checked
+pub(crate) fn cloud_url_of(
+    matches: &clap::ArgMatches,
+) -> Result<Option<&str>, crate::failure::Failure> {
+    let Some(typed) = matches
+        .try_get_one::<Withheld>("cloud-url")
+        .ok()
+        .flatten()
+        .map(Withheld::typed)
+    else {
+        return Ok(None);
+    };
+    let named = match matches.value_source("cloud-url") {
+        Some(clap::parser::ValueSource::EnvVariable) => env::CLOUD_URL,
+        Some(_) | None => "--cloud-url",
+    };
+    crate::cloud::origin::CloudOrigin::checked(typed)
+        .map(|_| Some(typed))
+        .map_err(|refused| crate::failure::Failure::usage(refused.sentence(named)))
+}
+
+/// The connection `--connect` or `PLOYZ_CONNECT` names, as typed.
+pub(crate) fn connection(matches: &clap::ArgMatches) -> Option<&str> {
+    matches
+        .try_get_one::<Withheld>("connect")
+        .ok()
+        .flatten()
+        .map(Withheld::typed)
 }
 
 /// The subcommand words of `matches`, `server add`.
@@ -132,14 +195,10 @@ pub(crate) fn takes_value<'a>(words: impl IntoIterator<Item = &'a str>, id: &str
     inherited || command.get_arguments().any(takes)
 }
 
-/// This command line as typed, then `extra`.
-pub(crate) fn typed_with(extra: &[&str]) -> String {
-    std::iter::once("ployz".to_owned())
-        .chain(std::env::args().skip(1))
-        .chain(extra.iter().map(|arg| (*arg).to_owned()))
-        .map(|arg| crate::ui::shell_word(&arg).into_owned())
-        .collect::<Vec<_>>()
-        .join(" ")
+/// `args` as the same Cluster would run them, under this command line's own arguments:
+/// the line a `next:` or `inspect:` hint names.
+pub(crate) fn rerun(matches: &clap::ArgMatches, args: &[&str]) -> String {
+    Rerun::then(matches, args).line()
 }
 
 /// The values given for `id` on the command line or from the environment, not its default.
@@ -208,6 +267,7 @@ pub(crate) fn yes(help: &'static str) -> Arg {
     switch("yes", Some('y'))
         .value_parser(clap::builder::BoolishValueParser::new())
         .env(env::AUTO_CONFIRM)
+        .hide_env_values(true)
         .help(help)
 }
 
@@ -356,7 +416,7 @@ mod tests {
                 blank.push(format!("{path} {}", arg.get_id()));
             }
         }
-        for sub in command.get_subcommands() {
+        for sub in command.get_subcommands().filter(|sub| !sub.is_hide_set()) {
             undescribed(sub, &format!("{path} {}", sub.get_name()), blank);
         }
     }
@@ -374,6 +434,35 @@ mod tests {
             &mut blank,
         );
         assert_eq!(blank, Vec::<String>::new());
+    }
+
+    /// Every argument a variable sets, by its command path.
+    fn showing_env_values(command: &clap::Command, path: &str, shown: &mut Vec<String>) {
+        for arg in command.get_arguments() {
+            if arg.get_env().is_some() && !arg.is_hide_env_values_set() {
+                shown.push(format!("{path} {}", arg.get_id()));
+            }
+        }
+        for sub in command.get_subcommands() {
+            showing_env_values(sub, &format!("{path} {}", sub.get_name()), shown);
+        }
+    }
+
+    /// `--help` names the variable an argument reads and never its value, which may be a
+    /// credential set for another command or pasted into the wrong one.
+    #[test]
+    fn help_shows_no_variables_value() {
+        let mut shown = Vec::new();
+        let published = crate::published::Published::parse(include_bytes!(
+            "../../tests/fixtures/published-manifest.json"
+        ))
+        .unwrap();
+        showing_env_values(
+            &crate::published::attach(super::compiled(), &published),
+            "ployz",
+            &mut shown,
+        );
+        assert_eq!(shown, Vec::<String>::new());
     }
 
     #[test]
@@ -436,6 +525,54 @@ mod tests {
         ] {
             assert!(super::review_version(bad).is_err(), "{bad}");
         }
+    }
+
+    fn again(words: &[&str]) -> (clap::ArgMatches, String) {
+        let root = super::command()
+            .try_get_matches_from(std::iter::once("ployz").chain(words.iter().copied()))
+            .unwrap();
+        let line = super::Rerun::again(&root).line();
+        (root, line)
+    }
+
+    /// A retry shows a connection only when it reaches the same place as typed and every
+    /// part of it shows: a TCP address, or a Unix socket that exists. Anything else, an SSH
+    /// user that may be a session token among it, makes the whole of it `<CONNECT>`, which
+    /// doesn't run. The command still reads it as typed.
+    #[test]
+    fn a_retry_never_repeats_a_connections_secret() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("ployz.sock");
+        std::fs::write(&socket, "").unwrap();
+        let socket = format!("unix://{}", socket.display());
+        for (typed, shown) in [
+            ("ployz1:SENTINEL-4564", "'<CONNECT>'"),
+            ("management:SENTINEL-4564", "'<CONNECT>'"),
+            ("ssh://root:SENTINEL-4564@203.0.113.7:22", "'<CONNECT>'"),
+            ("root:SENTINEL-4564@203.0.113.7", "'<CONNECT>'"),
+            ("SENTINEL-4564@203.0.113.7", "'<CONNECT>'"),
+            ("ssh://SENTINEL-4564@203.0.113.7", "'<CONNECT>'"),
+            (
+                "tcp://203.0.113.7:7/SENTINEL-4564?t=SENTINEL-4564#SENTINEL-4564",
+                "'<CONNECT>'",
+            ),
+            ("SENTINEL-4564://203.0.113.7", "'<CONNECT>'"),
+            ("unix:///SENTINEL-4564", "'<CONNECT>'"),
+            ("tcp://203.0.113.7:7", "tcp://203.0.113.7:7"),
+            (&socket, &socket),
+        ] {
+            let (root, line) = again(&["--connect", typed, "status"]);
+            assert_eq!(line, format!("ployz --connect {shown} status"), "{typed}");
+            assert_eq!(super::connection(super::leaf_matches(&root)), Some(typed));
+        }
+    }
+
+    /// A flag that takes its value only after `=` gets it that way, or clap reads the value
+    /// as a word of its own.
+    #[test]
+    fn a_retry_joins_a_value_to_a_flag_that_requires_equals() {
+        let (_, line) = again(&["volume", "set", "data", "--shared-writes=false"]);
+        assert_eq!(line, "ployz volume set data '--shared-writes=false'");
     }
 
     #[test]

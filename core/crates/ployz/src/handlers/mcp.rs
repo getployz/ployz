@@ -129,12 +129,14 @@ pub(super) fn serve(root: &ArgMatches) -> Result<(), Error> {
         let mut interrupt = signal(SignalKind::interrupt())?;
         let mut hangup = signal(SignalKind::hangup())?;
         let closed = CancellationToken::new();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the JSON-RPC stream to the MCP client, which reads it as written"
+        )]
+        let stdout = crate::ui::async_stdout(closed.clone());
         let serving = async {
             server
-                .serve(Lines::new(
-                    tokio::io::stdin(),
-                    crate::ui::async_stdout(closed.clone()),
-                ))
+                .serve(Lines::new(tokio::io::stdin(), stdout))
                 .await
                 .map_err(Failure::command)?
                 .waiting()

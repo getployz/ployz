@@ -5,14 +5,13 @@ use std::ffi::OsString;
 use std::path::Path;
 
 use clap::ArgMatches;
-use clap::parser::ValueSource;
 use ployz_core::{Hint, RpcError, RpcErrorCode};
 use reqwest::Method;
 use serde_json::{Map, Value};
 
 use super::wire::Ran;
 use super::{ArgKind, PublishError, PublishedCommand, Render, Setup, Typed, UNKNOWN_COMMAND};
-use crate::cli::leaf_matches;
+use crate::cli::{Rerun, leaf_matches};
 use crate::cloud;
 use crate::cloud::account::StoreCallError;
 use crate::failure::Failure;
@@ -106,7 +105,7 @@ pub(crate) fn run(
         if said_yes {
             return Err(crate::approval::moved(asked.verb(None), refusal));
         }
-        let retry = retry(root, command, asked.digest());
+        let retry = retry(root, setup, asked.digest());
         approval =
             Some(crate::approval::settle(asked.verb(None), &asked, retry).map_err(Failure::from)?);
         said_yes = true;
@@ -157,61 +156,26 @@ fn refused(
             Failure::from(refusal).hint(Hint::Next("ployz link --project PROJECT".to_owned()))
         }
         StoreCallError::Refused(refusal) => match crate::approval::Asked::of(&refusal) {
-            Some(asked) => {
-                let retry = retry(root, command, asked.digest());
-                Failure::from(refusal).hint(Hint::Retry(retry))
-            }
+            Some(asked) => Failure::from(refusal).hint(retry(root, setup, asked.digest())),
             None => StoreCallError::Refused(refusal).into(),
         },
         error @ (StoreCallError::Cloud(_) | StoreCallError::Stopped(_)) => error.into(),
     }
 }
 
-/// This command again as typed, carrying `id`, the digest of the yes it needs, in the same output mode. A
-/// value that starts with `-` still reads as a value: a flag's joins it with `=`,
-/// and positionals move behind `--`.
-fn retry(root: &ArgMatches, command: &PublishedCommand, id: &str) -> String {
-    let leaf = leaf_matches(root);
-    let typed = |id: &str| root.value_source(id) == Some(ValueSource::CommandLine);
-    let mut words = vec!["ployz".to_owned()];
-    words.extend(
-        crate::cli::config_flag(root)
-            .into_iter()
-            .flatten()
-            .map(ToOwned::to_owned),
-    );
-    if typed("json") {
-        words.push("--json".to_owned());
-    }
-    if typed("color")
-        && let Some(color) = root.get_one::<String>("color")
-    {
-        words.extend(["--color".to_owned(), color.clone()]);
-    }
-    words.extend(command.path.iter().cloned());
-    let (mut positionals, mut named) = (Vec::new(), Vec::new());
-    for arg in &command.args {
-        for value in leaf.get_raw(&arg.name).into_iter().flatten() {
-            let value = value.to_string_lossy().into_owned();
-            if arg.positional {
-                positionals.push(value);
-            } else if value.starts_with('-') {
-                named.push(format!("--{}={value}", arg.flag()));
-            } else {
-                named.extend([format!("--{}", arg.flag()), value]);
-            }
-        }
-    }
-    named.extend(["--approval".to_owned(), id.to_owned()]);
-    if positionals.iter().any(|value| value.starts_with('-')) {
-        words.extend(named);
-        words.push("--".to_owned());
-        words.extend(positionals);
-    } else {
-        words.extend(positionals);
-        words.extend(named);
-    }
-    shell_words::join(words)
+/// This command again as typed, carrying `id`, the digest of the yes it needs.
+fn retry(root: &ArgMatches, setup: &Setup, id: &str) -> Rerun {
+    let compiled = crate::cli::compiled();
+    let tree = match setup.cached() {
+        Some(published) => super::attach(compiled, &published),
+        None => compiled,
+    };
+    again(tree, root, id)
+}
+
+/// The command line `tree` parsed into `root` again, carrying `id`.
+fn again(tree: clap::Command, root: &ArgMatches, id: &str) -> Rerun {
+    Rerun::again_in(tree, root).set("approval", id)
 }
 
 /// The entry's input from what was typed, as its schema shapes it. An argument left
@@ -513,17 +477,19 @@ mod tests {
             .unwrap_or_else(|error| panic!("{argv:?}: {error}"))
     }
 
+    /// An approval's retry is the command again with its yes: the flags of the run, each
+    /// choice, and each value that parses as its kind, as typed; anything else, such as a
+    /// member or a reason, as its placeholder.
     #[test]
-    fn an_approval_retry_parses_with_every_argument_typed() {
+    fn an_approval_retry_keeps_what_parses_and_withholds_free_text() {
         let published = gated();
-        for (path, argv) in [
+        for (argv, line) in [
             (
-                "org member role",
-                vec!["ployz", "org", "member", "role", "Linus Torvalds", "admin"],
+                &["ployz", "org", "member", "role", "Linus Torvalds", "admin"][..],
+                "ployz org member role '<MEMBER>' admin --approval a7e572f3",
             ),
             (
-                "org member invite",
-                vec![
+                &[
                     "ployz",
                     "--ployz-config",
                     "/tmp/ployz config.toml",
@@ -534,36 +500,29 @@ mod tests {
                     "--role",
                     "admin",
                 ],
+                "ployz --ployz-config '<PLOYZ_CONFIG>' org member invite '<EMAIL>' --role admin \
+                 --approval a7e572f3",
             ),
             (
-                "org member role",
-                vec![
-                    "ployz",
-                    "--json",
-                    "org",
-                    "member",
-                    "role",
-                    "Linus Torvalds",
-                    "admin",
-                ],
+                &["ployz", "--json", "org", "member", "role", "Linus", "admin"],
+                "ployz --json org member role '<MEMBER>' admin --approval a7e572f3",
             ),
             (
-                "org member role",
-                vec![
+                &[
                     "ployz", "org", "member", "role", "Linus", "admin", "--color", "always",
                 ],
+                "ployz --color always org member role '<MEMBER>' admin --approval a7e572f3",
             ),
             (
-                "org member rm",
-                vec!["ployz", "org", "member", "rm", "--", "--json"],
+                &["ployz", "org", "member", "rm", "--", "--json"],
+                "ployz org member rm '<MEMBER>' --approval a7e572f3",
             ),
             (
-                "uptime show",
-                vec!["ployz", "uptime", "show", "web", "--env", "staging"],
+                &["ployz", "uptime", "show", "web", "--env", "staging"],
+                "ployz uptime show web --env staging --approval a7e572f3",
             ),
             (
-                "org approval deny",
-                vec![
+                &[
                     "ployz",
                     "org",
                     "approval",
@@ -572,33 +531,16 @@ mod tests {
                     "--",
                     "-a7",
                 ],
+                "ployz org approval deny --reason '<REASON>' --approval a7e572f3 -- -a7",
             ),
         ] {
-            let command = published.find(path).unwrap();
-            let root = parsed(&published, &argv);
-            let again = retry(&root, command, "a7e572f3");
+            let root = parsed(&published, argv);
+            let tree = crate::published::attach(crate::cli::compiled(), &published);
+            let again = again(tree, &root, "a7e572f3").line();
+            assert_eq!(again, line, "{argv:?}");
             let words = shell_words::split(&again).unwrap();
             let words: Vec<&str> = words.iter().map(String::as_str).collect();
-            let again = parsed(&published, &words);
-            assert_eq!(
-                input(leaf_matches(&again), command),
-                input(leaf_matches(&root), command),
-                "{path}"
-            );
-            assert_eq!(
-                leaf_matches(&again)
-                    .get_one::<String>("approval")
-                    .map(String::as_str),
-                Some("a7e572f3")
-            );
-            for flag in ["ployz-config", "json", "color"] {
-                assert_eq!(again.value_source(flag), root.value_source(flag), "{flag}");
-                assert_eq!(
-                    again.get_raw(flag).map(Iterator::collect::<Vec<_>>),
-                    root.get_raw(flag).map(Iterator::collect::<Vec<_>>),
-                    "{flag}"
-                );
-            }
+            parsed(&published, &words);
         }
     }
 

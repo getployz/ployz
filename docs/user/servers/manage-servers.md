@@ -338,9 +338,9 @@ sudo ployz key add pk1_…
 It changes only the server you run it on, and names the servers that still don't trust the key.
 Run it on each of them. It also takes a device's key, as `ployz server add --command` prints it.
 It reaches the server through its local socket, which admits root and members of the `ployz`
-group, so anyone in that group can add a key. Until a server trusts your passkey, approve rules
-from an approved device with `ployz github rule approve`, and turn Private Access on with
-`ployz private-access on`.
+group, so anyone in that group can add a key. Until a server trusts your passkey, deploy from an
+approved device with `ployz deploy`, which also signs the automatic deploy rule unless you turned
+it off, and turn Private Access on with `ployz private-access on`.
 
 `ployz device ls` lists each passkey under your devices as `passkey, approve-only`, with its
 account and who approved it on each server: a device, or `on <server>` for that server's own
@@ -1059,7 +1059,7 @@ CLI use them only through a server on a newer release. While every newer server 
 **Servers** page reads **Upgrade your server over SSH**, and the CLI says:
 
 ```text
-Machine 0123… runs Ployz 0.3.2, which can't show which Cluster it belongs to. Upgrade it to 0.3.3 or later over SSH: ployz server upgrade stable SERVER --connect ssh://USER@HOST
+Machine 0123… runs Ployz 0.3.2, which can't show which Cluster it belongs to. Upgrade it to 0.3.3 or later over SSH: ployz server upgrade stable SERVER --connect ssh://<USER>@HOST
 ```
 
 The server keeps running your apps, so don't forget it. Upgrade it over SSH, as for a server on 0.2
