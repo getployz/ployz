@@ -75,6 +75,18 @@ fn a_urls_user_info_is_masked_whole_however_it_is_written() {
             "url=xhttps:<USER>:<PASSWORD>@host",
         ),
         (
+            "https://demo:sample@host/x?img=a@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "https://<USER>:<PASSWORD>@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        ),
+        (
+            "http:demo:sample@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "http:<USER>:<PASSWORD>@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        ),
+        (
+            "ghcr.io/acme/my-http:demo:sample@host/a@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "ghcr.io/acme/my-http:<USER>:<PASSWORD>@host/a@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        ),
+        (
             "a https://u:sample@a.example and b ssh://sample@b.example",
             "a https://<USER>:<PASSWORD>@a.example and b ssh://<USER>@b.example",
         ),
@@ -97,7 +109,6 @@ fn text_without_user_info_is_left_as_it_is() {
         "ghcr.io/acme/web:v1@sha256:0123abcd",
         "ghcr.io/acme/my-http:v1@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         "registry.example/team/sftp-wss:2@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-        "https://user:pw@sha512:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         "git@github.com:acme/web.git",
         "mailto:a@b.example",
         "See https://example.com for help, or mail a@b.example.",
@@ -223,6 +234,8 @@ const SCHEMES: &[&str] = &[
     "s3",
     "x",
     "1a",
+    "my-http",
+    "xhttps",
 ];
 const SLASHES: &[&str] = &["//", "/", "", "///", "\\\\", "/\\", "//\\", "////"];
 const INFO: &[&str] = &[
@@ -294,6 +307,10 @@ const RESTS: &[&str] = &[
     "#frag",
     ":/path?email=a@b",
     "/@scope/pkg",
+    "/a@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "?img=a@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "@sha256:012340123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
     ":12",
     "\"",
     ")",
