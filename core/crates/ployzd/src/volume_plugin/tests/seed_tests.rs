@@ -9,7 +9,7 @@ use std::{
     time::Duration,
 };
 
-use super::copy_tests::{BORN, eventually, let_requests_act, poll, receive_ready};
+use super::copy_tests::{BORN, eventually, poll, receive_ready};
 use super::inspect_tests::{set_property, start};
 use super::*;
 
@@ -17,6 +17,11 @@ const POINT: &str = "tank/ployz/data@w-1-1\t77\t1700000000";
 
 fn seed(guid: u64) -> Value {
     json!({"name": "data", "into": "seed", "guid": guid.to_string()})
+}
+
+/// [`seed`] as the seed run at `gen` sends it.
+fn seed_of_run(guid: u64, r#gen: u64) -> Value {
+    json!({"name": "data", "into": "seed", "guid": guid.to_string(), "gen": r#gen})
 }
 
 /// Resends the seed until its reply stops showing a copy in flight.
@@ -346,9 +351,10 @@ fn answer_gated(test: &TestDir, zfs: &Path) -> PathBuf {
 }
 
 /// The receive fails after a resent Seed found it running and before that Seed read the
-/// copy for its answer. The answer shows the failure, and the next call starts over.
+/// copy for its answer. The answer shows the failure, and so does the run's next resend,
+/// since Cloud resends when a reply is lost. The next run's Seed starts the copy over.
 #[tokio::test]
-async fn a_failed_seed_copy_is_answered_once_and_the_next_call_starts_over() {
+async fn a_failed_seed_copy_is_answered_to_its_run_and_the_next_run_starts_over() {
     let test = test_dir();
     for marker in ["root", "volume"] {
         fs::write(test.0.join(marker), "").unwrap();
@@ -362,13 +368,13 @@ async fn a_failed_seed_copy_is_answered_once_and_the_next_call_starts_over() {
     set_property(&test, "tank/ployz/data", "snapshots", POINT);
     fs::write(test.0.join("props").join("receive-fails"), "").unwrap();
     fs::write(test.0.join("props").join("stall-read"), "").unwrap();
-    post(&socket, "/Volume.Seed", seed(77)).await;
+    post(&socket, "/Volume.Seed", seed_of_run(77, 2)).await;
     receive_ready(&test).await;
 
     fs::write(test.0.join("answer-gate"), "").unwrap();
     let resent = tokio::spawn({
         let socket = socket.clone();
-        async move { post(&socket, "/Volume.Seed", seed(77)).await }
+        async move { post(&socket, "/Volume.Seed", seed_of_run(77, 2)).await }
     });
     eventually("the resent Seed's answer", || {
         test.0.join("answer-reached").exists()
@@ -378,17 +384,22 @@ async fn a_failed_seed_copy_is_answered_once_and_the_next_call_starts_over() {
     eventually("the receive's failure", || !receives.status(&into).busy()).await;
     fs::remove_file(test.0.join("answer-gate")).unwrap();
 
-    let failed = resent.await.unwrap();
-    let failure = failed
-        .pointer("/Ok/copy/pull/failure")
-        .and_then(Value::as_str)
-        .unwrap_or_else(|| panic!("{failed}"));
-    assert!(failure.contains("out of space"), "{failure}");
-    assert!(failure.contains("zfs send -t …"), "{failure}");
-    assert!(!failure.contains("token-1"), "{failure}");
-
     fs::remove_file(test.0.join("props").join("receive-fails")).unwrap();
-    let restarted = post(&socket, "/Volume.Seed", seed(77)).await;
+    for failed in [
+        resent.await.unwrap(),
+        post(&socket, "/Volume.Seed", seed_of_run(77, 2)).await,
+    ] {
+        let failure = failed
+            .pointer("/Ok/copy/pull/failure")
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("{failed}"));
+        assert!(failure.contains("out of space"), "{failure}");
+        assert!(failure.contains("zfs send -t …"), "{failure}");
+        assert!(!failure.contains("token-1"), "{failure}");
+    }
+    assert_eq!(commands(&test).matches("zfs send ").count(), 1);
+
+    let restarted = post(&socket, "/Volume.Seed", seed_of_run(77, 3)).await;
     assert!(
         restarted
             .pointer("/Ok/copy/pull/failure")
@@ -593,11 +604,15 @@ async fn departure_keeps_a_seed_whose_receive_exited_before_its_run_finished() {
         fs::write(test.0.join(marker), "").unwrap();
     }
     set_property(&test, "tank/ployz/data", "snapshots", POINT);
-    let (socket, _server) = start(&test, USABLE_POOL, &[]);
+    let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
+    let storage = VolumeStorage::with_programs(zpool, zfs);
+    let receives = storage.receives.clone();
+    let socket = test.0.join("plugin.sock");
+    let _server = tokio::spawn(serve(UnixListener::bind(&socket).unwrap(), storage));
+    let into: VolumeName = "seed".parse().unwrap();
     post(&socket, "/Volume.Seed", seed(77)).await;
-    let landed = test.0.join("props/tank/ployz-mirror/seed/fs/snapshots");
-    eventually("the seed's receive", || {
-        fs::read_to_string(&landed).is_ok_and(|snapshots| snapshots.contains("@w-1-1"))
+    eventually("the seed's run at its read-only set", || {
+        test.0.join("props/stalled").exists()
     })
     .await;
     set_property(
@@ -611,8 +626,8 @@ async fn departure_keeps_a_seed_whose_receive_exited_before_its_run_finished() {
         let socket = socket.clone();
         async move { post(&socket, "/Storage.Demote", json!(null)).await }
     });
-    let_requests_act(Duration::from_millis(200)).await;
-    let _ = fs::remove_file(test.0.join("props/stall-command"));
+    eventually("the departure's stop", || receives.stopped(&into)).await;
+    fs::remove_file(test.0.join("props/stall-command")).unwrap();
     let reply = departure.await.unwrap();
     assert_eq!(
         reply,

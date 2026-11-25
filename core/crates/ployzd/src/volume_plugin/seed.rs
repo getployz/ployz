@@ -32,7 +32,7 @@ use axum::{Json, extract::State};
 use ployz_core::authority::{StepDigest, Timestamp};
 use ployz_core::{
     DockerVolumeName, Pull, RpcError, SeedVolumeRequest, Snapshot, SnapshotGuid, SwitchError,
-    VolumeCopy, VolumeCopyView, VolumeOrigin,
+    VolumeCopy, VolumeCopyView, VolumeGen, VolumeOrigin,
 };
 use tokio::{io::AsyncWriteExt as _, process::Command};
 
@@ -64,13 +64,13 @@ enum SeedProgress {
     Landed,
     /// No root, and the registry's receive of `into` is alive, or a child it dropped is,
     /// whatever its target and whether or not a slot of `into` exists:
-    /// [`super::transfer::Receives::take_failure`] answers [`Busy`] before it compares
+    /// [`super::transfer::Receives::seed_failure`] answers [`Busy`] before it compares
     /// targets.
     Copying,
     /// No root, and the registry's receive of `into` ended failed, with no child it dropped
-    /// left alive, for the target the slot's `ployz:pull` names. So a failed SetVolumeCopy
-    /// pull of `into` whose target has the point's name selects it too. Reading it clears
-    /// it.
+    /// left alive, for the target the slot's `ployz:pull` names, and no later seed run
+    /// than every one it was answered to reads it. So a failed SetVolumeCopy pull of
+    /// `into` whose target has the point's name selects it too.
     Failed(String),
     /// No root, no receive alive and no failure answered, and the slot's `fs` has the guid
     /// as its newest run snapshot. That includes an `fs` a stopped [`Copied::land`] left
@@ -313,6 +313,13 @@ impl VolumeStorage {
 
 impl VolumeStorage {
     /// The seed `request` asks for, bound to `copy` when a Copy step admitted it.
+    ///
+    /// A failed copy is answered to every Seed of the seed run it was first answered to,
+    /// named by the request's gen, since Cloud resends that run's Seed when a reply is lost
+    /// or arrives after its attempt timed out. Only a Seed of a later run starts the copy
+    /// over, and Cloud starts one only after the earlier run ended. A Seed without a gen
+    /// names no run, so the next one after an answer starts over, and a reply lost before
+    /// it goes unseen.
     pub(super) async fn seed_volume(
         &self,
         request: &SeedVolumeRequest,
@@ -324,19 +331,22 @@ impl VolumeStorage {
         let (held, _installation) = self.admit_mutation().await?;
         let pool = self.one_pool().await?;
         let datasets = self.datasets(&pool).await?;
-        match self
-            .seed_progress(&held, &pool, &datasets, &into, (guid, copy))
+        let view = match self
+            .seed_progress(&held, &pool, &datasets, &into, (guid, copy), request.r#gen)
             .await?
         {
-            SeedProgress::Taken => Err(SwitchError::Precondition
-                .rpc_error(format!("Volume {into} already exists on this Machine"))),
+            SeedProgress::Taken => {
+                return Err(SwitchError::Precondition
+                    .rpc_error(format!("Volume {into} already exists on this Machine")));
+            }
             SeedProgress::Renamed(renamed) => {
                 renamed.finish_landing(self).await?;
                 self.seeded(&pool, &into).await
             }
             SeedProgress::Landed | SeedProgress::Copying => self.seeded(&pool, &into).await,
-            // Answered once. The next call finds the slot Copied if the receive completed
-            // before the copy failed, and Stale otherwise.
+            // Answered to this run until a later run's Seed reads it. That Seed finds the
+            // slot Copied if the receive completed before the copy failed, and Stale
+            // otherwise.
             SeedProgress::Failed(failure) => {
                 tracing::warn!(%into, failure, "Volume seed copy failed");
                 self.seeded(&pool, &into).await.map(|view| VolumeCopyView {
@@ -401,11 +411,28 @@ impl VolumeStorage {
                     None => self.copy_point(&held, &pool, &into, source).await,
                 }
             }
+        }?;
+        // A receive ends outside the mutation, so the answer can show a failure that ended
+        // after the read above found the receive running or after this call spawned it.
+        // That failure stays for this run's resends, whose replies Cloud may be the first
+        // to receive, and goes with the next run's first Seed.
+        if let Some(VolumeCopy::Slot {
+            pull:
+                Some(Pull {
+                    target,
+                    failure: Some(_),
+                }),
+            ..
+        }) = &view.copy
+        {
+            self.receives.answered(&into, target, request.r#gen);
         }
+        Ok(view)
     }
 
-    /// The one read of [`SeedProgress`], under the mutation `_held`. Its only registry read
-    /// is [`super::transfer::Receives::take_failure`], which answers and clears in one
+    /// The one read of [`SeedProgress`], under the mutation `_held`, for a Seed of the seed
+    /// run `run`. Its only registry read is [`super::transfer::Receives::seed_failure`],
+    /// which answers and, for a later run than the failure was answered to, clears in one
     /// step: a receive task ends outside the mutation, so two reads could each see a
     /// different side of that end. Under `copy`, a root of `into` the seed goes on with
     /// must carry the step's birth, and a slot must carry the step and record the birth or
@@ -417,6 +444,7 @@ impl VolumeStorage {
         datasets: &[Dataset],
         into: &VolumeName,
         (guid, copy): (SnapshotGuid, Option<&CopyBinding>),
+        run: Option<VolumeGen>,
     ) -> Result<SeedProgress, RpcError> {
         let birth = copy.map(|copy| copy.birth);
         let root = DatasetLayout::of(pool).root(into);
@@ -467,7 +495,7 @@ impl VolumeStorage {
         } else {
             None
         };
-        match self.receives.take_failure(into, pulling.as_ref()) {
+        match self.receives.seed_failure(into, pulling.as_ref(), run) {
             Err(Busy) if bound => return Ok(SeedProgress::Copying),
             Ok(Some(failure)) if bound => return Ok(SeedProgress::Failed(failure)),
             Err(Busy) | Ok(Some(_)) => return Ok(SeedProgress::Taken),
@@ -629,30 +657,12 @@ impl VolumeStorage {
     }
 
     /// The copy of `into` as the datasets stand now: a slot while it copies, a root once landed.
-    ///
-    /// A receive ends outside the mutation, so it can fail after [`Self::seed_progress`]
-    /// found it running or after this call spawned it, and before this read. The failure
-    /// this answer shows is then taken with it, so it is answered once and the next call
-    /// starts over. A failure whose dropped child outlives the hold shows and stays, since
-    /// that child can still hold the slot.
     async fn seeded(
         &self,
         pool: &MachinePool,
         into: &VolumeName,
     ) -> Result<VolumeCopyView, RpcError> {
         let copy = self.current_copy(pool, into).await?;
-        if let Some(VolumeCopy::Slot {
-            pull:
-                Some(Pull {
-                    target,
-                    failure: Some(_),
-                }),
-            ..
-        }) = &copy
-        {
-            // `Busy` only for the stuck child: its failure stays until the child exits.
-            let _ = self.receives.take_failure(into, Some(target));
-        }
         Ok(VolumeCopyView { copy })
     }
 

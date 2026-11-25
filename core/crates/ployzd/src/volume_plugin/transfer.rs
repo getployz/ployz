@@ -74,6 +74,31 @@ impl Default for Receives {
 struct Entry {
     target: SnapshotName,
     receive: Receive,
+    /// The seed runs its failure was answered to.
+    answered: Answered,
+}
+
+/// Which seed runs a failure was answered to, by gen. A Seed carrying no gen names no
+/// run, which reads as `To(None)`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Answered {
+    #[default]
+    Not,
+    /// The newest run it was answered to.
+    To(Option<VolumeGen>),
+}
+
+impl Answered {
+    /// Whether a Seed of `run` comes from a run after every one this failure was answered
+    /// to. A failure no run was answered keeps until one is. Without a gen a Seed cannot
+    /// tell a resend of the run it answered from a later run, so it counts as later.
+    fn superseded_by(self, run: Option<VolumeGen>) -> bool {
+        match (self, run) {
+            (Self::Not, _) => false,
+            (Self::To(Some(answered)), Some(run)) => run > answered,
+            (Self::To(_), None) | (Self::To(None), Some(_)) => true,
+        }
+    }
 }
 
 /// One Volume's receive. Its task writes the ending before it lets go of its life, so a
@@ -203,6 +228,16 @@ impl Receives {
         }
     }
 
+    /// Whether a departure has stopped `name`'s receive.
+    #[cfg(test)]
+    pub(super) fn stopped(&self, name: &VolumeName) -> bool {
+        self.receives
+            .lock()
+            .expect("receive registry is not poisoned")
+            .get(name.as_str())
+            .is_some_and(|entry| entry.receive.life().stop.is_cancelled())
+    }
+
     /// The receive of `name`, whatever its target. A task that answered still runs until
     /// the children it dropped exit, and those can still change the slot, so its failure
     /// waits for them, but only for the hold.
@@ -272,12 +307,88 @@ impl Receives {
                         life,
                         ..
                     },
+                ..
             }) if Some(&failed) == target && life.finished.is_cancelled() => Ok(Some(failure)),
             Some(entry) => {
                 let busy = entry.receive.unfinished();
                 receives.insert(name.to_string(), entry);
                 if busy { Err(Busy) } else { Ok(None) }
             }
+        }
+    }
+
+    /// The failure of `name`'s receive of `target` a Seed of `run` answers, read as
+    /// [`Self::take_failure`] reads it. Unlike that read, it stays: a reply can be lost on
+    /// its way to Cloud, which then resends the same run's Seed, and that Seed must answer
+    /// the failure again rather than start over. It goes only when a Seed of a later run
+    /// than every one it was answered to (see [`Self::answered`]) reads it: that run began
+    /// after the earlier one ended, so the copy starts over at Cloud's ask.
+    ///
+    /// # Errors
+    ///
+    /// [`Busy`] as [`Self::take_failure`] answers it.
+    pub(super) fn seed_failure(
+        &self,
+        name: &VolumeName,
+        target: Option<&SnapshotName>,
+        run: Option<VolumeGen>,
+    ) -> Result<Option<String>, Busy> {
+        let mut receives = self
+            .receives
+            .lock()
+            .expect("receive registry is not poisoned");
+        let Some(entry) = receives.get(name.as_str()) else {
+            return Ok(None);
+        };
+        match entry {
+            Entry {
+                target: failed,
+                receive:
+                    Receive::Ended {
+                        ending: Ending::Failed(failure),
+                        life,
+                        ..
+                    },
+                answered,
+            } if Some(failed) == target && life.finished.is_cancelled() => {
+                if answered.superseded_by(run) {
+                    receives.remove(name.as_str());
+                    Ok(None)
+                } else {
+                    Ok(Some(failure.clone()))
+                }
+            }
+            entry if entry.receive.unfinished() => Err(Busy),
+            _ => Ok(None),
+        }
+    }
+
+    /// Records that a Seed of `run` answered the failure of `name`'s receive of `target`,
+    /// so [`Self::seed_failure`] keeps it for that run's resends.
+    pub(super) fn answered(
+        &self,
+        name: &VolumeName,
+        target: &SnapshotName,
+        run: Option<VolumeGen>,
+    ) {
+        let mut receives = self
+            .receives
+            .lock()
+            .expect("receive registry is not poisoned");
+        if let Some(entry) = receives.get_mut(name.as_str())
+            && entry.target == *target
+            && matches!(
+                entry.receive,
+                Receive::Ended {
+                    ending: Ending::Failed(_),
+                    ..
+                }
+            )
+        {
+            entry.answered = match entry.answered {
+                Answered::To(answered) => Answered::To(answered.max(run)),
+                Answered::Not => Answered::To(run),
+            };
         }
     }
 
@@ -342,6 +453,7 @@ impl Receives {
                 Entry {
                     target: target.clone(),
                     receive: Receive::Running { life },
+                    answered: Answered::Not,
                 },
             );
         }
