@@ -57,7 +57,7 @@ pub(super) fn set_command(command: Command) -> Command {
         )
         .arg(
             switch("secret", None)
-                .help("Seal a value read from stdin: set web.env.KEY --secret, or set web.registryCredential --secret for a private image's token. With --from-env-file, seal every value"),
+                .help("Seal a value read from stdin: set web.env.KEY --secret, or set web.registryCredential --secret --username octo for a private image's token. With --from-env-file, seal every value"),
         )
         .arg(
             value("registry", None)
@@ -68,6 +68,7 @@ pub(super) fn set_command(command: Command) -> Command {
             value("username", None)
                 .value_name("NAME")
                 .requires("secret")
+                .conflicts_with("from-env-file")
                 .help("Registry username for the token, like octo"),
         )
         .arg(
