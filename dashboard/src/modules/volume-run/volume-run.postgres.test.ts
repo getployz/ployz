@@ -1672,7 +1672,7 @@ describe("volume runs", () => {
 
       expect(output.error).toBeDefined();
       expect(seeds).toHaveLength(1);
-      expect(await rows()).toEqual([expect.objectContaining({ id: run.id, kind: "seed", state: "failed", message: "a newer run took data-copy on fsn-1" })]);
+      expect(await rows()).toEqual([expect.objectContaining({ id: run.id, kind: "seed", state: "failed", message: "a later run reached data-copy on fsn-1 first" })]);
     });
 
     it("a Foreign reply fails the run naming into, the Volume another Service holds", async () => {
