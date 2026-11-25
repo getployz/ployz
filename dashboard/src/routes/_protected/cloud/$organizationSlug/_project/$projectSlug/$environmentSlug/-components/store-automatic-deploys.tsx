@@ -57,29 +57,44 @@ export function StoreAutomaticDeploys({ organizationSlug, projectSlug, environme
     : branches.find((branch) => branch.repository_id === kept.source.repository_id && branch.branch === kept.source.branch);
   // While on, the picker shows the rule's branch, and picking another turns the rule on there.
   const selected = on ? following : branches.find((branch) => keyOf(branch) === picked) ?? following ?? branches[0];
-  // Turning on saves what is staged, so it waits until nothing is.
+  // Signing the rule saves what is staged, so it waits for a read that shows nothing is, and names that review: the
+  // Store refuses the Save if anyone stages since.
+  const clean = diff.ok && diff.value.holds_staged ? diff.value.version : null;
   const staged = diff.ok && !diff.value.holds_staged;
   const held = on ? view.changed : [];
   const shownBranch = on && kept !== null ? kept.source.branch : selected?.branch ?? "your branch";
   const repositories = new Set(branches.map((branch) => branch.repository_id));
   const named = (branch: Branch) => repositories.size > 1 ? `${branch.repository} at ${branch.branch}` : branch.branch;
   const turnOn = ({ repository_id, branch }: Branch) => {
+    if (clean === null) return;
     // Whatever stopped it already showed; the switch stays as the Store keeps the rule.
-    saveTap.save({ command: "publish", environment, version: null, accept_volume_loss: [], message: null }, [], { repository_id, branch })
+    saveTap.save({ command: "publish", environment, version: clean, accept_volume_loss: [], message: null }, [], { repository_id, branch })
       .catch(() => undefined);
   };
   return (
     <SettingsSection id="automatic-deploys" title="Automatic deploys"
       description="Deploy each push to your branch without a prompt.">
-      {held.length > 0 ? (
+      {on && following !== undefined ? (
         <SettingsRow
-          label={<span className="flex items-center gap-2"><TriangleAlertIcon className="size-4 shrink-0 text-warning" />Pushes to {shownBranch} are on hold</span>}
-          hint={`${listed(held)} changed since you approved. Deploy to approve the change.`}
+          label={held.length > 0
+            ? <span className="flex items-center gap-2"><TriangleAlertIcon className="size-4 shrink-0 text-warning" />Pushes to {shownBranch} are on hold</span>
+            : "Approval"}
+          hint={held.length > 0 ? `${listed(held)} changed since you approved.`
+            : staged ? "Save or discard your changes first."
+            : "Approve again after you add a server or a push is refused."}
           commit="none"
+          control={(
+            <Button variant={held.length > 0 ? "default" : "outline"} disabled={clean === null} onClick={() => turnOn(following)}>
+              <KeyRoundIcon data-icon="inline-start" />
+              Approve again
+            </Button>
+          )}
         />
       ) : null}
       {!on && branches.length === 0 ? (
-        <SettingsEmpty title="No service builds from GitHub">Connect a service to a repository first.</SettingsEmpty>
+        view.sources.length === 0
+          ? <SettingsEmpty title="No service builds from GitHub">Connect a service to a repository first.</SettingsEmpty>
+          : <SettingsEmpty title="No service deploys on push">Turn on Auto-deploy for a service first.</SettingsEmpty>
       ) : (
         <>
           {branches.length > 1 ? (
@@ -88,7 +103,7 @@ export function StoreAutomaticDeploys({ organizationSlug, projectSlug, environme
               hint="Only pushes to this branch deploy."
               commit="change"
               control={(
-                <Select value={selected === undefined ? null : keyOf(selected)} disabled={on && staged} onValueChange={(next) => {
+                <Select value={selected === undefined ? null : keyOf(selected)} disabled={on && clean === null} onValueChange={(next) => {
                   const branch = branches.find((candidate) => keyOf(candidate) === next);
                   if (branch === undefined) return;
                   if (on) turnOn(branch);
@@ -116,7 +131,7 @@ export function StoreAutomaticDeploys({ organizationSlug, projectSlug, environme
             commit="none"
             control={
               <Switch id="automatic-deploys" aria-label="Deploy every push" checked={on}
-                disabled={!on && (staged || selected === undefined)}
+                disabled={!on && (clean === null || selected === undefined)}
                 onCheckedChange={(next) => {
                   if (!next) setEnding(true);
                   else if (selected !== undefined) turnOn(selected);

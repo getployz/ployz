@@ -11,7 +11,7 @@ import type { OnlyPasskey } from "#/modules/passkeys/passkey-statement";
 import { signWithPasskey } from "#/modules/passkeys/passkey-statement";
 import { namesReview } from "./deploy-tap";
 import type { SaveTap } from "./deploy-tap.server";
-import { draftSource, type OwnerOf, priorOf } from "./source-step";
+import { draftSource, movedFrom, type OwnerOf, priorOf } from "./source-step";
 
 /** A Save as the Store takes it. */
 export type Publish = Extract<ConfigCommand, { command: "publish" }>;
@@ -25,6 +25,8 @@ export type SaveAsk = {
   readonly passkeys: readonly OnlyPasskey[];
   readonly command: Publish;
   readonly prior: SavedRule["prior"];
+  /** The branch whose pushes stop deploying when the rule moves off it. */
+  readonly stops: string | null;
   /** The review version the rule was drafted from: only a retry of this review reuses the answer. */
   readonly review: string;
 };
@@ -43,6 +45,10 @@ export type SavePrepared =
 const ASK_DEPLOYER = "Ask someone who can deploy to approve the rule.";
 /** Why the switch can't turn the rule on for this person here. */
 const NOT_HERE = "An owner or admin turns on automatic deploys here.";
+/** Why the switch signs nothing when no Server checks approvals. */
+const NO_CHECK = "None of your servers checks approvals, so pushes deploy without a rule.";
+/** Why the switch signs nothing once someone else changed the Environment. */
+const MOVED = "This environment changed since the page loaded. Reload.";
 
 /** Cloud's read of what a Save saves; with `gate`, also what asking for a passkey needs. */
 export type ReadSave = (gate: boolean) => Promise<SaveTap>;
@@ -60,37 +66,40 @@ const saves = (view: RuleView, command: Publish): view is RuleView & { version: 
  * for a passkey. When one is needed but can't be asked for, the Save goes without it and says why. A Save whose review
  * moved since the person looked is sent as it is, and the Store refuses it as stale.
  *
- * `on` is the branch the Deploy every push switch turns the rule on for: that Save always signs a rule, even one the
- * person ended, and saves nothing when it can't.
+ * `on` is the branch Automatic deploys turns the rule on for or approves again: that Save always signs a rule, even one
+ * the person ended, and saves nothing when it can't.
  */
 export async function prepareSave(command: Publish, read: ReadSave, ownerOf: OwnerOf, now = Date.now(), on?: PushBranch): Promise<SavePrepared> {
   const plain = { kind: "save", command } as const;
+  // Automatic deploys asked for the rule: anything short of signing it saves nothing.
+  const skip = (reason: string): SavePrepared => on === undefined ? plain : { kind: "refused", message: reason };
   const first = await read(false);
   if (first.kind === "refused") return first;
-  if (on !== undefined && first.kind !== "view") return { kind: "refused", message: first.kind === "off" ? NOT_HERE : ASK_DEPLOYER };
-  if (first.kind === "off") return plain;
-  if (!saves(first.view, command)) return plain;
+  if (first.kind === "off") return skip(NOT_HERE);
+  if (!saves(first.view, command)) return skip(MOVED);
   let need: ReturnType<typeof sourceNeed>;
   try {
     need = on === undefined ? sourceNeed(first.view) : "rule";
   } catch (error) {
-    return { ...plain, held: error instanceof Error && error.message !== "" ? error.message : READ };
+    const reason = error instanceof Error && error.message !== "" ? error.message : READ;
+    return on === undefined ? { ...plain, held: reason } : skip(reason);
   }
   if (need === "none") return plain;
   // Someone who can't deploy signs nothing: say who can.
-  if (first.kind === "unsigned") return need === "rule" ? { ...plain, held: ASK_DEPLOYER } : plain;
+  if (first.kind === "unsigned") return on !== undefined ? skip(ASK_DEPLOYER) : need === "rule" ? { ...plain, held: ASK_DEPLOYER } : plain;
   // A new rule holds every push. When only the Servers the kept rule names may be out of date, a push holds only if it
   // lands on one the rule doesn't name, which is certain once the Cluster's Servers drafted a rule that names more.
   const held = (reason: string, drafted = false): SavePrepared =>
-    on !== undefined ? { kind: "refused", message: reason }
+    on !== undefined ? skip(reason)
     : need === "servers" && !drafted ? { ...plain, held: reason, unchecked: true } : { ...plain, held: reason };
   const second = await read(true).catch(() => null);
   if (second === null) return held("Couldn't reach Ployz Cloud.");
   // Publish checks the version and who may save; a refused read only keeps the rule from being asked for.
   if (second.kind === "refused") return held(second.message);
-  if (second.kind !== "view") return plain;
+  if (second.kind !== "view") return skip(READ);
   const { view, tap: gate } = second;
-  if (!saves(view, command) || gate === null || gate.kind === "off") return plain;
+  if (!saves(view, command)) return skip(MOVED);
+  if (gate === null || gate.kind === "off") return skip(NO_CHECK);
   if (gate.kind === "refused") return held(gate.message);
   const drafted = await draftSource({
     cluster: gate.cluster, namespace: view.namespace, volumes: view.volumes, services: [],
@@ -99,12 +108,13 @@ export async function prepareSave(command: Publish, read: ReadSave, ownerOf: Own
   }, view, gate.members, ownerOf, on);
   if (drafted.kind === "held") return held(drafted.reason, drafted.drafted);
   const signed = drafted.draft;
-  if (signed?.source === undefined) return on === undefined ? plain : held(`No service deploys on push from ${on.branch}.`);
+  if (signed?.source === undefined) return on === undefined ? plain : skip(`No service deploys on push from ${on.branch}.`);
   return {
     kind: "ask",
     ask: {
       draft: { ...signed, source: signed.source }, passkeys: gate.passkeys, review: view.version,
       command: { ...command, version: command.version ?? view.version }, prior: priorOf(view),
+      stops: movedFrom(view, signed.source),
     },
   };
 }

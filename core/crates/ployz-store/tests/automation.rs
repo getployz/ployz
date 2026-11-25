@@ -2782,8 +2782,8 @@ fn a_push_under_a_rule_waits_for_approval_again_once_a_setting_changed() {
     assert_eq!(
         reasons(&automated),
         vec![
-            "web changed since the automatic deploy rule was approved. Deploy to approve the \
-             change."
+            "web changed since the automatic deploy rule was approved. Approve again under \
+             Automatic deploys."
         ]
     );
     // Approved again over the new settings, the next push deploys.
@@ -2798,8 +2798,8 @@ fn a_push_under_a_rule_waits_for_approval_again_once_a_setting_changed() {
     assert_eq!(
         reasons(&automated),
         vec![
-            "web changed since the automatic deploy rule was approved. Deploy to approve the \
-             change."
+            "web changed since the automatic deploy rule was approved. Approve again under \
+             Automatic deploys."
         ]
     );
 }
@@ -2816,8 +2816,8 @@ fn a_new_service_on_the_rules_branch_holds_the_push_and_shows_in_the_rule_view()
     assert_eq!(
         reasons(&automated),
         vec![
-            "worker changed since the automatic deploy rule was approved. Deploy to approve \
-             the change."
+            "worker changed since the automatic deploy rule was approved. Approve again \
+             under Automatic deploys."
         ]
     );
     // The view the dashboard reads names what holds the push, so it can be approved.
@@ -2861,6 +2861,43 @@ fn a_rule_approved_on_its_own_is_refused_and_says_where_to_turn_it_on() {
     approve_rule(&store, &who, 1).unwrap();
     end_rule(&store, &who, 2);
     assert_eq!(kept_rule(&store, &who), Some((9, 2, "main".to_owned())));
+}
+
+// Catches an Off a page drafted before the rule moved to another branch ending the new rule.
+#[test]
+fn an_off_read_before_the_rule_moved_to_another_branch_saves_nothing() {
+    let (store, who) = shop();
+    publish(&store, &who);
+    approve_rule(&store, &who, 1).unwrap();
+    let dev = signed_rule(&store, &who, (8, 1, "dev"), true);
+    save_with_rule(
+        &store,
+        &who,
+        &staged_version(&store, &who),
+        (dev, Some((9, 1))),
+    )
+    .unwrap();
+
+    let stale = store
+        .write(
+            &who,
+            &ployz_store::ApproveRule {
+                environment: EnvironmentRef::default(),
+                rule: {
+                    use ployz_core::authority::{Signed, Signer};
+                    let mut main = signed_rule(&store, &who, (9, 2, "main"), false)
+                        .open()
+                        .unwrap();
+                    main.ended = true;
+                    Box::new(Signed::sign(&main, &Signer::from_seed(&[7; 32])).unwrap())
+                },
+                births: Default::default(),
+            },
+        )
+        .unwrap_err();
+
+    assert_eq!(stale.code, RpcErrorCode::Conflict, "{stale:?}");
+    assert_eq!(kept_rule(&store, &who), Some((8, 1, "dev".to_owned())));
 }
 
 #[test]

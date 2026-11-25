@@ -524,7 +524,7 @@ fn forgetting(approved: &[ApprovedChange]) -> String {
          of one that opens a secret, mounts a volume, pulls its image with a login or reaches \
          its server. Running containers keep running. An automatic deploy rule for these \
          services stops, and Ployz Cloud can't move or drain the containers it built, until \
-         you turn Deploy every push off and on again in Ployz Cloud, which also approves \
+         you approve again under Automatic deploys in Ployz Cloud, which also approves \
          the commit now at the head of its branch.",
         services.join(", ")
     )

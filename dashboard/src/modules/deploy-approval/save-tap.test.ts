@@ -60,6 +60,14 @@ describe("prepareSave", () => {
     expect(await prepareSave(save, read, owner)).toEqual({ kind: "save", command: save, held: "Couldn't read production." });
   });
 
+  // Catches the switch sending a Save with no rule, which reads as on to no one and stages nothing new.
+  it("turning automatic deploys on saves nothing when it can't sign the rule", async () => {
+    const main = { repository_id: 11, branch: "main" };
+
+    expect(await prepareSave(save, reads(view(), { kind: "off" }), owner, 1_000, main)).toMatchObject({ kind: "refused" });
+    expect(await prepareSave({ ...save, version: "v0" }, reads(view(), ready), owner, 1_000, main)).toMatchObject({ kind: "refused" });
+  });
+
   it("refuses only when the staged read fails", async () => {
     const read = async (): Promise<SaveTap> => ({ kind: "refused", message: "Couldn't read production." });
 

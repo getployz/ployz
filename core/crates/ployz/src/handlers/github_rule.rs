@@ -23,6 +23,23 @@ pub(super) fn group(command: Command) -> Command {
         .after_help("Turn it on with Deploy every push in Ployz Cloud.")
 }
 
+/// The verb an older script still calls, kept hidden: it says where turning the rule on went.
+pub(super) fn approve_command(command: Command) -> Command {
+    command.hide(true).arg(
+        clap::Arg::new("args")
+            .num_args(0..)
+            .trailing_var_arg(true)
+            .allow_hyphen_values(true),
+    )
+}
+
+pub(super) fn approve(_: &ArgMatches) -> Result<(), Error> {
+    Err(Error::coded(
+        RpcErrorCode::InvalidArgument,
+        ployz_store::RULE_APPROVE_GONE,
+    ))
+}
+
 pub(super) fn end_command(command: Command) -> Command {
     store::scoped(command)
         .about("Stop deploying every push automatically")

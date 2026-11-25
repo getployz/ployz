@@ -307,6 +307,20 @@ fn the_switch_turns_an_ended_rule_on_again_as_its_next_generation() {
     );
 }
 
+// Catches Approve again signing nothing when only a Server or a forgotten version needs
+// the rule signed again, which the settings alone don't show.
+#[test]
+fn approving_again_signs_the_next_generation_even_when_nothing_changed() {
+    let (_, kept) = first_rule();
+
+    let next = turning_on(Some(&kept), view_json()["sources"].clone(), "main").unwrap();
+
+    assert_eq!(
+        (next.rule, next.generation, next.ended),
+        (kept.rule, 2, false)
+    );
+}
+
 #[test]
 fn with_several_branches_the_switch_follows_the_one_the_person_picks() {
     let mut sources = view_json()["sources"].clone();

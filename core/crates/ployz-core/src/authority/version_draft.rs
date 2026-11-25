@@ -66,8 +66,9 @@ pub struct SourceAsked {
     /// the person turns the rule on.
     #[serde(default)]
     pub builder: Option<Builder>,
-    /// The branch the person turns Deploy every push on for. Only the switch names one: a
-    /// rule they ended starts again, and with several branches it follows this one.
+    /// The branch the person turns Deploy every push on for, or approves again. Only
+    /// Automatic deploys names one: it always signs the next generation, a rule they ended
+    /// starts again, and with several branches it follows this one.
     #[serde(default)]
     pub on: Option<PushBranch>,
 }
@@ -129,7 +130,8 @@ impl SourceAsked {
 
 /// The rule a tap signs as its Source step for what `basis` reads, under `terms`, or none
 /// when the kept rule still approves every Service a push deploys on every Server it may
-/// place one on. A rule the person ended stays ended unless `on` turns it on again.
+/// place one on. A rule the person ended stays ended unless `on` turns it on again. With
+/// `on` the person asked for the rule, so it is signed even when the kept one approves.
 /// `terms.new_rule` names the rule when none is kept, and seeds the births it mints.
 ///
 /// # Errors
@@ -144,7 +146,8 @@ pub fn source_rule(
     };
     let kept = basis.kept();
     let rule = AutoDeployRule::draft(basis, &names, terms)?;
-    Ok((!kept.is_some_and(|kept| approves(&kept, &rule, &basis.target))).then_some(rule))
+    let approved = on.is_none() && kept.is_some_and(|kept| approves(&kept, &rule, &basis.target));
+    Ok((!approved).then_some(rule))
 }
 
 /// What a Save needs to keep pushes deploying, read from the Store's rule view alone,

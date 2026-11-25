@@ -93,6 +93,7 @@ export function useSaveTap(organizationSlug: string) {
           <DialogTitle>Deploy every push to {summary.branch}?</DialogTitle>
           <DialogDescription>
             Each push to {summary.branch} deploys these settings with no prompt.
+            {open.ask.stops === null ? null : ` Pushes to ${open.ask.stops} stop deploying.`}
           </DialogDescription>
         </DialogHeader>
         <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">

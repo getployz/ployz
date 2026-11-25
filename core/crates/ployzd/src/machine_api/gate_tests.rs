@@ -103,7 +103,7 @@ fn a_rule_gate_names_what_a_person_runs_only_when_that_helps() {
             Error::RuleDeployRefused(RuleDeployRefusal::Rule(AuthorityRefusal::UnknownPasskey)),
             json!({
                 "capability": ployz_core::DEPLOY_RULE_CAPABILITY,
-                "next": "Turn Deploy every push off and on again in Ployz Cloud",
+                "next": "Approve again under Automatic deploys in Ployz Cloud",
             }),
         ),
         (

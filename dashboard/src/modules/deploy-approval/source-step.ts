@@ -2,7 +2,7 @@
  * The Source step a tap signs: the Environment's automatic deploy rule, drafted in this browser with the ployz-core code
  * the Servers check, from the Store's staged rule view, as the last step of the bundle a Save or a Deploy signs.
  */
-import type { AutoDeployRule, RuleView, SavedRule, VersionsDraft } from "@ployz/sdk";
+import type { AutoDeployRule, RuleDraft, RuleView, SavedRule, VersionsDraft } from "@ployz/sdk";
 import { type PushBranch, type SourceAsked, versionSteps } from "@ployz/sdk/authority";
 import type { QueryClient } from "@tanstack/react-query";
 import { githubRepositoryOwnerQueryOptions } from "#/modules/github/github.queries";
@@ -57,6 +57,14 @@ export async function draftSource(asked: Asked, view: RuleView, members: readonl
 export function priorOf(view: RuleView): SavedRule["prior"] {
   const kept = view.rule === null || view.rule === undefined ? null : parsed(view.rule.body);
   return kept === null ? null : { rule: kept.rule, generation: kept.generation };
+}
+
+/** The branch whose pushes stop deploying when `drafted` moves the rule `view` keeps on to another branch. */
+export function movedFrom(view: RuleView, drafted: RuleDraft): string | null {
+  const kept = view.rule === null || view.rule === undefined ? null : parsed(view.rule.body);
+  if (kept === null || kept.ended) return null;
+  const next = parsed(drafted.body).source;
+  return kept.source.repository_id === next.repository_id && kept.source.branch === next.branch ? null : kept.source.branch;
 }
 
 /** The repository owner's GitHub ID as this organization's GitHub connection reads it. */

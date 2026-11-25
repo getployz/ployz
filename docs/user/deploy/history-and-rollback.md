@@ -132,9 +132,9 @@ service's older versions too, and runs the version it signed for it.
 - **Automatic deploy rules stop.** A forget also retires each
   [automatic deploy rule](github.md#approve-a-rule-for-deploys-on-push) for those services that
   was approved before it. Pushes stop deploying them, and Ployz Cloud can't move or drain the
-  containers a rule built, until you turn **Deploy every push** off and on again under
-  **Automatic deploys**. Turning it on approves the commit now at the head of the rule's
-  branch, so check that commit first.
+  containers a rule built, until you click **Approve again** under **Automatic deploys**.
+  Approving again approves the commit now at the head of the rule's branch, so check that
+  commit first.
 - **Forget goes by each device's clock.** The forget's time is your device's clock when you said
   yes. A version signed on a device whose clock runs behind yours can be forgotten even if it was
   signed after, and one signed on a device whose clock runs ahead can survive. Keep your devices'
