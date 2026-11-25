@@ -3376,6 +3376,7 @@ fn a_registry_rules_proof_comes_with_no_login_once_the_newest_deploy_froze_none(
     let rule = signed_registry_rule(&store, &who, 1);
     save_with_rule(&store, &who, &staged_version(&store, &who), (rule, None)).unwrap();
     deploy(&store, &who, "00000000-0000-4000-8000-000000000108");
+    run(&store, "00000000-0000-4000-8000-000000000108");
     // The Service moves to a public repository and pulls with no login.
     let public = format!("docker.io/acme/worker@{digest}");
     set(&store, &who, "worker.image", json!(public));
@@ -3401,6 +3402,7 @@ fn a_registry_rules_proof_comes_with_no_login_once_the_newest_deploy_froze_none(
     )
     .unwrap();
     deploy(&store, &who, "00000000-0000-4000-8000-000000000109");
+    run(&store, "00000000-0000-4000-8000-000000000109");
 
     let view: ployz_store::RuleView = store
         .read(
@@ -3424,6 +3426,15 @@ fn a_registry_rules_proof_comes_with_no_login_once_the_newest_deploy_froze_none(
         .unwrap();
     assert!(kept.rule.is_some(), "the registry rule covers worker");
     assert_eq!(kept.registry_login, None);
+}
+
+/// Run Deployment `id` to success.
+fn run(store: &ConfigStore, id: &str) {
+    let id = ployz_store::DeploymentId::parse(id).unwrap();
+    let claimed = store
+        .claim(&id, &ployz_store::RunnerId::parse("runner").unwrap())
+        .unwrap();
+    backend::finish(store, &id, claimed);
 }
 
 fn deploy(store: &ConfigStore, who: &Actor, id: &str) {
@@ -3500,6 +3511,90 @@ fn a_registry_rules_proof_comes_with_the_login_the_services_deploy_froze() {
             &Trusted::default(),
         )
         .unwrap();
+    run(&store, "00000000-0000-4000-8000-000000000108");
+    let view: ployz_store::RuleView = store
+        .read(
+            &who,
+            &ployz_store::RuleQuery {
+                environment: EnvironmentRef::default(),
+                staged: false,
+            },
+        )
+        .unwrap();
+    let kept = store
+        .versions(
+            &who.organization,
+            &ployz_store::VersionsQuery {
+                namespace: view.namespace,
+                service: ServiceName::parse("worker").unwrap(),
+                digest: ployz_core::authority::PayloadDigest::parse(&"0".repeat(64)).unwrap(),
+                image: ployz_core::authority::BuiltImageDigest::named_by(&image),
+            },
+        )
+        .unwrap();
+    assert!(kept.rule.is_some(), "the registry rule covers worker");
+    assert_eq!(
+        kept.registry_login,
+        Some(ployz_store::testing::login_for("ghcr.io", "worker"))
+    );
+}
+
+// Catches a moved Volume's start taking the login of a Deploy that never ran: one queued
+// with no login and cancelled leaves the private image's Service running with its login.
+#[test]
+fn a_registry_rules_proof_keeps_the_login_of_the_deploy_that_ran_past_a_cancelled_one() {
+    let (store, who) = shop();
+    let image = format!("ghcr.io/acme/worker@sha256:{}", "a".repeat(64));
+    store
+        .write(
+            &who,
+            &ployz_store::CreateService {
+                id: ployz_store::ServiceLineageId::parse("00000000-0000-4000-8000-000000000006")
+                    .unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("worker").unwrap(),
+                image: Some(image.clone()),
+                template: None,
+            },
+        )
+        .unwrap();
+    set(
+        &store,
+        &who,
+        "worker.registryCredential",
+        ployz_store::testing::sealed_login_for("ghcr.io", "worker"),
+    );
+    publish(&store, &who);
+    let rule = signed_registry_rule(&store, &who, 1);
+    save_with_rule(&store, &who, &staged_version(&store, &who), (rule, None)).unwrap();
+    deploy(&store, &who, "00000000-0000-4000-8000-000000000108");
+    run(&store, "00000000-0000-4000-8000-000000000108");
+    store
+        .write(
+            &who,
+            &Command::Edit(Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: vec![Change::Unset {
+                    path: SettingPath::parse("worker.registryCredential").unwrap(),
+                }],
+            }),
+        )
+        .unwrap();
+    publish(&store, &who);
+    deploy(&store, &who, "00000000-0000-4000-8000-000000000109");
+    store
+        .write(
+            &who,
+            &ployz_store::Cancel {
+                deployment: ployz_store::DeploymentId::parse(
+                    "00000000-0000-4000-8000-000000000109",
+                )
+                .unwrap(),
+            },
+        )
+        .unwrap();
+
     let view: ployz_store::RuleView = store
         .read(
             &who,

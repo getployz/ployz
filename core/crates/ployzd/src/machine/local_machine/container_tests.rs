@@ -1795,6 +1795,48 @@ mod settled {
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 
+    // Catches a moved Volume's start opening the Service's login for an image it already
+    // holds, which a Docker Hub mirror makes this Server refuse though nothing is pulled.
+    #[tokio::test]
+    async fn a_volume_start_opens_no_login_for_an_image_it_holds() {
+        let cluster = crate::sealed_env::test_support::Cluster::new();
+        let mut new = new_container("settled");
+        let held = format!("acme/private@sha256:{}", "c".repeat(64));
+        new.resolved_spec.container.image.clone_from(&held);
+        new.resolved_spec.container.pull_policy = ployz_core::PullPolicy::Never;
+        let Settling {
+            local,
+            fake: _,
+            data_dir,
+        } = settling_with(
+            FakeDocker {
+                named_containers: Some(Arc::new(Mutex::new(BTreeMap::new()))),
+                mirrors: Arc::new(Mutex::new(vec!["https://mirror.example".to_owned()])),
+                ..Default::default()
+            },
+            Some(cluster.dir.0.clone()),
+        )
+        .await;
+        let login = cluster.seal_login(
+            ployz_core::DOCKER_HUB,
+            &ployz_core::RegistryAuth {
+                username: Some("bot".into()),
+                password: "token".into(),
+            },
+        );
+        let placed = local
+            .place_holder_image(
+                new.resolved_spec.clone(),
+                super::super::AdmittedSpec::test_signed(&new.slot.namespace, &new.resolved_spec),
+                None,
+                Some(login),
+            )
+            .await
+            .map(|placed| placed.id);
+        assert!(placed.is_ok(), "{placed:?}");
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
     #[tokio::test]
     async fn a_pinned_start_never_runs_another_image_in_its_slot() {
         for state in [None, Some("running"), Some("exited")] {

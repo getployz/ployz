@@ -186,6 +186,23 @@ impl Images {
         }
     }
 
+    /// Whether [`Self::place`] would pull `image` under `policy`: always under `Always`,
+    /// else only when Docker doesn't hold it.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker cannot be asked.
+    pub(crate) async fn pulls(&self, image: &str, policy: PullPolicy) -> Result<bool, Error> {
+        if policy == PullPolicy::Always {
+            return Ok(true);
+        }
+        match self.docker.client.inspect_image(image).await {
+            Ok(_) => Ok(false),
+            Err(error) if crate::docker_image::is_not_found(&error) => Ok(true),
+            Err(error) => Err(Error::Docker(error)),
+        }
+    }
+
     /// The image `id` names, which [`Self::place`] answered before a promote, confirmed
     /// here. Reaches no registry and reads no tag.
     ///

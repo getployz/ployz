@@ -393,9 +393,13 @@ impl LocalMachine {
                 (Some(resolved), _) => images.placed(resolved.as_str()).await?,
                 (None, Some(id)) if admitted.signed() => images.placed(&id).await?,
                 (None, _) if admitted.signed() => {
+                    // Opened only for a pull, so an image held here needs no login this
+                    // Server would refuse.
                     let auth = match &login {
-                        Some(login) => Some(docker.open_login(image, login).await?),
-                        None => None,
+                        Some(login) if images.pulls(image, policy).await? => {
+                            Some(docker.open_login(image, login).await?)
+                        }
+                        Some(_) | None => None,
                     };
                     images.place(image, policy, auth.as_ref()).await?
                 }

@@ -121,6 +121,8 @@ pub(crate) struct FakeDocker {
     pub(crate) pulls_left: Arc<Mutex<Option<usize>>>,
     /// Images the registry serves only to a pull that sends a login.
     pub(crate) private: Arc<Mutex<BTreeSet<String>>>,
+    /// The registry mirrors `/info` reports Docker is configured with.
+    pub(crate) mirrors: Arc<Mutex<Vec<String>>>,
 }
 
 impl FakeDocker {
@@ -225,8 +227,11 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
         } else {
             "overlay2"
         };
-        return axum::Json(serde_json::json!({"DriverStatus": [["driver-type", driver]]}))
-            .into_response();
+        return axum::Json(serde_json::json!({
+            "DriverStatus": [["driver-type", driver]],
+            "RegistryConfig": {"Mirrors": *fake.mirrors.lock().unwrap()},
+        }))
+        .into_response();
     }
     if method == Method::GET && path.contains("/containers/") && path.ends_with("/logs") {
         return fake.logs.lock().unwrap().clone().into_response();

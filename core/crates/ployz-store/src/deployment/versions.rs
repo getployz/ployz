@@ -705,25 +705,24 @@ pub(crate) fn versions(
     })
 }
 
-/// The sealed login the newest Deployment in `namespace` that ships `service` froze for
-/// it: none when that one froze none, though an older one pulled with one.
+/// The sealed login the newest Deployment in `namespace` that applied `service` froze for
+/// it: none when that one froze none, though an older one pulled with one. A Deployment
+/// that never applied it, queued or cancelled, ran nothing, so its login counts for
+/// nothing.
 fn frozen_login(
     tx: &mut dyn Tx,
     organization: &str,
     (namespace, service): (&Namespace, &ServiceName),
 ) -> Result<Option<ployz_core::SealedLogin>, RpcError> {
     let rows = tx.query(
-        "SELECT nodes, logins FROM config_deployment \
+        "SELECT id, logins FROM config_deployment \
          WHERE organization_id = ?1 AND namespace = ?2 AND number IS NOT NULL \
          ORDER BY number DESC",
         &[organization.into(), namespace.as_str().into()],
     )?;
     for row in &rows {
-        let nodes: Vec<super::TargetNode> = row.json(0, "Deployment nodes")?;
-        let ships = nodes.iter().any(
-            |node| matches!(node, super::TargetNode::Service { runtime, .. } if runtime == service),
-        );
-        if ships {
+        let id = row.parse::<DeploymentId>(0, "Deployment")?;
+        if applied(&super::load(tx, &id)?, service) {
             let mut logins: BTreeMap<ServiceName, ployz_core::SealedLogin> =
                 row.json(1, "Deployment logins")?;
             return Ok(logins.remove(service));
