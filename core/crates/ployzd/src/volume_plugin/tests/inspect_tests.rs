@@ -241,7 +241,7 @@ fn every_root_mark_combination_parses_to_one_copy() {
         .unwrap();
         let root = RootCopy::parse(dataset.switching(), marks);
         assert_eq!(root, expected_root, "{marks:?} readonly={readonly}");
-        let copy = root.view(newest(), epoch, None);
+        let copy = root.view(newest(), epoch, None, None);
         let VolumeCopy::Root {
             readonly: replied,
             seed,
@@ -263,6 +263,7 @@ fn every_root_mark_combination_parses_to_one_copy() {
             seed,
             mark: None,
             origin: None,
+            placed: None,
         };
         for want in &wants {
             for expect in &expects {

@@ -386,7 +386,9 @@ impl VolumeStorage {
     ///   Create inherits only `ployz:promote`. Beside the `ployz:promote` set below, it
     ///   would read as a seed Docker never adopted ([`RootCopy::parse`]), which Forget
     ///   destroys. So `land` is the one step that leaves both on a root.
-    /// - `ployz:epoch` becomes `epoch`.
+    /// - `ployz:image` becomes the image the start placed before this promote, or goes,
+    ///   then `ployz:epoch` becomes `epoch`. A root already at `epoch` takes the image
+    ///   again, so a resend's record is the one its start reads back.
     /// - `ployz:promote` is set unless the slot was cut. A pulled copy has no Docker record
     ///   yet, so the root hides from Get and List until Docker's own Create registers it
     ///   with labels. A cut copy keeps its record, and hiding it would make Docker drop
@@ -414,8 +416,10 @@ impl VolumeStorage {
                     .await);
             }
             self.require_at(&scope, &root_name, request).await?;
+            let marks = self.marks(&root_name);
+            marks.record_image(request.image.as_ref()).await?;
             if epoch < request.epoch {
-                self.marks(&root_name).set_epoch(request.epoch).await?;
+                marks.set_epoch(request.epoch).await?;
             }
             if scope.slot().is_some() && scope.fs().is_none() {
                 self.z(&["destroy", &DatasetLayout::of(&scope.pool).slot_parent(name)])
@@ -480,7 +484,9 @@ impl VolumeStorage {
                     .await);
             }
         }
-        marks.promote_slot(request.epoch).await?;
+        marks
+            .promote_slot(request.epoch, request.image.as_ref())
+            .await?;
         // A Machine that only ever mirrored has no managed parent for the root yet.
         let parent = DatasetLayout::of(&scope.pool).root_parent();
         self.ensure_root(&scope.datasets, &parent).await?;

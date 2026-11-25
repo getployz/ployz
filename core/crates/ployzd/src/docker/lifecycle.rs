@@ -485,7 +485,7 @@ impl Lifecycle {
                 .await
                 .map_err(E::from)?
             {
-                return Ok(existing);
+                return self.adopt(existing, image).await.map_err(E::from);
             }
         }
         tracing::info!(
@@ -553,7 +553,10 @@ impl Lifecycle {
                         )
                         .await?;
                 }
-                ImagePull::Policy(_) | ImagePull::Prepared => {
+                ImagePull::Placed(id) if self.images.is_free(id) => {
+                    body.image = Some(id.to_owned());
+                }
+                ImagePull::Policy(_) | ImagePull::Prepared | ImagePull::Placed(_) => {
                     // By ID: the spec's tag here may name what a caller with Full access
                     // put under it, which this creation must not run.
                     let id = self
@@ -563,6 +566,8 @@ impl Lifecycle {
                     body.image = Some(id);
                 }
             }
+        } else if let ImagePull::Placed(id) = creating.image {
+            body.image = Some(id.to_owned());
         } else if let ImagePull::Policy(registry_auth) = creating.image
             && let Err(error) = prepare_image(
                 &self.docker.client,
@@ -586,7 +591,7 @@ impl Lifecycle {
             )
             .await?
         {
-            return Ok(existing);
+            return self.adopt(existing, creating.image).await;
         }
         // A key that admitted the spec may have been removed, or a newer generation of
         // its rule may have arrived, while the image pulled.
@@ -860,6 +865,24 @@ impl Lifecycle {
             container_id: existing.container_id,
             display_name: existing.into_parts().display_name,
         }))
+    }
+
+    /// `existing`, the Container an earlier create under the key made, for a create that
+    /// asks for `image`. A create by a placed ID adopts only a Container Docker made from
+    /// that ID: [`same_creation`] reads the spec, whose tag can name another image since.
+    async fn adopt(
+        &self,
+        existing: ContainerCreated,
+        image: ImagePull<'_>,
+    ) -> Result<ContainerCreated, Error> {
+        let ImagePull::Placed(id) = image else {
+            return Ok(existing);
+        };
+        if self.image_of(&existing.container_id).await?.as_deref() == Some(id) {
+            Ok(existing)
+        } else {
+            Err(Error::SlotNameOccupied(existing.display_name))
+        }
     }
 
     /// Removes a Container a daemon killed between Docker's create and the spec's write
@@ -1429,13 +1452,25 @@ fn slotted(rotation: &ployz_core::CopyRotation) -> bool {
     )
 }
 
+/// Whether `observed` is what a create of `spec` makes. The pull policy decides only how
+/// the image got here, not what runs, so a resend that asks for it differently, as a
+/// forward Release does after its Move's `never`, finds the Container that create made.
+/// The image reference must still match, and a create by ID adopts only a Container
+/// made from that ID ([`LocalLifecycle::adopt`]).
 pub(crate) fn same_creation(
     observed: &ContainerObservation,
     namespace: &Namespace,
     kind: ContainerKind,
     spec: &ResolvedServiceSpec,
 ) -> bool {
-    observed.namespace == *namespace && observed.kind == kind && observed.resolved_spec == *spec
+    let made = &observed.resolved_spec;
+    observed.namespace == *namespace
+        && observed.kind == kind
+        && (made == spec || {
+            let mut asked = spec.clone();
+            asked.container.pull_policy = made.container.pull_policy;
+            *made == asked
+        })
 }
 
 fn creation_name(
@@ -1607,6 +1642,57 @@ mod tests {
                 "{kind:?}",
             );
         }
+    }
+
+    /// A resend under a creation's key that asks for the image by another placed ID gets
+    /// no Container: the spec's tag matches, but the Container runs what Docker made it
+    /// from. The same ID, under another pull policy, adopts it.
+    #[tokio::test]
+    async fn a_create_by_placed_id_adopts_only_a_container_made_from_that_id() {
+        let namespace = Namespace::parse("app").unwrap();
+        let containers = std::sync::Arc::default();
+        let (runtime, _fake) = fake_runtime_with(FakeDocker {
+            named_containers: Some(std::sync::Arc::clone(&containers)),
+            ..FakeDocker::default()
+        })
+        .await;
+        let mut spec = spec_with_sources(Vec::new());
+        let (made, other) = (
+            format!("sha256:{}", "a".repeat(64)),
+            format!("sha256:{}", "b".repeat(64)),
+        );
+        let machine = machine();
+        let create = |spec: ResolvedServiceSpec, id: String| {
+            let (lifecycle, machine, namespace) =
+                (runtime.lifecycle(), machine.clone(), namespace.clone());
+            async move {
+                lifecycle
+                    .create_with_admission::<_, _, Error>(
+                        &machine,
+                        ContainerRequest {
+                            image: ImagePull::Placed(&id),
+                            ..container_request(
+                                ContainerKind::ServiceContainer,
+                                &namespace,
+                                &spec,
+                                std::future::ready(None),
+                            )
+                        },
+                    )
+                    .await
+            }
+        };
+        spec.container.pull_policy = PullPolicy::Never;
+        let first = create(spec.clone(), made.clone()).await.unwrap();
+
+        spec.container.pull_policy = PullPolicy::Missing;
+        let refused = create(spec.clone(), other).await;
+        assert!(
+            matches!(refused, Err(Error::SlotNameOccupied(_))),
+            "{refused:?}"
+        );
+        let adopted = create(spec, made).await.unwrap();
+        assert_eq!(adopted.container_id, first.container_id);
     }
 
     async fn stamped_labels(

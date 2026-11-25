@@ -520,6 +520,7 @@ const EXTRAS: &[(&str, &str)] = &[
     ("ployz.volume.size.shrink.v1", "Container"),
     ("ployz.volume.origin.v1", "Container"),
     ("ployz.volume.start.v1", "Container"),
+    ("ployz.volume.start.image.v1", "Container"),
     ("ployz.volume.cut.running.v1", "Container"),
     ("ployz.volume.keep-written.v1", "Container"),
     ("ployz.certificates.policy.v1", "Always"),

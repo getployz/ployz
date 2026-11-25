@@ -5,17 +5,17 @@
 use ployz_core::{
     ContainerKind, ContainerLocator, ContainerNow, ContainerObservation, ContainerRefusalReason,
     ContainerWant, CopyPlan, CopyRefusal, CopyRotation, CopyTransition, DockerVolumeName,
-    EnsuredContainer, HealthVerdict, QualifiedService, RpcError, RunRotation, RunTarget,
-    SeedCopyRequest, SeedVolumeRequest, SetVolumeCopyRefused, SetVolumeCopyRequest,
-    SetVolumeSizeReply, SetVolumeSizeRequest, Start, VolumeCopy, VolumeCopyView, VolumeGen,
-    WantedCopy,
+    EnsuredContainer, HealthVerdict, PlacedImage, QualifiedService, RpcError, RpcErrorCode,
+    RunRotation, RunTarget, SeedCopyRequest, SeedVolumeRequest, SetVolumeCopyRefused,
+    SetVolumeCopyRequest, SetVolumeSizeReply, SetVolumeSizeRequest, Start, VolumeCopy,
+    VolumeCopyView, VolumeGen, WantedCopy, WriterEpoch,
 };
 
 use ployz_core::authority::{
     AuthorityRefusal, CopyFacts, CopyVerified, CopyWindow, Purpose, Timestamp, copy,
 };
 
-use super::{AdmittedSpec, CutRefusal, Error, LocalMachine, SwitchGuard};
+use super::{AdmittedSpec, CutRefusal, Error, LocalMachine, PlacedHolder, SwitchGuard};
 use crate::{
     docker::FloorTurn,
     faults::{Identity, Point, Want},
@@ -309,19 +309,37 @@ impl SwitchGuard {
         .await;
         match (transition, want) {
             (CopyTransition::WriterToWriter, WantedCopy::Writer { at, epoch, start }) => {
+                let placed = self
+                    .place_start_image(copy.as_ref(), epoch, start.as_ref(), admitted)
+                    .await?;
+                let image = placed.as_ref().and_then(|placed| placed.record(epoch));
+                // The holder starts only beside a root whose own record names this start's
+                // image. A root promoted at `epoch` without it, by a plugin from before the
+                // record or under a mark that doesn't parse, is promoted again: the Writer
+                // route is idempotent at `epoch` and writes the record.
                 let copy = match copy {
                     Some(VolumeCopy::Root {
                         readonly,
                         epoch: held,
+                        placed: on_root,
                         ..
-                    }) if readonly || held != epoch => {
+                    }) if readonly || held != epoch || image.is_some() && on_root != image => {
+                        // Only the record would change: it names the image another holder may
+                        // run from, so it's rewritten only when nothing else holds the Volume.
+                        if !readonly && held == epoch {
+                            self.refuse_other_holder(start.as_ref(), &name).await?;
+                        }
                         let request = WriterRequest {
                             name: name.clone(),
                             at,
                             epoch,
                             r#gen,
+                            image,
                         };
-                        self.plugin_copy(WRITER_ROUTE, &request).await?
+                        recorded(
+                            self.plugin_copy(WRITER_ROUTE, &request).await?,
+                            request.image.as_ref(),
+                        )?
                     }
                     copy => copy,
                 };
@@ -334,8 +352,7 @@ impl SwitchGuard {
                             return Err(refused(CopyRefusal::NoTransition, copy, &name));
                         }
                         StartState::Stopped => {
-                            self.run_start(start.clone(), &name, r#gen, admitted)
-                                .await?;
+                            self.run_start(start.clone(), &name, r#gen, placed).await?;
                         }
                     }
                     self.route_created(&start, &name).await?;
@@ -343,13 +360,20 @@ impl SwitchGuard {
                 Ok(copy)
             }
             (CopyTransition::MirrorToWriter, WantedCopy::Writer { at, epoch, start }) => {
+                let placed = self
+                    .place_start_image(copy.as_ref(), epoch, start.as_ref(), admitted)
+                    .await?;
                 let request = WriterRequest {
                     name: name.clone(),
                     at,
                     epoch,
                     r#gen,
+                    image: placed.as_ref().and_then(|placed| placed.record(epoch)),
                 };
-                let copy = self.plugin_copy(WRITER_ROUTE, &request).await?;
+                let copy = recorded(
+                    self.plugin_copy(WRITER_ROUTE, &request).await?,
+                    request.image.as_ref(),
+                )?;
                 crate::faults::kill_inside(
                     Point::Copy(CopyTransition::MirrorToWriter),
                     Some(Identity {
@@ -359,8 +383,7 @@ impl SwitchGuard {
                     }),
                 );
                 if let Some(start) = start {
-                    self.run_start(start.clone(), &name, r#gen, admitted)
-                        .await?;
+                    self.run_start(start.clone(), &name, r#gen, placed).await?;
                     self.route_created(&start, &name).await?;
                 }
                 Ok(copy)
@@ -559,6 +582,27 @@ impl LocalMachine {
             .map_err(Error::StoragePreparation)
     }
 
+    /// Refuses while a Container other than `start`'s own runs on the Volume, before a
+    /// promote rewrites the record of the image that holder runs from.
+    async fn refuse_other_holder(
+        &self,
+        start: Option<&Start>,
+        name: &DockerVolumeName,
+    ) -> Result<(), Error> {
+        let me = match start {
+            Some(start) => self
+                .start_observed(start)
+                .await?
+                .map(|observed| observed.container_id),
+            None => None,
+        };
+        Ok(self
+            .docker()?
+            .volumes()
+            .refuse_beside_except(name, me.as_ref())
+            .await?)
+    }
+
     /// Whether the Writer's start already runs. It runs when Docker runs the Container
     /// `start` names, or a [`Self::replacement_running`]. Another holder of the Volume
     /// is not the Service, so its run is no start. A Kept Container Docker no longer
@@ -725,6 +769,42 @@ impl LocalMachine {
         Err(Error::StoragePreparation(error))
     }
 
+    /// Pull a Create's image before the promote, as its Create would, and keep its ID. A
+    /// Move's Mirror is a slot Docker never sees, so its holder can't be made before the
+    /// promote, but a refused pull then refuses the start with the copy as it was, and
+    /// the Create after it pulls nothing. Placed even beside a holder that runs now,
+    /// since it can exit while the promote runs. `None` for a Kept start, which creates
+    /// nothing.
+    ///
+    /// The promote records the ID on the copy with its epoch and the admitted spec's
+    /// digest. A resend that finds a record for `epoch` and this same spec takes the
+    /// recorded ID and pulls nothing: the image was chosen before the promote, and a
+    /// stop since changes neither it nor what the tag named then. Any other spec, even
+    /// one under the same creation key, places its own.
+    async fn place_start_image(
+        &self,
+        copy: Option<&VolumeCopy>,
+        epoch: WriterEpoch,
+        start: Option<&Start>,
+        admitted: Option<AdmittedSpec>,
+    ) -> Result<Option<PlacedHolder>, Error> {
+        let (Some(Start::Create { resolved_spec, .. }), Some(admitted)) = (start, admitted) else {
+            return Ok(None);
+        };
+        let recorded = match copy {
+            Some(VolumeCopy::Root {
+                placed: Some(placed),
+                ..
+            }) if placed.epoch() == epoch && *placed.spec() == admitted.placement() => {
+                Some(placed.id())
+            }
+            _ => None,
+        };
+        self.place_holder_image(resolved_spec.clone(), admitted, recorded)
+            .await
+            .map(Some)
+    }
+
     /// Create the Container when `start` asks for one and it is absent, then start it.
     /// Both halves are idempotent, so a resend after either converges. `Stale` when a
     /// newer lane raised the floor after this request was admitted.
@@ -733,10 +813,10 @@ impl LocalMachine {
         start: Start,
         name: &DockerVolumeName,
         r#gen: VolumeGen,
-        admitted: Option<AdmittedSpec>,
+        placed: Option<PlacedHolder>,
     ) -> Result<(), Error> {
         match self
-            .start_volume_holder(start, name.clone(), r#gen, admitted)
+            .start_volume_holder(start, name.clone(), r#gen, placed)
             .await?
         {
             Ok(()) => Ok(()),
@@ -804,6 +884,29 @@ fn refusal(refused: SetVolumeCopyRefused, name: &DockerVolumeName) -> Error {
         ),
     };
     Error::StoragePreparation(refused.rpc_error(message))
+}
+
+/// The promote's reply, when it carries the image the promote was asked to record. A
+/// volume plugin from before `ployz:image` promotes but ignores the image, so a resend
+/// after a stop would find no record and pull again. The start is refused instead, while
+/// that plugin still runs beside this daemon.
+fn recorded(copy: Copy, image: Option<&PlacedImage>) -> Result<Copy, Error> {
+    match (&copy, image) {
+        (_, None) => Ok(copy),
+        (
+            Some(VolumeCopy::Root {
+                placed: Some(placed),
+                ..
+            }),
+            Some(image),
+        ) if placed == image => Ok(copy),
+        (_, Some(_)) => Err(Error::StoragePreparation(RpcError::new(
+            RpcErrorCode::Unsupported,
+            "the volume plugin on this Server promoted the copy without recording the start's \
+             image, so it runs an older build than this daemon. Restart \
+             ployz-volume-plugin on this Server, then retry",
+        ))),
+    }
 }
 
 fn not_routed(message: String) -> RpcError {

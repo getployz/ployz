@@ -183,6 +183,7 @@ const label = (fake: FakeMachine, want: WantedCopy) => {
 /** What a fake Server lists unless a test names its own: every Volume verb. */
 const ON_PLOYZ_04 = [
   requirements.volumeStart.capability,
+  requirements.volumeStartImage.capability,
   requirements.volumeMove.capability,
   requirements.volumeFloor.capability,
   requirements.volumeSize.capability,
@@ -2802,6 +2803,21 @@ describe("volume runs", () => {
         { kind: "release", state: "failed", phase: "committed", current: B },
         { id: later.id, kind: "release", state: "done" },
       ]);
+    });
+
+    it("on a committed row, a forward release onto a Server whose Ployz would pull the start's image again creates nothing there", async () => {
+      const G = newSnap("f-1");
+      named("fsn-1").copy = slotCopy(G);
+      for (const container of containers) container.running = false;
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(G, null, "2"), capabilities: ON_PLOYZ_04.filter((capability) => capability !== requirements.volumeStartImage.capability) };
+      await owned("committed");
+      await runEffect(closeVolumeRun("run-1", "failure"));
+      verbs = [];
+
+      const failed = await execute((await releaseRow()).id, "run-2");
+
+      expect(failed.error).toMatchObject({ message: expect.stringContaining("Volume move is not available on fsn-2.") });
+      expect(verbs.filter((verb) => verb.startsWith("writer@"))).toEqual([]);
     });
 
     describe("a committed Move whose release failed", () => {

@@ -256,6 +256,10 @@ pub(crate) struct AdmittedSpec {
     /// A hash of the namespace and the whole spec. Every spec has one, where a spec
     /// holding a negative number has no [`PayloadDigest`].
     spec: [u8; 32],
+    /// The same hash with the spec's pull policy left out: what the spec runs, not how
+    /// its image is placed. A Writer start's recorded image binds to it, so a Release
+    /// that resends the Move's spec under another pull policy takes the same image.
+    placement: [u8; 32],
     by: AdmittedBy,
     standing: Option<Standing>,
     /// What this Machine issued for a rule build it checked online to admit the spec.
@@ -284,6 +288,17 @@ impl AdmittedSpec {
         Ok(Sha256::digest(&body).into())
     }
 
+    /// [`Self::hash`] of `spec` with its pull policy fixed, so it binds everything else
+    /// the spec says.
+    fn placement_hash(
+        namespace: &Namespace,
+        spec: &ResolvedServiceSpec,
+    ) -> Result<[u8; 32], AuthorityRefusal> {
+        let mut placed = spec.clone();
+        placed.container.pull_policy = ployz_core::PullPolicy::Never;
+        Self::hash(namespace, &placed)
+    }
+
     /// A reserved spec this daemon built itself, which no caller chose.
     ///
     /// # Errors
@@ -291,6 +306,7 @@ impl AdmittedSpec {
     pub(super) fn own(namespace: &Namespace, spec: &ResolvedServiceSpec) -> Result<Self, Error> {
         Ok(Self {
             spec: Self::hash(namespace, spec).map_err(Error::DeployRefused)?,
+            placement: Self::placement_hash(namespace, spec).map_err(Error::DeployRefused)?,
             by: AdmittedBy::Local {
                 service: QualifiedService::new(namespace.clone(), spec.name.clone()),
                 at: Timestamp::now(),
@@ -299,6 +315,11 @@ impl AdmittedSpec {
             verified: None,
             hook: None,
         })
+    }
+
+    /// The hash of the namespace and the spec this admits, its pull policy left out.
+    pub(crate) const fn placement(&self) -> [u8; 32] {
+        self.placement
     }
 
     /// Whether a signature or Full access stands behind the spec.
@@ -382,6 +403,7 @@ impl AdmittedSpec {
     pub(crate) fn test_reaching(reach: Reach) -> Self {
         Self {
             spec: [0; 32],
+            placement: [0; 32],
             by: AdmittedBy::Keys {
                 service: QualifiedService::parse("app/web").unwrap(),
                 keys: Vec::new(),
@@ -398,6 +420,7 @@ impl AdmittedSpec {
     pub(crate) fn test_unbound(signed: bool) -> Self {
         Self {
             spec: [0; 32],
+            placement: [0; 32],
             by: if signed {
                 AdmittedBy::Local {
                     service: QualifiedService::parse("app/web").unwrap(),
@@ -462,9 +485,12 @@ impl LocalMachine {
             Error::DeployRefused(refusal)
         };
         let spec = AdmittedSpec::hash(&new.slot.namespace, &new.resolved_spec).map_err(refused)?;
+        let placement = AdmittedSpec::placement_hash(&new.slot.namespace, &new.resolved_spec)
+            .map_err(refused)?;
         let admitted = |by, verified, hook| {
             Ok(Some(AdmittedSpec {
                 spec,
+                placement,
                 by,
                 standing: Some(self.standing()),
                 verified,

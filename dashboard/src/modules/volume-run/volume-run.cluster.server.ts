@@ -7,7 +7,7 @@ import type { OperationAsked, OperationVerb } from "#/modules/operations/asked";
 import { volumeRunTaken } from "#/modules/volume-run/volume-run.events";
 import { enqueueEvent } from "#/modules/inngest/outbox.server";
 import { ClusterOutOfTime, clusterRead, PLAN_CLUSTER_BUDGET_MS, requireClusterTime, RUNTIME_FRAME_TIMEOUT_MS, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
-import { type Requirement, requirementFor, requirements, serverSupports } from "#/modules/runtime/daemon-compat";
+import { type Requirement, requirementFor, requirements, serverSupports, writerStart } from "#/modules/runtime/daemon-compat";
 import { type PloyzSdkError, RpcError, sdkFailureMessage, setVolumeCopyRefusal } from "#/modules/runtime/ployz.server";
 import { alreadyOn, confirmedCopy, destroyedBy, holdingNewest, type PlanInput, planForwardRelease, planFromCopies, restoreSource, roleOf, upgradeBeforeSend, writerRemovedMessage } from "#/modules/volume-run/plan";
 import { resizeRequirements, sizeDirection } from "#/modules/volume-run/resize";
@@ -468,7 +468,11 @@ const volumeFrame = Effect.fn("VolumeRun.volumeFrame")(function* (organizationId
   const containers = frame.containers.filter((container) =>
     container.resolved_spec.volumes.some(({ source }) => source.kind === "provisioned" && source.name === dockerVolume));
   const regionOf = (machine: MachineId) => frame.machines.find((observed) => observed.machine.id === machine)?.machine.labels[REGION_LABEL] ?? null;
-  return { containers, regionOf };
+  const runtimeOf = (machine: MachineId): ServerRuntime => {
+    const observed = frame.machines.find((candidate) => candidate.machine.id === machine)?.machine.runtime;
+    return { capabilities: observed?.capabilities ?? [], daemonVersion: observed?.daemon_version ?? "" };
+  };
+  return { containers, regionOf, runtimeOf };
 }, Effect.scoped);
 
 const serviceContainers = (organizationId: string, dockerVolume: string) =>
@@ -542,6 +546,9 @@ export const findHolder = Effect.fn("VolumeRun.findHolder")(function* (ctx: RunC
 
 type CreateStart = Extract<CopyStart, { kind: "create" }>;
 
+/** What a Server's daemon lists and runs, as the runtime frame reports it: none for a Server it doesn't list. */
+type ServerRuntime = { readonly capabilities: readonly string[]; readonly daemonVersion: string };
+
 /**
  * The Create that starts `holder`'s Service on `to`: its spec, in `to`'s region when the Service is kept in one, with the
  * signed versions or rule build that admit it there. Read from the Store each time, so a step result never holds the spec.
@@ -552,9 +559,17 @@ const createOn = Effect.fn("VolumeRun.createOn")(function* (
   holder: ContainerObservation,
   to: MachineRef,
   region: string | null,
+  runtime: ServerRuntime,
   at: SnapshotGuid,
   moved: boolean,
 ) {
+  // Every Writer Create comes through here, a Move's check and start and a forward Release's start alike, so this is
+  // the one gate: a Server that lacks a verb would run the start differently, or not at all.
+  const unstartable = writerStart.find((requirement) => serverSupports(runtime, requirement) !== true);
+  if (unstartable !== undefined) {
+    const { lack } = yield* lackSentence(ctx.organizationId, unstartable.capability, { name: to.name, daemonVersion: runtime.daemonVersion }, undefined);
+    return refused(lack);
+  }
   const session = yield* openSession(ctx.organizationId);
   const { container } = yield* session.inspectContainer(holder.machine_id, holder.container_id).pipe(
     Effect.mapError((error) => new Error(`reading ${holder.resolved_spec.name}'s spec: ${sdkFailureMessage(error)}`)),
@@ -596,11 +611,11 @@ export const startRefusal = Effect.fn("VolumeRun.startRefusal")(function* (
   expect: ExpectedCopy,
   chosen: ContainerId | null = null,
 ) {
-  const { containers, regionOf } = yield* volumeFrame(ctx.organizationId, ctx.dockerVolume);
+  const { containers, regionOf, runtimeOf } = yield* volumeFrame(ctx.organizationId, ctx.dockerVolume);
   const found = holderOn(ctx, containers, from, chosen);
   if (!found.ok) return found.refusal.message;
   // A check changes nothing, so the snapshot and epoch it names are never used; a Server still parses the snapshot's number.
-  const created = yield* createOn(ctx, found.holder, to, regionOf(to.id), "check", false);
+  const created = yield* createOn(ctx, found.holder, to, regionOf(to.id), runtimeOf(to.id), "check", false);
   if (!created.ok) return created.refusal.message;
   const checked = yield* askCopy(ctx, to, expect, { kind: "writer", at: "0", epoch: 0, start: { ...created.start, check: true } }).pipe(
     Effect.catchIf((error) => error instanceof SwitchAttemptError && error.reach === "answered" && error.reason === null, (error) => Effect.succeed<CopyAnswer>({
@@ -717,7 +732,7 @@ export const commitAndStart = Effect.fn("VolumeRun.commitAndStart")(function* (
  */
 export const startWriter = Effect.fn("VolumeRun.startWriter")(function* (ctx: RunContext, ownedBy: string, start: WriterStart) {
   const { to, from } = start;
-  const { containers: all, regionOf } = yield* volumeFrame(ctx.organizationId, ctx.dockerVolume);
+  const { containers: all, regionOf, runtimeOf } = yield* volumeFrame(ctx.organizationId, ctx.dockerVolume);
   const containers = all.filter((container) => container.kind === "service_container");
   const stopped = containers.filter((container) =>
     container.runtime.state !== "running" && (from === null ? container.machine_id !== to.id : container.machine_id === from.id));
@@ -747,7 +762,7 @@ export const startWriter = Effect.fn("VolumeRun.startWriter")(function* (ctx: Ru
     const on = named.map((machine) => machine.name ?? machine.id).join(" and ");
     return yield* Effect.fail(new NonRetriableError(`${ctx.volumeName} has ${stopped.length} stopped Service containers on ${on}; starting it on ${to.name} needs exactly one`));
   }
-  const created = yield* createOn(ctx, holder, to, regionOf(to.id), start.at, true);
+  const created = yield* createOn(ctx, holder, to, regionOf(to.id), runtimeOf(to.id), start.at, true);
   if (!created.ok) return yield* Effect.fail(new NonRetriableError(created.refusal.message));
   yield* requireOwner(ctx.id, ownedBy);
   return yield* askCopy(ctx, to, start.expect, { kind: "writer", at: start.at, epoch: start.epoch, start: created.start });
@@ -855,11 +870,12 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
       ? resizeRequirements(run.recordedBytes, run.args.maximum_bytes).find((requirement) => serverSupports(capabilities, requirement) !== true)
       : undefined;
     const sized = run?.kind === "resize" ? { boundBytes: boundOf(frame.volumes, machine.id, dockerVolume) } : {};
-    // A destination starts the moved Service from the proof its Service's approval left, so it must list the verb:
-    // one that lists nothing predates it.
-    if (run?.kind === "move" && isDestination(run, ref) && serverSupports(capabilities, requirements.volumeStart) !== true) {
-      return lacks(requirements.volumeStart.capability, run.kind);
-    }
+    // `createOn` gates every Writer Create. A Move's destination is refused here too, so the Move is refused before
+    // any row rather than once its check would be sent.
+    const unstartable = run?.kind === "move" && isDestination(run, ref)
+      ? writerStart.find((requirement) => serverSupports(capabilities, requirement) !== true)
+      : undefined;
+    if (unstartable !== undefined) return lacks(unstartable.capability, "move");
     return session.volumeSwitch(machine.id, { command: "inspect_volume_copy", payload: { name: dockerVolume } }).pipe(
       clusterRead,
       Effect.timeout(OBSERVE_TIMEOUT),

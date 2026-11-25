@@ -17,6 +17,11 @@ pub(crate) enum ImagePull<'auth> {
     /// the spec's tag names now. Unsigned, it runs only once this Machine pulled it from
     /// the spec's repository by digest, with no login.
     Pinned(&'auth ployz_core::ImageDigest),
+    /// The image a Volume start placed here before its promote, by the ID it read then:
+    /// creation runs that ID and reaches no registry, wherever the tag points since.
+    /// Unsigned, the ID must be one a free pull placed; any other is pulled again as
+    /// [`Self::Policy`] is.
+    Placed(&'auth str),
 }
 
 /// `image`'s repository, registry and port kept, pinned to `id`: `repo:tag` becomes

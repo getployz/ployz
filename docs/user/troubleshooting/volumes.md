@@ -273,6 +273,32 @@ your service keeps running on `web-1`. What to do depends on the reason:
   Remove that mount from the service, deploy, then move again.
 - **`web-2` runs an older Ployz.** Upgrade it, then move again.
 
+## A move says the service's image is no longer on the server
+
+```
+image sha256:3f…, which this Writer was promoted to run, is no longer on this Server, and a start after its promote pulls nothing
+```
+
+`web-2` gets your service's image before it takes over the volume, and remembers which image
+that was. If `web-2` restarted during the switch, it starts your service from that same image
+and doesn't pull again, so a registry outage or a tag pushed since can't change what runs. This
+message means the image was deleted from `web-2` in between. Deploy the service, and the deploy
+starts it on `web-2` with its image.
+
+A move or a release that would start your service on a server whose Ployz doesn't remember the
+image this way starts nothing there and asks you to upgrade that server: `Volume move needs a newer
+Ployz on web-2`. A move stops before it copies anything.
+
+## A move says the volume plugin runs an older build
+
+```
+the volume plugin on this Server promoted the copy without recording the start's image, so it runs an older build than this daemon. Restart ployz-volume-plugin on this Server, then retry
+```
+
+The server's Ployz was upgraded, but its volume plugin still runs the old build, which doesn't
+remember the service's image when it switches the volume. Restart it with
+`systemctl restart ployz-volume-plugin` on that server, then retry the move.
+
 ## A deploy refuses a mirror change after a move
 
 ```

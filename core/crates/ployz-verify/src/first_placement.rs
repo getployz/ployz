@@ -745,6 +745,7 @@ fn held_copy(held: Held) -> Option<ployz_core::VolumeCopy> {
             seed: false,
             mark: None,
             origin: None,
+            placed: None,
         }),
         Held::Slot => Some(ployz_core::VolumeCopy::Slot {
             slot: ployz_core::SlotId::new(1),
