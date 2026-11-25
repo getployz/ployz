@@ -1030,7 +1030,9 @@ fn admit_preview_start(
     spec: &ResolvedServiceSpec,
     admitted: Option<&AdmittedSpec>,
 ) -> Result<(), Error> {
-    let admission = admitted.map_or(ployz_core::Admission::Free, AdmittedSpec::admission);
+    let admission = admitted.map_or(ployz_core::Admission::Free, |admitted| {
+        admitted.by().admission()
+    });
     ployz_core::admit_preview(machine, namespace, admission, &spec.to_requested())
         .map_err(Error::PreviewRefused)
 }

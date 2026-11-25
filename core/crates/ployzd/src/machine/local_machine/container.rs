@@ -1845,10 +1845,11 @@ impl LocalMachine {
         let record = self.record();
         let machine = record.cluster_machine().ok_or(Error::NotParticipating)?;
         // Before its Volumes are ensured, so a refused preview leaves nothing here.
+        // As the address part counts it: this Server's own socket vouches as a key does.
         ployz_core::admit_preview(
             &machine.id,
             namespace,
-            admitted.admission(),
+            admitted.by().admission(),
             &spec.to_requested(),
         )
         .map_err(Error::PreviewRefused)?;
