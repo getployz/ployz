@@ -39,7 +39,7 @@ use tokio::{io::AsyncWriteExt as _, process::Command};
 use super::{
     Dataset, PluginError, VolumeName, VolumeStorage,
     holders::{Unheld, copy_held_for_other_data, copy_unlisted},
-    inspect::{answering, receiving},
+    inspect::answering,
     marks::{Mark, Marks, Write},
     origin::Origin,
     storage::{HeldMutation, checked_command},
@@ -426,7 +426,7 @@ impl VolumeStorage {
             }
         }?;
         Ok(VolumeCopyView {
-            copy: receiving(view.copy),
+            copy: self.receiving(&into, view.copy),
         })
     }
 

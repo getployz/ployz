@@ -272,7 +272,7 @@ export function switchFailureMessage(
     case "restore_point_gone":
       return `the restore point is gone from ${name} on ${machine.name}`;
     case "stale":
-      return `a newer run took ${fenced} on ${machine.name}`;
+      return `a later run reached ${fenced} on ${machine.name} first`;
     case "foreign":
       return `${fenced} on ${machine.name} is mounted by a Service approved for other data`;
     case "docker_unavailable":
@@ -284,6 +284,20 @@ export function switchFailureMessage(
     case "busy":
       return undefined;
   }
+}
+
+/**
+ * The failure a Seed's reply ends its run on, or `null` while the copy runs or once it landed. A copy that failed while
+ * part of it still runs shows as receiving with its failure: no Seed answers that failure until the part exits.
+ */
+export function seedFailureMessage(copy: VolumeCopy | null, into: string, name: string, machine: MachineRef): string | null {
+  if (copy?.kind !== "slot") return null;
+  if (copy.pull?.failure) return `${into} could not copy ${name}: ${copy.pull.failure}`;
+  const state = copy.pull_state;
+  if (state?.kind === "receiving" && state.failure) {
+    return `${into} could not copy ${name}: ${state.failure}. Part of the copy still runs on ${machine.name}; restart the Ployz daemon there or wait for it to exit`;
+  }
+  return null;
 }
 
 /** A cut refused before it stopped anything, since `holder` runs on the Volume beside the Service the run counted. */

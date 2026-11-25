@@ -18,8 +18,9 @@
 //! (`answering` and `receiving`, inspect.rs). The receive task runs outside the mutation,
 //! so it can end between the decision and the reply. A task that failed can leave a `zfs`
 //! child it dropped alive past the hold: the registry then shows the failure while
-//! `seed_failure` still answers `Busy`. Forming a reply and Cloud receiving it are separate
-//! steps, since the reply can be lost between them.
+//! `seed_failure` still answers `Busy`, and the reply shows the copy still receiving with
+//! that failure, which Cloud ends the run on without it being answered. Forming a reply and
+//! Cloud receiving it are separate steps, since the reply can be lost between them.
 //!
 //! The findings. Before PR #4576, the reply showed a failure that ended after the decision
 //! and left it, so the operator's next run answered it again instead of starting over
@@ -30,13 +31,17 @@
 //! with a lower gen, could claim (`Broken::no_seed_fence`), and showed a failure in a
 //! reply whose decision answered Busy (`Broken::reply_reads_registry`). The fix: A admits
 //! no Seed older than one it admitted, and a reply shows only the failure its decision
-//! answered and recorded.
+//! answered and recorded. The third review found that fix's reply showing a failure whose
+//! dropped child never exits as a copy still receiving, so the run waited out its patience
+//! (`Broken::lingering_shows_receiving`). Now that reply shows the failure as still
+//! receiving, and records no run for it.
 //!
-//! The properties: no copy failure reaches Cloud in two runs, and a copy starts over past
-//! a failure Cloud never received only for a Seed of a later run than every one that
-//! reached A before the failure. A cannot fence a run whose Seed has not reached it, so a
-//! request of an ended run can take a failure while the next run's first Seed is still on
-//! its way. That run then starts the copy over, and is answered what its own copy does.
+//! The properties: no copy failure is answered to two runs, a reply formed while a failed
+//! copy's child lives shows that failure, and a copy starts over past a failure Cloud never
+//! received only for a Seed of a later run than every one that reached A before the
+//! failure. A cannot fence a run whose Seed has not reached it, so a request of an ended
+//! run can take a failure while the next run's first Seed is still on its way. That run
+//! then starts the copy over, and is answered what its own copy does.
 //!
 //! Out of scope: the marks, the floor and the later runs (the parent `volume_marks` model),
 //! a Seed carrying no gen (it names no run, so the next one after an answer starts over),
@@ -71,6 +76,9 @@ enum Run {
     Done,
     /// `failed("03-failed", ..)` after a reply showing a copy failure.
     Failed,
+    /// `failed("03-stuck", ..)` after a reply showing a copy still receiving with a
+    /// failure: its task failed and a child it dropped is still alive.
+    Stuck,
     /// `sendSwitch` failed the run on A's Stale refusal: a later run took `into`.
     Fenced,
     /// Every send went unanswered, or `03-too-long`: the run ended without a failure shown.
@@ -139,6 +147,9 @@ enum Shown {
     Slot,
     /// A slot whose pull shows receive `n`'s failure.
     Failure(u8),
+    /// A slot whose pull still receives, with receive `n`'s failure: its task failed and a
+    /// child it dropped outlives the hold (`VolumeStorage::receiving`, inspect.rs).
+    Lingering(u8),
     /// The Stale refusal.
     Stale,
 }
@@ -211,8 +222,12 @@ struct State {
     delivered_to: [u8; MAX_RECEIVES as usize],
     /// Receives whose failure a lost reply showed, one bit each.
     lost: u8,
+    /// Receives whose failure a run ended `Stuck` on, one bit each.
+    stuck: u8,
     /// A failure reached Cloud in a second run.
     delivered_twice: bool,
+    /// A reply formed while a failed task's child outlived the hold showed no failure.
+    silent: bool,
     /// A copy started over past a failure Cloud never received, for a Seed of a run A had
     /// taken a Seed of before the failure, or of an earlier run.
     hidden: bool,
@@ -261,6 +276,9 @@ struct Broken {
     supersedes_its_own_run: bool,
     /// `seed_failure` records no run for a failure it answers.
     answer_records_no_run: bool,
+    /// PR #4576's third reply: a reply to a Seed answered Busy shows the copy still
+    /// receiving with no failure, though a child its failed task dropped outlives the hold.
+    lingering_shows_receiving: bool,
 }
 
 impl Broken {
@@ -324,6 +342,25 @@ const COVERAGE: &[Coverage] = &[
             state.last == Some(Action::Decide)
                 && state.path == Some(SeedPath::Copying)
                 && matches!(state.receive, Receive::Failed { settled: false, .. })
+        },
+    },
+    Coverage {
+        name: "a run ends on a failure whose dropped child outlives the hold",
+        on: everywhere,
+        omit: Some(Omit::Actions(&[Action::End {
+            failed: true,
+            lingers: true,
+        }])),
+        reached: |_, state| state.last == Some(Action::Deliver) && state.run == Run::Stuck,
+    },
+    Coverage {
+        name: "a run after one ended on a dropped child's failure is answered it once the child exits",
+        on: everywhere,
+        omit: Some(Omit::Actions(&[Action::Settle])),
+        reached: |_, state| {
+            state.last == Some(Action::Answer)
+                && state.runs > 1
+                && matches!(state.in_flight, Some(Shown::Failure(n)) if state.stuck & bit(n) != 0)
         },
     },
     Coverage {
@@ -396,7 +433,9 @@ const COVERAGE: &[Coverage] = &[
     },
 ];
 
-const DELIVERED_ONCE: &str = "no copy failure reaches Cloud in two runs";
+const DELIVERED_ONCE: &str = "no copy failure is answered to two runs";
+const LINGERING_SHOWN: &str =
+    "a reply formed while a failed copy's dropped child lives shows that failure";
 const NEVER_HIDDEN: &str = "a copy starts over past a failure Cloud never received only for a Seed of a later run than every one that reached A before it";
 
 #[derive(Clone, Copy, Debug)]
@@ -501,16 +540,26 @@ impl SeedFailure {
 
     /// `seeded` (seed.rs) reads the copy. The `Failed` arm's `answering` shows the failure
     /// its decision answered, and every other arm's reply goes through `receiving`, which
-    /// shows none. Under `Broken::reply_reads`, the reply shows a failure `status_of`
-    /// reads, and `seed_volume` records the run it showed it to.
+    /// shows a failure only while a child its task dropped outlives the hold, as still
+    /// receiving, and records no run for it. Under `Broken::reply_reads`, the reply shows a
+    /// failure `status_of` reads, and `seed_volume` records the run it showed it to.
     fn answer(self, state: &mut State, request: Request) -> Shown {
         let shown = match (state.path, state.receive, state.into) {
             (Some(SeedPath::Fenced), ..) => Shown::Stale,
             (Some(SeedPath::Failed(n)), ..) => Shown::Failure(n),
             (_, Receive::Failed { n, .. }, _) if self.broken.reply_reads() => Shown::Failure(n),
+            (
+                _,
+                Receive::Failed {
+                    n, settled: false, ..
+                },
+                _,
+            ) if !self.broken.lingering_shows_receiving => Shown::Lingering(n),
             (.., Into::Root) => Shown::Root,
             (.., Into::Absent | Into::Slot { .. }) => Shown::Slot,
         };
+        state.silent |=
+            shown == Shown::Slot && matches!(state.receive, Receive::Failed { settled: false, .. });
         if self.broken.reply_reads()
             && let (
                 Shown::Failure(shown),
@@ -597,6 +646,10 @@ impl SeedFailure {
                     }
                     state.run = Run::Failed;
                 }
+                Some(Shown::Lingering(n)) => {
+                    state.stuck |= bit(n);
+                    state.run = Run::Stuck;
+                }
                 Some(Shown::Stale) => state.run = Run::Fenced,
                 None => unreachable!("only a formed reply is delivered"),
             },
@@ -677,7 +730,9 @@ impl Model for SeedFailure {
             failed_for: [0; MAX_RECEIVES as usize],
             delivered_to: [0; MAX_RECEIVES as usize],
             lost: 0,
+            stuck: 0,
             delivered_twice: false,
+            silent: false,
             hidden: false,
             last: None,
         }]
@@ -742,6 +797,7 @@ impl Model for SeedFailure {
     fn properties(&self) -> Vec<Property<Self>> {
         let mut properties = vec![
             Property::always(DELIVERED_ONCE, |_, state: &State| !state.delivered_twice),
+            Property::always(LINGERING_SHOWN, |_, state: &State| !state.silent),
             Property::always(NEVER_HIDDEN, |_, state: &State| !state.hidden),
         ];
         properties.extend(harness::sometimes(COVERAGE, self));
@@ -955,6 +1011,24 @@ mod tests {
         assert!(retried(&path), "a second run read it");
     }
 
+    /// PR #4576's third reply, which the third review found. A failed task's child outlives
+    /// the hold, and every Seed is answered Busy with the copy still receiving, so the run
+    /// waits out its patience and never learns the copy failed.
+    #[test]
+    fn a_reply_while_a_failed_copys_child_lives_shows_its_failure() {
+        let model = broken(Broken {
+            lingering_shows_receiving: true,
+            ..Broken::default()
+        });
+        let path = breaks(model, LINGERING_SHOWN);
+        assert!(lingered(&path), "a failed task's child outlived the hold");
+        assert!(
+            check(model).discovery(DELIVERED_ONCE).is_none()
+                && check(model).discovery(NEVER_HIDDEN).is_none(),
+            "it keeps the other properties"
+        );
+    }
+
     /// PR #4576's second fix, which the second review found. A request of run 1 waits in
     /// transit while run 1 gives up and run 2 starts a copy that fails. The request reaches
     /// A, is answered the failure though no attempt waits for it, and records run 1. Run
@@ -1076,8 +1150,9 @@ mod tests {
     /// `a_seed_of_an_earlier_run_is_refused_and_leaves_the_failure_to_the_later_run`, run
     /// 2's copy fails before it is shown, and a request of run 1 that outlived it arrives:
     /// it is refused, and run 2 is shown the failure. In
-    /// `a_seed_answered_busy_shows_no_failure_while_a_dropped_child_lives`, the Seed
-    /// answered Busy shows no failure, and once the child exits the run's resend shows it.
+    /// `a_seed_answered_busy_shows_a_failure_as_receiving_while_a_dropped_child_lives`, the
+    /// Seed answered Busy shows the failure as still receiving and records no run, so Cloud
+    /// ends the run and the next run, once the child exits, is answered it.
     #[test]
     fn the_second_review_orders_end_as_the_plugin_tests_expect() {
         // Run 1's first request is stranded. The run starts the copy and gives up once it
@@ -1133,7 +1208,7 @@ mod tests {
         ];
         let path = harness::follow(fixed(), &busy);
         assert_eq!(last(&path).path, Some(SeedPath::Copying));
-        assert_eq!(last(&path).in_flight, Some(Shown::Slot));
+        assert_eq!(last(&path).in_flight, Some(Shown::Lingering(1)));
         let path = harness::follow(
             fixed(),
             &[
@@ -1141,6 +1216,7 @@ mod tests {
                 &[
                     Action::Deliver,
                     Action::Settle,
+                    Action::Retry { first_gen: false },
                     Action::Decide,
                     Action::Answer,
                 ],
@@ -1148,6 +1224,14 @@ mod tests {
             .concat(),
         );
         assert_eq!(last(&path).in_flight, Some(Shown::Failure(1)));
+        let path = harness::follow(
+            broken(Broken {
+                lingering_shows_receiving: true,
+                ..Broken::default()
+            }),
+            &busy,
+        );
+        assert_eq!(last(&path).in_flight, Some(Shown::Slot));
         let path = harness::follow(
             broken(Broken {
                 reply_reads_registry: true,

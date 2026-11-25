@@ -487,7 +487,7 @@ async fn a_seed_of_an_earlier_run_is_refused_and_leaves_the_failure_to_the_later
 /// records no run for it. Once the child exits, the run's resend is shown the failure, and
 /// the next run's Seed starts the copy over.
 #[tokio::test]
-async fn a_seed_answered_busy_shows_no_failure_while_a_dropped_child_lives() {
+async fn a_seed_answered_busy_shows_a_failure_as_receiving_while_a_dropped_child_lives() {
     let test = test_dir();
     let receives = Receives::holding(Duration::ZERO);
     let (socket, _server) = seed_plugin(&test, receives.clone());
@@ -523,6 +523,15 @@ async fn a_seed_answered_busy_shows_no_failure_while_a_dropped_child_lives() {
     let busy = post(&socket, "/Volume.Seed", seed_of_run(77, 2)).await;
     assert!(
         busy.pointer("/Ok/copy/pull/failure").unwrap().is_null(),
+        "{busy}"
+    );
+    assert_eq!(
+        busy.pointer("/Ok/copy/pull_state"),
+        Some(&json!({
+            "kind": "receiving",
+            "target": target().as_str(),
+            "failure": "the receive failed",
+        })),
         "{busy}"
     );
     fs::remove_file(&gate).unwrap();

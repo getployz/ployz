@@ -31,24 +31,6 @@ pub(super) fn answering(mut copy: Option<VolumeCopy>, failure: String) -> Option
     copy
 }
 
-/// `copy` with no failure shown: a pull that failed reads as still receiving, as it did
-/// when a Seed's decision found it, so the reply shows no failure that decision did not
-/// answer. The Seed's next resend answers it.
-pub(super) fn receiving(mut copy: Option<VolumeCopy>) -> Option<VolumeCopy> {
-    if let Some(VolumeCopy::Slot {
-        pull: Some(pull),
-        pull_state,
-        ..
-    }) = &mut copy
-        && pull.failure.take().is_some()
-    {
-        *pull_state = Some(PullState::Receiving {
-            target: pull.target.clone(),
-        });
-    }
-    copy
-}
-
 /// Every snapshot of `dataset` as `name<TAB>guid<TAB>creation`, newest first by
 /// transaction group (creation time ties within a second).
 fn snapshot_listing(dataset: &str) -> [&str; 11] {
@@ -68,6 +50,39 @@ fn snapshot_listing(dataset: &str) -> [&str; 11] {
 }
 
 impl VolumeStorage {
+    /// `copy` as a Seed's reply shows it: with no failure its decision did not answer. A
+    /// pull that failed reads as still receiving, as it did when the decision found it, and
+    /// the Seed's next resend answers it. While a child the failed task dropped is still
+    /// alive, no Seed answers the failure, so the reply shows it as receiving with that
+    /// failure. Read after `copy`: a child that exited since then shows no failure here.
+    pub(super) fn receiving(
+        &self,
+        name: &VolumeName,
+        mut copy: Option<VolumeCopy>,
+    ) -> Option<VolumeCopy> {
+        if let Some(VolumeCopy::Slot {
+            pull: Some(pull),
+            pull_state,
+            ..
+        }) = &mut copy
+        {
+            let lingering = match self.receives.status_of(name, &pull.target) {
+                Status::Failed {
+                    failure,
+                    settled: false,
+                } => Some(failure),
+                Status::Idle | Status::Receiving | Status::Failed { .. } => None,
+            };
+            if pull.failure.take().is_some() || lingering.is_some() {
+                *pull_state = Some(PullState::Receiving {
+                    target: pull.target.clone(),
+                    failure: lingering,
+                });
+            }
+        }
+        copy
+    }
+
     /// A dataset's user property, or `None` when ZFS reports it unset (`-`).
     pub(super) async fn property(&self, dataset: &str, property: &str) -> Result<Option<String>> {
         let value = self
@@ -180,7 +195,10 @@ impl VolumeStorage {
             },
         };
         let state = match status {
-            Status::Receiving => PullState::Receiving { target },
+            Status::Receiving => PullState::Receiving {
+                target,
+                failure: None,
+            },
             Status::Failed { failure, .. } => PullState::Failed { target, failure },
             // The landed check copy_pull makes before it starts a receive.
             Status::Idle if newest.is_some_and(|newest| newest.name == target) => {
