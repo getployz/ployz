@@ -41,6 +41,13 @@ pub struct RuleSourceView {
     pub branch: Option<String>,
     pub root_dir: String,
     pub build: ServiceBuildConfig,
+    /// Whether a push to its branch deploys it: its Auto-deploy is on.
+    #[serde(default = "pushes")]
+    pub on_push: bool,
+}
+
+const fn pushes() -> bool {
+    true
 }
 
 /// What a rule is drafted from, as the Store's rule view gives it: the Environment's
@@ -85,8 +92,20 @@ pub struct RuleTerms {
     pub signer: SignerKey,
 }
 
-fn default_platform() -> String {
+/// What GitHub builds a rule's images for unless it names otherwise.
+#[must_use]
+pub fn default_platform() -> String {
     "linux/amd64".to_owned()
+}
+
+/// What a rule renewed from `kept` builds its images for: what `kept` builds for, so a
+/// Deploy or Save that renews it keeps a platform someone approved, else the default.
+#[must_use]
+pub fn renewed_platform(kept: Option<&AutoDeployRule>) -> String {
+    kept.and_then(|kept| {
+        (kept.services.iter()).find_map(|service| service.policy.platforms.first().cloned())
+    })
+    .unwrap_or_else(default_platform)
 }
 
 /// Why a rule can't be drafted. Each says what the person can change.
@@ -182,16 +201,14 @@ impl RuleBasis {
     }
 
     /// The Services a rule approved in the dashboard deploys: every one that builds from
-    /// GitHub, when they all build from one branch. When they build from several, those
-    /// on the kept rule's branch, if any still do. Otherwise every one, so drafting names
-    /// the branches that keep them from one rule.
+    /// GitHub with its Auto-deploy on, when they all build from one branch. When they
+    /// build from several, those on the kept rule's branch, if any still do. Otherwise
+    /// every one, so drafting names the branches that keep them from one rule.
     #[must_use]
     pub fn branch_services(&self) -> Vec<ServiceName> {
-        let all = || self.sources.iter().map(|source| source.service.clone());
-        let mut branches = self
-            .sources
-            .iter()
-            .map(|source| (source.repository_id, source.branch.as_deref()));
+        let pushed = || self.sources.iter().filter(|source| source.on_push);
+        let all = || pushed().map(|source| source.service.clone());
+        let mut branches = pushed().map(|source| (source.repository_id, source.branch.as_deref()));
         let first = branches.next();
         if branches.all(|branch| Some(branch) == first) {
             return all().collect();
@@ -199,9 +216,7 @@ impl RuleBasis {
         let Some(kept) = self.kept().map(|kept| kept.source) else {
             return all().collect();
         };
-        let on_kept: Vec<ServiceName> = self
-            .sources
-            .iter()
+        let on_kept: Vec<ServiceName> = pushed()
             .filter(|source| {
                 source.repository_id == kept.repository_id
                     && source.branch.as_deref() == Some(kept.branch.as_str())

@@ -21,10 +21,11 @@ use ployz_core::{
     AdvertisedEndpoint, AnswerWhen, ConfiguredHealthcheck, ContainerId, ContainerLocator,
     ContainerNow, ContainerRefusalReason, ContainerRuntimeObservation, ContainerWant, CopyRotation,
     Departure, DeploymentLogId, EnsureContainerRequest, EnsuredContainer, HealthVerdict,
-    HealthcheckCommand, HealthcheckSpec, HttpHealthcheck, Machine, MachineId, MachineName,
-    MachineRpc, MachineRuntime, NewContainer, ProxyRoutes, QualifiedService, ReadRoutesRequest,
-    ResolvedServiceSpec, RoutesRead, RpcError, RpcErrorCode, RpcResponse, RpcResponseBody,
-    RunRotation, RunTarget, WireGuardPublicKey, op, proxy_routes, service_containers,
+    HealthcheckCommand, HealthcheckSpec, HttpHealthcheck, KeptNames, Machine, MachineId,
+    MachineName, MachineRpc, MachineRuntime, NewContainer, ProxyRoutes, QualifiedService,
+    ReadRoutesRequest, ResolvedServiceSpec, RoutesRead, RpcError, RpcErrorCode, RpcResponse,
+    RpcResponseBody, RunRotation, RunTarget, WireGuardPublicKey, op, proxy_routes,
+    service_containers,
 };
 use serde_json::{Value, json};
 use tokio::{
@@ -1643,9 +1644,10 @@ async fn stale_evidence_keeps_in_copy_routed() {
     fleet.acked_by_all(&publishes, &api, &[a]).await;
     let mut dns_reach = Reach::new(fleet.id(2));
     let routed_before = dns_reach
-        .pass(&service_containers(
-            fleet.store.containers().await.unwrap().observations,
-        ))
+        .pass(
+            &service_containers(fleet.store.containers().await.unwrap().observations),
+            &KeptNames::default(),
+        )
         .routes;
     dns_reach.keep(routed_before);
 
@@ -1658,9 +1660,10 @@ async fn stale_evidence_keeps_in_copy_routed() {
     assert!(down.is_empty(), "no evidence is not Down: {down:?}");
     dns_reach.update_down(Ok(down));
     let dns_routes = dns_reach
-        .pass(&service_containers(
-            fleet.store.containers().await.unwrap().observations,
-        ))
+        .pass(
+            &service_containers(fleet.store.containers().await.unwrap().observations),
+            &KeptNames::default(),
+        )
         .routes;
     let dns_routed: BTreeSet<_> = dns_routes[&api]
         .iter()

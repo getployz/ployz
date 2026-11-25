@@ -216,6 +216,7 @@ fn deploy_leaving(
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
             &Trusted::default(),
         )
@@ -481,6 +482,7 @@ fn a_copy_of_a_made_sealed_password_deploys_only_once_the_browser_makes_its_own(
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
             &Trusted::default(),
         )
@@ -598,6 +600,7 @@ fn a_deploy_reading_a_pending_password_through_a_config_file_is_refused() {
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
             &Trusted::default(),
         )
@@ -1227,6 +1230,7 @@ fn setup_is_a_reserved_service_name_and_an_older_service_named_setup_must_be_ren
                 version: None,
                 message: None,
                 accept_volume_loss: Vec::new(),
+                rule: None,
             },
             &Trusted {
                 approval: ployz_store::Approval::NotRequired,
@@ -2433,6 +2437,7 @@ fn warnings(store: &ConfigStore, who: &Actor, environment: &str, n: u8) -> Value
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
             &Trusted::default(),
         )
@@ -2668,6 +2673,7 @@ fn an_own_copy_made_after_its_owner_only_saved_a_seal_copies_it_not_set() {
                 version: None,
                 message: None,
                 accept_volume_loss: Vec::new(),
+                rule: None,
             },
             &Trusted::default(),
         )
@@ -2967,6 +2973,7 @@ fn copying_a_node_waits_for_a_settled_branch() {
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
             &Trusted::default(),
         )

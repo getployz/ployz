@@ -1644,6 +1644,7 @@ mod tests {
             stopped: false,
             run: None,
             log_driver: None,
+            admission: None,
         })
         .unwrap()
     }

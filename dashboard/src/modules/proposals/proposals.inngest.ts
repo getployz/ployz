@@ -6,5 +6,5 @@ import { runInngestEffect } from "#/modules/inngest/run.server";
 export const createSweepProposals = (inngest: PloyzInngest) =>
   inngest.createFunction(
     { id: "sweep-proposals", retries: 1, triggers: [{ cron: "* * * * *" }], concurrency: [{ limit: 1 }] },
-    async ({ step }) => ({ looked: await step.run("sweep", () => runInngestEffect(sweepProposals(new Date()))) }),
+    async ({ step }) => ({ looked: await step.run("sweep", () => runInngestEffect(sweepProposals())) }),
   );

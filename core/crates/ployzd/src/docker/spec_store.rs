@@ -10,8 +10,8 @@ use std::{
 
 use hex::encode as hex_encode;
 use ployz_core::{
-    ConfigMount, ConfigSpec, ContainerId, ContainerKind, ContainerRun, CopyRotation,
-    DockerVolumeName, Namespace, ResolvedServiceSpec, VolumeGen,
+    AddressPart, Admission, ConfigMount, ConfigSpec, ContainerId, ContainerKind, ContainerRun,
+    CopyRotation, DockerVolumeName, Namespace, QualifiedService, ResolvedServiceSpec, VolumeGen,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::de::DeserializeOwned;
@@ -160,6 +160,46 @@ impl MachineSpecStore {
         Ok(kept.and_then(|kept| serde_json::from_value(kept).ok()))
     }
 
+    /// The part a Container takes a new bridge address in, from its kept spec and
+    /// admission and the Namespace its labels name. One with no spec, no admission or no
+    /// Namespace takes Free.
+    pub(crate) async fn address_part(
+        &self,
+        container_id: &ContainerId,
+        namespace: Option<&Namespace>,
+    ) -> Result<AddressPart, Error> {
+        let (Some(spec), Some(namespace)) = (self.get(container_id).await?, namespace) else {
+            return Ok(AddressPart::Free);
+        };
+        let admission = self.admitted_by(container_id).await?;
+        Ok(ployz_core::part_of(
+            &QualifiedService::new(namespace.clone(), spec.name.clone()),
+            admission.map(|by| by.admission()),
+            spec.volume_graph(),
+        ))
+    }
+
+    /// The part a Container's admission record puts it in, `None` when it has no spec, no
+    /// admission or no Namespace: a Container from before admission records keeps the
+    /// address it holds.
+    pub(crate) async fn recorded_part(
+        &self,
+        container_id: &ContainerId,
+        namespace: Option<&Namespace>,
+    ) -> Result<Option<AddressPart>, Error> {
+        let (Some(spec), Some(namespace)) = (self.get(container_id).await?, namespace) else {
+            return Ok(None);
+        };
+        let Some(admission) = self.admitted_by(container_id).await? else {
+            return Ok(None);
+        };
+        Ok(Some(ployz_core::part_of(
+            &QualifiedService::new(namespace.clone(), spec.name.clone()),
+            Some(admission.admission()),
+            spec.volume_graph(),
+        )))
+    }
+
     /// This Machine's record of a copy's rotation, `None` when it never left Pending.
     pub async fn rotation(
         &self,
@@ -169,14 +209,16 @@ impl MachineSpecStore {
             .await
     }
 
-    /// A Container's spec and its rotation, read over one connection. `None` when it has
-    /// no spec.
+    /// A Container's spec, its rotation and how it was admitted, read over one
+    /// connection. `None` when it has no spec. A Container with no admission this build
+    /// can read reads [`Admission::Free`]: one this Machine can't show was signed is
+    /// never treated as signed.
     pub async fn spec_and_rotation(
         &self,
         container_id: &ContainerId,
-    ) -> Result<Option<(ResolvedServiceSpec, Option<CopyRotation>)>, Error> {
+    ) -> Result<Option<(ResolvedServiceSpec, Option<CopyRotation>, Admission)>, Error> {
         let container_id = container_id.to_string();
-        let (spec, rotation) = self
+        let (spec, rotation, admitted) = self
             .run(move |connection| {
                 let read = |query: &str| {
                     connection
@@ -184,21 +226,28 @@ impl MachineSpecStore {
                         .optional()
                 };
                 let spec = read("SELECT service_spec FROM containers WHERE id = ?1")?;
-                let rotation = match spec {
-                    Some(_) => read("SELECT rotation FROM rotations WHERE id = ?1")?,
-                    None => None,
+                let (rotation, admitted) = match spec {
+                    Some(_) => (
+                        read("SELECT rotation FROM rotations WHERE id = ?1")?,
+                        read("SELECT admitted_by FROM admitted WHERE id = ?1")?,
+                    ),
+                    None => (None, None),
                 };
-                Ok((spec, rotation))
+                Ok((spec, rotation, admitted))
             })
             .await?;
         let Some(spec) = spec else {
             return Ok(None);
         };
+        let admission = admitted
+            .and_then(|admitted| serde_json::from_str::<crate::machine::AdmittedBy>(&admitted).ok())
+            .map_or(Admission::Free, |admitted| admitted.name_admission());
         Ok(Some((
             serde_json::from_str(&spec)?,
             rotation
                 .map(|rotation| serde_json::from_str(&rotation))
                 .transpose()?,
+            admission,
         )))
     }
 
@@ -1891,7 +1940,7 @@ mod tests {
         let store = MachineSpecStore::open(runtime.spec_store_path_for_test())
             .await
             .unwrap();
-        let (_, rotation) = store.spec_and_rotation(&id).await.unwrap().unwrap();
+        let (_, rotation, _) = store.spec_and_rotation(&id).await.unwrap().unwrap();
         assert_eq!(rotation, store.rotation(&id).await.unwrap());
         runtime
             .lifecycle()
@@ -1901,7 +1950,7 @@ mod tests {
             .write(&CopyRotation::Out)
             .await
             .unwrap();
-        let (spec, rotation) = store.spec_and_rotation(&id).await.unwrap().unwrap();
+        let (spec, rotation, _) = store.spec_and_rotation(&id).await.unwrap().unwrap();
         assert_eq!(rotation, Some(CopyRotation::Out));
         assert_eq!(Some(spec), store.get(&id).await.unwrap());
 

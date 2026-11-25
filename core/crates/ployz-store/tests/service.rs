@@ -399,6 +399,7 @@ fn a_service_keeps_the_template_it_was_created_from_until_unset() {
                 version: None,
                 message: None,
                 accept_volume_loss: Vec::new(),
+                rule: None,
             }),
         )
         .unwrap();

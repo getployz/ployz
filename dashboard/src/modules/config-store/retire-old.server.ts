@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { and, eq, lt, ne, or } from "drizzle-orm";
+import { and, eq, lt, ne, or, sql } from "drizzle-orm";
 import { Effect, Option } from "effect";
 import { cloudStore, refusedWith, storeTry } from "#/modules/config-store/store-sdk.server";
 import { deployDialOf } from "#/modules/config-store/store-sdk.server";
@@ -8,6 +8,7 @@ import { type CleanupLeft, deploymentCleanup, type DeploymentCleanupState } from
 import type { InngestRunStatus } from "#/modules/inngest/client";
 import type { ConfigDeploymentRetireRequestedEventData } from "#/modules/config-store/config-store.events";
 import { Database } from "#/server/database.server";
+import { checkedNow } from "#/db/tables";
 
 type RetireOutcome = { left: CleanupLeft[]; kept: CleanupLeft[] };
 
@@ -40,7 +41,7 @@ export const recordCleanupWaiting = Effect.fn("DeploymentCleanup.waiting")(funct
   runId: string, data: ConfigDeploymentRetireRequestedEventData, left: readonly CleanupLeft[] = [],
 ) {
   const { drizzle } = yield* Database;
-  const waiting = { runId, state: "waiting" as const, left: [...left], message: null, updatedAt: new Date() };
+  const waiting = { runId, state: "waiting" as const, left: [...left], message: null, updatedAt: sql`now()` };
   yield* drizzle.insert(deploymentCleanup)
     .values({ ...cleanupOf(data), ...waiting })
     .onConflictDoUpdate({
@@ -60,7 +61,7 @@ export const endCleanup = Effect.fn("DeploymentCleanup.end")(function* (
   runId: string, end: CleanupEnd, requested: Option.Option<ConfigDeploymentRetireRequestedEventData>,
 ) {
   const { drizzle } = yield* Database;
-  const outcome = { runId, state: end.state, message: end.message ?? null, updatedAt: new Date() };
+  const outcome = { runId, state: end.state, message: end.message ?? null, updatedAt: sql`now()` };
   // A cancel or a failure that names no copies keeps the last ones the row named; Done leaves none.
   const keepsLast = (end.state === "cancelled" || end.state === "failed") && end.left === undefined;
   const ended = keepsLast ? outcome : { ...outcome, left: [...end.left ?? []] };
@@ -92,7 +93,7 @@ export const closeStaleCleanups = Effect.fn("DeploymentCleanup.closeStale")(func
 ) {
   const { drizzle } = yield* Database;
   const quiet = yield* drizzle.select({ runId: deploymentCleanup.runId, left: deploymentCleanup.left }).from(deploymentCleanup)
-    .where(and(eq(deploymentCleanup.state, "waiting"), lt(deploymentCleanup.updatedAt, new Date(Date.now() - CLEANUP_QUIET_MS))));
+    .where(and(eq(deploymentCleanup.state, "waiting"), lt(deploymentCleanup.updatedAt, sql`${checkedNow()} - make_interval(secs => ${CLEANUP_QUIET_MS / 1000})`)));
   let closed = 0;
   for (const { runId, left } of quiet) {
     const status = yield* runStatus(runId).pipe(Effect.option);

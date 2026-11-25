@@ -20,6 +20,20 @@ pub(super) struct Bridge {
     pub(super) taken: BTreeSet<Ipv4Addr>,
 }
 
+impl Bridge {
+    /// A new address in `part`, which `handed` notes as handed out.
+    pub(super) fn take(
+        &self,
+        handed: &mut crate::network::bridge::address::Handed,
+        part: ployz_core::AddressPart,
+    ) -> Result<Ipv4Addr, Error> {
+        let subnet = self
+            .subnet
+            .ok_or(crate::network::bridge::address::NoAddress::UnknownSubnet)?;
+        Ok(handed.take(subnet, part, &self.taken)?)
+    }
+}
+
 impl LocalDocker {
     pub(super) async fn bridge_capacity(&self) -> Result<BridgeEndpointCapacity, Error> {
         Ok(self.bridge().await?.capacity)

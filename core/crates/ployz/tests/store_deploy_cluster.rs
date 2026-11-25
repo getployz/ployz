@@ -479,6 +479,7 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
                         versions: Vec::new(),
                         copies: Vec::new(),
                         recreate: Vec::new(),
+                        rule: None,
                     }),
                     &ployz_store::Trusted::default(),
                 )
@@ -678,6 +679,7 @@ async fn cloud_s_runner_builds_an_upload_then_reuses_it_or_asks_for_a_new_one() 
                         versions: Vec::new(),
                         copies: Vec::new(),
                         recreate: Vec::new(),
+                        rule: None,
                     }),
                     &ployz_store::Trusted::default(),
                 )

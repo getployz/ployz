@@ -67,6 +67,12 @@ pub struct PlanOptions {
     #[serde(skip)]
     #[ts(skip)]
     pub ended_runs: BTreeSet<crate::DeploymentLogId>,
+    /// The Services this runner hands a signature or a rule's proof for. It replaces a
+    /// copy of one that its Machine reports it ran unsigned, since that copy answers for
+    /// nothing once a signed one runs. Never serialized.
+    #[serde(skip)]
+    #[ts(skip)]
+    pub signed: BTreeSet<ServiceName>,
 }
 
 impl PlanOptions {
@@ -74,6 +80,12 @@ impl PlanOptions {
     #[must_use]
     pub fn recreates(&self, service: &ServiceName) -> bool {
         self.force_recreate || self.recreate.contains(service)
+    }
+
+    /// Whether this Deploy hands its Servers a signature or rule proof for `service`.
+    #[must_use]
+    pub fn signs(&self, service: &ServiceName) -> bool {
+        self.signed.contains(service)
     }
 
     /// Who runs this Deploy, which the planner reads instead of the loose runner fields.
@@ -104,6 +116,7 @@ impl PlanOptions {
             block_unmountable: true,
             ended_runs: runner.ended_runs,
             recreate: runner.recreate,
+            signed: runner.signed,
             ..self
         }
     }
@@ -119,6 +132,7 @@ impl PlanOptions {
                 operator,
                 ended_runs: ended_runs.clone(),
                 recreate: self.recreate.clone(),
+                signed: self.signed.clone(),
             }),
             PlanMode::Interactive { .. } => None,
         }
@@ -127,8 +141,8 @@ impl PlanOptions {
 
 /// What a runner sets on the `PlanOptions` it plans with, which the Store's lowering
 /// cannot know: who drives the Deploy, the runs that can no longer change the
-/// Namespace, and the Services its claim recreates. Applied by `PlanOptions::as_runner`,
-/// so a runner that lowers the Intent again keeps all three.
+/// Namespace, the Services its claim recreates, and those it signs. Applied by
+/// `PlanOptions::as_runner`, so a runner that lowers the Intent again keeps them all.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RunnerOptions {
     /// Who drives the Deploy, which a refusal's way back depends on.
@@ -138,6 +152,8 @@ pub struct RunnerOptions {
     /// The Services whose Containers it recreates even when the resolved spec matches,
     /// as the claimed Deployment lists them.
     pub recreate: BTreeSet<ServiceName>,
+    /// The Services it hands a signature or a rule's proof for.
+    pub signed: BTreeSet<ServiceName>,
 }
 
 /// How the planner treats a Deploy, read from `PlanOptions::mode`. Never serialized: the
@@ -1827,6 +1843,7 @@ mod tests {
             operator: Operator::Cli,
             ended_runs: ended.clone(),
             recreate: BTreeSet::new(),
+            signed: BTreeSet::new(),
         });
         assert_eq!(
             runner.mode(),
@@ -1861,6 +1878,7 @@ mod tests {
             operator: Operator::Cli,
             ended_runs: ended,
             recreate: BTreeSet::from([ServiceName::parse("web").unwrap()]),
+            signed: BTreeSet::new(),
         };
         assert_eq!(PlanOptions::default().runner(), None);
         assert_eq!(
@@ -1881,6 +1899,7 @@ mod tests {
             operator: Operator::Cloud,
             ended_runs: BTreeSet::new(),
             recreate: BTreeSet::new(),
+            signed: BTreeSet::new(),
         });
         assert_eq!(
             runner,

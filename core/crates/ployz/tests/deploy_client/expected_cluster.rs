@@ -170,6 +170,7 @@ fn pinned() -> (Arc<ConfigStore>, Actor, GithubBuildId) {
         versions: Vec::new(),
         copies: Vec::new(),
         recreate: Vec::new(),
+        rule: None,
     });
     store
         .write_trusted(&who, &deploy, &Trusted::default())

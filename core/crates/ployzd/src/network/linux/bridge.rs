@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     io,
     net::Ipv4Addr,
     path::Path,
@@ -12,7 +12,9 @@ use bollard::{
     },
     query_parameters::{ListContainersOptionsBuilder, StopContainerOptionsBuilder},
 };
-use ployz_core::{DOCKER_NETWORK_CONFLICT_RECOVERY, MachineSubnet, labels};
+use ployz_core::{
+    AddressPart, ContainerId, DOCKER_NETWORK_CONFLICT_RECOVERY, MachineSubnet, Namespace, labels,
+};
 use ployz_decide::bridge::{self, Settle};
 
 use crate::docker::Door;
@@ -21,7 +23,7 @@ use crate::docker_image::is_not_found;
 use crate::network::{
     NetworkError, WIREGUARD_INTERFACE_NAME, checked_command,
     docker_firewall::Ipv6Off,
-    firewall::{BridgeFence, docker_ipv6_firewall, fence_container_ipv6},
+    firewall::{BridgeFence, docker_ipv6_firewall, fence_container_ipv6, write_fence_file},
 };
 
 use super::NetworkPlane;
@@ -30,6 +32,7 @@ pub(crate) mod address;
 mod pins;
 mod stopped;
 
+use address::{Handed, NoAddress};
 use pins::Pins;
 use stopped::Stopped;
 
@@ -66,25 +69,64 @@ pub(crate) fn base_endpoint(ipv6: bool) -> Option<bollard::models::EndpointSetti
     })
 }
 
-/// The static address each member takes: its own, or the next free one.
+/// The static address each member takes: the one it holds or is pinned to, whatever its
+/// part, or a new one in the part `part` names for it.
 pub(super) fn addresses<'a>(
     members: impl IntoIterator<Item = &'a BridgeMember>,
     mut taken: BTreeSet<Ipv4Addr>,
     subnet: MachineSubnet,
-) -> Vec<(&'a BridgeMember, Option<Ipv4Addr>)> {
-    let mut last = None;
+    part: impl Fn(&BridgeMember) -> Result<AddressPart, NoAddress>,
+) -> Vec<(&'a BridgeMember, Result<Ipv4Addr, NoAddress>)> {
+    let mut handed = Handed::default();
     members
         .into_iter()
         .map(|member| {
-            let ipv4 = member.ipv4.or_else(|| {
-                let next = address::next(subnet, &taken, last);
-                last = next.or(last);
-                next
-            });
-            taken.extend(ipv4);
+            let ipv4 = match member.ipv4 {
+                Some(ipv4) => Ok(ipv4),
+                None => part(member).and_then(|part| handed.take(subnet, part, &taken)),
+            };
+            taken.extend(ipv4.ok());
             (member, ipv4)
         })
         .collect()
+}
+
+/// Gives each member whose admission record puts it in another part a new address in its
+/// own, noted in `taken`, for the pin pass to move it to: a Container made before the parts,
+/// or before this split, holds one anywhere. A member with no record keeps its address, and
+/// so does one whose part is full. Returns the members it gave one.
+pub(super) fn unplace(
+    members: &mut [BridgeMember],
+    recorded: &BTreeMap<String, AddressPart>,
+    taken: &mut BTreeSet<Ipv4Addr>,
+    subnet: MachineSubnet,
+) -> BTreeSet<String> {
+    let mut handed = Handed::default();
+    let mut unplaced = BTreeSet::new();
+    for member in members {
+        let (Some(ipv4), Some(&part)) = (member.ipv4, recorded.get(&member.id)) else {
+            continue;
+        };
+        if AddressPart::of_last_octet(ipv4.octets()[3]) == part {
+            continue;
+        }
+        match handed.take(subnet, part, taken) {
+            Ok(address) => {
+                taken.insert(address);
+                member.ipv4 = Some(address);
+                unplaced.insert(member.id.clone());
+            }
+            Err(error) => eprintln!(
+                "container {container} stays at {ipv4} on the {DOCKER_NETWORK_NAME} network, outside its {part} addresses, until a later start finds one free: {error}",
+                container = member.id,
+            ),
+        }
+    }
+    unplaced
+}
+
+fn report_unjoined(id: &str, error: &NoAddress) {
+    eprintln!("container {id} stays off the {DOCKER_NETWORK_NAME} network: {error}");
 }
 
 fn report_readdress(take_ipv6: bool, error: &NetworkError) {
@@ -145,6 +187,8 @@ pub(super) struct BridgeMember {
     pub(super) attached: bool,
     pub(super) pinned: bool,
     pub(super) ipv6: bool,
+    /// The Namespace its labels name, which with its kept spec says its part.
+    pub(super) namespace: Option<Namespace>,
 }
 
 impl BridgeMember {
@@ -177,6 +221,11 @@ pub(super) fn bridge_members(containers: &[ContainerSummary]) -> Vec<BridgeMembe
                 attached: endpoint.is_some(),
                 pinned: endpoint.and_then(address::pinned).is_some(),
                 ipv6: container.labels.as_ref().is_some_and(takes_ipv6),
+                namespace: container
+                    .labels
+                    .as_ref()
+                    .and_then(|labels| labels.get(labels::NAMESPACE))
+                    .and_then(|namespace| Namespace::parse(namespace).ok()),
             })
         })
         .filter(|member| !member.id.is_empty())
@@ -552,6 +601,9 @@ impl NetworkPlane {
         &self,
         data_dir: &Path,
     ) -> Result<(bool, BridgeFence), NetworkError> {
+        // Written before the bridge can first exist, so a boot never starts Docker with a
+        // bridge and no fence. A reset clears it with the data directory.
+        write_fence_file(data_dir)?;
         // The fence goes in before any container holds IPv6 that NAT66 could carry
         // into the mesh, including one an earlier start gave IPv6; without it the
         // bridge stays IPv4-only.
@@ -717,8 +769,19 @@ impl NetworkPlane {
             report_readdress(take_ipv6, error);
         }
         let taken = members.iter().filter_map(|member| member.ipv4).collect();
-        for (member, ipv4) in addresses(detached, taken, self.machine.subnet) {
-            self.rejoin(member, ipv4, stopped).await;
+        let parts = self.parts(&detached).await;
+        for (member, ipv4) in addresses(detached, taken, self.machine.subnet, |member| {
+            parts
+                .get(&member.id)
+                .copied()
+                .unwrap_or(Err(NoAddress::Unread))
+        }) {
+            match ipv4 {
+                Ok(ipv4) => {
+                    self.rejoin(member, ipv4, stopped).await;
+                }
+                Err(error) => report_unjoined(&member.id, &error),
+            }
         }
         replaced.map(|_| ())
     }
@@ -763,6 +826,57 @@ impl NetworkPlane {
         }
     }
 
+    /// The part each member's admission record puts it in, for those that have one.
+    async fn recorded_parts(&self, members: &[BridgeMember]) -> BTreeMap<String, AddressPart> {
+        let mut parts = BTreeMap::new();
+        let Some(records) = &self.records else {
+            return parts;
+        };
+        for member in members.iter().filter(|member| member.ipv4.is_some()) {
+            let Ok(id) = ContainerId::parse(member.id.clone()) else {
+                continue;
+            };
+            match records.recorded_part(&id, member.namespace.as_ref()).await {
+                Ok(Some(part)) => {
+                    parts.insert(member.id.clone(), part);
+                }
+                Ok(None) => {}
+                Err(error) => eprintln!(
+                    "container {id} keeps its {DOCKER_NETWORK_NAME} network address: its record could not be read: {error}",
+                    error = ployz_core::error_chain::inline(&error),
+                ),
+            }
+        }
+        parts
+    }
+
+    /// The part each member with no address takes a new one in, read from this Server's
+    /// Container records.
+    async fn parts(
+        &self,
+        members: &[&BridgeMember],
+    ) -> BTreeMap<String, Result<AddressPart, NoAddress>> {
+        let mut parts = BTreeMap::new();
+        for member in members {
+            let part = match (&self.records, ContainerId::parse(member.id.clone())) {
+                (None, _) => Err(NoAddress::NoRecords),
+                (Some(_), Err(_)) => Ok(AddressPart::Free),
+                (Some(records), Ok(id)) => records
+                    .address_part(&id, member.namespace.as_ref())
+                    .await
+                    .map_err(|error| {
+                        eprintln!(
+                            "could not read the record of container {id}: {error}",
+                            error = ployz_core::error_chain::inline(&error),
+                        );
+                        NoAddress::Unread
+                    }),
+            };
+            parts.insert(member.id.clone(), part);
+        }
+        parts
+    }
+
     async fn bridge_members(&self) -> Result<Vec<BridgeMember>, NetworkError> {
         let containers = self.bridge_containers().await?;
         Ok(bridge_members(&containers))
@@ -783,7 +897,9 @@ impl NetworkPlane {
     /// bridge that lost its endpoint, such as one a readdress detached, joins it again.
     /// One Ployz doesn't manage is pinned too, since a dynamic one could take a
     /// pinned address at boot, and it rejoins with its own aliases and options. A
-    /// detached member takes back the address `pins` holds for it, if any.
+    /// detached member takes back the address `pins` holds for it, if any. A member whose
+    /// admission record puts it in another part moves to a new address in its own, noted
+    /// before its detach like any other.
     async fn pin_members(&self, stopped: &mut Stopped, mut pins: Pins) {
         let containers = match self.bridge_containers().await {
             Ok(containers) => containers,
@@ -799,9 +915,12 @@ impl NetworkPlane {
         pins.restore(&mut members);
         let mut taken = address::taken(&containers);
         taken.extend(members.iter().filter_map(|member| member.ipv4));
+        let admitted = self.recorded_parts(&members).await;
+        let unplaced = unplace(&mut members, &admitted, &mut taken, self.machine.subnet);
+        let moves = |member: &BridgeMember| member.needs_pin() || unplaced.contains(&member.id);
         let detaches = members
             .iter()
-            .any(|member| member.attached && member.needs_pin());
+            .any(|member| member.attached && moves(member));
         let recorded = !detaches
             || pins
                 .record(&members)
@@ -811,10 +930,27 @@ impl NetworkPlane {
                     );
                 })
                 .is_ok();
-        let unpinned = members.iter().filter(|member| member.needs_pin());
+        let unpinned = members
+            .iter()
+            .filter(|member| moves(member))
+            .collect::<Vec<_>>();
+        let parts = self.parts(&unpinned).await;
         let mut unjoined = BTreeSet::new();
-        for (member, ipv4) in addresses(unpinned, taken, self.machine.subnet) {
-            let mut endpoint = address::endpoint(member.ipv6, None);
+        for (member, ipv4) in addresses(unpinned, taken, self.machine.subnet, |member| {
+            parts
+                .get(&member.id)
+                .copied()
+                .unwrap_or(Err(NoAddress::Unread))
+        }) {
+            let ipv4 = match ipv4 {
+                Ok(ipv4) => ipv4,
+                Err(error) => {
+                    report_unjoined(&member.id, &error);
+                    unjoined.insert(member.id.clone());
+                    continue;
+                }
+            };
+            let mut endpoint = address::endpoint(member.ipv6, ipv4);
             if member.attached {
                 if !recorded {
                     continue;
@@ -928,40 +1064,34 @@ impl NetworkPlane {
         }
     }
 
-    async fn rejoin(&self, member: &BridgeMember, ipv4: Option<Ipv4Addr>, stopped: &mut Stopped) {
-        let endpoint = address::endpoint(member.ipv6, None);
+    async fn rejoin(&self, member: &BridgeMember, ipv4: Ipv4Addr, stopped: &mut Stopped) {
+        let endpoint = address::endpoint(member.ipv6, ipv4);
         let _ = self.rejoin_with(member, endpoint, ipv4, stopped).await;
     }
 
-    /// Falls back to any free address when `ipv4` can't be had. Stops a container
-    /// Docker holds between restarts first, as `detach` does. Returns whether it
-    /// rejoined.
+    /// Rejoins only at `ipv4`: a member Docker won't take there stays detached, and the
+    /// next start tries again. Stops a container Docker holds between restarts first, as
+    /// `detach` does. Returns whether it rejoined.
     async fn rejoin_with(
         &self,
         member: &BridgeMember,
         endpoint: EndpointSettings,
-        ipv4: Option<Ipv4Addr>,
+        ipv4: Ipv4Addr,
         stopped: &mut Stopped,
     ) -> bool {
-        let connect = |ipv4| NetworkConnectRequest {
+        let connect = || NetworkConnectRequest {
             container: member.id.clone(),
             endpoint_config: Some(address::pin(endpoint.clone(), ipv4)),
         };
         let mut result = self
             .docker
-            .connect_network(DOCKER_NETWORK_NAME, connect(ipv4))
+            .connect_network(DOCKER_NETWORK_NAME, connect())
             .await;
         if result.as_ref().is_err_and(between_restarts) {
             self.stop(&member.id, stopped).await;
             result = self
                 .docker
-                .connect_network(DOCKER_NETWORK_NAME, connect(ipv4))
-                .await;
-        }
-        if result.is_err() && ipv4.is_some() {
-            result = self
-                .docker
-                .connect_network(DOCKER_NETWORK_NAME, connect(None))
+                .connect_network(DOCKER_NETWORK_NAME, connect())
                 .await;
         }
         if let Err(error) = &result {

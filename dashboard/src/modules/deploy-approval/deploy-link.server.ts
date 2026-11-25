@@ -75,8 +75,10 @@ export const linkDeploy = Effect.fn("DeployLink.link")(function* (caller: Caller
     if (diff === null) return null;
     version = diff.version;
   }
+  // The approval page never shows an automatic deploy rule, so approving a Deploy never signs one: the asker's is dropped.
+  const { rule: _rule, ...ruleless } = command;
   let bound: AdmitDeploy = {
-    ...command, services: [...command.services ?? []], version,
+    ...ruleless, services: [...command.services ?? []], version,
     environment: { project: place.environment.project, environment: place.environment.name },
   };
   // A Pending value has no review yet: the approval page makes it, and the Store's review is read then.

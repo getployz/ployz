@@ -2909,6 +2909,7 @@ async fn watcher_fixture() -> WatcherFixture {
         container_subscriptions: Arc::new(Mutex::new(Vec::new())),
         certificate_subscriptions: Arc::new(Mutex::new(Vec::new())),
         machine_subscriptions: Arc::new(Mutex::new(Vec::new())),
+        kept_subscriptions: Arc::new(Mutex::new(Vec::new())),
         certificates: Arc::new(Mutex::new(Vec::new())),
         statements: Arc::new(Mutex::new(Vec::new())),
         transactions: Arc::new(Mutex::new(Vec::new())),
@@ -3090,6 +3091,7 @@ struct WatchState {
     container_subscriptions: Arc<Mutex<Vec<mpsc::UnboundedSender<Bytes>>>>,
     certificate_subscriptions: Arc<Mutex<Vec<mpsc::UnboundedSender<Bytes>>>>,
     machine_subscriptions: Arc<Mutex<Vec<mpsc::UnboundedSender<Bytes>>>>,
+    kept_subscriptions: Arc<Mutex<Vec<mpsc::UnboundedSender<Bytes>>>>,
     certificates: Arc<Mutex<Vec<(String, String)>>>,
     statements: Arc<Mutex<Vec<(Sent, String)>>>,
     transactions: Arc<Mutex<Vec<Vec<Statement>>>>,
@@ -3296,6 +3298,8 @@ async fn query(State(state): State<WatchState>, body: Bytes) -> Response {
                 .iter()
                 .map(|machine| vec![json!(serde_json::to_string(machine).unwrap())]),
         )
+    } else if statement.query == "SELECT key AS name FROM cluster WHERE key LIKE ?" {
+        events(&["name"], std::iter::empty::<Vec<Value>>())
     } else if statement.query == "SELECT hostname, body FROM certificates ORDER BY hostname" {
         let certificates = state.certificates.lock().unwrap();
         events(
@@ -3333,6 +3337,11 @@ async fn subscribe(State(state): State<WatchState>, body: Bytes) -> Response {
             )
         } else if statement.query == "SELECT id, info FROM machines" {
             (&["id", "info"][..], &state.machine_subscriptions, false)
+        } else if statement
+            .query
+            .starts_with("SELECT key AS name FROM cluster WHERE key LIKE")
+        {
+            (&["name"][..], &state.kept_subscriptions, false)
         } else {
             panic!("unexpected subscription {}", statement.query);
         };

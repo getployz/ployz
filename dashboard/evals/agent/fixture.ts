@@ -98,10 +98,9 @@ export const evalFixture = Effect.fn("Eval.fixture")(function* (scenario?: Fleet
   yield* provided(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     const encryption = yield* SecretEncryption;
-    const now = new Date();
     yield* drizzle.insert(organizationClusterDomain).values({
       organizationId: ORGANIZATION, endpoint: "http://127.0.0.1:9/", name: CLUSTER_DOMAIN,
-      encryptedToken: encryption.encrypt("hosted-dns-token"), reservedAt: now, leaseRenewedAt: now,
+      encryptedToken: encryption.encrypt("hosted-dns-token"), reservedAt: sql`now()`, leaseRenewedAt: sql`now()`,
     });
   }));
   const store: ConfigStore = yield* provided(cloudStore);

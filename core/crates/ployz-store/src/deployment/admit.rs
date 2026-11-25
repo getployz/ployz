@@ -117,6 +117,11 @@ pub struct Deploy {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(optional, as = "Option<Vec<ServiceName>>")]
     pub recreate: Vec<ServiceName>,
+    /// The automatic deploy rule signed with this Deploy for what it saves, kept in the
+    /// Deploy's own transaction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, as = "Option<crate::auto_rule::SavedRule>")]
+    pub rule: Option<Box<crate::auto_rule::SavedRule>>,
 }
 
 /// Redeploy an ended Deployment: its Saved revision, targets, Namespace,
@@ -472,6 +477,12 @@ fn deploy(
     trusted: &Trusted,
 ) -> Result<DeploymentSummary, RpcError> {
     trusted.runnable()?;
+    if admit.rule.is_some() && admit.version.is_none() {
+        return Err(error::invalid(
+            "A Deploy that keeps an automatic deploy rule names the review it read.",
+            json!({}),
+        ));
+    }
     let environment = scope::lock(tx, who, &admit.environment)?;
     trusted.writes(&environment.summary.name)?;
     crate::removal::marked(tx, &environment)?;
@@ -567,6 +578,9 @@ fn deploy(
         },
         trusted,
     )?;
+    if let Some(rule) = &admit.rule {
+        crate::auto_rule::keep_saved(tx, who, &environment, rule)?;
+    }
     let frozen = match narrowed {
         Some(frozen) => frozen,
         None => {

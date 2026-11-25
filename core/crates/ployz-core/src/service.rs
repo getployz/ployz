@@ -12,6 +12,7 @@ use crate::{
 
 mod eligibility;
 mod serving;
+mod signed;
 
 pub use eligibility::{
     ServicePlacementEligibility, ServicePlacementIneligibleReason, ServicePlacementUnknownReason,
@@ -20,6 +21,7 @@ pub use serving::{
     ProxyRoutes, ServingContainer, SlotOccupancy, proxy_routes, reachable_routes,
     serving_containers,
 };
+pub use signed::{KeptNames, SIGNED_SERVICE_KEY_PREFIX, signed_service_key, signed_view};
 
 /// One observer-derived grouping. Every container keeps its own historical spec.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
@@ -874,6 +876,7 @@ mod tests {
             stopped: false,
             run: None,
             log_driver: None,
+            admission: None,
         })
         .unwrap()
     }

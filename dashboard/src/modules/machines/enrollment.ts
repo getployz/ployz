@@ -352,10 +352,6 @@ export function organizationEnrollmentStatus(row: OrganizationEnrollmentRow | un
   return row?.status ?? "unclaimed";
 }
 
-export function enrollmentExpiry(now: Date) {
-  return new Date(now.getTime() + ENROLLMENT_TOKEN_TTL_MS);
-}
-
 export function waitForFounder(): NotYetEnrollMaterial {
   return { kind: "not_yet", retryAfter: ENROLL_NOT_YET_RETRY_AFTER_SECONDS, reason: "founder" };
 }

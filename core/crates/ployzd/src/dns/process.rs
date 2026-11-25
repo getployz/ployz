@@ -180,6 +180,9 @@ struct Session {
 struct Connection {
     replicated: ReplicatedStore,
     changes: Subscription,
+    /// Names kept signed, which can arrive with no Container change: a name whose
+    /// signed copy was made and removed between two of its Machine's scans.
+    kept: Subscription,
     machines: MachineView,
     admin: AdminClient,
     token: String,
@@ -292,7 +295,7 @@ impl Session {
     async fn connect(&self) -> Result<(Connection, Snapshot), Attempt> {
         let token = read_token(&self.endpoint.token_file).map_err(|_| Attempt::NoToken)?;
         let replicated = ReplicatedStore::new(ApiClient::new(self.endpoint.api, &token)?);
-        let (changes, snapshot) = subscribe_then_snapshot(&replicated).await?;
+        let (changes, kept, snapshot) = subscribe_then_snapshot(&replicated).await?;
         let view_shutdown = CancellationToken::new();
         let machines = MachineView::start(replicated.clone(), view_shutdown.clone());
         let admin = AdminClient::new(&self.endpoint.admin_socket);
@@ -300,6 +303,7 @@ impl Session {
             Connection {
                 replicated,
                 changes,
+                kept,
                 machines,
                 admin,
                 token,
@@ -319,13 +323,16 @@ impl Session {
 
 async fn subscribe_then_snapshot(
     replicated: &ReplicatedStore,
-) -> Result<(Subscription, Snapshot), CorrosionError> {
+) -> Result<(Subscription, Subscription, Snapshot), CorrosionError> {
     let changes = replicated.subscribe_container_changes().await?;
+    let kept = replicated.subscribe_signed_service_changes().await?;
     let snapshot = load_snapshot(replicated).await?;
-    Ok((changes, snapshot))
+    Ok((changes, kept, snapshot))
 }
 
 async fn load_snapshot(replicated: &ReplicatedStore) -> Result<Snapshot, CorrosionError> {
+    // Names first: a signed copy that arrives after them is kept by its own observation.
+    let kept = replicated.signed_services().await?;
     let observations = replicated.containers().await?.observations;
     let cluster = replicated.cluster_name().await.unwrap_or_else(|error| {
         eprintln!(
@@ -337,6 +344,7 @@ async fn load_snapshot(replicated: &ReplicatedStore) -> Result<Snapshot, Corrosi
     Ok(Snapshot {
         observations,
         cluster,
+        kept,
     })
 }
 
@@ -369,6 +377,7 @@ async fn watch_projection(
     let Connection {
         replicated,
         changes,
+        kept,
         machines,
         admin,
         token,
@@ -401,7 +410,7 @@ async fn watch_projection(
     loop {
         let rebuild = tokio::select! {
             Some((started, loaded)) = refreshes.next() => {
-                if changes.stalled() {
+                if changes.stalled() || kept.stalled() {
                     return Ok(Watched::Lost(Lost::Stream(CorrosionError::SnapshotStalled)));
                 }
                 match loaded {
@@ -422,6 +431,14 @@ async fn watch_projection(
                 }
             }
             changed = changes.changed() => {
+                if let Err(error) = changed {
+                    return Ok(Watched::Lost(Lost::Stream(error)));
+                }
+                epoch.fetch_add(1, Ordering::Relaxed);
+                pending_snapshot = true;
+                reload_snapshot(replicated, inputs, &mut pending_snapshot, &epoch).await
+            }
+            changed = kept.changed() => {
                 if let Err(error) = changed {
                     return Ok(Watched::Lost(Lost::Stream(error)));
                 }

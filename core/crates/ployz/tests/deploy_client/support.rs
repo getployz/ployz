@@ -786,6 +786,7 @@ impl DeployService {
             stopped: false,
             run: None,
             log_driver: None,
+            admission: None,
         })
         .unwrap()
     }
@@ -1107,6 +1108,7 @@ impl FakeMachine for DeployService {
                     stopped: false,
                     run: None,
                     log_driver: None,
+                    admission: None,
                 },
             )
             .unwrap(),
@@ -1736,6 +1738,7 @@ pub(super) fn running_container_in(
         stopped: false,
         run: None,
         log_driver: None,
+        admission: None,
     })
     .unwrap()
 }

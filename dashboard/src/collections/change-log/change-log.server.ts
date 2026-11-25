@@ -4,6 +4,7 @@ import { Data, Effect } from "effect";
 import type { ChangeSource } from "#/collections/change-log/change-log.sources";
 import { organizationChangeLog as change } from "#/collections/change-log/tables";
 import { Database } from "#/server/database.server";
+import { checkedNow } from "#/db/tables";
 
 /** The xid horizon: every transaction below it has finished. */
 const horizon = sql`pg_snapshot_xmin(pg_current_snapshot())`;
@@ -85,7 +86,7 @@ export const currentChangeCursor = Effect.fn("OrganizationChangeLog.currentCurso
 export const pruneChangeLog = Effect.fn("OrganizationChangeLog.prune")(function* () {
   const database = yield* Database;
   const retentionFence = database.drizzle.select({ xid: sql`max(${change.xid})` }).from(change)
-    .where(lt(change.createdAt, sql`now() - interval '24 hours'`));
+    .where(lt(change.createdAt, sql`${checkedNow()} - interval '24 hours'`));
   const newest = database.drizzle.select({ xid: sql`max(${change.xid})` }).from(change);
   yield* database.drizzle.delete(change).where(and(
     lte(change.xid, sql`(${retentionFence})`),

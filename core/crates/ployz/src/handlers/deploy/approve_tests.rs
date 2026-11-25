@@ -359,7 +359,7 @@ fn the_upgrade_named_keeps_the_cluster_the_deploy_was_given() {
 fn no_terminal_refuses_before_signing() {
     let approved = [approved(&spec(PINNED))];
     let error = consent(
-        (&Namespace::parse("app").unwrap(), &approved),
+        (&Namespace::parse("app").unwrap(), &approved, None),
         |question, refusal, declined| crate::ui::confirm(question, || refusal, declined),
     )
     .unwrap_err();
@@ -420,7 +420,7 @@ fn declining_signs_nothing_and_fails() {
     let approved = [approved(&spec(PINNED))];
     let mut asked = None;
     let error = consent(
-        (&Namespace::parse("app").unwrap(), &approved),
+        (&Namespace::parse("app").unwrap(), &approved, None),
         |question, _, declined| {
             asked = Some((question.to_owned(), declined));
             Err(crate::handlers::Error::cancelled())
@@ -444,7 +444,7 @@ fn a_no_to_the_marked_data_signs_nothing() {
     let mut change = approved(&spec(PINNED));
     change.confirm = vec!["mounts managed volume app_vol-1 at /srv, read-write: …".to_owned()];
     let error = consent(
-        (&Namespace::parse("app").unwrap(), &[change]),
+        (&Namespace::parse("app").unwrap(), &[change], None),
         |question, _, _| match question {
             "Use the data marked above?" => Err(crate::handlers::Error::cancelled()),
             _ => Ok(()),

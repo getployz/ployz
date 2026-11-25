@@ -67,6 +67,7 @@ fn admitted(upload: Option<ployz_store::UploadedSource>) -> (Run, ployz_store::A
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
             &ployz_store::Trusted::default(),
         )
@@ -106,6 +107,7 @@ fn take_over(run: &Run, actor: &ployz_store::Actor) {
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: Vec::new(),
+                rule: None,
             }),
             &ployz_store::Trusted::default(),
         )
@@ -1208,6 +1210,7 @@ fn separately_uploaded() -> Claimed {
                     versions: Vec::new(),
                     copies: Vec::new(),
                     recreate: Vec::new(),
+                    rule: None,
                 }),
                 &ployz_store::Trusted::default(),
             )
@@ -1870,6 +1873,7 @@ async fn a_deploy_with_a_reused_build_still_recreates_the_services_its_claim_lis
                 versions: Vec::new(),
                 copies: Vec::new(),
                 recreate: vec![web.clone()],
+                rule: None,
             }),
             &Trusted::default(),
         )

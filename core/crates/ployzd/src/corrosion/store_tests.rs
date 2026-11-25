@@ -2158,6 +2158,47 @@ async fn container_rows_expose_rotation_and_gen_against_the_schema() {
     task.abort();
 }
 
+/// A signed copy's name outlives the copy: removing every row of it keeps the name, and an
+/// unsigned copy keeps none.
+#[tokio::test]
+async fn a_published_signed_copy_keeps_its_name_after_it_is_removed() {
+    let (store, task) = identity_store(corrosion_db()).await;
+    let machine = MachineId::parse("a".repeat(32)).unwrap();
+    let observation = |id: &str, name: &str, admission: &str| -> ployz_core::ContainerObservation {
+        let mut spec = crate::docker::test_support::spec_with_sources(vec![]);
+        spec.name = ployz_core::ServiceName::parse(name).unwrap();
+        serde_json::from_value(json!({
+            "container_id": id.repeat(64),
+            "display_name": format!("{name}-1"),
+            "machine_id": machine,
+            "namespace": "app",
+            "kind": "service_container",
+            "runtime": {"state": "running", "health": "healthy"},
+            "resolved_spec": spec,
+            "admission": admission,
+        }))
+        .unwrap()
+    };
+    let (db, web) = (
+        observation("b", "db", "signed"),
+        observation("c", "web", "free"),
+    );
+    let publication = store.machine_publication().await;
+    publication
+        .apply_container_rows(&machine, &[], &[db.clone(), web.clone()])
+        .await
+        .unwrap();
+    publication
+        .apply_container_rows(&machine, &[db.container_id, web.container_id], &[])
+        .await
+        .unwrap();
+
+    let kept = store.signed_services().await.unwrap();
+    assert!(kept.contains(&db.identity()));
+    assert!(!kept.contains(&web.identity()));
+    task.abort();
+}
+
 /// A Server forgotten before it finished joining stays gone: a resent Register writes no
 /// row, and neither does the Server's own publish once it catches up.
 #[tokio::test]
