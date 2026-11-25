@@ -114,8 +114,8 @@ pub struct DeployPlan {
     operations: Vec<DeployOperation>,
     groups: Vec<ServiceGroup>,
     preview: DeployPreview,
-    /// The intent's pull credentials, for execution only; never in the preview.
-    registry_auth: std::collections::BTreeMap<ployz_core::ServiceName, ployz_core::RegistryAuth>,
+    /// The intent's sealed pull logins, for execution only; never in the preview.
+    registry_logins: std::collections::BTreeMap<ployz_core::ServiceName, ployz_core::SealedLogin>,
     facts: Facts,
 }
 
@@ -155,10 +155,10 @@ impl DeployPlan {
         &self.groups
     }
 
-    pub(super) const fn registry_auth(
+    pub(super) const fn registry_logins(
         &self,
-    ) -> &std::collections::BTreeMap<ployz_core::ServiceName, ployz_core::RegistryAuth> {
-        &self.registry_auth
+    ) -> &std::collections::BTreeMap<ployz_core::ServiceName, ployz_core::SealedLogin> {
+        &self.registry_logins
     }
 
     pub(crate) const fn machine_names(&self) -> &BTreeMap<MachineId, ployz_core::MachineName> {
@@ -210,7 +210,7 @@ impl DeployPlan {
             operations,
             groups,
             preview: DeployPreview::new(rows, Vec::new(), namespace),
-            registry_auth: std::collections::BTreeMap::new(),
+            registry_logins: std::collections::BTreeMap::new(),
             facts: Facts::default(),
         }
     }
@@ -542,7 +542,7 @@ pub fn plan_deploy(
 fn admit(intent: &DeployIntent, snapshot: &DeploySnapshot, mut planned: Planned) -> DeployPlan {
     let budgets = std::mem::take(&mut planned.volumes.budgets);
     let mut plan = seal_plan(planned, snapshot, &intent.namespace);
-    plan.registry_auth.clone_from(&intent.registry_auth);
+    plan.registry_logins.clone_from(&intent.registry_logins);
     if !budgets.is_empty() {
         plan.preview
             .warnings
@@ -730,7 +730,7 @@ fn seal_plan(planned: Planned, snapshot: &DeploySnapshot, namespace: &Namespace)
         operations: planned.operations,
         groups: planned.groups,
         preview,
-        registry_auth: std::collections::BTreeMap::new(),
+        registry_logins: std::collections::BTreeMap::new(),
         facts: Facts {
             machine_names: super::progress::machine_names(snapshot),
             retiring: planned.retiring.into_iter().collect(),

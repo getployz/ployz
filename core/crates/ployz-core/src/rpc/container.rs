@@ -229,6 +229,9 @@ pub struct NewContainer {
     /// Credentials for pulling the image; used for this pull only, never stored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub registry_auth: Option<crate::RegistryAuth>,
+    /// A login sealed for the image's registry; opened for this pull only, never stored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry_login: Option<crate::SealedLogin>,
     /// A `PullImage` already placed the image, so creation uses it without pulling.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub image_prepared: bool,

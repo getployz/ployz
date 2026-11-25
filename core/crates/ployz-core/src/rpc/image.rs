@@ -125,6 +125,9 @@ pub struct PullImageRequest {
     /// Credentials for a private image; used for this pull only, never stored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub registry_auth: Option<crate::RegistryAuth>,
+    /// A login sealed for the image's registry; opened for this pull only, never stored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry_login: Option<crate::SealedLogin>,
 }
 
 /// Make one image present on this Machine as `policy` asks, the way the caller's own

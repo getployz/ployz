@@ -1005,7 +1005,7 @@ fn pinned_shape(want: &ployz_core::ContainerWant) -> Option<RpcError> {
         .is_some()
     {
         "the pinned route creates no reserved Service"
-    } else if new.registry_auth.is_some() || !new.image_prepared {
+    } else if new.registry_auth.is_some() || new.registry_login.is_some() || !new.image_prepared {
         "a pinned creation pulls nothing for the caller"
     } else {
         return None;
@@ -1223,7 +1223,7 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
         LocalMachineError::Docker(error) => Ok(RpcError::from(&error)),
         LocalMachineError::StoragePreparation(error)
         | LocalMachineError::FenceRefused(error)
-        | LocalMachineError::TagRefused(error) => Ok(error),
+        | LocalMachineError::PullRefused(error) => Ok(error),
         LocalMachineError::Cleanup(message) => Ok(RpcError::internal(message)),
         LocalMachineError::Admission(crate::mutation::Error::Busy) => Ok(RpcError::conflict(
             "a Ployz installation or upgrade is active",

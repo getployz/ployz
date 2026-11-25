@@ -1715,10 +1715,10 @@ fn every_deployment_that_left_flight_records_when_it_ended_after_upgrade() {
             &url,
             &format!(
                 "INSERT INTO config_deployment (id, organization_id, environment_id, status, \
-                 saved_revision, services, nodes, namespace, run, credentials, admitted, \
+                 saved_revision, services, nodes, namespace, run, logins, admitted, \
                  ended, listed) \
                  SELECT '{}', organization_id, environment_id, 'superseded', saved_revision, \
-                 services, '[]', namespace, run, credentials, admitted, admitted + 5, 100 \
+                 services, '[]', namespace, run, logins, admitted, admitted + 5, 100 \
                  FROM config_deployment WHERE id = '{}'",
                 id(7),
                 id(1)

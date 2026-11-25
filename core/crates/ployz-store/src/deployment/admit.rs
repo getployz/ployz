@@ -125,7 +125,7 @@ pub struct Deploy {
 }
 
 /// Redeploy an ended Deployment: its Saved revision, targets, Namespace,
-/// credentials, upload, pinned commits and whether it prunes, whatever was saved
+/// registry logins, upload, pinned commits and whether it prunes, whatever was saved
 /// since. Redeploying one older than a Deployment that may have changed the
 /// Servers rolls that back.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]

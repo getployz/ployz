@@ -39,6 +39,10 @@ import { CanvasInspectorNotFound, CanvasInspectorPending } from "#/routes/_prote
 import { CanvasInspectorNameEditor } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/CanvasInspectorNameEditor";
 import { ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO } from "#/lib/environment-routes";
 import { RegistryCredentialsField } from "./RegistryCredentialsField";
+import { getRegistryHostFromImageReference } from "#/modules/config-store/registry-credentials";
+import { sealLogin } from "#/modules/sealing/seal-value";
+import { SealError } from "#/modules/sealing/seal-error";
+import { useSealing } from "#/modules/sealing/use-sealing";
 import { ServiceSettingInput } from "#/components/settings/ServiceSettingInput";
 import { ServiceCommandField } from "./ServiceCommandField";
 import { HealthcheckSettings } from "./HealthcheckField";
@@ -75,8 +79,8 @@ export type StoreService = {
   source: ServiceListing["source"];
   /** Setting `name`'s Store path: `SERVICE.name`. */
   path: (name: string) => string;
-  /** Edits it at once, saved in the background. */
-  edit: (change: Change) => Write;
+  /** Edits it at once, saved in the background; with `prepare`, `change` shows and `prepare`'s is sent. */
+  edit: (change: Change, prepare?: () => Promise<Change>) => Write;
   set: (name: string, value: JsonValue | null) => Write;
 };
 
@@ -141,7 +145,8 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
 
   const rows = serviceSettingRows(settings, service.name);
   const path = (name: string) => `${service.name}.${name}`;
-  const edit = (change: Change) => writer.edit({ environment: store, changes: [change] });
+  const edit = (change: Change, prepare?: () => Promise<Change>) =>
+    writer.edit({ environment: store, changes: [change], ...(prepare && { prepare: async () => [await prepare()] }) });
   const state: StoreService = {
     organizationSlug,
     environment: store,
@@ -687,10 +692,12 @@ export function StoreSourceSection({ state }: { state: StoreService }) {
 }
 
 /**
- * A private image's pull credentials. A new secret replaces the stored one at once; turning them off is staged and
- * keeps the stored secret, which Restore turns back on. Reads show only that there is one.
+ * A private image's pull credentials. A new secret is sealed here for the image's registry and replaces the stored
+ * one at once; turning them off is staged and keeps the stored secret, which Restore turns back on. Reads show only
+ * that there is one.
  */
 function StoreRegistryCredentials({ state, image }: { state: StoreService; image: string }) {
+  const { sealer } = useSealing(state.organizationSlug);
   const row = state.rows.get("registryCredential");
   const [configured, hold] = useCommitHold(row !== undefined && row.value !== null);
   if (!row) return null;
@@ -705,7 +712,13 @@ function StoreRegistryCredentials({ state, image }: { state: StoreService; image
       changed={change !== undefined}
       baselineValue={change ? shown(change.before) : undefined}
       onSet={({ username, secret }) => {
-        const write = state.set("registryCredential", username === null ? { secret } : { username, secret });
+        const path = state.path("registryCredential");
+        const write = state.edit({ op: "set", path, value: { secret: true } }, async () => {
+          const { publicKey } = await sealer();
+          const login = await sealLogin(publicKey, getRegistryHostFromImageReference(image), { username, password: secret })
+            .catch(() => { throw new SealError(UNSEALED_LOGIN); });
+          return { op: "set", path, value: login };
+        });
         hold(true, write);
         return write;
       }}
@@ -714,6 +727,8 @@ function StoreRegistryCredentials({ state, image }: { state: StoreService; image
     />
   );
 }
+
+const UNSEALED_LOGIN = "Couldn't seal these credentials, so nothing was saved. Try again.";
 
 /** A saved Service's deletion is staged until the next deploy; a new one's is gone at once, so it asks first. */
 export function StoreDangerSection({ state }: { state: StoreService }) {

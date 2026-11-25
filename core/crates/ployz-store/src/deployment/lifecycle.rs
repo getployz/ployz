@@ -31,7 +31,7 @@ impl Admission<'_> {
 }
 
 /// Admit a frozen Deployment of Saved revision `saved`: refused when it hands the
-/// runner a Volume with Shared Writes on, with the registry credentials its image
+/// runner a Volume with Shared Writes on, with the registry logins its image
 /// Services pull with. A Deployment still queued is superseded: the newest admission
 /// replaces the pending one and takes over the Services it would have torn down.
 pub(crate) fn admit(
@@ -56,7 +56,7 @@ pub(crate) fn admit(
         }),
         super::admit::Shipping::Saved,
     )?;
-    let credentials = crate::registry::freeze(tx, environment, &intent, frozen)?;
+    let logins = crate::registry::freeze(tx, environment, &intent, frozen)?;
     let id = &admission.id();
     let (held, push) = match admission {
         Admission::New { push, .. } => (false, push.cloned()),
@@ -115,11 +115,11 @@ pub(crate) fn admit(
         prune: frozen.targeting.prunes(),
         ..Run::default()
     };
-    let (targets_text, nodes_text, run_text, credentials_text) = (
+    let (targets_text, nodes_text, run_text, logins_text) = (
         json_text(&targets),
         json_text(&nodes),
         json_text(&run),
-        json_text(&credentials),
+        json_text(&logins),
     );
     let upload_text = upload.as_ref().map(json_text);
     let service_uploads_text = service_uploads.as_ref().map(json_text);
@@ -131,7 +131,7 @@ pub(crate) fn admit(
             nodes_text.as_str().into(),
             frozen.namespace.as_str().into(),
             run_text.as_str().into(),
-            credentials_text.as_str().into(),
+            logins_text.as_str().into(),
             upload_text.as_deref().into(),
             frozen.cluster_domain.as_ref().map(Hostname::as_str).into(),
             admitted_at.into(),
@@ -145,7 +145,7 @@ pub(crate) fn admit(
             nodes,
             namespace,
             run,
-            credentials,
+            logins,
             upload,
             cluster,
             at,
@@ -162,7 +162,7 @@ pub(crate) fn admit(
             tx.execute(
                 "UPDATE config_deployment SET listed = ?13, \
                  saved_revision = ?2, services = ?3, nodes = ?4, namespace = ?5, run = ?6, \
-                 credentials = ?7, upload = ?8, cluster_domain = ?9, admitted = ?10, \
+                 logins = ?7, upload = ?8, cluster_domain = ?9, admitted = ?10, \
                  admitted_by = ?11, message = ?12, service_uploads = ?14 WHERE id = ?1",
                 &[
                     id.as_str().into(),
@@ -171,7 +171,7 @@ pub(crate) fn admit(
                     nodes,
                     namespace,
                     run,
-                    credentials,
+                    logins,
                     upload,
                     cluster,
                     at,
@@ -198,7 +198,7 @@ pub(crate) fn admit(
                 ("nodes", nodes),
                 ("namespace", namespace),
                 ("run", run),
-                ("credentials", credentials),
+                ("logins", logins),
                 ("upload", upload),
                 ("cluster_domain", cluster),
                 ("admitted", at),
@@ -488,7 +488,7 @@ pub(crate) fn hold(
             ("nodes", "[]".into()),
             ("namespace", namespace.as_str().into()),
             ("run", json_text(&Run::default()).as_str().into()),
-            ("credentials", "{}".into()),
+            ("logins", "{}".into()),
             ("admitted", now().into()),
             ("push_repository_id", push.repository_id.into()),
             ("push_branch", push.branch.as_str().into()),

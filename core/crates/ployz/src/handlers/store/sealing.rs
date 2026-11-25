@@ -1,10 +1,13 @@
-//! Seals a write's new secrets in this CLI when the write goes through Cloud.
+//! Seals a write's new secrets and registry logins in this CLI when the write goes
+//! through Cloud. A login is sealed for the registry its Service's image names.
 //! Cloud says whether it does and to which key, asked once per command and only for
 //! a write that carries plain text; the Store says where each secret lands. The key is
 //! sealed to only when it is the one this computer pinned for the Organization, and a
 //! secret's plain text never goes to Cloud. The in-process Store seals every secret itself.
 
-use ployz_core::{Hint, RpcErrorCode, SealedIdentity, SealingPublicKey, seal_value};
+use ployz_core::{
+    Hint, RpcErrorCode, SealedIdentity, SealingPublicKey, login_host, seal_login, seal_value,
+};
 use ployz_store::{
     Ask as _, Edit, EnvironmentSummary, SealingService, SealingTargetsQuery, SealingTargetsView,
     SecretValue, SyncChanges, View,
@@ -71,7 +74,7 @@ impl Store<'_> {
         mut edit: Edit,
         fail: impl Fn(StoreCallError) -> Error,
     ) -> Result<Edit, Error> {
-        if !edit.carries_plaintext_secret() {
+        if !edit.carries_plaintext_secret() && !edit.carries_plaintext_login() {
             return Ok(edit);
         }
         let query = SealingTargetsQuery::Edit {
@@ -101,6 +104,26 @@ impl Store<'_> {
             };
             let plaintext = secret.admit().map_err(refused)?;
             seal(&recipient, &identity, secret.key(), plaintext).map(Some)
+        })?;
+        edit.map_plaintext_logins(|service, login| {
+            let image = services
+                .iter()
+                .find(|target| &target.name == service)
+                .and_then(|target| target.image.as_deref())
+                .ok_or_else(|| {
+                    Error::usage(format!(
+                        "{service}.registryCredential: only an image service takes registry credentials."
+                    ))
+                })?;
+            let host = login_host(image)
+                .map_err(|error| Error::usage(format!("{service}.registryCredential: {error}.")))?;
+            seal_login(&recipient, host, &login).map_err(|error| {
+                Error::caused(
+                    RpcErrorCode::Internal,
+                    format!("{service}.registryCredential: could not seal the credentials"),
+                    error,
+                )
+            })
         })?;
         Ok(edit)
     }

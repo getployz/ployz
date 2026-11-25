@@ -259,11 +259,11 @@ pub struct DeployIntent {
     pub options: PlanOptions,
     #[serde(default)]
     dependencies: BTreeMap<ServiceName, Vec<ServiceDependency>>,
-    /// Credentials each Service's private image is pulled with. They reach only the
-    /// Machine creating that Service's containers, never a Deploy Preview.
+    /// The sealed login each Service's private image is pulled with. Each reaches only
+    /// the Machines pulling that Service's image, never a Deploy Preview.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    #[ts(as = "Option<BTreeMap<ServiceName, RegistryAuth>>", optional)]
-    pub registry_auth: BTreeMap<ServiceName, RegistryAuth>,
+    #[ts(as = "Option<BTreeMap<ServiceName, crate::SealedLogin>>", optional)]
+    pub registry_logins: BTreeMap<ServiceName, crate::SealedLogin>,
     /// The authored name of each Volume whose Docker name does not carry it, such as a
     /// Cloud Volume named by its ID. Messages name a Volume by it.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -322,7 +322,7 @@ impl DeployIntent {
             target,
             options,
             dependencies: BTreeMap::new(),
-            registry_auth: BTreeMap::new(),
+            registry_logins: BTreeMap::new(),
             volume_names: BTreeMap::new(),
             deployed_volumes: BTreeSet::new(),
             first_copies: BTreeMap::new(),

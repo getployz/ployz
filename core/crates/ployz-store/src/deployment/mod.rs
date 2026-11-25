@@ -79,10 +79,8 @@ use crate::id::{
     BranchName, CommitSha, ConfigId, DeploymentId, EnvironmentId, Hostname, OrganizationId,
     Principal, RepositoryId, Revision, RunnerId, ServiceLineageId, VolumeId, VolumeName,
 };
-use crate::registry;
 use crate::review::{Head, InFlight};
 use crate::scope::{self, Environment, EnvironmentSummary, revision_param};
-use crate::sealing::SealingKey;
 use crate::storage::json_text;
 use crate::storage::{Row, Tx, name_of, now};
 use crate::variables;

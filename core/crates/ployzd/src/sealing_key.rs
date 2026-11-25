@@ -575,6 +575,13 @@ impl SealingKey {
         self.open_under(separation::PLATFORM_SEALED, &aad, sealed)
     }
 
+    /// Opens a registry login sealed to this Cluster for its host, or `None` when it
+    /// does not open: sealed for another Cluster or another host.
+    pub(crate) fn open_login(&self, login: &ployz_core::SealedLogin) -> Option<Zeroizing<Vec<u8>>> {
+        let aad = login.associated_data(&self.public_key());
+        self.open_under(separation::REGISTRY_LOGIN, &aad, &login.sealed)
+    }
+
     /// Seal `plaintext` under `info` and `aad` to this key's public half.
     #[cfg(test)]
     pub(crate) fn seal_under(&self, info: &[u8], aad: &[u8], plaintext: &[u8]) -> Ciphertext {
@@ -1022,6 +1029,38 @@ mod tests {
         *flipped.last_mut().unwrap() ^= 0x01;
         assert!(
             key.open_value(&own, &Ciphertext::from_bytes(flipped))
+                .is_none()
+        );
+    }
+
+    /// The registry login vector `dashboard/src/modules/sealing/seal-value.test.ts`
+    /// seals in the browser with `sealLogin`. Test keys only.
+    #[test]
+    fn a_login_the_browser_sealed_opens_only_for_its_registry() {
+        let key = SealingKey(
+            hex::decode("347ace27753bb0420141f071765286281c5fb4c450a9811d4ab13b67ac3da146")
+                .unwrap()
+                .try_into()
+                .unwrap(),
+        );
+        let login = |host: &str| {
+            ployz_core::SealedLogin {
+            host: host.to_owned(),
+            sealed: Ciphertext::try_from("aQ3JpLLRSRFxTny/uywru4DsdBNaz2ed/8puzj80FnWwuG0cDAVo5Hs9oH8CtQl6jjCqhptoN5SowaxNNrf/CJL5K9FNXRSCZaOpddaXhpYK".to_owned()).unwrap(),
+        }
+        };
+        assert_eq!(
+            hex::encode(login("ghcr.io").associated_data(&key.public_key())),
+            "00000017706c6f797a2d72656769737472792d6c6f67696e2d763100000007676863722e696f0000002035d895d5063d3f7672a02f36600fc5681b34ce55931bf097535b4b7dc4b40838"
+        );
+        assert_eq!(
+            key.open_login(&login("ghcr.io")).unwrap().as_slice(),
+            br#"{"password":"frozen-vector-only"}"#
+        );
+        assert!(key.open_login(&login("docker.io")).is_none());
+        assert!(
+            SealingKey::generate()
+                .open_login(&login("ghcr.io"))
                 .is_none()
         );
     }

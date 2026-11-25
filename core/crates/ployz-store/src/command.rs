@@ -40,14 +40,13 @@ use crate::followup::FollowUp;
 use crate::scope::EnvironmentRef;
 use crate::storage::Tx;
 use crate::storage::json_text;
-use crate::{Actor, Permission, SealingKey, Trusted};
+use crate::{Actor, Permission, Trusted};
 
 /// What a command or query runs with: one open transaction, its caller, and the
 /// evidence Cloud gathered. Only the Store makes one.
 pub struct Call<'s> {
     pub(crate) tx: &'s mut dyn Tx,
     pub(crate) who: &'s Actor,
-    pub(crate) sealing: &'s SealingKey,
     pub(crate) trusted: &'s Trusted,
 }
 
@@ -172,7 +171,7 @@ in_environment!(
 /// with the names bound in the table's header.
 macro_rules! commands {
     (
-        |$tx:ident, $who:ident, $sealing:ident, $trusted:ident, $c:ident|
+        |$tx:ident, $who:ident, $trusted:ident, $c:ident|
         $(
             $(#[doc = $doc:literal])*
             $variant:ident($payload:ty) -> $written:ident($answer:ty) $(as $unbox:tt)?
@@ -244,8 +243,8 @@ macro_rules! commands {
                     let run = |at: &mut Call<'_>| -> Result<$answer, RpcError> {
                         let $c = self;
                         let $tx: &mut dyn Tx = &mut *at.tx;
-                        let ($who, $sealing, $trusted) = (at.who, at.sealing, at.trusted);
-                        let _ = ($sealing, $trusted);
+                        let ($who, $trusted) = (at.who, at.trusted);
+                        let _ = $trusted;
                         $call
                     };
                     $(
@@ -292,7 +291,7 @@ macro_rules! commands {
 }
 
 commands! {
-    |tx, who, sealing, trusted, c|
+    |tx, who, trusted, c|
     /// Create a Project with its Default Environment.
     CreateProject(CreateProject) -> Project(ProjectCreated)
         keyed [c.id.as_str(), c.default_environment.as_str()] if crate::replay::any
@@ -399,7 +398,7 @@ commands! {
     Edit(Edit) -> Edited(Edited)
         needs ChangesStage
         agent [service_update, environment_region]
-        => crate::settings::edit::edit(tx, who, sealing, c, trusted);
+        => crate::settings::edit::edit(tx, who, c, trusted);
     /// Save Working State as the next Saved revision.
     Publish(Publish) -> Published(Published)
         keyed [c.id.as_deref()] if crate::replay::same_environment
@@ -558,7 +557,7 @@ commands! {
         agent [service_add, volume_add, config_write, config_rename, config_remove, discard]
         => {
             crate::scope::lock(tx, who, &c.environment)?.expect(c.expect)?;
-            let mut at = Call { tx, who, sealing, trusted };
+            let mut at = Call { tx, who, trusted };
             c.commands
                 .iter()
                 .enumerate()

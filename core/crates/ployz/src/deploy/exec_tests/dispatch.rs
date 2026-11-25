@@ -518,7 +518,7 @@ async fn global_start_failure_leaves_nothing_of_the_keyed_container() {
 
 #[tokio::test]
 async fn a_private_image_is_pulled_with_its_services_credentials_only() {
-    use ployz_core::{OpaquePayload, PullImageRequest, RegistryAuth, RpcRequestBody};
+    use ployz_core::{OpaquePayload, PullImageRequest, RpcRequestBody};
     use std::sync::Arc;
     use tonic::{Request, Response};
 
@@ -554,9 +554,9 @@ async fn a_private_image_is_pulled_with_its_services_credentials_only() {
     let mut public = private.clone();
     public.name = ployz_core::ServiceName::parse("other").unwrap();
     public.container.image = "docker.io/library/public:1".into();
-    let auth = RegistryAuth {
-        username: Some("octocat".into()),
-        password: "token".into(),
+    let auth = ployz_core::SealedLogin {
+        host: "registry.example".into(),
+        sealed: ployz_core::Ciphertext::from_bytes(vec![7; 48]),
     };
     super::pull_images(
         &client,
@@ -573,7 +573,7 @@ async fn a_private_image_is_pulled_with_its_services_credentials_only() {
         .lock()
         .unwrap()
         .iter()
-        .map(|request| (request.image.clone(), request.registry_auth.clone()))
+        .map(|request| (request.image.clone(), request.registry_login.clone()))
         .collect::<std::collections::BTreeMap<_, _>>();
     assert_eq!(
         sent,
@@ -1082,6 +1082,7 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
                 resolved_spec: spec.clone(),
                 deployment_id: None,
                 registry_auth: None,
+                registry_login: None,
                 image_prepared: true,
                 answer: ployz_core::AnswerWhen::Started,
                 image_id: None,

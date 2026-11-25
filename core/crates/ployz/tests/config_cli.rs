@@ -5911,42 +5911,60 @@ fn a_synced_secret_arrives_not_set_and_never_blocks_a_deploy() {
 }
 
 #[test]
-fn a_private_image_credential_arrives_on_stdin_and_rotates_at_once() {
-    for store in &targets() {
-        ok(store, &["project", "new", "shop"]);
-        ok(
-            store,
-            &["service", "add", "web", "--image", "ghcr.io/acme/web:1"],
-        );
-        let path = "web.registryCredential";
-        let (code, first) = ployz_with_stdin(store, &["set", path, "--secret"], "first-token\n");
-        assert_eq!(code, Some(0), "{first}");
-        let first: Value = serde_json::from_str(&first).unwrap();
-        assert_eq!(first["staged"], json!([path]));
-        assert_eq!(first["immediate"], json!([path]));
-        assert_eq!(
-            ok(store, &["get", path])["settings"][0]["value"],
-            json!({ "secret": true })
-        );
-        let body = r#"{"registryCredential":{"username":"octocat","secret":"second-token"}}"#;
-        let (code, rotated) = ployz_with_stdin(store, &["set", "web", "--patch", "-"], body);
-        assert_eq!(code, Some(0), "{rotated}");
-        let rotated: Value = serde_json::from_str(&rotated).unwrap();
-        assert_eq!(rotated["staged"], json!([]));
-        assert_eq!(rotated["immediate"], json!([path]));
-        failed(store, &["set", "web", "--patch", body], 2);
-        let refused = error(store, &["set", "web.registryCredential=plain-token"]);
-        assert_eq!(refused["code"], json!("invalid_argument"));
-        let shown = [
-            refused,
-            ok(store, &["get", "web"]),
-            ok(store, &["diff"]),
-            ok(store, &["explain", path]),
-        ];
-        for read in shown {
-            assert!(!read.to_string().contains("-token"), "{read}");
+fn a_private_image_login_is_sealed_here_for_its_registry_and_rotates_at_once() {
+    let store = &cloud_target();
+    ok(store, &["project", "new", "shop"]);
+    ok(
+        store,
+        &["service", "add", "web", "--image", "ghcr.io/acme/web:1"],
+    );
+    let path = "web.registryCredential";
+    let (code, first) = ployz_with_stdin(store, &["set", path, "--secret"], "first-token\n");
+    assert_eq!(code, Some(0), "{first}");
+    let first: Value = serde_json::from_str(&first).unwrap();
+    assert_eq!(first["staged"], json!([path]));
+    assert_eq!(first["immediate"], json!([path]));
+    assert_eq!(
+        ok(store, &["get", path])["settings"][0]["value"],
+        json!({ "secret": true })
+    );
+    let body = r#"{"registryCredential":{"username":"octocat","secret":"second-token"}}"#;
+    let (code, rotated) = ployz_with_stdin(store, &["set", "web", "--patch", "-"], body);
+    assert_eq!(code, Some(0), "{rotated}");
+    let rotated: Value = serde_json::from_str(&rotated).unwrap();
+    assert_eq!(rotated["staged"], json!([]));
+    assert_eq!(rotated["immediate"], json!([path]));
+    failed(store, &["set", "web", "--patch", body], 2);
+    let refused = error(store, &["set", "web.registryCredential=plain-token"]);
+    assert_eq!(refused["code"], json!("invalid_argument"));
+    for token in ["first-token", "second-token", "octocat"] {
+        cloud_never_saw(store, token);
+    }
+    // Each login went sealed for the registry the image names, the only one it opens for.
+    fn hosts(value: &Value, into: &mut Vec<String>) {
+        match value {
+            Value::Object(fields) if fields.contains_key("sealed") => {
+                into.extend(
+                    fields
+                        .get("host")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                );
+            }
+            Value::Object(fields) => fields.values().for_each(|value| hosts(value, into)),
+            Value::Array(values) => values.iter().for_each(|value| hosts(value, into)),
+            Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
         }
     }
+    let mut sealed_for = Vec::new();
+    for (url, _, body) in REQUESTS.lock().unwrap().iter() {
+        if url == store.url()
+            && let Ok(body) = serde_json::from_str::<Value>(body)
+        {
+            hosts(&body, &mut sealed_for);
+        }
+    }
+    assert_eq!(sealed_for, ["ghcr.io", "ghcr.io"]);
 }
 
 /// Over Cloud, `deploy --upload` hands Cloud the directory before admitting the
@@ -8273,7 +8291,7 @@ fn below_the_cli_read_bound_the_store_judges_an_input_as_on_main() {
 
     // A registry credential never becomes a variable, so the 128 KiB limit is not its.
     let (_, stdin) = file_of(&vec![b't'; 128 * 1024 + 1]);
-    let (code, set) = ployz_on(store, &["set", "web.registryCredential", "--secret"], stdin);
+    let (code, set) = ployz_on(cloud, &["set", "web.registryCredential", "--secret"], stdin);
     assert_eq!(code, Some(0), "{set}");
 
     // The path is judged before the value's length, as on main.

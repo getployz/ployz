@@ -614,6 +614,14 @@ fn an_old_cli_s_plain_text_secret_is_told_to_update_and_everything_else_passes()
         }],
         "TOKEN",
     );
+    // So is a registry login's, which a CLI from before sealed logins sent as text.
+    refused(
+        vec![set_change(
+            "web.registryCredential",
+            json!({ "username": "bot", "secret": SECRET }),
+        )],
+        "registryCredential",
+    );
     // A secret set again is new text too.
     refused(
         vec![set_change(
@@ -632,13 +640,13 @@ fn an_old_cli_s_plain_text_secret_is_told_to_update_and_everything_else_passes()
         )
         .unwrap_err();
     assert_eq!(absent.code, RpcErrorCode::NotFound, "{absent:?}");
-    // Everything but a secret's text passes: a kept secret, a registry credential, a
+    // Everything but a secret's text passes: a kept secret, a sealed registry login, a
     // value sealed in the browser, and text that isn't a secret.
     for (path, value) in [
         ("web.env.PASSWORD", json!({ "secret": true })),
         (
             "web.registryCredential",
-            json!({ "secret": "registry-token" }),
+            ployz_store::testing::sealed_login("registry"),
         ),
         ("web.env.PASSWORD", password(2)),
         ("web.env.PLAIN", json!("plain text")),
@@ -675,6 +683,7 @@ fn sealing_targets_name_the_organization_the_environment_and_each_service_by_id(
         [SealingService {
             name: ServiceName::parse("web").unwrap(),
             service: Some(uuid(3).parse().unwrap()),
+            image: Some("nginx:1".into()),
         }]
     );
     let missing = store
@@ -974,7 +983,7 @@ fn whatever_the_store_reads_as_a_secret_s_text_the_cli_seals_or_refuses_and_send
             );
             let reads_text = raw.as_ref().is_err_and(read_secret_text);
             read += usize::from(reads_text);
-            if !asked.carries_plaintext_secret() {
+            if !asked.carries_plaintext_secret() && !asked.carries_plaintext_login() {
                 assert!(!reads_text && !holds, "missed: {asked:?}");
                 continue;
             }
@@ -987,6 +996,9 @@ fn whatever_the_store_reads_as_a_secret_s_text_the_cli_seals_or_refuses_and_send
                     Ok(Some(serde_json::from_value(sealed).unwrap()))
                 },
             );
+            let sealed = sealed.and_then(|()| {
+                sent.map_plaintext_logins(|_, _| Ok(ployz_store::testing::login("cli")))
+            });
             match sealed {
                 Err(refused) => {
                     assert!(!format!("{refused:?}").contains(SECRET), "{refused:?}");

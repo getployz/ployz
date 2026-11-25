@@ -275,10 +275,11 @@ pub enum Error {
     /// An upgrade is running; the fence is retried once it ends.
     #[error(transparent)]
     FenceRefused(RpcError),
-    /// An Operator's pull named an image by tag, which this Server writes only for a
-    /// caller with Full access. The refusal names the route's capability in its details.
+    /// An Operator's pull asked for what this Server does only for a caller with Full
+    /// access: write an image tag, or pull a free image with a registry login. The refusal
+    /// names the route's capability in its details.
     #[error(transparent)]
-    TagRefused(RpcError),
+    PullRefused(RpcError),
     #[error("local operation task failed")]
     OperationTask(#[from] tokio::task::JoinError),
     #[error("Register requires a client-selected Machine Subnet")]

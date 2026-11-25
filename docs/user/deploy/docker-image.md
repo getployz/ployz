@@ -102,10 +102,27 @@ warning about ports the image exposes. Upgrade it.
 
 <!-- screenshot: the Registry credentials row showing "Docker Hub · docker.io" -->
 
-Ployz stores the secret encrypted and never shows it again. The **Registry credentials** row
-shows the provider and registry, like **Docker Hub · docker.io**. To replace it, click the pencil. A new secret takes effect at once, not as a staged
-change, and Discard can't bring the old one back. **Disconnect** stops using credentials from
-your next deploy, and **Restore** undoes it until then.
+Your browser seals the credentials for the image's registry before they leave it, so Ployz Cloud
+can't read them. Your servers use them only to pull from that registry. The **Registry
+credentials** row shows the provider and registry, like **Docker Hub · docker.io**. To replace
+them, click the pencil. A new secret takes effect at once, not as a staged change, and Discard
+can't bring the old one back. **Disconnect** stops using credentials from your next deploy, and
+**Restore** undoes it until then. From the CLI, `ployz set web.registryCredential --secret`
+seals a token the same way.
+
+If you move the image to another registry, enter its credentials again.
+
+> [!IMPORTANT]
+> Credentials saved before this release are deleted when Ployz Cloud upgrades, since Cloud could
+> read them. Revoke every older token at your registry, then enter a new one here.
+
+A server refuses to send credentials where they could leak, and the deploy fails at pull:
+
+- Docker on the server reaches the registry without TLS, such as an entry in
+  `insecure-registries`.
+- The image is on Docker Hub and Docker on the server pulls through a registry mirror.
+- The image name spells its registry with a capital letter, like `GHCR.io/acme/web`. Write it in
+  lowercase.
 
 An expired token fails the next pull. Use a long-lived token where your registry offers one.
 ECR Public tokens are short-lived, so replace the secret before each deploy.

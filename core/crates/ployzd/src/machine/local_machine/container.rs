@@ -881,13 +881,17 @@ impl LocalMachine {
         let request = self.pull_as(self.scope_now()?, request)?;
         self.finish_shared(move |local| async move {
             let request = local.pull_as(local.scope(), request)?;
-            let exposed_ports = local
-                .docker()?
+            let docker = local.docker()?;
+            let login = match &request.registry_login {
+                Some(login) => Some(docker.open_login(&request.image, login).await?),
+                None => None,
+            };
+            let exposed_ports = docker
                 .images()
                 .pull_image(
                     &request.image,
                     request.policy,
-                    request.registry_auth.as_ref(),
+                    login.as_ref().or(request.registry_auth.as_ref()),
                 )
                 .await?;
             Ok(ImagePulled { exposed_ports })
@@ -927,6 +931,18 @@ impl LocalMachine {
         &self,
         request: PullFreeImageRequest,
     ) -> Result<ImagePulled, Error> {
+        // What a free pull places runs with no signature, so a login never makes it.
+        if let (Scope::Operator, Some(_)) = (self.scope_now()?, &request.registry_auth) {
+            return Err(Error::PullRefused(
+                ployz_core::RpcError::invalid_argument(
+                    "A free pull carries no registry login: sign the Service to pull its private image.",
+                )
+                .with_details(serde_json::json!({
+                    "target": self.record().id().to_string(),
+                    "capability": ployz_core::PULL_FREE_IMAGE_CAPABILITY,
+                })),
+            ));
+        }
         self.finish_shared(move |local| async move {
             let images = local.docker()?.images();
             let exposed_ports = match local.scope() {
@@ -1000,7 +1016,7 @@ impl LocalMachine {
 
     /// Why this Server writes no tag for an Operator, naming the route's `capability`.
     fn tag_refusal(&self, capability: &str) -> Error {
-        Error::TagRefused(
+        Error::PullRefused(
             ployz_core::RpcError::unsupported(
                 "This Server writes an image tag only for a caller with Full access.",
             )
@@ -1749,6 +1765,16 @@ impl LocalMachine {
             .finish_mutation(move |local| async move {
                 let _switch = switch;
                 let pin = new.image_id.clone();
+                let login = match (&pin, new.image_prepared, &new.registry_login) {
+                    (None, false, Some(login)) => {
+                        let image = &new.resolved_spec.container.image;
+                        match local.docker()?.open_login(image, login).await {
+                            Ok(login) => Some(login),
+                            Err(error) => return create_refusal(error.into()).map(Made::Refused),
+                        }
+                    }
+                    _ => None,
+                };
                 let created = local
                     .create_container_admitted(CreationFacts {
                         kind: new.slot.kind,
@@ -1760,7 +1786,9 @@ impl LocalMachine {
                         image: match (&pin, new.image_prepared) {
                             (Some(pin), _) => ImagePull::Pinned(pin),
                             (None, true) => ImagePull::Prepared,
-                            (None, false) => ImagePull::Policy(new.registry_auth.as_ref()),
+                            (None, false) => {
+                                ImagePull::Policy(login.as_ref().or(new.registry_auth.as_ref()))
+                            }
                         },
                         admitted,
                         replaces: new.replaces,
@@ -2412,7 +2440,7 @@ fn unadmitted() -> Error {
 }
 
 fn create_refusal(error: Error) -> Result<ContainerRefusal, Error> {
-    use crate::{docker::Error as Docker, sealed_env::OpenError};
+    use crate::{docker::Error as Docker, docker_image::LoginRefused, sealed_env::OpenError};
     #[expect(
         clippy::wildcard_enum_match_arm,
         reason = "only create-path errors a driver can act on become refusals"
@@ -2439,7 +2467,15 @@ fn create_refusal(error: Error) -> Result<ContainerRefusal, Error> {
         ) => ContainerRefusalReason::NotEligible,
         Error::Docker(Docker::SlotNameOccupied(_)) => ContainerRefusalReason::SlotOccupied,
         Error::Docker(
-            Docker::ImagePull(_) | Docker::UnsignedImage(_) | Docker::DiskFull { .. },
+            Docker::ImagePull(_)
+            | Docker::UnsignedImage(_)
+            | Docker::DiskFull { .. }
+            | Docker::RegistryLogin(
+                LoginRefused::Uppercase(_)
+                | LoginRefused::OtherHost { .. }
+                | LoginRefused::Insecure(_)
+                | LoginRefused::Mirrored,
+            ),
         ) => ContainerRefusalReason::ImagePullFailed,
         Error::Docker(
             Docker::ExternalVolumeNotFound(_)
@@ -2458,6 +2494,7 @@ fn create_refusal(error: Error) -> Result<ContainerRefusal, Error> {
             | OpenError::Unopenable(_)
             | OpenError::TunnelToken
             | OpenError::PrivateAccessKey
+            | OpenError::RegistryLogin(_)
             | OpenError::ShortLine(_)
             | OpenError::Unsigned(_)
             | OpenError::OutOfReach(_) => ContainerRefusalReason::SealedValueUnopenable,

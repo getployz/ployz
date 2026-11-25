@@ -4,7 +4,7 @@ use super::*;
 use crate::storage::json_text;
 
 /// Queue Deployment `id` shipping exactly what `source` froze: its Saved revision,
-/// targets, Namespace, registry credentials, upload and pinned commits, whatever
+/// targets, Namespace, registry logins, upload and pinned commits, whatever
 /// changed since. Any Deployment that ended can be redeployed, applied ones too.
 /// One older than a Deployment that may have changed the Servers rolls that back,
 /// once the caller confirmed exactly those. Its source's consent covered what the
@@ -292,10 +292,10 @@ pub(crate) fn retry(
             &format!(
                 "INSERT INTO config_deployment \
              (id, organization_id, environment_id, number, status, saved_revision, services, \
-              nodes, namespace, run, credentials, upload, cluster_domain, admitted, admitted_by, \
+              nodes, namespace, run, logins, upload, cluster_domain, admitted, admitted_by, \
               message, listed, service_uploads, ran) \
              SELECT ?1, organization_id, environment_id, ?2, '{QUEUED}', saved_revision, ?7, \
-              ?8, namespace, ?3, credentials, upload, cluster_domain, ?5, ?6, message, ?9, \
+              ?8, namespace, ?3, logins, upload, cluster_domain, ?5, ?6, message, ?9, \
               ?10, ?11 \
              FROM config_deployment WHERE id = ?4"
             ),

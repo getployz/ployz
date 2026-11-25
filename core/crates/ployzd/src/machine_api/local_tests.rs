@@ -355,6 +355,7 @@ async fn a_pulled_image_answers_only_after_docker_holds_it() {
                 image: image.into(),
                 policy: ployz_core::PullPolicy::Always,
                 registry_auth: None,
+                registry_login: None,
             })
             .encode()
             .unwrap(),

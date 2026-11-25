@@ -148,7 +148,8 @@ separate OAuth App, a sign-in token only reads the person's profile and email ad
 > [!WARNING]
 > Keep `APP_ENCRYPTION_SECRET` the same forever, and back it up with the Postgres volume
 > `ployz-cloud-self-host_postgres-data`. It encrypts the credentials Ployz Cloud stores, such as
-> registry credentials and domain tokens, so a new value makes them unreadable. Secret
+> domain tokens, so a new value makes them unreadable. Registry credentials are sealed on your
+> device and don't use it. Secret
 > variables saved on v0.3.4 or earlier are encrypted with it too, until the upgrade reseals them.
 > Variables saved after that are sealed on your device and don't use it.
 
