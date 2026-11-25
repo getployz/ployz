@@ -1427,7 +1427,6 @@ fn a_deploy_that_takes_over_a_teardown_takes_the_config_it_removes_too() {
                     services: Vec::new(),
                     target: false,
                     deployment: None,
-                    upload: false,
                 },
             )
             .unwrap()

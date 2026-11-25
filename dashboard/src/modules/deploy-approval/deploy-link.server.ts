@@ -7,7 +7,7 @@ import { readStore } from "#/modules/config-store/config-store.server";
 import { protector, protectorOnly } from "#/modules/config-store/protected.server";
 import { environmentProtected } from "#/modules/config-store/store-lookup.server";
 import { admission, isPending, namesReview, versionService } from "#/modules/deploy-approval/deploy-tap";
-import { enforcement, prepareDeployTap } from "#/modules/deploy-approval/deploy-tap.server";
+import { prepareDeployTap } from "#/modules/deploy-approval/deploy-tap.server";
 import { type Caller, callerEnvironments, callerPermissions } from "#/modules/identity/actor";
 import type { DeployReview } from "#/modules/proposals/proposal";
 import { askedDeployProposal, presentDeployProposal, reviewDeploy } from "#/modules/proposals/proposals.server";
@@ -42,27 +42,21 @@ export const linkDeploy = Effect.fn("DeployLink.link")(function* (caller: Caller
   // A Device that signed the rule with this Deploy already signed its Source step, so the rule isn't read for it.
   const keyed = command.rule !== undefined;
   const planned = yield* prepareDeployTap(caller, {
-    organizationSlug: caller.organization.slug, environment: command.environment, services: command.services ?? [], classify: true,
-    upload: command.upload !== undefined && command.upload !== null, rule: !keyed,
+    organizationSlug: caller.organization.slug, environment: command.environment, services: command.services ?? [], classify: true, rule: !keyed,
   }).pipe(Effect.catchIf((error) => error instanceof Forbidden || error instanceof NotFound, () => Effect.succeed(null)));
   if (planned === null) return null;
-  const waits = planned.kind === "refused" && isPending(planned.details) ? planned.details : null;
-  if (planned.kind === "refused" && waits === null) return null;
-  const pending = waits !== null;
+  const pending = planned.kind === "refused" && isPending(planned.details);
+  if (planned.kind === "refused" && !pending) return null;
   const plan = planned.kind === "plan" ? planned.plan : null;
-  // A Pending plan reads no tap, so only whether a Server enforces device approval says its uploads won't build.
-  const uploads = waits?.uploads ?? [];
-  const servers = planned.kind === "plan" ? planned.tap : uploads.length > 0 ? yield* enforcement(caller.organization.id) : { kind: "off" } as const;
-  const admits = admission({
-    plan: plan ?? { uploads: [...uploads] }, servers, source: planned.kind === "plan" ? planned.source : undefined, covered,
-    rule: keyed ? { kind: "device" } : { kind: "none" },
-  });
+  // A Pending plan has nothing to sign yet: the approval page makes the value, then plans.
+  const admits = planned.kind === "plan" ? admission({ plan: planned.plan, servers: planned.tap, source: planned.source, covered, rule: { kind: "none" } })
+    : { kind: "admit", source: false } as const;
   // Only an agent waits on a person when Cloud couldn't reach the Servers. Anyone else's Deploy queues as it always did,
   // and each Server checks it.
   if (admits.kind === "refused" && admits.unreached) return agent ? { refused: refusal("conflict", `${admits.reason} Nothing deployed.`) } : null;
   if (admits.kind === "refused") return { refused: refusal("conflict", admits.reason) };
   // A Git build no rule covers needs one even when it reaches no data, so the approver's tap signs the rule with it.
-  const signs = admits.kind === "ask";
+  const signs = admits.kind === "ask" || admits.source;
   const makes = pending && covered.size === 0;
   if (!agent && !signs && !makes && !mayGuard) return null;
 

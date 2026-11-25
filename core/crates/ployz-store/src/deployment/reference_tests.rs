@@ -765,7 +765,6 @@ fn planned_restarts(store: &ConfigStore, who: &Actor, services: &[&str]) -> Opti
                 services: services.iter().map(|service| name(service)).collect(),
                 target: false,
                 deployment: None,
-                upload: false,
             },
         )
         .unwrap()

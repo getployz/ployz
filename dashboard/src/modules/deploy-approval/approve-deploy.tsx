@@ -14,7 +14,7 @@ import { decideProposal, landProposal, proposalOptions } from "#/modules/proposa
 import { useSealing } from "#/modules/sealing/use-sealing";
 import { prepareDeployTapServerFn } from "./deploy-tap.functions";
 import { type Prepared, prepareDeploy, signVersions } from "./deploy-tap";
-import { SignedLines } from "./deploy-sheet";
+import { SignedLines, warnHeld } from "./deploy-sheet";
 import { fillPending } from "./fill-pending";
 import { RuleSummaryList } from "./rule-summary";
 import { ownerLookup } from "./source-step";
@@ -72,17 +72,6 @@ export function ApproveDeploy({ organizationSlug, id }: { organizationSlug: stri
         return stop(DEPLOY_MOVED, false);
       }
       if (prepared.kind === "refused") return stop(prepared.message);
-      // A Service only the rule builds doesn't build without it, so the page says why rather than approve it. The asker
-      // heard it before any link, so only a change since or this person's own passkeys and Servers stop here. A rule
-      // drafted here replaces the live one, so it must cover every shipped Git Service, as the decision checks.
-      const drafted = prepared.kind === "ask" ? prepared.ask.draft.source?.summary.services.map(({ name }) => name) : undefined;
-      const shipped = planned.kind !== "plan" || planned.tap.kind === "off" ? undefined : drafted === undefined ? planned.plan.sources : planned.plan.git ?? planned.plan.sources;
-      const sources = shipped ?? [];
-      const held = prepared.kind === "admit" ? prepared.held : prepared.ask.held;
-      const sourced = new Set(drafted);
-      const unbuilt = sources.find((service) => !sourced.has(service)) ?? null;
-      if (held !== null && (!held.unchecked || unbuilt !== null)) return stop(held.reason);
-      if (unbuilt !== null) return stop(`No automatic deploy rule can cover ${unbuilt} now, so your servers won't build it.`);
       setPage({ kind: "ready", prepared });
     };
     plan().catch((error) => stop(error instanceof Error && error.message ? error.message : "Couldn't plan this deploy. Try again."));
@@ -135,7 +124,10 @@ export function ApproveDeploy({ organizationSlug, id }: { organizationSlug: stri
     setBusy("sending");
     try {
       const decided = await decideProposal(organizationSlug, id, { approve: answer ?? {} });
-      if (decided.ok) return await landProposal(queryClient, organizationSlug, id, decided.decided);
+      if (decided.ok) {
+        warnHeld(prepared.kind === "admit" ? prepared.held : prepared.ask.held);
+        return await landProposal(queryClient, organizationSlug, id, decided.decided);
+      }
       setProblem(decided.message);
     } catch {
       setProblem("Couldn't reach Ployz Cloud. Try again.");

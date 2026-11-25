@@ -71,15 +71,13 @@ type TapInput = {
   readonly classify?: true;
   /** Read whether the Deploy's own tap signs the automatic deploy rule with it. */
   readonly rule?: boolean;
-  /** The Deploy sends a new upload, which each Service without a source of its own builds from. */
-  readonly upload?: boolean;
 };
 
 export const prepareDeployTap = Effect.fn("DeployTap.prepare")(function* (actor: Actor, input: TapInput) {
   const access = yield* requireAccess(actor, input.organizationSlug, "changes:deploy");
   const read = yield* callStore(access.organization.id, actor.userId, {
     operation: "read",
-    query: { query: "plan", environment: input.environment, services: [...input.services], target: true, upload: input.upload === true },
+    query: { query: "plan", environment: input.environment, services: [...input.services], target: true },
   }, { approval: "not_required", permissions: access.permissions, environments: access.environments });
   if (!read.ok) return { kind: "refused", message: read.refusal.message, details: read.refusal.details } satisfies DeployPlan;
   const plan = read.value;
@@ -103,10 +101,7 @@ export const prepareDeployTap = Effect.fn("DeployTap.prepare")(function* (actor:
   const signer = input.classify === true ? null : actor.userId;
   // Only a member who signs here may sign the rule with the Deploy. Classified, it says whether whoever approves it signs one.
   let source = input.rule !== true || access.kind !== "member" ? null : yield* sourceOf(access, input.environment, plan.version, actor.userId, signer === null);
-  // Classified, a build from an upload, or one only a Source step builds, still reads whether any Server enforces
-  // device approval: none builds the first then, and the second only under a rule the tap signs.
-  const builds = input.classify === true && (plan.uploads ?? []).length + (plan.sources ?? []).length > 0;
-  const versions = (unsigned.length === 0 && !builds) || asks ? Effect.succeed<DeployTap>({ kind: "off" })
+  const versions = unsigned.length === 0 || asks ? Effect.succeed<DeployTap>({ kind: "off" })
     : gate(signer, access.organization.id, tags, { namespace: plan.namespace, parents, needs: SIGNS });
   let tap: DeployTap;
   if (source?.kind === "sign") {
@@ -199,24 +194,6 @@ export const prepareSaveTap = Effect.fn("SaveTap.prepare")(function* (actor: Act
 const mayProtect = (access: Omit<Access, "organization">, environment: string) =>
   access.permissions.includes("environments:protect") && beyondEnvironments(access.environments, { environment }) === null;
 
-/** Whether any Server of `organizationId` enforces device approval, as each paired one answers, and what it read. */
-export const enforcement = Effect.fn("DeployTap.enforcement")(function* (organizationId: string) {
-  const refused = (message: string) => ({ kind: "refused", message }) as const;
-  // With no Server paired nothing enforces; the first one deploys what is saved.
-  const paired = yield* listOrganizationServers(organizationId);
-  if (paired.length === 0) return { kind: "off" } as const;
-  const frame = yield* firstRuntimeFrame(organizationId).pipe(Effect.orElseSucceed(() => null));
-  // A Server the frame couldn't read may enforce: its answer is unknown, not off.
-  if (frame === null || frame.incomplete_ids.machines.length > 0) return refused(UNREACHED);
-  // A paired Server the frame doesn't list may enforce: name it rather than read its silence as off.
-  const seen = new Set(frame.machines.map(({ machine }) => machine.id));
-  const unseen = paired.find(({ id }) => !seen.has(id));
-  if (unseen !== undefined) return refused(`Couldn't reach ${unseen.name ?? unseen.id}. Try again.`);
-  const enforcing = frame.machines.map(({ machine }) => machine).filter((machine) => machine.runtime.device_enforcement === true);
-  if (enforcing.length === 0) return { kind: "off" } as const;
-  return { kind: "on", paired, frame, enforcing } as const;
-});
-
 /** `userId` null only classifies a Deploy someone else signs: no one's passkeys, and no digest lookups. */
 const gate = Effect.fn("DeployTap.gate")(function* <E, R>(userId: string | null, organizationId: string, tags: readonly string[], asked: {
   readonly namespace: string;
@@ -226,9 +203,18 @@ const gate = Effect.fn("DeployTap.gate")(function* <E, R>(userId: string | null,
   readonly needs: readonly string[];
 }) {
   const refused = (message: string): DeployTap => ({ kind: "refused", message });
-  const enforced = yield* enforcement(organizationId);
-  if (enforced.kind !== "on") return enforced;
-  const { paired, frame, enforcing } = enforced;
+  // With no Server paired nothing enforces; the first one deploys what is saved.
+  const paired = yield* listOrganizationServers(organizationId);
+  if (paired.length === 0) return { kind: "off" } satisfies DeployTap;
+  const frame = yield* firstRuntimeFrame(organizationId).pipe(Effect.orElseSucceed(() => null));
+  // A Server the frame couldn't read may enforce: its answer is unknown, not off.
+  if (frame === null || frame.incomplete_ids.machines.length > 0) return refused(UNREACHED);
+  // A paired Server the frame doesn't list may enforce: name it rather than read its silence as off.
+  const seen = new Set(frame.machines.map(({ machine }) => machine.id));
+  const unseen = paired.find(({ id }) => !seen.has(id));
+  if (unseen !== undefined) return refused(`Couldn't reach ${unseen.name ?? unseen.id}. Try again.`);
+  const enforcing = frame.machines.map(({ machine }) => machine).filter((machine) => machine.runtime.device_enforcement === true);
+  if (enforcing.length === 0) return { kind: "off" } satisfies DeployTap;
   const older = enforcing.find(({ runtime: { capabilities = [] } }) => asked.needs.some((needed) => !capabilities.includes(needed)));
   if (older !== undefined) return refused(`Upgrade ${older.name} first. Its ployz can't check your passkey.`);
   const keyed = enforcing.flatMap(({ id, runtime }) => runtime.sealing?.kind === "held" ? [{ id, cluster: runtime.sealing.public_key }] : [])[0];

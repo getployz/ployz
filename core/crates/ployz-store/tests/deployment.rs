@@ -8227,7 +8227,6 @@ fn a_deploy_plan_lowers_exactly_what_its_runner_is_handed() {
                 services: Vec::new(),
                 target: true,
                 deployment: None,
-                upload: false,
             },
         )
         .unwrap();
@@ -8286,7 +8285,6 @@ fn redeploy_plan(store: &ConfigStore, who: &Actor, source: u8) -> ployz_store::P
                 services: Vec::new(),
                 target: true,
                 deployment: Some(id(source)),
-                upload: false,
             },
         )
         .unwrap()
@@ -8314,7 +8312,6 @@ fn a_redeploy_plan_lowers_what_its_runner_is_handed_whatever_was_saved_since() {
                 services: Vec::new(),
                 target: true,
                 deployment: None,
-                upload: false,
             },
         )
         .unwrap();
@@ -8377,7 +8374,6 @@ fn a_redeploy_plan_names_no_services_and_only_a_deployment_of_its_environment() 
                 services,
                 target: true,
                 deployment: Some(id(source)),
-                upload: false,
             },
         )
     };
@@ -8399,7 +8395,6 @@ fn a_plan_lowers_its_target_only_when_asked() {
                 services: Vec::new(),
                 target: false,
                 deployment: None,
-                upload: false,
             },
         )
         .unwrap();
@@ -8425,7 +8420,6 @@ fn a_narrowed_plan_lowers_only_the_services_it_ships() {
                     services,
                     target: true,
                     deployment: None,
-                    upload: false,
                 },
             )
             .unwrap();
@@ -9052,7 +9046,6 @@ fn signed_spec(
                 services: Vec::new(),
                 target: true,
                 deployment: None,
-                upload: false,
             },
         )
         .unwrap();
@@ -9679,7 +9672,6 @@ fn a_deploy_of_one_service_runs_each_version_its_plan_asks_a_device_to_sign() {
                 services: vec![ServiceName::parse("web").unwrap()],
                 target: true,
                 deployment: None,
-                upload: false,
             },
         )
         .unwrap();
@@ -9942,7 +9934,6 @@ fn plan_at(store: &ConfigStore, who: &Actor, environment: EnvironmentRef) -> plo
                 services: Vec::new(),
                 target: true,
                 deployment: None,
-                upload: false,
             },
         )
         .unwrap()
@@ -9997,42 +9988,6 @@ fn unsigned(store: &ConfigStore, who: &Actor) -> Vec<(String, ployz_store::Needs
         .into_iter()
         .map(|entry| (entry.service.as_str().to_owned(), entry.needs))
         .collect()
-}
-
-/// The Services a plan says build from an upload, as a Deploy that `sends` one or not.
-fn uploads(store: &ConfigStore, who: &Actor, sends: bool) -> Vec<String> {
-    store
-        .read(
-            who,
-            &PlanQuery {
-                target: true,
-                upload: sends,
-                ..PlanQuery::default()
-            },
-        )
-        .unwrap()
-        .uploads
-        .iter()
-        .map(|service| service.as_str().to_owned())
-        .collect()
-}
-
-/// A Server that enforces Device approval builds no upload, so Cloud refuses a Deploy that
-/// builds one before anyone is asked, though it reaches no data and needs no signature.
-#[test]
-fn a_plan_names_each_service_that_builds_from_an_upload_though_it_reaches_no_data() {
-    let (store, who) = uploaded_app();
-    assert_eq!(uploads(&store, &who, true), ["app"]);
-    // Nothing uploaded yet: without one sent, app has nothing to build from.
-    assert!(uploads(&store, &who, false).is_empty());
-    assert!(
-        unsigned(&store, &who)
-            .iter()
-            .all(|(service, _)| service != "app")
-    );
-    deploy_sent(&store, &who, 1, Some('a'));
-    // A later Deploy builds app from the upload it last built from.
-    assert_eq!(uploads(&store, &who, false), ["app"]);
 }
 
 #[test]

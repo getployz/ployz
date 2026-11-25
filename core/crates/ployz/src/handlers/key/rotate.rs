@@ -761,7 +761,6 @@ fn redeploy(
         services: services.clone(),
         target: true,
         deployment: None,
-        upload: false,
     })?;
     let target = plan.target.unwrap_or_default();
     let signer = SignerKey::Device(resigner.device_key());

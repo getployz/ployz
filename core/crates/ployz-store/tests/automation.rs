@@ -2620,7 +2620,6 @@ fn plan(store: &ConfigStore, who: &Actor) -> ployz_store::PlanView {
                 services: Vec::new(),
                 target: true,
                 deployment: None,
-                upload: false,
             },
         )
         .unwrap()
@@ -2636,16 +2635,7 @@ fn unsigned(store: &ConfigStore, who: &Actor) -> Vec<(String, ployz_store::Needs
 
 /// The Services a Deploy of `services` ships that only a Source step signed with it builds.
 fn sources(store: &ConfigStore, who: &Actor, services: &[&str]) -> Vec<String> {
-    named(store, who, services, |plan| &plan.sources)
-}
-
-fn named(
-    store: &ConfigStore,
-    who: &Actor,
-    services: &[&str],
-    field: fn(&ployz_store::PlanView) -> &Vec<ServiceName>,
-) -> Vec<String> {
-    let plan = store
+    store
         .read(
             who,
             &ployz_store::PlanQuery {
@@ -2657,8 +2647,8 @@ fn named(
                 ..ployz_store::PlanQuery::default()
             },
         )
-        .unwrap();
-    field(&plan)
+        .unwrap()
+        .sources
         .iter()
         .map(|service| service.as_str().to_owned())
         .collect()
@@ -2689,12 +2679,6 @@ fn a_plan_names_each_git_service_only_a_source_builds_by_the_name_it_runs_under(
     publish(&store, &who);
     approve_rule(&store, &who, 1).unwrap();
     assert_eq!(sources(&store, &who, &[]), Vec::<String>::new());
-    // A rule signed with the Deploy replaces the live one, so it must still approve both.
-    assert_eq!(named(&store, &who, &[], |plan| &plan.git), ["web", "api"]);
-    assert_eq!(
-        named(&store, &who, &["frontend"], |plan| &plan.git),
-        ["web"]
-    );
 }
 
 #[test]

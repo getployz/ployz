@@ -264,7 +264,6 @@ fn recreates(
         services: Vec::new(),
         target: true,
         deployment: None,
-        upload: false,
     })?;
     Ok(plan
         .target
@@ -1294,7 +1293,6 @@ fn plan(
         services,
         target: false,
         deployment: None,
-        upload: false,
     })?;
     let hint = store
         .again()

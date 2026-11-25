@@ -10,8 +10,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ployz_core::config::{SavedEnvironmentIntent, SavedServiceIntent, ServiceSource};
-use ployz_core::{RpcError, ServiceName, UploadDigest};
+use ployz_core::config::{SavedEnvironmentIntent, ServiceSource};
+use ployz_core::{RpcError, UploadDigest};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -177,44 +177,6 @@ pub(crate) fn admitted(
         .map_or((None, None), |(carried, uploads)| {
             (Some(carried), Some(uploads))
         }))
-}
-
-/// The Services without a source of their own that a Deploy `targets` builds from an
-/// upload, by name: every one it targets when it `sends` one, as [`admitted`] chooses,
-/// and otherwise every one when any of them built from an upload before.
-/// Whether each reaches data doesn't matter: a Server that enforces Device approval
-/// starts none of these builds.
-pub(crate) fn building(
-    tx: &mut dyn Tx,
-    environment: &EnvironmentId,
-    intent: &SavedEnvironmentIntent,
-    targets: impl Fn(&SavedServiceIntent) -> bool,
-    sends: bool,
-) -> Result<Vec<ServiceName>, RpcError> {
-    let sourceless: Vec<_> = intent
-        .services
-        .iter()
-        .filter(|service| matches!(service.config.source, ServiceSource::Empty { .. }))
-        .filter(|service| targets(service))
-        .collect();
-    if sourceless.is_empty() {
-        return Ok(Vec::new());
-    }
-    if !sends {
-        let ids: Vec<&str> = sourceless
-            .iter()
-            .map(|service| service.id.as_str())
-            .collect();
-        if chosen(&uploaded(tx, environment)?, &ids)?.is_none() {
-            return Ok(Vec::new());
-        }
-    }
-    sourceless
-        .iter()
-        .map(|service| {
-            ServiceName::parse(service.slug.as_str()).map_err(|_| error::corrupt("Service name"))
-        })
-        .collect()
 }
 
 /// Choose again, as `stored` starts, the uploads admission chose it by lineage: the

@@ -629,10 +629,7 @@ const approvedDeploy = Effect.fn("Proposals.approvedDeploy")(function* (decider:
   const access = yield* requireAccessById({ userId: decider.userId }, row.organizationId, "changes:deploy");
   const isProtected = yield* environmentProtected(row.organizationId, row.project, row.environmentId).pipe(Effect.catchTag("StoreRefused", () => Effect.succeed(true)));
   if (isProtected && (access.kind !== "member" || !protector(access))) return refuse("Only an owner or admin can approve a deploy to a Protected Environment.");
-  const planned = yield* prepareDeployTap(decider, {
-    organizationSlug: decider.organization.slug, environment: command.environment, services: command.services ?? [], classify: true, rule: true,
-    upload: command.upload !== undefined && command.upload !== null,
-  });
+  const planned = yield* prepareDeployTap(decider, { organizationSlug: decider.organization.slug, environment: command.environment, services: command.services ?? [], classify: true, rule: true });
   if (planned.kind === "refused") return refuse(isPending(planned.details) ? "A password has no value yet. Approve this deploy on its approval page." : planned.message);
   if (step.deploy.review === undefined) return refuse("Approve this deploy on its approval page.");
   if (command.version !== null && command.version !== undefined && !namesReview(planned.plan.version, command.version)) return { moved: true } as const;

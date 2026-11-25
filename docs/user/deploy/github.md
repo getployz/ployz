@@ -139,13 +139,10 @@ deploys off, **Deploy** stops before it starts instead.
 
 A deploy that waits at a link, from a computer with no device key or for an owner or admin in a
 Protected Environment, signs the rule on its [approval page](deployments.md#deploy-with-no-key):
-the tap that approves the deploy signs it too. When the page can't sign it, the page says why and
-offers **Deny**, and nothing deploys. If the rule changed after the tap, the deploy is refused:
-`Automatic deploys changed since you looked. Check them, then try again.` When no rule can cover
-a service, as when the services build from several branches and none is picked, the deploy is
-refused before any link: `No automatic deploy rule can cover api now, so your servers won't build
-it.` The same checks run again when someone approves it, so a server that started enforcing device
-approval since the link refuses what it won't build.
+the tap that approves the deploy signs it too. When the page can't sign it, the deploy goes without
+it, says why, and your servers refuse the builds only the rule covers. If the rule changed after
+the tap, the deploy is refused:
+`Automatic deploys changed since you looked. Check them, then try again.`
 
 To turn automatic deploys on yourself, open the environment's **Settings**, find **Automatic
 deploys** and turn on **Deploy every push**. That's a Save that signs the rule: the same sheet

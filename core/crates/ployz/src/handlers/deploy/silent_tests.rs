@@ -485,7 +485,6 @@ fn staged_by_store(edits: &[(&str, Value)]) -> Vec<ployz_store::NodeChange> {
                 services: Vec::new(),
                 target: false,
                 deployment: None,
-                upload: false,
             },
         )
         .unwrap()
