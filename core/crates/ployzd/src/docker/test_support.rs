@@ -913,16 +913,6 @@ fn listed_by_labels(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    let volumes: Vec<&str> = filters
-        .get("volume")
-        .and_then(serde_json::Value::as_array)
-        .map(|volumes| {
-            volumes
-                .iter()
-                .filter_map(serde_json::Value::as_str)
-                .collect()
-        })
-        .unwrap_or_default();
     containers
         .values()
         .filter(|container| {
@@ -930,11 +920,6 @@ fn listed_by_labels(
                 .pointer("/State/Status")
                 .and_then(serde_json::Value::as_str)
                 == Some("running")
-        })
-        .filter(|container| {
-            volumes
-                .iter()
-                .all(|volume| mounted_volumes(container).any(|mounted| mounted == *volume))
         })
         .filter_map(|container| {
             let labels = container.pointer("/Config/Labels")?;
