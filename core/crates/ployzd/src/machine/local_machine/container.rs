@@ -154,7 +154,7 @@ impl LocalMachine {
                     .mounted_volumes()
                     .filter_map(|volume| volume.source.managed_docker_volume_name())
             }) {
-                local.admit_preview_arrival(name)?;
+                local.open_preview_arrival(name)?;
             }
             let storage = local.observe_storage().await;
             let mut requested = std::collections::BTreeMap::new();

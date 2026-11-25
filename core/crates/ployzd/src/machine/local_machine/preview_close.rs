@@ -50,6 +50,13 @@ impl LocalMachine {
         }
     }
 
+    /// Write `namespace` Closing as a Close does first, without its switch or its sweep,
+    /// so a test lands it at a moment it picks.
+    #[cfg(test)]
+    pub(crate) fn begin_close_for_test(&self, namespace: &Namespace) {
+        self.approvals.begin_close(namespace).unwrap().unwrap();
+    }
+
     /// Refuse a start of, or data arriving into, a preview whose Close began.
     ///
     /// # Errors

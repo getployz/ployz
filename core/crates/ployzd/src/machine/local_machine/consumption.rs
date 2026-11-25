@@ -657,8 +657,8 @@ impl ConsumptionLog {
         })
     }
 
-    /// Open `preview` for a Container about to be created in it, refusing one whose Close
-    /// began.
+    /// Open `preview` for a Container about to be created in it, or data about to arrive
+    /// into it, refusing one whose Close began.
     ///
     /// # Errors
     /// Returns [`Error::ApprovalRecord`] when the record cannot be read or written.
@@ -681,7 +681,8 @@ impl ConsumptionLog {
     }
 
     /// Refuse a start of, or data arriving into, `preview` once its Close began. A
-    /// Namespace this Machine never opened passes: its create opens it, or refuses.
+    /// Namespace this Machine never opened passes: what creates or lands in it opens it,
+    /// or refuses.
     ///
     /// # Errors
     /// Returns [`Error::ApprovalRecord`] when the record cannot be read.

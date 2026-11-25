@@ -922,10 +922,94 @@ async fn a_close_of_a_preview_this_server_never_opened_touches_nothing() {
     assert_eq!(calls_to(&plugin, PREVIEW_CLOSE_ROUTE), 0);
 }
 
-/// A Close whose sweep fails leaves the preview Closing: its Container is gone and no start
-/// makes another. A daemon start runs the sweep again and marks it Closed.
+/// Data that lands in a preview before any Container is created in it opens the preview,
+/// so its Close sweeps that data rather than answering that the preview never ran here.
 #[tokio::test]
-async fn a_close_stopped_mid_sweep_resumes_at_the_next_daemon_start() {
+async fn data_landing_before_any_create_opens_the_preview_for_its_close() {
+    let fleet = Fleet::start().await;
+    let (namespace, _, volume) = preview_on(fleet.node(0));
+    let plugin = FakePlugin::default();
+    plugin.reply(PREVIEW_CLOSE_ROUTE, json!({"Ok": {}}));
+    let service = fleet.with_plugin(0, &plugin);
+    let seed = ployz_core::SeedVolumeRequest {
+        name: DockerVolumeName::parse("app_data").unwrap(),
+        into: volume,
+        guid: ployz_core::SnapshotGuid::new(7),
+        r#gen: None,
+    };
+    let _ = service
+        .seed_volume(Request::new(
+            op::SeedVolume::into_request(seed).encode().unwrap(),
+        ))
+        .await;
+    assert_eq!(calls_to(&plugin, VOLUME_SEED_ROUTE), 1, "the Seed landed");
+    let seeded = close(&service, &namespace).await;
+    assert!(seeded.is_ok(), "{seeded:?}");
+    assert_eq!(calls_to(&plugin, PREVIEW_CLOSE_ROUTE), 1);
+
+    let fleet = Fleet::start().await;
+    let (namespace, spec, _) = preview_on(fleet.node(0));
+    let plugin = FakePlugin::default();
+    plugin.reply(PREVIEW_CLOSE_ROUTE, json!({"Ok": {}}));
+    let service = fleet.with_plugin(0, &plugin);
+    let _ = service
+        .local
+        .prepare_volumes(vec![ployz_core::ServiceStorageSpec::from(&spec)])
+        .await;
+    let prepared = close(&service, &namespace).await;
+    assert!(prepared.is_ok(), "{prepared:?}");
+    assert_eq!(calls_to(&plugin, PREVIEW_CLOSE_ROUTE), 1);
+}
+
+/// A Seed that passed its early check while the preview was open, and then queued on the
+/// switch behind a Close, lands nothing: it reads the record again under the switch.
+#[tokio::test]
+async fn a_seed_queued_behind_a_close_lands_nothing() {
+    let fleet = Fleet::start().await;
+    let (_, spec, volume) = preview_on(fleet.node(0));
+    let plugin = preview_plugin(&spec, &volume);
+    let (service, namespace, _, volume) = created_preview(&fleet, &plugin).await;
+    let local = service.local.clone();
+    let held = local.lock_switch().await.unwrap();
+    let mut asked = local.switch_asked();
+    let before = *asked.borrow();
+    let seed = ployz_core::SeedVolumeRequest {
+        name: DockerVolumeName::parse("app_data").unwrap(),
+        into: volume,
+        guid: ployz_core::SnapshotGuid::new(7),
+        r#gen: None,
+    };
+    let call = tokio::spawn(async move {
+        service
+            .seed_volume(Request::new(
+                op::SeedVolume::into_request(seed).encode().unwrap(),
+            ))
+            .await
+    });
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        asked.wait_for(|asked| *asked > before),
+    )
+    .await
+    .expect("the Seed queues on the switch")
+    .unwrap();
+    local.begin_close_for_test(&namespace);
+    drop(held);
+
+    let seeded = call.await.unwrap();
+    assert!(
+        seeded
+            .as_ref()
+            .is_err_and(|status| status.message().contains("is closed")),
+        "{seeded:?}"
+    );
+    assert_eq!(calls_to(&plugin, VOLUME_SEED_ROUTE), 0);
+}
+
+/// A Close whose sweep fails leaves the preview Closing: its Container is gone and no start
+/// makes another. Its resume, which a daemon start runs, sweeps again and marks it Closed.
+#[tokio::test]
+async fn a_close_stopped_mid_sweep_is_finished_by_its_resume() {
     let fleet = Fleet::start().await;
     let node = fleet.node(0);
     let (_, spec, volume) = preview_on(node);
@@ -952,7 +1036,7 @@ async fn a_close_stopped_mid_sweep_resumes_at_the_next_daemon_start() {
     assert_eq!(
         calls_to(&plugin, PREVIEW_CLOSE_ROUTE),
         2,
-        "the start resumed the sweep"
+        "the resume swept again"
     );
     service.local.resume_preview_closes().await;
     assert_eq!(

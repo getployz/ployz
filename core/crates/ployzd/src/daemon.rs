@@ -1017,6 +1017,42 @@ mod tests {
         daemon.wait().await.unwrap();
     }
 
+    /// A daemon start runs again the Close of a preview its record left Closing. This one
+    /// has no Docker, so the Close stays Closing and the daemon says so.
+    #[tokio::test]
+    async fn a_daemon_start_resumes_a_close_its_record_left_closing() {
+        let root = TestDir::new("ployzd-daemon-resume-close");
+        let (config, _) = test_config(&root.0, ContainerMode::Absent);
+        let machine = LocalMachineStore::open(&config.data_dir)
+            .unwrap()
+            .record()
+            .id();
+        let home = ployz_core::PreviewHome::of(&machine);
+        let preview =
+            ployz_core::Namespace::parse(format!("pv-0123456789abcdef-{home}-00c0ffee")).unwrap();
+        let approvals = crate::machine::local_machine::ConsumptionLog::new(&config.data_dir);
+        approvals.open_preview(&preview).unwrap().unwrap();
+        approvals.begin_close(&preview).unwrap().unwrap();
+        let (capture, _logging) = crate::diag::test_support::capture();
+
+        let daemon = Daemon::start(config).await.unwrap();
+        let resumed = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while !capture.text().contains("preview stays closing") {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        daemon.request_stop();
+        daemon.wait().await.unwrap();
+
+        assert!(resumed.is_ok(), "{}", capture.text());
+        assert!(
+            capture.text().contains(preview.as_str()),
+            "{}",
+            capture.text()
+        );
+    }
+
     #[tokio::test]
     async fn request_stop_leaves_data_dir() {
         let root = TestDir::new("ployzd-daemon-stop");

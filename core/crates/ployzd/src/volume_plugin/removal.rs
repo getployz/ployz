@@ -25,7 +25,7 @@ impl VolumeStorage {
     ///
     /// Refuses when this Machine has held a Pool that is not imported, so a Volume is
     /// never reported absent only because its Pool is missing.
-    async fn imported_pool(&self) -> Result<(std::fs::File, Option<MachinePool>)> {
+    pub(super) async fn imported_pool(&self) -> Result<(std::fs::File, Option<MachinePool>)> {
         let guard = self.pool.lock_mutation().await?;
         let pool = self
             .pool

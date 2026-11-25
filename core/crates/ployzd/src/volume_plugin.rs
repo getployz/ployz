@@ -410,6 +410,9 @@ mod tests {
             .collect()
     }
 
+    #[path = "close_tests.rs"]
+    mod close_tests;
+
     #[path = "remove_tests.rs"]
     mod remove_tests;
 
