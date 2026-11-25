@@ -362,6 +362,14 @@ case "$*" in
     require "$3"
     rm -f '{readonly_volume}'
     put '{props}/tank/ployz/data/readonly' off ;;
+  'set refreservation='*' tank/ployz-trash')
+    # `pool-full` stands for a Pool with no space left: only freeing the slack makes room.
+    case "$2" in
+      refreservation=none) [ "$(prop tank/ployz-trash refreservation none)" = none ] || touch '{props}/pool-freed' ;;
+      *) if [ -e '{props}/pool-full' ]; then echo "cannot set property for 'tank/ployz-trash': size is greater than available space" >&2; exit 1; fi ;;
+    esac
+    put '{props}'/tank/ployz-trash/refreservation "${{2#*=}}"
+    ;;
   'set '*)
     require "$3"
     check_property "${{2%%=*}}"
@@ -425,6 +433,7 @@ case "$*" in
   'rename '*' tank/ployz-trash/'*)
     src=$2; dst=$3; id=${{dst#tank/ployz-trash/}}
     if [ -e '{rename_fails}' ]; then echo 'rename interrupted' >&2; exit 1; fi
+    if [ -e '{props}/pool-full' ] && [ ! -e '{props}/pool-freed' ]; then echo "cannot rename '$src': out of space" >&2; exit 1; fi
     require "$src"
     exists tank/ployz-trash || {{ echo "cannot rename to '$dst': parent does not exist" >&2; exit 1; }}
     ! exists "$dst" || {{ echo "cannot rename to '$dst': dataset already exists" >&2; exit 1; }}

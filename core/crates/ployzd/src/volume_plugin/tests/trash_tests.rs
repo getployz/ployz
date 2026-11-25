@@ -321,6 +321,45 @@ async fn a_delete_stopped_before_its_rename_leaves_a_working_volume() {
     }
 }
 
+/// A Pool with no space left refuses a rename though it takes a destroy, so a delete gives
+/// up the Trash's slack to make room, and a sweep with room takes it back.
+#[tokio::test]
+async fn a_delete_on_a_full_pool_moves_the_volume_with_the_trash_slack() {
+    let test = test_dir();
+    let plugin = Plugin::start(&test, &["root", "volume"], Ok(vec![]));
+    plugin.sweep().await;
+    assert_eq!(
+        property(&test, "tank/ployz-trash", "refreservation").as_deref(),
+        Some("1M")
+    );
+    fs::create_dir_all(test.0.join("props")).unwrap();
+    fs::write(test.0.join("props/pool-full"), "").unwrap();
+
+    let removed = plugin
+        .post("/VolumeDriver.Remove", json!({"Name": "data"}))
+        .await;
+
+    assert_eq!(removed, json!({"Err": ""}));
+    trashed_one(&test, "root");
+    assert_eq!(
+        property(&test, "tank/ployz-trash", "refreservation").as_deref(),
+        Some("none")
+    );
+    plugin.later(1);
+    plugin.sweep().await;
+    assert_eq!(
+        property(&test, "tank/ployz-trash", "refreservation").as_deref(),
+        Some("none")
+    );
+    fs::remove_file(test.0.join("props/pool-full")).unwrap();
+    plugin.later(1);
+    plugin.sweep().await;
+    assert_eq!(
+        property(&test, "tank/ployz-trash", "refreservation").as_deref(),
+        Some("1M")
+    );
+}
+
 /// The sweep counts one hour per hour of wall time it saw pass, and destroys an entry
 /// once 168 of them passed since its delete.
 #[tokio::test]

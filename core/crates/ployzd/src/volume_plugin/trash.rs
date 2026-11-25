@@ -1,8 +1,11 @@
 //! The Trash: every copy of a Volume this Machine deletes moves to `<pool>/ployz-trash/<id>`
 //! and waits there for 168 hourly sweeps, the hours the Server ran in 7 days.
 //!
-//! A delete ([`VolumeStorage::discard`]) is a rename, so it needs no space and never empties
-//! the Trash to make room. In order:
+//! A delete ([`VolumeStorage::discard`]) is a rename, so it frees no space and never empties
+//! the Trash to make room. A rename still writes a few blocks, which ZFS refuses on a Pool
+//! with none left, though it lets a destroy through; so the Trash parent holds back
+//! [`TRASH_SLACK`], which a rename that ran out of space gives up and the sweep takes back.
+//! In order:
 //!
 //! 1. The trash marks go on the live copy, set locally: its Docker Volume name, its place,
 //!    its own `readonly` and `canmount` (`ployz:trash-was`), and the sweep hour. Nothing on a
@@ -44,6 +47,9 @@ use crate::{
 };
 
 const HOUR_SECONDS: i64 = 3600;
+
+/// The `refreservation` the Trash parent keeps for a rename on a full Pool.
+const TRASH_SLACK: &str = "1M";
 
 /// The marks the move writes, which a restore takes off again.
 const ENTRY_MARKS: [Mark; 5] = [
@@ -182,8 +188,36 @@ impl VolumeStorage {
                 &parent,
             ])
             .await?;
+            self.keep_slack(&parent).await;
         }
         Ok(parent)
+    }
+
+    /// Reserves [`TRASH_SLACK`] on the Trash parent when it holds none. A Pool too full for
+    /// it keeps none until a later sweep finds room.
+    async fn keep_slack(&self, parent: &str) {
+        let slack = format!("refreservation={TRASH_SLACK}");
+        match self.local_property(parent, "refreservation").await {
+            Ok(Some(value)) if value == TRASH_SLACK => {}
+            Ok(_) => {
+                if let Err(error) = self.zfs(&["set", &slack, parent]).await {
+                    tracing::debug!(%error, parent, "the Trash keeps no slack for now");
+                }
+            }
+            Err(error) => tracing::debug!(%error, parent, "could not read the Trash's slack"),
+        }
+    }
+
+    /// Renames `dataset` to `entry` under `parent`, giving up the parent's slack once if
+    /// the Pool has no space left for the rename.
+    async fn rename_into(&self, parent: &str, dataset: &str, entry: &str) -> Result<()> {
+        match self.zfs(&["rename", dataset, entry]).await {
+            Err(error) if error.to_string().contains("out of space") => {
+                self.zfs(&["set", "refreservation=none", parent]).await?;
+                self.zfs(&["rename", dataset, entry]).await.map(drop)
+            }
+            result => result.map(drop),
+        }
     }
 
     /// The Trash's sweep hours; a parent no sweep advanced reads 0.
@@ -242,7 +276,7 @@ impl VolumeStorage {
             .map_err(|_| "could not draw a Trash ID from the system's random source")?;
         let id = TrashId::from_bytes(bytes);
         let entry = DatasetLayout::new(pool).trash_entry(&id);
-        self.zfs(&["rename", dataset, &entry]).await?;
+        self.rename_into(&parent, dataset, &entry).await?;
         crate::faults::kill_inside(crate::faults::Point::Verb("Trash.Renamed"), None);
         self.settle_entry(&entry).await?;
         self.bury(&entry, true).await?;
@@ -638,6 +672,7 @@ impl VolumeStorage {
         };
         let datasets = self.datasets(&pool).await?;
         let parent = self.ensure_trash_parent(pool.name(), &datasets).await?;
+        self.keep_slack(&parent).await;
         let mut hours = self.sweep_hours(&parent).await?;
         let now = self.now_seconds();
         let last = self.marks(&parent).local(Mark::TrashLast).await?;
