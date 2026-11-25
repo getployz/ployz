@@ -885,3 +885,56 @@ async fn a_start_resent_after_its_promote_runs_the_image_the_promote_recorded() 
     let holder = only_container(node);
     assert_eq!(node.container(holder).unwrap()["Image"], pulled.as_str());
 }
+
+/// A Move that made its holder under `never` and failed to start it leaves that holder
+/// stopped under the start's key. Cloud's forward Release resends the key under
+/// `missing`, so the spec differs only in how its image is placed: the Release adopts
+/// the holder the Move made, starts it, and routes it.
+#[tokio::test]
+async fn a_release_starts_the_holder_its_move_made_under_another_pull_policy() {
+    let fleet = Fleet::start().await;
+    let node = fleet.node(1);
+    let plugin = plugin(
+        slot(Some(snapshot())),
+        WRITER_ROUTE,
+        writer_root(1, Some(snapshot())),
+    );
+    let (calls, replies) = (plugin.calls.clone(), plugin.replies.clone());
+    plugin.on(WRITER_ROUTE, move || {
+        let image = calls.lock().unwrap().last().unwrap().1["image"].clone();
+        let mut root = writer_root(1, Some(snapshot()));
+        root["Ok"]["placed"] = image;
+        let mut replies = replies.lock().unwrap();
+        replies.insert(WRITER_ROUTE.into(), root.clone());
+        replies.insert(INSPECT_ROUTE.into(), root);
+    });
+    let destination = fleet.with_plugin(1, &plugin);
+    let service = spec("api");
+    let start = |policy: &str| {
+        let mut moved = service.clone();
+        moved.container.pull_policy = serde_json::from_value(json!(policy)).unwrap();
+        json!({"name":VOLUME, "expect":{"kind":"mirror", "newest":"7", "slot":"1"},
+            "want":{"kind":"writer", "at":"7", "epoch":1, "start":{
+                "kind":"create", "namespace":"app", "resolved_spec":moved,
+                "creation_key":"move-1", "gen":2,
+                "rotation":{"in":{"run":null, "expect":"pending"}}}}})
+    };
+
+    node.fake
+        .exit_on_start
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    try_set_copy(&destination, start("never"))
+        .await
+        .expect_err("the Move's holder exited");
+    let made = only_container(node);
+    assert!(!node.running(made));
+
+    node.fake
+        .exit_on_start
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    let released = try_set_copy(&destination, start("missing")).await;
+    assert!(released.is_ok(), "{released:?}");
+    assert_eq!(only_container(node), made);
+    assert!(node.running(made));
+    assert_eq!(node.rotation(made).await, CopyRotation::In);
+}
