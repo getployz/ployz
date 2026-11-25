@@ -534,12 +534,40 @@ next: ployz login
 To move everything off now, click **Drain** and confirm. The dialog lists what runs on the server and
 badges what won't move as planned: **Moves with data** when its volume moves with it, **Skipped**
 when no project owns it, which draining leaves where it is, **Stays** with the reason when its
-data can't move with it, and **Stops** for a global service that runs on no other server, which
-the drain removes.
-Draining turns services off for the server and stops its global services there. Then it moves
-each replicated service's containers to your other servers one at a time. Each new container runs
+data can't move with it, and **Global** for a service that runs on every server, in a project or
+not, which stops the drain, as below.
+Draining turns services off for the server, then moves each replicated service's containers to
+your other servers one at a time. Each new container runs
 the same image, and each one starts, is healthy and is routed by every server's proxy before the
 old container is taken out of routing and removed.
+
+A service set to run on every server, from a Compose file with `deploy.mode: global` deployed
+before 0.1.2-beta.42, stops the drain before it moves anything, because its copy on this server
+could be the last one working. The drain also stops when Ployz can't ask the server what it runs:
+
+```text
+error: Server web-2 runs `shop-production/metrics` on every Server, and draining could stop its last working copy. Remove it, deploy, then add it back with a replica count.
+```
+
+[Move that service off `deploy.mode: global`](../troubleshooting/servers.md#move-a-service-off-deploymode-global),
+then drain again.
+
+Ployz Cloud won't start a drain until it hears the server answer, since a server that doesn't
+answer may run a service it hasn't reported. It waits up to 20 seconds, both when you confirm and
+when the drain's turn comes, then says `web-2 isn't answering, so Cloud can't tell what draining it
+would stop. Try again once it answers.` Through a server on an older release, Cloud can't tell
+whether the server answered, so the drain goes ahead and stops if Ployz can't ask the server what
+it runs.
+
+A drain that stops after turning the server's services off, for any reason, ends its error with
+`Services are now off on web-2: turn them back on to let it run services again.` The server takes no
+new services until you turn **Run services here** back on, or run
+`ployz server set web-2 --accepts-services=true`.
+
+If the server never answers the request to turn its services off, or you cancel while it's
+pending, the drain can't tell whether the change landed. Its error then ends with
+`Services may now be off on web-2: if they are, turn them back on to let it run services again.`
+Check **Run services here** on the server, and turn it back on if it's off.
 
 The new container runs exactly the image the old one ran, even when its tag, like `app:v1`, names
 another image on the other server by then. A service whose image is named by a tag therefore moves
@@ -551,8 +579,7 @@ own tag names that same image and the server you connected to has no image under
 later deploy with `pull: never` runs whatever image the
 server holds under the tag.
 Pre-deploy commands don't run again, and nothing is deployed. The drain starts once you confirm:
-the dialog is the approval. If a global service's last other copy stopped while the dialog was open,
-the drain doesn't start; open it again to see what stops now. Drains in one organization run one
+the dialog is the approval. Drains in one organization run one
 at a time: a second one reads **Queued · Waiting on web-1**. While a drain waits on a
 [volume it moves](#services-with-a-volume), another can run. While a drain runs, the
 **Drain** row counts the services left to move and lists them as **Pending**; each one leaves the
@@ -651,8 +678,7 @@ move anything back.
 `ployz server drain web-2` does the same from the CLI, moves volumes too, and exits non-zero if
 anything stayed or failed, apart from that other server's move. A service that moved with its data
 counts as moved. It follows the drain for as long as Ployz Cloud runs it, up to a day while volumes
-move. It asks yes or no first when a global service would run on no other server (see
-[Destructive actions ask first](../account/organizations.md#destructive-actions-ask-first)).
+move. A global service stops it before it starts, as in the dialog.
 
 Under **Web traffic** on a server's page, **Takes web traffic** is a switch. On, the line under it
 reads **Your domains point at 203.0.113.10**: the server's address. Turn it off and a dialog lists the

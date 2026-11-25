@@ -19,27 +19,28 @@
 //!   reads another version, every Server leaves, or the drained Server leaves the frame
 //!   (`ApprovalBinding::edits`). With `open_paths` it also makes the change the code
 //!   doesn't bind: the cancelled Deployment's runner claims it (`Plan::Started`).
-//! - **The other copy** is global G's copy on Server B, which the Drain's yes counted on
-//!   when it retires G's copy A on the drained Server. Three things about it change apart
-//!   (`OtherCopy`): its Container stops and its owner publishes that, which Cloud's
-//!   `drainPlan` (`runtime.state`) and the proxies read and the Engine's `LastIn` guard does
-//!   not; it goes Out or its Machine goes Down, which `last_in` and the proxies read; and
-//!   whether it answers traffic. With `open_paths` it stops answering while what Cloud and
-//!   the proxies read of it still says Running: a crash loop with no healthcheck, or an
-//!   exit not yet replicated.
+//! - **The drained Server** changes under the Drain, each once. A user Global lands on it
+//!   (`Action::Global`) until the Engine's second read: a Service the Drain's scope chose,
+//!   redeployed as a Global, or another Service, which a Full caller's Global spec or a
+//!   Deploy racing the Drain puts there. It stops answering Cloud's probes before Cloud's
+//!   last compare (`Action::Silent`), so the frame lists it `unanswered` with its rows as
+//!   it last reported them. It stops answering the Engine's listing before the Engine's
+//!   second read (`Action::Unlisted`). Cloud and the Engine observe it apart (bet 1).
 //! - **The frame** changes what `dataCheck` reads of a Service the Engine leaves on the
-//!   drained Server for its Volume, once (`Data`): the Volume's reason to stay clears, or
-//!   the Service now mounts another managed Volume.
+//!   drained Server for its Volume, once (`Data`): the Volume's reason to stay clears, the
+//!   Service now mounts another managed Volume, or a Deploy made it a Global. Once a move is
+//!   planned, a Full caller replaces the Service that holds the Volume with a Global, once,
+//!   before admission or before the Move's cut (`Action::Swap`).
 //! - **The remover** revokes the caller's management access on a Machine once
 //!   (`Action::Revoke`): a Full caller's `set_device` removes the Device and its slot under
 //!   its own exclusive turn (`machine/local_machine/management_client.rs`).
 //! - **The executor** sends the request (`Action::Send`), and where the code splits it, takes
 //!   its later steps: Cloud's second Store call before f06d2a6351 (`Action::Resend`), a
 //!   Drain's compare and Inngest's retry of it (`Action::Run`, `Action::Crash`), then its
-//!   Engine call (`Action::Engine`) and each global copy's retirement: the Out write, the
-//!   wait for every proxy to unlist the copy, and its removal (`Action::Out`,
-//!   `Action::Unlist`, `Action::Remove`), then its Volume plan (`Action::Volumes`) and each
-//!   move's admission (`Action::Admit`); and a Machine's admitted turn (`Action::Run`).
+//!   Engine call: the first read and services off (`Action::Engine`), the second read
+//!   (`Action::Reread`), then its Volume plan (`Action::Volumes`), each move's
+//!   admission (`Action::Admit`) and its Move's cut (`Action::Cut`); and a Machine's
+//!   admitted turn (`Action::Run`).
 //!
 //! Each gate is restated by hand from the function it copies, with each shortcut that once
 //! skipped the digest comparison as a `Broken` flag that restores it:
@@ -53,15 +54,20 @@
 //! - Cloud's `gateOperation` (`dashboard/src/modules/operations/gate.server.ts`) weighs a
 //!   Drain's yes when it is asked, and `stillCovered`
 //!   (`dashboard/src/modules/machines/server-drain.server.ts`) plans again each time
-//!   `executeDrainOnce` runs. It hands the Engine only the Services in scope:
-//!   `drain_machine` (`ployz/src/drain.rs`, `preflight`) reads the Cluster again and drains
-//!   them as it finds them, retiring each global copy only past the drained Server's
-//!   `LastIn` guard (`ployzd/src/machine/local_machine/rotation.rs`, `last_in`), and
-//!   removing it only once every proxy has unlisted it (`ployz/src/deploy/cleanup.rs`,
-//!   `retire` and `wait_unlisted`; the proxies route by `ployz-core`'s `proxy_routes`). Later
-//!   still, `planDrainVolumes`
-//!   (`dashboard/src/modules/machines/server-drain-volumes.server.ts`) plans each Volume
-//!   move from a new frame, and `admitDrainVolume` admits or refuses it (`Command::Drain`).
+//!   `executeDrainOnce` runs. Both refuse, through `drainRefusal`
+//!   (`server-operations.server.ts`), a Server the frame lists `unanswered` or one running a
+//!   user Global, and `stillCovered` refuses one the frame lost. It hands the Engine only
+//!   the Services in scope: `drain_machine` (`ployz/src/drain.rs`, `preflight`) lists the
+//!   Server before and after it turns services off, and `chosen_on` refuses at either read
+//!   a Server that didn't answer or that runs a user Global, chosen or not. Later still,
+//!   `planDrainVolumes` (`dashboard/src/modules/machines/server-drain-volumes.server.ts`)
+//!   plans each Volume move from a new frame through `dataCheck`, which keeps a Service any
+//!   copy of which is Global, and `admitDrainVolume` admits or refuses it. Admission and
+//!   each Move step read the holder again: `holderOn` (`volume-run.cluster.server.ts`)
+//!   refuses a Global's copy, and the Drain's pin (`admitDrainVolume`'s compare,
+//!   `holderSwapped` in `volume-run.inngest.ts`) a Container other than the one it chose
+//!   (`Command::Drain`). A Global that replaced the holder is a new Container, so either
+//!   refuses it; the model folds them into one holder check.
 //!   The carried yes's ask shows the Drain's effects and no preview (`yesRequired`'s
 //!   `previewed`), so it names no Volume forecast, and the model checks no move against one.
 //! - A Machine checks the caller's management access, `require_management_access`
@@ -74,19 +80,19 @@
 //! Open paths, which `open_paths` adds and the shipped check leaves out: a Cancel's digest
 //! binds the Deployment and the review version, which stay put when its runner claims it,
 //! so a yes to taking a queued Deployment out of the queue stops one already running
-//! (#4555); and nothing reads whether B answers traffic. `last_in` counts B when its owner
-//! answers In and not leaving, and the proxies drop A when they read B Running and In. A
-//! B that stops answering while it still reads Running, from before the ask (a crash loop)
-//! or after Cloud's compare (an exit not yet replicated, #4556), leaves G with no serving
-//! copy once A is removed. A stop the proxies do read keeps A routed only while they hold
-//! the route they had: then `wait_unlisted` times out and the Drain reports `NotRetired`,
-//! which the shipped check holds. A proxy that restarts after A went Out holds no route,
-//! so `next_route` routes only what serves now, never A, and `wait_unlisted` passes beside
-//! a B it reads stopped or Down (#4556). A Full caller reaches these through a Global spec:
-//! the Machine API admits one (`admission.rs`, `Scope::Full`), the Drain classifies a
-//! Container by its observed spec (`observed_global_slot`), and Compose accepted
-//! `deploy.mode: global` up to v0.1.2-beta.41. A Drain never retires a system Global
-//! (`DrainScope::includes`).
+//! (#4555).
+//!
+//! A Drain retires no Global. Up to #4567 it retired each user Global's copy on the drained
+//! Server past `last_in`, which counts a crash-looping copy elsewhere In, so it could take
+//! the last copy that served. A Full caller still makes a user Global (the Machine API
+//! admits a resolved Global spec, `admission.rs`, `Scope::Full`), and Compose did up to
+//! v0.1.2-beta.41, so the Drain refuses any user Global on its Server; a system Global it
+//! never touches (`DrainScope::includes`). The Engine's refusal is the one that holds: it
+//! reads the Server itself, after Cloud's last compare. Cloud's refusal of a Global it
+//! reads only refuses earlier, before a yes, so no `Broken` flag removes it; the
+//! dashboard's Postgres tests cover it. A Global or a listing lost between the Engine's two
+//! reads refuses after services went off: the refusal says so, and the model counts it as
+//! no effect, as bet 4 reports a prefix.
 //!
 //! Out of scope: a yes the dashboard gives itself (a dashboard confirm, including the Drain
 //! dialog's Volume forecast, `previewServerDrain`), a Deploy that waits
@@ -217,18 +223,16 @@ enum Plan {
     /// Head's token counts only Deployments that ended (`history::head`), so the review
     /// version, and with it the digest, stays the asked one's.
     Started,
-    /// Global G's other copy no longer serves. Read by Cloud, B's Container isn't running,
-    /// so `drainPlan` names `removes_service` for G. As an effect, the proxies unlisted G's
-    /// copy here and it was removed while B's copy didn't answer, so G was left with no
-    /// serving copy.
-    LastCopy,
+    /// A user Global runs on the drained Server. Only an effect: the Drain turned services
+    /// off around a copy that may be the Global's last that works, or a Volume move cut it.
+    Global,
 }
 
 impl Plan {
     /// Whether the plan names a destructive effect.
     const fn destroys(self) -> bool {
         match self {
-            Self::Asked | Self::Other | Self::Forgets | Self::Started | Self::LastCopy => true,
+            Self::Asked | Self::Other | Self::Forgets | Self::Started | Self::Global => true,
             Self::Harmless | Self::Discarded | Self::Gone => false,
         }
     }
@@ -246,7 +250,7 @@ impl Plan {
             | Self::Discarded
             | Self::Forgets
             | Self::Gone
-            | Self::LastCopy => self,
+            | Self::Global => self,
         }
     }
 }
@@ -338,6 +342,15 @@ enum Why {
     NoPlan,
     /// `stillCovered` found the Drain changed since its gate.
     Changed,
+    /// `drainRefusal`: the frame lists the drained Server `unanswered`, or `stillCovered`
+    /// found it gone from the frame.
+    Unseen,
+    /// `drainRefusal`: the frame shows a user Global on the drained Server.
+    Global,
+    /// The Engine's `chosen_on` read a user Global on the drained Server.
+    EngineGlobal,
+    /// The Engine's `chosen_on` got no listing from the drained Server (`Unobservable`).
+    Unobservable,
     /// `ManagementRevoked`: no slot accepts the caller's key.
     Revoked,
 }
@@ -358,18 +371,19 @@ enum Exec {
     Covered {
         digest: Plan,
     },
-    /// The Engine's preflight read the Cluster and each global's `LastIn` guard decided; the
-    /// copy it let go is still to be written Out.
-    Retiring,
-    /// The copy here is Out; `wait_unlisted` is still to read whether every proxy dropped it.
-    Unlisting,
-    /// Every proxy dropped the copy here; it is still to be removed.
-    Removing,
+    /// The Engine's first read passed and it turned services off; its second read is still
+    /// to come.
+    Off,
     /// The Engine drained and answered; the Volume moves are still to be planned.
     Moving,
     /// `planDrainVolumes` planned a move from what `dataCheck` read; `admitDrainVolume` is
     /// still to admit or refuse it.
     Admitting {
+        read: Data,
+    },
+    /// `admitDrainVolume` admitted the move; its Move's steps are still to read the holder
+    /// again and cut it.
+    Cutting {
         read: Data,
     },
     Ran,
@@ -402,74 +416,49 @@ enum Data {
     /// drained Server before the Engine turned its services role off (`dataCheck` reads the
     /// newest Container).
     Switched,
+    /// A Full caller replaced the Service with a Global after the Engine left it, so its
+    /// Container on the Volume is a Global's copy.
+    Global,
 }
 
-/// B's copy's rotation, as its owner answers and the proxies read it.
+/// The step a Global that replaced the Volume's planned holder landed before: a Full
+/// caller replaced the Service with a Global after `planDrainVolumes` read it.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-enum Rotation {
-    /// In and not leaving. A stopped Container stays In: nothing on B writes Out when it
-    /// exits, and its daemon still answers.
-    In,
-    /// Out: B's own `LastIn` guard counted A before A was marked leaving.
-    Out,
-    /// B's Machine is Down. `last_in` skips it, and the proxies keep routing what they
-    /// routed, since its stale row still reads In.
-    Down,
+enum Swap {
+    /// `admitDrainVolume`, which reads the holder through `holderOn` (`readHolder`).
+    Admit,
+    /// The Move's steps, which read it through `holderOn` (`findHolder`) before the cut.
+    Cut,
 }
 
-/// Global G's other copy, on Server B, which the Drain counts on when it retires G's copy
-/// A on the drained Server.
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-struct OtherCopy {
-    /// What B's owner last published of its Container: Running, with no healthcheck or a
-    /// passing one. Cloud's `drainPlan` reads it (`runtime.state === "running"`), and so do
-    /// the proxies (`may_serve`); `last_in` does not.
-    running: bool,
-    rotation: Rotation,
-    /// It answers G's traffic. The shipped check keeps this equal to `running` while In;
-    /// `open_paths` lets it stop alone.
-    serving: bool,
-}
-
-impl OtherCopy {
-    /// Whether the proxies drop A once A is Out (`proxy_routes`' `next_route`): B is a
-    /// Serving Container they route instead (In, read Running, its Machine not Down), or
-    /// every copy in view is Out, so the route empties. A B read stopped, or on a Down
-    /// Machine, keeps the route they have, A included, unless they `restarted` since A went
-    /// Out: with no route to keep, they route what serves now or on a Down Machine, never
-    /// the Out A.
-    const fn unlists_beside(self, restarted: bool) -> bool {
-        restarted
-            || match self.rotation {
-                Rotation::In => self.running,
-                Rotation::Out => true,
-                Rotation::Down => false,
-            }
-    }
-}
-
-/// The Drain step B's copy last changed before.
+/// The Drain step a change to the drained Server landed before.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Before {
-    /// Cloud's last compare, which reads a stopped Container.
+    /// Cloud's gate, which reads the frame when the request arrives.
+    Gate,
+    /// Cloud's last compare, `stillCovered`.
     Compare,
-    /// The guard's read, after the compare.
-    Guard,
-    /// The proxies' unlisting of A, after the guard counted B.
-    Unlist,
+    /// The Engine's first read, before it turns services off.
+    Read,
+    /// The Engine's second read, after services went off.
+    Reread,
 }
 
-/// What became of G's copy A on the drained Server.
+/// A user Global on the drained Server.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-enum Retirement {
-    /// `last_in` counted another copy, so A goes Out, is unlisted and is removed.
-    Retired,
-    /// `last_in` counted none: A stays In and runs, and the Drain reports
-    /// `DrainOutcome::NotRetired` with the refusal.
-    NotRetired,
-    /// A went Out, but a proxy kept routing it past `ACK_WAIT`: `retire` returns
-    /// `NotConfirmed` and leaves A running, and the Drain reports `NotRetired`.
-    NotUnlisted,
+struct Landed {
+    /// It is a Service the Drain's scope chose, redeployed as a Global. Cloud saves the
+    /// scope at the request, so any other Service that lands later is outside it.
+    chosen: bool,
+    before: Before,
+}
+
+/// What Cloud's `drainPlan` reads of the drained Server.
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+struct Seen {
+    plan: Plan,
+    /// A user Global runs there.
+    global: bool,
 }
 
 /// What `admitDrainVolume` did with a planned move.
@@ -480,6 +469,9 @@ enum Admission {
     /// Every candidate refused, the target stopped taking services, or the drain no longer
     /// owns its row: the Volume stays, with that reason on the report.
     Stayed,
+    /// The holder check refused the move: a Global's copy holds the Volume, or a Container
+    /// other than the one the Drain chose. The Volume stays.
+    HolderRefused,
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
@@ -493,20 +485,18 @@ struct State {
     trusted: bool,
     /// The Drain's step died once before its effect, and Inngest ran it again.
     crashed: bool,
-    other: OtherCopy,
-    /// The Drain step B's Container stopped before, as its owner published it.
-    stopped: Option<Before>,
-    /// The Drain step B's rotation changed before: Out, or its Machine Down.
-    left: Option<Before>,
-    /// The Drain step B stopped answering before while it still read Running.
-    failed: Option<Before>,
-    /// The proxies restarted after A went Out, before `wait_unlisted` read them, so they
-    /// hold no route from before (`Reach::new`).
-    restarted: bool,
-    retirement: Option<Retirement>,
+    global: Option<Landed>,
+    /// The drained Server stopped answering Cloud's probes; what Cloud read of it last.
+    silent: Option<Seen>,
+    /// The drained Server stopped answering the Engine's listing.
+    unlisted: bool,
+    /// The Engine turned the drained Server's services off.
+    off: bool,
     data: Data,
     /// The frame changed `data` after Cloud's last compare.
     data_late: bool,
+    /// A Global replaced the Volume's planned holder.
+    swapped: Option<Swap>,
     exec: Exec,
     wrote: Option<Wrote>,
     admission: Option<Admission>,
@@ -522,28 +512,27 @@ impl State {
         matches!(
             self.exec,
             Exec::Covered { .. }
-                | Exec::Retiring
-                | Exec::Unlisting
-                | Exec::Removing
+                | Exec::Off
                 | Exec::Moving
                 | Exec::Admitting { .. }
+                | Exec::Cutting { .. }
                 | Exec::Ran
         )
     }
 
-    /// Where a change to B's copy lands now.
-    const fn window(&self) -> Before {
+    /// The Drain step a change to the drained Server lands before now; none once the
+    /// Engine's second read passed.
+    const fn window(&self) -> Option<Before> {
         match self.exec {
-            Exec::Covered { .. } => Before::Guard,
-            Exec::Retiring
-            | Exec::Unlisting
-            | Exec::Removing
-            | Exec::Moving
+            Exec::Ready => Some(Before::Gate),
+            Exec::Resending | Exec::Waiting { .. } => Some(Before::Compare),
+            Exec::Covered { .. } => Some(Before::Read),
+            Exec::Off => Some(Before::Reread),
+            Exec::Moving
             | Exec::Admitting { .. }
-            | Exec::Ran => Before::Unlist,
-            Exec::Ready | Exec::Resending | Exec::Waiting { .. } | Exec::Refused { .. } => {
-                Before::Compare
-            }
+            | Exec::Cutting { .. }
+            | Exec::Ran
+            | Exec::Refused { .. } => None,
         }
     }
 
@@ -604,22 +593,35 @@ struct Broken {
     /// A guard f06d2a6351 needed, not a past bug: `Gate::ask` takes a member's own CLI yes
     /// for what a Protected Environment asks of an owner or admin.
     member_yes_answers_protected: bool,
-    /// A guard, not a past bug: the drained Server's `last_in` refuses taking a global's only
-    /// In copy Out (`EmptyPolicy::RequireOtherIn` in `retire_copies`).
-    retire_skips_last_in: bool,
-    /// A guard, not a past bug: `retire` removes a copy only once `wait_unlisted` reads
-    /// every proxy's route without it, and returns `NotConfirmed` otherwise. Set, it removes
-    /// the copy as `retire_unconfirmed` does, without waiting.
-    retire_skips_unlisting: bool,
+    /// #4567: the Engine drained a Server running a user Global, retiring it, as `main` did
+    /// before. Cloud's refusal still holds for one it reads.
+    engine_skips_globals: bool,
+    /// #4567 before its fourth round: `chosen_on` looked for a Global only among the
+    /// Services the Drain's scope chose.
+    engine_global_scoped: bool,
+    /// A guard, not a past bug: `chosen_on` refuses a Server whose listing didn't answer
+    /// (`observed`). Set, it reads that Server as running nothing.
+    engine_reads_unlisted_empty: bool,
+    /// #4567 before its fourth round: `drainPlan` read a Server the frame lists
+    /// `unanswered` from the rows it last reported.
+    cloud_reads_unanswered: bool,
+    /// #4567 before its fourth round: `dataCheck` and `holderOn` took a Global's copy as
+    /// the holder a Volume move cuts.
+    volume_moves_global: bool,
+    /// A guard, not a past bug: the holder check at admission and at each Move step, which
+    /// refuses a Global's copy (`holderOn`) or a Container other than the one the Drain
+    /// chose (`admitDrainVolume`'s compare, `holderSwapped`). A Global that replaced the
+    /// holder is a new Container, so either refuses it. Set, the Move cuts whatever holds
+    /// the Volume when its step reads it.
+    move_skips_holder: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
 struct ApprovalBinding {
     command: Command,
     broken: Broken,
-    /// The changes the shipped code lets through: a Cancel's Deployment starts; B stops
-    /// answering while what Cloud and the proxies read of it still says Running; or the
-    /// proxies restart once A is Out. Each breaks the property; see the module doc.
+    /// The change the shipped code lets through: a Cancel's Deployment starts. It breaks the
+    /// property; see the module doc.
     open_paths: bool,
 }
 
@@ -627,19 +629,12 @@ struct ApprovalBinding {
 enum Action {
     /// The editor moves the plan.
     Edit(Plan),
-    /// B's Container stops and its owner publishes that. Its rotation stays In.
-    CopyStops,
-    /// B's copy goes Out.
-    CopyOut,
-    /// B's Machine goes Down.
-    CopyDown,
-    /// B's copy stops answering while what Cloud and the proxies read of it still says
-    /// Running and In.
-    CopyFails,
-    /// The proxies restart once A is Out and before `wait_unlisted` reads them, dropping
-    /// the route they kept. A restart before A went Out reroutes A while it is In, and
-    /// changes nothing.
-    ProxiesRestart,
+    /// A user Global lands on the drained Server, a Service the Drain's scope chose or not.
+    Global { chosen: bool },
+    /// The drained Server stops answering Cloud's probes.
+    Silent,
+    /// The drained Server stops answering the Engine's listing.
+    Unlisted,
     /// The remover revokes the caller's management access.
     Revoke,
     /// The executor sends its request.
@@ -653,18 +648,21 @@ enum Action {
     /// The frame changes what `dataCheck` reads of the Service left for its Volume.
     Data(Data),
     /// `executeDrainOnce` calls `drainMachine` with the Services in scope; its `preflight`
-    /// reads the Cluster again and each global's `LastIn` guard decides.
+    /// reads the drained Server through `chosen_on`, then turns services off.
     Engine,
-    /// `send_out` writes the copy the guard let go Out.
-    Out,
-    /// `wait_unlisted` reads every proxy's route, until it lacks the copy or `ACK_WAIT` ends.
-    Unlist,
-    /// `retire` removes the unlisted copy, and the Engine answers.
-    Remove,
+    /// `preflight` reads the drained Server through `chosen_on` again, and the Engine drains
+    /// and answers.
+    Reread,
     /// `planDrainVolumes` reads a new frame and plans each move `dataCheck` allows.
     Volumes,
-    /// `admitDrainVolume` admits the planned move (true) or refuses it (false).
+    /// `admitDrainVolume` admits the planned move (true) or refuses it (false), after its
+    /// holder check.
     Admit(bool),
+    /// A Full caller replaces the Service that holds the Volume with a Global, after
+    /// `planDrainVolumes` planned its move and before the Move's cut.
+    Swap,
+    /// The Move's steps read the holder again through the holder check, then cut it.
+    Cut,
 }
 
 impl ApprovalBinding {
@@ -672,49 +670,39 @@ impl ApprovalBinding {
     const fn edits(&self, state: &State) -> &'static [Plan] {
         match (self.command, state.exec) {
             (Command::Store(Write::Cancel), _) if self.open_paths => &[Plan::Other, Plan::Started],
-            // After Cloud's last compare, what changes is B's copy (`copy_changes`) and the
-            // Volume read (`data_changes`).
+            // After Cloud's last compare, what changes is the drained Server
+            // (`server_changes`) and the Volume read (`data_changes`).
             (Command::Drain, _) if state.compared() => &[],
             (command, _) => command.edits(),
         }
     }
 
-    /// What may happen to B's copy from `state`, until the proxies unlist A: after that, a
-    /// B that fails is the plan the yes named, G running only on B. B's Container may stop,
-    /// which Cloud's compare and the proxies read, and its Machine may go Down. B may go Out
-    /// only until A's guard marks A leaving; after, B's own guard would see the mark and
-    /// refuse. With `open_paths`, B stops answering while it still reads Running.
-    fn copy_changes(&self, state: &State, actions: &mut Vec<Action>) {
+    /// What may change on the drained Server from `state`: a user Global lands there until
+    /// the Engine's second read, it stops answering Cloud's probes until Cloud's last
+    /// compare, and it stops answering the Engine's listing until that second read.
+    fn server_changes(&self, state: &State, actions: &mut Vec<Action>) {
         if self.command != Command::Drain {
             return;
         }
-        let guarded = match state.exec {
-            Exec::Ready | Exec::Resending | Exec::Waiting { .. } | Exec::Covered { .. } => false,
-            Exec::Retiring | Exec::Unlisting => true,
-            Exec::Removing
-            | Exec::Moving
-            | Exec::Admitting { .. }
-            | Exec::Ran
-            | Exec::Refused { .. } => return,
+        let Some(window) = state.window() else {
+            return;
         };
-        let other = state.other;
-        if other.running {
-            actions.push(Action::CopyStops);
+        if state.global.is_none() {
+            actions.push(Action::Global { chosen: true });
+            actions.push(Action::Global { chosen: false });
         }
-        if other.rotation == Rotation::In {
-            if !guarded {
-                actions.push(Action::CopyOut);
-            }
-            actions.push(Action::CopyDown);
-            if self.open_paths && other.running && other.serving {
-                actions.push(Action::CopyFails);
-            }
+        if state.silent.is_none() && matches!(window, Before::Gate | Before::Compare) {
+            actions.push(Action::Silent);
+        }
+        if !state.unlisted {
+            actions.push(Action::Unlisted);
         }
     }
 
     /// What the frame may change `dataCheck`'s read to from `state`: a reason to stay
-    /// clears until `planDrainVolumes` reads, and a Service's Volume switches only while the
-    /// drained Server still takes services, before the Engine's preflight turns that off.
+    /// clears until `planDrainVolumes` reads, a Service's Volume switches only while the
+    /// drained Server still takes services, before the Engine's preflight turns that off,
+    /// and a Full caller makes the Service a Global once the Engine has left it.
     fn data_changes(&self, state: &State) -> &'static [Data] {
         if self.command != Command::Drain || state.data != Data::Stays {
             return &[];
@@ -723,9 +711,20 @@ impl ApprovalBinding {
             Exec::Ready | Exec::Resending | Exec::Waiting { .. } | Exec::Covered { .. } => {
                 &[Data::Frees, Data::Switched]
             }
-            Exec::Retiring | Exec::Unlisting | Exec::Removing | Exec::Moving => &[Data::Frees],
-            Exec::Admitting { .. } | Exec::Ran | Exec::Refused { .. } => &[],
+            Exec::Off => &[Data::Frees],
+            Exec::Moving => &[Data::Frees, Data::Global],
+            Exec::Admitting { .. } | Exec::Cutting { .. } | Exec::Ran | Exec::Refused { .. } => &[],
         }
+    }
+
+    /// Whether the holder check refuses a move planned from `read`: the Volume's holder is a
+    /// Global's copy (`holderOn`), or `swapped` replaced the Container the Drain chose
+    /// (the compare in `admitDrainVolume`, `holderSwapped` in the Move).
+    const fn holder_refuses(&self, read: Data, swapped: Option<Swap>) -> bool {
+        if self.broken.move_skips_holder {
+            return false;
+        }
+        swapped.is_some() || (matches!(read, Data::Global) && !self.broken.volume_moves_global)
     }
 
     /// `Gate::ask`'s comparison, at `protection` as the gate holds it.
@@ -888,21 +887,34 @@ impl ApprovalBinding {
         }
     }
 
-    /// The Drain's plan as Cloud's `drainPlan` reads it: G with no running copy elsewhere is
-    /// `removes_service`. It reads B's runtime state, not its rotation.
-    fn drain_plan(state: &State) -> Plan {
-        if state.live == Plan::Asked && !state.other.running {
-            Plan::LastCopy
-        } else {
-            state.live
+    /// What Cloud's `drainPlan` reads of the drained Server, or none when the frame lists it
+    /// `unanswered`, which `drainRefusal` refuses. Under Broken, an unanswered Server reads
+    /// as it last reported.
+    fn cloud_reads(&self, state: &State) -> Option<Seen> {
+        match state.silent {
+            Some(seen) if self.broken.cloud_reads_unanswered => Some(seen),
+            Some(_) => None,
+            None => Some(Seen {
+                plan: state.live,
+                global: state.global.is_some(),
+            }),
         }
     }
 
-    /// `drainServer`'s `planDrain` and `gateOperation`, then the row it records.
+    /// `drainServer`'s `planDrain`, `drainRefusal` and `gateOperation`, then the row it
+    /// records.
     fn send_drain(&self, state: &mut State) {
-        let plan = Self::drain_plan(state);
+        let Some(seen) = self.cloud_reads(state) else {
+            state.refuse(Why::Unseen);
+            return;
+        };
+        let plan = seen.plan;
         if plan == Plan::Gone {
             state.refuse(Why::NoPlan);
+            return;
+        }
+        if seen.global {
+            state.refuse(Why::Global);
             return;
         }
         let agent = state.facts.signer == Signer::Agent;
@@ -923,13 +935,24 @@ impl ApprovalBinding {
     /// `executeDrainOnce`'s `stillCovered`, for a Drain a person said yes to. Covered, it
     /// waits for the Engine call.
     fn run_drain(&self, state: &mut State, digest: Plan) {
-        let plan = Self::drain_plan(state);
-        let present = plan != Plan::Gone;
-        let harmless = !plan.destroys();
-        let matches = present && plan.digest(self.broken) == digest;
-        let covered = if self.broken.drain_runs_harmless {
-            !present || harmless || matches
-        } else if self.broken.drain_runs_gone {
+        let broken = self.broken;
+        let Some(seen) = self.cloud_reads(state) else {
+            state.refuse(Why::Unseen);
+            return;
+        };
+        let present = seen.plan != Plan::Gone;
+        if !present && !broken.drain_runs_harmless && !broken.drain_runs_gone {
+            state.refuse(Why::Unseen);
+            return;
+        }
+        if present && seen.global {
+            state.refuse(Why::Global);
+            return;
+        }
+        let matches = present && seen.plan.digest(broken) == digest;
+        let covered = if broken.drain_runs_harmless {
+            !present || !seen.plan.destroys() || matches
+        } else if broken.drain_runs_gone {
             // `plan === null || (plan.effects.length === 0 && !admitted.approved)`.
             !present || matches
         } else {
@@ -942,25 +965,34 @@ impl ApprovalBinding {
         }
     }
 
-    /// `drainMachine`'s `preflight` reads the Cluster again, and `retire_copies` asks each
-    /// global copy Out with `EmptyPolicy::RequireOtherIn`. The drained Server's `last_in`
-    /// counts B's copy when its owner answers In and not leaving and proxies ack it; it
-    /// never reads whether B's Container runs.
-    fn engine_drain(&self, state: &mut State) {
-        let refuses = state.other.rotation != Rotation::In && !self.broken.retire_skips_last_in;
-        state.retirement = Some(if refuses {
-            Retirement::NotRetired
+    /// `preflight`'s `chosen_on`: it refuses a drained Server whose listing didn't answer,
+    /// and one running a user Global, whatever the scope chose. The first read comes before
+    /// services go off, the second (`second`) after. A Server Cloud's frame lost may still
+    /// be one the Engine sees, so the Engine drains it too.
+    fn engine_read(&self, state: &mut State, second: bool) {
+        let broken = self.broken;
+        if state.unlisted && !broken.engine_reads_unlisted_empty {
+            state.refuse(Why::Unobservable);
+            return;
+        }
+        let seen = !state.unlisted
+            && state
+                .global
+                .is_some_and(|global| global.chosen || !broken.engine_global_scoped);
+        if seen && !broken.engine_skips_globals {
+            state.refuse(Why::EngineGlobal);
+            return;
+        }
+        if !second {
+            state.off = true;
+            state.exec = Exec::Off;
+            return;
+        }
+        let plan = if state.global.is_some() {
+            Plan::Global
         } else {
-            Retirement::Retired
-        });
-        state.exec = Exec::Retiring;
-    }
-
-    /// The Drain's effect, once A's retirement ended. A copy left running, refused or not
-    /// unlisted, makes it the asked plan less that retirement, which the Drain reports
-    /// `NotRetired`. A removed copy leaves G with what answers on B. A Server Cloud's frame
-    /// lost may still be one the Engine sees, so the Engine drains it too.
-    fn engine_answers(&self, state: &mut State, plan: Plan) {
+            state.live
+        };
         state.wrote = Some(Wrote {
             plan,
             valid: self.valid(state),
@@ -968,44 +1000,13 @@ impl ApprovalBinding {
         state.exec = Exec::Moving;
     }
 
-    /// `send_out`: the guard's refusal comes back as `LastIn`, and a copy it let go is
-    /// written Out.
-    fn engine_out(&self, state: &mut State) {
-        match state.retirement {
-            Some(Retirement::Retired) => state.exec = Exec::Unlisting,
-            Some(Retirement::NotRetired | Retirement::NotUnlisted) | None => {
-                self.engine_answers(state, state.live);
-            }
-        }
-    }
-
-    /// `wait_unlisted`, which reads the routes the proxies ack, never B itself, nor whether
-    /// a proxy restarted.
-    fn engine_unlist(&self, state: &mut State) {
-        if self.broken.retire_skips_unlisting || state.other.unlists_beside(state.restarted) {
-            state.exec = Exec::Removing;
-        } else {
-            state.retirement = Some(Retirement::NotUnlisted);
-            self.engine_answers(state, state.live);
-        }
-    }
-
-    /// `retire`'s removal, reading no other copy again.
-    fn engine_remove(&self, state: &mut State) {
-        let plan = if state.other.serving {
-            state.live
-        } else {
-            Plan::LastCopy
-        };
-        self.engine_answers(state, plan);
-    }
-
     /// `planDrainVolumes`: the Service the Engine left for its Volume gets a move when the
-    /// new frame's `dataCheck` allows one.
-    fn drain_volumes(state: &mut State) {
+    /// new frame's `dataCheck` allows one. It keeps a Service any copy of which is Global.
+    fn drain_volumes(&self, state: &mut State) {
         state.exec = match state.data {
             Data::Stays => Exec::Ran,
-            read @ (Data::Frees | Data::Switched) => Exec::Admitting { read },
+            Data::Global if !self.broken.volume_moves_global => Exec::Ran,
+            read @ (Data::Frees | Data::Switched | Data::Global) => Exec::Admitting { read },
         };
     }
 }
@@ -1063,18 +1064,13 @@ impl Model for ApprovalBinding {
                         edited: false,
                         trusted: true,
                         crashed: false,
-                        other: OtherCopy {
-                            running: true,
-                            rotation: Rotation::In,
-                            serving: true,
-                        },
-                        stopped: None,
-                        left: None,
-                        failed: None,
-                        restarted: false,
-                        retirement: None,
+                        global: None,
+                        silent: None,
+                        unlisted: false,
+                        off: false,
                         data: Data::Stays,
                         data_late: false,
+                        swapped: None,
                         exec: Exec::Ready,
                         wrote: None,
                         admission: None,
@@ -1092,7 +1088,7 @@ impl Model for ApprovalBinding {
         if !state.edited {
             actions.extend(self.edits(state).iter().map(|plan| Action::Edit(*plan)));
         }
-        self.copy_changes(state, actions);
+        self.server_changes(state, actions);
         actions.extend(
             self.data_changes(state)
                 .iter()
@@ -1116,18 +1112,20 @@ impl Model for ApprovalBinding {
                     actions.push(Action::Crash);
                 }
             }
-            Exec::Retiring => actions.push(Action::Out),
-            Exec::Unlisting => {
-                actions.push(Action::Unlist);
-                if self.open_paths && !state.restarted {
-                    actions.push(Action::ProxiesRestart);
-                }
-            }
-            Exec::Removing => actions.push(Action::Remove),
+            Exec::Off => actions.push(Action::Reread),
             Exec::Moving => actions.push(Action::Volumes),
-            Exec::Admitting { .. } => {
+            Exec::Admitting { read } => {
                 actions.push(Action::Admit(true));
                 actions.push(Action::Admit(false));
+                if state.swapped.is_none() && read != Data::Global {
+                    actions.push(Action::Swap);
+                }
+            }
+            Exec::Cutting { read } => {
+                actions.push(Action::Cut);
+                if state.swapped.is_none() && read != Data::Global {
+                    actions.push(Action::Swap);
+                }
             }
             Exec::Ran | Exec::Refused { .. } => {}
         }
@@ -1140,26 +1138,19 @@ impl Model for ApprovalBinding {
                 state.live = plan;
                 state.edited = true;
             }
-            Action::CopyStops => {
-                state.other.running = false;
-                state.stopped = Some(state.window());
-                state.other.serving = false;
+            Action::Global { chosen } => {
+                state.global = Some(Landed {
+                    chosen,
+                    before: state.window()?,
+                });
             }
-            Action::CopyOut => {
-                state.other.rotation = Rotation::Out;
-                state.left = Some(state.window());
-                state.other.serving = false;
+            Action::Silent => {
+                state.silent = Some(Seen {
+                    plan: state.live,
+                    global: state.global.is_some(),
+                });
             }
-            Action::CopyDown => {
-                state.other.rotation = Rotation::Down;
-                state.left = Some(state.window());
-                state.other.serving = false;
-            }
-            Action::CopyFails => {
-                state.failed = Some(state.window());
-                state.other.serving = false;
-            }
-            Action::ProxiesRestart => state.restarted = true,
+            Action::Unlisted => state.unlisted = true,
             Action::Revoke => state.trusted = false,
             Action::Send => match self.command {
                 Command::Store(write) => self.send_store(&mut state, write),
@@ -1212,30 +1203,68 @@ impl Model for ApprovalBinding {
                 state.crashed = true;
                 // What changed during the dead attempt lands before the retry's compare.
                 state.data_late = false;
-                for change in [&mut state.stopped, &mut state.left, &mut state.failed] {
-                    if *change == Some(Before::Guard) {
-                        *change = Some(Before::Compare);
-                    }
+                if let Some(global) = &mut state.global
+                    && global.before == Before::Read
+                {
+                    global.before = Before::Compare;
                 }
             }
             Action::Data(data) => {
                 state.data = data;
                 state.data_late = state.compared();
             }
-            Action::Engine => self.engine_drain(&mut state),
-            Action::Out => self.engine_out(&mut state),
-            Action::Unlist => self.engine_unlist(&mut state),
-            Action::Remove => self.engine_remove(&mut state),
-            Action::Volumes => Self::drain_volumes(&mut state),
+            Action::Engine => self.engine_read(&mut state, false),
+            Action::Reread => self.engine_read(&mut state, true),
+            Action::Volumes => self.drain_volumes(&mut state),
             Action::Admit(admitted) => {
                 let Exec::Admitting { read } = state.exec else {
                     return None;
                 };
-                state.admission = Some(if admitted {
-                    Admission::Moved(read)
+                if !admitted {
+                    state.admission = Some(Admission::Stayed);
+                    state.exec = Exec::Ran;
+                } else if self.holder_refuses(read, state.swapped) {
+                    state.admission = Some(Admission::HolderRefused);
+                    state.exec = Exec::Ran;
                 } else {
-                    Admission::Stayed
+                    state.exec = Exec::Cutting { read };
+                }
+            }
+            Action::Swap => {
+                state.swapped = Some(match state.exec {
+                    Exec::Admitting { .. } => Swap::Admit,
+                    Exec::Cutting { .. } => Swap::Cut,
+                    Exec::Ready
+                    | Exec::Resending
+                    | Exec::Waiting { .. }
+                    | Exec::Covered { .. }
+                    | Exec::Off
+                    | Exec::Moving
+                    | Exec::Ran
+                    | Exec::Refused { .. } => return None,
                 });
+            }
+            Action::Cut => {
+                let Exec::Cutting { read } = state.exec else {
+                    return None;
+                };
+                if self.holder_refuses(read, state.swapped) {
+                    state.admission = Some(Admission::HolderRefused);
+                } else {
+                    // The cut stops the Container that holds the Volume now.
+                    let holder = if state.swapped.is_some() {
+                        Data::Global
+                    } else {
+                        read
+                    };
+                    state.admission = Some(Admission::Moved(holder));
+                    if holder == Data::Global {
+                        state.wrote = Some(Wrote {
+                            plan: Plan::Global,
+                            valid: self.valid(&state),
+                        });
+                    }
+                }
                 state.exec = Exec::Ran;
             }
         }
@@ -1323,37 +1352,76 @@ impl Model for ApprovalBinding {
                 properties.push(Property::sometimes(DRAIN_RETRIED, |_, state: &State| {
                     state.crashed && state.wrote.is_some()
                 }));
-                properties.push(Property::sometimes(LAST_IN_KEEPS, |_, state: &State| {
-                    state.left == Some(Before::Guard)
-                        && state.retirement == Some(Retirement::NotRetired)
-                        && state.wrote
-                            == Some(Wrote {
-                                plan: Plan::Asked,
-                                valid: true,
-                            })
+                properties.push(Property::sometimes(
+                    CLOUD_REFUSES_GLOBAL,
+                    |_, state: &State| {
+                        matches!(
+                            state.exec,
+                            Exec::Refused {
+                                why: Why::Global,
+                                ..
+                            }
+                        )
+                    },
+                ));
+                properties.push(Property::sometimes(
+                    ENGINE_REFUSES_UNCHOSEN,
+                    |_, state: &State| {
+                        state.global.is_some_and(|global| {
+                            !global.chosen && matches!(global.before, Before::Read | Before::Reread)
+                        }) && matches!(
+                            state.exec,
+                            Exec::Refused {
+                                why: Why::EngineGlobal,
+                                ..
+                            }
+                        )
+                    },
+                ));
+                properties.push(Property::sometimes(UNLISTED_REFUSES, |_, state: &State| {
+                    state.global.is_some()
+                        && matches!(
+                            state.exec,
+                            Exec::Refused {
+                                why: Why::Unobservable,
+                                ..
+                            }
+                        )
                 }));
-                properties.push(Property::sometimes(UNLISTING_KEEPS, |_, state: &State| {
-                    state.stopped == Some(Before::Guard)
-                        && !state.other.running
-                        && state.retirement == Some(Retirement::NotUnlisted)
-                        && state.wrote
-                            == Some(Wrote {
-                                plan: Plan::Asked,
-                                valid: true,
-                            })
+                properties.push(Property::sometimes(OFF_REFUSED, |_, state: &State| {
+                    state.off
+                        && matches!(
+                            state.exec,
+                            Exec::Refused {
+                                why: Why::EngineGlobal | Why::Unobservable,
+                                ..
+                            }
+                        )
                 }));
                 properties.push(Property::sometimes(
-                    COPY_STOP_CHANGED,
+                    UNANSWERED_REFUSES,
                     |_, state: &State| {
-                        state.live == Plan::Asked
-                            && !state.other.running
+                        state.silent
+                            == Some(Seen {
+                                plan: Plan::Asked,
+                                global: false,
+                            })
+                            && state.live != Plan::Asked
                             && matches!(
                                 state.exec,
                                 Exec::Refused {
-                                    why: Why::Changed,
+                                    why: Why::Unseen,
                                     ..
                                 }
                             )
+                    },
+                ));
+                properties.push(Property::sometimes(
+                    GLOBAL_KEEPS_VOLUME,
+                    |_, state: &State| {
+                        state.data == Data::Global
+                            && state.exec == Exec::Ran
+                            && state.admission.is_none()
                     },
                 ));
                 properties.push(Property::sometimes(SWITCHED_MOVES, |_, state: &State| {
@@ -1363,6 +1431,10 @@ impl Model for ApprovalBinding {
                     ADMISSION_REFUSES,
                     |_, state: &State| state.admission == Some(Admission::Stayed),
                 ));
+                properties.push(Property::sometimes(HOLDER_REFUSES, |_, state: &State| {
+                    state.swapped == Some(Swap::Cut)
+                        && state.admission == Some(Admission::HolderRefused)
+                }));
             }
             Command::Machine(_) => {
                 properties.push(Property::sometimes(
@@ -1389,15 +1461,23 @@ const MEMBER_ASKS: &str = "a member's own yes reaches the Store and asks an owne
 const DRAIN_CHANGED: &str = "a Drain whose plan changed after its gate is refused when it runs";
 const DRAIN_RETRIED: &str = "a Drain runs after Inngest ran its step again";
 const REVOKED_UNDER_TURN: &str = "a key revoked while its call waited is refused under the turn";
-const LAST_IN_KEEPS: &str = "a global whose other copy left rotation after Cloud's compare \
-     stays NotRetired: LastIn refuses it";
-const UNLISTING_KEEPS: &str = "a global whose other copy stopped after Cloud's compare stays \
-     NotRetired: the proxies keep routing its copy here, so it is never unlisted";
-const COPY_STOP_CHANGED: &str =
-    "a Drain whose other copy stopped before Cloud's compare is refused when it runs";
+const CLOUD_REFUSES_GLOBAL: &str =
+    "a user Global Cloud reads on the drained Server refuses the Drain before the Engine";
+const ENGINE_REFUSES_UNCHOSEN: &str = "a user Global the Drain's scope left out, landed after \
+     Cloud's compare, refuses the Drain at the Engine";
+const UNLISTED_REFUSES: &str =
+    "a Server the Engine can't list refuses the Drain, though a Global runs there";
+const OFF_REFUSED: &str = "a Global or a lost listing at the Engine's second read refuses the \
+     Drain with services off";
+const UNANSWERED_REFUSES: &str = "a Server that stopped answering Cloud refuses the Drain, \
+     though its last rows match the yes";
+const GLOBAL_KEEPS_VOLUME: &str =
+    "a Service made a Global after the Engine left it keeps its Volume";
 const SWITCHED_MOVES: &str = "a Volume the Service switched to after Cloud's compare and \
      before services-off moves once admitted, which the carried yes never named";
 const ADMISSION_REFUSES: &str = "admission refuses a planned Volume move, and the Volume stays";
+const HOLDER_REFUSES: &str = "a Global that replaced the Volume's holder after admission is \
+     refused at the Move's step, and the Volume stays";
 
 /// `path` under `model` in the code's words: each step, and what stands once it ran.
 fn story(model: &ApprovalBinding, path: &[(State, Option<Action>)]) -> String {
@@ -1442,28 +1522,16 @@ fn story(model: &ApprovalBinding, path: &[(State, Option<Action>)]) -> String {
         );
         let volume = if model.command == Command::Drain {
             format!(
-                " B=(reads {}, {:?}, {}, stopped {:?}, left {:?}, failed silently {:?}) proxies={} retirement={:?} data={:?} admission={:?}",
-                if state.other.running {
-                    "running"
-                } else {
-                    "stopped"
-                },
-                state.other.rotation,
-                if state.other.serving {
-                    "serving"
-                } else {
-                    "not serving"
-                },
-                state.stopped,
-                state.left,
-                state.failed,
-                if state.restarted {
-                    "restarted"
-                } else {
-                    "keep their route"
-                },
-                state.retirement,
+                " server=(global {:?}, Cloud reads {}, Engine lists it {}, services {}) data={:?} swapped={:?} admission={:?}",
+                state.global,
+                state.silent.map_or_else(
+                    || "it now".to_owned(),
+                    |seen| format!("its last rows {seen:?}")
+                ),
+                !state.unlisted,
+                if state.off { "off" } else { "on" },
                 state.data,
+                state.swapped,
                 state.admission
             )
         } else {
@@ -1489,34 +1557,25 @@ fn reads_as(model: &ApprovalBinding, action: Action, after: &State) -> String {
         Exec::Resending => "and Cloud's first call asks for the yes's digest".to_owned(),
         Exec::Waiting { digest } => format!("and it waits, holding digest {digest:?}"),
         Exec::Covered { digest } => format!("and it matches digest {digest:?}"),
-        Exec::Retiring => "and the guard has decided".to_owned(),
-        Exec::Unlisting => "and it waits for every proxy to drop the copy here".to_owned(),
-        Exec::Removing => "and every proxy's route lacks the copy here".to_owned(),
+        Exec::Off => "and services go off, the second read to come".to_owned(),
         Exec::Moving => "and the Engine answers".to_owned(),
         Exec::Admitting { read } => format!("and it plans a move from what it read: {read:?}"),
+        Exec::Cutting { .. } => "and the Move starts, its cut to come".to_owned(),
         Exec::Ready => String::new(),
     };
     match action {
         Action::Edit(plan) => format!("editor: {}", edit_words(plan)),
-        Action::CopyStops => {
-            "B: G's Container there stops and its owner publishes it exited; its rotation stays In and its daemon still answers"
+        Action::Global { chosen: true } => {
+            "server: a Service the Drain's scope chose is redeployed there as a Global".to_owned()
+        }
+        Action::Global { chosen: false } => {
+            "server: a Full caller starts a user Global there, outside the Drain's scope".to_owned()
+        }
+        Action::Silent => {
+            "server: it stops answering Cloud's probes, so the frame lists it unanswered with its last rows"
                 .to_owned()
         }
-        Action::CopyOut => {
-            "B: G's copy there goes Out, its own guard having counted the copy here before it was marked leaving"
-                .to_owned()
-        }
-        Action::CopyDown => {
-            "B: its Machine goes Down; its last rows still read In and Running".to_owned()
-        }
-        Action::CopyFails => {
-            "B: G's copy there stops answering while what Cloud and the proxies read still says Running and In (a crash loop with no healthcheck, or an exit not yet replicated)"
-                .to_owned()
-        }
-        Action::ProxiesRestart => {
-            "proxies: they restart, and Reach::new holds no route, so next_route routes only what serves now, never the Out copy here"
-                .to_owned()
-        }
+        Action::Unlisted => "server: it stops answering the Engine's listing".to_owned(),
         Action::Revoke => {
             "remover: set_device removes the Device and its slot under its own exclusive turn"
                 .to_owned()
@@ -1527,47 +1586,34 @@ fn reads_as(model: &ApprovalBinding, action: Action, after: &State) -> String {
         }
         Action::Data(data) => format!("frame: {}", data_words(data)),
         Action::Engine => format!(
-            "Engine: drainMachine's preflight reads the Cluster again, and the drained Server's last_in {}, {outcome}",
-            match after.retirement {
-                Some(Retirement::NotRetired) => "counts no other In copy and refuses: NotRetired",
-                Some(Retirement::Retired) if broken.retire_skips_last_in => {
-                    "lets G's copy go without counting (under Broken)"
-                }
-                Some(Retirement::Retired | Retirement::NotUnlisted) | None => {
-                    "counts B's copy In from its owner's answer, reading no runtime state"
-                }
-            }
+            "Engine: drainMachine's preflight lists the drained Server and chosen_on {}, {outcome}",
+            engine_words(broken)
         ),
-        Action::Out if after.exec == Exec::Unlisting => {
-            format!("Engine: send_out writes G's copy here Out, {outcome}")
-        }
-        Action::Out => format!(
-            "Engine: send_out returns LastIn's refusal, G's copy here stays In and the Drain reports NotRetired, {outcome}"
+        Action::Reread => format!(
+            "Engine: preflight lists the drained Server again with services off, and chosen_on {}, {outcome}",
+            engine_words(broken)
         ),
-        Action::Unlist if after.retirement == Some(Retirement::NotUnlisted) => format!(
-            "Engine: wait_unlisted reads every proxy still routing G's copy here, which they keep while B reads stopped or its Machine is Down; past ACK_WAIT retire returns NotConfirmed and the Drain reports NotRetired, {outcome}"
-        ),
-        Action::Unlist if broken.retire_skips_unlisting => format!(
-            "Engine: retire goes on without waiting for the proxies (under Broken), {outcome}"
-        ),
-        Action::Unlist if after.restarted => format!(
-            "Engine: wait_unlisted reads every proxy's route without G's copy here, since they restarted with no route to keep, {outcome}"
-        ),
-        Action::Unlist => format!(
-            "Engine: wait_unlisted reads every proxy's route without G's copy here, since they read B Running and In or every copy Out, {outcome}"
-        ),
-        Action::Remove => format!(
-            "Engine: retire removes G's copy here, reading no other copy again, {outcome}"
+        Action::Volumes if broken.volume_moves_global => format!(
+            "Cloud: planDrainVolumes reads a new frame through dataCheck, which takes a Global's copy as the holder (under Broken), {outcome}"
         ),
         Action::Volumes => {
             format!("Cloud: planDrainVolumes reads a new frame through dataCheck, {outcome}")
         }
-        Action::Admit(true) => {
-            "Cloud: admitDrainVolume admits the move, and the Volume moves".to_owned()
-        }
+        Action::Admit(true) => format!(
+            "Cloud: admitDrainVolume reads the holder through {}, {outcome}",
+            holder_words(broken)
+        ),
         Action::Admit(false) => {
             "Cloud: admitDrainVolume refuses the move, and the Volume stays".to_owned()
         }
+        Action::Swap => {
+            "server: a Full caller replaces the Service holding the Volume with a Global".to_owned()
+        }
+        Action::Cut => format!(
+            "Cloud: the Move's step reads the holder through {}, then cuts it: {:?}",
+            holder_words(broken),
+            after.admission
+        ),
         Action::Send => match model.command {
             Command::Store(write) if broken.cloud_calls_twice => format!(
                 "executor: handleConfigRequest's first Store call carries no yes (under Broken), {} weighs `required`, {outcome}",
@@ -1582,9 +1628,10 @@ fn reads_as(model: &ApprovalBinding, action: Action, after: &State) -> String {
                     " (under Broken)"
                 }
             ),
-            Command::Drain => {
-                format!("executor: drainServer plans and gateOperation weighs the yes, {outcome}")
-            }
+            Command::Drain => format!(
+                "executor: drainServer plans, drainRefusal{} and gateOperation weighs the yes, {outcome}",
+                cloud_words(broken)
+            ),
             Command::Machine(Route::Turned) => {
                 format!("executor: the call arrives and waits for its turn, {outcome}")
             }
@@ -1601,7 +1648,8 @@ fn reads_as(model: &ApprovalBinding, action: Action, after: &State) -> String {
         },
         Action::Run => match model.command {
             Command::Drain => format!(
-                "Inngest: executeDrainOnce plans again and stillCovered compares the row, {outcome}"
+                "Inngest: executeDrainOnce plans again, drainRefusal{} and stillCovered compares the row, {outcome}",
+                cloud_words(broken)
             ),
             Command::Machine(Route::Turned) if broken.turn_trusts_arrival => format!(
                 "Machine: finish_admitted takes the turn and runs what arrival admitted, unchecked (under Broken), {outcome}"
@@ -1633,7 +1681,43 @@ const fn edit_words(plan: Plan) -> &'static str {
         Plan::Started => {
             "the runner claims the queued Deployment: it is running now, at the same review version"
         }
-        Plan::LastCopy => "G's other copy no longer serves: retiring it here leaves it none",
+        Plan::Global => "a user Global runs on the drained Server",
+    }
+}
+
+/// What `chosen_on` refuses, as `broken` leaves it.
+const fn engine_words(broken: Broken) -> &'static str {
+    match (
+        broken.engine_skips_globals,
+        broken.engine_global_scoped,
+        broken.engine_reads_unlisted_empty,
+    ) {
+        (true, _, _) => "drains past any Global (under Broken)",
+        (false, true, _) => "looks for a Global only among the chosen Services (under Broken)",
+        (false, false, true) => {
+            "reads a Server that didn't answer as running nothing (under Broken)"
+        }
+        (false, false, false) => "refuses a Server it can't list or that runs a user Global",
+    }
+}
+
+/// What the holder check refuses, as `broken` leaves it.
+const fn holder_words(broken: Broken) -> &'static str {
+    match (broken.move_skips_holder, broken.volume_moves_global) {
+        (true, _) => "no check (under Broken)",
+        (false, true) => "a check that takes a Global's copy (under Broken)",
+        (false, false) => {
+            "holderOn and the Drain's pin, which refuse a Global or another Container"
+        }
+    }
+}
+
+/// What `drainRefusal` reads, as `broken` leaves it.
+const fn cloud_words(broken: Broken) -> &'static str {
+    if broken.cloud_reads_unanswered {
+        " reads an unanswered Server's last rows (under Broken)"
+    } else {
+        " refuses an unanswered Server or a user Global"
     }
 }
 
@@ -1645,6 +1729,9 @@ const fn data_words(data: Data) -> &'static str {
         }
         Data::Switched => {
             "a Deploy switches the Service from its shared Volume V1 to V2, onto the drained Server"
+        }
+        Data::Global => {
+            "a Full caller replaces the Service with a Global, whose copy now holds the Volume"
         }
     }
 }
@@ -2067,153 +2154,123 @@ mod tests {
         }
     }
 
-    /// Which Drain steps a change to B lands in.
-    type Window = fn(&Exec) -> bool;
-
-    /// The step `path` took `wanted` from, if any.
-    fn taken_from(path: &[(State, Option<Action>)], wanted: Action) -> Option<&State> {
-        path.iter()
-            .find(|(_, action)| *action == Some(wanted))
-            .map(|(state, _)| state)
-    }
-
-    /// A guard, not a past bug: between Cloud's compare and the Engine's read, G's copy on
-    /// B goes Out. The drained Server's `last_in` refuses taking its copy Out, so G keeps it
-    /// and the Drain reports `NotRetired`. Without the guard, A goes Out beside an Out B,
-    /// the proxies' route empties, and the Drain removes G's last copy.
-    #[test]
-    fn a_retirement_keeps_a_global_s_last_copy() {
-        let broken = Broken {
-            retire_skips_last_in: true,
-            ..Broken::default()
-        };
-        let path = breaks_where(without(Command::Drain, broken), BOUND, |path| {
-            last(path).left == Some(Before::Guard)
-                && last(path).wrote
+    /// The Drain under `broken` reaches an effect a user Global sat beside, on a path
+    /// `ends` accepts.
+    fn drains_beside_a_global(
+        broken: Broken,
+        ends: impl Fn(&State) -> bool + Send + Sync + 'static,
+    ) -> State {
+        last(&breaks_ending(
+            without(Command::Drain, broken),
+            move |state| {
+                state.wrote
                     == Some(Wrote {
-                        plan: Plan::LastCopy,
+                        plan: Plan::Global,
                         valid: true,
                     })
-        });
-        let left = taken_from(&path, Action::CopyOut).expect("B's copy goes Out");
-        assert!(
-            matches!(left.exec, Exec::Covered { .. }),
-            "after the compare"
-        );
+                    && ends(state)
+            },
+        ))
     }
 
-    /// A guard, not a past bug: `retire` removes A only once every proxy dropped it, and a
-    /// proxy keeps routing A while it reads B stopped or B's Machine Down. Without the wait,
-    /// a B that stopped after Cloud's compare, or went Down after the guard counted it,
-    /// leaves G with no serving copy.
+    /// #4567, the fix itself. As `main` did before it, the Engine drains a Server running a
+    /// user Global, so one that landed after Cloud's compare loses the copy there, which
+    /// may be its last that works while the others crash-loop.
     #[test]
-    fn a_retirement_waits_for_the_proxies_to_drop_its_copy() {
+    fn the_engine_refuses_a_drain_beside_a_user_global() {
         let broken = Broken {
-            retire_skips_unlisting: true,
+            engine_skips_globals: true,
             ..Broken::default()
         };
-        let cases: [(Action, Window); 3] = [
-            (Action::CopyStops, |exec| {
-                matches!(exec, Exec::Covered { .. })
-            }),
-            (Action::CopyStops, |exec| {
-                matches!(exec, Exec::Retiring | Exec::Unlisting)
-            }),
-            (Action::CopyDown, |exec| {
-                matches!(exec, Exec::Retiring | Exec::Unlisting)
-            }),
-        ];
-        for (change, from) in cases {
-            breaks_where(without(Command::Drain, broken), BOUND, move |path| {
-                taken_from(path, change).is_some_and(|state| from(&state.exec))
-                    && last(path).wrote
-                        == Some(Wrote {
-                            plan: Plan::LastCopy,
-                            valid: true,
-                        })
-            });
-        }
-    }
-
-    /// The path `open(Command::Drain)` takes when B stops answering, from a state `from`
-    /// accepts, while it still reads Running: A is counted, unlisted and removed, and G is
-    /// left with no serving copy.
-    fn unlisted_beside_a_silent_copy(from: fn(&Exec) -> bool) -> Path<ApprovalBinding> {
-        let path = breaks_where(open(Command::Drain), BOUND, move |path| {
-            taken_from(path, Action::CopyFails).is_some_and(|state| from(&state.exec))
-        });
-        let ran = last(&path);
-        assert!(taken_from(&path, Action::Remove).is_some(), "A was removed");
-        assert_eq!(ran.retirement, Some(Retirement::Retired), "after unlisting");
-        assert!(ran.other.running && !ran.other.serving);
-        assert_eq!(
-            ran.wrote,
-            Some(Wrote {
-                plan: Plan::LastCopy,
-                valid: true,
+        drains_beside_a_global(broken, |state| {
+            state.global.is_some_and(|global| {
+                global.chosen && matches!(global.before, Before::Read | Before::Reread)
             })
+        });
+    }
+
+    /// #4567 before its fourth round: `chosen_on` looked for a Global only in the scope Cloud
+    /// saved at the request, so a Global that landed after Cloud's compare, never in that
+    /// scope, was drained beside. A Global the scope chose was still refused.
+    #[test]
+    fn the_engine_refuses_a_global_its_scope_left_out() {
+        let broken = Broken {
+            engine_global_scoped: true,
+            ..Broken::default()
+        };
+        let model = without(Command::Drain, broken);
+        drains_beside_a_global(broken, |state| {
+            state.global.is_some_and(|global| !global.chosen)
+        });
+        let chosen = first_break(
+            model,
+            BOUND,
+            |path| last(path).global.is_some_and(|global| global.chosen),
+            false,
         );
-        path
+        assert!(
+            chosen.is_none(),
+            "a Global the scope chose is still refused"
+        );
     }
 
-    /// Open, F1 until #4567: reachable through a Full caller's Global spec. B crash-loops under
-    /// `unless-stopped` with no healthcheck from before the ask. Cloud's `drainPlan`, at the
-    /// gate and at `stillCovered`, lands on a moment its Container reads Running, so the yes
-    /// names G kept on B. `last_in` counts B In, the proxies read B Running and drop A, and
-    /// `retire` removes A. B exits again before it serves, and G stays down. S9, so #4567
-    /// is fixing it in production.
+    /// A guard, not a past bug: `chosen_on` refuses a Server whose listing didn't answer.
+    /// Read as running nothing, a Server that runs a Global unseen is drained.
     #[test]
-    fn a_retirement_removes_a_global_s_copy_beside_a_crash_looping_copy_read_running() {
-        unlisted_beside_a_silent_copy(|exec| matches!(exec, Exec::Ready));
+    fn the_engine_refuses_a_server_it_cannot_list() {
+        let broken = Broken {
+            engine_reads_unlisted_empty: true,
+            ..Broken::default()
+        };
+        drains_beside_a_global(broken, |state| state.unlisted);
     }
 
-    /// Open, #4556, F1 until #4567: reachable through a Full caller's Global spec. B's Container exits
-    /// after Cloud's compare and before the guard reads, and its exit has not replicated when
-    /// the proxies drop A. `last_in` counts B, which its daemon still answers In, and the
-    /// proxies route B alone. Had they read the exit, they would have kept A and the Drain
-    /// would report `NotRetired` (`UNLISTING_KEEPS`).
+    /// #4567 before its fourth round: `drainPlan` read a Server the frame lists
+    /// `unanswered` from the rows it last reported, so `stillCovered` matched the yes's
+    /// digest while the plan the Engine then ran had moved on.
     #[test]
-    fn a_retirement_counts_a_global_s_other_copy_that_stopped_unseen_before_its_guard() {
-        unlisted_beside_a_silent_copy(|exec| matches!(exec, Exec::Covered { .. }));
+    fn cloud_refuses_a_server_that_stopped_answering() {
+        let broken = Broken {
+            cloud_reads_unanswered: true,
+            ..Broken::default()
+        };
+        let ran = last(&breaks_ending(without(Command::Drain, broken), |state| {
+            state.silent.is_some()
+                && state
+                    .wrote
+                    .is_some_and(|wrote| wrote.plan != Plan::Asked && wrote.valid)
+        }));
+        assert_eq!(
+            ran.silent.map(|seen| seen.plan),
+            Some(Plan::Asked),
+            "its last rows matched the yes"
+        );
     }
 
-    /// Open, #4556, F1 until #4567: reachable through a Full caller's Global spec. `last_in` counted
-    /// B. B's Container exits before the proxies drop A, and its exit has not replicated by
-    /// then, so they route B alone and `retire` removes A.
+    /// #4567 before its fourth round: `dataCheck` chose, and `holderOn` checked, a Volume's
+    /// holder by Container alone, so a Global that replaced the Service after the Engine's
+    /// report was the Container its move cut.
     #[test]
-    fn a_retirement_removes_a_global_s_copy_beside_one_that_stopped_unseen_after_its_guard() {
-        unlisted_beside_a_silent_copy(|exec| matches!(exec, Exec::Retiring | Exec::Unlisting));
+    fn a_drain_s_volume_move_never_cuts_a_global() {
+        let broken = Broken {
+            volume_moves_global: true,
+            ..Broken::default()
+        };
+        let ran = drains_beside_a_global(broken, |state| state.global.is_none());
+        assert_eq!(ran.admission, Some(Admission::Moved(Data::Global)));
     }
 
-    /// Open, #4556, F1 until #4567: reachable through a Full caller's Global spec.
-    /// `last_in` counted B and A went Out. B stops, and its owner publishes it, or B's
-    /// Machine goes Down. The proxies restart before `wait_unlisted` reads them: with no
-    /// route to keep, `next_route` routes only what serves now, or B on its Down Machine,
-    /// never the Out A. `wait_unlisted` passes and `retire` removes A, though the proxies
-    /// saw B stopped or Down. Without the restart the same path ends `NotUnlisted`
-    /// (`UNLISTING_KEEPS`).
+    /// A guard, not a past bug: the holder check at each Move step. `dataCheck` and
+    /// admission read the holder before a Full caller replaces it with a Global, so only the
+    /// Move's own read stands between that Global's copy and the cut.
     #[test]
-    fn a_retirement_removes_a_global_s_copy_once_a_restarted_proxy_drops_its_route() {
-        for change in [Action::CopyStops, Action::CopyDown] {
-            let path = breaks_where(open(Command::Drain), BOUND, move |path| {
-                taken_from(path, Action::ProxiesRestart).is_some()
-                    && taken_from(path, change).is_some()
-                    && taken_from(path, Action::CopyFails).is_none()
-            });
-            let ran = last(&path);
-            assert!(taken_from(&path, Action::Remove).is_some(), "A was removed");
-            assert_eq!(ran.retirement, Some(Retirement::Retired), "{change:?}");
-            assert!(
-                !ran.other.running || ran.other.rotation == Rotation::Down,
-                "the proxies read B stopped or Down"
-            );
-            assert_eq!(
-                ran.wrote,
-                Some(Wrote {
-                    plan: Plan::LastCopy,
-                    valid: true,
-                })
-            );
-        }
+    fn a_move_step_never_cuts_a_global_that_replaced_its_holder() {
+        let broken = Broken {
+            move_skips_holder: true,
+            ..Broken::default()
+        };
+        let ran = drains_beside_a_global(broken, |state| state.swapped == Some(Swap::Cut));
+        assert_ne!(ran.data, Data::Global, "dataCheck read no Global");
+        assert_eq!(ran.admission, Some(Admission::Moved(Data::Global)));
     }
 }

@@ -318,10 +318,14 @@ next: ployz set 'web.image=ghcr.io/acme/web@sha256:…'
 If the registry doesn't answer within 10 seconds, `ployz deploy` stops and names it.
 
 A narrowed deploy, such as `ployz deploy web`, checks only the services it ships. A service
-that builds from source can't deploy this way yet; `ployz deploy` says so and stops.
-A deploy through Ployz Cloud that builds from source, such as a Git push with no
-automatic deploy rule, fails earlier: your
-servers refuse the build with `This server runs only builds an approved device starts.`
+that builds from source builds under its
+[automatic deploy rule](github.md#approve-a-rule-for-deploys-on-push), which `ployz deploy` signs
+with the deploy when it needs to. When no rule can cover it, `ployz deploy` stops before it signs:
+`No automatic deploy rule covers web as it stands, so your servers won't build it. Turn on Deploy every push, then deploy again.`
+It also stops when you turned automatic deploys off, and when it can't read the rule, saying so.
+A Git push that builds from source with no rule, or under one you turned off, fails at its build,
+and so does a dashboard **Deploy** with no rule. Your servers refuse it with
+`This server runs only builds an approved device starts.`
 
 If `ployz deploy` can't reach your servers before it signs, it warns and deploys
 without signing, and the servers refuse it.
@@ -473,8 +477,6 @@ These need no prompt:
 Your servers must trust your passkey. Add it under **Account**, **Passkeys**. Before it asks,
 Deploy stops and says why, and deploys nothing, when:
 
-- a service builds from source and no rule covers it: `No automatic deploy rule covers web. Approve one, or run ployz deploy.`
-- its rule covers it but hasn't built it yet: `Push to web's branch first. Its rule hasn't built this version yet.`
 - you turned automatic deploys off: `Automatic deploys are off for web. Turn on Deploy every push to deploy it.`
 - a service pulls a private tag: `web pulls a private tag. Write its image by digest (image@sha256:…).`
 - a server runs an older `ployz`: `Upgrade web-1 first. Its ployz can't check your passkey.`

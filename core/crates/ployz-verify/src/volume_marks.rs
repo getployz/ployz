@@ -37,9 +37,10 @@
 //! `ployz:promote` that the next Seed finishes. `ployz_decide::volume_root::RootCopy::parse` must read
 //! that root by its marks, not as a cut.
 //!
-//! Out of scope: a seed copy that fails, `ployz:epoch` (no modelled copy carries it), the
-//! departure, any other failure between the zfs calls of one handler, `ployz:pull` and the
-//! role property on the slot parent, more than one Seed request stranded, and Busy answers.
+//! Out of scope: a seed copy that fails (the `seed_failure` model checks its answer),
+//! `ployz:epoch` (no modelled copy carries it), the departure, any other failure between the
+//! zfs calls of one handler, `ployz:pull` and the role property on the slot parent, more
+//! than one Seed request stranded, and Busy answers.
 
 use std::fmt::Write as _;
 
@@ -51,6 +52,7 @@ use stateright::{Model, Property};
 use crate::harness::{self, everywhere};
 
 mod copy_step;
+mod seed_failure;
 
 /// A snapshot point.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]

@@ -16,7 +16,7 @@ import {
 import { applyServerPolicyChangeActivity, requestServerPolicyChange } from "#/modules/machines/server-policy.server";
 import { operationsOn } from "#/modules/operations/operation-history.server";
 import { OrganizationRuntime, type ScopedRuntimeClientSession } from "#/modules/runtime/organization-runtime.server";
-import type { PloyzSession } from "#/modules/runtime/ployz.server";
+import { firstFrame, type PloyzSession, type Settle } from "#/modules/runtime/ployz.server";
 import type { Database } from "#/server/database.server";
 import { serverDrainAttempt } from "#/modules/machines/tables";
 import { makeInngestEffectRunner, type runInngestEffect } from "#/modules/inngest/run.server";
@@ -37,9 +37,12 @@ const web2 = { id: machineId, name: "web-2" };
 
 /**
  * The cluster a Drain plans from: web-2 runs one owned Service, which moves; nothing is destroyed. Every Server takes
- * services and lists `capabilities` by id, none (unknown) when absent.
+ * services, lists `capabilities` by id, none (unknown) when absent, and answers but `unanswered`, as the entry, web-1,
+ * heard once it probed them.
  */
-const frameOf = (mode: "replicated" | "global", capabilities: Record<string, string[]> = {}) => asTestDouble<RuntimeWatchView>()({
+const frameOf = (mode: "replicated" | "global", capabilities: Record<string, string[]> = {}, unanswered: string[] = []) => asTestDouble<RuntimeWatchView>()({
+  unanswered,
+  answered: [web1.id, web2.id, otherMachineId].filter((id) => !unanswered.includes(id)),
   machines: [web1, web2, { id: otherMachineId, name: "web-3" }].map((machine) => ({
     machine: { ...machine, accepts_services: true, runtime: { capabilities: capabilities[machine.id] ?? [] } },
   })),
@@ -95,8 +98,11 @@ describe("drain-server", () => {
   /** What the Engine answers a Drain with. */
   let drainAnswer: () => Promise<DrainReport>;
   let updates: unknown[][];
-  /** What the Engine shows Cloud of the cluster when a Drain plans. */
+  /** What the Engine shows Cloud of the cluster when a Drain plans: the watch's first frame, then `later`. */
   let frame: RuntimeWatchView;
+  let later: RuntimeWatchView[];
+  /** Called once the watch has sent every frame it has, and waits. */
+  let watchIdle: () => void;
   /** How many more times Cloud finds the cluster not answering. */
   let silentOpens: number;
   /** Whether the Organization has no Cluster paired. */
@@ -135,13 +141,19 @@ describe("drain-server", () => {
           return { status: "unreachable" as const, error: null };
         }) : Effect.succeed({ status: "connected" as const, connected: asTestDouble<PloyzSession>()({
           updateMachine: (...args: unknown[]) => Effect.sync(() => void updates.push(args)),
-          watchFirstFrame: () => Effect.succeed(frame),
+          watchFirstFrame: (timeoutMs: number, settle?: Settle) => firstFrame(() => watchOf([frame, ...later]), timeoutMs, settle),
         }) }),
       }),
     ))) as typeof runInngestEffect;
 
-  const request = (id = requestId, machine = machineId, stops: string[] = []) =>
-    runEffect(requestServerDrain(caller, { organizationSlug: "acme", machineId: machine, requestId: id, stops }));
+  /** A watch that sends `frames` and then nothing, as a daemon whose Cluster stays as it is, until it is closed. */
+  async function* watchOf(frames: RuntimeWatchView[]) {
+    yield* frames;
+    watchIdle();
+    await new Promise(() => {});
+  }
+  const request = (id = requestId, machine = machineId) =>
+    runEffect(requestServerDrain(caller, { organizationSlug: "acme", machineId: machine, requestId: id }));
   /** One run of the Drain. The test engine mints a run ID per step execution; Inngest keeps one per run. */
   const drain = (attemptId = requestId, machine = machineId, runId = "run-drain") => new InngestTestEngine({
     function: createDrainServer(new Inngest({ id: "test" }), runEffect),
@@ -203,6 +215,8 @@ describe("drain-server", () => {
     failAfterRead = false;
     failNextOpen = false;
     frame = frameOf("replicated");
+    later = [];
+    watchIdle = () => {};
     silentOpens = 0;
     unpaired = false;
     whileWaiting = async () => {};
@@ -384,22 +398,14 @@ describe("drain-server", () => {
     expect(drainCalls).toEqual([[machineId, { scope: "services", services: ["shop-production/api"] }]]);
   });
 
-  it("a dashboard Drain that retires the last copy of a Global runs without asking anyone", async () => {
+  // Catches a dashboard yes to a Drain the Engine refuses, since a Global's copy here may be its last that works.
+  it("refuses a dashboard Drain of a Server running a Global, and records nothing", async () => {
     frame = frameOf("global");
-    expect(await request(requestId, machineId, ["shop-production/api"])).toMatchObject({ drain: { attemptId: requestId, state: "pending" } });
-    expect((await harness.pool.query(`select count(*)::int as n from operation_approvals`)).rows).toEqual([{ n: 0 }]);
-    await drain();
-
-    expect(drainCalls).toEqual([[machineId, { scope: "services", services: ["shop-production/api"] }]]);
-  });
-
-  it("refuses a dashboard Drain that would stop a Service its dialog showed as moving", async () => {
-    frame = frameOf("global");
-    await expect(request()).rejects.toThrow("Draining now stops api. Review the drain again.");
+    await expect(request()).rejects.toThrow("api runs on every server, and draining could stop its last working copy.");
     expect(await rows()).toEqual([]);
   });
 
-  it("plans again when its turn comes and refuses a destroy its gate never saw, without asking the Engine", async () => {
+  it("plans again when its turn comes and refuses a Global seen since, without asking the Engine", async () => {
     await request();
     frame = frameOf("global");
     const output = await drain();
@@ -409,9 +415,67 @@ describe("drain-server", () => {
     expect(await rows()).toMatchObject([{
       state: "failed",
       end_code: "refused",
-      refusal_message: "The drain now destroys something nobody approved. Drain the server again to review it.",
+      refusal_message: "api runs on every server, and draining could stop its last working copy. Remove it, deploy, then add it back with a replica count.",
       started_at: null,
     }]);
+  });
+
+  /** A watch's first frame from web-1: sent before it probed anyone, so it has heard only from itself. */
+  const unprobed = () => asTestDouble<RuntimeWatchView>()({ ...frameOf("replicated"), answered: [web1.id] });
+
+  // Catches a Drain admitted, and run, from a watch's first frame, which the entry sends before it probes a Server: its
+  // empty `unanswered` read as web-2 answering, though web-2's rows may miss a Global it runs now.
+  it("reads past a watch's first frame and refuses a Server not answering, at the request and at its turn", async () => {
+    frame = unprobed();
+    later = [frameOf("replicated", {}, [machineId])];
+    await expect(request()).rejects.toThrow("web-2 isn't answering, so Cloud can't tell what draining it would stop.");
+    expect(await rows()).toEqual([]);
+
+    later = [frameOf("replicated")];
+    await request();
+    later = [frameOf("replicated", {}, [machineId])];
+    await drain();
+
+    expect(drainCalls).toEqual([]);
+    expect(await rows()).toMatchObject([{ end_code: "refused", refusal_message: expect.stringContaining("web-2 isn't answering") }]);
+  });
+
+  it("refuses a Drain whose Server the entry still hasn't heard from once Cloud stops waiting, so it can be tried again", async () => {
+    frame = unprobed();
+    const idle = new Promise<void>((resolve) => { watchIdle = resolve; });
+
+    await expect(runEffect(Effect.gen(function* () {
+      const fiber = yield* Effect.forkChild(requestServerDrain(caller, { organizationSlug: "acme", machineId, requestId }));
+      yield* Effect.promise(() => idle);
+      yield* TestClock.adjust("20 seconds");
+      return yield* Fiber.join(fiber);
+    }).pipe(Effect.provide(TestClock.layer())))).rejects.toThrow(
+      "web-2 isn't answering, so Cloud can't tell what draining it would stop. Try again once it answers.",
+    );
+    expect(await rows()).toEqual([]);
+  });
+
+  // An older entry names only who missed its probes, so the Engine's own listing of the Server decides, as before.
+  it("drains through an entry too old to say who answered, leaving the Server's listing to the Engine", async () => {
+    const { answered: _, ...older } = frameOf("replicated");
+    frame = asTestDouble<RuntimeWatchView>()(older);
+
+    await request();
+    await drain();
+
+    expect(drainCalls).toEqual([[machineId, { scope: "services", services: ["shop-production/api"] }]]);
+  });
+
+  // Catches a Drain nobody said yes to reaching the Engine once its Server left the frame, read as destroying nothing.
+  it("runs nothing for a Drain that needed no yes once its Server is gone from the frame", async () => {
+    await request();
+    const replicated = frameOf("replicated");
+    frame = asTestDouble<RuntimeWatchView>()({ ...replicated, machines: replicated.machines.filter(({ machine }) => machine.id !== machineId) });
+
+    await drain();
+
+    expect(drainCalls).toEqual([]);
+    expect(await rows()).toMatchObject([{ end_code: "refused", refusal_message: "The server isn't answering, so Cloud can't tell what draining it would stop. Try again once it answers." }]);
   });
 
   it("passes a plan with nothing owned as no services, so the Engine selects nothing rather than everything", async () => {

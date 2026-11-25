@@ -15,6 +15,7 @@ import { codeOfPasskeyKey } from "#/modules/passkeys/passkey-key";
 import { listOrganizationServers } from "#/modules/runtime/connections.server";
 import { firstRuntimeFrame, OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { pinImageDigests } from "#/modules/runtime/ployz.server";
+import { underRule } from "#/modules/deploy-approval/deploy-tap";
 import { Database } from "#/server/database.server";
 
 /** What a Server that enforces device approval needs to check a passkey's versions. */
@@ -80,9 +81,9 @@ export const prepareDeployTap = Effect.fn("DeployTap.prepare")(function* (actor:
   }, { approval: "not_required", permissions: access.permissions, environments: access.environments });
   if (!read.ok) return { kind: "refused", message: read.refusal.message, details: read.refusal.details } satisfies DeployPlan;
   const plan = read.value;
-  const unsigned = plan.unsigned ?? [];
+  const unsigned = (plan.unsigned ?? []).filter((entry) => !underRule(entry));
   const signs = new Set(unsigned.filter((entry) => entry.needs === "version").map((entry) => entry.service));
-  // A Service only a rule or a digest can cover refuses before any lookup, unless nothing enforces.
+  // A Service only a digest or Deploy every push can cover refuses before any lookup, unless nothing enforces.
   const tags = signs.size < unsigned.length ? [] : (plan.target ?? []).filter((spec) => signs.has(spec.name))
     .map((spec) => spec.container.image).filter((image) => !image.includes("@sha256:"));
   // The Store keeps each Service's last approved version with its Sealed values, so support never reads it. A Store that
