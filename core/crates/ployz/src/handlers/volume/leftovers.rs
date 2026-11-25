@@ -3,7 +3,6 @@
 //! deletes that, after seeing it.
 
 use clap::{ArgMatches, Command};
-use ployz_core::{Hint, RpcErrorCode};
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 
@@ -11,7 +10,6 @@ use super::super::store;
 use super::super::{Error, leaf_matches};
 use super::run::{self, OneRun, Pacing};
 use crate::cli::{positional, value};
-use crate::cloud::account::StoreCallError;
 use crate::ui::{Cell, Table, Tone};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -135,37 +133,15 @@ pub(crate) fn remove(root: &ArgMatches) -> Result<(), Error> {
         Some(confirm) => serde_json::json!({ "server": server, "confirm": confirm }),
         None => serde_json::json!({ "server": server }),
     };
-    let started: Result<OneRun, StoreCallError> =
-        runtime.block_on(crate::cloud::account::refusable_operation(
+    let asked: OneRun = runtime
+        .block_on(crate::cloud::account::refusable_operation(
             credential,
             Method::POST,
             &format!("volume-leftovers/{volume}/rm"),
             Some(&body),
-        ));
-    let run = match started {
-        Ok(started) => started.run,
-        Err(StoreCallError::Refused(refusal))
-            if refusal.code == RpcErrorCode::ConfirmationRequired =>
-        {
-            let shown = refusal
-                .details
-                .get("copy")
-                .and_then(|copy| copy.get("confirm"))
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned);
-            let retry = shown.map(|shown| {
-                Hint::Retry(store.again(&[
-                    volume.as_str(),
-                    "--on",
-                    server.as_str(),
-                    "--confirm",
-                    shown.as_str(),
-                ]))
-            });
-            return Err(store.fail(StoreCallError::Refused(refusal)).hint(retry));
-        }
-        Err(error) => return Err(store.fail(error)),
-    };
+        ))
+        .map_err(|error| store.fail(error))?;
+    let run = asked.run;
     let started = format!("delete of {volume}'s copy on {server}");
     let follow = store::next(matches, &["volume", "leftovers"]);
     if !matches.get_flag("wait") {
