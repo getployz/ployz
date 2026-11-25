@@ -3,10 +3,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
+    Admission, ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
     ContainerRuntimeObservation, CopyRotation, DeploymentLogId, HealthObservation, HttpProtocol,
-    IngressHost, Machine, MachineId, MachineName, Namespace, PortPublication, ProxyRoutes,
-    ResolvedServiceSpec, ServiceContainer, WireGuardPublicKey, proxy_routes, service_containers,
+    IngressHost, KeptNames, Machine, MachineId, MachineName, Namespace, PortPublication,
+    ProxyRoutes, ResolvedServiceSpec, ServiceContainer, WireGuardPublicKey, proxy_routes,
+    service_containers,
 };
 use serde_json::json;
 
@@ -68,6 +69,7 @@ fn copy(suffix: u8, machine: MachineId, rotation: CopyRotation) -> ContainerObse
         stopped: false,
         run: None,
         log_driver: None,
+        admission: None,
     })
     .unwrap()
 }
@@ -113,7 +115,13 @@ fn pass(
     let mut reach = Reach::new(machine('f'));
     reach.update_down(Ok(down.iter().copied().collect()));
     reach.keep(routed.clone());
-    let (routes, projection) = next_pass(&local(), &containers, &BTreeMap::new(), &reach);
+    let (routes, projection) = next_pass(
+        &local(),
+        &containers,
+        &BTreeMap::new(),
+        &reach,
+        &KeptNames::default(),
+    );
     let dialed = projection
         .sites
         .iter()
@@ -256,6 +264,35 @@ fn a_routed_copy_out_of_view_stays_in_caddy() {
     );
 
     assert_eq!(next.dialed, Some(BTreeSet::from([1])));
+}
+
+/// A name kept by its row alone, after every signed copy of it is gone, still keeps an
+/// unsigned copy off its hostname.
+#[test]
+fn an_unsigned_copy_of_a_kept_name_publishes_no_hostname_once_its_signed_copies_are_gone() {
+    let mut free = copy(1, machine('a'), CopyRotation::In);
+    free.try_update(|parts| parts.admission = Some(Admission::Free))
+        .unwrap();
+    let mut kept = KeptNames::default();
+    kept.keep_keys(["signed-service:app/api"]);
+
+    let (routes, projection) = next_pass(
+        &local(),
+        &service_containers([free]),
+        &BTreeMap::new(),
+        &Reach::new(machine('a')),
+        &kept,
+    );
+
+    assert!(routes.is_empty(), "{routes:?}");
+    assert!(
+        projection
+            .sites
+            .iter()
+            .all(|site| site.hostname.as_str() != "api.example"),
+        "{:?}",
+        projection.sites
+    );
 }
 
 /// `next_pass` returns exactly the route [`proxy_routes`] carries, unfiltered, for

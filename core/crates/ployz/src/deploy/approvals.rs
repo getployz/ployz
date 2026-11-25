@@ -155,6 +155,11 @@ impl RuleProofs {
         self.rules.contains_key(service)
     }
 
+    /// Each Service a rule's proof covers.
+    pub(crate) fn services(&self) -> impl Iterator<Item = &ServiceName> {
+        self.rules.keys()
+    }
+
     /// The verified build a Server issued for each Service, with the claim it covers.
     #[must_use]
     pub(crate) fn issued(&self) -> BTreeMap<ServiceName, ployz_store::VerifiedClaim> {
