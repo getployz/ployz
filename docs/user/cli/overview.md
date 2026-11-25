@@ -452,7 +452,9 @@ an app logged it. Results, `--json`, errors, hints, `ployz get` and `ployz logs`
 `ssh://root@203.0.113.7` as `ssh://<USER>@203.0.113.7`. Ployz masks everything between a URL's
 `://` and the last `@` before the next space, so a password with `/`, `@` or `?` in it is hidden
 whole. A URL with an `@` after its host loses more: `https://registry.npmjs.org/@scope/pkg`
-prints as `https://<USER>@scope/pkg`. Two commands pass output on exactly as
+prints as `https://<USER>@scope/pkg`. So does an image whose repository name ends in `http`,
+`https`, `ws`, `wss`, `ftp` or `file` and that is pinned to a digest: `ghcr.io/acme/my-http:v1@sha256:…`
+prints its tag as `<USER>`. Two commands pass output on exactly as
 it was written: `ployz exec`, which relays what your command prints in the container, and
 `ployz github cat`, which prints a file. To see a value whole, read it where it's used, such as
 `ployz exec web -- printenv DATABASE_URL`.

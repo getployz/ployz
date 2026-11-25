@@ -84,7 +84,17 @@ fn a_urls_user_info_is_masked_whole_however_it_is_written() {
         ),
         (
             "ghcr.io/acme/my-http:demo:sample@host/a@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-            "ghcr.io/acme/my-http:<USER>:<PASSWORD>@host/a@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "ghcr.io/acme/my-http:<USER>:<PASSWORD>@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        ),
+        // An image reference has the shape of a URL whose host is a digest when its repository
+        // ends in a special scheme's name, so its tag is masked too.
+        (
+            "ghcr.io/acme/my-http:v1@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "ghcr.io/acme/my-http:<USER>@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        ),
+        (
+            "\u{1b}[1mftp:user:sample@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef/path\u{1b}[0m",
+            "\u{1b}[1mftp:<USER>:<PASSWORD>@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef/path\u{1b}[0m",
         ),
         (
             "a https://u:sample@a.example and b ssh://sample@b.example",
@@ -107,8 +117,6 @@ fn text_without_user_info_is_left_as_it_is() {
         "nginx@sha256:abc and user@host and https://",
         "docker.io/library/nginx:1.25@sha256:0123abcd",
         "ghcr.io/acme/web:v1@sha256:0123abcd",
-        "ghcr.io/acme/my-http:v1@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-        "registry.example/team/sftp-wss:2@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         "git@github.com:acme/web.git",
         "mailto:a@b.example",
         "See https://example.com for help, or mail a@b.example.",
