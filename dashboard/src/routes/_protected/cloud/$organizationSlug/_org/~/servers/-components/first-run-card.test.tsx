@@ -2,6 +2,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
+import { tolerateForeignDom } from "#/lib/foreign-dom";
 import * as fleetTokenFunctions from "#/modules/machines/waiting/fleet-token.functions";
 import * as memberFunctions from "#/modules/organization/members.functions";
 import { membersKey, ROLE_CHECKING, ROLE_UNCHECKED } from "#/modules/organization/members.queries";
@@ -51,4 +52,33 @@ it("makes the same 24-hour token as Add servers and ployz server token create", 
   fireEvent.click(screen.getByRole("button", { name: "Get install command" }));
   await screen.findByText("Shown once. Expires in 24h.");
   expect(create).toHaveBeenCalledWith({ data: expect.objectContaining({ expiresIn: "1d" }) });
+});
+
+/** Does to the page what Chrome's translate does: each text node is swapped for `<font><font>translated</font></font>`. */
+function translate(root: HTMLElement) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const texts: Text[] = [];
+  while (walker.nextNode()) texts.push(walker.currentNode as Text);
+  for (const text of texts) {
+    const outer = document.createElement("font");
+    const inner = outer.appendChild(document.createElement("font"));
+    inner.textContent = `es: ${text.data}`;
+    text.replaceWith(outer);
+  }
+}
+
+it("gets the install command on a page the browser translated", async () => {
+  tolerateForeignDom();
+  let answer!: () => void;
+  const token = { token: "pflt_first", id: "token-1", name: "brisk-otter", expiresAt: "2026-10-24T10:00:00Z", cloudOrigin: "https://ployz.dev", ployzVersion: "1.2.3" };
+  vi.spyOn(fleetTokenFunctions, "createFleetTokenServerFn").mockReturnValue(new Promise((settle) => { answer = () => settle(token); }));
+  const client = new QueryClient();
+  client.setQueryData(membersKey("ada"), { members: [], invites: [], mail: false, support: true });
+  const { container } = render(<QueryClientProvider client={client}><FirstRunCard organizationSlug="ada" arrived={false} /></QueryClientProvider>);
+  translate(container);
+  const get = screen.getByRole("button", { name: "es: Get install command" });
+  fireEvent.click(get);
+  await waitFor(() => expect(get.querySelector('[data-slot="spinner"]')).not.toBeNull());
+  await act(async () => answer());
+  expect(await screen.findByText("Shown once. Expires in 24h.")).toBeTruthy();
 });
