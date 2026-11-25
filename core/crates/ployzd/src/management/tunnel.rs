@@ -68,22 +68,54 @@ pub(super) async fn serve(
             );
         }
     };
+    relay(
+        connection,
+        (send, recv),
+        &local,
+        records,
+        remote,
+        &record,
+        &bound,
+        shutdown,
+    )
+    .await;
+    // `relay` dropped every socket the tunnel opened before it returned.
+    bound.stopped();
+}
+
+/// Open the tunnel `bound` ties to `remote` and relay it until either side ends it, the key
+/// is revoked or its work ended, or `shutdown`, closing `connection` with why.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one admitted tunnel's parts, borrowed from `serve`"
+)]
+async fn relay(
+    connection: Connection,
+    (send, recv): (iroh::endpoint::SendStream, iroh::endpoint::RecvStream),
+    local: &LocalMachine,
+    records: watch::Receiver<Arc<LocalMachineRecord>>,
+    remote: ployz_core::ClientKey,
+    record: &LocalMachineRecord,
+    bound: &crate::machine::Bound,
+    shutdown: CancellationToken,
+) {
     let revoked = revoked(records, remote);
     tokio::pin!(revoked);
     let opened = tokio::select! {
         () = &mut revoked => return connection.close(REVOKED, b"revoked"),
         () = bound.ended() => return connection.close(REVOKED, b"revoked"),
         () = shutdown.cancelled() => return connection.close(VarInt::from_u32(0), b"shutdown"),
-        opened = tokio::time::timeout(OPEN_TIMEOUT, open(send, recv, &record, &local)) => opened
+        opened = tokio::time::timeout(OPEN_TIMEOUT, open(send, recv, record, local)) => opened
             .unwrap_or(Err(TunnelError::Timeout)),
     };
-    let (mut tcp, mut stream) = match opened {
+    let (target, mut tcp, mut stream) = match opened {
         Ok(opened) => opened,
         Err(reason) => {
             let reason = reason.to_string();
             return connection.close(VarInt::from_u32(TUNNEL_FAILED), reason.as_bytes());
         }
     };
+    bound.name(format!("a port-forward tunnel to {target}"));
     tokio::select! {
         () = &mut revoked => connection.close(REVOKED, b"revoked"),
         () = bound.ended() => connection.close(REVOKED, b"revoked"),
@@ -146,7 +178,7 @@ async fn open(
     mut recv: iroh::endpoint::RecvStream,
     record: &LocalMachineRecord,
     local: &LocalMachine,
-) -> Result<(TcpStream, TunnelStream), TunnelError> {
+) -> Result<(SocketAddr, TcpStream, TunnelStream), TunnelError> {
     let length = recv.read_u8().await.map_err(TunnelError::Header)?;
     let mut target = vec![0; usize::from(length)];
     recv.read_exact(&mut target)
@@ -171,7 +203,7 @@ async fn open(
     send.write_u8(TUNNEL_OPEN)
         .await
         .map_err(TunnelError::Acknowledgement)?;
-    Ok((tcp, tokio::io::join(recv, send)))
+    Ok((target, tcp, tokio::io::join(recv, send)))
 }
 
 #[cfg(test)]

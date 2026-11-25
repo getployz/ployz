@@ -1,13 +1,20 @@
 //! Work at Full scope that outlives the call that started it: an exec, a port-forward
 //! tunnel, a Build, a Build Grant. Each is bound to the management key that asked for it.
 //! Every key change, once its record is written and before it returns, ends the work whose
-//! key no longer holds Full scope, through [`LocalMachine::finish_key_change`]. It waits at
-//! most [`STOP_WITHIN`] for each piece to stop, and returns to its caller every piece that
-//! did not confirm it stopped.
+//! key no longer holds Full scope, through [`LocalMachine::finish_key_change`], and waits at
+//! most [`STOP_WITHIN`] for it to stop.
 //!
-//! A secret is read for bound work only through [`Bound::read`]. A [`Bound`] is work the key
-//! change waits for, so no read is under way once the change has returned. A [`Tie`] only
-//! says whether the work has ended, and reads nothing.
+//! The registry forgets work only on evidence that it ended: a [`Bound`] goes through
+//! [`Bound::stopped`] once its holder saw the work end, and any other way leaves a doubt.
+//! Work that still runs or left a doubt stays, past the key change that ended it. Every key
+//! change that finds its key short of Full reports it by name, until a [`Recheck`] sees it
+//! end. [`ployz_decide::bound_work`] holds the rules; `ployz-verify`'s `bound_work` model
+//! explores them against key changes.
+//!
+//! A secret is read, and an effect starts, for bound work only under the lock a key change
+//! ends work under: through [`Bound::read`], or by taking a fresh [`Bound`] with
+//! [`Tie::hold`] right before the effect. A key change waits for every Bound, so nothing
+//! reads or starts once it has returned.
 //!
 //! Work from this Server's local socket, and the daemon's own, is bound to no key and ends
 //! only on its own.
@@ -18,7 +25,9 @@ use std::{
     time::Duration,
 };
 
+use futures_util::future::BoxFuture;
 use ployz_core::{ClientKey, ManagementScope};
+use ployz_decide::bound_work::{Entry, Release};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
@@ -30,6 +39,13 @@ use crate::machine::LocalMachineRecord;
 /// work that bound failed.
 pub(crate) const STOP_WITHIN: Duration = Duration::from_secs(90);
 
+/// A later look at work that went without evidence it ended, which a key change runs:
+/// `Ok` once it saw the work end.
+pub type Recheck = Arc<dyn Fn() -> BoxFuture<'static, Result<(), Cause>> + Send + Sync>;
+
+/// Why work could not confirm it stopped, in its own words.
+pub type Cause = Box<dyn std::error::Error + Send + Sync>;
+
 /// The work bound to management keys on this Machine, which every clone of it shares.
 #[derive(Clone)]
 pub(super) struct BoundWork {
@@ -40,21 +56,37 @@ pub(super) struct BoundWork {
 #[derive(Default)]
 struct Open {
     next: u64,
-    work: HashMap<u64, Entry>,
+    work: HashMap<u64, Piece>,
 }
 
-/// One piece of work still bound to `key`.
-struct Entry {
+/// One piece of work bound to `key`, kept until it is settled.
+struct Piece {
     key: ClientKey,
     work: Work,
+    /// What names this piece to a person, once the work knows it.
+    name: Option<String>,
     end: CancellationToken,
-    /// Closed once every [`Bound`] of the work has dropped.
-    running: watch::Sender<()>,
-    unconfirmed: Unconfirmed,
+    /// How many Bounds hold the work, which a key change waits on.
+    holders: Arc<watch::Sender<u32>>,
+    facts: Entry<Doubt>,
 }
 
-/// Why the work could not confirm it stopped, as its [`Bound`]s report it.
-type Unconfirmed = Arc<Mutex<Vec<StopCause>>>;
+/// A Bound that went without evidence its work ended.
+struct Doubt {
+    id: u64,
+    cause: Arc<StopCause>,
+    recheck: Option<Recheck>,
+}
+
+impl Piece {
+    fn named(&self) -> String {
+        self.name.clone().unwrap_or_else(|| self.work.to_string())
+    }
+
+    fn publish(&self) {
+        self.holders.send_replace(self.facts.holders());
+    }
+}
 
 /// Which work a key started, as a key change names it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -76,18 +108,17 @@ impl std::fmt::Display for Work {
     }
 }
 
-/// Work running for the key that started it, which a key change that ends it waits for: the
-/// work keeps a `Bound` until it has stopped acting for that key. Reads a secret only
-/// through [`Self::read`].
-#[must_use]
+/// Work running for the key that started it, which a key change that ends it waits for. It
+/// goes through [`Self::stopped`] once its holder saw the work end, or
+/// [`Self::unconfirmed`]; dropped any other way, it leaves a doubt the registry keeps.
+#[must_use = "a Bound goes through `stopped` or `unconfirmed`; dropped, it leaves a doubt"]
 pub struct Bound {
     tie: Tie,
-    /// `None` for work no management key started.
-    running: Option<watch::Receiver<()>>,
+    released: bool,
 }
 
 /// What ties work to the key that started it, holding no key change up: whether a key change
-/// ended it. [`Self::hold`] makes another [`Bound`] of it while none has.
+/// ended it. [`Self::hold`] takes another [`Bound`] of it.
 #[derive(Clone)]
 pub struct Tie(Arc<Binding>);
 
@@ -101,19 +132,12 @@ struct Keyed {
     work: BoundWork,
     id: u64,
     key: ClientKey,
-    unconfirmed: Unconfirmed,
 }
 
 impl Drop for Binding {
     fn drop(&mut self) {
         if let Some(keyed) = &self.key {
-            keyed
-                .work
-                .open
-                .lock()
-                .expect("bound work lock")
-                .work
-                .remove(&keyed.id);
+            keyed.work.settle(keyed.id, Entry::untie);
         }
     }
 }
@@ -121,41 +145,43 @@ impl Drop for Binding {
 /// Why a piece of work did not confirm it stopped.
 #[derive(Debug, thiserror::Error)]
 pub enum StopCause {
-    #[error("it still ran {} s after the key change ended it", STOP_WITHIN.as_secs())]
+    #[error("it still ran {} s after a key change ended it", STOP_WITHIN.as_secs())]
     Deadline,
     #[error("its task failed")]
     Panicked,
+    #[error("its task went without seeing it end")]
+    Dropped,
     /// The work's own account of why it can't confirm it stopped.
     #[error(transparent)]
-    Reported(Box<dyn std::error::Error + Send + Sync>),
+    Reported(Cause),
 }
 
-/// A key change was written, but work a key it left short of Full scope started did not
-/// confirm it stopped: `work` first, for `cause`, and `others` more.
+/// A key change was written, but work a key without Full scope started did not confirm it
+/// stopped: every piece by name, and why the first did not.
 #[derive(Debug, thiserror::Error)]
 #[error(
-    "This Server made the key change, but {work} the key started did not confirm it stopped{}",
-    more(*.others)
+    "This Server made the key change, but work a key without Full access started did not confirm it stopped: {}",
+    names(.pieces)
 )]
 pub struct WorkNotStopped {
-    work: Work,
+    pieces: Vec<(Work, String)>,
     #[source]
-    cause: StopCause,
-    others: usize,
+    cause: Arc<StopCause>,
 }
 
-fn more(others: usize) -> String {
-    match others {
-        0 => String::new(),
-        others => format!(", nor did {others} more"),
-    }
+fn names(pieces: &[(Work, String)]) -> String {
+    pieces
+        .iter()
+        .map(|(_, name)| name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 impl WorkNotStopped {
-    /// The first work that did not confirm it stopped, and why.
+    /// Each piece that did not confirm it stopped.
     #[cfg(test)]
-    pub(crate) fn first(&self) -> (Work, &StopCause) {
-        (self.work, &self.cause)
+    pub(crate) fn works(&self) -> Vec<Work> {
+        self.pieces.iter().map(|(work, _)| *work).collect()
     }
 }
 
@@ -175,16 +201,15 @@ impl BoundWork {
         let id = open.next;
         open.next += 1;
         let end = CancellationToken::new();
-        let (running, held) = watch::channel(());
-        let unconfirmed = Unconfirmed::default();
         open.work.insert(
             id,
-            Entry {
+            Piece {
                 key,
                 work,
+                name: None,
                 end: end.clone(),
-                running,
-                unconfirmed: Arc::clone(&unconfirmed),
+                holders: Arc::new(watch::Sender::new(1)),
+                facts: Entry::bound(),
             },
         );
         Ok(Bound {
@@ -194,51 +219,106 @@ impl BoundWork {
                     work: self.clone(),
                     id,
                     key,
-                    unconfirmed,
                 }),
             })),
-            running: Some(held),
+            released: false,
         })
     }
 
-    /// End the work whose key no longer holds Full scope as the keys stand, and wait, at most
-    /// [`STOP_WITHIN`] in all, until each piece has stopped. A key change calls this once its
-    /// record is written.
+    /// Change piece `id`'s facts with `change` under the lock, and forget it once settled.
+    fn settle(&self, id: u64, change: impl FnOnce(&mut Entry<Doubt>)) {
+        let mut open = self.open.lock().expect("bound work lock");
+        let Some(piece) = open.work.get_mut(&id) else {
+            return;
+        };
+        change(&mut piece.facts);
+        piece.publish();
+        if piece.facts.settled() {
+            open.work.remove(&id);
+        }
+    }
+
+    /// End the work whose key no longer holds Full scope as the keys stand, wait, at most
+    /// [`STOP_WITHIN`] in all, until each piece it ends has stopped, and look again at every
+    /// doubt such work left before. A key change calls this once its record is written.
     ///
     /// # Errors
-    /// Every piece that did not stop in time, or stopped without confirming it.
+    /// Every piece of such work, ended now or by an earlier key change, that still runs or
+    /// left a doubt no look cleared.
     pub(super) async fn end_unheld(&self) -> Result<(), WorkNotStopped> {
-        let ending: Vec<Entry> = {
+        let deadline = tokio::time::Instant::now() + STOP_WITHIN;
+        let (mut waits, looks) = {
             let mut open = self.open.lock().expect("bound work lock");
             let record = self.records.borrow().clone();
-            open.work
-                .extract_if(|_, entry| holds_full(&record, &entry.key).is_err())
-                .map(|(_, entry)| {
-                    entry.end.cancel();
-                    entry
-                })
-                .collect()
-        };
-        let deadline = tokio::time::Instant::now() + STOP_WITHIN;
-        let mut failures = Vec::new();
-        for entry in ending {
-            let stopped = tokio::time::timeout_at(deadline, entry.running.closed())
-                .await
-                .is_ok();
-            let mut causes = std::mem::take(&mut *entry.unconfirmed.lock().expect("stop lock"));
-            if !stopped {
-                causes.push(StopCause::Deadline);
+            let mut waits = Vec::new();
+            let mut looks = Vec::new();
+            for (id, piece) in &mut open.work {
+                if holds_full(&record, &piece.key).is_ok() {
+                    continue;
+                }
+                if piece.facts.end() {
+                    piece.end.cancel();
+                    waits.push(piece.holders.subscribe());
+                }
+                looks.extend(piece.facts.doubts().iter().filter_map(|doubt| {
+                    let recheck = doubt.recheck.clone()?;
+                    Some((*id, doubt.id, recheck))
+                }));
             }
-            failures.extend(causes.into_iter().map(|cause| (entry.work, cause)));
+            (waits, looks)
+        };
+        for holders in &mut waits {
+            let _ = tokio::time::timeout_at(deadline, holders.wait_for(|held| *held == 0)).await;
         }
-        let mut failures = failures.into_iter();
-        match failures.next() {
+        let looked = futures_util::future::join_all(looks.into_iter().map(
+            |(piece, doubt, recheck)| async move {
+                let seen = tokio::time::timeout_at(deadline, recheck())
+                    .await
+                    .unwrap_or_else(|_| Err(StopCause::Deadline.into()));
+                (piece, doubt, seen)
+            },
+        ))
+        .await;
+        let mut open = self.open.lock().expect("bound work lock");
+        for (id, doubt, seen) in looked {
+            let Some(piece) = open.work.get_mut(&id) else {
+                continue;
+            };
+            match seen {
+                Ok(()) => piece.facts.confirm(|held| held.id == doubt),
+                // The latest look says best why the work still can't confirm it ended.
+                Err(cause) => {
+                    if let Some(held) = piece
+                        .facts
+                        .doubts_mut()
+                        .iter_mut()
+                        .find(|held| held.id == doubt)
+                    {
+                        held.cause = Arc::new(StopCause::Reported(cause));
+                    }
+                }
+            }
+            piece.publish();
+        }
+        let record = self.records.borrow().clone();
+        let mut pieces = Vec::new();
+        let mut cause = None;
+        open.work.retain(|_, piece| {
+            if piece.facts.settled() {
+                return false;
+            }
+            if holds_full(&record, &piece.key).is_err() && piece.facts.unconfirmed() {
+                pieces.push((piece.work, piece.named()));
+                cause.get_or_insert_with(|| match piece.facts.doubts().first() {
+                    Some(doubt) => Arc::clone(&doubt.cause),
+                    None => Arc::new(StopCause::Deadline),
+                });
+            }
+            true
+        });
+        match cause {
             None => Ok(()),
-            Some((work, cause)) => Err(WorkNotStopped {
-                work,
-                cause,
-                others: failures.len(),
-            }),
+            Some(cause) => Err(WorkNotStopped { pieces, cause }),
         }
     }
 }
@@ -261,7 +341,7 @@ impl Bound {
                 end: CancellationToken::new(),
                 key: None,
             })),
-            running: None,
+            released: false,
         }
     }
 
@@ -270,10 +350,12 @@ impl Bound {
         &self.tie
     }
 
-    /// The tie alone, for work a key change ends without waiting for it.
+    /// The tie alone, once this Bound's own part of the work is done, such as a read.
     #[must_use]
     pub fn into_tie(self) -> Tie {
-        self.tie.clone()
+        let tie = self.tie.clone();
+        self.stopped();
+        tie
     }
 
     /// Whether a key change can end this work: a management key started it.
@@ -285,6 +367,21 @@ impl Bound {
     /// Completes once a key change ended the work. Pending forever for work no key started.
     pub async fn ended(&self) {
         self.tie.ended().await;
+    }
+
+    /// Name this piece of work to a person, as a key change reports it: `exec 3f2a…`.
+    pub fn name(&self, name: impl Into<String>) {
+        if let Some(keyed) = &self.tie.0.key
+            && let Some(piece) = keyed
+                .work
+                .open
+                .lock()
+                .expect("bound work lock")
+                .work
+                .get_mut(&keyed.id)
+        {
+            piece.name = Some(name.into());
+        }
     }
 
     /// Run `read` while the work's key holds Full scope as the keys stand and no key change
@@ -306,15 +403,45 @@ impl Bound {
         Ok(read())
     }
 
-    /// Stop holding the work up, telling the key change that ended it why it can't confirm
-    /// the work stopped.
-    pub fn unconfirmed(self, cause: impl std::error::Error + Send + Sync + 'static) {
-        self.report(StopCause::Reported(Box::new(cause)));
+    /// Stop holding the work up: its holder saw it end.
+    pub fn stopped(mut self) {
+        self.release(Release::Ended);
     }
 
-    fn report(&self, cause: StopCause) {
+    /// Stop holding the work up without having seen it end, for `cause`. A key change that
+    /// finds its key short of Full runs `recheck` until it sees the work end, and reports
+    /// it until then.
+    pub fn unconfirmed(
+        mut self,
+        cause: impl std::error::Error + Send + Sync + 'static,
+        recheck: Option<Recheck>,
+    ) {
+        self.doubt(StopCause::Reported(Box::new(cause)), recheck);
+    }
+
+    fn doubt(&mut self, cause: StopCause, recheck: Option<Recheck>) {
+        let Some(keyed) = &self.tie.0.key else {
+            self.released = true;
+            return;
+        };
+        let id = {
+            let mut open = keyed.work.open.lock().expect("bound work lock");
+            open.next += 1;
+            open.next
+        };
+        self.release(Release::Unconfirmed(Doubt {
+            id,
+            cause: Arc::new(cause),
+            recheck,
+        }));
+    }
+
+    fn release(&mut self, how: Release<Doubt>) {
+        if std::mem::replace(&mut self.released, true) {
+            return;
+        }
         if let Some(keyed) = &self.tie.0.key {
-            keyed.unconfirmed.lock().expect("stop lock").push(cause);
+            keyed.work.settle(keyed.id, |facts| facts.release(how));
         }
     }
 }
@@ -329,9 +456,13 @@ impl Bound {
 
 impl Drop for Bound {
     fn drop(&mut self) {
-        // A task that panicked never reached the point where its work confirmed it stopped.
-        if std::thread::panicking() && self.running.is_some() {
-            self.report(StopCause::Panicked);
+        if !self.released {
+            let cause = if std::thread::panicking() {
+                StopCause::Panicked
+            } else {
+                StopCause::Dropped
+            };
+            self.doubt(cause, None);
         }
     }
 }
@@ -347,7 +478,9 @@ impl Tie {
         self.0.end.is_cancelled()
     }
 
-    /// Another [`Bound`] of this work, which a key change that ends it also waits for.
+    /// Another [`Bound`] of this work, which a key change that ends it also waits for: taken
+    /// under the lock a key change ends work under, so it is the check an effect makes right
+    /// before it starts.
     ///
     /// # Errors
     /// Returns [`Error::NeedsFullScope`] once a key change ended the work, and as
@@ -356,19 +489,19 @@ impl Tie {
         let Some(keyed) = &self.0.key else {
             return Ok(Bound {
                 tie: self.clone(),
-                running: None,
+                released: false,
             });
         };
-        let open = keyed.work.open.lock().expect("bound work lock");
+        let mut open = keyed.work.open.lock().expect("bound work lock");
         holds_full(&keyed.work.records.borrow(), &keyed.key)?;
-        let entry = open
-            .work
-            .get(&keyed.id)
-            .filter(|_| !self.is_ended())
-            .ok_or(Error::NeedsFullScope)?;
+        let piece = open.work.get_mut(&keyed.id).ok_or(Error::NeedsFullScope)?;
+        if !piece.facts.hold() {
+            return Err(Error::NeedsFullScope);
+        }
+        piece.publish();
         Ok(Bound {
             tie: self.clone(),
-            running: Some(entry.running.subscribe()),
+            released: false,
         })
     }
 }

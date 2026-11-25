@@ -6,7 +6,7 @@ use std::{collections::BTreeMap, path::Path};
 use ployz_core::OpenedSealed;
 
 use crate::{
-    BuildError, Railpack, Request, Staged,
+    BuildError, Railpack, Request, SealedStaging, Staged,
     received_recipe::{SealedFiles, validate_capture},
     remote::Definition,
 };
@@ -55,8 +55,25 @@ impl<'a> Prepared<'a> {
         opened: Option<&OpenedSealed>,
         extra_environment: impl IntoIterator<Item = (String, String)>,
     ) -> Result<Self, PrepareError> {
+        Self::staged_in(
+            &SealedStaging::under(root),
+            root,
+            definition,
+            opened,
+            extra_environment,
+        )
+    }
+
+    /// [`Self::capture`], staging into `staging`, which its owner can revoke.
+    pub(crate) fn staged_in(
+        staging: &SealedStaging,
+        root: &'a Path,
+        definition: &'a Definition,
+        opened: Option<&OpenedSealed>,
+        extra_environment: impl IntoIterator<Item = (String, String)>,
+    ) -> Result<Self, PrepareError> {
         let staged = opened
-            .map(|opened| Staged::stage(root, opened, &definition.targets))
+            .map(|opened| Staged::stage(staging, opened, &definition.targets))
             .transpose()
             .map_err(PrepareError::Staging)?;
         let railpack = validate_capture(root, definition, SealedFiles::Opened)

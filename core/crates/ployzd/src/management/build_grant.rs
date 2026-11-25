@@ -159,6 +159,24 @@ impl Mint {
         sealing: Option<&SealingKeyStore>,
         minter: Minter,
     ) -> Result<Mint, RpcError> {
+        let (full, rule) = match minter {
+            Minter::Full(bound) => (Some(bound), None),
+            Minter::Rule(admitted) => (None, Some(admitted)),
+        };
+        let checked = Self::checked(request, sealing, full.as_ref(), rule);
+        // The mint's own read is over, opened or refused, so only the grant's tie stays.
+        let tie = full.map(Bound::into_tie);
+        checked.map(|mint| Mint { tie, ..mint })
+    }
+
+    /// The checks of [`Self::check_admitted`], opening a Full caller's Sealed values under
+    /// `full`, or a rule build's for `rule`.
+    fn checked(
+        request: MintBuildGrantRequest,
+        sealing: Option<&SealingKeyStore>,
+        full: Option<&Bound>,
+        rule: Option<AdmittedRule>,
+    ) -> Result<Mint, RpcError> {
         let key = match request.holder {
             None => Key::Made(SecretKey::generate()),
             Some(holder) => Key::Holder(
@@ -174,9 +192,7 @@ impl Mint {
                     })?,
             ),
         };
-        if matches!(key, Key::Made(_))
-            && (request.sealed.is_some() || matches!(minter, Minter::Rule(_)))
-        {
+        if matches!(key, Key::Made(_)) && (request.sealed.is_some() || rule.is_some()) {
             return Err(RpcError::new(
                 RpcErrorCode::InvalidArgument,
                 "a Build Grant carrying Sealed values needs a holder",
@@ -192,38 +208,32 @@ impl Mint {
         };
         if let Some(record) = &request.sealed {
             let sealing = sealing()?;
-            let opened = match &minter {
-                Minter::Full(bound) => bound
+            let opened = match full {
+                Some(bound) => bound
                     .read(|| sealing.open_for_build(record))
                     .map_err(|_| ended())?,
-                Minter::Rule(_) => sealing.open_for_build(record),
+                None => sealing.open_for_build(record),
             };
             opened.map_err(|error| RpcError::new(RpcErrorCode::Conflict, error.to_string()))?;
         }
-        let (release, tie) = match (minter, request.sealed) {
-            (Minter::Full(bound), None) => (None, Some(bound.into_tie())),
-            (Minter::Full(bound), Some(record)) => (
-                Some(Release::Plain {
-                    record,
-                    sealing: sealing()?.clone(),
-                }),
-                Some(bound.into_tie()),
-            ),
-            (Minter::Rule(admitted), record) => (
-                Some(Release::Attested {
-                    record,
-                    sealing: sealing()?.clone(),
-                    recipient: admitted.recipient,
-                    audience: admitted.audience,
-                }),
-                None,
-            ),
+        let release = match (rule, request.sealed) {
+            (None, None) => None,
+            (None, Some(record)) => Some(Release::Plain {
+                record,
+                sealing: sealing()?.clone(),
+            }),
+            (Some(admitted), record) => Some(Release::Attested {
+                record,
+                sealing: sealing()?.clone(),
+                recipient: admitted.recipient,
+                audience: admitted.audience,
+            }),
         };
         Ok(Mint {
             repository: request.repository,
             key,
             release,
-            tie,
+            tie: None,
         })
     }
 }
@@ -383,6 +393,13 @@ impl Serving {
         };
         Some(Self { grant, hold })
     }
+
+    /// Stop serving, once every request that read under the hold has ended.
+    fn stop(self) {
+        if let Some(hold) = self.hold.and_then(Arc::into_inner) {
+            hold.stopped();
+        }
+    }
 }
 
 /// The refusal for a grant whose minter no longer holds Full scope.
@@ -420,7 +437,7 @@ pub(super) async fn serve(
             _ = streams.join_next(), if !streams.is_empty() => continue,
             accepted = connection.accept_bi() => match accepted {
                 Ok(streams) => streams,
-                Err(_) => return,
+                Err(_) => break,
             },
         };
         let serving = serving.clone();
@@ -440,11 +457,11 @@ pub(super) async fn serve(
         });
     }
     // An ended grant pushes and opens nothing more: its requests stop before the hold that
-    // a key change waits for drops.
+    // a key change waits for goes. A manifest commit under way holds a Bound of its own.
     streams.abort_all();
     while streams.join_next().await.is_some() {}
     connection.close(VarInt::from_u32(BUILD_GRANT_ENDED), b"build grant ended");
-    drop(serving);
+    serving.stop();
 }
 
 /// One call a grant allows.
@@ -585,23 +602,104 @@ where
             "the manifest does not match the digest it is pushed as",
         );
     }
-    if !tagged {
-        return forward(client, grant.ingest, &parts, manifest.into()).await;
-    }
-    {
+    // Image Ingest stores a manifest as it answers, so this is where a push lands. A Full
+    // caller's grant takes a fresh Bound for it under the lock a key change ends work under.
+    let commit = match &grant.tie {
+        Some(tie) => match tie.hold() {
+            Ok(bound) => Some(bound),
+            Err(_) => return denied(StatusCode::FORBIDDEN, "the Build Grant has ended"),
+        },
+        None => None,
+    };
+    if tagged {
         let mut push = grant.push.lock().expect("grant push lock");
         if !matches!(*push, Push::Open) {
+            drop(push);
+            if let Some(commit) = commit {
+                commit.stopped();
+            }
             return denied(StatusCode::CONFLICT, "the Build Grant is already pushing");
         }
         *push = Push::Pushing;
     }
-    let response = forward(client, grant.ingest, &parts, manifest.into()).await;
-    // Only a stored manifest spends the grant; a refused one may be retried.
-    *grant.push.lock().expect("grant push lock") = if response.status().is_success() {
-        Push::Pushed(digest)
-    } else {
-        Push::Open
+    // Its own task, so ending the grant's requests doesn't cut it off: the key change that
+    // ends the grant waits until Image Ingest answered.
+    let committing = tokio::spawn(commit_manifest(
+        client.clone(),
+        Arc::clone(&serving.grant),
+        parts,
+        manifest,
+        tagged.then_some(digest),
+        commit,
+    ));
+    committing.await.unwrap_or_else(|_| {
+        denied(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "the manifest's commit task failed",
+        )
+    })
+}
+
+/// How long Image Ingest has to answer a manifest it was sent.
+const COMMIT_WITHIN: Duration = Duration::from_secs(60);
+
+/// Why a manifest's commit has no answer from Image Ingest.
+#[derive(Debug, thiserror::Error)]
+enum Uncommitted {
+    #[error("Image Ingest did not answer a Build Grant's manifest within {} s", COMMIT_WITHIN.as_secs())]
+    Late,
+    #[error("Image Ingest did not answer a Build Grant's manifest")]
+    Lost(#[source] reqwest::Error),
+}
+
+/// Send `manifest` to `grant`'s Image Ingest, and spend the grant on a stored `tag`. `bound`
+/// goes once Image Ingest answered, or once nothing reached it.
+async fn commit_manifest(
+    client: reqwest::Client,
+    grant: Arc<Grant>,
+    parts: http::request::Parts,
+    manifest: Bytes,
+    tag: Option<ImageDigest>,
+    bound: Option<Bound>,
+) -> Response<Body> {
+    let sent = tokio::time::timeout(
+        COMMIT_WITHIN,
+        send(&client, grant.ingest, &parts, manifest.into()),
+    )
+    .await;
+    let response = match sent {
+        Ok(Ok(upstream)) => {
+            if let Some(bound) = bound {
+                bound.stopped();
+            }
+            relayed(upstream)
+        }
+        Ok(Err(error)) => {
+            tracing::debug!(error = %ployz_core::error_chain::inline(&error), "build grant ingest request failed");
+            if let Some(bound) = bound {
+                if error.is_connect() {
+                    bound.stopped();
+                } else {
+                    bound.unconfirmed(Uncommitted::Lost(error), None);
+                }
+            }
+            denied(StatusCode::BAD_GATEWAY, "image ingest is unavailable")
+        }
+        Err(_) => {
+            if let Some(bound) = bound {
+                bound.unconfirmed(Uncommitted::Late, None);
+            }
+            denied(StatusCode::GATEWAY_TIMEOUT, "image ingest did not answer")
+        }
     };
+    if let Some(digest) = tag {
+        // Only a stored manifest spends the grant; a refused one may be retried.
+        *grant.push.lock().expect("grant push lock") = if response.status().is_success() {
+            Push::Pushed(digest)
+        } else {
+            Push::Open
+        };
+    }
     response
 }
 
@@ -690,20 +788,32 @@ async fn forward(
     parts: &http::request::Parts,
     body: reqwest::Body,
 ) -> Response<Body> {
+    match send(client, ingest, parts, body).await {
+        Ok(upstream) => relayed(upstream),
+        Err(error) => {
+            tracing::debug!(error = %ployz_core::error_chain::inline(&error), "build grant ingest request failed");
+            denied(StatusCode::BAD_GATEWAY, "image ingest is unavailable")
+        }
+    }
+}
+
+async fn send(
+    client: &reqwest::Client,
+    ingest: SocketAddr,
+    parts: &http::request::Parts,
+    body: reqwest::Body,
+) -> Result<reqwest::Response, reqwest::Error> {
     let path = parts.uri.path_and_query().map_or("/", |path| path.as_str());
-    let result = client
+    client
         .request(parts.method.clone(), format!("http://{ingest}{path}"))
         .headers(end_to_end(&parts.headers))
         .body(body)
         .send()
-        .await;
-    let upstream = match result {
-        Ok(upstream) => upstream,
-        Err(error) => {
-            tracing::debug!(error = %ployz_core::error_chain::inline(&error), "build grant ingest request failed");
-            return denied(StatusCode::BAD_GATEWAY, "image ingest is unavailable");
-        }
-    };
+        .await
+}
+
+/// Image Ingest's answer, as the pusher reads it.
+fn relayed(upstream: reqwest::Response) -> Response<Body> {
     let mut response = Response::builder().status(upstream.status());
     let headers = response.headers_mut().expect("fresh response builder");
     *headers = end_to_end(upstream.headers());
@@ -979,11 +1089,210 @@ mod tests {
             !removal.is_finished(),
             "the removal returned while a connection still served its grant"
         );
-        drop(connected);
+        connected.stop();
         removal.await.unwrap().unwrap();
 
         assert!(Serving::new(admitted).is_none());
         assert!(grants.admit(holder().as_bytes()).is_none());
+    }
+
+    /// A stand-in Image Ingest, which counts each request it read whole and notifies
+    /// `read` of it.
+    struct Ingest {
+        address: SocketAddr,
+        received: Arc<std::sync::atomic::AtomicUsize>,
+        read: Arc<tokio::sync::Notify>,
+    }
+
+    /// An [`Ingest`] that answers each request it read with `201 Created`, or with `lose`,
+    /// drops it unanswered once `lose` is notified.
+    async fn ingest(lose: Option<Arc<tokio::sync::Notify>>) -> Ingest {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ingest = Ingest {
+            address: listener.local_addr().unwrap(),
+            received: Arc::default(),
+            read: Arc::default(),
+        };
+        let (received, read) = (Arc::clone(&ingest.received), Arc::clone(&ingest.read));
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let (received, read, lose) = (received.clone(), read.clone(), lose.clone());
+                tokio::spawn(async move {
+                    let mut request = Vec::new();
+                    let mut chunk = [0; 4096];
+                    loop {
+                        let n = stream.read(&mut chunk).await.unwrap_or(0);
+                        if n == 0 {
+                            return;
+                        }
+                        request.extend_from_slice(chunk.split_at(n).0);
+                        let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") else {
+                            continue;
+                        };
+                        let head = String::from_utf8_lossy(request.split_at(end).0).to_lowercase();
+                        let length = head
+                            .lines()
+                            .find_map(|line| line.strip_prefix("content-length:"))
+                            .map_or(0, |length| length.trim().parse::<usize>().unwrap());
+                        if request.len() >= end + 4 + length {
+                            break;
+                        }
+                    }
+                    received.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    read.notify_one();
+                    match lose {
+                        Some(lose) => lose.notified().await,
+                        None => stream
+                            .write_all(b"HTTP/1.1 201 Created\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                            .await
+                            .unwrap(),
+                    }
+                });
+            }
+        });
+        ingest
+    }
+
+    const MANIFEST: &[u8] = br#"{"schemaVersion":2,"layers":[]}"#;
+
+    /// Where a holder PUTs [`MANIFEST`] tagged with its own digest.
+    fn manifest_tag() -> String {
+        format!(
+            "/v2/ployz-build/web/manifests/ployz-sha256-{}",
+            hex::encode(Sha256::digest(MANIFEST))
+        )
+    }
+
+    /// A grant for [`holder`] pushing to `ingest`, minted by a Device whose key also holds
+    /// Cloud's slot, with the Machine that minted it and the Device.
+    fn device_grant(
+        dir: &std::path::Path,
+        ingest: SocketAddr,
+    ) -> (
+        crate::machine::LocalMachine,
+        ployz_core::DeviceKey,
+        Arc<Grant>,
+    ) {
+        let mut store = crate::machine::test_support::founder(dir, "grants");
+        let device = crate::machine::test_support::device_in_two_slots(&mut store);
+        let local =
+            crate::machine::LocalMachine::new(crate::machine::RecordOwner::spawn(store).unwrap());
+        let mint = Mint::check(
+            request(Some(&hex::encode(holder().as_bytes()))),
+            None,
+            local
+                .clone()
+                .with_management_client(device.into())
+                .bind_full(crate::machine::Work::BuildGrant)
+                .unwrap(),
+        )
+        .unwrap();
+        let grants = BuildGrants::default();
+        grants
+            .mint(ManagementIdentity::from_bytes([7; 32]), mint, ingest)
+            .unwrap();
+        (local, device, grants.admit(holder().as_bytes()).unwrap())
+    }
+
+    /// A Device's grant is mid-way through sending a manifest when the Device is removed.
+    /// Once the removal ended the grant, the rest of the push reaches no Image Ingest.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_manifest_still_arriving_when_its_devices_removal_began_reaches_no_ingest() {
+        let dir = tempfile::tempdir().unwrap();
+        let ingest = ingest(None).await;
+        let (local, device, admitted) = device_grant(dir.path(), ingest.address);
+        let connected = Serving::new(Arc::clone(&admitted)).unwrap();
+        let (arriving, body) =
+            tokio::sync::mpsc::channel::<Result<hyper::body::Frame<Bytes>, Infallible>>(1);
+        let request = Request::builder()
+            .method(Method::PUT)
+            .uri(manifest_tag())
+            .body(http_body_util::StreamBody::new(
+                tokio_stream::wrappers::ReceiverStream::new(body),
+            ))
+            .unwrap();
+        let pushing = tokio::spawn({
+            let connected = connected.clone();
+            async move { read(handle(request, &connected, &reqwest::Client::new()).await).await }
+        });
+        let (head, tail) = MANIFEST.split_at(8);
+        let (first, second) = head.split_at(4);
+        for part in [first, second] {
+            arriving
+                .send(Ok(hyper::body::Frame::data(Bytes::copy_from_slice(part))))
+                .await
+                .unwrap();
+        }
+        // The second part waited for the handler to take the first: it is reading the body.
+
+        let removal = tokio::spawn(async move {
+            local
+                .on_local_socket()
+                .set_device(ployz_core::SetDeviceRequest::Remove {
+                    code: device.code(),
+                })
+                .await
+        });
+        admitted.ended().await;
+        arriving
+            .send(Ok(hyper::body::Frame::data(Bytes::copy_from_slice(tail))))
+            .await
+            .unwrap();
+        drop(arriving);
+        let (status, body) = pushing.await.unwrap();
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert_eq!(
+            ingest.received.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "a removed Device's manifest reached Image Ingest"
+        );
+        connected.stop();
+        removal.await.unwrap().unwrap();
+    }
+
+    /// A Device's grant has a manifest at Image Ingest when the Device is removed, and
+    /// Image Ingest's answer never comes, so the manifest may have landed: `device rm` says
+    /// the grant didn't confirm it stopped.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_removal_says_when_a_manifest_in_flight_may_have_landed() {
+        let dir = tempfile::tempdir().unwrap();
+        let lose = Arc::new(tokio::sync::Notify::new());
+        let ingest = ingest(Some(Arc::clone(&lose))).await;
+        let (local, device, admitted) = device_grant(dir.path(), ingest.address);
+        let connected = Serving::new(Arc::clone(&admitted)).unwrap();
+        let request = Request::builder()
+            .method(Method::PUT)
+            .uri(manifest_tag())
+            .body(http_body_util::Full::new(Bytes::from_static(MANIFEST)))
+            .unwrap();
+        let pushing = tokio::spawn({
+            let connected = connected.clone();
+            async move { handle(request, &connected, &reqwest::Client::new()).await }
+        });
+        ingest.read.notified().await;
+
+        let removal = tokio::spawn(async move {
+            local
+                .on_local_socket()
+                .set_device(ployz_core::SetDeviceRequest::Remove {
+                    code: device.code(),
+                })
+                .await
+        });
+        admitted.ended().await;
+        // The grant's connection ends its requests, as `serve` does once the grant ended.
+        pushing.abort();
+        let _ = pushing.await;
+        connected.stop();
+        lose.notify_one();
+
+        let removed = removal.await.unwrap();
+        let Err(crate::machine::LocalMachineError::WorkNotStopped(unstopped)) = removed else {
+            panic!("the removal said a push in flight stopped without knowing: {removed:?}");
+        };
+        assert_eq!(unstopped.works(), [crate::machine::Work::BuildGrant]);
     }
 
     #[test]

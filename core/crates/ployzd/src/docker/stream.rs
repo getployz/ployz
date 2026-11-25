@@ -1,5 +1,5 @@
 use ployz_core::labels;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use bollard::{
     container::LogOutput,
@@ -35,6 +35,8 @@ const DOCKER_ANSWER: Duration = Duration::from_secs(5);
 /// How often a detached exec a management key started is checked for having exited, so its
 /// watch ends with it.
 const DETACHED_EXEC_POLL: Duration = Duration::from_secs(1);
+/// How often an attached exec's command is checked for having exited.
+const EXEC_EXIT_POLL: Duration = Duration::from_millis(100);
 const EXEC_ENDED: &str = "Exec stopped: this Device no longer has Full access to this Server.";
 
 /// An exec Docker started, with what its caller asked for.
@@ -44,11 +46,25 @@ struct StartedExec {
     started: StartExecResults,
 }
 
+/// Why an exec didn't start, and the exec whose start Docker may have run anyway.
+struct Unstarted {
+    status: Status,
+    /// Set once a start was sent: Docker can start the command and lose the answer.
+    sent: Option<String>,
+}
+
+impl From<Status> for Unstarted {
+    fn from(status: Status) -> Self {
+        Self { status, sent: None }
+    }
+}
+
 impl ContainerRuntime {
     /// Run an exec for the caller `bound` ties it to. A task of its own holds `bound` from
-    /// before Docker starts the command until the command ended, so a caller that goes away
-    /// mid-start leaves no command running unwatched. A key change that ends `bound` closes
-    /// the stream and stops the command, attached or detached, and learns whether it stopped.
+    /// before Docker starts the command until it saw the command end, so a caller that goes
+    /// away mid-start leaves no command running unwatched. A key change that ends `bound`
+    /// closes the stream and stops the command, attached or detached, and learns whether it
+    /// stopped.
     pub async fn exec(
         &self,
         requests: Streaming<OpaquePayload>,
@@ -66,32 +82,37 @@ impl ContainerRuntime {
         bound: Bound,
         opened: tokio::sync::oneshot::Sender<Result<RpcStream, Status>>,
     ) {
+        let docker = self.docker.client.clone();
         let started = match self.start_exec(&mut requests, &bound, &opened).await {
             Ok(started) => started,
-            Err(status) => {
+            Err(Unstarted { status, sent }) => {
                 let _ = opened.send(Err(status));
+                match sent {
+                    None => bound.stopped(),
+                    Some(exec_id) => {
+                        bound.name(exec_name(&exec_id));
+                        settle(bound, &docker, &exec_id, stop_exec(&docker, &exec_id).await);
+                    }
+                }
                 return;
             }
         };
-        let docker = self.docker.client.clone();
         let exec_id = started.id;
+        bound.name(exec_name(&exec_id));
         let (sender, receiver) = mpsc::channel(32);
-        if send_exec(&sender, ExecResponseFrame::ExecId(exec_id.clone()))
-            .await
-            .is_err()
-        {
-            return;
-        }
+        // The receiver is still here, so only an unencodable frame fails, and a caller that
+        // never reads it then leaves as one gone away does.
+        let _ = send_exec(&sender, ExecResponseFrame::ExecId(exec_id.clone())).await;
         // A caller gone by now drops the stream with the send, and an attached exec then
         // stops as an abandoned one does.
         let _ = opened.send(Ok(tokio_stream::wrappers::ReceiverStream::new(receiver)));
-        match started.started {
+        let stopped = match started.started {
+            // Work no key started is no key change's to wait for, so nothing watches it.
+            StartExecResults::Detached if !bound.may_end() => return bound.stopped(),
             StartExecResults::Detached => {
-                if bound.may_end() {
-                    tokio::select! {
-                        () = detached_exec_exit(&docker, &exec_id) => {}
-                        () = bound.ended() => confirm_stopped(bound, stop_exec(&docker, &exec_id).await),
-                    }
+                tokio::select! {
+                    _ = exec_exit(&docker, &exec_id, DETACHED_EXEC_POLL) => Ok(ExecStopped::Exited),
+                    () = bound.ended() => stop_exec(&docker, &exec_id).await,
                 }
             }
             StartExecResults::Attached {
@@ -143,14 +164,14 @@ impl ContainerRuntime {
                     .as_ref()
                     .map(tokio::task::JoinHandle::abort_handle);
                 tokio::select! {
-                    _ = forward_attached_exec(
+                    stopped = forward_attached_exec(
                         &docker,
                         &exec_id,
                         &mut output,
                         tty,
                         &sender,
                         stdin_task,
-                    ) => {}
+                    ) => stopped,
                     () = bound.ended() => {
                         if let Some(stdin) = stdin {
                             stdin.abort();
@@ -159,11 +180,12 @@ impl ContainerRuntime {
                             let _ = sender.try_send(Ok(frame));
                         }
                         drop(sender);
-                        confirm_stopped(bound, stop_exec(&docker, &exec_id).await);
+                        stop_exec(&docker, &exec_id).await
                     }
                 }
             }
-        }
+        };
+        settle(bound, &docker, &exec_id, stopped);
     }
 
     /// Create and start the exec the first frame asks for. Starts nothing once `bound` ended
@@ -174,10 +196,10 @@ impl ContainerRuntime {
         requests: &mut Streaming<OpaquePayload>,
         bound: &Bound,
         caller: &tokio::sync::oneshot::Sender<Result<RpcStream, Status>>,
-    ) -> Result<StartedExec, Status> {
+    ) -> Result<StartedExec, Unstarted> {
         let first = tokio::select! {
             first = requests.message() => first?,
-            () = bound.ended() => return Err(Status::unauthenticated(EXEC_ENDED)),
+            () = bound.ended() => return Err(Status::unauthenticated(EXEC_ENDED).into()),
         }
         .ok_or_else(|| Status::invalid_argument("exec stream is empty"))?;
         let ExecRequestFrame::Config(config) =
@@ -185,12 +207,12 @@ impl ContainerRuntime {
                 ployz_core::rpc::caused_status(tonic::Code::InvalidArgument, &error)
             })?
         else {
-            return Err(Status::invalid_argument(
-                "first exec stream frame must contain config",
-            ));
+            return Err(
+                Status::invalid_argument("first exec stream frame must contain config").into(),
+            );
         };
         if config.options.command.is_empty() {
-            return Err(Status::invalid_argument("exec command cannot be empty"));
+            return Err(Status::invalid_argument("exec command cannot be empty").into());
         }
         self.observation()
             .ensure_managed(&config.container_id)
@@ -211,10 +233,10 @@ impl ContainerRuntime {
             .await
             .map_err(|error| docker_status(docker_error(&config.container_id, error)))?;
         if bound.tie().is_ended() {
-            return Err(Status::unauthenticated(EXEC_ENDED));
+            return Err(Status::unauthenticated(EXEC_ENDED).into());
         }
         if caller.is_closed() {
-            return Err(Status::cancelled("exec client disconnected"));
+            return Err(Status::cancelled("exec client disconnected").into());
         }
         let started = self
             .docker
@@ -228,7 +250,10 @@ impl ContainerRuntime {
                 }),
             )
             .await
-            .map_err(|error| docker_status(docker_error(&config.container_id, error)))?;
+            .map_err(|error| Unstarted {
+                status: docker_status(docker_error(&config.container_id, error)),
+                sent: Some(created.id.clone()),
+            })?;
         Ok(StartedExec {
             id: created.id,
             config,
@@ -299,6 +324,10 @@ impl ContainerRuntime {
     }
 }
 
+/// Forward an attached exec's output until its command exits or its client goes away, and
+/// stop the command in the latter case: how the command ended, or why that's unknown. Output
+/// Docker stops sending, by an error or its end, leaves the command watched until one of
+/// those.
 async fn forward_attached_exec(
     docker: &bollard::Docker,
     exec_id: &str,
@@ -306,71 +335,79 @@ async fn forward_attached_exec(
     tty: bool,
     sender: &mpsc::Sender<Result<OpaquePayload, Status>>,
     stdin_task: Option<tokio::task::JoinHandle<()>>,
-) -> Result<(), Status> {
+) -> Result<ExecStopped, ExecStopError> {
     enum Completion {
-        StreamEnded,
         ProcessExited(Option<i64>),
-        Failed(bollard::errors::Error),
         ClientGone,
     }
 
-    let process_exited = wait_for_exec_exit(docker, exec_id);
+    let process_exited = exec_exit(docker, exec_id, EXEC_EXIT_POLL);
     tokio::pin!(process_exited);
+    let mut reading = true;
     let completion = loop {
         tokio::select! {
             biased;
-            result = &mut process_exited => match result {
-                Ok(exit_code) => break Ok(Completion::ProcessExited(exit_code)),
-                Err(error) => break Ok(Completion::Failed(error)),
-            },
-            () = sender.closed() => break Ok(Completion::ClientGone),
-            next = output.next() => match next {
-                Some(Ok(output)) => match send_exec(sender, exec_output(output, tty)).await {
-                    Ok(()) => {}
-                    Err(_) if sender.is_closed() => break Ok(Completion::ClientGone),
-                    Err(error) => break Err(error),
-                },
-                Some(Err(error)) => break Ok(Completion::Failed(error)),
-                None => break Ok(Completion::StreamEnded),
+            exit_code = &mut process_exited => break Completion::ProcessExited(exit_code),
+            () = sender.closed() => break Completion::ClientGone,
+            next = output.next(), if reading => match next {
+                Some(Ok(output)) => {
+                    if send_exec(sender, exec_output(output, tty)).await.is_err() {
+                        break Completion::ClientGone;
+                    }
+                }
+                Some(Err(error)) => {
+                    reading = false;
+                    let _ = send_exec_error(sender, error).await;
+                }
+                None => reading = false,
             },
         }
     };
     if let Some(task) = stdin_task {
         task.abort();
     }
-    let completion = completion?;
-
     match completion {
-        Completion::StreamEnded => match docker.inspect_exec(exec_id).await {
-            Ok(inspected) => send_exec_exit(sender, inspected.exit_code).await,
-            Err(error) => send_exec_error(sender, error).await,
-        },
-        Completion::Failed(error) => send_exec_error(sender, error).await,
         Completion::ProcessExited(exit_code) => {
-            finish_exec_output(output, tty, sender, exit_code).await
+            let _ = finish_exec_output(output, reading, tty, sender, exit_code).await;
+            Ok(ExecStopped::Exited)
         }
-        Completion::ClientGone => {
-            stop_abandoned_exec(docker, exec_id).await;
-            Ok(())
-        }
+        // An interrupted `ployz exec` with a TTY already stops its command; one without
+        // goes the same way.
+        Completion::ClientGone => stop_exec(docker, exec_id).await,
     }
 }
 
-/// Stop the command of an exec whose client went away, as an interrupted
-/// `ployz exec` with a TTY already does. No one waits on the outcome, so a stop that
-/// can't be confirmed is only logged.
-async fn stop_abandoned_exec(docker: &bollard::Docker, exec_id: &str) {
-    if let Err(error) = stop_exec(docker, exec_id).await {
-        tracing::warn!(error = %ployz_core::error_chain::inline(&error), "an abandoned exec did not confirm it stopped");
-    }
-}
-
-/// Hand the key change that ended an exec its stop: confirmed, or why not.
-fn confirm_stopped(bound: Bound, stopped: Result<ExecStopped, ExecStopError>) {
+/// Hand `bound` the end of exec `exec_id`'s command: seen, or why not, with the stop a
+/// later key change tries again.
+fn settle(
+    bound: Bound,
+    docker: &bollard::Docker,
+    exec_id: &str,
+    stopped: Result<ExecStopped, ExecStopError>,
+) {
     match stopped {
-        Ok(_) => drop(bound),
-        Err(error) => bound.unconfirmed(error),
+        Ok(_) => bound.stopped(),
+        Err(error) => {
+            let (docker, exec_id) = (docker.clone(), exec_id.to_owned());
+            bound.unconfirmed(
+                error,
+                Some(Arc::new(move || {
+                    let (docker, exec_id) = (docker.clone(), exec_id.clone());
+                    Box::pin(async move {
+                        stop_exec(&docker, &exec_id)
+                            .await
+                            .map(drop)
+                            .map_err(Into::into)
+                    })
+                })),
+            );
+        }
     }
+}
+
+/// How a key change names exec `exec_id`, as `docker ps` shortens an ID.
+fn exec_name(exec_id: &str) -> String {
+    format!("exec {}", exec_id.get(..12).unwrap_or(exec_id))
 }
 
 /// How an exec's command ended once this daemon asked it to stop.
@@ -401,6 +438,8 @@ enum ExecStopError {
         KILLED_EXEC_GRACE.as_secs()
     )]
     Unkilled { exec: String },
+    #[error("Docker reports exec {exec} running, with no process yet")]
+    Starting { exec: String },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -493,8 +532,7 @@ async fn exec_process(
         inspected
             .running
             .unwrap_or(false)
-            .then_some(inspected.pid)
-            .flatten()
+            .then_some(inspected.pid.unwrap_or(0))
     };
     let Some(inspected) = inspect().await? else {
         return Ok(None);
@@ -502,11 +540,14 @@ async fn exec_process(
     let Some(pid) = running(&inspected) else {
         return Ok(None);
     };
+    // Docker marks an exec running as it begins the start, before the process exists.
     let Some(raw) = i32::try_from(pid)
         .ok()
         .and_then(rustix::process::Pid::from_raw)
     else {
-        return Ok(None);
+        return Err(ExecStopError::Starting {
+            exec: exec_id.to_owned(),
+        });
     };
     let process = match rustix::process::pidfd_open(raw, rustix::process::PidfdFlags::empty()) {
         Ok(process) => process,
@@ -543,57 +584,43 @@ async fn exec_process(
     Ok((still && same).then_some(process))
 }
 
+/// Forward what output is left once the command exited, while `reading`, then its exit.
 async fn finish_exec_output(
     output: &mut (impl Stream<Item = Result<LogOutput, bollard::errors::Error>> + Unpin),
+    reading: bool,
     tty: bool,
     sender: &mpsc::Sender<Result<OpaquePayload, Status>>,
     exit_code: Option<i64>,
 ) -> Result<(), Status> {
     // ponytail: 100 ms idle ends a held hijack; use a Docker output-complete signal if added.
     // Forwarding buffered output may take longer under downstream backpressure.
-    loop {
-        match tokio::time::timeout(EXEC_OUTPUT_IDLE, output.next()).await {
-            Ok(Some(Ok(output))) => send_exec(sender, exec_output(output, tty)).await?,
-            Ok(Some(Err(error))) => return send_exec_error(sender, error).await,
-            Ok(None) | Err(_) => break,
+    if reading {
+        loop {
+            match tokio::time::timeout(EXEC_OUTPUT_IDLE, output.next()).await {
+                Ok(Some(Ok(output))) => send_exec(sender, exec_output(output, tty)).await?,
+                Ok(Some(Err(error))) => return send_exec_error(sender, error).await,
+                Ok(None) | Err(_) => break,
+            }
         }
     }
     send_exec_exit(sender, exit_code).await
 }
 
-async fn wait_for_exec_exit(
-    docker: &bollard::Docker,
-    exec_id: &str,
-) -> Result<Option<i64>, bollard::errors::Error> {
-    poll_exec_exit(docker, exec_id, Duration::from_millis(100)).await
-}
-
-/// Completes once a detached exec's command has exited, or Docker no longer knows the exec
-/// because its Container went. The watch of a detached exec lives only that long: it outlives
-/// the `exec` call, bounded by the command the caller started, and acts only to stop it.
-async fn detached_exec_exit(docker: &bollard::Docker, exec_id: &str) {
-    loop {
-        match poll_exec_exit(docker, exec_id, DETACHED_EXEC_POLL).await {
-            Ok(_)
-            | Err(bollard::errors::Error::DockerResponseServerError {
-                status_code: 404, ..
-            }) => return,
-            Err(_) => {}
-        }
-    }
-}
-
-async fn poll_exec_exit(
-    docker: &bollard::Docker,
-    exec_id: &str,
-    every: Duration,
-) -> Result<Option<i64>, bollard::errors::Error> {
+/// Completes once exec `exec_id`'s command has exited, with its code, or Docker no longer
+/// knows the exec because its Container went, with none. Docker is asked every `every`, and
+/// asked again when it fails to answer. The watch of a detached exec lives only that long:
+/// it outlives the `exec` call, bounded by the command the caller started, and acts only to
+/// stop it.
+async fn exec_exit(docker: &bollard::Docker, exec_id: &str, every: Duration) -> Option<i64> {
     loop {
         // ponytail: one inspect per `every`; use a Docker exec wait API if one appears.
         tokio::time::sleep(every).await;
-        let inspected = docker.inspect_exec(exec_id).await?;
-        if inspected.running == Some(false) {
-            return Ok(inspected.exit_code);
+        match docker.inspect_exec(exec_id).await {
+            Ok(inspected) if inspected.running == Some(false) => return inspected.exit_code,
+            Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404, ..
+            }) => return None,
+            Ok(_) | Err(_) => {}
         }
     }
 }
@@ -745,7 +772,7 @@ mod tests {
                 })
             }))
             .chain(futures_util::stream::pending());
-            finish_exec_output(&mut output, false, &sender, Some(0)).await
+            finish_exec_output(&mut output, true, false, &sender, Some(0)).await
         });
         let mut bytes = Vec::new();
         let mut exit = None;

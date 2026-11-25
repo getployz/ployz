@@ -712,6 +712,8 @@ case "$1 $2" in
   'buildx rm')
     if [ -f "$root/fail-cleanup" ] && {{ [ -f "$root/executed" ] || [ -f "$root/checking" ]; }}; then exit 1; fi ;;
   'buildx version'|'buildx create') exit 0 ;;
+  'rm --force')
+    if [ -f "$root/fail-cleanup" ]; then exit 1; fi ;;
   'buildx inspect')
     if [ -f "$root/slow-check" ]; then : > "$root/checking"; exec sleep 30; fi ;;
   'buildx ls') printf '%s\n' '{{"Name":"{}","Nodes":[{{"Status":"running","Platforms":["linux/amd64"]}}]}}' ;;
@@ -1543,12 +1545,66 @@ async fn a_removal_says_when_a_build_cannot_confirm_it_stopped() {
     let Err(crate::machine::LocalMachineError::WorkNotStopped(unstopped)) = removed else {
         panic!("the removal said the Build stopped without knowing: {removed:?}");
     };
-    assert_eq!(unstopped.first().0, crate::machine::Work::Build);
+    assert_eq!(unstopped.works(), [crate::machine::Work::Build]);
     assert!(opened.is_empty(), "{opened:?}");
     assert!(matches!(
         failure(result),
         ployz::build::RemoteBuildFailure::Unknown { .. }
     ));
+}
+
+/// A Device whose key also holds Cloud's slot runs a Build the builder doesn't confirm
+/// stopped, before anyone removes the Device. Removing the Device later says so, and so does
+/// the next key change, until one finds the Build's slot clear.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_build_that_ended_unconfirmed_before_its_removal_stays_reported_until_confirmed() {
+    let cluster = crate::sealed_env::test_support::Cluster::new();
+    let fixture = Fixture::with(|_| {}, Some(cluster.dir.0.clone())).await;
+    let (device, address) = fixture.device_in_two_slots().await;
+    let capture = fixture.capture_with(Some(&cluster));
+    let client = ployz::connect::connect(Path::new("/missing-test-config"), Some(&address), None)
+        .await
+        .unwrap();
+    fs::write(fixture.root.join("fail-cleanup"), "").unwrap();
+    let result = capture
+        .execute_remote_images(
+            &client,
+            fixture.machine.id,
+            None,
+            Default::default(),
+            |_| {},
+        )
+        .await;
+    assert!(matches!(
+        failure(result),
+        ployz::build::RemoteBuildFailure::Unknown { .. }
+    ));
+
+    let removed = fixture
+        .local
+        .clone()
+        .on_local_socket()
+        .set_device(ployz_core::SetDeviceRequest::Remove {
+            code: device.code(),
+        })
+        .await;
+    let Err(crate::machine::LocalMachineError::WorkNotStopped(unstopped)) = removed else {
+        panic!("the removal said an unconfirmed Build stopped: {removed:?}");
+    };
+    assert_eq!(unstopped.works(), [crate::machine::Work::Build]);
+
+    fs::remove_file(fixture.root.join("fail-cleanup")).unwrap();
+    fixture
+        .local
+        .clone()
+        .on_local_socket()
+        .set_device(ployz_core::SetDeviceRequest::Approve {
+            key: ployz_core::DeviceKey::from(
+                ployz_core::authority::Signer::from_seed(&[11; 32]).public(),
+            ),
+        })
+        .await
+        .expect("the next key change found the Build's slot clear");
 }
 
 #[tokio::test]

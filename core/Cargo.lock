@@ -4273,6 +4273,7 @@ dependencies = [
  "tokio-util",
  "toml",
  "tonic",
+ "tower",
  "tower-service",
  "tracing",
  "tracing-subscriber",

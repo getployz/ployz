@@ -27,6 +27,8 @@ const ENTRY_LIMIT: usize = 100_000;
 /// complete, validated upload can reach the execution host.
 pub struct Upload {
     root: PathBuf,
+    /// The build slot's staging that holds `root`, removed with it once empty.
+    slot: Option<PathBuf>,
     paths: BTreeSet<PathBuf>,
     directories: Vec<(PathBuf, u32)>,
     links: BTreeMap<PathBuf, PathBuf>,
@@ -65,7 +67,7 @@ impl Admission {
         targets: &[crate::Target],
     ) -> Result<(), BuildError> {
         let _ownership = self.lock.clone();
-        let mut upload = Upload::owned(self.lock.upload_directory())
+        let mut upload = Upload::owned(self.lock.upload_directory(), self.upload_root())
             .map_err(|error| BuildError::Prerequisite(error.to_string()))?;
         let environment = environment(&upload.root);
         let recorder = self.lock.recorder();
@@ -103,7 +105,7 @@ impl AdmittedUpload {
         admission
             .check()
             .map_err(|error| InputError::from(error.to_string()))?;
-        let upload = Upload::owned(admission.lock.upload_directory())?;
+        let upload = Upload::owned(admission.lock.upload_directory(), admission.upload_root())?;
         Ok(Self { upload, admission })
     }
 
@@ -158,11 +160,18 @@ impl Upload {
         Self::create(root)
     }
 
-    pub(crate) fn owned(root: PathBuf) -> Result<Self, InputError> {
+    /// Staging at `root`, one attempt's own directory in its build slot's `slot`.
+    pub(crate) fn owned(slot: PathBuf, root: PathBuf) -> Result<Self, InputError> {
         // Called only with retained-builder ownership. An execution marker
         // prevents reaching this point while abandoned work is uncertain.
-        remove_abandoned(&root).map_err(io_error)?;
-        Self::create(root)
+        remove_abandoned(&slot).map_err(io_error)?;
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&slot)
+            .map_err(io_error)?;
+        let mut upload = Self::create(root)?;
+        upload.slot = Some(slot);
+        Ok(upload)
     }
 
     fn create(root: PathBuf) -> Result<Self, InputError> {
@@ -172,6 +181,7 @@ impl Upload {
             .map_err(io_error)?;
         Ok(Self {
             root,
+            slot: None,
             paths: BTreeSet::new(),
             directories: Vec::new(),
             links: BTreeMap::new(),
@@ -346,7 +356,13 @@ impl CompletedUpload {
         let none = OpenedSealed::new(BTreeMap::new(), Vec::new());
         let opened = opened.unwrap_or(&none);
         // Declared after `upload` so the staged files go before the root does.
-        let prepared = crate::Prepared::capture(&upload.root, definition, Some(opened), [])?;
+        let prepared = crate::Prepared::staged_in(
+            &admission.staging,
+            &upload.root,
+            definition,
+            Some(opened),
+            [],
+        )?;
         for (path, mode) in upload.directories.iter().rev() {
             fs::set_permissions(upload.root.join(path), fs::Permissions::from_mode(*mode))
                 .map_err(|error| BuildError::Request(io_error(error).to_string()))?;
@@ -369,6 +385,9 @@ impl Drop for Upload {
         if !self.retain {
             let _ = make_removable(&self.root);
             let _ = fs::remove_dir_all(&self.root);
+            if let Some(slot) = &self.slot {
+                let _ = fs::remove_dir(slot);
+            }
         }
     }
 }
