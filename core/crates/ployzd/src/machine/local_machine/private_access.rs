@@ -25,9 +25,9 @@ use ployz_core::{
 use zeroize::Zeroizing;
 
 use super::reserved::{self, Effects, Gate, Retiree, Step, newest, retirees, usable};
-use super::{Error, LocalMachine, Scope};
+use super::{Error, LocalMachine, Scope, turns::ExclusiveTurn};
 use crate::docker::{ContainerRuntime, same_creation};
-use crate::images::private_access_router;
+use crate::images::{TAILSCALE, private_access_router};
 
 /// The waits of the Private Access route. `Default` is production's.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -197,7 +197,10 @@ impl LocalMachine {
     }
 
     /// Place this Machine's Private Access router, or remove it. An Operator's turn on
-    /// needs an approval, as [`Self::admit_operator_private_access`] decides.
+    /// needs an approval, as [`Self::admit_operator_private_access`] decides: refused
+    /// before any effect at the scope the caller holds now, and checked again under the
+    /// turn that writes the node state and the auth key, so a caller downgraded or removed
+    /// while this waited writes nothing.
     ///
     /// # Errors
     ///
@@ -211,13 +214,14 @@ impl LocalMachine {
         &self,
         request: SetPrivateAccessRequest,
     ) -> Result<PrivateAccessSet, Error> {
-        if let Scope::Operator = self.scope() {
+        if let Scope::Operator = self.scope_now()? {
             self.admit_operator_private_access(&request)?;
         }
         let containers = self.docker()?.clone();
         let opened = if request.enabled {
             let sealed = request
                 .sealed_auth_key
+                .clone()
                 .ok_or(Error::PrivateAccessKeyMissing)?;
             let key = containers
                 .sealing()
@@ -233,6 +237,13 @@ impl LocalMachine {
             local.reserved_effect(Gate::Router)?;
             let machine_id = local.record().id();
             let routers = containers.routers(&machine_id).await?;
+            if opened.is_some() {
+                containers.doors().prepare_pinned_image(TAILSCALE).await?;
+            }
+            let turn = local.exclusive_turn().await?;
+            if let Scope::Operator = turn.scope() {
+                turn.admit_operator_private_access(&request)?;
+            }
             let wanted = match opened {
                 Some((sealed, key, network)) => {
                     let state = containers
@@ -240,22 +251,19 @@ impl LocalMachine {
                         .keep_private_access_state()
                         .map_err(Error::PrivateAccessState)?;
                     let spec = private_access_router(network, &sealed, state);
-                    containers
-                        .doors()
-                        .prepare_pinned_image(&spec.container.image)
-                        .await?;
-                    containers
-                        .machine_files()
-                        .write_private_access_key(&key)
-                        .map_err(Error::PrivateAccessKeyFile)?;
                     Some(Wanted { spec, key })
                 }
                 None => None,
             };
-            let _turn = local.exclusive_turn().await;
+            if let Some(wanted) = &wanted {
+                containers
+                    .machine_files()
+                    .write_private_access_key(&wanted.key)
+                    .map_err(Error::PrivateAccessKeyFile)?;
+            }
             let plan = plan_router(&routers, wanted.as_ref().map(|wanted| &wanted.spec));
             local
-                .converge_router(&containers, &plan, wanted.as_ref(), Watch::Settle)
+                .converge_router(&turn, &containers, &plan, wanted.as_ref(), Watch::Settle)
                 .await
         })
         .await
@@ -295,10 +303,10 @@ impl LocalMachine {
                 tracing::info!(
                     "a Private Access router turned off is still here, so it is removed, not started"
                 );
-                let _turn = local.exclusive_turn().await;
+                let turn = local.exclusive_turn().await?;
                 let plan = plan_router(&routers, None);
                 return local
-                    .converge_router(&containers, &plan, None, Watch::Skip)
+                    .converge_router(&turn, &containers, &plan, None, Watch::Skip)
                     .await
                     .map(Some);
             }
@@ -334,10 +342,10 @@ impl LocalMachine {
                 .machine_files().write_private_access_key(&key)
                 .map_err(Error::PrivateAccessKeyFile)?;
             let wanted = Wanted { spec, key };
-            let _turn = local.exclusive_turn().await;
+            let turn = local.exclusive_turn().await?;
             let plan = plan_router(&routers, Some(&wanted.spec));
             local
-                .converge_router(&containers, &plan, Some(&wanted), Watch::Skip)
+                .converge_router(&turn, &containers, &plan, Some(&wanted), Watch::Skip)
                 .await
                 .map(Some)
         })
@@ -354,6 +362,7 @@ impl LocalMachine {
     /// retires it.
     async fn converge_router(
         &self,
+        _turn: &ExclusiveTurn,
         containers: &ContainerRuntime,
         plan: &RouterPlan,
         wanted: Option<&Wanted>,

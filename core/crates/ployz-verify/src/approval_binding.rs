@@ -74,8 +74,8 @@
 //!   (`ployzd/src/machine/local_machine.rs`), in `admit_installation`
 //!   (`ployzd/src/machine/local_machine/turns.rs`). `finish_mutation` and `finish_shared`
 //!   take their turn first and check under it; `finish_installed` checks when the call
-//!   arrives and its work takes `exclusive_turn` later, which checks nothing
-//!   (`Command::Machine`).
+//!   arrives and again under each `exclusive_turn` its work takes later
+//!   (`Installed::exclusive_turn`, `checked_under`) (`Command::Machine`).
 //!
 //! Open paths, which `open_paths` adds and the shipped check leaves out: a Cancel's digest
 //! binds the Deployment and the review version, which stay put when its runner claims it,
@@ -145,10 +145,10 @@ enum Route {
     /// checks the caller's access under it.
     Turned,
     /// `finish_installed`: `admit_installation` checks the caller's access when the call
-    /// arrives, and the work takes `exclusive_turn` itself after its drain, which checks
-    /// nothing: `ContainerStep::StopThenRemove` and `ContainerStep::Remove`
-    /// (`machine/local_machine/container.rs:1491-1543`), `stop_checked`'s stop, and a
-    /// Volume cut (`container.rs:674`).
+    /// arrives, and the work takes `Installed::exclusive_turn` itself after its drain, which
+    /// checks the caller again under it: `ContainerStep::StopThenRemove` and
+    /// `ContainerStep::Remove` (`machine/local_machine/container.rs`), `stop_checked`'s
+    /// stop, and a Volume cut.
     Installed,
 }
 
@@ -587,6 +587,9 @@ struct Broken {
     /// 273b77fabc: a turn runs what its call's arrival admitted, without checking the
     /// caller again.
     turn_trusts_arrival: bool,
+    /// #4558: the work `finish_installed` admitted takes `exclusive_turn` after its drain
+    /// and runs without checking the caller again under it.
+    installed_trusts_arrival: bool,
     /// A guard f06d2a6351 needed, not a past bug: `Gate::ask` takes a member's own CLI yes
     /// for what a Protected Environment asks of an owner or admin.
     member_yes_answers_protected: bool,
@@ -1186,6 +1189,11 @@ impl Model for ApprovalBinding {
                     {
                         state.refuse(Why::Revoked);
                     }
+                    Command::Machine(Route::Installed)
+                        if !state.trusted && !self.broken.installed_trusts_arrival =>
+                    {
+                        state.refuse(Why::Revoked);
+                    }
                     Command::Machine(_) | Command::Store(_) => self.run(&mut state),
                 }
             }
@@ -1423,7 +1431,7 @@ impl Model for ApprovalBinding {
                         && state.admission == Some(Admission::HolderRefused)
                 }));
             }
-            Command::Machine(Route::Turned) => {
+            Command::Machine(_) => {
                 properties.push(Property::sometimes(
                     REVOKED_UNDER_TURN,
                     |_, state: &State| {
@@ -1435,7 +1443,6 @@ impl Model for ApprovalBinding {
                     },
                 ));
             }
-            Command::Machine(Route::Installed) => {}
         }
         properties
     }
@@ -1645,8 +1652,11 @@ fn reads_as(model: &ApprovalBinding, action: Action, after: &State) -> String {
             Command::Machine(Route::Turned) => format!(
                 "Machine: finish_admitted takes the turn, then admit_installation checks the caller's access under it, {outcome}"
             ),
+            Command::Machine(Route::Installed) if broken.installed_trusts_arrival => format!(
+                "Machine: the work takes exclusive_turn and removes the Container, unchecked (under Broken), {outcome}"
+            ),
             Command::Machine(Route::Installed) => format!(
-                "Machine: the work takes exclusive_turn and removes the Container, checking nothing, {outcome}"
+                "Machine: the work takes exclusive_turn, which checks the caller's access under it, {outcome}"
             ),
             Command::Store(_) => outcome,
         },
@@ -1788,14 +1798,11 @@ mod tests {
     /// branch the code handles: a yes runs its plan, an edited plan asks again, an agent's
     /// yes and a member's in a Protected Environment are refused, a Drain refuses a plan
     /// that changed after its gate and runs after a retry, and a turn refuses a key revoked
-    /// while its call waited. `Route::Installed` is the finding below, so it is left out, and
-    /// the changes `open_paths` adds are the open paths at the end of this module.
+    /// while its call waited. The changes `open_paths` adds are the open paths at the end of
+    /// this module.
     #[test]
     fn the_code_binds_every_yes_to_its_plan_and_moment() {
         for command in Command::ALL {
-            if command == Command::Machine(Route::Installed) {
-                continue;
-            }
             let checker = check(code(command));
             println!("{command:?}: {} states", checker.unique_state_count());
             checker.assert_properties();
@@ -2106,14 +2113,18 @@ mod tests {
         });
     }
 
-    /// The finding, still open. `finish_installed` checks the caller's management access
-    /// when the call arrives; its work drains, then takes `exclusive_turn`, which checks
-    /// nothing, and removes the Container. A Device removed while it drained still has its
-    /// Container removed.
+    /// #4558: `finish_installed` checked the caller's management access when the call
+    /// arrived; its work drained, then took `exclusive_turn`, which checked nothing, and
+    /// removed the Container. A Device removed while it drained still had its Container
+    /// removed.
     #[test]
-    fn an_installed_step_runs_for_a_key_revoked_while_it_drained() {
+    fn an_installed_step_checks_the_caller_again_under_its_turn() {
+        let broken = Broken {
+            installed_trusts_arrival: true,
+            ..Broken::default()
+        };
         let ran = last(&breaks_ending(
-            code(Command::Machine(Route::Installed)),
+            without(Command::Machine(Route::Installed), broken),
             |state| state.wrote.is_some(),
         ));
         assert!(!ran.trusted, "the key was revoked while the call drained");

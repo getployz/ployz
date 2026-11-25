@@ -21,9 +21,9 @@ Under a second. CI runs every `ployz-verify` model in the `rust-tests (cli-*)` l
 
 Green is 24 passing tests, in three groups:
 
-- **The code holds.** `the_code_binds_every_yes_to_its_plan_and_moment` checks every command as it ships (Save, Deploy, Retry, RemovalRetry, ShutDown, Remove, Cancel, Move, Drain, a turned Machine route), prints each state count, and fails on any unreached `sometimes`: a branch the model can no longer reach makes a passing property meaningless. It leaves out the open paths below: the installed route, and the change `open_paths` adds (a Cancel's Deployment starting).
+- **The code holds.** `the_code_binds_every_yes_to_its_plan_and_moment` checks every command as it ships (Save, Deploy, Retry, RemovalRetry, ShutDown, Remove, Cancel, Move, Drain, both Machine routes), prints each state count, and fails on any unreached `sometimes`: a branch the model can no longer reach makes a passing property meaningless. It leaves out the open path below, the change `open_paths` adds (a Cancel's Deployment starting).
 - **The past bugs and guards.** Each test sets one `Broken` flag that restores the code before a fix, or removes a guard, and expects a counterexample. If one goes green, the guard stopped mattering or the model lost the path that shows it.
-- **The open paths.** Two tests pass because the shipped code breaks the property (below). When one is fixed, its test goes red: move its change into the shipped model and give the fix a `Broken` flag and a breaking test, as the others have.
+- **The open path.** One test passes because the shipped code breaks the property (below). When it is fixed, its test goes red: move its change into the shipped model and give the fix a `Broken` flag and a breaking test, as the others have.
 
 | Fix | `Broken` flag | Command |
 |---|---|---|
@@ -33,6 +33,7 @@ Green is 24 passing tests, in three groups:
 | 1c93248b9b | `agent_yes_unrefused`, `gate_skips_yes`, `drain_runs_harmless` | Save, Drain |
 | bad55e1aed | `drain_runs_gone` | Drain |
 | 273b77fabc | `turn_trusts_arrival` | Machine, turned route |
+| #4558 | `installed_trusts_arrival` | Machine, installed route |
 | #4567 | `engine_skips_globals` (drains beside a user Global, as `main` did) | Drain |
 | #4567, round 4 | `engine_global_scoped`, `cloud_reads_unanswered`, `volume_moves_global` | Drain |
 | guard | `member_yes_answers_protected` | Save |
@@ -67,7 +68,6 @@ Each is scored per AGENTS.md, filed when a user can reach it, and left in the co
 
 | Issue | Test | What runs | F | S |
 |---|---|---|---|---|
-| #4553 | `an_installed_step_runs_for_a_key_revoked_while_it_drained` | `finish_installed` checks the caller's management access when the call arrives; its work drains, takes `exclusive_turn`, which checks nothing, and stops or removes a Container for a Device `set_device` removed meanwhile. Removing a Container can delete its only anonymous-volume data. Fixed by #4558 (open), which checks under each turn the work takes. | 1 | 10 |
 | #4555 | `a_cancel_s_yes_while_queued_stops_a_started_deployment` | A carried-digest case. `approve_cancel` binds the Deployment and the review version; Head's token counts only ended Deployments, so the runner's claim moves neither, and a carried yes to take a queued Deployment out of the queue stops it partway once it runs (`Plan::Started`). No end-to-end approval path is shown: an authorized caller's cancel skips the first ask, and a protected member's gets a refusal. | 1 | 4 |
 | none | not modelled | A stop-first rollout of a Service with 2 replicas, live today. `last_in` lets the healthy copy go Out while the other crash-loops, counting it In from its rotation alone, so the Service has no serving copy until the rollout's new copy is healthy. The gap heals within the deploy, and no yes is weighed in it, so it sits outside this property. F×S = 6, under the fix bar. | 2 | 3 |
 

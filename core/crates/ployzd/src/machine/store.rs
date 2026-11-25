@@ -19,8 +19,8 @@ use reqwest::Url;
 use thiserror::Error;
 
 use super::{
-    FoundingCluster, LiveSlot, LocalMachineBody, LocalMachineRecord, ManagementClientSlot,
-    ParticipationOrigin, RemovedMember,
+    FoundingCluster, KeyChangeHeld, LiveSlot, LocalMachineBody, LocalMachineRecord,
+    ManagementClientSlot, ParticipationOrigin, RemovedMember,
 };
 use crate::management::ManagementSecret;
 use crate::network::{DiscoveredNetwork, WireGuardPrivateKey, allocate_machine_subnet};
@@ -869,6 +869,7 @@ impl LocalMachineStore {
     /// and a storage error if the updated record cannot be saved atomically.
     pub(crate) fn apply_join_restrictions(
         &mut self,
+        _held: &KeyChangeHeld,
         set: &ployz_core::JoinRestrictionSet,
     ) -> Result<(), StoreError> {
         self.commit_if_changed(|record| {
@@ -960,8 +961,9 @@ impl LocalMachineStore {
     ///
     /// # Errors
     /// Returns a storage error if the updated record cannot be saved atomically.
-    pub fn stage_management_client(
+    pub(crate) fn stage_management_client(
         &mut self,
+        _held: &KeyChangeHeld,
         label: ManagementClientLabel,
         pending: ClientKey,
     ) -> Result<(), StoreError> {
@@ -980,8 +982,9 @@ impl LocalMachineStore {
     ///
     /// # Errors
     /// Returns a storage error if the updated record cannot be saved atomically.
-    pub fn clear_management_client(
+    pub(crate) fn clear_management_client(
         &mut self,
+        _held: &KeyChangeHeld,
         label: &ManagementClientLabel,
     ) -> Result<(), StoreError> {
         let Some(was) = self
@@ -1004,7 +1007,11 @@ impl LocalMachineStore {
     ///
     /// # Errors
     /// Returns a storage error if the updated record cannot be saved atomically.
-    pub fn activate_management_client(&mut self, remote: ClientKey) -> Result<(), StoreError> {
+    pub(crate) fn activate_management_client(
+        &mut self,
+        _held: &KeyChangeHeld,
+        remote: ClientKey,
+    ) -> Result<(), StoreError> {
         let Some(label) = self.record.pending_label(&remote).cloned() else {
             return Ok(());
         };
@@ -1019,10 +1026,13 @@ impl LocalMachineStore {
 
     /// Admit `key` as an accepted client in the slot its [`DeviceCode`] names, in one
     /// write. Returns `false`, without a write, when the slot already holds exactly it.
+    /// It only adds a key: one whose code another live key's slot holds is refused, since
+    /// replacing that key would remove it without the locks a removal takes.
     ///
     /// # Errors
-    /// Returns [`StoreError::KeyRemoved`] for a key this Machine removed, and a storage
-    /// error if the updated record cannot be saved atomically.
+    /// Returns [`StoreError::KeyRemoved`] for a key this Machine removed,
+    /// [`StoreError::CodeHeld`] when another live key holds its slot, and a storage error
+    /// if the updated record cannot be saved atomically.
     pub fn approve_device(&mut self, key: DeviceKey) -> Result<bool, StoreError> {
         if self.record.removes_key(&KeyRef::Signing { key }) {
             return Err(StoreError::KeyRemoved(KeyRef::Signing { key }));
@@ -1031,7 +1041,11 @@ impl LocalMachineStore {
         let slot = ManagementClientSlot::Live(LiveSlot::Active {
             accepted: ClientKey::from(key),
         });
-        let held = self.record.management_clients.get(&label) == Some(&slot);
+        let was = self.record.management_clients.get(&label).copied();
+        if was.is_some_and(|was| was.live().is_some() && was != slot) {
+            return Err(StoreError::CodeHeld(key.code()));
+        }
+        let held = was == Some(slot);
         self.commit_if_changed::<_, StoreError>(|record| {
             record.management_clients.insert(label, slot);
             Ok(())
@@ -1045,7 +1059,11 @@ impl LocalMachineStore {
     /// # Errors
     /// Returns [`StoreError::AmbiguousCode`] when `code` names more than one key here, and
     /// otherwise as [`Self::remove_key`].
-    pub fn remove_by_code(&mut self, code: DeviceCode) -> Result<bool, StoreError> {
+    pub(crate) fn remove_by_code(
+        &mut self,
+        held: &KeyChangeHeld,
+        code: DeviceCode,
+    ) -> Result<bool, StoreError> {
         let device = self
             .record
             .management_clients
@@ -1074,7 +1092,7 @@ impl LocalMachineStore {
         named.dedup();
         match named.as_slice() {
             [] => Ok(false),
-            [key] => self.remove_key(*key),
+            [key] => self.remove_key(held, *key),
             _ => Err(StoreError::AmbiguousCode(code)),
         }
     }
@@ -1088,7 +1106,11 @@ impl LocalMachineStore {
     /// Returns [`StoreError::LastKey`] when `key` is the last person's or full CLI key this
     /// Machine trusts, which alone change keys, and a storage error if the updated record
     /// cannot be saved atomically.
-    pub fn remove_key(&mut self, key: KeyRef) -> Result<bool, StoreError> {
+    pub(crate) fn remove_key(
+        &mut self,
+        _held: &KeyChangeHeld,
+        key: KeyRef,
+    ) -> Result<bool, StoreError> {
         self.remove(key, false)
     }
 
@@ -1102,8 +1124,9 @@ impl LocalMachineStore {
     /// Returns [`StoreError::NotGrant`] when `key` is a Device here,
     /// [`StoreError::GrantMoved`] when either grant `retired` names isn't the one held
     /// here, and what [`Self::remove_key`] returns.
-    pub fn remove_grant(
+    pub(crate) fn remove_grant(
         &mut self,
+        _held: &KeyChangeHeld,
         key: SigningPublicKey,
         retired: Option<Retired>,
     ) -> Result<bool, StoreError> {
@@ -1234,8 +1257,9 @@ impl LocalMachineStore {
     ///
     /// [`Prior::Edit`]: ployz_core::authority::Prior::Edit
     /// [`Prior::Replace`]: ployz_core::authority::Prior::Replace
-    pub fn approve_grant(
+    pub(crate) fn approve_grant(
         &mut self,
+        _held: &KeyChangeHeld,
         trusted: ployz_core::authority::TrustedGrant,
         prior: Option<ployz_core::authority::Prior>,
     ) -> Result<bool, StoreError> {
@@ -1754,6 +1778,10 @@ pub enum StoreError {
     },
     #[error("Code {0} names more than one key on this Server. Remove it by its full key.")]
     AmbiguousCode(DeviceCode),
+    #[error(
+        "Another device already holds code {0} on this Server. Nothing changed here. Make a new key, or remove that device first."
+    )]
+    CodeHeld(DeviceCode),
     #[error("Key {0} is already on this Server. Change it with ployz key scope.")]
     GrantHeld(DeviceCode),
     #[error(
@@ -2234,6 +2262,33 @@ mod device_slot_tests {
             Some(ManagementScope::Full)
         );
         assert_eq!(store.record().devices().collect::<Vec<_>>(), vec![key()]);
+    }
+
+    /// Two Device keys whose codes collide, as 50-bit codes can: the second approval
+    /// leaves the first key in its slot, since only a removal under its locks drops a key.
+    #[test]
+    fn a_device_whose_code_another_live_key_holds_is_refused() {
+        let (_dir, mut store) = founded();
+        let other = DeviceKey::from_bytes([8; 32]);
+        store
+            .commit::<_, super::StoreError>(|record| {
+                let slot = record.management_clients.remove(&key().label()).unwrap();
+                record.management_clients.insert(other.label(), slot);
+                Ok(())
+            })
+            .unwrap();
+
+        let refused = store.approve_device(other);
+
+        assert!(matches!(refused, Err(super::StoreError::CodeHeld(code)) if code == other.code()));
+        assert_eq!(
+            store
+                .record()
+                .management_clients
+                .get(&other.label())
+                .and_then(|slot| slot.accepted()),
+            Some(key().into())
+        );
     }
 
     #[test]
