@@ -438,7 +438,7 @@ impl LocalMachine {
         {
             tracing::warn!(
                 error = %ployz_core::error_chain::inline(&error),
-                "could not write the preview fence; previews on this Server can't reach each other until a preview Container starts"
+                "could not write the preview fence; each preview's own Containers on this Server can't reach each other until one of its Containers starts"
             );
         }
         if let Err(error) = self.restore_private_access().await {

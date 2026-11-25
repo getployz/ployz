@@ -166,7 +166,6 @@ fn install(
         || !command_succeeds("iptables", &["-t", "filter", "-S", PREVIEW_CHAIN])
     {
         ipv4_document.push_str(&format!("*filter\n{}COMMIT\n", closed_preview_chain()));
-        super::preview_fence::forget_written();
     }
     ipv4_document.push_str(&Chain::fence().document(
         "iptables",
@@ -451,7 +450,9 @@ fn part_match(flag: &str, part: AddressPart) -> String {
 /// A preview Container is reached only from Open, signed data and its own preview: Free
 /// never reaches one, a preview reaches no Free Container, and two previews meet only on
 /// one bridge, where [`PREVIEW_CHAIN`] lets through only two addresses of one preview
-/// Namespace. Every rule follows the established-flow return, so each reads only new flows.
+/// Namespace. These rules come ahead of the established-flow return, so they read every
+/// packet: membership in a Namespace is symmetric, so a reply passes as its flow's first
+/// packet did, and a flow whose sets no longer hold both ends stops at its next packet.
 fn fence_rules() -> Vec<String> {
     let into_data = part_match("-d", AddressPart::SignedData);
     let into_preview = part_match("-d", AddressPart::Preview);
@@ -461,28 +462,25 @@ fn fence_rules() -> Vec<String> {
     // A preview's Containers are signed, but reach no data any more than a Free one.
     let kept_from_data = [&from_preview, &from_free];
     let bridge = DOCKER_NETWORK_NAME;
+    let mesh = WIREGUARD_INTERFACE_NAME;
     let mut rules = vec![
-        "-m conntrack --ctstate RELATED,ESTABLISHED -j RETURN".to_owned(),
         format!("-i {bridge} -o {bridge} {from_preview} {into_preview} -j {PREVIEW_CHAIN}"),
-        format!("-i {bridge} -o {bridge} {from_preview} {into_preview} -j RETURN"),
-        // Toward a peer's Container, by the part its address lies in.
+        // What PREVIEW_CHAIN leaves, even emptied, and toward a peer's preview.
         format!("-i {bridge} {from_preview} {into_preview} -j DROP"),
         format!("-i {bridge} {from_preview} {into_free} -j DROP"),
+        format!("-i {bridge} {from_free} {into_preview} -j DROP"),
+        // Each Server drops on arrival what a peer's fence drops on leaving.
+        format!("-i {mesh} {from_preview} {into_preview} -j DROP"),
+        format!("-i {mesh} {from_preview} {into_free} -j DROP"),
+        format!("-i {mesh} {from_free} {into_preview} -j DROP"),
+        "-m conntrack --ctstate RELATED,ESTABLISHED -j RETURN".to_owned(),
     ];
-    for (interface, otherwise) in [(bridge, "RETURN"), (WIREGUARD_INTERFACE_NAME, "ACCEPT")] {
+    for (interface, otherwise) in [(bridge, "RETURN"), (mesh, "ACCEPT")] {
         rules.extend(
             kept_from_data
                 .iter()
                 .map(|source| format!("-i {interface} {source} {into_data} -j DROP")),
         );
-        rules.push(format!("-i {interface} {from_free} {into_preview} -j DROP"));
-        if interface == WIREGUARD_INTERFACE_NAME {
-            // Each Server drops on arrival what a peer's fence drops on leaving.
-            rules.push(format!(
-                "-i {interface} {from_preview} {into_preview} -j DROP"
-            ));
-            rules.push(format!("-i {interface} {from_preview} {into_free} -j DROP"));
-        }
         rules.push(format!("-i {interface} -j {otherwise}"));
     }
     rules.push("-m conntrack --ctstate DNAT -j RETURN".to_owned());

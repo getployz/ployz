@@ -1141,8 +1141,9 @@ impl Lifecycle {
         if let Some(container_labels) = inspected.labels() {
             self.collector.cover(container_labels).await?;
         }
-        // A preview Container joins its Namespace's set before it starts, so it meets its
-        // siblings and no address leaves a set without its flows forgotten.
+        // A preview Container's start writes every preview's set from Docker first, so it
+        // meets its siblings and an address another preview held stops meeting that one. A
+        // write that fails refuses the start.
         let preview = inspected
             .labels()
             .and_then(|labels| labels.get(labels::NAMESPACE))
@@ -1254,20 +1255,7 @@ impl Lifecycle {
     ) -> Result<(), Error> {
         let mut config_operation = self.specs.config_operation().await;
         self.remove_locked(&mut config_operation, container_id, remove_volumes, force)
-            .await?;
-        drop(config_operation);
-        // The Container's address leaves its preview's set, and its flows with it. A failed
-        // write leaves the address in the set until the next start of a preview here writes
-        // the sets again, before that start.
-        if crate::network::preview_sets_held()
-            && let Err(error) = self.docker.sync_preview_fence().await
-        {
-            tracing::warn!(
-                error = %ployz_core::error_chain::inline(&error),
-                "could not write the preview fence after a removal"
-            );
-        }
-        Ok(())
+            .await
     }
 
     pub(super) async fn remove_locked(

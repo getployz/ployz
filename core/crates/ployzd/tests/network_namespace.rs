@@ -8,10 +8,14 @@ use defguard_wireguard_rs::{
     Kernel, WGApi, WireguardInterfaceApi, host::Peer, key::Key, net::IpAddrMask,
 };
 use ployz_core::{CORROSION_GOSSIP_PORT, MACHINE_API_PORT, ManagementAddress, UNREGISTRY_PORT};
-use ployzd::network::{BridgeFence, NetworkError, apply_firewall_rules, fence_builder};
+use ployzd::network::{
+    BridgeFence, NetworkError, apply_firewall_rules, fence_builder, write_preview_sets,
+};
 
 const TEST_NAME: &str = "mesh_firewall_policy";
 const ERROR_TEST_NAME: &str = "firewall_surfaces_command_start_errors";
+const PREVIEW_TEST_NAME: &str = "a_preview_meets_only_its_own_preview_whatever_flows_it_held";
+const PREVIEW_STEP: &str = "PLOYZ_PREVIEW_FENCE_STEP";
 const ERROR_TEST_CHILD: &str = "PLOYZ_FIREWALL_ERROR_TEST_CHILD";
 const LAN: &str = "192.168.77.2";
 const METADATA: &str = "169.254.169.254";
@@ -1159,6 +1163,300 @@ time.sleep(.3); done.set(); t.join(); print(f'{{len(set(range(sent))-got)}} of {
         jumped,
         "a converged INPUT jump was replaced"
     );
+}
+
+/// One Server's bridge, its Containers each at a /32 routed through the host, so every
+/// packet between two of them crosses the host's FORWARD in and out of `ployz`, as bridged
+/// traffic does under Docker's br_netfilter.
+#[test]
+#[ignore = "requires passwordless sudo and Linux network namespaces"]
+fn a_preview_meets_only_its_own_preview_whatever_flows_it_held() {
+    if let Ok(step) = env::var(PREVIEW_STEP) {
+        let sets = env::var("PLOYZ_PREVIEW_SETS")
+            .unwrap()
+            .split(';')
+            .map(|set| {
+                let (nonce, addresses) = set.split_once('=').unwrap();
+                (
+                    ployz_core::Namespace::parse(format!("pv-0123456789abcdef-01234567-{nonce}"))
+                        .unwrap(),
+                    addresses
+                        .split(',')
+                        .map(|address| address.parse().unwrap())
+                        .collect(),
+                )
+            })
+            .collect();
+        let apply = || {
+            apply_firewall_rules(
+                "10.210.2.0/24".parse().unwrap(),
+                ManagementAddress("fdcc::2".parse().unwrap()),
+                BridgeFence::IfAvailable,
+            )
+            .unwrap()
+        };
+        match step.as_str() {
+            "apply" => {
+                apply();
+                write_preview_sets(sets).unwrap();
+            }
+            "sets" => write_preview_sets(sets).unwrap(),
+            "flush" => {
+                let installed = apply();
+                write_preview_sets(sets).unwrap();
+                let flushed = Command::new("iptables")
+                    .args(["-F", "PLOYZ-PREVIEW"])
+                    .status()
+                    .unwrap();
+                assert!(flushed.success());
+                installed.reapply().unwrap().unwrap();
+            }
+            other => panic!("unknown step {other}"),
+        }
+        return;
+    }
+
+    sudo(&["-n", "true"]);
+    let suffix = std::process::id();
+    let host = format!("p35-pvhost-{suffix}");
+    let switch = format!("p35-pvswitch-{suffix}");
+    // Two Containers of preview a, one of preview b, and a Free one.
+    let containers = [130, 131, 140, 200].map(|last| (last, format!("p35-pv{last}-{suffix}")));
+    let mut names = vec![host.clone(), switch.clone()];
+    names.extend(containers.iter().map(|(_, name)| name.clone()));
+    let _namespaces = Namespaces::new(&names);
+    for name in &names {
+        ns(name, "ip", &["link", "set", "lo", "up"]);
+    }
+    ns(&switch, "ip", &["link", "add", "sw", "type", "bridge"]);
+    ns(&switch, "ip", &["link", "set", "sw", "up"]);
+    let plug = |name: &str, inside: &str, port: &str| {
+        sudo(&[
+            "ip", "link", "add", port, "type", "veth", "peer", "name", inside,
+        ]);
+        sudo(&["ip", "link", "set", port, "netns", &switch]);
+        sudo(&["ip", "link", "set", inside, "netns", name]);
+        ns(&switch, "ip", &["link", "set", port, "master", "sw"]);
+        ns(&switch, "ip", &["link", "set", port, "up"]);
+    };
+    plug(&host, &format!("pvh{suffix}"), &format!("pvs{suffix}"));
+    ns(
+        &host,
+        "ip",
+        &["link", "set", &format!("pvh{suffix}"), "name", "ployz"],
+    );
+    configure_link(&host, "ployz", "10.210.2.1/24");
+    for (key, value) in [
+        ("net.ipv4.ip_forward", "1"),
+        ("net.ipv4.conf.all.send_redirects", "0"),
+        ("net.ipv4.conf.ployz.send_redirects", "0"),
+    ] {
+        ns(&host, "sysctl", &["-q", "-w", &format!("{key}={value}")]);
+    }
+    ns(&host, "iptables", &["-N", "DOCKER-USER"]);
+    ns(
+        &host,
+        "iptables",
+        &["-I", "FORWARD", "1", "-j", "DOCKER-USER"],
+    );
+    // Docker's own accept behind DOCKER-USER, which also tracks the flows opened before
+    // the fence.
+    ns(
+        &host,
+        "iptables",
+        &[
+            "-A",
+            "FORWARD",
+            "-m",
+            "conntrack",
+            "--ctstate",
+            "RELATED,ESTABLISHED",
+            "-j",
+            "ACCEPT",
+        ],
+    );
+    for (last, name) in &containers {
+        plug(
+            name,
+            &format!("pvc{last}-{suffix}"),
+            &format!("pvp{last}-{suffix}"),
+        );
+        ns(
+            name,
+            "ip",
+            &[
+                "link",
+                "set",
+                &format!("pvc{last}-{suffix}"),
+                "name",
+                "eth0",
+            ],
+        );
+        configure_link(name, "eth0", &format!("10.210.2.{last}/32"));
+        ns(name, "ip", &["route", "add", "10.210.2.1", "dev", "eth0"]);
+        ns(
+            name,
+            "ip",
+            &["route", "add", "default", "via", "10.210.2.1"],
+        );
+    }
+    let at = |last: u8| {
+        containers
+            .iter()
+            .find(|(at, _)| *at == last)
+            .unwrap()
+            .1
+            .clone()
+    };
+    let address = |last: u8| format!("10.210.2.{last}");
+    let open = |from: u8, to: u8, port: u16| {
+        Conversation::open(&at(from), &address(from), &at(to), &address(to), port)
+    };
+
+    // Opened before the fence: each must stop at its next packet unless one preview holds
+    // both ends.
+    let mut sibling = open(130, 131, 41001);
+    let mut to_free = open(130, 200, 41002);
+    let mut from_free = open(200, 130, 41003);
+    let mut across = open(130, 140, 41004);
+    for conversation in [&mut sibling, &mut to_free, &mut from_free, &mut across] {
+        assert!(conversation.exchange(), "no flow before the fence");
+    }
+    preview_step(
+        &host,
+        "apply",
+        "0000000a=10.210.2.130,10.210.2.131;0000000b=10.210.2.140",
+    );
+    assert!(
+        sibling.exchange(),
+        "a preview's own flow stopped at the fence"
+    );
+    assert!(
+        !to_free.exchange(),
+        "a preview kept its flow to a Free Container"
+    );
+    assert!(
+        !from_free.exchange(),
+        "a Free Container kept its flow to a preview"
+    );
+    assert!(
+        !across.exchange(),
+        "a preview kept its flow to another preview"
+    );
+    let mut new_sibling = open(131, 130, 41005);
+    assert!(new_sibling.exchange());
+    let _b = stream_server(&at(140), &address(140), 41006);
+    assert_connection_denied(&at(130), &address(130), &address(140), 41006);
+
+    // .131 now belongs to preview b, as when an address passes to another preview.
+    preview_step(
+        &host,
+        "sets",
+        "0000000a=10.210.2.130;0000000b=10.210.2.131,10.210.2.140",
+    );
+    assert!(
+        !sibling.exchange(),
+        "a flow outlived the set that let it begin"
+    );
+    assert!(
+        !new_sibling.exchange(),
+        "a flow outlived the set that let it begin"
+    );
+    assert!(open(131, 140, 41007).exchange());
+
+    // An emptied PLOYZ-PREVIEW, kept by a re-apply, fails closed.
+    preview_step(
+        &host,
+        "flush",
+        "0000000a=10.210.2.130;0000000b=10.210.2.131,10.210.2.140",
+    );
+    let _a = stream_server(&at(130), &address(130), 41008);
+    assert_connection_denied(&at(140), &address(140), &address(130), 41008);
+}
+
+fn preview_step(host: &str, step: &str, sets: &str) {
+    let status = Command::new("sudo")
+        .args(["-n", "ip", "netns", "exec", host, "env"])
+        .arg(format!("{PREVIEW_STEP}={step}"))
+        .arg(format!("PLOYZ_PREVIEW_SETS={sets}"))
+        .arg(env::current_exe().unwrap())
+        .args(["--ignored", "--exact", PREVIEW_TEST_NAME])
+        .status()
+        .unwrap();
+    assert!(status.success(), "preview step {step} failed");
+}
+
+/// A TCP connection held open: each exchange sends a byte and waits a second for its echo.
+struct Conversation {
+    server: Child,
+    client: Child,
+    input: std::process::ChildStdin,
+    output: BufReader<ChildStdout>,
+}
+
+impl Conversation {
+    fn open(
+        client_namespace: &str,
+        client_address: &str,
+        server_namespace: &str,
+        server_address: &str,
+        port: u16,
+    ) -> Self {
+        let mut server = Command::new("sudo")
+            .args(["-n", "ip", "netns", "exec", server_namespace, "python3", "-c",
+                "import socket,sys; a,p=sys.argv[1:]; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1); s.bind((a,int(p))); s.listen(1); print('READY',flush=True); c,_=s.accept()\nwhile True:\n b=c.recv(1)\n if not b: break\n c.sendall(b)",
+                server_address])
+            .arg(port.to_string())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut ready = String::new();
+        BufReader::new(server.stdout.take().unwrap())
+            .read_line(&mut ready)
+            .unwrap();
+        assert_eq!(ready.trim(), "READY");
+        let mut client = Command::new("sudo")
+            .args(["-n", "ip", "netns", "exec", client_namespace, "python3", "-u", "-c",
+                "import socket,sys; a,b,p=sys.argv[1:]; s=socket.socket(); s.bind((a,0)); s.settimeout(3); s.connect((b,int(p))); s.settimeout(1); print('READY',flush=True)\nfor _ in sys.stdin:\n s.sendall(b'x')\n try: print('ok' if s.recv(1)==b'x' else 'lost',flush=True)\n except socket.timeout: print('lost',flush=True)",
+                client_address, server_address])
+            .arg(port.to_string())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let input = client.stdin.take().unwrap();
+        let mut output = BufReader::new(client.stdout.take().unwrap());
+        let mut ready = String::new();
+        output.read_line(&mut ready).unwrap();
+        assert_eq!(
+            ready.trim(),
+            "READY",
+            "{client_address} could not connect to {server_address}:{port}"
+        );
+        Self {
+            server,
+            client,
+            input,
+            output,
+        }
+    }
+
+    fn exchange(&mut self) -> bool {
+        use std::io::Write as _;
+        writeln!(self.input).unwrap();
+        let mut answer = String::new();
+        self.output.read_line(&mut answer).unwrap();
+        answer.trim() == "ok"
+    }
+}
+
+impl Drop for Conversation {
+    fn drop(&mut self) {
+        let _ = self.client.kill();
+        let _ = self.client.wait();
+        let _ = self.server.kill();
+        let _ = self.server.wait();
+    }
 }
 
 fn rules(namespace: &str, table: &str, chain: &str) -> Vec<String> {
