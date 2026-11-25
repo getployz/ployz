@@ -1664,7 +1664,7 @@ async fn rule_proofs(
             service: service.clone(),
             policy,
             commit,
-            authority: token.authority,
+            authority: token.authority.clone(),
             stage: BuildStage::Built { image, attest },
         };
         let token = ployz_core::GithubToken::new(token.token.clone());

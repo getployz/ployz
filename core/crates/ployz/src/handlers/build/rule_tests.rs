@@ -78,6 +78,7 @@ fn checked_in(rule: &AutoDeployRule, deployment: Value) -> CheckedIn {
         attest: AttestKey::from_bytes([0x55; 32]),
         service: web(),
         deployment,
+        approval: None,
     }
 }
 
@@ -288,21 +289,49 @@ fn a_registry_cache_is_no_policy() {
 fn a_build_fed_another_attest_key_never_writes_the_clusters_cache_scope() {
     let cluster = X25519Secret::generate().attest();
     let attacker = X25519Secret::generate().attest();
-    assert_eq!(cache_scope(&lab_policy(&[]), &cluster).unwrap(), None);
+    let rule = opened(&rule(lab_policy(&[])));
+    assert_eq!(
+        cache_scope(&rule, &lab_policy(&[]), &cluster).unwrap(),
+        None
+    );
     let cached = BuildPolicy {
         cache: PolicyCache::Actions,
         ..lab_policy(&[])
     };
-    let honest = cache_scope(&cached, &cluster).unwrap().unwrap();
-    assert_eq!(cache_scope(&cached, &cluster).unwrap().unwrap(), honest);
-    assert_ne!(cache_scope(&cached, &attacker).unwrap().unwrap(), honest);
+    let honest = cache_scope(&rule, &cached, &cluster).unwrap().unwrap();
+    assert_eq!(
+        cache_scope(&rule, &cached, &cluster).unwrap().unwrap(),
+        honest
+    );
+    assert_ne!(
+        cache_scope(&rule, &cached, &attacker).unwrap().unwrap(),
+        honest
+    );
     // Nor the scope of the policy alone, which any key could name.
     assert_ne!(PolicyDigest::of(&cached).unwrap().to_string(), honest);
     let other = BuildPolicy {
         context: "/web".to_owned(),
         ..cached
     };
-    assert_ne!(cache_scope(&other, &cluster).unwrap().unwrap(), honest);
+    assert_ne!(
+        cache_scope(&rule, &other, &cluster).unwrap().unwrap(),
+        honest
+    );
+}
+
+#[test]
+fn a_preview_rules_build_reads_and_writes_no_cache_whatever_its_policy_says() {
+    let mut preview = rule(golden_policy());
+    preview.preview = Some(ployz_core::authority::PreviewTerms {
+        parent: uuid::Uuid::nil(),
+        pushers: Vec::new(),
+        pinned: Vec::new(),
+    });
+    let attest = X25519Secret::generate().attest();
+    assert_eq!(
+        cache_scope(&opened(&preview), &golden_policy(), &attest).unwrap(),
+        None
+    );
 }
 
 #[test]
@@ -335,7 +364,9 @@ fn a_cache_scope_is_the_digest_of_its_own_domain_policy_and_attest_key() {
             .chain_update(attest.as_bytes())
             .finalize(),
     );
-    let scope = cache_scope(&cached, &attest).unwrap().unwrap();
+    let scope = cache_scope(&opened(&rule(lab_policy(&[]))), &cached, &attest)
+        .unwrap()
+        .unwrap();
     assert_eq!(scope, oracle);
     assert_eq!(
         scope,

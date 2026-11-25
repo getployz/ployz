@@ -7,7 +7,8 @@ use ployz_core::{
     BuildGrantRepository, DeviceKey, EnvValue, MachineName, MintBuildGrantRequest, Namespace,
     SealedScope, SealingPublicKey, ServiceName,
     authority::{
-        BuildPolicy, PayloadDigest, RuleId, RuleService, Signed, Signer, SignerKey,
+        BuildPolicy, CommitApproval, PayloadDigest, PreviewTerms, RuleId, RuleService, Signed,
+        Signer, SignerKey,
         rule::{Builder, PolicyCache, PolicyMethod, RuleEvent, RuleSource, Runner},
     },
 };
@@ -218,6 +219,12 @@ pub(crate) fn grant_for(rule: &AutoDeployRule, signer: &Signer, token: String) -
     }
 }
 
+/// A fork's commit: no branch of the repository holds it, and the run GitHub started
+/// for Cloud's dispatch checked out another.
+pub(crate) fn fork() -> CommitSha {
+    CommitSha::parse(&"f".repeat(40)).unwrap()
+}
+
 /// GitHub as the fixture tokens expect it, with the branch at `head`.
 pub(crate) fn github(head: CommitSha) -> FixedGithub {
     FixedGithub {
@@ -283,6 +290,46 @@ impl Fixture {
     }
 }
 
+impl Fixture {
+    /// The preview `nonce` of `rule` on this Server.
+    pub(crate) fn preview_of(&self, rule: &AutoDeployRule, nonce: &str) -> Namespace {
+        let home = ployz_core::PreviewHome::of(&self.machine.record().id());
+        Namespace::parse(format!(
+            "pv-{}-{home}-{nonce}",
+            &rule.rule.to_string()[..16]
+        ))
+        .unwrap()
+    }
+
+    /// The fixture Device's approval of [`fork`] for `preview` under `rule`.
+    pub(crate) fn approval(&self, rule: &AutoDeployRule, preview: &Namespace) -> CommitApproval {
+        CommitApproval {
+            cluster: self.cluster,
+            rule: rule.rule,
+            generation: rule.generation,
+            repository_id: rule.source.repository_id,
+            commit: fork(),
+            namespace: preview.clone(),
+            issued_at: now(),
+            signer: SignerKey::Device(self.signer.public().into()),
+        }
+    }
+
+    pub(crate) fn approved(&self, approval: &CommitApproval) -> CommitAuthority {
+        CommitAuthority::Approved(Signed::sign(approval, &self.signer).unwrap())
+    }
+}
+
+/// `rule` as a preview rule whose pushers leave out the fixture token's actor.
+fn previewing(rule: &mut AutoDeployRule) {
+    rule.source.branch = String::new();
+    rule.preview = Some(PreviewTerms {
+        parent: uuid::Uuid::nil(),
+        pushers: vec![1],
+        pinned: Vec::new(),
+    });
+}
+
 #[track_caller]
 fn refused(result: Result<AdmittedRule, Error>, field: &str) {
     match result {
@@ -331,9 +378,10 @@ impl Github for ForgetDuringWait<'_> {
         &self,
         rule: &AutoDeployRule,
         token: &str,
+        authority: &ployz_core::authority::CommitAuthority,
         now: Timestamp,
     ) -> Result<GithubClaims, ProofRefusal> {
-        self.github.claims(rule, token, now).await
+        self.github.claims(rule, token, authority, now).await
     }
 
     async fn head(
@@ -652,4 +700,112 @@ async fn a_rule_a_passkey_answered_with_its_own_prompt_mints() {
         .admit(&grant, &holder(), Some(&fixture.record()), commit())
         .await;
     assert!(admitted.is_ok(), "{:?}", admitted.err());
+}
+
+/// A fork's commit builds once a person approves it for one preview, though Cloud's
+/// dispatch ran on another commit, the branch head is a third, and the rule's pushers
+/// leave out the dispatcher. Without the approval the same build is refused, and an
+/// approval of anything else admits nothing.
+#[tokio::test]
+async fn an_approved_fork_commit_is_granted_on_a_run_of_another_commit() {
+    let fixture = fixture().await;
+    let preview = fixture.preview_of(&fixture.rule(), "0000aaaa");
+    let build = |authority: CommitAuthority, pushers: Vec<u64>| {
+        move |rule: &mut AutoDeployRule, claim: &mut BuildClaim, grant: &mut RuleGrant| {
+            previewing(rule);
+            rule.preview.as_mut().unwrap().pushers = pushers;
+            claim.commit = fork();
+            claim.authority = authority.clone();
+            grant.commit = fork();
+            grant.authority = authority;
+        }
+    };
+    let approval = fixture.approval(&fixture.rule(), &preview);
+    let admitted = fixture
+        .admit_changed("fork", build(fixture.approved(&approval), vec![1]))
+        .await
+        .unwrap();
+    assert_eq!(admitted.commit, fork());
+
+    assert!(
+        matches!(
+            fixture
+                .admit_changed("head-actor", build(CommitAuthority::Head, vec![1]))
+                .await,
+            Err(Error::RuleProofRefused(ProofRefusal::Claim(
+                AuthorityRefusal::Mismatch {
+                    field: MismatchField::ClaimActor
+                }
+            )))
+        ),
+        "the head path still bounds who pushed"
+    );
+    refused(
+        fixture
+            .admit_changed("head", build(CommitAuthority::Head, Vec::new()))
+            .await,
+        "a commit",
+    );
+
+    let parent = Namespace::parse("app").unwrap();
+    let other_rule = fixture.preview_of(
+        &AutoDeployRule {
+            rule: RuleId::from_bytes([0x22; 16]),
+            ..fixture.rule()
+        },
+        "0000aaaa",
+    );
+    let changed = [
+        CommitApproval {
+            rule: RuleId::from_bytes([0x22; 16]),
+            ..approval.clone()
+        },
+        CommitApproval {
+            generation: 2,
+            ..approval.clone()
+        },
+        CommitApproval {
+            repository_id: 1,
+            ..approval.clone()
+        },
+        CommitApproval {
+            commit: commit(),
+            ..approval.clone()
+        },
+        CommitApproval {
+            namespace: parent.clone(),
+            ..approval.clone()
+        },
+        CommitApproval {
+            namespace: other_rule,
+            ..approval.clone()
+        },
+    ];
+    for (jti, changed) in changed.iter().enumerate() {
+        refused(
+            fixture
+                .admit_changed(
+                    &format!("changed-{jti}"),
+                    build(fixture.approved(changed), vec![1]),
+                )
+                .await,
+            "a commit approval",
+        );
+    }
+    // Under a rule for one branch, an approval stands for nothing, even one naming the
+    // rule's own Environment. A Server keeps a rule's branch, so this one has never seen
+    // the rule as a preview rule.
+    let fixture = self::fixture().await;
+    let authority = fixture.approved(&fixture.approval(&fixture.rule(), &parent));
+    refused(
+        fixture
+            .admit_changed("branch", move |_, claim, grant| {
+                claim.commit = fork();
+                claim.authority = authority.clone();
+                grant.commit = fork();
+                grant.authority = authority;
+            })
+            .await,
+        "a commit approval",
+    );
 }

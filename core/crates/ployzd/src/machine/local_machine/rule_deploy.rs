@@ -20,8 +20,8 @@ use hkdf::hmac::Mac as _;
 use ployz_core::{
     ContainerKind, ContainerWant, QualifiedService, RunTarget, Sealing, ServiceName,
     authority::{
-        AuthorityRefusal, AutoDeployRule, Budget, BuildClaim, MismatchField, RuleEvidence,
-        RuleFacts, RuleProof, Signed, Timestamp, VerifiedBuild, deploy::Creation,
+        AuthorityRefusal, AutoDeployRule, Budget, BuildClaim, CommitAuthority, MismatchField,
+        RuleEvidence, RuleFacts, RuleProof, Signed, Timestamp, VerifiedBuild, deploy::Creation,
         rule::verify_signature,
     },
 };
@@ -236,7 +236,7 @@ impl LocalMachine {
                 // GitHub's token signature is one more check on the same budget.
                 budget.reserve_one().map_err(refused)?;
                 let claims = github
-                    .claims(&rule, token.as_str(), now)
+                    .claims(&rule, token.as_str(), &claim.authority, now)
                     .await
                     .map_err(|refusal| {
                         tracing::warn!(rule = %rule.rule, %refusal, "refused a deploy under a rule");
@@ -245,22 +245,41 @@ impl LocalMachine {
                 if claim.audience().ok().as_deref() != Some(claims.aud.as_str()) {
                     return Err(held(MismatchField::Audience));
                 }
-                // GitHub's `sha` is the commit the push built.
-                if claims.sha != claim.commit {
-                    return Err(held(MismatchField::Commit));
+                match claim.authority {
+                    // The approval names the commit: Cloud's dispatch ran on another.
+                    CommitAuthority::Approved(_) => None,
+                    CommitAuthority::Head => {
+                        // GitHub's `sha` is the commit the push built.
+                        if claims.sha != claim.commit {
+                            return Err(held(MismatchField::Commit));
+                        }
+                        let head = github
+                            .head(
+                                rule.source.repository_id,
+                                rule.head_branch(&claims),
+                                proof.reader.as_ref(),
+                            )
+                            .await
+                            .map_err(|error| {
+                                Error::RuleDeployRefused(RuleDeployRefusal::Head(error))
+                            })?;
+                        Some(head)
+                    }
                 }
-                let head = github
-                    .head(
-                        rule.source.repository_id,
-                        rule.head_branch(&claims),
-                        proof.reader.as_ref(),
-                    )
-                    .await
-                    .map_err(|error| Error::RuleDeployRefused(RuleDeployRefusal::Head(error)))?;
-                Some(head)
             }
             RuleEvidence::Verified(_) | RuleEvidence::Pinned => None,
         };
+        if let CommitAuthority::Approved(_) = claim.authority {
+            budget.reserve_one().map_err(refused)?;
+        }
+        rule.verify_authority(
+            &claim.authority,
+            &trusted,
+            cluster,
+            claim.commit,
+            Some(&new.slot.namespace),
+        )
+        .map_err(|refusal| logged(&rule, &new.slot.service, refusal))?;
         rule.verify_creation(claim, &facts(head), creation)
             .map_err(|refusal| logged(&rule, &new.slot.service, refusal))?;
         let verified = match &proof.evidence {

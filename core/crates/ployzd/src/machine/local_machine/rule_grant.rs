@@ -26,12 +26,13 @@ use crate::github::{
 /// What a rule grant learns from GitHub: a token's verified claims, a branch head, and
 /// how a branch stands to a commit.
 pub(crate) trait Github: Sync {
-    /// The claims of `token` once its signature, issuer and every claim `rule` names
-    /// check out, and its lifetime at `now`.
+    /// The claims of `token` once its signature, issuer and every claim `rule` names for
+    /// a build under `authority` check out, and its lifetime at `now`.
     fn claims(
         &self,
         rule: &AutoDeployRule,
         token: &str,
+        authority: &CommitAuthority,
         now: Timestamp,
     ) -> impl Future<Output = Result<GithubClaims, ProofRefusal>> + Send;
 
@@ -76,9 +77,10 @@ impl Github for GithubOnline {
         &self,
         rule: &AutoDeployRule,
         token: &str,
+        authority: &CommitAuthority,
         now: Timestamp,
     ) -> Result<GithubClaims, ProofRefusal> {
-        self.keys.check(rule, token, now).await
+        self.keys.check(rule, token, authority, now).await
     }
 
     async fn head(
@@ -120,11 +122,13 @@ impl Github for FixedGithub {
         &self,
         rule: &AutoDeployRule,
         token: &str,
+        authority: &CommitAuthority,
         now: Timestamp,
     ) -> Result<GithubClaims, ProofRefusal> {
         let claims =
             crate::github::oidc::verify(token, &self.keys, now).map_err(ProofRefusal::Token)?;
-        rule.verify_claims(&claims).map_err(ProofRefusal::Claim)?;
+        rule.verify_claims(&claims, authority)
+            .map_err(ProofRefusal::Claim)?;
         Ok(claims)
     }
 
@@ -159,7 +163,8 @@ pub(crate) struct AdmittedRule {
 impl LocalMachine {
     /// Admit a grant for `holder` under `grant`'s rule, with `sealed` the record Cloud
     /// relays, at `now`. Every check runs before anything opens, in the order the body
-    /// runs them, and the token is spent last. Only the branch head builds.
+    /// runs them, and the token is spent last. Only the branch head, or a commit a person
+    /// approved for a preview, builds.
     ///
     /// # Errors
     /// Returns [`Error::RuleGrantRefused`] naming what does not match,
@@ -205,7 +210,7 @@ impl LocalMachine {
             .map_err(Error::RuleGrantRefused)?;
         let holder = holder.ok_or_else(|| refused(MismatchField::Holder))?;
         let claims = github
-            .claims(&rule, grant.proof.as_str(), now)
+            .claims(&rule, grant.proof.as_str(), &grant.authority, now)
             .await
             .map_err(Error::RuleProofRefused)?;
         let expected = BuildClaim {
@@ -216,7 +221,7 @@ impl LocalMachine {
             policy: PolicyDigest::of(&service.policy)
                 .map_err(|_| refused(MismatchField::Policy))?,
             commit: grant.commit,
-            authority: grant.authority,
+            authority: grant.authority.clone(),
             stage: BuildStage::Grant {
                 holder: *holder,
                 recipient: grant.recipient,
@@ -228,20 +233,33 @@ impl LocalMachine {
         if claims.aud != audience {
             return Err(refused(MismatchField::Audience));
         }
-        let CommitAuthority::Head = grant.authority;
-        if grant.commit != claims.sha {
-            return Err(refused(MismatchField::Commit));
-        }
-        let head = github
-            .head(
-                rule.source.repository_id,
-                rule.head_branch(&claims),
-                grant.reader.as_ref(),
-            )
-            .await
-            .map_err(Error::RuleHeadUnread)?;
-        if head != grant.commit {
-            return Err(refused(MismatchField::Commit));
+        match &grant.authority {
+            // The builder checked out the approved commit; Cloud's dispatch ran on another.
+            CommitAuthority::Approved(_) => rule
+                .verify_authority(
+                    &grant.authority,
+                    &record.trusted_keys(),
+                    cluster,
+                    grant.commit,
+                    None,
+                )
+                .map_err(Error::RuleGrantRefused)?,
+            CommitAuthority::Head => {
+                if grant.commit != claims.sha {
+                    return Err(refused(MismatchField::Commit));
+                }
+                let head = github
+                    .head(
+                        rule.source.repository_id,
+                        rule.head_branch(&claims),
+                        grant.reader.as_ref(),
+                    )
+                    .await
+                    .map_err(Error::RuleHeadUnread)?;
+                if head != grant.commit {
+                    return Err(refused(MismatchField::Commit));
+                }
+            }
         }
         let digest = sealed
             .map(SealedDigest::of)

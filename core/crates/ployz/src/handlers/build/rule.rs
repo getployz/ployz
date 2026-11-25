@@ -1,11 +1,12 @@
 //! `ployz build --cloud`: a build under an automatic deploy rule, on the GitHub run the
 //! rule's workflow started.
 //!
-//! The runner checks out the commit GitHub ran, never one Cloud names. Everything Cloud
-//! relays at check-in (the rule, the Cluster key, the attest key, the deployment) goes
-//! into the grant token's audience or opens the secrets, so a lie fails a check on the
-//! Machine or here. The runner's GitHub token credentials stay in this process: Buildx
-//! gets a fresh environment.
+//! The runner checks out the commit GitHub ran, or under a preview rule one a person
+//! approved, never one Cloud names alone. Everything Cloud relays at check-in (the rule,
+//! the Cluster key, the attest key, the deployment, an approval) goes into the grant
+//! token's audience or opens the secrets, so a lie fails a check on the Machine or here.
+//! The runner's GitHub token credentials stay in this process: Buildx gets a fresh
+//! environment.
 //!
 //!   check-in ─▶ grant token (holder K, recipient R) ─▶ grant ─▶ secrets opened with A
 //!     ─▶ build with the rule's policy ─▶ push ─▶ image token (image, A)
@@ -14,7 +15,8 @@ use ployz_core::{
     BuildGrantId, GithubToken, RpcErrorCode, ServiceName, X25519Secret,
     authority::{
         AttestKey, AutoDeployRule, BuildClaim, BuildPolicy, BuildStage, BuiltImageDigest,
-        CommitAuthority, CommitSha, PolicyDigest, RecipientKey, RuleId, Signed, rule::PolicyCache,
+        CommitApproval, CommitAuthority, CommitSha, PolicyDigest, RecipientKey, RuleId, Signed,
+        rule::PolicyCache,
     },
     separation,
 };
@@ -40,6 +42,19 @@ pub(super) struct CheckedIn {
     pub(super) service: ServiceName,
     /// The Deployment's lowering input narrowed to the Service, its Sealed values sealed.
     pub(super) deployment: Value,
+    /// A person's approval of the commit for one preview, which no branch head need hold.
+    #[serde(default)]
+    pub(super) approval: Option<Signed<CommitApproval>>,
+}
+
+impl CheckedIn {
+    /// The authority this build claims for its commit: the approval Cloud relayed, else
+    /// the branch head.
+    pub(super) fn authority(&self) -> CommitAuthority {
+        self.approval
+            .clone()
+            .map_or(CommitAuthority::Head, CommitAuthority::Approved)
+    }
 }
 
 /// What a build takes from the relayed rule, once its signature checks.
@@ -48,6 +63,8 @@ pub(super) struct Opened {
     pub(super) generation: u64,
     /// The policy it approves for the built Service; `None` when it names no such Service.
     policy: Option<BuildPolicy>,
+    /// A preview rule's build, which runs code no one reviewed.
+    preview: bool,
 }
 
 /// Check the relayed rule's signature and take what the build needs for `service`.
@@ -67,6 +84,7 @@ pub(super) fn open(
         policy: rule
             .service(service)
             .map(|approved| approved.policy.clone()),
+        preview: rule.preview.is_some(),
     })
 }
 
@@ -168,7 +186,9 @@ pub(super) fn built_claim(
 }
 
 /// The Actions cache scope of a rule build: a digest of its policy and of `attest`, the
-/// attest key its secrets opened with. `None` keeps the cache off.
+/// attest key its secrets opened with. `None` keeps the cache off, and a preview rule's
+/// build always has it off: GitHub lets a branch read the default branch's cache, and
+/// a preview's code would read what honest builds wrote, and write what they read.
 ///
 /// BuildKit leaves secret values out of its cache keys, so a scope shared with a build
 /// that opened values from another key would let that build's layers into honest
@@ -178,10 +198,12 @@ pub(super) fn built_claim(
 /// admitted, built with the Cluster's own values, and a build fed another key writes a
 /// scope no honest build reads.
 pub(super) fn cache_scope(
+    rule: &Opened,
     policy: &BuildPolicy,
     attest: &AttestKey,
 ) -> Result<Option<String>, Error> {
     match policy.cache {
+        PolicyCache::Actions if rule.preview => Ok(None),
         PolicyCache::Off => Ok(None),
         PolicyCache::Actions => {
             let policy = PolicyDigest::of(policy).map_err(Error::command)?;

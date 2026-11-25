@@ -442,11 +442,16 @@ impl AutoDeployRule {
 
     /// Check a verified GitHub token's claims against this rule, in the order the body
     /// runs them. The audience is the caller's: it depends on the holder, recipient or
-    /// image in hand.
+    /// image in hand. A build of a commit a person approved runs on Cloud's dispatch, so the
+    /// rule's pushers don't bound it.
     ///
     /// # Errors
     /// Returns [`AuthorityRefusal::Mismatch`] naming the first claim that does not match.
-    pub fn verify_claims(&self, claims: &GithubClaims) -> Result<(), AuthorityRefusal> {
+    pub fn verify_claims(
+        &self,
+        claims: &GithubClaims,
+        authority: &CommitAuthority,
+    ) -> Result<(), AuthorityRefusal> {
         let Some(preview) = &self.preview else {
             return self
                 .source
@@ -459,7 +464,9 @@ impl AutoDeployRule {
         self.source.verify_claims(claims, &claims.git_ref)?;
         first_mismatch([(
             MismatchField::ClaimActor,
-            preview.pushers.is_empty() || preview.pushers.contains(&claims.actor_id),
+            matches!(authority, CommitAuthority::Approved(_))
+                || preview.pushers.is_empty()
+                || preview.pushers.contains(&claims.actor_id),
         )])
     }
 
@@ -588,11 +595,94 @@ pub fn verify_signature(
 
 /// Which authority a build claims for its commit. Written into every claim, so the
 /// pinned builder's audience keeps its bytes.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum CommitAuthority {
     /// The commit is the branch head the Machine reads from GitHub itself.
     Head,
+    /// A person approved the commit for one preview of a preview rule, such as a fork's,
+    /// which no branch of the repository need hold.
+    Approved(Signed<CommitApproval>),
+}
+
+/// One commit a person approves for one preview of a preview rule: what a pull request
+/// from a fork, or from a pusher the rule doesn't name, builds under. It admits only its
+/// own commit, so each new push waits for its own approval.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct CommitApproval {
+    pub cluster: SealingPublicKey,
+    pub rule: RuleId,
+    pub generation: u64,
+    pub repository_id: u64,
+    pub commit: CommitSha,
+    /// The preview's own Namespace, never the Parent's.
+    pub namespace: Namespace,
+    pub issued_at: Timestamp,
+    pub signer: SignerKey,
+}
+
+impl Statement for CommitApproval {
+    const PURPOSE: Purpose = Purpose::Commit;
+    const TAKES_ASSERTION: bool = true;
+}
+
+impl StepBody for CommitApproval {
+    fn kind(&self) -> StepKind {
+        StepKind::Source
+    }
+    fn place(&self) -> Option<ProposalRef> {
+        None
+    }
+    fn signer(&self) -> SignerKey {
+        self.signer
+    }
+    fn cluster(&self) -> SealingPublicKey {
+        self.cluster
+    }
+    fn namespace(&self) -> Option<&Namespace> {
+        Some(&self.namespace)
+    }
+    fn ask(&self) -> Ask<'_> {
+        Ask::Commit
+    }
+}
+
+impl AutoDeployRule {
+    /// Check `authority` for a build of `commit` under this rule, in `namespace` when the
+    /// caller knows it. The head needs nothing here: its caller reads it from GitHub. An
+    /// approval must be one a trusted person signed for this Cluster, this preview rule's
+    /// generation and repository, `commit`, and a preview Namespace of this rule.
+    ///
+    /// # Errors
+    /// Returns the refusal of [`open_approval`], and [`AuthorityRefusal::Mismatch`] naming
+    /// the first fact the approval doesn't match.
+    pub fn verify_authority(
+        &self,
+        authority: &CommitAuthority,
+        trusted: &TrustedKeys,
+        cluster: SealingPublicKey,
+        commit: CommitSha,
+        namespace: Option<&Namespace>,
+    ) -> Result<(), AuthorityRefusal> {
+        let CommitAuthority::Approved(approval) = authority else {
+            return Ok(());
+        };
+        let (approval, _, cluster) = open_approval(approval, trusted, Some(cluster))?;
+        first_mismatch([
+            (MismatchField::Cluster, approval.cluster == cluster),
+            (
+                MismatchField::CommitApproval,
+                self.preview.is_some()
+                    && approval.rule == self.rule
+                    && approval.generation == self.generation
+                    && approval.repository_id == self.source.repository_id
+                    && approval.commit == commit
+                    && self.deploys_in(&approval.namespace)
+                    && namespace.is_none_or(|namespace| *namespace == approval.namespace),
+            ),
+        ])
+    }
 }
 
 /// Which token of a build this is: the one that asks for the build secrets, or the one
