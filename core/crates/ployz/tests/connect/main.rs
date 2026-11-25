@@ -32,6 +32,7 @@ use tonic::{
 };
 
 mod domain_cli;
+mod kept_volumes_cli;
 mod machine_storage;
 mod removal_cli;
 mod sdk;

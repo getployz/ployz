@@ -287,6 +287,22 @@ const ROWS: &[(&str, &str, &str, &str, &str, &str)] = &[
         "Unary",
     ),
     (
+        "ListKeptVolumes",
+        "list_kept_volumes",
+        "ployz.volume.kept.list.v1",
+        "Container",
+        "Operator",
+        "Unary",
+    ),
+    (
+        "RemoveKeptVolumes",
+        "remove_kept_volumes",
+        "ployz.volume.kept.remove.v1",
+        "Container",
+        "Operator",
+        "Unary",
+    ),
+    (
         "InspectVolumeCopy",
         "inspect_volume_copy",
         "ployz.volume.copy.inspect.v1",

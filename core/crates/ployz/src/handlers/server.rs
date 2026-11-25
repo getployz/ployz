@@ -46,6 +46,7 @@ mod show;
 pub(super) mod token;
 mod upgrade;
 pub(super) mod upgrade_policy;
+pub(super) mod volumes;
 mod waiting;
 
 use add::add;

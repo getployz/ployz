@@ -327,6 +327,8 @@ impl MachineRpc for MachineService {
         leave,
         forget,
         prune_images,
+        list_kept_volumes,
+        remove_kept_volumes,
         set_ingress_doors,
         set_private_access,
     }

@@ -1198,34 +1198,43 @@ impl Lifecycle {
         container_id: &ContainerId,
         how: How,
     ) -> Result<(), Error> {
-        let removed = match how {
+        let (removed, kept) = match how {
             How::Asked { volumes, force } => {
                 match self.observation.ensure_managed(container_id).await {
                     Ok(inspected) => {
                         let remove_volumes = self
                             .replaced(config_operation, container_id, &inspected, volumes)
                             .await?;
+                        let kept = if remove_volumes {
+                            Vec::new()
+                        } else {
+                            self.anonymous_volumes(container_id, &inspected).await
+                        };
                         let options = RemoveContainerOptionsBuilder::default()
                             .v(remove_volumes)
                             .force(force)
                             .build();
-                        self.docker
+                        let removed = self
+                            .docker
                             .client
                             .remove_container(container_id.as_str(), Some(options))
                             .await
-                            .map_err(|error| docker_error(container_id, error))
+                            .map_err(|error| docker_error(container_id, error));
+                        (removed, kept)
                     }
-                    Err(error) => Err(error),
+                    Err(error) => (Err(error), Vec::new()),
                 }
             }
             How::Departing => {
                 self.stop_if_running(container_id).await?;
-                self.remove_if_present(container_id).await
+                (self.remove_if_present(container_id).await, Vec::new())
             }
         };
         match removed {
             Ok(()) => {
-                config_operation.remove(container_id).await?;
+                // A daemon killed before this write keeps the Volumes unrecorded, which
+                // only this Machine's record would let anything remove.
+                config_operation.remove_keeping(container_id, kept).await?;
             }
             Err(Error::ContainerNotFound(_)) if config_operation.remove(container_id).await? => {}
             Err(error) => return Err(error),

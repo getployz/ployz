@@ -456,6 +456,10 @@ _Avoid_: General rollback, atomic deployment
 A machine-local Docker storage resource and possible placement anchor. Its name is meaningful only together with its Machine.
 _Avoid_: Cluster volume, replicated volume, CSI volume
 
+**Kept Volume**:
+An anonymous Docker Volume a Machine kept when it removed a Container no copy replaced, recorded in that Machine's own store with the Namespace, Service, Container and path it came from. The record is the only proof Ployz kept it: a Machine deletes only a Volume it recorded, and only while no Container, running or not, mounts it, checked under the lock every Container create and removal takes. A Volume kept before its Machine recorded them is not one.
+_Avoid_: dangling volume, orphan volume, leftover volume
+
 **Data Loss**:
 One named thing an operation will destroy, carrying the identity that makes it unique. A Data Loss list is Live Observation from one observer, not a complete Cluster view, and it is not a warning, a plan, or an operation.
 _Avoid_: warning, plan, operation

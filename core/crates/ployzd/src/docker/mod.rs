@@ -11,6 +11,7 @@ mod http_health;
 mod images;
 pub use images::Images;
 mod inspect;
+mod kept_volumes;
 use inspect::{Inspected, RawContainerConfig};
 mod lifecycle;
 pub use lifecycle::{Lifecycle, VolumeDisposal};

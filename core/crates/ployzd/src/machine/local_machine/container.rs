@@ -15,10 +15,11 @@ use ployz_core::{
     ContainerNow, ContainerObservation, ContainerPlacementUpdated, ContainerRefusal,
     ContainerRefusalReason, ContainerRuntimeObservation, ContainerWant, CopyRotation,
     DockerVolumeName, Drain, EnsuredContainer, ImageIngestOpened, ImageIngestReason, ImagePulled,
-    ImagesRemoved, LocalMachinePhase, MachineStorageObservation, Namespace, NewContainer,
-    PruneImagesRequest, PullFreeImageRequest, PullImageFromMachineRequest, PullImageRequest,
-    QualifiedService, ReservedKind, ResolvedServiceSpec, RotationTarget, RunRotation, RunTarget,
-    Start, StopOptions, VolumeGen, VolumeRemoved,
+    ImagesRemoved, KeptVolumes, KeptVolumesRemoved, ListKeptVolumesRequest, LocalMachinePhase,
+    MachineStorageObservation, Namespace, NewContainer, PruneImagesRequest, PullFreeImageRequest,
+    PullImageFromMachineRequest, PullImageRequest, QualifiedService, RemoveKeptVolumesRequest,
+    ReservedKind, ResolvedServiceSpec, RotationTarget, RunRotation, RunTarget, Start, StopOptions,
+    VolumeGen, VolumeRemoved,
 };
 use ployz_core::{
     AnswerWhen, ContainerRun, DeploymentLogId, Gen, HealthFailure, HealthPoll, HealthVerdict,
@@ -835,6 +836,43 @@ impl LocalMachine {
                 .images()
                 .prune_images(&request.repositories)
                 .await?)
+        })
+        .await
+    }
+
+    /// This Machine's Kept Volumes, each measured if there is time.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker is unavailable or the record can't be read.
+    pub(crate) async fn list_kept_volumes(
+        &self,
+        _request: ListKeptVolumesRequest,
+    ) -> Result<KeptVolumes, Error> {
+        Ok(KeptVolumes {
+            volumes: self.docker()?.lifecycle().kept_volumes().await?,
+        })
+    }
+
+    /// Remove the named Kept Volumes that no Container mounts, holding Machine mutation
+    /// admission.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker is unavailable, admission is busy, or the record or Docker's
+    /// Container list can't be read.
+    pub(crate) async fn remove_kept_volumes(
+        &self,
+        request: RemoveKeptVolumesRequest,
+    ) -> Result<KeptVolumesRemoved, Error> {
+        self.finish_mutation(move |local| async move {
+            Ok(KeptVolumesRemoved {
+                results: local
+                    .docker()?
+                    .lifecycle()
+                    .remove_kept_volumes(request.volumes)
+                    .await?,
+            })
         })
         .await
     }

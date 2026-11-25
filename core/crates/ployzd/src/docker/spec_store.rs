@@ -11,7 +11,8 @@ use std::{
 use hex::encode as hex_encode;
 use ployz_core::{
     AddressPart, Admission, ConfigMount, ConfigSpec, ContainerId, ContainerKind, ContainerRun,
-    CopyRotation, DockerVolumeName, Namespace, QualifiedService, ResolvedServiceSpec, VolumeGen,
+    CopyRotation, DockerVolumeName, KeptVolume, Namespace, QualifiedService, ResolvedServiceSpec,
+    VolumeGen,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::de::DeserializeOwned;
@@ -57,11 +58,55 @@ CREATE TABLE IF NOT EXISTS replacements (
     id       TEXT NOT NULL PRIMARY KEY,
     replaces TEXT NOT NULL UNIQUE
 );
+CREATE TABLE IF NOT EXISTS kept_volumes (
+    name      TEXT NOT NULL PRIMARY KEY,
+    namespace TEXT NOT NULL,
+    service   TEXT NOT NULL,
+    container TEXT NOT NULL,
+    path      TEXT NOT NULL,
+    kept_at   INTEGER NOT NULL
+);
 ";
 /// The tables keyed by a Container's Docker ID, which move and are dropped with it.
 const ID_TABLES: [&str; 5] = [SPEC_TABLE, "rotations", "stops", "admitted", "replacements"];
 const SPEC_TABLE: &str = "containers";
 static TEMPORARY_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// One `kept_volumes` row as SQLite holds it.
+struct KeptRow {
+    name: String,
+    namespace: String,
+    service: String,
+    container: String,
+    path: String,
+    kept_at: i64,
+}
+
+impl KeptRow {
+    fn read(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
+        Ok(Self {
+            name: row.get(0)?,
+            namespace: row.get(1)?,
+            service: row.get(2)?,
+            container: row.get(3)?,
+            path: row.get(4)?,
+            kept_at: row.get(5)?,
+        })
+    }
+
+    /// The row as a Kept Volume; `None` when a column this store wrote no longer parses.
+    fn parse(self) -> Option<KeptVolume> {
+        Some(KeptVolume {
+            name: DockerVolumeName::parse(self.name).ok()?,
+            namespace: Namespace::parse(self.namespace).ok()?,
+            service: ployz_core::ServiceName::parse(self.service).ok()?,
+            container: ContainerId::parse(self.container).ok()?,
+            path: ployz_core::ContainerPath::parse(self.path).ok()?,
+            kept_at: self.kept_at,
+            size_bytes: None,
+        })
+    }
+}
 
 /// The namespace, kind and creation key a keyed create reserved. A container-level
 /// restore keeps a Container's labels and so its slot, but mints a new Docker ID.
@@ -229,6 +274,24 @@ impl MachineSpecStore {
             .await?;
         // A row this store wrote holds a Docker ID; one that doesn't parse names nothing.
         Ok(replacement.and_then(|id| ContainerId::parse(id).ok()))
+    }
+
+    /// The Kept Volumes this Machine recorded, oldest first, unmeasured. A row that no
+    /// longer reads as one is left out.
+    pub async fn kept_volumes(&self) -> Result<Vec<KeptVolume>, Error> {
+        self.run(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT name, namespace, service, container, path, kept_at FROM kept_volumes \
+                 ORDER BY kept_at, name",
+            )?;
+            let rows = statement.query_map([], KeptRow::read)?;
+            let mut kept = Vec::new();
+            for row in rows {
+                kept.extend(row?.parse());
+            }
+            Ok(kept)
+        })
+        .await
     }
 
     /// This Machine's record of a copy's rotation, `None` when it never left Pending.
@@ -704,24 +767,51 @@ impl ConfigOperation<'_> {
     }
 
     pub async fn remove(&mut self, container_id: &ContainerId) -> Result<bool, Error> {
+        self.remove_keeping(container_id, Vec::new()).await
+    }
+
+    /// [`Self::remove`], recording in the same write that Docker kept `kept`, the
+    /// Container's anonymous Volumes. A name already recorded takes the newer record.
+    pub async fn remove_keeping(
+        &mut self,
+        container_id: &ContainerId,
+        kept: Vec<KeptVolume>,
+    ) -> Result<bool, Error> {
         let path = self.store.path.clone();
         let container_id = container_id.to_string();
         self.store
             .run(move |connection| {
+                let transaction = connection.transaction()?;
+                for volume in &kept {
+                    transaction.execute(
+                        "INSERT OR REPLACE INTO kept_volumes \
+                         (name, namespace, service, container, path, kept_at) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                        params![
+                            volume.name.as_str(),
+                            volume.namespace.as_str(),
+                            volume.service.as_str(),
+                            volume.container.as_str(),
+                            volume.path.as_str(),
+                            volume.kept_at,
+                        ],
+                    )?;
+                }
                 let mut removed = false;
                 for table in ID_TABLES.iter().rev() {
-                    let rows = connection.execute(
+                    let rows = transaction.execute(
                         &format!("DELETE FROM {table} WHERE id = ?1"),
                         [&container_id],
                     )?;
                     removed |= *table == SPEC_TABLE && rows > 0;
                 }
-                connection.execute("DELETE FROM creations WHERE id = ?1", [&container_id])?;
+                transaction.execute("DELETE FROM creations WHERE id = ?1", [&container_id])?;
                 // Nothing replaces a Container that is gone.
-                connection.execute(
+                transaction.execute(
                     "DELETE FROM replacements WHERE replaces = ?1",
                     [container_id],
                 )?;
+                transaction.commit()?;
                 if removed
                     && let Err(error) = referenced_config_names(connection)
                         .and_then(|retained| garbage_collect_config_files(&path, &retained))
@@ -732,6 +822,41 @@ impl ConfigOperation<'_> {
                     );
                 }
                 Ok(removed)
+            })
+            .await
+    }
+
+    /// The Kept Volume `name`, as this Machine recorded it.
+    pub(super) async fn kept_volume(
+        &mut self,
+        name: &DockerVolumeName,
+    ) -> Result<Option<KeptVolume>, Error> {
+        let name = name.to_string();
+        self.store
+            .run(move |connection| {
+                Ok(connection
+                    .query_row(
+                        "SELECT name, namespace, service, container, path, kept_at \
+                         FROM kept_volumes WHERE name = ?1",
+                        [name],
+                        KeptRow::read,
+                    )
+                    .optional()?
+                    .and_then(KeptRow::parse))
+            })
+            .await
+    }
+
+    /// Drop the record of Kept Volume `name`, once Docker no longer has it.
+    pub(super) async fn forget_kept_volume(
+        &mut self,
+        name: &DockerVolumeName,
+    ) -> Result<(), Error> {
+        let name = name.to_string();
+        self.store
+            .run(move |connection| {
+                connection.execute("DELETE FROM kept_volumes WHERE name = ?1", [name])?;
+                Ok(())
             })
             .await
     }

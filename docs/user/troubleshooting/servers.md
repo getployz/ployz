@@ -969,6 +969,11 @@ sudo docker system df
   change them. A container started before your server ran this release keeps its old settings
   until its next deploy.
 - **Plain Docker volumes** have no size limit, and `docker system df` above counts them.
+- **Volumes kept from removed containers.** When a drain, a lower replica count or deleting a
+  service removes a container whose image made its own volume, like `postgres`, the server keeps
+  that volume and its data. `ployz server volumes <server>` lists them with their sizes, and
+  `ployz server volumes <server> prune` deletes the ones no container uses after asking. See
+  [Delete the volumes a server kept](../services/services.md#delete-the-volumes-a-server-kept).
 - **Kept metrics.** Ployz keeps the server's metrics in `ployz-observe` under Docker's directory.
   `docker system df` doesn't count them; `sudo du -sh /var/lib/docker/ployz-observe` does. They're
   capped at 5% of the disk, kept between 512 MB and 5 GB. When free space drops below 10% of the

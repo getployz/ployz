@@ -536,6 +536,9 @@ async fn sample(case: &Case, machine: &Enforcing) -> Sample {
         (ployz_core::REMOVE_VOLUME_CAPABILITY, _) => {
             unary::<op::RemoveVolume>(json!({"name": "app_data", "force": false}))
         }
+        (ployz_core::REMOVE_KEPT_VOLUMES_CAPABILITY, _) => {
+            unary::<op::RemoveKeptVolumes>(json!({"volumes": ["app_data"]}))
+        }
         (ployz_core::SEED_VOLUME_CAPABILITY, _) => unary::<op::SeedVolume>(json!({
             "name": "app_data", "into": "app_restore", "guid": "7",
         })),

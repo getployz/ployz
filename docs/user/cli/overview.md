@@ -243,7 +243,7 @@ Any member can run `ployz org member ls`. Pending invites name who was invited, 
 Through Ployz Cloud, commands that talk to your servers directly need an owner or admin too: `exec`,
 `service start`, `service stop`, `service restart`, `service port-forward`,
 `server ls`, `server show`, `server logs`, `server set`, `server drain`, `server upgrade`,
-`server rm`, `server forget <server>` and `server clean` without `--namespace`. A member gets
+`server volumes`, `server rm`, `server forget <server>` and `server clean` without `--namespace`. A member gets
 `Server access needs an admin. Ask an owner or admin of <organization>.` and exit code 1. A `read` or
 `deploy` [token](#make-an-organization-token) can't run them either, even an owner's: it gets
 `This token's grant doesn't include servers:shell.`
