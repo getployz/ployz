@@ -722,15 +722,16 @@ pub enum StopContainerPurpose {
     FreeHostPorts,
 }
 
-/// Why a Deploy removes a Container.
+/// Why a Deploy removes a Container. What happens to its anonymous Volumes is the
+/// removal's [`crate::AnonymousVolumes`], never this.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum RemoveContainerPurpose {
-    /// Roll a Service out: its anonymous Volumes go with the Container.
+    /// Roll a Service out: it keeps serving from its other copies, so the copy leaves
+    /// routing only beside another In copy.
     #[default]
     Rollout,
-    /// Retire a Service the Deploy removes: its anonymous Volumes stay, since deleting
-    /// data is a Volume decision.
+    /// Retire a Service the Deploy removes: the copy may be its last.
     Retire,
 }
 
@@ -769,6 +770,11 @@ pub enum DeployOperation {
         container_id: ContainerId,
         #[serde(default)]
         purpose: RemoveContainerPurpose,
+        /// What the removal asks for the Container's anonymous Volumes, which the plan
+        /// decides from the copies it keeps ([`crate::AnonymousVolumes::of`]).
+        #[serde(flatten)]
+        #[ts(flatten)]
+        anonymous_volumes: crate::AnonymousVolumes,
     },
     /// Replace `old_container_id` with a new container from the replacement spec.
     ReplaceContainer(ReplacementOperation),

@@ -431,6 +431,7 @@ fn container_observation() -> ContainerObservation {
         run: None,
         log_driver: None,
         admission: None,
+        replaced_by: None,
     })
     .unwrap()
 }

@@ -69,6 +69,7 @@ fn want_of(
             image_prepared: false,
             image_id: None,
             answer: ployz_core::AnswerWhen::Started,
+            replaces: None,
         }),
         rotation: RunRotation::Pending,
     }

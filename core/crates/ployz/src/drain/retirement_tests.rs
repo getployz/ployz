@@ -300,7 +300,7 @@ fn gone(hex: char) -> ContainerWant {
     ContainerWant::Gone {
         container: ContainerLocator::Id(container(hex)),
         drain: ployz_core::Drain::DEFAULT,
-        anonymous_volumes: AnonymousVolumes::Remove,
+        anonymous_volumes: ployz_core::AnonymousVolumes::keep(),
     }
 }
 
@@ -458,4 +458,46 @@ async fn let_go_leaves_the_copy_running_when_the_drain_is_cancelled() {
         }
     );
     assert!(cluster.wants().is_empty());
+}
+
+/// Whether each Gone a Drain sent deletes the Container's anonymous Volumes.
+fn anonymous_volumes_deleted(cluster: &Cluster) -> Vec<bool> {
+    cluster
+        .wants()
+        .into_iter()
+        .filter_map(|want| match want {
+            ContainerWant::Gone {
+                anonymous_volumes, ..
+            } => Some(anonymous_volumes.replaced_by().is_some()),
+            ContainerWant::Running { .. }
+            | ContainerWant::Stopped { .. }
+            | ContainerWant::Out { .. }
+            | ContainerWant::Held { .. } => None,
+        })
+        .collect()
+}
+
+/// A copy a Drain's move left Out on the drained Server leaves that Server for good: a
+/// Service run without a Volume, such as postgres, keeps its data in the anonymous
+/// Volume its image declares, so that data stays.
+#[tokio::test]
+async fn a_drain_keeps_the_anonymous_volumes_of_a_copy_it_lets_go() {
+    let (drained, other) = (machine('1', "drained"), machine('2', "other"));
+    let cluster = Cluster::of(
+        &[&drained, &other],
+        vec![
+            copy_on(&drained, 'a', CopyRotation::Out),
+            copy_on(&other, 'b', CopyRotation::In),
+        ],
+    );
+    let copy = Copy::observed(&copy_on(&drained, 'a', CopyRotation::Out));
+    let end = let_go(
+        &cluster,
+        &copy,
+        &names(vec![drained.clone(), other.clone()]),
+        &CancellationToken::new(),
+    )
+    .await;
+    assert_eq!(end, OldCopyEnd::Stopped);
+    assert_eq!(anonymous_volumes_deleted(&cluster), [false]);
 }

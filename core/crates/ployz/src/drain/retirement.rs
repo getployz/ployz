@@ -24,7 +24,7 @@ pub(crate) async fn let_go<C: CopyLifecycle>(
     .await
     .map(cleanup::Waited::failure);
     let ended = match unlisted {
-        Ok(Ok(())) => cleanup::remove(client, copy, AnonymousVolumes::Remove)
+        Ok(Ok(())) => cleanup::remove(client, copy, AnonymousVolumes::keep())
             .await
             .map(cleanup::Removal::failure),
         unlisted => unlisted,
