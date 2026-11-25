@@ -950,3 +950,59 @@ async fn a_restored_root_deleted_again_carries_no_restore_marks_into_its_entry()
         Some(&json!("restored"))
     );
 }
+
+/// A pin stopped between its two writes never leaves the entry pinned on its old clock,
+/// where the next sweep would destroy a restore in progress.
+#[tokio::test]
+async fn a_pin_stopped_between_its_writes_leaves_no_pin_on_the_old_clock() {
+    let id = trash_id(1);
+    let entry = format!("tank/ployz-trash/{id}");
+    for step in [
+        format!("set ployz:trashed-hour=50 {entry}"),
+        format!("set ployz:trash-pin={id}:1 {entry}"),
+    ] {
+        let test = test_dir();
+        let plugin = Plugin::start(&test, &["root"], Ok(vec![]));
+        plant_trash(&test, &id, "data", "root", 0, false);
+        set_property(&test, "tank/ployz-trash", "ployz:trash-hours", "50");
+        set_property(&test, "", "fail-command", &step);
+
+        let stopped = plugin.call(&entry, false).await;
+
+        assert!(stopped.get("Err").is_some(), "{step}: {stopped}");
+        if property(&test, &entry, "ployz:trash-pin").is_some() {
+            assert_eq!(
+                property(&test, &entry, "ployz:trashed-hour").as_deref(),
+                Some("50"),
+                "{step}"
+            );
+        }
+    }
+}
+
+/// A promote stopped before `canmount` came back leaves the root `canmount=off` with its
+/// `trash-was`. Deleted again, the new entry keeps the `trash-was` the first delete took, so
+/// its restore brings `canmount` back rather than keeping it off for good.
+#[tokio::test]
+async fn a_half_restored_root_deleted_again_keeps_the_canmount_it_was_deleted_with() {
+    let test = test_dir();
+    let (plugin, entry) = deleted_root(&test).await;
+    assert!(plugin.call(&entry, false).await.get("Ok").is_some());
+    set_property(
+        &test,
+        "",
+        "fail-command",
+        &format!("set canmount=on {ROOT}"),
+    );
+    assert!(plugin.call(&entry, true).await.get("Err").is_some());
+    assert_eq!(property(&test, ROOT, "canmount").as_deref(), Some("off"));
+    let removed = plugin
+        .post("/VolumeDriver.Remove", json!({"Name": "data"}))
+        .await;
+    assert_eq!(removed, json!({"Err": ""}));
+    let again = trashed_one(&test, "root");
+
+    assert!(plugin.restore(&again).await.get("Ok").is_some());
+
+    assert_eq!(property(&test, ROOT, "canmount").as_deref(), Some("on"));
+}

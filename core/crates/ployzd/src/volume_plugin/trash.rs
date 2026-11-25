@@ -293,7 +293,12 @@ impl VolumeStorage {
             self.ensure_trash_parent(pool, &[]).await?;
         }
         let hour = self.sweep_hours(&parent).await?;
-        let was = Was::read(self, dataset).await?;
+        // A root whose restore stopped before `Was` came back still carries the `canmount`
+        // it was first deleted with; reading it live would keep the restore's `off` for good.
+        let was = match self.marks(dataset).local(Mark::TrashWas).await? {
+            Some(was) => was,
+            None => Was::read(self, dataset).await?.to_string(),
+        };
         // A copy a restore made carries what that restore left; its new entry takes none.
         self.marks(dataset)
             .apply(&[
@@ -302,7 +307,7 @@ impl VolumeStorage {
                 Write::Inherit(Mark::TrashRestoring),
                 Write::Set(Mark::TrashName, name.to_string()),
                 Write::Set(Mark::TrashPlace, place.as_str().to_owned()),
-                Write::Set(Mark::TrashWas, was.to_string()),
+                Write::Set(Mark::TrashWas, was),
                 Write::Set(Mark::TrashedHour, hour.to_string()),
                 Write::Set(Mark::TrashedAt, self.now_seconds().to_string()),
             ])
@@ -692,10 +697,11 @@ impl VolumeStorage {
             id: entry.id,
             epoch,
         };
+        // The clock first: a pin left on the old clock would let the next sweep destroy it.
         self.marks(&entry.dataset.name)
             .apply(&[
-                Write::Set(Mark::TrashPin, pin.to_string()),
                 Write::Set(Mark::TrashedHour, hours.to_string()),
+                Write::Set(Mark::TrashPin, pin.to_string()),
             ])
             .await?;
         Ok(TrashRestored {
