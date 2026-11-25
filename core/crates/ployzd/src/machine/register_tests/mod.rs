@@ -468,6 +468,76 @@ async fn register_requires_a_valid_assignment_and_preserves_the_row_on_refusal()
     let _ = std::fs::remove_dir_all(data_dir);
 }
 
+/// A Volume step holds a joiner's switch when its admitting Machine's restrictions arrive.
+/// The joiner takes them only once the step ends, as every change to the keys it trusts
+/// waits, so no step a removed key asked for still runs once they are in.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_join_confirmation_waits_out_a_volume_step() {
+    let (replicated, server) = fake_cluster::store().await;
+    let cluster = || {
+        Some((
+            replicated.clone(),
+            AdminClient::new("/no/such/ployz-admin.sock"),
+        ))
+    };
+    let (entry_dir, entry_store, founder) = open_store("ployzd-confirm-waits");
+    replicated.publish_local_machine(&founder).await.unwrap();
+    let entry = LocalMachine::new(entry_store).with_cluster(cluster());
+    let target_dir = std::env::temp_dir().join(format!(
+        "ployzd-confirm-waits-target-{}",
+        MachineId::random()
+    ));
+    let target_store = RecordOwner::spawn(LocalMachineStore::open(&target_dir).unwrap()).unwrap();
+    let mut identity = request(
+        "joiner",
+        target_store.record().wireguard_private_key.public_key(),
+    );
+    identity.machine_id = target_store.record().id();
+    let target = LocalMachine::new(target_store).with_cluster(cluster());
+    let registered = register_published(&entry, &identity).await.unwrap();
+    let restrictions = registered.restrictions.clone().unwrap();
+    target
+        .enroll(ployz_core::EnrollRequest {
+            role: ployz_core::EnrollAs::Member {
+                pin: crate::machine::test_support::pin_of(&registered),
+                registration: registered,
+            },
+            wireguard_mtu: None,
+            pinned: Default::default(),
+        })
+        .await
+        .unwrap();
+
+    let mut asked = target.switch_asked();
+    let step = target.lock_switch().await.unwrap();
+    let before = *asked.borrow();
+    let mut confirming = tokio::spawn({
+        let target = target.clone();
+        async move {
+            target
+                .confirm_join(ployz_core::ConfirmJoinRequest { restrictions })
+                .await
+        }
+    });
+    let early = tokio::select! {
+        confirmed = &mut confirming => Some(confirmed.unwrap()),
+        queued = asked.wait_for(|asked| *asked > before) => {
+            queued.unwrap();
+            None
+        }
+    };
+    assert!(
+        early.is_none(),
+        "the joiner took its restrictions while a Volume step held the switch: {early:?}"
+    );
+    drop(step);
+    confirming.await.unwrap().unwrap();
+    server.abort();
+    drop((entry, target));
+    let _ = std::fs::remove_dir_all(entry_dir);
+    let _ = std::fs::remove_dir_all(target_dir);
+}
+
 #[tokio::test]
 async fn replayed_enroll_republishes_runtime_over_a_register_row() {
     let (replicated, server) = fake_cluster::store_with_subscriptions().await;

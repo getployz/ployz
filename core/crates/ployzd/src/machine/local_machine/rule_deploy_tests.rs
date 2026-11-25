@@ -144,6 +144,27 @@ impl Fixture {
     }
 }
 
+impl Fixture {
+    /// Admit the hook in slot `key` under `proof` and take its place, as its create does.
+    async fn create_hook(&self, key: &str, proof: &RuleProof) -> Result<(), Error> {
+        let admitted = self
+            .machine
+            .admit_rule_deploy(
+                &want("pre_deploy_hook", key, &spec()),
+                proof,
+                &github(commit()),
+                now(),
+                &mut Budget::default(),
+                Admit::Record,
+            )
+            .await?;
+        admitted
+            .hook
+            .expect("a hook's admission names its place")
+            .take(&self.machine.approvals)
+    }
+}
+
 fn refused(result: Result<(), Error>) -> String {
     match result {
         Err(Error::RuleDeployRefused(RuleDeployRefusal::Rule(AuthorityRefusal::Mismatch {
@@ -382,7 +403,9 @@ async fn a_verified_build_stops_once_the_rules_signer_is_removed() {
         .machine
         .owner
         .mutate(move |store| {
-            store.remove_by_code(device).unwrap();
+            store
+                .remove_by_code(&crate::machine::KeyChangeHeld::for_test(), device)
+                .unwrap();
         })
         .await
         .unwrap();
@@ -460,38 +483,33 @@ async fn a_push_runs_its_hook_once() {
     let rule = fixture.deploy_rule(3);
     let claim = fixture.built(&rule, fixture.attest());
     let proof = fixture.proof(&rule, &claim, token_for(&claim, "hook"));
-    fixture
-        .deploy(
-            want("pre_deploy_hook", "h1", &spec()),
-            &proof,
-            commit(),
-            now(),
-        )
-        .await
-        .unwrap();
+    fixture.create_hook("h1", &proof).await.unwrap();
     // A resend of the same slot adopts the hook that ran.
-    fixture
-        .deploy(
-            want("pre_deploy_hook", "h1", &spec()),
-            &proof,
-            commit(),
-            now(),
-        )
-        .await
-        .unwrap();
+    fixture.create_hook("h1", &proof).await.unwrap();
     assert_eq!(
-        refused(
-            fixture
-                .deploy(
-                    want("pre_deploy_hook", "h2", &spec()),
-                    &proof,
-                    commit(),
-                    now()
-                )
-                .await
-        ),
+        refused(fixture.create_hook("h2", &proof).await),
         "a hook run"
     );
+}
+
+/// A hook a rule admitted whose create never ran, as when its caller's key went before the
+/// create's turn, leaves its push's place: a valid retry in another slot is admitted.
+#[tokio::test]
+async fn a_hook_admitted_without_a_create_leaves_its_place() {
+    let fixture = fixture().await;
+    let rule = fixture.deploy_rule(3);
+    let claim = fixture.built(&rule, fixture.attest());
+    let proof = fixture.proof(&rule, &claim, token_for(&claim, "hook"));
+    fixture
+        .deploy(
+            want("pre_deploy_hook", "h1", &spec()),
+            &proof,
+            commit(),
+            now(),
+        )
+        .await
+        .unwrap();
+    fixture.create_hook("h2", &proof).await.unwrap();
 }
 
 #[tokio::test]

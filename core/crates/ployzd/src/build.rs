@@ -191,6 +191,11 @@ async fn attempt(
                 .with_work(work);
         }
     };
+    // Only a Full caller builds, and a Build opens Sealed build values: a key that lost its
+    // Device slot while this Build queued builds nothing.
+    if let Err(error) = local.scope_now().and_then(crate::machine::Scope::full) {
+        return failed(Stage::Admission, ployz_core::error_chain::inline(&error)).with_work(work);
+    }
     // Acceptance may have been revoked while this Build waited in the queue.
     let (machine_id, concurrency) = match require_build_acceptance(&local) {
         Ok(accepted) => accepted,
