@@ -534,8 +534,13 @@ impl VolumePlan<'_> {
             // must not hold it; its definitions still conflict with the applied ones.
             let applied = requested.iter().any(|applied| applied.name == spec.name);
             let result = (|| {
-                let candidates = match super::placement_candidates(spec, &self.namespace, snapshot)
-                {
+                // A spec that mounts a Volume reaches data, so it never runs free.
+                let candidates = match super::placement_candidates(
+                    spec,
+                    &self.namespace,
+                    snapshot,
+                    &PlanOptions::default(),
+                ) {
                     Ok(candidates) => candidates,
                     Err(_) if !applied => return Ok(()),
                     Err(error) => return Err(error),

@@ -2070,7 +2070,8 @@ fn signed_rule(
     staged: bool,
 ) -> SignedRule {
     use ployz_core::authority::rule::{
-        BuildPolicy, Builder, PolicyCache, RuleEvent, RuleService, RuleSource, Runner, template,
+        BuildPolicy, Builder, GithubSource, PolicyCache, RuleEvent, RuleService, RuleSource,
+        Runner, template,
     };
     use ployz_core::authority::{AutoDeployRule, RuleId, Signed, Signer, SignerKey, Timestamp};
     let view = store
@@ -2100,13 +2101,13 @@ fn signed_rule(
                         .iter()
                         .find(|source| source.service == spec.name)
                         .unwrap();
-                    BuildPolicy::derive(
+                    Some(BuildPolicy::derive(
                         &source.root_dir,
                         &source.build,
                         spec,
                         ["linux/amd64".to_owned()].into(),
                         PolicyCache::Off,
-                    )
+                    ))
                 },
                 secrets: None,
                 seeded: None,
@@ -2121,7 +2122,7 @@ fn signed_rule(
         generation,
         namespace: view.namespace,
         machines: Vec::new(),
-        source: RuleSource {
+        source: RuleSource::Github(GithubSource {
             repository_id: 11,
             owner_id: 1,
             repository: "acme/web".into(),
@@ -2130,7 +2131,7 @@ fn signed_rule(
             events: vec![RuleEvent::Push],
             builder: Builder::pinned(),
             runner: Runner::GithubHosted,
-        },
+        }),
         services,
         issued_at: Timestamp::from_millis(1_800_000_000_000).unwrap(),
         ended: false,
@@ -2206,7 +2207,11 @@ fn kept_rule(store: &ConfigStore, who: &Actor) -> Option<(u8, u64, String)> {
         )
         .unwrap();
     let rule = view.rule?.open().unwrap();
-    Some((rule.rule.as_bytes()[0], rule.generation, rule.source.branch))
+    Some((
+        rule.rule.as_bytes()[0],
+        rule.generation,
+        rule.source.github().unwrap().branch.clone(),
+    ))
 }
 
 #[test]
@@ -2656,14 +2661,47 @@ fn sources(store: &ConfigStore, who: &Actor, services: &[&str]) -> Vec<String> {
         .collect()
 }
 
+/// Mounts a new Docker Volume on `service`, so it reaches data.
+fn mount(store: &ConfigStore, who: &Actor, service: &str, id: u8) {
+    store
+        .write(
+            who,
+            &ployz_store::CreateVolume {
+                restored_from: None,
+                shared_writes: false,
+                storage_locked: false,
+                storage: ployz_core::config::VolumeKind::Docker {},
+                id: ployz_store::VolumeId::parse(format!(
+                    "00000000-0000-4000-8000-0000000000{id:02}"
+                ))
+                .unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ployz_store::VolumeName::parse(format!("data-{service}")).unwrap(),
+                mounts: vec![ployz_store::Mount {
+                    service: ServiceName::parse(service).unwrap(),
+                    path: "/data".into(),
+                }],
+            },
+        )
+        .unwrap();
+}
+
+/// A Git Service that reaches no data builds free on a Server, so a Deploy of it needs
+/// no Source step and nobody's signature.
+#[test]
+fn a_git_service_that_reaches_no_data_needs_no_source_step() {
+    let (store, who) = shop();
+    assert_eq!(unsigned(&store, &who), []);
+    assert_eq!(sources(&store, &who, &[]), Vec::<String>::new());
+}
+
 /// Cloud takes a Deploy's Source step only when it names each of these, so a Service
-/// renamed since its Private DNS name was fixed, or one that reaches no data, is never
-/// left for its build to refuse.
+/// renamed since its Private DNS name was fixed is never left for its build to refuse.
 #[test]
 fn a_plan_names_each_git_service_only_a_source_builds_by_the_name_it_runs_under() {
     let (store, who) = shop();
-    // Neither reaches data, so no person signs a version of either.
-    assert_eq!(unsigned(&store, &who), []);
+    mount(&store, &who, "web", 21);
+    mount(&store, &who, "api", 22);
     assert_eq!(sources(&store, &who, &[]), ["web", "api"]);
     // A Deploy of api alone ships no web, so it needs no Source step for it.
     assert_eq!(sources(&store, &who, &["api"]), ["api"]);
@@ -3146,8 +3184,8 @@ fn a_verified_build_rides_a_rollback_and_a_drain_of_its_image() {
             .rule
     };
     let proof = drained(&"d".repeat(64)).expect("the copy's image has a verified build");
-    assert_eq!(proof.evidence, RuleEvidence::Verified(kept.verified));
-    assert_eq!(proof.claim, Some(kept.claim));
+    assert_eq!(proof.proof.evidence, RuleEvidence::Verified(kept.verified));
+    assert_eq!(proof.proof.claim, Some(kept.claim));
     assert_eq!(drained(&"c".repeat(64)), None);
     // Under the rule's next generation the kept proof proves nothing, so a build's
     // fresh token for the same image goes in its place.
@@ -3217,4 +3255,425 @@ fn a_redeploy_reusing_its_sources_image_keeps_that_images_token() {
         &format!("ployz-build/web@sha256:{}", "c".repeat(64)),
     );
     assert_eq!(store.github_input(&web).unwrap().image_token, None);
+}
+
+/// Sign `generation` of a registry rule for `ghcr.io/acme/worker` over worker's settings
+/// as they are Saved.
+fn signed_registry_rule(store: &ConfigStore, who: &Actor, generation: u64) -> SignedRule {
+    signed_registry_rule_on(store, who, generation, "ghcr.io")
+}
+
+// Catches a registry rule that leaves every Deploy of a new digest waiting for a tap, or
+// one that stands for a tag or another repository's image.
+#[test]
+fn a_registry_rule_covers_each_digest_of_its_repository_and_nothing_else() {
+    let (store, who) = shop();
+    let digest = |n: char| format!("sha256:{}", n.to_string().repeat(64));
+    store
+        .write(
+            &who,
+            &ployz_store::CreateService {
+                id: ployz_store::ServiceLineageId::parse("00000000-0000-4000-8000-000000000006")
+                    .unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("worker").unwrap(),
+                image: Some(format!("ghcr.io/acme/worker@{}", digest('a'))),
+                template: None,
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::CreateVolume {
+                restored_from: None,
+                shared_writes: false,
+                storage_locked: false,
+                storage: ployz_core::config::VolumeKind::Docker {},
+                id: ployz_store::VolumeId::parse("00000000-0000-4000-8000-000000000007").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ployz_store::VolumeName::parse("jobs").unwrap(),
+                mounts: vec![ployz_store::Mount {
+                    service: ServiceName::parse("worker").unwrap(),
+                    path: "/jobs".into(),
+                }],
+            },
+        )
+        .unwrap();
+    publish(&store, &who);
+    let worker = |store: &ConfigStore| {
+        unsigned(store, &who)
+            .into_iter()
+            .any(|(service, _)| service == "worker")
+    };
+    assert!(worker(&store), "worker reaches data, so it needs a tap");
+    let rule = signed_registry_rule(&store, &who, 1);
+    save_with_rule(&store, &who, &staged_version(&store, &who), (rule, None)).unwrap();
+    assert!(
+        !worker(&store),
+        "the rule approves the digest it was signed beside"
+    );
+    // A new image pushed to the repository deploys with no tap.
+    set(
+        &store,
+        &who,
+        "worker.image",
+        json!(format!("ghcr.io/acme/worker@{}", digest('b'))),
+    );
+    publish(&store, &who);
+    assert!(!worker(&store), "a new digest of the repository deploys");
+    for image in [
+        "ghcr.io/acme/worker:1".to_owned(),
+        format!("ghcr.io/acme/worker-x@{}", digest('b')),
+        format!("docker.io/acme/worker@{}", digest('b')),
+    ] {
+        set(&store, &who, "worker.image", json!(image));
+        publish(&store, &who);
+        assert!(worker(&store), "{image} needs a tap");
+    }
+}
+
+// Catches a moved Volume's start taking the login an older Deploy froze for a registry the
+// Service has left, which its Server refuses as one for another host.
+#[test]
+fn a_registry_rules_proof_comes_with_no_login_once_the_newest_deploy_froze_none() {
+    let (store, who) = shop();
+    let digest = format!("sha256:{}", "a".repeat(64));
+    store
+        .write(
+            &who,
+            &ployz_store::CreateService {
+                id: ployz_store::ServiceLineageId::parse("00000000-0000-4000-8000-000000000006")
+                    .unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("worker").unwrap(),
+                image: Some(format!("ghcr.io/acme/worker@{digest}")),
+                template: None,
+            },
+        )
+        .unwrap();
+    set(
+        &store,
+        &who,
+        "worker.registryCredential",
+        ployz_store::testing::sealed_login_for("ghcr.io", "worker"),
+    );
+    publish(&store, &who);
+    let rule = signed_registry_rule(&store, &who, 1);
+    save_with_rule(&store, &who, &staged_version(&store, &who), (rule, None)).unwrap();
+    deploy(&store, &who, "00000000-0000-4000-8000-000000000108");
+    run(&store, "00000000-0000-4000-8000-000000000108");
+    // The Service moves to a public repository and pulls with no login.
+    let public = format!("docker.io/acme/worker@{digest}");
+    set(&store, &who, "worker.image", json!(public));
+    store
+        .write(
+            &who,
+            &Command::Edit(Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: vec![Change::Unset {
+                    path: SettingPath::parse("worker.registryCredential").unwrap(),
+                }],
+            }),
+        )
+        .unwrap();
+    publish(&store, &who);
+    let rule = signed_registry_rule_on(&store, &who, 2, "docker.io");
+    save_with_rule(
+        &store,
+        &who,
+        &staged_version(&store, &who),
+        (rule, Some((5, 1))),
+    )
+    .unwrap();
+    deploy(&store, &who, "00000000-0000-4000-8000-000000000109");
+    run(&store, "00000000-0000-4000-8000-000000000109");
+
+    let view: ployz_store::RuleView = store
+        .read(
+            &who,
+            &ployz_store::RuleQuery {
+                environment: EnvironmentRef::default(),
+                staged: false,
+            },
+        )
+        .unwrap();
+    let kept = store
+        .versions(
+            &who.organization,
+            &ployz_store::VersionsQuery {
+                namespace: view.namespace,
+                service: ServiceName::parse("worker").unwrap(),
+                digest: ployz_core::authority::PayloadDigest::parse(&"0".repeat(64)).unwrap(),
+                image: ployz_core::authority::BuiltImageDigest::named_by(&public),
+            },
+        )
+        .unwrap();
+    assert!(kept.rule.is_some(), "the registry rule covers worker");
+    assert_eq!(kept.rule.as_ref().and_then(|rule| rule.login.clone()), None);
+}
+
+/// Run Deployment `id` to success.
+fn run(store: &ConfigStore, id: &str) {
+    let id = ployz_store::DeploymentId::parse(id).unwrap();
+    let claimed = store
+        .claim(&id, &ployz_store::RunnerId::parse("runner").unwrap())
+        .unwrap();
+    backend::finish(store, &id, claimed);
+}
+
+fn deploy(store: &ConfigStore, who: &Actor, id: &str) {
+    store
+        .write_trusted(
+            who,
+            &ployz_store::Admit::Deploy(ployz_store::Deploy {
+                id: ployz_store::DeploymentId::parse(id).unwrap(),
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+                prune: false,
+                no_prune: false,
+                versions: Vec::new(),
+                copies: Vec::new(),
+                recreate: Vec::new(),
+                rule: None,
+            }),
+            &Trusted::default(),
+        )
+        .unwrap();
+}
+
+// Catches a moved Volume's start, or any copy a registry rule admits away from its Deploy,
+// reaching its Server with no login, so the Server's own pull of a private image fails.
+#[test]
+fn a_registry_rules_proof_comes_with_the_login_the_services_deploy_froze() {
+    let (store, who) = shop();
+    let image = registry_worker(&store, &who);
+    let view: ployz_store::RuleView = store
+        .read(
+            &who,
+            &ployz_store::RuleQuery {
+                environment: EnvironmentRef::default(),
+                staged: false,
+            },
+        )
+        .unwrap();
+    let kept = store
+        .versions(
+            &who.organization,
+            &ployz_store::VersionsQuery {
+                namespace: view.namespace,
+                service: ServiceName::parse("worker").unwrap(),
+                digest: ployz_core::authority::PayloadDigest::parse(&"0".repeat(64)).unwrap(),
+                image: ployz_core::authority::BuiltImageDigest::named_by(&image),
+            },
+        )
+        .unwrap();
+    assert!(kept.rule.is_some(), "the registry rule covers worker");
+    let login = ployz_store::testing::login_for("ghcr.io", "worker");
+    assert_eq!(
+        kept.rule.as_ref().and_then(|rule| rule.login.clone()),
+        Some(login.clone())
+    );
+    // A CLI reads it over HTTPS, so the login crosses JSON beside the rule.
+    let wire = serde_json::to_value(ployz_store::View::Versions(kept.clone())).unwrap();
+    assert_eq!(
+        wire["registry_login"],
+        serde_json::to_value(&login).unwrap()
+    );
+    assert_eq!(
+        serde_json::from_value::<ployz_store::View>(wire).unwrap(),
+        ployz_store::View::Versions(kept)
+    );
+}
+
+// Catches a moved Volume's start taking the login of a Deploy that never ran: one queued
+// with no login and cancelled leaves the private image's Service running with its login.
+#[test]
+fn a_registry_rules_proof_keeps_the_login_of_the_deploy_that_ran_past_a_cancelled_one() {
+    let (store, who) = shop();
+    let image = format!("ghcr.io/acme/worker@sha256:{}", "a".repeat(64));
+    store
+        .write(
+            &who,
+            &ployz_store::CreateService {
+                id: ployz_store::ServiceLineageId::parse("00000000-0000-4000-8000-000000000006")
+                    .unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("worker").unwrap(),
+                image: Some(image.clone()),
+                template: None,
+            },
+        )
+        .unwrap();
+    set(
+        &store,
+        &who,
+        "worker.registryCredential",
+        ployz_store::testing::sealed_login_for("ghcr.io", "worker"),
+    );
+    publish(&store, &who);
+    let rule = signed_registry_rule(&store, &who, 1);
+    save_with_rule(&store, &who, &staged_version(&store, &who), (rule, None)).unwrap();
+    deploy(&store, &who, "00000000-0000-4000-8000-000000000108");
+    run(&store, "00000000-0000-4000-8000-000000000108");
+    store
+        .write(
+            &who,
+            &Command::Edit(Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: vec![Change::Unset {
+                    path: SettingPath::parse("worker.registryCredential").unwrap(),
+                }],
+            }),
+        )
+        .unwrap();
+    publish(&store, &who);
+    deploy(&store, &who, "00000000-0000-4000-8000-000000000109");
+    store
+        .write(
+            &who,
+            &ployz_store::Cancel {
+                deployment: ployz_store::DeploymentId::parse(
+                    "00000000-0000-4000-8000-000000000109",
+                )
+                .unwrap(),
+            },
+        )
+        .unwrap();
+
+    let view: ployz_store::RuleView = store
+        .read(
+            &who,
+            &ployz_store::RuleQuery {
+                environment: EnvironmentRef::default(),
+                staged: false,
+            },
+        )
+        .unwrap();
+    let kept = store
+        .versions(
+            &who.organization,
+            &ployz_store::VersionsQuery {
+                namespace: view.namespace,
+                service: ServiceName::parse("worker").unwrap(),
+                digest: ployz_core::authority::PayloadDigest::parse(&"0".repeat(64)).unwrap(),
+                image: ployz_core::authority::BuiltImageDigest::named_by(&image),
+            },
+        )
+        .unwrap();
+    assert!(kept.rule.is_some(), "the registry rule covers worker");
+    assert_eq!(
+        kept.rule.as_ref().and_then(|rule| rule.login.clone()),
+        Some(ployz_store::testing::login_for("ghcr.io", "worker"))
+    );
+}
+
+// Catches the login of what's applied read from the newest Deployment that marked the
+// Service deployed: a late report after a runner takeover marks it so without advancing
+// Applied State, and that Deployment froze no login.
+#[test]
+fn a_registry_rules_proof_keeps_the_applied_login_past_a_late_report_after_a_takeover() {
+    let (store, who) = shop();
+    let image = format!("ghcr.io/acme/worker@sha256:{}", "a".repeat(64));
+    store
+        .write(
+            &who,
+            &ployz_store::CreateService {
+                id: ployz_store::ServiceLineageId::parse("00000000-0000-4000-8000-000000000006")
+                    .unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("worker").unwrap(),
+                image: Some(image.clone()),
+                template: None,
+            },
+        )
+        .unwrap();
+    set(
+        &store,
+        &who,
+        "worker.registryCredential",
+        ployz_store::testing::sealed_login_for("ghcr.io", "worker"),
+    );
+    publish(&store, &who);
+    let rule = signed_registry_rule(&store, &who, 1);
+    save_with_rule(&store, &who, &staged_version(&store, &who), (rule, None)).unwrap();
+    deploy(&store, &who, "00000000-0000-4000-8000-000000000108");
+    run(&store, "00000000-0000-4000-8000-000000000108");
+    store
+        .write(
+            &who,
+            &Command::Edit(Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: vec![Change::Unset {
+                    path: SettingPath::parse("worker.registryCredential").unwrap(),
+                }],
+            }),
+        )
+        .unwrap();
+    publish(&store, &who);
+    deploy(&store, &who, "00000000-0000-4000-8000-000000000109");
+    let id = ployz_store::DeploymentId::parse("00000000-0000-4000-8000-000000000109").unwrap();
+    let runner = ployz_store::RunnerId::parse("runner").unwrap();
+    let claimed = store.claim(&id, &runner).unwrap();
+    let n = backend::confirm(&store, &id, &claimed, &[], 0);
+    deploy(&store, &who, "00000000-0000-4000-8000-000000000110");
+    let next = ployz_store::DeploymentId::parse("00000000-0000-4000-8000-000000000110").unwrap();
+    let other = ployz_store::RunnerId::parse("runner-b").unwrap();
+    store.claim(&next, &other).unwrap();
+    let completed = (0..n).map(|i| json!({"type":"remove_container","machine_id":"a".repeat(32),"container_id":format!("{i:064x}")})).collect::<Vec<_>>();
+    store
+        .record(
+            &id,
+            &runner,
+            ployz_store::RunEvidence::Executed {
+                progress: vec![],
+                removed: vec![],
+                outcome: Box::new(
+                    serde_json::from_value(
+                        json!({"type":"interrupted","completed":completed,"unexecuted":[]}),
+                    )
+                    .unwrap(),
+                ),
+            },
+        )
+        .unwrap();
+    store
+        .record(
+            &next,
+            &other,
+            ployz_store::RunEvidence::NotExecuted("stopped".into()),
+        )
+        .unwrap();
+    let view: ployz_store::RuleView = store
+        .read(
+            &who,
+            &ployz_store::RuleQuery {
+                environment: EnvironmentRef::default(),
+                staged: false,
+            },
+        )
+        .unwrap();
+    let kept = store
+        .versions(
+            &who.organization,
+            &ployz_store::VersionsQuery {
+                namespace: view.namespace,
+                service: ServiceName::parse("worker").unwrap(),
+                digest: ployz_core::authority::PayloadDigest::parse(&"0".repeat(64)).unwrap(),
+                image: ployz_core::authority::BuiltImageDigest::named_by(&image),
+            },
+        )
+        .unwrap();
+    assert!(kept.rule.is_some(), "the registry rule covers worker");
+    assert_eq!(
+        kept.rule.as_ref().and_then(|rule| rule.login.clone()),
+        Some(ployz_store::testing::login_for("ghcr.io", "worker"))
+    );
 }

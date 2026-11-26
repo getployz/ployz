@@ -251,6 +251,7 @@ pub struct Admission {
     pub(crate) cancellation: Cancellation,
     pub(crate) resources: crate::policy::Resources,
     pub(crate) fence: Option<crate::FenceInstaller>,
+    pub(crate) access: crate::Access,
     /// This attempt's own directory in its slot's upload staging, never another's.
     attempt: String,
     pub(crate) staging: crate::SealedStaging,
@@ -344,9 +345,16 @@ impl Admission {
             cancellation,
             resources,
             fence,
+            access: crate::Access::Full,
             attempt,
             staging,
         }
+    }
+    /// Run this attempt with `access`, before its upload is admitted.
+    #[must_use]
+    pub fn with_access(mut self, access: crate::Access) -> Self {
+        self.access = access;
+        self
     }
     /// This attempt's capture: its own directory in its build slot's upload staging.
     pub(crate) fn upload_root(&self) -> PathBuf {

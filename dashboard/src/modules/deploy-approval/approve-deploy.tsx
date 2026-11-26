@@ -16,7 +16,7 @@ import { prepareDeployTapServerFn } from "./deploy-tap.functions";
 import { type Prepared, prepareDeploy, signVersions } from "./deploy-tap";
 import { SignedLines, warnHeld } from "./deploy-sheet";
 import { fillPending } from "./fill-pending";
-import { RuleSummaryList } from "./rule-summary";
+import { RuleSummaryList, ruleTrigger } from "./rule-summary";
 import { ownerLookup } from "./source-step";
 
 type Page =
@@ -143,7 +143,7 @@ export function ApproveDeploy({ organizationSlug, id }: { organizationSlug: stri
         <CardDescription>
           {proposal.asker ? `${proposal.asker} asked for this deploy.` : "Someone asked for this deploy."}
           {prepared.kind === "ask" ? " Check each line. Your passkey signs exactly this." : ""}
-          {summary === undefined ? "" : ` Then each push to ${summary.branch} deploys the services below without asking.`}
+          {summary === undefined ? "" : ` Then ${ruleTrigger(summary).each} deploys the services below without asking.`}
           {review?.protected ? " Only an owner or admin can approve a deploy to a Protected Environment." : ""}
         </CardDescription>
       </CardHeader>

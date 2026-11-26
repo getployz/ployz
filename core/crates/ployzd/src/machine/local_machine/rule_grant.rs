@@ -204,6 +204,15 @@ impl LocalMachine {
         self.rule_floor(cluster, &qualified, &rule, now)
             .map_err(Error::RuleGrantRefused)?;
         let holder = holder.ok_or_else(|| refused(MismatchField::Holder))?;
+        // A registry rule builds nothing, so it grants no push.
+        let source = rule
+            .source
+            .github()
+            .ok_or_else(|| refused(MismatchField::RuleSource))?;
+        let policy = service
+            .policy
+            .as_ref()
+            .ok_or_else(|| refused(MismatchField::Policy))?;
         let claims = github
             .claims(&rule, grant.proof.as_str(), now)
             .await
@@ -213,8 +222,7 @@ impl LocalMachine {
             rule: rule.rule,
             generation: rule.generation,
             service: grant.service.clone(),
-            policy: PolicyDigest::of(&service.policy)
-                .map_err(|_| refused(MismatchField::Policy))?,
+            policy: PolicyDigest::of(policy).map_err(|_| refused(MismatchField::Policy))?,
             commit: grant.commit,
             authority: grant.authority,
             stage: BuildStage::Grant {
@@ -234,7 +242,7 @@ impl LocalMachine {
         }
         let head = github
             .head(
-                rule.source.repository_id,
+                source.repository_id,
                 rule.head_branch(&claims),
                 grant.reader.as_ref(),
             )

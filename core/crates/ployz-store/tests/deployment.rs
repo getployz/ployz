@@ -4550,6 +4550,56 @@ fn a_reupload_stays_kept_whether_a_retry_of_an_older_upload_comes_before_or_afte
     }
 }
 
+/// A Service built from an upload that reaches no data builds free, as a Git one does,
+/// though its spec lowers only once the runner built it: the claim judges it as its
+/// upload builds it. An Image Service never builds.
+#[test]
+fn an_uploaded_service_that_reaches_no_data_builds_free() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("app").unwrap(),
+                image: None,
+                template: None,
+            },
+        )
+        .unwrap();
+    store
+        .write_trusted(
+            &who,
+            &Admit::Deploy(Deploy {
+                id: id(1),
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                version: None,
+                upload: Some(UploadedSource {
+                    digest: ployz_core::UploadDigest::parse("d".repeat(64)).unwrap(),
+                    base: None,
+                    uploader: None,
+                }),
+                accept_volume_loss: Vec::new(),
+                message: None,
+                prune: false,
+                no_prune: false,
+                versions: Vec::new(),
+                copies: Vec::new(),
+                recreate: Vec::new(),
+                rule: None,
+            }),
+            &ployz_store::Trusted::default(),
+        )
+        .unwrap();
+    let claimed = store.claim(&id(1), &runner("runner-a")).unwrap();
+    assert_eq!(
+        claimed.free,
+        std::collections::BTreeSet::from([ServiceName::parse("app").unwrap()])
+    );
+}
+
 #[test]
 fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back() {
     let (store, who) = shop();
@@ -9827,6 +9877,50 @@ fn a_deploy_keeps_only_versions_of_its_own_services_and_never_replaces_a_kept_on
         .versions;
     assert!(kept.contains(&first.statement), "{kept:?}");
     assert!(kept.contains(&later.statement), "{kept:?}");
+}
+
+/// A drained copy carries the Free receipt of the image it runs, though a later free
+/// Build of the Service gave another; an image no free Build gave carries none.
+#[test]
+fn a_drain_reads_the_free_receipt_of_the_image_a_copy_runs() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    let image = |hex: &str| format!("sha256:{}", hex.repeat(64));
+    let free = |hex: &str| json!({"image": image(hex), "mac": "b".repeat(64)});
+    let web = ServiceName::parse("web").unwrap();
+    for hex in ["1", "2"] {
+        let receipt = json!({"fingerprint": "f".repeat(64), "free": free(hex)});
+        store
+            .record(
+                &id(1),
+                &a,
+                RunEvidence::Built([(web.clone(), receipt)].into()),
+            )
+            .unwrap();
+    }
+    let digest = signed_spec(&store, &who, "web", P1);
+    let read = |hex: &str| {
+        store
+            .read(
+                &who,
+                &ployz_store::VersionsQuery {
+                    namespace: ployz_core::Namespace::parse("shop-production").unwrap(),
+                    service: web.clone(),
+                    digest,
+                    image: Some(
+                        ployz_core::authority::BuiltImageDigest::parse(&image(hex)).unwrap(),
+                    ),
+                },
+            )
+            .unwrap()
+            .free
+    };
+    for hex in ["1", "2"] {
+        assert_eq!(read(hex), Some(serde_json::from_value(free(hex)).unwrap()));
+    }
+    assert_eq!(read("3"), None);
 }
 
 /// Leave Deployment `n` as 0049 leaves one admitted before the Store kept what each

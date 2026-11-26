@@ -46,7 +46,7 @@ fn rule() -> AutoDeployRule {
         generation: 3,
         namespace: Namespace::parse("app").unwrap(),
         machines: vec![MachineId::parse("1".repeat(32)).unwrap()],
-        source: RuleSource {
+        source: RuleSource::Github(GithubSource {
             repository_id: 1_450_985_696,
             owner_id: 278_111_222,
             repository: "Ployz-test/lab-service".to_owned(),
@@ -58,11 +58,11 @@ fn rule() -> AutoDeployRule {
                 sha: CommitSha::parse(BUILDER_SHA).unwrap(),
             },
             runner: Runner::GithubHosted,
-        },
+        }),
         services: vec![RuleService {
             name: web(),
             template: PayloadDigest::parse(&"ab".repeat(32)).unwrap(),
-            policy: policy(),
+            policy: Some(policy()),
             secrets: None,
             seeded: None,
         }],
@@ -213,7 +213,7 @@ fn the_first_failing_claim_in_table_order_is_named() {
 #[test]
 fn an_event_the_rule_leaves_out_is_refused() {
     let mut push_only = rule();
-    push_only.source.events = vec![RuleEvent::Push];
+    github_mut(&mut push_only).events = vec![RuleEvent::Push];
     let dispatched = claims(|value| value["event_name"] = json!("workflow_dispatch"));
     assert_eq!(
         push_only.verify_claims(&dispatched),
@@ -348,7 +348,7 @@ fn a_rule_reads_back_only_in_canonical_order() {
         rule()
     );
     let mut unsorted = rule();
-    unsorted.source.events = vec![RuleEvent::WorkflowDispatch, RuleEvent::Push];
+    github_mut(&mut unsorted).events = vec![RuleEvent::WorkflowDispatch, RuleEvent::Push];
     let body = canonical::to_canonical(&unsorted).unwrap();
     assert!(canonical::from_canonical::<AutoDeployRule>(&body).is_err());
     let registry = body.replace(r#""cache":"actions""#, r#""cache":"registry""#);
@@ -890,12 +890,12 @@ fn a_commit_shows_its_first_twelve_digits() {
 fn a_build_by_a_builder_that_installs_a_lab_ployz_is_refused_under_a_rule_pinning_it() {
     let lab = "a19b4fca3adea371c25ec29f181e8c7d21037d1e";
     let mut pinned = rule();
-    pinned.source.builder = Builder {
+    github_mut(&mut pinned).builder = Builder {
         r#ref: format!("getployz/build/.github/workflows/build.yml@{lab}"),
         sha: CommitSha::parse(lab).unwrap(),
     };
     let ran = claims(|value| {
-        value["job_workflow_ref"] = json!(pinned.source.builder.r#ref);
+        value["job_workflow_ref"] = json!(pinned.source.github().unwrap().builder.r#ref);
         value["job_workflow_sha"] = json!(lab);
     });
     assert_eq!(
@@ -1071,7 +1071,7 @@ fn preview_rule(pushers: Vec<u64>) -> AutoDeployRule {
     let namespace = preview("0000aaaa");
     let spec = requested(preview_json(&namespace, namespace.as_str()));
     let mut rule = rule();
-    rule.source.branch = String::new();
+    github_mut(&mut rule).branch = String::new();
     rule.services[0].template = preview_template(&spec, &namespace, false).unwrap();
     rule.preview = Some(PreviewTerms {
         parent: "11111111-1111-1111-1111-111111111111".parse().unwrap(),
@@ -1314,4 +1314,136 @@ fn a_pinned_service_runs_only_the_digest_its_template_names() {
             field: MismatchField::Service
         })
     );
+}
+
+fn github_mut(rule: &mut AutoDeployRule) -> &mut GithubSource {
+    match &mut rule.source {
+        RuleSource::Github(source) => source,
+        RuleSource::Registry(_) => panic!("a GitHub rule"),
+    }
+}
+
+fn registry_rule() -> AutoDeployRule {
+    let mut rule = approved_rule();
+    rule.source = RuleSource::Registry(RegistrySource {
+        host: "ghcr.io".to_owned(),
+        repository: "acme/web".to_owned(),
+    });
+    rule.services[0].policy = None;
+    rule
+}
+
+/// Check a creation of `spec` running `image` under the registry `rule` on Machine `1…`.
+fn create_from_registry(
+    rule: &AutoDeployRule,
+    image: &str,
+) -> Result<RegistryPin, AuthorityRefusal> {
+    let spec = resolved(&requested(changed(&["container", "image"], json!(image))));
+    let machine = MachineId::parse("1".repeat(32)).unwrap();
+    let namespace = Namespace::parse("app").unwrap();
+    rule.verify_registry_creation(
+        &RuleFacts {
+            cluster: SealingPublicKey::from_bytes([9; 32]),
+            attest: AttestKey::from_bytes([0x55; 32]),
+            machine: &machine,
+            namespace: &namespace,
+            service: &spec.name,
+            head: None,
+        },
+        Creation {
+            service: &spec.name,
+            kind: ContainerKind::ServiceContainer,
+            spec: &spec,
+        },
+    )
+}
+
+// Catches a registry rule running an image from a repository that only starts like the
+// approved one, or from the same path on another registry.
+#[test]
+fn a_registry_rule_runs_only_digests_of_its_own_repository() {
+    let digest = format!("sha256:{}", "4".repeat(64));
+    let rule = registry_rule();
+    let pin = create_from_registry(&rule, &format!("ghcr.io/acme/web@{digest}")).unwrap();
+    assert_eq!(pin.reference(), format!("ghcr.io/acme/web@{digest}"));
+    for lookalike in [
+        "ghcr.io/acme/web-evil",
+        "ghcr.io/acme/web/inner",
+        "ghcr.io/acme/we",
+        "docker.io/acme/web",
+        "acme/web",
+        "ghcr.io:443/acme/web",
+    ] {
+        assert_eq!(
+            create_from_registry(&rule, &format!("{lookalike}@{digest}")),
+            Err(AuthorityRefusal::Mismatch {
+                field: MismatchField::Repository
+            }),
+            "{lookalike}"
+        );
+    }
+    // A tag names whatever was pushed last, so it names nothing the Server can pin.
+    assert_eq!(
+        create_from_registry(&rule, "ghcr.io/acme/web:latest"),
+        Err(AuthorityRefusal::Mismatch {
+            field: MismatchField::Image
+        })
+    );
+    // Every other setting is still the approved template.
+    let mut other = rule;
+    other.services[0].template = PayloadDigest::parse(&"cd".repeat(32)).unwrap();
+    assert!(create_from_registry(&other, &format!("ghcr.io/acme/web@{digest}")).is_err());
+}
+
+// Catches a GitHub rule's proof standing in for a registry pull, or the reverse.
+#[test]
+fn each_rule_admits_only_through_its_own_source() {
+    let digest = format!("sha256:{}", "4".repeat(64));
+    assert_eq!(
+        create_from_registry(&approved_rule(), &format!("ghcr.io/acme/web@{digest}")),
+        Err(AuthorityRefusal::Mismatch {
+            field: MismatchField::RuleSource
+        })
+    );
+    assert_eq!(
+        create(
+            &registry_rule(),
+            &built(),
+            requested_json(),
+            ContainerKind::ServiceContainer
+        ),
+        Err(AuthorityRefusal::Mismatch {
+            field: MismatchField::RuleSource
+        })
+    );
+}
+
+// Catches a registry rule that carries build settings or build secrets, which no build
+// under it would ever check.
+#[test]
+fn a_registry_rule_builds_nothing() {
+    assert_eq!(registry_rule().well_formed(), Ok(()));
+    let mut policy = registry_rule();
+    policy.services[0].policy = Some(self::policy());
+    let mut secrets = registry_rule();
+    secrets.services[0].secrets = Some(SealedDigest::from_bytes([1; 32]));
+    let mut unnamed = registry_rule();
+    unnamed.source = RuleSource::Registry(RegistrySource {
+        host: "10.0.0.5:5000".to_owned(),
+        repository: "acme/web".to_owned(),
+    });
+    for (rule, field) in [
+        (policy, MismatchField::Policy),
+        (secrets, MismatchField::Policy),
+        (unnamed, MismatchField::Repository),
+    ] {
+        assert_eq!(
+            rule.well_formed(),
+            Err(AuthorityRefusal::Mismatch { field }),
+            "{rule:?}"
+        );
+    }
+    let mut github = approved_rule();
+    github.services[0].policy = None;
+    assert!(github.well_formed().is_err());
 }

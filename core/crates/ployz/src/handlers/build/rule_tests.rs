@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
     Namespace, OpenedSealed, SealingPublicKey,
-    authority::rule::{Builder, PolicyMethod, RuleEvent, RuleSource, Runner},
+    authority::rule::{Builder, GithubSource, PolicyMethod, RuleEvent, RuleSource, Runner},
     authority::{PayloadDigest, RuleId, RuleService, Signer, SignerKey, Timestamp},
 };
 use serde_json::json;
@@ -38,7 +38,7 @@ fn rule(policy: BuildPolicy) -> AutoDeployRule {
         generation: 3,
         namespace: Namespace::parse("app").unwrap(),
         machines: Vec::new(),
-        source: RuleSource {
+        source: RuleSource::Github(GithubSource {
             repository_id: 1_450_985_696,
             owner_id: 1,
             repository: "Ployz-test/lab-service".to_owned(),
@@ -47,11 +47,11 @@ fn rule(policy: BuildPolicy) -> AutoDeployRule {
             events: vec![RuleEvent::Push],
             builder: Builder::pinned(),
             runner: Runner::GithubHosted,
-        },
+        }),
         services: vec![RuleService {
             name: web(),
             template: PayloadDigest::parse(&"ab".repeat(32)).unwrap(),
-            policy,
+            policy: Some(policy),
             secrets: None,
             seeded: None,
         }],

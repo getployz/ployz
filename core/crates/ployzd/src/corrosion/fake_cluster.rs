@@ -20,7 +20,10 @@ use futures_util::{StreamExt, stream};
 use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tokio::{net::TcpListener, sync::broadcast};
+use tokio::{
+    net::{TcpListener, TcpStream},
+    sync::broadcast,
+};
 
 use super::{
     ApiClient, ReplicatedStore,
@@ -320,7 +323,7 @@ pub(crate) struct FakeCluster {
     address: SocketAddr,
     cluster: Shared,
     runtime: Option<tokio::runtime::Runtime>,
-    /// Disconnects once the serving task, and with it the listener, is dropped.
+    /// Disconnects once the serving task has dropped, and closed, the listener.
     serving: Option<std::sync::mpsc::Receiver<()>>,
 }
 
@@ -443,13 +446,38 @@ impl FakeCluster {
             .unwrap();
         let cluster = self.cluster.clone();
         let (serving, stopped) = std::sync::mpsc::channel();
+        let listener = Serving {
+            listener: {
+                let _runtime = runtime.enter();
+                TcpListener::from_std(listener).unwrap()
+            },
+            _serving: serving,
+        };
         runtime.spawn(async move {
-            let _serving = serving;
-            let listener = TcpListener::from_std(listener).unwrap();
             axum::serve(listener, router(cluster)).await.unwrap();
         });
         self.runtime = Some(runtime);
         self.serving = Some(stopped);
+    }
+}
+
+/// Closes its socket before it disconnects `FakeCluster::serving`, whether its
+/// task is dropped before or after its first poll.
+struct Serving {
+    listener: TcpListener,
+    _serving: std::sync::mpsc::Sender<()>,
+}
+
+impl axum::serve::Listener for Serving {
+    type Io = TcpStream;
+    type Addr = SocketAddr;
+
+    fn accept(&mut self) -> impl Future<Output = (TcpStream, SocketAddr)> + Send {
+        axum::serve::Listener::accept(&mut self.listener)
+    }
+
+    fn local_addr(&self) -> std::io::Result<SocketAddr> {
+        self.listener.local_addr()
     }
 }
 

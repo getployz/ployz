@@ -57,7 +57,7 @@ pub use store_call::store_call;
 pub use store_runner::{
     RetireLeft, RetireOutcome, Sources, retire_old, run_deployment, run_deployment_expecting,
 };
-pub use volume_start::{VolumeStartProof, VolumeStartQuery, volume_start_proof};
+pub use volume_start::{VolumeStartFields, VolumeStartProof, VolumeStartQuery, volume_start_proof};
 
 /// Cancellable preparation whose progress is retained until read, within a byte budget.
 pub type RunningPreparation = Running<PreparedDeploy>;

@@ -353,6 +353,11 @@ const MIGRATIONS: &[(&str, Step)] = &[
             Ok(None)
         }),
     ),
+    (
+        // The Free receipt of each image a free Build loaded, which a copy of it carries.
+        "0056_free_receipt",
+        Step::Sql(include_str!("migrations/0056_free_receipt.sql")),
+    ),
 ];
 
 enum Step {

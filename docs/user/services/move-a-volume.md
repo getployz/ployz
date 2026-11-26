@@ -24,6 +24,8 @@ just before the switch. The move is refused, and your service keeps running on `
   [deploy rule](../deploy/github.md#approve-a-rule-for-deploys-on-push) built. A rule's build
   runs only on the servers the rule lists. Deploy the service so a version covers `web-2`, then
   move again.
+- **`web-2` can't pull the image.** The registry refused the service's login. Fix the service's
+  registry credential, deploy, then move again.
 - **Other data moves with it.** The volume must be the only data the service mounts. A bind mount,
   another volume or a Docker volume can't move along, and the refusal names it.
 - **Something else uses the volume.** Only your service's container may run on `web-1` with the

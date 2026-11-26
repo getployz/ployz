@@ -5,8 +5,9 @@
 //! waits for a person instead of failing on every Machine.
 
 use ployz_core::authority::{
-    AutoDeployRule, Births, BuildPolicy, PlannedVolumes, RuleBasis, RuleId, Signed, rule::template,
-    rule_draft::RuleSourceView,
+    AutoDeployRule, Births, BuildPolicy, PlannedVolumes, RuleBasis, RuleId, RuleSource, Signed,
+    rule::template,
+    rule_draft::{RuleImageView, RuleSourceView},
 };
 use ployz_core::config::{SavedEnvironmentIntent, ServiceSource, canonicalize_environment_intent};
 use ployz_core::{Namespace, RequestedServiceSpec, RpcError, ServiceName};
@@ -82,6 +83,9 @@ pub struct RuleView {
     pub rule: Option<Signed<AutoDeployRule>>,
     /// Each Saved Service that builds from a GitHub repository.
     pub sources: Vec<RuleSourceView>,
+    /// Each Saved Service that runs a registry's image, which a registry rule deploys.
+    #[serde(default)]
+    pub images: Vec<RuleImageView>,
     /// The latest Saved revision lowered as a push's Deployment would: the settings a
     /// rule approves, less each built image.
     pub target: Vec<RequestedServiceSpec>,
@@ -114,6 +118,7 @@ impl RuleView {
             namespace: self.namespace.clone(),
             rule: self.rule.clone(),
             sources: self.sources.clone(),
+            images: self.images.clone(),
             target: self.target.clone(),
             volumes: self.volumes.clone(),
             minted: Births::new(),
@@ -324,6 +329,7 @@ fn view_of(
             }
         }
     }
+    let images = saved.as_ref().map(images).unwrap_or_default();
     let target = match (trusted, &saved) {
         (Some(trusted), Some(saved)) => {
             crate::deployment::query::saved_target(tx, who, trusted, (environment, saved), &[])?
@@ -346,6 +352,7 @@ fn view_of(
         namespace,
         rule,
         sources,
+        images,
         target,
         changed,
         volumes,
@@ -358,9 +365,10 @@ fn view_of(
 /// The repository and branch whose pushes `rule` approves; none when it names one GitHub
 /// couldn't have, so no push is its.
 pub(crate) fn branch(rule: &AutoDeployRule) -> Option<(RepositoryId, BranchName)> {
+    let github = rule.source.github()?;
     Some((
-        RepositoryId::parse(rule.source.repository_id).ok()?,
-        BranchName::parse(rule.source.branch.as_str()).ok()?,
+        RepositoryId::parse(github.repository_id).ok()?,
+        BranchName::parse(github.branch.as_str()).ok()?,
     ))
 }
 
@@ -412,15 +420,50 @@ pub(crate) fn sources(saved: &SavedEnvironmentIntent) -> Vec<RuleSourceView> {
         .collect()
 }
 
+/// Each Saved Service that runs a registry's image rather than one Ployz builds.
+pub(crate) fn images(saved: &SavedEnvironmentIntent) -> Vec<RuleImageView> {
+    saved
+        .services
+        .iter()
+        .filter_map(|service| match &service.config.source {
+            ServiceSource::Image { image, .. } if !ployz_core::is_built_image(image) => Some(
+                RuleImageView::new(service.config.private_dns.clone(), image.clone()),
+            ),
+            ServiceSource::Image { .. }
+            | ServiceSource::Git { .. }
+            | ServiceSource::Empty { .. } => None,
+        })
+        .collect()
+}
+
 /// The Services `rule` approves as `saved` stands, lowered to `target` in `namespace`:
 /// each it covers that still builds from its repository and branch, with the settings
-/// and build policy it signed. A person's Deploy builds these under the rule.
+/// and build policy it signed. A person's Deploy builds these under the rule. For a
+/// registry rule, each it covers whose Saved image is in its repository, with the settings
+/// it signed; a Deploy runs these under the rule once the image names a digest.
 pub(crate) fn approved(
     rule: &AutoDeployRule,
     namespace: &Namespace,
     saved: &SavedEnvironmentIntent,
     target: &[RequestedServiceSpec],
 ) -> Vec<ServiceName> {
+    if let RuleSource::Registry(source) = &rule.source {
+        let changed = changed(rule, namespace, target, &[], &[]);
+        let basis = RuleBasis {
+            namespace: namespace.clone(),
+            rule: None,
+            sources: Vec::new(),
+            images: images(saved),
+            target: Vec::new(),
+            volumes: PlannedVolumes::new(),
+            minted: Births::new(),
+        };
+        return basis
+            .image_services(source)
+            .into_iter()
+            .filter(|service| rule.service(service).is_some() && !changed.contains(service))
+            .collect();
+    }
     let Some((repository, branch)) = branch(rule) else {
         return Vec::new();
     };
@@ -437,7 +480,8 @@ pub(crate) fn approved(
 /// The Services a push of `rule`'s branch would deploy that the rule doesn't approve:
 /// each it covers whose template in `target`, or whose build policy from `sources`,
 /// changed, and each of `ships` it doesn't cover. All of them when the Environment
-/// moved to another Namespace.
+/// moved to another Namespace. A registry rule builds nothing, so only its templates
+/// count, and `sources` is not read.
 pub(crate) fn changed(
     rule: &AutoDeployRule,
     namespace: &Namespace,
@@ -449,6 +493,10 @@ pub(crate) fn changed(
         let Some(spec) = target.iter().find(|spec| spec.name == approved.name) else {
             return false;
         };
+        let template = template(spec, namespace).ok().as_ref() == Some(&approved.template);
+        let Some(approved_policy) = &approved.policy else {
+            return template && rule.source.registry().is_some();
+        };
         let Some(source) = sources
             .iter()
             .find(|source| source.service == approved.name)
@@ -459,11 +507,10 @@ pub(crate) fn changed(
             &source.root_dir,
             &source.build,
             spec,
-            approved.policy.platforms.clone(),
-            approved.policy.cache,
+            approved_policy.platforms.clone(),
+            approved_policy.cache,
         );
-        template(spec, namespace).ok().as_ref() == Some(&approved.template)
-            && policy == approved.policy
+        template && policy == *approved_policy
     };
     let mut changed: Vec<ServiceName> = rule
         .services
