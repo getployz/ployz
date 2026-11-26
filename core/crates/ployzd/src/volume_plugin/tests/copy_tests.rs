@@ -4330,3 +4330,24 @@ async fn send_point_answers_a_cut_listing_or_a_marked_parent_as_no_absence() {
     );
     server.abort();
 }
+
+/// A restore asks every Server for its copy, so a listing ZFS cut short answers an error,
+/// never "no copy": a degraded Pool's listing can stop early and still exit 0.
+#[tokio::test]
+async fn inspect_answers_a_cut_listing_as_an_error_not_no_copy() {
+    let test = test_dir();
+    let (socket, server) = start(&test, USABLE_POOL, &["root", "volume"]);
+    let inspect = || post(&socket, "/Volume.Inspect", json!({"name": "data"}));
+    let whole = inspect().await;
+    assert!(
+        whole
+            .pointer("/Ok/copy")
+            .is_some_and(|copy| !copy.is_null()),
+        "{whole}"
+    );
+    fs::create_dir_all(test.0.join("props")).unwrap();
+    fs::write(test.0.join("props/datasets-cut"), "").unwrap();
+    let cut = inspect().await;
+    assert!(cut.pointer("/Err/code").is_some(), "{cut}");
+    server.abort();
+}

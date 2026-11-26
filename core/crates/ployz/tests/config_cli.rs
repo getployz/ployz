@@ -718,7 +718,7 @@ impl Approvals {
             if command["accept_volume_loss"] != json!([volume]) || command["version"] != REVIEWED {
                 let error = json!({
                     "code": "confirmation_required",
-                    "message": format!("This Deploy permanently deletes the data of {volume}"),
+                    "message": format!("This Deploy deletes the data of {volume}"),
                     "details": { "accept": [volume], "version": REVIEWED },
                 });
                 return Some((409, json!({ "error": error })));

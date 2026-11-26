@@ -108,7 +108,7 @@ impl Confirmation {
 }
 
 /// The message of a refusal to delete the data of `names`, which `subject` does:
-/// "This permanently deletes" for a deploy, "Next deploy deletes" for a publish.
+/// "This deletes" for a deploy, "Next deploy deletes" for a publish.
 pub(crate) fn data_loss_message<'a>(
     subject: &str,
     names: impl IntoIterator<Item = &'a VolumeName>,
@@ -221,8 +221,8 @@ mod tests {
     fn the_data_loss_message_reads_as_it_did_for_a_deploy_and_a_publish() {
         let names = [volume("data"), volume("logs")];
         assert_eq!(
-            data_loss_message("This permanently deletes", &names),
-            "This permanently deletes the data of data, logs. Accept each by name"
+            data_loss_message("This deletes", &names),
+            "This deletes the data of data, logs. Accept each by name"
         );
         assert_eq!(
             data_loss_message("Next deploy deletes", &names),

@@ -91,6 +91,12 @@ pub(super) enum Mark {
     /// lands under it: the entry's ID. A restore stopped before its rename finds the
     /// parent by it and finishes ([`super::trash`]).
     TrashRestoring,
+    /// On a root entry a restore pinned: `<id>:<epoch>`, the entry's own ID and the epoch
+    /// it becomes the Volume's data at. It counts only on the entry whose ID it names.
+    TrashPin,
+    /// On a root a restore made from the Trash, until Docker's Create registers it: the
+    /// entry's ID, which a restore run again finds it by ([`super::trash`]).
+    TrashRestored,
 }
 
 impl Mark {
@@ -116,6 +122,8 @@ impl Mark {
             Self::TrashHours => "ployz:trash-hours",
             Self::TrashLast => "ployz:trash-last",
             Self::TrashRestoring => "ployz:trash-restoring",
+            Self::TrashPin => "ployz:trash-pin",
+            Self::TrashRestored => "ployz:trash-restored",
         }
     }
 }

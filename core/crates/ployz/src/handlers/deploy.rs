@@ -2104,10 +2104,9 @@ mod tests {
             matches,
         )
         .args(super::switches(matches));
-        let refused = ployz_core::RpcError::confirmation_required(
-            "This Deploy permanently deletes the data of data",
-        )
-        .with_details(serde_json::json!({ "version": "3:1:0.1", "accept": ["data"] }));
+        let refused =
+            ployz_core::RpcError::confirmation_required("This Deploy deletes the data of data")
+                .with_details(serde_json::json!({ "version": "3:1:0.1", "accept": ["data"] }));
 
         let hints = store.accepting(StoreCallError::Refused(refused)).hints();
 
