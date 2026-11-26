@@ -172,6 +172,7 @@ impl Upload {
     /// Build's Server refuses.
     /// # Errors
     /// Reports failure to create protected staging.
+    #[cfg(feature = "test-support")]
     pub fn free() -> Result<Self, InputError> {
         let mut upload = Self::new()?;
         upload.access = crate::Access::Free;

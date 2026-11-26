@@ -1042,13 +1042,6 @@ async fn move_one(
     })?;
     let dest = machine(snapshot, &dest);
     let to = MachineRef::from(dest);
-    // The last look before the image moves.
-    if free && !crate::build::takes_free_receipts(dest) {
-        return Err(MoveFailure::Refused {
-            from: Some(from),
-            reason: StayReason::needs_upgrade(vec![to]),
-        });
-    }
     let image_id = image_id(&client.client, &container.container_id, &from, &to).await?;
     let image = ImageDigest::parse(&image_id).map_err(|error| MoveFailure::ReadImage {
         from: from.clone(),

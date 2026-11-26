@@ -1895,6 +1895,40 @@ async fn a_server_that_joins_during_a_free_build_gets_none_of_its_containers() {
     fs::remove_dir_all(root).unwrap();
 }
 
+/// A Server that stops taking Free receipts after the plan chose it gets no creation that
+/// carries one: each creation reads the Servers again before it goes out.
+#[tokio::test]
+async fn a_server_rolled_back_after_the_plan_gets_no_free_creation() {
+    let (root, service, _) = free_fixture(
+        &[ployz_core::BUILD_FREE_CAPABILITY],
+        &[ployz_core::FREE_RECEIPT_CAPABILITY],
+    );
+    let application = machine('b', "application").machine.id;
+    let service = service.rolls_back_on_delivery(application);
+    let carried = service.free_receipts();
+    let mut free = input(&root, vec![git("one", "dockerfile")]);
+    free.free = [ServiceName::parse("one").unwrap()].into();
+    let (session, server) = session(service).await;
+    let outcome = session
+        .prepare(free)
+        .unwrap()
+        .finished()
+        .await
+        .unwrap()
+        .confirm()
+        .unwrap()
+        .finished()
+        .await
+        .unwrap();
+    session.close().await;
+    server.abort();
+    let refused = format!("{outcome:?}");
+    assert!(refused.contains("Upgrade application first"), "{refused}");
+    let carried = carried.lock().unwrap().clone();
+    assert!(carried.is_empty(), "{carried:?}");
+    fs::remove_dir_all(root).unwrap();
+}
+
 /// A redeploy that reuses a free Service's image and builds only a signed one needs no
 /// Builder that runs a Free Build.
 #[tokio::test]

@@ -76,10 +76,7 @@ pub(crate) fn takes_free_receipts(machine: &Machine) -> bool {
 ///
 /// # Errors
 /// Returns `unsupported`, naming `machine`, when it is behind.
-pub(crate) fn runs_free_receipt(
-    machine: &Machine,
-    service: &ServiceName,
-) -> Result<(), ConnectError> {
+fn runs_free_receipt(machine: &Machine, service: &ServiceName) -> Result<(), ConnectError> {
     if takes_free_receipts(machine) {
         return Ok(());
     }

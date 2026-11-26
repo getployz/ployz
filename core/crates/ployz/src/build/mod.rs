@@ -21,9 +21,7 @@ use inputs::BuildInputs;
 pub use inputs::{UploadListing, content_digest};
 
 mod free;
-pub(crate) use free::{
-    admit_free, free_builders, free_destinations, runs_free_receipt, takes_free_receipts,
-};
+pub(crate) use free::{admit_free, free_builders, free_destinations, takes_free_receipts};
 mod ignore;
 mod inputs;
 mod local;

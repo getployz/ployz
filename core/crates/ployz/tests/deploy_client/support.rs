@@ -4,7 +4,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
 
@@ -107,6 +107,10 @@ pub(super) struct DeployService {
     /// A Machine `ListMachines` answers only once a Build has started, as one that joins
     /// while it runs.
     joins_while_building: Option<MachineObservation>,
+    /// A Machine that stops advertising Free receipts once an image reaches it, as one
+    /// rolled back to an older Ployz between the plan and its creations.
+    rolls_back_on_delivery: Option<MachineId>,
+    rolled_back: Arc<AtomicBool>,
     /// Machines whose registry rejects every pull.
     pull_failures: BTreeSet<MachineId>,
     /// What a rejected pull answers.
@@ -211,6 +215,8 @@ impl DeployService {
             creation_pulls: Arc::new(AtomicUsize::new(0)),
             free_receipts: Arc::new(Mutex::new(Vec::new())),
             joins_while_building: None,
+            rolls_back_on_delivery: None,
+            rolled_back: Arc::default(),
             pull_failures: BTreeSet::new(),
             pull_failure: RpcError::internal("registry refused the pull"),
             ingress_roles: Arc::default(),
@@ -470,6 +476,12 @@ impl DeployService {
         self
     }
 
+    /// `machine` stops advertising Free receipts once an image reaches it.
+    pub(super) fn rolls_back_on_delivery(mut self, machine: MachineId) -> Self {
+        self.rolls_back_on_delivery = Some(machine);
+        self
+    }
+
     pub(super) fn creation_pulls(&self) -> Arc<AtomicUsize> {
         self.creation_pulls.clone()
     }
@@ -542,6 +554,15 @@ impl DeployService {
         for observed in &mut machines {
             if let Some(role) = roles.get(&observed.machine.id) {
                 observed.machine.accepts_ingress = *role;
+            }
+            if self.rolled_back.load(Ordering::SeqCst)
+                && self.rolls_back_on_delivery == Some(observed.machine.id)
+            {
+                observed
+                    .machine
+                    .runtime
+                    .capabilities
+                    .remove(ployz_core::FREE_RECEIPT_CAPABILITY);
             }
         }
         machines
@@ -1610,6 +1631,9 @@ impl FakeMachine for DeployService {
             else {
                 panic!("expected peer pull");
             };
+            if self.rolls_back_on_delivery == Some(machine) {
+                self.rolled_back.store(true, Ordering::SeqCst);
+            }
             return reply(builds.pull(machine, pull));
         }
         self.record_mutation();
