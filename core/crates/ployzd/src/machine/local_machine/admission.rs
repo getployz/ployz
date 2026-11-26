@@ -839,10 +839,12 @@ impl LocalMachine {
         // the create read this result, and the create runs this image by its ID.
         let admitted = match admitted {
             Some(mut admitted) if ployz_core::PreviewNamespace::of(namespace).is_some() => {
+                // A Service's login goes only with a signed spec, as its create sends it.
+                let login = login.as_ref().filter(|_| admitted.signed());
                 admitted.preview_image = self
                     .docker()?
                     .lifecycle()
-                    .prepare_preview_image(namespace, resolved_spec)
+                    .prepare_preview_image(namespace, resolved_spec, (admitted.pin(), login))
                     .await?;
                 if let Some(image) = &admitted.preview_image {
                     image.admit(namespace, resolved_spec)?;
