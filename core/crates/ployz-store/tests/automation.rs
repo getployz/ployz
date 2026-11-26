@@ -2664,12 +2664,12 @@ fn mount(store: &ConfigStore, who: &Actor, service: &str, id: u8) {
                 shared_writes: false,
                 storage_locked: false,
                 storage: ployz_core::config::VolumeKind::Docker {},
-                id: ployz_store::VolumeId::parse(&format!(
+                id: ployz_store::VolumeId::parse(format!(
                     "00000000-0000-4000-8000-0000000000{id:02}"
                 ))
                 .unwrap(),
                 environment: EnvironmentRef::default(),
-                name: ployz_store::VolumeName::parse(&format!("data-{service}")).unwrap(),
+                name: ployz_store::VolumeName::parse(format!("data-{service}")).unwrap(),
                 mounts: vec![ployz_store::Mount {
                     service: ServiceName::parse(service).unwrap(),
                     path: "/data".into(),

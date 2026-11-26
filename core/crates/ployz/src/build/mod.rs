@@ -20,6 +20,8 @@ use thiserror::Error;
 use inputs::BuildInputs;
 pub use inputs::{UploadListing, content_digest};
 
+mod free;
+pub(crate) use free::{free_builders, free_destinations};
 mod ignore;
 mod inputs;
 mod local;
@@ -164,6 +166,9 @@ pub struct BuiltService {
     pub placement: Placement,
     /// The completed image, identified by content.
     pub built: BuiltImage,
+    /// The receipt a free Build's Server gave for the image, which an unsigned creation of
+    /// it carries. None for a Full Build's image.
+    pub free: Option<ployz_core::FreeReceipt>,
     /// Keeps the Build Machine's temporary image retention alive.
     pub(crate) _retention: Option<Arc<Mutex<tonic::Streaming<ployz_core::OpaquePayload>>>>,
 }
@@ -175,6 +180,7 @@ impl PartialEq for BuiltService {
             && self.image == other.image
             && self.placement == other.placement
             && self.built == other.built
+            && self.free == other.free
     }
 }
 
@@ -207,6 +213,8 @@ struct CapturedTarget {
     /// Names of the Sealed values the Build reads.
     sealed: Vec<String>,
     inputs: BuildInputs,
+    /// Whether it builds free: with nothing secret, its image loaded under no name.
+    access: ployz_build::Access,
 }
 
 /// Freeze each Service's source and effective variables before any Build runs.
@@ -350,6 +358,7 @@ fn capture_target(
         retained_tag,
         sealed,
         inputs,
+        access: ployz_build::Access::Full,
     })
 }
 
@@ -392,6 +401,39 @@ impl CapturedBuild {
     /// Images still to produce, with the platforms each must carry.
     pub fn targets(&self) -> impl Iterator<Item = &ployz_build::Target> {
         self.targets.iter().map(|captured| &captured.target)
+    }
+
+    /// Build each of `free` free: with nothing secret, its image loaded under no name and
+    /// run by the receipt its Server gives.
+    pub(crate) fn build_free(&mut self, free: &std::collections::BTreeSet<ServiceName>) {
+        for captured in &mut self.targets {
+            if free.contains(&captured.name) {
+                captured.access = ployz_build::Access::Free;
+            }
+        }
+    }
+
+    /// The Services it builds free.
+    pub(crate) fn free(&self) -> impl Iterator<Item = &ServiceName> {
+        self.targets
+            .iter()
+            .filter(|captured| captured.access == ployz_build::Access::Free)
+            .map(|captured| &captured.name)
+    }
+
+    /// How a Builder is checked for it: free when every target builds free, since a
+    /// Server that enforces Device approval refuses a Full Build from Cloud.
+    pub(crate) fn access(&self) -> ployz_build::Access {
+        if !self.targets.is_empty()
+            && self
+                .targets
+                .iter()
+                .all(|captured| captured.access == ployz_build::Access::Free)
+        {
+            ployz_build::Access::Free
+        } else {
+            ployz_build::Access::Full
+        }
     }
 
     /// Owned copies of [`Self::targets`], for requests that carry them.
@@ -447,16 +489,24 @@ impl CapturedBuild {
                 .with_work(work)
                 .into());
             }
+            // A free Build's Server loads its image under no name.
+            let retained_tags = match captured.access {
+                ployz_build::Access::Full => vec![captured.retained_tag],
+                ployz_build::Access::Free => Vec::new(),
+            };
             let outcome = remote::execute(
                 captured.inputs,
-                Definition {
-                    retained_tags: vec![captured.retained_tag],
-                    targets: vec![captured.target.clone()],
-                    image_contexts: BTreeMap::new(),
-                    output: Output::Load,
-                    no_cache: false,
-                    pull: false,
-                },
+                (
+                    Definition {
+                        retained_tags,
+                        targets: vec![captured.target.clone()],
+                        image_contexts: BTreeMap::new(),
+                        output: Output::Load,
+                        no_cache: false,
+                        pull: false,
+                    },
+                    captured.access,
+                ),
                 client,
                 machine_id,
                 admit_by,
@@ -466,7 +516,7 @@ impl CapturedBuild {
             .await;
             match outcome {
                 remote::Completion::Images { images, stream } => {
-                    let image = images
+                    let (image, free) = images
                         .into_iter()
                         .next()
                         .expect("remote adapter validated the count");
@@ -480,6 +530,7 @@ impl CapturedBuild {
                         image: captured.image,
                         placement: captured.placement,
                         built: image,
+                        free,
                         _retention: Some(stream),
                     });
                 }
@@ -743,6 +794,7 @@ pub(crate) mod tests {
                 platforms: vec!["linux/amd64".into()],
                 location: "unix:///var/run/docker.sock".into(),
             },
+            free: None,
             _retention: None,
         });
         bind(&mut intent, &builds).unwrap();

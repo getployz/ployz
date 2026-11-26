@@ -849,6 +849,7 @@ pub async fn github_finish(
                             platforms: platforms.to_vec(),
                             location: "build-grant".to_owned(),
                         },
+                        free: None,
                     };
                     GithubEnd::Built {
                         receipt: serde_json::to_value(receipt).expect("a build receipt is JSON"),

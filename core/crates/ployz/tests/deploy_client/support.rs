@@ -100,6 +100,8 @@ pub(super) struct DeployService {
     image_pulls: Arc<Mutex<Vec<ImagePullCall>>>,
     /// Creations that arrived without a prepared image, so the Machine pulled inside them.
     creation_pulls: Arc<AtomicUsize>,
+    /// The Free receipt each creation carried, in arrival order.
+    free_receipts: Arc<Mutex<Vec<Option<ployz_core::FreeReceipt>>>>,
     /// Machines whose registry rejects every pull.
     pull_failures: BTreeSet<MachineId>,
     /// What a rejected pull answers.
@@ -202,6 +204,7 @@ impl DeployService {
             sticky_proxies: BTreeSet::new(),
             image_pulls: Arc::new(Mutex::new(Vec::new())),
             creation_pulls: Arc::new(AtomicUsize::new(0)),
+            free_receipts: Arc::new(Mutex::new(Vec::new())),
             pull_failures: BTreeSet::new(),
             pull_failure: RpcError::internal("registry refused the pull"),
             ingress_roles: Arc::default(),
@@ -449,6 +452,10 @@ impl DeployService {
 
     pub(super) fn image_pulls(&self) -> Arc<Mutex<Vec<ImagePullCall>>> {
         self.image_pulls.clone()
+    }
+
+    pub(super) fn free_receipts(&self) -> Arc<Mutex<Vec<Option<ployz_core::FreeReceipt>>>> {
+        self.free_receipts.clone()
     }
 
     pub(super) fn creation_pulls(&self) -> Arc<AtomicUsize> {
@@ -842,6 +849,18 @@ impl FakeMachine for DeployService {
         Ok(frames.map(|frames| Box::pin(frames) as FakeStream))
     }
 
+    async fn build_free(
+        &self,
+        request: Request<tonic::Streaming<OpaquePayload>>,
+    ) -> Result<Response<FakeStream>, Status> {
+        let frames = self
+            .builds
+            .clone()
+            .ok_or_else(|| Status::unimplemented("BuildFree is not used by this fixture"))?
+            .stream_free(request)?;
+        Ok(frames.map(|frames| Box::pin(frames) as FakeStream))
+    }
+
     async fn describe_contract(
         &self,
         request: Request<OpaquePayload>,
@@ -869,6 +888,7 @@ impl FakeMachine for DeployService {
             capabilities.extend(
                 [
                     ployz_core::BUILD_CAPABILITY,
+                    ployz_core::BUILD_FREE_CAPABILITY,
                     ployz_core::ENSURE_IMAGE_INGEST_CAPABILITY,
                     ployz_core::PULL_IMAGE_FROM_MACHINE_CAPABILITY,
                     ployz_core::PRUNE_IMAGES_CAPABILITY,
@@ -1174,6 +1194,10 @@ impl FakeMachine for DeployService {
                 container: RunTarget::New(new),
                 ..
             } => {
+                self.free_receipts
+                    .lock()
+                    .unwrap()
+                    .push(new.free_receipt.clone());
                 if !new.image_prepared {
                     self.creation_pulls.fetch_add(1, Ordering::SeqCst);
                     if self.pull_failures.contains(&machine_id) {

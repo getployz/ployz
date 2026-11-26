@@ -5,7 +5,7 @@ use super::RemoteBuildFailure;
 use super::inputs::BuildInputs;
 use crate::connect::Client;
 use ployz_build::{
-    Progress, Stage, TIMING,
+    Access, Progress, Stage, TIMING,
     remote::{self, Definition, Event, Input, Outcome},
 };
 use ployz_core::error_chain;
@@ -26,11 +26,13 @@ impl Client {
         &self,
         machine_id: MachineId,
         targets: &[ployz_build::Target],
+        access: Access,
         cancellation: &CancellationToken,
     ) -> Result<(), CapabilityCheckError> {
         let mut admitted = match open_and_admit(
             self,
             Input::Check(targets.to_vec()),
+            access,
             machine_id,
             cancellation,
             &mut |_| {},
@@ -73,8 +75,9 @@ impl Client {
 }
 
 pub(super) enum Completion {
+    /// Each image, with the receipt its Server gave when a free Build made it.
     Images {
-        images: Vec<ployz_build::BuiltImage>,
+        images: Vec<(ployz_build::BuiltImage, Option<ployz_core::FreeReceipt>)>,
         stream: Arc<Mutex<tonic::Streaming<ployz_core::OpaquePayload>>>,
     },
     /// The Build Machine reported the attempt failed, or its termination unconfirmed.
@@ -85,7 +88,7 @@ pub(super) enum Completion {
 
 pub(super) async fn execute(
     inputs: BuildInputs,
-    definition: Definition,
+    (definition, access): (Definition, Access),
     client: &Client,
     machine_id: MachineId,
     admit_by: Option<tokio::time::Instant>,
@@ -96,7 +99,7 @@ pub(super) async fn execute(
     let mut executing = None;
     let outcome = execute_attempt(
         inputs,
-        definition,
+        (definition, access),
         client,
         machine_id,
         admit_by,
@@ -171,6 +174,7 @@ impl CapabilityCheckError {
 async fn open_and_admit(
     client: &Client,
     request: Input,
+    access: Access,
     machine_id: MachineId,
     cancellation: &CancellationToken,
     progress: &mut impl FnMut(Progress),
@@ -183,17 +187,31 @@ async fn open_and_admit(
     };
     sender.send(start).await.expect("request receiver is owned");
     let target = MachineTarget::from(&machine_id);
-    let mut responses = match tokio::time::timeout(
-        TIMING.admission_wait,
-        client.open_stream::<op::Build>(Some(&target), ReceiverStream::new(receiver)),
-    )
-    .await
-    {
+    let requests = ReceiverStream::new(receiver);
+    let capability = match access {
+        Access::Full => ployz_core::BUILD_CAPABILITY,
+        Access::Free => ployz_core::BUILD_FREE_CAPABILITY,
+    };
+    let opened = async {
+        match access {
+            Access::Full => {
+                client
+                    .open_stream::<op::Build>(Some(&target), requests)
+                    .await
+            }
+            Access::Free => {
+                client
+                    .open_stream::<op::BuildFree>(Some(&target), requests)
+                    .await
+            }
+        }
+    };
+    let mut responses = match tokio::time::timeout(TIMING.admission_wait, opened).await {
         Ok(Ok(responses)) => responses,
         Ok(Err(error)) => {
             let refusal = error.to_rpc_error();
             // An enforcing Machine's refusal is a sentence of its own, not a failure to reach it.
-            if crate::connect::refused_by_enforcement(&refusal, ployz_core::BUILD_CAPABILITY) {
+            if crate::connect::refused_by_enforcement(&refusal, capability) {
                 return Err(Refused {
                     failure: failed(Stage::Admission, refusal.message),
                     by_enforcement: true,
@@ -262,7 +280,7 @@ async fn open_and_admit(
 
 async fn execute_attempt(
     inputs: BuildInputs,
-    definition: Definition,
+    (definition, access): (Definition, Access),
     client: &Client,
     machine_id: MachineId,
     admit_by: Option<tokio::time::Instant>,
@@ -282,6 +300,7 @@ async fn execute_attempt(
     let admission = open_and_admit(
         client,
         Input::Start(definition),
+        access,
         machine_id,
         &cancellation,
         &mut progress,
@@ -342,7 +361,7 @@ async fn execute_attempt(
                             progress(event);
                         }
                         Ok(Event::Finished(outcome)) => {
-                            let validated = validate_outcome(outcome, machine_id, expected, evidence);
+                            let validated = validate_outcome(outcome, (machine_id, access), expected, evidence);
                             if validated.is_ok() { retained = Some(responses); }
                             return validated;
                         },
@@ -397,61 +416,95 @@ async fn send_cancellation(
         .map_err(|_| "Build request stream closed before cancellation".into())
 }
 
+/// The images a finished Build made, each with its receipt when a free Build made it: a
+/// Full Build's are named by tags, and a free Build's by nothing but an ID its receipt
+/// names.
 fn validate_outcome(
     outcome: Outcome,
-    expected: MachineId,
+    (expected, access): (MachineId, Access),
     count: usize,
     evidence: ployz_build::WorkEvidence,
-) -> Result<Vec<ployz_build::BuiltImage>, RemoteBuildFailure> {
-    match outcome {
-        Outcome::Images { machine_id, images }
-            if machine_id == expected && images.len() == count =>
-        {
-            if images.iter().any(|image| {
-                ployz_core::ReportedImageDigest::parse(image.reference.as_str()).is_err()
-                    || image.tags.is_empty()
-                    || image.platforms.is_empty()
-                    || image
-                        .platforms
-                        .iter()
-                        .any(|platform| !remote::linux_platform(platform))
-            }) {
+) -> Result<Vec<(ployz_build::BuiltImage, Option<ployz_core::FreeReceipt>)>, RemoteBuildFailure> {
+    let images: Vec<(ployz_build::BuiltImage, Option<ployz_core::FreeReceipt>)> =
+        match (outcome, access) {
+            (Outcome::Images { machine_id, images }, Access::Full)
+                if machine_id == expected && images.len() == count =>
+            {
+                images.into_iter().map(|image| (image, None)).collect()
+            }
+            (Outcome::FreeImages { machine_id, images }, Access::Free)
+                if machine_id == expected && images.len() == count =>
+            {
+                images
+                    .into_iter()
+                    .map(|free| (free.image, Some(free.receipt)))
+                    .collect()
+            }
+            (
+                Outcome::Failed {
+                    stage,
+                    message,
+                    work,
+                },
+                _,
+            ) => {
+                return Err(RemoteBuildFailure::Failed {
+                    stage,
+                    message,
+                    work: observed_first(work, evidence),
+                });
+            }
+            (
+                Outcome::Unknown {
+                    stage,
+                    message,
+                    work,
+                },
+                _,
+            ) => {
+                return Err(RemoteBuildFailure::Unknown {
+                    stage,
+                    message,
+                    work: observed_first(work, evidence),
+                });
+            }
+            (
+                Outcome::CapabilitiesChecked { .. }
+                | Outcome::Images { .. }
+                | Outcome::FreeImages { .. }
+                | Outcome::Validated { .. }
+                | Outcome::Published { .. },
+                _,
+            ) => {
                 return Err(unknown(
                     Stage::Output,
-                    "Build returned an invalid image identity or platform",
+                    "Build result does not match the admitted request",
                 )
                 .with_work(evidence));
             }
-            Ok(images)
-        }
-        Outcome::Failed {
-            stage,
-            message,
-            work,
-        } => Err(RemoteBuildFailure::Failed {
-            stage,
-            message,
-            work: observed_first(work, evidence),
-        }),
-        Outcome::Unknown {
-            stage,
-            message,
-            work,
-        } => Err(RemoteBuildFailure::Unknown {
-            stage,
-            message,
-            work: observed_first(work, evidence),
-        }),
-        Outcome::CapabilitiesChecked { .. }
-        | Outcome::Images { .. }
-        | Outcome::FreeImages { .. }
-        | Outcome::Validated { .. }
-        | Outcome::Published { .. } => Err(unknown(
+        };
+    let invalid = |(image, free): &(ployz_build::BuiltImage, Option<ployz_core::FreeReceipt>)| {
+        ployz_core::ReportedImageDigest::parse(image.reference.as_str()).is_err()
+            || image.platforms.is_empty()
+            || image
+                .platforms
+                .iter()
+                .any(|platform| !remote::linux_platform(platform))
+            || match free {
+                None => image.tags.is_empty(),
+                Some(receipt) => {
+                    !image.tags.is_empty() || receipt.image.as_str() != image.reference
+                }
+            }
+    };
+    if images.iter().any(invalid) {
+        return Err(unknown(
             Stage::Output,
-            "Build result does not match the admitted request",
+            "Build returned an invalid image identity or platform",
         )
-        .with_work(evidence)),
+        .with_work(evidence));
     }
+    Ok(images)
 }
 
 /// `work` as the Build Machine reported it, plus what this client saw of the targets it left out.
@@ -525,7 +578,7 @@ mod tests {
             },
         ] {
             let Err(RemoteBuildFailure::Unknown { work: retained, .. }) =
-                validate_outcome(outcome, machine_id, 1, work.clone())
+                validate_outcome(outcome, (machine_id, Access::Full), 1, work.clone())
             else {
                 panic!("malformed success was accepted")
             };
@@ -544,7 +597,7 @@ mod tests {
                         ..image.clone()
                     }],
                 },
-                machine_id,
+                (machine_id, Access::Full),
                 1,
                 work.clone(),
             ) else {
@@ -569,14 +622,14 @@ mod tests {
                         ..image.clone()
                     }],
                 },
-                machine_id,
+                (machine_id, Access::Full),
                 1,
                 work.clone(),
             ) else {
                 panic!("{reference} was refused")
             };
             assert_eq!(
-                images.first().map(|image| image.reference.as_str()),
+                images.first().map(|(image, _)| image.reference.as_str()),
                 Some(reference.as_str())
             );
         }
@@ -597,7 +650,12 @@ mod tests {
         })
         .await;
         let error = client
-            .check_build_capabilities(MachineId::random(), &[], &CancellationToken::new())
+            .check_build_capabilities(
+                MachineId::random(),
+                &[],
+                Access::Full,
+                &CancellationToken::new(),
+            )
             .await
             .unwrap_err();
         assert!(
@@ -637,6 +695,7 @@ mod tests {
         }) = open_and_admit(
             &client,
             Input::Check(Vec::new()),
+            Access::Full,
             MachineId::random(),
             &CancellationToken::new(),
             &mut |_| {},

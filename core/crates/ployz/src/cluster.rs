@@ -64,11 +64,13 @@ use session::Session;
 const STORAGE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// What an `EnsureContainer` carries to the Machine beside its want: the signed versions
-/// and the rule's proof that approve it.
+/// and the rule's proof that approve it, and for an unsigned creation of a Free Build's
+/// image, that image's Free receipt.
 #[derive(Default)]
 pub struct Carried {
     pub rule: Option<Box<ployz_core::authority::RuleProof>>,
     pub versions: Vec<ployz_core::authority::Signed<ployz_core::authority::ServiceVersion>>,
+    pub free: Option<ployz_core::FreeReceipt>,
 }
 
 /// Reply timeout for mutations on a live Machine, which may be mid-Deploy and
@@ -1111,11 +1113,18 @@ impl Client {
     async fn ensure_request(
         &self,
         target: &MachineTarget,
-        want: ContainerWant,
+        mut want: ContainerWant,
         carry: impl AsyncFnOnce(&ContainerWant) -> Carried,
     ) -> Result<EnsureContainerRequest, RpcError> {
         crate::sealed_compat::admit(self, target, &want).await?;
         let carried = carry(&want).await;
+        if let ContainerWant::Running {
+            container: ployz_core::RunTarget::New(new),
+            ..
+        } = &mut want
+        {
+            new.free_receipt = carried.free;
+        }
         Ok(EnsureContainerRequest {
             want,
             rule: carried.rule,
@@ -1705,6 +1714,12 @@ pub(crate) trait StreamRpc {
 
 impl StreamRpc for op::Build {
     const PATH: &'static str = op::Build::PATH;
+    const CLIENT_STREAM: bool = true;
+    const ENTRY_ONLY: bool = true;
+}
+
+impl StreamRpc for op::BuildFree {
+    const PATH: &'static str = op::BuildFree::PATH;
     const CLIENT_STREAM: bool = true;
     const ENTRY_ONLY: bool = true;
 }

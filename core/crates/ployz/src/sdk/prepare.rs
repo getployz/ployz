@@ -114,7 +114,7 @@ fn rank(
 /// Returns exhausted eligibility evidence.
 pub async fn select_build_machine(
     client: &mut crate::connect::Client,
-    targets: &[ployz_build::Target],
+    (targets, access): (&[ployz_build::Target], ployz_build::Access),
     visible: &[MachineObservation],
     preference: BuildPreference,
     cancellation: &tokio_util::sync::CancellationToken,
@@ -161,12 +161,19 @@ pub async fn select_build_machine(
                     ),
                     "answered as a different Machine",
                 ),
-                Ok(contract) if !contract.supports(ployz_core::BUILD_CAPABILITY) => (
-                    "does not support remote Builds".into(),
-                    "lacks the Build capability",
-                ),
+                Ok(contract)
+                    if !contract.supports(match access {
+                        ployz_build::Access::Full => ployz_core::BUILD_CAPABILITY,
+                        ployz_build::Access::Free => ployz_core::BUILD_FREE_CAPABILITY,
+                    }) =>
+                {
+                    (
+                        "does not support remote Builds".into(),
+                        "lacks the Build capability",
+                    )
+                }
                 Ok(_) => match client
-                    .check_build_capabilities(machine.id, targets, cancellation)
+                    .check_build_capabilities(machine.id, targets, access, cancellation)
                     .await
                 {
                     Ok(()) => {
@@ -418,6 +425,9 @@ pub(super) async fn build_images(
         return Ok(Vec::new());
     }
     let machines = observe_machines(client, intent, cancellation).await?;
+    let free: Vec<_> = build.free().cloned().collect();
+    crate::build::free_destinations(&free, intent, &machines)
+        .map_err(PreparationError::Selection)?;
     let mut builds = if sourceless.is_empty() {
         Vec::new()
     } else {
@@ -439,11 +449,18 @@ pub(super) async fn build_images(
         return Ok(builds);
     }
     let builders = crate::sealed_compat::builders(&machines, build.reads_sealed())
+        .and_then(|builders| crate::build::free_builders(&free, builders))
         .map_err(PreparationError::Selection)?;
     let selected = read(cancellation, async {
-        select_build_machine(client, &targets, &builders, preference, cancellation)
-            .await
-            .map_err(PreparationError::Selection)
+        select_build_machine(
+            client,
+            (&targets, build.access()),
+            &builders,
+            preference,
+            cancellation,
+        )
+        .await
+        .map_err(PreparationError::Selection)
     })
     .await?;
     let id = selected.machine.id;

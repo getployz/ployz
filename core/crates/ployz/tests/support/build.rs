@@ -112,6 +112,30 @@ impl BuildFixture {
         self: Arc<Self>,
         request: Request<tonic::Streaming<OpaquePayload>>,
     ) -> Result<Response<ReceiverStream<Result<OpaquePayload, Status>>>, Status> {
+        self.serve(request, false)
+    }
+
+    /// A Free Build's stream: its images load under no name, each with a receipt.
+    #[expect(
+        clippy::result_large_err,
+        reason = "tonic::Status is the RPC error type"
+    )]
+    pub fn stream_free(
+        self: Arc<Self>,
+        request: Request<tonic::Streaming<OpaquePayload>>,
+    ) -> Result<Response<ReceiverStream<Result<OpaquePayload, Status>>>, Status> {
+        self.serve(request, true)
+    }
+
+    #[expect(
+        clippy::result_large_err,
+        reason = "tonic::Status is the RPC error type"
+    )]
+    fn serve(
+        self: Arc<Self>,
+        request: Request<tonic::Streaming<OpaquePayload>>,
+        free: bool,
+    ) -> Result<Response<ReceiverStream<Result<OpaquePayload, Status>>>, Status> {
         let machine_id =
             MachineId::parse(request.metadata().get("machine").unwrap().to_str().unwrap())
                 .map_err(|error| Status::invalid_argument(error.to_string()))?;
@@ -219,7 +243,11 @@ impl BuildFixture {
                                 "sha256:{}",
                                 (offset + index + 1).to_string().repeat(64)
                             ),
-                            tags: vec!["registry.invalid/shared:latest".into()],
+                            tags: if free {
+                                Vec::new()
+                            } else {
+                                vec!["registry.invalid/shared:latest".into()]
+                            },
                             platforms: self
                                 .platforms
                                 .lock()
@@ -250,7 +278,23 @@ impl BuildFixture {
                             platforms: image.platforms.clone(),
                             last_tagged: None,
                         }));
-                    Outcome::Images { machine_id, images }
+                    if free {
+                        let images = images
+                            .into_iter()
+                            .map(|image| remote::FreeImage {
+                                receipt: ployz_core::FreeReceipt {
+                                    image: ployz_core::ImageDigest::parse(&image.reference)
+                                        .unwrap(),
+                                    mac: serde_json::from_value(serde_json::json!("0".repeat(64)))
+                                        .unwrap(),
+                                },
+                                image,
+                            })
+                            .collect();
+                        Outcome::FreeImages { machine_id, images }
+                    } else {
+                        Outcome::Images { machine_id, images }
+                    }
                 }
             });
             let _ = sender
