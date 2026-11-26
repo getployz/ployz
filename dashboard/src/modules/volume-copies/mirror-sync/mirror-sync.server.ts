@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import type { EnvironmentRef, ExpectedCopy, MachineId, Snapshot, VolumeCopy, WantedCopy } from "@ployz/sdk";
+import type { EnvironmentRef, ExpectedCopy, MachineId, Snapshot, SnapshotGuid, VolumeCopy, WantedCopy } from "@ployz/sdk";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { Effect, Option, Semaphore } from "effect";
 import { ClusterOutOfTime } from "#/modules/runtime/organization-runtime.server";
@@ -7,7 +7,7 @@ import { originUpgradeMessage } from "#/modules/runtime/daemon-release";
 import { volumePlacement } from "#/modules/volume-placement/tables";
 import { slotRole } from "#/modules/volume-placement/volume-placement";
 import { deployClaim } from "#/modules/volume-placement/volume-placement.server";
-import { expectOf, roleOf } from "#/modules/volume-run/plan";
+import { expectOf, mayReplace, roleOf, upgradeFirst } from "#/modules/volume-run/plan";
 import { volumeMirrorStatus } from "#/modules/volume-copies/mirror-sync/tables";
 import { volumeRun } from "#/modules/volume-run/tables";
 import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, copyName, type MachineRef, type Member, unheardOf } from "#/modules/volume-run/volume-run";
@@ -246,7 +246,7 @@ const syncOnce = Effect.fn("MirrorSync.sync")(function* (organizationId: string,
     const asker = { organizationId, dockerVolume: volume.dockerVolume, volumeName: volume.name, gen };
     const steps: MirrorStep[] = [];
     const named = (member: Member) => copyName(volume.name, member.machine.name);
-    const setCopy = (machine: MachineRef, expect: ExpectedCopy, want: WantedCopy) => ask(asker, machine, expect, want).pipe(
+    const setCopy = (machine: MachineRef, expect: ExpectedCopy, want: WantedCopy, adds?: SnapshotGuid) => ask(asker, machine, expect, want, adds).pipe(
       Effect.catchIf(
         (error) => error instanceof ClusterOutOfTime,
         (error) => Effect.succeed<MirrorAnswer>({ ok: false, reason: error.inFlight ? "unanswered" : "unasked", copy: null, message: "the sync ran out of time" }),
@@ -261,8 +261,18 @@ const syncOnce = Effect.fn("MirrorSync.sync")(function* (organizationId: string,
         Effect.as<MirrorAnswer>({ ok: false, reason: "unasked", copy: null, message: "Cloud couldn't reach the Cluster" }),
       )),
     );
-    const pull = (member: SlotMember, copy: Slot, target: string) =>
-      setCopy(member.machine, expectOf(copy), { kind: "mirror", from: writer.address, target, drain: DRAIN_MS });
+    /** `adds` is the Writer's snapshot the pull adds to, so the ask knows it can't replace the slot. */
+    const pull = (member: SlotMember, copy: Slot, target: string, adds: SnapshotGuid | undefined) =>
+      setCopy(member.machine, expectOf(copy), { kind: "mirror", from: writer.address, target, drain: DRAIN_MS }, adds);
+
+    // A Server without keep-written replaces a slot it can't pull an incremental onto, whatever the slot holds, so it
+    // is asked only for a pull that can't: a new one from the Writer's newest, or one whose target is still the
+    // Writer's newest, so no snapshot since pruned the base it pulls from.
+    const writerNewest = writer.view.copy.newest;
+    const replaces = (member: SlotMember, target: string | null) => member.keepsWritten !== true
+      && (target === null ? mayReplace(member, writer) : writerNewest?.name !== target);
+    const refusedOlder = (member: SlotMember) =>
+      ({ kind: "refused", mirror: named(member), message: upgradeFirst(volume.name, member.machine.name, "pull") }) as const;
 
     // The Machine finishes a landed pull only when asked for it again, so resend each pull before calling it busy.
     const busy: MirrorStep[] = [];
@@ -274,7 +284,12 @@ const syncOnce = Effect.fn("MirrorSync.sync")(function* (organizationId: string,
         idle.push({ member, copy });
         continue;
       }
-      const resent = yield* pull(member, copy, target);
+      // Refused, it pulls nothing, so the snapshot below takes nothing from it.
+      if (replaces(member, target)) {
+        steps.push(refusedOlder(member));
+        continue;
+      }
+      const resent = yield* pull(member, copy, target, writerNewest?.name === target ? copy.newest?.guid : undefined);
       if (resent.ok && resent.copy?.kind === "slot" && resent.copy.pull === null) idle.push({ member, copy: resent.copy });
       else if (resent.ok || resent.reason === "busy") busy.push({ kind: "pulling", mirror: named(member), target });
       else if (resent.reason === "unanswered") busy.push({ kind: "unknown", server: member.machine.name });
@@ -282,7 +297,7 @@ const syncOnce = Effect.fn("MirrorSync.sync")(function* (organizationId: string,
       else busy.push({ kind: "refused", mirror: named(member), message: resent.message });
     }
     // A writer keeps its newest two snapshots, so a new one while a pull runs could prune that pull's source.
-    if (busy.length > 0) return yield* answer(reported, { kind: "synced", mirrors: busy });
+    if (busy.length > 0) return yield* answer(reported, { kind: "synced", mirrors: [...steps, ...busy] });
 
     const snapshot = yield* setCopy(writer.machine, { kind: "writer", epoch }, { kind: "snapshot", name: `w-${epoch}-${yield* snapshotRound()}` });
     if (!snapshot.ok) {
@@ -304,7 +319,14 @@ const syncOnce = Effect.fn("MirrorSync.sync")(function* (organizationId: string,
         const status = statuses.find((row) => row.machineId === member.machine.id);
         if (status?.okSnapshot !== copy.newest.name) yield* recordSuccess(organizationId, volume.volumeId, member.machine.id, copy.newest, false);
       }
-      const handed = yield* pull(member, copy, target.name);
+      // The copy a resend just finished, not the one observed before it.
+      if (replaces({ ...member, view: { ...member.view, copy } }, null)) {
+        const refused = refusedOlder(member);
+        yield* recordFailure(organizationId, volume.volumeId, member.machine.id, target.name, refused.message);
+        steps.push(refused);
+        continue;
+      }
+      const handed = yield* pull(member, copy, target.name, writerNewest?.guid);
       const pulling = handed.copy?.kind === "slot" ? pullingTo(handed.copy) : null;
       if (handed.ok) {
         steps.push({ kind: "handed_off", mirror: named(member), target: target.name });

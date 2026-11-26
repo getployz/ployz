@@ -626,34 +626,13 @@ fn arrival_checks_keep_a_row_they_cannot_repair_and_refuse_a_write_that_leaves_i
         [["0037_arrival_checks".to_owned()]]
     );
     assert_eq!(arrival_columns(&url), before);
-    let refused = try_execute(
+    let refused = backend::try_execute(
         &url,
         "UPDATE config_sync_arrival SET was = '\"9\"' WHERE at = 'env.D'",
     )
     .unwrap_err();
     assert!(refused.contains("config_sync_arrival_pending"), "{refused}");
-    try_execute(&url, "DELETE FROM config_sync_arrival WHERE at = 'env.D'").unwrap();
-}
-
-/// Run `sql` on the database at `url`, beside the Store: Ok, or the database's
-/// message.
-fn try_execute(url: &str, sql: &str) -> Result<(), String> {
-    match url.strip_prefix("sqlite:") {
-        Some(path) => rusqlite::Connection::open(path)
-            .unwrap()
-            .execute(sql, [])
-            .map(drop)
-            .map_err(|error| error.to_string()),
-        None => postgres::Client::connect(url, postgres::NoTls)
-            .unwrap()
-            .execute(sql, &[])
-            .map(drop)
-            .map_err(|error| {
-                error
-                    .as_db_error()
-                    .map_or_else(|| error.to_string(), |db| db.message().to_owned())
-            }),
-    }
+    backend::try_execute(&url, "DELETE FROM config_sync_arrival WHERE at = 'env.D'").unwrap();
 }
 
 #[test]
@@ -662,7 +641,7 @@ fn arrival_checks_refuse_each_illegal_row_and_allow_its_nearest_legal_one() {
     let url = backend::fresh_url(&dir);
     drop(shop_at(&url));
     let insert = |at: &str, columns: &str, values: &str| {
-        try_execute(
+        backend::try_execute(
             &url,
             &format!(
                 "INSERT INTO config_sync_arrival \

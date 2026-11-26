@@ -27,6 +27,9 @@ const ENTRY_LIMIT: usize = 100_000;
 /// complete, validated upload can reach the execution host.
 pub struct Upload {
     root: PathBuf,
+    /// The build slot this attempt's staging sits in, held until `root` is gone, so the next
+    /// attempt in the slot starts only after this one's directory went.
+    slot: Option<crate::builder::Lock>,
     paths: BTreeSet<PathBuf>,
     directories: Vec<(PathBuf, u32)>,
     links: BTreeMap<PathBuf, PathBuf>,
@@ -64,8 +67,7 @@ impl Admission {
         program: &Path,
         targets: &[crate::Target],
     ) -> Result<(), BuildError> {
-        let _ownership = self.lock.clone();
-        let mut upload = Upload::owned(self.lock.upload_directory())
+        let mut upload = Upload::owned(&self.lock, self.upload_root())
             .map_err(|error| BuildError::Prerequisite(error.to_string()))?;
         let environment = environment(&upload.root);
         let recorder = self.lock.recorder();
@@ -103,7 +105,7 @@ impl AdmittedUpload {
         admission
             .check()
             .map_err(|error| InputError::from(error.to_string()))?;
-        let upload = Upload::owned(admission.lock.upload_directory())?;
+        let upload = Upload::owned(&admission.lock, admission.upload_root())?;
         Ok(Self { upload, admission })
     }
 
@@ -158,11 +160,20 @@ impl Upload {
         Self::create(root)
     }
 
-    pub(crate) fn owned(root: PathBuf) -> Result<Self, InputError> {
+    /// Staging at `root`, one attempt's own directory in the staging of `slot`, which it
+    /// holds until the directory is gone.
+    pub(crate) fn owned(slot: &crate::builder::Lock, root: PathBuf) -> Result<Self, InputError> {
         // Called only with retained-builder ownership. An execution marker
         // prevents reaching this point while abandoned work is uncertain.
-        remove_abandoned(&root).map_err(io_error)?;
-        Self::create(root)
+        let staging = slot.upload_directory();
+        remove_abandoned(&staging).map_err(io_error)?;
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&staging)
+            .map_err(io_error)?;
+        let mut upload = Self::create(root)?;
+        upload.slot = Some(slot.clone());
+        Ok(upload)
     }
 
     fn create(root: PathBuf) -> Result<Self, InputError> {
@@ -172,6 +183,7 @@ impl Upload {
             .map_err(io_error)?;
         Ok(Self {
             root,
+            slot: None,
             paths: BTreeSet::new(),
             directories: Vec::new(),
             links: BTreeMap::new(),
@@ -346,7 +358,13 @@ impl CompletedUpload {
         let none = OpenedSealed::new(BTreeMap::new(), Vec::new());
         let opened = opened.unwrap_or(&none);
         // Declared after `upload` so the staged files go before the root does.
-        let prepared = crate::Prepared::capture(&upload.root, definition, Some(opened), [])?;
+        let prepared = crate::Prepared::staged_in(
+            &admission.staging,
+            &upload.root,
+            definition,
+            Some(opened),
+            [],
+        )?;
         for (path, mode) in upload.directories.iter().rev() {
             fs::set_permissions(upload.root.join(path), fs::Permissions::from_mode(*mode))
                 .map_err(|error| BuildError::Request(io_error(error).to_string()))?;
@@ -369,6 +387,9 @@ impl Drop for Upload {
         if !self.retain {
             let _ = make_removable(&self.root);
             let _ = fs::remove_dir_all(&self.root);
+            if let Some(slot) = &self.slot {
+                let _ = fs::remove_dir(slot.upload_directory());
+            }
         }
     }
 }
@@ -532,6 +553,28 @@ pub(crate) fn environment(root: &Path) -> BTreeMap<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_build_slot_stays_taken_until_its_last_capture_is_gone() {
+        let root = std::env::temp_dir().join(format!("ployz-capture-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        let lock = crate::builder::Lock::try_acquire_in(&root).unwrap();
+        let last = Upload::owned(&lock, lock.upload_directory().join("last")).unwrap();
+        // The last attempt's Build returned and let its admission go; its capture goes after.
+        drop(lock);
+        assert!(matches!(
+            crate::builder::Lock::try_acquire_in(&root),
+            Err(BuildError::Busy)
+        ));
+        drop(last);
+        let lock = crate::builder::Lock::try_acquire_in(&root).unwrap();
+        let next = Upload::owned(&lock, lock.upload_directory().join("next")).unwrap();
+        assert!(next.root.exists());
+        drop(next);
+        drop(lock);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn only_finished_uploads_can_become_executable() {

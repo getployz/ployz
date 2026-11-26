@@ -3,6 +3,7 @@ import type { MachineId } from "@ployz/sdk";
 import { createdAt, updatedAt } from "#/db/tables";
 import { organization } from "#/modules/organization/tables";
 import type { StoredPlacement } from "#/modules/volume-placement/volume-placement";
+import type { ConfirmedCopy } from "#/modules/volume-run/volume-run";
 
 /** Which copies of a Volume are mirrors, and the placement the user staged for the next Deploy. */
 export const volumePlacement = pgTable(
@@ -16,6 +17,8 @@ export const volumePlacement = pgTable(
     mirrors: jsonb("mirrors").$type<MachineId[]>(),
     staged: jsonb("staged").$type<StoredPlacement>(),
     deploymentId: text("deployment_id"),
+    /** The copies the confirm of `deploymentId` named, as their Servers reported them: all its runs may discard. */
+    confirmed: jsonb("confirmed").$type<ConfirmedCopy[]>(),
     createdAt,
     updatedAt,
   },

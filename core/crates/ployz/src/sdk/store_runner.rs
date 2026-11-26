@@ -11,8 +11,8 @@ use std::time::Duration;
 
 use ployz_agent_tools::{LogText, SealedValues, Withheld};
 use ployz_core::{
-    ContainerId, ContainerRuntimeObservation, DeployOperation, DeployOutcome, DeployWarning,
-    ExecutionError, FailedOperation, HealthFailure, LastRun, MachineId, MachineName,
+    AnonymousVolumes, ContainerId, ContainerRuntimeObservation, DeployOperation, DeployOutcome,
+    DeployWarning, ExecutionError, FailedOperation, HealthFailure, LastRun, MachineId, MachineName,
     MachineObservation, Operator, QualifiedService, RemoveContainerPurpose, RpcError, RpcErrorCode,
     RunnerOptions, ServiceName,
 };
@@ -493,7 +493,8 @@ async fn retire_copy<C: CopyLifecycle>(
         client,
         &Copy::observed(&observed),
         copy.purpose.into(),
-        copy.purpose.into(),
+        // The cleanup comes after the Deploy, which keeps no copy any longer.
+        AnonymousVolumes::keep(),
         &CancellationToken::new(),
     )
     .await;
@@ -997,7 +998,7 @@ impl Run {
         // Delivering images can outlast the lease: keep renewing it.
         let running: Running<PreparedDeploy, Unprepared> = session.prepare_with(
             input,
-            claimed.intent.registry_auth,
+            claimed.intent.registry_logins,
             claimed.intent.options.runner(),
         )?;
         self.renewing(running.finished(), || running.abort()).await

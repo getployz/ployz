@@ -3,10 +3,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
-    ContainerId, ContainerObservation, CopyRotation, HookContainer, HostBind, MachineId, Namespace,
-    PortPublication, Region, RegionWait, RequestedServiceSpec, ResolvedServiceSpec,
-    ResolvedUpdateConfig, ServiceContainer, ServiceId, ServiceMode, ServiceName,
-    ServiceObservation, SpecChange, UPDATE_CONTAINER_LIMITS_CAPABILITY,
+    AnonymousVolumes, ContainerId, ContainerObservation, CopyRotation, HookContainer, HostBind,
+    MachineId, Namespace, PortPublication, Region, RegionWait, RequestedServiceSpec,
+    ResolvedServiceSpec, ResolvedUpdateConfig, ServiceContainer, ServiceId, ServiceMode,
+    ServiceName, ServiceObservation, SpecChange, UPDATE_CONTAINER_LIMITS_CAPABILITY,
     UPDATE_CONTAINER_PLACEMENT_CAPABILITY, UpdateOrder, compare_observed,
 };
 
@@ -1171,6 +1171,23 @@ fn remove_unused(
     used: &BTreeSet<ContainerId>,
     placement: &mut PlacementState,
 ) {
+    // A copy this Deploy replaces is used for its slot, but not kept.
+    let replaced: BTreeSet<ContainerId> = operations
+        .iter()
+        .filter_map(|operation| match operation {
+            DeployOperation::ReplaceContainer(replacement) => Some(replacement.old_container_id),
+            DeployOperation::PrepareVolumes { .. }
+            | DeployOperation::WaitHealthy { .. }
+            | DeployOperation::RunContainer { .. }
+            | DeployOperation::StopContainer { .. }
+            | DeployOperation::RemoveContainer { .. }
+            | DeployOperation::UpdateContainer(_)
+            | DeployOperation::StopHook { .. }
+            | DeployOperation::RunHook { .. }
+            | DeployOperation::RemoveVolume { .. } => None,
+        })
+        .collect();
+    let kept = |id: &ContainerId| used.contains(id) && !replaced.contains(id);
     for container in current {
         let observation = container.as_observation();
         let unknown_placement = placement
@@ -1193,6 +1210,9 @@ fn remove_unused(
                 machine_id: observation.machine_id,
                 container_id: observation.container_id,
                 purpose: ployz_core::RemoveContainerPurpose::Rollout,
+                // Only a copy this Deploy keeps can have taken this one's place, as one an
+                // earlier attempt made to replace it.
+                anonymous_volumes: AnonymousVolumes::of(observation, kept),
             });
             placement.capacity.release(&observation.machine_id);
             placement

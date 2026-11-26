@@ -501,6 +501,23 @@ impl Volumes {
         super::holder::refuse_beside(&self.docker.client, None, name).await
     }
 
+    /// [`Self::refuse_beside`], but `me`, when given, doesn't count.
+    ///
+    /// # Errors
+    /// [`Error::VolumeHeld`] naming the running holder, or the error of a read that failed.
+    pub(crate) async fn refuse_beside_except(
+        &self,
+        name: &DockerVolumeName,
+        me: Option<&ContainerId>,
+    ) -> Result<(), Error> {
+        super::holder::refuse_beside(
+            &self.docker.client,
+            me.map(ContainerId::as_str),
+            name.as_str(),
+        )
+        .await
+    }
+
     /// The Docker name of a Container, other than `me` when given, that runs on the
     /// Docker Volume `name`, whatever made it, or `None`.
     pub(crate) async fn running_beside(

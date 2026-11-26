@@ -5,10 +5,10 @@
 //! Environment's lock, so edits to different Settings never overwrite each other.
 //! A caller may pass the revision it read; the edit then refuses if Working State moved.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::config::{ClientSealedValue, Replicas};
-use ployz_core::{Region, RpcError, ServiceName};
+use ployz_core::{Region, RegistryAuth, RpcError, SealedLogin, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use ts_rs::TS;
@@ -17,9 +17,8 @@ use crate::error;
 use crate::git::GitSetting;
 use crate::id::{ConfigId, Revision, VolumeName};
 use crate::policy::{self, Policy};
-use crate::registry;
+use crate::registry::{self, LoginInput, login_input};
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
-use crate::sealing::SealingKey;
 use crate::settings::{self, Apply, EnvironmentSetting, ServiceSetting, SettingPath, Target};
 use crate::storage::Tx;
 use crate::typed_address::{Instead, Typed};
@@ -100,6 +99,116 @@ impl Edit {
             *slot = found.secret.sealed(&sealed);
         }
         Ok(())
+    }
+
+    /// Refuses this edit unless each registry login it sets, by whatever path or key
+    /// the Store reads one from, is sealed, `{"secret": true}`, or null. A client sends
+    /// a login only as its sealing left it, so a token never leaves as text.
+    ///
+    /// # Errors
+    /// `invalid_argument` for any other login, and what the Store refuses in the
+    /// edit's shape, such as a patch on a Setting's path.
+    pub fn refuse_unsealed_logins(&self) -> Result<(), RpcError> {
+        for (path, step, _) in expand_from(&self.changes)? {
+            let (Some(Target::Setting(ServiceSetting::RegistryCredential)), Step::Set(value)) =
+                (path.target(), &step)
+            else {
+                continue;
+            };
+            if !value.is_null() && matches!(login_input(value)?, LoginInput::Plaintext(_)) {
+                return Err(registry::unsealed());
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether this edit carries a new registry login's plain text, which the Store
+    /// refuses: `{"secret": "…"}` with an optional username, set or patched.
+    ///
+    /// # Errors
+    /// A login the Store would refuse, which may hold a secret's text: a client refuses
+    /// it before it sends anything.
+    pub fn carries_plaintext_login(&self) -> Result<bool, RpcError> {
+        let mut carries = false;
+        for (service, slot) in self.clone().login_slots() {
+            if !slot.is_null() && matches!(login_input(slot)?, LoginInput::Plaintext(_)) {
+                service?;
+                carries = true;
+            }
+        }
+        Ok(carries)
+    }
+
+    /// Each new registry login's plain text this edit carries, replaced where the edit
+    /// holds it by what `seal` makes of it for its Service. `seal` gets the image this
+    /// edit sets for that Service, if it sets one.
+    ///
+    /// # Errors
+    /// What [`Self::carries_plaintext_login`] refuses, through `refuse`, and what
+    /// `seal` refuses.
+    pub fn map_plaintext_logins<E>(
+        &mut self,
+        refuse: impl Fn(RpcError) -> E,
+        mut seal: impl FnMut(&ServiceName, Option<&str>, RegistryAuth) -> Result<SealedLogin, E>,
+    ) -> Result<(), E> {
+        let images = self.images_set();
+        for (service, slot) in self.login_slots() {
+            if slot.is_null() {
+                continue;
+            }
+            let LoginInput::Plaintext(login) = login_input(slot).map_err(&refuse)? else {
+                continue;
+            };
+            let service = service.map_err(&refuse)?;
+            let image = images.get(&service).map(String::as_str);
+            *slot = serde_json::to_value(seal(&service, image, login)?)
+                .expect("a sealed login is JSON");
+        }
+        Ok(())
+    }
+
+    /// Each registry login this edit sets or patches, by its Service, as the Store
+    /// reads it.
+    fn login_slots(
+        &mut self,
+    ) -> impl Iterator<Item = (Result<ServiceName, RpcError>, &mut Value)> + '_ {
+        self.changes.iter_mut().filter_map(|change| {
+            let (path, slot) = match change {
+                Change::Set { path, value }
+                    if path.target()
+                        == Some(&Target::Setting(ServiceSetting::RegistryCredential)) =>
+                {
+                    (path, value)
+                }
+                Change::Patch { path, value } => (path, value.get_mut("registryCredential")?),
+                Change::Set { .. } | Change::Unset { .. } | Change::Rename { .. } => return None,
+            };
+            Some((path.settings_of().cloned(), slot))
+        })
+    }
+
+    /// The image this edit sets for each Service it sets one for.
+    fn images_set(&self) -> BTreeMap<ServiceName, String> {
+        self.changes
+            .iter()
+            .filter_map(|change| {
+                let (path, image) = match change {
+                    Change::Set { path, value }
+                        if path.target() == Some(&Target::Setting(ServiceSetting::Image)) =>
+                    {
+                        (path, value)
+                    }
+                    Change::Patch { path, value } => (path, value.get("image")?),
+                    Change::Set { .. } | Change::Unset { .. } | Change::Rename { .. } => {
+                        return None;
+                    }
+                };
+                Some((
+                    path.settings_of().ok()?.clone(),
+                    image.as_str()?.trim().to_owned(),
+                ))
+            })
+            .collect()
     }
 
     /// The new secrets' plain text the Store reads from this edit: each variable a
@@ -300,7 +409,6 @@ pub struct TypedAddresses {
 pub(crate) fn edit(
     tx: &mut dyn Tx,
     who: &Actor,
-    sealing: &SealingKey,
     edit: &Edit,
     trusted: &Trusted,
 ) -> Result<Edited, RpcError> {
@@ -363,7 +471,6 @@ pub(crate) fn edit(
     let mut editing = Editing {
         tx,
         who,
-        sealing,
         trusted,
         environment,
         staged: Vec::new(),
@@ -488,7 +595,6 @@ const fn is_source(setting: ServiceSetting) -> bool {
 struct Editing<'a> {
     tx: &'a mut dyn Tx,
     who: &'a Actor,
-    sealing: &'a SealingKey,
     trusted: &'a Trusted,
     environment: Environment,
     staged: Vec<SettingPath>,
@@ -554,7 +660,7 @@ impl Editing<'_> {
                     &mut self.environment,
                     service,
                     value,
-                    self.sealing,
+                    self.trusted.sealer(self.who),
                 )?,
                 None => {
                     let config = &mut self.environment.service_mut(service)?.config;

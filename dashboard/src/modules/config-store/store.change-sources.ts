@@ -20,7 +20,7 @@ export const storeChangeSources = {
   config_build: { key: ["deployment_id"], family: "store_deployment" },
   config_deployment_row: { key: ["deployment_id"], family: "store_deployment" },
   config_applied: { key: ["environment_id"], family: "store_environment" },
-  config_registry_credential: { key: ["environment_id"], family: "store_environment" },
+  config_registry_login: { key: ["environment_id"], family: "store_environment" },
   config_service_policy: { key: ["environment_id"], family: "store_environment" },
   config_environment_branch: { key: ["environment_id"], family: "store_environment" },
   config_sync_base: { key: ["environment_id"], family: "store_environment" },

@@ -178,7 +178,7 @@ web-2 can't join from here: this computer has no device key, so nothing tells th
 reaches that server over SSH. With neither, it stops the same way:
 
 ```text
-web-2 can't join from here: this computer has no approved device key and reaches your Servers only through Ployz Cloud. Run it from an approved device, or add --connect ssh://USER@SERVER for a Server of the Cluster. Nothing was enrolled.
+web-2 can't join from here: this computer has no approved device key and reaches your Servers only through Ployz Cloud. Run it from an approved device, or add --connect ssh://<USER>@SERVER for a Server of the Cluster. Nothing was enrolled.
 ```
 
 The line the dashboard or `ployz server add --command` gives you runs on the server itself and
@@ -627,8 +627,8 @@ images from ghcr.io.
 
 - **Operating system updates stay with you.** Ployz doesn't install them.
 - **Already running Docker?** Ployz keeps it and its settings, if it's Docker 29.2 or newer
-  with buildx 0.18 or newer and the containerd image store turned on. Otherwise setup stops
-  before changing anything; see
+  with buildx 0.18 or newer, the containerd image store turned on and live-restore on. Otherwise
+  setup stops before changing anything; see
   [The install stops while checking Docker](../troubleshooting/servers.md#the-install-stops-while-checking-docker).
   Keep Docker's default iptables firewall. Ployz
   [keeps unsigned containers away from databases](../services/private-networking.md#who-can-reach-a-service-that-holds-a-volume)

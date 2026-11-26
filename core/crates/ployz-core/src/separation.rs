@@ -16,6 +16,10 @@ pub const SEALED_VALUE: &[u8] = b"ployz-sealed-v1";
 /// of such a value's associated data too.
 pub const PLATFORM_SEALED: &[u8] = b"ployz-platform-sealed-v1";
 
+/// HPKE `info` for a registry login a client seals to a Cluster's Sealing Key for one
+/// registry host. The first field of such a login's associated data too.
+pub const REGISTRY_LOGIN: &[u8] = b"ployz-registry-login-v1";
+
 /// What every build-secrets seal is bound under, followed by the grant's audience.
 pub const BUILD_SECRETS: &[u8] = b"ployz build secrets v1";
 
@@ -83,9 +87,10 @@ pub const PREVIEW_BIRTH: &[u8] = b"ployz-preview-birth-v1\0";
 mod tests {
     use super::*;
 
-    const ALL: [(&str, &[u8]); 22] = [
+    const ALL: [(&str, &[u8]); 23] = [
         ("SEALED_VALUE", SEALED_VALUE),
         ("PLATFORM_SEALED", PLATFORM_SEALED),
+        ("REGISTRY_LOGIN", REGISTRY_LOGIN),
         ("BUILD_SECRETS", BUILD_SECRETS),
         ("SEALING_KEY", SEALING_KEY),
         ("SEALING_KEY_SHARE", SEALING_KEY_SHARE),
@@ -122,9 +127,10 @@ mod tests {
 
     #[test]
     fn each_string_is_the_bytes_old_machines_and_stored_rows_know() {
-        let expected: [&[u8]; 22] = [
+        let expected: [&[u8]; 23] = [
             b"ployz-sealed-v1",
             b"ployz-platform-sealed-v1",
+            b"ployz-registry-login-v1",
             b"ployz build secrets v1",
             b"ployz-sealing-key-v1",
             b"ployz-sealing-key-share-v1",

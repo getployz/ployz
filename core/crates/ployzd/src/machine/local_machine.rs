@@ -48,6 +48,9 @@ pub struct LocalMachine {
     /// This handle runs inside a switch whose guard its caller holds, so it takes no
     /// switch lock of its own. A clone never carries it.
     in_switch: switch::InSwitch,
+    /// The work management keys started that outlives its call, which each key change ends
+    /// for a key it leaves short of Full scope.
+    bound: bound::BoundWork,
     /// How many calls have asked for the switch lock, which a test awaits to know a call
     /// queued behind it.
     #[cfg(test)]
@@ -76,6 +79,7 @@ pub(crate) type PeerInspect = std::sync::Arc<
 >;
 
 mod admission;
+mod bound;
 mod call;
 mod departure;
 mod enroll;
@@ -91,12 +95,15 @@ mod private_access;
 mod register;
 mod reserved;
 pub(crate) use admission::{Admit, AdmittedBy, AdmittedSpec};
+#[cfg(test)]
+pub(crate) use bound::STOP_WITHIN;
+pub use bound::{Bound, Cause, Recheck, Seen, Tie, Work};
 pub use call::FullCaller;
 pub(crate) use call::{Call, Caller, Checked, Scope};
 pub(crate) use consumption::ConsumptionLog;
-pub(crate) use container::CutRefusal;
 #[cfg(test)]
 pub(crate) use container::names_content;
+pub(crate) use container::{CutRefusal, PlacedHolder};
 #[cfg(test)]
 pub(crate) use container::{EnsurePause, EnsurePausePoint};
 #[cfg(test)]
@@ -183,6 +190,8 @@ pub enum Error {
     ClusterStoreEmpty,
     #[error("Cluster is not available")]
     ClusterUnavailable,
+    #[error(transparent)]
+    WorkNotStopped(#[from] bound::WorkNotStopped),
     #[error("Docker is not available")]
     DockerUnavailable,
     /// A Leave was removing this Machine from the Cluster as the call failed with
@@ -280,10 +289,11 @@ pub enum Error {
     /// An upgrade is running; the fence is retried once it ends.
     #[error(transparent)]
     FenceRefused(RpcError),
-    /// An Operator's pull named an image by tag, which this Server writes only for a
-    /// caller with Full access. The refusal names the route's capability in its details.
+    /// An Operator's pull asked for what this Server does only for a caller with Full
+    /// access: write an image tag, or pull a free image with a registry login. The refusal
+    /// names the route's capability in its details.
     #[error(transparent)]
-    TagRefused(RpcError),
+    PullRefused(RpcError),
     #[error("local operation task failed")]
     OperationTask(#[from] tokio::task::JoinError),
     #[error("Register requires a client-selected Machine Subnet")]
@@ -314,6 +324,7 @@ impl LocalMachine {
     #[must_use]
     pub fn new(owner: RecordOwner) -> Self {
         Self {
+            bound: bound::BoundWork::new(owner.watch()),
             approvals: owner.restart_approvals(),
             owner,
             call: Call::daemon(),

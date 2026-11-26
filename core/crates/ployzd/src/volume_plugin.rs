@@ -768,15 +768,15 @@ mod tests {
             (USABLE_POOL, None),
             (
                 "tank\t4294967296\t0\t4294967296\tONLINE\ton\n",
-                Some("no usable existing Machine Pool"),
+                Some("won't write to its Pool tank, since it is imported read-only"),
             ),
             (
                 "tank\t4294967296\t0\t4294967296\tFAULTED\toff\n",
-                Some("no usable existing Machine Pool"),
+                Some("won't write to its Pool tank, since it is FAULTED"),
             ),
             (
                 "alpha\t4294967296\t0\t4294967296\tONLINE\toff\nbeta\t4294967296\t0\t4294967296\tDEGRADED\toff\n",
-                Some("multiple usable Machine Pools"),
+                Some("has these attached: alpha (imported), beta (imported)"),
             ),
         ] {
             let test = test_dir();
@@ -792,7 +792,7 @@ mod tests {
             )
             .await;
             match expected_error {
-                Some(expected) => assert!(error(&response).contains(expected)),
+                Some(expected) => assert!(error(&response).contains(expected), "{response}"),
                 None => assert_eq!(error(&response), ""),
             }
             server.abort();

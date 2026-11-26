@@ -63,6 +63,7 @@ const organizationOwnedWithoutChangeLog = {
   failed_restore: "A restored Volume whose copy failed, read only when a Deploy is admitted or advanced; no view reads it, so it needs no change log.",
   volume_mirror_status: "What the last mirror sync saw of each mirror, read as a Remote Read; no view reads it, so it needs no change log.",
   upload_chunk: "Source a Deployment's runner reads while it's in flight; no view reads it, so it needs no change log.",
+  config_registry_credential: "Registry logins from before they were sealed. The Store emptied it, refuses every write to it, and keeps it only so an older Store deploys during a rollout. It cascades from its Environment, and no view reads it, so it needs no change log.",
   config_build_receipt: "Private build evidence only a Deployment's runner reads at claim; no view reads it, so it needs no change log.",
   config_branch: "The GitHub branch heads the Store's automation compares from; no view reads them, so they need no change log.",
   config_auto_deploy_rule: "Each Environment's signed automatic deploy rule, which the Store relays with a push's Deployment for Servers to check; no view reads it, so it needs no change log.",

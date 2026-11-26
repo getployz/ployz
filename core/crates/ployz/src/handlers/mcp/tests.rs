@@ -1164,6 +1164,39 @@ async fn a_write_unanswered_at_the_deadline_may_have_landed_and_retries_under_th
     );
 }
 
+/// An agent tool's write reaches Cloud through the same check as a command's: a
+/// registry login in any shape but a sealed one never leaves this computer, whatever
+/// shape the tool let through.
+#[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
+#[tokio::test]
+async fn an_agent_tool_never_sends_a_login_as_text() {
+    let place = transcript("service_update", in_org()).place;
+    let cloud = lossy_cloud(
+        HashMap::from([("/api/config/write", json!({}))]),
+        Lost::Dropped,
+    );
+    let refusal = refusal_on(
+        &cloud,
+        place,
+        "service_update",
+        json!({
+            "service": "web",
+            "set": { "registryCredential": { "username": "octo", "password": "mcp-token" } },
+        }),
+    )
+    .await;
+    let sent: Vec<String> = cloud
+        .requests()
+        .iter()
+        .map(|seen| seen.body.to_string())
+        .collect();
+    assert!(
+        sent.iter().all(|body| !body.contains("mcp-token")),
+        "{sent:?}"
+    );
+    assert_eq!(refusal["writes"], "none", "{refusal}");
+}
+
 #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
 #[tokio::test]
 async fn a_lost_reply_to_a_read_wrote_nothing() {

@@ -20,20 +20,20 @@ pub enum InputError {
     Value(#[from] ployz_core::ValueError),
     #[error("cannot attach a terminal exec to non-terminal stdin; use -T")]
     TtyRequiresStdin,
-    #[error("invalid Service log selector {0:?}")]
-    InvalidServiceSelector(String),
-    #[error("invalid log tail {0:?}: expected a non-negative integer or all")]
-    InvalidTail(String),
+    #[error("invalid Service log selector: expected SERVICE or SERVICE:CONTAINER")]
+    InvalidServiceSelector,
+    #[error("invalid log tail: expected a non-negative integer or all")]
+    InvalidTail,
     #[error(
-        "invalid time {value:?} for --{flag}: expected a relative duration, RFC 3339 date, or Unix timestamp"
+        "invalid time for --{flag}: expected a relative duration, RFC 3339 date, or Unix timestamp"
     )]
-    InvalidTime { flag: &'static str, value: String },
+    InvalidTime { flag: &'static str },
     #[error("invalid proxy port: expected [LOCAL_PORT:]REMOTE_PORT")]
     InvalidProxyPort,
-    #[error("invalid local port {0:?}: expected 0-65535")]
-    InvalidLocalPort(String),
-    #[error("invalid remote port {0:?}: expected 1-65535")]
-    InvalidRemotePort(String),
+    #[error("invalid local port: expected 0-65535")]
+    InvalidLocalPort,
+    #[error("invalid remote port: expected 1-65535")]
+    InvalidRemotePort,
 }
 
 impl Coded for InputError {
@@ -107,7 +107,7 @@ pub fn parse_service_args(values: &[String]) -> Result<Vec<ServiceArg>, InputErr
                 (service, Some(container))
             });
         if service.is_empty() || container.is_some_and(str::is_empty) {
-            return Err(InputError::InvalidServiceSelector(value.to_owned()));
+            return Err(InputError::InvalidServiceSelector);
         }
         let service = ServiceSelector::parse(service)?;
         let container = container.map(ContainerSelector::parse).transpose()?;
@@ -139,7 +139,7 @@ pub fn parse_tail(value: &str) -> Result<i32, InputError> {
         .parse::<i32>()
         .ok()
         .filter(|tail| *tail >= 0)
-        .ok_or_else(|| InputError::InvalidTail(value.to_owned()))
+        .ok_or(InputError::InvalidTail)
 }
 
 /// Parse a `--since` / `--until` value into absolute Unix seconds.
@@ -185,14 +185,15 @@ pub fn parse_log_time(
                 .and_then(|duration| i64::try_from(duration.as_secs()).ok())
                 .map(|seconds| now_unix_seconds - seconds)
         });
-    timestamp.map(Some).ok_or_else(|| InputError::InvalidTime {
-        flag,
-        value: value.to_owned(),
-    })
+    timestamp.map(Some).ok_or(InputError::InvalidTime { flag })
 }
 
-/// Go duration syntax plus days, such as `1m30s`, `500ms` or `30d`.
+/// Go duration syntax plus days, such as `1m30s`, `500ms` or `30d`. An empty value is
+/// none.
 pub(crate) fn go_duration(value: &str) -> Option<std::time::Duration> {
+    if value.is_empty() {
+        return None;
+    }
     let mut remaining = value;
     let mut seconds = 0_f64;
     while !remaining.is_empty() {
@@ -227,12 +228,12 @@ pub fn parse_proxy_ports(value: &str) -> Result<ProxyPorts, InputError> {
     }
     let local = local
         .parse::<u16>()
-        .map_err(|_| InputError::InvalidLocalPort(local.to_owned()))?;
+        .map_err(|_| InputError::InvalidLocalPort)?;
     let remote = remote
         .parse::<u16>()
         .ok()
         .filter(|port| *port > 0)
-        .ok_or_else(|| InputError::InvalidRemotePort(remote.to_owned()))?;
+        .ok_or(InputError::InvalidRemotePort)?;
     Ok(ProxyPorts { local, remote })
 }
 

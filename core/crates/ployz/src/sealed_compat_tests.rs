@@ -115,9 +115,11 @@ fn want(spec: ResolvedServiceSpec) -> ContainerWant {
             resolved_spec: spec,
             deployment_id: None,
             registry_auth: None,
+            registry_login: None,
             image_prepared: false,
             answer: ployz_core::AnswerWhen::Started,
             image_id: None,
+            replaces: None,
         }),
         rotation: RunRotation::Pending,
     }

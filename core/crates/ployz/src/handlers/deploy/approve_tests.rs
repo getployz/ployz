@@ -511,9 +511,42 @@ fn the_upgrade_named_keeps_the_cluster_the_deploy_was_given() {
     assert_eq!(
         next_hints(&refused),
         [format!(
-            "ployz --connect ssh://root@entry server upgrade {channel} machine-1 --context prod"
+            "ployz --connect '<CONNECT>' server upgrade {channel} machine-1 --context prod"
         )]
     );
+}
+
+/// `ployz deploy web`, again.
+fn deploying() -> crate::cli::Rerun {
+    let root = crate::cli::command()
+        .try_get_matches_from(["ployz", "deploy", "web"])
+        .unwrap();
+    crate::cli::Rerun::again(&root)
+}
+
+/// Without a terminal a deploy ships only the images it names, with `--yes`; one that
+/// forgets has no such line, since `--yes` never forgets.
+#[test]
+fn without_a_terminal_a_deploy_ships_only_named_images_and_never_forgets() {
+    let line = |args: &[&str]| {
+        let root = crate::cli::command()
+            .try_get_matches_from(["ployz", "deploy"].iter().chain(args))
+            .unwrap();
+        super::without_terminal(
+            crate::handlers::leaf_matches(&root),
+            crate::cli::Rerun::again(&root),
+        )
+        .map(|again| again.line())
+    };
+    assert_eq!(
+        line(&["--no-prune"]).as_deref(),
+        Some("ployz deploy --no-prune --image '<SERVICE=IMAGE>' --yes")
+    );
+    assert_eq!(
+        line(&["web", "--image", "web=nginx:1"]).as_deref(),
+        Some("ployz deploy web --image 'web=nginx:1' --yes")
+    );
+    assert_eq!(line(&["--no-prune", "--forget-older"]), None);
 }
 
 /// Without a terminal nothing is signed: the refusal says to run it at one.
@@ -522,6 +555,7 @@ fn no_terminal_refuses_before_signing() {
     let approved = [approved(&spec(PINNED))];
     let error = consent(
         (&Namespace::parse("app").unwrap(), &approved, None),
+        Some(deploying()),
         |question, refusal, declined| crate::ui::confirm(question, || refusal, declined),
     )
     .unwrap_err();
@@ -583,6 +617,7 @@ fn declining_signs_nothing_and_fails() {
     let mut asked = None;
     let error = consent(
         (&Namespace::parse("app").unwrap(), &approved, None),
+        Some(deploying()),
         |question, _, declined| {
             asked = Some((question.to_owned(), declined));
             Err(crate::handlers::Error::cancelled())
@@ -607,6 +642,7 @@ fn a_no_to_the_marked_data_signs_nothing() {
     change.confirm = vec!["mounts managed volume app_vol-1 at /srv, read-write: …".to_owned()];
     let error = consent(
         (&Namespace::parse("app").unwrap(), &[change], None),
+        Some(deploying()),
         |question, _, _| match question {
             "Use the data marked above?" => Err(crate::handlers::Error::cancelled()),
             _ => Ok(()),

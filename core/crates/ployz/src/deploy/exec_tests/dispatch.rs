@@ -38,6 +38,7 @@ async fn dispatches_the_complete_algebra() {
             machine_id: first,
             container_id: removed,
             purpose: ployz_core::RemoveContainerPurpose::Rollout,
+            anonymous_volumes: ployz_core::AnonymousVolumes::keep(),
         },
         DeployOperation::ReplaceContainer(ReplacementOperation {
             machine_id: first,
@@ -470,6 +471,7 @@ async fn standalone_stop_and_remove_tolerate_missing_targets() {
             machine_id: machine,
             container_id: removed,
             purpose: ployz_core::RemoveContainerPurpose::Rollout,
+            anonymous_volumes: ployz_core::AnonymousVolumes::keep(),
         },
         DeployOperation::RemoveVolume { id: volume.clone() },
         stop(&machine, &suffix),
@@ -516,7 +518,7 @@ async fn global_start_failure_leaves_nothing_of_the_keyed_container() {
 
 #[tokio::test]
 async fn a_private_image_is_pulled_with_its_services_credentials_only() {
-    use ployz_core::{OpaquePayload, PullImageRequest, RegistryAuth, RpcRequestBody};
+    use ployz_core::{OpaquePayload, PullImageRequest, RpcRequestBody};
     use std::sync::Arc;
     use tonic::{Request, Response};
 
@@ -552,9 +554,9 @@ async fn a_private_image_is_pulled_with_its_services_credentials_only() {
     let mut public = private.clone();
     public.name = ployz_core::ServiceName::parse("other").unwrap();
     public.container.image = "docker.io/library/public:1".into();
-    let auth = RegistryAuth {
-        username: Some("octocat".into()),
-        password: "token".into(),
+    let auth = ployz_core::SealedLogin {
+        host: "registry.example".into(),
+        sealed: ployz_core::Ciphertext::from_bytes(vec![7; 48]),
     };
     super::pull_images(
         &client,
@@ -571,7 +573,7 @@ async fn a_private_image_is_pulled_with_its_services_credentials_only() {
         .lock()
         .unwrap()
         .iter()
-        .map(|request| (request.image.clone(), request.registry_auth.clone()))
+        .map(|request| (request.image.clone(), request.registry_login.clone()))
         .collect::<std::collections::BTreeMap<_, _>>();
     assert_eq!(
         sent,
@@ -582,8 +584,8 @@ async fn a_private_image_is_pulled_with_its_services_credentials_only() {
     );
 }
 
-/// What the Machine is asked to want for a Container removed for `purpose`.
-async fn removal_sent(purpose: ployz_core::RemoveContainerPurpose) -> Vec<ContainerWant> {
+/// What the Machine is asked to want for a Container a plan removes, asking `anonymous_volumes`.
+async fn removal_sent(anonymous_volumes: ployz_core::AnonymousVolumes) -> Vec<ContainerWant> {
     use ployz_core::{EnsureContainerRequest, EnsuredContainer, OpaquePayload, RpcRequestBody};
     use std::sync::Arc;
     use tonic::{Request, Response};
@@ -649,6 +651,8 @@ async fn removal_sent(purpose: ployz_core::RemoveContainerPurpose) -> Vec<Contai
                     | RpcRequestBody::PrepareVolumes(_)
                     | RpcRequestBody::ListVolumes(_)
                     | RpcRequestBody::RemoveVolume(_)
+                    | RpcRequestBody::ListKeptVolumes(_)
+                    | RpcRequestBody::RemoveKeptVolumes(_)
                     | RpcRequestBody::InspectVolumeCopy(_)
                     | RpcRequestBody::SeedVolume(_)
                     | RpcRequestBody::SeedCopy(_)
@@ -689,7 +693,8 @@ async fn removal_sent(purpose: ployz_core::RemoveContainerPurpose) -> Vec<Contai
         &[DeployOperation::RemoveContainer {
             machine_id: machine('1'),
             container_id: container('a'),
-            purpose,
+            purpose: ployz_core::RemoveContainerPurpose::Rollout,
+            anonymous_volumes,
         }],
         &client,
         &CancellationToken::new(),
@@ -704,34 +709,25 @@ async fn removal_sent(purpose: ployz_core::RemoveContainerPurpose) -> Vec<Contai
         .collect()
 }
 
+/// The Gone carries what the plan asked of the copy's anonymous Volumes: keep them, or
+/// remove them for the copy it names as having taken this one's place.
 #[tokio::test]
-async fn retiring_a_container_keeps_its_anonymous_volumes() {
-    let wants = removal_sent(ployz_core::RemoveContainerPurpose::Retire).await;
-    assert!(
-        matches!(
-            wants.as_slice(),
-            [ContainerWant::Gone {
-                anonymous_volumes: ployz_core::AnonymousVolumes::Keep,
-                ..
-            }]
-        ),
-        "{wants:?}"
-    );
-}
-
-#[tokio::test]
-async fn a_rollout_removes_a_containers_anonymous_volumes_with_it() {
-    let wants = removal_sent(ployz_core::RemoveContainerPurpose::Rollout).await;
-    assert!(
-        matches!(
-            wants.as_slice(),
-            [ContainerWant::Gone {
-                anonymous_volumes: ployz_core::AnonymousVolumes::Remove,
-                ..
-            }]
-        ),
-        "{wants:?}"
-    );
+async fn a_removal_sends_what_its_plan_asked_of_the_anonymous_volumes() {
+    let named: ployz_core::AnonymousVolumes = serde_json::from_value(serde_json::json!({
+        "anonymous_volumes": "remove",
+        "replaced_by": container('b'),
+    }))
+    .unwrap();
+    for asked in [ployz_core::AnonymousVolumes::keep(), named] {
+        let wants = removal_sent(asked).await;
+        assert!(
+            matches!(
+                wants.as_slice(),
+                [ContainerWant::Gone { anonymous_volumes, .. }] if *anonymous_volumes == asked
+            ),
+            "{wants:?}"
+        );
+    }
 }
 
 #[test]
@@ -1093,9 +1089,11 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
                 resolved_spec: spec.clone(),
                 deployment_id: None,
                 registry_auth: None,
+                registry_login: None,
                 image_prepared: true,
                 answer: ployz_core::AnswerWhen::Started,
                 image_id: None,
+                replaces: None,
             }),
             rotation: RunRotation::Pending,
         },
@@ -1369,6 +1367,7 @@ async fn stop_and_remove_rows_never_read_as_starting() {
             machine_id: machine,
             container_id: removed,
             purpose: ployz_core::RemoveContainerPurpose::Retire,
+            anonymous_volumes: ployz_core::AnonymousVolumes::keep(),
         },
         DeployOperation::StopHook {
             machine_id: machine,

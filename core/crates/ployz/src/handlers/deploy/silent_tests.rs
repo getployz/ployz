@@ -175,10 +175,18 @@ fn admit(
 }
 
 fn deploy_matches(args: &[&str]) -> clap::ArgMatches {
-    let typed = crate::cli::command()
+    crate::cli::command()
         .try_get_matches_from(["ployz", "deploy"].iter().chain(args))
-        .unwrap();
-    crate::handlers::leaf_matches(&typed).clone()
+        .unwrap()
+}
+
+/// `refused` as `ployz deploy` with `args` reports it.
+fn refusal(refused: Refused, args: &[&str]) -> crate::failure::Failure {
+    let root = deploy_matches(args);
+    refused.error(
+        crate::handlers::leaf_matches(&root),
+        crate::cli::Rerun::again(&root),
+    )
 }
 
 #[test]
@@ -279,7 +287,7 @@ fn a_first_version_is_never_signed_without_a_person() {
             deployed: false
         }
     );
-    let error = refused.error(&deploy_matches(&["--yes"]));
+    let error = refusal(refused, &["--yes"]);
     assert_eq!(error.report().code, RpcErrorCode::ConfirmationRequired);
 }
 
@@ -348,7 +356,7 @@ fn a_plan_that_runs_another_image_than_the_one_typed_signs_nothing() {
             planned: "nginx:3".to_owned(),
         }
     );
-    let error = refused.error(&deploy_matches(&["--yes", "--image", "web=nginx:2"]));
+    let error = refusal(refused, &["--yes", "--image", "web=nginx:2"]);
     assert!(
         !error.report().message.contains("--image."),
         "{}",
@@ -492,12 +500,12 @@ fn a_saved_image_with_no_image_edit_refuses_and_names_the_image_edit() {
     assert_eq!(pending(&changes, &edit_to_nginx_2()), Ok(()));
     let refused = pending(&changes, &[]).unwrap_err();
 
-    let error = refused.error(&deploy_matches(&["--yes"]));
+    let error = refusal(refused, &["--yes"]);
     assert_eq!(error.report().code, RpcErrorCode::ConfirmationRequired);
     assert!(
         error.hints().iter().any(|hint| matches!(
             hint,
-            Hint::Retry(retry) if retry.ends_with("--image 'web=nginx:2'")
+            Hint::Retry(retry) if retry.command() == "ployz deploy --yes --image 'web=nginx:2'"
         )),
         "{:?}",
         error.hints()
@@ -524,7 +532,7 @@ fn a_staged_change_beside_the_image_edit_refuses_and_names_its_service_and_field
             service: Some(ServiceName::parse("api").unwrap()),
         }
     );
-    let error = refused.error(&deploy_matches(&["--yes", "--image", "web=nginx:2"]));
+    let error = refusal(refused, &["--yes", "--image", "web=nginx:2"]);
     assert_eq!(error.report().code, RpcErrorCode::ConfirmationRequired);
     assert!(
         error.hints().iter().any(|hint| matches!(
@@ -552,12 +560,28 @@ fn a_staged_change_in_the_named_service_beyond_its_image_refuses() {
     );
 }
 
+/// The refusal names the same deploy for a terminal, keeping every flag but `--yes`: a
+/// line that dropped `--no-prune` would remove the Services it kept.
 #[test]
 fn a_silent_deploy_never_forgets() {
-    let error = refuse_forget(&deploy_matches(&["--yes", "--forget-older"])).unwrap_err();
+    let refused = |args: &[&str]| {
+        let root = deploy_matches(args);
+        refuse_forget(
+            crate::handlers::leaf_matches(&root),
+            crate::cli::Rerun::again(&root),
+        )
+    };
+    let error =
+        refused(&["--no-prune", "--yes", "--forget-older", "--env", "staging"]).unwrap_err();
 
     assert_eq!(error.report().code, RpcErrorCode::ConfirmationRequired);
-    assert!(refuse_forget(&deploy_matches(&["--yes"])).is_ok());
+    assert_eq!(
+        error.hints(),
+        [crate::cli::retry_hint(
+            "ployz deploy --no-prune --forget-older --env staging"
+        )]
+    );
+    assert!(refused(&["--yes"]).is_ok());
 }
 
 /// A staged region moves a Service no silent signer reviewed, so the deploy waits for a
@@ -576,5 +600,50 @@ fn a_staged_region_move_refuses_and_names_the_service() {
             field: Some("region".to_owned()),
             service: Some(service),
         })
+    );
+}
+
+/// A retry keeps every argument typed, `--yes`, the config and the Environment with it,
+/// and adds the image the refusal names.
+#[test]
+fn a_named_image_retry_keeps_the_config_the_environment_and_yes() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("a b.yaml");
+    std::fs::write(&config, "").unwrap();
+    let config = config.to_str().unwrap();
+    let root = crate::cli::command()
+        .try_get_matches_from([
+            "ployz",
+            "--ployz-config",
+            config,
+            "deploy",
+            "web",
+            "--env",
+            "staging",
+            "--yes",
+        ])
+        .unwrap();
+    let refused = Refused::Unnamed {
+        service: web(),
+        image: "nginx:2".to_owned(),
+    };
+    let refusal = refused
+        .error(
+            crate::handlers::leaf_matches(&root),
+            crate::cli::Rerun::again(&root),
+        )
+        .report();
+    assert_eq!(
+        refusal
+            .details
+            .get("retry")
+            .and_then(serde_json::Value::as_str),
+        Some(
+            format!(
+                "ployz --ployz-config '{config}' deploy web --env staging --yes \
+                 --image 'web=nginx:2'"
+            )
+            .as_str()
+        )
     );
 }

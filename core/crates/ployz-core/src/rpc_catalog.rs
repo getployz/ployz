@@ -93,6 +93,8 @@ macro_rules! rpc_catalog {
                 PrepareVolumes: (prepare_volumes, PrepareVolumesRequest, PreparedVolumes, PREPARE_VOLUMES_CAPABILITY, "ployz.storage.prepare.v1", Container, Operator),
                 ListVolumes: (list_volumes, ListVolumesRequest, VolumeInventory, LIST_VOLUMES_CAPABILITY, "ployz.volume.list.v1", Container, Operator),
                 RemoveVolume: (remove_volume, RemoveVolumeRequest, VolumeRemoved, REMOVE_VOLUME_CAPABILITY, "ployz.volume.remove.v1", Container, Operator),
+                ListKeptVolumes: (list_kept_volumes, ListKeptVolumesRequest, KeptVolumes, LIST_KEPT_VOLUMES_CAPABILITY, "ployz.volume.kept.list.v1", Container, Operator),
+                RemoveKeptVolumes: (remove_kept_volumes, RemoveKeptVolumesRequest, KeptVolumesRemoved, REMOVE_KEPT_VOLUMES_CAPABILITY, "ployz.volume.kept.remove.v1", Container, Operator),
                 InspectVolumeCopy: (inspect_volume_copy, InspectVolumeCopyRequest, VolumeCopyView, INSPECT_VOLUME_COPY_CAPABILITY, "ployz.volume.copy.inspect.v1", Container, Operator),
                 SeedVolume: (seed_volume, SeedVolumeRequest, VolumeCopyView, SEED_VOLUME_CAPABILITY, "ployz.volume.seed.v1", Container, Full),
                 SeedCopy: (seed_copy, SeedCopyRequest, VolumeCopyView, SEED_COPY_CAPABILITY, "ployz.volume.seed-copy.v1", Container, Operator),
@@ -145,8 +147,12 @@ macro_rules! rpc_catalog {
                 PREVIEW_HOME_CAPABILITY: ("ployz.preview.home.v1", Container),
                 /// `SetVolumeCopy` creates an Operator's Writer from the signed versions or rule proof its `Create` carries, for a spec that mounts the Volume, and answers a `check` without changing anything.
                 VOLUME_START_CAPABILITY: ("ployz.volume.start.v1", Container),
+                /// A Writer start's promote records the image the start placed, with its epoch and the admitted spec's digest, and a start resent after the promote creates its holder from that image with no pull. A start whose volume plugin promotes without that record is refused.
+                VOLUME_START_IMAGE_CAPABILITY: ("ployz.volume.start.image.v1", Container),
                 /// `SetVolumeCopy`'s cut with a `holder` takes `running`: it refuses `stopped` when that Container no longer runs, and records a stop it makes before making it, so a resent cut knows the stop as its own.
                 VOLUME_CUT_RUNNING_CAPABILITY: ("ployz.volume.cut.running.v1", Container),
+                /// `SetVolumeCopy` keeps a slot that may hold writes no other Machine has: a Forget without `discard` refuses `written_here`, and a pull never replaces it with a full send.
+                VOLUME_KEEP_WRITTEN_CAPABILITY: ("ployz.volume.keep-written.v1", Container),
                 /// The daemon can take a Certificate Policy from cluster state.
                 CERTIFICATE_POLICY_CAPABILITY: ("ployz.certificates.policy.v1", Always),
                 /// `Inspect` can report requested current local Machine storage evidence.
@@ -182,6 +188,8 @@ macro_rules! rpc_catalog {
                 PARENT_VERSIONS_CAPABILITY: ("ployz.authority.parent-versions.v1", Always),
                 /// A Key step's trust may name the grant it replaces and the key's name, and applies only over that grant. `SetDevice` takes `remove_grant`, which removes only a CI or agent key, and only over the grants a rotation read.
                 KEY_PRIOR_CAPABILITY: ("ployz.authority.key-prior.v1", Always),
+                /// A new Container may name the copy it replaces ([`NewContainer::replaces`](crate::NewContainer::replaces)), which the Machine records and reports on that copy (`replaced_by`). A `Gone` takes a Container's anonymous Volumes only when it names the copy the Machine recorded as its replacement ([`AnonymousVolumes::replaced_by`](crate::AnonymousVolumes::replaced_by)) and that copy runs, routed and not stopping. Whatever the caller asked, it keeps them otherwise.
+                CONTAINER_REPLACES_CAPABILITY: ("ployz.container.replaces.v1", Container),
             }
         }
     };

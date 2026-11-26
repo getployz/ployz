@@ -1,5 +1,9 @@
-// Human text goes through `ui` so `--json` keeps stdout parseable; tests may print.
-#![cfg_attr(not(test), deny(clippy::print_stdout))]
+// Output goes through `ui`, so `--json` keeps stdout parseable and URL user info is
+// masked; tests may print.
+#![cfg_attr(
+    not(test),
+    deny(clippy::print_stdout, clippy::print_stderr, clippy::dbg_macro)
+)]
 
 mod agent_call;
 mod approval;

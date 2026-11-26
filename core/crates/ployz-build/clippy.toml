@@ -1,0 +1,4 @@
+disallowed-methods = [
+    { path = "std::io::stdout", reason = "ployz-build prints nothing itself: progress goes to the `show` writer its caller passes, which the CLI masks" },
+    { path = "std::io::stderr", reason = "ployz-build prints nothing itself: progress goes to the `show` writer its caller passes, which the CLI masks; log through tracing" },
+]

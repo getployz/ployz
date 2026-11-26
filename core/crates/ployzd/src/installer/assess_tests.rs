@@ -48,6 +48,7 @@ fn host() -> HostFacts {
             api: "1.53".into(),
             buildx: Some("v0.37.1".into()),
             containerd_store: Some(true),
+            live_restore: Some(true),
             error: None,
         },
         zpool_present: Some(false),
@@ -125,6 +126,7 @@ fn an_old_docker_engine_blocks() {
         api: "1.44".into(),
         buildx: None,
         containerd_store: None,
+        live_restore: None,
         error: None,
     };
     let blockers = assess(&facts).blockers;
@@ -149,6 +151,7 @@ fn an_old_buildx_blocks() {
         api: "1.53".into(),
         buildx: Some("v0.17.1".into()),
         containerd_store: None,
+        live_restore: None,
         error: None,
     };
     let blockers = assess(&facts).blockers;
@@ -174,12 +177,38 @@ fn docker_without_the_containerd_store_blocks() {
         api: "1.53".into(),
         buildx: Some("v0.37.1".into()),
         containerd_store: Some(false),
+        live_restore: None,
         error: None,
     };
     assert_eq!(
         codes(&assess(&facts).blockers),
         ["docker_containerd_store_off"]
     );
+}
+
+/// Without live-restore, a dockerd crash leaves `unless-stopped` Services stopped for good.
+/// Only Docker's own `false` blocks: a probe that never asked claims nothing.
+#[test]
+fn docker_with_live_restore_off_blocks() {
+    for (live_restore, expected) in [
+        (Some(false), vec!["docker_live_restore_off"]),
+        (Some(true), vec![]),
+        (None, vec![]),
+    ] {
+        let mut facts = host();
+        let DockerFacts::Present {
+            live_restore: read, ..
+        } = &mut facts.docker
+        else {
+            unreachable!()
+        };
+        *read = live_restore;
+        assert_eq!(
+            codes(&assess(&facts).blockers),
+            expected,
+            "{live_restore:?}"
+        );
+    }
 }
 
 #[test]
@@ -190,6 +219,7 @@ fn a_docker_that_stopped_answering_blocks_with_its_error() {
         api: "1.53".into(),
         buildx: None,
         containerd_store: None,
+        live_restore: None,
         error: Some("checking Docker: docker: 'buildx' is not a docker command.".into()),
     };
     assert_eq!(
@@ -880,6 +910,7 @@ const ELIGIBLE_DOCUMENT_GOLDEN: &str = r#"{
         "buildx": "v0.37.1",
         "containerd_store": true,
         "error": null,
+        "live_restore": true,
         "version": "29.1.0"
       }
     },
@@ -1000,6 +1031,7 @@ fn probe_document_variants_serialize_as_serde_defaults() {
                 api: "1.53".into(),
                 buildx: None,
                 containerd_store: None,
+                live_restore: None,
                 error: Some("buildx broke".into()),
             },
             json!({"Present": {
@@ -1007,6 +1039,7 @@ fn probe_document_variants_serialize_as_serde_defaults() {
                 "api": "1.53",
                 "buildx": null,
                 "containerd_store": null,
+                "live_restore": null,
                 "error": "buildx broke",
             }}),
         ),

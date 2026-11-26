@@ -343,6 +343,18 @@ const MIGRATIONS: &[(&str, Step)] = &[
         Step::Sql(include_str!("migrations/0054_service_version_parent.sql")),
     ),
     (
+        // Registry logins sealed on a person's device, and none the Store can read.
+        "0055_registry_login",
+        Step::Rust(|tx, backend| {
+            tx.batch(include_str!("migrations/0055_registry_login.sql"))?;
+            tx.batch(match backend {
+                Backend::Postgres => include_str!("migrations/0055_registry_login_postgres.sql"),
+                Backend::Sqlite => include_str!("migrations/0055_registry_login_sqlite.sql"),
+            })?;
+            Ok(None)
+        }),
+    ),
+    (
         // Drop the 0.4 preview rule's table: a PR plan keeps its preview rule.
         "0056_preview_rule_gone",
         Step::Sql(include_str!("migrations/0056_preview_rule_gone.sql")),

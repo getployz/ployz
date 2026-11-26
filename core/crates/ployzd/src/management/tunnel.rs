@@ -4,7 +4,9 @@
 //! A tunnel is Machine RPC power, not more: only a `Full` slot's accepted key, proven
 //! on the tunnel's first stream, opens one, the
 //! target must be an IPv4 address in this Machine's Cluster network (never loopback or
-//! the internet), and revoking the key or stopping the daemon ends it at once.
+//! the internet), and revoking the key or stopping the daemon ends it at once. So does a
+//! key change that leaves the key short of Full, such as removing its Device while it keeps
+//! another slot: that change returns only once the tunnel has closed.
 
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
@@ -20,7 +22,7 @@ use tokio_util::sync::CancellationToken;
 use super::{REVOKED, refusal, revoked};
 use ipnet::Ipv4Net;
 
-use crate::machine::{LocalMachine, LocalMachineRecord};
+use crate::machine::{Call, Caller, LocalMachine, LocalMachineError, LocalMachineRecord};
 
 /// Bounds the client's header and the Machine's dial, so a stalled open never lingers.
 const OPEN_TIMEOUT: Duration = Duration::from_secs(10);
@@ -46,29 +48,77 @@ pub(super) async fn serve(
         connection.close(code, b"management access refused");
         return;
     }
-    if record.management_scope(&remote) < Some(ManagementScope::Full) {
-        return connection.close(
-            VarInt::from_u32(TUNNEL_FAILED),
-            TUNNEL_NEEDS_FULL.as_bytes(),
-        );
-    }
+    let bound = match local
+        .clone()
+        .at(Call::new(
+            Caller::Management(remote),
+            ManagementScope::Full,
+            false,
+        ))
+        .bind_full(crate::machine::Work::Tunnel)
+    {
+        Ok(bound) => bound,
+        Err(LocalMachineError::ManagementRevoked) => {
+            return connection.close(REVOKED, b"revoked");
+        }
+        Err(_) => {
+            return connection.close(
+                VarInt::from_u32(TUNNEL_FAILED),
+                TUNNEL_NEEDS_FULL.as_bytes(),
+            );
+        }
+    };
+    relay(
+        connection,
+        (send, recv),
+        &local,
+        records,
+        remote,
+        &record,
+        &bound,
+        shutdown,
+    )
+    .await;
+    // `relay` dropped every socket the tunnel opened before it returned.
+    bound.stopped(crate::machine::Seen::Joined);
+}
+
+/// Open the tunnel `bound` ties to `remote` and relay it until either side ends it, the key
+/// is revoked or its work ended, or `shutdown`, closing `connection` with why.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one admitted tunnel's parts, borrowed from `serve`"
+)]
+async fn relay(
+    connection: Connection,
+    (send, recv): (iroh::endpoint::SendStream, iroh::endpoint::RecvStream),
+    local: &LocalMachine,
+    records: watch::Receiver<Arc<LocalMachineRecord>>,
+    remote: ployz_core::ClientKey,
+    record: &LocalMachineRecord,
+    bound: &crate::machine::Bound,
+    shutdown: CancellationToken,
+) {
     let revoked = revoked(records, remote);
     tokio::pin!(revoked);
     let opened = tokio::select! {
         () = &mut revoked => return connection.close(REVOKED, b"revoked"),
+        () = bound.ended() => return connection.close(REVOKED, b"revoked"),
         () = shutdown.cancelled() => return connection.close(VarInt::from_u32(0), b"shutdown"),
-        opened = tokio::time::timeout(OPEN_TIMEOUT, open(send, recv, &record, &local)) => opened
+        opened = tokio::time::timeout(OPEN_TIMEOUT, open(send, recv, record, local)) => opened
             .unwrap_or(Err(TunnelError::Timeout)),
     };
-    let (mut tcp, mut stream) = match opened {
+    let (target, mut tcp, mut stream) = match opened {
         Ok(opened) => opened,
         Err(reason) => {
             let reason = reason.to_string();
             return connection.close(VarInt::from_u32(TUNNEL_FAILED), reason.as_bytes());
         }
     };
+    bound.name(format!("a port-forward tunnel to {target}"));
     tokio::select! {
         () = &mut revoked => connection.close(REVOKED, b"revoked"),
+        () = bound.ended() => connection.close(REVOKED, b"revoked"),
         () = shutdown.cancelled() => connection.close(VarInt::from_u32(0), b"shutdown"),
         copied = tokio::io::copy_bidirectional(&mut tcp, &mut stream) => {
             if let Err(error) = copied {
@@ -128,7 +178,7 @@ async fn open(
     mut recv: iroh::endpoint::RecvStream,
     record: &LocalMachineRecord,
     local: &LocalMachine,
-) -> Result<(TcpStream, TunnelStream), TunnelError> {
+) -> Result<(SocketAddr, TcpStream, TunnelStream), TunnelError> {
     let length = recv.read_u8().await.map_err(TunnelError::Header)?;
     let mut target = vec![0; usize::from(length)];
     recv.read_exact(&mut target)
@@ -153,7 +203,7 @@ async fn open(
     send.write_u8(TUNNEL_OPEN)
         .await
         .map_err(TunnelError::Acknowledgement)?;
-    Ok((tcp, tokio::io::join(recv, send)))
+    Ok((target, tcp, tokio::io::join(recv, send)))
 }
 
 #[cfg(test)]

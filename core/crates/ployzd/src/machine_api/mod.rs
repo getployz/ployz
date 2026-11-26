@@ -149,6 +149,13 @@ fn wrap(service: local::MachineService) -> MachineApi {
     }
 }
 
+/// This Machine's API as a Device's own management connection reaches it once the edge let
+/// a call through: from `key`, at Full scope unless the call carries the Operator mark.
+#[cfg(test)]
+pub(crate) fn device_routes(service: MachineService, key: ployz_core::ClientKey) -> Routes {
+    routes(service.with_management_client(key))
+}
+
 fn routes(service: local::MachineService) -> Routes {
     Routes::new(
         MachineRpcServer::new(service)

@@ -766,12 +766,12 @@ pub(crate) async fn user_remove<C: CopyLifecycle>(
             client,
             &copy,
             EmptyPolicy::MayEmpty,
-            AnonymousVolumes::Remove,
+            AnonymousVolumes::keep(),
             cancellation,
         )
         .await?
     } else {
-        remove(client, &copy, AnonymousVolumes::Remove)
+        remove(client, &copy, AnonymousVolumes::keep())
             .await?
             .into()
     };

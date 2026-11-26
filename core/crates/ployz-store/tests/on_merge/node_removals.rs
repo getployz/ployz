@@ -91,7 +91,7 @@ fn production_nodes(store: &ConfigStore, who: &Actor) {
             ("db.env.USER", json!("app")),
             (
                 "db.registryCredential",
-                json!({ "username": "bot", "secret": "pull-token" }),
+                ployz_store::testing::sealed_login("pull"),
             ),
         ],
     );

@@ -187,9 +187,9 @@ async fn server_removal_without_the_typed_name_names_what_goes_and_the_retry() {
     assert_eq!(at("/error/details/data_loss/0/id/name"), "data", "{error}");
     let next = at("/error/details/retry");
     let next = next.as_str().unwrap();
-    assert!(next.starts_with("ployz server rm one --connect"), "{next}");
+    assert!(next.starts_with("ployz --connect "), "{next}");
     assert!(
-        next.ends_with("--confirm one --accept-volume-loss data"),
+        next.ends_with(" server rm one --confirm one --accept-volume-loss data"),
         "{next}"
     );
 
@@ -782,8 +782,8 @@ async fn under_json_a_cloud_removal_names_the_retry_that_carries_its_digest() {
         .and_then(serde_json::Value::as_str)
         .unwrap_or_default();
     assert!(
-        retry.starts_with("ployz server forget two --connect tcp://")
-            && retry.ends_with(" --confirm two --approval forget:abc"),
+        retry.starts_with("ployz --connect tcp://")
+            && retry.ends_with(" server forget two --confirm two --approval forget:abc"),
         "{retry}"
     );
     assert_eq!(
@@ -1120,11 +1120,11 @@ async fn a_server_that_does_not_answer_leaves_without_a_reset_only_when_dead_is_
         .unwrap()
         .as_str()
         .unwrap();
+    assert!(retry.starts_with("ployz --connect "), "{retry}");
     assert!(
-        retry.starts_with("ployz server forget two --connect"),
+        retry.ends_with(" server forget two --confirm dead"),
         "{retry}"
     );
-    assert!(retry.ends_with("--confirm dead"), "{retry}");
 
     let output = run("two", &["--confirm", "two"]).await;
     let error = error_of(&output);
@@ -1311,8 +1311,10 @@ async fn a_server_that_stops_answering_after_its_name_is_typed_is_kept() {
         .unwrap()
         .as_str()
         .unwrap();
-    assert!(retry.starts_with("ployz server forget two"), "{retry}");
-    assert!(retry.ends_with("--confirm dead"), "{retry}");
+    assert!(
+        retry.ends_with(" server forget two --confirm dead"),
+        "{retry}"
+    );
     assert!(removals.lock().unwrap().is_empty());
     server.abort();
 }

@@ -9,6 +9,13 @@
 //! BuildKit owns build options and their validation; this crate hands it the
 //! captured Compose file and adds only the rules BuildKit cannot enforce: one
 //! bounded attempt, and one image bound to the content that attempt produced.
+//!
+//! It prints nothing itself: rendered progress goes to the writer its caller passes,
+//! which for the CLI masks URL user info like everything else it prints.
+#![cfg_attr(
+    not(test),
+    deny(clippy::print_stdout, clippy::print_stderr, clippy::dbg_macro)
+)]
 
 mod builder;
 pub mod capture;
@@ -38,7 +45,7 @@ pub use railpack::Railpack;
 mod scrub;
 pub use scrub::OutputScrub;
 mod sealed;
-pub use sealed::{Staged, sealed_file, valid_name};
+pub use sealed::{SealedStaging, Staged, sealed_file, valid_name};
 mod solve;
 pub use solve::PlainRenderer;
 
@@ -371,7 +378,7 @@ impl BuildError {
 /// Returns the completed images in the order of `targets`. Validation and
 /// registry publication retain no local image, so they return none. Cancellation
 /// is supplied by the caller; this function never installs process signal handlers.
-/// Progress renders to stderr and also reaches `observe`.
+/// Progress renders as text to `show` and also reaches `observe`.
 ///
 /// # Errors
 /// Returns a prerequisite error when Docker cannot serve the Build, a request
@@ -384,12 +391,13 @@ pub fn execute(
     cancellation: &Cancellation,
     scrub: Option<&OutputScrub>,
     observe: &(dyn Fn(&Progress) + Sync),
+    show: &(dyn Fn(&[u8]) + Sync),
 ) -> Result<Vec<BuiltImage>, BuildError> {
     execute_rendered(
         request,
         Produce::Output(request.output),
         cancellation,
-        Sinks::stderr(scrub, observe),
+        Sinks::new(show, scrub, observe),
     )
 }
 
@@ -397,7 +405,7 @@ pub fn execute(
 /// running it again, producing no image; `request.output` is not consulted.
 /// Without that service in the captured environment, or when the Build
 /// [reads plaintext](reads_plaintext), it does nothing: other workflows read that
-/// cache. Progress renders to stderr only.
+/// cache. Progress renders as text to `show` only.
 ///
 /// # Errors
 /// Returns the same failures as [`execute`].
@@ -405,6 +413,7 @@ pub fn export_cache(
     request: &Request<'_>,
     cancellation: &Cancellation,
     scrub: Option<&OutputScrub>,
+    show: &(dyn Fn(&[u8]) + Sync),
 ) -> Result<(), BuildError> {
     if !github_cache(request) || reads_plaintext(request.sealed_override, request.railpack) {
         return Ok(());
@@ -413,7 +422,7 @@ pub fn export_cache(
         request,
         Produce::Cache,
         cancellation,
-        Sinks::stderr(scrub, &|_| {}),
+        Sinks::new(show, scrub, &|_| {}),
     )
     .map(drop)
 }
@@ -442,13 +451,14 @@ struct Sinks<'a> {
 }
 
 impl<'a> Sinks<'a> {
-    fn stderr(scrub: Option<&'a OutputScrub>, observe: &'a (dyn Fn(&Progress) + Sync)) -> Self {
+    fn new(
+        write: &'a (dyn Fn(&[u8]) + Sync),
+        scrub: Option<&'a OutputScrub>,
+        observe: &'a (dyn Fn(&Progress) + Sync),
+    ) -> Self {
         Self {
             renderer: PlainRenderer::default(),
-            write: &|text| {
-                use std::io::Write as _;
-                let _ = std::io::stderr().write_all(text);
-            },
+            write,
             observe,
             scrub,
         }
@@ -1179,17 +1189,26 @@ impl<'a> Docker<'a> {
                 }
             }
         };
-        let mut child = command.spawn().map_err(|error| BuildError::Docker {
-            action,
-            diagnostic: error.to_string(),
-        })?;
+        let mut start = || {
+            let mut child = command.spawn().map_err(|error| BuildError::Docker {
+                action,
+                diagnostic: error.to_string(),
+            })?;
+            if let Some(recorder) = self.recorder
+                && let Err(error) = recorder.record(&mut child, &self.location())
+            {
+                let _ = child.wait();
+                return Err(error);
+            }
+            Ok(child)
+        };
+        // Set up, the process starts only under the lock a cancel takes, and checked there:
+        // a cancel that came first starts nothing.
+        let mut child = match self.cancellation {
+            Some(cancellation) => cancellation.spawn(start).ok_or(BuildError::Cancelled)??,
+            None => start()?,
+        };
         drop(command);
-        if let Some(recorder) = self.recorder
-            && let Err(error) = recorder.record(&mut child, &self.location())
-        {
-            let _ = child.wait();
-            return Err(error);
-        }
         started();
         let status = wait_controlled(&mut child, self.deadline, self.cancellation, &mut drain);
         if !status.as_ref().is_err_and(|error| error.is_unknown()) {

@@ -270,9 +270,12 @@ pub(crate) async fn remove_token(
     }
     match call::<Reply>(credential, Method::DELETE, &format!("tokens/{id}"), None).await {
         Ok(reply) => Ok((reply.removed, reply.servers)),
-        Err(LoginError::Status { status: 404, .. }) => {
-            Err(LoginError::UnknownCredential(id.to_owned()))
-        }
+        Err(LoginError::Status { status: 404, .. }) => Err(LoginError::UnknownCredential(
+            crate::cli::shown::Minted::parse(id).map_or_else(
+                || crate::cli::Shown::placeholder("CREDENTIAL"),
+                |id| crate::cli::Shown::of(&id),
+            ),
+        )),
         Err(error) => Err(error),
     }
 }

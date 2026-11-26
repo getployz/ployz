@@ -109,12 +109,7 @@ pub(crate) fn sync(root: &ArgMatches) -> Result<(), Error> {
         },
     };
     let words = sync_words(matches);
-    let mut retried = sync_target(matches);
-    retried.extend(repeated(matches, &["--only", "--skip", "--value"]));
-    if matches.get_flag("close") {
-        retried.push("--close");
-    }
-    let store = store(root)?.args(retried).reads_secrets(secrets);
+    let store = store(root)?.reads_secrets(secrets);
     let view = store.read(&query)?;
     if matches.get_flag("plan") {
         return sync_plan(matches, &words, &view);
@@ -192,7 +187,7 @@ fn undo(root: &ArgMatches, sync: &str) -> Result<(), Error> {
         sync: SyncId::parse(sync)
             .map_err(|_| Error::usage("Expected --undo SYNC to be the ID a Sync printed"))?,
     };
-    let undone: Undone = store(root)?.args(["--undo", sync]).write(&request)?;
+    let undone: Undone = store(root)?.write(&request)?;
     let into = &undone.into;
     let followed = Next::new(
         &undone,
@@ -218,9 +213,7 @@ fn take(root: &ArgMatches, source: &str, into: EnvironmentRef) -> Result<(), Err
         .iter()
         .map(|asked| asked.as_str().into())
         .collect();
-    let store = store(root)?
-        .args(["--take", source])
-        .args(repeated(matches, &["--only"]));
+    let store = store(root)?;
     // The hints were read at this version, else at the diff's now.
     let version = match matches.get_one::<String>("version") {
         Some(version) => version.clone(),
@@ -264,19 +257,6 @@ fn taken_out(matches: &ArgMatches, taken: &Taken) -> Result<(), Error> {
         }
         followed.say();
     })
-}
-
-/// Each value of each repeatable flag in `flags`, after its flag. `--value` names only a
-/// row: its secret comes on stdin, so a retry never repeats it.
-fn repeated<'m>(matches: &'m ArgMatches, flags: &[&'static str]) -> Vec<&'m str> {
-    let mut words = Vec::new();
-    for flag in flags {
-        let id = flag.trim_start_matches("--");
-        for value in matches.get_many::<String>(id).into_iter().flatten() {
-            words.extend([*flag, value.as_str()]);
-        }
-    }
-    words
 }
 
 /// `env sync --to [ENV]` or `env sync --from ENV`, as given.

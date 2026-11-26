@@ -44,6 +44,8 @@ pub enum OpenError {
     TunnelToken,
     #[error("the Tailscale auth key does not open with this Cluster's Sealing Key")]
     PrivateAccessKey,
+    #[error("the registry login for {0} does not open with this Cluster's Sealing Key")]
+    RegistryLogin(String),
     #[error("env {0} holds a multiline Sealed value with a line too short to scrub from logs")]
     ShortLine(String),
     #[error("env {0} is Sealed, and nothing signed the spec")]
@@ -185,6 +187,21 @@ impl SealingKeyStore {
                 PlatformPurpose::IngressTunnel => OpenError::TunnelToken,
                 PlatformPurpose::PrivateAccess => OpenError::PrivateAccessKey,
             })
+    }
+
+    /// Open a registry login sealed to this Cluster for its host.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OpenError::KeyMissing`] or [`OpenError::KeyUnreadable`] as opening does,
+    /// and [`OpenError::RegistryLogin`] when it was sealed for another Cluster or host.
+    pub(crate) fn open_login(
+        &self,
+        login: &ployz_core::SealedLogin,
+    ) -> Result<ployz_core::RegistryAuth, OpenError> {
+        let unopenable = || OpenError::RegistryLogin(login.host.clone());
+        let opened = self.load()?.open_login(login).ok_or_else(unopenable)?;
+        serde_json::from_slice(&opened).map_err(|_| unopenable())
     }
 
     /// The Cluster's build attest key pair, derived from the Sealing Key.
@@ -432,6 +449,15 @@ pub(crate) mod test_support {
         pub(crate) fn open(&self, env: BTreeMap<String, EnvValue>) -> Result<OpenedEnv, OpenError> {
             self.store()
                 .open_env(env, Some(&self.identity), &AdmittedSpec::test_unbound(true))
+        }
+
+        /// `login` sealed to this Cluster for registry `host`, as a client seals it.
+        pub(crate) fn seal_login(
+            &self,
+            host: &str,
+            login: &ployz_core::RegistryAuth,
+        ) -> ployz_core::SealedLogin {
+            ployz_core::seal_login(&self.key.public_key(), host, login).unwrap()
         }
 
         /// `plaintext` sealed to this Cluster for `purpose`, as a client seals it.

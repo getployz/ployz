@@ -27,8 +27,9 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     let token_request = helpers::token_request(matches)?;
     let pinned = machine::pinned(&token_request);
     let wireguard_mtu = matches.get_one::<u32>("wg-mtu").copied();
-    let yes = matches.get_flag("yes");
-    let storage = super::provision::resolve_storage(matches)?;
+    let reset_asks =
+        (!matches.get_flag("yes")).then(|| crate::cli::Rerun::again(root).switch("yes"));
+    let storage = super::provision::resolve_storage(root)?;
     let no_install = matches.get_flag("no-install");
     let runtime = runtime()?;
     let assigned = runtime.block_on(async {
@@ -71,7 +72,10 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
             && joining.is_none()
             && listed.is_none()
         {
-            machine::confirm(yes, "Reset the Server before adding it to this Cluster?")?;
+            machine::confirm(
+                reset_asks.clone(),
+                "Reset the Server before adding it to this Cluster?",
+            )?;
             machine::leave(&mut target_client, &details).await?;
             target_client = helpers::reconnect_direct(matches, &connection).await?;
             token = machine::inspect_token(&mut target_client, token_request)
@@ -196,14 +200,14 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
             let mut entry = super::super::reconnect_client(matches, options.context()).await?;
             Ok::<_, Error>(
                 crate::enrollment::catch_up::follow_globals(&mut entry, &assigned, |args| {
-                    super::super::recovery_command(matches, &context_name, args)
+                    crate::cli::Rerun::then(matches, args).set("context", &context_name)
                 })
                 .await,
             )
         })?;
         catch_up.map_err(|error| {
             crate::enrollment::catch_up::joined_catch_up_error(error, &assigned, |args| {
-                super::super::recovery_command(matches, &context_name, args)
+                crate::cli::Rerun::then(matches, args).set("context", &context_name)
             })
         })?;
         // The wait above may have printed retries; this line says it ended well.
@@ -321,7 +325,7 @@ mod tests {
                 vec![ployz_core::QualifiedService::system_ingress()],
             ),
             &assigned,
-            |args| shell_words::join(std::iter::once("ployz").chain(args.iter().copied())),
+            crate::cli::Rerun::plain,
         );
         let message = failure.to_string();
         assert!(message.starts_with("Server joined"), "{message}");
@@ -339,13 +343,14 @@ mod tests {
             })
             .unwrap();
         assert_eq!(
-            shell_words::split(command).unwrap(),
+            shell_words::split(command.command()).unwrap(),
             [
                 "ployz",
                 "server",
                 "set",
                 &assigned.id.to_string(),
-                "--accepts-ingress=true"
+                "--accepts-ingress",
+                "true"
             ]
         );
         assert_eq!(failure.causes(), ["deploy timed out"]);

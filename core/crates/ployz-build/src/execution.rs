@@ -93,9 +93,55 @@ impl WorkEvidence {
     }
 }
 
-/// A caller-owned request to stop, never proof that execution stopped.
-/// Shared by synchronous Build execution and subsequent async command phases.
-pub use tokio_util::sync::CancellationToken as Cancellation;
+/// A caller-owned request to stop, never proof that execution stopped. Shared by
+/// synchronous Build execution and subsequent async command phases.
+///
+/// [`Self::cancel`] takes the lock a Build step's process spawns under, so a step either
+/// spawned before the cancel, and its wait sees the cancel and kills it, or never spawns.
+#[derive(Clone, Debug, Default)]
+pub struct Cancellation {
+    token: tokio_util::sync::CancellationToken,
+    spawning: std::sync::Arc<std::sync::Mutex<()>>,
+}
+
+impl Cancellation {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn cancel(&self) {
+        let _spawning = self.spawning.lock().expect("spawn lock");
+        self.token.cancel();
+    }
+
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.token.is_cancelled()
+    }
+
+    pub fn cancelled(&self) -> tokio_util::sync::WaitForCancellationFuture<'_> {
+        self.token.cancelled()
+    }
+
+    /// Run `spawn` unless cancelled, under the lock [`Self::cancel`] takes: `None` once
+    /// cancelled.
+    pub(crate) fn spawn<T>(&self, spawn: impl FnOnce() -> T) -> Option<T> {
+        let _spawning = self.spawning.lock().expect("spawn lock");
+        (!self.token.is_cancelled()).then(spawn)
+    }
+}
+
+/// A cancellation `token`'s holder drives, for a Build on its own computer. Cancelling the
+/// token itself skips the spawn lock, which only a Machine's own Builds need.
+impl From<tokio_util::sync::CancellationToken> for Cancellation {
+    fn from(token: tokio_util::sync::CancellationToken) -> Self {
+        Self {
+            token,
+            spawning: std::sync::Arc::default(),
+        }
+    }
+}
 
 /// Execution-host settings. These are never deserialized from a Build request.
 #[derive(Clone)]
@@ -169,6 +215,17 @@ impl HostPolicy {
         Ok(policy)
     }
 
+    /// Whether every process the last Build in `slot` started is gone, asked by the process
+    /// that ran it: the slot recovers, its Build here known to have returned.
+    ///
+    /// # Errors
+    /// The slot stays quarantined: a process of its last Build may still run, or Docker
+    /// didn't confirm its builder removed. [`BuildError::Busy`] when another admission holds
+    /// the slot, which says nothing: it may be recovering the slot and fail to.
+    pub fn confirm_ended(&self, slot: usize) -> Result<(), BuildError> {
+        Lock::try_acquire_own_slot(&self.state_directory, slot, &self.docker).map(drop)
+    }
+
     /// Validate before allocating queue state or computing deadlines.
     /// # Errors
     /// Capacity is 0–1024; timeouts must be positive and at most 24 hours.
@@ -194,6 +251,9 @@ pub struct Admission {
     pub(crate) cancellation: Cancellation,
     pub(crate) resources: crate::policy::Resources,
     pub(crate) fence: Option<crate::FenceInstaller>,
+    /// This attempt's own directory in its slot's upload staging, never another's.
+    attempt: String,
+    pub(crate) staging: crate::SealedStaging,
 }
 impl Admission {
     /// Recover abandoned build slots once after daemon restart. A slot whose
@@ -249,24 +309,59 @@ impl Admission {
     pub(crate) fn try_acquire_slot(policy: &HostPolicy, slot: usize) -> Result<Self, BuildError> {
         policy.validate()?;
         let resources = crate::policy::Resources::load(&policy.configuration_file)?;
-        Ok(Self {
+        let lock = Lock::try_acquire_slot(&policy.state_directory, slot, &policy.docker)?;
+        Ok(Self::owning(
+            lock,
             resources,
-            lock: Lock::try_acquire_slot(&policy.state_directory, slot, &policy.docker)?,
-            deadline: Deadline::starting_now(policy.active_timeout),
-            cancellation: Cancellation::default(),
-            fence: policy.fence,
-        })
+            Deadline::starting_now(policy.active_timeout),
+            Cancellation::default(),
+            policy.fence,
+        ))
     }
     pub(crate) fn wait(docker: &Path, cancellation: &Cancellation) -> Result<Self, BuildError> {
         let lock = Lock::acquire(docker, cancellation)?;
         let resources = crate::policy::Resources::load(&HostPolicy::default().configuration_file)?;
-        Ok(Self {
-            resources,
+        Ok(Self::owning(
             lock,
-            deadline: Deadline::starting_now(EXECUTION_TIMEOUT),
-            cancellation: cancellation.clone(),
-            fence: None,
-        })
+            resources,
+            Deadline::starting_now(EXECUTION_TIMEOUT),
+            cancellation.clone(),
+            None,
+        ))
+    }
+    fn owning(
+        lock: Lock,
+        resources: crate::policy::Resources,
+        deadline: Deadline,
+        cancellation: Cancellation,
+        fence: Option<crate::FenceInstaller>,
+    ) -> Self {
+        let attempt = uuid::Uuid::new_v4().to_string();
+        let staging = crate::SealedStaging::under(&lock.upload_directory().join(&attempt));
+        Self {
+            lock,
+            deadline,
+            cancellation,
+            resources,
+            fence,
+            attempt,
+            staging,
+        }
+    }
+    /// This attempt's capture: its own directory in its build slot's upload staging.
+    pub(crate) fn upload_root(&self) -> PathBuf {
+        self.lock.upload_directory().join(&self.attempt)
+    }
+    /// Where this attempt stages the Sealed values it opens, so its owner can take them back
+    /// while the attempt still runs. No other attempt stages there.
+    #[must_use]
+    pub fn sealed_staging(&self) -> crate::SealedStaging {
+        self.staging.clone()
+    }
+    /// The build slot this attempt owns, which [`HostPolicy::confirm_ended`] looks at again.
+    #[must_use]
+    pub fn slot(&self) -> usize {
+        self.lock.slot()
     }
     /// A shared handle to this attempt's [`Cancellation`]; cancelling it makes [`Self::check`]
     /// fail with [`BuildError::Cancelled`].
@@ -441,6 +536,25 @@ mod tests {
     }
 
     #[test]
+    fn a_build_slot_another_admission_holds_is_never_confirmed_ended() {
+        let root = std::env::temp_dir().join(format!("ployz-build-busy-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let policy = HostPolicy {
+            state_directory: root.clone(),
+            docker: root.join("docker"),
+            ..Default::default()
+        };
+        // The Build that last used the slot never confirmed its end, and another admission
+        // holds the slot to recover it, which it may fail to.
+        let mut lock = Lock::try_acquire_in(&root).unwrap();
+        lock.quarantine().unwrap();
+        assert!(matches!(policy.confirm_ended(0), Err(BuildError::Busy)));
+        drop(lock);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn expired_admission_and_docker_report_configured_budget() {
         let root = std::env::temp_dir().join(format!("ployz-budget-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&root).unwrap();
@@ -488,6 +602,74 @@ mod tests {
         assert!(root.join("build-upload/existing").exists());
         assert!(Admission::try_acquire_with(&policy).is_ok());
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A policy over a fresh private state directory, and the opened value a Build stages.
+    fn staging_policy() -> (HostPolicy, ployz_core::OpenedSealed) {
+        let root = std::env::temp_dir().join(format!("ployz-staging-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let opened = ployz_core::OpenedSealed::new(
+            [("NPM_TOKEN".to_owned(), "opened-token".to_owned())].into(),
+            Vec::new(),
+        );
+        (
+            HostPolicy {
+                state_directory: root,
+                ..Default::default()
+            },
+            opened,
+        )
+    }
+
+    /// `admission`'s upload, with the private directory a capture brings, and its root.
+    fn uploaded(admission: Admission) -> (crate::remote::AdmittedUpload, PathBuf) {
+        let root = admission.upload_root();
+        let upload = admission.upload().unwrap();
+        std::fs::create_dir(root.join("private")).unwrap();
+        (upload, root)
+    }
+
+    /// Two Builds take the same slot in turn, and the first one's owner takes back its
+    /// values only once the second staged its own: the second's values stay.
+    #[test]
+    fn a_late_revoke_takes_back_only_its_own_builds_values() {
+        let (policy, opened) = staging_policy();
+        let first = Admission::try_acquire_with(&policy).unwrap();
+        let late = first.sealed_staging();
+        drop(first);
+        let second = Admission::try_acquire_with(&policy).unwrap();
+        let staging = second.sealed_staging();
+        let (_upload, root) = uploaded(second);
+        let _staged = crate::Staged::stage(&staging, &opened, &[]).unwrap();
+
+        late.revoke().unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(root.join(crate::sealed_file("NPM_TOKEN"))).unwrap(),
+            "opened-token",
+            "an earlier Build's revoke removed the next Build's value"
+        );
+        std::fs::remove_dir_all(&policy.state_directory).unwrap();
+    }
+
+    /// An owner takes back its Build's values before the Build staged them: the Build stages
+    /// none.
+    #[test]
+    fn a_revoke_before_staging_leaves_nothing_to_stage() {
+        let (policy, opened) = staging_policy();
+        let admission = Admission::try_acquire_with(&policy).unwrap();
+        let staging = admission.sealed_staging();
+        let (_upload, root) = uploaded(admission);
+
+        staging.revoke().unwrap();
+
+        assert!(matches!(
+            crate::Staged::stage(&staging, &opened, &[]),
+            Err(BuildError::Cancelled)
+        ));
+        assert!(!root.join(crate::sealed_file("NPM_TOKEN")).exists());
+        std::fs::remove_dir_all(&policy.state_directory).unwrap();
     }
 
     #[test]

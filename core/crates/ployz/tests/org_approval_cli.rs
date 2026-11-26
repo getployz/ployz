@@ -525,7 +525,6 @@ fn context_config_org_removal_hint_ignores_the_context_environment() {
     let cloud = fake_cloud(Arc::default(), true);
     let execute = |args: &[&str]| {
         Command::new(env!("CARGO_BIN_EXE_ployz"))
-            .arg("--why=test")
             .args(args)
             .env_clear()
             .env("HOME", dir.path())
@@ -538,6 +537,7 @@ fn context_config_org_removal_hint_ignores_the_context_environment() {
             .unwrap()
     };
     let asked = json_of(&execute(&[
+        "--why=test",
         "org",
         "rm",
         "acme",
@@ -552,12 +552,15 @@ fn context_config_org_removal_hint_ignores_the_context_environment() {
         .unwrap();
     assert!(!retry.contains("--context"), "{retry}");
     let words = shell_words::split(retry).unwrap();
+    // A retry withholds the typed reason, which the person types again.
     let args = words
         .get(1..)
         .unwrap()
         .iter()
-        .map(String::as_str)
-        .chain(["--json"])
+        .map(|word| match word.as_str() {
+            "<REASON>" => "test",
+            word => word,
+        })
         .collect::<Vec<_>>();
     let approved = execute(&args);
     assert!(approved.status.success(), "{}", json_of(&approved));

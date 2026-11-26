@@ -46,7 +46,7 @@ toast names those variables, the Service shows **· N not set**, and its Variabl
 **Set value** on each. Deploys leave a Not set variable out of the container until you set it.
 A variable that was ever sealed can't come back as plain text. A version that only set sealed
 values lists each variable it changed, shown **Sealed** or **Not set** without its value, though one saved
-before Ployz 0.3.4 may show none. It has nothing to undo, so its Undo is disabled and says **Sealed. Nothing to undo.** History does not recover deleted Volume data or undo private-image credential rotations.
+before Ployz 0.3.4 may show none. It has nothing to undo, so its Undo is disabled and says **Sealed. Nothing to undo.** History doesn't undo private-image credential rotations, and recovers deleted Volume data only after you [restore it from the server's trash](../services/volumes.md#get-deleted-data-back).
 An accepted deployment and its redeploys keep their original snapshot while you edit the draft.
 
 ## Redeploy or cancel a deployment
@@ -132,9 +132,9 @@ service's older versions too, and runs the version it signed for it.
 - **Automatic deploy rules stop.** A forget also retires each
   [automatic deploy rule](github.md#approve-a-rule-for-deploys-on-push) for those services that
   was approved before it. Pushes stop deploying them, and Ployz Cloud can't move or drain the
-  containers a rule built, until you approve the rule again with
-  `ployz github rule approve <service>...`. Approving it again approves the commit now at the
-  head of the rule's branch, so check that commit first.
+  containers a rule built, until you click **Approve again** under **Automatic deploys**.
+  Approving again approves the commit now at the head of the rule's branch, so check that
+  commit first.
 - **Forget goes by each device's clock.** The forget's time is your device's clock when you said
   yes. A version signed on a device whose clock runs behind yours can be forgotten even if it was
   signed after, and one signed on a device whose clock runs ahead can survive. Keep your devices'

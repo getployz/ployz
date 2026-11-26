@@ -1595,7 +1595,7 @@ pub(crate) fn changes_into(
 /// Captured when the Sync is made, so landing never reads a side that may be gone.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub(crate) struct Carried {
-    credentials: BTreeMap<String, ployz_core::config::EncryptedSecretValue>,
+    credentials: BTreeMap<String, ployz_core::SealedLogin>,
     policies: BTreeMap<String, Policy>,
 }
 
@@ -1608,7 +1608,7 @@ impl Carried {
     ) -> Result<Self, RpcError> {
         let mut carried = Self::default();
         for service in &from.services {
-            if let Some(sealed) = registry::sealed(tx, source, &service.id)? {
+            if let Some(sealed) = registry::stored(tx, source, &service.id)? {
                 carried.credentials.insert(service.id.clone(), sealed);
             }
             if let Some(policy) = policy::stored(tx, source, &service.id)? {

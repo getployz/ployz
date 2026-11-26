@@ -4,7 +4,7 @@ use std::path::Path;
 
 use clap::{ArgMatches, Command};
 
-use crate::cli::{base, positional, value};
+use crate::cli::{Rerun, base, positional, value};
 use serde::Serialize;
 use serde_json::json;
 
@@ -40,21 +40,18 @@ pub(super) fn no_contexts_next(leaf: &ArgMatches) -> Option<String> {
 pub(super) fn with_context_next(failure: Error, leaf: &ArgMatches) -> Error {
     let next = match failure.context_error() {
         Some(ContextError::NoContexts(_)) => no_contexts_next(leaf),
-        Some(ContextError::NoConnections { name, .. }) => Some(super::recovery_command(
-            leaf,
-            name,
-            &["server", "add", "--standalone"],
-        )),
+        Some(ContextError::NoConnections { name, .. }) => Some(
+            Rerun::then(leaf, &["server", "add", "--standalone"])
+                .set("context", name.as_str())
+                .line(),
+        ),
         _ => None,
     };
     failure.hint(next.map(Hint::Next))
 }
 
 fn config(matches: &ArgMatches) -> Result<Config, Error> {
-    if matches
-        .get_one::<String>("connect")
-        .is_some_and(|value| !value.is_empty())
-    {
+    if crate::cli::connection(matches).is_some_and(|value| !value.is_empty()) {
         return Err(Error::usage(
             "context management is unavailable with a direct connection",
         ));
@@ -117,19 +114,6 @@ pub(super) fn list(matches: &ArgMatches) -> Result<(), Error> {
     Ok(())
 }
 
-/// `ployz ctx use CONTEXT`, keeping a config file named on the command line;
-/// one from the environment is still set when the retry runs.
-pub(super) fn retry_use(leaf: &ArgMatches) -> String {
-    let mut args = vec!["ployz", "ctx", "use"];
-    if leaf.value_source("ployz-config") == Some(clap::parser::ValueSource::CommandLine)
-        && let Some(path) = leaf.get_one::<String>("ployz-config")
-    {
-        args.extend(["--ployz-config", path]);
-    }
-    args.push("CONTEXT");
-    shell_words::join(args)
-}
-
 pub(super) fn select(matches: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(matches);
     let mut config = config(matches)?;
@@ -170,7 +154,7 @@ pub(super) fn select(matches: &ArgMatches) -> Result<(), Error> {
                 current.unwrap_or(0),
                 || {
                     Error::usage("Choosing a context needs a terminal; name one instead.")
-                        .hint(Hint::Retry(retry_use(leaf)))
+                        .hint(Rerun::again(matches).placeholder("context-name", "CONTEXT"))
                         .hint(Hint::valid(names.iter().map(|name| name.as_str())))
                 },
                 "Cancelled. The current context is unchanged.",
@@ -274,7 +258,7 @@ fn connection_index(
 ) -> Result<usize, Error> {
     if connections.is_empty() {
         return Err(ContextError::NoConnections {
-            name: context.to_owned(),
+            name: crate::context::shown_context(context),
         }
         .into());
     }

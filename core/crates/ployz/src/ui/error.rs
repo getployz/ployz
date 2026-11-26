@@ -25,10 +25,8 @@ const fn label(hint: &Hint) -> Option<&'static str> {
 /// What the reader sees: a command they can paste, or names [`escaped`] to read as stored.
 fn text(hint: &Hint) -> String {
     match hint {
-        Hint::Next(command)
-        | Hint::Inspect(command)
-        | Hint::Retry(command)
-        | Hint::Undo(command) => pasteable(command),
+        Hint::Next(command) | Hint::Inspect(command) | Hint::Undo(command) => pasteable(command),
+        Hint::Retry(retry) => pasteable(retry.command()),
         Hint::Closest(name) => format!("did you mean {}?", escaped(name)),
         Hint::Valid(names) => {
             let names: Vec<_> = names.iter().map(|name| escaped(name)).collect();
@@ -259,7 +257,7 @@ mod tests {
             None,
             &[
                 Hint::Next(shell_words::join(next)),
-                Hint::Retry(shell_words::join(retry)),
+                crate::cli::retry_hint(&shell_words::join(retry)),
                 Hint::Undo("ployz config rm-file app 'a\u{202E}b.txt".into()),
             ],
         )
@@ -305,7 +303,7 @@ mod tests {
             None,
             &[
                 Hint::Next(hints[0].into()),
-                Hint::Retry(hints[1].into()),
+                crate::cli::retry_hint(hints[1]),
                 Hint::Undo(hints[2].into()),
                 Hint::Inspect(hints[3].into()),
             ],
@@ -335,6 +333,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "renders hints as an error from the wire carries them"
+    )]
     fn the_closest_name_shows_even_when_the_list_is_cut() {
         let details = serde_json::json!({
             "did_you_mean": "s11",

@@ -93,29 +93,42 @@ pub(crate) mod test_support {
     use std::{
         collections::BTreeMap,
         path::Path,
-        sync::{Arc, Mutex},
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicBool, Ordering},
+        },
     };
 
     use axum::{Router, extract::State, http::Uri, response::IntoResponse};
     use serde_json::Value;
 
     use super::Plugin;
+    use crate::volume_copy::{INSPECT_ROUTE, WRITER_ROUTE};
 
     type Effect = Arc<dyn Fn() + Send + Sync>;
 
     /// A plugin that answers each route with a canned reply and records every call. A
-    /// route without a reply answers an internal error.
+    /// route without a reply answers an internal error. Like the plugin, its Writer
+    /// route records the request's start image on the root it answers, and Inspect
+    /// answers it from then on.
     #[derive(Clone, Default)]
     pub(crate) struct FakePlugin {
         pub(crate) calls: Arc<Mutex<Vec<(String, Value)>>>,
         pub(crate) replies: Arc<Mutex<BTreeMap<String, Value>>>,
         effects: Arc<Mutex<BTreeMap<String, Effect>>>,
         gates: Arc<Mutex<BTreeMap<String, Arc<tokio::sync::RwLock<()>>>>>,
+        records_no_image: Arc<AtomicBool>,
     }
 
     impl FakePlugin {
         pub(crate) fn reply(&self, route: &str, reply: Value) {
             self.replies.lock().unwrap().insert(route.to_owned(), reply);
+        }
+
+        /// Answers the Writer route without the start image, as a plugin from before
+        /// `ployz:image` does.
+        pub(crate) fn records_no_image(&self) {
+            self.records_no_image.store(true, Ordering::SeqCst);
         }
 
         /// Runs `effect` each time `route` is called, before the canned reply.
@@ -161,13 +174,37 @@ pub(crate) mod test_support {
         }
     }
 
+    impl FakePlugin {
+        /// Sets `placed` on the root the Writer route and Inspect answer, or clears it.
+        fn record_image(&self, image: Option<&Value>) {
+            let mut replies = self.replies.lock().unwrap();
+            for route in [WRITER_ROUTE, INSPECT_ROUTE] {
+                let Some(root) = replies
+                    .get_mut(route)
+                    .and_then(|reply| reply.get_mut("Ok"))
+                    .and_then(Value::as_object_mut)
+                    .filter(|root| root.get("kind").and_then(Value::as_str) == Some("root"))
+                else {
+                    continue;
+                };
+                match image {
+                    Some(image) => root.insert("placed".to_owned(), image.clone()),
+                    None => root.remove("placed"),
+                };
+            }
+        }
+    }
+
     async fn answer(
         State(fake): State<FakePlugin>,
         uri: Uri,
         axum::Json(request): axum::Json<Value>,
     ) -> axum::response::Response {
         let route = uri.path().trim_start_matches('/').to_owned();
-        fake.calls.lock().unwrap().push((route.clone(), request));
+        fake.calls
+            .lock()
+            .unwrap()
+            .push((route.clone(), request.clone()));
         let gate = fake.gates.lock().unwrap().get(&route).cloned();
         if let Some(gate) = gate {
             drop(gate.read().await);
@@ -175,6 +212,9 @@ pub(crate) mod test_support {
         let effect = fake.effects.lock().unwrap().get(&route).cloned();
         if let Some(effect) = effect {
             effect();
+        }
+        if route == WRITER_ROUTE && !fake.records_no_image.load(Ordering::SeqCst) {
+            fake.record_image(request.get("image"));
         }
         let reply = fake.replies.lock().unwrap().get(&route).cloned();
         match reply {

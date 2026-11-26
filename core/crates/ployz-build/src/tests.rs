@@ -133,6 +133,61 @@ fn chatty_builds_deliver_the_final_diagnosis_without_a_disk_spool() {
     std::fs::remove_dir_all(directory).unwrap();
 }
 
+/// A Build is cancelled while its next Docker command is still being set up: that command
+/// never starts.
+#[test]
+fn a_cancel_during_a_commands_setup_starts_nothing() {
+    let directory = std::env::temp_dir().join(format!("ployz-setup-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&directory).unwrap();
+    let program = directory.join("docker");
+    executable(
+        &program,
+        "#!/bin/sh\ncase \"$1\" in --ready) exit 0 ;; esac\nexit 0\n",
+    );
+    // Each captured stream opens a FIFO, which blocks the setup until this test reads it.
+    for stream in ["docker-output", "docker-diagnosis"] {
+        assert!(
+            Command::new("mkfifo")
+                .arg(directory.join(stream))
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let cancellation = Cancellation::default();
+    let environment = BTreeMap::new();
+    let docker = Docker {
+        program: &program,
+        environment: &environment,
+        working_dir: &directory,
+        deadline: Deadline::starting_now(Duration::from_secs(10)),
+        cancellation: Some(&cancellation),
+        progress: None,
+        recorder: None,
+    };
+    let started = std::sync::atomic::AtomicBool::new(false);
+    let ran = std::thread::scope(|scope| {
+        let running = scope.spawn(|| {
+            docker.run_started("the build", &[], Streams::Captured, || {
+                started.store(true, std::sync::atomic::Ordering::SeqCst);
+            })
+        });
+        // Opening the first stream meets the setup there, past any check it made before.
+        let output = std::fs::File::open(directory.join("docker-output")).unwrap();
+        cancellation.cancel();
+        let diagnosis = std::fs::File::open(directory.join("docker-diagnosis")).unwrap();
+        let ran = running.join().unwrap();
+        drop((output, diagnosis));
+        ran
+    });
+    assert!(matches!(ran, Err(BuildError::Cancelled)), "{ran:?}");
+    assert!(
+        !started.load(std::sync::atomic::Ordering::SeqCst),
+        "a cancelled Build started its next command"
+    );
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 #[test]
 fn cancellation_does_not_wait_for_a_surviving_output_writer() {
     let directory = std::env::temp_dir().join(format!("ployz-writer-{}", uuid::Uuid::new_v4()));
@@ -637,7 +692,7 @@ esac
             sealed: false,
             cache_scope: None,
         };
-        execute(&request, &Cancellation::new(), None, &|_| ()).unwrap();
+        execute(&request, &Cancellation::new(), None, &|_| (), &|_| ()).unwrap();
         std::fs::remove_dir_all(directory).unwrap();
         Command::new("kill")
             .args([&signal, &std::process::id().to_string()])
@@ -929,7 +984,10 @@ fn a_cache_export_runs_nothing(
         cache_scope: None,
     };
     // Any Docker call would fail: this Docker does not exist.
-    assert_eq!(export_cache(&request, &Cancellation::new(), None), Ok(()));
+    assert_eq!(
+        export_cache(&request, &Cancellation::new(), None, &|_| ()),
+        Ok(())
+    );
 }
 
 #[test]
@@ -1025,7 +1083,8 @@ fn railpack_delivers_a_sealed_value_to_a_build_step_and_keeps_it_out_of_the_imag
         Vec::new(),
     );
     let targets = [target("web", None)];
-    let _files = Staged::stage(&directory, &opened, &targets).unwrap();
+    let _files =
+        Staged::stage(&crate::SealedStaging::under(&directory), &opened, &targets).unwrap();
     let railpack = [Railpack {
         name: "web".into(),
         context: "source/app".into(),

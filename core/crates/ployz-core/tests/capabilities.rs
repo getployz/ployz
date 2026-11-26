@@ -110,6 +110,18 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
         "fails closed: an older daemon refuses a Key step carrying `prior` or `name` for its unknown fields, and a `remove_grant` for its unknown kind, so `ployz key` checks for it on every Server first",
     ),
     (
+        "ployz.container.replaces.v1",
+        "gated: a Deploy asks to remove a leftover copy's anonymous Volumes only on a Server advertising it, and asks any other to keep them, since an older daemon removes them as asked. An older daemon ignores `replaces` on EnsureContainer",
+    ),
+    (
+        "ployz.volume.kept.list.v1",
+        "refused legibly: `ployz server volumes` says the Server needs a daemon upgrade, and `ployz server show` leaves its kept volumes out",
+    ),
+    (
+        "ployz.volume.kept.remove.v1",
+        "refused legibly: `ployz server volumes prune` lists first, so an older daemon refuses the list and the CLI says the Server needs a daemon upgrade",
+    ),
+    (
         "ployz.metrics.live.v1",
         "refused legibly: `ployz metrics` names a Server whose daemon lacks it as not answering",
     ),
@@ -150,8 +162,16 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
         "gated: nothing sends an Operator's Create with versions yet; Cloud must send one only to a Server advertising it. An older daemon ignores `versions`, `rule` and `check` and refuses an Operator's Create before any copy changes, so a Move there fails closed",
     ),
     (
+        "ployz.volume.start.image.v1",
+        "gated: Cloud starts a Move's Writer only on a destination advertising it, and otherwise refuses naming the Server to upgrade. An older daemon pulls the start's image again on a start resent after its promote, so the image could have moved",
+    ),
+    (
         "ployz.volume.cut.running.v1",
         "gated: a drain sends a cut that needs its holder running only to a Server advertising it, and otherwise leaves the Service where it is, naming the Server to upgrade. An older daemon ignores `running` and cuts a stopped holder",
+    ),
+    (
+        "ployz.volume.keep-written.v1",
+        "gated: Cloud sends a full sync's Forget, or a mirror onto a slot a departure parked, only to a Server advertising it, and otherwise refuses naming the Server to upgrade. An older daemon ignores `discard` and destroys any slot a Forget names, as `mirror rm` asks",
     ),
     (
         "ployz.volume.seed-copy.v1",

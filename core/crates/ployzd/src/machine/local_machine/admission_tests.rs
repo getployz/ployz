@@ -752,6 +752,7 @@ async fn a_trash_restore_of_another_servers_preview_changes_nothing() {
     let machine = fixture.machine.clone().with_plugin(served);
     let request = ployz_core::RestoreTrashRequest {
         id: ployz_core::TrashId::parse(&id).unwrap(),
+        promote: false,
     };
     let refused = machine.restore_trash(&request).await;
     assert!(
@@ -789,6 +790,7 @@ async fn a_trash_restore_of_an_entry_not_listed_readable_changes_nothing() {
     let machine = fixture.machine.clone().with_plugin(served);
     let request = ployz_core::RestoreTrashRequest {
         id: ployz_core::TrashId::parse(&id).unwrap(),
+        promote: false,
     };
     let refused = machine.restore_trash(&request).await;
     assert!(
