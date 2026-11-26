@@ -7270,6 +7270,77 @@ mod ensure_container {
             std::fs::remove_dir_all(fixture.data_dir).unwrap();
         }
 
+        /// A pin and a Free receipt that name different images settle nothing: an empty
+        /// slot makes neither, and a slot holding the pinned image neither answers it as
+        /// running nor starts it.
+        #[tokio::test]
+        #[expect(clippy::indexing_slicing, reason = "JSON fixture")]
+        async fn a_pin_and_a_receipt_for_different_images_run_neither() {
+            let (data_dir, store, service, fake, runtime, cluster) =
+                fake_docker_service_sealing("ployzd-free-pin-conflict").await;
+            let mut fixture = enforce((data_dir, store, service, fake, runtime)).await;
+            let _replica = fixture.with_replica().await;
+            let service = &fixture.service;
+            let a = ployz_core::ImageDigest::parse(format!("sha256:{}", "d".repeat(64))).unwrap();
+            let b = ployz_core::ImageDigest::parse(format!("sha256:{}", "e".repeat(64))).unwrap();
+            let receipt_a = cluster.store().free_receipt(&a).unwrap();
+            let receipt_b = cluster.store().free_receipt(&b).unwrap();
+            // A tag, as the pinned route takes.
+            let tagged = spec("8.8.8.8/api:1");
+            let pinned = |key: &str| {
+                let mut want = new_want("service_container", key, &tagged);
+                let new = &mut want["container"]["new"];
+                new["image_id"] = json!(a);
+                new["free_receipt"] = json!(receipt_b);
+                new["image_prepared"] = json!(true);
+                new["answer"] = json!("settled");
+                want
+            };
+            let pinned_ensure = |want: Value| async move {
+                let request = Request::new(
+                    op::EnsurePinnedContainer::into_request(
+                        serde_json::from_value(json!({"want": want})).unwrap(),
+                    )
+                    .encode()
+                    .unwrap(),
+                );
+                service
+                    .ensure_pinned_container(as_operator(request, true))
+                    .await
+                    .unwrap()
+                    .into_inner()
+                    .decode_response()
+                    .unwrap()
+                    .decode::<op::EnsurePinnedContainer>()
+                    .unwrap()
+            };
+            let differ = "differ; send one";
+
+            let seen = requests(&fixture.fake).len();
+            let empty = pinned_ensure(pinned("k-empty")).await;
+            assert!(format!("{empty:?}").contains(differ), "{empty:?}");
+            assert_eq!(
+                creates(&fixture.fake, seen),
+                0,
+                "an empty slot makes nothing"
+            );
+
+            // The slot already holds A, made from A's receipt.
+            let mut held = new_want("service_container", "k-held", &tagged);
+            held["container"]["new"]["free_receipt"] = json!(receipt_a);
+            present(&deploy_ensure(service, held, None).await.unwrap());
+            let seen = requests(&fixture.fake).len();
+            let reused = pinned_ensure(pinned("k-held")).await;
+            assert!(format!("{reused:?}").contains(differ), "{reused:?}");
+            assert_eq!(
+                ends_with(&requests_since(&fixture.fake, seen), Method::POST, "/start").count(),
+                0,
+                "nothing started"
+            );
+            assert_eq!(creates(&fixture.fake, seen), 0, "nothing made");
+            std::fs::remove_dir_all(fixture.data_dir).unwrap();
+        }
+
         #[tokio::test]
         async fn a_signed_hook_never_starts_again_but_adopts_a_resent_one() {
             let fixture = enforced("ployzd-deploy-hook-start").await;

@@ -156,6 +156,41 @@ async fn each_free_build_removes_the_free_images_gone_idle_and_only_those() {
     );
 }
 
+// A Free Build loads its targets one at a time, so one that fails may still have
+// loaded an image: its cleanup runs whatever the outcome.
+#[tokio::test]
+async fn a_failed_free_build_still_removes_the_free_images_gone_idle() {
+    let cluster = crate::sealed_env::test_support::Cluster::new();
+    let fixture = Fixture::with(|_| {}, Some(cluster.dir.0.clone())).await;
+    let idle = format!("sha256:{}", "a".repeat(64));
+    fixture
+        .docker
+        .listed_images
+        .lock()
+        .unwrap()
+        .push(serde_json::json!({
+            "Id": idle, "ParentId": "", "RepoTags": [], "RepoDigests": [], "Created": 0,
+            "Size": 1, "SharedSize": 0, "Containers": 0,
+            "Labels": {ployz_build::FREE_IMAGE_LABEL: "true"},
+            "LastTagTime": (chrono::Utc::now() - chrono::Duration::days(30)).to_rfc3339(),
+        }));
+    let dir = fixture.root.join("free-capture");
+    capture(&dir, &[]);
+    // The run writes its output, so its image may be loaded, then fails.
+    fs::write(fixture.root.join("fail-after-output"), "").unwrap();
+    let removed = fixture.docker.image_removed.clone();
+    let mut removal = std::pin::pin!(removed.notified());
+    removal.as_mut().enable();
+
+    let outcome = fixture.build_free(definition(), &dir).await;
+
+    assert!(matches!(outcome, Outcome::Failed { .. }), "{outcome:?}");
+    tokio::time::timeout(Duration::from_secs(10), removal)
+        .await
+        .expect("the failed Free Build's cleanup removed the idle image");
+    assert_eq!(*fixture.docker.removed_images.lock().unwrap(), [idle]);
+}
+
 #[tokio::test]
 async fn a_free_build_refuses_private_material_as_it_arrives_and_never_opens_it() {
     let cluster = crate::sealed_env::test_support::Cluster::new();

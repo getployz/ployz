@@ -5,6 +5,7 @@ use std::sync::Arc;
 use ployz_core::{MachineId, Namespace, ResolvedServiceSpec, ServiceId, ServiceMode};
 use serde_json::json;
 
+use super::Runs;
 use crate::machine::{LocalMachine, LocalMachineError, LocalMachineStore, RecordOwner};
 use crate::storage::test_support::FakePlugin;
 
@@ -847,7 +848,7 @@ async fn a_racing_create_that_adopts_an_exited_hook_does_not_start_it() {
 
     assert!(matches!(
         local
-            .create_and_start(new.clone(), None, None, admitted.clone(), None)
+            .create_and_start(new.clone(), Runs::Spec, None, admitted.clone(), None)
             .await
             .unwrap(),
         super::Made::Acted(_, None)
@@ -867,7 +868,7 @@ async fn a_racing_create_that_adopts_an_exited_hook_does_not_start_it() {
     }
     assert!(matches!(
         local
-            .create_and_start(new, None, None, admitted, None)
+            .create_and_start(new, Runs::Spec, None, admitted, None)
             .await
             .unwrap(),
         super::Made::Acted(_, None)
@@ -1731,7 +1732,13 @@ mod settled {
             .unwrap();
         assert!(!admitted.signed());
         let first = local
-            .create_and_start(new.clone(), Some(image("a")), None, admitted.clone(), None)
+            .create_and_start(
+                new.clone(),
+                Runs::Free(image("a")),
+                None,
+                admitted.clone(),
+                None,
+            )
             .await
             .unwrap();
         assert!(
@@ -1742,7 +1749,7 @@ mod settled {
 
         // A second request read the slot empty, then its create adopted the first one's.
         let adopted = local
-            .create_and_start(new, Some(image("b")), None, admitted, None)
+            .create_and_start(new, Runs::Free(image("b")), None, admitted, None)
             .await
             .unwrap();
 

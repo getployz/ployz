@@ -56,6 +56,7 @@ pub(crate) fn start(
         let shutdown = runner.shutdown.clone();
         let state = Arc::new(AttemptState::default());
         let cleanup = local.clone();
+        let free = access == Access::Free;
         let outcome = attempt(
             local,
             requests,
@@ -65,7 +66,6 @@ pub(crate) fn start(
             (sealing, access),
         )
         .await;
-        let loaded_free = matches!(outcome, Outcome::FreeImages { .. });
         let message = "Build terminal report exceeds the response size limit";
         let fallback = match &outcome {
             Outcome::Unknown { stage, .. } => Outcome::Unknown {
@@ -86,9 +86,9 @@ pub(crate) fn start(
             remote::encode(&Event::Finished(fallback)).expect("bounded terminal fallback")
         });
         let _ = tokio::time::timeout(Duration::from_secs(5), events.send(Ok(payload))).await;
-        // Each Free Build loads a new image, which nothing else removes on a Server only
-        // Cloud deploys to.
-        if loaded_free && let Err(error) = cleanup.prune_free_images().await {
+        // A Free Build may load images whatever its outcome, one target at a time, and
+        // nothing else removes them on a Server only Cloud deploys to.
+        if free && let Err(error) = cleanup.prune_free_images().await {
             tracing::warn!(
                 error = %ployz_core::error_chain::inline(&error),
                 "Free Build image cleanup failed"

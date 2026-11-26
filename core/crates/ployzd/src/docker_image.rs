@@ -69,6 +69,11 @@ pub enum FreeImageRefusal {
     NotThisCluster(ployz_core::ImageDigest),
     #[error("image {0} isn't on this Server; copy it here, then create the Container again")]
     Absent(ployz_core::ImageDigest),
+    #[error("the image ID {pinned} and the Free receipt's image {receipt} differ; send one")]
+    Conflicts {
+        pinned: ployz_core::ImageDigest,
+        receipt: ployz_core::ImageDigest,
+    },
 }
 
 /// `image`'s repository, registry and port kept, pinned to `id`: `repo:tag` becomes
