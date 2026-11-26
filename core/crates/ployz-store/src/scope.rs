@@ -18,6 +18,7 @@ use crate::followup::FollowUp;
 use crate::id::{EnvironmentId, EnvironmentName, ProjectId, ProjectName, Revision, VolumeName};
 use crate::storage::Tx;
 use crate::storage::json_text;
+use crate::storage::ranked::{self, Lock};
 use crate::trusted::Evidence;
 
 /// Which Environment a request addresses. An omitted Project means the
@@ -607,6 +608,7 @@ pub(crate) fn lock_all(
 ) -> Result<(), RpcError> {
     let ids: std::collections::BTreeSet<EnvironmentId> = ids.into_iter().collect();
     for id in ids {
+        ranked::take(Lock::environment(&id));
         tx.execute(
             "UPDATE config_environment SET working_revision = working_revision WHERE id = ?1",
             &[id.as_str().into()],
@@ -616,10 +618,12 @@ pub(crate) fn lock_all(
 }
 
 /// Lock Project `id`, serialising the writes in it that take this lock. A writer
-/// takes it before any Environment lock.
+/// takes it after any pull request row and before any PR plan or Environment, as
+/// [`crate::storage::ranked`] checks.
 // ponytail: this serialises multi-Environment writes within a Project; go back to
 // ID-ordered lock_all if throughput matters.
 pub(crate) fn lock_project(tx: &mut dyn Tx, id: &ProjectId) -> Result<(), RpcError> {
+    ranked::take(Lock::project(id));
     tx.execute(
         "UPDATE config_project SET name = name WHERE id = ?1",
         &[id.as_str().into()],
@@ -627,14 +631,21 @@ pub(crate) fn lock_project(tx: &mut dyn Tx, id: &ProjectId) -> Result<(), RpcErr
     Ok(())
 }
 
-/// Lock the Project of Environment `id`, as [`lock_project`] does.
-pub(crate) fn lock_project_of(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<(), RpcError> {
-    tx.execute(
-        "UPDATE config_project SET name = name \
-         WHERE id = (SELECT project_id FROM config_environment WHERE id = ?1)",
+/// Lock the Project of Environment `id`, as [`lock_project`] does, and return it.
+pub(crate) fn lock_project_of(
+    tx: &mut dyn Tx,
+    id: &EnvironmentId,
+) -> Result<Option<ProjectId>, RpcError> {
+    let rows = tx.query(
+        "SELECT project_id FROM config_environment WHERE id = ?1",
         &[id.as_str().into()],
     )?;
-    Ok(())
+    let Some(row) = rows.first() else {
+        return Ok(None);
+    };
+    let project = row.parse(0, "Project ID")?;
+    lock_project(tx, &project)?;
+    Ok(Some(project))
 }
 
 /// Lock and load Environment `id` of `who`'s Organization, as [`lock`] does.
@@ -960,6 +971,7 @@ fn persist_working(
     }
     environment.removed = removed;
     environment.summary.revision = environment.summary.revision.next();
+    ranked::take(Lock::environment(&environment.summary.id));
     tx.execute(
         "UPDATE config_environment SET working_revision = ?1, working = ?2, removed = ?3 WHERE id = ?4",
         &[
@@ -988,6 +1000,7 @@ fn persist_removed(tx: &mut dyn Tx, environment: &mut Environment) -> Result<(),
     let mut removed = removed_of(tx, &environment.summary.id)?;
     removed.adopt(&environment.removed);
     environment.removed = removed;
+    ranked::take(Lock::environment(&environment.summary.id));
     tx.execute(
         "UPDATE config_environment SET removed = ?1 WHERE id = ?2",
         &[
@@ -1207,6 +1220,7 @@ pub(crate) fn purge(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<(), 
         "DELETE FROM config_sync_arrival WHERE environment_id = ?1",
         &[environment.as_str().into()],
     )?;
+    ranked::take(Lock::environment(environment));
     tx.execute(
         "DELETE FROM config_environment WHERE id = ?1",
         &[environment.as_str().into()],

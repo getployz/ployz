@@ -604,6 +604,7 @@ async fn sample(case: &Case, machine: &Enforcing) -> Sample {
         (ployz_core::CLOSE_PREVIEW_CAPABILITY, _) => unary::<op::ClosePreview>(json!({
             "namespace": format!("pv-{}-{}-0000aaaa", "1".repeat(16), "2".repeat(8)),
         })),
+        (ployz_core::LIST_PREVIEWS_CAPABILITY, _) => unary::<op::ListPreviews>(json!({})),
         (ployz_core::PRUNE_IMAGES_CAPABILITY, _) => {
             unary::<op::PruneImages>(json!({"repositories": []}))
         }

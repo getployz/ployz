@@ -182,7 +182,8 @@ pub(crate) fn lock_below(
     branch: &EnvironmentId,
 ) -> Result<Environment, RpcError> {
     tx.wait_for_locks(Some(BRANCH_LOCK_WAIT))?;
-    let branch = scope::lock_id(tx, who, branch)?;
+    // Out of the order, as a Branch may sort before its Parent: the wait gives up.
+    let branch = crate::storage::ranked::bounded(|| scope::lock_id(tx, who, branch))?;
     tx.wait_for_locks(None)?;
     Ok(branch)
 }

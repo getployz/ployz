@@ -3,9 +3,9 @@
 //! then its Volumes, and only then is it marked Closed. A Close that stops halfway stays
 //! Closing, and a daemon start or another Close runs the whole sweep again.
 
-use ployz_core::{Namespace, PreviewClosed, PreviewNamespace, PreviewRefusal};
+use ployz_core::{Namespace, PreviewClosed, PreviewNamespace, PreviewRefusal, PreviewsHeld};
 
-use super::{Checked, Error, LocalMachine};
+use super::{Checked, Error, LocalMachine, consumption::PreviewState};
 
 impl LocalMachine {
     /// Close `namespace`: an exact preview Namespace this Server opened. Anything else is
@@ -31,9 +31,20 @@ impl LocalMachine {
         .await
     }
 
+    /// The previews this Server runs, and those whose Close didn't finish.
+    ///
+    /// # Errors
+    /// Returns [`Error::ApprovalRecord`] when the record cannot be read.
+    pub(crate) fn list_previews(&self) -> Result<PreviewsHeld, Error> {
+        Ok(PreviewsHeld {
+            open: self.approvals.previews(PreviewState::Open)?,
+            closing: self.approvals.previews(PreviewState::Closing)?,
+        })
+    }
+
     /// Run again the Close of every preview whose sweep a stop interrupted.
     pub(crate) async fn resume_preview_closes(&self) {
-        let closing = match self.approvals.closing_previews() {
+        let closing = match self.approvals.previews(PreviewState::Closing) {
             Ok(closing) => closing,
             Err(error) => {
                 tracing::warn!(error = %ployz_core::error_chain::inline(&error), "couldn't read which previews are closing");

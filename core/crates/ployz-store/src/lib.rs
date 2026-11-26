@@ -103,8 +103,9 @@ pub use permission::Permission;
 pub use ployz_core::config::RowId;
 pub use pull_request::{
     ApprovePullRequest, MergeRow, OnMerge, OnMergeCheck, OnMergeConclusion, OnMergeQuery,
-    OpenPullRequest, PrPlansQuery, PrPlansView, PullRequest, PullRequestQuery, PullRequestRef,
-    PullRequestView, Ride, SetMergeValue, SetPrPlan, Standing, Sweep,
+    OpenPreviewsQuery, OpenPreviewsView, OpenPullRequest, PrPlansQuery, PrPlansView, PreviewPlan,
+    PullRequest, PullRequestQuery, PullRequestRef, PullRequestView, Ride, SetMergeValue, SetPrPlan,
+    Standing, Sweep,
 };
 pub use query::*;
 pub use region::{
@@ -135,7 +136,7 @@ pub use teardown::{
 };
 pub use trusted::{
     Approval, Asks, ObservationFailure, ObservationStage, RunningObservation, SealingRecipient,
-    Trusted, VolumeObservation,
+    Signers, Trusted, VolumeObservation,
 };
 pub use variables::holds_secret_text;
 pub use volume::size::{Unheld, VolumeResized};

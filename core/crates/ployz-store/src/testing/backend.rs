@@ -488,3 +488,8 @@ fn texts(url: &str, sql: &str) -> Vec<Vec<String>> {
             .collect(),
     }
 }
+
+/// What `work` returns, and how many statements its Store calls ran.
+pub fn statements<T>(work: impl FnOnce() -> T) -> (T, usize) {
+    crate::storage::counted::statements(work)
+}

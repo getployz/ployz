@@ -808,6 +808,26 @@ async fn a_preview_start_refuses_a_kept_container_of_the_image_its_tag_left() {
     assert_eq!(promotes(&plugin), 1, "a refused start promoted the copy");
 }
 
+/// The previews this Server lists as open, which Cloud closes when the Store doesn't.
+async fn held_open(service: &MachineService) -> Vec<Namespace> {
+    held(service).await.open
+}
+
+/// The previews this Server lists, open and closing.
+async fn held(service: &MachineService) -> ployz_core::PreviewsHeld {
+    let request = ployz_core::ListPreviewsRequest {};
+    let response = service
+        .list_previews(Request::new(
+            op::ListPreviews::into_request(request).encode().unwrap(),
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .decode_response()
+        .unwrap();
+    response.decode::<op::ListPreviews>().unwrap()
+}
+
 async fn close(
     service: &MachineService,
     namespace: &Namespace,
@@ -901,8 +921,14 @@ async fn a_closed_preview_runs_and_receives_nothing_more() {
     plugin.reply(PREVIEW_CLOSE_ROUTE, json!({"Ok": {"destroyed": [volume]}}));
     let (service, namespace, spec, volume) = created_preview(&fleet, &plugin).await;
     let promoted = promotes(&plugin);
+    assert_eq!(held_open(&service).await, std::slice::from_ref(&namespace));
 
     let closed = close(&service, &namespace).await.unwrap();
+
+    assert!(
+        held_open(&service).await.is_empty(),
+        "a closed preview is still listed open"
+    );
 
     assert_eq!(closed.destroyed, std::slice::from_ref(&volume));
     assert_eq!(
@@ -1189,6 +1215,12 @@ async fn a_close_stopped_mid_sweep_is_finished_by_its_resume() {
     let stopped = close(&service, &namespace).await;
     assert!(stopped.is_err(), "{stopped:?}");
     assert!(!holds_a_container(node));
+    let listed = held(&service).await;
+    assert_eq!(
+        (listed.open, listed.closing),
+        (Vec::new(), vec![namespace.clone()]),
+        "Cloud's sweep sees it is left to close"
+    );
     let start = try_set_copy(&service, preview_writer_at(&namespace, &spec, &volume, 2)).await;
     assert!(
         start
@@ -1210,6 +1242,7 @@ async fn a_close_stopped_mid_sweep_is_finished_by_its_resume() {
         2,
         "a finished Close is not resumed again"
     );
+    assert_eq!(held(&service).await, ployz_core::PreviewsHeld::default());
 }
 
 /// A Close that can't remove the preview's Container leaves it Closing, and the Container

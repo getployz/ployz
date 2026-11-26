@@ -619,6 +619,12 @@ impl MachineRpc for MachineService {
         finish(local.close_preview(request.namespace).await)
     }
 
+    async fn list_previews(&self, request: Request<OpaquePayload>) -> Answer {
+        let local = self.at(&request);
+        expect::<op::ListPreviews>(request)?;
+        finish(local.list_previews())
+    }
+
     async fn build(
         &self,
         request: Request<tonic::Streaming<OpaquePayload>>,

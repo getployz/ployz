@@ -788,15 +788,16 @@ impl ConsumptionLog {
         })
     }
 
-    /// Every preview whose Close began and never finished, which a daemon start resumes.
+    /// Every preview in `state`: Closing ones a daemon start resumes, and Open ones Cloud
+    /// checks against what it holds open.
     ///
     /// # Errors
     /// Returns [`Error::ApprovalRecord`] when the record cannot be read.
-    pub(crate) fn closing_previews(&self) -> Result<Vec<Namespace>, Error> {
+    pub(crate) fn previews(&self, state: PreviewState) -> Result<Vec<Namespace>, Error> {
         self.read(Error::ApprovalRecord, |log| {
             log.previews
                 .iter()
-                .filter(|(_, state)| **state == PreviewState::Closing)
+                .filter(|(_, held)| **held == state)
                 .map(|(preview, _)| preview.clone())
                 .collect()
         })
