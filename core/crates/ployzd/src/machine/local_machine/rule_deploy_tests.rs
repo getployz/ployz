@@ -10,7 +10,7 @@ use ployz_core::{
 use serde_json::{Value, json};
 
 use super::super::rule_grant::tests::{
-    Fixture, claim_for, commit, fixture, github, now, rule_for, token_for,
+    Fixture, claim_for, commit, fixture, github, github_mut, now, rule_for, token_for,
 };
 use super::*;
 
@@ -92,7 +92,7 @@ impl Fixture {
         RuleProof {
             rule: Signed::sign(rule, &self.signer).unwrap(),
             evidence: RuleEvidence::Online(GithubToken::new(token)),
-            claim: claim.clone(),
+            claim: Some(claim.clone()),
             reader: None,
         }
     }
@@ -112,7 +112,7 @@ impl Fixture {
             .admit_rule_deploy(
                 &want,
                 proof,
-                &github(commit()),
+                (&github(commit()), &NoRegistry),
                 now(),
                 &mut Budget::default(),
                 Admit::Record,
@@ -134,7 +134,7 @@ impl Fixture {
             .admit_rule_deploy(
                 &want,
                 proof,
-                &github(head),
+                (&github(head), &NoRegistry),
                 at,
                 &mut Budget::default(),
                 Admit::Record,
@@ -152,7 +152,7 @@ impl Fixture {
             .admit_rule_deploy(
                 &want("pre_deploy_hook", key, &spec()),
                 proof,
-                &github(commit()),
+                (&github(commit()), &NoRegistry),
                 now(),
                 &mut Budget::default(),
                 Admit::Record,
@@ -162,6 +162,19 @@ impl Fixture {
             .hook
             .expect("a hook's admission names its place")
             .take(&self.machine.approvals)
+    }
+}
+
+/// A registry no GitHub rule reaches: its pull is a bug.
+struct NoRegistry;
+
+impl Registry for NoRegistry {
+    async fn pull(
+        &self,
+        pin: &ployz_core::authority::RegistryPin,
+        _login: Option<&ployz_core::SealedLogin>,
+    ) -> Result<ployz_core::ImageDigest, Error> {
+        panic!("a GitHub rule pulled {}", pin.reference())
     }
 }
 
@@ -309,7 +322,7 @@ async fn a_verified_build_stands_only_for_its_own_build_service_and_generation()
         .issued(want("service_container", "k1", &spec()), &proof)
         .await;
     let offline = |claim: &BuildClaim, verified| RuleProof {
-        claim: claim.clone(),
+        claim: Some(claim.clone()),
         ..Fixture::offline(&proof, verified)
     };
     let fixture = &fixture;
@@ -435,7 +448,7 @@ async fn a_verified_build_under_a_retired_builder_is_refused() {
     let fixture = fixture().await;
     let lab = "a19b4fca3adea371c25ec29f181e8c7d21037d1e";
     let mut rule = fixture.deploy_rule(3);
-    rule.source.builder = Builder {
+    github_mut(&mut rule).builder = Builder {
         r#ref: format!("getployz/build/.github/workflows/build.yml@{lab}"),
         sha: CommitSha::parse(lab).unwrap(),
     };
@@ -459,7 +472,7 @@ async fn a_verified_build_under_a_retired_builder_is_refused() {
             &RuleProof {
                 rule: signed,
                 evidence: RuleEvidence::Verified(verified),
-                claim,
+                claim: Some(claim),
                 reader: None,
             },
             moved(),
@@ -555,7 +568,7 @@ async fn what_a_rule_admitted_stops_standing_once_a_newer_generation_arrives() {
         .admit_rule_deploy(
             &want("service_container", "k1", &spec()),
             &fixture.proof(&old, &claim, token_for(&claim, "old")),
-            &github(commit()),
+            (&github(commit()), &NoRegistry),
             now(),
             &mut Budget::default(),
             Admit::Record,
@@ -658,9 +671,14 @@ async fn a_newer_generation_landing_during_the_head_read_refuses_the_older_one()
     let first = want("service_container", "k1", &spec());
     let mut budget = Budget::default();
     let (in_flight, ()) = tokio::join!(
-        fixture
-            .machine
-            .admit_rule_deploy(&first, &stale, &slow, now(), &mut budget, Admit::Record),
+        fixture.machine.admit_rule_deploy(
+            &first,
+            &stale,
+            (&slow, &NoRegistry),
+            now(),
+            &mut budget,
+            Admit::Record,
+        ),
         async {
             slow.reached.notified().await;
             fixture
@@ -742,7 +760,7 @@ async fn a_new_builds_token_is_charged_to_the_same_budget_as_the_rule() {
         .admit_rule_deploy(
             &want("service_container", "k1", &spec()),
             &proof,
-            &github(commit()),
+            (&github(commit()), &NoRegistry),
             now(),
             &mut one_left,
             Admit::Record,
@@ -763,7 +781,7 @@ async fn a_new_builds_token_is_charged_to_the_same_budget_as_the_rule() {
         .admit_rule_deploy(
             &want("service_container", "k1", &spec()),
             &proof,
-            &github(commit()),
+            (&github(commit()), &NoRegistry),
             now(),
             &mut two_left,
             Admit::Record,
@@ -920,4 +938,377 @@ async fn a_rule_deploy_through_the_servers_socket_is_admitted_under_the_rule() {
         "{admitted:?}"
     );
     assert_eq!(admitted.admission(), ployz_core::Admission::Signed);
+}
+
+/// The image ID a registry pull places, which differs from the manifest digest it named.
+const PLACED: &str = "5555555555555555555555555555555555555555555555555555555555555555";
+
+fn registry_spec(service: &str, digest: &str) -> Value {
+    let mut spec = spec();
+    spec["name"] = json!(service);
+    spec["container"]["image"] = json!(format!("ghcr.io/acme/web@sha256:{digest}"));
+    spec
+}
+
+fn placed() -> ployz_core::ImageDigest {
+    ployz_core::ImageDigest::parse(format!("sha256:{PLACED}")).unwrap()
+}
+
+/// A registry that serves `answered` under every digest, or the digest asked for, and
+/// places [`PLACED`]. A newer rule in `landing` lands on the Machine while it pulls.
+#[derive(Default)]
+struct FixedRegistry<'a> {
+    answered: Option<String>,
+    landing: Option<(&'a Fixture, ployz_core::authority::AutoDeployRule)>,
+    pulled: std::sync::Mutex<Vec<String>>,
+}
+
+impl Registry for FixedRegistry<'_> {
+    async fn pull(
+        &self,
+        pin: &ployz_core::authority::RegistryPin,
+        _login: Option<&ployz_core::SealedLogin>,
+    ) -> Result<ployz_core::ImageDigest, Error> {
+        self.pulled.lock().unwrap().push(pin.reference());
+        if let Some((fixture, newer)) = &self.landing {
+            fixture
+                .machine
+                .approvals
+                .mark_rule(newer, Admit::Record, |refusal| {
+                    Error::RuleDeployRefused(RuleDeployRefusal::Rule(refusal))
+                })
+                .unwrap();
+        }
+        match &self.answered {
+            Some(answered) => Err(pull_refused(
+                crate::docker_image::RegistryPull::OtherDigest {
+                    answered: answered.clone(),
+                },
+            )),
+            None => Ok(placed()),
+        }
+    }
+}
+
+impl Fixture {
+    /// The fixture's rule at `generation` as a registry rule for `ghcr.io/acme/web`,
+    /// approving `services`' settings.
+    fn registry_rule(
+        &self,
+        generation: u64,
+        services: &[&str],
+    ) -> ployz_core::authority::AutoDeployRule {
+        let mut rule = self.deploy_rule(generation);
+        rule.source =
+            ployz_core::authority::RuleSource::Registry(ployz_core::authority::RegistrySource {
+                host: "ghcr.io".to_owned(),
+                repository: "acme/web".to_owned(),
+            });
+        rule.services = services
+            .iter()
+            .map(|name| ployz_core::authority::RuleService {
+                name: ServiceName::parse(*name).unwrap(),
+                template: ployz_core::authority::rule::template(
+                    &requested(&registry_spec(name, IMAGE)),
+                    &Namespace::parse("app").unwrap(),
+                )
+                .unwrap(),
+                policy: None,
+                secrets: None,
+            })
+            .collect();
+        rule
+    }
+
+    fn registry_proof(&self, rule: &ployz_core::authority::AutoDeployRule) -> RuleProof {
+        RuleProof {
+            rule: Signed::sign(rule, &self.signer).unwrap(),
+            evidence: RuleEvidence::Registry,
+            claim: None,
+            reader: None,
+        }
+    }
+
+    async fn pull_deploy(
+        &self,
+        want: &ContainerWant,
+        proof: &RuleProof,
+        registry: &FixedRegistry<'_>,
+    ) -> Result<RuleAdmitted, Error> {
+        self.machine
+            .admit_rule_deploy(
+                want,
+                proof,
+                (&github(commit()), registry),
+                now(),
+                &mut Budget::default(),
+                Admit::Record,
+            )
+            .await
+    }
+
+    /// Admit `service`'s hook for image `digest` in slot `key` under `proof`, and take
+    /// its place, as its create does.
+    async fn registry_hook(
+        &self,
+        (service, digest): (&str, &str),
+        key: &str,
+        proof: &RuleProof,
+    ) -> Result<(), Error> {
+        let mut want = want("pre_deploy_hook", key, &registry_spec(service, digest));
+        if let ContainerWant::Running {
+            container: RunTarget::New(new),
+            ..
+        } = &mut want
+        {
+            new.slot.service = ServiceName::parse(service).unwrap();
+        }
+        self.pull_deploy(&want, proof, &FixedRegistry::default())
+            .await?
+            .hook
+            .expect("a hook's admission names its place")
+            .take(&self.machine.approvals)
+    }
+}
+
+fn refused_admission(result: Result<RuleAdmitted, Error>) -> String {
+    refused(result.map(drop))
+}
+
+// Catches a registry rule's Container created, adopted or started from whatever image
+// this Server holds under the name, rather than the one its own pull placed.
+#[tokio::test]
+async fn a_registry_rule_runs_the_image_its_own_pull_placed() {
+    let fixture = fixture().await;
+    let rule = fixture.registry_rule(3, &["web"]);
+    let proof = fixture.registry_proof(&rule);
+    let registry = FixedRegistry::default();
+    let admitted = fixture
+        .pull_deploy(
+            &want("service_container", "k1", &registry_spec("web", IMAGE)),
+            &proof,
+            &registry,
+        )
+        .await
+        .unwrap();
+    assert_eq!(admitted.pin, Some(placed()));
+    assert_eq!(
+        *registry.pulled.lock().unwrap(),
+        [format!("ghcr.io/acme/web@sha256:{IMAGE}")],
+        "the Server pulls the exact digest, never a tag"
+    );
+    assert!(admitted.hook.is_none() && admitted.verified.is_none());
+}
+
+// Catches a caller's pin naming a local image under the same repository spelling winning
+// over the Server's own pull.
+#[tokio::test]
+async fn a_caller_pin_that_names_other_content_is_refused() {
+    let fixture = fixture().await;
+    let proof = fixture.registry_proof(&fixture.registry_rule(3, &["web"]));
+    let mut local = want("service_container", "k1", &registry_spec("web", IMAGE));
+    let ContainerWant::Running {
+        container: RunTarget::New(new),
+        ..
+    } = &mut local
+    else {
+        unreachable!()
+    };
+    new.image_id =
+        Some(ployz_core::ImageDigest::parse(format!("sha256:{}", "6".repeat(64))).unwrap());
+    assert_eq!(
+        refused_admission(
+            fixture
+                .pull_deploy(&local, &proof, &FixedRegistry::default())
+                .await
+        ),
+        MismatchField::Image.to_string()
+    );
+    new_pin(&mut local, placed());
+    fixture
+        .pull_deploy(&local, &proof, &FixedRegistry::default())
+        .await
+        .unwrap();
+}
+
+fn new_pin(want: &mut ContainerWant, pin: ployz_core::ImageDigest) {
+    let ContainerWant::Running {
+        container: RunTarget::New(new),
+        ..
+    } = want
+    else {
+        unreachable!()
+    };
+    new.image_id = Some(pin);
+}
+
+#[tokio::test]
+async fn a_registry_that_serves_other_content_under_the_digest_is_refused() {
+    let fixture = fixture().await;
+    let proof = fixture.registry_proof(&fixture.registry_rule(3, &["web"]));
+    let registry = FixedRegistry {
+        answered: Some(format!("sha256:{}", "7".repeat(64))),
+        ..FixedRegistry::default()
+    };
+    assert_eq!(
+        refused_admission(
+            fixture
+                .pull_deploy(
+                    &want("service_container", "k1", &registry_spec("web", IMAGE)),
+                    &proof,
+                    &registry,
+                )
+                .await
+        ),
+        MismatchField::RegistryDigest.to_string()
+    );
+}
+
+// Catches an approval turned off or changed while the registry answered still deploying
+// the image it was pulling.
+#[tokio::test]
+async fn a_newer_generation_landing_during_the_pull_refuses_the_older_one() {
+    let fixture = fixture().await;
+    let proof = fixture.registry_proof(&fixture.registry_rule(3, &["web"]));
+    let registry = FixedRegistry {
+        landing: Some((&fixture, fixture.registry_rule(4, &["web"]))),
+        ..FixedRegistry::default()
+    };
+    assert_eq!(
+        refused_admission(
+            fixture
+                .pull_deploy(
+                    &want("service_container", "k1", &registry_spec("web", IMAGE)),
+                    &proof,
+                    &registry,
+                )
+                .await
+        ),
+        "a generation"
+    );
+}
+
+// Catches a registry rule's hook running twice for one image under one approval, or
+// one Service's run standing in for another's on the same image.
+#[tokio::test]
+async fn a_registry_hook_runs_once_per_service_image_and_generation() {
+    const OTHER: &str = "8888888888888888888888888888888888888888888888888888888888888888";
+    let fixture = fixture().await;
+    let proof = fixture.registry_proof(&fixture.registry_rule(3, &["api", "web"]));
+    let hook_run = MismatchField::HookRun.to_string();
+    fixture
+        .registry_hook(("web", IMAGE), "k1", &proof)
+        .await
+        .unwrap();
+    // A retry of the same slot adopts the hook that ran.
+    fixture
+        .registry_hook(("web", IMAGE), "k1", &proof)
+        .await
+        .unwrap();
+    assert_eq!(
+        refused(fixture.registry_hook(("web", IMAGE), "k2", &proof).await),
+        hook_run
+    );
+    // Another Service on the same digest runs its own hook.
+    fixture
+        .registry_hook(("api", IMAGE), "k3", &proof)
+        .await
+        .unwrap();
+    // Another image runs once, and moving back does not run the first image again.
+    fixture
+        .registry_hook(("web", OTHER), "k4", &proof)
+        .await
+        .unwrap();
+    assert_eq!(
+        refused(fixture.registry_hook(("web", IMAGE), "k5", &proof).await),
+        hook_run
+    );
+    // A slot whose hook was made is never made again, once its Container is gone.
+    assert!(!fixture.machine.approvals.hook_made("k1").unwrap());
+    fixture.machine.approvals.mark_hook_made("k1").unwrap();
+    assert!(fixture.machine.approvals.hook_made("k1").unwrap());
+    // A newer approval runs the image's hook once more.
+    let newer = fixture.registry_proof(&fixture.registry_rule(4, &["api", "web"]));
+    fixture
+        .registry_hook(("web", IMAGE), "k6", &newer)
+        .await
+        .unwrap();
+    assert_eq!(
+        refused(fixture.registry_hook(("web", IMAGE), "k6", &proof).await),
+        "a generation"
+    );
+}
+
+// Catches a GitHub rule's proof admitting a registry pull, and the reverse.
+#[tokio::test]
+async fn a_proof_of_one_source_admits_nothing_under_the_other() {
+    let fixture = fixture().await;
+    let github_rule = fixture.deploy_rule(3);
+    let registry = fixture.registry_proof(&github_rule);
+    let source = MismatchField::RuleSource.to_string();
+    assert_eq!(
+        refused_admission(
+            fixture
+                .pull_deploy(
+                    &want("service_container", "k1", &spec()),
+                    &registry,
+                    &FixedRegistry::default(),
+                )
+                .await
+        ),
+        source
+    );
+    // A rule's source never changes under its ID, so the other half runs on a fresh
+    // Machine.
+    let fixture = super::super::rule_grant::tests::fixture().await;
+    let rule = fixture.registry_rule(3, &["web"]);
+    let claim = fixture.built(&rule, fixture.attest());
+    let online = fixture.proof(&rule, &claim, token_for(&claim, "swap"));
+    assert_eq!(
+        refused_admission(
+            fixture
+                .pull_deploy(
+                    &want("service_container", "k1", &registry_spec("web", IMAGE)),
+                    &online,
+                    &FixedRegistry::default(),
+                )
+                .await
+        ),
+        source
+    );
+}
+
+// Catches a rule switched to another repository on Automatic deploys leaving the
+// repository before it approved on a Server that took the switch.
+#[tokio::test]
+async fn switching_a_registry_rule_to_another_repository_ends_the_one_before() {
+    let fixture = fixture().await;
+    let web = fixture.registry_rule(3, &["web"]);
+    let proof = fixture.registry_proof(&web);
+    let deploy = |key| want("service_container", key, &registry_spec("web", IMAGE));
+    fixture
+        .pull_deploy(&deploy("k1"), &proof, &FixedRegistry::default())
+        .await
+        .unwrap();
+    let mut api = fixture.registry_rule(4, &["web"]);
+    api.source =
+        ployz_core::authority::RuleSource::Registry(ployz_core::authority::RegistrySource {
+            host: "ghcr.io".to_owned(),
+            repository: "acme/api".to_owned(),
+        });
+    fixture
+        .machine
+        .approvals
+        .mark_rule(&api, Admit::Record, |refusal| {
+            Error::RuleDeployRefused(RuleDeployRefusal::Rule(refusal))
+        })
+        .expect("a newer generation may move a registry rule to another repository");
+    assert_eq!(
+        refused_admission(
+            fixture
+                .pull_deploy(&deploy("k2"), &proof, &FixedRegistry::default())
+                .await
+        ),
+        "a generation"
+    );
 }

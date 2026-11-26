@@ -9,7 +9,7 @@ use ployz_core::{
     ContainerLocator, ContainerWant, Namespace, NewContainer, ResolvedServiceSpec, RunTarget,
     ServiceName,
     authority::{
-        BuiltImageDigest, PayloadDigest, RuleEvidence, RuleProof, ServiceVersion, Signed,
+        BuiltImageDigest, KeptRule, PayloadDigest, RuleEvidence, ServiceVersion, Signed,
         VerifiedBuild, version::MAX_PRESENTED,
     },
 };
@@ -142,13 +142,14 @@ pub(crate) fn kept_query(
 /// them, which every clone of the Deploy's client shares.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct RuleProofs {
-    rules: BTreeMap<ServiceName, RuleProof>,
+    /// Each Service's proof, with the login its Server pulls with under a registry rule.
+    rules: BTreeMap<ServiceName, KeptRule>,
     issued: Arc<Mutex<BTreeMap<ServiceName, VerifiedBuild>>>,
 }
 
 impl RuleProofs {
-    pub(crate) fn insert(&mut self, service: ServiceName, proof: RuleProof) {
-        self.rules.insert(service, proof);
+    pub(crate) fn insert(&mut self, service: ServiceName, rule: KeptRule) {
+        self.rules.insert(service, rule);
     }
 
     pub(crate) fn contains(&self, service: &ServiceName) -> bool {
@@ -158,6 +159,15 @@ impl RuleProofs {
     /// Each Service a rule's proof covers.
     pub(crate) fn services(&self) -> impl Iterator<Item = &ServiceName> {
         self.rules.keys()
+    }
+
+    /// Each Service a registry rule's proof covers, which only a Server that checks one
+    /// admits.
+    pub(crate) fn registry_services(&self) -> impl Iterator<Item = &ServiceName> {
+        self.rules
+            .iter()
+            .filter(|(_, kept)| kept.proof.evidence == RuleEvidence::Registry)
+            .map(|(service, _)| service)
     }
 
     /// The verified build a Server issued for each Service, with the claim it covers.
@@ -170,11 +180,11 @@ impl RuleProofs {
         issued
             .iter()
             .filter_map(|(service, verified)| {
-                let proof = self.rules.get(service)?;
+                let kept = self.rules.get(service)?;
                 Some((
                     service.clone(),
                     ployz_store::VerifiedClaim {
-                        claim: proof.claim.clone(),
+                        claim: kept.proof.claim.clone()?,
                         verified: *verified,
                     },
                 ))
@@ -182,12 +192,12 @@ impl RuleProofs {
             .collect()
     }
 
-    /// The proof a change of `want` carries: its Service's, or for a step on a Container
-    /// named only by ID, any of the Deploy's, since such a step needs only the rule's
+    /// The proof a change of `want` carries: its Service's, none for a Service no rule
+    /// covers, or for a step on a Container named only by ID, any of the Deploy's, since such a step needs only the rule's
     /// Environment. Once a Server issued a verified build for that Service, the proof
     /// carries it in place of the token, which may have expired since: a pre-deploy hook
     /// can outlast it.
-    fn carried(&self, want: &ContainerWant) -> Option<Box<RuleProof>> {
+    fn carried(&self, want: &ContainerWant) -> Option<KeptRule> {
         let service = match want {
             ContainerWant::Running {
                 container: RunTarget::New(new),
@@ -205,18 +215,19 @@ impl RuleProofs {
                 ContainerLocator::Id(_) => None,
             },
         };
-        let (service, proof) = service
-            .and_then(|service| self.rules.get_key_value(service))
-            .or_else(|| self.rules.iter().next())?;
-        let mut proof = proof.clone();
+        let (service, kept) = match service {
+            Some(service) => self.rules.get_key_value(service)?,
+            None => self.rules.iter().next()?,
+        };
+        let mut kept = kept.clone();
         let issued = self
             .issued
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(verified) = issued.get(service) {
-            proof.evidence = RuleEvidence::Verified(*verified);
+            kept.proof.evidence = RuleEvidence::Verified(*verified);
         }
-        Some(Box::new(proof))
+        Some(kept)
     }
 }
 

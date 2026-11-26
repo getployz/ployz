@@ -268,6 +268,8 @@ Before a move stops anything, `web-2` checks it would start your service. Nothin
 your service keeps running on `web-1`. What to do depends on the reason:
 
 - **No approved version runs there.** Deploy the service, then move again.
+- **`web-2` can't pull the image**, as in "image pull failed". The registry refused the service's
+  login. Fix the service's registry credential, deploy, then move again.
 - **The deploy rule that built it doesn't list `web-2`.** Add `web-2` to the
   [rule](../deploy/github.md#approve-a-rule-for-deploys-on-push), or deploy the service again, then move again.
 - **Another container uses the volume**, as in "web and worker all use data on web-1". Stop the

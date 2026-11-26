@@ -98,6 +98,10 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
         "gated: Cloud attaches a rule proof only for a Machine that advertises it. An older daemon ignores `rule`, and under Device enforcement it refuses the Operator's creation for want of a deploy approval, so a rule deploy there fails closed",
     ),
     (
+        "ployz.container.deploy-registry-rule.v1",
+        "names the Server: the runner refuses a Deploy once, naming the Server, when it would place a Service a registry rule covers on a Machine that doesn't advertise it. An older daemon refuses the rule's registry source anyway, so the deploy fails closed",
+    ),
+    (
         "ployz.rule.passkey.v1",
         "gated: the dashboard signs a rule with a passkey only when every enforcing Machine advertises it. An older daemon refuses the rule's envelope for its unknown `assertions` field, and its `\"passkey\"` signer, so a rule deploy there fails closed",
     ),

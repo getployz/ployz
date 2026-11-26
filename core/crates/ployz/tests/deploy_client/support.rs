@@ -288,16 +288,22 @@ impl DeployService {
     }
 
     /// The verified build a creation under a rule gets back, or the refusal a Server
-    /// gives one whose proof no longer holds.
+    /// gives one whose proof no longer holds. A registry rule's image sits on a private
+    /// registry, so its Server's own pull needs the creation's login.
     fn check_rule(
         &self,
         proof: Option<&ployz_core::authority::RuleProof>,
+        login: Option<&ployz_core::SealedLogin>,
     ) -> Result<Option<ployz_core::authority::VerifiedBuild>, RpcError> {
         use ployz_core::authority::RuleEvidence;
         let Some(checks) = &self.rule_checks else {
             return Ok(None);
         };
         match proof.map(|proof| &proof.evidence) {
+            Some(RuleEvidence::Registry) if login.is_some() => Ok(None),
+            Some(RuleEvidence::Registry) => Err(RpcError::forbidden(
+                "the registry refused the Server's pull without a login",
+            )),
             Some(RuleEvidence::Online(_)) if !checks.expired.swap(true, Ordering::SeqCst) => {
                 Ok(Some(checks.issues))
             }
@@ -1151,11 +1157,11 @@ impl FakeMachine for DeployService {
         let want = ensure.want.clone();
         let mut verified = None;
         if let ployz_core::ContainerWant::Running {
-            container: RunTarget::New(_),
+            container: RunTarget::New(new),
             ..
         } = &want
         {
-            match self.check_rule(ensure.rule.as_deref()) {
+            match self.check_rule(ensure.rule.as_deref(), new.registry_login.as_ref()) {
                 Ok(issued) => verified = issued,
                 Err(refusal) => return reply(refusal),
             }

@@ -97,3 +97,50 @@ async fn an_edit_carries_the_parentless_version_it_edits() {
         vec![child, root]
     );
 }
+
+// Catches a Deploy whose rule covers one Service handing that rule's proof to another
+// Service's creation, which its Server then refuses under the rule.
+#[tokio::test]
+async fn a_service_the_rule_doesnt_cover_carries_no_rule_proof() {
+    use ployz_core::authority::{
+        AutoDeployRule, RegistrySource, RuleEvidence, RuleId, RuleProof, RuleSource,
+    };
+    let namespace = ployz_core::Namespace::parse("app").unwrap();
+    let signer = Signer::from_seed(&[1; 32]);
+    let rule = AutoDeployRule {
+        proposal: None,
+        cluster: ployz_core::SealingPublicKey::from_bytes([3; 32]),
+        rule: RuleId::from_bytes([9; 16]),
+        generation: 1,
+        namespace: namespace.clone(),
+        machines: Vec::new(),
+        source: RuleSource::Registry(RegistrySource {
+            host: "ghcr.io".to_owned(),
+            repository: "acme/web".to_owned(),
+        }),
+        services: Vec::new(),
+        issued_at: Timestamp::from_millis(1_800_000_000_000).unwrap(),
+        ended: false,
+        signer: SignerKey::Device(signer.public().into()),
+    };
+    let mut proofs = RuleProofs::default();
+    proofs.insert(
+        ployz_core::ServiceName::parse("web").unwrap(),
+        ployz_core::authority::KeptRule::built(RuleProof {
+            rule: Signed::sign(&rule, &signer).unwrap(),
+            evidence: RuleEvidence::Registry,
+            claim: None,
+            reader: None,
+        }),
+    );
+    let approvals = Approvals::signed(Vec::new(), proofs);
+    let other = requested(ServiceMode::Global);
+    assert_ne!(other.name.as_str(), "web");
+    assert!(
+        approvals
+            .carried(&want_of(other, &namespace))
+            .await
+            .rule
+            .is_none()
+    );
+}
