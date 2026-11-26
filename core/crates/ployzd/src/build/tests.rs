@@ -1446,6 +1446,13 @@ async fn a_running_build_whose_device_goes_has_stopped_when_its_removal_returns(
     let client = ployz::connect::connect(Path::new("/missing-test-config"), Some(&address), None)
         .await
         .unwrap();
+    // The execution thread waits, once the Build said it stopped, until the removal is
+    // looked at: what the removal's caller sees can't depend on that thread's pace.
+    let (looked, returning) = std::sync::mpsc::channel::<()>();
+    let returning = std::sync::Mutex::new(returning);
+    *fixture.service.builds.returning.lock().unwrap() = Some(std::sync::Arc::new(move || {
+        let _ = returning.lock().unwrap().recv();
+    }));
     fs::write(fixture.root.join("hold-build"), "").unwrap();
     let remove = async {
         until_fake_docker(Duration::from_secs(10), || {
@@ -1458,6 +1465,7 @@ async fn a_running_build_whose_device_goes_has_stopped_when_its_removal_returns(
         let mut opened = Vec::new();
         files_named(&fixture.root, "NPM_TOKEN", &mut opened);
         fs::remove_file(fixture.root.join("hold-build")).unwrap();
+        looked.send(()).unwrap();
         (running, opened)
     };
     let (result, (running, opened)) = tokio::join!(
