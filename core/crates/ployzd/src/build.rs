@@ -299,11 +299,16 @@ async fn attempt(
     let (upload, source) = mpsc::channel(2);
     let output = events.clone();
     let tie = bound.tie().clone();
+    #[cfg(test)]
+    let returning = runner
+        .returning
+        .lock()
+        .expect("returning hook lock")
+        .clone();
     // The execution holds the Build bound until it has returned, which may be after this
     // attempt reported it Unknown: a key change that ends it waits for the execution
     // itself, and hears when its builder didn't confirm it stopped.
     let mut execution = tokio::task::spawn_blocking(move || {
-        let _permit = permit;
         let outcome = match request {
             Input::Start(definition) => receive_and_execute(
                 machine_id,
@@ -332,6 +337,9 @@ async fn attempt(
                 unreachable!("only Build starts and capability checks reach admission")
             }
         };
+        // The Build stops counting as running before a key change that ends it can hear it
+        // stopped. Its builder was already released, or left quarantined, as it returned.
+        drop(permit);
         // The execution returned, so every process it started was reaped, unless it says
         // Unknown: then the build slot it leaves quarantined says when they are gone.
         match &outcome {
@@ -360,6 +368,10 @@ async fn attempt(
             | Outcome::FreeImages { .. }
             | Outcome::Validated { .. }
             | Outcome::Published { .. } => bound.stopped(crate::machine::Seen::Joined),
+        }
+        #[cfg(test)]
+        if let Some(returning) = returning {
+            returning();
         }
         outcome
     });
