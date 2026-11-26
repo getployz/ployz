@@ -88,17 +88,12 @@ pub async fn close_unheld_previews(
     let connector = Arc::new(SystemConnector::default());
     let session = connect_expecting(connections, connector, Some(expect)).await?;
     let foreign = session.foreign();
-    if !session.cluster().is_some_and(|check| check.verified) {
-        session.close().await;
-        return Ok(Dialed {
-            outcome: unverified,
-            foreign,
-        });
-    }
     let swept = async {
-        let mut client = session.client()?;
-        let machines = client.machines().await.map_err(crate::connect::rpc_error)?;
-        sweep(&client, &machines, |namespaces| {
+        let Some(mut verified) = Verified::of(&session)? else {
+            return Ok(unverified);
+        };
+        let machines = verified.machines().await?;
+        sweep(&verified, &machines, |namespaces| {
             let store = Arc::clone(&store);
             let who = who.clone();
             async move {
@@ -116,6 +111,25 @@ pub async fn close_unheld_previews(
         outcome: swept?,
         foreign,
     })
+}
+
+/// A client of a Session whose entry held the Sealing key Cloud recorded for the
+/// Organization. A Close destroys a preview's data, so [`close_on`] sends one only
+/// through this: a Server Cloud can't tie to the Organization's Cluster gets none.
+struct Verified(Client);
+
+impl Verified {
+    /// None unless `session`'s dial matched its entry to the Sealing key it expected.
+    fn of(session: &Session) -> Result<Option<Self>, RpcError> {
+        if !session.cluster().is_some_and(|check| check.verified) {
+            return Ok(None);
+        }
+        session.client().map(|client| Some(Self(client)))
+    }
+
+    async fn machines(&mut self) -> Result<Vec<MachineObservation>, RpcError> {
+        self.0.machines().await.map_err(crate::connect::rpc_error)
+    }
 }
 
 /// The Servers of the Cluster `connections` reach that can hold a preview: each takes
@@ -188,7 +202,7 @@ fn homes(machines: &[MachineObservation]) -> Vec<MachineId> {
 }
 
 async fn sweep<F, Fut>(
-    client: &Client,
+    client: &Verified,
     machines: &[MachineObservation],
     open: F,
 ) -> Result<PreviewsSwept, RpcError>
@@ -211,6 +225,7 @@ where
             continue;
         }
         let listed = client
+            .0
             .call_shared::<op::ListPreviews>(
                 ListPreviewsRequest {},
                 Call::once()
@@ -248,11 +263,12 @@ where
 }
 
 async fn close_on(
-    client: &Client,
+    client: &Verified,
     machine: &MachineId,
     namespace: &Namespace,
 ) -> Result<PreviewClosed, RpcError> {
     client
+        .0
         .call_shared::<op::ClosePreview>(
             ClosePreviewRequest {
                 namespace: namespace.clone(),
@@ -268,8 +284,9 @@ async fn close_on(
 impl Session {
     /// Close preview `namespace` on its home Server, reporting each of `deletes` there:
     /// removed, unless the Close failed or kept it. A home the Cluster doesn't list as
-    /// answering is reported omitted, so the removal stays to be retried. Any of
-    /// `deletes` on another Server is removed as usual.
+    /// answering is reported omitted, so the removal stays to be retried, and a Session
+    /// Cloud couldn't tie to the Organization's Cluster sends no Close and fails each.
+    /// Any of `deletes` on another Server is removed as usual.
     pub(crate) async fn close_preview(
         &self,
         namespace: &Namespace,
@@ -281,7 +298,13 @@ impl Session {
         let (home, elsewhere): (Vec<_>, Vec<_>) = deletes
             .into_iter()
             .partition(|id| preview.homed_on(&id.machine_id));
-        let outcome = self.closed_on_home(namespace, &preview).await;
+        let outcome = match Verified::of(self) {
+            Ok(Some(verified)) => self.closed_on_home(verified, namespace, &preview).await,
+            Ok(None) => Some(Err(RpcError::conflict(
+                "Ployz Cloud couldn't check that these Servers are your Organization's Cluster, so it didn't close the preview",
+            ))),
+            Err(_) => None,
+        };
         let mut removed = removals(home, |name| match &outcome {
             None => VolumeRemovalOutcome::Omitted,
             Some(Ok(closed)) if closed.kept.contains(name) => VolumeRemovalOutcome::Failed {
@@ -300,13 +323,11 @@ impl Session {
 
     async fn closed_on_home(
         &self,
+        mut client: Verified,
         namespace: &Namespace,
         preview: &PreviewNamespace,
     ) -> Option<Result<PreviewClosed, RpcError>> {
-        let mut client = self.client().ok()?;
-        let machines =
-            self.until_closed(async { client.machines().await.map_err(crate::connect::rpc_error) });
-        let machines = machines.await.ok()?;
+        let machines = self.until_closed(client.machines()).await.ok()?;
         let home = machines.iter().find(|machine| {
             preview.homed_on(&machine.machine.id)
                 && machine.invites_rpc()

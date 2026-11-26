@@ -20,6 +20,11 @@ use ployz_store::{
 const HEAD: &str = "1111111111111111111111111111111111111111";
 
 fn uuid(n: u8) -> String {
+    // `staging`, the Parent previews start from, sorts after every Environment a test
+    // makes, so a write locking in ID order takes it last.
+    if n == 3 {
+        return "ffffffff-ffff-ffff-ffff-ffffffffffff".into();
+    }
     format!("00000000-0000-4000-8000-0000000000{n:02}")
 }
 
@@ -34,8 +39,9 @@ fn machine(byte: char) -> MachineId {
     MachineId::parse(byte.to_string().repeat(32)).unwrap()
 }
 
-/// Project `shop`: Protected `production` runs `web` from `acme/web`'s `main`, and root
-/// `staging` runs `web` and `api` from its `staging` branch, each published.
+/// Project `shop`: Protected `production` runs `web` from `acme/web`'s `main`, root
+/// `staging` runs `web` and `api` from its `staging` branch, and root `stage2` runs `web`
+/// from it too, each published.
 fn shop() -> (ConfigStore, Actor) {
     shop_in(backend::open())
 }
@@ -65,6 +71,17 @@ fn shop_in(store: ConfigStore) -> (ConfigStore, Actor) {
             },
         )
         .unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::CreateEnvironment {
+                id: EnvironmentId::parse(uuid(77)).unwrap(),
+                project: None,
+                name: EnvironmentName::parse("stage2").unwrap(),
+                region: None,
+            },
+        )
+        .unwrap();
     let evidence = Trusted {
         repositories: vec![AuthorizedRepository {
             repository: backend::repo_name("acme/web"),
@@ -79,6 +96,7 @@ fn shop_in(store: ConfigStore) -> (ConfigStore, Actor) {
         (4, "production", "web", None),
         (5, "staging", "web", Some("staging")),
         (6, "staging", "api", Some("staging")),
+        (78, "stage2", "web", Some("staging")),
     ];
     for (n, environment, name, branch) in services {
         store
@@ -95,7 +113,7 @@ fn shop_in(store: ConfigStore) -> (ConfigStore, Actor) {
             )
             .unwrap();
     }
-    for environment in ["production", "staging"] {
+    for environment in ["production", "staging", "stage2"] {
         store
             .write(
                 &who,
@@ -281,6 +299,25 @@ fn preview_of(store: &ConfigStore, who: &Actor, number: u64) -> Option<PreviewNa
     listed
         .then(|| PreviewNamespace::of(&namespace_of(store, who, &name)))
         .flatten()
+}
+
+/// Whether pull request `number` has an open preview, under any of the names its PR
+/// Environments took: one closing keeps its name until it is gone.
+fn previewing(store: &ConfigStore, who: &Actor, number: u64) -> bool {
+    let name = format!("pr-{number}");
+    let namespaces = store
+        .read(who, &ployz_store::EnvironmentsQuery::default())
+        .unwrap()
+        .environments
+        .into_iter()
+        .filter(|listing| {
+            let listed = listing.name.as_str();
+            listed == name || listed.starts_with(&format!("{name}-"))
+        })
+        .map(|listing| namespace_of(store, who, listing.name.as_str()))
+        .collect();
+    let asked = OpenPreviewsQuery { namespaces };
+    !store.read(who, &asked).unwrap().open.is_empty()
 }
 
 fn skipped(automated: &Automated) -> Vec<&str> {
@@ -1216,4 +1253,225 @@ fn a_sweep_and_news_of_a_pull_request_both_moving_a_preview_both_finish() {
             .all(|preview| preview.homed_on(&machine('b')))
     );
     assert_eq!(preview_of(&store, &who, 6), None, "the cap holds");
+}
+
+/// [`shop`] on Postgres, with its URL; none on SQLite, whose writers never overlap.
+fn shop_on_postgres() -> Option<(ConfigStore, Actor, String)> {
+    std::env::var_os("PLOYZ_STORE_TEST_POSTGRES")?;
+    let url = backend::fresh_url(&tempfile::tempdir().unwrap());
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
+    Some((store, who, url))
+}
+
+/// Until `sessions` of `url`'s database wait for a lock.
+fn queued(url: &str, sessions: i64) {
+    settled(url, sessions, || false);
+}
+
+/// Until `sessions` of `url`'s database wait for a lock, or `done`.
+fn settled(url: &str, sessions: i64, done: impl Fn() -> bool) {
+    let waiting = "SELECT COUNT(*) FROM pg_stat_activity \
+                   WHERE datname = current_database() AND wait_event_type = 'Lock'";
+    let start = std::time::Instant::now();
+    while !done() && backend::count(url, waiting) < sessions {
+        assert!(start.elapsed().as_secs() < 30, "{sessions} never queued");
+    }
+}
+
+/// Hold `staging`, the Parent, until the returned transaction ends, as a write that
+/// reached it first does.
+fn hold_parent(client: &mut postgres::Client) -> postgres::Transaction<'_> {
+    let mut held = client.transaction().unwrap();
+    held.execute(
+        "UPDATE config_environment SET working_revision = working_revision WHERE id = $1",
+        &[&uuid(3)],
+    )
+    .unwrap();
+    held
+}
+
+/// With a cap of one, news of a second pull request that queued behind a change of the
+/// plan's Parent, while the first's preview was being made, still waits: both lock the
+/// plan, not the Parent the change moves.
+#[test]
+fn a_parent_changed_while_a_preview_opens_lets_no_second_past_the_cap() {
+    let Some((store, who, url)) = shop_on_postgres() else {
+        return;
+    };
+    previews(&store, &who, 1);
+    let moved = SetPrPlan {
+        preview_rule: Some(rule(&store, &who, (77, "stage2"))),
+        ..plan("stage2")
+    };
+    let mut gate = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    gate.batch_execute(
+        "CREATE FUNCTION pause_pr_5() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN \
+         IF NEW.name = 'pr-5' THEN PERFORM pg_advisory_xact_lock(54321); END IF; \
+         RETURN NEW; END $$; \
+         CREATE TRIGGER pause_pr_5 BEFORE INSERT ON config_environment \
+         FOR EACH ROW EXECUTE FUNCTION pause_pr_5(); \
+         SELECT pg_advisory_lock(54321)",
+    )
+    .unwrap();
+    let trusted = homes(&['a']);
+    let opened = |number| facts(number, true, "feature", "2026-01-01T00:00:00Z");
+
+    let (first, moving, second) = std::thread::scope(|threads| {
+        let first = threads.spawn(|| pull(&store, &who, opened(5), &trusted));
+        queued(&url, 1);
+        // Each either queues behind the first or finishes before it.
+        let moving = threads.spawn(|| save(&store, &who, &moved));
+        settled(&url, 2, || moving.is_finished());
+        let second = threads.spawn(|| pull(&store, &who, opened(6), &trusted));
+        settled(&url, 3, || second.is_finished());
+        gate.batch_execute("SELECT pg_advisory_unlock(54321)")
+            .unwrap();
+        (
+            first.join().unwrap(),
+            moving.join().unwrap(),
+            second.join().unwrap(),
+        )
+    });
+
+    assert_eq!(first.admitted.len(), 1, "{:?}", skipped(&first));
+    moving.unwrap();
+    assert!(second.admitted.is_empty(), "{second:?}");
+    assert_eq!(preview_of(&store, &who, 6), None, "the cap holds");
+}
+
+/// A rename of a waiting pull request's branch, queued behind a sweep that opens its
+/// preview from the old name, retracks that preview once the sweep is done.
+#[test]
+fn a_rename_queued_behind_the_sweep_that_opened_its_preview_retracks_it() {
+    let Some((store, who, url)) = shop_on_postgres() else {
+        return;
+    };
+    previews(&store, &who, 1);
+    let trusted = homes(&['a']);
+    pull(
+        &store,
+        &who,
+        facts(5, true, "feature", "2026-01-01T00:00:00Z"),
+        &homes(&[]),
+    );
+    let mut renamed = facts(5, true, "feature", "2026-01-03T00:00:00Z");
+    renamed.head_branch = backend::git_branch("renamed");
+    let mut gate = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    let held = hold_parent(&mut gate);
+    let sweep = SystemEvent::Sweep(Sweep { now: 0 });
+    let news = SystemEvent::PullRequest(renamed);
+
+    let (swept, news) = std::thread::scope(|threads| {
+        let swept = threads.spawn(|| store.system(&who.organization, &sweep, &trusted));
+        queued(&url, 1);
+        let news = threads.spawn(|| store.system(&who.organization, &news, &trusted));
+        queued(&url, 2);
+        held.rollback().unwrap();
+        (swept.join().unwrap(), news.join().unwrap())
+    });
+
+    assert!(swept.is_ok() && news.is_ok(), "{swept:?} {news:?}");
+    assert!(preview_of(&store, &who, 5).is_some());
+    let tracking = |branch: &str| {
+        backend::count(
+            &url,
+            &format!(
+                "SELECT COUNT(*) FROM config_environment \
+                 WHERE name = 'pr-5' AND working LIKE '%\"{branch}\"%'"
+            ),
+        )
+    };
+    assert_eq!((tracking("search-5"), tracking("renamed")), (0, 1));
+}
+
+/// News of a merge and a sweep settling the removal of the merged pull request's closed
+/// preview both finish: each locks the plan before the preview or its Parent.
+#[test]
+fn a_merge_and_the_sweep_settling_its_closed_preview_both_finish() {
+    let Some((store, who, url)) = shop_on_postgres() else {
+        return;
+    };
+    previews(&store, &who, 1);
+    let trusted = homes(&['a']);
+    let opened = pull(
+        &store,
+        &who,
+        facts(5, true, "feature", "2026-01-01T00:00:00Z"),
+        &trusted,
+    );
+    run(&store, &opened.admitted.first().unwrap().deployment.id);
+    pull(
+        &store,
+        &who,
+        facts(5, false, "feature", "2026-01-02T00:00:00Z"),
+        &trusted,
+    );
+    let mut merged = facts(5, false, "feature", "2026-01-03T00:00:00Z");
+    merged.merge_commit = Some(backend::sha(HEAD));
+    let mut gate = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    let held = hold_parent(&mut gate);
+    let sweep = SystemEvent::Sweep(Sweep { now: 0 });
+    let news = SystemEvent::PullRequest(merged);
+
+    let (swept, news) = std::thread::scope(|threads| {
+        let swept = threads.spawn(|| store.system(&who.organization, &sweep, &trusted));
+        queued(&url, 1);
+        let news = threads.spawn(|| store.system(&who.organization, &news, &trusted));
+        queued(&url, 2);
+        held.rollback().unwrap();
+        (swept.join().unwrap(), news.join().unwrap())
+    });
+
+    assert!(swept.is_ok() && news.is_ok(), "{swept:?} {news:?}");
+}
+
+/// A preview closed for idleness gives its slot to the pull requests waiting, and its
+/// own waits for activity: a title alone isn't any, a push is. It then waits behind
+/// those that waited before it came back, and ahead of any opened after.
+#[test]
+fn a_preview_closed_for_idleness_gives_its_slot_away_until_its_pull_request_moves() {
+    let (store, who) = shop();
+    previews(&store, &who, 1);
+    let trusted = homes(&['a']);
+    let news = |number, open, updated: &str| {
+        pull(&store, &who, facts(number, open, "main", updated), &trusted)
+    };
+    let first = news(5, true, "2026-01-01T00:00:00Z");
+    run(&store, &first.admitted.first().unwrap().deployment.id);
+    news(6, true, "2026-01-01T00:00:00Z");
+    news(7, true, "2026-01-01T00:00:00Z");
+    let open = |numbers: [u64; 4]| numbers.map(|number| previewing(&store, &who, number));
+
+    let idle = observe(
+        &store,
+        &who,
+        SystemEvent::Sweep(Sweep { now: i64::MAX }),
+        &trusted,
+    );
+
+    assert_eq!(idle.admitted.len(), 1, "{:?}", skipped(&idle));
+    assert_eq!(open([5, 6, 7, 8]), [false, true, false, false]);
+    let retitled = news(5, true, "2026-01-02T00:00:00Z");
+    assert_eq!(
+        skipped(&retitled),
+        ["Its preview closed while idle: push, reopen or approve it to get one again"]
+    );
+    let mut pushed = facts(5, true, "main", "2026-01-03T00:00:00Z");
+    pushed.head = backend::sha("2222222222222222222222222222222222222222");
+    let pushed = pull(&store, &who, pushed, &trusted);
+    assert_eq!(skipped(&pushed), ["Waiting for a preview slot"]);
+    news(8, true, "2026-01-03T00:00:00Z");
+
+    news(6, false, "2026-01-04T00:00:00Z");
+    assert_eq!(
+        open([5, 6, 7, 8]),
+        [false, false, true, false],
+        "7 waited first"
+    );
+    news(7, false, "2026-01-04T00:00:00Z");
+    assert_eq!(
+        open([5, 6, 7, 8]),
+        [true, false, false, false],
+        "8 opened after"
+    );
 }

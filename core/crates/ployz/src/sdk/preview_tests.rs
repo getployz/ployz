@@ -137,14 +137,43 @@ async fn serve(
     (Connection::tcp(address), server)
 }
 
-/// A Session to [`serve`]'s Cluster.
-async fn cluster(machines: Vec<MachineObservation>, held: Held) -> (Session, Serving) {
-    let (connection, server) = serve(machines, held, None).await;
-    let session =
-        super::super::connect_connections(vec![connection], Arc::new(SystemConnector::default()))
-            .await
-            .unwrap();
+/// The Sealing key Cloud recorded for the Organization's Cluster.
+fn recorded() -> ployz_core::SealingPublicKey {
+    ployz_core::SealingPublicKey::from_bytes([3; 32])
+}
+
+/// A Session to [`serve`]'s Cluster, its entry holding the [`recorded`] key, `sealed`, or
+/// none, dialled expecting `expect`.
+async fn dialled(
+    machines: Vec<MachineObservation>,
+    held: Held,
+    (sealed, expect): (
+        Option<ployz_core::SealingPublicKey>,
+        Option<crate::connect::ClusterExpectation>,
+    ),
+) -> (Session, Serving) {
+    let (connection, server) = serve(machines, held, sealed).await;
+    let connector = Arc::new(SystemConnector::default());
+    let session = connect_expecting(vec![connection], connector, expect)
+        .await
+        .unwrap();
     (session, server)
+}
+
+/// A Session to [`serve`]'s Cluster, checked against the key Cloud recorded for it.
+async fn cluster(machines: Vec<MachineObservation>, held: Held) -> (Session, Serving) {
+    let expect = crate::connect::ClusterExpectation {
+        sealing_public_key: recorded(),
+        allow_unverified: false,
+    };
+    dialled(machines, held, (Some(recorded()), Some(expect))).await
+}
+
+/// A client of a Session [`cluster`] checked.
+fn verified(session: &Session) -> Verified {
+    Verified::of(session)
+        .unwrap()
+        .expect("the dial matched the recorded key")
 }
 
 fn preview_on(machine: &MachineObservation, nonce: u8) -> Namespace {
@@ -174,7 +203,7 @@ async fn a_sweep_closes_only_the_previews_the_store_does_not_hold_open() {
         (b.machine.id, vec![unknown.clone()]),
     ]);
     let (session, server) = cluster(vec![a.clone(), b.clone()], held.clone()).await;
-    let client = session.client().unwrap();
+    let client = verified(&session);
 
     let store_holds = vec![open.clone()];
     let swept = sweep(&client, &[a.clone(), b.clone()], |asked| {
@@ -206,7 +235,7 @@ async fn a_sweep_finishes_a_close_its_server_left_halfway() {
         .unwrap()
         .insert(machine.machine.id, vec![stuck.clone()]);
     let (session, server) = cluster(vec![machine.clone()], held.clone()).await;
-    let client = session.client().unwrap();
+    let client = verified(&session);
 
     let swept = sweep(&client, std::slice::from_ref(&machine), |_| async {
         Ok(Vec::new())
@@ -285,6 +314,37 @@ async fn a_preview_whose_home_left_the_cluster_leaves_its_volumes_to_retry() {
     server.abort();
 }
 
+/// The removal runner closes a preview only through a Session it tied to the Organization's
+/// Cluster: one dialled with no Sealing key to expect, or past an entry that shows none,
+/// sends no Close and keeps every Volume on the home for a later try.
+#[tokio::test]
+async fn a_removal_closes_no_preview_through_a_session_it_could_not_tie_to_the_cluster() {
+    let home = support::machine('a', "one");
+    let namespace = preview_on(&home, 1);
+    let unchecked = crate::connect::ClusterExpectation {
+        sealing_public_key: recorded(),
+        allow_unverified: true,
+    };
+    for expect in [None, Some(unchecked)] {
+        let held = Held::default();
+        let (session, server) = dialled(vec![home.clone()], held.clone(), (None, expect)).await;
+
+        let removals = session
+            .close_preview(&namespace, vec![volume(&home, format!("{namespace}_data"))])
+            .await;
+
+        assert!(held.closed.lock().unwrap().is_empty(), "{expect:?}");
+        assert!(held.removed.lock().unwrap().is_empty(), "{expect:?}");
+        let outcomes: Vec<_> = removals.iter().map(|removal| &removal.outcome).collect();
+        assert!(
+            matches!(outcomes.as_slice(), [VolumeRemovalOutcome::Failed { .. }]),
+            "{expect:?}: {outcomes:?}"
+        );
+        session.close().await;
+        server.abort();
+    }
+}
+
 #[test]
 fn a_preview_is_placed_only_on_a_server_taking_services_that_can_close_it() {
     let capable = |hex, name| {
@@ -325,7 +385,7 @@ async fn a_sweep_closes_an_unheld_preview_only_on_servers_it_ties_to_the_organiz
     let key = ployz_store::SealingKey::new(b"test").unwrap();
     let store = Arc::new(ConfigStore::open("sqlite::memory:", key).unwrap());
     let who = Actor::system(ployz_store::OrganizationId::parse("org").unwrap());
-    let cluster = ployz_core::SealingPublicKey::from_bytes([3; 32]);
+    let cluster = recorded();
     let sweep = |connection: Connection, expect| {
         close_unheld_previews(Arc::clone(&store), who.clone(), vec![connection], expect)
     };

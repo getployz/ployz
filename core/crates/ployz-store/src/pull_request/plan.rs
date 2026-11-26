@@ -39,6 +39,8 @@ pub(crate) fn set_plan(
             names,
         ));
     };
+    // Under the plan's own lock, as everything that opens or closes its previews holds it.
+    super::preview::lock_plan(tx, &project.id, *repository_id)?;
     let mut plan = load(tx, &project.id, *repository_id)?.unwrap_or_else(off);
     if let Some(enabled) = set.enabled {
         plan.enabled = enabled;

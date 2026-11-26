@@ -18,6 +18,9 @@ pub(crate) const DEFAULT_CAP: NonZeroU8 = NonZeroU8::new(5).expect("5 is not 0")
 /// Why an admitted pull request has no preview yet.
 pub(crate) const WAITING: &str = "Waiting for a preview slot";
 
+/// Why a pull request whose preview closed for idleness got none.
+const RESTING: &str = "Its preview closed while idle: push, reopen or approve it to get one again";
+
 /// A plan's preview rule as stored, with its cap.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) struct StoredPreview {
@@ -239,24 +242,64 @@ pub(super) fn reserve(
     Ok(())
 }
 
-/// What a reconcile of `repository`'s previews, or of every repository's, holds the
-/// lock of: the start-from of each plan that keeps a preview rule, under which its
-/// previews are counted and opened, and each live preview, which it may close. A caller locks these with everything else it
-/// touches, in one [`scope::lock_all`], before it reconciles.
-pub(super) struct Locked {
+/// The PR plans of `repository`, or every one of `who`'s, locked in key order. Every
+/// write that changes a plan's previews or the branches they track takes these first,
+/// after only the pull request rows it changes and before any Environment, and reads
+/// nothing it decides by until it holds them: news of a pull request, an approval, the
+/// sweep with the removals it settles, and a change to a plan ([`lock_plan`]). A plan's
+/// start-from can change, so it is no lock; the plan's own row is.
+pub(super) struct Plans {
     repository: Option<RepositoryId>,
+    keys: BTreeSet<(crate::id::ProjectId, RepositoryId)>,
+}
+
+pub(super) fn lock_plans(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    repository: Option<RepositoryId>,
+) -> Result<Plans, RpcError> {
+    let mut keys = BTreeSet::new();
+    for (project, repository_id, _) in plans(tx, who, repository)? {
+        keys.insert((project, repository_id));
+    }
+    for (project, repository_id) in &keys {
+        lock_plan(tx, project, *repository_id)?;
+    }
+    Ok(Plans { repository, keys })
+}
+
+/// Lock Project `project`'s plan for `repository_id`, if it has one: see [`Plans`].
+pub(super) fn lock_plan(
+    tx: &mut dyn Tx,
+    project: &crate::id::ProjectId,
+    repository_id: RepositoryId,
+) -> Result<(), RpcError> {
+    tx.execute(
+        "UPDATE config_pr_plan SET plan = plan WHERE project_id = ?1 AND repository_id = ?2",
+        &[project.as_str().into(), repository_id.into()],
+    )?;
+    Ok(())
+}
+
+/// What a reconcile under the locked `plans` holds the lock of: the start-from of each
+/// that keeps a preview rule, under which its previews are counted and opened, and each
+/// live preview of their repositories, which it may close. Read only once the plans are
+/// locked; a caller locks these with everything else it touches, in one
+/// [`scope::lock_all`], before it reconciles.
+pub(super) struct Locked {
+    plans: Plans,
     start_froms: BTreeSet<EnvironmentId>,
     previews: BTreeSet<EnvironmentId>,
 }
 
 impl Locked {
-    pub(super) fn of(
-        tx: &mut dyn Tx,
-        who: &Actor,
-        repository: Option<RepositoryId>,
-    ) -> Result<Self, RpcError> {
-        let start_froms = plans(tx, who, repository)?
+    pub(super) fn of(tx: &mut dyn Tx, who: &Actor, plans: Plans) -> Result<Self, RpcError> {
+        let repository = plans.repository;
+        let start_froms = self::plans(tx, who, repository)?
             .into_iter()
+            .filter(|(project, repository_id, _)| {
+                plans.keys.contains(&(project.clone(), *repository_id))
+            })
             .filter(|(_, _, plan)| plan.preview.is_some())
             .filter_map(|(_, _, plan)| plan.start_from)
             .collect();
@@ -266,7 +309,7 @@ impl Locked {
             .map(|open| open.environment)
             .collect();
         Ok(Self {
-            repository,
+            plans,
             start_froms,
             previews,
         })
@@ -302,11 +345,16 @@ pub(super) fn reconcile(
         }
     }
     let mut live = live(tx, who)?;
-    for (project, repository_id, plan) in plans(tx, who, locked.repository)? {
-        if plan
-            .start_from
-            .as_ref()
-            .is_some_and(|start| locked.start_froms.contains(start))
+    for (project, repository_id, plan) in plans(tx, who, locked.plans.repository)? {
+        let held = locked
+            .plans
+            .keys
+            .contains(&(project.clone(), repository_id));
+        if held
+            && plan
+                .start_from
+                .as_ref()
+                .is_some_and(|start| locked.start_froms.contains(start))
         {
             let at = (&project, repository_id, &plan);
             fill(tx, who, at, &mut live, asked, trusted, automated)?;
@@ -370,10 +418,11 @@ fn unfit(
     Ok(None)
 }
 
-/// Open previews under `plan` for its open pull requests that have none, oldest first,
-/// while its cap leaves room among the `live` previews. The cap and the rule are read
-/// once, so a full cap costs nothing per waiting pull request. One that needs approval,
-/// or a bot's the plan leaves out, waits for news of it.
+/// Open previews under `plan` for its open pull requests that have none, oldest first and
+/// each back from rest where it came back ([`Rest::Back`]), while its cap leaves room among
+/// the `live` previews. The cap and the rule are read once, so a full cap costs nothing per
+/// waiting pull request. One that needs approval, a bot's the plan leaves out, or one at
+/// rest since its preview closed for idleness, waits for news of it.
 fn fill(
     tx: &mut dyn Tx,
     who: &Actor,
@@ -412,12 +461,21 @@ fn fill(
         ),
         &[who.organization.as_str().into(), repository_id.into()],
     )?;
+    let mut queue = Vec::new();
     for row in rows {
         let number: PullRequestNumber = row.number(0, "pull request")?;
         if free == 0 && asked != Some(number) {
             continue;
         }
         let record = Record::read(&row, 1)?;
+        let place = match record.phase.rest() {
+            Some(Rest::Back { after, since }) => (after, true, since, number),
+            Some(Rest::Idle) | None => (number, false, 0, number),
+        };
+        queue.push((place, record));
+    }
+    queue.sort_by_key(|(place, _)| *place);
+    for ((.., number), record) in queue {
         let event = record.facts();
         if !matches!(record.phase, Phase::Open { .. })
             || (event.bot && !plan.include_bots)
@@ -435,6 +493,8 @@ fn fill(
                 Ok(Some(automation::Deploy::NeedsApproval))
             } else if trusted.runnable().is_err() {
                 Ok(Some(automation::Deploy::NoServers))
+            } else if record.phase.rest() == Some(Rest::Idle) {
+                Err(error::conflict(RESTING, json!({})))
             } else if free == 0 {
                 Err(error::conflict(WAITING, json!({})))
             } else {

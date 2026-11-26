@@ -22,7 +22,7 @@ use serde_json::{Value, json};
 use ts_rs::TS;
 
 pub use self::due::{Due, DueQuery};
-pub(crate) use self::due::{admit, close, sweep};
+pub(crate) use self::due::{admit, close, settling, sweep};
 pub(crate) use self::due::{ask_taking_off, due, shut_down};
 use self::mark::{Accepted, Closed, Mark, State};
 pub use self::review::{ConsentedQuery, ConsentedView};

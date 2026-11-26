@@ -312,6 +312,16 @@ pub(crate) fn close(
     settle(tx, who, &mut mark, automated)
 }
 
+/// Every Environment [`sweep`] settles a removal of, which its caller locks with
+/// everything else it touches before it sweeps.
+pub(crate) fn settling(tx: &mut dyn Tx, who: &Actor) -> Result<Vec<EnvironmentId>, RpcError> {
+    let mut members = Vec::new();
+    for mark in mark::live(tx, who)? {
+        members.extend(alive(tx, &mark)?);
+    }
+    Ok(members)
+}
+
 /// Move every removal on, then close each Branch idle past its deadline.
 pub(crate) fn sweep(
     tx: &mut dyn Tx,

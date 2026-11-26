@@ -247,10 +247,14 @@ enum Phase {
     Open {
         head: CommitSha,
         standing: OpenStanding,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rest: Option<Rest>,
     },
     Closed {
         head: CommitSha,
         standing: OpenStanding,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rest: Option<Rest>,
     },
     /// For good: no later facts reopen it.
     Merged {
@@ -261,6 +265,22 @@ enum Phase {
         /// What each Destination didn't take. None until it landed, and for good for
         /// a merge a Store from before `0012_on_merge` landed.
         landed: Option<Vec<on_merge::Unlanded>>,
+    },
+}
+
+/// Where a pull request whose preview closed for idleness stands in the queue for one.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum Rest {
+    /// Its preview closed for idleness: it gets none again until a push, a reopen or an
+    /// approval.
+    Idle,
+    /// Back at the end of the queue since `since` (the Store's clock), behind every pull
+    /// request numbered up to `after`, the repository's highest then: those waited first,
+    /// and any opened later waits behind it.
+    Back {
+        after: PullRequestNumber,
+        since: i64,
     },
 }
 
@@ -308,8 +328,16 @@ impl Phase {
                 standing,
                 landed,
             },
-            None if facts.open => Self::Open { head, standing },
-            None => Self::Closed { head, standing },
+            None if facts.open => Self::Open {
+                head,
+                standing,
+                rest: None,
+            },
+            None => Self::Closed {
+                head,
+                standing,
+                rest: None,
+            },
         }
     }
 
@@ -333,6 +361,23 @@ impl Phase {
             Self::Open { standing, .. }
             | Self::Closed { standing, .. }
             | Self::Merged { standing, .. } => *standing = to,
+        }
+        self
+    }
+
+    /// Where it stands in the queue for a preview, if its preview closed for idleness.
+    fn rest(&self) -> Option<Rest> {
+        match self {
+            Self::Open { rest, .. } | Self::Closed { rest, .. } => *rest,
+            Self::Merged { .. } => None,
+        }
+    }
+
+    /// It, at rest as `to`. A merge never rests.
+    fn resting(mut self, to: Option<Rest>) -> Self {
+        match &mut self {
+            Self::Open { rest, .. } | Self::Closed { rest, .. } => *rest = to,
+            Self::Merged { .. } => {}
         }
         self
     }
@@ -693,6 +738,36 @@ pub(crate) fn record_phases(tx: &mut dyn Tx) -> Result<(), RpcError> {
     Ok(())
 }
 
+/// Pull request `pr` back from rest now: at the end of the queue for a preview, behind
+/// every pull request its repository numbers up to now.
+fn back(tx: &mut dyn Tx, who: &Actor, pr: &PullRequestRef) -> Result<Rest, RpcError> {
+    let rows = tx.query(
+        "SELECT MAX(number) FROM config_pull_request \
+         WHERE organization_id = ?1 AND repository_id = ?2",
+        &[who.organization.as_str().into(), pr.repository_id.into()],
+    )?;
+    let after = match rows.first() {
+        Some(row) => row.number(0, "pull request")?,
+        None => pr.number,
+    };
+    Ok(Rest::Back {
+        after,
+        since: crate::storage::now(),
+    })
+}
+
+/// Rest open pull request `pr`, whose preview closed for idleness, until it shows activity.
+/// Its row is locked first, as news of it locks it.
+fn rest_idle(tx: &mut dyn Tx, who: &Actor, pr: &PullRequestRef) -> Result<(), RpcError> {
+    let Some(record) = record(tx, who, pr.repository_id, pr.number)? else {
+        return Ok(());
+    };
+    if matches!(record.phase, Phase::Open { .. }) {
+        write_phase(tx, who, pr, &record.phase.resting(Some(Rest::Idle)))?;
+    }
+    Ok(())
+}
+
 /// Store `phase` as the pull request's, and its standing in the column a Store from
 /// before `0040_pull_request_phase` reads.
 fn write_phase(
@@ -927,8 +1002,25 @@ fn record_facts(
             landed: landed.clone(),
         },
         (_, false, Some(held)) => held.phase.clone().standing_as(standing),
-        (_, false, None) if event.open => Phase::Open { head, standing },
-        (_, false, None) => Phase::Closed { head, standing },
+        (_, false, None) if event.open => {
+            // A push or a reopen is activity: a pull request at rest joins the queue's end.
+            let active =
+                was.is_some_and(|was| *was.head() != head || matches!(was, Phase::Closed { .. }));
+            let rest = match was.and_then(Phase::rest) {
+                Some(Rest::Idle) if active => Some(back(tx, who, &pr)?),
+                rest => rest,
+            };
+            Phase::Open {
+                head,
+                standing,
+                rest,
+            }
+        }
+        (_, false, None) => Phase::Closed {
+            head,
+            standing,
+            rest: was.and_then(Phase::rest),
+        },
     };
     write_phase(tx, who, &pr, &phase)?;
     Ok(Reported {
@@ -968,6 +1060,10 @@ pub(crate) fn pull_request(
         // Older than what the Store holds: never undo a newer fact.
         return Ok(automated);
     }
+    // The repository's plans next, after only this pull request's row: what follows is
+    // read under them, so a sweep or other news of the repository that ran first left
+    // everything it decided by.
+    let plans = preview::lock_plans(tx, who, Some(repository_id))?;
     // A merge lands from every PR Environment, one closing too: a close may come
     // before the merge.
     let landing = match first_merge {
@@ -975,10 +1071,10 @@ pub(crate) fn pull_request(
         None => Vec::new(),
     };
     let current = current(tx, who, event.repository_id, event.number, false)?;
-    // Everything this event may touch, locked first and in ID order: its PR
+    // Everything this event may touch, locked then and in ID order: its PR
     // Environments, where new ones start from, the repository's previews, and at the
     // merge the Destinations it lands in.
-    let previews = preview::Locked::of(tx, who, Some(repository_id))?;
+    let previews = preview::Locked::of(tx, who, plans)?;
     let mut touched: Vec<EnvironmentId> = current.iter().map(|(id, _)| id.clone()).collect();
     touched.extend(landing.iter().map(|(id, _)| id.clone()));
     touched.extend(start_froms(tx, who, event.repository_id)?);
@@ -1115,8 +1211,9 @@ pub(crate) fn approve(
         ));
     }
     let event = record.facts();
+    let plans = preview::lock_plans(tx, who, Some(repository_id))?;
     let current = current(tx, who, repository_id, number, false)?;
-    let previews = preview::Locked::of(tx, who, Some(repository_id))?;
+    let previews = preview::Locked::of(tx, who, plans)?;
     let mut touched: Vec<EnvironmentId> = current.iter().map(|(id, _)| id.clone()).collect();
     touched.extend(start_froms(tx, who, repository_id)?);
     touched.extend(previews.ids());
@@ -1128,10 +1225,14 @@ pub(crate) fn approve(
     let first = !record
         .phase
         .admits(&approval.head, &record.facts, trusted.members.as_deref());
-    let phase = match first {
+    let mut phase = match first {
         true => record.phase.standing_as(OpenStanding::ApprovedHead),
         false => record.phase,
     };
+    // An approval is activity: a pull request at rest joins the queue's end.
+    if phase.rest() == Some(Rest::Idle) {
+        phase = phase.resting(Some(back(tx, who, &pr)?));
+    }
     write_phase(tx, who, &pr, &phase)?;
     let mut automated = Automated::default();
     let at = Opening {
@@ -1548,32 +1649,70 @@ pub(crate) fn sweep(
     sweep: &Sweep,
     trusted: &Trusted,
 ) -> Result<Automated, RpcError> {
-    // Closing would lose what it holds for its merge: an idle PR Environment that
-    // holds something only comes off the Servers.
-    let mut idle = Vec::new();
-    let mut held = Vec::new();
+    let due = |closes_at: Option<i64>| closes_at.is_some_and(|at| sweep.now >= at);
+    // A pull request whose preview closes for idleness rests after, so the rows of those
+    // that may lock first, in key order as news of each locks it; then every plan.
+    let mut resting = BTreeSet::new();
     for deadline in branch::idle::deadlines(tx, &who.organization)? {
         let Deadline {
             environment: id,
             closes_at,
         } = deadline?;
-        if closes_at.is_some_and(|at| sweep.now >= at) && on_merge::holds_open(tx, who, &id)? {
-            held.push(id);
-        } else {
-            idle.push((id, closes_at));
+        if due(closes_at)
+            && preview::of(tx, &id)?.is_some()
+            && let Some(pr) = crate::pr_environment::of(tx, &id)?
+        {
+            resting.insert((pr.repository_id, pr.number));
         }
     }
-    // What it closes, shuts down and opens previews under, locked first and in ID order,
-    // as news of a pull request locks it.
-    let previews = preview::Locked::of(tx, who, None)?;
-    let due = idle
+    for (repository_id, number) in &resting {
+        lock(tx, who, *repository_id, *number)?;
+    }
+    let plans = preview::lock_plans(tx, who, None)?;
+    // Read again under the plans. Closing would lose what it holds for its merge: an idle
+    // PR Environment that holds something only comes off the Servers. A preview that came
+    // due since, whose pull request's row this didn't lock, closes at the next sweep.
+    let mut idle = Vec::new();
+    let mut held = Vec::new();
+    let mut rested = Vec::new();
+    for deadline in branch::idle::deadlines(tx, &who.organization)? {
+        let Deadline {
+            environment: id,
+            closes_at,
+        } = deadline?;
+        if due(closes_at) && on_merge::holds_open(tx, who, &id)? {
+            held.push(id);
+            continue;
+        }
+        let pr = match due(closes_at) && preview::of(tx, &id)?.is_some() {
+            true => crate::pr_environment::of(tx, &id)?,
+            false => None,
+        };
+        match pr {
+            Some(pr) if !resting.contains(&(pr.repository_id, pr.number)) => continue,
+            Some(pr) => rested.push((id.clone(), pr)),
+            None => {}
+        }
+        idle.push((id, closes_at));
+    }
+    // What it closes, settles, shuts down and opens previews under, locked then and in ID
+    // order, as news of a pull request locks it.
+    let previews = preview::Locked::of(tx, who, plans)?;
+    let closing = idle
         .iter()
-        .filter(|(_, closes_at)| closes_at.is_some_and(|at| sweep.now >= at))
+        .filter(|(_, closes_at)| due(*closes_at))
         .map(|(id, _)| id.clone());
-    scope::lock_all(tx, previews.ids().chain(due).chain(held.iter().cloned()))?;
+    let settling = crate::removal::settling(tx, who)?;
+    let locks = previews.ids().chain(closing).chain(held.iter().cloned());
+    scope::lock_all(tx, locks.chain(settling))?;
     let mut automated = crate::removal::sweep(tx, who, sweep.now, &idle)?;
     for id in &held {
         shut_down(tx, who, id, &mut automated)?;
+    }
+    for (id, pr) in &rested {
+        if preview::closing(tx, id)? {
+            rest_idle(tx, who, pr)?;
+        }
     }
     preview::reconcile(tx, who, &previews, None, trusted, &mut automated)?;
     Ok(automated)
