@@ -603,18 +603,20 @@ fn destination(
         },
         ..PlanOptions::default()
     };
-    let no_destination = |error: PlanError| match error {
-        PlanError::FreeReceiptsUntaken { names, .. } => StayReason::needs_upgrade(
-            names
-                .iter()
-                .filter_map(|name| snapshot.machine_named(name))
-                .map(|observed| MachineRef::from(&observed.machine))
-                .collect(),
-        ),
-        error => StayReason::NoDestination {
+    let no_destination = |error: PlanError| {
+        if let PlanError::FreeReceiptsUntaken { names, .. } = &error {
+            return StayReason::needs_upgrade(
+                names
+                    .iter()
+                    .filter_map(|name| snapshot.machine_named(name))
+                    .map(|observed| MachineRef::from(&observed.machine))
+                    .collect(),
+            );
+        }
+        StayReason::NoDestination {
             detail: error_chain::row(&error),
             upgrade: Vec::new(),
-        },
+        }
     };
     if content_addressed(&spec.container.image) {
         return place_one(requested, namespace, snapshot, &options).map_err(no_destination);

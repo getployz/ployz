@@ -1878,7 +1878,11 @@ async fn a_server_that_joins_during_a_free_build_gets_none_of_its_containers() {
     let service = service.joins_while_building(late);
     let carried = service.free_receipts();
     let mut snapshot = git("one", "dockerfile");
-    snapshot["config"]["replicas"] = json!(2);
+    snapshot
+        .pointer_mut("/config")
+        .and_then(serde_json::Value::as_object_mut)
+        .unwrap()
+        .insert("replicas".into(), json!(2));
     let mut free = input(&root, vec![snapshot]);
     free.free = [ServiceName::parse("one").unwrap()].into();
     deploy(service, free).await.unwrap();

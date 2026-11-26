@@ -587,6 +587,10 @@ pub(crate) struct Lowered {
     /// then Config file references whose resolved value may break the file or is
     /// left empty.
     pub(crate) warnings: Vec<DeploymentWarning>,
+    /// Each Service that builds from an upload, which `intent` leaves out, lowered as its
+    /// upload builds it, so a claim can tell what it reaches. Empty when that lowering
+    /// fails.
+    pub(crate) uploaded: Vec<ployz_core::RequestedServiceSpec>,
 }
 
 impl Lowered {
@@ -908,7 +912,7 @@ pub(super) fn lower(
     };
     // `uploaded` also gives each named source-less Service the image its upload
     // builds, as the SDK's preparation does.
-    let with = |built_later: bool, uploaded: bool| {
+    let with = |built_later: bool, uploaded: &dyn Fn(&str) -> bool| {
         snapshots
             .iter()
             .map(|(config, snapshot)| {
@@ -916,11 +920,7 @@ pub(super) fn lower(
                     && match config.settings.source {
                         ServiceSource::Git { .. } => true,
                         ServiceSource::Empty { .. } => {
-                            uploaded
-                                && snapshot
-                                    .service_id
-                                    .as_deref()
-                                    .is_some_and(|id| targeted.contains(&id))
+                            snapshot.service_id.as_deref().is_some_and(uploaded)
                         }
                         ServiceSource::Image { .. } => false,
                     };
@@ -940,11 +940,27 @@ pub(super) fn lower(
             )
         })
     };
-    let intent = checked(with(true, false))?;
+    let none = |_: &str| false;
+    let intent = checked(with(true, &none))?;
+    let uploaded = checked(with(true, &|_| true)).map_or_else(
+        |_| Vec::new(),
+        |every| {
+            every
+                .target
+                .into_iter()
+                .filter(|spec| {
+                    intent
+                        .target
+                        .iter()
+                        .all(|lowered| lowered.name != spec.name)
+                })
+                .collect()
+        },
+    );
     // Only the Services this Deploy ships, the named ones and what they reference;
     // the rest ride along unchanged.
     let shipped: BTreeSet<ServiceName> = if narrowed {
-        checked(with(true, true))?
+        checked(with(true, &|id| targeted.contains(&id)))?
             .applied_names()
             .into_iter()
             .cloned()
@@ -985,10 +1001,11 @@ pub(super) fn lower(
         .collect();
     refuse_pending(environment, saved, &warnings)?;
     Ok(Lowered {
-        input: input(with(false, false)),
+        input: input(with(false, &none)),
         shipped,
         intent,
         warnings,
+        uploaded,
     })
 }
 

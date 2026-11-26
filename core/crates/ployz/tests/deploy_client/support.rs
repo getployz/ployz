@@ -33,6 +33,8 @@ use tokio::net::TcpListener;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::{Request, Response, Status, Streaming, transport::Server};
 
+pub(super) type Carried = Arc<Mutex<Vec<(MachineId, Option<ployz_core::FreeReceipt>)>>>;
+
 #[path = "../support/inspect_telemetry.rs"]
 mod inspect_telemetry_fixture;
 
@@ -101,7 +103,7 @@ pub(super) struct DeployService {
     /// Creations that arrived without a prepared image, so the Machine pulled inside them.
     creation_pulls: Arc<AtomicUsize>,
     /// The Machine each creation went to and the Free receipt it carried, in arrival order.
-    free_receipts: Arc<Mutex<Vec<(MachineId, Option<ployz_core::FreeReceipt>)>>>,
+    free_receipts: Carried,
     /// A Machine `ListMachines` answers only once a Build has started, as one that joins
     /// while it runs.
     joins_while_building: Option<MachineObservation>,
@@ -458,9 +460,7 @@ impl DeployService {
         self.image_pulls.clone()
     }
 
-    pub(super) fn free_receipts(
-        &self,
-    ) -> Arc<Mutex<Vec<(MachineId, Option<ployz_core::FreeReceipt>)>>> {
+    pub(super) fn free_receipts(&self) -> Carried {
         self.free_receipts.clone()
     }
 

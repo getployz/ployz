@@ -4550,6 +4550,56 @@ fn a_reupload_stays_kept_whether_a_retry_of_an_older_upload_comes_before_or_afte
     }
 }
 
+/// A Service built from an upload that reaches no data builds free, as a Git one does,
+/// though its spec lowers only once the runner built it: the claim judges it as its
+/// upload builds it. An Image Service never builds.
+#[test]
+fn an_uploaded_service_that_reaches_no_data_builds_free() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("app").unwrap(),
+                image: None,
+                template: None,
+            },
+        )
+        .unwrap();
+    store
+        .write_trusted(
+            &who,
+            &Admit::Deploy(Deploy {
+                id: id(1),
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                version: None,
+                upload: Some(UploadedSource {
+                    digest: ployz_core::UploadDigest::parse("d".repeat(64)).unwrap(),
+                    base: None,
+                    uploader: None,
+                }),
+                accept_volume_loss: Vec::new(),
+                message: None,
+                prune: false,
+                no_prune: false,
+                versions: Vec::new(),
+                copies: Vec::new(),
+                recreate: Vec::new(),
+                rule: None,
+            }),
+            &ployz_store::Trusted::default(),
+        )
+        .unwrap();
+    let claimed = store.claim(&id(1), &runner("runner-a")).unwrap();
+    assert_eq!(
+        claimed.free,
+        std::collections::BTreeSet::from([ServiceName::parse("app").unwrap()])
+    );
+}
+
 #[test]
 fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back() {
     let (store, who) = shop();
