@@ -666,6 +666,10 @@ fn execute_produce(
                     .first()
                     .map_or(native.as_str(), String::as_str)
             ));
+            if free {
+                resolved_alone(&docker, &arguments, target)
+                    .map_err(|error| error.at(Stage::Preparation))?;
+            }
             progress(Progress::Stage(Stage::Building));
             if let Err(error) = builder.run(&arguments, request.sealed, || {
                 progress(Progress::Target {
@@ -731,6 +735,46 @@ fn execute_produce(
         Ok(images)
     });
     builder.finish(result)
+}
+
+/// Refuses a Free Build whose plan, as Bake resolves `arguments`, builds anything but
+/// `planned` or names its image. A requested name can resolve to a group, such as a Service
+/// named `default`, and `--load` then loads every target in it under its own tags.
+fn resolved_alone(
+    docker: &Docker<'_>,
+    arguments: &[String],
+    planned: &Planned<'_>,
+) -> Result<(), BuildError> {
+    let mut print = arguments.iter().map(String::as_str).collect::<Vec<_>>();
+    print.push("--print");
+    let printed = docker.run("resolve the Free Build's plan", &print, Streams::Captured)?;
+    alone(&printed, &planned.bake)
+}
+
+/// Whether the plan Bake `printed` builds only `bake`, under no name.
+fn alone(printed: &str, bake: &str) -> Result<(), BuildError> {
+    #[derive(Deserialize)]
+    struct Plan {
+        #[serde(default)]
+        target: BTreeMap<String, Resolved>,
+    }
+    #[derive(Deserialize)]
+    struct Resolved {
+        #[serde(default)]
+        tags: Vec<String>,
+    }
+    let plan: Plan = serde_json::from_str(printed)
+        .map_err(|error| BuildError::Result(format!("read the Free Build's plan: {error}")))?;
+    match plan.target.iter().collect::<Vec<_>>().as_slice() {
+        [(name, resolved)] if name.as_str() == bake && resolved.tags.is_empty() => Ok(()),
+        [(name, _)] if name.as_str() == bake => Err(BuildError::Request(format!(
+            "A Free Build loads its image under no name, but its plan tags '{bake}'"
+        ))),
+        _ => Err(BuildError::Request(format!(
+            "A Free Build builds only '{bake}', but its plan builds {}",
+            plan.target.keys().map(String::as_str).collect::<Vec<_>>().join(", ")
+        ))),
+    }
 }
 
 /// One target with the Buildx name it will carry, derived once.

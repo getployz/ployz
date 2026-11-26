@@ -1519,3 +1519,104 @@ fn without_a_scrub_both_sinks_read_progress_as_it_came() {
             .contains("plain opened-token-0123456789")
     );
 }
+
+/// What real Buildx 0.30 prints for `bake --print default` over a Compose file whose
+/// Services are `default` and `signed`: the name resolves to the default group.
+const GROUP_PLAN: &str = r#"{"group":{"default":{"targets":["default","signed"]}},"target":{"default":{"context":".","dockerfile":"Dockerfile","output":[{"type":"docker"}]},"signed":{"context":".","dockerfile":"Dockerfile","tags":["registry.invalid/signed:latest"],"output":[{"type":"docker"}]}}}"#;
+
+/// A Free Build of `name` against a fake Docker whose Bake resolves its plan as `plan`.
+/// Returns the result and whether a Bake run started.
+fn free_build_resolving(name: &str, plan: &str) -> (Result<Vec<BuiltImage>, BuildError>, bool) {
+    let directory = std::env::temp_dir().join(format!("ployz-free-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::set_permissions(
+        &directory,
+        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
+    )
+    .unwrap();
+    std::fs::write(directory.join("plan.json"), plan).unwrap();
+    let program = directory.join("docker");
+    executable(
+        &program,
+        &format!(
+            r#"#!/bin/sh
+case "$1 $2" in
+  'context show') echo default ;;
+  'info --format') echo '{{"DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]],"Architecture":"amd64","OSType":"linux","CgroupVersion":"2"}}' ;;
+  'buildx ls') echo '{{"Name":"{}","Nodes":[{{"Status":"running","Platforms":["linux/amd64"]}}]}}' ;;
+  'buildx bake')
+    for argument in "$@"; do
+      if [ "$argument" = --print ]; then cat plan.json; exit 0; fi
+    done
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --metadata-file) shift; metadata="$1" ;;
+        *.platform=*) target="${{1%%.platform=*}}" ;;
+      esac
+      shift
+    done
+    echo "$target" >> runs
+    printf '{{"%s":{{"containerimage.digest":"sha256:%s"}}}}' "$target" "$target" > "$metadata" ;;
+  'image inspect') printf '{{"Os":"linux","Architecture":"amd64","Descriptor":{{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"%s"}}}}' "$3" ;;
+esac
+exit 0
+"#,
+            Access::Free.builder(0)
+        ),
+    );
+    let targets = [target(name, None)];
+    let environment = BTreeMap::new();
+    let request = Request {
+        image_contexts: &BTreeMap::new(),
+        railpack: &[],
+        compose_file: &directory.join("compose.yaml"),
+        sealed_override: None,
+        working_dir: &directory,
+        environment: &environment,
+        docker: Some(&program),
+        targets: &targets,
+        build_args: &[],
+        output: Output::Load,
+        no_cache: false,
+        pull: false,
+        sealed: false,
+        cache_scope: None,
+    };
+    let admission = Admission::try_acquire_with(&HostPolicy {
+        docker: program.clone(),
+        state_directory: directory.clone(),
+        configuration_file: directory.join("build.yaml"),
+        ..Default::default()
+    })
+    .unwrap()
+    .with_access(Access::Free);
+    let result = execute_admitted(&request, admission, &|_| {});
+    let ran = directory.join("runs").exists();
+    std::fs::remove_dir_all(directory).unwrap();
+    (result, ran)
+}
+
+/// A requested name can resolve to a group, and `--load` loads every target in it under
+/// its own tags: a signed Service's tag would then name a Free Build's content.
+#[test]
+fn a_free_build_whose_plan_resolves_to_a_group_never_runs() {
+    let (result, ran) = free_build_resolving("default", GROUP_PLAN);
+    let error = result.unwrap_err();
+    assert_eq!(error.stage(), Stage::Preparation);
+    assert!(
+        error
+            .to_string()
+            .contains("A Free Build builds only 'default', but its plan builds default, signed"),
+        "{error}"
+    );
+    assert!(!ran);
+
+    let tagged = r#"{"target":{"web":{"tags":["registry.invalid/web:latest"]}}}"#;
+    let (result, ran) = free_build_resolving("web", tagged);
+    assert!(result.unwrap_err().to_string().contains("plan tags 'web'"));
+    assert!(!ran);
+
+    let (result, ran) = free_build_resolving("web", r#"{"target":{"web":{"context":"."}}}"#);
+    assert_eq!(result.unwrap().len(), 1);
+    assert!(ran);
+}
