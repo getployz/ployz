@@ -912,6 +912,7 @@ fn creation(
             image_id: None,
             answer: ployz_core::AnswerWhen::Started,
             replaces: None,
+            free_receipt: None,
         }),
         rotation: ployz_core::RunRotation::Pending,
     }

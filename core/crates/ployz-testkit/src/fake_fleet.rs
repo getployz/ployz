@@ -1569,6 +1569,7 @@ macro_rules! fleet_service {
         impl MachineRpc for FleetService {
             type ExecStream = FrameStream;
             type BuildStream = FrameStream;
+            type BuildFreeStream = FrameStream;
             type TailLogsStream = FrameStream;
             type RuntimeWatchStream = FrameStream;
 

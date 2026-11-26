@@ -531,7 +531,8 @@ fn holds_full(record: &LocalMachineRecord, key: &ClientKey) -> Result<(), Error>
 }
 
 impl Bound {
-    fn unbound() -> Self {
+    /// Work no key's scope bounds: a key change never ends it.
+    pub(crate) fn unbound() -> Self {
         Self {
             tie: Tie(Arc::new(Binding {
                 end: CancellationToken::new(),

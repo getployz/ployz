@@ -772,6 +772,7 @@ impl LocalMachine {
                 answer: AnswerWhen::default(),
                 image_id: None,
                 replaces: None,
+                free_receipt: None,
             }),
             rotation: rotation.clone(),
         };

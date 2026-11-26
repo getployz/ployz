@@ -98,6 +98,47 @@ fi
     assert!(clear_cache(&host.policy).unwrap_err().is_unknown());
 }
 
+/// A Free Build's builder and cache exist only once a Free Build ran here, so clearing
+/// the cache on a host that never ran one makes neither.
+#[test]
+fn cache_clearing_makes_no_free_builder_on_a_host_that_never_ran_a_free_build() {
+    let uid = rustix::process::getuid().as_raw();
+    let host = Host::new(&format!(
+        r#"
+root=$(dirname "$0")
+echo "$*" >> "$root/commands"
+case "$1 $2" in
+ 'context show') echo default ;;
+ 'volume ls') if [ -f "$root/ran-free" ]; then echo buildx_buildkit_ployz-free-{uid}0_state; fi ;;
+esac
+"#
+    ));
+    let free_builder = |commands: &str| {
+        commands.lines().any(|command| {
+            command.contains(&format!("ployz-free-{uid}")) && !command.starts_with("volume ls")
+        })
+    };
+
+    clear_cache(&host.policy).unwrap();
+    let commands = fs::read_to_string(host.file("commands")).unwrap();
+    assert!(!free_builder(&commands), "{commands}");
+    assert!(
+        commands.contains(&format!("buildx prune --builder ployz-{uid} --all --force")),
+        "{commands}"
+    );
+
+    fs::write(host.file("ran-free"), "").unwrap();
+    fs::remove_file(host.file("commands")).unwrap();
+    clear_cache(&host.policy).unwrap();
+    let commands = fs::read_to_string(host.file("commands")).unwrap();
+    assert!(
+        commands.contains(&format!(
+            "buildx prune --builder ployz-free-{uid} --all --force"
+        )),
+        "{commands}"
+    );
+}
+
 #[test]
 fn invalid_host_configuration_refuses_admission_before_execution() {
     let host = Host::new("exit 99");
@@ -138,7 +179,7 @@ case "$1 $2" in
         touch preparation-created ;;
     esac ;;
  'buildx prune')
-    for expected in '--max-used-space 1073741824' '--min-free-space 2147483648'; do
+    for expected in '--max-used-space 536870912' '--min-free-space 2147483648'; do
         case " $* " in *" $expected "*) ;; *) echo 'GC targets missing' >&2; exit 1 ;; esac
     done ;;
 esac

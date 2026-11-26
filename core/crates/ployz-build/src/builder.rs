@@ -11,7 +11,7 @@ use std::{
     path::PathBuf,
 };
 
-use crate::{BUILDKIT_IMAGE, BuildError, Docker, Streams, builder_name};
+use crate::{Access, BUILDKIT_IMAGE, BuildError, Docker, Streams};
 
 /// Longest a command waits for another local build to release the builder.
 const QUEUE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
@@ -20,6 +20,7 @@ const QUEUE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10 * 6
 pub(crate) struct Builder<'a> {
     docker: &'a Docker<'a>,
     name: String,
+    access: Access,
     lock: Option<Lock>,
     // Released only after Drop removes the container that uses the bridge.
     bridge: Option<Bridge>,
@@ -38,13 +39,15 @@ impl<'a> Builder<'a> {
     pub(crate) fn acquire(
         docker: &'a Docker<'a>,
         lock: Lock,
+        access: Access,
         resources: &crate::policy::Resources,
         fence: Option<(crate::FenceInstaller, Vec<u16>)>,
     ) -> Result<Self, BuildError> {
-        let name = lock.name();
+        let name = access.builder(lock.slot);
         let mut builder = Self {
             docker,
             name,
+            access,
             lock: Some(lock),
             bridge: None,
             fence,
@@ -250,6 +253,7 @@ impl<'a> Builder<'a> {
             slot: self.lock.as_ref().expect("owned lock").slot,
             cgroup,
             image_ports: image_ports.clone(),
+            mesh_images: self.access == Access::Full,
         })
         .map_err(refuse)
     }
@@ -546,6 +550,8 @@ impl Lock {
     fn recover(&mut self, docker: &std::path::Path, owned_here: bool) -> Result<(), BuildError> {
         let path = self.directory.join(lock_file(self.slot));
         let name = self.name();
+        // Either access's builder may have run in this slot last.
+        let builders = [Access::Full, Access::Free].map(|access| access.builder(self.slot));
         let quarantined = |observed: String| {
             BuildError::UncertainTermination(format!(
                 "builder {name} stays quarantined: the Build that last used it never confirmed its end, and {observed}. A later Build, daemon start or cache clear recovers it once that changes; its mark is {}",
@@ -553,9 +559,17 @@ impl Lock {
             ))
         };
         let mark = crate::owner::Mark::parse(&fs::read_to_string(&path).map_err(lock_error)?);
-        let mut survivors = mark
-            .survivors(&name)
-            .map_err(|error| quarantined(format!("its processes could not be read: {error}")))?;
+        let mut survivors = Vec::new();
+        for builder in &builders {
+            for survivor in mark
+                .survivors(builder)
+                .map_err(|error| quarantined(format!("its processes could not be read: {error}")))?
+            {
+                if !survivors.contains(&survivor) {
+                    survivors.push(survivor);
+                }
+            }
+        }
         if owned_here {
             let here = crate::owner::Process::current().map_err(|error| {
                 quarantined(format!("its processes could not be read: {error}"))
@@ -604,8 +618,12 @@ impl Lock {
                 recorder: Some(&recorder),
             };
             // Ask Docker itself, not a Buildx configuration the attempt may not have shared.
-            std::iter::once(format!("buildx_buildkit_{name}0"))
-                .chain(HELPERS.iter().map(|helper| format!("{name}-{helper}")))
+            builders
+                .iter()
+                .flat_map(|name| {
+                    std::iter::once(format!("buildx_buildkit_{name}0"))
+                        .chain(HELPERS.iter().map(move |helper| format!("{name}-{helper}")))
+                })
                 .try_for_each(|container| docker.remove_container(&container))
                 .map_err(|error| {
                     quarantined(format!(
@@ -819,12 +837,10 @@ fn bridge_error(error: std::io::Error) -> BuildError {
     BuildError::Prerequisite(format!("claim a build bridge: {error}"))
 }
 
-/// Slot 0 keeps the historical builder name; others are numbered after it.
+/// A slot is named after its Full builder: slot 0 keeps the historical name, and the
+/// others are numbered after it.
 fn slot_name(slot: usize) -> String {
-    match slot {
-        0 => builder_name(),
-        slot => format!("{}-{slot}", builder_name()),
-    }
+    Access::Full.builder(slot)
 }
 
 fn lock_file(slot: usize) -> String {
@@ -905,7 +921,7 @@ case "$1 $2" in
   'buildx ls') echo '{{"Name":"{}","Nodes":[{{"Status":"running","Platforms":["linux/amd64","linux/386","linux/arm/v7","linux/ppc64le"]}}]}}' ;;
 esac
 "#,
-                builder_name()
+                crate::builder_name()
             ),
         );
         let environment = BTreeMap::new();
@@ -922,6 +938,7 @@ esac
         let builder = Builder::acquire(
             &docker,
             Lock::try_acquire_in(&directory).unwrap(),
+            Access::Full,
             &resources,
             None,
         )
@@ -968,12 +985,18 @@ esac
                 recorder: None,
             };
             let lock = Lock::try_acquire_in(&directory).unwrap();
-            let mut builder =
-                Builder::acquire(&docker, lock, &crate::policy::Resources::default(), None)
-                    .unwrap();
+            let mut builder = Builder::acquire(
+                &docker,
+                lock,
+                Access::Full,
+                &crate::policy::Resources::default(),
+                None,
+            )
+            .unwrap();
             // A read-only descriptor deterministically makes marker truncation fail.
             builder.lock.as_mut().unwrap().file = std::sync::Arc::new(LockedFile {
-                file: fs::File::open(directory.join(format!("{}.lock", builder_name()))).unwrap(),
+                file: fs::File::open(directory.join(format!("{}.lock", crate::builder_name())))
+                    .unwrap(),
                 writes: std::sync::Mutex::default(),
             });
             let result = if prior_failure {
@@ -1114,14 +1137,17 @@ esac
         );
         drop(Lock::try_acquire_slot(directory.path(), slot, &docker).unwrap());
         let calls = fs::read_to_string(directory.path().join("calls")).unwrap();
-        assert!(
-            calls.lines().any(|call| call
-                == format!(
-                    "unix:///run/user/7/docker.sock rm --force buildx_buildkit_{}0",
-                    slot_name(slot)
-                )),
-            "{calls}"
-        );
+        // The slot ran a Build or a Free Build: recovery can't tell which, so it removes both.
+        for access in [Access::Full, Access::Free] {
+            assert!(
+                calls.lines().any(|call| call
+                    == format!(
+                        "unix:///run/user/7/docker.sock rm --force buildx_buildkit_{}0",
+                        access.builder(slot)
+                    )),
+                "{calls}"
+            );
+        }
         assert!(!calls.contains("unix:///var/run/docker.sock"), "{calls}");
     }
 
@@ -1318,9 +1344,15 @@ esac
             &crate::Cancellation::default(),
         )
         .unwrap();
-        let builder =
-            Builder::acquire(&docker, lock, &crate::policy::Resources::default(), None).unwrap();
-        let name = builder_name();
+        let builder = Builder::acquire(
+            &docker,
+            lock,
+            Access::Full,
+            &crate::policy::Resources::default(),
+            None,
+        )
+        .unwrap();
+        let name = crate::builder_name();
         let acquired = fs::read_to_string(directory.join("calls")).unwrap();
         // A container left by an earlier attempt is stale, so it is replaced.
         assert_eq!(
@@ -1371,8 +1403,9 @@ exit 1
             recorder: None,
         };
         let builder = Builder {
+            access: Access::Full,
             docker: &docker,
-            name: builder_name(),
+            name: crate::builder_name(),
             lock: None,
             bridge: None,
             fence: None,

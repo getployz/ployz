@@ -5,6 +5,7 @@ use std::sync::Arc;
 use ployz_core::{MachineId, Namespace, ResolvedServiceSpec, ServiceId, ServiceMode};
 use serde_json::json;
 
+use super::Runs;
 use crate::machine::{LocalMachine, LocalMachineError, LocalMachineStore, RecordOwner};
 use crate::storage::test_support::FakePlugin;
 
@@ -513,6 +514,7 @@ mod plan {
             answer: ployz_core::AnswerWhen::Started,
             image_id: None,
             replaces: None,
+            free_receipt: None,
         }
     }
 
@@ -846,7 +848,7 @@ async fn a_racing_create_that_adopts_an_exited_hook_does_not_start_it() {
 
     assert!(matches!(
         local
-            .create_and_start(new.clone(), None, admitted.clone(), None)
+            .create_and_start(new.clone(), Runs::Spec, None, admitted.clone(), None)
             .await
             .unwrap(),
         super::Made::Acted(_, None)
@@ -866,7 +868,7 @@ async fn a_racing_create_that_adopts_an_exited_hook_does_not_start_it() {
     }
     assert!(matches!(
         local
-            .create_and_start(new, None, admitted, None)
+            .create_and_start(new, Runs::Spec, None, admitted, None)
             .await
             .unwrap(),
         super::Made::Acted(_, None)
@@ -1703,6 +1705,64 @@ mod settled {
             assert_eq!(starts(&fake), started, "{state:?}: nothing else started");
             std::fs::remove_dir_all(data_dir).unwrap();
         }
+    }
+
+    /// An unsigned create that adopts a Container another request made in its slot, from
+    /// another Free Build's image, never starts it.
+    #[tokio::test]
+    async fn an_adopted_container_serves_a_receipt_only_for_its_image() {
+        let Settling {
+            local,
+            fake,
+            data_dir,
+        } = settling().await;
+        let (local, _replica) = with_replica(local).await;
+        let image = |hex: &str| {
+            crate::docker_image::FreeImage::for_test(
+                ployz_core::ImageDigest::parse(format!("sha256:{}", hex.repeat(64))).unwrap(),
+            )
+        };
+        let new = new_container("settled");
+        let admitted = local
+            .clone()
+            .at_operator_scope()
+            .admit_spec(&run(new.clone()), None, &[], crate::machine::Admit::Record)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!admitted.signed());
+        let first = local
+            .create_and_start(
+                new.clone(),
+                Runs::Free(image("a")),
+                None,
+                admitted.clone(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(first, super::super::Made::Acted(_, None)),
+            "{first:?}"
+        );
+        let started = starts(&fake);
+
+        // A second request read the slot empty, then its create adopted the first one's.
+        let adopted = local
+            .create_and_start(new, Runs::Free(image("b")), None, admitted, None)
+            .await
+            .unwrap();
+
+        assert!(
+            matches!(
+                &adopted,
+                super::super::Made::Acted(_, Some(refusal))
+                    if refusal.reason == ployz_core::ContainerRefusalReason::ImageDiffers
+            ),
+            "{adopted:?}"
+        );
+        assert_eq!(starts(&fake), started, "nothing else started");
+        std::fs::remove_dir_all(data_dir).unwrap();
     }
 }
 
@@ -2774,6 +2834,7 @@ mod anonymous_volumes {
                 answer: ployz_core::AnswerWhen::Started,
                 image_id: None,
                 replaces,
+                free_receipt: None,
             };
             let reply = self
                 .local

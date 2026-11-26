@@ -306,6 +306,7 @@ macro_rules! pass_through {
 impl MachineRpc for MachineService {
     type ExecStream = RpcStream;
     type BuildStream = RpcStream;
+    type BuildFreeStream = RpcStream;
     type TailLogsStream = RpcStream;
     type RuntimeWatchStream = RuntimeWatchStream;
 
@@ -632,6 +633,23 @@ impl MachineRpc for MachineService {
             request.into_inner(),
             self.builds.clone(),
             containers.sealing().clone(),
+            ployz_build::Access::Full,
+        )))
+    }
+
+    async fn build_free(
+        &self,
+        request: Request<tonic::Streaming<OpaquePayload>>,
+    ) -> Result<Response<Self::BuildFreeStream>, Status> {
+        let containers = self
+            .containers()
+            .map_err(|error| Status::unavailable(error.message))?;
+        Ok(Response::new(crate::build::start(
+            self.at(&request),
+            request.into_inner(),
+            self.builds.clone(),
+            containers.sealing().clone(),
+            ployz_build::Access::Free,
         )))
     }
 
