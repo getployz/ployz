@@ -23,7 +23,9 @@ async fn rejected_admission_does_not_poll_deferred_local_admission() {
                 deployment_id: None,
                 r#gen: ployz_core::Gen::FIRST,
                 replaces: None,
-                image: crate::docker_image::ImagePull::Policy(None),
+                image: crate::docker_image::ImagePull::Policy(
+                    crate::docker_image::Credential::Auth(None),
+                ),
                 creation_key: "ordinary",
                 kind: ContainerKind::ServiceContainer,
                 namespace: &namespace,

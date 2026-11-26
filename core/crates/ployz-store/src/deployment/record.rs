@@ -351,6 +351,12 @@ pub(crate) fn record(
             for (service, receipt) in &receipts {
                 save_receipt(tx, &stored.summary.environment_id, service, receipt)?;
             }
+            let organization = organization(tx, &stored.summary.id)?;
+            super::versions::keep_free_receipts(
+                tx,
+                (organization.as_str(), stored.namespace()),
+                &receipts,
+            )?;
             Ok(stored.summary)
         }
         RunEvidence::Build(report) => {

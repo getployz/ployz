@@ -181,6 +181,7 @@ async fn prepare(
             build_receipts: BTreeMap::new(),
             build_index: 0,
             preferred_machine: None,
+            free: Default::default(),
             pins: BTreeMap::new(),
         })
         .unwrap()

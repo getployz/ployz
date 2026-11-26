@@ -4,7 +4,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
 
@@ -32,6 +32,8 @@ use ployz_testkit::{
 use tokio::net::TcpListener;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::{Request, Response, Status, Streaming, transport::Server};
+
+pub(super) type Carried = Arc<Mutex<Vec<(MachineId, Option<ployz_core::FreeReceipt>)>>>;
 
 #[path = "../support/inspect_telemetry.rs"]
 mod inspect_telemetry_fixture;
@@ -100,6 +102,15 @@ pub(super) struct DeployService {
     image_pulls: Arc<Mutex<Vec<ImagePullCall>>>,
     /// Creations that arrived without a prepared image, so the Machine pulled inside them.
     creation_pulls: Arc<AtomicUsize>,
+    /// The Machine each creation went to and the Free receipt it carried, in arrival order.
+    free_receipts: Carried,
+    /// A Machine `ListMachines` answers only once a Build has started, as one that joins
+    /// while it runs.
+    joins_while_building: Option<MachineObservation>,
+    /// A Machine that stops advertising Free receipts once an image reaches it, as one
+    /// rolled back to an older Ployz between the plan and its creations.
+    rolls_back_on_delivery: Option<MachineId>,
+    rolled_back: Arc<AtomicBool>,
     /// Machines whose registry rejects every pull.
     pull_failures: BTreeSet<MachineId>,
     /// What a rejected pull answers.
@@ -202,6 +213,10 @@ impl DeployService {
             sticky_proxies: BTreeSet::new(),
             image_pulls: Arc::new(Mutex::new(Vec::new())),
             creation_pulls: Arc::new(AtomicUsize::new(0)),
+            free_receipts: Arc::new(Mutex::new(Vec::new())),
+            joins_while_building: None,
+            rolls_back_on_delivery: None,
+            rolled_back: Arc::default(),
             pull_failures: BTreeSet::new(),
             pull_failure: RpcError::internal("registry refused the pull"),
             ingress_roles: Arc::default(),
@@ -288,16 +303,22 @@ impl DeployService {
     }
 
     /// The verified build a creation under a rule gets back, or the refusal a Server
-    /// gives one whose proof no longer holds.
+    /// gives one whose proof no longer holds. A registry rule's image sits on a private
+    /// registry, so its Server's own pull needs the creation's login.
     fn check_rule(
         &self,
         proof: Option<&ployz_core::authority::RuleProof>,
+        login: Option<&ployz_core::SealedLogin>,
     ) -> Result<Option<ployz_core::authority::VerifiedBuild>, RpcError> {
         use ployz_core::authority::RuleEvidence;
         let Some(checks) = &self.rule_checks else {
             return Ok(None);
         };
         match proof.map(|proof| &proof.evidence) {
+            Some(RuleEvidence::Registry) if login.is_some() => Ok(None),
+            Some(RuleEvidence::Registry) => Err(RpcError::forbidden(
+                "the registry refused the Server's pull without a login",
+            )),
             Some(RuleEvidence::Online(_)) if !checks.expired.swap(true, Ordering::SeqCst) => {
                 Ok(Some(checks.issues))
             }
@@ -451,6 +472,22 @@ impl DeployService {
         self.image_pulls.clone()
     }
 
+    pub(super) fn free_receipts(&self) -> Carried {
+        self.free_receipts.clone()
+    }
+
+    /// `machine` joins once a Build has started: `ListMachines` answers it from then on.
+    pub(super) fn joins_while_building(mut self, machine: MachineObservation) -> Self {
+        self.joins_while_building = Some(machine);
+        self
+    }
+
+    /// `machine` stops advertising Free receipts once an image reaches it.
+    pub(super) fn rolls_back_on_delivery(mut self, machine: MachineId) -> Self {
+        self.rolls_back_on_delivery = Some(machine);
+        self
+    }
+
     pub(super) fn creation_pulls(&self) -> Arc<AtomicUsize> {
         self.creation_pulls.clone()
     }
@@ -513,9 +550,25 @@ impl DeployService {
     fn listed_machines(&self) -> Vec<MachineObservation> {
         let roles = self.ingress_roles.lock().unwrap();
         let mut machines = self.machines.clone();
+        let building = self
+            .builds
+            .as_ref()
+            .is_some_and(|builds| !builds.definitions.lock().unwrap().is_empty());
+        if building && let Some(joined) = &self.joins_while_building {
+            machines.push(joined.clone());
+        }
         for observed in &mut machines {
             if let Some(role) = roles.get(&observed.machine.id) {
                 observed.machine.accepts_ingress = *role;
+            }
+            if self.rolled_back.load(Ordering::SeqCst)
+                && self.rolls_back_on_delivery == Some(observed.machine.id)
+            {
+                observed
+                    .machine
+                    .runtime
+                    .capabilities
+                    .remove(ployz_core::FREE_RECEIPT_CAPABILITY);
             }
         }
         machines
@@ -842,6 +895,18 @@ impl FakeMachine for DeployService {
         Ok(frames.map(|frames| Box::pin(frames) as FakeStream))
     }
 
+    async fn build_free(
+        &self,
+        request: Request<tonic::Streaming<OpaquePayload>>,
+    ) -> Result<Response<FakeStream>, Status> {
+        let frames = self
+            .builds
+            .clone()
+            .ok_or_else(|| Status::unimplemented("BuildFree is not used by this fixture"))?
+            .stream_free(request)?;
+        Ok(frames.map(|frames| Box::pin(frames) as FakeStream))
+    }
+
     async fn describe_contract(
         &self,
         request: Request<OpaquePayload>,
@@ -869,6 +934,7 @@ impl FakeMachine for DeployService {
             capabilities.extend(
                 [
                     ployz_core::BUILD_CAPABILITY,
+                    ployz_core::BUILD_FREE_CAPABILITY,
                     ployz_core::ENSURE_IMAGE_INGEST_CAPABILITY,
                     ployz_core::PULL_IMAGE_FROM_MACHINE_CAPABILITY,
                     ployz_core::PRUNE_IMAGES_CAPABILITY,
@@ -1151,11 +1217,11 @@ impl FakeMachine for DeployService {
         let want = ensure.want.clone();
         let mut verified = None;
         if let ployz_core::ContainerWant::Running {
-            container: RunTarget::New(_),
+            container: RunTarget::New(new),
             ..
         } = &want
         {
-            match self.check_rule(ensure.rule.as_deref()) {
+            match self.check_rule(ensure.rule.as_deref(), new.registry_login.as_ref()) {
                 Ok(issued) => verified = issued,
                 Err(refusal) => return reply(refusal),
             }
@@ -1174,6 +1240,10 @@ impl FakeMachine for DeployService {
                 container: RunTarget::New(new),
                 ..
             } => {
+                self.free_receipts
+                    .lock()
+                    .unwrap()
+                    .push((machine_id, new.free_receipt.clone()));
                 if !new.image_prepared {
                     self.creation_pulls.fetch_add(1, Ordering::SeqCst);
                     if self.pull_failures.contains(&machine_id) {
@@ -1567,6 +1637,9 @@ impl FakeMachine for DeployService {
             else {
                 panic!("expected peer pull");
             };
+            if self.rolls_back_on_delivery == Some(machine) {
+                self.rolled_back.store(true, Ordering::SeqCst);
+            }
             return reply(builds.pull(machine, pull));
         }
         self.record_mutation();

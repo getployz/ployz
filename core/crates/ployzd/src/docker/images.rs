@@ -16,7 +16,6 @@ use bollard::{
 use ployz_core::{
     DOCKER_ROOT_NEARLY_FULL_BYTES, DiskFull, DiskSpace, ExposedPort, ImageRemoval,
     ImageRemovalOutcome, ImageSummary, ImagesRemoved, MachineImages, PullPolicy, RETENTION_TAG,
-    RegistryAuth,
 };
 
 use super::{Error, LocalDocker, Status, classify, containerd_store, project_image};
@@ -28,6 +27,8 @@ const KEEP: usize = 3;
 const KEEP_UNDER_PRESSURE: usize = 1;
 /// Beyond [`KEEP`], an unused image goes once this idle.
 const IDLE_SECONDS: i64 = 7 * 24 * 60 * 60;
+/// An untagged image younger than this stays even when the Docker root is nearly full.
+const FRESH_SECONDS: i64 = 60 * 60;
 /// Below this free share of the Docker root, keep only [`KEEP_UNDER_PRESSURE`].
 const PRESSURE_FREE_PERCENT: u64 = 20;
 /// ENOSPC, as Docker words it.
@@ -136,43 +137,68 @@ impl Images {
     /// # Errors
     ///
     /// Returns when the pull fails or the image is absent afterwards, as under `Never`.
-    pub async fn pull_image(
+    pub(crate) async fn pull_image(
         &self,
         image: &str,
         policy: PullPolicy,
-        auth: Option<&RegistryAuth>,
+        credential: crate::docker_image::Credential<'_>,
     ) -> Result<Vec<ExposedPort>, Error> {
         let docker = &self.docker.client;
-        if let Err(error) = crate::docker_image::prepare_image(docker, image, policy, auth).await {
-            return Err(self.pull_failure(Error::ImagePull(error)).await);
+        if let Err(error) = crate::docker_image::prepare(docker, image, policy, credential).await {
+            return Err(self.pull_failure(error).await);
         }
         self.exposed_ports(image).await
     }
 
-    /// Make `image` present as `policy` asks, with no login, and answer the ID it names
-    /// here now, so a creation can run that ID whatever the tag names later.
+    /// Make `image` present as `policy` asks, with `credential` for a pull it issues,
+    /// and answer the ID it names here now, so a creation can run that ID whatever the
+    /// tag names later. A sealed login pulls an absent image even under `Never`, so a
+    /// Move's check proves the pull before the image is copied here.
     ///
     /// # Errors
     ///
     /// As [`Self::pull_image`], [`Error::ImageAbsent`] when `policy` pulls nothing and
     /// the image isn't here, and when Docker names no ID for it.
-    pub(crate) async fn place(&self, image: &str, policy: PullPolicy) -> Result<String, Error> {
+    pub(crate) async fn place(
+        &self,
+        image: &str,
+        policy: PullPolicy,
+        credential: crate::docker_image::Credential<'_>,
+    ) -> Result<String, Error> {
         let docker = &self.docker.client;
-        if let Err(error) = crate::docker_image::prepare_image(docker, image, policy, None).await {
-            return Err(self.pull_failure(Error::ImagePull(error)).await);
-        }
-        match docker.inspect_image(image).await {
-            Ok(inspected) => inspected.id.ok_or(Error::MissingField("image ID")),
-            Err(source)
-                if policy == PullPolicy::Never && crate::docker_image::is_not_found(&source) =>
-            {
-                Err(Error::ImageAbsent {
-                    image: image.to_owned(),
-                    source,
-                })
+        let policy = match (credential, policy) {
+            (crate::docker_image::Credential::Sealed { .. }, PullPolicy::Never) => {
+                PullPolicy::Missing
             }
-            Err(error) => Err(Error::ImagePull(error)),
+            _ => policy,
+        };
+        // The ID read and the pull decision are one inspect, so an image that goes after
+        // it was found is still the one answered, and one found absent pulls with the login.
+        if policy != PullPolicy::Always {
+            match docker.inspect_image(image).await {
+                Ok(inspected) => return inspected.id.ok_or(Error::MissingField("image ID")),
+                Err(source)
+                    if policy == PullPolicy::Never
+                        && crate::docker_image::is_not_found(&source) =>
+                {
+                    return Err(Error::ImageAbsent {
+                        image: image.to_owned(),
+                        source,
+                    });
+                }
+                Err(source) if crate::docker_image::is_not_found(&source) => {}
+                Err(error) => return Err(Error::ImagePull(error)),
+            }
         }
+        if let Err(error) = crate::docker_image::pull_with(docker, image, credential).await {
+            return Err(self.pull_failure(error).await);
+        }
+        docker
+            .inspect_image(image)
+            .await
+            .map_err(Error::ImagePull)?
+            .id
+            .ok_or(Error::MissingField("image ID"))
     }
 
     /// The image `id` names, which [`Self::place`] answered before a promote, confirmed
@@ -254,9 +280,17 @@ impl Images {
         let filters = reference
             .map(|reference| HashMap::from([("reference", vec![reference])]))
             .unwrap_or_default();
+        self.listed(&filters, last_tagged).await
+    }
+
+    async fn listed(
+        &self,
+        filters: &HashMap<&str, Vec<&str>>,
+        last_tagged: bool,
+    ) -> Result<MachineImages, Error> {
         let options = ListImagesOptionsBuilder::default()
             .all(true)
-            .filters(&filters)
+            .filters(filters)
             .manifests(true)
             .build();
         let listed = self.docker.client.list_images(Some(options)).await?;
@@ -325,10 +359,42 @@ impl Images {
                 now,
             ));
         }
+        references.extend(self.idle_free(now).await?);
         if references.is_empty() {
             return Ok(ImagesRemoved::default());
         }
         self.remove_images(&references).await
+    }
+
+    /// Remove the Free Builds' images that went idle.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker cannot list images or Containers; per-reference failures
+    /// are results.
+    pub async fn prune_free_images(&self) -> Result<ImagesRemoved, Error> {
+        let references = self.idle_free(chrono::Utc::now().timestamp()).await?;
+        if references.is_empty() {
+            return Ok(ImagesRemoved::default());
+        }
+        self.remove_images(&references).await
+    }
+
+    /// The Free Builds' images [`idle_untagged`] removes. Only an image a Free Build
+    /// labelled counts, so an untagged image of the host's own stays.
+    async fn idle_free(&self, now: i64) -> Result<Vec<String>, Error> {
+        let label = format!("{}=true", ployz_build::FREE_IMAGE_LABEL);
+        let untagged = self
+            .listed(
+                &HashMap::from([("dangling", vec!["true"]), ("label", vec![label.as_str()])]),
+                true,
+            )
+            .await?;
+        Ok(idle_untagged(
+            &untagged.images,
+            under_pressure(untagged.docker_root),
+            now,
+        ))
     }
 
     /// Remove each reference without force. A reference whose image any Container
@@ -397,6 +463,23 @@ fn superseded(images: &[ImageSummary], repository: &str, pressure: bool, now: i6
         .skip(keep)
         .filter(|(tagged, _)| pressure || tagged.is_some_and(|at| now - at > IDLE_SECONDS))
         .map(|(_, tag)| tag.clone())
+        .collect()
+}
+
+/// Untagged images to remove: a Free Build's, which no Container uses and no Build
+/// loaded again for a week, or for an hour when the Docker root is nearly full. The
+/// hour leaves a Free Build's image on the Server until its creation arrives.
+fn idle_untagged(images: &[ImageSummary], pressure: bool, now: i64) -> Vec<String> {
+    let idle = if pressure {
+        FRESH_SECONDS
+    } else {
+        IDLE_SECONDS
+    };
+    images
+        .iter()
+        .filter(|image| image.containers == 0 && image.repo_tags.is_empty())
+        .filter(|image| image.last_tagged.is_some_and(|at| now - at > idle))
+        .map(|image| image.id.clone())
         .collect()
 }
 
@@ -614,6 +697,32 @@ mod tests {
             image("unknown", None, 0),
         ];
         assert_eq!(removed(&images, false), ["old"]);
+    }
+
+    #[test]
+    fn an_untagged_image_goes_once_idle_and_unused_and_a_fresh_one_stays_under_pressure() {
+        let untagged = |name: &str, hours_ago: Option<i64>, containers| ImageSummary {
+            repo_tags: Vec::new(),
+            last_tagged: hours_ago.map(|hours| NOW - hours * 60 * 60),
+            ..image(name, None, containers)
+        };
+        let images = [
+            untagged("running", Some(30 * 24), 1),
+            untagged("uncounted", Some(30 * 24), -1),
+            untagged("unknown", None, 0),
+            untagged("loaded", Some(0), 0),
+            untagged("hours", Some(2), 0),
+            untagged("week", Some(8 * 24), 0),
+            image("tagged", Some(30), 0),
+        ];
+        let removed = |pressure| {
+            idle_untagged(&images, pressure, NOW)
+                .into_iter()
+                .map(|id| id.trim_start_matches("sha256:").to_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(removed(false), ["week"]);
+        assert_eq!(removed(true), ["hours", "week"]);
     }
 
     #[test]
@@ -979,7 +1088,11 @@ mod tests {
         let started = std::time::Instant::now();
         let error = tokio::time::timeout(
             std::time::Duration::from_secs(10),
-            images.pull_image("ghcr.io/acme/missing:1", PullPolicy::Always, None),
+            images.pull_image(
+                "ghcr.io/acme/missing:1",
+                PullPolicy::Always,
+                crate::docker_image::Credential::Auth(None),
+            ),
         )
         .await
         .expect("the pull failure returns without waiting on docker info")

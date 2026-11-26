@@ -216,6 +216,8 @@ it.live(
       const write = (command: ConfigCommand, trusted?: ConfigTrusted) =>
         Effect.promise(() => store.write(ORGANIZATION, command, trusted));
       yield* seedStoreGitService(ORGANIZATION, { project: PROJECT, environment: ENVIRONMENT, service: SERVICE }, "public").pipe(Effect.provide(services));
+      // web reaches data, so its build takes the Source step.
+      yield* write({ command: "create_volume", id: "00000000-0000-4000-8000-00000000b1f1", environment: here, name: "data", storage: { kind: "docker" }, mounts: [{ service: "web", path: "/data" }] });
       yield* write({ command: "admit", admit: "deploy", id: DEPLOYED, environment: here, services: [], version: null, accept_volume_loss: [] });
 
       const worker = createRunStoreDeployment(

@@ -4,6 +4,7 @@
 //! builder's GitHub tokens, the branch head and the settings before it runs anything.
 
 use clap::{ArgMatches, Command};
+use ployz_core::authority::SourceSummary;
 use ployz_core::authority::rule::Builder;
 use ployz_core::authority::shown::Shown;
 use ployz_core::authority::{
@@ -75,6 +76,18 @@ pub(super) fn end(root: &ArgMatches) -> Result<(), Error> {
         crate::ui::stream("Automatic deploys are already off for this environment.");
         return Ok(());
     }
+    if basis
+        .kept()
+        .is_some_and(|kept| kept.source.registry().is_some())
+    {
+        return Err(Error::coded(
+            RpcErrorCode::InvalidArgument,
+            format!(
+                "{} deploys images from a registry, not GitHub pushes. Turn it off under Automatic deploys in Ployz Cloud.",
+                view.environment.name
+            ),
+        ));
+    }
     let rule = AutoDeployRule::ending(
         &basis,
         Timestamp::now(),
@@ -89,6 +102,9 @@ pub(super) fn end(root: &ArgMatches) -> Result<(), Error> {
             ),
         )
     })?;
+    let ployz_core::authority::RuleSource::Github(github) = &rule.source else {
+        unreachable!("a registry rule was refused above");
+    };
     store.write(&ApproveRule {
         environment,
         rule: Box::new(Signed::sign(&rule, &signer).map_err(Error::command)?),
@@ -97,15 +113,15 @@ pub(super) fn end(root: &ArgMatches) -> Result<(), Error> {
     crate::ui::stream(format_args!(
         "Automatic deploys are off. Pushes to {} no longer deploy on servers that enforce \
          device approval.",
-        rule.source.branch
+        github.branch
     ));
     crate::ui::emit(&Ended {
         rule: rule.rule,
         generation: rule.generation,
         ended: true,
-        repository: &rule.source.repository,
-        branch: &rule.source.branch,
-        builder: &rule.source.builder,
+        repository: &github.repository,
+        branch: &github.branch,
+        builder: &github.builder,
         services: rule.services.iter().map(|service| &service.name).collect(),
     })?;
     Ok(())
@@ -158,15 +174,26 @@ pub(super) fn show(environment: &str, summary: &RuleSummary) {
         Shown::text(environment)
     ));
     crate::ui::stream(format_args!("  namespace   {}", summary.namespace));
-    crate::ui::stream(format_args!(
-        "  repository  {} on {}",
-        summary.repository, summary.branch
-    ));
-    crate::ui::stream(format_args!(
-        "  workflow    {}, on push and on rebuilds you approve",
-        summary.workflow
-    ));
-    crate::ui::stream(format_args!("  builder     {}", summary.builder));
+    match &summary.source {
+        SourceSummary::Github {
+            repository,
+            branch,
+            workflow,
+            builder,
+            ..
+        } => {
+            crate::ui::stream(format_args!("  repository  {repository} on {branch}"));
+            crate::ui::stream(format_args!(
+                "  workflow    {workflow}, on push and on rebuilds you approve"
+            ));
+            crate::ui::stream(format_args!("  builder     {builder}"));
+        }
+        SourceSummary::Registry { repository } => {
+            crate::ui::stream(format_args!(
+                "  images      every one pushed to {repository}"
+            ));
+        }
+    }
     crate::ui::stream(format_args!(
         "  servers     {} in the cluster",
         summary.servers
@@ -185,7 +212,9 @@ pub(super) fn show(environment: &str, summary: &RuleSummary) {
     }
     for service in &summary.services {
         crate::ui::stream(format_args!("  {}", service.name));
-        crate::ui::stream(format_args!("    builds    {}", service.builds));
+        if !service.builds.is_empty() {
+            crate::ui::stream(format_args!("    builds    {}", service.builds));
+        }
         if !service.changes.is_empty() {
             crate::ui::stream(format_args!("    changed   {}", service.changes.join(", ")));
         }
@@ -193,7 +222,7 @@ pub(super) fn show(environment: &str, summary: &RuleSummary) {
             crate::ui::stream(format_args!("    {line}"));
         }
     }
-    if !summary.pinned {
+    if matches!(summary.source, SourceSummary::Github { pinned: false, .. }) {
         crate::ui::note("This rule pins a builder other than Ployz's own release.");
     }
 }

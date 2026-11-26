@@ -39,6 +39,7 @@ pub struct Upload {
     metadata_bytes: usize,
     state: UploadState,
     retain: bool,
+    access: crate::Access,
 }
 
 enum UploadState {
@@ -69,6 +70,7 @@ impl Admission {
     ) -> Result<(), BuildError> {
         let mut upload = Upload::owned(&self.lock, self.upload_root())
             .map_err(|error| BuildError::Prerequisite(error.to_string()))?;
+        upload.access = self.access;
         let environment = environment(&upload.root);
         let recorder = self.lock.recorder();
         let docker = crate::Docker {
@@ -88,8 +90,13 @@ impl Admission {
                 }
                 return Err(error);
             }
-            let builder =
-                crate::builder::Builder::acquire(&docker, self.lock, &self.resources, None)?;
+            let builder = crate::builder::Builder::acquire(
+                &docker,
+                self.lock,
+                self.access,
+                &self.resources,
+                None,
+            )?;
             let result = builder
                 .native_platform(targets, &self.resources)
                 .map(|_| ());
@@ -105,7 +112,8 @@ impl AdmittedUpload {
         admission
             .check()
             .map_err(|error| InputError::from(error.to_string()))?;
-        let upload = Upload::owned(&admission.lock, admission.upload_root())?;
+        let mut upload = Upload::owned(&admission.lock, admission.upload_root())?;
+        upload.access = admission.access;
         Ok(Self { upload, admission })
     }
 
@@ -160,6 +168,17 @@ impl Upload {
         Self::create(root)
     }
 
+    /// Private staging for one bounded upload of a Free Build, which refuses what a Free
+    /// Build's Server refuses.
+    /// # Errors
+    /// Reports failure to create protected staging.
+    #[cfg(feature = "test-support")]
+    pub fn free() -> Result<Self, InputError> {
+        let mut upload = Self::new()?;
+        upload.access = crate::Access::Free;
+        Ok(upload)
+    }
+
     /// Staging at `root`, one attempt's own directory in the staging of `slot`, which it
     /// holds until the directory is gone.
     pub(crate) fn owned(slot: &crate::builder::Lock, root: PathBuf) -> Result<Self, InputError> {
@@ -193,6 +212,7 @@ impl Upload {
             metadata_bytes: 0,
             state: UploadState::Receiving,
             retain: false,
+            access: crate::Access::Full,
         })
     }
 
@@ -252,6 +272,14 @@ impl Upload {
                     && relative != Path::new(crate::capture::COMPOSE)
                 {
                     return Err("Build entry is outside source and private material".into());
+                }
+                // Refused as it arrives, so a Sealed record never reaches a Free Build's
+                // staging, let alone opens.
+                if self.access == crate::Access::Free
+                    && relative.starts_with(crate::capture::PRIVATE)
+                    && !crate::capture::free_private(&relative)
+                {
+                    return Err("A free Build takes no Sealed values, registry login, secret file or SSH key".into());
                 }
                 if mode & !0o777 != 0 {
                     return Err("Build entry has special permission bits".into());
@@ -364,6 +392,7 @@ impl CompletedUpload {
             definition,
             Some(opened),
             [],
+            admission.access,
         )?;
         for (path, mode) in upload.directories.iter().rev() {
             fs::set_permissions(upload.root.join(path), fs::Permissions::from_mode(*mode))
@@ -548,6 +577,19 @@ pub(crate) fn environment(root: &Path) -> BTreeMap<String, String> {
             root.join("private/docker").to_string_lossy().into_owned(),
         ),
     ])
+}
+
+/// A Free Build's environment: HOME and DOCKER_CONFIG in an empty directory this host
+/// makes beside the capture, where no upload can write, so the Docker client reads no
+/// configuration or login the capture brought.
+pub(crate) fn free_environment(root: &Path) -> io::Result<BTreeMap<String, String>> {
+    let home = root.join("free-docker");
+    fs::DirBuilder::new().mode(0o700).create(&home)?;
+    let home = home.to_string_lossy().into_owned();
+    let mut environment = environment(root);
+    environment.insert("HOME".into(), home.clone());
+    environment.insert("DOCKER_CONFIG".into(), home);
+    Ok(environment)
 }
 
 #[cfg(test)]

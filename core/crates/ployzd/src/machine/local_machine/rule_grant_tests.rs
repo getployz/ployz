@@ -8,7 +8,7 @@ use ployz_core::{
     SealedScope, SealingPublicKey, ServiceName,
     authority::{
         BuildPolicy, PayloadDigest, RuleId, RuleService, Signed, Signer, SignerKey,
-        rule::{Builder, PolicyCache, PolicyMethod, RuleEvent, RuleSource, Runner},
+        rule::{Builder, GithubSource, PolicyCache, PolicyMethod, RuleEvent, RuleSource, Runner},
     },
 };
 use serde_json::{Value, json};
@@ -144,7 +144,7 @@ pub(crate) fn rule_for(
         generation: 3,
         namespace: Namespace::parse("app").unwrap(),
         machines: vec![machine],
-        source: RuleSource {
+        source: RuleSource::Github(GithubSource {
             repository_id: 1_450_985_696,
             owner_id: 354_323_584,
             repository: "Ployz-test/lab-service".to_owned(),
@@ -156,11 +156,11 @@ pub(crate) fn rule_for(
                 sha: CommitSha::parse(BUILDER_SHA).unwrap(),
             },
             runner: Runner::GithubHosted,
-        },
+        }),
         services: vec![RuleService {
             name: web(),
             template: PayloadDigest::parse(&"ab".repeat(32)).unwrap(),
-            policy: policy(),
+            policy: Some(policy()),
             secrets: Some(SealedDigest::of(record).unwrap()),
         }],
         issued_at: Timestamp::from_millis(now().as_millis() - 60_000).unwrap(),
@@ -649,4 +649,12 @@ async fn a_rule_a_passkey_answered_with_its_own_prompt_mints() {
         .admit(&grant, &holder(), Some(&fixture.record()), commit())
         .await;
     assert!(admitted.is_ok(), "{:?}", admitted.err());
+}
+
+/// The GitHub source of a GitHub rule, to change in place.
+pub(crate) fn github_mut(rule: &mut AutoDeployRule) -> &mut GithubSource {
+    match &mut rule.source {
+        RuleSource::Github(source) => source,
+        RuleSource::Registry(_) => panic!("a GitHub rule"),
+    }
 }

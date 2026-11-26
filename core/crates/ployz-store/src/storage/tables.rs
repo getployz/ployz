@@ -7,7 +7,7 @@
 
 /// Rows an Organization leaves behind once its Projects are gone: none of them hangs
 /// off a Project or an Environment by a cascading key.
-pub(crate) const ORGANIZATION_TABLES: [&str; 9] = [
+pub(crate) const ORGANIZATION_TABLES: [&str; 10] = [
     "config_create",
     "config_branch",
     "config_check_suite",
@@ -17,15 +17,18 @@ pub(crate) const ORGANIZATION_TABLES: [&str; 9] = [
     "config_removal_mark",
     "config_region_name",
     "config_service_version",
+    "config_free_receipt",
 ];
 
 /// Applied State, Namespaces and signed versions: what a Cluster's Servers hold or
 /// admit, which forgetting the Cluster clears while the Environments stay.
-pub(crate) const CLUSTER_TABLES: [&str; 3] = [
+pub(crate) const CLUSTER_TABLES: [&str; 4] = [
     "config_applied",
     "config_namespace",
     // Each names the Cluster's Sealing key, so no Server of a later Cluster admits one.
     "config_service_version",
+    // Each holds only under the Cluster's Sealing Key.
+    "config_free_receipt",
 ];
 
 #[cfg(test)]
