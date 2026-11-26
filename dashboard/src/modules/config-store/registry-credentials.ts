@@ -45,8 +45,7 @@ const UPPERCASE_HOST = "Write the image's registry in lowercase, like ghcr.io.";
 /** A registry the credentials form knows how to ask for: what it's called, and what it wants as username and secret. */
 type RegistryProvider = {
   label: string;
-  /** Null when the registry needs no username of the user's own. */
-  usernameLabel: string | null;
+  usernameLabel: string;
   /** The username the registry always takes. */
   fixedUsername: string | null;
   secretLabel: string;
@@ -56,8 +55,8 @@ type RegistryProvider = {
 };
 
 const REGISTRY_PROVIDERS: ReadonlyArray<RegistryProvider & { matches: (host: string) => boolean }> = [
-  { matches: (host) => host === "ghcr.io", label: "GitHub Container Registry", usernameLabel: null, fixedUsername: null,
-    secretLabel: "GitHub Access Token", description: "Use a GitHub Personal Access Token with the read:packages scope." },
+  { matches: (host) => host === "ghcr.io", label: "GitHub Container Registry", usernameLabel: "GitHub Username", fixedUsername: null,
+    secretLabel: "GitHub Access Token", description: "Use your GitHub username and a personal access token with the read:packages scope." },
   { matches: (host) => host === "registry.gitlab.com", label: "GitLab Container Registry", usernameLabel: "Username", fixedUsername: null,
     secretLabel: "Personal Access Token", description: "Use your GitLab username and a token with read_registry scope." },
   { matches: (host) => host === "quay.io", label: "Quay.io", usernameLabel: "Robot Username", fixedUsername: null, secretLabel: "Robot Token",

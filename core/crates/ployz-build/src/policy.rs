@@ -180,8 +180,11 @@ impl Resources {
         arguments
     }
 
+    /// Each build slot keeps a Full and a Free cache, so each takes half of `cache_bytes`,
+    /// at least a byte: BuildKit reads 0 as no limit.
     fn max_used_bytes(&self) -> u64 {
-        self.cache_bytes.unwrap_or(UNCAPPED_CACHE_BYTES)
+        self.cache_bytes
+            .map_or(UNCAPPED_CACHE_BYTES, |bytes| (bytes / 2).max(1))
     }
 
     /// Every BuildKit runs on the host network and owns its bridge, so two
@@ -226,13 +229,20 @@ fn docker_root_total_bytes(docker: &Docker<'_>) -> Option<u64> {
 /// invalid host configuration, and
 /// reports upstream launch/prune errors or unconfirmed cleanup.
 pub fn clear_cache(policy: &HostPolicy) -> Result<(), BuildError> {
-    // Every build slot keeps its own cache; stop at the first refusal.
-    crate::builder::Lock::known_slots(&policy.state_directory)
-        .try_for_each(|slot| clear_slot_cache(policy, slot))
+    // Every build slot keeps a cache for each access; stop at the first refusal.
+    crate::builder::Lock::known_slots(&policy.state_directory).try_for_each(|slot| {
+        [crate::Access::Full, crate::Access::Free]
+            .into_iter()
+            .try_for_each(|access| clear_slot_cache(policy, slot, access))
+    })
 }
 
-fn clear_slot_cache(policy: &HostPolicy, slot: usize) -> Result<(), BuildError> {
-    let admission = Admission::try_acquire_slot(policy, slot)?;
+fn clear_slot_cache(
+    policy: &HostPolicy,
+    slot: usize,
+    access: crate::Access,
+) -> Result<(), BuildError> {
+    let admission = Admission::try_acquire_slot(policy, slot)?.with_access(access);
     let environment: BTreeMap<String, String> = std::env::vars().collect();
     // Private command output must not collide with a concurrent caller or a Build.
     let directory = policy
@@ -252,7 +262,18 @@ fn clear_slot_cache(policy: &HostPolicy, slot: usize) -> Result<(), BuildError> 
     };
     let result = (|| {
         docker.require_local()?;
-        let builder = Builder::acquire(&docker, admission.lock, &admission.resources, None)?;
+        // A Free Build's builder is made only by a Free Build: a host that never ran one
+        // has no cache to clear.
+        if access == crate::Access::Free && !holds_cache(&docker, &access.builder(slot))? {
+            return Ok(());
+        }
+        let builder = Builder::acquire(
+            &docker,
+            admission.lock,
+            admission.access,
+            &admission.resources,
+            None,
+        )?;
         let result = docker
             .run(
                 "start the builder for cache clearing",
@@ -283,6 +304,23 @@ fn clear_slot_cache(policy: &HostPolicy, slot: usize) -> Result<(), BuildError> 
     result
 }
 
+/// Whether `builder` left a cache volume on this host.
+fn holds_cache(docker: &Docker<'_>, builder: &str) -> Result<bool, BuildError> {
+    let volume = format!("buildx_buildkit_{builder}0_state");
+    let listed = docker.run(
+        "look for the build cache",
+        &[
+            "volume",
+            "ls",
+            "--quiet",
+            "--filter",
+            &format!("name={volume}"),
+        ],
+        Streams::Captured,
+    )?;
+    Ok(listed.lines().any(|line| line.trim() == volume))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -300,7 +338,7 @@ mod tests {
             Resources::parse(b"cache_bytes: 1073741824")
                 .unwrap()
                 .buildkit_config(3),
-            "[worker.oci]\nnetworkMode = \"bridge\"\nbridgeName = \"ployz-build3\"\nbridgeSubnet = \"10.10.3.0/24\"\ngc = true\nreservedSpace = 0\nmaxUsedSpace = 1073741824\n"
+            "[worker.oci]\nnetworkMode = \"bridge\"\nbridgeName = \"ployz-build3\"\nbridgeSubnet = \"10.10.3.0/24\"\ngc = true\nreservedSpace = 0\nmaxUsedSpace = 536870912\n"
         );
         for invalid in [
             "cpu_cores: 0",
@@ -333,6 +371,8 @@ mod tests {
         };
         assert_eq!(max_used(b"{}"), "4611686018427387904");
         assert_eq!(max_used(b"min_free_bytes: 1"), "4611686018427387904");
-        assert_eq!(max_used(b"cache_bytes: 1073741824"), "1073741824");
+        // A slot's Full and Free caches together stay within it.
+        assert_eq!(max_used(b"cache_bytes: 1073741824"), "536870912");
+        assert_eq!(max_used(b"cache_bytes: 1"), "1");
     }
 }

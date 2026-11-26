@@ -64,6 +64,7 @@ pub mod value;
 mod volume_copy;
 mod volume_size;
 mod volume_switch;
+mod volume_trash;
 
 pub use container_metadata::*;
 pub use dockerfile::DockerfileFacts;
@@ -95,6 +96,7 @@ pub use value::*;
 pub use volume_copy::*;
 pub use volume_size::*;
 pub use volume_switch::*;
+pub use volume_trash::*;
 
 /// How long a Machine may take to become ready after start or restart,
 /// including a first Corrosion image pull. systemd start is extended up to

@@ -402,7 +402,7 @@ fn a_credential_lost_from_the_store_says_to_set_it_again() {
         .unwrap_err();
     assert_eq!(
         refused.details["next"],
-        "ployz set web.registryCredential --secret"
+        "ployz set web.registryCredential --secret --username NAME"
     );
 }
 
@@ -429,7 +429,7 @@ fn a_deployment_that_froze_no_login_is_deployed_again_rather_than_redeployed() {
     );
     assert_eq!(
         refused.details["next"],
-        "ployz set web.registryCredential --secret"
+        "ployz set web.registryCredential --secret --username NAME"
     );
     assert_eq!(
         pulls_with(&store, &admit(&store, 2)),
@@ -455,7 +455,7 @@ fn a_login_for_another_registry_is_entered_again_before_admission() {
     );
     assert_eq!(
         refused.details["next"],
-        "ployz set web.registryCredential --secret"
+        "ployz set web.registryCredential --secret --username NAME"
     );
 }
 

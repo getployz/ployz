@@ -100,6 +100,9 @@ macro_rules! rpc_catalog {
                 SeedCopy: (seed_copy, SeedCopyRequest, VolumeCopyView, SEED_COPY_CAPABILITY, "ployz.volume.seed-copy.v1", Container, Operator),
                 SetVolumeCopy: (set_volume_copy, SetVolumeCopyRequest, SetVolumeCopyReply, SET_VOLUME_COPY_CAPABILITY, "ployz.volume.copy.set.v1", Container, Operator),
                 SetVolumeSize: (set_volume_size, SetVolumeSizeRequest, SetVolumeSizeReply, SET_VOLUME_SIZE_CAPABILITY, "ployz.volume.size.set.v1", Container, Operator),
+                ListTrash: (list_trash, ListTrashRequest, TrashList, LIST_TRASH_CAPABILITY, "ployz.volume.trash.v1", Container, Full),
+                RestoreTrash: (restore_trash, RestoreTrashRequest, TrashRestored, RESTORE_TRASH_CAPABILITY, "ployz.volume.trash-restore.v1", Container, Full),
+                EmptyTrash: (empty_trash, EmptyTrashRequest, TrashEmptied, EMPTY_TRASH_CAPABILITY, "ployz.volume.trash-empty.v1", Container, Full),
                 ListImages: (list_images, ListImagesRequest, MachineImages, LIST_IMAGES_CAPABILITY, "ployz.image.list.v1", Container, Operator),
                 PruneImages: (prune_images, PruneImagesRequest, ImagesRemoved, PRUNE_IMAGES_CAPABILITY, "ployz.image.prune.v1", Container, Operator),
                 EnsureImageIngest: (ensure_image_ingest, EnsureImageIngestRequest, ImageIngestOpened, ENSURE_IMAGE_INGEST_CAPABILITY, "ployz.image.ingest.ensure.v1", Container, Operator),
@@ -125,6 +128,7 @@ macro_rules! rpc_catalog {
             bidi_streaming {
                 Exec: (exec, EXEC_CONTAINER_CAPABILITY, "ployz.container.exec.v1", Container, Full),
                 Build: (build, BUILD_CAPABILITY, "ployz.build.v1", Container, Operator),
+                BuildFree: (build_free, BUILD_FREE_CAPABILITY, "ployz.build.free.v1", Container, Operator),
             }
             capabilities {
                 JOIN_APPROVAL_CAPABILITY: ("ployz.machine.join.device-approval.v1", Always),
@@ -169,6 +173,8 @@ macro_rules! rpc_catalog {
                 SIGNED_VERSION_CAPABILITY: ("ployz.container.signed-version.v1", Always),
                 /// A signed version may be an unsigned step of a signed proposal bundle that rides in its envelope.
                 SIGNED_VERSION_PROPOSAL_CAPABILITY: ("ployz.container.signed-version.proposal.v1", Always),
+                /// `EnsureContainer` takes a Free Build's receipt and runs an unsigned creation's Container from exactly the image it names, once its MAC holds under the Cluster's Sealing Key.
+                FREE_RECEIPT_CAPABILITY: ("ployz.container.free-receipt.v1", Always),
                 /// `EnsureContainer` takes an automatic deploy rule with its image token and creates an Operator's Container under it only for the head's image built under the rule.
                 DEPLOY_RULE_CAPABILITY: ("ployz.container.deploy-rule.v1", Always),
                 /// `EnsureContainer` takes a registry automatic deploy rule, and creates an Operator's Container under it only from the image this Machine pulled itself from the rule's repository, by the digest the spec names.

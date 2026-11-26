@@ -96,6 +96,29 @@ pub fn image_registry(image: &str) -> Option<&str> {
         .then_some(first)
 }
 
+/// The reference that pulls `image` from the Machine image server at `server`. Whatever
+/// pulls from one, a destination or BuildKit, asks for this.
+///
+/// The server reads the path after its address as the name its image store holds, so an
+/// image keeps its whole name there. A path can't hold a registry's port or an IPv6
+/// address, so an image from such a registry goes by its repository path and digest
+/// alone: the server finds a digest by content, whatever the path. A tag from such a
+/// registry has no path the server would read as its name, so it gets `None`.
+#[must_use]
+pub fn image_server_reference(server: std::net::SocketAddr, image: &str) -> Option<String> {
+    let path_safe = |host: &str| {
+        host.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"._-".contains(&byte)
+        })
+    };
+    let Some(host) = image_registry(image).filter(|host| !path_safe(host)) else {
+        return Some(format!("{server}/{image}"));
+    };
+    let digest = ImageRef::new(image).digest?;
+    let path = &image_repository(image)[host.len() + 1..];
+    Some(format!("{server}/{path}@{digest}"))
+}
+
 /// Docker Hub's host, as a login for it is sealed.
 pub const DOCKER_HUB: &str = "docker.io";
 
@@ -363,6 +386,45 @@ mod tests {
         // Docker reads these first parts as hosts, which match whatever their case.
         for image in ["Registry/api:1", "GHCR.io/acme/api", "ghcr.IO/acme/api"] {
             assert!(login_host(image).is_err(), "{image}");
+        }
+    }
+
+    /// A destination or BuildKit pulls from a Machine image server by this reference, so
+    /// Docker must parse it and the server must find the image by it: a tag by the
+    /// image's whole name, a digest by content.
+    #[test]
+    fn an_image_server_reference_is_one_docker_parses_and_the_server_finds() {
+        let server = "127.0.0.1:9".parse().unwrap();
+        let digest = format!("sha256:{}", "1".repeat(64));
+        let pinned = |path: &str| format!("{path}@{digest}");
+        for (image, served) in [
+            ("busybox:1.37.0".to_owned(), "busybox:1.37.0".to_owned()),
+            ("ghcr.io/acme/web:v1".into(), "ghcr.io/acme/web:v1".into()),
+            ("localhost/web:v1".into(), "localhost/web:v1".into()),
+            (pinned("busybox"), pinned("busybox")),
+            (pinned("ghcr.io/acme/web"), pinned("ghcr.io/acme/web")),
+            (pinned("registry.verify:5000/acme/web"), pinned("acme/web")),
+            (
+                pinned("registry.verify:5000/acme/web:v1"),
+                pinned("acme/web"),
+            ),
+            (pinned("localhost:5000/web"), pinned("web")),
+            (pinned("[fd00::1]:5000/acme/web"), pinned("acme/web")),
+        ] {
+            let reference = image_server_reference(server, &image).unwrap();
+            assert!(is_image_reference(&reference), "{image}: {reference}");
+            assert_eq!(
+                reference.strip_prefix("127.0.0.1:9/"),
+                Some(served.as_str()),
+                "{image}"
+            );
+        }
+        // The server holds such a tag under a name no path can spell.
+        for image in [
+            "registry.verify:5000/acme/web:v1",
+            "[fd00::1]:5000/acme/web",
+        ] {
+            assert_eq!(image_server_reference(server, image), None, "{image}");
         }
     }
 

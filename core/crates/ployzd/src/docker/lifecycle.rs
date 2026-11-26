@@ -540,6 +540,19 @@ impl Lifecycle {
         if !creating.admitted.signed() {
             // The caller's word that the image is here, and its login, count for nothing.
             match creating.image {
+                ImagePull::Free(free) => {
+                    // Never pulled: only a Free Build of this Cluster made what its ID names.
+                    match self.docker.client.inspect_image(free.id().as_str()).await {
+                        Ok(_) => {}
+                        Err(error) if crate::docker_image::is_not_found(&error) => {
+                            return Err(Error::FreeImage(
+                                crate::docker_image::FreeImageRefusal::Absent(free.id().clone()),
+                            ));
+                        }
+                        Err(error) => return Err(Error::Docker(error)),
+                    }
+                    body.image = Some(free.id().to_string());
+                }
                 ImagePull::Pinned(id) => {
                     // A digest pull can't change what it names, so `always` asks nothing more.
                     let policy = match spec.container.pull_policy {
@@ -742,7 +755,9 @@ impl Lifecycle {
                 field: "container ID",
                 source,
             })?;
-        if !creating.admitted.signed() && !self.runs_free_image(&container_id).await? {
+        if !creating.admitted.signed()
+            && !self.runs_free_image(&container_id, creating.image).await?
+        {
             self.remove_if_present(&container_id).await?;
             return Err(Error::UnsignedImage(UnsignedImage::Moved));
         }
@@ -808,14 +823,25 @@ impl Lifecycle {
         Ok(self.docker.inspect(container_id).await?.image)
     }
 
-    /// Whether the Container just made runs an image [`Images::pull_free`] placed. Its
-    /// image was resolved by name when Docker made it, after the pull, so a name another
-    /// caller moved in between is caught here, before the Container starts.
-    async fn runs_free_image(&self, container_id: &ContainerId) -> Result<bool, Error> {
+    /// Whether the Container just made runs an image [`Images::pull_free`] placed, or the
+    /// one a Free receipt named. Its image was resolved when Docker made it, after
+    /// the pull, so a name another caller moved in between is caught here, before the
+    /// Container starts.
+    async fn runs_free_image(
+        &self,
+        container_id: &ContainerId,
+        pull: ImagePull<'_>,
+    ) -> Result<bool, Error> {
         Ok(self
             .image_of(container_id)
             .await?
-            .is_some_and(|image| self.images.is_free(&image)))
+            .is_some_and(|image| match pull {
+                ImagePull::Free(free) => image == free.id().as_str(),
+                ImagePull::Policy(_)
+                | ImagePull::Prepared
+                | ImagePull::Pinned(_)
+                | ImagePull::Placed(_) => self.images.is_free(&image),
+            }))
     }
 
     /// The Container an earlier create under `key` left behind, so a resend adopts it

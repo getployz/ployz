@@ -105,7 +105,7 @@ fn parse_origin(value: &str, dataset: &str) -> Result<VolumeOrigin> {
 
 impl VolumeStorage {
     /// The origin `mark` holds on `dataset`, set locally, or `None` when it is unset.
-    async fn local_origin(&self, dataset: &str, mark: Mark) -> Result<Origin> {
+    pub(super) async fn local_origin(&self, dataset: &str, mark: Mark) -> Result<Origin> {
         let output = self
             .zfs(&["get", "-Hp", "-o", "value,source", mark.name(), dataset])
             .await?;

@@ -188,6 +188,14 @@ _Avoid_: CI credential, push token, Management Capability
 A MAC a Machine issues over one rule build's claim and the exact rule approval it ran under, only after it checked that build with GitHub. Every Machine holding the Sealing Key checks it with its own key, so the build deploys again after its GitHub token expired or its branch moved on, while the rule's signer is trusted and no newer approval of the rule reached that Machine.
 _Avoid_: Build Receipt, accepted build
 
+**Free Build**:
+A Build that opens no Sealed value, reads no registry login, takes no other Service's image and reaches no mesh image server. It still pulls public base images and `# syntax=` frontends. It loads its image untagged and labelled on the Machine that ran it, which returns a Free receipt for each image and removes the image once it sits idle.
+_Avoid_: unsigned build, preview build
+
+**Free receipt**:
+A MAC a Machine issues over one Free Build image's ID, keyed from the Sealing Key. An unsigned creation that carries it runs exactly that image from the Machine's store, and a Machine of another Cluster refuses it. Machines keep no list of free images.
+_Avoid_: Build Receipt, verified build
+
 **Deploy**:
 A bounded command attempt that calculates and executes work against an observer-relative snapshot. It is not a persistent resource or durable workflow; its record is a Deployment.
 _Avoid_: Deployment (the record), reconciliation loop
@@ -483,6 +491,14 @@ _Avoid_: primary, master, active replica, source of truth
 **Mirror**:
 A read-only point-in-time copy of a Provisioned Volume held in a hidden slot on another Machine's Pool, refreshed by request. Docker never lists a slot; the Pool still pays for its bound. It is not continuous replication and does not make the Volume shared. The Machine records each slot's role: a pull makes it a Mirror, and a cut or a departure that parks the Writer's root in it makes it an **Old copy**, which nothing refreshes.
 _Avoid_: replica, standby, backup, secondary
+
+**Trash**:
+Where a Machine keeps every copy of a Provisioned Volume it deletes, on the same Machine Pool, for 168 hourly sweeps it ran (7 days while it runs). A delete moves the copy there and frees no space; the sweep, or a person with Full access emptying it, destroys it. The Machine never empties it to make room. Plain and anonymous Docker volumes are not kept.
+_Avoid_: recycle bin, soft delete, retention, backup
+
+**Trash entry**:
+One deleted copy in a Machine's Trash: a root, a slot or a slot's copy, with its Docker Volume name, the place it came from, the origin of the data it holds and the sweep hour it was deleted at. A person with Full access restores it where its Volume has no copy, never a slot a restore was still filling.
+_Avoid_: deleted volume, backup, snapshot
 
 **Lease**:
 The per-Volume record each Machine keeps on its Pool, `<lease>:<seq>.<round>.<sub>:<open|closed>`, that admits a switch request only when its lease and step are not behind what this Machine already did. The operator driving the Volume Run numbers the lease from its own store. A newer lease adopts, the same step replays, and anything older is refused. It outlives the copy, `docker volume rm` and a Machine reset, which closes it.

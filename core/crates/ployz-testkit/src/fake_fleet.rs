@@ -943,7 +943,7 @@ impl Fleet {
                             placed: None,
                         },
                     });
-                unary(VolumeCopyView { copy }.into())
+                unary(VolumeCopyView::of(copy).into())
             }
             RpcRequestBody::RequestMachineUpgrade(request) => {
                 let machine = self.by_id_mut(target)?;
@@ -1569,6 +1569,7 @@ macro_rules! fleet_service {
         impl MachineRpc for FleetService {
             type ExecStream = FrameStream;
             type BuildStream = FrameStream;
+            type BuildFreeStream = FrameStream;
             type TailLogsStream = FrameStream;
             type RuntimeWatchStream = FrameStream;
 

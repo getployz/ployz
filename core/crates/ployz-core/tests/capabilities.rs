@@ -50,6 +50,14 @@ const FIELD_FLOOR: &[&str] = &[
 /// Each capability above the floor, and what a caller does when a Machine lacks it.
 const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
+        "ployz.build.free.v1",
+        "gated: nothing sends a free Build yet; Cloud must send one only to a Server that advertises it, and an older daemon refuses the unknown call",
+    ),
+    (
+        "ployz.container.free-receipt.v1",
+        "gated: Cloud must attach a receipt only for a Server that advertises it. An older daemon ignores `free_receipt` and pulls the unsigned creation's image itself, which a free Build's image ID never names in a registry, so it fails closed",
+    ),
+    (
         "ployz.machine.join-trust.v1",
         "gated: a Server seals the keys and removals it holds only for a recipient whose row claims it, and a joiner that claims it refuses to serve without them, naming the admitting Server to upgrade",
     ),
@@ -268,6 +276,18 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
         "ployz.machine.join.approve.v1",
         "unreached: ApproveJoin goes only to the Machine that listed the pending join, which has it",
+    ),
+    (
+        "ployz.volume.trash.v1",
+        "refused legibly: Trash calls go only to the Server the caller connects to, and an older daemon's refusal names the capability",
+    ),
+    (
+        "ployz.volume.trash-restore.v1",
+        "refused legibly: Trash calls go only to the Server the caller connects to, and an older daemon's refusal names the capability",
+    ),
+    (
+        "ployz.volume.trash-empty.v1",
+        "refused legibly: Trash calls go only to the Server the caller connects to, and an older daemon's refusal names the capability",
     ),
     (
         "ployz.machine.join.device-approval.v1",

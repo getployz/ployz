@@ -14,7 +14,7 @@ use std::net::{TcpListener, TcpStream};
 use std::process::Command;
 
 use ployz_core::config::{ClientSealedValue, ServiceGitAccess};
-use ployz_core::{Keypair, RpcError, RpcErrorCode, SealedIdentity};
+use ployz_core::{Keypair, RpcError, RpcErrorCode, SealedIdentity, SealedLogin};
 use ployz_store::{
     Actor, AuthorizedRepository, ClusterDomain, ClusterDomainStatus, Command as StoreCommand,
     ConfigStore, DomainEvidence, Hostname, OrganizationId, Permission, Principal, Removal,
@@ -764,7 +764,7 @@ impl Approvals {
             if command["accept_volume_loss"] != json!([volume]) || command["version"] != REVIEWED {
                 let error = json!({
                     "code": "confirmation_required",
-                    "message": format!("This Deploy permanently deletes the data of {volume}"),
+                    "message": format!("This Deploy deletes the data of {volume}"),
                     "details": { "accept": [volume], "version": REVIEWED },
                 });
                 return Some((409, json!({ "error": error })));
@@ -6027,32 +6027,94 @@ fn a_synced_secret_arrives_not_set_and_never_blocks_a_deploy() {
     assert_eq!(deployed["number"], json!(3), "{deployed}");
 }
 
-/// The registry hosts of every login sealed in the CLI that `cloud`'s requests carried.
-fn sealed_login_hosts(cloud: &Target) -> Vec<String> {
-    fn hosts(value: &Value, into: &mut Vec<String>) {
+/// Every login sealed in the CLI that `cloud`'s requests carried.
+fn sealed_logins(cloud: &Target) -> Vec<SealedLogin> {
+    fn logins(value: &Value, into: &mut Vec<SealedLogin>) {
         match value {
             Value::Object(fields) if fields.contains_key("sealed") => {
-                into.extend(
-                    fields
-                        .get("host")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned),
-                );
+                into.extend(serde_json::from_value(value.clone()).ok());
             }
-            Value::Object(fields) => fields.values().for_each(|value| hosts(value, into)),
-            Value::Array(values) => values.iter().for_each(|value| hosts(value, into)),
+            Value::Object(fields) => fields.values().for_each(|value| logins(value, into)),
+            Value::Array(values) => values.iter().for_each(|value| logins(value, into)),
             Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
         }
     }
-    let mut sealed_for = Vec::new();
+    let mut sealed = Vec::new();
     for (url, _, body) in REQUESTS.lock().unwrap().iter() {
         if url == cloud.url()
             && let Ok(body) = serde_json::from_str::<Value>(body)
         {
-            hosts(&body, &mut sealed_for);
+            logins(&body, &mut sealed);
         }
     }
-    sealed_for
+    sealed
+}
+
+/// The registry hosts of every login sealed in the CLI that `cloud`'s requests carried.
+fn sealed_login_hosts(cloud: &Target) -> Vec<String> {
+    sealed_logins(cloud)
+        .into_iter()
+        .map(|login| login.host)
+        .collect()
+}
+
+/// Docker sends a login only with a username, so one without would pull as if there
+/// were none. The CLI refuses it before the token leaves, by `--secret` or a patch, and
+/// a login with one reaches the Server with both.
+#[test]
+fn a_login_reaches_the_server_with_its_username_or_never_leaves() {
+    let store = &cloud_target();
+    ok(store, &["project", "new", "shop"]);
+    ok(
+        store,
+        &["service", "add", "web", "--image", "ghcr.io/acme/web:1"],
+    );
+    let path = "web.registryCredential";
+    let writes = requests_to(store, "/api/config/write").len();
+    let (code, refused) = ployz_with_stdin(
+        store,
+        &["set", path, "--secret", "--registry", "ghcr.io"],
+        "unnamed-token\n",
+    );
+    assert_eq!(code, Some(2), "{refused}");
+    assert!(refused.contains("--username"), "{refused}");
+    let body = r#"{"registryCredential":{"secret":"patch-token"}}"#;
+    let (code, refused) = ployz_with_stdin(
+        store,
+        &["set", "web", "--patch", "-", "--registry", "ghcr.io"],
+        body,
+    );
+    assert_eq!(code, Some(2), "{refused}");
+    assert!(refused.contains("--username"), "{refused}");
+    assert_eq!(requests_to(store, "/api/config/write").len(), writes);
+    let (code, named) = ployz_with_stdin(
+        store,
+        &[
+            "set",
+            path,
+            "--secret",
+            "--registry",
+            "ghcr.io",
+            "--username",
+            "octo",
+        ],
+        "named-token\n",
+    );
+    assert_eq!(code, Some(0), "{named}");
+    let opened: Vec<_> = sealed_logins(store)
+        .iter()
+        .map(|login| {
+            let login = KEYPAIR.open_login(login).expect("sealed to the Cluster");
+            (login.username, login.password)
+        })
+        .collect();
+    assert_eq!(
+        opened,
+        [(Some("octo".to_owned()), "named-token".to_owned())]
+    );
+    for token in ["unnamed-token", "patch-token", "named-token"] {
+        cloud_never_saw(store, token);
+    }
 }
 
 #[test]
@@ -6066,7 +6128,15 @@ fn a_private_image_login_is_sealed_here_for_its_registry_and_rotates_at_once() {
     let path = "web.registryCredential";
     let (code, first) = ployz_with_stdin(
         store,
-        &["set", path, "--secret", "--registry", "ghcr.io"],
+        &[
+            "set",
+            path,
+            "--secret",
+            "--registry",
+            "ghcr.io",
+            "--username",
+            "octocat",
+        ],
         "first-token\n",
     );
     assert_eq!(code, Some(0), "{first}");
@@ -6088,7 +6158,7 @@ fn a_private_image_login_is_sealed_here_for_its_registry_and_rotates_at_once() {
     assert_eq!(rotated["staged"], json!([]));
     assert_eq!(rotated["immediate"], json!([path]));
     // A write that moves the image seals for the registry it moves to.
-    let moved = r#"{"image":"quay.io/acme/web:2","registryCredential":{"secret":"third-token"}}"#;
+    let moved = r#"{"image":"quay.io/acme/web:2","registryCredential":{"username":"octocat","secret":"third-token"}}"#;
     let (code, moved) = ployz_with_stdin(store, &["set", "web", "--patch", "-"], moved);
     assert_eq!(code, Some(0), "{moved}");
     failed(store, &["set", "web", "--patch", body], 2);
@@ -6112,14 +6182,26 @@ fn a_login_is_never_sealed_for_a_registry_only_cloud_names() {
         &["service", "add", "web", "--image", "ghcr.io/acme/web:1"],
     );
     let path = "web.registryCredential";
-    let (code, refused) = ployz_with_stdin(&cloud, &["set", path, "--secret"], "first-token\n");
+    let (code, refused) = ployz_with_stdin(
+        &cloud,
+        &["set", path, "--secret", "--username", "octo"],
+        "first-token\n",
+    );
     assert_eq!(code, Some(2), "{refused}");
-    let body = r#"{"registryCredential":{"secret":"second-token"}}"#;
+    let body = r#"{"registryCredential":{"username":"octo","secret":"second-token"}}"#;
     let (code, refused) = ployz_with_stdin(&cloud, &["set", "web", "--patch", "-"], body);
     assert_eq!(code, Some(2), "{refused}");
     let (code, named) = ployz_with_stdin(
         &cloud,
-        &["set", path, "--secret", "--registry", "ghcr.io"],
+        &[
+            "set",
+            path,
+            "--secret",
+            "--registry",
+            "ghcr.io",
+            "--username",
+            "octo",
+        ],
         "third-token\n",
     );
     assert_eq!(code, Some(0), "{named}");
@@ -8564,6 +8646,8 @@ fn below_the_cli_read_bound_the_store_judges_an_input_as_on_main() {
             "--secret",
             "--registry",
             "docker.io",
+            "--username",
+            "octo",
         ],
         stdin,
     );

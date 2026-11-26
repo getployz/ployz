@@ -150,9 +150,15 @@ async fn destroy_drops_a_landed_seed_docker_never_adopted() {
         "the seed root is gone"
     );
     assert!(test.0.join("volume").exists(), "the source stays");
+    assert!(
+        !effects_since(&test, &log)
+            .iter()
+            .any(|effect| effect.contains("destroy"))
+    );
+    let entry = trashed_one(&test, "root");
     assert_eq!(
-        effects_since(&test, &log),
-        ["zfs destroy -r tank/ployz/seed"]
+        property(&test, &entry, "ployz:trash-name").as_deref(),
+        Some("seed")
     );
     assert_eq!(
         post(&socket, "/Volume.Copy.Destroy", json!({"name": "seed"})).await,
@@ -182,12 +188,14 @@ async fn destroy_drops_a_seed_and_the_slot_parent_a_crashed_landing_left() {
         "the slot parent is gone"
     );
     assert!(test.0.join("volume").exists(), "the source stays");
+    trashed_one(&test, "root");
     assert_eq!(
-        effects_since(&test, &log),
-        [
-            "zfs destroy -r tank/ployz/seed",
-            "zfs destroy -r tank/ployz-mirror/seed"
-        ]
+        effects_since(&test, &log)
+            .iter()
+            .filter(|effect| effect.contains("destroy"))
+            .collect::<Vec<_>>(),
+        ["zfs destroy tank/ployz-mirror/seed"],
+        "the empty slot parent goes outright"
     );
 }
 
@@ -905,10 +913,16 @@ async fn a_seed_replaces_a_slot_a_mirror_pull_marked_or_that_holds_no_point() {
             "pulled {pulled}: {landed}"
         );
         let log = commands(&test);
-        assert!(
-            log.contains("zfs destroy -r tank/ployz-mirror/seed\n"),
-            "pulled {pulled}: {log}"
-        );
+        if pulled {
+            let entry = trashed_one(&test, "slot");
+            assert_eq!(snapshot_names(&test, &format!("{entry}/fs")), ["w-9-1"]);
+        } else {
+            assert!(
+                log.contains("zfs destroy -r tank/ployz-mirror/seed\n"),
+                "a slot with no point goes outright: {log}"
+            );
+            assert_eq!(trashed(&test), Vec::<String>::new());
+        }
         assert_landed(&test);
     }
 }
@@ -1060,10 +1074,86 @@ async fn a_seed_replaces_a_slot_parent_with_no_fs() {
     );
     let log = commands(&test);
     assert!(
-        log.contains("zfs destroy -r tank/ployz-mirror/seed\n"),
+        log.contains("zfs destroy tank/ployz-mirror/seed\n"),
         "{log}"
     );
+    assert_eq!(trashed(&test), Vec::<String>::new());
     assert_landed(&test);
+}
+
+/// A stale slot whose copy holds a point keeps its bytes in the Trash, so a seed admits the
+/// new slot beside them before it moves the old one, and keeps it when the Pool can't.
+#[tokio::test]
+async fn a_seed_keeps_a_stale_slot_the_pool_cannot_replace_beside_the_trash() {
+    let test = test_dir();
+    let (socket, _server) = start(
+        &test,
+        USABLE_POOL,
+        &["root", "volume", "seed-slot", "seed-fs"],
+    );
+    set_property(&test, "tank/ployz/data", "snapshots", POINT);
+    let (parent, fs) = ("tank/ployz-mirror/seed", "tank/ployz-mirror/seed/fs");
+    set_property(&test, parent, "refquota", &(1u64 << 30).to_string());
+    set_property(
+        &test,
+        fs,
+        "snapshots",
+        &format!("{fs}@w-1-0\t70\t1690000000"),
+    );
+    set_property(&test, fs, "ployz:pulled", "70");
+    set_property(&test, fs, "used", &(3u64 << 29).to_string());
+    set_property(&test, fs, "usedbydataset", &(3u64 << 29).to_string());
+    super::trash_tests::pool_using(&test, 966_367_642 + (3 << 29));
+
+    let refused = post(&socket, "/Volume.Seed", seed(77)).await;
+
+    assert!(
+        refused
+            .pointer("/Err/message")
+            .and_then(Value::as_str)
+            .is_some_and(|message| message.contains("Machine Pool needs")),
+        "{refused}"
+    );
+    assert!(test.0.join("seed-slot").exists() && test.0.join("seed-fs").exists());
+    assert_eq!(snapshot_names(&test, fs), ["w-1-0"]);
+    assert_eq!(trashed(&test), Vec::<String>::new());
+}
+
+/// A stale slot whose copy holds a point only this Machine may hold is refused for that
+/// before the Pool is asked for room, so no admission grows the Pool for a seed that
+/// never starts.
+#[tokio::test]
+async fn a_seed_refuses_a_stale_slot_written_here_before_it_admits_a_new_one() {
+    let test = test_dir();
+    let (socket, _server) = start(
+        &test,
+        USABLE_POOL,
+        &["root", "volume", "seed-slot", "seed-fs"],
+    );
+    set_property(&test, "tank/ployz/data", "snapshots", POINT);
+    let (parent, fs) = ("tank/ployz-mirror/seed", "tank/ployz-mirror/seed/fs");
+    set_property(&test, parent, "refquota", &(1u64 << 30).to_string());
+    set_property(
+        &test,
+        fs,
+        "snapshots",
+        &format!("{fs}@w-1-0\t70\t1690000000"),
+    );
+    set_property(&test, fs, "used", &(3u64 << 29).to_string());
+    set_property(&test, fs, "usedbydataset", &(3u64 << 29).to_string());
+    super::trash_tests::pool_using(&test, 966_367_642 + (3 << 29));
+
+    let refused = post(&socket, "/Volume.Seed", seed(77)).await;
+
+    assert!(
+        refused
+            .pointer("/Err/message")
+            .and_then(Value::as_str)
+            .is_some_and(|message| message.contains("promote or restore it before seeding it")),
+        "{refused}"
+    );
+    assert!(test.0.join("seed-slot").exists() && test.0.join("seed-fs").exists());
+    assert_eq!(trashed(&test), Vec::<String>::new());
 }
 
 /// Docker's Create leaves `ployz:seed` on the root it adopts, so the same Seed resent
@@ -1391,7 +1481,12 @@ async fn a_closed_window_finishes_a_copy_underway_and_starts_none() {
 /// restarted plugin is refused, makes nothing, and the Volume stays gone.
 #[tokio::test]
 async fn a_copy_never_makes_its_deleted_volume_again() {
-    for delete in ["forget the landed root", "docker rm", "forget the slot"] {
+    for delete in [
+        "forget the landed root",
+        "docker rm",
+        "docker rm stopped before its tombstone",
+        "forget the slot",
+    ] {
         let test = if delete == "forget the slot" {
             killed_copy()
         } else {
@@ -1401,7 +1496,7 @@ async fn a_copy_never_makes_its_deleted_volume_again() {
         if delete != "forget the slot" {
             copy_settled(&socket, &copy(open(OPEN))).await;
         }
-        let deleted = if delete == "docker rm" {
+        let deleted = if delete.starts_with("docker rm") {
             let created = post(
                 &socket,
                 "/VolumeDriver.Create",
@@ -1417,6 +1512,12 @@ async fn a_copy_never_makes_its_deleted_volume_again() {
             deleted.get("Err").is_none_or(|error| error == ""),
             "{delete}: {deleted}"
         );
+        if delete == "docker rm stopped before its tombstone" {
+            // The move's rename committed and the plugin stopped before it wrote the
+            // tombstone: the step's Volume waits in the Trash, carrying the step.
+            fs::remove_dir_all(test.0.join("admission-data/seed-copies")).unwrap();
+            assert_eq!(trashed(&test).len(), 1);
+        }
         stop(server).await;
         let (socket, _server) = plugin(&test, None);
         let log = commands(&test);

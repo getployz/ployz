@@ -20,16 +20,16 @@ fn unknown(error: impl std::fmt::Display) -> ployz_core::RpcError {
 }
 
 fn storage_error(error: super::PluginError) -> ployz_core::RpcError {
-    match error.into_capacity() {
-        Ok(error) => error.into_rpc_error(),
-        Err(error) => ployz_core::RpcError::internal("Storage preparation failed")
-            .with_details(serde_json::json!({"code": "storage_preparation_failed"}))
-            .with_causes(
-                std::iter::once(error.to_string())
-                    .chain(ployz_core::error_chain::causes(&error))
-                    .collect(),
-            ),
+    if error.is_capacity() {
+        return error.into();
     }
+    ployz_core::RpcError::internal("Storage preparation failed")
+        .with_details(serde_json::json!({"code": "storage_preparation_failed"}))
+        .with_causes(
+            std::iter::once(error.to_string())
+                .chain(ployz_core::error_chain::causes(&error))
+                .collect(),
+        )
 }
 
 impl VolumeStorage {
@@ -86,7 +86,7 @@ impl VolumeStorage {
                             0,
                         )
                     }
-                    Place::Outside => continue,
+                    Place::Trash(_) | Place::Outside => continue,
                 };
                 let maximum = ProvisionedVolumeMaximumBytes::new(
                     std::num::NonZeroU64::new(maximum_bytes).ok_or("Volume has no finite bound")?,
@@ -140,16 +140,26 @@ impl VolumeStorage {
         requested: &Volumes,
     ) -> Result<Vec<ployz_core::DockerVolumeName>, ployz_core::RpcError> {
         let _pool_guard = self.pool.lock_mutation().await.map_err(storage_error)?;
-        let capacity = self.capacity().await.map_err(unknown)?;
+        let mut capacity = self.capacity().await.map_err(unknown)?;
+        let existing_pool = self.pool.one_usable().await.map_err(storage_error)?;
+        let datasets = match &existing_pool {
+            Some(pool) => self.datasets(pool).await.map_err(storage_error)?,
+            None => Vec::new(),
+        };
+        let trash_bytes = existing_pool.as_ref().map_or(0, |pool| {
+            super::storage::Commitment::trash_of(pool, &datasets)
+        });
+        // The host is budgeted for live data only, as a Pool grows for nothing else; what
+        // fits only once the Trash is emptied is refused below, saying what it holds.
+        let unmanaged_used_bytes = capacity.unmanaged_used_bytes;
+        capacity.unmanaged_used_bytes = unmanaged_used_bytes.saturating_sub(trash_bytes);
         let budget = capacity
             .budget(requested)
             .map_err(StorageCapacityError::into_rpc_error)?;
         if requested.is_empty() {
             return Ok(Vec::new());
         }
-        let existing_pool = self.pool.one_usable().await.map_err(storage_error)?;
         if let Some(pool) = &existing_pool {
-            let datasets = self.datasets(pool).await.map_err(storage_error)?;
             for (name, maximum) in requested {
                 let plugin_name =
                     VolumeName::try_from(name).map_err(|error| storage_error(error.into()))?;
@@ -171,12 +181,18 @@ impl VolumeStorage {
             .ok_or_else(|| unknown("Volume commitments overflow u64"))?;
         match existing_pool {
             Some(pool) => {
-                self.ensure_pool_capacity(&pool, commitment, capacity.unmanaged_used_bytes)
+                let commitment = super::storage::Commitment {
+                    bytes: commitment,
+                    unmanaged_used_bytes,
+                    trash_bytes,
+                };
+                self.ensure_pool_capacity(&pool, &commitment)
                     .await
                     .map_err(storage_error)?;
             }
             None => {
-                self.pool.create(commitment).await.map_err(storage_error)?;
+                let created = self.pool.create(commitment).await.map_err(storage_error)?;
+                self.trash_new_pool(created.machine_pool()).await;
             }
         }
         Ok(requested.keys().cloned().collect())

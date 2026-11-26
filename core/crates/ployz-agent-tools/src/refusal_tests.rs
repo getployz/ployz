@@ -57,7 +57,7 @@ fn every_store_follow_up_reads_as_main_wrote_it() {
             FollowUp::SetRegistryCredential {
                 service: "web".into(),
             },
-            json!("ployz set web.registryCredential --secret"),
+            json!("ployz set web.registryCredential --secret --username NAME"),
             fix(DashboardPage::Variables),
         ),
         (

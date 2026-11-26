@@ -1500,6 +1500,9 @@ pub enum Error {
     /// A spec nothing signed names an image this Machine cannot pull itself with no login.
     #[error("nothing signed this Service, so its image must be public")]
     UnsignedImage(#[source] crate::docker_image::UnsignedImage),
+    /// A spec nothing signed carries a Free receipt this Machine won't run.
+    #[error("nothing signed this Service, and this Server won't run its free Build's image")]
+    FreeImage(#[source] crate::docker_image::FreeImageRefusal),
     /// A Container was about to be made from a spec nothing admitted.
     #[error("this Server did not admit the spec")]
     NotAdmitted,
@@ -1609,6 +1612,7 @@ impl Error {
             | Self::TunnelOriginNotRunning
             | Self::UnrecognizedNetwork
             | Self::UnsignedImage(_)
+            | Self::FreeImage(_)
             | Self::RegistryLogin(_)
             | Self::NotAdmitted
             | Self::Unadmitted(_)

@@ -9,6 +9,11 @@
 //! a ZFS that does not keep `readonly=on` on the received copy, however it is set, and
 //! `props/receive-fails` a receive that fails outright. Like ZFS,
 //! a command naming a dataset no marker stands for fails with `dataset does not exist`.
+//!
+//! The Trash is the `trash` directory: it stands for `tank/ployz-trash`, and each
+//! `trash/<id>` directory for one entry, with a `trash/<id>/fs` marker when the entry is a
+//! slot holding a copy. A rename into the Trash moves a dataset's marker and its `props`
+//! there; a rename out of it moves them back.
 
 use std::{
     fs,
@@ -68,14 +73,28 @@ pub(super) fn fake_zfs_seeding(directory: &Path, pools: &str, seed: &str) -> (Pa
     let seed_fs = directory.join("seed-fs");
     let seed_volume = directory.join("seed-volume");
     let props = directory.join("props");
+    let trash = directory.join("trash");
     let next_guid = directory.join("next-guid");
     let script_body = format!(
         r#"#!/bin/sh
 set -eu
 name=${{0##*/}}
 printf '%s %s\n' "$name" "$*" >> '{commands}'
+# props/pools, when a test writes it, stands for the Pools in place of the given ones.
 if [ "$name" = zpool ]; then
-  printf '{pools}'
+  # A label scan finds what props/importable lists, and otherwise says so on stderr as ZFS does.
+  if [ "$1" = import ]; then
+    if [ -e '{props}/importable' ]; then cat '{props}/importable'; else echo 'no pools available to import' >&2; fi
+    exit 0
+  fi
+  pools() {{ if [ -e '{props}/pools' ]; then cat '{props}/pools'; else printf '{pools}'; fi; }}
+  # A listing with guids gives each Pool the guid its name's checksum makes.
+  case "$*" in
+    'list -Hp -o name,guid,'*) pools | while IFS="$(printf '\t')" read -r pool rest || [ -n "$pool" ]; do
+        printf '%s\t%s\t%s\n' "$pool" "$(printf %s "$pool" | cksum | cut -d' ' -f1)" "$rest"
+      done ;;
+    *) pools ;;
+  esac
   exit 0
 fi
 # ZFS refuses a user property (a name with a colon) holding anything but a-z, 0-9 and :._-
@@ -108,6 +127,10 @@ new_guid() {{
 exists() {{
   case "$1" in
     tank) ;;
+    tank/ployz-trash) [ -d '{trash}' ] ;;
+    tank/ployz-trash/*/fs) [ -e '{trash}'/"${{1#tank/ployz-trash/}}" ] ;;
+    tank/ployz-trash/*/*) false ;;
+    tank/ployz-trash/*) [ -d '{trash}'/"${{1#tank/ployz-trash/}}" ] ;;
     tank/ployz) [ -e '{root}' ] ;;
     tank/ployz/data) [ -e '{volume}' ] ;;
     tank/ployz/data/child) [ -e '{descendant}' ] ;;
@@ -121,6 +144,34 @@ exists() {{
     tank/ployz-mirror/{seed}/fs) [ -e '{seed_slot}' ] && [ -e '{seed_fs}' ] ;;
     *) false ;;
   esac
+}}
+# Every dataset the Trash holds, its parent first.
+trash_datasets() {{
+  [ -d '{trash}' ] || return 0
+  printf 'tank/ployz-trash\n'
+  for e in '{trash}'/*; do
+    [ -d "$e" ] || continue
+    printf 'tank/ployz-trash/%s\n' "${{e##*/}}"
+    [ ! -e "$e/fs" ] || printf 'tank/ployz-trash/%s/fs\n' "${{e##*/}}"
+  done
+}}
+# Moves the props of dataset $1, and of its children, to dataset $2.
+move_props() {{
+  rm -rf '{props}'/"$2"
+  if [ -d '{props}'/"$1" ]; then
+    mkdir -p '{props}'/"${{2%/*}}"
+    mv '{props}'/"$1" '{props}'/"$2"
+    find '{props}'/"$2" -name snapshots -type f | while read -r f; do
+      sed -e "s#^$1/#$2/#" -e "s#^$1@#$2@#" "$f" > "$f.new"; mv "$f.new" "$f"
+    done
+  fi
+  if [ -e '{props}'/received/"$1" ]; then
+    mkdir -p '{props}'/received/"${{2%/*}}"; mv '{props}'/received/"$1" '{props}'/received/"$2"
+  fi
+}}
+# Sets property $2 of dataset $1 to $3 unless the dataset sets it already.
+keep() {{
+  [ -e '{props}'/"$1/$2" ] || put '{props}'/"$1/$2" "$3"
 }}
 # Writes a substream BEGIN record naming guid $1, as [`begun`] does.
 begin() {{
@@ -165,6 +216,7 @@ case "$*" in
     for d in tank tank/ployz tank/ployz/data tank/ployz/data/child tank/ployz/sibling tank/ployz/{seed} tank/ployz-mirror tank/ployz-mirror/copy tank/ployz-mirror/copy/fs tank/ployz-mirror/data tank/ployz-mirror/data/fs tank/ployz-mirror/{seed} tank/ployz-mirror/{seed}/fs; do
       ! exists "$d" || printf '%s\n' "$d"
     done
+    trash_datasets
     ;;
   'list -H -o name,guid -t snapshot -d 1 '*)
     require "$9"
@@ -176,6 +228,11 @@ case "$*" in
     if [ -e '{props}/datasets-cut' ]; then
       printf 'tank\t0\t0\t0\t0\t/tank\tyes\toff\n'; echo 'cannot iterate filesystems: I/O error' >&2; exit 0
     fi
+    # props/datasets-cut-later: this listing finishes, and the next one stops early.
+    [ ! -e '{props}/datasets-cut-later' ] || mv '{props}/datasets-cut-later' '{props}/datasets-cut'
+    # props/datasets-empty: ZFS printed nothing at all and exited 0; -later from the next one.
+    [ ! -e '{props}/datasets-empty' ] || exit 0
+    [ ! -e '{props}/datasets-empty-later' ] || mv '{props}/datasets-empty-later' '{props}/datasets-empty'
     if [ -e '{hold_list}' ]; then
       touch '{list_held}'
       while [ -e '{hold_list}' ]; do sleep 0.01; done
@@ -218,9 +275,13 @@ case "$*" in
     if [ -e '{seed_slot}' ]; then
       printf 'tank/ployz-mirror/{seed}\t%s\t0\t0\t0\t/var/lib/ployz-mirror/{seed}\tno\ton\n' "$(prop tank/ployz-mirror/{seed} refquota {slot_bound})"
       if [ -e '{seed_fs}' ]; then
-        printf 'tank/ployz-mirror/{seed}/fs\t%s\t0\t0\t0\t/var/lib/ployz-mirror/{seed}/fs\tno\t%s\n' "$(prop tank/ployz-mirror/{seed}/fs refquota {slot_bound})" "$(prop tank/ployz-mirror/{seed}/fs readonly on)"
+        printf 'tank/ployz-mirror/{seed}/fs\t%s\t%s\t%s\t0\t/var/lib/ployz-mirror/{seed}/fs\tno\t%s\n' "$(prop tank/ployz-mirror/{seed}/fs refquota {slot_bound})" "$(prop tank/ployz-mirror/{seed}/fs used 0)" "$(prop tank/ployz-mirror/{seed}/fs usedbydataset 0)" "$(prop tank/ployz-mirror/{seed}/fs readonly on)"
       fi
     fi
+    for d in $(trash_datasets); do
+      if [ "$d" = tank/ployz-trash ]; then printf 'tank/ployz-trash\t0\t0\t0\t0\tnone\tno\toff\n'; continue; fi
+      printf '%s\t%s\t%s\t%s\t%s\tnone\tno\t%s\n' "$d" "$(prop "$d" refquota 0)" "$(prop "$d" used 0)" "$(prop "$d" usedbydataset 0)" "$(prop "$d" referenced 0)" "$(prop "$d" readonly off)"
+    done
     ;;
   'list -Hp -t snapshot -o name,guid,creation -S createtxg -d 1 '*)
     require "${{11}}"
@@ -248,15 +309,28 @@ case "$*" in
   'get -r -H -s local -o value '*)
     require "$9"
     check_property "$8"
-    for d in tank/ployz tank/ployz/data tank/ployz/data/child tank/ployz/sibling tank/ployz/{seed} tank/ployz-mirror tank/ployz-mirror/copy tank/ployz-mirror/copy/fs tank/ployz-mirror/data tank/ployz-mirror/data/fs tank/ployz-mirror/{seed} tank/ployz-mirror/{seed}/fs; do
+    for d in tank/ployz tank/ployz/data tank/ployz/data/child tank/ployz/sibling tank/ployz/{seed} tank/ployz-mirror tank/ployz-mirror/copy tank/ployz-mirror/copy/fs tank/ployz-mirror/data tank/ployz-mirror/data/fs tank/ployz-mirror/{seed} tank/ployz-mirror/{seed}/fs $(trash_datasets); do
       case "$d" in "$9"|"$9"/*) ;; *) continue ;; esac
       exists "$d" || continue
       f='{props}'/"$d/$8"
       [ ! -e "$f" ] || prop "$d" "$8" -
     done
     ;;
+  'get -r -H -s local -o name,value '*)
+    require "$9"
+    check_property "$8"
+    for d in tank/ployz tank/ployz/data tank/ployz/data/child tank/ployz/sibling tank/ployz/{seed} $(trash_datasets); do
+      case "$d" in "$9"|"$9"/*) ;; *) continue ;; esac
+      exists "$d" || continue
+      f='{props}'/"$d/$8"
+      [ ! -e "$f" ] || printf '%s\t%s\n' "$d" "$(prop "$d" "$8" -)"
+    done
+    ;;
   'get -H -s local -o value '*)
     require "$8"
+    # props/get-cut/<dataset>: ZFS couldn't read the dataset's properties, said so on
+    # stderr, and still exited 0.
+    [ ! -e '{props}'/get-cut/"$8" ] || {{ echo "cannot get property: I/O error" >&2; exit 0; }}
     check_property "$7"
     f='{props}'/"$8/$7"
     [ ! -e "$f" ] || prop "$8" "$7" -
@@ -272,6 +346,9 @@ case "$*" in
     ;;
   'get -Hp -o value,source '*)
     require "$6"
+    [ ! -e '{props}'/get-cut/"$6" ] || {{ echo "cannot get property: I/O error" >&2; exit 0; }}
+    # props/source-cut/<dataset>: the row ends partway through its source.
+    [ ! -e '{props}'/source-cut/"$6" ] || {{ printf -- '-\tloc\n'; exit 0; }}
     v=$(prop "$6" "$5" -)
     if [ "$v" = - ]; then printf -- '-\t-\n'; else printf '%s\tlocal\n' "$v"; fi
     ;;
@@ -320,6 +397,14 @@ case "$*" in
     require "$3"
     rm -f '{readonly_volume}'
     put '{props}/tank/ployz/data/readonly' off ;;
+  'set refreservation='*' tank/ployz-trash')
+    # `pool-full` stands for a Pool with no space left: only freeing the slack makes room.
+    case "$2" in
+      refreservation=none) [ "$(prop tank/ployz-trash refreservation none)" = none ] || touch '{props}/pool-freed' ;;
+      *) if [ -e '{props}/pool-full' ]; then echo "cannot set property for 'tank/ployz-trash': size is greater than available space" >&2; exit 1; fi ;;
+    esac
+    put '{props}'/tank/ployz-trash/refreservation "${{2#*=}}"
+    ;;
   'set '*)
     require "$3"
     check_property "${{2%%=*}}"
@@ -349,6 +434,14 @@ case "$*" in
     if exists tank/ployz-mirror; then echo "cannot create 'tank/ployz-mirror': dataset already exists" >&2; exit 1; fi
     touch '{mirror_root}'
     ;;
+  'create -o canmount=off -o readonly=on -o refquota='*' -o ployz:role='*' -o ployz:trash-restoring='*' tank/ployz-mirror/data')
+    if [ -e '{mirror}' ]; then echo "cannot create 'tank/ployz-mirror/data': dataset already exists" >&2; exit 1; fi
+    touch '{mirror}'
+    mkdir -p '{props}/tank/ployz-mirror/data'
+    printf '%s\n' "${{7#refquota=}}" > '{props}/tank/ployz-mirror/data/refquota'
+    printf '%s\n' "${{9#ployz:role=}}" > '{props}/tank/ployz-mirror/data/ployz:role'
+    printf '%s\n' "${{11#ployz:trash-restoring=}}" > '{props}/tank/ployz-mirror/data/ployz:trash-restoring'
+    ;;
   'create -o canmount=off -o readonly=on -o refquota='*' tank/ployz-mirror/data')
     if [ -e '{mirror}' ]; then echo "cannot create 'tank/ployz-mirror/data': dataset already exists" >&2; exit 1; fi
     touch '{mirror}'
@@ -375,6 +468,71 @@ case "$*" in
     printf '%s\n' "${{7#refquota=}}" > '{props}/tank/ployz-mirror/{seed}/refquota'
     new_guid
     printf '%s\n' "$guid" > '{props}/tank/ployz-mirror/{seed}/guid'
+    ;;
+  'create -o mountpoint=none -o canmount=off tank/ployz-trash')
+    if exists tank/ployz-trash; then echo "cannot create 'tank/ployz-trash': dataset already exists" >&2; exit 1; fi
+    mkdir '{trash}'
+    ;;
+  'rename '*' tank/ployz-trash/'*)
+    src=$2; dst=$3; id=${{dst#tank/ployz-trash/}}
+    if [ -e '{rename_fails}' ]; then echo 'rename interrupted' >&2; exit 1; fi
+    if [ -e '{props}/pool-full' ] && [ ! -e '{props}/pool-freed' ]; then echo "cannot rename '$src': out of space" >&2; exit 1; fi
+    require "$src"
+    exists tank/ployz-trash || {{ echo "cannot rename to '$dst': parent does not exist" >&2; exit 1; }}
+    ! exists "$dst" || {{ echo "cannot rename to '$dst': dataset already exists" >&2; exit 1; }}
+    child=
+    case "$src" in
+      tank/ployz/data)
+        if [ -e '{mounted}' ] && [ -e '{props}/busy-mount' ]; then echo "cannot unmount '/var/lib/ployz-volumes/data': pool or dataset is busy" >&2; exit 1; fi
+        if [ -e '{readonly_volume}' ]; then keep "$src" readonly on; fi
+        keep "$src" refquota 1073741824; keep "$src" used 966367642
+        rm -f '{volume}' '{mounted}' '{readonly_volume}' ;;
+      tank/ployz/{seed})
+        keep "$src" refquota 1073741824
+        rm -f '{seed_volume}' ;;
+      tank/ployz-mirror/data)
+        keep "$src" refquota {slot_bound}
+        if [ -e '{mirror_fs}' ]; then child=fs; keep "$src/fs" refquota {slot_bound}; fi
+        rm -f '{mirror}' '{mirror_fs}' ;;
+      tank/ployz-mirror/data/fs)
+        keep "$src" refquota {slot_bound}
+        rm -f '{mirror_fs}' ;;
+      tank/ployz-mirror/{seed})
+        keep "$src" refquota {slot_bound}
+        if [ -e '{seed_fs}' ]; then child=fs; keep "$src/fs" refquota {slot_bound}; fi
+        rm -f '{seed_slot}' '{seed_fs}' ;;
+      tank/ployz-mirror/{seed}/fs)
+        keep "$src" refquota {slot_bound}
+        rm -f '{seed_fs}' ;;
+      tank/ployz-mirror/copy) child=fs; rm -f '{slot}' ;;
+      *) echo "unexpected fake zfs command: $*" >&2; exit 2 ;;
+    esac
+    mkdir '{trash}'/"$id"
+    [ -z "$child" ] || touch '{trash}'/"$id"/fs
+    move_props "$src" "$dst"
+    ;;
+  'rename tank/ployz-trash/'*)
+    src=$2; dst=$3; id=${{src#tank/ployz-trash/}}
+    require "$src"
+    ! exists "$dst" || {{ echo "cannot rename to '$dst': dataset already exists" >&2; exit 1; }}
+    exists "${{dst%/*}}" || {{ echo "cannot rename to '$dst': parent does not exist" >&2; exit 1; }}
+    move_props "$src" "$dst"
+    case "$dst" in
+      tank/ployz/data)
+        touch '{volume}'
+        [ "$(prop "$dst" readonly off)" != on ] || touch '{readonly_volume}' ;;
+      tank/ployz/{seed}) touch '{seed_volume}' ;;
+      tank/ployz-mirror/data) touch '{mirror}'; [ ! -e '{trash}'/"$id"/fs ] || touch '{mirror_fs}' ;;
+      tank/ployz-mirror/data/fs) touch '{mirror_fs}' ;;
+      tank/ployz-mirror/{seed}) touch '{seed_slot}'; [ ! -e '{trash}'/"$id"/fs ] || touch '{seed_fs}' ;;
+      tank/ployz-mirror/{seed}/fs) touch '{seed_fs}' ;;
+      *) echo "unexpected fake zfs command: $*" >&2; exit 2 ;;
+    esac
+    rm -rf '{trash}'/"$id"
+    ;;
+  'destroy -r tank/ployz-trash/'*)
+    require "$3"
+    rm -rf '{trash}'/"${{3#tank/ployz-trash/}}" '{props}'/"$3"
     ;;
   'mount tank/ployz/data') touch '{mounted}' ;;
   'unmount tank/ployz/data')
@@ -606,6 +764,7 @@ esac
         seed_volume = seed_volume.display(),
         slot_bound = SLOT_BOUND_BYTES,
         props = props.display(),
+        trash = trash.display(),
         next_guid = next_guid.display(),
     );
     fs::write(&script, script_body).unwrap();

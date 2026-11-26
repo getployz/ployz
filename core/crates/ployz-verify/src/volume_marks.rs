@@ -182,7 +182,7 @@ enum SeedPath {
     Lands,
     /// As `Lands`, but `finish_landing`'s `readonly=off` fails after the rename.
     Stops,
-    /// `written_here(fs)` in `Stale::clear`: "Volume into is held in slot".
+    /// `written_here(fs)` in `Stale::replace`: "Volume into is held in slot".
     Held,
     /// A slot exists: `zfs destroy -r <parent>`, then a new slot and a copy of `G`.
     Replaces,
@@ -321,7 +321,7 @@ struct Broken {
     root_ignores_seed: bool,
     /// `seed_volume` skips the `Busy` arm of `receives.take_failure` (seed.rs).
     seed_ignores_receive: bool,
-    /// `Stale::clear` skips `written_here(fs)` before its `destroy -r` (seed.rs).
+    /// `Stale::replace` skips `written_here(fs)` before its `destroy -r` (seed.rs).
     seed_ignores_written_here: bool,
     /// `mark_pulled` (copy.rs) sets `ployz:pulled` without inheriting `ployz:cut`,
     /// `epoch`, `promote` and `seed` first.
@@ -607,14 +607,14 @@ impl VolumeMarks {
                     (SeedPath::Lands, Answer::Root(fs.made))
                 }
             }
-            // seed.rs: `SeedProgress::Stale` with an `fs`, and `Stale::clear` finds
+            // seed.rs: `SeedProgress::Stale` with an `fs`, and `Stale::replace` finds
             // `written_here(fs)`.
             Into::Slot { fs: Some(fs) }
                 if Self::written_here(fs) && !broken.seed_ignores_written_here =>
             {
                 (SeedPath::Held, Answer::Refused)
             }
-            // seed.rs: `SeedProgress::Stale`: `Stale::clear` runs `zfs destroy -r <parent>`,
+            // seed.rs: `SeedProgress::Stale`: `Stale::replace` runs `zfs destroy -r <parent>`,
             // then `copy_point` runs `create_slot`, sets `ployz:pull` and runs
             // `receives.spawn(copy_snapshot)`.
             Into::Slot { fs } => {

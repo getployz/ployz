@@ -384,6 +384,21 @@ mod sealer {
             String::from_utf8(plaintext.to_vec()).ok()
         }
 
+        /// The login `sealed` holds, as a Server opens it, or `None` when it was sealed
+        /// to another key or for another host.
+        #[must_use]
+        pub fn open_login(&self, sealed: &SealedLogin) -> Option<crate::RegistryAuth> {
+            let plaintext = hpke_suite::open(
+                OpenAs::Base,
+                &self.private,
+                separation::REGISTRY_LOGIN,
+                &sealed.associated_data(&self.public),
+                sealed.sealed.as_bytes(),
+            )
+            .ok()?;
+            serde_json::from_slice(&plaintext).ok()
+        }
+
         /// The bytes of `sealed` as sealed for `purpose` to this key, or `None` when
         /// it was sealed to another key or for another purpose.
         #[must_use]

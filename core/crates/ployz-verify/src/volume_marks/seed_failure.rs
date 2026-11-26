@@ -133,7 +133,7 @@ enum SeedPath {
     Lands,
     /// `SeedProgress::Landed`: a resend after the root's reply was lost answers the root.
     Landed,
-    /// `SeedProgress::Stale`: `Stale::clear`, then `copy_point` spawns a receive.
+    /// `SeedProgress::Stale`: `Stale::replace`, then `copy_point` spawns a receive.
     Restarts,
     /// `SeedProgress::Absent`: `copy_point` makes the slot and spawns a receive.
     Starts,

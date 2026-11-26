@@ -933,7 +933,12 @@ fn ipv4_fence(fence: &ployz_build::Fence) -> Vec<String> {
 
 fn ipv6_fence(fence: &ployz_build::Fence) -> Vec<String> {
     let mesh = mesh_cidr();
-    let allowed = vec![format!("-d {mesh} -p tcp --dport {UNREGISTRY_PORT}")];
+    // A Free Build reaches no image server; any other reaches them for its image contexts.
+    let allowed = if fence.mesh_images {
+        vec![format!("-d {mesh} -p tcp --dport {UNREGISTRY_PORT}")]
+    } else {
+        Vec::new()
+    };
     let drops = [format!("-d {mesh}")];
     fenced(fence, "::1/128", allowed, &drops, &PRIVATE_V6)
 }
@@ -1286,6 +1291,7 @@ mod tests {
             slot: 2,
             cgroup: ployz_build::CgroupPath::new("/system.slice/docker-abc.scope").unwrap(),
             image_ports,
+            mesh_images: true,
         }
     }
 
@@ -1379,6 +1385,25 @@ mod tests {
                 "-m cgroup --path /system.slice/docker-abc.scope -d fc00::/7 -j DROP",
                 "-m cgroup --path /system.slice/docker-abc.scope -d fe80::/10 -j DROP",
             ]
+        );
+    }
+
+    #[test]
+    fn a_free_builds_worker_reaches_no_image_server_across_the_mesh() {
+        let free = ployz_build::Fence {
+            mesh_images: false,
+            ..fence(Vec::new())
+        };
+        let rules = ipv6_fence(&free);
+        assert!(
+            !rules.iter().any(|rule| rule.contains("--dport 7572")),
+            "{rules:#?}"
+        );
+        assert!(
+            rules
+                .iter()
+                .any(|rule| rule.ends_with("-d fdcc::/16 -j DROP")),
+            "{rules:#?}"
         );
     }
 

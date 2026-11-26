@@ -55,6 +55,16 @@ const UNIT_ONLY: &[(&str, &str, &str)] = &[
         "with a rule and its proof",
         "rule_grant_tests::a_valid_token_mints_and_its_secrets_open_only_for_the_build",
     ),
+    (
+        ployz_core::BUILD_FREE_CAPABILITY,
+        "sealed values",
+        "build::tests::free::a_free_build_refuses_private_material_as_it_arrives_and_never_opens_it",
+    ),
+    (
+        ployz_core::BUILD_FREE_CAPABILITY,
+        "no secret",
+        "build::tests::free::a_free_build_loads_its_image_untagged_with_its_clusters_receipt_and_reads_no_login, with machine_api::local::tests::an_unsigned_creation_runs_a_free_builds_image_only_by_its_clusters_receipt",
+    ),
 ];
 
 struct Enforcing {
@@ -535,6 +545,13 @@ async fn sample(case: &Case, machine: &Enforcing) -> Sample {
         }
         (ployz_core::REMOVE_VOLUME_CAPABILITY, _) => {
             unary::<op::RemoveVolume>(json!({"name": "app_data", "force": false}))
+        }
+        (ployz_core::LIST_TRASH_CAPABILITY, _) => unary::<op::ListTrash>(json!({})),
+        (ployz_core::RESTORE_TRASH_CAPABILITY, _) => {
+            unary::<op::RestoreTrash>(json!({"id": "a".repeat(26)}))
+        }
+        (ployz_core::EMPTY_TRASH_CAPABILITY, _) => {
+            unary::<op::EmptyTrash>(json!({"ids": ["a".repeat(26)]}))
         }
         (ployz_core::REMOVE_KEPT_VOLUMES_CAPABILITY, _) => {
             unary::<op::RemoveKeptVolumes>(json!({"volumes": ["app_data"]}))
