@@ -1,8 +1,11 @@
 //! Pull an image from another Machine's ingest TCP destination into local Docker.
 
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, SocketAddr};
 
-use ployz_core::{ImageDigestReference, ImageIngestDestination, PeerImagePull, retention_tag};
+use ployz_core::{
+    ImageDigestReference, ImageIngestDestination, PeerImagePull, image_server_reference,
+    retention_tag,
+};
 use tokio::{
     io::copy_bidirectional,
     net::{TcpListener, TcpStream},
@@ -40,7 +43,12 @@ pub(crate) async fn pull_from_ingest(
         None
     };
     let proxy = ImageProxy::open(source).await?;
-    let pulled = localhost_registry_reference(proxy.port, image);
+    let pulled = image_server_reference(SocketAddr::from((Ipv4Addr::LOCALHOST, proxy.port)), image)
+        .ok_or_else(|| {
+            Error::PeerPull(format!(
+                "{image} is a tag from a registry with a port, which a Machine can't serve by name; pin it by digest"
+            ))
+        })?;
     pull_and_tag(
         image,
         &pulled,
@@ -122,10 +130,6 @@ async fn descriptor_digest(
         .get("digest")
         .and_then(serde_json::Value::as_str)
         .map(str::to_owned))
-}
-
-fn localhost_registry_reference(port: u16, image: &str) -> String {
-    format!("127.0.0.1:{port}/{image}")
 }
 
 /// A connection-scoped loopback bridge to a Machine image server. Both Docker
@@ -391,17 +395,5 @@ esac
             .await
             .unwrap();
         fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn localhost_pull_reference_keeps_the_image_path() {
-        assert_eq!(
-            localhost_registry_reference(UNREGISTRY_PORT, "busybox:1.37.0"),
-            format!("127.0.0.1:{UNREGISTRY_PORT}/busybox:1.37.0")
-        );
-        assert_eq!(
-            localhost_registry_reference(9, "registry.test/team/api:v1"),
-            "127.0.0.1:9/registry.test/team/api:v1"
-        );
     }
 }

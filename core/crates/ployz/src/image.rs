@@ -177,6 +177,11 @@ pub(crate) async fn ensure_cluster_image(
         PullPolicy::Always => return Ok(()),
         PullPolicy::Missing | PullPolicy::Never => {}
     }
+    // A peer can't serve a tag from a registry with a port, so its registry pull decides.
+    let any_server = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 0));
+    if ployz_core::image_server_reference(any_server, image).is_none() {
+        return Ok(());
+    }
     let mut listing_client = client.clone();
     let machines = listing_client.machines().await.map_err(rpc_error)?;
     // The Deploy plan chose `dest` from an earlier observation. If this one no
