@@ -1,15 +1,15 @@
-//! The SDK's WASM ABI for Node and the browser: config rules, the automatic deploy rule,
-//! Private Access approval, join and versions a passkey answers, and the key an install line
+//! The SDK's WASM ABI for Node and the browser: config rules, turning the automatic deploy
+//! rule off, Private Access approval, join and versions a passkey answers, and the key an install line
 //! carries.
 //! All policy lives in ployz-core.
 use ployz_core::OperationId;
 use ployz_core::authority::{
     AutoDeployRule, JoinApproval, Passkey, PrivateAccessApproval, PrivateAccessTerms, RuleBasis,
-    RuleTerms, SignerKey, Timestamp, version_draft, version_draft::VersionsAsked,
+    SignerKey, Timestamp, version_draft, version_draft::VersionsAsked,
 };
 use ployz_core::config::{ConfigError, Generator, parse_env_file, parse_service_setting};
 use ployz_core::first_key::LineKey;
-use ployz_core::{JoinedServer, MachineSubnet, Region, ServiceName};
+use ployz_core::{JoinedServer, MachineSubnet, Region};
 use wasm_bindgen::prelude::*;
 
 #[derive(serde::Deserialize)]
@@ -98,37 +98,6 @@ fn refused(path: &str, message: &str) -> ConfigError {
         path: path.into(),
         message: message.into(),
     }
-}
-
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RuleInput {
-    view: RuleBasis,
-    terms: RuleTerms,
-    /// The Services to approve; every one on the rule's branch when absent.
-    #[serde(default)]
-    services: Option<Vec<ServiceName>>,
-}
-
-/// The automatic deploy rule a person approves for the Store's rule `view` under `terms`,
-/// as [`AutoDeployRule::draft`] builds it: its canonical body, what it shows and the births it mints. The
-/// browser takes each Service's digest with the code the CLI and the Servers run.
-///
-/// # Errors
-/// Rejects malformed input and whatever `draft` refuses.
-#[wasm_bindgen]
-pub fn auto_deploy_rule_body(input: &str) -> Result<String, JsError> {
-    let mut input: RuleInput =
-        serde_json::from_str(input).map_err(|error| JsError::new(&error.to_string()))?;
-    let services = input
-        .services
-        .take()
-        .unwrap_or_else(|| input.view.branch_services());
-    let draft = AutoDeployRule::draft(&mut input.view, &services, input.terms)
-        .map_err(|error| JsError::new(&error.to_string()))?
-        .drafted(&input.view)
-        .map_err(|error| JsError::new(&error.to_string()))?;
-    serde_json::to_string(&draft).map_err(|error| JsError::new(&error.to_string()))
 }
 
 #[derive(serde::Deserialize)]

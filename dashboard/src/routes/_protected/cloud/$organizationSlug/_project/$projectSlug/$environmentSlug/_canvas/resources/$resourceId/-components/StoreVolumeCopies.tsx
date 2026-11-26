@@ -26,7 +26,7 @@ import { useRefreshMirror } from "#/modules/volume-copies/mirror-sync/mirror-syn
 import { useVolumeCopiesOf } from "#/modules/volume-copies/volume-copies.hooks";
 import { MIRROR_ROUND_MINUTES, mirrorLast, skippedWords } from "#/modules/volume-copies/mirror-sync/mirror-sync.words";
 import { placementBlockers, placementServers, restoreOpen } from "#/modules/runtime/daemon-release";
-import { appliedMirrors, editPlacement, observePlacement, type Placement, type PlacementEdit, type PlacementRow, placementTargets, type PlacementVolume, type Recovery, recovery, type RestorePoint, restorePoints, seedOffer, targetPlacement } from "#/modules/volume-placement/volume-placement";
+import { appliedMirrors, editPlacement, observePlacement, type Placement, type PlacementEdit, type PlacementRow, placementTargets, type PlacementVolume, type Recovery, recovery, type RestorePoint, restorePoints, seedOffer, type ShownCopy, shownCopy, targetPlacement } from "#/modules/volume-placement/volume-placement";
 import { lossMoment } from "#/utils/relative-time";
 import { useDeleteCopy, useStagePlacement, useStageRestore } from "#/modules/volume-placement/volume-placement.hooks";
 import { useVolumePlacements } from "#/modules/volume-placement/volume-placement.queries";
@@ -109,7 +109,7 @@ export type CopiesPanelProps = {
   deploying: boolean;
   stage: (staged: Placement | null, mirrors: readonly MachineId[]) => void;
   restore: (point: RestorePoint) => void;
-  deleteCopy: (server: MachineName) => void;
+  deleteCopy: (server: MachineName, copy: ShownCopy | null) => void;
   refresh: () => void;
   /** From the Refresh now click until its round ends. */
   refreshing: boolean;
@@ -204,7 +204,8 @@ type Resolved = CopiesPanelProps & {
 function CopiesView({ volume, members, row, rows, owed, copies, target, servers, accepting, upgrade, seeds, seedRefused, disabled, deploying, stage, restore, deleteCopy, onOpen, now,
   alert, needs }: Resolved & { target: Placement; alert: ReactNode; needs: ReactNode }) {
   const [adding, setAdding] = useState(false);
-  const [deleting, setDeleting] = useState<OldCopy | null>(null);
+  // The copy the dialog shows, as its Server reported it when the dialog opened: the delete deletes only that copy.
+  const [deleting, setDeleting] = useState<{ readonly old: OldCopy; readonly shown: ShownCopy | null } | null>(null);
   const observed = observePlacement(members);
   const applied = appliedMirrors(observed, row);
   const blocked = upgrade.length > 0;
@@ -236,7 +237,9 @@ function CopiesView({ volume, members, row, rows, owed, copies, target, servers,
       {copies.elsewhere.length === 0
         ? <p className="text-sm text-muted-foreground">{nothingElsewhere(copies)}</p>
         : copies.elsewhere.map((copy) => <CopyRow key={copy.id} copy={copy} now={now} locked={locked} blocked={blocked}
-          onOpen={() => { if (copy.kind === "mirror") onOpen(copy.server.id); }} onDelete={copy.kind === "old" ? () => setDeleting(copy) : null}
+          onOpen={() => { if (copy.kind === "mirror") onOpen(copy.server.id); }} onDelete={copy.kind === "old"
+            ? () => setDeleting({ old: copy, shown: shownCopy(members.find((member) => member.machine.id === copy.server.id)) })
+            : null}
           restore={copy.kind === "old" ? restoreOffer(volume, members, rows, copy.server.id, disabled || deploying, restore) : null} seeds={seeds}
           seedRefused={seedRefused} />)}
     </Group>
@@ -249,11 +252,11 @@ function CopiesView({ volume, members, row, rows, owed, copies, target, servers,
       actionLabel="Delete" pendingLabel="Deleting"
       description={deleting ? <div className="flex flex-col gap-3">
         <p className="flex items-center gap-2 text-foreground"><Trash2Icon className="size-4 shrink-0" />
-          {[deleting.server.name, volume.name, deleting.since ? lossMoment(deleting.since, now) : null].filter(Boolean).join(" · ")}
+          {[deleting.old.server.name, volume.name, deleting.old.since ? lossMoment(deleting.old.since, now) : null].filter(Boolean).join(" · ")}
         </p>
         <p>This runs now, not on deploy. It can't be undone.</p>
       </div> : null}
-      onConfirm={() => { if (deleting) deleteCopy(deleting.server.name); setDeleting(null); }} />
+      onConfirm={() => { if (deleting) deleteCopy(deleting.old.server.name, deleting.shown); setDeleting(null); }} />
   </div>;
 }
 

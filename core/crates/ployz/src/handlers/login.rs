@@ -4,21 +4,19 @@ use clap::{ArgMatches, Command};
 use serde::Serialize;
 
 use super::{Error, config_path, leaf_matches, runtime};
-use crate::cli::{switch, value};
+use crate::cli::switch;
 use crate::cloud;
 use crate::cloud::login::{
     Account, CredentialStore, LoginError, Organization, Pending, SignedIn, Start,
 };
-use crate::cloud::origin::{CloudOrigin, DEFAULT_CLOUD, NotWebUrl};
-use crate::env;
+use crate::cloud::origin::{CloudOrigin, DEFAULT_CLOUD};
 
 pub(super) fn login_command(command: Command) -> Command {
     command
         .about("Sign this device in to Ployz Cloud")
         .long_about("Sign this device in to Ployz Cloud. Opens the approval page and waits; with --json, prints the page and code at once unless --wait is given. Run again, or with --wait, to finish a pending sign-in.")
         .arg(
-            value("cloud-url", None)
-                .env(env::CLOUD_URL)
+            crate::cli::cloud_url()
                 .help("Cloud to sign in to [default: the pending or signed-in Cloud, else ployz.dev]"),
         )
         .arg(switch("wait", None).help("Wait for approval, also with --json"))
@@ -61,23 +59,15 @@ pub(super) fn login(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let store = CredentialStore::beside(&config_path(matches)?);
     let stored = readable_cloud(&store, "Replacing it.")?;
-    let cloud = matches
-        .get_one::<String>("cloud-url")
-        .cloned()
+    let cloud = crate::cli::cloud_url_of(matches)?
+        .map(str::to_owned)
         .or(stored)
         .unwrap_or_else(|| DEFAULT_CLOUD.to_owned());
-    if let Err(NotWebUrl { given }) = CloudOrigin::checked(&cloud) {
-        let named = match matches.value_source("cloud-url") {
-            Some(clap::parser::ValueSource::EnvVariable) => env::CLOUD_URL,
-            Some(_) => "--cloud-url",
-            None => {
-                return Err(Error::usage(format!(
-                    "The stored Cloud {given} is not an http:// or https:// URL; name one with --cloud-url"
-                )));
-            }
-        };
+    // A Cloud named on this command line passed above; a stored one may predate the check.
+    if let Err(refused) = CloudOrigin::checked(&cloud) {
         return Err(Error::usage(format!(
-            "{named} takes a host such as ployz.dev, or an http:// or https:// URL, not {given}"
+            "{}; name one with --cloud-url",
+            refused.sentence("The stored Cloud")
         )));
     }
     let wait = matches.get_flag("wait") || !crate::ui::json();
@@ -139,19 +129,22 @@ pub(super) fn logout(root: &ArgMatches) -> Result<(), Error> {
     let next = out.as_ref().and_then(|out| {
         let device = out.device.as_deref()?;
         // Run from another signed-in device or with PLOYZ_TOKEN: this one is signed out.
-        super::account::retry_clears(&out.servers, device)
+        super::account::retry_clears(&out.servers, || {
+            crate::cli::Rerun::then(root, &["token", "rm", device])
+        })
     });
+    let line = next.as_ref().map(crate::cli::Rerun::line);
     let report = LogoutReport {
         signed_out: out.is_some(),
         cloud: out.as_ref().map(|out| out.cloud.as_str()),
         device: out.as_ref().and_then(|out| out.device.as_deref()),
         servers: out.as_ref().map(|out| &out.servers),
-        next: next.as_deref(),
+        next: line.as_deref(),
     };
     crate::ui::finish(&report, || match &out {
         Some(out) => {
             crate::ui::stream(format_args!("Signed out of {}.", out.cloud));
-            super::account::say_clears(&out.servers, next.as_deref());
+            super::account::say_clears(&out.servers, next.as_ref());
         }
         None => crate::ui::stream(format_args!("Not signed in.")),
     })?;

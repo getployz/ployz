@@ -79,10 +79,8 @@ use crate::id::{
     BranchName, CommitSha, ConfigId, DeploymentId, EnvironmentId, Hostname, OrganizationId,
     Principal, RepositoryId, Revision, RunnerId, ServiceLineageId, VolumeId, VolumeName,
 };
-use crate::registry;
 use crate::review::{Head, InFlight};
 use crate::scope::{self, Environment, EnvironmentSummary, revision_param};
-use crate::sealing::SealingKey;
 use crate::storage::json_text;
 use crate::storage::{Row, Tx, name_of, now};
 use crate::variables;
@@ -418,6 +416,10 @@ pub(crate) fn clipped(text: &str) -> String {
 /// How long a runner holds a claimed Deployment without recording anything. Every
 /// record renews it; once it lapses the runner is gone and the outcome is unknown.
 pub(crate) const LEASE: i64 = 10 * 60;
+
+/// The frozen credentials a Store from before sealed logins reads: none, so it still
+/// deploys public images during a rollout. A later release drops the column.
+pub(crate) const NO_LEGACY_CREDENTIALS: &str = "{}";
 
 /// A queued Deployment no runner claimed: its dispatch may have been lost.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]

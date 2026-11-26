@@ -112,7 +112,7 @@ pub(super) fn logs(credential: &Credential, asked: LogsAsked<'_>) -> Result<(), 
             .iter()
             .map(|named| {
                 let name = ServiceName::parse(named.as_str())
-                    .map_err(|_| Error::usage(format!("{named:?} is not a Service name")))?;
+                    .map_err(|refused| Error::usage(refused.to_string()))?;
                 let runtime = scoped.services.get(&name).cloned().unwrap_or(name.clone());
                 Ok((name, runtime))
             })
@@ -302,21 +302,25 @@ pub(super) fn metrics(
         ),
         MetricsAsked::Server(named) => {
             let only = MachineName::parse(named.as_str())
-                .map_err(|_| Error::usage(format!("{named:?} is not a Server name")))?;
-            let servers: ServersAnswer =
-                match refusable(credential, CloudQuery::Servers { only: Some(only) })? {
-                    Ok(answer) => answer,
-                    Err(error) if offers_no_cli_access(&error) => {
-                        return Ok(CloudMetrics::NotEnabled(error.into()));
-                    }
-                    Err(error) => return Err(error.into()),
-                };
+                .map_err(|refused| Error::usage(refused.to_string()))?;
+            let servers: ServersAnswer = match refusable(
+                credential,
+                CloudQuery::Servers {
+                    only: Some(only.clone()),
+                },
+            )? {
+                Ok(answer) => answer,
+                Err(error) if offers_no_cli_access(&error) => {
+                    return Ok(CloudMetrics::NotEnabled(error.into()));
+                }
+                Err(error) => return Err(error.into()),
+            };
             let server = match servers.servers.as_slice() {
-                [] => return Err(Error::usage(format!("No Server is named {named:?}"))),
+                [] => return Err(Error::usage(format!("No Server is named {only}"))),
                 [server] => server,
                 [_, _, ..] => {
                     return Err(Error::usage(format!(
-                        "More than one Server is named {named:?}"
+                        "More than one Server is named {only}"
                     )));
                 }
             };

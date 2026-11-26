@@ -73,10 +73,9 @@ pub(crate) fn claim(
     tx: &mut dyn Tx,
     id: &DeploymentId,
     runner: &RunnerId,
-    sealing: &SealingKey,
 ) -> Result<Taken, RpcError> {
     let stored = locked(tx, id)?;
-    take(tx, stored, runner, sealing)
+    take(tx, stored, runner)
 }
 
 /// Refuse the claim of `stored`, which records what `refusal` says and nothing else.
@@ -101,12 +100,7 @@ fn refuse(tx: &mut dyn Tx, mut stored: Stored, refusal: Refusal) -> Result<Taken
     Ok(Taken::Refused(refusal))
 }
 
-fn take(
-    tx: &mut dyn Tx,
-    mut stored: Stored,
-    runner: &RunnerId,
-    sealing: &SealingKey,
-) -> Result<Taken, RpcError> {
+fn take(tx: &mut dyn Tx, mut stored: Stored, runner: &RunnerId) -> Result<Taken, RpcError> {
     let id = stored.summary.id.clone();
     let now = now();
     let starting = match stored.summary.status {
@@ -201,15 +195,14 @@ fn take(
         stored.summary.warnings = stored.run.summary_warnings();
         save(tx, &mut stored)?;
     }
-    let credentials = tx.query(
-        "SELECT credentials FROM config_deployment WHERE id = ?1",
+    let logins = tx.query(
+        "SELECT logins FROM config_deployment WHERE id = ?1",
         &[id.as_str().into()],
     )?;
-    let credentials = credentials
+    intent.registry_logins = logins
         .first()
         .ok_or_else(|| missing(&id))?
-        .json(0, "Deployment credentials")?;
-    intent.registry_auth = registry::unseal(credentials, sealing)?;
+        .json(0, "Deployment logins")?;
     let receipts = receipts(tx, &stored.summary.environment_id)?;
     let deletes = stored
         .nodes

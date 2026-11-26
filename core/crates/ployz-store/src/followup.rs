@@ -230,9 +230,9 @@ impl FollowUp {
             Self::ServerClean { namespace } => line(format!(
                 "ployz server clean --namespace {namespace} --confirm {namespace}"
             )),
-            Self::SetRegistryCredential { service } => {
-                line(format!("ployz set {service}.registryCredential --secret"))
-            }
+            Self::SetRegistryCredential { service } => line(format!(
+                "ployz set {service}.registryCredential --secret --username NAME"
+            )),
             Self::SetStopFirst { service, place } => line(format!(
                 "ployz set {service}.updateOrder=stop-first {}",
                 place.environment_first()

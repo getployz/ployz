@@ -1,6 +1,6 @@
 use ployz_core::labels;
 use ployz_core::{ServiceId, ServiceName};
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use futures_util::StreamExt;
 use ployz_core::{
@@ -23,8 +23,10 @@ async fn exec_forwards_output_while_docker_inspection_is_pending() {
     let (release_inspection, inspection_released) = tokio::sync::oneshot::channel();
     let container_id = ContainerId::parse("a".repeat(64)).unwrap();
     let spec = crate::docker::test_support::spec_with_sources(vec![]);
+    let init = Sleep::spawn();
     let managed = serde_json::json!({
         "Id": container_id.as_str(),
+        "State": {"Pid": init.0.id()},
         "Config": {"Labels": {
             labels::MANAGED: "",
             labels::NAMESPACE: "app",
@@ -157,99 +159,14 @@ async fn an_exec_still_writing_when_its_client_goes_away_stops_its_command() {
 /// reads when `noisy`, then drop the client; how the command ended.
 async fn abandoned_exec(noisy: bool) -> std::process::ExitStatus {
     let root = TestDir::new("ployzd-exec-abandoned");
-    let docker_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let docker_address = docker_listener.local_addr().unwrap();
-    let container_id = ContainerId::parse("b".repeat(64)).unwrap();
-    let spec = crate::docker::test_support::spec_with_sources(vec![]);
-    // The container's own process is this test's, so the command shares its cgroup.
-    let managed = serde_json::json!({
-        "Id": container_id.as_str(),
-        "State": {"Pid": std::process::id()},
-        "Config": {"Labels": {
-            labels::MANAGED: "",
-            labels::NAMESPACE: "app",
-            labels::SERVICE_ID: spec.service_id.to_string(),
-            labels::SERVICE_NAME: spec.name.to_string(),
-        }},
-    })
-    .to_string();
-    // The exec's process: Docker reports its host PID, as for a Service's container.
-    let command = std::sync::Arc::new(std::sync::Mutex::new(
-        std::process::Command::new("sleep")
-            .arg("300")
-            .spawn()
-            .unwrap(),
-    ));
-    let pid = command.lock().unwrap().id();
-    let docker_command = std::sync::Arc::clone(&command);
-    let docker_server = tokio::spawn(async move {
-        let mut hijacked = Vec::new();
-        loop {
-            let (mut stream, path) = accept_docker_request_to(&docker_listener).await;
-            let body = if path.starts_with("/containers/") && path.ends_with("/json") {
-                managed.clone()
-            } else if path.ends_with("/exec") {
-                r#"{"Id":"slow"}"#.to_owned()
-            } else if path.starts_with("/exec/slow/start") {
-                stream
-                    .write_all(b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n")
-                    .await
-                    .unwrap();
-                if noisy {
-                    // Far more than the response channel holds, so forwarding waits on a send.
-                    tokio::spawn(async move {
-                        let mut frame = b"\x01\0\0\0\0\0\x04\0".to_vec();
-                        frame.extend([b'x'; 1024]);
-                        for _ in 0..4096 {
-                            if stream.write_all(&frame).await.is_err() {
-                                return;
-                            }
-                        }
-                        std::future::pending::<()>().await;
-                    });
-                } else {
-                    hijacked.push(stream);
-                }
-                continue;
-            } else {
-                let exited = docker_command.lock().unwrap().try_wait().unwrap();
-                match exited {
-                    None => format!(
-                        r#"{{"Running":true,"Pid":{pid},"ContainerID":"{}"}}"#,
-                        "b".repeat(64)
-                    ),
-                    Some(_) => r#"{"Running":false,"ExitCode":143}"#.to_owned(),
-                }
-            };
-            stream
-                .write_all(
-                    format!(
-                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                        body.len()
-                    )
-                    .as_bytes(),
-                )
-                .await
-                .unwrap();
-        }
-    });
-    let docker = bollard::Docker::connect_with_http(
-        &format!("http://{docker_address}"),
-        5,
-        bollard::API_DEFAULT_VERSION,
-    )
-    .unwrap();
-    let machine_store = crate::machine::LocalMachineStore::open(&root.0).unwrap();
-    let specs = MachineSpecStore::open(root.0.join("machine.db"))
-        .await
-        .unwrap();
-    specs
-        .config_operation()
-        .await
-        .put(&container_id, None, &spec, None)
-        .await
-        .unwrap();
-    let runtime = ContainerRuntime::new(LocalDocker::from_client(docker), specs);
+    let command = ExecCommand::default();
+    let start = if noisy {
+        ExecStart::Noisy
+    } else {
+        ExecStart::Attached
+    };
+    let (runtime, container_id, docker_server) = exec_runtime(&root, &command, start).await;
+    let machine_store = crate::machine::LocalMachineStore::open(root.0.join("machine")).unwrap();
     let owner = crate::machine::RecordOwner::spawn(machine_store).unwrap();
     let api = MachineApi::builder(owner.clone())
         .with_local(crate::machine::LocalMachine::new(owner).with_containers(Some(runtime)))
@@ -279,11 +196,10 @@ async fn abandoned_exec(noisy: bool) -> std::process::ExitStatus {
 
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     let status = loop {
-        if let Some(status) = command.lock().unwrap().try_wait().unwrap() {
+        if let Some(status) = command.exited() {
             break status;
         }
         if std::time::Instant::now() > deadline {
-            let _ = command.lock().unwrap().kill();
             panic!("the exec's command outlived its client");
         }
         // real-wait: the command is a separate process, and its exit signals nothing in-process.
@@ -294,14 +210,1126 @@ async fn abandoned_exec(noisy: bool) -> std::process::ExitStatus {
     status
 }
 
-/// Accept one request to the fake Docker, returning its stream and path.
-async fn accept_docker_request_to(
-    listener: &tokio::net::TcpListener,
-) -> (tokio::net::TcpStream, String) {
-    let (stream, _) = listener.accept().await.unwrap();
-    let mut reader = BufReader::new(stream);
+#[tokio::test(flavor = "multi_thread")]
+async fn a_removed_devices_exec_has_stopped_when_its_removal_returns() {
+    removed_devices_exec(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_removed_devices_detached_exec_has_stopped_when_its_removal_returns() {
+    removed_devices_exec(true).await;
+}
+
+/// A Device whose key also holds Cloud's slot runs a command in a Service's Container,
+/// detached when `detach`, then its Device is removed: the command has stopped by the time
+/// `device rm` returns, and the client's stream has ended.
+async fn removed_devices_exec(detach: bool) {
+    {
+        let root = TestDir::new("ployzd-exec-removed-device");
+        let command = ExecCommand::default();
+        let start = if detach {
+            ExecStart::Detached
+        } else {
+            ExecStart::Attached
+        };
+        let (runtime, container_id, docker_server) = exec_runtime(&root, &command, start).await;
+        let mut store = crate::machine::test_support::founder(&root.0.join("machine"), "exec");
+        let device = crate::machine::test_support::device_in_two_slots(&mut store);
+        let owner = crate::machine::RecordOwner::spawn(store).unwrap();
+        let local = crate::machine::LocalMachine::new(owner).with_containers(Some(runtime));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(
+            Server::builder()
+                .add_routes(crate::machine_api::device_routes(
+                    crate::machine_api::MachineService::over(local.clone()),
+                    device.into(),
+                ))
+                .serve_with_incoming(TcpListenerStream::new(listener)),
+        );
+        let mut client = MachineRpcClient::connect(format!("http://{address}"))
+            .await
+            .unwrap();
+        let mut output = client
+            .exec(Request::new(tokio_stream::iter([exec_config(
+                &container_id,
+                ["sleep", "300"],
+                detach,
+            )])))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(
+            ExecResponseFrame::decode(&output.message().await.unwrap().unwrap()).unwrap(),
+            ExecResponseFrame::ExecId("slow".into())
+        );
+
+        local
+            .clone()
+            .on_local_socket()
+            .set_device(ployz_core::SetDeviceRequest::Remove {
+                code: device.code(),
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            command.exited().is_some(),
+            "a {} exec's command still runs once its Device's removal returned",
+            if detach { "detached" } else { "attached" }
+        );
+        let rest = tokio::time::timeout(Duration::from_secs(10), async {
+            let mut frames = Vec::new();
+            while let Ok(Some(frame)) = output.message().await {
+                frames.push(ExecResponseFrame::decode(&frame).unwrap());
+            }
+            frames
+        })
+        .await
+        .expect("the exec's stream ends once its command stopped");
+        assert!(
+            !rest
+                .iter()
+                .any(|frame| matches!(frame, ExecResponseFrame::Stdout(_))),
+            "{rest:?}"
+        );
+        docker_server.abort();
+        server.abort();
+    }
+}
+
+/// A Device whose key also holds Cloud's slot starts a detached exec and goes away while
+/// Docker starts it. The command Docker started is still the Device's: removing the Device
+/// stops it before `device rm` returns.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_detached_exec_whose_caller_left_mid_start_stops_with_its_device() {
+    let root = TestDir::new("ployzd-exec-left-mid-start");
+    let command = ExecCommand::default();
+    let reached = Arc::new(tokio::sync::Notify::new());
+    let permit = Arc::new(tokio::sync::Semaphore::new(0));
+    let stalls = Stalls {
+        start: Some((Arc::clone(&reached), Arc::clone(&permit))),
+        ..Stalls::default()
+    };
+    let (runtime, container_id, docker_server) =
+        stalling_exec_runtime(&root, &command, ExecStart::Detached, stalls).await;
+    let left = Arc::new(tokio::sync::Notify::new());
+    let (local, device, address, server) =
+        device_exec_server_noting(&root, runtime, Some(Arc::clone(&left))).await;
+    let mut client = MachineRpcClient::connect(format!("http://{address}"))
+        .await
+        .unwrap();
+    let call = tokio::spawn(async move {
+        client
+            .exec(Request::new(tokio_stream::iter([exec_config(
+                &container_id,
+                ["sleep", "300"],
+                true,
+            )])))
+            .await
+    });
+    reached.notified().await;
+    call.abort();
+    let _ = call.await;
+    // The server dropped the call's handler once the client's reset arrived.
+    left.notified().await;
+    permit.add_permits(1);
+
+    local
+        .on_local_socket()
+        .set_device(ployz_core::SetDeviceRequest::Remove {
+            code: device.code(),
+        })
+        .await
+        .unwrap();
+
+    assert!(
+        command.exited().is_some(),
+        "a detached exec whose caller left mid-start still runs once its Device's removal returned"
+    );
+    docker_server.abort();
+    server.abort();
+}
+
+/// A Device whose key also holds Cloud's slot runs a command Docker never answers about, so
+/// its process is never seen, and the Device is removed. `device rm` returns within its bound
+/// and says the exec didn't confirm it stopped, rather than that it did.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_removal_says_when_docker_cannot_confirm_an_exec_stopped() {
+    let root = TestDir::new("ployzd-exec-unconfirmed");
+    let command = ExecCommand::default();
+    let stalls = Stalls::default();
+    stalls
+        .inspect
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let (runtime, container_id, docker_server) =
+        stalling_exec_runtime(&root, &command, ExecStart::Attached, stalls.clone()).await;
+    let (local, device, address, server) = device_exec_server(&root, runtime).await;
+    let mut client = MachineRpcClient::connect(format!("http://{address}"))
+        .await
+        .unwrap();
+    let mut output = client
+        .exec(Request::new(tokio_stream::iter([exec_config(
+            &container_id,
+            ["sleep", "300"],
+            false,
+        )])))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        ExecResponseFrame::decode(&output.message().await.unwrap().unwrap()).unwrap(),
+        ExecResponseFrame::ExecId("slow".into())
+    );
+
+    let removed = tokio::time::timeout(
+        crate::machine::STOP_WITHIN,
+        local
+            .on_local_socket()
+            .set_device(ployz_core::SetDeviceRequest::Remove {
+                code: device.code(),
+            }),
+    )
+    .await
+    .expect("the removal waited past its bound on a stuck exec");
+
+    let Err(crate::machine::LocalMachineError::WorkNotStopped(unstopped)) = removed else {
+        panic!("the removal said the exec stopped without knowing: {removed:?}");
+    };
+    assert_eq!(unstopped.works(), [crate::machine::Work::Exec]);
+    docker_server.abort();
+    server.abort();
+}
+
+/// A Device whose key also holds Cloud's slot runs a command Docker fails every look at, so
+/// its process is never seen, then its client vanishes and the stop that follows fails. The
+/// command stays the Device's: removing the Device says it didn't confirm stopping, and once
+/// Docker answers again the next key change stops it.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_exec_whose_client_vanished_and_whose_stop_failed_stays_reported_until_stopped() {
+    let root = TestDir::new("ployzd-exec-vanished");
+    let command = ExecCommand::default();
+    let stalls = Stalls {
+        fail_after_create: true,
+        ..Stalls::default()
+    };
+    let (runtime, container_id, docker_server) =
+        stalling_exec_runtime(&root, &command, ExecStart::Attached, stalls.clone()).await;
+    let (local, device, address, server) = device_exec_server(&root, runtime).await;
+    let mut client = MachineRpcClient::connect(format!("http://{address}"))
+        .await
+        .unwrap();
+    let mut output = client
+        .exec(Request::new(tokio_stream::iter([exec_config(
+            &container_id,
+            ["sleep", "300"],
+            false,
+        )])))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        ExecResponseFrame::decode(&output.message().await.unwrap().unwrap()).unwrap(),
+        ExecResponseFrame::ExecId("slow".into())
+    );
+    stalls.inspect_failed.notified().await;
+    drop(output);
+    drop(client);
+
+    let removed = local
+        .clone()
+        .on_local_socket()
+        .set_device(ployz_core::SetDeviceRequest::Remove {
+            code: device.code(),
+        })
+        .await;
+    let Err(crate::machine::LocalMachineError::WorkNotStopped(unstopped)) = removed else {
+        panic!("the removal said the exec stopped without knowing: {removed:?}");
+    };
+    assert_eq!(unstopped.works(), [crate::machine::Work::Exec]);
+    assert!(command.exited().is_none());
+
+    stalls
+        .failing
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    local
+        .on_local_socket()
+        .set_device(ployz_core::SetDeviceRequest::Approve {
+            key: ployz_core::DeviceKey::from(
+                ployz_core::authority::Signer::from_seed(&[11; 32]).public(),
+            ),
+        })
+        .await
+        .expect("the next key change stopped the exec it still held");
+    assert!(command.exited().is_some());
+    docker_server.abort();
+    server.abort();
+}
+
+/// A Device whose key also holds Cloud's slot runs a command whose output Docker stops
+/// sending while it still runs. The command stays the Device's: removing the Device stops it
+/// before `device rm` returns.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_exec_whose_output_ended_while_it_runs_stops_with_its_device() {
+    let root = TestDir::new("ployzd-exec-output-ended");
+    let command = ExecCommand::default();
+    let end = Arc::new(tokio::sync::Notify::new());
+    let stalls = Stalls {
+        end_output: Some(Arc::clone(&end)),
+        ..Stalls::default()
+    };
+    let (runtime, container_id, docker_server) =
+        stalling_exec_runtime(&root, &command, ExecStart::Attached, stalls.clone()).await;
+    let (local, device, address, server) = device_exec_server(&root, runtime).await;
+    let mut client = MachineRpcClient::connect(format!("http://{address}"))
+        .await
+        .unwrap();
+    let mut output = client
+        .exec(Request::new(tokio_stream::iter([exec_config(
+            &container_id,
+            ["sleep", "300"],
+            false,
+        )])))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        ExecResponseFrame::decode(&output.message().await.unwrap().unwrap()).unwrap(),
+        ExecResponseFrame::ExecId("slow".into())
+    );
+    end.notify_one();
+
+    local
+        .on_local_socket()
+        .set_device(ployz_core::SetDeviceRequest::Remove {
+            code: device.code(),
+        })
+        .await
+        .unwrap();
+
+    assert!(
+        command.exited().is_some(),
+        "an exec whose output ended still runs once its Device's removal returned"
+    );
+    docker_server.abort();
+    server.abort();
+}
+
+/// A Device whose key also holds Cloud's slot starts a detached exec, and Docker starts it
+/// but the answer is lost. The command is still the Device's: it has stopped by the time
+/// removing the Device returns.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_exec_docker_started_without_answering_stops_with_its_device() {
+    let root = TestDir::new("ployzd-exec-lost-start");
+    let command = ExecCommand::default();
+    let stalls = Stalls {
+        lose_start: true,
+        ..Stalls::default()
+    };
+    let (runtime, container_id, docker_server) =
+        stalling_exec_runtime(&root, &command, ExecStart::Detached, stalls).await;
+    let (local, device, address, server) = device_exec_server(&root, runtime).await;
+    let mut client = MachineRpcClient::connect(format!("http://{address}"))
+        .await
+        .unwrap();
+    let started = client
+        .exec(Request::new(tokio_stream::iter([exec_config(
+            &container_id,
+            ["sleep", "300"],
+            true,
+        )])))
+        .await;
+    assert!(started.is_err(), "a start Docker never answered succeeded");
+
+    local
+        .on_local_socket()
+        .set_device(ployz_core::SetDeviceRequest::Remove {
+            code: device.code(),
+        })
+        .await
+        .unwrap();
+
+    assert!(
+        command.exited().is_some(),
+        "an exec whose start went unanswered still runs once its Device's removal returned"
+    );
+    docker_server.abort();
+    server.abort();
+}
+
+/// A Device whose key also holds Cloud's slot runs a command Docker has yet to mark running,
+/// as Docker answers an attach before it does. The command is the Device's once Docker
+/// reports it: removing the Device stops it before `device rm` returns.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_exec_docker_has_yet_to_mark_running_stops_with_its_device() {
+    let root = TestDir::new("ployzd-exec-pending");
+    let command = ExecCommand::default();
+    let stalls = Stalls::default();
+    stalls
+        .pending
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let (runtime, container_id, docker_server) =
+        stalling_exec_runtime(&root, &command, ExecStart::Attached, stalls.clone()).await;
+    let (local, device, address, server) = device_exec_server(&root, runtime).await;
+    let mut client = MachineRpcClient::connect(format!("http://{address}"))
+        .await
+        .unwrap();
+    let mut output = client
+        .exec(Request::new(tokio_stream::iter([exec_config(
+            &container_id,
+            ["sleep", "300"],
+            false,
+        )])))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        ExecResponseFrame::decode(&output.message().await.unwrap().unwrap()).unwrap(),
+        ExecResponseFrame::ExecId("slow".into())
+    );
+    // The server looked twice while Docker reported the command not running, unless it took
+    // that for the command's end and told the client so.
+    tokio::select! {
+        _ = output.message() => {}
+        () = inspected(&stalls, 2) => {}
+    }
+    stalls
+        .pending
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+
+    local
+        .on_local_socket()
+        .set_device(ployz_core::SetDeviceRequest::Remove {
+            code: device.code(),
+        })
+        .await
+        .unwrap();
+
+    assert!(
+        command.exited().is_some(),
+        "an exec Docker had yet to mark running still runs once its Device's removal returned"
+    );
+    docker_server.abort();
+    server.abort();
+}
+
+/// A Device whose key also holds Cloud's slot starts a detached exec. Docker loses the
+/// start's answer and has yet to mark the command running. The command is the Device's once
+/// Docker reports it: removing the Device stops it before `device rm` returns.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_exec_whose_lost_start_docker_has_yet_to_mark_running_stops_with_its_device() {
+    let root = TestDir::new("ployzd-exec-lost-pending");
+    let command = ExecCommand::default();
+    let stalls = Stalls {
+        lose_start: true,
+        ..Stalls::default()
+    };
+    stalls
+        .pending
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let (runtime, container_id, docker_server) =
+        stalling_exec_runtime(&root, &command, ExecStart::Detached, stalls.clone()).await;
+    let (local, device, address, server) = device_exec_server(&root, runtime).await;
+    let mut client = MachineRpcClient::connect(format!("http://{address}"))
+        .await
+        .unwrap();
+    let started = client
+        .exec(Request::new(tokio_stream::iter([exec_config(
+            &container_id,
+            ["sleep", "300"],
+            true,
+        )])))
+        .await;
+    assert!(started.is_err(), "a start Docker never answered succeeded");
+    inspected(&stalls, 1).await;
+    stalls
+        .pending
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+
+    local
+        .on_local_socket()
+        .set_device(ployz_core::SetDeviceRequest::Remove {
+            code: device.code(),
+        })
+        .await
+        .unwrap();
+
+    assert!(
+        command.exited().is_some(),
+        "an exec whose lost start Docker had yet to run still runs once its Device's removal returned"
+    );
+    docker_server.abort();
+    server.abort();
+}
+
+/// A Device whose key also holds Cloud's slot runs a command, and Docker restarts before the
+/// server saw its process: it forgets the exec while live-restore keeps the command running.
+/// Removing the Device says the exec didn't confirm it stopped, rather than that it did.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_removal_says_when_docker_forgot_an_exec_whose_process_never_showed() {
+    let root = TestDir::new("ployzd-exec-forgotten");
+    let command = ExecCommand::default();
+    let stalls = Stalls {
+        forget_after: Some(0),
+        ..Stalls::default()
+    };
+    let (runtime, container_id, docker_server) =
+        stalling_exec_runtime(&root, &command, ExecStart::Attached, stalls).await;
+    let (local, device, address, server) = device_exec_server(&root, runtime).await;
+    let mut client = MachineRpcClient::connect(format!("http://{address}"))
+        .await
+        .unwrap();
+    let mut output = client
+        .exec(Request::new(tokio_stream::iter([exec_config(
+            &container_id,
+            ["sleep", "300"],
+            false,
+        )])))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        ExecResponseFrame::decode(&output.message().await.unwrap().unwrap()).unwrap(),
+        ExecResponseFrame::ExecId("slow".into())
+    );
+
+    let removed = local
+        .on_local_socket()
+        .set_device(ployz_core::SetDeviceRequest::Remove {
+            code: device.code(),
+        })
+        .await;
+
+    let Err(crate::machine::LocalMachineError::WorkNotStopped(unstopped)) = removed else {
+        panic!("the removal said a forgotten exec stopped without knowing: {removed:?}");
+    };
+    assert_eq!(unstopped.works(), [crate::machine::Work::Exec]);
+    assert!(command.exited().is_none());
+    docker_server.abort();
+    server.abort();
+}
+
+/// A Device whose key also holds Cloud's slot runs a detached command, and Docker restarts
+/// after the server saw its process: it forgets the exec while live-restore keeps the command
+/// running. `device rm` never says the exec stopped while its command runs.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_removal_never_says_a_forgotten_detached_exec_stopped_while_it_runs() {
+    let root = TestDir::new("ployzd-exec-forgotten-detached");
+    let command = ExecCommand::default();
+    let stalls = Stalls {
+        forget_after: Some(1),
+        ..Stalls::default()
+    };
+    let (runtime, container_id, docker_server) =
+        stalling_exec_runtime(&root, &command, ExecStart::Detached, stalls.clone()).await;
+    let (local, device, address, server) = device_exec_server(&root, runtime).await;
+    let mut client = MachineRpcClient::connect(format!("http://{address}"))
+        .await
+        .unwrap();
+    let mut output = client
+        .exec(Request::new(tokio_stream::iter([exec_config(
+            &container_id,
+            ["sleep", "300"],
+            true,
+        )])))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        ExecResponseFrame::decode(&output.message().await.unwrap().unwrap()).unwrap(),
+        ExecResponseFrame::ExecId("slow".into())
+    );
+    // Docker reported the command running before it restarted.
+    inspected(&stalls, 1).await;
+
+    let removed = local
+        .on_local_socket()
+        .set_device(ployz_core::SetDeviceRequest::Remove {
+            code: device.code(),
+        })
+        .await;
+
+    match removed {
+        Ok(_) => assert!(
+            command.exited().is_some(),
+            "the removal said a forgotten exec stopped while its command runs"
+        ),
+        // The removal came before the server finished taking hold of the process.
+        Err(crate::machine::LocalMachineError::WorkNotStopped(unstopped)) => {
+            assert_eq!(unstopped.works(), [crate::machine::Work::Exec]);
+        }
+        Err(error) => panic!("{error:?}"),
+    }
+    docker_server.abort();
+    server.abort();
+}
+
+/// A Device whose key also holds Cloud's slot asks for an exec in a Container whose process
+/// can't be read, so nothing could tell the command's process from the Container's own. The
+/// exec doesn't start, and removing the Device finds nothing to stop.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_exec_whose_container_cannot_be_read_never_starts() {
+    let root = TestDir::new("ployzd-exec-unreadable");
+    let command = ExecCommand::default();
+    let stalls = Stalls {
+        unreadable_init: true,
+        ..Stalls::default()
+    };
+    let (runtime, container_id, docker_server) =
+        stalling_exec_runtime(&root, &command, ExecStart::Attached, stalls).await;
+    let (local, device, address, server) = device_exec_server(&root, runtime).await;
+    let mut client = MachineRpcClient::connect(format!("http://{address}"))
+        .await
+        .unwrap();
+    let started = client
+        .exec(Request::new(tokio_stream::iter([exec_config(
+            &container_id,
+            ["sleep", "300"],
+            false,
+        )])))
+        .await;
+    assert!(
+        started.is_err(),
+        "an exec started that nothing could follow"
+    );
+
+    local
+        .on_local_socket()
+        .set_device(ployz_core::SetDeviceRequest::Remove {
+            code: device.code(),
+        })
+        .await
+        .expect("the Device left nothing running");
+    assert!(!command.started());
+    docker_server.abort();
+    server.abort();
+}
+
+/// A Device whose key also holds Cloud's slot runs a command Docker can't start, as for a
+/// mistyped name. Its client gets Docker's exit code, and removing the Device finds nothing
+/// to stop: no process in the Container could be that command.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_exec_docker_could_not_start_leaves_its_removal_nothing_to_stop() {
+    let root = TestDir::new("ployzd-exec-unstarted");
+    let command = ExecCommand::default();
+    let stalls = Stalls {
+        start_fails: true,
+        ..Stalls::default()
+    };
+    let (runtime, container_id, docker_server) =
+        stalling_exec_runtime(&root, &command, ExecStart::Attached, stalls).await;
+    let (local, device, address, server) = device_exec_server(&root, runtime).await;
+    let mut client = MachineRpcClient::connect(format!("http://{address}"))
+        .await
+        .unwrap();
+    let mut output = client
+        .exec(Request::new(tokio_stream::iter([exec_config(
+            &container_id,
+            ["sleeep", "300"],
+            false,
+        )])))
+        .await
+        .unwrap()
+        .into_inner();
+    let mut frames = Vec::new();
+    while let Some(payload) = output.message().await.unwrap() {
+        frames.push(ExecResponseFrame::decode(&payload).unwrap());
+    }
+    assert_eq!(
+        frames,
+        [
+            ExecResponseFrame::ExecId("slow".into()),
+            ExecResponseFrame::Exit(127)
+        ]
+    );
+
+    local
+        .on_local_socket()
+        .set_device(ployz_core::SetDeviceRequest::Remove {
+            code: device.code(),
+        })
+        .await
+        .expect("an exec Docker never started was left to stop");
+    assert!(!command.started());
+    docker_server.abort();
+    server.abort();
+}
+
+/// A Device whose key also holds Cloud's slot runs a command, and Docker's attach to it fails
+/// before the server took hold of its process. Docker then reports the exec not running with
+/// exit code 126 while the command runs on. The command is still the Device's: it has
+/// stopped by the time removing the Device returns.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_exec_whose_attach_failed_while_its_command_runs_stops_with_its_device() {
+    let root = TestDir::new("ployzd-exec-attach-failed");
+    let command = ExecCommand::default();
+    let stalls = Stalls {
+        attach_fails: true,
+        ..Stalls::default()
+    };
+    let (runtime, container_id, docker_server) =
+        stalling_exec_runtime(&root, &command, ExecStart::Attached, stalls.clone()).await;
+    let (local, device, address, server) = device_exec_server(&root, runtime).await;
+    let mut client = MachineRpcClient::connect(format!("http://{address}"))
+        .await
+        .unwrap();
+    let mut output = client
+        .exec(Request::new(tokio_stream::iter([exec_config(
+            &container_id,
+            ["sleep", "300"],
+            false,
+        )])))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        ExecResponseFrame::decode(&output.message().await.unwrap().unwrap()).unwrap(),
+        ExecResponseFrame::ExecId("slow".into())
+    );
+    // The server looked once Docker reported the exit code.
+    inspected(&stalls, 1).await;
+
+    local
+        .on_local_socket()
+        .set_device(ployz_core::SetDeviceRequest::Remove {
+            code: device.code(),
+        })
+        .await
+        .unwrap();
+
+    assert!(
+        command.exited().is_some(),
+        "an exec whose attach failed still runs once its Device's removal returned"
+    );
+    docker_server.abort();
+    server.abort();
+}
+
+/// Until the stand-in Docker answered `count` exec inspects in all.
+async fn inspected(stalls: &Stalls, count: usize) {
+    while stalls.inspects.load(std::sync::atomic::Ordering::SeqCst) < count {
+        stalls.inspected.notified().await;
+    }
+}
+
+/// This Machine's API, over `runtime`, served to a Device whose key also holds Cloud's slot
+/// as its own connection would reach it: the Machine, the Device and the address it dials.
+async fn device_exec_server(
+    root: &TestDir,
+    runtime: ContainerRuntime,
+) -> (
+    crate::machine::LocalMachine,
+    ployz_core::DeviceKey,
+    std::net::SocketAddr,
+    tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+) {
+    device_exec_server_noting(root, runtime, None).await
+}
+
+/// [`device_exec_server`], notifying `left` each time the server drops a call it was still
+/// handling.
+async fn device_exec_server_noting(
+    root: &TestDir,
+    runtime: ContainerRuntime,
+    left: Option<Arc<tokio::sync::Notify>>,
+) -> (
+    crate::machine::LocalMachine,
+    ployz_core::DeviceKey,
+    std::net::SocketAddr,
+    tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+) {
+    let mut store = crate::machine::test_support::founder(&root.0.join("machine"), "exec");
+    let device = crate::machine::test_support::device_in_two_slots(&mut store);
+    let owner = crate::machine::RecordOwner::spawn(store).unwrap();
+    let local = crate::machine::LocalMachine::new(owner).with_containers(Some(runtime));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(
+        Server::builder()
+            .layer(tower::layer::layer_fn(move |inner| NoteLeft {
+                inner,
+                left: left.clone(),
+            }))
+            .add_routes(crate::machine_api::device_routes(
+                crate::machine_api::MachineService::over(local.clone()),
+                device.into(),
+            ))
+            .serve_with_incoming(TcpListenerStream::new(listener)),
+    );
+    (local, device, address, server)
+}
+
+/// A service that notifies `left` when a call it was handling is dropped unanswered.
+#[derive(Clone)]
+struct NoteLeft<S> {
+    inner: S,
+    left: Option<Arc<tokio::sync::Notify>>,
+}
+
+impl<S, R> tower::Service<R> for NoteLeft<S>
+where
+    S: tower::Service<R>,
+    S::Future: Send + 'static,
+{
+    type Response = S::Response;
+    type Error = S::Error;
+    type Future =
+        std::pin::Pin<Box<dyn std::future::Future<Output = Result<S::Response, S::Error>> + Send>>;
+
+    fn poll_ready(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), S::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, request: R) -> <Self as tower::Service<R>>::Future {
+        struct Unanswered(Option<Arc<tokio::sync::Notify>>);
+        impl Unanswered {
+            fn answered(mut self) {
+                self.0.take();
+            }
+        }
+        impl Drop for Unanswered {
+            fn drop(&mut self) {
+                if let Some(left) = self.0.take() {
+                    left.notify_one();
+                }
+            }
+        }
+        let call = self.inner.call(request);
+        let unanswered = Unanswered(self.left.clone());
+        Box::pin(async move {
+            let answered = call.await;
+            unanswered.answered();
+            answered
+        })
+    }
+}
+
+/// The local process an exec's command runs as. The stand-in Docker starts it when it starts
+/// the exec, as a child of this test's process, which stands in for containerd's shim.
+#[derive(Clone, Default)]
+struct ExecCommand(std::sync::Arc<std::sync::Mutex<Option<Sleep>>>);
+
+impl ExecCommand {
+    /// Start the command, as Docker does when it starts the exec.
+    fn start(&self) {
+        self.0.lock().unwrap().get_or_insert_with(Sleep::spawn);
+    }
+
+    /// The command's PID and whether it exited, once Docker started it.
+    fn state(&self) -> Option<(u32, Option<std::process::ExitStatus>)> {
+        let mut command = self.0.lock().unwrap();
+        let command = &mut command.as_mut()?.0;
+        Some((command.id(), command.try_wait().unwrap()))
+    }
+
+    fn started(&self) -> bool {
+        self.0.lock().unwrap().is_some()
+    }
+
+    fn exited(&self) -> Option<std::process::ExitStatus> {
+        self.state().expect("Docker started the exec's command").1
+    }
+}
+
+/// A local `sleep 300`, killed once dropped.
+struct Sleep(std::process::Child);
+
+impl Sleep {
+    fn spawn() -> Self {
+        Self(
+            std::process::Command::new("sleep")
+                .arg("300")
+                .spawn()
+                .unwrap(),
+        )
+    }
+}
+
+impl Drop for Sleep {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// How the stand-in Docker answers an exec's start.
+#[derive(Clone, Copy)]
+enum ExecStart {
+    Attached,
+    /// Attached, writing far more output than the response channel holds, so forwarding
+    /// waits on a send.
+    Noisy,
+    Detached,
+}
+
+/// How the stand-in Docker misbehaves, as a test turns it.
+#[derive(Clone, Default)]
+struct Stalls {
+    /// When set, the exec's start reaches the stand-in, which notifies this and answers
+    /// only once it holds a permit.
+    start: Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Semaphore>)>,
+    /// When set, the stand-in takes a detached start and closes the connection without
+    /// answering, as a start whose answer is lost.
+    lose_start: bool,
+    /// While set, an exec inspect is never answered.
+    inspect: Arc<std::sync::atomic::AtomicBool>,
+    /// While set, an exec inspect fails, and each failure notifies `inspect_failed`.
+    failing: Arc<std::sync::atomic::AtomicBool>,
+    inspect_failed: Arc<tokio::sync::Notify>,
+    /// When set, the exec's create sets `failing`.
+    fail_after_create: bool,
+    /// Exec inspects answered, each notifying `inspected`.
+    inspects: Arc<std::sync::atomic::AtomicUsize>,
+    inspected: Arc<tokio::sync::Notify>,
+    /// While set, an exec inspect reports the command not running with no exit code, as
+    /// Docker does before it marks an exec running.
+    pending: Arc<std::sync::atomic::AtomicBool>,
+    /// When set, the exec inspects Docker answers before it forgets the exec, as it does
+    /// when it restarts, and answers each after with 404.
+    forget_after: Option<usize>,
+    /// When set, Docker reports the Container's process at a PID no process can have, so
+    /// its cgroup can't be read.
+    unreadable_init: bool,
+    /// When set, an attached exec's output ends once this is notified.
+    end_output: Option<Arc<tokio::sync::Notify>>,
+    /// When set, Docker's attach to an attached exec fails at once, and it reports the exec
+    /// not running with exit code 126 and its PID while the command runs on, as moby's
+    /// `ContainerExecStart` does.
+    attach_fails: bool,
+    /// When set, Docker can't start the command, as for a name no file has, and reports the
+    /// exec not running with exit code 127 and no process.
+    start_fails: bool,
+}
+
+/// Above the kernel's largest `pid_max`, so no process has it.
+const UNUSABLE_PID: u32 = 4_194_305;
+
+/// A runtime over a stand-in Docker for one exec, `slow`, in a managed Container whose
+/// process is a child of this test's, so `command` shares its cgroup and its parent as an
+/// exec's process does. Docker reports the exec running with `command`'s PID until it exits.
+async fn exec_runtime(
+    root: &TestDir,
+    command: &ExecCommand,
+    start: ExecStart,
+) -> (ContainerRuntime, ContainerId, tokio::task::JoinHandle<()>) {
+    stalling_exec_runtime(root, command, start, Stalls::default()).await
+}
+
+/// [`exec_runtime`] over a stand-in Docker that stalls as `stalls` says.
+async fn stalling_exec_runtime(
+    root: &TestDir,
+    command: &ExecCommand,
+    start: ExecStart,
+    stalls: Stalls,
+) -> (ContainerRuntime, ContainerId, tokio::task::JoinHandle<()>) {
+    let docker_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let docker_address = docker_listener.local_addr().unwrap();
+    let container_id = ContainerId::parse("b".repeat(64)).unwrap();
+    let spec = crate::docker::test_support::spec_with_sources(vec![]);
+    let init = Sleep::spawn();
+    let managed = serde_json::json!({
+        "Id": container_id.as_str(),
+        "State": {"Pid": if stalls.unreadable_init { UNUSABLE_PID } else { init.0.id() }},
+        "Config": {"Labels": {
+            labels::MANAGED: "",
+            labels::NAMESPACE: "app",
+            labels::SERVICE_ID: spec.service_id.to_string(),
+            labels::SERVICE_NAME: spec.name.to_string(),
+        }},
+    })
+    .to_string();
+    let command = command.clone();
+    let docker_server = tokio::spawn(async move {
+        let _init = init;
+        let mut hijacked = Vec::new();
+        let mut requests = DockerRequests::new(docker_listener);
+        loop {
+            let (mut stream, path) = requests.next().await;
+            let body = if path.starts_with("/containers/") && path.ends_with("/json") {
+                managed.clone()
+            } else if path.ends_with("/exec") {
+                if stalls.fail_after_create {
+                    stalls
+                        .failing
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+                r#"{"Id":"slow"}"#.to_owned()
+            } else if path.starts_with("/exec/slow/start") {
+                if !stalls.start_fails {
+                    command.start();
+                }
+                if matches!(start, ExecStart::Detached) && stalls.lose_start {
+                    drop(stream);
+                    continue;
+                }
+                if let (ExecStart::Detached, Some((reached, permit))) = (start, &stalls.start) {
+                    reached.notify_one();
+                    let permit = Arc::clone(permit);
+                    tokio::spawn(async move {
+                        let _permit = permit.acquire().await.unwrap();
+                        let _ = stream
+                            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                            .await;
+                    });
+                    continue;
+                }
+                match start {
+                    ExecStart::Detached => String::new(),
+                    ExecStart::Attached | ExecStart::Noisy => {
+                        stream
+                            .write_all(b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n")
+                            .await
+                            .unwrap();
+                        if stalls.attach_fails || stalls.start_fails {
+                            drop(stream);
+                        } else if matches!(start, ExecStart::Noisy) {
+                            tokio::spawn(async move {
+                                let mut frame = b"\x01\0\0\0\0\0\x04\0".to_vec();
+                                frame.extend([b'x'; 1024]);
+                                for _ in 0..4096 {
+                                    if stream.write_all(&frame).await.is_err() {
+                                        return;
+                                    }
+                                }
+                                std::future::pending::<()>().await;
+                            });
+                        } else if let Some(end) = &stalls.end_output {
+                            let end = Arc::clone(end);
+                            tokio::spawn(async move {
+                                end.notified().await;
+                                drop(stream);
+                            });
+                        } else {
+                            hijacked.push(stream);
+                        }
+                        continue;
+                    }
+                }
+            } else {
+                if stalls.inspect.load(std::sync::atomic::Ordering::SeqCst) {
+                    hijacked.push(stream);
+                    continue;
+                }
+                if stalls.failing.load(std::sync::atomic::Ordering::SeqCst) {
+                    stream
+                        .write_all(b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+                        .await
+                        .unwrap();
+                    drop(stream);
+                    stalls.inspect_failed.notify_one();
+                    continue;
+                }
+                let answered = stalls
+                    .inspects
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                stalls.inspected.notify_one();
+                if stalls.forget_after.is_some_and(|after| answered >= after) {
+                    let _ = stream
+                        .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 38\r\nConnection: close\r\n\r\n{\"message\":\"No such exec instance: s\"}")
+                        .await;
+                    continue;
+                }
+                match command.state() {
+                    None if stalls.start_fails => r#"{"Running":false,"ExitCode":127}"#.to_owned(),
+                    None => r#"{"Running":false}"#.to_owned(),
+                    Some((_, None)) if stalls.pending.load(std::sync::atomic::Ordering::SeqCst) => {
+                        r#"{"Running":false}"#.to_owned()
+                    }
+                    Some((pid, None)) if stalls.attach_fails => format!(
+                        r#"{{"Running":false,"ExitCode":126,"Pid":{pid},"ContainerID":"{}"}}"#,
+                        "b".repeat(64)
+                    ),
+                    Some((pid, None)) => format!(
+                        r#"{{"Running":true,"Pid":{pid},"ContainerID":"{}"}}"#,
+                        "b".repeat(64)
+                    ),
+                    // Docker names the process once it exited, too.
+                    Some((pid, Some(_))) => {
+                        format!(r#"{{"Running":false,"ExitCode":143,"Pid":{pid}}}"#)
+                    }
+                }
+            };
+            stream
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+        }
+    });
+    let docker = bollard::Docker::connect_with_http(
+        &format!("http://{docker_address}"),
+        5,
+        bollard::API_DEFAULT_VERSION,
+    )
+    .unwrap();
+    let specs = MachineSpecStore::open(root.0.join("machine.db"))
+        .await
+        .unwrap();
+    specs
+        .config_operation()
+        .await
+        .put(&container_id, None, &spec, None)
+        .await
+        .unwrap();
+    (
+        ContainerRuntime::new(LocalDocker::from_client(docker), specs),
+        container_id,
+        docker_server,
+    )
+}
+
+/// Requests to the fake Docker. Each connection is read on its own, as Docker serves them
+/// at once, so a connection a cancelled call left open with no request holds up none other.
+struct DockerRequests {
+    listener: tokio::net::TcpListener,
+    read: tokio::sync::mpsc::UnboundedSender<(tokio::net::TcpStream, String)>,
+    requests: tokio::sync::mpsc::UnboundedReceiver<(tokio::net::TcpStream, String)>,
+}
+
+impl DockerRequests {
+    fn new(listener: tokio::net::TcpListener) -> Self {
+        let (read, requests) = tokio::sync::mpsc::unbounded_channel();
+        Self {
+            listener,
+            read,
+            requests,
+        }
+    }
+
+    /// The next whole request, with its stream and path.
+    async fn next(&mut self) -> (tokio::net::TcpStream, String) {
+        loop {
+            tokio::select! {
+                Some(request) = self.requests.recv() => return request,
+                accepted = self.listener.accept() => {
+                    let (stream, _) = accepted.unwrap();
+                    let read = self.read.clone();
+                    tokio::spawn(async move {
+                        let mut reader = BufReader::new(stream);
+                        if let Ok(path) = read_docker_request(&mut reader).await {
+                            let _ = read.send((reader.into_inner(), path));
+                        }
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// The path of the request `reader` reads whole.
+async fn read_docker_request(
+    reader: &mut BufReader<tokio::net::TcpStream>,
+) -> std::io::Result<String> {
     let mut request = String::new();
-    reader.read_line(&mut request).await.unwrap();
+    reader.read_line(&mut request).await?;
     let path = request.split_whitespace().nth(1).unwrap_or_default();
     let path = match path.strip_prefix("/v") {
         Some(versioned) => versioned.find('/').map_or(path, |at| &versioned[at..]),
@@ -311,7 +1339,9 @@ async fn accept_docker_request_to(
     let mut content_length = 0;
     loop {
         let mut line = String::new();
-        assert_ne!(reader.read_line(&mut line).await.unwrap(), 0);
+        if reader.read_line(&mut line).await? == 0 {
+            return Err(std::io::ErrorKind::UnexpectedEof.into());
+        }
         if line == "\r\n" {
             break;
         }
@@ -321,11 +1351,8 @@ async fn accept_docker_request_to(
             content_length = value.trim().parse().unwrap();
         }
     }
-    reader
-        .read_exact(&mut vec![0; content_length])
-        .await
-        .unwrap();
-    (reader.into_inner(), path)
+    reader.read_exact(&mut vec![0; content_length]).await?;
+    Ok(path)
 }
 
 async fn accept_docker_request(listener: &tokio::net::TcpListener) -> tokio::net::TcpStream {
@@ -558,7 +1585,11 @@ async fn l3_015_through_l3_024_exec_and_l3_069_logs_cross_the_real_docker_endpoi
 
     runtime
         .lifecycle()
-        .remove(&created.container_id, true, true)
+        .remove(
+            &created.container_id,
+            crate::docker::VolumeDisposal::Keep,
+            true,
+        )
         .await
         .unwrap();
     server.abort();

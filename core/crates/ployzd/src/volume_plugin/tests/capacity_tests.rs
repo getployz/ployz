@@ -25,9 +25,9 @@ async fn device_pool_recovery_preserves_volumes_through_every_admission_route() 
     case "$*" in
       import) printf '   pool: ployz-device\n'; exit 0 ;;
       'import -N ployz-device') touch '{}/device-imported'; exit 0 ;;
-      'list -Hp -o name,size,allocated,free,health,readonly')
+      'list -Hp -o name,guid,size,allocated,free,health,readonly')
         if [ -e '{}/device-imported' ]; then
-          printf 'ployz-device\t8589934592\t0\t8589934592\tONLINE\toff\n'
+          printf 'ployz-device\t7\t8589934592\t0\t8589934592\tONLINE\toff\n'
         fi
         exit 0 ;;
     esac
@@ -346,8 +346,8 @@ fn committed_pool_with_slot(
                     r#"  zpool)
     case "$*" in
       import) printf '   pool: ployz-device\n'; exit 0 ;;
-      'list -Hp -o name,size,allocated,free,health,readonly')
-        printf 'ployz-device\t{}\t{}\t0\tONLINE\toff\n'
+      'list -Hp -o name,guid,size,allocated,free,health,readonly')
+        printf 'ployz-device\t7\t{}\t{}\t0\tONLINE\toff\n'
         exit 0 ;;
     esac
 "#,

@@ -138,6 +138,9 @@ pub enum DockerFacts {
         api: String,
         buildx: Option<String>,
         containerd_store: Option<bool>,
+        /// `None` also when the probe came from a ployzd that didn't ask.
+        #[serde(default)]
+        live_restore: Option<bool>,
         /// The failed command that stopped reading, as the installer would refuse with it.
         error: Option<String>,
     },
@@ -155,6 +158,7 @@ open_string_enum!(BlockerCode, Unknown {
     DockerTooOld => "docker_too_old",
     DockerUnreadable => "docker_unreadable",
     DockerContainerdStoreOff => "docker_containerd_store_off",
+    DockerLiveRestoreOff => "docker_live_restore_off",
     BuildxTooOld => "buildx_too_old",
     NoSystemd => "no_systemd",
     DiskTooSmall => "disk_too_small",

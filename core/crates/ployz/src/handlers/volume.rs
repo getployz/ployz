@@ -23,8 +23,10 @@ use super::{Error, leaf_matches};
 use crate::cli::{base, positional, switch, value};
 use crate::ui::{Cell, Fields, Table, Tone};
 
+pub(super) mod leftovers;
 mod restore;
 pub(super) mod run;
+pub(super) mod trash;
 
 pub(super) fn group(command: Command) -> Command {
     base(command, "Manage Volumes")

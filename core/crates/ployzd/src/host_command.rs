@@ -7,9 +7,24 @@ use tokio::process::Command;
 
 /// `program` with `args`, retried while exec reports ETXTBSY.
 pub(crate) async fn run(program: &Path, args: &[&str]) -> io::Result<Output> {
+    launch(program, args, false).await
+}
+
+/// [`run`] under `LC_ALL=C`, for output whose wording is judged, which another locale
+/// would translate.
+pub(crate) async fn run_c(program: &Path, args: &[&str]) -> io::Result<Output> {
+    launch(program, args, true).await
+}
+
+async fn launch(program: &Path, args: &[&str], c_locale: bool) -> io::Result<Output> {
     let mut attempt = 0;
     loop {
-        match Command::new(program).args(args).output().await {
+        let mut command = Command::new(program);
+        command.args(args);
+        if c_locale {
+            command.env("LC_ALL", "C");
+        }
+        match command.output().await {
             // ETXTBSY means exec never started; only that launch error is safe to retry.
             Err(error) if error.kind() == io::ErrorKind::ExecutableFileBusy && attempt < 4 => {
                 tokio::time::sleep(std::time::Duration::from_millis(10 << attempt)).await;

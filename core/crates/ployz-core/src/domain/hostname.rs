@@ -299,6 +299,7 @@ mod tests {
             run: None,
             log_driver: None,
             admission: None,
+            replaced_by: None,
         })
         .unwrap()
     }

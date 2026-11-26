@@ -543,6 +543,9 @@ async fn sample(case: &Case, machine: &Enforcing) -> Sample {
         (ployz_core::EMPTY_TRASH_CAPABILITY, _) => {
             unary::<op::EmptyTrash>(json!({"ids": ["a".repeat(26)]}))
         }
+        (ployz_core::REMOVE_KEPT_VOLUMES_CAPABILITY, _) => {
+            unary::<op::RemoveKeptVolumes>(json!({"volumes": ["app_data"]}))
+        }
         (ployz_core::SEED_VOLUME_CAPABILITY, _) => unary::<op::SeedVolume>(json!({
             "name": "app_data", "into": "app_restore", "guid": "7",
         })),
@@ -1651,6 +1654,46 @@ mod revoked {
             })
             .count();
         assert_eq!(resolved, 1, "{answer:?}");
+        machine.remove();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_operators_free_pull_with_a_login_is_refused_before_it_pulls() {
+        let machine = Enforcing::new().await;
+        let sealed = crate::sealed_env::test_support::Cluster::new().seal_login(
+            "docker.io",
+            &ployz_core::RegistryAuth {
+                username: None,
+                password: "token".into(),
+            },
+        );
+        for login in [
+            json!({ "registry_auth": {"username": "bot", "password": "token"} }),
+            json!({ "registry_login": sealed }),
+        ] {
+            let mut pull = json!({ "image": "redis:7-alpine", "policy": "always" });
+            pull.as_object_mut()
+                .unwrap()
+                .extend(login.as_object().unwrap().clone());
+            let pull: ployz_core::PullFreeImageRequest = serde_json::from_value(pull).unwrap();
+            let answer = machine
+                .unary(
+                    op::PullFreeImage::PATH,
+                    &op::PullFreeImage::into_request(pull),
+                )
+                .await;
+            refused_naming(&answer, ployz_core::PULL_FREE_IMAGE_CAPABILITY);
+            let pulled = machine
+                .fake
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(_, path)| {
+                    path.contains("/images/create") || path.contains("/distribution/")
+                });
+            assert!(!pulled, "{login}: {answer:?}");
+        }
         machine.remove();
     }
 

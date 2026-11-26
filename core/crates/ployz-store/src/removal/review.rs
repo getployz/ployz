@@ -84,7 +84,7 @@ pub(crate) enum Deletes {
 impl Deletes {
     const fn subject(self) -> &'static str {
         match self {
-            Self::Now => "This permanently deletes",
+            Self::Now => "This deletes",
             Self::NextDeploy => "Next deploy deletes",
         }
     }

@@ -135,12 +135,12 @@ it("Delete copy toasts only once the delete run ends, with the Server's words wh
   const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
   const { result } = renderHook(() => useDeleteCopy("acme", environment, { id: "v1", name: "data" }), { wrapper });
 
-  act(() => result.current("web-3"));
+  act(() => result.current("web-3", null));
   await waitFor(() => expect(read).toHaveBeenCalledWith({ data: { organizationSlug: "acme", id: "run-1" } }));
   expect(success).not.toHaveBeenCalled();
   await waitFor(() => expect(success).toHaveBeenCalledWith("Copy deleted"), { timeout: 5_000 });
 
-  act(() => result.current("web-3"));
+  act(() => result.current("web-3", null));
   await waitFor(() => expect(error).toHaveBeenCalledWith("web-3 still mounts data."));
   expect(success).toHaveBeenCalledTimes(1);
 });
@@ -155,8 +155,8 @@ it("Delete copy watches each delete it starts, so a second one leaves the first 
   const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
   const { result } = renderHook(() => useDeleteCopy("acme", environment, { id: "v1", name: "data" }), { wrapper });
 
-  act(() => result.current("web-3"));
-  act(() => result.current("web-4"));
+  act(() => result.current("web-3", null));
+  act(() => result.current("web-4", null));
   await waitFor(() => expect(functions.deleteCopyServerFn).toHaveBeenCalledTimes(2));
   ended = true;
   await waitFor(() => expect(success).toHaveBeenCalledTimes(2), { timeout: 5_000 });
@@ -169,7 +169,7 @@ it("Delete copy toasts a refusal without watching anything", async () => {
   const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={new QueryClient()}>{children}</QueryClientProvider>;
   const { result } = renderHook(() => useDeleteCopy("acme", environment, { id: "v1", name: "data" }), { wrapper });
 
-  act(() => result.current("web-3"));
+  act(() => result.current("web-3", null));
   await waitFor(() => expect(error).toHaveBeenCalledWith("data is busy."));
   expect(read).not.toHaveBeenCalled();
 });

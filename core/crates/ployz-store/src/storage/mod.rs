@@ -341,6 +341,18 @@ const MIGRATIONS: &[(&str, Step)] = &[
         "0054_service_version_parent",
         Step::Sql(include_str!("migrations/0054_service_version_parent.sql")),
     ),
+    (
+        // Registry logins sealed on a person's device, and none the Store can read.
+        "0055_registry_login",
+        Step::Rust(|tx, backend| {
+            tx.batch(include_str!("migrations/0055_registry_login.sql"))?;
+            tx.batch(match backend {
+                Backend::Postgres => include_str!("migrations/0055_registry_login_postgres.sql"),
+                Backend::Sqlite => include_str!("migrations/0055_registry_login_sqlite.sql"),
+            })?;
+            Ok(None)
+        }),
+    ),
 ];
 
 enum Step {

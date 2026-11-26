@@ -593,9 +593,11 @@ async fn run_container(
                 resolved_spec,
                 deployment_id: None,
                 registry_auth: None,
+                registry_login: None,
                 image_prepared: false,
                 answer: ployz_core::AnswerWhen::Started,
                 image_id: None,
+                replaces: None,
             }),
             rotation: RunRotation::Pending,
         },
@@ -647,7 +649,7 @@ async fn remove_container(client: &mut Client, machine_id: MachineId, container_
         ContainerWant::Gone {
             container: ContainerLocator::Id(container_id),
             drain: Drain::NONE,
-            anonymous_volumes: ployz_core::AnonymousVolumes::Remove,
+            anonymous_volumes: ployz_core::AnonymousVolumes::keep(),
         },
     )
     .await;

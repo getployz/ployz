@@ -23,6 +23,8 @@ fn seen(name: &str, copy: Option<VolumeCopy>) -> Seen {
         id: MachineId::parse(name[name.len() - 1..].repeat(32)).unwrap(),
         name: name.to_owned(),
         copy: Ok(copy),
+        read: None,
+        pinned: None,
     }
 }
 
@@ -51,6 +53,7 @@ fn old_copy(newest: Option<Snapshot>) -> VolumeCopy {
         role: Some(SlotRole::OldCopy),
         pull_state: None,
         origin: None,
+        written_here: true,
     }
 }
 
@@ -62,6 +65,7 @@ fn root(readonly: bool, epoch: u32) -> VolumeCopy {
         seed: false,
         mark: None,
         origin: None,
+        placed: None,
     }
 }
 
@@ -102,6 +106,7 @@ fn a_removed_servers_old_copy_becomes_the_writer_in_a_newer_epoch() {
             newest: SnapshotGuid::new(99),
             slot: SlotId::new(7),
             role: None,
+            written_here: None,
         }
     );
     assert_eq!(

@@ -86,6 +86,38 @@ pub fn retained_digest(tag: &str) -> Option<ImageDigest> {
     ImageDigest::parse(format!("sha256:{hex}")).ok()
 }
 
+/// The host and port of the registry Docker pulls `image` from, as written, or `None`
+/// for Docker Hub. Docker takes the first part for a host when it holds a dot, a colon or
+/// a capital letter, or is `localhost`.
+#[must_use]
+pub fn image_registry(image: &str) -> Option<&str> {
+    let (first, _) = image.split_once('/')?;
+    (first == "localhost" || first.contains(['.', ':']) || first.to_lowercase() != first)
+        .then_some(first)
+}
+
+/// Docker Hub's host, as a login for it is sealed.
+pub const DOCKER_HUB: &str = "docker.io";
+
+/// The registry host a login for `image` is sealed for and sent to: [`image_registry`],
+/// with Docker Hub as [`DOCKER_HUB`], which Docker also reads `index.docker.io` as.
+///
+/// # Errors
+/// [`UppercaseHost`] when the host holds a capital letter. Docker reads one as a host
+/// while hosts match whatever their case, so no spelling of it names one login.
+pub fn login_host(image: &str) -> Result<&str, UppercaseHost> {
+    match image_registry(image) {
+        None | Some("index.docker.io") => Ok(DOCKER_HUB),
+        Some(host) if host.chars().any(char::is_uppercase) => Err(UppercaseHost),
+        Some(host) => Ok(host),
+    }
+}
+
+/// An image whose registry host holds a capital letter.
+#[derive(Debug, thiserror::Error)]
+#[error("write the image's registry in lowercase, like ghcr.io")]
+pub struct UppercaseHost;
+
 /// Whether two tags name the same thing once Docker fills in what each leaves out:
 /// `app:v1` is `docker.io/library/app:v1`, and `app` is `app:latest`. `team/app:v1` and
 /// `ghcr.io/app:v1` are other repositories. A name Docker can't parse matches nothing.
@@ -234,6 +266,28 @@ pub fn is_built_image(image: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_login_names_the_registry_docker_pulls_from() {
+        for (image, host) in [
+            ("nginx", "docker.io"),
+            ("library/nginx:1.29", "docker.io"),
+            ("docker.io/acme/api", "docker.io"),
+            ("index.docker.io/acme/api", "docker.io"),
+            ("ghcr.io/acme/api:1", "ghcr.io"),
+            ("ghcr.io/acme/api@sha256:aa", "ghcr.io"),
+            ("localhost/api", "localhost"),
+            ("registry:5000/api", "registry:5000"),
+            // A Docker Hub account, not a host, however much it looks like one.
+            ("ghcr/api", "docker.io"),
+        ] {
+            assert_eq!(login_host(image).ok(), Some(host), "{image}");
+        }
+        // Docker reads these first parts as hosts, which match whatever their case.
+        for image in ["Registry/api:1", "GHCR.io/acme/api", "ghcr.IO/acme/api"] {
+            assert!(login_host(image).is_err(), "{image}");
+        }
+    }
 
     #[test]
     fn a_build_grant_repository_is_a_short_docker_repository_path() {

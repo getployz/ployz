@@ -197,6 +197,7 @@ fn saving(rule: Option<&AutoDeployRule>, sources: serde_json::Value) -> Versions
         machines: vec![MachineId::parse("1".repeat(32)).unwrap()],
         owner_id: 278_111_222,
         builder: None,
+        on: None,
     });
     asked
 }
@@ -281,6 +282,69 @@ fn an_ended_rule_stays_ended() {
             .unwrap(),
         None
     );
+}
+
+/// Turning Deploy every push on for `branch` of `sources` beside `rule`.
+fn turning_on(
+    rule: Option<&AutoDeployRule>,
+    sources: serde_json::Value,
+    branch: &str,
+) -> Option<AutoDeployRule> {
+    let mut asked = saving(rule, sources);
+    asked.source.as_mut().unwrap().on = Some(PushBranch {
+        repository_id: 1_450_985_696,
+        branch: branch.to_owned(),
+    });
+    let draft = asked.draft().unwrap()?;
+    Some(from_canonical(&draft.source.unwrap().body).unwrap())
+}
+
+// Catches the switch signing nothing when settings are as the rule was when it ended.
+#[test]
+fn the_switch_turns_an_ended_rule_on_again_as_its_next_generation() {
+    let (_, mut kept) = first_rule();
+    kept.ended = true;
+
+    let next = turning_on(Some(&kept), view_json()["sources"].clone(), "main").unwrap();
+
+    assert_eq!(
+        (next.rule, next.generation, next.ended),
+        (kept.rule, 2, false)
+    );
+}
+
+// Catches Approve again signing nothing when only a Server or a forgotten version needs
+// the rule signed again, which the settings alone don't show.
+#[test]
+fn approving_again_signs_the_next_generation_even_when_nothing_changed() {
+    let (_, kept) = first_rule();
+
+    let next = turning_on(Some(&kept), view_json()["sources"].clone(), "main").unwrap();
+
+    assert_eq!(
+        (next.rule, next.generation, next.ended),
+        (kept.rule, 2, false)
+    );
+}
+
+#[test]
+fn with_several_branches_the_switch_follows_the_one_the_person_picks() {
+    let mut sources = view_json()["sources"].clone();
+    let mut cache = sources[0].clone();
+    cache["service"] = json!("cache");
+    cache["branch"] = json!("dev");
+    sources.as_array_mut().unwrap().push(cache);
+    assert_eq!(saving(None, sources.clone()).draft().unwrap(), None);
+
+    let rule = turning_on(None, sources, "dev").unwrap();
+
+    assert_eq!(rule.source.branch, "dev");
+    let covered: Vec<&str> = rule
+        .services
+        .iter()
+        .map(|service| service.name.as_str())
+        .collect();
+    assert_eq!(covered, ["cache"], "web on main no longer deploys on push");
 }
 
 /// What a Save of `sources` beside `rule` needs, read from the view alone.

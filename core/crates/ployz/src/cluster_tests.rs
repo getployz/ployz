@@ -470,6 +470,7 @@ fn observation(id: char, machine: char) -> ContainerObservation {
         run: None,
         log_driver: None,
         admission: None,
+        replaced_by: None,
     })
     .unwrap()
 }

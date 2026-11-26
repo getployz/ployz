@@ -2012,19 +2012,19 @@ fn a_synced_source_brings_its_credential_only_where_it_turns_credentials_on() {
     let pulls_with = |n: u8| {
         let id = backend::admit(&store, &who, "production", n);
         let runner = ployz_store::RunnerId::parse("runner").unwrap();
-        let claimed = store.claim(&id, &runner).unwrap().intent.registry_auth;
+        let claimed = store.claim(&id, &runner).unwrap().intent.registry_logins;
         backend::run(&store, &id);
-        claimed
-            .into_values()
-            .map(|auth| auth.password)
-            .collect::<Vec<_>>()
+        claimed.into_values().collect::<Vec<_>>()
     };
     let credential = |environment: &str, secret: &str| {
         set(
             &store,
             &who,
             environment,
-            &[("web.registryCredential", json!({ "secret": secret }))],
+            &[(
+                "web.registryCredential",
+                ployz_store::testing::sealed_login(secret),
+            )],
         );
     };
     credential("fix-web", "branch-token");
@@ -2034,7 +2034,7 @@ fn a_synced_source_brings_its_credential_only_where_it_turns_credentials_on() {
         ("fix-web", "production"),
         Some(&["web.source"]),
     );
-    assert_eq!(pulls_with(1), ["branch-token"]);
+    assert_eq!(pulls_with(1), [ployz_store::testing::login("branch-token")]);
 
     credential("production", "own-token");
     set(&store, &who, "fix-web", &[("web.image", json!("web:2"))]);
@@ -2045,7 +2045,7 @@ fn a_synced_source_brings_its_credential_only_where_it_turns_credentials_on() {
         Some(&["web.source"]),
     );
     assert_eq!(values(&store, &who, "production", "web")["image"], "web:2");
-    assert_eq!(pulls_with(2), ["own-token"]);
+    assert_eq!(pulls_with(2), [ployz_store::testing::login("own-token")]);
 }
 
 #[test]

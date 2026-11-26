@@ -1,5 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
-import type { Change, PostedVersion } from "@ployz/sdk";
+import type { Change, PostedVersion, SavedRule } from "@ployz/sdk";
 import { Effect, Schema } from "effect";
 import { requireAccess } from "#/modules/organization/access.server";
 import { askerNames, asSeenBy, decideProposal, fillDeploy, getProposal, pendingProposals, type ProposalView } from "#/modules/proposals/proposals.server";
@@ -8,9 +8,12 @@ import { authenticated, runActor, strictValidator } from "#/server/tanstack";
 /** A version the passkey signed. The Store checks the rest of it: this only keeps what is not one out. */
 const signed = Schema.is(Schema.Struct({ statement: Schema.Struct({ body: Schema.String }) }));
 const Posted = Schema.declare<PostedVersion>((value): value is PostedVersion => signed(value));
+/** The rule the same tap signed. The decision checks it is that bundle's Source step, and the Store the rest. */
+const isSaved = Schema.is(Schema.Struct({ rule: Schema.Struct({ body: Schema.String }), prior: Schema.NullOr(Schema.Struct({ rule: Schema.String, generation: Schema.Number })) }));
+const Saved = Schema.declare<SavedRule>((value): value is SavedRule => isSaved(value));
 
 const Decision = Schema.Union([
-  Schema.Struct({ approve: Schema.Struct({ versions: Schema.optional(Schema.Array(Posted).check(Schema.isMaxLength(256))) }) }),
+  Schema.Struct({ approve: Schema.Struct({ versions: Schema.optional(Schema.Array(Posted).check(Schema.isMaxLength(256))), rule: Schema.optional(Saved) }) }),
   Schema.Struct({ reject: Schema.Struct({ reason: Schema.optional(Schema.String.check(Schema.isMaxLength(1024))) }) }),
 ]);
 

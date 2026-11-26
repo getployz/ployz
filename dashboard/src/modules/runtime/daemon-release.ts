@@ -18,6 +18,9 @@ export const placementUpgradeMessage = (blockers: readonly string[]) =>
 /** Checks where a copy's data began, so it may hold a born Volume. A Legacy Volume needs no such check. */
 export const checksOrigins = (machine: Daemon) => machine.capabilities.includes(requirements.volumeOrigin.capability);
 
+/** Keeps a slot that may hold writes no other Server has from a bare Forget and from a pull's full send. */
+export const keepsWritten = (machine: Daemon) => machine.capabilities.includes(requirements.volumeKeepWritten.capability);
+
 /** Which of `servers` can't hold a born Volume, by name; one the frame doesn't show, by ID. */
 export const originBlockers = (machines: readonly (Daemon & { readonly id: string; readonly name: string })[], servers: readonly string[]) =>
   [...new Set(servers)].flatMap((id) => {

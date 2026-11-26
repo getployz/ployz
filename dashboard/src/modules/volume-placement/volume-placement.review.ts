@@ -1,7 +1,7 @@
 import type { DeletionItem } from "#/modules/config-store/deletion";
 import { lossMoment } from "#/utils/relative-time";
 import type { ChangeGroup } from "#/modules/config-store/store-deployments";
-import { type PlacementVolume, type PlacementChange, detachedName, CHANGE_KINDS, changeSteps, type PlacementLost, placementLosses, lossByVolume } from "#/modules/volume-placement/volume-placement";
+import { type PlacementVolume, type PlacementChange, detachedName, CHANGE_KINDS, changeSteps, type PlacementLost, type LostCopy, lossByVolume } from "#/modules/volume-placement/volume-placement";
 
 /** Each Volume a Deploy loses, as its confirm lists it, whether Cloud refused it or the canvas checked first. */
 export function volumeLossItems(
@@ -22,12 +22,14 @@ export const LOSS_MARK = "#loss-";
 /**
  * The Store diff version a Deploy carries, bound to the loss its confirm showed. Names alone would let consent to one
  * loss pass for another staged on the same Volume meanwhile, and staging a copy change doesn't move the Store's version.
- * The version is the one field every client carries back verbatim.
+ * Each deleted copy counts as its Server reported it, slot, newest snapshot and whether it was written there, so a copy
+ * replaced or written since needs a new confirm. The version is the one field every client carries back verbatim.
  */
 export function lossVersion(version: string, lost: readonly PlacementLost[]) {
   if (lost.length === 0) return version;
+  const copy = ({ machine_id, slot, newest, written_here }: LostCopy) => [machine_id, slot ?? "", newest ?? "", String(written_here ?? "")].join("/");
   const shown = JSON.stringify(lossByVolume(lost)
-    .map((volume) => ({ ...volume, deletes: volume.deletes.map(({ machine_id }) => machine_id).sort() }))
+    .map((volume) => ({ ...volume, deletes: volume.deletes.map(copy).sort() }))
     .sort((a, b) => a.name.localeCompare(b.name)));
   let hash = 0x811c9dc5;
   for (let index = 0; index < shown.length; index++) hash = Math.imul(hash ^ shown.charCodeAt(index), 0x01000193);
@@ -49,8 +51,7 @@ export type PlacementLoss = {
   readonly version: (version: string) => string;
 };
 
-export function placementLoss(changes: readonly PlacementChange[]): PlacementLoss {
-  const lost = placementLosses(changes);
+export function placementLoss(lost: readonly PlacementLost[]): PlacementLoss {
   const volumes = lossByVolume(lost);
   const servers = lost.flatMap(({ server }) => server ?? []);
   return {

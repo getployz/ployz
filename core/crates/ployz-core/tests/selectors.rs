@@ -14,11 +14,11 @@ use serde_json::json;
 fn machine_target_is_non_empty_and_cannot_be_a_wildcard() {
     assert_eq!(
         MachineTarget::parse("").unwrap_err().to_string(),
-        "invalid Machine Target \"\": a non-empty Machine identity that is not a wildcard"
+        "invalid Machine Target: a non-empty Machine identity that is not a wildcard"
     );
     assert_eq!(
         MachineTarget::parse("*").unwrap_err().to_string(),
-        "invalid Machine Target \"*\": a non-empty Machine identity that is not a wildcard"
+        "invalid Machine Target: a non-empty Machine identity that is not a wildcard"
     );
     assert_eq!(MachineTarget::parse("all").unwrap().as_str(), "all");
     assert_eq!(
@@ -40,7 +40,7 @@ fn fanout_selector_treats_star_as_the_only_wildcard() {
     );
     assert_eq!(
         FanoutSelector::parse("").unwrap_err().to_string(),
-        "invalid Machine Target \"\": a non-empty Machine identity that is not a wildcard"
+        "invalid Machine Target: a non-empty Machine identity that is not a wildcard"
     );
 }
 
@@ -284,7 +284,7 @@ fn service_selector_with_namespace_qualifies_names_and_rejects_invalid_names() {
             .with_namespace(&namespace)
             .unwrap_err()
             .to_string(),
-        "invalid Service Name \"My_App\": a 1-63 character lowercase DNS label"
+        "invalid Service Name: a 1-63 character lowercase DNS label"
     );
 }
 
@@ -415,6 +415,7 @@ fn container(
         run: None,
         log_driver: None,
         admission: None,
+        replaced_by: None,
     })
     .unwrap()
 }

@@ -8,6 +8,7 @@ use std::{
     fs, io,
     os::unix::fs::{DirBuilderExt, OpenOptionsExt},
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
 };
 
 pub(crate) const DIRECTORY: &str = "private/sealed";
@@ -27,6 +28,58 @@ pub fn valid_name(name: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || b"_+-".contains(&byte))
 }
 
+/// Where one attempt stages its opened Sealed values: its own capture's `private/sealed`,
+/// which the attempt's owner can take back while the solve still runs. The execution writes
+/// each value under the lock [`Self::revoke`] takes, so a value is either written first and
+/// revoked, or never written.
+#[derive(Clone)]
+pub struct SealedStaging(Arc<Staging>);
+
+struct Staging {
+    root: PathBuf,
+    revoked: Mutex<bool>,
+}
+
+impl SealedStaging {
+    pub(crate) fn under(root: &Path) -> Self {
+        Self(Arc::new(Staging {
+            root: root.to_owned(),
+            revoked: Mutex::new(false),
+        }))
+    }
+
+    /// Remove every value staged here and stage none again, so a solve still running reads
+    /// none of them again. The directory itself stays for [`Staged`]'s own drop.
+    ///
+    /// # Errors
+    /// A staged file that could not be removed.
+    pub fn revoke(&self) -> io::Result<()> {
+        let mut revoked = self.0.revoked.lock().expect("staging lock");
+        *revoked = true;
+        let entries = match fs::read_dir(self.0.root.join(DIRECTORY)) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        for entry in entries {
+            match fs::remove_file(entry?.path()) {
+                Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+                Ok(()) | Err(_) => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Run `write` unless [`Self::revoke`] ran, under its lock.
+    fn write<T>(&self, write: impl FnOnce() -> io::Result<T>) -> Result<T, BuildError> {
+        let revoked = self.0.revoked.lock().expect("staging lock");
+        if *revoked {
+            return Err(BuildError::Cancelled);
+        }
+        write().map_err(io_error)
+    }
+}
+
 /// Opened values written for one solve. Dropping removes them on every
 /// outcome, including a retained Unknown root and a dropped cancelled Build.
 pub struct Staged {
@@ -36,18 +89,19 @@ pub struct Staged {
 }
 
 impl Staged {
-    /// Write `opened` under the capture at `root`: a file per value, and the Compose
-    /// override that passes the declared Dockerfile ARGs of `targets`.
+    /// Write `opened` into `staging`: a file per value, and the Compose override that
+    /// passes the declared Dockerfile ARGs of `targets`.
     ///
     /// # Errors
-    /// Fails on a name that can't be a secret id, an ARG nothing opened, or a write.
+    /// Fails on a name that can't be a secret id, an ARG nothing opened, a write, or a
+    /// staging its owner revoked.
     pub fn stage(
-        root: &Path,
+        staging: &SealedStaging,
         opened: &OpenedSealed,
         targets: &[Target],
     ) -> Result<Self, BuildError> {
-        let mut staged = Self::write(root, opened)?;
-        staged.compose_override = staged.args(root, targets, opened)?;
+        let mut staged = Self::write(staging, opened)?;
+        staged.compose_override = staged.args(staging, targets, opened)?;
         Ok(staged)
     }
 
@@ -59,10 +113,11 @@ impl Staged {
 
     fn args(
         &mut self,
-        root: &Path,
+        staging: &SealedStaging,
         targets: &[Target],
         opened: &OpenedSealed,
     ) -> Result<Option<PathBuf>, BuildError> {
+        let root = &staging.0.root;
         let bytes = match fs::read(crate::capture::sealed_args(root)) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -96,17 +151,11 @@ impl Staged {
             .expect("Compose arguments encode")
             .replace('$', "$$");
         self.files.push(path.clone());
-        fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&path)
-            .and_then(|mut file| io::Write::write_all(&mut file, contents.as_bytes()))
-            .map_err(io_error)?;
+        staging.write(|| private_file(&path, contents.as_bytes()))?;
         Ok(Some(path))
     }
 
-    fn write(root: &Path, opened: &OpenedSealed) -> Result<Self, BuildError> {
+    fn write(staging: &SealedStaging, opened: &OpenedSealed) -> Result<Self, BuildError> {
         let mut files = Self {
             directory: None,
             files: Vec::new(),
@@ -115,11 +164,9 @@ impl Staged {
         if opened.is_empty() {
             return Ok(files);
         }
+        let root = &staging.0.root;
         let directory = root.join(DIRECTORY);
-        fs::DirBuilder::new()
-            .mode(0o700)
-            .create(&directory)
-            .map_err(io_error)?;
+        staging.write(|| fs::DirBuilder::new().mode(0o700).create(&directory))?;
         files.directory = Some(directory);
         for (name, value) in opened.values() {
             if !valid_name(name) {
@@ -129,16 +176,20 @@ impl Staged {
             }
             let path = root.join(sealed_file(name));
             files.files.push(path.clone());
-            fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(&path)
-                .and_then(|mut file| io::Write::write_all(&mut file, value.as_bytes()))
-                .map_err(io_error)?;
+            staging.write(|| private_file(&path, value.as_bytes()))?;
         }
         Ok(files)
     }
+}
+
+/// A new file only its owner reads, holding `contents`.
+fn private_file(path: &Path, contents: &[u8]) -> io::Result<()> {
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+        .and_then(|mut file| io::Write::write_all(&mut file, contents))
 }
 
 impl Drop for Staged {
@@ -189,7 +240,7 @@ mod tests {
             ("NPM_TOKEN".to_owned(), "opened-token".to_owned()),
             ("OTHER".to_owned(), "two".to_owned()),
         ]);
-        let guard = Staged::write(root.path(), &opened(values)).unwrap();
+        let guard = Staged::write(&SealedStaging::under(root.path()), &opened(values)).unwrap();
         let token = root.path().join(sealed_file("NPM_TOKEN"));
         assert_eq!(fs::read_to_string(&token).unwrap(), "opened-token");
         assert_eq!(
@@ -212,7 +263,8 @@ mod tests {
     #[test]
     fn no_opened_values_leave_private_material_untouched() {
         let root = Root::new();
-        let _guard = Staged::write(root.path(), &opened(BTreeMap::new())).unwrap();
+        let _guard =
+            Staged::write(&SealedStaging::under(root.path()), &opened(BTreeMap::new())).unwrap();
         assert_eq!(
             fs::read_dir(root.path().join("private")).unwrap().count(),
             0
@@ -241,7 +293,7 @@ mod tests {
             ("NPM_TOKEN".into(), value.into()),
             ("MOUNT_ONLY".into(), "mount-only-value".into()),
         ]));
-        let guard = Staged::stage(root.path(), &opened, &targets()).unwrap();
+        let guard = Staged::stage(&SealedStaging::under(root.path()), &opened, &targets()).unwrap();
         let file = guard.compose_override().unwrap().to_owned();
         let encoded = fs::read_to_string(&file).unwrap();
         let compose: serde_json::Value = serde_json::from_str(&encoded.replace("$$", "$")).unwrap();
@@ -273,7 +325,9 @@ mod tests {
             r#"{"api":["MISSING"]}"#,
         ] {
             fs::write(root.path().join("private/sealed-args.json"), contents).unwrap();
-            assert!(Staged::stage(root.path(), &opened, &targets()).is_err());
+            assert!(
+                Staged::stage(&SealedStaging::under(root.path()), &opened, &targets()).is_err()
+            );
             assert!(!root.path().join(DIRECTORY).exists());
         }
     }
@@ -283,7 +337,10 @@ mod tests {
         let root = Root::new();
         for name in ["", "../escape", "a/b", "with space", "a=b"] {
             let opened = opened(BTreeMap::from([(name.to_owned(), "x".to_owned())]));
-            assert!(Staged::write(root.path(), &opened).is_err(), "{name:?}");
+            assert!(
+                Staged::write(&SealedStaging::under(root.path()), &opened).is_err(),
+                "{name:?}"
+            );
         }
         assert!(!root.path().join(DIRECTORY).exists());
     }
