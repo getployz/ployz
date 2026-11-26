@@ -15,6 +15,7 @@ mod inspect;
 mod kept_volumes;
 use inspect::{Inspected, RawContainerConfig};
 mod lifecycle;
+pub(crate) use lifecycle::PreviewImage;
 pub use lifecycle::{Lifecycle, VolumeDisposal};
 mod limits;
 mod live_stats;
@@ -25,6 +26,7 @@ mod peer_pull;
 mod placement;
 mod recovery;
 pub(crate) use peer_pull::ImageProxy;
+mod preview_fence;
 mod private_access;
 mod processes;
 mod spec_store;
@@ -1309,6 +1311,9 @@ fn container_address(inspected: &Inspected) -> Option<ContainerAddress> {
 pub enum Error {
     #[error("Direct Image Transfer requires Docker's containerd image store")]
     UnsupportedImageStore,
+    /// A preview's Container that its image or spec would let reach past the preview.
+    #[error(transparent)]
+    PreviewRefused(ployz_core::PreviewRefusal),
     #[error(transparent)]
     Observation(#[from] ployz_core::ContainerObservationError),
     /// A required host telemetry read failed.
@@ -1616,6 +1621,7 @@ impl Error {
             | Self::RegistryLogin(_)
             | Self::NotAdmitted
             | Self::Unadmitted(_)
+            | Self::PreviewRefused(_)
             | Self::NotManaged => RpcErrorCode::InvalidArgument,
             Self::Docker(_)
             | Self::ImagePull(_)

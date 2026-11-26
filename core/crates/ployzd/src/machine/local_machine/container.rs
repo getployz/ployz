@@ -150,6 +150,13 @@ impl LocalMachine {
             let containers = local.docker()?;
             let record = local.record();
             let machine = record.cluster_machine().ok_or(Error::NotParticipating)?;
+            for name in specs.iter().flat_map(|spec| {
+                spec.volume_graph()
+                    .mounted_volumes()
+                    .filter_map(|volume| volume.source.managed_docker_volume_name())
+            }) {
+                local.open_preview_arrival(name)?;
+            }
             let storage = local.observe_storage().await;
             let mut requested = std::collections::BTreeMap::new();
             let mut mounted = std::collections::BTreeMap::new();
@@ -385,17 +392,20 @@ impl LocalMachine {
             let docker = local.docker()?;
             let images = docker.images();
             let (image, policy) = (&spec.container.image, spec.container.pull_policy);
-            let id = match (admitted.pin(), recorded) {
-                (Some(resolved), Some(recorded)) if resolved.as_str() != recorded => {
+            let id = match (admitted.preview_image(), admitted.pin(), recorded) {
+                // A preview's admission pulled and inspected its image once: its checks
+                // read that ID, so the Create runs it and nothing pulls the tag again.
+                (Some(preview), _, _) => preview.id().to_owned(),
+                (None, Some(resolved), Some(recorded)) if resolved.as_str() != recorded => {
                     return Err(crate::docker::Error::PlacedImageDisagrees {
                         recorded,
                         resolved: resolved.as_str().to_owned(),
                     }
                     .into());
                 }
-                (Some(resolved), _) => images.placed(resolved.as_str()).await?,
-                (None, Some(id)) if admitted.signed() => images.placed(&id).await?,
-                (None, _) if admitted.signed() => {
+                (None, Some(resolved), _) => images.placed(resolved.as_str()).await?,
+                (None, None, Some(id)) if admitted.signed() => images.placed(&id).await?,
+                (None, None, _) if admitted.signed() => {
                     let credential = match &login {
                         Some(login) => Credential::Sealed {
                             login,
@@ -405,7 +415,7 @@ impl LocalMachine {
                     };
                     images.place(image, policy, credential).await?
                 }
-                (None, _) => images.pull_free(image, policy).await?,
+                (None, None, _) => images.pull_free(image, policy).await?,
             };
             Ok(PlacedHolder { admitted, id })
         })
@@ -429,6 +439,34 @@ impl LocalMachine {
         r#gen: VolumeGen,
         placed: Option<PlacedHolder>,
     ) -> Result<Result<(), VolumeGen>, Error> {
+        self.volume_holder(start, name, r#gen, placed, true).await
+    }
+
+    /// [`Self::start_volume_holder`]'s create alone: the Container is made and left
+    /// stopped. A preview's Writer start makes it before the promote, so whatever refuses
+    /// the Container refuses it with the copy as it was.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::start_volume_holder`].
+    pub(crate) async fn create_volume_holder(
+        &self,
+        start: Start,
+        name: DockerVolumeName,
+        r#gen: VolumeGen,
+        placed: Option<PlacedHolder>,
+    ) -> Result<Result<(), VolumeGen>, Error> {
+        self.volume_holder(start, name, r#gen, placed, false).await
+    }
+
+    async fn volume_holder(
+        &self,
+        start: Start,
+        name: DockerVolumeName,
+        r#gen: VolumeGen,
+        placed: Option<PlacedHolder>,
+        run: bool,
+    ) -> Result<Result<(), VolumeGen>, Error> {
         self.finish_mutation(move |local| async move {
             let containers = local.docker()?;
             if let Err(floor) = containers
@@ -442,7 +480,9 @@ impl LocalMachine {
             }
             let container_id = match start {
                 Start::Kept { container_id } => {
-                    local.start_kept(containers, &container_id).await?;
+                    if run {
+                        local.start_kept(containers, &container_id).await?;
+                    }
                     return Ok(Ok(()));
                 }
                 Start::Create {
@@ -469,7 +509,9 @@ impl LocalMachine {
                         .container_id
                 }
             };
-            local.start_checked(containers, &container_id).await?;
+            if run {
+                local.start_checked(containers, &container_id).await?;
+            }
             Ok(Ok(()))
         })
         .await
@@ -2016,6 +2058,20 @@ impl LocalMachine {
         let containers = self.docker()?;
         let record = self.record();
         let machine = record.cluster_machine().ok_or(Error::NotParticipating)?;
+        // Before its Volumes are ensured, so a refused preview leaves nothing here.
+        // As the address part counts it: this Server's own socket vouches as a key does.
+        ployz_core::admit_preview(
+            &machine.id,
+            namespace,
+            admitted.by().admission(),
+            &spec.to_requested(),
+        )
+        .map_err(Error::PreviewRefused)?;
+        if ployz_core::PreviewNamespace::of(namespace).is_some() {
+            self.approvals
+                .open_preview(namespace)?
+                .map_err(Error::PreviewRefused)?;
+        }
         // Only a key or a rule keeps a name: Cloud never learns of a deploy through this
         // Server's own socket, so a name it kept would refuse every later Cloud deploy of a
         // Service that reaches no data. System Containers are skipped: the replica may be
@@ -2681,6 +2737,7 @@ pub(crate) fn names_content(pull: &ployz_core::PeerImagePull) -> bool {
 
 /// A Writer start's Create, admitted, with the ID of the image it placed before its
 /// promote, so the Create after the promote reaches no registry.
+#[derive(Clone)]
 pub(crate) struct PlacedHolder {
     admitted: AdmittedSpec,
     id: String,

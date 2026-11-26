@@ -39,6 +39,39 @@ enum StartState {
 }
 
 impl LocalMachine {
+    /// Refuse data arriving into `name` when it belongs to another Server's preview, or to
+    /// a preview whose Close began. An early check before the switch; the arrival itself
+    /// passes [`Self::open_preview_arrival`] under it.
+    ///
+    /// # Errors
+    /// Returns [`Error::PreviewRefused`] for another Server's preview or a closing one.
+    pub(crate) fn admit_preview_arrival(&self, name: &DockerVolumeName) -> Result<(), Error> {
+        ployz_core::admit_preview_arrival(&self.record().id(), name)
+            .map_err(Error::PreviewRefused)?;
+        match ployz_core::PreviewNamespace::holding(name) {
+            Some(preview) => self.admit_preview_runs(preview.namespace()),
+            None => Ok(()),
+        }
+    }
+
+    /// [`Self::admit_preview_arrival`] under the switch, which a Close holds, as data is
+    /// about to land in `name`: it opens a preview of this Server's not yet open, so its
+    /// Close sweeps what lands even when no Container was ever created in it.
+    ///
+    /// # Errors
+    /// Returns [`Error::PreviewRefused`] for another Server's preview or a closing one.
+    pub(crate) fn open_preview_arrival(&self, name: &DockerVolumeName) -> Result<(), Error> {
+        ployz_core::admit_preview_arrival(&self.record().id(), name)
+            .map_err(Error::PreviewRefused)?;
+        match ployz_core::PreviewNamespace::holding(name) {
+            Some(preview) => self
+                .approvals
+                .open_preview(preview.namespace())?
+                .map_err(Error::PreviewRefused),
+            None => Ok(()),
+        }
+    }
+
     /// SetVolumeCopy: move the copy of `request.name` to its want, under the switch lock
     /// from the floor check through the transition.
     ///
@@ -49,6 +82,9 @@ impl LocalMachine {
         &self,
         request: SetVolumeCopyRequest,
     ) -> Result<Copy, Error> {
+        if !matches!(request.want, WantedCopy::Forget { .. } | WantedCopy::Floor) {
+            self.admit_preview_arrival(&request.name)?;
+        }
         // The spec of the Container this request's start creates, when it creates one,
         // which the create checks again under its turn.
         let admitted = match &request.want {
@@ -128,7 +164,9 @@ impl LocalMachine {
         &self,
         request: &SeedVolumeRequest,
     ) -> Result<VolumeCopyView, Error> {
+        self.admit_preview_arrival(&request.into)?;
         let switch = self.lock_switch().await?;
+        switch.admit_preview_arrival(&request.into)?;
         // Only a Full caller seeds, checked under the switch: the Machine API refused an
         // Operator on arrival, and a key that lost its Device slot since is one now.
         switch.full_caller()?;
@@ -138,6 +176,8 @@ impl LocalMachine {
         if let Some(r#gen) = request.r#gen {
             switch.check_gen(&request.into, r#gen).await?;
         }
+        // Opened once the Seed is admitted, so a refused one opens no preview.
+        switch.open_preview_arrival(&request.into)?;
         switch
             .finish_verb("SeedVolume", VOLUME_SEED_ROUTE, request.clone())
             .await
@@ -161,7 +201,9 @@ impl LocalMachine {
         &self,
         request: SeedCopyRequest,
     ) -> Result<VolumeCopyView, Error> {
+        self.admit_preview_arrival(&request.seed.into)?;
         let switch = self.lock_switch().await?;
+        switch.admit_preview_arrival(&request.seed.into)?;
         if let Some(r#gen) = request.seed.r#gen {
             switch.check_gen(&request.seed.into, r#gen).await?;
         }
@@ -186,6 +228,8 @@ impl LocalMachine {
                 problem: error.to_string(),
             })
         })?;
+        // Opened once the step is admitted, so a refused one opens no preview.
+        switch.open_preview_arrival(&request.seed.into)?;
         self.approvals.take_copy(&verified)?;
         let step = &verified.step;
         let seed = SeedCopy {
@@ -242,6 +286,43 @@ impl LocalMachine {
             .map_err(Error::StoragePreparation)
     }
 
+    /// Put Trash entry `request.id` back, refused before the plugin changes anything when
+    /// it holds the data of a preview whose home is another Server, or when the Trash lists
+    /// no readable entry by that ID, whose data could be anyone's.
+    ///
+    /// # Errors
+    /// Returns [`Error::PreviewRefused`] for another Server's preview or an entry not
+    /// listed, and the plugin's error otherwise.
+    pub(crate) async fn restore_trash(
+        &self,
+        request: &ployz_core::RestoreTrashRequest,
+    ) -> Result<ployz_core::TrashRestored, Error> {
+        let _switch = self.lock_switch().await?;
+        let trash: ployz_core::TrashList = self
+            .volume_verb(
+                "ListTrash",
+                crate::volume_copy::TRASH_LIST_ROUTE,
+                &ployz_core::ListTrashRequest {},
+            )
+            .await?;
+        let entry = trash
+            .entries
+            .iter()
+            .find(|entry| entry.id == request.id)
+            .ok_or_else(|| {
+                Error::PreviewRefused(ployz_core::PreviewRefusal::UnreadTrash {
+                    id: request.id.to_string(),
+                })
+            })?;
+        self.open_preview_arrival(&entry.name)?;
+        self.volume_verb(
+            "RestoreTrash",
+            crate::volume_copy::TRASH_RESTORE_ROUTE,
+            request,
+        )
+        .await
+    }
+
     fn require_joined(&self) -> Result<(), Error> {
         if has_cluster_identity(&self.record().phase()) {
             Ok(())
@@ -284,6 +365,9 @@ impl SwitchGuard {
             want,
             r#gen,
         } = request;
+        if !matches!(want, WantedCopy::Forget { .. } | WantedCopy::Floor) {
+            self.open_preview_arrival(&name)?;
+        }
         // Checked again at the scope the caller holds under the switch, before any effect:
         // a caller that lost its Device slot while this queued promotes nothing for a start
         // an Operator may not make.
@@ -336,6 +420,8 @@ impl SwitchGuard {
                 let placed = self
                     .place_start_image(copy.as_ref(), epoch, start.as_ref(), admitted)
                     .await?;
+                self.create_before_promote(start.as_ref(), &name, r#gen, placed.as_ref())
+                    .await?;
                 let image = placed.as_ref().and_then(|placed| placed.record(epoch));
                 // The holder starts only beside a root whose own record names this start's
                 // image. A root promoted at `epoch` without it, by a plugin from before the
@@ -386,6 +472,8 @@ impl SwitchGuard {
             (CopyTransition::MirrorToWriter, WantedCopy::Writer { at, epoch, start }) => {
                 let placed = self
                     .place_start_image(copy.as_ref(), epoch, start.as_ref(), admitted)
+                    .await?;
+                self.create_before_promote(start.as_ref(), &name, r#gen, placed.as_ref())
                     .await?;
                 let request = WriterRequest {
                     name: name.clone(),
@@ -791,6 +879,34 @@ impl LocalMachine {
             }
         };
         Err(Error::StoragePreparation(error))
+    }
+
+    /// A preview's Create makes its Container, stopped, from the image `placed` before
+    /// the promote, so whatever refuses it leaves the copy as it was. After the promote
+    /// only Docker's local start runs: the create resent then finds this Container, and
+    /// pulls nothing. Any other start creates after the promote, from `placed` too.
+    async fn create_before_promote(
+        &self,
+        start: Option<&Start>,
+        name: &DockerVolumeName,
+        r#gen: VolumeGen,
+        placed: Option<&PlacedHolder>,
+    ) -> Result<(), Error> {
+        let Some(start @ Start::Create { namespace, .. }) = start else {
+            return Ok(());
+        };
+        if ployz_core::PreviewNamespace::of(namespace).is_none()
+            || self.start_state(start, name).await? != StartState::Stopped
+        {
+            return Ok(());
+        }
+        match self
+            .create_volume_holder(start.clone(), name.clone(), r#gen, placed.cloned())
+            .await?
+        {
+            Ok(()) => Ok(()),
+            Err(floor) => Err(stale(floor, self.inspect_copy(name).await?, name)),
+        }
     }
 
     /// Pull a Create's image before the promote, as its Create would, and keep its ID. A

@@ -21,6 +21,7 @@ mod endpoints;
 mod firewall;
 mod linux;
 mod path;
+mod preview_fence;
 
 pub use crate::docker::TUNNEL_NETWORK_NAME;
 pub(crate) use endpoints::interface_addresses;
@@ -33,6 +34,7 @@ pub(crate) use linux::bridge;
 pub use linux::bridge::DOCKER_NETWORK_NAME;
 pub use linux::{Leftover, NetworkPlane};
 pub(crate) use path::PathBook;
+pub use preview_fence::write_preview_sets;
 
 pub const WIREGUARD_INTERFACE_NAME: &str = "ployz-wg";
 pub const WIREGUARD_KEEPALIVE_SECONDS: u16 = 25;

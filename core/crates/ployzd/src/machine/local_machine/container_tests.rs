@@ -2053,6 +2053,59 @@ mod settled {
         assert_eq!(starts(&fake), started, "nothing else started");
         std::fs::remove_dir_all(data_dir).unwrap();
     }
+
+    // Catches a preview Writer's start pulling its image with no login, which a private
+    // registry refuses though the start carried the Service's sealed login.
+    #[tokio::test]
+    async fn a_preview_start_pulls_with_the_services_login() {
+        let cluster = crate::sealed_env::test_support::Cluster::new();
+        let image = "acme/private:1".to_owned();
+        let Settling {
+            local,
+            fake,
+            data_dir,
+        } = settling_with(
+            FakeDocker {
+                named_containers: Some(Arc::new(Mutex::new(BTreeMap::new()))),
+                private: Arc::new(Mutex::new([image.clone()].into())),
+                images: Arc::new(Mutex::new([(image.clone(), None)].into())),
+                ..Default::default()
+            },
+            Some(cluster.dir.0.clone()),
+        )
+        .await;
+        let home = ployz_core::PreviewHome::of(&local.record().id());
+        let namespace = Namespace::parse(format!("pv-0123456789abcdef-{home}-00c0ffee")).unwrap();
+        let mut spec = new_container("settled").resolved_spec;
+        spec.container.image.clone_from(&image);
+        spec.container.pull_policy = ployz_core::PullPolicy::Always;
+        let login = cluster.seal_login(
+            ployz_core::DOCKER_HUB,
+            &ployz_core::RegistryAuth {
+                username: Some("bot".into()),
+                password: "token".into(),
+            },
+        );
+        let start: ployz_core::Start = serde_json::from_value(json!({"kind": "create",
+            "namespace": namespace, "resolved_spec": spec, "creation_key": "move-1",
+            "gen": 2, "rotation": "pending", "registry_login": login}))
+        .unwrap();
+
+        let admitted = local
+            .admit_volume_start(&format!("{namespace}_data").parse().unwrap(), &start)
+            .await;
+
+        let pulled = fake.images.lock().unwrap().get(&image).cloned().flatten();
+        let inspected = admitted
+            .as_ref()
+            .ok()
+            .and_then(Option::as_ref)
+            .and_then(|admitted| admitted.preview_image())
+            .map(|preview| preview.id().to_owned());
+        assert!(pulled.is_some(), "the start didn't pull: {admitted:?}");
+        assert_eq!(inspected, pulled, "{admitted:?}");
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
 }
 
 mod stopped_on_request {

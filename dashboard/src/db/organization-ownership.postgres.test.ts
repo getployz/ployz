@@ -67,7 +67,6 @@ const organizationOwnedWithoutChangeLog = {
   config_build_receipt: "Private build evidence only a Deployment's runner reads at claim; no view reads it, so it needs no change log.",
   config_branch: "The GitHub branch heads the Store's automation compares from; no view reads them, so they need no change log.",
   config_auto_deploy_rule: "Each Environment's signed automatic deploy rule, which the Store relays with a push's Deployment for Servers to check; no view reads it, so it needs no change log.",
-  config_preview_rule: "Each Environment's signed preview rule, which the Store relays with a preview's Deployment for Servers to check; no view reads it, so it needs no change log.",
   config_service_version: "Each signed version a client posted, read only when a Deployment is claimed or a drain sends a copy's versions to its Server; no view reads it, so it needs no change log.",
   config_free_receipt: "Each Free receipt a free Build's Server gave, read only when a drain sends a copy's receipt to its Server; no view reads it, so it needs no change log.",
   config_removal_mark: "The Store's record of removals under way, read by its sweep; what a removal does shows in the Environment and Deployment rows it admits or deletes, so it needs no change log.",

@@ -103,6 +103,8 @@ macro_rules! rpc_catalog {
                 ListTrash: (list_trash, ListTrashRequest, TrashList, LIST_TRASH_CAPABILITY, "ployz.volume.trash.v1", Container, Full),
                 RestoreTrash: (restore_trash, RestoreTrashRequest, TrashRestored, RESTORE_TRASH_CAPABILITY, "ployz.volume.trash-restore.v1", Container, Full),
                 EmptyTrash: (empty_trash, EmptyTrashRequest, TrashEmptied, EMPTY_TRASH_CAPABILITY, "ployz.volume.trash-empty.v1", Container, Full),
+                ClosePreview: (close_preview, ClosePreviewRequest, PreviewClosed, CLOSE_PREVIEW_CAPABILITY, "ployz.preview.close.v1", Container, Operator),
+                ListPreviews: (list_previews, ListPreviewsRequest, PreviewsHeld, LIST_PREVIEWS_CAPABILITY, "ployz.preview.list.v1", Container, Operator),
                 ListImages: (list_images, ListImagesRequest, MachineImages, LIST_IMAGES_CAPABILITY, "ployz.image.list.v1", Container, Operator),
                 PruneImages: (prune_images, PruneImagesRequest, ImagesRemoved, PRUNE_IMAGES_CAPABILITY, "ployz.image.prune.v1", Container, Operator),
                 EnsureImageIngest: (ensure_image_ingest, EnsureImageIngestRequest, ImageIngestOpened, ENSURE_IMAGE_INGEST_CAPABILITY, "ployz.image.ingest.ensure.v1", Container, Operator),
@@ -142,6 +144,8 @@ macro_rules! rpc_catalog {
                 VOLUME_SHRINK_CAPABILITY: ("ployz.volume.size.shrink.v1", Container),
                 /// The Machine opens a Volume's data only for a Container whose spec expects the origin it carries, and its pulls take born data.
                 VOLUME_ORIGIN_CAPABILITY: ("ployz.volume.origin.v1", Container),
+                /// The Machine admits a create, start or data arrival in a preview Namespace only when the Namespace names it as home, and a preview Container only when it is signed and mounts only tmpfs and the preview's own Volumes.
+                PREVIEW_HOME_CAPABILITY: ("ployz.preview.home.v1", Container),
                 /// `SetVolumeCopy` creates an Operator's Writer from the signed versions or rule proof its `Create` carries, for a spec that mounts the Volume, and answers a `check` without changing anything.
                 VOLUME_START_CAPABILITY: ("ployz.volume.start.v1", Container),
                 /// A Writer start's promote records the image the start placed, with its epoch and the admitted spec's digest, and a start resent after the promote creates its holder from that image with no pull. A start whose volume plugin promotes without that record is refused.
@@ -181,6 +185,8 @@ macro_rules! rpc_catalog {
                 DEPLOY_REGISTRY_RULE_CAPABILITY: ("ployz.container.deploy-registry-rule.v1", Always),
                 /// An automatic deploy rule may be answered by a trusted passkey's own prompt, which rides in its envelope, in place of a Device's signature.
                 RULE_PASSKEY_CAPABILITY: ("ployz.rule.passkey.v1", Always),
+                /// A rule may be a preview rule: it creates a Container only in a preview Namespace carrying its ID, with the Parent's values, Volumes born for that preview and domains naming it, builds any branch its pushers push, runs the images it pins with no build, and runs a push's hook once per preview.
+                PREVIEW_RULE_CAPABILITY: ("ployz.container.preview-rule.v1", Always),
                 /// The daemon trusts CI and agent keys a person granted, each only for the Service versions its scope names, and admits a join approval carrying them.
                 SCOPED_KEYS_CAPABILITY: ("ployz.authority.scoped-keys.v1", Always),
                 /// A signed version may name the parentless version a person or full CLI signed that it edits, and a CI or agent key's version must.

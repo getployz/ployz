@@ -597,15 +597,7 @@ impl MachineRpc for MachineService {
 
     async fn restore_trash(&self, request: Request<OpaquePayload>) -> Answer {
         let request = expect::<op::RestoreTrash>(request)?;
-        finish(
-            self.local
-                .volume_verb::<ployz_core::TrashRestored>(
-                    "RestoreTrash",
-                    crate::volume_copy::TRASH_RESTORE_ROUTE,
-                    &request,
-                )
-                .await,
-        )
+        finish(self.local.restore_trash(&request).await)
     }
 
     async fn empty_trash(&self, request: Request<OpaquePayload>) -> Answer {
@@ -619,6 +611,18 @@ impl MachineRpc for MachineService {
                 )
                 .await,
         )
+    }
+
+    async fn close_preview(&self, request: Request<OpaquePayload>) -> Answer {
+        let local = self.at(&request);
+        let request = expect::<op::ClosePreview>(request)?;
+        finish(local.close_preview(request.namespace).await)
+    }
+
+    async fn list_previews(&self, request: Request<OpaquePayload>) -> Answer {
+        let local = self.at(&request);
+        expect::<op::ListPreviews>(request)?;
+        finish(local.list_previews())
     }
 
     async fn build(
@@ -1154,6 +1158,12 @@ fn local_failure(error: LocalMachineError) -> Result<RpcError, Status> {
             tonic::Code::PermissionDenied,
             &error,
             &Gate::new(ployz_core::SEED_COPY_CAPABILITY),
+        )),
+        LocalMachineError::PreviewRefused(_)
+        | LocalMachineError::Docker(crate::docker::Error::PreviewRefused(_)) => Err(gated(
+            tonic::Code::PermissionDenied,
+            &error,
+            &Gate::new(ployz_core::PREVIEW_HOME_CAPABILITY),
         )),
         LocalMachineError::ForgetRefused(_) => Err(gated(
             tonic::Code::PermissionDenied,

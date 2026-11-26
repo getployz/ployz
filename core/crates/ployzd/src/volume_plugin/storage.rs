@@ -704,8 +704,9 @@ fn parse_zfs_bytes(value: &str) -> Result<u64> {
 /// Why a dataset may be destroyed outright rather than moved to the Trash.
 #[derive(Clone, Copy, Debug)]
 pub(super) enum Holds {
-    /// An empty slot parent, or the empty mirror root: ZFS refuses the destroy if a copy or
-    /// a snapshot is under it.
+    /// A dataset with nothing under it: an empty slot parent, the empty mirror root, or a
+    /// closed preview's own copy once its snapshots went. ZFS refuses the destroy if a copy
+    /// or a snapshot is under it.
     Nothing,
     /// A receive's copy that never completed a first snapshot, so it holds no point.
     Unreceived,

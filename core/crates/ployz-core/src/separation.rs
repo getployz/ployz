@@ -83,11 +83,17 @@ pub const MANAGEMENT_PROOF: &[u8] = b"ployz management client proof v1";
 /// Signature prefix of a statement a Device or passkey signs.
 pub const AUTHORITY_SIGNING: &[u8] = b"ployz-authority/v1\n";
 
+/// Hashed before a Machine ID into the home a preview Namespace names.
+pub const PREVIEW_HOME: &[u8] = b"ployz-preview-home-v1\0";
+
+/// Hashed before a preview Namespace and a Docker Volume name into a preview birth's nonce.
+pub const PREVIEW_BIRTH: &[u8] = b"ployz-preview-birth-v1\0";
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const ALL: [(&str, &[u8]); 23] = [
+    const ALL: [(&str, &[u8]); 25] = [
         ("SEALED_VALUE", SEALED_VALUE),
         ("PLATFORM_SEALED", PLATFORM_SEALED),
         ("REGISTRY_LOGIN", REGISTRY_LOGIN),
@@ -111,6 +117,8 @@ mod tests {
         ("BUILD_CACHE", BUILD_CACHE),
         ("MANAGEMENT_PROOF", MANAGEMENT_PROOF),
         ("AUTHORITY_SIGNING", AUTHORITY_SIGNING),
+        ("PREVIEW_HOME", PREVIEW_HOME),
+        ("PREVIEW_BIRTH", PREVIEW_BIRTH),
     ];
 
     #[test]
@@ -127,7 +135,7 @@ mod tests {
 
     #[test]
     fn each_string_is_the_bytes_old_machines_and_stored_rows_know() {
-        let expected: [&[u8]; 23] = [
+        let expected: [&[u8]; 25] = [
             b"ployz-sealed-v1",
             b"ployz-platform-sealed-v1",
             b"ployz-registry-login-v1",
@@ -151,6 +159,8 @@ mod tests {
             b"ployz build cache v1\0",
             b"ployz management client proof v1",
             b"ployz-authority/v1\n",
+            b"ployz-preview-home-v1\0",
+            b"ployz-preview-birth-v1\0",
         ];
         for ((name, string), expected) in ALL.iter().zip(expected) {
             assert_eq!(*string, expected, "{name}");

@@ -136,6 +136,60 @@ struct Creating<'a> {
     plugin: &'a crate::storage::Plugin,
 }
 
+/// A preview Container's image, inspected once for its start: the immutable ID its create
+/// runs, and the `VOLUME` paths it declares, which every check of that start reads.
+#[derive(Clone, Debug)]
+pub(crate) struct PreviewImage {
+    id: String,
+    declared: Vec<String>,
+}
+
+/// Which image a Container already in a creation's slot must run to be reused.
+#[derive(Clone, Copy, Debug)]
+enum ReusedImage<'a> {
+    /// Whichever it runs: outside a preview, or only to find it.
+    Any,
+    /// Exactly this ID: a preview's, resolved for this start.
+    Exactly(&'a str),
+    /// A preview's, not resolved yet: reuse waits for the check after it is.
+    Unresolved,
+}
+
+impl<'a> ReusedImage<'a> {
+    fn of(namespace: &Namespace, image: Option<&'a PreviewImage>) -> Self {
+        match (ployz_core::PreviewNamespace::of(namespace), image) {
+            (None, _) => Self::Any,
+            (Some(_), Some(image)) => Self::Exactly(&image.id),
+            (Some(_), None) => Self::Unresolved,
+        }
+    }
+}
+
+impl PreviewImage {
+    /// The image's ID, which its checks read and its Container runs.
+    pub(crate) fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// Refuse `spec` when a `VOLUME` this image declares has no mount, as
+    /// [`ployz_core::admit_preview_image`] decides.
+    ///
+    /// # Errors
+    /// Returns [`Error::PreviewRefused`] naming the first uncovered path.
+    pub(crate) fn admit(
+        &self,
+        namespace: &Namespace,
+        spec: &ResolvedServiceSpec,
+    ) -> Result<(), Error> {
+        ployz_core::admit_preview_image(
+            namespace,
+            &spec.to_requested(),
+            self.declared.iter().map(String::as_str),
+        )
+        .map_err(Error::PreviewRefused)
+    }
+}
+
 /// Creating, starting, stopping and removing the managed Containers, and the marks and
 /// records those operations keep.
 #[derive(Clone)]
@@ -480,7 +534,10 @@ impl Lifecycle {
                     machine,
                     (namespace, kind, spec),
                     creation_key,
-                    admitted.admission(),
+                    (
+                        admitted.admission(),
+                        ReusedImage::of(namespace, admitted.preview_image()),
+                    ),
                 )
                 .await
                 .map_err(E::from)?
@@ -592,15 +649,32 @@ impl Lifecycle {
         {
             return Err(self.images.pull_failure(error).await);
         }
+        // A preview runs the image its checks read: the one its start inspected, or one
+        // inspected here, by its ID, so no tag pulled again in between changes it.
+        let preview = match creating.admitted.preview_image() {
+            Some(image) => Some(image.clone()),
+            None => {
+                self.preview_image(
+                    namespace,
+                    body.image.as_deref().unwrap_or(&spec.container.image),
+                )
+                .await?
+            }
+        };
+        if let Some(image) = &preview {
+            image.admit(namespace, spec)?;
+            body.image = Some(image.id.clone());
+        }
         let mut config_operation = self.specs.config_operation().await;
         // Another request may have won while admission and image preparation ran.
+        let reused = ReusedImage::of(namespace, preview.as_ref());
         if let Some(existing) = self
             .matching_creation(
                 &mut config_operation,
                 machine,
                 (namespace, kind, spec),
                 creation_key,
-                creating.admitted.admission(),
+                (creating.admitted.admission(), reused),
             )
             .await?
         {
@@ -628,7 +702,7 @@ impl Lifecycle {
         mounts.extend(docker_config_mounts(&mut config_operation, spec).await?);
         let replaced = self.slot_taken(&creating).await;
         let result = self
-            .create_and_record(&creating, &mut config_operation, body, replaced)
+            .create_and_record(&creating, &mut config_operation, body, reused, replaced)
             .await;
         if result.is_err()
             && let Err(error) = config_operation.garbage_collect_configs().await
@@ -639,6 +713,77 @@ impl Lifecycle {
             );
         }
         result
+    }
+
+    /// Inspect `image` once for a Container in `namespace`, `None` outside a preview.
+    ///
+    /// # Errors
+    /// Returns [`Error::PreviewRefused`] for an image Docker names no ID for, and the
+    /// Docker error of an inspect that fails.
+    pub(crate) async fn preview_image(
+        &self,
+        namespace: &Namespace,
+        image: &str,
+    ) -> Result<Option<PreviewImage>, Error> {
+        if ployz_core::PreviewNamespace::of(namespace).is_none() {
+            return Ok(None);
+        }
+        let inspected = self.docker.client.inspect_image(image).await?;
+        let id = inspected.id.filter(|id| !id.is_empty()).ok_or_else(|| {
+            Error::PreviewRefused(ployz_core::PreviewRefusal::ImageUnidentified {
+                image: image.to_owned(),
+            })
+        })?;
+        Ok(Some(PreviewImage {
+            id,
+            declared: inspected
+                .config
+                .and_then(|config| config.volumes)
+                .unwrap_or_default(),
+        }))
+    }
+
+    /// Place `spec`'s image as its create would, then inspect it once, for a Writer's start
+    /// in `namespace` checked before anything is promoted. An image a registry rule's
+    /// admission already pulled by digest, `pin`, is inspected with no second pull. Any
+    /// other pull its policy asks for presents `login`, which opens only if that pull runs.
+    /// `None` outside a preview.
+    ///
+    /// # Errors
+    /// As [`Self::preview_image`], and the login's or the pull's failure.
+    pub(crate) async fn prepare_preview_image(
+        &self,
+        namespace: &Namespace,
+        spec: &ResolvedServiceSpec,
+        (pin, login): (
+            Option<&ployz_core::ImageDigest>,
+            Option<&ployz_core::SealedLogin>,
+        ),
+    ) -> Result<Option<PreviewImage>, Error> {
+        if ployz_core::PreviewNamespace::of(namespace).is_none() {
+            return Ok(None);
+        }
+        if let Some(pin) = pin {
+            return self.preview_image(namespace, pin.as_str()).await;
+        }
+        let credential = match login {
+            Some(login) => crate::docker_image::Credential::Sealed {
+                login,
+                sealing: self.observation.sealing(),
+            },
+            None => crate::docker_image::Credential::Auth(None),
+        };
+        if let Err(error) = crate::docker_image::prepare(
+            &self.docker.client,
+            &spec.container.image,
+            spec.container.pull_policy,
+            credential,
+        )
+        .await
+        {
+            return Err(self.images.pull_failure(error).await);
+        }
+        self.preview_image(namespace, &spec.container.image).await
     }
 
     /// The create body for Docker: the network it joins, the sysctls only the Ingress
@@ -711,6 +856,7 @@ impl Lifecycle {
         creating: &Creating<'_>,
         config_operation: &mut ConfigOperation<'_>,
         body: ContainerCreateBody,
+        reused: ReusedImage<'_>,
         replaced: Option<ContainerId>,
     ) -> Result<ContainerCreated, Error> {
         let Creating {
@@ -743,7 +889,7 @@ impl Lifecycle {
                         machine,
                         (namespace, kind, spec),
                         creation_key,
-                        creating.admitted.admission(),
+                        (creating.admitted.admission(), reused),
                     )
                     .await?
                     .ok_or(Error::SlotNameOccupied(display_name));
@@ -861,7 +1007,7 @@ impl Lifecycle {
             machine,
             (namespace, kind, spec),
             key,
-            ployz_core::Admission::Free,
+            (ployz_core::Admission::Free, ReusedImage::Any),
         )
         .await
     }
@@ -876,7 +1022,7 @@ impl Lifecycle {
         machine: &Machine,
         (namespace, kind, spec): (&Namespace, ContainerKind, &ResolvedServiceSpec),
         key: &str,
-        wanted: ployz_core::Admission,
+        (wanted, image): (ployz_core::Admission, ReusedImage<'_>),
     ) -> Result<Option<ContainerCreated>, Error> {
         let name = &creation_name(&machine.id, namespace, &spec.name, kind, key);
         let existing = self.resolve_slot(operation, &machine.id, name, key).await?;
@@ -886,6 +1032,21 @@ impl Lifecycle {
         let signed = wanted == ployz_core::Admission::Signed;
         if !same_creation(&existing, namespace, kind, spec) || (signed && !existing.signed()) {
             return Err(Error::SlotNameOccupied(name.into()));
+        }
+        // A preview's checks read one image: a Container made from another is no match,
+        // whatever its spec names, since a tag can move between two starts.
+        match image {
+            ReusedImage::Any => {}
+            ReusedImage::Unresolved => return Ok(None),
+            ReusedImage::Exactly(id) => {
+                if self.image_of(&existing.container_id).await?.as_deref() != Some(id) {
+                    return Err(Error::PreviewRefused(
+                        ployz_core::PreviewRefusal::ImageChanged {
+                            image: spec.container.image.clone(),
+                        },
+                    ));
+                }
+            }
         }
         Ok(Some(ContainerCreated {
             container_id: existing.container_id,
@@ -1073,6 +1234,26 @@ impl Lifecycle {
         Ok(self.specs.admitted_by(container_id).await?)
     }
 
+    /// Write the preview Namespaces' sets from Docker.
+    ///
+    /// # Errors
+    /// As [`super::LocalDocker::sync_preview_fence`].
+    pub(crate) async fn sync_preview_fence(&self) -> Result<(), Error> {
+        self.docker.sync_preview_fence().await
+    }
+
+    /// The Namespace a managed Container's label names, `None` when it names none.
+    pub(crate) async fn namespace_of(
+        &self,
+        container_id: &ContainerId,
+    ) -> Result<Option<Namespace>, Error> {
+        let inspected = self.observation.ensure_managed(container_id).await?;
+        Ok(inspected
+            .labels()
+            .and_then(|labels| labels.get(labels::NAMESPACE))
+            .and_then(|namespace| Namespace::parse(namespace).ok()))
+    }
+
     pub async fn start(&self, container_id: &ContainerId) -> Result<(), Error> {
         let inspected = self.observation.ensure_managed(container_id).await?;
         self.recovery.release(container_id).await;
@@ -1093,6 +1274,17 @@ impl Lifecycle {
         }
         if let Some(container_labels) = inspected.labels() {
             self.collector.cover(container_labels).await?;
+        }
+        // A preview Container's start writes every preview's set from Docker first, so it
+        // meets its siblings and an address another preview held stops meeting that one. A
+        // write that fails refuses the start.
+        let preview = inspected
+            .labels()
+            .and_then(|labels| labels.get(labels::NAMESPACE))
+            .and_then(|namespace| Namespace::parse(namespace).ok())
+            .is_some_and(|namespace| ployz_core::PreviewNamespace::of(&namespace).is_some());
+        if preview {
+            self.docker.sync_preview_fence().await?;
         }
         let spec = self.specs.get(container_id).await?;
         match super::holder::start_inspected(&self.docker.client, inspected, spec.as_ref()).await {
@@ -1215,6 +1407,32 @@ impl Lifecycle {
             How::Asked { volumes, force },
         )
         .await
+    }
+
+    /// Force-remove every managed Container in `namespace`, keeping their Volumes. The
+    /// preview fence keeps their addresses until the next preview start, which writes every
+    /// set from Docker before it runs anything.
+    ///
+    /// # Errors
+    /// Returns the Docker error of a list or removal that fails.
+    pub(crate) async fn remove_namespace(&self, namespace: &Namespace) -> Result<(), Error> {
+        let mut config_operation = self.specs.config_operation().await;
+        let managed = self
+            .docker
+            .labelled(vec![
+                labels::MANAGED.to_owned(),
+                format!("{}={namespace}", labels::NAMESPACE),
+            ])
+            .await?;
+        for (container_id, _) in managed {
+            let how = How::Asked {
+                volumes: VolumeDisposal::Keep,
+                force: true,
+            };
+            self.retire(&mut config_operation, &container_id, how)
+                .await?;
+        }
+        Ok(())
     }
 
     pub async fn remove_all_managed(&self) -> Result<(), Error> {
@@ -1589,6 +1807,38 @@ mod tests {
             "NetworkSettings": { "Networks": networks },
         }))
         .unwrap()
+    }
+
+    // Catches a preview Writer's start pulling again the image its registry rule's
+    // admission already pulled by digest.
+    #[tokio::test]
+    async fn a_preview_start_inspects_the_image_its_admission_pulled_and_pulls_nothing() {
+        let (runtime, fake) = fake_runtime_with(FakeDocker {
+            pulls_left: std::sync::Arc::new(std::sync::Mutex::new(Some(0))),
+            ..Default::default()
+        })
+        .await;
+        let digest = format!("sha256:{}", "d".repeat(64));
+        let pin = ployz_core::ImageDigest::parse(digest.clone()).unwrap();
+        let mut spec = spec_with_sources(Vec::new());
+        spec.container.image = format!("ghcr.io/acme/web@{digest}");
+        spec.container.pull_policy = ployz_core::PullPolicy::Always;
+        let namespace = Namespace::parse("pv-0123456789abcdef-00000000-00c0ffee").unwrap();
+
+        let prepared = runtime
+            .lifecycle()
+            .prepare_preview_image(&namespace, &spec, (Some(&pin), None))
+            .await;
+
+        assert!(prepared.as_ref().is_ok_and(Option::is_some), "{prepared:?}");
+        let pulls = fake
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, path)| path.contains("/images/create"))
+            .count();
+        assert_eq!(pulls, 0);
     }
 
     #[test]

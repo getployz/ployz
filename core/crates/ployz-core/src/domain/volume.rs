@@ -42,19 +42,37 @@ hex_newtype!(
     VolumeOrigin, "volume origin", 32, "", "64 lowercase hex digits"
 );
 
+/// What opens the origin of every preview's own Volume.
+pub const PREVIEW_ORIGIN_TAG: &[u8; 16] = b"ployz-preview-v1";
+
 /// The send request header listing what the pulling Server claims, comma separated.
 pub const CAPABILITIES_HEADER: &str = "ployz-capabilities";
 /// The send reply header carrying the origin of a born copy. Legacy data sends none.
 pub const ORIGIN_HEADER: &str = "ployz-origin";
 
 impl VolumeOrigin {
-    /// The origin of every copy of the Volume `birth` began.
+    /// The origin of every copy of the Volume `birth` began. A preview's own Volume opens
+    /// with [`PREVIEW_ORIGIN_TAG`], so its data reads as a preview's wherever it lands, and no
+    /// birth a signer mints ever carries the tag by chance of its hash alone.
     ///
     /// # Errors
     /// Returns a [`CanonicalError`] when the birth has no canonical form.
     pub fn of(birth: &VolumeBirth) -> Result<Self, CanonicalError> {
         let body = canonical::to_canonical(birth)?;
-        Ok(Self::hashed(b"born", body.as_bytes()))
+        let origin = Self::hashed(b"born", body.as_bytes());
+        if !birth.is_preview() {
+            return Ok(origin);
+        }
+        let mut tagged = [0; 32];
+        tagged[..16].copy_from_slice(PREVIEW_ORIGIN_TAG);
+        tagged[16..].copy_from_slice(&origin.0[..16]);
+        Ok(Self(tagged))
+    }
+
+    /// Whether this is the origin of a preview's own Volume.
+    #[must_use]
+    pub fn is_preview(&self) -> bool {
+        self.0.starts_with(PREVIEW_ORIGIN_TAG)
     }
 
     /// The origin data from before births reads as, keyed by its physical name.

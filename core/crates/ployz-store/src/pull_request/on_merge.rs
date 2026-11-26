@@ -762,6 +762,11 @@ pub(crate) fn record_unlanded(
     pull_request: &PullRequestRef,
     unlanded: &[Unlanded],
 ) -> Result<(), RpcError> {
+    crate::storage::ranked::take(crate::storage::ranked::Lock::pull_request(
+        who.organization.as_str(),
+        pull_request.repository_id,
+        pull_request.number,
+    ));
     tx.execute(
         "UPDATE config_pull_request SET unlanded = ?4 \
          WHERE organization_id = ?1 AND repository_id = ?2 AND number = ?3",

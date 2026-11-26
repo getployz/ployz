@@ -21,8 +21,8 @@ use super::{
 };
 use crate::{
     BirthNonce, ContainerKind, ContainerObservation, ContainerRuntimeObservation, DockerVolumeName,
-    MountOrigins, Namespace, RawVolumeSource, Region, RequestedServiceSpec, SealingPublicKey,
-    ServiceMount, ServiceName, VolumeBirth, VolumeDriver, VolumeOrigin,
+    MountOrigins, Namespace, PreviewNamespace, RawVolumeSource, Region, RequestedServiceSpec,
+    SealingPublicKey, ServiceMount, ServiceName, VolumeBirth, VolumeDriver, VolumeOrigin,
 };
 
 /// A Volume a plan's specs mount, as the Config Store names it.
@@ -96,11 +96,18 @@ pub fn mint<'a>(
         }
         spec.mount_graph = spec.mount_graph.with_births(|name| {
             let planned = volumes.get(name).filter(|planned| planned.unborn)?;
-            let birth = births.entry(name.clone()).or_insert_with(|| VolumeBirth {
-                namespace: namespace.clone(),
-                name: planned.name.clone(),
-                made_at,
-                nonce: nonce(name),
+            let birth = births.entry(name.clone()).or_insert_with(|| {
+                // A preview's own Volume takes the birth its Namespace derives, never a
+                // random one, so a Server tags its data as the preview's.
+                PreviewNamespace::of(namespace).map_or_else(
+                    || VolumeBirth {
+                        namespace: namespace.clone(),
+                        name: planned.name.clone(),
+                        made_at,
+                        nonce: nonce(name),
+                    },
+                    |preview| preview.birth(name.as_str()),
+                )
             });
             Some(birth.clone())
         });
@@ -698,6 +705,7 @@ impl Mounts<'_> {
     /// `previews, 3 Nov 14:02 UTC`, or the name data from before births has on its Servers.
     fn named(&self, mounted: &Mounted<'_>) -> Shown {
         match mounted.volume.birth {
+            Some(birth) if birth.is_preview() => Shown::text(&birth.name),
             Some(birth) => Shown::text(&birth.name)
                 .and_words(", ")
                 .and(when(birth.made_at, self.now)),
@@ -707,6 +715,9 @@ impl Mounts<'_> {
 
     /// `data made as previews, 3 Nov 14:02 UTC, 16 days ago`.
     fn made(&self, birth: &VolumeBirth) -> Shown {
+        if birth.is_preview() {
+            return Shown::words("this preview's own data");
+        }
         let made = Shown::words("data made as ")
             .and_text(&birth.name)
             .and_words(", ")

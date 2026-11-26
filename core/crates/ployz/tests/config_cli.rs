@@ -6550,6 +6550,8 @@ fn opened_pull_request(members: Vec<ployz_store::GithubUserId>) -> Target {
                 setup: None,
                 remove_on_close: None,
                 include_bots: None,
+                preview_rule: None,
+                preview_cap: None,
             },
         )
         .unwrap();

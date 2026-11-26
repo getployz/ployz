@@ -351,6 +351,7 @@ impl RuleBasis {
             template: template(spec, &self.namespace)?,
             policy: Some(policy),
             secrets,
+            seeded: None,
         })
     }
 
@@ -470,6 +471,7 @@ impl AutoDeployRule {
             ended: false,
             signer: terms.signer,
             proposal: None,
+            preview: None,
         })
     }
 
@@ -526,6 +528,7 @@ impl AutoDeployRule {
                     template: template(basis.spec(name)?, &basis.namespace)?,
                     policy: None,
                     secrets: None,
+                    seeded: None,
                 })
             })
             .collect::<Result<Vec<_>, RuleDraftError>>()?;
@@ -552,6 +555,7 @@ impl AutoDeployRule {
             ended: false,
             signer: terms.signer,
             proposal: None,
+            preview: None,
         })
     }
 

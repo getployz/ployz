@@ -90,6 +90,7 @@ mod consumption;
 mod container;
 mod forget;
 mod ingress_doors;
+mod preview_close;
 mod private_access;
 mod register;
 mod reserved;
@@ -165,6 +166,10 @@ pub enum Error {
     /// [`ployz_core::SEED_COPY_CAPABILITY`] in its details.
     #[error("This Server refused the copy of a Volume: {0}")]
     CopyRefused(ployz_core::authority::AuthorityRefusal),
+    /// A preview this Server may not hold. The refusal names
+    /// [`ployz_core::PREVIEW_HOME_CAPABILITY`] in its details.
+    #[error("{0}")]
+    PreviewRefused(ployz_core::PreviewRefusal),
     /// No version of a forget opened here. The refusal names
     /// [`ployz_core::FORGET_VERSIONS_CAPABILITY`] in its details.
     #[error("This Server refused to forget older versions: {}", forget::refusal_text(.0))]
@@ -438,6 +443,16 @@ impl LocalMachine {
     /// the daemon stopped. A step that fails is warned about and the other still runs, and
     /// what it could not place stays as it is until the operator asks again.
     pub(crate) async fn restore_held_at_boot(&self) {
+        // The daemon's first firewall install closed the preview sets; no two previews meet
+        // until this writes them again.
+        if let Ok(containers) = self.docker()
+            && let Err(error) = containers.lifecycle().sync_preview_fence().await
+        {
+            tracing::warn!(
+                error = %ployz_core::error_chain::inline(&error),
+                "could not write the preview fence; each preview's own Containers on this Server can't reach each other until one of its Containers starts"
+            );
+        }
         if let Err(error) = self.restore_private_access().await {
             tracing::warn!(
                 error = %ployz_core::error_chain::inline(&error),

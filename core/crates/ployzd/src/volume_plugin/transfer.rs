@@ -490,6 +490,27 @@ impl Receives {
         Ok(())
     }
 
+    /// Stops `name`'s receive, if one runs, and waits at most `deadline` for it to end and
+    /// its `zfs` children to exit. Whether nothing of it still runs.
+    pub(super) async fn stop(&self, name: &VolumeName, deadline: Duration) -> bool {
+        let finished = self
+            .receives
+            .lock()
+            .expect("receive registry is not poisoned")
+            .get(name.as_str())
+            .map(|entry| {
+                let life = entry.receive.life();
+                life.stop.cancel();
+                life.finished.clone()
+            });
+        match finished {
+            None => true,
+            Some(finished) => tokio::time::timeout(deadline, finished.cancelled())
+                .await
+                .is_ok(),
+        }
+    }
+
     /// Stops every receive task and waits until each ended and its `zfs` children
     /// exited, so ZFS holds no slot busy and no receive changes a slot afterwards. Answers
     /// the names with a task still running once `deadline` passes.

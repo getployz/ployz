@@ -265,6 +265,9 @@ pub(crate) struct AdmittedSpec {
     /// What this Machine issued for a rule build it checked online to admit the spec.
     verified: Option<VerifiedBuild>,
     hook: Option<super::rule_deploy::HookPlace>,
+    /// A preview Writer's image, inspected once at its start's admission, which the check
+    /// before the promote and the create read again.
+    preview_image: Option<crate::docker::PreviewImage>,
     /// The image a registry rule's pull placed here, which every Container this admission
     /// makes, adopts or starts must run.
     pin: Option<ployz_core::ImageDigest>,
@@ -317,6 +320,7 @@ impl AdmittedSpec {
             standing: None,
             verified: None,
             hook: None,
+            preview_image: None,
             pin: None,
         })
     }
@@ -347,6 +351,11 @@ impl AdmittedSpec {
     /// The place a hook's push takes when its create runs, for a hook a rule admitted.
     pub(crate) fn hook(&self) -> Option<&super::rule_deploy::HookPlace> {
         self.hook.as_ref()
+    }
+
+    /// The image a preview Writer's start inspected, which its create runs by ID.
+    pub(crate) fn preview_image(&self) -> Option<&crate::docker::PreviewImage> {
+        self.preview_image.as_ref()
     }
 
     /// The image this admission's Container must run, as this Machine pulled it for a
@@ -435,6 +444,7 @@ impl AdmittedSpec {
             standing: None,
             verified: None,
             hook: None,
+            preview_image: None,
             pin: None,
         }
     }
@@ -456,6 +466,7 @@ impl AdmittedSpec {
             standing: None,
             verified: None,
             hook: None,
+            preview_image: None,
             pin: None,
         }
     }
@@ -520,6 +531,7 @@ impl LocalMachine {
                 standing: Some(self.standing()),
                 verified,
                 hook,
+                preview_image: None,
                 pin,
             }))
         };
@@ -817,6 +829,30 @@ impl LocalMachine {
         if operator && !admitted.as_ref().is_some_and(AdmittedSpec::signed) {
             return Err(start_refused(resolved_spec, MismatchField::VolumeStart));
         }
+        admit_preview_start(
+            &self.record().id(),
+            namespace,
+            resolved_spec,
+            admitted.as_ref(),
+        )?;
+        // Inspected once, here, before the cut or promote: the check under the switch and
+        // the create read this result, and the create runs this image by its ID.
+        let admitted = match admitted {
+            Some(mut admitted) if ployz_core::PreviewNamespace::of(namespace).is_some() => {
+                // A Service's login goes only with a signed spec, as its create sends it.
+                let login = login.as_ref().filter(|_| admitted.signed());
+                admitted.preview_image = self
+                    .docker()?
+                    .lifecycle()
+                    .prepare_preview_image(namespace, resolved_spec, (admitted.pin(), login))
+                    .await?;
+                if let Some(image) = &admitted.preview_image {
+                    image.admit(namespace, resolved_spec)?;
+                }
+                Some(admitted)
+            }
+            admitted => admitted,
+        };
         if check {
             let record = self.record();
             let machine = record.cluster_machine().ok_or(Error::NotParticipating)?;
@@ -869,11 +905,25 @@ impl Checked {
         let (resolved_spec, versions, rule) = match start {
             Start::Kept { container_id } => return self.refuse_operator_hook(container_id).await,
             Start::Create {
+                namespace,
                 resolved_spec,
                 versions,
                 rule,
                 ..
-            } => (resolved_spec, versions, rule),
+            } => {
+                admit_preview_start(&self.record().id(), namespace, resolved_spec, admitted)?;
+                if ployz_core::PreviewNamespace::of(namespace).is_some() {
+                    admitted
+                        .and_then(AdmittedSpec::preview_image)
+                        .ok_or_else(|| {
+                            Error::PreviewRefused(ployz_core::PreviewRefusal::ImageUnidentified {
+                                image: resolved_spec.container.image.clone(),
+                            })
+                        })?
+                        .admit(namespace, resolved_spec)?;
+                }
+                (resolved_spec, versions, rule)
+            }
         };
         let operator = matches!(self.scope(), Scope::Operator);
         if operator {
@@ -887,7 +937,8 @@ impl Checked {
             .map_err(Error::DeployRefused)
     }
 
-    /// Start `id`. An Operator's start is refused when the admission kept with the
+    /// Start `id`, refused on any Server but its home when it is a preview's. An Operator's
+    /// start is also refused when the admission kept with the
     /// Container no longer stands here, as [`Standing::admits`] decides, and when this
     /// Machine kept no admission for it. Docker's start refuses it beside another running
     /// holder of its Provisioned Volume, as [`crate::docker::holder::start`] decides.
@@ -901,6 +952,18 @@ impl Checked {
         containers: &ContainerRuntime,
         id: &ContainerId,
     ) -> Result<(), Error> {
+        if let Some(preview) = containers
+            .lifecycle()
+            .namespace_of(id)
+            .await?
+            .as_ref()
+            .and_then(ployz_core::PreviewNamespace::of)
+        {
+            preview
+                .admit_on(&self.record().id())
+                .map_err(Error::PreviewRefused)?;
+            self.admit_preview_runs(preview.namespace())?;
+        }
         if let Scope::Operator = self.scope() {
             let refusal = match containers.lifecycle().admitted_by(id).await? {
                 Some(by) => self.standing().admits(&by, Error::ApprovalRecord)?.err(),
@@ -1060,6 +1123,25 @@ pub(super) fn refusal_text(refusal: &AuthorityRefusal) -> String {
         }
     };
     text.to_owned()
+}
+
+/// A Writer's start of a Container in a preview Namespace, refused as
+/// [`ployz_core::admit_preview`] refuses the Container itself, so a start its create would
+/// refuse promotes nothing first.
+///
+/// # Errors
+/// Returns [`Error::PreviewRefused`] for a refused preview start.
+fn admit_preview_start(
+    machine: &ployz_core::MachineId,
+    namespace: &Namespace,
+    spec: &ResolvedServiceSpec,
+    admitted: Option<&AdmittedSpec>,
+) -> Result<(), Error> {
+    let admission = admitted.map_or(ployz_core::Admission::Free, |admitted| {
+        admitted.by().admission()
+    });
+    ployz_core::admit_preview(machine, namespace, admission, &spec.to_requested())
+        .map_err(Error::PreviewRefused)
 }
 
 #[cfg(test)]

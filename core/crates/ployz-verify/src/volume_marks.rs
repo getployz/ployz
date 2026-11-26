@@ -52,6 +52,7 @@ use stateright::{Model, Property};
 use crate::harness::{self, everywhere};
 
 mod copy_step;
+mod preview_close;
 mod seed_failure;
 
 /// A snapshot point.

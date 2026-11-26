@@ -23,6 +23,7 @@ use tokio::net::UnixListener;
 use tower_service::Service;
 
 mod capacity;
+mod close;
 mod copy;
 mod departure;
 mod error;
@@ -45,11 +46,11 @@ pub(crate) use trash::TrashSwept;
 use crate::{
     dataset_layout::VolumeName,
     volume_copy::{
-        CUT_ROUTE, DESTROY_ROUTE, FORGET_ROUTE, INSPECT_ROUTE, PULL_ROUTE, SEND_POINT_ROUTE,
-        SNAPSHOT_ROUTE, STORAGE_DEMOTE_ROUTE, STORAGE_INSPECT_ROUTE, STORAGE_PREPARE_ROUTE,
-        STORAGE_SEAL_ROUTE, TRASH_EMPTY_ROUTE, TRASH_LIST_ROUTE, TRASH_RESTORE_ROUTE,
-        TRASH_SWEEP_ROUTE, VOLUME_INSPECT_ROUTE, VOLUME_SEED_COPY_ROUTE, VOLUME_SEED_ROUTE,
-        VOLUME_SIZE_SET_ROUTE, WRITER_ROUTE,
+        CUT_ROUTE, DESTROY_ROUTE, FORGET_ROUTE, INSPECT_ROUTE, PREVIEW_CLOSE_ROUTE, PULL_ROUTE,
+        SEND_POINT_ROUTE, SNAPSHOT_ROUTE, STORAGE_DEMOTE_ROUTE, STORAGE_INSPECT_ROUTE,
+        STORAGE_PREPARE_ROUTE, STORAGE_SEAL_ROUTE, TRASH_EMPTY_ROUTE, TRASH_LIST_ROUTE,
+        TRASH_RESTORE_ROUTE, TRASH_SWEEP_ROUTE, VOLUME_INSPECT_ROUTE, VOLUME_SEED_COPY_ROUTE,
+        VOLUME_SEED_ROUTE, VOLUME_SIZE_SET_ROUTE, WRITER_ROUTE,
     },
 };
 use error::PluginError;
@@ -183,6 +184,7 @@ async fn serve(listener: UnixListener, storage: VolumeStorage) -> io::Result<()>
         .route(&at(TRASH_RESTORE_ROUTE), post(trash::restore))
         .route(&at(TRASH_EMPTY_ROUTE), post(trash::empty))
         .route(&at(TRASH_SWEEP_ROUTE), post(trash::sweep))
+        .route(&at(PREVIEW_CLOSE_ROUTE), post(close::close))
         .route("/VolumeDriver.Create", post(create))
         .route("/VolumeDriver.Remove", post(removal::remove))
         .route("/VolumeDriver.Get", post(removal::get))
@@ -407,6 +409,9 @@ mod tests {
             .map(|line| line.split(['@', '\t']).nth(1).unwrap().to_owned())
             .collect()
     }
+
+    #[path = "close_tests.rs"]
+    mod close_tests;
 
     #[path = "remove_tests.rs"]
     mod remove_tests;

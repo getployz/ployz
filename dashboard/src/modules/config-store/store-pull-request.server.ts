@@ -4,6 +4,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import { Effect, Option } from "effect";
 import { type Guarded, storePrCheckRun } from "./store-pull-requests";
 import { admittedEvents, callStore, storeSystem } from "#/modules/config-store/config-store.server";
+import { closeUnheldPreviews } from "#/modules/config-store/preview-evidence.server";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import { StoreGithubFailure, mergedInto, pullRequestEvent } from "#/modules/config-store/store-github.server";
 import { installationAccess } from "#/modules/github/github-access";
@@ -83,6 +84,10 @@ export const sweepStore = Effect.fn("StorePullRequest.sweepOne")(function* (
 ) {
   const event: SystemEvent = { event: "sweep", now: Math.floor(now.getTime() / 1000) };
   yield* collect(organizationId, yield* storeSystem(organizationId, event), done, "user");
+  // A Server that holds a preview the Store closed, or never knew, closes it now.
+  yield* closeUnheldPreviews(organizationId).pipe(
+    Effect.catch((error) => Effect.logWarning("Cloud couldn't close the previews its Servers hold past the Store.", { organizationId, error })),
+  );
   return done;
 });
 

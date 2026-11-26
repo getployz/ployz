@@ -213,6 +213,7 @@ fn fixture_rule() -> AutoDeployRule {
     let text = |name: &str| claims[name].as_str().unwrap().to_owned();
     AutoDeployRule {
         proposal: None,
+        preview: None,
         cluster: SealingPublicKey::from_bytes([9; 32]),
         rule: RuleId::from_bytes([0x5a; 16]),
         generation: 1,
@@ -364,9 +365,14 @@ async fn a_refusal_logs_the_claim_and_the_rule_never_the_token() {
     let keys = keys_at(url, Duration::ZERO);
 
     assert!(
-        keys.check(&fixture_rule(), token(), issued_at())
-            .await
-            .is_ok()
+        keys.check(
+            &fixture_rule(),
+            token(),
+            &CommitAuthority::Head,
+            issued_at()
+        )
+        .await
+        .is_ok()
     );
 
     let mut moved = fixture_rule();
@@ -375,13 +381,20 @@ async fn a_refusal_logs_the_claim_and_the_rule_never_the_token() {
     };
     source.builder.sha = CommitSha::from_bytes([0; 20]);
     assert!(matches!(
-        keys.check(&moved, token(), issued_at()).await,
+        keys.check(&moved, token(), &CommitAuthority::Head, issued_at())
+            .await,
         Err(ProofRefusal::Claim(AuthorityRefusal::Mismatch {
             field: MismatchField::ClaimJobWorkflowSha
         }))
     ));
     assert!(matches!(
-        keys.check(&fixture_rule(), token(), Timestamp::now()).await,
+        keys.check(
+            &fixture_rule(),
+            token(),
+            &CommitAuthority::Head,
+            Timestamp::now()
+        )
+        .await,
         Err(ProofRefusal::Token(TokenRefusal::Lifetime(_)))
     ));
 

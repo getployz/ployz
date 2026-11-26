@@ -236,13 +236,23 @@ async fn send_point(
         })
 }
 
-/// Refuse with no bytes of the Volume unless `recipients` accepts `peer`.
+/// Refuse with no bytes of the Volume unless `recipients` accepts `peer` and it is no
+/// preview's.
 async fn admit<R: Recipients>(
     recipients: &R,
     peer: IpAddr,
     volume: &DockerVolumeName,
     snapshot: Option<&SnapshotName>,
 ) -> Result<(), Response> {
+    // A preview's data stays on its home Server, so no peer pulls it.
+    if ployz_core::PreviewNamespace::holding(volume).is_some() {
+        tracing::warn!(%peer, %volume, "send stream refused: a preview's Volume");
+        return Err((
+            StatusCode::FORBIDDEN,
+            format!("{volume} is a preview's data, which stays on its own Server"),
+        )
+            .into_response());
+    }
     match recipients.accepts(peer).await {
         Ok(true) => Ok(()),
         Ok(false) => {
@@ -683,6 +693,22 @@ esac
                 "{path}: {body}"
             );
             assert!(!body.contains("stream"), "no bytes of the Volume: {body}");
+        }
+        shutdown.cancel();
+    }
+
+    #[tokio::test]
+    async fn sends_no_preview_volume_even_to_a_member() {
+        let dir = TestDir::new("ployzd-volume-send");
+        let (base, shutdown) = start_for(&dir, POOLS, Asked(member)).await;
+        let preview = "pv-0123456789abcdef-01234567-00c0ffee_data";
+        for path in [
+            format!("/volume-send/{preview}?target=w-1-2"),
+            format!("/volume-bound/{preview}"),
+        ] {
+            let (status, body) = get_from(MEMBER, &base, &path).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{path}: {body}");
+            assert!(body.contains("a preview's data"), "{path}: {body}");
         }
         shutdown.cancel();
     }
