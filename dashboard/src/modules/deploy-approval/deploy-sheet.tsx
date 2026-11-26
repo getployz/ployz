@@ -15,7 +15,7 @@ import { prepareDeployTapServerFn } from "./deploy-tap.functions";
 import { fillPending } from "./fill-pending";
 import type { AdmitDeploy } from "#/modules/config-store/admit-deploy";
 import { type Answer, type Answered, type Ask, deployWith, type DeploySteps, type Held, prepareDeploy, signVersions, withAnswer } from "./deploy-tap";
-import { RuleSummaryList } from "./rule-summary";
+import { RuleSummaryList, ruleTrigger } from "./rule-summary";
 import { ownerLookup } from "./source-step";
 
 /** A Deploy that was not sent: refused before any prompt, stale, or cancelled. Whoever said why already showed it. */
@@ -169,11 +169,11 @@ export function useDeployTap(organizationSlug: string) {
       <DialogContent className="flex max-h-[85dvh] flex-col sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>
-            {open.ask.services.length === 0 ? `Deploy every push to ${summary?.branch ?? ""}?`
-              : `Approve ${open.ask.services.join(", ")} in ${open.ask.namespace}${summary === undefined ? "" : `, and deploy every push to ${summary.branch}`}?`}
+            {open.ask.services.length === 0 ? `Deploy ${summary === undefined ? "on push" : ruleTrigger(summary).every}?`
+              : `Approve ${open.ask.services.join(", ")} in ${open.ask.namespace}${summary === undefined ? "" : `, and deploy ${ruleTrigger(summary).every}`}?`}
           </DialogTitle>
           <DialogDescription>
-            {summary === undefined ? "Check each line. Your passkey signs exactly this." : `Check each line. Then each push to ${summary.branch} deploys these settings with no prompt.`}
+            {summary === undefined ? "Check each line. Your passkey signs exactly this." : `Check each line. Then ${ruleTrigger(summary).each} deploys these settings with no prompt.`}
           </DialogDescription>
         </DialogHeader>
         <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">

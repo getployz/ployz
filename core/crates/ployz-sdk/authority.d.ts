@@ -6,6 +6,7 @@ export type {
   ApprovedChange,
   AutoDeployRule,
   BuildPolicy,
+  GithubSource,
   JoinApproval,
   Passkey,
   PasskeyJoinDraft,
@@ -15,7 +16,9 @@ export type {
   ProposalApproval,
   ProposalRef,
   ProposalStep,
+  RegistrySource,
   RuleDraft,
+  RuleImageView,
   RuleServiceSummary,
   RuleService,
   RuleSource,
@@ -24,6 +27,7 @@ export type {
   Signed,
   SignerKey,
   SourceNeed,
+  SourceSummary,
   StepDigest,
   StepKind,
   VersionsDraft,
@@ -40,7 +44,9 @@ import type {
   PlanView,
   PrivateAccessTerms,
   RequestedServiceSpec,
+  RegistrySource,
   RuleDraft,
+  RuleImageView,
   RuleSourceView,
   RuleTerms,
   RuleView,
@@ -105,16 +111,24 @@ export function sourceNeed(view: RuleView): SourceNeed;
 export type SourceAsked = {
   rule: Signed | null;
   sources: readonly RuleSourceView[];
+  /** The Saved Services that run a registry's image, which a registry rule deploys. */
+  images?: readonly RuleImageView[];
   target: readonly RequestedServiceSpec[];
   machines: readonly string[];
   owner_id: number;
   builder?: { ref: string; sha: string };
-  /** The branch the person turns Deploy every push on for: a rule they ended starts again, and it follows this branch. */
-  on?: PushBranch;
+  /**
+   * The branch, or registry repository, the person turns automatic deploys on for: a rule they ended starts again, and
+   * it follows this one.
+   */
+  on?: PushBranch | PushImages;
 };
 
 /** A branch a rule follows: the repository's GitHub ID and the branch's name. */
 export type PushBranch = { repository_id: number; branch: string };
+
+/** A registry repository whose every pushed image a rule deploys. */
+export type PushImages = { registry: RegistrySource };
 
 /**
  * What each mount is compared with: each Service's last approved version, the keys one enforcing Server trusts, the

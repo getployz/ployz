@@ -6,3 +6,18 @@ test(=an_unmounted_config_edits_while_another_service_mounts_too_much)
 | test(=recovery::back_up_with_a_hanging_echo_retries_then_exits_without_a_code)
 """
 priority = 100
+
+# These tests run Builds as this user, so they share the builder ployz-<uid>. A Build that
+# ended unconfirmed keeps that builder quarantined while any Buildx process on the host
+# names it, and another test's fake Build is one. Run them one at a time.
+[test-groups]
+host-builder = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = """
+package(ployzd) & (
+  test(/^build::tests::/)
+  | test(=daemon::tests::startup_recovers_an_abandoned_builder_without_a_build_request)
+)
+"""
+test-group = "host-builder"

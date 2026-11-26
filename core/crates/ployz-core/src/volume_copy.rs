@@ -270,6 +270,10 @@ pub enum Start {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         rule: Option<Box<crate::authority::RuleProof>>,
+        /// The Service's sealed registry login, which a registry rule's start pulls with.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        registry_login: Option<crate::SealedLogin>,
         /// Answer only whether this Machine would admit the start, its placement
         /// included, and change nothing: no floor, mark, copy or Container.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]

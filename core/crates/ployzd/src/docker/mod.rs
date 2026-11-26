@@ -533,18 +533,28 @@ impl ContainerRuntime {
         self.observation.sealing()
     }
 
-    /// The login `login` opens to for pulling `image`, as
-    /// [`crate::docker_image::open_login`] allows it.
+    /// Pull a registry rule's image by its digest, with `login` when the Service has one,
+    /// as [`crate::docker_image::pull_pinned`] does, and answer the ID it placed.
     ///
     /// # Errors
     ///
-    /// Returns when the login is refused for `image` or does not open.
-    pub(crate) async fn open_login(
+    /// Returns when the login is refused, the registry serves other content, or the pull
+    /// fails.
+    pub(crate) async fn pull_registry_pin(
         &self,
-        image: &str,
-        login: &ployz_core::SealedLogin,
-    ) -> Result<ployz_core::RegistryAuth, Error> {
-        crate::docker_image::open_login(&self.docker.client, self.sealing(), image, login).await
+        pin: &ployz_core::authority::RegistryPin,
+        login: Option<&ployz_core::SealedLogin>,
+    ) -> Result<ployz_core::ImageDigest, crate::docker_image::RegistryPull> {
+        let reference = pin.reference();
+        let credential = match login {
+            Some(login) => crate::docker_image::Credential::Sealed {
+                login,
+                sealing: self.sealing(),
+            },
+            None => crate::docker_image::Credential::Auth(None),
+        };
+        crate::docker_image::pull_pinned(&self.docker.client, &reference, &pin.digest, credential)
+            .await
     }
 
     /// The secret files this Machine keeps for the Containers that mount them.
@@ -1483,12 +1493,21 @@ pub enum Error {
         #[source]
         source: bollard::errors::Error,
     },
+    /// A Writer start resent after its promote admits another image than the one the
+    /// promote recorded.
+    #[error(
+        "this Writer was promoted to run image {recorded}, but its start now asks for image {resolved}"
+    )]
+    PlacedImageDisagrees { recorded: String, resolved: String },
     /// A sealed registry login this Machine won't pull with.
     #[error("this Server won't pull the image with its registry login")]
     RegistryLogin(#[from] crate::docker_image::LoginRefused),
     /// A spec nothing signed names an image this Machine cannot pull itself with no login.
     #[error("nothing signed this Service, so its image must be public")]
     UnsignedImage(#[source] crate::docker_image::UnsignedImage),
+    /// A spec nothing signed carries a Free receipt this Machine won't run.
+    #[error("nothing signed this Service, and this Server won't run its free Build's image")]
+    FreeImage(#[source] crate::docker_image::FreeImageRefusal),
     /// A Container was about to be made from a spec nothing admitted.
     #[error("this Server did not admit the spec")]
     NotAdmitted,
@@ -1559,6 +1578,7 @@ impl Error {
                 ..
             })
             | Self::VolumeShapeMismatch { .. }
+            | Self::PlacedImageDisagrees { .. }
             | Self::ForeignVolume { .. }
             | Self::VolumeNotWritable(_)
             | Self::VolumeHeld { .. }
@@ -1597,6 +1617,7 @@ impl Error {
             | Self::TunnelOriginNotRunning
             | Self::UnrecognizedNetwork
             | Self::UnsignedImage(_)
+            | Self::FreeImage(_)
             | Self::RegistryLogin(_)
             | Self::NotAdmitted
             | Self::Unadmitted(_)

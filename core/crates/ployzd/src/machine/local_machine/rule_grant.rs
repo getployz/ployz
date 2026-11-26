@@ -217,14 +217,19 @@ impl LocalMachine {
         let service = rule
             .service(&grant.service)
             .ok_or_else(|| refused(MismatchField::Service))?;
-        let policy = rule
-            .build_policy(&grant.service)
-            .ok_or_else(|| refused(MismatchField::Service))?;
         let qualified =
             ployz_core::QualifiedService::new(rule.namespace.clone(), grant.service.clone());
         self.rule_floor(cluster, &qualified, &rule, now)
             .map_err(Error::RuleGrantRefused)?;
         let holder = holder.ok_or_else(|| refused(MismatchField::Holder))?;
+        // A registry rule builds nothing, so it grants no push.
+        let source = rule
+            .source
+            .github()
+            .ok_or_else(|| refused(MismatchField::RuleSource))?;
+        let policy = rule
+            .build_policy(&grant.service)
+            .ok_or_else(|| refused(MismatchField::Policy))?;
         let claims = github
             .claims(&rule, grant.proof.as_str(), &grant.authority, now)
             .await
@@ -259,7 +264,7 @@ impl LocalMachine {
                 }
                 let head = github
                     .head(
-                        rule.source.repository_id,
+                        source.repository_id,
                         rule.head_branch(&claims),
                         grant.reader.as_ref(),
                     )

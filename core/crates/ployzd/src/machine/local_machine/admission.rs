@@ -268,6 +268,9 @@ pub(crate) struct AdmittedSpec {
     /// A preview Writer's image, inspected once at its start's admission, which the check
     /// before the promote and the create read again.
     preview_image: Option<crate::docker::PreviewImage>,
+    /// The image a registry rule's pull placed here, which every Container this admission
+    /// makes, adopts or starts must run.
+    pin: Option<ployz_core::ImageDigest>,
 }
 
 impl std::fmt::Debug for AdmittedSpec {
@@ -318,6 +321,7 @@ impl AdmittedSpec {
             verified: None,
             hook: None,
             preview_image: None,
+            pin: None,
         })
     }
 
@@ -352,6 +356,12 @@ impl AdmittedSpec {
     /// The image a preview Writer's start inspected, which its create runs by ID.
     pub(crate) fn preview_image(&self) -> Option<&crate::docker::PreviewImage> {
         self.preview_image.as_ref()
+    }
+
+    /// The image this admission's Container must run, as this Machine pulled it for a
+    /// registry rule.
+    pub(crate) fn pin(&self) -> Option<&ployz_core::ImageDigest> {
+        self.pin.as_ref()
     }
 
     /// Whether the admission covers opening `value`: a version's signers covered the
@@ -392,6 +402,19 @@ impl AdmittedSpec {
         Self::own(namespace, spec).unwrap()
     }
 
+    /// `spec` admitted with the image a registry rule's pull placed.
+    #[cfg(test)]
+    pub(crate) fn test_pinned(
+        namespace: &Namespace,
+        spec: &ResolvedServiceSpec,
+        pin: ployz_core::ImageDigest,
+    ) -> Self {
+        Self {
+            pin: Some(pin),
+            ..Self::test_signed(namespace, spec)
+        }
+    }
+
     /// `spec` admitted by a Device's signature, for a test that needs a Container another
     /// key made.
     #[cfg(test)]
@@ -422,6 +445,7 @@ impl AdmittedSpec {
             verified: None,
             hook: None,
             preview_image: None,
+            pin: None,
         }
     }
 
@@ -443,6 +467,7 @@ impl AdmittedSpec {
             verified: None,
             hook: None,
             preview_image: None,
+            pin: None,
         }
     }
 }
@@ -498,7 +523,7 @@ impl LocalMachine {
         let spec = AdmittedSpec::hash(&new.slot.namespace, &new.resolved_spec).map_err(refused)?;
         let placement = AdmittedSpec::placement_hash(&new.slot.namespace, &new.resolved_spec)
             .map_err(refused)?;
-        let admitted = |by, verified, hook| {
+        let admitted = |by, verified, hook, pin| {
             Ok(Some(AdmittedSpec {
                 spec,
                 placement,
@@ -507,6 +532,7 @@ impl LocalMachine {
                 verified,
                 hook,
                 preview_image: None,
+                pin,
             }))
         };
         // One budget for every signature this attempt opens, whichever proof carries it.
@@ -517,7 +543,7 @@ impl LocalMachine {
             QualifiedService::new(new.slot.namespace.clone(), new.resolved_spec.name.clone());
         if !versions.is_empty() {
             match self.approved_versions(new, &service, versions, &mut budget, admit)? {
-                Ok(by) => return admitted(by, None, None),
+                Ok(by) => return admitted(by, None, None, None),
                 // A creation at Full access would hide that the forget failed.
                 Err(refusal) if asks_to_forget(versions, &self.record().trusted_keys()) => {
                     return Err(refused(refusal));
@@ -533,7 +559,12 @@ impl LocalMachine {
                 .await
             {
                 Ok(admitted_rule) => {
-                    return admitted(admitted_rule.by, admitted_rule.verified, admitted_rule.hook);
+                    return admitted(
+                        admitted_rule.by,
+                        admitted_rule.verified,
+                        admitted_rule.hook,
+                        admitted_rule.pin,
+                    );
                 }
                 Err(Error::RuleDeployRefused(_)) if matches!(scope, Scope::Full(_)) => {}
                 Err(error) => return Err(error),
@@ -562,7 +593,7 @@ impl LocalMachine {
                 unapproved.unwrap_or(AuthorityRefusal::SignedName { service }),
             ));
         }
-        admitted(by, None, None)
+        admitted(by, None, None, None)
     }
 
     /// Whether `service`'s name refuses a `kind` Container admitted `by`. A name that ran
@@ -735,7 +766,7 @@ impl LocalMachine {
         start: &Start,
     ) -> Result<Option<AdmittedSpec>, Error> {
         let operator = matches!(self.scope_now()?, Scope::Operator);
-        let (namespace, resolved_spec, creation_key, r#gen, rotation, versions, rule, check) =
+        let (namespace, resolved_spec, creation_key, r#gen, rotation, versions, rule, login, check) =
             match start {
                 Start::Kept { container_id } => {
                     if operator {
@@ -752,6 +783,7 @@ impl LocalMachine {
                     rotation,
                     versions,
                     rule,
+                    registry_login,
                     check,
                 } => (
                     namespace,
@@ -761,6 +793,7 @@ impl LocalMachine {
                     rotation,
                     versions,
                     rule,
+                    registry_login,
                     *check,
                 ),
             };
@@ -779,11 +812,13 @@ impl LocalMachine {
                 r#gen: *r#gen,
                 deployment_id: None,
                 registry_auth: None,
-                registry_login: None,
+                // A registry rule's pull opens it only for the image's own registry.
+                registry_login: login.clone(),
                 image_prepared: false,
                 answer: AnswerWhen::default(),
                 image_id: None,
                 replaces: None,
+                free_receipt: None,
             }),
             rotation: rotation.clone(),
         };

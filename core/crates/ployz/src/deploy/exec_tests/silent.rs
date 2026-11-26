@@ -260,6 +260,7 @@ async fn a_machine_silent_while_a_global_start_checks_its_slot_is_named() {
                 answer: AnswerWhen::Started,
                 image_id: None,
                 replaces: None,
+                free_receipt: None,
             }),
             rotation: RunRotation::Pending,
         },

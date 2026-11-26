@@ -1687,3 +1687,43 @@ async fn a_start_beside_another_running_holder_keeps_that_holders_record() {
     assert_eq!(promotes(&plugin), 1);
     assert_eq!(record(), api);
 }
+
+/// A Move's check places its start's image as the Create after the cut would, so a pull
+/// the registry refuses refuses the check, while the source's Writer still runs. An
+/// image the Move copies here after the check refuses nothing yet.
+#[tokio::test]
+async fn a_moves_check_refuses_a_start_whose_image_does_not_pull() {
+    let fleet = Fleet::start().await;
+    let node = fleet.node(1);
+    let mut moved = spec("api");
+    moved.container.image = "example.test/private:1".to_owned();
+    let image = moved.container.image.clone();
+    node.fake.private.lock().unwrap().insert(image.clone());
+    node.fake.images.lock().unwrap().insert(image.clone(), None);
+    let plugin = plugin(
+        slot(Some(snapshot())),
+        WRITER_ROUTE,
+        writer_root(1, Some(snapshot())),
+    );
+    let destination = fleet.with_plugin(1, &plugin);
+    let check = |moved: &ResolvedServiceSpec| {
+        json!({"name":VOLUME, "expect":{"kind":"mirror", "newest":"7", "slot":"1"},
+            "want":{"kind":"writer", "at":"0", "epoch":0, "start":{
+                "kind":"create", "namespace":"app", "resolved_spec":moved,
+                "creation_key":"check", "gen":2, "check":true,
+                "rotation":{"in":{"run":null, "expect":"pending"}}}}})
+    };
+
+    moved.container.pull_policy = ployz_core::PullPolicy::Missing;
+    let refused = try_set_copy(&destination, check(&moved)).await;
+    assert!(
+        refused.as_ref().is_err_and(|error| error.contains("pull")),
+        "{refused:?}"
+    );
+
+    moved.container.pull_policy = ployz_core::PullPolicy::Never;
+    let checked = try_set_copy(&destination, check(&moved)).await;
+    assert!(checked.is_ok(), "{checked:?}");
+    assert_eq!(promotes(&plugin), 0);
+    assert!(node.fake.images.lock().unwrap()[&image].is_none());
+}

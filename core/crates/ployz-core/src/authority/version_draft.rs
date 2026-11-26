@@ -14,8 +14,8 @@ use super::{
     deploy::{content_addressed, placement_signed},
     keys::Signed,
     proposal::{ProposalApproval, ProposalRef, ProposalStep, StepDigest, StepKind},
-    rule::{Builder, RuleId},
-    rule_draft::RuleSourceView,
+    rule::{Builder, RegistrySource, RuleId, RuleSource},
+    rule_draft::{RuleImageView, RuleSourceView, SourceSummary},
 };
 use crate::{
     DeviceKey, MachineId, Namespace, OperationId, RequestedServiceSpec, SealingPublicKey,
@@ -57,6 +57,9 @@ pub struct VersionsAsked {
 pub struct SourceAsked {
     pub rule: Option<Signed<AutoDeployRule>>,
     pub sources: Vec<RuleSourceView>,
+    /// The Saved Services that run a registry's image.
+    #[serde(default)]
+    pub images: Vec<RuleImageView>,
     /// Lowered as a push deploys them, each built image left a placeholder.
     pub target: Vec<RequestedServiceSpec>,
     pub machines: Vec<MachineId>,
@@ -66,11 +69,20 @@ pub struct SourceAsked {
     /// the person turns the rule on.
     #[serde(default)]
     pub builder: Option<Builder>,
-    /// The branch the person turns Deploy every push on for, or approves again. Only
-    /// Automatic deploys names one: it always signs the next generation, a rule they ended
-    /// starts again, and with several branches it follows this one.
+    /// The branch or registry repository the person turns automatic deploys on for, or
+    /// approves again. Only Automatic deploys names one: it always signs the next
+    /// generation, a rule they ended starts again, and with several branches or
+    /// repositories it follows this one.
     #[serde(default)]
-    pub on: Option<PushBranch>,
+    pub on: Option<SourceOn>,
+}
+
+/// What a person turns automatic deploys on for.
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
+#[serde(untagged)]
+pub enum SourceOn {
+    Branch(PushBranch),
+    Images(PushImages),
 }
 
 /// A branch a rule follows: the repository's GitHub ID and the branch's name.
@@ -79,6 +91,13 @@ pub struct SourceAsked {
 pub struct PushBranch {
     pub repository_id: u64,
     pub branch: String,
+}
+
+/// A registry repository whose every pushed image a rule deploys.
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PushImages {
+    pub registry: RegistrySource,
 }
 
 impl SourceAsked {
@@ -95,6 +114,7 @@ impl SourceAsked {
             namespace: namespace.clone(),
             rule: self.rule,
             sources: self.sources,
+            images: self.images,
             target: self.target,
             volumes: volumes.clone(),
             minted: Births::new(),
@@ -105,7 +125,9 @@ impl SourceAsked {
         let builder = (self.builder)
             .or_else(|| match self.on {
                 Some(_) => None,
-                None => kept.as_ref().map(|kept| kept.source.builder.clone()),
+                None => (kept.as_ref())
+                    .and_then(|kept| kept.source.github())
+                    .map(|kept| kept.builder.clone()),
             })
             .unwrap_or_else(Builder::pinned);
         let terms = RuleTerms {
@@ -139,15 +161,36 @@ impl SourceAsked {
 pub fn source_rule(
     basis: &mut RuleBasis,
     terms: RuleTerms,
-    on: Option<&PushBranch>,
+    on: Option<&SourceOn>,
 ) -> Result<Option<AutoDeployRule>, RuleDraftError> {
-    let Some(names) = eligible(basis, on) else {
+    let Some(covered) = eligible(basis, on) else {
         return Ok(None);
     };
     let kept = basis.kept();
-    let rule = AutoDeployRule::draft(basis, &names, terms)?;
+    let rule = covered.draft(basis, terms)?;
     let approved = on.is_none() && kept.is_some_and(|kept| approves(&kept, &rule, &basis.target));
     Ok((!approved).then_some(rule))
+}
+
+/// The Services a Source step covers, and the source they deploy from.
+enum Covered {
+    Branch(Vec<ServiceName>),
+    Images(RegistrySource, Vec<ServiceName>),
+}
+
+impl Covered {
+    fn draft(
+        &self,
+        basis: &mut RuleBasis,
+        terms: RuleTerms,
+    ) -> Result<AutoDeployRule, RuleDraftError> {
+        match self {
+            Self::Branch(names) => AutoDeployRule::draft(basis, names, terms),
+            Self::Images(source, names) => {
+                AutoDeployRule::draft_images(basis, source, names, terms)
+            }
+        }
+    }
 }
 
 /// What a Save needs to keep pushes deploying, read from the Store's rule view alone,
@@ -170,24 +213,25 @@ pub enum SourceNeed {
 /// names stands in for the Cluster's, which only a Server reports.
 #[must_use]
 pub fn source_need(basis: &RuleBasis) -> SourceNeed {
-    let Some(names) = eligible(basis, None) else {
+    let Some(covered) = eligible(basis, None) else {
         return SourceNeed::None;
     };
     let Some(kept) = basis.kept() else {
         return SourceNeed::Rule;
     };
+    let github = kept.source.github();
     let terms = RuleTerms {
         cluster: kept.cluster,
         machines: kept.machines.clone(),
-        owner_id: kept.source.owner_id,
-        builder: kept.source.builder.clone(),
+        owner_id: github.map_or(0, |github| github.owner_id),
+        builder: github.map_or_else(Builder::pinned, |github| github.builder.clone()),
         platform: super::rule_draft::renewed_platform(Some(&kept)),
         new_rule: kept.rule,
         issued_at: kept.issued_at,
         signer: SignerKey::Passkey(super::OwnPrompt::Passkey),
     };
     let mut basis = basis.clone();
-    match AutoDeployRule::draft(&mut basis, &names, terms) {
+    match covered.draft(&mut basis, terms) {
         Ok(next) if approves(&kept, &next, &basis.target) => match placed(&next, &basis.target) {
             true => SourceNeed::Servers,
             false => SourceNeed::None,
@@ -200,7 +244,31 @@ pub fn source_need(basis: &RuleBasis) -> SourceNeed {
 /// build from, or on `on` when the person turns the rule on for it. Without `on`, none
 /// when the person ended the rule, which stays ended until they turn it on again, or when
 /// they build from several branches, where the person picks one.
-fn eligible(basis: &RuleBasis, on: Option<&PushBranch>) -> Option<Vec<ServiceName>> {
+///
+/// A registry rule is signed only on Automatic deploys: `on` names its repository, and
+/// the image Services of that repository are covered. Without `on`, a kept registry rule
+/// covers nothing, so a Save or Deploy signs no generation of it, nor a branch's rule in
+/// its place; a changed setting holds new images until the person approves it again.
+fn eligible(basis: &RuleBasis, on: Option<&SourceOn>) -> Option<Covered> {
+    match on {
+        Some(SourceOn::Images(on)) => {
+            let names = basis.image_services(&on.registry);
+            return (!names.is_empty()).then(|| Covered::Images(on.registry.clone(), names));
+        }
+        Some(SourceOn::Branch(on)) => return branch_eligible(basis, Some(on)).map(Covered::Branch),
+        None => {}
+    }
+    if basis
+        .kept()
+        .is_some_and(|kept| kept.source.registry().is_some())
+    {
+        return None;
+    }
+    branch_eligible(basis, None).map(Covered::Branch)
+}
+
+/// [`eligible`] for a GitHub rule.
+fn branch_eligible(basis: &RuleBasis, on: Option<&PushBranch>) -> Option<Vec<ServiceName>> {
     if let Some(on) = on {
         let names: Vec<ServiceName> = (basis.sources.iter())
             .filter(|source| {
@@ -230,12 +298,20 @@ fn eligible(basis: &RuleBasis, on: Option<&PushBranch>) -> Option<Vec<ServiceNam
 /// Whether `kept` approves what `next` would: on, with the same rule, branch, builder and
 /// Services, and every Server `next` names unless no Service it covers is placed by its spec.
 fn approves(kept: &AutoDeployRule, next: &AutoDeployRule, target: &[RequestedServiceSpec]) -> bool {
+    let same_source = match (&kept.source, &next.source) {
+        (RuleSource::Github(kept), RuleSource::Github(next)) => {
+            kept.repository_id == next.repository_id
+                && kept.branch == next.branch
+                && kept.builder == next.builder
+        }
+        (RuleSource::Registry(kept), RuleSource::Registry(next)) => kept == next,
+        (RuleSource::Github(_), RuleSource::Registry(_))
+        | (RuleSource::Registry(_), RuleSource::Github(_)) => false,
+    };
     !kept.ended
         && kept.rule == next.rule
         && kept.namespace == next.namespace
-        && kept.source.repository_id == next.source.repository_id
-        && kept.source.branch == next.source.branch
-        && kept.source.builder == next.source.builder
+        && same_source
         && kept.services == next.services
         && (next
             .machines
@@ -517,11 +593,13 @@ impl VersionsAsked {
                 let name = service.name.as_str();
                 (service.confirm.iter()).map(move |line| format!("{name}: {line}"))
             }));
-            if !summary.pinned {
-                confirm.push(format!(
-                    "builder {}, not Ployz's own release",
-                    summary.builder
-                ));
+            if let SourceSummary::Github {
+                pinned: false,
+                builder,
+                ..
+            } = &summary.source
+            {
+                confirm.push(format!("builder {builder}, not Ployz's own release"));
             }
         }
         // Cloud chose each pin, so the person reads the whole signed reference, never a

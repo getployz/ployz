@@ -166,6 +166,11 @@ pub enum MismatchField {
     Namespace,
     Branch,
     Repository,
+    /// A rule of the other source: a GitHub rule for a registry image, or a registry rule
+    /// for a build.
+    RuleSource,
+    /// The digest a registry answered for the image a registry rule's Container names.
+    RegistryDigest,
     PendingJoinCapacity,
     BootstrapPeers,
     FirstKey,
@@ -260,6 +265,8 @@ impl MismatchField {
             Self::Namespace => "a Namespace",
             Self::Branch => "a branch",
             Self::Repository => "a repository",
+            Self::RuleSource => "a rule source",
+            Self::RegistryDigest => "a registry digest",
             Self::PendingJoinCapacity => "pending join capacity",
             Self::BootstrapPeers => "bootstrap peers",
             Self::FirstKey => "the joiner's First Key",
@@ -372,6 +379,8 @@ impl MismatchField {
             | Self::Namespace
             | Self::Branch
             | Self::Repository
+            | Self::RegistryDigest
+            | Self::RuleSource
             | Self::PendingJoinCapacity
             | Self::BootstrapPeers
             | Self::FirstKey
@@ -418,6 +427,13 @@ impl MismatchField {
             Self::Hostname => {
                 "Each of a preview's domains names the preview, so no two previews share one."
             }
+            Self::Repository => {
+                "This image isn't in the repository the automatic deploy rule approves."
+            }
+            Self::RuleSource => {
+                "This environment's automatic deploy rule doesn't deploy this kind of source. Approve again under Automatic deploys."
+            }
+            Self::RegistryDigest => "The registry serves something else under this image's digest.",
             Self::Signer | Self::Passkey => {
                 "An automatic deploy rule needs your passkey or an approved device. Approve again under Automatic deploys."
             }
@@ -481,7 +497,6 @@ impl MismatchField {
             | Self::StartTime
             | Self::Namespace
             | Self::Branch
-            | Self::Repository
             | Self::PendingJoinCapacity
             | Self::BootstrapPeers
             | Self::FirstKey

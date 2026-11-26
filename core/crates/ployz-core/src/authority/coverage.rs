@@ -9,7 +9,7 @@
 use serde::Serialize;
 
 use crate::{
-    APPROVE_JOIN_CAPABILITY, BUILD_CAPABILITY, BUILD_GRANT_RULE_CAPABILITY,
+    APPROVE_JOIN_CAPABILITY, BUILD_CAPABILITY, BUILD_FREE_CAPABILITY, BUILD_GRANT_RULE_CAPABILITY,
     CLOSE_PREVIEW_CAPABILITY, CONFIRM_JOIN_CAPABILITY, DEPLOY_RULE_CAPABILITY,
     DESCRIBE_CONTRACT_CAPABILITY, EMPTY_TRASH_CAPABILITY, ENROLL_FOR_RECOVERY_CAPABILITY,
     ENROLL_MACHINE_CAPABILITY, ENSURE_CONTAINER_CAPABILITY, ENSURE_IMAGE_INGEST_CAPABILITY,
@@ -243,6 +243,12 @@ pub const AUTHORIZATION: &[(&str, Authorization)] = &[
     (RUNTIME_WATCH_CAPABILITY, Read),
     (EXEC_CONTAINER_CAPABILITY, Full),
     (BUILD_CAPABILITY, Signed(&[])),
+    (
+        BUILD_FREE_CAPABILITY,
+        Bound(
+            "opens no Sealed value, takes no registry login or other Service's image, reaches no image server, and loads its image under no name; its receipt admits only an unsigned creation of that content",
+        ),
+    ),
 ];
 
 /// The class of the route named by `capability`, or `None` for a name that is not a route.
@@ -305,6 +311,10 @@ const fn case(
     }
 }
 
+const OPENS_NOTHING: &str =
+    "the upload is refused as the Sealed record arrives, and nothing opens or runs";
+const LOADS_NO_NAME: &str =
+    "the built image carries no tag, and only a creation with its receipt runs it unsigned";
 const MOUNTS_NOTHING: &str =
     "a following unsigned EnsureContainer create that mounts it is refused";
 const PULLS_AGAIN: &str =
@@ -778,5 +788,17 @@ pub const CASES: &[Case] = &[
         "no statement",
         "a Build from Cloud",
         Expected::Refused(&[BUILD_CAPABILITY]),
+    ),
+    case(
+        BUILD_FREE_CAPABILITY,
+        "sealed values",
+        "a free Build from Cloud whose capture carries a Sealed record",
+        Expected::Bounded(OPENS_NOTHING),
+    ),
+    case(
+        BUILD_FREE_CAPABILITY,
+        "no secret",
+        "a free Build from Cloud of a public recipe",
+        Expected::Bounded(LOADS_NO_NAME),
     ),
 ];

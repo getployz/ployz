@@ -158,6 +158,7 @@ fn take(tx: &mut dyn Tx, mut stored: Stored, runner: &RunnerId) -> Result<Taken,
         input,
         mut intent,
         warnings,
+        uploaded,
         ..
     } = match lowered(tx, &stored, &saved) {
         Ok(lowered) => lowered,
@@ -170,7 +171,21 @@ fn take(tx: &mut dyn Tx, mut stored: Stored, runner: &RunnerId) -> Result<Taken,
         }
         Err(error) => return Err(error),
     };
-    let sources = build::routed(tx, &stored, &saved)?;
+    let sources = build::routed(tx, &stored, &saved, &intent.target)?;
+    let owner = organization(tx, &id)?;
+    // A Service built from an upload lowers only once the runner built it, so it is
+    // judged here as its upload builds it.
+    let built: Vec<_> = intent.target.iter().chain(&uploaded).cloned().collect();
+    let free = super::versions::free_builds(
+        tx,
+        (
+            &stored.summary.environment_id,
+            owner.as_str(),
+            stored.namespace(),
+        ),
+        &saved,
+        (&stored.nodes, &built),
+    )?;
     if starting {
         // Every other claimed Deployment of the Environment loses its runner, its runner
         // lease lapsed or not; each keeps its runner column for an Interrupted record.
@@ -263,6 +278,7 @@ fn take(tx: &mut dyn Tx, mut stored: Stored, runner: &RunnerId) -> Result<Taken,
         image_tokens,
         verified,
         ran,
+        free,
     })))
 }
 

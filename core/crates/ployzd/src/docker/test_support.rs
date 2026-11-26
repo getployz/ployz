@@ -118,9 +118,18 @@ pub(crate) struct FakeDocker {
     /// What the registry serves for each tag, by ID. A tag listed nowhere serves the ID
     /// made from its name. A pull of a tag writes it into [`Self::images`].
     pub(crate) registry: Arc<Mutex<BTreeMap<String, String>>>,
+    /// What an image listing answers before its `dangling` and `label` filters: Docker's
+    /// summaries, each with the `LastTagTime` an inspect of its ID answers.
+    pub(crate) listed_images: Arc<Mutex<Vec<serde_json::Value>>>,
+    /// Each image a remove named, in order.
+    pub(crate) removed_images: Arc<Mutex<Vec<String>>>,
     /// When set, each image pull spends one; once none are left, a pull answers the
     /// registry's rate limit.
     pub(crate) pulls_left: Arc<Mutex<Option<usize>>>,
+    /// Images the registry serves only to a pull that sends a login.
+    pub(crate) private: Arc<Mutex<BTreeSet<String>>>,
+    /// The registry mirrors `/info` reports Docker is configured with.
+    pub(crate) mirrors: Arc<Mutex<Vec<String>>>,
 }
 
 impl FakeDocker {
@@ -145,8 +154,29 @@ async fn fake_docker(
     State(fake): State<FakeDocker>,
     method: Method,
     uri: Uri,
+    headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Response {
+    if method == Method::POST
+        && uri.path().ends_with("/images/create")
+        && !headers.contains_key("x-registry-auth")
+        && uri.query().is_some_and(|query| {
+            let query = query.replace("%2F", "/").replace("%3A", ":");
+            fake.private
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|image| query.contains(image.as_str()))
+        })
+    {
+        return (
+            StatusCode::NOT_FOUND,
+            axum::Json(
+                serde_json::json!({"message": "pull access denied: authentication required"}),
+            ),
+        )
+            .into_response();
+    }
     let hold = (method == Method::GET && is_inspect(uri.path()))
         .then(|| fake.answered_hold.lock().unwrap().take())
         .flatten()
@@ -204,8 +234,11 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
         } else {
             "overlay2"
         };
-        return axum::Json(serde_json::json!({"DriverStatus": [["driver-type", driver]]}))
-            .into_response();
+        return axum::Json(serde_json::json!({
+            "DriverStatus": [["driver-type", driver]],
+            "RegistryConfig": {"Mirrors": *fake.mirrors.lock().unwrap()},
+        }))
+        .into_response();
     }
     if method == Method::GET && path.contains("/containers/") && path.ends_with("/logs") {
         return fake.logs.lock().unwrap().clone().into_response();
@@ -655,6 +688,15 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
             StatusCode::OK,
             serde_json::json!({"Descriptor": {"digest": fake.served(tag)}, "Platforms": []}),
         )
+    } else if method == Method::GET && path.ends_with("/images/json") {
+        (
+            StatusCode::OK,
+            listed_images(&fake.listed_images.lock().unwrap(), uri.query()),
+        )
+    } else if method == Method::DELETE && path.contains("/images/") {
+        let image = path.split("/images/").nth(1).unwrap_or_default().to_owned();
+        fake.removed_images.lock().unwrap().push(image.clone());
+        (StatusCode::OK, serde_json::json!([{"Deleted": image}]))
     } else if method == Method::GET && path.contains("/images/") && path.ends_with("/json") {
         if let Some(barrier) = &fake.image_barrier {
             barrier.wait().await;
@@ -665,12 +707,25 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
             .nth(1)
             .unwrap_or_default()
             .trim_end_matches("/json");
-        match fake.image(image) {
-            Some(id) => (StatusCode::OK, serde_json::json!({"Id": id})),
-            None => (
-                StatusCode::NOT_FOUND,
-                serde_json::json!({"message": format!("No such image: {image}")}),
+        let tagged = fake
+            .listed_images
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|listed| listed["Id"] == image)
+            .map(|listed| listed["LastTagTime"].clone());
+        match tagged {
+            Some(time) => (
+                StatusCode::OK,
+                serde_json::json!({"Id": image, "Metadata": {"LastTagTime": time}}),
             ),
+            None => match fake.image(image) {
+                Some(id) => (StatusCode::OK, serde_json::json!({"Id": id})),
+                None => (
+                    StatusCode::NOT_FOUND,
+                    serde_json::json!({"message": format!("No such image: {image}")}),
+                ),
+            },
         }
     } else if method == Method::GET
         && path.ends_with("/volumes")
@@ -916,6 +971,50 @@ pub(super) async fn fake_runtime() -> (ContainerRuntime, FakeDocker) {
     fake_runtime_with(FakeDocker::default()).await
 }
 
+/// The images in `listed` an image listing's `dangling` and `label` filters keep.
+fn listed_images(listed: &[serde_json::Value], query: Option<&str>) -> serde_json::Value {
+    let filters = url::form_urlencoded::parse(query.unwrap_or_default().as_bytes())
+        .find(|(key, _)| key == "filters")
+        .map(|(_, filters)| serde_json::from_str::<serde_json::Value>(&filters).unwrap())
+        .unwrap_or_default();
+    let values = |key: &str| -> Vec<String> {
+        filters
+            .get(key)
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(serde_json::Value::as_str)
+            .map(str::to_owned)
+            .collect()
+    };
+    let dangling = values("dangling").iter().any(|value| value == "true");
+    let labels = values("label");
+    listed
+        .iter()
+        .filter(|image| {
+            !dangling
+                || image["RepoTags"]
+                    .as_array()
+                    .is_none_or(|tags| tags.is_empty())
+        })
+        .filter(|image| {
+            labels.iter().all(|label| {
+                let (key, value) = label.split_once('=').unwrap_or((label, ""));
+                image
+                    .get("Labels")
+                    .and_then(|labels| labels.get(key))
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|held| value.is_empty() || held == value)
+            })
+        })
+        .map(|image| {
+            let mut image = image.clone();
+            image.as_object_mut().unwrap().remove("LastTagTime");
+            image
+        })
+        .collect()
+}
+
 fn listed_by_labels(
     containers: &BTreeMap<String, serde_json::Value>,
     query: Option<&str>,
@@ -1083,7 +1182,7 @@ pub(super) fn container_request<'spec, Storage>(
         deployment_id: None,
         r#gen: ployz_core::Gen::FIRST,
         replaces: None,
-        image: crate::docker_image::ImagePull::Policy(None),
+        image: crate::docker_image::ImagePull::Policy(crate::docker_image::Credential::Auth(None)),
         creation_key: "test-key",
         kind,
         namespace,

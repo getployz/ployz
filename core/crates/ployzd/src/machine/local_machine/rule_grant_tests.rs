@@ -9,7 +9,7 @@ use ployz_core::{
     authority::{
         BuildPolicy, CommitApproval, PayloadDigest, PreviewTerms, RuleId, RuleService, Signed,
         Signer, SignerKey,
-        rule::{Builder, PolicyCache, PolicyMethod, RuleEvent, RuleSource, Runner},
+        rule::{Builder, GithubSource, PolicyCache, PolicyMethod, RuleEvent, RuleSource, Runner},
     },
 };
 use serde_json::{Value, json};
@@ -146,7 +146,7 @@ pub(crate) fn rule_for(
         generation: 3,
         namespace: Namespace::parse("app").unwrap(),
         machines: vec![machine],
-        source: RuleSource {
+        source: RuleSource::Github(GithubSource {
             repository_id: 1_450_985_696,
             owner_id: 354_323_584,
             repository: "Ployz-test/lab-service".to_owned(),
@@ -158,11 +158,11 @@ pub(crate) fn rule_for(
                 sha: CommitSha::parse(BUILDER_SHA).unwrap(),
             },
             runner: Runner::GithubHosted,
-        },
+        }),
         services: vec![RuleService {
             name: web(),
             template: PayloadDigest::parse(&"ab".repeat(32)).unwrap(),
-            policy: policy(),
+            policy: Some(policy()),
             secrets: Some(SealedDigest::of(record).unwrap()),
             seeded: None,
         }],
@@ -307,7 +307,7 @@ impl Fixture {
             cluster: self.cluster,
             rule: rule.rule,
             generation: rule.generation,
-            repository_id: rule.source.repository_id,
+            repository_id: rule.source.github().unwrap().repository_id,
             commit: fork(),
             namespace: preview.clone(),
             issued_at: now(),
@@ -322,7 +322,7 @@ impl Fixture {
 
 /// `rule` as a preview rule whose pushers leave out the fixture token's actor.
 fn previewing(rule: &mut AutoDeployRule) {
-    rule.source.branch = String::new();
+    github_mut(rule).branch = String::new();
     rule.preview = Some(PreviewTerms {
         parent: uuid::Uuid::nil(),
         pushers: vec![1],
@@ -711,7 +711,7 @@ async fn a_preview_rules_grant_binds_its_cache_off() {
     let cached = |rule: &mut AutoDeployRule| {
         previewing(rule);
         rule.preview.as_mut().unwrap().pushers = Vec::new();
-        rule.services[0].policy.cache = PolicyCache::Actions;
+        rule.services[0].policy.as_mut().unwrap().cache = PolicyCache::Actions;
     };
     fixture
         .admit_changed("off", |rule, claim, _| {
@@ -724,7 +724,9 @@ async fn a_preview_rules_grant_binds_its_cache_off() {
         fixture
             .admit_changed("on", |rule, claim, _| {
                 cached(rule);
-                claim.policy = PolicyDigest::of(&rule.service(&web()).unwrap().policy).unwrap();
+                claim.policy =
+                    PolicyDigest::of(rule.service(&web()).unwrap().policy.as_ref().unwrap())
+                        .unwrap();
             })
             .await,
         "an audience",
@@ -890,4 +892,12 @@ async fn an_approved_fork_commit_is_granted_on_a_run_of_another_commit() {
             .await,
         "a commit approval",
     );
+}
+
+/// The GitHub source of a GitHub rule, to change in place.
+pub(crate) fn github_mut(rule: &mut AutoDeployRule) -> &mut GithubSource {
+    match &mut rule.source {
+        RuleSource::Github(source) => source,
+        RuleSource::Registry(_) => panic!("a GitHub rule"),
+    }
 }

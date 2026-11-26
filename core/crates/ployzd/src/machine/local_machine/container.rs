@@ -35,7 +35,7 @@ use crate::docker::{
     ContainerCreated, ContainerRequest, ContainerRuntime, ImageIngest, RotationTurn, Withdrawal,
     same_creation,
 };
-use crate::docker_image::ImagePull;
+use crate::docker_image::{Credential, ImagePull};
 use crate::host_facts::{STORAGE_OBSERVATION_TIMEOUT, local_storage};
 use crate::images::DoorSpecs;
 use ployz_decide::rotation::{RotationWant, in_rotation, in_rotation_refusal};
@@ -337,7 +337,7 @@ impl LocalMachine {
                         .unwrap_or_else(|| format!("test:{}", ployz_core::MachineId::random())),
                     deployment_id,
                     r#gen: Gen::FIRST,
-                    image: ImagePull::Policy(registry_auth.as_ref()),
+                    image: ImagePull::Policy(Credential::Auth(registry_auth.as_ref())),
                     admitted,
                     replaces: None,
                 })
@@ -365,17 +365,20 @@ impl LocalMachine {
         .await
     }
 
-    /// Pull `spec`'s image as a Writer start's Create would, under shared admission
-    /// like [`Self::pull_free_image`], and read its ID, so that Create, after the
-    /// promote, runs that ID and reaches no registry. A signed start whose promote
-    /// already `recorded` an ID takes that one, as Docker holds it, and pulls nothing.
-    /// An unsigned start pulls as [`Images::pull_free`] does whatever the record says,
-    /// since only that pull proves an image public.
+    /// Place the image a Writer start's Create runs, under shared admission like
+    /// [`Self::pull_free_image`], and read its ID, so that Create, after the promote,
+    /// runs that ID and reaches no registry. The ID the admission resolved, as a
+    /// registry rule's pull does, comes first, and a promote's `recorded` ID must agree
+    /// with it. A signed start the admission resolved no ID for takes the `recorded`
+    /// one, or else pulls `spec`'s image with the Service's sealed `login`. An unsigned
+    /// start pulls as [`Images::pull_free`] does whatever the record says, since only
+    /// that pull proves an image public.
     ///
     /// # Errors
     ///
-    /// Returns when Docker is unavailable, admission is busy, the pull is refused or
-    /// fails, or Docker no longer holds the `recorded` image.
+    /// Returns when Docker is unavailable, admission is busy, the login or pull is
+    /// refused or fails, Docker no longer holds the image chosen, or the `recorded` ID
+    /// is not the one the admission resolved.
     ///
     /// [`Images::pull_free`]: crate::docker::Images::pull_free
     pub(crate) async fn place_holder_image(
@@ -383,17 +386,36 @@ impl LocalMachine {
         spec: ResolvedServiceSpec,
         admitted: AdmittedSpec,
         recorded: Option<String>,
+        login: Option<ployz_core::SealedLogin>,
     ) -> Result<PlacedHolder, Error> {
         self.finish_shared(move |local| async move {
-            let images = local.docker()?.images();
+            let docker = local.docker()?;
+            let images = docker.images();
             let (image, policy) = (&spec.container.image, spec.container.pull_policy);
-            let id = match (admitted.preview_image(), recorded, admitted.signed()) {
+            let id = match (admitted.preview_image(), admitted.pin(), recorded) {
                 // A preview's admission pulled and inspected its image once: its checks
                 // read that ID, so the Create runs it and nothing pulls the tag again.
                 (Some(preview), _, _) => preview.id().to_owned(),
-                (None, Some(id), true) => images.placed(&id).await?,
-                (None, None, true) => images.place(image, policy).await?,
-                (None, _, false) => images.pull_free(image, policy).await?,
+                (None, Some(resolved), Some(recorded)) if resolved.as_str() != recorded => {
+                    return Err(crate::docker::Error::PlacedImageDisagrees {
+                        recorded,
+                        resolved: resolved.as_str().to_owned(),
+                    }
+                    .into());
+                }
+                (None, Some(resolved), _) => images.placed(resolved.as_str()).await?,
+                (None, None, Some(id)) if admitted.signed() => images.placed(&id).await?,
+                (None, None, _) if admitted.signed() => {
+                    let credential = match &login {
+                        Some(login) => Credential::Sealed {
+                            login,
+                            sealing: docker.sealing(),
+                        },
+                        None => Credential::Auth(None),
+                    };
+                    images.place(image, policy, credential).await?
+                }
+                (None, None, _) => images.pull_free(image, policy).await?,
             };
             Ok(PlacedHolder { admitted, id })
         })
@@ -919,6 +941,20 @@ impl LocalMachine {
         .await
     }
 
+    /// Remove the Free Builds' images that went idle, as each Free Build ends, so a
+    /// Server only Cloud deploys to never keeps them all.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker is unavailable, admission is busy, or Docker cannot list
+    /// images or Containers.
+    pub(crate) async fn prune_free_images(&self) -> Result<ImagesRemoved, Error> {
+        self.finish_mutation(move |local| async move {
+            Ok(local.docker()?.images().prune_free_images().await?)
+        })
+        .await
+    }
+
     /// This Machine's Kept Volumes, each measured if there is time.
     ///
     /// # Errors
@@ -999,17 +1035,16 @@ impl LocalMachine {
         self.finish_shared(move |local| async move {
             let request = local.pull_as(local.scope(), request)?;
             let docker = local.docker()?;
-            let login = match &request.registry_login {
-                Some(login) => Some(docker.open_login(&request.image, login).await?),
-                None => None,
+            let credential = match &request.registry_login {
+                Some(login) => Credential::Sealed {
+                    login,
+                    sealing: docker.sealing(),
+                },
+                None => Credential::Auth(request.registry_auth.as_ref()),
             };
             let exposed_ports = docker
                 .images()
-                .pull_image(
-                    &request.image,
-                    request.policy,
-                    login.as_ref().or(request.registry_auth.as_ref()),
-                )
+                .pull_image(&request.image, request.policy, credential)
                 .await?;
             Ok(ImagePulled { exposed_ports })
         })
@@ -1069,7 +1104,7 @@ impl LocalMachine {
                         .pull_image(
                             &request.image,
                             request.policy,
-                            request.registry_auth.as_ref(),
+                            Credential::Auth(request.registry_auth.as_ref()),
                         )
                         .await?
                 }
@@ -1637,6 +1672,43 @@ impl LocalMachine {
         self.converge_now(want, admitted).await
     }
 
+    /// The one image `want` may run. A pin and a receipt that name different images are
+    /// refused. An unsigned creation's receipt must hold under this Machine's key; a signed
+    /// creation ignores the receipt.
+    fn runs(&self, want: &ContainerWant, admitted: Option<&AdmittedSpec>) -> Result<Runs, Error> {
+        let ContainerWant::Running {
+            container: RunTarget::New(new),
+            ..
+        } = want
+        else {
+            return Ok(Runs::Spec);
+        };
+        if let (Some(pinned), Some(receipt)) = (&new.image_id, &new.free_receipt)
+            && *pinned != receipt.image
+        {
+            return Err(crate::docker::Error::FreeImage(
+                crate::docker_image::FreeImageRefusal::Conflicts {
+                    pinned: pinned.clone(),
+                    receipt: receipt.image.clone(),
+                },
+            )
+            .into());
+        }
+        let unsigned = admitted.is_some_and(|admitted| !admitted.signed());
+        // A registry rule's pull, admitted already, governs over the caller's pin, which
+        // admission refused when it named other content.
+        let pinned = admitted
+            .and_then(AdmittedSpec::pin)
+            .or(new.image_id.as_ref());
+        match (&new.free_receipt, pinned) {
+            (Some(receipt), _) if unsigned => Ok(Runs::Free(
+                crate::docker_image::FreeImage::check(receipt, self.docker()?.sealing())?,
+            )),
+            (_, Some(pinned)) => Ok(Runs::Pinned(pinned.clone())),
+            (_, None) => Ok(Runs::Spec),
+        }
+    }
+
     async fn converge_now(
         &self,
         want: ContainerWant,
@@ -1644,9 +1716,19 @@ impl LocalMachine {
     ) -> Result<EnsuredContainer, Error> {
         let locator = want_locator(&want);
         let fence = start_fence(&want);
-        let pin = pinned(&want);
         let replan = (!self.in_switch.held()).then(|| want.clone());
         let mut now = self.container_now(&locator).await?;
+        // The one image this request may run, settled before any Container serves it:
+        // every branch below reads it, never the pin or the receipt.
+        let runs = match self.runs(&want, admitted.as_ref()) {
+            Ok(runs) => runs,
+            Err(error) => {
+                return Ok(EnsuredContainer::Refused {
+                    now: redacted(now),
+                    refusal: create_refusal(error)?,
+                });
+            }
+        };
         let admission = admitted
             .as_ref()
             .map_or(ployz_core::Admission::Free, AdmittedSpec::admission);
@@ -1666,7 +1748,7 @@ impl LocalMachine {
         let mut acted = None;
         let refusal = match step {
             ContainerStep::Done => {
-                let differs = match (&pin, now.present()) {
+                let differs = match (runs.id(), now.present()) {
                     (Some(pin), Some(observed)) => {
                         self.image_differs(&observed.container_id, pin).await?
                     }
@@ -1691,7 +1773,7 @@ impl LocalMachine {
                 });
             }
             ContainerStep::CreateAndStart(new) => match self
-                .create_and_start(new, fence, admitted.ok_or_else(unadmitted)?, switch)
+                .create_and_start(new, runs, fence, admitted.ok_or_else(unadmitted)?, switch)
                 .await?
             {
                 Made::Refused(refusal) => Some(refusal),
@@ -1702,8 +1784,8 @@ impl LocalMachine {
             },
             ContainerStep::Start(id) => {
                 acted = Some(id);
-                match pin {
-                    Some(pin) if let Some(refusal) = self.image_differs(&id, &pin).await? => {
+                match runs.id() {
+                    Some(pin) if let Some(refusal) = self.image_differs(&id, pin).await? => {
                         Some(refusal)
                     }
                     Some(_) | None => match fence {
@@ -1875,6 +1957,7 @@ impl LocalMachine {
     async fn create_and_start(
         &self,
         new: NewContainer,
+        runs: Runs,
         fence: Option<StartFence>,
         admitted: AdmittedSpec,
         switch: Option<SwitchGuard>,
@@ -1882,17 +1965,7 @@ impl LocalMachine {
         let outcome = self
             .finish_mutation(move |local| async move {
                 let _switch = switch;
-                let pin = new.image_id.clone();
-                let login = match (&pin, new.image_prepared, &new.registry_login) {
-                    (None, false, Some(login)) => {
-                        let image = &new.resolved_spec.container.image;
-                        match local.docker()?.open_login(image, login).await {
-                            Ok(login) => Some(login),
-                            Err(error) => return create_refusal(error.into()).map(Made::Refused),
-                        }
-                    }
-                    _ => None,
-                };
+                let sealing = local.docker()?.sealing().clone();
                 let created = local
                     .create_container_admitted(CreationFacts {
                         kind: new.slot.kind,
@@ -1901,12 +1974,18 @@ impl LocalMachine {
                         creation_key: new.slot.creation_key.as_str().to_owned(),
                         deployment_id: new.deployment_id,
                         r#gen: new.r#gen,
-                        image: match (&pin, new.image_prepared) {
-                            (Some(pin), _) => ImagePull::Pinned(pin),
-                            (None, true) => ImagePull::Prepared,
-                            (None, false) => {
-                                ImagePull::Policy(login.as_ref().or(new.registry_auth.as_ref()))
-                            }
+                        image: match (&runs, new.image_prepared) {
+                            (Runs::Free(free), _) => ImagePull::Free(free),
+                            (Runs::Pinned(pin), _) => ImagePull::Pinned(pin),
+                            (Runs::Spec, true) => ImagePull::Prepared,
+                            // A sealed login opens only if this pull reaches a registry.
+                            (Runs::Spec, false) => ImagePull::Policy(match &new.registry_login {
+                                Some(login) => Credential::Sealed {
+                                    login,
+                                    sealing: &sealing,
+                                },
+                                None => Credential::Auth(new.registry_auth.as_ref()),
+                            }),
                         },
                         admitted,
                         replaces: new.replaces,
@@ -1920,7 +1999,7 @@ impl LocalMachine {
                 let acted = |refusal| Made::Acted(created.container_id, refusal);
                 // A create may adopt a Container another request made from the same spec,
                 // which may run another image: it never starts for a pinned request.
-                if let Some(pin) = &pin
+                if let Some(pin) = runs.id()
                     && let Some(refusal) = local.image_differs(&created.container_id, pin).await?
                 {
                     return Ok(acted(Some(refusal)));
@@ -2089,6 +2168,7 @@ impl LocalMachine {
 }
 
 /// What a creation did with the slot.
+#[derive(Debug)]
 enum Made {
     /// It made nothing, so the reply reads the slot.
     Refused(ContainerRefusal),
@@ -2525,18 +2605,22 @@ fn refuse(reason: ContainerRefusalReason, message: impl Into<String>) -> Contain
     }
 }
 
-/// The image a new creation is pinned to, which every Container it names must run.
-fn pinned(want: &ContainerWant) -> Option<ployz_core::ImageDigest> {
-    match want {
-        ContainerWant::Running {
-            container: RunTarget::New(new),
-            ..
-        } => new.image_id.clone(),
-        ContainerWant::Running { .. }
-        | ContainerWant::Stopped { .. }
-        | ContainerWant::Gone { .. }
-        | ContainerWant::Out { .. }
-        | ContainerWant::Held { .. } => None,
+/// The one image a request may run: what its spec names, an image ID it is pinned to,
+/// or a Free Build's image whose receipt held. Every Container the request names runs it.
+#[derive(Debug)]
+enum Runs {
+    Spec,
+    Pinned(ployz_core::ImageDigest),
+    Free(crate::docker_image::FreeImage),
+}
+
+impl Runs {
+    fn id(&self) -> Option<&ployz_core::ImageDigest> {
+        match self {
+            Self::Spec => None,
+            Self::Pinned(id) => Some(id),
+            Self::Free(free) => Some(free.id()),
+        }
     }
 }
 
@@ -2602,7 +2686,9 @@ fn create_refusal(error: Error) -> Result<ContainerRefusal, Error> {
             Docker::ImagePull(_)
             | Docker::ImageAbsent { .. }
             | Docker::PlacedImageGone { .. }
+            | Docker::PlacedImageDisagrees { .. }
             | Docker::UnsignedImage(_)
+            | Docker::FreeImage(_)
             | Docker::DiskFull { .. }
             | Docker::RegistryLogin(
                 LoginRefused::Uppercase(_)
