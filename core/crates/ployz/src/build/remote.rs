@@ -289,12 +289,17 @@ async fn execute_attempt(
 ) -> Completion {
     let mut evidence = ployz_build::WorkEvidence::new(&definition.targets);
     // The Builder opens the Sealed values; here their files are named, not present.
-    if let Err(error) =
-        remote::validate_capture(inputs.root(), &definition, remote::SealedFiles::Pending)
-    {
-        return Completion::Failed(
-            failed(Stage::Preparation, error.to_string()).with_work(evidence),
-        );
+    let files = match access {
+        Access::Full => Ok(remote::SealedFiles::Pending),
+        Access::Free => inputs
+            .without_registry_config()
+            .map(|()| remote::SealedFiles::Free),
+    };
+    if let Err(error) = files.map_err(|error| error.to_string()).and_then(|files| {
+        remote::validate_capture(inputs.root(), &definition, files)
+            .map_err(|error| error.to_string())
+    }) {
+        return Completion::Failed(failed(Stage::Preparation, error).with_work(evidence));
     }
     let expected = definition.targets.len();
     let admission = open_and_admit(

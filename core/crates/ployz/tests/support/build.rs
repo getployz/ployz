@@ -219,12 +219,27 @@ impl BuildFixture {
                 .unwrap()))
                 .await
                 .unwrap();
-            let mut upload = remote::Upload::new().unwrap();
+            let mut upload = if free {
+                remote::Upload::free()
+            } else {
+                remote::Upload::new()
+            }
+            .unwrap();
             loop {
                 let payload = request.message().await.unwrap().unwrap();
                 let frame: Input = remote::decode(&payload).unwrap();
                 let finish = matches!(frame, Input::Finish);
-                upload.accept(frame).unwrap();
+                if let Err(error) = upload.accept(frame) {
+                    let refused = Outcome::Failed {
+                        stage: ployz_build::Stage::Upload,
+                        message: format!("Build receiver stopped; {error}"),
+                        work: Default::default(),
+                    };
+                    let _ = sender
+                        .send(Ok(remote::encode(&Event::Finished(refused)).unwrap()))
+                        .await;
+                    return;
+                }
                 if finish {
                     break;
                 }

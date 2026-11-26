@@ -168,6 +168,16 @@ impl Upload {
         Self::create(root)
     }
 
+    /// Private staging for one bounded upload of a Free Build, which refuses what a Free
+    /// Build's Server refuses.
+    /// # Errors
+    /// Reports failure to create protected staging.
+    pub fn free() -> Result<Self, InputError> {
+        let mut upload = Self::new()?;
+        upload.access = crate::Access::Free;
+        Ok(upload)
+    }
+
     /// Staging at `root`, one attempt's own directory in the staging of `slot`, which it
     /// holds until the directory is gone.
     pub(crate) fn owned(slot: &crate::builder::Lock, root: PathBuf) -> Result<Self, InputError> {
