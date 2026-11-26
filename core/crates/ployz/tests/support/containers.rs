@@ -37,6 +37,7 @@ pub async fn run(
                 answer: ployz_core::AnswerWhen::Started,
                 image_id: None,
                 replaces: None,
+                free_receipt: None,
             }),
             rotation: RunRotation::Pending,
         },

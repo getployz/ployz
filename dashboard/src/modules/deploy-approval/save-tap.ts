@@ -5,16 +5,16 @@
  * only relays the rule view and the answer, and each Server checks the rule on every push.
  */
 import type { ConfigCommand, PostedVersion, RuleView, SavedRule, VersionsDraft } from "@ployz/sdk";
-import { type PushBranch, sourceNeed } from "@ployz/sdk/authority";
+import { sourceNeed } from "@ployz/sdk/authority";
 import { StoreRefused } from "#/lib/refusal";
 import type { OnlyPasskey } from "#/modules/passkeys/passkey-statement";
 import { signWithPasskey } from "#/modules/passkeys/passkey-statement";
 import { namesReview } from "./deploy-tap";
 import type { SaveTap } from "./deploy-tap.server";
-import { draftSource, movedFrom, type OwnerOf, priorOf } from "./source-step";
+import { draftSource, movedFrom, type OwnerOf, priorOf, type SourceOn } from "./source-step";
 
-/** The branch Automatic deploys signs the rule for, and the rule the page showed when the person clicked. */
-export type TurnOn = PushBranch & { readonly shown: SavedRule["prior"] };
+/** The branch or repository Automatic deploys signs the rule for, and the rule the page showed when the person clicked. */
+export type TurnOn = SourceOn & { readonly shown: SavedRule["prior"] };
 
 /** Whether two reads name the same kept rule at the same generation. */
 const samePrior = (a: SavedRule["prior"], b: SavedRule["prior"]) =>
@@ -32,7 +32,7 @@ export type SaveAsk = {
   readonly passkeys: readonly OnlyPasskey[];
   readonly command: Publish;
   readonly prior: SavedRule["prior"];
-  /** The branch whose pushes stop deploying when the rule moves off it. */
+  /** The branch or repository that stops deploying when the rule moves off it. */
   readonly stops: string | null;
   /** The review version the rule was drafted from: only a retry of this review reuses the answer. */
   readonly review: string;
@@ -73,7 +73,7 @@ const saves = (view: RuleView, command: Publish): view is RuleView & { version: 
  * for a passkey. When one is needed but can't be asked for, the Save goes without it and says why. A Save whose review
  * moved since the person looked is sent as it is, and the Store refuses it as stale.
  *
- * `on` is the branch Automatic deploys turns the rule on for or approves again: that Save always signs a rule, even one
+ * `on` is the branch or repository Automatic deploys turns the rule on for or approves again: that Save always signs a rule, even one
  * the person ended, and saves nothing when it can't.
  */
 export async function prepareSave(command: Publish, read: ReadSave, ownerOf: OwnerOf, now = Date.now(), on?: TurnOn): Promise<SavePrepared> {
@@ -117,7 +117,8 @@ export async function prepareSave(command: Publish, read: ReadSave, ownerOf: Own
   }, view, gate.members, ownerOf, on);
   if (drafted.kind === "held") return held(drafted.reason, drafted.drafted);
   const signed = drafted.draft;
-  if (signed?.source === undefined) return on === undefined ? plain : skip(`No service deploys on push from ${on.branch}.`);
+  if (signed?.source === undefined) return on === undefined ? plain : skip("branch" in on ? `No service deploys on push from ${on.branch}.`
+    : `No service runs an image from ${on.registry.host}/${on.registry.repository}.`);
   return {
     kind: "ask",
     ask: {

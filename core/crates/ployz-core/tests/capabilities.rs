@@ -50,6 +50,14 @@ const FIELD_FLOOR: &[&str] = &[
 /// Each capability above the floor, and what a caller does when a Machine lacks it.
 const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
+        "ployz.build.free.v1",
+        "gated: nothing sends a free Build yet; Cloud must send one only to a Server that advertises it, and an older daemon refuses the unknown call",
+    ),
+    (
+        "ployz.container.free-receipt.v1",
+        "gated: Cloud must attach a receipt only for a Server that advertises it. An older daemon ignores `free_receipt` and pulls the unsigned creation's image itself, which a free Build's image ID never names in a registry, so it fails closed",
+    ),
+    (
         "ployz.machine.join-trust.v1",
         "gated: a Server seals the keys and removals it holds only for a recipient whose row claims it, and a joiner that claims it refuses to serve without them, naming the admitting Server to upgrade",
     ),
@@ -88,6 +96,10 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
         "ployz.container.deploy-rule.v1",
         "gated: Cloud attaches a rule proof only for a Machine that advertises it. An older daemon ignores `rule`, and under Device enforcement it refuses the Operator's creation for want of a deploy approval, so a rule deploy there fails closed",
+    ),
+    (
+        "ployz.container.deploy-registry-rule.v1",
+        "names the Server: the runner refuses a Deploy once, naming the Server, when it would place a Service a registry rule covers on a Machine that doesn't advertise it. An older daemon refuses the rule's registry source anyway, so the deploy fails closed",
     ),
     (
         "ployz.rule.passkey.v1",

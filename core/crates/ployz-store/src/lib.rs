@@ -84,7 +84,7 @@ pub use deployment::{
     NodeOutcome, NodeStatus, Outcome, Parent, ParentQuery, ParentView, Pinned, PostedVersion,
     RowPhase, RowState, RowTracker, RowTransition, RunEvidence, Running, RunningQuery, RunningView,
     ServerProgress, ServerRow, StoppedBy, TagPin, Unclaimed, UploadBase, UploadedSource,
-    VersionsQuery, VersionsView, WaitingService,
+    VersionsFields, VersionsQuery, VersionsView, WaitingService,
 };
 pub use domain::{
     AddDomain, ClusterDomain, ClusterDomainStatus, DnsLookup, Domain, DomainAction, DomainAdded,

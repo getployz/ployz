@@ -94,6 +94,8 @@ it.live(
       yield* provided(seedStoreOrganization(ORGANIZATION));
       const store = yield* provided(seedStoreGitService(ORGANIZATION, { project: PROJECT, environment: ENVIRONMENT, service: SERVICE }));
       const write = (command: ConfigCommand) => Effect.promise(() => store.write(ORGANIZATION, command, acmeWeb()));
+      // web reaches data, so it builds on the full route, GitHub first.
+      yield* write({ command: "create_volume", id: "00000000-0000-4000-8000-00000000b1f1", environment: here, name: "data", storage: { kind: "docker" }, mounts: [{ service: "web", path: "/data" }] });
       yield* write({ command: "admit", admit: "deploy", id: DEPLOYMENT, environment: here, services: [], version: null, accept_volume_loss: [] });
       const view = () => Effect.promise(() => store.read(ORGANIZATION, { query: "deployment", id: DEPLOYMENT }));
 

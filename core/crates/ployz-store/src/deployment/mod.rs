@@ -43,7 +43,7 @@ pub(crate) use targeting::Targeting;
 use targeting::scope_sql;
 pub use versions::{
     Parent, ParentQuery, ParentView, Pinned, PostedVersion, Running, RunningQuery, RunningView,
-    TagPin, VersionsQuery, VersionsView,
+    TagPin, VersionsFields, VersionsQuery, VersionsView,
 };
 
 pub use ployz_core::deploy_progress::{
@@ -708,6 +708,10 @@ pub struct Claimed {
     /// What each target Service runs, by runtime name, with the signed versions kept for
     /// it. A Service without one sends its Saved image and no statement.
     pub ran: BTreeMap<ServiceName, Pinned>,
+    /// Each Service it builds whose build is a free Build, by runtime name: it runs
+    /// unsigned, so a Server builds it with nothing secret and its image runs by the
+    /// receipt that Server gives.
+    pub free: BTreeSet<ServiceName>,
 }
 
 /// One node a Deployment targets, as frozen at admission. A row stores a Service the

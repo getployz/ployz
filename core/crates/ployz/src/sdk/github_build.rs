@@ -95,11 +95,15 @@ pub async fn github_start(
     .await?;
     let approved = match rule {
         Some(GithubRule::Push(signed)) => {
-            if let Ok(rule) = signed.open() {
+            if let Some(github) = signed
+                .open()
+                .ok()
+                .and_then(|rule| rule.source.github().cloned())
+            {
                 return Ok(Dialed {
                     outcome: GithubStart::Follow {
-                        workflow: rule.source.workflow,
-                        workflow_ref: rule.source.builder.r#ref,
+                        workflow: github.workflow,
+                        workflow_ref: github.builder.r#ref,
                         commit: built.commit.to_string(),
                     },
                     foreign: Vec::new(),
@@ -107,7 +111,11 @@ pub async fn github_start(
             }
             None
         }
-        Some(GithubRule::Dispatch(signed)) => signed.open().ok(),
+        // A registry rule builds nothing, so the build goes on as if there were no rule.
+        Some(GithubRule::Dispatch(signed)) => signed
+            .open()
+            .ok()
+            .filter(|rule| rule.source.github().is_some()),
         None => None,
     };
     let deployment = only(&built.input, &id.service)?;
@@ -138,18 +146,20 @@ pub async fn github_start(
     // the Service's Servers run.
     let mut refused = None;
     if let Some(rule) = approved
+        && let Some(github) = rule.source.github()
         && !matches!(outside, Ok(OutsideBuild::Reuse { .. }))
     {
         let signed = (rule.service(&id.service))
-            .map(|approved| approved.policy.platforms.clone())
+            .and_then(|approved| approved.policy.as_ref())
+            .map(|policy| policy.platforms.clone())
             .unwrap_or_default();
         match unbuildable(&signed, &id.service, &outside) {
             None => {
                 return Ok(Dialed {
                     outcome: GithubStart::Approved {
-                        workflow: rule.source.workflow,
-                        workflow_ref: rule.source.builder.r#ref,
-                        branch: rule.source.branch,
+                        workflow: github.workflow.clone(),
+                        workflow_ref: github.builder.r#ref.clone(),
+                        branch: github.branch.clone(),
                         commit: commit.to_string(),
                     },
                     foreign,
@@ -849,6 +859,7 @@ pub async fn github_finish(
                             platforms: platforms.to_vec(),
                             location: "build-grant".to_owned(),
                         },
+                        free: None,
                     };
                     GithubEnd::Built {
                         receipt: serde_json::to_value(receipt).expect("a build receipt is JSON"),

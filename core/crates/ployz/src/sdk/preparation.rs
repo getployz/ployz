@@ -43,6 +43,11 @@ pub struct PreparationInput {
     /// The Service's Preferred Machine, tried before any other Machine.
     #[serde(default)]
     pub preferred_machine: Option<ployz_core::MachineId>,
+    /// The Services, by runtime name, that build free: they run unsigned, so a Server
+    /// builds each with nothing secret and its image runs by the receipt that Server
+    /// gives. Only a receipt a free Build gave serves one, and only one serves it.
+    #[serde(default)]
+    pub free: std::collections::BTreeSet<ServiceName>,
     /// The content-addressed image each Service's tag runs as, written into its spec once
     /// it is lowered. Only a Store runner sets it.
     #[serde(skip)]
@@ -70,6 +75,22 @@ pub struct BuildReceipt {
     pub variables: BuildVariables,
     pub image: ployz_build::BuiltImage,
     pub machine_id: ployz_core::MachineId,
+    /// The receipt a free Build's Server gave for the image, which an unsigned creation
+    /// of it carries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub free: Option<Box<ployz_core::FreeReceipt>>,
+}
+
+impl BuildReceipt {
+    /// Whether this receipt's image may run a Service now: the build read the inputs that
+    /// give `fingerprint`, its image holds a platform, and it is a free Build's exactly when
+    /// the Service builds `free`. A free Service runs only an image a free Build vouched
+    /// for, and one that runs signed never reuses one.
+    pub(crate) fn serves(&self, fingerprint: &str, free: bool) -> bool {
+        !self.image.platforms.is_empty()
+            && self.fingerprint == fingerprint
+            && self.free.is_some() == free
+    }
 }
 
 /// Which variables are a build's inputs: a variable it never reads can change
@@ -147,6 +168,7 @@ pub(crate) fn receipts(
                         variables: variables.clone(),
                         image: build.built.clone(),
                         machine_id: build.machine_id,
+                        free: build.free.clone().map(Box::new),
                     }
                 }
             };
@@ -309,7 +331,8 @@ fn capture_frozen(
         return Err(invalid("checkout supplied for a non-Git service"));
     }
     let intent = frozen.intent;
-    let build = crate::build::capture(&intent, builds, opened).map_err(invalid)?;
+    let mut build = crate::build::capture(&intent, builds, opened).map_err(invalid)?;
+    build.build_free(&input.free);
     // The latest receipt names the warm Machine even when its image is stale.
     // ponytail: one preference per call; a multi-Service prepare builds on one
     // Machine, so it follows its first target's cache holder.
@@ -338,8 +361,10 @@ fn capture_frozen(
             .unwrap_or_default()
             .into_iter()
             .filter(|receipt| {
-                !receipt.image.platforms.is_empty()
-                    && receipt.fingerprint == fingerprint(identity, service, &receipt.variables)
+                receipt.serves(
+                    &fingerprint(identity, service, &receipt.variables),
+                    input.free.contains(&service.name),
+                )
             })
             .collect();
         if !matching.is_empty() {
@@ -360,6 +385,7 @@ fn capture_frozen(
                     image: service.container.image.clone(),
                     placement: service.placement.clone(),
                     built: receipt.image.clone(),
+                    free: receipt.free.as_deref().cloned(),
                     _retention: None,
                 })
         })
@@ -674,6 +700,7 @@ mod tests {
             build_receipts: BTreeMap::new(),
             build_index: 0,
             preferred_machine: None,
+            free: Default::default(),
             pins: BTreeMap::new(),
         })
         .unwrap();
@@ -716,6 +743,7 @@ mod tests {
             build_receipts: BTreeMap::new(),
             build_index: 0,
             preferred_machine: None,
+            free: Default::default(),
             pins: BTreeMap::new(),
         })
         .unwrap();

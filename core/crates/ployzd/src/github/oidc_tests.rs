@@ -11,7 +11,7 @@ use ployz_core::{
     DeviceKey, MachineId, Namespace, SealingPublicKey,
     authority::{
         CommitSha, RuleId, SignerKey,
-        rule::{Builder, RuleEvent, RuleSource, Runner},
+        rule::{Builder, GithubSource, RuleEvent, RuleSource, Runner},
     },
 };
 use ring::hmac;
@@ -218,7 +218,7 @@ fn fixture_rule() -> AutoDeployRule {
         generation: 1,
         namespace: Namespace::parse("lab").unwrap(),
         machines: vec![MachineId::parse("1".repeat(32)).unwrap()],
-        source: RuleSource {
+        source: RuleSource::Github(GithubSource {
             repository_id: text("repository_id").parse().unwrap(),
             owner_id: text("repository_owner_id").parse().unwrap(),
             repository: text("repository"),
@@ -230,7 +230,7 @@ fn fixture_rule() -> AutoDeployRule {
                 sha: CommitSha::parse(&text("job_workflow_sha")).unwrap(),
             },
             runner: Runner::GithubHosted,
-        },
+        }),
         services: Vec::new(),
         issued_at: Timestamp::from_millis(0).unwrap(),
         ended: false,
@@ -370,7 +370,10 @@ async fn a_refusal_logs_the_claim_and_the_rule_never_the_token() {
     );
 
     let mut moved = fixture_rule();
-    moved.source.builder.sha = CommitSha::from_bytes([0; 20]);
+    let RuleSource::Github(source) = &mut moved.source else {
+        panic!("a GitHub rule")
+    };
+    source.builder.sha = CommitSha::from_bytes([0; 20]);
     assert!(matches!(
         keys.check(&moved, token(), issued_at()).await,
         Err(ProofRefusal::Claim(AuthorityRefusal::Mismatch {

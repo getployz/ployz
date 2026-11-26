@@ -178,17 +178,35 @@ pub(crate) fn uploads_of(
 /// The Git Services `stored` builds, with the Builders each tries.
 pub(crate) fn sources_of(tx: &mut dyn Tx, stored: &Stored) -> Result<Vec<GitSource>, RpcError> {
     let saved = deployment::saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
-    routed(tx, stored, &saved)
+    // A Deployment that doesn't lower fails its claim; until then its builds route as any.
+    let target = match deployment::lowered(tx, stored, &saved) {
+        Ok(lowered) => lowered.intent.target,
+        Err(refused) if refused.code == ployz_core::RpcErrorCode::InvalidArgument => Vec::new(),
+        Err(error) => return Err(error),
+    };
+    routed(tx, stored, &saved, &target)
 }
 
 /// The Git Services `stored` builds from `saved`, each with the Builders it tries: only
-/// GitHub for one that builds under the automatic deploy rule.
+/// GitHub for one that builds under the automatic deploy rule, and only the Servers for a
+/// free Build of `target`.
 pub(crate) fn routed(
     tx: &mut dyn Tx,
     stored: &Stored,
     saved: &ployz_core::config::SavedEnvironmentIntent,
+    target: &[ployz_core::RequestedServiceSpec],
 ) -> Result<Vec<GitSource>, RpcError> {
     let organization = deployment::organization(tx, &stored.summary.id)?;
+    let free = deployment::versions::free_builds(
+        tx,
+        (
+            &stored.summary.environment_id,
+            organization.as_str(),
+            stored.namespace(),
+        ),
+        saved,
+        (&stored.nodes, target),
+    )?;
     let mut sources = Vec::new();
     for (id, mut source) in git_sources(tx, stored, saved)? {
         (source.builders, source.preferred_machine) = builders::walk(
@@ -211,6 +229,11 @@ pub(crate) fn routed(
             source
                 .builders
                 .retain(|builder| *builder == Builder::Github);
+        }
+        // A free Build runs only where its image's receipt is made: on a Server, whatever
+        // the Build Order says, as an upload's does.
+        if free.contains(&source.service) {
+            source.builders = vec![Builder::Servers];
         }
         sources.push(source);
     }

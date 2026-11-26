@@ -912,6 +912,7 @@ fn creation(
             image_id: None,
             answer: ployz_core::AnswerWhen::Started,
             replaces: None,
+            free_receipt: None,
         }),
         rotation: ployz_core::RunRotation::Pending,
     }
@@ -922,8 +923,8 @@ fn online_proof(service: &ServiceName) -> ployz_core::authority::RuleProof {
     use ployz_core::authority::rule::{Builder, RuleEvent, Runner};
     use ployz_core::authority::{
         AttestKey, AutoDeployRule, BuildClaim, BuildStage, BuiltImageDigest, CommitAuthority,
-        CommitSha, PolicyDigest, RuleEvidence, RuleId, RuleProof, RuleSource, Signed, Signer,
-        SignerKey, Timestamp,
+        CommitSha, GithubSource, PolicyDigest, RuleEvidence, RuleId, RuleProof, RuleSource, Signed,
+        Signer, SignerKey, Timestamp,
     };
     let cluster = ployz_core::SealingPublicKey::from_bytes([3; 32]);
     let signer = Signer::from_seed(&[1; 32]);
@@ -934,7 +935,7 @@ fn online_proof(service: &ServiceName) -> ployz_core::authority::RuleProof {
         generation: 1,
         namespace: ployz_core::Namespace::parse("app").unwrap(),
         machines: Vec::new(),
-        source: RuleSource {
+        source: RuleSource::Github(GithubSource {
             repository_id: 11,
             owner_id: 1,
             repository: "acme/web".into(),
@@ -943,7 +944,7 @@ fn online_proof(service: &ServiceName) -> ployz_core::authority::RuleProof {
             events: vec![RuleEvent::Push],
             builder: Builder::pinned(),
             runner: Runner::GithubHosted,
-        },
+        }),
         services: Vec::new(),
         issued_at: Timestamp::from_millis(1_800_000_000_000).unwrap(),
         ended: false,
@@ -952,7 +953,7 @@ fn online_proof(service: &ServiceName) -> ployz_core::authority::RuleProof {
     RuleProof {
         rule: Signed::sign(&rule, &signer).unwrap(),
         evidence: RuleEvidence::Online(ployz_core::GithubToken::new("image-token".to_owned())),
-        claim: BuildClaim {
+        claim: Some(BuildClaim {
             cluster,
             rule: rule.rule,
             generation: 1,
@@ -964,7 +965,7 @@ fn online_proof(service: &ServiceName) -> ployz_core::authority::RuleProof {
                 image: BuiltImageDigest::parse(&format!("sha256:{}", "d".repeat(64))).unwrap(),
                 attest: AttestKey::from_bytes([0x55; 32]),
             },
-        },
+        }),
         reader: None,
     }
 }
@@ -993,7 +994,10 @@ async fn a_service_created_after_its_hook_carries_the_verified_build_the_hook_go
         )
         .unwrap();
     let mut proofs = crate::deploy::RuleProofs::default();
-    proofs.insert(spec.name.clone(), online_proof(&spec.name));
+    proofs.insert(
+        spec.name.clone(),
+        ployz_core::authority::KeptRule::built(online_proof(&spec.name)),
+    );
     let client = crate::deploy::Approved::new(
         session.client().unwrap(),
         crate::deploy::Approvals::signed(Vec::new(), proofs.clone()),
@@ -1020,6 +1024,138 @@ async fn a_service_created_after_its_hook_carries_the_verified_build_the_hook_go
         Some(issued)
     );
 
+    session.close().await;
+    server.abort();
+}
+
+// A registry rule's Server pulls the image itself when it creates the Container, and the
+// registry refuses a pull without a login. The Deploy pulls ahead with the Service's
+// login and then creates with none, so each creation under the rule, hook and Service
+// alike, must carry that login again.
+#[tokio::test]
+async fn each_creation_under_a_registry_rule_carries_its_services_login() {
+    use crate::sdk::test_support as support;
+    use ployz_core::ContainerKind;
+    use ployz_core::authority::{RuleEvidence, RuleProof};
+    let one = support::machine('a', "one");
+    let unused = ployz_core::authority::VerifiedBuild::from_bytes([0x5a; 32]);
+    let service = support::DeployService::new(one.clone()).checking_rules(unused);
+    let (address, server) = support::listening(service).await;
+    let session = crate::sdk::connect_connections(
+        vec![Connection::tcp(address)],
+        Arc::new(SystemConnector::default()),
+    )
+    .await
+    .unwrap();
+    let spec = crate::global_fixtures::requested(ployz_core::ServiceMode::Global)
+        .to_resolved(
+            crate::global_fixtures::service_id('a'),
+            ployz_core::ResolvedUpdateConfig::default(),
+        )
+        .unwrap();
+    let mut proofs = crate::deploy::RuleProofs::default();
+    proofs.insert(
+        spec.name.clone(),
+        ployz_core::authority::KeptRule {
+            proof: Box::new(RuleProof {
+                evidence: RuleEvidence::Registry,
+                claim: None,
+                ..online_proof(&spec.name)
+            }),
+            login: Some(ployz_core::SealedLogin {
+                host: "registry.example".into(),
+                sealed: ployz_core::Ciphertext::from_bytes(vec![7; 48]),
+            }),
+        },
+    );
+    let client = crate::deploy::Approved::new(
+        session.client().unwrap(),
+        crate::deploy::Approvals::signed(Vec::new(), proofs),
+    );
+
+    for (kind, key) in [
+        (ContainerKind::PreDeployHook, "hook:test"),
+        (ContainerKind::ServiceContainer, "global:test"),
+    ] {
+        let created = crate::deploy::CopyLifecycle::ensure_unsettled(
+            &client,
+            &one.machine.id,
+            creation(&spec, kind, key),
+            None,
+        )
+        .await;
+        assert!(
+            matches!(created, Ok(ployz_core::EnsuredContainer::Ensured { .. })),
+            "the {kind} is created: {created:?}"
+        );
+    }
+
+    session.close().await;
+    server.abort();
+}
+
+// A Server drain recreates a registry rule's copy from what the Store keeps for it.
+// The destination pulls the private image itself, so the kept rule must bring the
+// login of what's applied with it.
+#[tokio::test]
+async fn a_drained_copy_under_a_registry_rule_pulls_with_the_applied_login() {
+    use crate::sdk::test_support as support;
+    use ployz_core::ContainerKind;
+    use ployz_store::testing::shop;
+    let one = support::machine('a', "one");
+    let unused = ployz_core::authority::VerifiedBuild::from_bytes([0x5a; 32]);
+    let service = support::DeployService::new(one.clone()).checking_rules(unused);
+    let (address, server) = support::listening(service).await;
+    let session = crate::sdk::connect_connections(
+        vec![Connection::tcp(address)],
+        Arc::new(SystemConnector::default()),
+    )
+    .await
+    .unwrap();
+    let (store, who) = shop::shop();
+    shop::registry_worker(&store, &who);
+    let view: ployz_store::RuleView = store
+        .read(
+            &who,
+            &ployz_store::RuleQuery {
+                environment: ployz_store::EnvironmentRef::default(),
+                staged: false,
+            },
+        )
+        .unwrap();
+    let spec = view
+        .target
+        .iter()
+        .find(|spec| spec.name.as_str() == "worker")
+        .unwrap()
+        .to_resolved(
+            crate::global_fixtures::service_id('a'),
+            ployz_core::ResolvedUpdateConfig::default(),
+        )
+        .unwrap();
+    let mut want = creation(&spec, ContainerKind::ServiceContainer, "global:test");
+    if let ployz_core::ContainerWant::Running {
+        container: ployz_core::RunTarget::New(new),
+        ..
+    } = &mut want
+    {
+        new.slot.namespace = view.namespace;
+    }
+    let client = crate::deploy::Approved::new(
+        session.client().unwrap(),
+        crate::deploy::Approvals::kept(crate::deploy::KeptVersions::new(
+            Arc::new(store),
+            who.organization,
+        )),
+    );
+
+    let created =
+        crate::deploy::CopyLifecycle::ensure_unsettled(&client, &one.machine.id, want, None).await;
+
+    assert!(
+        matches!(created, Ok(ployz_core::EnsuredContainer::Ensured { .. })),
+        "{created:?}"
+    );
     session.close().await;
     server.abort();
 }
@@ -1886,6 +2022,8 @@ async fn a_deploy_with_a_reused_build_still_recreates_the_services_its_claim_lis
     runs.machine.accepts_builds = false;
     builder.machine.runtime.architecture = "x86_64".into();
     runs.machine.runtime.architecture = "x86_64".into();
+    builder.machine.runtime.capabilities = [ployz_core::BUILD_FREE_CAPABILITY.to_owned()].into();
+    runs.machine.runtime.capabilities = [ployz_core::FREE_RECEIPT_CAPABILITY.to_owned()].into();
     let mut service = support::DeployService::new(builder.clone())
         .with_machines(vec![builder, runs.clone()])
         .with_exec_exit(0);
@@ -1909,12 +2047,15 @@ async fn a_deploy_with_a_reused_build_still_recreates_the_services_its_claim_lis
     )
     .await
     .unwrap();
-    // The image an earlier Deployment built for `api`, as its receipt names it.
+    // The image an earlier Deployment built for `api`, as its receipt names it. `api` reaches
+    // no data, so it built free.
+    assert_eq!(claimed.free, [api.clone()].into());
     let built = session
         .prepare(PreparationInput {
             deployment: claimed.input.clone(),
             sources: BTreeMap::from([(api.clone(), root.clone())]),
             source_commits: BTreeMap::from([(api.clone(), commit)]),
+            free: claimed.free.clone(),
             ..PreparationInput::default()
         })
         .unwrap()
@@ -1922,6 +2063,7 @@ async fn a_deploy_with_a_reused_build_still_recreates_the_services_its_claim_lis
         .await
         .unwrap();
     let receipt = built.build_receipts().get(&api).unwrap().clone();
+    assert!(receipt.free.is_some());
     built.close();
 
     let ran = pins(&claimed.ran);

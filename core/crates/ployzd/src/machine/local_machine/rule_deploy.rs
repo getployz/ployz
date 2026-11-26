@@ -11,16 +11,26 @@
 //!
 //!   signature and Cluster ─▶ mark ─▶ floor ─▶ evidence (token and head, or verified
 //!     build) ─▶ verify_creation ─▶ mark again and issue (online) ─▶ hook once
+//!
+//! A registry rule builds nothing. Its creation names an image of the approved repository
+//! by digest, and this Machine pulls that digest from the registry itself, with the
+//! Service's sealed login. The ID that pull placed is what the Container runs, whether it
+//! is made, adopted or started, so a local image under the same name never runs unless the
+//! registry serves the same content.
+//!
+//!   signature and Cluster ─▶ mark ─▶ floor ─▶ verify_registry_creation ─▶ pull ─▶ mark
+//!     again ─▶ pin the pulled ID ─▶ hook once per Service, image and generation
 
 use std::time::Instant;
 
 use hkdf::hmac::Mac as _;
 use ployz_core::{
-    ContainerKind, ContainerWant, QualifiedService, RunTarget, Sealing, ServiceName,
+    ContainerKind, ContainerWant, ImageDigest, QualifiedService, RunTarget, SealedLogin, Sealing,
+    ServiceName,
     authority::{
-        AuthorityRefusal, AutoDeployRule, Budget, BuildClaim, MismatchField, RuleEvidence,
-        RuleFacts, RuleProof, Signed, Timestamp, VerifiedBuild, deploy::Creation,
-        rule::verify_signature,
+        AuthorityRefusal, AutoDeployRule, Budget, BuildClaim, MismatchField, RegistryPin,
+        RuleEvidence, RuleFacts, RuleProof, RuleSource, Signed, Timestamp, VerifiedBuild,
+        deploy::Creation, rule::verify_signature,
     },
 };
 
@@ -36,6 +46,59 @@ pub enum RuleDeployRefusal {
     Proof(crate::github::oidc::ProofRefusal),
     #[error("this server could not read the approved branch's head from GitHub")]
     Head(#[source] crate::github::head::HeadError),
+    /// Carries the pull's reason in its text, since a refusal reaches the caller without
+    /// its causes.
+    #[error(
+        "This server couldn't pull the image the automatic deploy rule approves from its registry: {}",
+        ployz_core::error_chain::row(.0)
+    )]
+    Pull(crate::docker_image::RegistryPull),
+}
+
+/// Where a registry rule's image comes from: the registry itself, asked by this Machine.
+pub(crate) trait Registry {
+    /// Pull `pin` with `login`, and answer the ID of the image the pull placed.
+    ///
+    /// # Errors
+    /// Returns the pull's refusal, as [`pull_refused`] names it.
+    async fn pull(
+        &self,
+        pin: &RegistryPin,
+        login: Option<&SealedLogin>,
+    ) -> Result<ImageDigest, Error>;
+}
+
+/// This Machine's Docker, reached only when a registry rule pulls, so a GitHub rule's
+/// deploy never needs it.
+impl Registry for LocalMachine {
+    async fn pull(
+        &self,
+        pin: &RegistryPin,
+        login: Option<&SealedLogin>,
+    ) -> Result<ImageDigest, Error> {
+        self.docker()?
+            .pull_registry_pin(pin, login)
+            .await
+            .map_err(pull_refused)
+    }
+}
+
+/// A registry pull's failure as a rule deploy's refusal: a registry that serves other
+/// content under the digest is refused by name.
+pub(crate) fn pull_refused(error: crate::docker_image::RegistryPull) -> Error {
+    use crate::docker_image::RegistryPull;
+    match error {
+        RegistryPull::OtherDigest { .. } => {
+            Error::RuleDeployRefused(RuleDeployRefusal::Rule(AuthorityRefusal::Mismatch {
+                field: MismatchField::RegistryDigest,
+            }))
+        }
+        error @ (RegistryPull::Registry(_)
+        | RegistryPull::Login(_)
+        | RegistryPull::Inspect(_)
+        | RegistryPull::Pull(_)
+        | RegistryPull::Moved) => Error::RuleDeployRefused(RuleDeployRefusal::Pull(error)),
+    }
 }
 
 impl RuleDeployRefusal {
@@ -56,7 +119,7 @@ impl RuleDeployRefusal {
                 | AuthorityRefusal::UnknownPasskey
                 | AuthorityRefusal::Forgotten { .. },
             ) => Some("Approve again under Automatic deploys in Ployz Cloud"),
-            Self::Rule(_) | Self::Proof(_) | Self::Head(_) => None,
+            Self::Rule(_) | Self::Proof(_) | Self::Head(_) | Self::Pull(_) => None,
         }
     }
 }
@@ -103,6 +166,8 @@ pub(crate) struct RuleAdmitted {
     pub(crate) verified: Option<VerifiedBuild>,
     /// The place a hook's push takes when its create runs.
     pub(crate) hook: Option<HookPlace>,
+    /// The image a registry rule's pull placed, which the Container must run.
+    pub(crate) pin: Option<ImageDigest>,
 }
 
 /// The place a push's hook takes under its rule. It stays with the hook's admission until
@@ -112,8 +177,20 @@ pub(crate) struct RuleAdmitted {
 #[derive(Clone, Debug)]
 pub(crate) struct HookPlace {
     rule: ployz_core::authority::RuleId,
-    claim: BuildClaim,
+    push: HookPush,
     slot: ployz_core::CreationKey,
+}
+
+/// What a hook's place is for: one GitHub build, or one registry image a Service runs
+/// under one generation.
+#[derive(Clone, Debug)]
+enum HookPush {
+    Build(BuildClaim),
+    Image {
+        service: ServiceName,
+        generation: u64,
+        pin: RegistryPin,
+    },
 }
 
 impl HookPlace {
@@ -123,9 +200,23 @@ impl HookPlace {
     /// Returns [`Error::RuleDeployRefused`] for a place another slot took, and
     /// [`Error::ApprovalRecord`] when the record cannot be read or written.
     pub(crate) fn take(&self, approvals: &super::ConsumptionLog) -> Result<(), Error> {
-        approvals.consume_rule_hook(self.rule, &self.claim, &self.slot, |refusal| {
-            Error::RuleDeployRefused(RuleDeployRefusal::Rule(refusal))
-        })
+        let refused = |refusal| Error::RuleDeployRefused(RuleDeployRefusal::Rule(refusal));
+        match &self.push {
+            HookPush::Build(claim) => {
+                approvals.consume_rule_hook(self.rule, claim, &self.slot, refused)
+            }
+            HookPush::Image {
+                service,
+                generation,
+                pin,
+            } => approvals.consume_registry_hook(
+                (self.rule, *generation),
+                service,
+                pin,
+                &self.slot,
+                refused,
+            ),
+        }
     }
 }
 
@@ -142,7 +233,7 @@ impl LocalMachine {
         &self,
         want: &ContainerWant,
         proof: &RuleProof,
-        github: &impl Github,
+        (github, registry): (&impl Github, &impl Registry),
         now: Timestamp,
         budget: &mut Budget,
         admit: Admit,
@@ -186,7 +277,79 @@ impl LocalMachine {
         let service = QualifiedService::new(new.slot.namespace.clone(), new.slot.service.clone());
         self.rule_floor(cluster, &service, &rule, now)
             .map_err(|refusal| logged(&rule, &new.slot.service, refusal))?;
-        let claim = &proof.claim;
+        let facts = RuleFacts {
+            cluster,
+            attest,
+            machine: &machine,
+            namespace: &new.slot.namespace,
+            service: &new.slot.service,
+            head: None,
+        };
+        let creation = Creation {
+            service: &new.slot.service,
+            kind: new.slot.kind,
+            spec: &new.resolved_spec,
+        };
+        let claim = match (proof.build_claim().map_err(refused)?, &rule.source) {
+            (Some(claim), RuleSource::Github(_)) => claim,
+            (None, RuleSource::Registry(_)) => {
+                let pin = rule
+                    .verify_registry_creation(&facts, creation)
+                    .map_err(|refusal| logged(&rule, &new.slot.service, refusal))?;
+                let pulled = registry
+                    .pull(&pin, new.registry_login.as_ref())
+                    .await
+                    .inspect_err(|error| {
+                        tracing::warn!(rule = %rule.rule, image = %pin.reference(), "refused a deploy under a registry rule: {}", ployz_core::error_chain::row(error));
+                    })?;
+                // Checked again: a newer generation may have landed while the registry
+                // answered.
+                self.approvals.mark_rule(&rule, admit, superseded)?;
+                // The caller's pin counts for nothing beside the Server's own pull, and
+                // one that names other content is refused rather than overridden.
+                if new
+                    .image_id
+                    .as_ref()
+                    .is_some_and(|theirs| *theirs != pulled)
+                {
+                    return Err(held(MismatchField::Image));
+                }
+                let hook = (new.slot.kind == ContainerKind::PreDeployHook).then(|| HookPlace {
+                    rule: rule.rule,
+                    push: HookPush::Image {
+                        service: new.slot.service.clone(),
+                        generation: rule.generation,
+                        pin: pin.clone(),
+                    },
+                    slot: new.slot.creation_key.clone(),
+                });
+                tracing::info!(
+                    kind = %new.slot.kind,
+                    admission_us = started.elapsed().as_micros(),
+                    "deploy of {} admitted under registry rule {} gen {} image {} as {pulled}",
+                    new.slot.service,
+                    rule.rule,
+                    rule.generation,
+                    pin.reference(),
+                );
+                return Ok(RuleAdmitted {
+                    by: AdmittedBy::Rule {
+                        service,
+                        signer: signer.into(),
+                        rule: rule.rule,
+                        generation: rule.generation,
+                        issued_at: rule.issued_at,
+                    },
+                    verified: None,
+                    hook,
+                    pin: Some(pulled),
+                });
+            }
+            (Some(_), RuleSource::Registry(_)) | (None, RuleSource::Github(_)) => {
+                return Err(held(MismatchField::RuleSource));
+            }
+        };
+        let github_source = rule.github().map_err(refused)?;
         let head = match &proof.evidence {
             RuleEvidence::Online(token) => {
                 // GitHub's token signature is one more check on the same budget.
@@ -207,8 +370,8 @@ impl LocalMachine {
                 }
                 let head = github
                     .head(
-                        rule.source.repository_id,
-                        &rule.source.branch,
+                        github_source.repository_id,
+                        &github_source.branch,
                         proof.reader.as_ref(),
                     )
                     .await
@@ -216,25 +379,11 @@ impl LocalMachine {
                 Some(head)
             }
             RuleEvidence::Verified(_) => None,
+            RuleEvidence::Registry => return Err(held(MismatchField::RuleSource)),
         };
-        let facts = RuleFacts {
-            cluster,
-            attest,
-            machine: &machine,
-            namespace: &new.slot.namespace,
-            service: &new.slot.service,
-            head,
-        };
-        rule.verify_creation(
-            claim,
-            &facts,
-            Creation {
-                service: &new.slot.service,
-                kind: new.slot.kind,
-                spec: &new.resolved_spec,
-            },
-        )
-        .map_err(|refusal| logged(&rule, &new.slot.service, refusal))?;
+        let facts = RuleFacts { head, ..facts };
+        rule.verify_creation(claim, &facts, creation)
+            .map_err(|refusal| logged(&rule, &new.slot.service, refusal))?;
         let verified = match &proof.evidence {
             RuleEvidence::Verified(verified) => {
                 if !holds(&proof.rule, claim, verified, &key) {
@@ -253,10 +402,11 @@ impl LocalMachine {
                     &key,
                 )
             }
+            RuleEvidence::Registry => return Err(held(MismatchField::RuleSource)),
         };
         let hook = (new.slot.kind == ContainerKind::PreDeployHook).then(|| HookPlace {
             rule: rule.rule,
-            claim: claim.clone(),
+            push: HookPush::Build(claim.clone()),
             slot: new.slot.creation_key.clone(),
         });
         tracing::info!(
@@ -279,6 +429,7 @@ impl LocalMachine {
             },
             verified,
             hook,
+            pin: None,
         })
     }
 
@@ -323,7 +474,7 @@ impl LocalMachine {
                 field: MismatchField::GitHubClient,
             }),
         ))?;
-        self.admit_rule_deploy(want, proof, github, Timestamp::now(), budget, admit)
+        self.admit_rule_deploy(want, proof, (github, self), Timestamp::now(), budget, admit)
             .await
     }
 }

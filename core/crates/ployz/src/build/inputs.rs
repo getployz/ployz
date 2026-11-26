@@ -78,6 +78,15 @@ impl BuildInputs {
         Ok(inputs)
     }
 
+    /// Drop the empty registry configuration. A free Build's Server refuses any, and runs
+    /// Docker with its own.
+    pub(super) fn without_registry_config(&self) -> Result<(), Error> {
+        match fs::remove_file(capture::docker_config(&self.root)) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(input_error(error)),
+            _ => Ok(()),
+        }
+    }
+
     /// Copy a source once, rejecting edits observed during the copy.
     ///
     /// # Errors
