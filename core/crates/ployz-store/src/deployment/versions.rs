@@ -890,13 +890,7 @@ pub(crate) fn unsigned(
     let stored = crate::auto_rule::stored(tx, environment)?
         .as_ref()
         .and_then(crate::auto_rule::opened);
-    // A rule names each Service it ever deployed, so one that ended still says which ran
-    // signed.
-    let ruled: Vec<ServiceName> = stored
-        .iter()
-        .flat_map(|rule| &rule.services)
-        .map(|service| service.name.clone())
-        .collect();
+    let ruled = ruled(stored.as_ref());
     let ended = stored.as_ref().is_some_and(|rule| rule.ended);
     let approved: Vec<ServiceName> = match stored.filter(|rule| !rule.ended) {
         Some(rule) => crate::auto_rule::approved(&rule, namespace, saved, target),
@@ -906,12 +900,12 @@ pub(crate) fn unsigned(
     for spec in target {
         let service = saved_service(saved, nodes, spec);
         let login = service.is_some_and(crate::registry::uses_login);
-        // A Service that reaches no data runs unsigned, unless it ran signed before:
-        // every Server then keeps its name for a signed Container, and refuses it unsigned.
-        if ployz_core::authority::reach(spec, login).is_none()
-            && !ruled.contains(&spec.name)
-            && !signed_before(tx, (environment, organization, namespace), &spec.name)?
-        {
+        if runs_unsigned(
+            tx,
+            (environment, organization, namespace),
+            &ruled,
+            (spec, login),
+        )? {
             continue;
         }
         let reused = reused(tx, environment.as_str(), (nodes, spec), namespace)?;
@@ -941,6 +935,61 @@ pub(crate) fn unsigned(
         });
     }
     Ok(unsigned)
+}
+
+/// Each Service a rule names. A rule names each Service it ever deployed, so one that
+/// ended still says which ran signed.
+fn ruled(rule: Option<&ployz_core::authority::AutoDeployRule>) -> Vec<ServiceName> {
+    rule.iter()
+        .flat_map(|rule| &rule.services)
+        .map(|service| service.name.clone())
+        .collect()
+}
+
+/// Whether `spec` runs unsigned: it reaches no data, no rule in `ruled` names it, and it
+/// never ran signed. A Service that ran signed keeps its name on every Server for a signed
+/// Container, which then refuses it unsigned.
+fn runs_unsigned(
+    tx: &mut dyn Tx,
+    keys: (&crate::id::EnvironmentId, &str, &Namespace),
+    ruled: &[ServiceName],
+    (spec, login): (&RequestedServiceSpec, bool),
+) -> Result<bool, RpcError> {
+    Ok(ployz_core::authority::reach(spec, login).is_none()
+        && !ruled.contains(&spec.name)
+        && !signed_before(tx, keys, &spec.name)?)
+}
+
+/// Each Service of `target`, by the name it runs under, that a Server builds, from Git or
+/// an upload, and that runs unsigned: its build is a free Build, whose image an unsigned
+/// creation runs by its receipt, and needs nobody's approval.
+///
+/// # Errors
+/// Returns a storage error, or `corrupt` for a row that doesn't read.
+pub(crate) fn free_builds(
+    tx: &mut dyn Tx,
+    keys: (&crate::id::EnvironmentId, &str, &Namespace),
+    saved: &ployz_core::config::SavedEnvironmentIntent,
+    (nodes, target): (&[TargetNode], &[RequestedServiceSpec]),
+) -> Result<BTreeSet<ServiceName>, RpcError> {
+    use ployz_core::config::ServiceSource;
+    let rule = crate::auto_rule::stored(tx, keys.0)?
+        .as_ref()
+        .and_then(crate::auto_rule::opened);
+    let ruled = ruled(rule.as_ref());
+    let mut free = BTreeSet::new();
+    for spec in target {
+        let Some(service) = saved_service(saved, nodes, spec) else {
+            continue;
+        };
+        let login = crate::registry::uses_login(service);
+        if !matches!(service.config.source, ServiceSource::Image { .. })
+            && runs_unsigned(tx, keys, &ruled, (spec, login))?
+        {
+            free.insert(spec.name.clone());
+        }
+    }
+    Ok(free)
 }
 
 /// The Saved Service `nodes` lowered into `spec`.
@@ -975,7 +1024,7 @@ fn saved_service<'a>(
 /// Returns a storage error, or `corrupt` for a row that doesn't read.
 pub(crate) fn unsourced(
     tx: &mut dyn Tx,
-    (environment, namespace): (&crate::id::EnvironmentId, &Namespace),
+    (environment, organization, namespace): (&crate::id::EnvironmentId, &str, &Namespace),
     saved: &ployz_core::config::SavedEnvironmentIntent,
     (nodes, target): (&[TargetNode], &[RequestedServiceSpec]),
 ) -> Result<Vec<ServiceName>, RpcError> {
@@ -989,9 +1038,15 @@ pub(crate) fn unsourced(
     let approved = stored.map_or_else(Vec::new, |rule| {
         crate::auto_rule::approved(&rule, namespace, saved, target)
     });
+    let free = free_builds(
+        tx,
+        (environment, organization, namespace),
+        saved,
+        (nodes, target),
+    )?;
     Ok(target
         .iter()
-        .filter(|spec| !approved.contains(&spec.name))
+        .filter(|spec| !approved.contains(&spec.name) && !free.contains(&spec.name))
         .filter(|spec| {
             saved_service(saved, nodes, spec)
                 .is_some_and(|service| matches!(service.config.source, ServiceSource::Git { .. }))
