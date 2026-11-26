@@ -616,7 +616,8 @@ pub(crate) fn lock_all(
 }
 
 /// Lock Project `id`, serialising the writes in it that take this lock. A writer
-/// takes it before any Environment lock.
+/// takes it after any pull request row and before any PR plan or Environment (see
+/// `pull_request::preview::Plans`).
 // ponytail: this serialises multi-Environment writes within a Project; go back to
 // ID-ordered lock_all if throughput matters.
 pub(crate) fn lock_project(tx: &mut dyn Tx, id: &ProjectId) -> Result<(), RpcError> {

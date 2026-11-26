@@ -1651,7 +1651,8 @@ pub(crate) fn sweep(
 ) -> Result<Automated, RpcError> {
     let due = |closes_at: Option<i64>| closes_at.is_some_and(|at| sweep.now >= at);
     // A pull request whose preview closes for idleness rests after, so the rows of those
-    // that may lock first, in key order as news of each locks it; then every plan.
+    // that may lock first, in key order as news of each locks it; then the Projects of the
+    // removals it settles, as settling one may delete its Project; then every plan.
     let mut resting = BTreeSet::new();
     for deadline in branch::idle::deadlines(tx, &who.organization)? {
         let Deadline {
@@ -1667,6 +1668,10 @@ pub(crate) fn sweep(
     }
     for (repository_id, number) in &resting {
         lock(tx, who, *repository_id, *number)?;
+    }
+    let settling = crate::removal::settling(tx, who)?;
+    for project in &settling.projects {
+        scope::lock_project(tx, project)?;
     }
     let plans = preview::lock_plans(tx, who, None)?;
     // Read again under the plans. Closing would lose what it holds for its merge: an idle
@@ -1702,10 +1707,10 @@ pub(crate) fn sweep(
         .iter()
         .filter(|(_, closes_at)| due(*closes_at))
         .map(|(id, _)| id.clone());
-    let settling = crate::removal::settling(tx, who)?;
+    let settled = settling.members(tx, who)?;
     let locks = previews.ids().chain(closing).chain(held.iter().cloned());
-    scope::lock_all(tx, locks.chain(settling))?;
-    let mut automated = crate::removal::sweep(tx, who, sweep.now, &idle)?;
+    scope::lock_all(tx, locks.chain(settled))?;
+    let mut automated = crate::removal::sweep(tx, who, sweep.now, &settling, &idle)?;
     for id in &held {
         shut_down(tx, who, id, &mut automated)?;
     }

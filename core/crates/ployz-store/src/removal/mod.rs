@@ -308,6 +308,8 @@ pub(crate) fn remove(
             )
         }
         None => {
+            // Removing the Project deletes its plans once nothing of it runs.
+            crate::pull_request::preview::lock_project_plans(tx, &project.id)?;
             let mut members = Vec::new();
             for member in scope::members(tx, &project.id)? {
                 members.push(scope::lock_id(tx, who, &member.id)?);

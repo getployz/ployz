@@ -19,7 +19,7 @@ pub(crate) const DEFAULT_CAP: NonZeroU8 = NonZeroU8::new(5).expect("5 is not 0")
 pub(crate) const WAITING: &str = "Waiting for a preview slot";
 
 /// Why a pull request whose preview closed for idleness got none.
-const RESTING: &str = "Its preview closed while idle: push, reopen or approve it to get one again";
+const RESTING: &str = "Its preview closed while idle: push to it or reopen it to get one again";
 
 /// A plan's preview rule as stored, with its cap.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -243,11 +243,15 @@ pub(super) fn reserve(
 }
 
 /// The PR plans of `repository`, or every one of `who`'s, locked in key order. Every
-/// write that changes a plan's previews or the branches they track takes these first,
-/// after only the pull request rows it changes and before any Environment, and reads
-/// nothing it decides by until it holds them: news of a pull request, an approval, the
-/// sweep with the removals it settles, and a change to a plan ([`lock_plan`]). A plan's
-/// start-from can change, so it is no lock; the plan's own row is.
+/// write that changes a plan's previews or the branches they track takes these and
+/// reads nothing it decides by until it holds them: news of a pull request, an
+/// approval, the sweep with the removals it settles, a change to a plan ([`lock_plan`])
+/// and removing a Project ([`lock_project_plans`]). A plan's start-from can change, so
+/// it is no lock; the plan's own row is.
+///
+/// Writers lock in one order: pull request rows, then Projects, then plans, then
+/// Environments. Deleting a Project deletes its plans, so it counts as taking them: a
+/// writer that may delete one holds its Project and its plans first.
 pub(super) struct Plans {
     repository: Option<RepositoryId>,
     keys: BTreeSet<(crate::id::ProjectId, RepositoryId)>,
@@ -266,6 +270,21 @@ pub(super) fn lock_plans(
         lock_plan(tx, project, *repository_id)?;
     }
     Ok(Plans { repository, keys })
+}
+
+/// Lock every plan of Project `project`, in key order, before deleting it: see [`Plans`].
+pub(crate) fn lock_project_plans(
+    tx: &mut dyn Tx,
+    project: &crate::id::ProjectId,
+) -> Result<(), RpcError> {
+    let rows = tx.query(
+        "SELECT repository_id FROM config_pr_plan WHERE project_id = ?1 ORDER BY repository_id",
+        &[project.as_str().into()],
+    )?;
+    for row in rows {
+        lock_plan(tx, project, row.number(0, "repository")?)?;
+    }
+    Ok(())
 }
 
 /// Lock Project `project`'s plan for `repository_id`, if it has one: see [`Plans`].

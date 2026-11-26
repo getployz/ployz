@@ -1454,7 +1454,7 @@ fn a_preview_closed_for_idleness_gives_its_slot_away_until_its_pull_request_move
     let retitled = news(5, true, "2026-01-02T00:00:00Z");
     assert_eq!(
         skipped(&retitled),
-        ["Its preview closed while idle: push, reopen or approve it to get one again"]
+        ["Its preview closed while idle: push to it or reopen it to get one again"]
     );
     let mut pushed = facts(5, true, "main", "2026-01-03T00:00:00Z");
     pushed.head = backend::sha("2222222222222222222222222222222222222222");
@@ -1473,5 +1473,119 @@ fn a_preview_closed_for_idleness_gives_its_slot_away_until_its_pull_request_move
         open([5, 6, 7, 8]),
         [true, false, false, false],
         "8 opened after"
+    );
+}
+
+/// Removing a whole Project deletes its row, which deletes its PR plans, after it locked
+/// every member. News of a pull request locks the plan before `staging`, so the removal
+/// must hold the plan before any member.
+#[test]
+fn removing_a_project_and_news_of_its_pull_request_both_finish() {
+    let Some((store, who, url)) = shop_on_postgres() else {
+        return;
+    };
+    previews(&store, &who, 1);
+    let trusted = homes(&['a']);
+    let remove = ployz_store::Remove {
+        project: ProjectName::parse("shop").unwrap(),
+        environment: None,
+        version: None,
+        accept_volume_loss: Default::default(),
+        every_copy: Default::default(),
+    };
+    let event = SystemEvent::PullRequest(facts(5, true, "feature", "2026-01-01T00:00:00Z"));
+    // Hold the Project's delete until news of the pull request queues behind the removal.
+    let mut gate = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    gate.batch_execute(
+        "CREATE FUNCTION pause_project_delete() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN \
+         PERFORM pg_advisory_xact_lock(54322); RETURN OLD; END $$; \
+         CREATE TRIGGER pause_project_delete BEFORE DELETE ON config_project \
+         FOR EACH ROW EXECUTE FUNCTION pause_project_delete(); \
+         SELECT pg_advisory_lock(54322)",
+    )
+    .unwrap();
+
+    let (removed, news) = std::thread::scope(|threads| {
+        let removed = threads.spawn(|| store.write_trusted(&who, &remove, &trusted).map(drop));
+        queued(&url, 1);
+        let news = threads.spawn(|| store.system(&who.organization, &event, &trusted).map(drop));
+        queued(&url, 2);
+        gate.batch_execute("SELECT pg_advisory_unlock(54322)")
+            .unwrap();
+        (removed.join().unwrap(), news.join().unwrap())
+    });
+
+    assert!(removed.is_ok() && news.is_ok(), "{removed:?} {news:?}");
+}
+
+/// A sweep that settles a Project's removal deletes the Project, and so its plans, which
+/// it locked before any Environment. A change to a plan locks the Project before the
+/// plan, so the sweep must hold the Project before the plans.
+#[test]
+fn a_sweep_deleting_a_project_and_a_change_to_its_plan_both_finish() {
+    let Some((store, who, url)) = shop_on_postgres() else {
+        return;
+    };
+    previews(&store, &who, 1);
+    let trusted = homes(&['a']);
+    let opened = pull(
+        &store,
+        &who,
+        facts(5, true, "feature", "2026-01-01T00:00:00Z"),
+        &trusted,
+    );
+    run(&store, &opened.admitted.first().unwrap().deployment.id);
+    let remove = |version: Option<String>| ployz_store::Remove {
+        project: ProjectName::parse("shop").unwrap(),
+        environment: None,
+        version,
+        accept_volume_loss: Default::default(),
+        every_copy: Default::default(),
+    };
+    let asked = store
+        .write_trusted(&who, &remove(None), &trusted)
+        .unwrap_err();
+    let version = asked
+        .details
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .unwrap()
+        .to_owned();
+    let removing = store
+        .write_trusted(&who, &remove(Some(version)), &trusted)
+        .unwrap();
+    let ployz_store::Removal::Removing { left, .. } = removing else {
+        panic!("removed at once");
+    };
+    let taking_off = left
+        .iter()
+        .find_map(|left| left.deployment.as_ref())
+        .unwrap();
+    run(&store, &taking_off.id);
+    let sweep = SystemEvent::Sweep(Sweep { now: 0 });
+    let change = SetPrPlan {
+        include_bots: Some(true),
+        ..plan("staging")
+    };
+    let mut gate = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    let held = hold_parent(&mut gate);
+
+    let (swept, changed) = std::thread::scope(|threads| {
+        // The sweep holds every plan and waits on `staging`, before it deletes the Project.
+        let swept = threads.spawn(|| store.system(&who.organization, &sweep, &trusted).map(drop));
+        queued(&url, 1);
+        let changed = threads.spawn(|| save(&store, &who, &change));
+        queued(&url, 2);
+        held.rollback().unwrap();
+        (swept.join().unwrap(), changed.join().unwrap())
+    });
+
+    assert!(swept.is_ok(), "{swept:?}");
+    // The Project is gone, so the change finds nothing to change: refused, not deadlocked.
+    let refused = changed.unwrap_err();
+    assert_ne!(
+        refused.code,
+        ployz_core::RpcErrorCode::Unavailable,
+        "{refused:?}"
     );
 }
