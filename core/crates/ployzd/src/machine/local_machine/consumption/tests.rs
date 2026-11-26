@@ -74,6 +74,57 @@ fn a_copy_step_is_taken_once_and_kept_across_a_restart() {
     ));
 }
 
+/// A closed preview's hook entries leave the record, so it grows with the previews still
+/// open rather than every preview a rule ever ran. Another preview's entries and the
+/// Closed mark stay, and the preview still refuses a create after a restart.
+#[test]
+fn a_closed_previews_hook_entries_leave_the_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = ConsumptionLog::new(dir.path());
+    let rule = RuleId::from_bytes([7; 16]);
+    let [closing, open] = ["0000aaaa", "0000bbbb"]
+        .map(|nonce| Namespace::parse(format!("pv-{}-00000000-{nonce}", "7".repeat(16))).unwrap());
+    let web = ServiceName::parse("web").unwrap();
+    for preview in [&closing, &open] {
+        log.open_preview(preview).unwrap().unwrap();
+        log.transact(Error::ApprovalRecord, |record| {
+            record.rule_hooks.insert(
+                rule_service_key((rule, Some(preview)), &web),
+                RuleHook {
+                    generation: 1,
+                    commit: ployz_core::authority::CommitSha::parse(&"a".repeat(40)).unwrap(),
+                    slot: ployz_core::CreationKey::for_move(
+                        &ployz_core::ContainerId::parse("c".repeat(64)).unwrap(),
+                        uuid::Uuid::nil(),
+                    ),
+                    made: true,
+                },
+            );
+            Ok(Edit::Write(()))
+        })
+        .unwrap();
+    }
+
+    log.begin_close(&closing).unwrap().unwrap();
+    log.finish_close(&closing).unwrap();
+
+    let record = std::fs::read_to_string(dir.path().join(FILE_NAME)).unwrap();
+    let record: serde_json::Value = serde_json::from_str(&record).unwrap();
+    let hooks = record
+        .get("rule_hooks")
+        .and_then(|hooks| hooks.as_object())
+        .unwrap();
+    assert_eq!(
+        hooks.keys().collect::<Vec<_>>(),
+        [&rule_service_key((rule, Some(&open)), &web)]
+    );
+    let restarted = ConsumptionLog::new(dir.path());
+    assert_eq!(
+        restarted.open_preview(&closing).unwrap(),
+        Err(closed(&closing))
+    );
+}
+
 /// A creation admitted under one approval, whose image's hook place that approval took
 /// already, is refused as superseded once a newer approval of the rule reached this
 /// Machine, not as a hook that already ran.

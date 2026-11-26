@@ -213,6 +213,8 @@ impl Tool for EnvironmentPr {
             setup: None,
             remove_on_close: None,
             include_bots: None,
+            preview_rule: None,
+            preview_cap: None,
         })?;
         let enabled = written
             .plans

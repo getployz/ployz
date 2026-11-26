@@ -2,12 +2,13 @@
 //! in one. The Namespace names the one Server that may hold its Containers and data, so no
 //! second Server ever holds the same preview.
 
+use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 use crate::{
     Admission, ContainerPath, DockerVolumeName, MachineId, Namespace, RawVolumeSource,
-    RequestedServiceSpec, VolumeBirth,
-    authority::{canonical::Timestamp, deploy::host_reach},
+    RequestedServiceSpec, TrashId, VolumeBirth, VolumeOrigin,
+    authority::{RuleId, canonical::Timestamp, deploy::host_reach},
     separation::{PREVIEW_BIRTH, PREVIEW_HOME},
     value::{hex_newtype, is_lower_hex},
 };
@@ -53,6 +54,37 @@ impl PreviewNamespace {
         })
     }
 
+    /// A new preview of `rule` homed on `home`: the Namespace a pull request's preview
+    /// gets when it opens, with `nonce` keeping each opening apart.
+    #[must_use]
+    pub fn mint(rule: &RuleId, home: &MachineId, nonce: [u8; 4]) -> Self {
+        let rule = rule.to_string();
+        let home = PreviewHome::of(home);
+        let nonce = PreviewHome::from_bytes(nonce);
+        let namespace = Namespace::parse(format!("pv-{}-{home}-{nonce}", &rule[..16]))
+            .expect("hex and hyphens make a Namespace");
+        Self { namespace, home }
+    }
+
+    #[must_use]
+    pub fn namespace(&self) -> &Namespace {
+        &self.namespace
+    }
+
+    /// Whether `machine` is the one Server this preview may run on.
+    #[must_use]
+    pub fn homed_on(&self, machine: &MachineId) -> bool {
+        self.home == PreviewHome::of(machine)
+    }
+
+    /// The origin of `physical` when this preview made it: what a Docker Volume of this
+    /// Namespace carries when its data was born here for the preview, and `None` for a name
+    /// outside the Namespace.
+    #[must_use]
+    pub fn own_origin(&self, physical: &str) -> Option<VolumeOrigin> {
+        VolumeOrigin::of(&self.birth(self.logical(physical)?)).ok()
+    }
+
     /// The preview whose Docker Volume `physical` is, if any.
     #[must_use]
     pub fn holding(physical: &DockerVolumeName) -> Option<Self> {
@@ -65,7 +97,7 @@ impl PreviewNamespace {
     /// # Errors
     /// Returns [`PreviewRefusal::Elsewhere`] on a Server the Namespace doesn't name.
     pub fn admit_on(&self, machine: &MachineId) -> Result<(), PreviewRefusal> {
-        if self.home == PreviewHome::of(machine) {
+        if self.homed_on(machine) {
             Ok(())
         } else {
             Err(PreviewRefusal::Elsewhere {
@@ -98,9 +130,8 @@ impl PreviewNamespace {
 
     /// The name the preview's drafts give `physical`, when it is a Docker Volume of this
     /// Namespace.
-    fn logical<'a>(&self, physical: &'a DockerVolumeName) -> Option<&'a str> {
+    fn logical<'a>(&self, physical: &'a str) -> Option<&'a str> {
         physical
-            .as_str()
             .strip_prefix(self.namespace.as_str())
             .and_then(|declared| declared.strip_prefix('_'))
             .filter(|declared| !declared.is_empty())
@@ -143,6 +174,54 @@ pub enum PreviewRefusal {
         "This Server lists no readable Trash entry {id}, so it can't tell whose data it holds and restores nothing."
     )]
     UnreadTrash { id: String },
+    #[error("Preview {namespace} is closed on this Server, so it runs and receives nothing more.")]
+    Closed { namespace: Namespace },
+    #[error("This Server never ran preview {namespace}, so it has nothing of it to close.")]
+    NeverOpened { namespace: Namespace },
+}
+
+/// Close preview `namespace` on its home Server: its Containers removed, the Volumes it made
+/// destroyed, any other data of its Docker Volumes moved to the Trash.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ClosePreviewRequest {
+    pub namespace: Namespace,
+}
+
+/// List the previews this Server holds open.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ListPreviewsRequest {}
+
+/// The previews this Server ran and hasn't closed, which Cloud checks against what it
+/// holds open.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PreviewsHeld {
+    #[serde(default)]
+    pub open: Vec<Namespace>,
+    /// Those whose Close began and didn't finish, which only another Close finishes.
+    #[serde(default)]
+    pub closing: Vec<Namespace>,
+}
+
+/// What a Close took off this Server, and what it left.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PreviewClosed {
+    /// Docker Volumes whose data the preview made, destroyed.
+    #[serde(default)]
+    pub destroyed: Vec<DockerVolumeName>,
+    /// Docker Volumes holding data from elsewhere, moved to the Trash.
+    #[serde(default)]
+    pub trashed: Vec<PreviewTrashed>,
+    /// Docker Volumes of the Namespace that no Ployz Pool holds, kept as they are.
+    #[serde(default)]
+    pub kept: Vec<DockerVolumeName>,
+}
+
+/// A copy of a preview's Docker Volume that a Close moved to the Trash.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PreviewTrashed {
+    pub name: DockerVolumeName,
+    pub id: TrashId,
 }
 
 /// Refuse a Container in a preview Namespace unless this Server is its home, a person's
@@ -176,7 +255,7 @@ pub fn admit_preview(
                 birth: Some(birth),
                 ..
             } if preview
-                .logical(name)
+                .logical(name.as_str())
                 .is_some_and(|logical| *birth == preview.birth(logical)) => {}
             RawVolumeSource::Bind { .. } | RawVolumeSource::External { .. } => {
                 return Err(PreviewRefusal::Outside { target: target() });

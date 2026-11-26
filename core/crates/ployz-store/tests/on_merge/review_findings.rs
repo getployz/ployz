@@ -67,6 +67,8 @@ fn keep(store: &ConfigStore, who: &Actor) {
                 setup: None,
                 remove_on_close: Some(false),
                 include_bots: None,
+                preview_rule: None,
+                preview_cap: None,
             },
         )
         .unwrap();

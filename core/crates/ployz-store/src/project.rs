@@ -105,6 +105,7 @@ pub(crate) fn create_project(
 ) -> Result<ProjectCreated, RpcError> {
     name_free(tx, who, &create.name)?;
     refuse_unseen_region(create.region.as_ref(), trusted)?;
+    crate::storage::ranked::unordered(crate::storage::ranked::Lock::project(&create.id));
     tx.execute(
         "INSERT INTO config_project (id, organization_id, name, default_environment_id) \
          VALUES (?1, ?2, ?3, ?4)",
@@ -129,6 +130,9 @@ pub(crate) fn create_project(
         name,
         create.region.clone(),
     )?;
+    crate::storage::ranked::unordered(crate::storage::ranked::Lock::environment(
+        &create.default_environment,
+    ));
     tx.execute(
         "UPDATE config_environment SET protected = 1, protections = 1 WHERE id = ?1",
         &[create.default_environment.as_str().into()],
@@ -200,6 +204,7 @@ pub(crate) fn insert_environment(
         region,
     };
     let revision = Revision(1);
+    crate::storage::ranked::unordered(crate::storage::ranked::Lock::environment(id));
     tx.execute(
         "INSERT INTO config_environment \
          (id, organization_id, project_id, name, working_revision, working) \
@@ -229,6 +234,7 @@ pub(crate) fn rename_project(
     let project = scope::project(tx, who, Some(&rename.project))?;
     if rename.name != project.name {
         name_free(tx, who, &rename.name)?;
+        crate::storage::ranked::take(crate::storage::ranked::Lock::project(&project.id));
         tx.execute(
             "UPDATE config_project SET name = ?1 WHERE id = ?2",
             &[rename.name.as_str().into(), project.id.as_str().into()],

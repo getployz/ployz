@@ -83,8 +83,10 @@ it.live("a push asks the paired Servers about exactly the consented Volumes and 
     expect(observe).toHaveBeenCalledExactlyOnceWith([{ machine_id: machineId("0"), management: `ployz1:cloud:${machineId("0")}` }], [volume], null);
     expect(system).toHaveBeenCalledExactlyOnceWith(ORGANIZATION, push, expect.objectContaining({ volumes: held }));
 
+    // A sweep asks the Store only whether the Organization uses previews, never about Volumes.
     yield* told({ event: "sweep", now: 0 });
-    expect(read).toHaveBeenCalledOnce();
+    expect(read).toHaveBeenLastCalledWith(ORGANIZATION, { query: "open_previews", namespaces: [] });
+    expect(read.mock.calls.filter(([, query]) => query.query === "consented")).toHaveLength(1);
     expect(observe).toHaveBeenCalledOnce();
     expect(system).toHaveBeenLastCalledWith(ORGANIZATION, { event: "sweep", now: 0 }, expect.not.objectContaining({ volumes: expect.anything() }));
 

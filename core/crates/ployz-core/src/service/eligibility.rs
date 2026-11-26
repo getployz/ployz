@@ -49,6 +49,11 @@ impl RequestedServiceSpec {
         machine: &Machine,
         storage: Option<&MachineStorageObservation>,
     ) -> ServicePlacementEligibility {
+        if preview_elsewhere(namespace, machine) {
+            return ServicePlacementEligibility::Ineligible(
+                ServicePlacementIneligibleReason::PlacementMismatch,
+            );
+        }
         let gate = RoleGate::of(&crate::QualifiedService::new(
             namespace.clone(),
             self.name.clone(),
@@ -77,6 +82,11 @@ impl ResolvedServiceSpec {
         machine: &Machine,
         storage: Option<&MachineStorageObservation>,
     ) -> ServicePlacementEligibility {
+        if preview_elsewhere(namespace, machine) {
+            return ServicePlacementEligibility::Ineligible(
+                ServicePlacementIneligibleReason::PlacementMismatch,
+            );
+        }
         let gate = RoleGate::of(&crate::QualifiedService::new(
             namespace.clone(),
             self.name.clone(),
@@ -109,6 +119,12 @@ impl crate::ServiceStorageSpec {
             RoleGate::Services,
         )
     }
+}
+
+/// Whether `namespace` is a preview homed on another Server than `machine`: the Namespace
+/// fixes the one Server that runs it, so it is placed nowhere else.
+fn preview_elsewhere(namespace: &crate::Namespace, machine: &Machine) -> bool {
+    crate::PreviewNamespace::of(namespace).is_some_and(|preview| !preview.homed_on(&machine.id))
 }
 
 /// The role a Machine needs for work, decided by the work's identity alone.
@@ -359,6 +375,43 @@ mod tests {
             );
             assert_eq!(crate::ServiceStorageSpec::from(&resolved), storage_spec);
         }
+    }
+
+    /// A preview's Namespace names the one Server it runs on, so a Deploy places it
+    /// there and on no other Server, which would refuse it.
+    #[test]
+    fn a_preview_is_placed_only_on_its_home() {
+        let home = machine("home");
+        let mut other = machine("other");
+        other.id = MachineId::parse("2".repeat(32)).unwrap();
+        let rule = crate::authority::RuleId::from_bytes([7; 16]);
+        let preview = crate::PreviewNamespace::mint(&rule, &home.id, [1; 4]);
+        let spec = requested(Placement::default(), ServiceVolumeGraph::default());
+        let resolved = spec
+            .to_resolved(ServiceId::random(), ResolvedUpdateConfig::default())
+            .unwrap();
+        let elsewhere = ServicePlacementEligibility::Ineligible(
+            ServicePlacementIneligibleReason::PlacementMismatch,
+        );
+        for (machine, expected) in [
+            (&home, ServicePlacementEligibility::Eligible),
+            (&other, elsewhere),
+        ] {
+            let namespace = preview.namespace();
+            assert_eq!(
+                spec.placement_eligibility_in_namespace(namespace, machine, None),
+                expected
+            );
+            assert_eq!(
+                resolved.placement_eligibility_in_namespace(namespace, machine, None),
+                expected
+            );
+        }
+        let ordinary = crate::Namespace::parse("shop").unwrap();
+        assert_eq!(
+            spec.placement_eligibility_in_namespace(&ordinary, &other, None),
+            ServicePlacementEligibility::Eligible
+        );
     }
 
     #[test]
