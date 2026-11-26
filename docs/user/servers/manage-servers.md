@@ -464,8 +464,8 @@ A server checks these itself, whoever asks. Ployz Cloud carries a signature but 
 - **Builds.** A server refuses a build Ployz Cloud starts with
   `This server runs only builds an approved device starts.`, before the build opens any
   credential. A build started over a device's own connection runs, and so does a push under an
-  automatic deploy rule. See
-  [Builds need an approved device or a rule](../builds/where-builds-run.md#builds-need-an-approved-device-or-a-rule).
+  automatic deploy rule or the build of a service that reaches no data. See
+  [Which builds need an approved device or a rule](../builds/where-builds-run.md#which-builds-need-an-approved-device-or-a-rule).
 - **Joins.** An approved device authorizes a new server's identity, keys, allocation and initial
   devices. See [Approve a join](add-a-server.md#approve-a-join). An approval names one existing
   server that may admit the join, so another cluster can't use it even if it shares a Sealing

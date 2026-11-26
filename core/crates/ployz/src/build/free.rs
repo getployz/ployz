@@ -81,9 +81,8 @@ fn refusal(behind: &BTreeSet<String>, act: &str, free: &[ServiceName]) -> Connec
     let servers = listed(behind.iter().map(String::as_str));
     let services = listed(free.iter().map(ServiceName::as_str));
     let message = format!(
-        "{servers} can't {act} {services} yet. A service that reaches no data builds without \
-         your approval, and only an upgraded server runs that build. Upgrade {servers}, then \
-         deploy again."
+        "{servers} can't {act} {services}, which builds without approval. Upgrade {servers}, \
+         then deploy again."
     );
     ConnectError::Remote(RpcError::unsupported(message.clone()).with_details(
         serde_json::json!({ "rejections": { "upgrade needed": behind.len() }, "reasons": [message] }),

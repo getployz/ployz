@@ -55,7 +55,7 @@ fn a_free_build_names_each_server_its_service_may_run_on_that_cant_run_it() {
     ];
     let refused = message(free_destinations(&web(), &intent, &machines).unwrap_err());
     assert!(
-        refused.starts_with("web-2 and web-3 can't run web yet."),
+        refused.starts_with("web-2 and web-3 can't run web, which"),
         "{refused}"
     );
     assert!(refused.ends_with("Upgrade web-2 and web-3, then deploy again."));
@@ -95,7 +95,7 @@ fn a_free_build_runs_only_on_a_builder_that_runs_free_builds() {
     let behind = machines.get(..1).unwrap();
     let refused = message(free_builders(&web(), Cow::Borrowed(behind)).unwrap_err());
     assert!(
-        refused.starts_with("web-1 can't build web yet."),
+        refused.starts_with("web-1 can't build web, which"),
         "{refused}"
     );
 }

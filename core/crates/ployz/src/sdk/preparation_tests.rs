@@ -1766,12 +1766,12 @@ async fn a_free_build_names_the_server_that_cant_run_it_before_anything_builds()
         (
             ployz_core::BUILD_FREE_CAPABILITY,
             "",
-            "application can't run one yet",
+            "application can't run one, which builds without approval. Upgrade application",
         ),
         (
             "",
             ployz_core::FREE_RECEIPT_CAPABILITY,
-            "builder can't build one yet",
+            "builder can't build one, which",
         ),
     ] {
         let (root, service, builds) = free_fixture(&[builder], &[destination]);

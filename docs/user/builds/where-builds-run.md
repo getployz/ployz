@@ -133,11 +133,26 @@ A deploy names the server each service built on. When GitHub came first and coul
 the build, for example because the repository has no Ployz build workflow, the deploy says so
 and why.
 
-## Builds need an approved device or a rule
+## Which builds need an approved device or a rule
 
-A build runs steps from your repository and opens your service's sealed values. A server
-refuses a build Ployz Cloud starts, so Ployz Cloud can't run steps of its choosing there. The
-deployment fails with:
+A service that reaches no data builds without approval: it mounts no volume and reads no sealed
+value or registry login. It builds on one of your servers, whatever the build order says, and
+deploying it needs no rule. Its build reads nothing secret, and only your servers run the image
+it makes.
+
+Once a service has run under a signature, a person's or a rule's, it always needs one. It builds
+like any other service, even after it stops reaching data.
+
+If a server can't build or run it yet, the deploy stops before anything builds and names that
+server:
+
+```text
+No eligible Build Machine was selected; no build was started: web-2 can't run web, which builds without approval. Upgrade web-2, then deploy again.
+```
+
+Any other build runs steps from your repository and opens your service's sealed values. A server
+refuses such a build when Ployz Cloud starts it, so Ployz Cloud can't run steps of its choosing
+there. The deployment fails with:
 
 ```text
 No eligible Build Machine was selected; no build was started: Server web-1 (…): This server runs only builds an approved device starts.
