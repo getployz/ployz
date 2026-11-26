@@ -743,25 +743,41 @@ impl Lifecycle {
         }))
     }
 
-    /// Pull `spec`'s image as its create would, with no login, then inspect it once, for a
-    /// Writer's start in `namespace` checked before anything is promoted. `None` outside a
-    /// preview.
+    /// Place `spec`'s image as its create would, then inspect it once, for a Writer's start
+    /// in `namespace` checked before anything is promoted. An image a registry rule's
+    /// admission already pulled by digest, `pin`, is inspected with no second pull. Any
+    /// other pull its policy asks for presents `login`, which opens only if that pull runs.
+    /// `None` outside a preview.
     ///
     /// # Errors
-    /// As [`Self::preview_image`], and the pull's failure.
+    /// As [`Self::preview_image`], and the login's or the pull's failure.
     pub(crate) async fn prepare_preview_image(
         &self,
         namespace: &Namespace,
         spec: &ResolvedServiceSpec,
+        (pin, login): (
+            Option<&ployz_core::ImageDigest>,
+            Option<&ployz_core::SealedLogin>,
+        ),
     ) -> Result<Option<PreviewImage>, Error> {
         if ployz_core::PreviewNamespace::of(namespace).is_none() {
             return Ok(None);
         }
+        if let Some(pin) = pin {
+            return self.preview_image(namespace, pin.as_str()).await;
+        }
+        let credential = match login {
+            Some(login) => crate::docker_image::Credential::Sealed {
+                login,
+                sealing: self.observation.sealing(),
+            },
+            None => crate::docker_image::Credential::Auth(None),
+        };
         if let Err(error) = crate::docker_image::prepare(
             &self.docker.client,
             &spec.container.image,
             spec.container.pull_policy,
-            crate::docker_image::Credential::Auth(None),
+            credential,
         )
         .await
         {
@@ -1765,6 +1781,38 @@ mod tests {
             "NetworkSettings": { "Networks": networks },
         }))
         .unwrap()
+    }
+
+    // Catches a preview Writer's start pulling again the image its registry rule's
+    // admission already pulled by digest.
+    #[tokio::test]
+    async fn a_preview_start_inspects_the_image_its_admission_pulled_and_pulls_nothing() {
+        let (runtime, fake) = fake_runtime_with(FakeDocker {
+            pulls_left: std::sync::Arc::new(std::sync::Mutex::new(Some(0))),
+            ..Default::default()
+        })
+        .await;
+        let digest = format!("sha256:{}", "d".repeat(64));
+        let pin = ployz_core::ImageDigest::parse(digest.clone()).unwrap();
+        let mut spec = spec_with_sources(Vec::new());
+        spec.container.image = format!("ghcr.io/acme/web@{digest}");
+        spec.container.pull_policy = ployz_core::PullPolicy::Always;
+        let namespace = Namespace::parse("pv-0123456789abcdef-00000000-00c0ffee").unwrap();
+
+        let prepared = runtime
+            .lifecycle()
+            .prepare_preview_image(&namespace, &spec, (Some(&pin), None))
+            .await;
+
+        assert!(prepared.as_ref().is_ok_and(Option::is_some), "{prepared:?}");
+        let pulls = fake
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, path)| path.contains("/images/create"))
+            .count();
+        assert_eq!(pulls, 0);
     }
 
     #[test]
