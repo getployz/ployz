@@ -45,6 +45,13 @@ impl FakeMachine for Previews {
         self.cluster.list_machines(request).await
     }
 
+    async fn inspect(
+        &self,
+        request: Request<OpaquePayload>,
+    ) -> Result<Response<OpaquePayload>, Status> {
+        self.cluster.inspect(request).await
+    }
+
     async fn list_previews(
         &self,
         request: Request<OpaquePayload>,
@@ -103,14 +110,10 @@ impl FakeMachine for Previews {
     }
 }
 
-/// A Session to a Cluster of `machines`, each holding what `held` says.
-async fn cluster(
-    machines: Vec<MachineObservation>,
-    held: Held,
-) -> (
-    Session,
-    tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
-) {
+type Serving = tokio::task::JoinHandle<Result<(), tonic::transport::Error>>;
+
+/// A Cluster of `machines`, each holding what `held` says, and how to reach it.
+async fn serve(machines: Vec<MachineObservation>, held: Held) -> (Connection, Serving) {
     let previews = Previews {
         cluster: DeployService::empty().with_machines(machines),
         held,
@@ -122,12 +125,16 @@ async fn cluster(
             .add_service(MachineRpcServer::new(Fake(previews)))
             .serve_with_incoming(TcpListenerStream::new(tcp)),
     );
-    let session = super::super::connect_connections(
-        vec![Connection::tcp(address)],
-        Arc::new(SystemConnector::default()),
-    )
-    .await
-    .unwrap();
+    (Connection::tcp(address), server)
+}
+
+/// A Session to [`serve`]'s Cluster.
+async fn cluster(machines: Vec<MachineObservation>, held: Held) -> (Session, Serving) {
+    let (connection, server) = serve(machines, held).await;
+    let session =
+        super::super::connect_connections(vec![connection], Arc::new(SystemConnector::default()))
+            .await
+            .unwrap();
     (session, server)
 }
 
@@ -295,4 +302,35 @@ fn a_preview_is_placed_only_on_a_server_taking_services_that_can_close_it() {
     let found = homes(&[home.clone(), no_services, leaving, older, unclaimed]);
 
     assert_eq!(found, [home.machine.id]);
+}
+
+#[tokio::test]
+async fn a_sweep_closes_nothing_on_servers_it_cannot_tie_to_the_organization_s_cluster() {
+    let machine = support::machine('a', "one");
+    let held = Held::default();
+    held.open
+        .lock()
+        .unwrap()
+        .insert(machine.machine.id, vec![preview_on(&machine, 1)]);
+    let (connection, server) = serve(vec![machine], held.clone()).await;
+    let key = ployz_store::SealingKey::new(b"test").unwrap();
+    let store = Arc::new(ConfigStore::open("sqlite::memory:", key).unwrap());
+    let who = Actor::system(ployz_store::OrganizationId::parse("org").unwrap());
+    // No Sealing key recorded, as for an enrollment candidate; and one recorded, past an
+    // entry that shows none, which a dial that allows it still reaches.
+    let keyless = crate::connect::ClusterExpectation {
+        sealing_public_key: ployz_core::SealingPublicKey::from_bytes([3; 32]),
+        allow_unverified: true,
+    };
+
+    for expect in [None, Some(keyless)] {
+        let reach = vec![connection.clone()];
+        let swept = close_unheld_previews(Arc::clone(&store), who.clone(), reach, expect)
+            .await
+            .unwrap();
+        assert!(swept.outcome.unverified, "{expect:?}");
+    }
+
+    assert!(held.closed.lock().unwrap().is_empty(), "no Close was sent");
+    server.abort();
 }

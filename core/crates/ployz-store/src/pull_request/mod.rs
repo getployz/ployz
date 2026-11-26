@@ -28,8 +28,8 @@ pub(crate) use on_merge::view as on_merge;
 pub use on_merge::{MergeRow, OnMerge, OnMergeInto, OnMergeQuery, Ride, SetMergeValue};
 pub(crate) use on_merge::{forget_edits, set_merge_value};
 pub(crate) use plan::*;
+pub(crate) use preview::open_previews;
 pub use preview::{OpenPreviewsQuery, OpenPreviewsView, PreviewPlan};
-pub(crate) use preview::{open_previews, rehome};
 
 use crate::id::{
     BranchName, CommitSha, GithubUserId, PullRequestNumber, RepositoryId, RepositoryName,
@@ -1027,21 +1027,8 @@ pub(crate) fn pull_request(
             .as_ref()
             .is_some_and(|before| before.target_branch != event.target_branch);
         if retargeted {
-            for (environment, project) in &current {
+            for (environment, _) in &current {
                 forget_edits(tx, environment)?;
-                // A preview of where it now merges closes, so its slot frees.
-                let plan = load(tx, project, repository_id)?.unwrap_or_else(off);
-                let destinations =
-                    destinations_of(tx, project, repository_id, &event.target_branch)?;
-                let into_parent = plan
-                    .start_from
-                    .as_ref()
-                    .is_some_and(|parent| destinations.contains(parent));
-                if into_parent && preview::of(tx, environment)?.is_some() {
-                    let because = crate::removal::mark::Closed::PullRequest;
-                    crate::removal::close(tx, who, environment, because, &mut automated)?;
-                    preview::fill(tx, who, (project, repository_id), trusted, &mut automated)?;
-                }
             }
             automated.checks.push(PullRequestRef {
                 repository_id,
@@ -1055,16 +1042,14 @@ pub(crate) fn pull_request(
     if !matches!(phase, Phase::Open { .. }) {
         for (environment, project) in &current {
             let plan = load(tx, project, event.repository_id)?.unwrap_or_else(off);
-            // A preview always closes with its pull request, so its slot frees. What it
-            // opened as decides, not the plan now.
-            if (plan.remove_on_close || preview::of(tx, environment)?.is_some())
+            // A preview closes in `preview::reconcile`, by what it opened as.
+            if plan.remove_on_close
+                && preview::of(tx, environment)?.is_none()
                 && !kept.contains(environment)
                 && !on_merge::holds_open(tx, who, environment)?
             {
                 let because = crate::removal::mark::Closed::PullRequest;
                 crate::removal::close(tx, who, environment, because, &mut automated)?;
-                let at = (project, event.repository_id);
-                preview::fill(tx, who, at, trusted, &mut automated)?;
             }
         }
     } else {
@@ -1093,6 +1078,8 @@ pub(crate) fn pull_request(
             }
         }
     }
+    let asked = (Some(repository_id), Some(number));
+    preview::reconcile(tx, who, asked, trusted, &mut automated)?;
     let has_environments =
         !current.is_empty() || !landing.is_empty() || !automated.admitted.is_empty();
     if has_environments && !automated.checks.contains(&reported) {
@@ -1155,6 +1142,8 @@ pub(crate) fn approve(
             crate::automation::deploy_head(tx, who, environment, &event, trusted, &mut automated)?;
         }
     }
+    let asked = (Some(repository_id), Some(number));
+    preview::reconcile(tx, who, asked, trusted, &mut automated)?;
     automated.checks.push(pr);
     Ok(automated)
 }
@@ -1256,8 +1245,6 @@ fn open(
         admits,
         trusted,
     } = *at;
-    // Read under the start-froms' locks, so a preview another pull request's close
-    // opened for this one counts.
     let current = current(tx, who, event.repository_id, event.number, false)?;
     let rows = tx.query(
         "SELECT project_id, plan FROM config_pr_plan \
@@ -1267,7 +1254,9 @@ fn open(
     for row in rows {
         let project = row.parse::<crate::id::ProjectId>(0, "Project ID")?;
         let plan: Stored = row.json(1, "PR plan")?;
+        // A preview opens only in `preview::reconcile`, which holds the cap.
         if !plan.enabled
+            || plan.preview.is_some()
             || (event.bot && !plan.include_bots)
             || current.iter().any(|(_, has)| *has == project)
         {
@@ -1288,14 +1277,7 @@ fn open(
             Ok(Some(automation::Deploy::NoServers))
         } else {
             crate::storage::attempt(tx, |tx| {
-                let preview = plan
-                    .preview
-                    .as_ref()
-                    .map(|preview| {
-                        preview::slot(tx, who, (&project, &plan, preview), event, trusted)
-                    })
-                    .transpose()?;
-                create(tx, who, &start, &plan, (event, trusted, preview.as_ref()))
+                create(tx, who, &start, &plan, (event, trusted, None))
             })
         };
         automation::record(&start.summary.id, deployed, automated)?;
@@ -1583,7 +1565,7 @@ pub(crate) fn sweep(
     for id in &held {
         shut_down(tx, who, id, &mut automated)?;
     }
-    rehome(tx, who, trusted, &mut automated)?;
+    preview::reconcile(tx, who, (None, None), trusted, &mut automated)?;
     Ok(automated)
 }
 

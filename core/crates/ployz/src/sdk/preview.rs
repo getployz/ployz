@@ -35,6 +35,9 @@ pub struct PreviewsSwept {
     /// Servers that didn't say which previews they hold.
     #[ts(as = "Vec<String>")]
     pub unanswered: Vec<MachineId>,
+    /// Cloud couldn't check that the Servers are the Organization's Cluster, so it asked
+    /// none of them and closed nothing.
+    pub unverified: bool,
 }
 
 /// The Servers that can hold a preview.
@@ -63,8 +66,9 @@ pub struct PreviewFailed {
 /// Close, on each Server of the Cluster `connections` reach, every preview it holds open
 /// that the Store doesn't report open for `who`'s Organization, and finish every Close
 /// one began. Each Server's list is read before the Store, and a preview's Namespace is
-/// never used again, so a preview the Store opens meanwhile is never one this closes. With `expect`, it reaches the Cluster
-/// only through an entry of it, as a Deployment runs.
+/// never used again, so a preview the Store opens meanwhile is never one this closes.
+/// A Close destroys data, so it goes only to a Cluster whose Sealing key the dial matched
+/// to `expect`: without one, or past an entry that shows no key, it closes nothing.
 ///
 /// # Errors
 /// Returns the connection's error when no Server can be reached, or a storage error.
@@ -74,9 +78,23 @@ pub async fn close_unheld_previews(
     connections: Vec<Connection>,
     expect: Option<crate::connect::ClusterExpectation>,
 ) -> Result<Dialed<PreviewsSwept>, RpcError> {
+    let unverified = PreviewsSwept {
+        unverified: true,
+        ..PreviewsSwept::default()
+    };
+    let Some(expect) = expect else {
+        return Ok(Dialed::undialed(unverified));
+    };
     let connector = Arc::new(SystemConnector::default());
-    let session = connect_expecting(connections, connector, expect).await?;
+    let session = connect_expecting(connections, connector, Some(expect)).await?;
     let foreign = session.foreign();
+    if !session.cluster().is_some_and(|check| check.verified) {
+        session.close().await;
+        return Ok(Dialed {
+            outcome: unverified,
+            foreign,
+        });
+    }
     let swept = async {
         let mut client = session.client()?;
         let machines = client.machines().await.map_err(crate::connect::rpc_error)?;

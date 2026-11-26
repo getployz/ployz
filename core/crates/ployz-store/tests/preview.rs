@@ -13,8 +13,8 @@ use ployz_store::{
     Actor, Admit, AdmitRemoval, AuthorizedRepository, Automated, ConfigStore, CreateBranch,
     CreateGitService, CreateProject, DeploymentId, EnvironmentId, EnvironmentName, EnvironmentRef,
     OpenPreviewsQuery, OrganizationId, PrPlansQuery, ProjectId, ProjectName, PullRequest,
-    RuleQuery, RunEvidence, RunnerId, ServiceLineageId, SetEnvironmentProtected, SetPrPlan,
-    ShutDown, Signers, Sweep, SystemEvent, Trusted, Written,
+    RuleQuery, RunEvidence, RunnerId, SealingRecipient, ServiceLineageId, SetEnvironmentProtected,
+    SetPrPlan, ShutDown, Signers, Sweep, SystemEvent, Trusted, Written,
 };
 
 const HEAD: &str = "1111111111111111111111111111111111111111";
@@ -122,17 +122,30 @@ fn device() -> Signer {
     Signer::from_seed(&[7; 32])
 }
 
-/// Cloud's evidence that the Servers trust [`device`].
-fn trusting() -> Trusted {
+/// The Cluster Cloud recorded for the Organization.
+fn cluster() -> ployz_core::SealingPublicKey {
+    ployz_core::SealingPublicKey::from_bytes([3; 32])
+}
+
+/// Cloud's evidence that the Servers of [`cluster`] trust `signer`.
+fn trusting_key(signer: &Signer) -> Trusted {
     Trusted {
         signers: Some(Signers {
             devices: vec![ployz_core::DeviceKey::from_bytes(
-                *device().public().as_bytes(),
+                *signer.public().as_bytes(),
             )],
             ..Signers::default()
         }),
+        sealing: Some(SealingRecipient {
+            public_key: cluster(),
+        }),
         ..Trusted::default()
     }
+}
+
+/// Cloud's evidence that the Servers trust [`device`].
+fn trusting() -> Trusted {
+    trusting_key(&device())
 }
 
 /// Save `set`, with Cloud's evidence of the keys the Servers trust.
@@ -160,7 +173,7 @@ fn edited(
             pushers: Vec::new(),
             pinned: Vec::new(),
         }),
-        cluster: ployz_core::SealingPublicKey::from_bytes([3; 32]),
+        cluster: cluster(),
         rule: RuleId::from_bytes([9; 16]),
         generation: 1,
         namespace: namespace_of(store, who, parent.1),
@@ -663,17 +676,21 @@ fn a_preview_rule_is_kept_only_once_a_key_the_servers_trust_signed_it() {
     };
     let unread = store.write(&who, &set).unwrap_err();
     assert_eq!(unread.code, RpcErrorCode::Unavailable, "{unread:?}");
-    let stranger = Trusted {
-        signers: Some(Signers {
-            devices: vec![ployz_core::DeviceKey::from_bytes(
-                *Signer::from_seed(&[8; 32]).public().as_bytes(),
-            )],
-            ..Signers::default()
-        }),
-        ..Trusted::default()
-    };
+    let stranger = trusting_key(&Signer::from_seed(&[8; 32]));
     let error = store.write_trusted(&who, &set, &stranger).unwrap_err();
     assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{error:?}");
+    let elsewhere = SetPrPlan {
+        preview_rule: Some(edited(&store, &who, (3, "staging"), |body| {
+            body.cluster = ployz_core::SealingPublicKey::from_bytes([4; 32]);
+        })),
+        ..plan("staging")
+    };
+    let error = save(&store, &who, &elsewhere).unwrap_err();
+    assert_eq!(
+        error.code,
+        RpcErrorCode::InvalidArgument,
+        "another Cluster's rule"
+    );
     assert!(
         store
             .read(&who, &PrPlansQuery::default())
@@ -871,4 +888,159 @@ fn a_preview_a_sweep_may_have_closed_never_opens_again() {
     );
     assert_eq!(reopened.admitted.len(), 1, "{:?}", skipped(&reopened));
     assert!(store.read(&who, &asked).unwrap().open.is_empty());
+}
+
+#[test]
+fn a_close_and_a_retarget_in_one_observation_close_the_preview_once() {
+    let (store, who) = shop();
+    previews(&store, &who, 1);
+    let removes = SetPrPlan {
+        remove_on_close: Some(true),
+        ..plan("staging")
+    };
+    store.write(&who, &removes).unwrap();
+    let trusted = homes(&['a']);
+    pull(
+        &store,
+        &who,
+        facts(5, true, "main", "2026-01-01T00:00:00Z"),
+        &trusted,
+    );
+
+    let both = SystemEvent::PullRequest(facts(5, false, "staging", "2026-01-02T00:00:00Z"));
+    store
+        .system(&who.organization, &both, &trusted)
+        .expect("one observation closes it once");
+
+    assert_eq!(preview_of(&store, &who, 5), None);
+}
+
+#[test]
+fn a_server_that_returns_a_sweep_later_takes_the_waiting_preview() {
+    let (store, who) = shop();
+    previews(&store, &who, 1);
+    pull(
+        &store,
+        &who,
+        facts(5, true, "main", "2026-01-01T00:00:00Z"),
+        &homes(&['a']),
+    );
+    let sweep = || SystemEvent::Sweep(Sweep { now: 0 });
+    let none = observe(&store, &who, sweep(), &homes(&[]));
+    assert!(none.admitted.is_empty(), "no Server can take it");
+
+    let back = observe(&store, &who, sweep(), &homes(&['b']));
+
+    assert_eq!(back.admitted.len(), 1, "{:?}", skipped(&back));
+}
+
+#[test]
+fn a_merge_into_a_branch_nothing_deploys_closes_the_preview_and_frees_its_slot() {
+    let (store, who) = shop();
+    previews(&store, &who, 1);
+    let trusted = homes(&['a']);
+    for number in [5, 6] {
+        let target = if number == 5 { "feature" } else { "main" };
+        pull(
+            &store,
+            &who,
+            facts(number, true, target, "2026-01-01T00:00:00Z"),
+            &trusted,
+        );
+    }
+    let asked = OpenPreviewsQuery {
+        namespaces: vec![preview_of(&store, &who, 5).unwrap().namespace().clone()],
+    };
+    let mut merged = facts(5, false, "feature", "2026-01-03T00:00:00Z");
+    merged.merge_commit = Some(backend::sha(HEAD));
+
+    let landed = pull(&store, &who, merged, &trusted);
+
+    assert!(store.read(&who, &asked).unwrap().open.is_empty());
+    assert_eq!(landed.admitted.len(), 1, "{:?}", skipped(&landed));
+    assert!(
+        preview_of(&store, &who, 6).is_some(),
+        "the waiting one opens"
+    );
+}
+
+#[test]
+fn a_retarget_closes_a_preview_by_the_parent_its_branch_was_made_from() {
+    let (store, who) = shop();
+    previews(&store, &who, 1);
+    let trusted = homes(&['a']);
+    pull(
+        &store,
+        &who,
+        facts(5, true, "main", "2026-01-01T00:00:00Z"),
+        &trusted,
+    );
+    let first = preview_of(&store, &who, 5).unwrap().namespace().clone();
+    // The plan now starts elsewhere; the preview was made from staging.
+    store.write(&who, &plan("production")).unwrap();
+
+    pull(
+        &store,
+        &who,
+        facts(5, true, "staging", "2026-01-02T00:00:00Z"),
+        &trusted,
+    );
+
+    let asked = OpenPreviewsQuery {
+        namespaces: vec![first],
+    };
+    assert!(store.read(&who, &asked).unwrap().open.is_empty());
+}
+
+#[test]
+fn a_preview_rule_a_device_approved_as_a_bundle_s_source_step_is_kept() {
+    use ployz_core::authority::{
+        ProposalApproval, ProposalRef, ProposalStep, StepDigest, StepKind,
+    };
+    let (store, who) = shop();
+    let mut body = rule(&store, &who, (3, "staging")).open().unwrap();
+    let operation = ployz_core::OperationId::parse("e".repeat(32)).unwrap();
+    body.proposal = Some(ProposalRef {
+        operation,
+        index: 0,
+    });
+    let step = ployz_core::authority::canonical::to_canonical(&body).unwrap();
+    let bundle = ProposalApproval {
+        cluster: body.cluster,
+        environment: body.namespace.clone(),
+        operation,
+        steps: vec![ProposalStep {
+            index: 0,
+            kind: StepKind::Source,
+            digest: StepDigest::of(&step),
+        }],
+        issued_at: body.issued_at,
+        expires_at: ployz_core::authority::Timestamp::from_millis(1_800_000_001_000).unwrap(),
+        signer: body.signer,
+    };
+    let signed = Signed::proposed(&body, Signed::sign(&bundle, &device()).unwrap()).unwrap();
+    let set = SetPrPlan {
+        preview_rule: Some(Box::new(signed)),
+        ..plan("staging")
+    };
+
+    save(&store, &who, &set).expect("a Server opens this rule");
+}
+
+#[test]
+fn a_preview_rule_naming_another_signer_than_the_one_who_signed_it_is_refused() {
+    let (store, who) = shop();
+    let other = Signer::from_seed(&[8; 32]);
+    let set = SetPrPlan {
+        preview_rule: Some(edited(&store, &who, (3, "staging"), |body| {
+            body.signer = SignerKey::Device(ployz_core::DeviceKey::from_bytes(
+                *other.public().as_bytes(),
+            ));
+        })),
+        ..plan("staging")
+    };
+
+    let error = save(&store, &who, &set).unwrap_err();
+
+    assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{error:?}");
 }

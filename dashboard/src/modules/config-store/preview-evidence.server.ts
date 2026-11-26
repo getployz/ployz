@@ -39,14 +39,19 @@ export const gatherSigners = Effect.fn("ConfigStore.signers")(function* (organiz
  * Close, on each Server, every preview it holds open that the Store doesn't, and finish every Close one began: one whose
  * Close never reached it, or one from before a Server restarted. Each Server's list is read before the Store, so a
  * preview opening meanwhile stays. Every Server is asked, even once no plan keeps previews, since one that was down
- * may still hold some.
+ * may still hold some. A Close destroys data, so none goes to a Cluster whose recorded Sealing Key the dial didn't match.
  */
 export const closeUnheldPreviews = Effect.fn("ConfigStore.closeUnheldPreviews")(function* (organizationId: string) {
   const store = yield* cloudStore;
-  const { connections } = yield* deployDialOf(organizationId);
+  const { connections, expect } = yield* deployDialOf(organizationId);
   if (connections.length === 0) return;
+  if (expect === null) {
+    yield* Effect.logWarning("Closed no previews: Cloud has no Sealing Key recorded to check which Cluster the Servers are.", { organizationId });
+    return;
+  }
   const swept = yield* withDeployDial(organizationId, ({ connections, expect }) =>
     store.closeUnheldPreviews(organizationId, connections, expect));
+  if (swept.unverified) yield* Effect.logWarning("Closed no previews: Cloud couldn't check that the Servers are this Organization's Cluster.", { organizationId });
   if (swept.closed.length > 0) yield* Effect.logInfo("Closed previews the Store no longer holds open.", { organizationId, closed: swept.closed });
   if (swept.failed.length > 0) yield* Effect.logWarning("A preview's Close failed; the next sweep retries it.", { organizationId, failed: swept.failed });
 });
