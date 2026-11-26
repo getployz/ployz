@@ -1589,3 +1589,122 @@ fn a_sweep_deleting_a_project_and_a_change_to_its_plan_both_finish() {
         "{refused:?}"
     );
 }
+
+/// Making `staging` the default Environment writes its Project. News of a pull request
+/// holds the plan and waits on `staging`, the plan's start-from, and a change to the
+/// plan holds the Project and waits on the plan: the new default must lock the Project
+/// before `staging`.
+#[test]
+fn a_new_default_environment_news_of_a_pull_request_and_a_plan_change_all_finish() {
+    let Some((store, who, url)) = shop_on_postgres() else {
+        return;
+    };
+    previews(&store, &who, 1);
+    let trusted = homes(&['a']);
+    let default = ployz_store::SetDefaultEnvironment {
+        environment: at("staging"),
+    };
+    let news = SystemEvent::PullRequest(facts(5, true, "feature", "2026-01-01T00:00:00Z"));
+    let change = SetPrPlan {
+        include_bots: Some(true),
+        ..plan("staging")
+    };
+    // Stop the new default at the removal marks it reads, after it locked what it locks first.
+    let mut gate = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    let mut held = gate.transaction().unwrap();
+    held.batch_execute("LOCK TABLE config_removal_mark IN ACCESS EXCLUSIVE MODE")
+        .unwrap();
+
+    let (defaulted, news, changed) = std::thread::scope(|threads| {
+        let defaulted = threads.spawn(|| store.write(&who, &default).map(drop));
+        queued(&url, 1);
+        let news = threads.spawn(|| store.system(&who.organization, &news, &trusted).map(drop));
+        queued(&url, 2);
+        let changed = threads.spawn(|| save(&store, &who, &change));
+        queued(&url, 3);
+        held.rollback().unwrap();
+        (
+            defaulted.join().unwrap(),
+            news.join().unwrap(),
+            changed.join().unwrap(),
+        )
+    });
+
+    assert!(
+        defaulted.is_ok() && news.is_ok() && changed.is_ok(),
+        "{defaulted:?} {news:?} {changed:?}"
+    );
+}
+
+/// Cancelling the Deployment that takes a preview off its Server stops its Project's
+/// whole removal, so it locks every member; the sweep settling that removal locks them
+/// too. Both must take them in ID order, after the Project.
+#[test]
+fn cancelling_a_project_removal_s_deployment_and_the_sweep_both_finish() {
+    let Some((store, who, url)) = shop_on_postgres() else {
+        return;
+    };
+    previews(&store, &who, 1);
+    let trusted = homes(&['a']);
+    let opened = pull(
+        &store,
+        &who,
+        facts(5, true, "feature", "2026-01-01T00:00:00Z"),
+        &trusted,
+    );
+    run(&store, &opened.admitted.first().unwrap().deployment.id);
+    let remove = |version: Option<String>| ployz_store::Remove {
+        project: ProjectName::parse("shop").unwrap(),
+        environment: None,
+        version,
+        accept_volume_loss: Default::default(),
+        every_copy: Default::default(),
+    };
+    let asked = store
+        .write_trusted(&who, &remove(None), &trusted)
+        .unwrap_err();
+    let version = asked
+        .details
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .unwrap()
+        .to_owned();
+    let removing = store
+        .write_trusted(&who, &remove(Some(version)), &trusted)
+        .unwrap();
+    let ployz_store::Removal::Removing { left, .. } = removing else {
+        panic!("removed at once");
+    };
+    let taking_off = left
+        .iter()
+        .find_map(|left| left.deployment.as_ref())
+        .unwrap()
+        .id
+        .clone();
+    let cancel = ployz_store::Cancel {
+        deployment: taking_off.clone(),
+    };
+    let sweep = SystemEvent::Sweep(Sweep { now: 0 });
+    // Stop the cancel at the Deployment's row, after it locked what it locks first.
+    let mut gate = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    let mut held = gate.transaction().unwrap();
+    held.execute(
+        "SELECT 1 FROM config_deployment WHERE id = $1 FOR UPDATE",
+        &[&taking_off.as_str()],
+    )
+    .unwrap();
+
+    let (cancelled, swept) = std::thread::scope(|threads| {
+        let cancelled = threads.spawn(|| store.write(&who, &cancel).map(drop));
+        queued(&url, 1);
+        let swept = threads.spawn(|| store.system(&who.organization, &sweep, &trusted).map(drop));
+        queued(&url, 2);
+        held.rollback().unwrap();
+        (cancelled.join().unwrap(), swept.join().unwrap())
+    });
+
+    assert!(
+        cancelled.is_ok() && swept.is_ok(),
+        "{cancelled:?} {swept:?}"
+    );
+}

@@ -227,6 +227,12 @@ fn finish(tx: &mut dyn Tx, mark: &mut Mark) -> Result<Option<Vec<EnvironmentSumm
     match &mark.target {
         Target::Environment(id) => scope::purge(tx, id)?,
         Target::Project(id) => {
+            // The delete cascades onto its plans and Environments: take them first, in order.
+            scope::lock_project(tx, id)?;
+            crate::pull_request::preview::lock_project_plans(tx, id)?;
+            let members = scope::members(tx, id)?;
+            scope::lock_all(tx, members.into_iter().map(|member| member.id))?;
+            crate::storage::ranked::take(crate::storage::ranked::Lock::project(id));
             tx.execute(
                 "DELETE FROM config_project WHERE id = ?1",
                 &[id.as_str().into()],

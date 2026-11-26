@@ -58,6 +58,7 @@ use crate::review::history::NotSetVariable;
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
 use crate::settings::NodeName;
 use crate::storage::Tx;
+use crate::storage::ranked::{self, Lock};
 use crate::trusted::Evidence;
 use crate::{Actor, Trusted, review};
 
@@ -724,6 +725,11 @@ pub(crate) fn record_phases(tx: &mut dyn Tx) -> Result<(), RpcError> {
     )?;
     for row in rows {
         let phase = Record::read(&row, 3)?.phase;
+        ranked::unordered(Lock::pull_request_row(
+            row.text(0)?,
+            row.int(1)?,
+            row.int(2)?,
+        ));
         tx.execute(
             "UPDATE config_pull_request SET phase = ?4 \
              WHERE organization_id = ?1 AND repository_id = ?2 AND number = ?3",
@@ -776,6 +782,11 @@ fn write_phase(
     pr: &PullRequestRef,
     phase: &Phase,
 ) -> Result<(), RpcError> {
+    ranked::take(Lock::pull_request(
+        who.organization.as_str(),
+        pr.repository_id,
+        pr.number,
+    ));
     tx.execute(
         "UPDATE config_pull_request SET phase = ?4, standing = ?5 \
          WHERE organization_id = ?1 AND repository_id = ?2 AND number = ?3",
@@ -906,6 +917,11 @@ fn record_facts(
     let facts = json_text(event);
     // The lock: a placeholder no facts are older than, or the row. A second first
     // report waits here on the first, then reads what it left.
+    ranked::take(Lock::pull_request(
+        organization,
+        pr.repository_id,
+        pr.number,
+    ));
     tx.execute(
         "INSERT INTO config_pull_request (organization_id, repository_id, number, facts, updated) \
          VALUES (?1, ?2, ?3, ?4, '') \
@@ -924,6 +940,11 @@ fn record_facts(
         true => format!(" AND {not_merged}"),
         false => String::new(),
     };
+    ranked::take(Lock::pull_request(
+        organization,
+        pr.repository_id,
+        pr.number,
+    ));
     let fresh = tx.execute(
         &format!(
             "UPDATE config_pull_request SET facts = ?4, updated = ?5 \
@@ -944,6 +965,11 @@ fn record_facts(
             commit: commit.clone(),
             into: event.target_branch.clone(),
         });
+        ranked::take(Lock::pull_request(
+            organization,
+            pr.repository_id,
+            pr.number,
+        ));
         first_merge = tx.execute(
             &format!(
                 "UPDATE config_pull_request SET merged = ?4 \
@@ -1260,6 +1286,11 @@ fn lock(
     repository_id: RepositoryId,
     pr: PullRequestNumber,
 ) -> Result<(), RpcError> {
+    ranked::take(Lock::pull_request(
+        who.organization.as_str(),
+        repository_id,
+        pr,
+    ));
     tx.execute(
         "UPDATE config_pull_request SET updated = updated \
          WHERE organization_id = ?1 AND repository_id = ?2 AND number = ?3",

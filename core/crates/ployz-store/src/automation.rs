@@ -288,6 +288,16 @@ fn branch_head(
             json!({}),
         ));
     }
+    // Every Environment it may cancel a hold in or deploy, in ID order, before any.
+    let environments = tx
+        .query(
+            "SELECT id FROM config_environment WHERE organization_id = ?1 ORDER BY id",
+            &[organization.into()],
+        )?
+        .iter()
+        .map(|row| row.parse::<EnvironmentId>(0, "Environment ID"))
+        .collect::<Result<Vec<_>, RpcError>>()?;
+    scope::lock_all(tx, environments.iter().cloned())?;
     // A Deployment still waiting for an older head's CI never ships now.
     deployment::supersede_held(tx, who, (repository_id, branch), event.head.as_ref())?;
     let Some(head) = &event.head else {
@@ -296,13 +306,8 @@ fn branch_head(
     remember(tx, who, repository_id, branch, head)?;
     // The first head seen deploys every Service that follows the branch.
     let changed = event.base.as_ref().and(event.changed.as_deref());
-    let environments = tx.query(
-        "SELECT id FROM config_environment WHERE organization_id = ?1 ORDER BY id",
-        &[organization.into()],
-    )?;
     let mut automated = Automated::default();
-    for row in environments {
-        let environment = row.parse::<EnvironmentId>(0, "Environment ID")?;
+    for environment in environments {
         let push = GitPush {
             repository_id: event.repository_id,
             branch: branch.clone(),
@@ -351,9 +356,14 @@ fn check_suite(
     let mut automated = Automated::default();
     // Whether every suite passed is read under each Environment's lock (`admit`): two
     // suites of the head completing at once each see the other's row committed there,
-    // where either read before the lock could find the other still pending.
-    for (held, environment, push) in deployment::held_for_head(tx, who, repository_id, &event.head)?
-    {
+    // where either read before the lock could find the other still pending. Locked in
+    // ID order before any.
+    let held = deployment::held_for_head(tx, who, repository_id, &event.head)?;
+    scope::lock_all(
+        tx,
+        held.iter().map(|(_, environment, _)| environment.clone()),
+    )?;
+    for (held, environment, push) in held {
         deploy(
             tx,
             who,

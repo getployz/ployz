@@ -250,8 +250,9 @@ pub(super) fn reserve(
 /// it is no lock; the plan's own row is.
 ///
 /// Writers lock in one order: pull request rows, then Projects, then plans, then
-/// Environments. Deleting a Project deletes its plans, so it counts as taking them: a
-/// writer that may delete one holds its Project and its plans first.
+/// Environments, each in key order. Deleting a Project deletes its plans, so it counts
+/// as taking them: a writer that may delete one holds its Project and its plans first.
+/// [`crate::storage::ranked`] checks the order in every debug and test transaction.
 pub(super) struct Plans {
     repository: Option<RepositoryId>,
     keys: BTreeSet<(crate::id::ProjectId, RepositoryId)>,
@@ -293,6 +294,7 @@ pub(super) fn lock_plan(
     project: &crate::id::ProjectId,
     repository_id: RepositoryId,
 ) -> Result<(), RpcError> {
+    crate::storage::ranked::take(crate::storage::ranked::Lock::plan(project, repository_id));
     tx.execute(
         "UPDATE config_pr_plan SET plan = plan WHERE project_id = ?1 AND repository_id = ?2",
         &[project.as_str().into(), repository_id.into()],

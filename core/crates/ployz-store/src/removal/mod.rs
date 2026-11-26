@@ -876,10 +876,17 @@ pub(crate) fn cancel(
     id: &DeploymentId,
     trusted: &Trusted,
 ) -> Result<DeploymentSummary, RpcError> {
-    // Read it, and the Environment's protection, under the lock the cancel writes
-    // under, so neither can change between the ask and the cancel.
+    // Read it, the Environment's protection and the removal it may stop under the locks
+    // the cancel writes under, so none can change between the ask and the cancel: its
+    // Project, then the Environment and every member of that removal, in ID order. The
+    // Project lock holds the removal's members still, as `remove` takes it too.
     let environment = deployment::owned(tx, who, id)?.summary.environment_id;
-    crate::scope::lock_all(tx, [environment])?;
+    scope::lock_project_of(tx, &environment)?;
+    let mut stopping = vec![environment.clone()];
+    if let Some(mark) = mark::naming(tx, &environment)? {
+        stopping.extend(due::alive(tx, &mark)?);
+    }
+    scope::lock_all(tx, stopping)?;
     let summary = deployment::owned(tx, who, id)?.summary;
     // Their own by the immutable id Cloud authenticated, since a name may repeat. A
     // Deployment an older Cloud admitted holds none, nor does a caller an older Cloud
@@ -917,7 +924,9 @@ fn stop(
     except: Option<&DeploymentId>,
 ) -> Result<Vec<DeploymentId>, RpcError> {
     let mut cancelled = Vec::new();
-    for member in due::alive(tx, mark)? {
+    let members = due::alive(tx, mark)?;
+    scope::lock_all(tx, members.iter().cloned())?;
+    for member in members {
         scope::lock_id(tx, who, &member)?;
         if let Some(running) = deployment::in_flight(tx, &member)?
             .filter(|running| running.remove && Some(&running.id) != except)

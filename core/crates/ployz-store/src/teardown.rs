@@ -217,8 +217,14 @@ pub(crate) fn set_default(
     who: &Actor,
     set: &SetDefaultEnvironment,
 ) -> Result<EnvironmentsView, RpcError> {
+    // Its Project before it, as every writer of both takes them.
+    let found = scope::environment(tx, who, &set.environment)?;
+    let project = scope::lock_project_of(tx, &found.summary.id)?;
     let environment = scope::lock(tx, who, &set.environment)?;
     crate::removal::marked(tx, &environment)?;
+    if let Some(project) = &project {
+        crate::storage::ranked::take(crate::storage::ranked::Lock::project(project));
+    }
     tx.execute(
         "UPDATE config_project SET default_environment_id = ?1 \
          WHERE organization_id = ?2 AND name = ?3",
@@ -268,6 +274,7 @@ pub(crate) fn set_protected(
             json!({ "project": summary.project, "environment": summary.name }),
         ));
     }
+    crate::storage::ranked::take(crate::storage::ranked::Lock::environment(&summary.id));
     tx.execute(
         if set.protected {
             "UPDATE config_environment SET protections = protections + 1 - protected, protected = 1 \
@@ -381,7 +388,36 @@ pub(crate) fn remove_organization(
             .within(json!({ "projects": names })),
         ));
     }
-    for table in ORGANIZATION_TABLES {
+    // Pull request rows one at a time, in key order, as every writer locks them.
+    let pull_requests = tx.query(
+        "SELECT repository_id, number FROM config_pull_request \
+         WHERE organization_id = ?1 ORDER BY repository_id, number",
+        &[who.organization.as_str().into()],
+    )?;
+    for row in pull_requests {
+        let (repository_id, number) = (
+            row.number(0, "pull request")?,
+            row.number(1, "pull request")?,
+        );
+        crate::storage::ranked::take(crate::storage::ranked::Lock::pull_request(
+            who.organization.as_str(),
+            repository_id,
+            number,
+        ));
+        tx.execute(
+            "DELETE FROM config_pull_request \
+             WHERE organization_id = ?1 AND repository_id = ?2 AND number = ?3",
+            &[
+                who.organization.as_str().into(),
+                repository_id.into(),
+                number.into(),
+            ],
+        )?;
+    }
+    for table in ORGANIZATION_TABLES
+        .into_iter()
+        .filter(|table| *table != "config_pull_request")
+    {
         tx.execute(
             &format!("DELETE FROM {table} WHERE organization_id = ?1"),
             &[who.organization.as_str().into()],

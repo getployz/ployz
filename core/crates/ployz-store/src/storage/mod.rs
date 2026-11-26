@@ -8,6 +8,7 @@
 mod convert;
 pub(crate) mod counted;
 mod pg;
+pub(crate) mod ranked;
 mod sqlite;
 mod steps;
 pub(crate) mod tables;
@@ -439,7 +440,7 @@ impl Storage {
         &self,
         work: impl FnOnce(&mut dyn Tx) -> Result<T, RpcError>,
     ) -> Result<T, RpcError> {
-        let work = counted::counted(work);
+        let work = ranked::checked(counted::counted(work));
         match self {
             Self::Sqlite(sqlite) => sqlite
                 .transaction(true, work)
@@ -453,7 +454,7 @@ impl Storage {
         &self,
         work: impl FnOnce(&mut dyn Tx) -> Result<T, RpcError>,
     ) -> Result<T, RpcError> {
-        let work = counted::counted(work);
+        let work = ranked::checked(counted::counted(work));
         match self {
             Self::Sqlite(sqlite) => sqlite
                 .transaction(false, work)
@@ -507,9 +508,11 @@ pub(crate) fn attempt<T>(
     work: impl FnOnce(&mut dyn Tx) -> Result<T, RpcError>,
 ) -> Result<T, RpcError> {
     tx.execute("SAVEPOINT attempt", &[])?;
+    let held = ranked::mark();
     let result = work(tx);
     if result.is_err() {
         tx.execute("ROLLBACK TO SAVEPOINT attempt", &[])?;
+        ranked::rolled_back(held);
     }
     tx.execute("RELEASE SAVEPOINT attempt", &[])?;
     result

@@ -126,6 +126,10 @@ pub(crate) fn set_plan(
         preview.cap = cap;
     }
     let name = set.repository.as_str();
+    crate::storage::ranked::take(crate::storage::ranked::Lock::plan(
+        &project.id,
+        *repository_id,
+    ));
     tx.execute(
         "INSERT INTO config_pr_plan (project_id, repository_id, organization_id, repository, plan) \
          VALUES (?1, ?2, ?3, ?4, ?5) \
