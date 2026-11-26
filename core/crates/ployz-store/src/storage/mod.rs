@@ -341,6 +341,11 @@ const MIGRATIONS: &[(&str, Step)] = &[
         "0054_service_version_parent",
         Step::Sql(include_str!("migrations/0054_service_version_parent.sql")),
     ),
+    (
+        // Drop the 0.4 preview rule's table: a PR plan keeps its preview rule.
+        "0056_preview_rule_gone",
+        Step::Sql(include_str!("migrations/0056_preview_rule_gone.sql")),
+    ),
 ];
 
 enum Step {

@@ -254,6 +254,7 @@ async function openConfigStore(url, sealingSecret) {
 const observeVolumes = rpc(native.observeVolumes);
 const observeCopies = rpc(native.observeCopies);
 const observeRunning = rpc(native.observeRunning);
+const observePreviewHomes = rpc(native.observePreviewHomes);
 const allocateEnrollment = rpc(native.allocateEnrollment);
 const machineUpgradeAttemptId = rpc(native.machineUpgradeAttemptId);
 const ployzVersion = rpc(native.ployzVersion);
@@ -281,6 +282,7 @@ module.exports = {
   observeVolumes,
   observeCopies,
   observeRunning,
+  observePreviewHomes,
   allocateEnrollment,
   setVolumeCopyRefusal,
   machineUpgradeAttemptId,

@@ -21,12 +21,15 @@
 mod checks;
 pub(crate) mod on_merge;
 mod plan;
+mod preview;
 pub use crate::pr_environment::PullRequestRef;
 pub(crate) use checks::*;
 pub(crate) use on_merge::view as on_merge;
 pub use on_merge::{MergeRow, OnMerge, OnMergeInto, OnMergeQuery, Ride, SetMergeValue};
 pub(crate) use on_merge::{forget_edits, set_merge_value};
 pub(crate) use plan::*;
+pub use preview::{OpenPreviewsQuery, OpenPreviewsView, PreviewPlan};
+pub(crate) use preview::{open_previews, rehome};
 
 use crate::id::{
     BranchName, CommitSha, GithubUserId, PullRequestNumber, RepositoryId, RepositoryName,
@@ -35,8 +38,9 @@ use crate::storage::json_text;
 use std::collections::BTreeSet;
 use std::num::NonZeroU8;
 
+use ployz_core::authority::{AutoDeployRule, Signed};
 use ployz_core::config::{SavedEnvironmentIntent, ServiceGitAccess, ServiceSource};
-use ployz_core::{RpcError, ServiceName};
+use ployz_core::{PreviewNamespace, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
@@ -145,6 +149,15 @@ pub struct SetPrPlan {
     /// Make PR Environments for bots' pull requests too.
     #[serde(default)]
     pub include_bots: Option<bool>,
+    /// The preview rule a Device or a passkey signed for these pull requests: each then gets
+    /// a preview of the start-from Environment, its Parent, on one Server.
+    #[serde(default)]
+    #[ts(optional, as = "Option<Signed<AutoDeployRule>>")]
+    pub preview_rule: Option<Box<Signed<AutoDeployRule>>>,
+    /// The most previews open at once; 5 until set.
+    #[serde(default)]
+    #[ts(optional, type = "number")]
+    pub preview_cap: Option<NonZeroU8>,
 }
 
 /// List a Project's PR plans.
@@ -178,6 +191,10 @@ pub struct PrPlan {
     pub setup: Vec<SetupCommand>,
     pub remove_on_close: bool,
     pub include_bots: bool,
+    /// Its preview rule, when one was kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub preview: Option<PreviewPlan>,
     /// Its pull requests with a PR Environment in the Project, not being closed.
     pub open: Vec<OpenPullRequest>,
 }
@@ -480,6 +497,8 @@ struct Stored {
     setup: Vec<Setup>,
     remove_on_close: bool,
     include_bots: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    preview: Option<preview::StoredPreview>,
 }
 
 /// The repository's pull requests with a PR Environment in the Project, not being
@@ -1022,12 +1041,15 @@ pub(crate) fn pull_request(
     if !matches!(phase, Phase::Open { .. }) {
         for (environment, project) in &current {
             let plan = load(tx, project, event.repository_id)?.unwrap_or_else(off);
-            if plan.remove_on_close
+            // A preview always closes with its pull request, so its slot frees.
+            if (plan.remove_on_close || plan.preview.is_some())
                 && !kept.contains(environment)
                 && !on_merge::holds_open(tx, who, environment)?
             {
                 let because = crate::removal::mark::Closed::PullRequest;
                 crate::removal::close(tx, who, environment, because, &mut automated)?;
+                let at = (project, event.repository_id);
+                preview::fill(tx, who, at, trusted, &mut automated)?;
             }
         }
     } else {
@@ -1041,7 +1063,7 @@ pub(crate) fn pull_request(
             admits,
             trusted,
         };
-        open(tx, who, &at, &current, &mut automated)?;
+        open(tx, who, &at, &mut automated)?;
         // A push it refused before the author proved a member never comes again.
         if refused && admits {
             for (environment, _) in &current {
@@ -1112,7 +1134,7 @@ pub(crate) fn approve(
         admits: true,
         trusted,
     };
-    open(tx, who, &at, &current, &mut automated)?;
+    open(tx, who, &at, &mut automated)?;
     if first {
         for (environment, _) in &current {
             crate::automation::deploy_head(tx, who, environment, &event, trusted, &mut automated)?;
@@ -1212,7 +1234,6 @@ fn open(
     tx: &mut dyn Tx,
     who: &Actor,
     at: &Opening<'_>,
-    current: &[(EnvironmentId, crate::id::ProjectId)],
     automated: &mut Automated,
 ) -> Result<(), RpcError> {
     let Opening {
@@ -1220,6 +1241,9 @@ fn open(
         admits,
         trusted,
     } = *at;
+    // Read under the start-froms' locks, so a preview another pull request's close
+    // opened for this one counts.
+    let current = current(tx, who, event.repository_id, event.number, false)?;
     let rows = tx.query(
         "SELECT project_id, plan FROM config_pr_plan \
          WHERE organization_id = ?1 AND repository_id = ?2 ORDER BY project_id",
@@ -1248,7 +1272,16 @@ fn open(
         } else if trusted.runnable().is_err() {
             Ok(Some(automation::Deploy::NoServers))
         } else {
-            crate::storage::attempt(tx, |tx| create(tx, who, &start, &plan, (event, trusted)))
+            crate::storage::attempt(tx, |tx| {
+                let preview = plan
+                    .preview
+                    .as_ref()
+                    .map(|preview| {
+                        preview::slot(tx, who, (&project, &plan, preview), event, trusted)
+                    })
+                    .transpose()?;
+                create(tx, who, &start, &plan, (event, trusted, preview.as_ref()))
+            })
         };
         automation::record(&start.summary.id, deployed, automated)?;
     }
@@ -1262,9 +1295,9 @@ fn create(
     who: &Actor,
     start: &Environment,
     plan: &Stored,
-    (event, trusted): (&PullRequest, &Trusted),
+    (event, trusted, preview): (&PullRequest, &Trusted, Option<&PreviewNamespace>),
 ) -> Result<Option<automation::Deploy>, RpcError> {
-    let Some(made) = make(tx, who, start, plan, (event, trusted))? else {
+    let Some(made) = make(tx, who, start, plan, (event, trusted, preview))? else {
         return Ok(None);
     };
     let Made {
@@ -1314,7 +1347,7 @@ fn make(
     who: &Actor,
     start: &Environment,
     plan: &Stored,
-    (event, trusted): (&PullRequest, &Trusted),
+    (event, trusted, preview): (&PullRequest, &Trusted, Option<&PreviewNamespace>),
 ) -> Result<Option<Made>, RpcError> {
     let working = &start.working;
     let ours = |source: &ServiceSource| source.builds_repository(event.repository_id.get());
@@ -1375,6 +1408,9 @@ fn make(
         },
         trusted,
     )?;
+    if let Some(preview) = preview {
+        preview::reserve(tx, who, &id, preview)?;
+    }
     let mut environment = scope::lock_id(tx, who, &id)?;
     environment.working = derive(environment.working, event);
     scope::save_working(tx, &mut environment, trusted)?;
@@ -1507,7 +1543,12 @@ fn shut_down(
 }
 
 /// Move every removal on, then close each Branch idle past its deadline.
-pub(crate) fn sweep(tx: &mut dyn Tx, who: &Actor, sweep: &Sweep) -> Result<Automated, RpcError> {
+pub(crate) fn sweep(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    sweep: &Sweep,
+    trusted: &Trusted,
+) -> Result<Automated, RpcError> {
     // Closing would lose what it holds for its merge: an idle PR Environment that
     // holds something only comes off the Servers.
     let mut idle = Vec::new();
@@ -1527,6 +1568,7 @@ pub(crate) fn sweep(tx: &mut dyn Tx, who: &Actor, sweep: &Sweep) -> Result<Autom
     for id in &held {
         shut_down(tx, who, id, &mut automated)?;
     }
+    rehome(tx, who, trusted, &mut automated)?;
     Ok(automated)
 }
 

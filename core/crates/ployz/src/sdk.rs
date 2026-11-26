@@ -37,6 +37,7 @@ mod payloads;
 pub(crate) mod preparation;
 pub(crate) mod preparation_failure;
 pub(crate) mod prepare;
+mod preview;
 mod run_support;
 mod running;
 mod sealed;
@@ -52,6 +53,10 @@ pub use github_build::{
     github_rule_check_in, github_rule_grant, github_start,
 };
 pub use observe::{observe_copies, observe_running, observe_volumes};
+pub use preview::{
+    PreviewFailed, PreviewHomes, PreviewOn, PreviewsSwept, close_unheld_previews,
+    observe_preview_homes,
+};
 pub use running::Running;
 pub use store_call::store_call;
 pub use store_runner::{

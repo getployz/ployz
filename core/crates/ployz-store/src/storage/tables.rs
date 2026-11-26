@@ -36,7 +36,7 @@ mod tests {
     use crate::storage::Storage;
 
     /// Tables neither list names, and why they need no sweep.
-    const NO_SWEEP: [&str; 4] = [
+    const NO_SWEEP: [&str; 3] = [
         // Removing an Organization refuses while it has Projects, so none is left to delete.
         "config_project",
         // The Store's own record of applied migrations, not an Organization's rows.
@@ -44,7 +44,6 @@ mod tests {
         // Keyed by an Environment no Organization removal can reach: none is left once
         // its Projects are gone.
         "config_auto_deploy_rule",
-        "config_preview_rule",
     ];
 
     /// Every `config_*` table is swept by a list, reached by a cascade from the

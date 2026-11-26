@@ -1145,6 +1145,8 @@ fn a_kept_preview_has_nothing_left_on_merge_once_it_landed() {
                 setup: None,
                 remove_on_close: Some(false),
                 include_bots: None,
+                preview_rule: None,
+                preview_cap: None,
             },
         )
         .unwrap();

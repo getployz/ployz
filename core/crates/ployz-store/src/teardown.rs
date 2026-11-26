@@ -95,6 +95,8 @@ pub enum RemovedBecause {
     Idle,
     /// It synced into its Parent and wasn't kept.
     Synced,
+    /// It was a preview whose Server left, so its pull request got a new one on another.
+    Moved,
 }
 
 /// Make an Environment its Project's Default Environment.

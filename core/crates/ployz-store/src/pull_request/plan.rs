@@ -101,6 +101,26 @@ pub(crate) fn set_plan(
                 .collect::<Result<_, RpcError>>()?;
         }
     }
+    if let Some(rule) = &set.preview_rule {
+        super::preview::fit(tx, who, (&project.id, &plan, *repository_id), rule)?;
+        let cap = plan
+            .preview
+            .as_ref()
+            .map_or(super::preview::DEFAULT_CAP, |kept| kept.cap);
+        plan.preview = Some(super::preview::StoredPreview {
+            rule: (**rule).clone(),
+            cap,
+        });
+    }
+    if let Some(cap) = set.preview_cap {
+        let Some(preview) = &mut plan.preview else {
+            return Err(error::invalid(
+                "Keep a preview rule first: the cap counts its previews",
+                json!({}),
+            ));
+        };
+        preview.cap = cap;
+    }
     let name = set.repository.as_str();
     tx.execute(
         "INSERT INTO config_pr_plan (project_id, repository_id, organization_id, repository, plan) \
@@ -174,6 +194,7 @@ pub(crate) fn plans(
                 .collect(),
             remove_on_close: stored.remove_on_close,
             include_bots: stored.include_bots,
+            preview: stored.preview.as_ref().and_then(Option::from),
             open,
         });
     }

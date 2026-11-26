@@ -103,6 +103,13 @@ pub struct Trusted {
     #[serde(default)]
     #[ts(as = "Option<bool>", optional)]
     pub from_cli: bool,
+    /// The Servers a preview may open on, as Cloud read them: each takes Services and
+    /// serves previews. A preview whose Server isn't listed closes, and its pull request
+    /// opens one on a listed Server. None when Cloud didn't look, which opens no preview
+    /// and closes none for its Server.
+    #[serde(default)]
+    #[ts(optional)]
+    pub preview_homes: Option<Vec<MachineId>>,
     /// The Cluster's Sealing public key, as Cloud read it: what the Store seals a
     /// generated secret to. None when the Cluster has no Server yet, which refuses a
     /// generated secret.

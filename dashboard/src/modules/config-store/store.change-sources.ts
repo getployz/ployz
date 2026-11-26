@@ -119,6 +119,8 @@ export const storeViewRefreshedBy = {
   uploads: ["store_environment", "store_deployment"],
   // Plans list the repositories Working States deploy from, and name nodes of the start-from Environment.
   pr_plans: ["store_project", "store_environment"],
+  // Open previews are PR Environments in preview Namespaces; a plan keeps the preview rule.
+  open_previews: ["store_project", "store_environment"],
   // PR Environments, their Deployments, each Destination's Working State, and the facts GitHub last told Cloud.
   pull_request: ["store_environment", "store_deployment", "store_pull_request", "store_check_suite"],
   // What a merge lands: both Environments' Working and Saved, the Edits, and the pull request's facts.

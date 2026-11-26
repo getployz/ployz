@@ -165,6 +165,11 @@ fn typescript_declarations() -> String {
     declarations.add::<ployz_store::AppliedVolume>();
     declarations.add::<super::CopyObservation>();
     declarations.add::<super::RetireOutcome>();
+    declarations.add::<super::PreviewsSwept>();
+    declarations.add::<super::PreviewHomes>();
+    declarations.add::<ployz_store::OpenPreviewsQuery>();
+    declarations.add::<ployz_store::OpenPreviewsView>();
+    declarations.add::<ployz_store::PreviewPlan>();
     declarations.add::<ployz_core::InspectVolumeCopyRequest>();
     declarations.add::<ployz_core::SeedVolumeRequest>();
     declarations.add::<ployz_core::SeedCopyRequest>();

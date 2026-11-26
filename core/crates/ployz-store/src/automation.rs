@@ -191,7 +191,7 @@ pub(crate) fn system(
         SystemEvent::PullRequest(pull) => {
             crate::pull_request::pull_request(tx, &who, pull, trusted)
         }
-        SystemEvent::Sweep(sweep) => crate::pull_request::sweep(tx, &who, sweep),
+        SystemEvent::Sweep(sweep) => crate::pull_request::sweep(tx, &who, sweep, trusted),
         SystemEvent::ClusterForgotten => Ok(Automated {
             cancelled: crate::teardown::forget_cluster(tx, &who)?,
             ..Automated::default()

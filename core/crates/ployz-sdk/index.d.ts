@@ -39,6 +39,7 @@ export {
   allocateEnrollment,
   machineUpgradeAttemptId,
   observeCopies,
+  observePreviewHomes,
   observeRunning,
   observeVolumes,
   pinImages,

@@ -8,7 +8,7 @@ use sha2::{Digest as _, Sha256};
 use crate::{
     Admission, ContainerPath, DockerVolumeName, MachineId, Namespace, RawVolumeSource,
     RequestedServiceSpec, TrashId, VolumeBirth, VolumeOrigin,
-    authority::{canonical::Timestamp, deploy::host_reach},
+    authority::{RuleId, canonical::Timestamp, deploy::host_reach},
     separation::{PREVIEW_BIRTH, PREVIEW_HOME},
     value::{hex_newtype, is_lower_hex},
 };
@@ -54,9 +54,27 @@ impl PreviewNamespace {
         })
     }
 
+    /// A new preview of `rule` homed on `home`: the Namespace a pull request's preview
+    /// gets when it opens, with `nonce` keeping each opening apart.
+    #[must_use]
+    pub fn mint(rule: &RuleId, home: &MachineId, nonce: [u8; 4]) -> Self {
+        let rule = rule.to_string();
+        let home = PreviewHome::of(home);
+        let nonce = PreviewHome::from_bytes(nonce);
+        let namespace = Namespace::parse(format!("pv-{}-{home}-{nonce}", &rule[..16]))
+            .expect("hex and hyphens make a Namespace");
+        Self { namespace, home }
+    }
+
     #[must_use]
     pub fn namespace(&self) -> &Namespace {
         &self.namespace
+    }
+
+    /// Whether `machine` is the one Server this preview may run on.
+    #[must_use]
+    pub fn homed_on(&self, machine: &MachineId) -> bool {
+        self.home == PreviewHome::of(machine)
     }
 
     /// The origin of `physical` when this preview made it: what a Docker Volume of this
@@ -79,7 +97,7 @@ impl PreviewNamespace {
     /// # Errors
     /// Returns [`PreviewRefusal::Elsewhere`] on a Server the Namespace doesn't name.
     pub fn admit_on(&self, machine: &MachineId) -> Result<(), PreviewRefusal> {
-        if self.home == PreviewHome::of(machine) {
+        if self.homed_on(machine) {
             Ok(())
         } else {
             Err(PreviewRefusal::Elsewhere {
@@ -167,6 +185,19 @@ pub enum PreviewRefusal {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ClosePreviewRequest {
     pub namespace: Namespace,
+}
+
+/// List the previews this Server holds open.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ListPreviewsRequest {}
+
+/// The previews this Server ran and hasn't closed, which Cloud checks against what it
+/// holds open.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PreviewsHeld {
+    #[serde(default)]
+    pub open: Vec<Namespace>,
 }
 
 /// What a Close took off this Server, and what it left.

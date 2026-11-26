@@ -706,6 +706,10 @@ pub struct Claimed {
     /// What each target Service runs, by runtime name, with the signed versions kept for
     /// it. A Service without one sends its Saved image and no statement.
     pub ran: BTreeMap<ServiceName, Pinned>,
+    /// The preview this Deployment closes: a removal that takes a preview's PR Environment
+    /// off for good, which its home Server closes rather than its Volumes being deleted
+    /// one by one. None for any other Deployment, a preview's shut down included.
+    pub closes: Option<Namespace>,
 }
 
 /// One node a Deployment targets, as frozen at admission. A row stores a Service the
@@ -1894,7 +1898,9 @@ fn free_namespace(
                 &[who.organization.as_str().into(), namespace.as_str().into()],
             )?
             .is_empty();
-        if namespace.is_reserved() || taken {
+        // A preview's form is minted only for a preview, which names its one Server.
+        let preview = ployz_core::PreviewNamespace::of(&namespace).is_some();
+        if namespace.is_reserved() || preview || taken {
             continue;
         }
         return Ok(namespace);

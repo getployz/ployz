@@ -359,6 +359,14 @@ const ROWS: &[(&str, &str, &str, &str, &str, &str)] = &[
         "Unary",
     ),
     (
+        "ListPreviews",
+        "list_previews",
+        "ployz.preview.list.v1",
+        "Container",
+        "Operator",
+        "Unary",
+    ),
+    (
         "ListImages",
         "list_images",
         "ployz.image.list.v1",

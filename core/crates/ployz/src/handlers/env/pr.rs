@@ -95,6 +95,8 @@ pub(crate) fn pr(root: &ArgMatches) -> Result<(), Error> {
                 setup,
                 remove_on_close,
                 include_bots,
+                preview_rule: None,
+                preview_cap: None,
             };
             store.write(&set)?
         }

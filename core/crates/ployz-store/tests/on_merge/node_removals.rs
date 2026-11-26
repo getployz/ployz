@@ -490,6 +490,8 @@ fn each_destination_takes_a_removal_its_references_never_hold() {
                 setup: None,
                 remove_on_close: None,
                 include_bots: None,
+                preview_rule: None,
+                preview_cap: None,
             },
         )
         .unwrap();
