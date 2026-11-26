@@ -1823,7 +1823,12 @@ async fn a_reused_free_image_names_the_server_that_cant_run_it() {
         .iter()
         .map(|(service, receipt)| (service.clone(), vec![receipt.clone()]))
         .collect();
-    assert!(receipts[&one][0].free.is_some());
+    assert!(
+        receipts
+            .get(&one)
+            .and_then(|built| built.first())
+            .is_some_and(|receipt| receipt.free.is_some())
+    );
     first.close();
     building.close().await;
     server.abort();
@@ -1841,7 +1846,7 @@ async fn a_reused_free_image_names_the_server_that_cant_run_it() {
         .finished()
         .await
         .err()
-        .expect("a Server that can't run the image stops the Deploy");
+        .unwrap();
     let recorded = ployz_store::Failure::from(&error);
     let cause = recorded.cause.last().expect("a cause names the Server");
     assert!(

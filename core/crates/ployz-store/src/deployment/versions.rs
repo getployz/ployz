@@ -669,6 +669,11 @@ pub struct VersionsView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub rule: Option<Box<RuleProof>>,
+    /// The Free receipt a free Build's Server gave for `image`, which an unsigned
+    /// creation of it carries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub free: Option<ployz_core::FreeReceipt>,
 }
 
 /// What `organization` keeps for the spec `query` names: its signed versions and, for an
@@ -683,14 +688,74 @@ pub(crate) fn versions(
 ) -> Result<VersionsView, RpcError> {
     let service = (&query.namespace, &query.service);
     let versions = versions_for(tx, organization, service, query.digest)?;
-    let rule = match query.image {
-        Some(image) => crate::build::verified_proof(tx, organization, service, image)?,
-        None => None,
+    let (rule, free) = match query.image {
+        Some(image) => (
+            crate::build::verified_proof(tx, organization, service, image)?,
+            free_receipt(tx, organization, service, image)?,
+        ),
+        None => (None, None),
     };
     Ok(VersionsView {
         versions,
         rule: rule.map(Box::new),
+        free,
     })
+}
+
+/// Keep the Free receipt each of `receipts` carries under `namespace` and its Service, so
+/// a later copy of a Container running its image carries it too.
+///
+/// # Errors
+/// Returns `invalid_argument` for a Free receipt that doesn't read, or a storage error.
+pub(crate) fn keep_free_receipts(
+    tx: &mut dyn Tx,
+    (organization, namespace): (&str, &Namespace),
+    receipts: &BTreeMap<ServiceName, serde_json::Value>,
+) -> Result<(), RpcError> {
+    for (service, receipt) in receipts {
+        let Some(free) = receipt.get("free") else {
+            continue;
+        };
+        let free: ployz_core::FreeReceipt = serde_json::from_value(free.clone())
+            .map_err(|_| error::invalid("A build's Free receipt doesn't read", json!({})))?;
+        tx.execute(
+            "INSERT INTO config_free_receipt (organization_id, namespace, service, image, receipt) \
+             VALUES (?1, ?2, ?3, ?4, ?5) \
+             ON CONFLICT (organization_id, namespace, service, image) \
+             DO UPDATE SET receipt = excluded.receipt",
+            &[
+                organization.into(),
+                namespace.as_str().into(),
+                service.as_str().into(),
+                free.image.as_str().into(),
+                json_text(&free)?.as_str().into(),
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+/// The Free receipt kept for `image` of `service` in `namespace`.
+fn free_receipt(
+    tx: &mut dyn Tx,
+    organization: &str,
+    (namespace, service): (&Namespace, &ServiceName),
+    image: BuiltImageDigest,
+) -> Result<Option<ployz_core::FreeReceipt>, RpcError> {
+    let image = image.to_string();
+    let rows = tx.query(
+        "SELECT receipt FROM config_free_receipt \
+         WHERE organization_id = ?1 AND namespace = ?2 AND service = ?3 AND image = ?4",
+        &[
+            organization.into(),
+            namespace.as_str().into(),
+            service.as_str().into(),
+            image.as_str().into(),
+        ],
+    )?;
+    rows.first()
+        .map(|row| row.json(0, "Free receipt"))
+        .transpose()
 }
 
 /// What each Service of `target` runs in Deployment `id`, written back so a retry of `id`

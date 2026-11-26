@@ -9829,6 +9829,50 @@ fn a_deploy_keeps_only_versions_of_its_own_services_and_never_replaces_a_kept_on
     assert!(kept.contains(&later.statement), "{kept:?}");
 }
 
+/// A drained copy carries the Free receipt of the image it runs, though a later free
+/// Build of the Service gave another; an image no free Build gave carries none.
+#[test]
+fn a_drain_reads_the_free_receipt_of_the_image_a_copy_runs() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    let image = |hex: &str| format!("sha256:{}", hex.repeat(64));
+    let free = |hex: &str| json!({"image": image(hex), "mac": "b".repeat(64)});
+    let web = ServiceName::parse("web").unwrap();
+    for hex in ["1", "2"] {
+        let receipt = json!({"fingerprint": "f".repeat(64), "free": free(hex)});
+        store
+            .record(
+                &id(1),
+                &a,
+                RunEvidence::Built([(web.clone(), receipt)].into()),
+            )
+            .unwrap();
+    }
+    let digest = signed_spec(&store, &who, "web", P1);
+    let read = |hex: &str| {
+        store
+            .read(
+                &who,
+                &ployz_store::VersionsQuery {
+                    namespace: ployz_core::Namespace::parse("shop-production").unwrap(),
+                    service: web.clone(),
+                    digest,
+                    image: Some(
+                        ployz_core::authority::BuiltImageDigest::parse(&image(hex)).unwrap(),
+                    ),
+                },
+            )
+            .unwrap()
+            .free
+    };
+    for hex in ["1", "2"] {
+        assert_eq!(read(hex), Some(serde_json::from_value(free(hex)).unwrap()));
+    }
+    assert_eq!(read("3"), None);
+}
+
 /// Leave Deployment `n` as 0049 leaves one admitted before the Store kept what each
 /// Deployment ran.
 fn legacy(url: &str, n: u8) {

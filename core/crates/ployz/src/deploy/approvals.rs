@@ -117,7 +117,7 @@ impl KeptVersions {
             Ok(view) => Carried {
                 rule: view.rule,
                 versions: view.versions,
-                free: None,
+                free: view.free.filter(|receipt| runs(receipt, new)),
             },
             Err(error) => {
                 tracing::warn!(%error, service = %new.slot.service, "could not read a copy's signed versions");
@@ -339,10 +339,20 @@ impl Approvals {
         else {
             return None;
         };
-        let receipt = self.free.get(&new.slot.service)?;
-        let (_, image) = new.resolved_spec.container.image.rsplit_once('@')?;
-        (image == receipt.image.as_str()).then(|| receipt.clone())
+        self.free
+            .get(&new.slot.service)
+            .filter(|receipt| runs(receipt, new))
+            .cloned()
     }
+}
+
+/// Whether `new` runs the image `receipt` names.
+fn runs(receipt: &FreeReceipt, new: &NewContainer) -> bool {
+    new.resolved_spec
+        .container
+        .image
+        .rsplit_once('@')
+        .is_some_and(|(_, image)| image == receipt.image.as_str())
 }
 
 #[cfg(test)]

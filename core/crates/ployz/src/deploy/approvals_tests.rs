@@ -97,3 +97,85 @@ async fn an_edit_carries_the_parentless_version_it_edits() {
         vec![child, root]
     );
 }
+
+/// A drain recreates a free Container on another Server with the Free receipt its Build
+/// gave for the image the copy runs. Without it the Server would have to pull that image,
+/// which no registry holds.
+#[tokio::test]
+async fn a_drained_free_copy_carries_the_receipt_of_the_image_it_runs() {
+    use ployz_store::{
+        Actor, Admit, ConfigStore, CreateProject, Deploy, DeploymentId, EnvironmentId,
+        EnvironmentRef, OrganizationId, ProjectId, ProjectName, RunEvidence, RunnerId, SealingKey,
+    };
+    const DEPLOYMENT: &str = "00000000-0000-4000-8000-000000000103";
+    let store = std::sync::Arc::new(
+        ConfigStore::open("sqlite::memory:", SealingKey::new(b"test").unwrap()).unwrap(),
+    );
+    let organization = OrganizationId::parse("owner").unwrap();
+    let owner = Actor::system(organization.clone());
+    store
+        .write(
+            &owner,
+            &CreateProject {
+                id: ProjectId::parse("00000000-0000-4000-8000-000000000101").unwrap(),
+                name: ProjectName::parse("shop").unwrap(),
+                default_environment: EnvironmentId::parse("00000000-0000-4000-8000-000000000102")
+                    .unwrap(),
+                region: None,
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &owner,
+            &Admit::Deploy(Deploy {
+                id: DeploymentId::parse(DEPLOYMENT).unwrap(),
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+                prune: false,
+                no_prune: false,
+                versions: Vec::new(),
+                copies: Vec::new(),
+                recreate: Vec::new(),
+                rule: None,
+            }),
+        )
+        .unwrap();
+    let runner = RunnerId::parse("runner").unwrap();
+    let deployment = DeploymentId::parse(DEPLOYMENT).unwrap();
+    store.claim(&deployment, &runner).unwrap();
+    let image = format!("sha256:{}", "1".repeat(64));
+    let receipt = serde_json::json!({"image": image, "mac": "b".repeat(64)});
+    store
+        .record(
+            &deployment,
+            &runner,
+            RunEvidence::Built(
+                [(
+                    ployz_core::ServiceName::parse("api").unwrap(),
+                    serde_json::json!({"fingerprint": "f".repeat(64), "free": receipt}),
+                )]
+                .into(),
+            ),
+        )
+        .unwrap();
+
+    let namespace = ployz_core::Namespace::parse("shop-production").unwrap();
+    let approvals = Approvals::kept(super::KeptVersions::new(store, organization));
+    let mut free = requested(ServiceMode::Global);
+    free.container.image = format!("ployz-build/api@{image}");
+    assert_eq!(
+        approvals.carried(&want_of(free, &namespace)).await.free,
+        Some(serde_json::from_value(receipt).unwrap())
+    );
+    let mut other = requested(ServiceMode::Global);
+    other.container.image = format!("ployz-build/api@sha256:{}", "2".repeat(64));
+    assert_eq!(
+        approvals.carried(&want_of(other, &namespace)).await.free,
+        None
+    );
+}

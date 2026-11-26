@@ -314,7 +314,14 @@ mod tests {
                     Vec::new()
                 };
                 let rule = Some(Box::new(rule_omitting_every_machine()));
-                (spec, VersionsView { versions, rule })
+                (
+                    spec,
+                    VersionsView {
+                        versions,
+                        rule,
+                        free: None,
+                    },
+                )
             })
             .collect();
 
