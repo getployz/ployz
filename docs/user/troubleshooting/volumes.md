@@ -22,6 +22,9 @@ server or Ployz Cloud goes away during it. What happens next depends on how far 
   the move there, and `ployz volume runs data` shows the release that finished it. If that release
   fails too, or `web-2` won't start your service, your next deploy starts it on `web-2` and
   finishes the move.
+  The release pulls your service's image on `web-2` when it isn't there, so if the move failed
+  because your registry didn't answer, `ployz volume release data` finishes it once the registry
+  is back.
 
 If the release put the volume back on `web-1` and your service didn't start there, the run says
 "web-1 holds data again, but its Service didn't start there". Deploy, and the deploy starts it.

@@ -562,6 +562,7 @@ const createOn = Effect.fn("VolumeRun.createOn")(function* (
   runtime: ServerRuntime,
   at: SnapshotGuid,
   moved: boolean,
+  copied: boolean,
 ) {
   // Every Writer Create comes through here, a Move's check and start and a forward Release's start alike, so this is
   // the one gate: a Server that lacks a verb would run the start differently, or not at all.
@@ -589,7 +590,7 @@ const createOn = Effect.fn("VolumeRun.createOn")(function* (
   const start: CreateStart = {
     kind: "create",
     namespace: holder.namespace,
-    resolved_spec: startingSpec(ctx, proof.spec),
+    resolved_spec: startingSpec(ctx, proof.spec, copied),
     creation_key: creationKey(ctx, at),
     gen: container.gen ?? 1,
     rotation: container.rotation === "in" ? { in: { run: null, expect: "pending" } } : "pending",
@@ -615,7 +616,7 @@ export const startRefusal = Effect.fn("VolumeRun.startRefusal")(function* (
   const found = holderOn(ctx, containers, from, chosen);
   if (!found.ok) return found.refusal.message;
   // A check changes nothing, so the snapshot and epoch it names are never used; a Server still parses the snapshot's number.
-  const created = yield* createOn(ctx, found.holder, to, regionOf(to.id), runtimeOf(to.id), "check", false);
+  const created = yield* createOn(ctx, found.holder, to, regionOf(to.id), runtimeOf(to.id), "check", false, true);
   if (!created.ok) return created.refusal.message;
   const checked = yield* askCopy(ctx, to, expect, { kind: "writer", at: "0", epoch: 0, start: { ...created.start, check: true } }).pipe(
     Effect.catchIf((error) => error instanceof SwitchAttemptError && error.reach === "answered" && error.reason === null, (error) => Effect.succeed<CopyAnswer>({
@@ -762,22 +763,25 @@ export const startWriter = Effect.fn("VolumeRun.startWriter")(function* (ctx: Ru
     const on = named.map((machine) => machine.name ?? machine.id).join(" and ");
     return yield* Effect.fail(new NonRetriableError(`${ctx.volumeName} has ${stopped.length} stopped Service containers on ${on}; starting it on ${to.name} needs exactly one`));
   }
-  const created = yield* createOn(ctx, holder, to, regionOf(to.id), runtimeOf(to.id), start.at, true);
+  // A Move copied the image from `from` before its start; a forward Release, with no `from`, copied none.
+  const created = yield* createOn(ctx, holder, to, regionOf(to.id), runtimeOf(to.id), start.at, true, from !== null);
   if (!created.ok) return yield* Effect.fail(new NonRetriableError(created.refusal.message));
   yield* requireOwner(ctx.id, ownedBy);
   return yield* askCopy(ctx, to, start.expect, { kind: "writer", at: start.at, epoch: start.epoch, start: created.start });
 });
 
 /**
- * The stopped Container's spec as B starts it, from the image already copied there. The spec was resolved at the
- * Service's last Deploy; a resize since then raised the copies, and the Store recorded it.
+ * The stopped Container's spec as B starts it. B pulls nothing when the run `copied` the image there; otherwise it
+ * pulls the image when it isn't there, as every Service's spec asks, so a forward Release starts once the registry
+ * answers. The policy is set either way: a holder an earlier Move started carries that Move's `never`. The spec was
+ * resolved at the Service's last Deploy; a resize since then raised the copies, and the Store recorded it.
  */
-const startingSpec = (ctx: Pick<RunContext, "dockerVolume" | "recordedBytes">, resolved: ResolvedServiceSpec): ResolvedServiceSpec => {
+const startingSpec = (ctx: Pick<RunContext, "dockerVolume" | "recordedBytes">, resolved: ResolvedServiceSpec, copied: boolean): ResolvedServiceSpec => {
   const volumes = resolved.volumes.map((volume) =>
     volume.source.kind === "provisioned" && volume.source.name === ctx.dockerVolume && ctx.recordedBytes > 0
       ? { ...volume, source: { ...volume.source, maximum_bytes: ctx.recordedBytes } }
       : volume);
-  return { ...resolved, volumes, container: { ...resolved.container, pull_policy: "never" } };
+  return { ...resolved, volumes, container: { ...resolved.container, pull_policy: copied ? "never" : "missing" } };
 };
 
 /**
