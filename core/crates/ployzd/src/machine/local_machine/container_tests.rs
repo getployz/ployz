@@ -1837,6 +1837,101 @@ mod settled {
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 
+    // Catches a pull its policy skips opening the Service's login anyway, which a Docker
+    // Hub mirror makes this Server refuse though no registry is asked.
+    #[tokio::test]
+    async fn a_pull_its_policy_skips_opens_no_login() {
+        let cluster = crate::sealed_env::test_support::Cluster::new();
+        let mut new = new_container("settled");
+        let held = format!("acme/private@sha256:{}", "c".repeat(64));
+        new.resolved_spec.container.image.clone_from(&held);
+        new.resolved_spec.container.pull_policy = ployz_core::PullPolicy::Never;
+        let Settling {
+            local,
+            fake: _,
+            data_dir,
+        } = settling_with(
+            FakeDocker {
+                named_containers: Some(Arc::new(Mutex::new(BTreeMap::new()))),
+                mirrors: Arc::new(Mutex::new(vec!["https://mirror.example".to_owned()])),
+                ..Default::default()
+            },
+            Some(cluster.dir.0.clone()),
+        )
+        .await;
+        let login = cluster.seal_login(
+            ployz_core::DOCKER_HUB,
+            &ployz_core::RegistryAuth {
+                username: Some("bot".into()),
+                password: "token".into(),
+            },
+        );
+        let placed = local
+            .pull_image(ployz_core::PullImageRequest {
+                image: held,
+                policy: ployz_core::PullPolicy::Never,
+                registry_login: Some(login),
+                registry_auth: None,
+            })
+            .await;
+        assert!(placed.is_ok(), "{placed:?}");
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    // Catches a Volume start that found its image here, skipped the login, and then pulled
+    // anonymously once the image was gone before the pull's own check.
+    #[tokio::test]
+    async fn a_volume_start_answers_the_image_it_found_or_pulls_it_with_the_login() {
+        let cluster = crate::sealed_env::test_support::Cluster::new();
+        let mut new = new_container("settled");
+        let held = "acme/private:1".to_owned();
+        let gate = Arc::new(tokio::sync::Barrier::new(2));
+        new.resolved_spec.container.image.clone_from(&held);
+        new.resolved_spec.container.pull_policy = ployz_core::PullPolicy::Missing;
+        let Settling {
+            local,
+            fake,
+            data_dir,
+        } = settling_with(
+            FakeDocker {
+                named_containers: Some(Arc::new(Mutex::new(BTreeMap::new()))),
+                image_barrier: Some(gate.clone()),
+                private: Arc::new(Mutex::new([held.clone()].into())),
+                ..Default::default()
+            },
+            Some(cluster.dir.0.clone()),
+        )
+        .await;
+        let login = cluster.seal_login(
+            ployz_core::DOCKER_HUB,
+            &ployz_core::RegistryAuth {
+                username: Some("bot".into()),
+                password: "token".into(),
+            },
+        );
+        let task = tokio::spawn(async move {
+            for inspect in 1.. {
+                gate.wait().await;
+                if inspect == 2 {
+                    fake.images.lock().unwrap().insert(held.clone(), None);
+                }
+                gate.wait().await;
+            }
+        });
+        let placed = local
+            .place_holder_image(
+                new.resolved_spec.clone(),
+                super::super::AdmittedSpec::test_signed(&new.slot.namespace, &new.resolved_spec),
+                None,
+                Some(login),
+            )
+            .await
+            .map(|placed| placed.id);
+        task.abort();
+        assert!(placed.is_ok(), "{placed:?}");
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
     #[tokio::test]
     async fn a_pinned_start_never_runs_another_image_in_its_slot() {
         for state in [None, Some("running"), Some("exited")] {

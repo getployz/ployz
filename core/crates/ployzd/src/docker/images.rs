@@ -16,7 +16,6 @@ use bollard::{
 use ployz_core::{
     DOCKER_ROOT_NEARLY_FULL_BYTES, DiskFull, DiskSpace, ExposedPort, ImageRemoval,
     ImageRemovalOutcome, ImageSummary, ImagesRemoved, MachineImages, PullPolicy, RETENTION_TAG,
-    RegistryAuth,
 };
 
 use super::{Error, LocalDocker, Status, classify, containerd_store, project_image};
@@ -136,23 +135,23 @@ impl Images {
     /// # Errors
     ///
     /// Returns when the pull fails or the image is absent afterwards, as under `Never`.
-    pub async fn pull_image(
+    pub(crate) async fn pull_image(
         &self,
         image: &str,
         policy: PullPolicy,
-        auth: Option<&RegistryAuth>,
+        credential: crate::docker_image::Credential<'_>,
     ) -> Result<Vec<ExposedPort>, Error> {
         let docker = &self.docker.client;
-        if let Err(error) = crate::docker_image::prepare_image(docker, image, policy, auth).await {
-            return Err(self.pull_failure(Error::ImagePull(error)).await);
+        if let Err(error) = crate::docker_image::prepare(docker, image, policy, credential).await {
+            return Err(self.pull_failure(error).await);
         }
         self.exposed_ports(image).await
     }
 
-    /// Make `image` present as `policy` asks, with `auth` when the Service has a login,
+    /// Make `image` present as `policy` asks, with `credential` for a pull it issues,
     /// and answer the ID it names here now, so a creation can run that ID whatever the
-    /// tag names later. A login pulls an absent image even under `Never`, so a Move's
-    /// check proves the pull before the image is copied here.
+    /// tag names later. A sealed login pulls an absent image even under `Never`, so a
+    /// Move's check proves the pull before the image is copied here.
     ///
     /// # Errors
     ///
@@ -162,45 +161,42 @@ impl Images {
         &self,
         image: &str,
         policy: PullPolicy,
-        auth: Option<&RegistryAuth>,
+        credential: crate::docker_image::Credential<'_>,
     ) -> Result<String, Error> {
         let docker = &self.docker.client;
-        let policy = match (auth, policy) {
-            (Some(_), PullPolicy::Never) => PullPolicy::Missing,
+        let policy = match (credential, policy) {
+            (crate::docker_image::Credential::Sealed { .. }, PullPolicy::Never) => {
+                PullPolicy::Missing
+            }
             _ => policy,
         };
-        if let Err(error) = crate::docker_image::prepare_image(docker, image, policy, auth).await {
-            return Err(self.pull_failure(Error::ImagePull(error)).await);
-        }
-        match docker.inspect_image(image).await {
-            Ok(inspected) => inspected.id.ok_or(Error::MissingField("image ID")),
-            Err(source)
-                if policy == PullPolicy::Never && crate::docker_image::is_not_found(&source) =>
-            {
-                Err(Error::ImageAbsent {
-                    image: image.to_owned(),
-                    source,
-                })
+        // The ID read and the pull decision are one inspect, so an image that goes after
+        // it was found is still the one answered, and one found absent pulls with the login.
+        if policy != PullPolicy::Always {
+            match docker.inspect_image(image).await {
+                Ok(inspected) => return inspected.id.ok_or(Error::MissingField("image ID")),
+                Err(source)
+                    if policy == PullPolicy::Never
+                        && crate::docker_image::is_not_found(&source) =>
+                {
+                    return Err(Error::ImageAbsent {
+                        image: image.to_owned(),
+                        source,
+                    });
+                }
+                Err(source) if crate::docker_image::is_not_found(&source) => {}
+                Err(error) => return Err(Error::ImagePull(error)),
             }
-            Err(error) => Err(Error::ImagePull(error)),
         }
-    }
-
-    /// Whether [`Self::place`] would pull `image` under `policy`: always under `Always`,
-    /// else only when Docker doesn't hold it.
-    ///
-    /// # Errors
-    ///
-    /// Returns when Docker cannot be asked.
-    pub(crate) async fn pulls(&self, image: &str, policy: PullPolicy) -> Result<bool, Error> {
-        if policy == PullPolicy::Always {
-            return Ok(true);
+        if let Err(error) = crate::docker_image::pull_with(docker, image, credential).await {
+            return Err(self.pull_failure(error).await);
         }
-        match self.docker.client.inspect_image(image).await {
-            Ok(_) => Ok(false),
-            Err(error) if crate::docker_image::is_not_found(&error) => Ok(true),
-            Err(error) => Err(Error::Docker(error)),
-        }
+        docker
+            .inspect_image(image)
+            .await
+            .map_err(Error::ImagePull)?
+            .id
+            .ok_or(Error::MissingField("image ID"))
     }
 
     /// The image `id` names, which [`Self::place`] answered before a promote, confirmed
@@ -1007,7 +1003,11 @@ mod tests {
         let started = std::time::Instant::now();
         let error = tokio::time::timeout(
             std::time::Duration::from_secs(10),
-            images.pull_image("ghcr.io/acme/missing:1", PullPolicy::Always, None),
+            images.pull_image(
+                "ghcr.io/acme/missing:1",
+                PullPolicy::Always,
+                crate::docker_image::Credential::Auth(None),
+            ),
         )
         .await
         .expect("the pull failure returns without waiting on docker info")

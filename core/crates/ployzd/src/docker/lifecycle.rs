@@ -18,7 +18,7 @@ use ployz_core::{
 use ployz_core::MachineGateway;
 
 use crate::{
-    docker_image::{ImagePull, UnsignedImage, prepare_image},
+    docker_image::{ImagePull, UnsignedImage},
     machine::AdmittedSpec,
     network::{DOCKER_NETWORK_NAME, TUNNEL_NETWORK_NAME, bridge},
 };
@@ -422,7 +422,7 @@ impl Lifecycle {
                 deployment_id: None,
                 r#gen: Gen::FIRST,
                 replaces: None,
-                image: ImagePull::Policy(None),
+                image: ImagePull::Policy(crate::docker_image::Credential::Auth(None)),
                 kind,
                 namespace,
                 spec,
@@ -568,16 +568,16 @@ impl Lifecycle {
             }
         } else if let ImagePull::Placed(id) = creating.image {
             body.image = Some(id.to_owned());
-        } else if let ImagePull::Policy(registry_auth) = creating.image
-            && let Err(error) = prepare_image(
+        } else if let ImagePull::Policy(credential) = creating.image
+            && let Err(error) = crate::docker_image::prepare(
                 &self.docker.client,
                 &spec.container.image,
                 spec.container.pull_policy,
-                registry_auth,
+                credential,
             )
             .await
         {
-            return Err(self.images.pull_failure(Error::ImagePull(error)).await);
+            return Err(self.images.pull_failure(error).await);
         }
         let mut config_operation = self.specs.config_operation().await;
         // Another request may have won while admission and image preparation ran.

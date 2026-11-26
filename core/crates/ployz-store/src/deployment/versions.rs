@@ -9,9 +9,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::authority::{
-    AutoDeployRule, Births, BuiltImageDigest, CopyStep, PayloadDigest, ProposalRef, Purpose,
-    RuleProof, ServiceVersion, Signed, SignerKey, Statement, Timestamp, deploy::content_addressed,
-    version::MAX_PRESENTED,
+    AutoDeployRule, Births, BuiltImageDigest, CopyStep, KeptRule, PayloadDigest, ProposalRef,
+    Purpose, RuleProof, ServiceVersion, Signed, SignerKey, Statement, Timestamp,
+    deploy::content_addressed, version::MAX_PRESENTED,
 };
 use ployz_core::{
     MachineId, Namespace, OperationId, RequestedServiceSpec, RpcError, SealingPublicKey,
@@ -661,17 +661,25 @@ pub struct VersionsQuery {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[ts(as = "VersionsFields")]
 pub struct VersionsView {
     /// Newest first, and at most as many as one request carries.
     pub versions: Vec<Signed<ServiceVersion>>,
     /// The newest verified build kept for `image` under the Environment's rule, which a
-    /// Server takes in place of a signed version.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Server takes in place of a signed version, with the login of what's applied when
+    /// it is a registry rule: its Server pulls the image itself.
+    #[serde(default, flatten)]
+    pub rule: Option<ployz_core::authority::KeptRule>,
+}
+
+/// [`VersionsView`] as TypeScript reads it: ts-rs flattens no `Option`, so the kept
+/// rule's two fields stand beside the versions, absent when no rule is kept.
+#[derive(TS)]
+#[ts(rename = "VersionsView")]
+pub struct VersionsFields {
+    pub versions: Vec<Signed<ServiceVersion>>,
     #[ts(optional)]
-    pub rule: Option<Box<RuleProof>>,
-    /// The sealed login the Service's newest Deployment pulled with, when `rule` is a
-    /// registry rule: its Server pulls the image itself.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule: Option<Box<ployz_core::authority::RuleProof>>,
     #[ts(optional)]
     pub registry_login: Option<ployz_core::SealedLogin>,
 }
@@ -688,43 +696,48 @@ pub(crate) fn versions(
 ) -> Result<VersionsView, RpcError> {
     let service = (&query.namespace, &query.service);
     let versions = versions_for(tx, organization, service, query.digest)?;
-    let (rule, registry_login) = match query.image {
+    let rule = match query.image {
         Some(image) => match crate::build::verified_proof(tx, organization, service, image)? {
-            Some(proof) => (Some(proof), None),
+            Some(proof) => Some(KeptRule::built(proof)),
             None => match registry_proof(tx, organization, service)? {
-                Some(proof) => (Some(proof), frozen_login(tx, organization, service)?),
-                None => (None, None),
+                Some(proof) => Some(KeptRule {
+                    proof: Box::new(proof),
+                    login: applied_login(tx, organization, service)?,
+                }),
+                None => None,
             },
         },
-        None => (None, None),
+        None => None,
     };
-    Ok(VersionsView {
-        versions,
-        rule: rule.map(Box::new),
-        registry_login,
-    })
+    Ok(VersionsView { versions, rule })
 }
 
-/// The sealed login the newest Deployment in `namespace` that applied `service` froze for
-/// it: none when that one froze none, though an older one pulled with one. A Deployment
-/// that never applied it, queued or cancelled, ran nothing, so its login counts for
-/// nothing.
-fn frozen_login(
+/// The sealed login of what's applied for `service` in `namespace`: the one the Deployment
+/// that confirmed its Applied State row froze for it, none when that one froze none. A
+/// Deployment that ran without advancing that row, queued, cancelled or taken over, never
+/// counts. A Move and a drain read it here; a Deploy pulls with the login its own
+/// Deployment froze, which becomes this one when it confirms the row.
+fn applied_login(
     tx: &mut dyn Tx,
     organization: &str,
     (namespace, service): (&Namespace, &ServiceName),
 ) -> Result<Option<ployz_core::SealedLogin>, RpcError> {
     let rows = tx.query(
-        "SELECT id, logins FROM config_deployment \
-         WHERE organization_id = ?1 AND namespace = ?2 AND number IS NOT NULL \
-         ORDER BY number DESC",
+        "SELECT a.node_id, d.nodes, d.logins FROM config_applied a \
+         JOIN config_deployment d ON d.id = a.deployment_id \
+         WHERE a.organization_id = ?1 AND d.namespace = ?2 AND a.node_type = 'service'",
         &[organization.into(), namespace.as_str().into()],
     )?;
     for row in &rows {
-        let id = row.parse::<DeploymentId>(0, "Deployment")?;
-        if applied(&super::load(tx, &id)?, service) {
+        let node = row.text(0)?;
+        let nodes: Vec<super::TargetNode> = row.json(1, "Deployment nodes")?;
+        let confirms = nodes.iter().any(|target| {
+            matches!(target, super::TargetNode::Service { id, runtime, .. }
+                if id.as_str() == node && runtime == service)
+        });
+        if confirms {
             let mut logins: BTreeMap<ServiceName, ployz_core::SealedLogin> =
-                row.json(1, "Deployment logins")?;
+                row.json(2, "Deployment logins")?;
             return Ok(logins.remove(service));
         }
     }

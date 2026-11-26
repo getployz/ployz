@@ -775,13 +775,6 @@ impl Client {
             ..
         } = &mut want
         {
-            // A registry rule's Server pulls the image itself, so it needs the login
-            // the Deploy's own pull used.
-            if let Some(login) =
-                approvals.and_then(|approvals| approvals.registry_login(&new.slot.service))
-            {
-                new.registry_login = Some(login.clone());
-            }
             Some(new.slot.service.clone())
         } else {
             None

@@ -35,7 +35,7 @@ use crate::docker::{
     ContainerCreated, ContainerRequest, ContainerRuntime, ImageIngest, RotationTurn, Withdrawal,
     same_creation,
 };
-use crate::docker_image::ImagePull;
+use crate::docker_image::{Credential, ImagePull};
 use crate::host_facts::{STORAGE_OBSERVATION_TIMEOUT, local_storage};
 use crate::images::DoorSpecs;
 use ployz_decide::rotation::{RotationWant, in_rotation, in_rotation_refusal};
@@ -327,7 +327,7 @@ impl LocalMachine {
                         .unwrap_or_else(|| format!("test:{}", ployz_core::MachineId::random())),
                     deployment_id,
                     r#gen: Gen::FIRST,
-                    image: ImagePull::Policy(registry_auth.as_ref()),
+                    image: ImagePull::Policy(Credential::Auth(registry_auth.as_ref())),
                     admitted,
                     replaces: None,
                 })
@@ -393,15 +393,14 @@ impl LocalMachine {
                 (Some(resolved), _) => images.placed(resolved.as_str()).await?,
                 (None, Some(id)) if admitted.signed() => images.placed(&id).await?,
                 (None, _) if admitted.signed() => {
-                    // Opened only for a pull, so an image held here needs no login this
-                    // Server would refuse.
-                    let auth = match &login {
-                        Some(login) if images.pulls(image, policy).await? => {
-                            Some(docker.open_login(image, login).await?)
-                        }
-                        Some(_) | None => None,
+                    let credential = match &login {
+                        Some(login) => Credential::Sealed {
+                            login,
+                            sealing: docker.sealing(),
+                        },
+                        None => Credential::Auth(None),
                     };
-                    images.place(image, policy, auth.as_ref()).await?
+                    images.place(image, policy, credential).await?
                 }
                 (None, _) => images.pull_free(image, policy).await?,
             };
@@ -977,17 +976,16 @@ impl LocalMachine {
         self.finish_shared(move |local| async move {
             let request = local.pull_as(local.scope(), request)?;
             let docker = local.docker()?;
-            let login = match &request.registry_login {
-                Some(login) => Some(docker.open_login(&request.image, login).await?),
-                None => None,
+            let credential = match &request.registry_login {
+                Some(login) => Credential::Sealed {
+                    login,
+                    sealing: docker.sealing(),
+                },
+                None => Credential::Auth(request.registry_auth.as_ref()),
             };
             let exposed_ports = docker
                 .images()
-                .pull_image(
-                    &request.image,
-                    request.policy,
-                    login.as_ref().or(request.registry_auth.as_ref()),
-                )
+                .pull_image(&request.image, request.policy, credential)
                 .await?;
             Ok(ImagePulled { exposed_ports })
         })
@@ -1047,7 +1045,7 @@ impl LocalMachine {
                         .pull_image(
                             &request.image,
                             request.policy,
-                            request.registry_auth.as_ref(),
+                            Credential::Auth(request.registry_auth.as_ref()),
                         )
                         .await?
                 }
@@ -1867,16 +1865,7 @@ impl LocalMachine {
             .finish_mutation(move |local| async move {
                 let _switch = switch;
                 let pin = admitted.pin().cloned().or_else(|| new.image_id.clone());
-                let login = match (&pin, new.image_prepared, &new.registry_login) {
-                    (None, false, Some(login)) => {
-                        let image = &new.resolved_spec.container.image;
-                        match local.docker()?.open_login(image, login).await {
-                            Ok(login) => Some(login),
-                            Err(error) => return create_refusal(error.into()).map(Made::Refused),
-                        }
-                    }
-                    _ => None,
-                };
+                let sealing = local.docker()?.sealing().clone();
                 let created = local
                     .create_container_admitted(CreationFacts {
                         kind: new.slot.kind,
@@ -1888,9 +1877,13 @@ impl LocalMachine {
                         image: match (&pin, new.image_prepared) {
                             (Some(pin), _) => ImagePull::Pinned(pin),
                             (None, true) => ImagePull::Prepared,
-                            (None, false) => {
-                                ImagePull::Policy(login.as_ref().or(new.registry_auth.as_ref()))
-                            }
+                            (None, false) => ImagePull::Policy(match &new.registry_login {
+                                Some(login) => Credential::Sealed {
+                                    login,
+                                    sealing: &sealing,
+                                },
+                                None => Credential::Auth(new.registry_auth.as_ref()),
+                            }),
                         },
                         admitted,
                         replaces: new.replaces,

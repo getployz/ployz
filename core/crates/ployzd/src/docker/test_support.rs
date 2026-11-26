@@ -1103,7 +1103,7 @@ pub(super) fn container_request<'spec, Storage>(
         deployment_id: None,
         r#gen: ployz_core::Gen::FIRST,
         replaces: None,
-        image: crate::docker_image::ImagePull::Policy(None),
+        image: crate::docker_image::ImagePull::Policy(crate::docker_image::Credential::Auth(None)),
         creation_key: "test-key",
         kind,
         namespace,

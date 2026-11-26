@@ -689,6 +689,35 @@ pub struct RuleProof {
     pub reader: Option<GithubToken>,
 }
 
+/// A rule's proof for a copy of one Service, and the sealed login its Server pulls the
+/// image with under a registry rule. One value, so a Deploy, a drain or a Move hands on
+/// the rule only with its login. Its fields read as `rule` and `registry_login` beside
+/// what carries it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct KeptRule {
+    #[serde(rename = "rule")]
+    #[ts(rename = "rule")]
+    pub proof: Box<RuleProof>,
+    #[serde(
+        rename = "registry_login",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[ts(rename = "registry_login", optional)]
+    pub login: Option<crate::SealedLogin>,
+}
+
+impl KeptRule {
+    /// A built image's proof: its Server takes the image from the build, with no login.
+    #[must_use]
+    pub fn built(proof: RuleProof) -> Self {
+        Self {
+            proof: Box::new(proof),
+            login: None,
+        }
+    }
+}
+
 /// Why a Machine may take a rule's claim as a build the rule covers.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]

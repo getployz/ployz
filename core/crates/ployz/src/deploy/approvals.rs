@@ -7,9 +7,9 @@ use std::{
 
 use ployz_core::{
     ContainerLocator, ContainerWant, Namespace, NewContainer, ResolvedServiceSpec, RunTarget,
-    SealedLogin, ServiceName,
+    ServiceName,
     authority::{
-        BuiltImageDigest, PayloadDigest, RuleEvidence, RuleProof, ServiceVersion, Signed,
+        BuiltImageDigest, KeptRule, PayloadDigest, RuleEvidence, ServiceVersion, Signed,
         VerifiedBuild, version::MAX_PRESENTED,
     },
 };
@@ -142,21 +142,14 @@ pub(crate) fn kept_query(
 /// them, which every clone of the Deploy's client shares.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct RuleProofs {
-    rules: BTreeMap<ServiceName, RuleProof>,
+    /// Each Service's proof, with the login its Server pulls with under a registry rule.
+    rules: BTreeMap<ServiceName, KeptRule>,
     issued: Arc<Mutex<BTreeMap<ServiceName, VerifiedBuild>>>,
-    /// The sealed login each Service under a registry rule pulls with, since its Server
-    /// pulls the image itself when it creates the Service's Container.
-    logins: BTreeMap<ServiceName, SealedLogin>,
 }
 
 impl RuleProofs {
-    pub(crate) fn insert(&mut self, service: ServiceName, proof: RuleProof) {
-        self.rules.insert(service, proof);
-    }
-
-    /// Hand `service`'s Server `login` for the pull its registry rule's creation makes.
-    pub(crate) fn login(&mut self, service: ServiceName, login: SealedLogin) {
-        self.logins.insert(service, login);
+    pub(crate) fn insert(&mut self, service: ServiceName, rule: KeptRule) {
+        self.rules.insert(service, rule);
     }
 
     pub(crate) fn contains(&self, service: &ServiceName) -> bool {
@@ -173,7 +166,7 @@ impl RuleProofs {
     pub(crate) fn registry_services(&self) -> impl Iterator<Item = &ServiceName> {
         self.rules
             .iter()
-            .filter(|(_, proof)| proof.evidence == RuleEvidence::Registry)
+            .filter(|(_, kept)| kept.proof.evidence == RuleEvidence::Registry)
             .map(|(service, _)| service)
     }
 
@@ -187,11 +180,11 @@ impl RuleProofs {
         issued
             .iter()
             .filter_map(|(service, verified)| {
-                let proof = self.rules.get(service)?;
+                let kept = self.rules.get(service)?;
                 Some((
                     service.clone(),
                     ployz_store::VerifiedClaim {
-                        claim: proof.claim.clone()?,
+                        claim: kept.proof.claim.clone()?,
                         verified: *verified,
                     },
                 ))
@@ -204,7 +197,7 @@ impl RuleProofs {
     /// Environment. Once a Server issued a verified build for that Service, the proof
     /// carries it in place of the token, which may have expired since: a pre-deploy hook
     /// can outlast it.
-    fn carried(&self, want: &ContainerWant) -> Option<Box<RuleProof>> {
+    fn carried(&self, want: &ContainerWant) -> Option<KeptRule> {
         let service = match want {
             ContainerWant::Running {
                 container: RunTarget::New(new),
@@ -222,19 +215,19 @@ impl RuleProofs {
                 ContainerLocator::Id(_) => None,
             },
         };
-        let (service, proof) = match service {
+        let (service, kept) = match service {
             Some(service) => self.rules.get_key_value(service)?,
             None => self.rules.iter().next()?,
         };
-        let mut proof = proof.clone();
+        let mut kept = kept.clone();
         let issued = self
             .issued
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(verified) = issued.get(service) {
-            proof.evidence = RuleEvidence::Verified(*verified);
+            kept.proof.evidence = RuleEvidence::Verified(*verified);
         }
-        Some(Box::new(proof))
+        Some(kept)
     }
 }
 
@@ -278,17 +271,6 @@ impl Approvals {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .insert(service.clone(), verified);
         }
-    }
-
-    /// The login a new Container of `service` pulls with when a registry rule's proof
-    /// covers it.
-    pub(super) fn registry_login(&self, service: &ServiceName) -> Option<&SealedLogin> {
-        let proofs = &self.proofs;
-        proofs
-            .rules
-            .get(service)
-            .filter(|proof| proof.evidence == RuleEvidence::Registry)
-            .and_then(|_| proofs.logins.get(service))
     }
 
     /// What a change of `want` carries. A new creation carries its spec's versions; a

@@ -53,7 +53,7 @@ pub use proposal::{ProposalApproval, ProposalRef, ProposalStep, StepDigest, Step
 pub use refusal::{AuthorityRefusal, MismatchField};
 pub use rule::{
     AttestKey, AutoDeployRule, BuildClaim, BuildPolicy, BuildStage, BuiltImageDigest,
-    CommitAuthority, CommitSha, GithubClaims, GithubSource, PolicyDigest, RecipientKey,
+    CommitAuthority, CommitSha, GithubClaims, GithubSource, KeptRule, PolicyDigest, RecipientKey,
     RegistryPin, RegistrySource, RuleEvidence, RuleFacts, RuleId, RuleIdentity, RuleProof,
     RuleService, RuleSource, SealedDigest, VerifiedBuild,
 };

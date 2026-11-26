@@ -6,11 +6,41 @@ use bollard::{
 use futures_util::TryStreamExt;
 use ployz_core::{PullPolicy, RegistryAuth};
 
+/// What a pull presents to the image's registry.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Credential<'a> {
+    /// A caller's own login, or none.
+    Auth(Option<&'a RegistryAuth>),
+    /// The Service's sealed login, which this Machine opens with its Sealing Key only for
+    /// a pull it issues.
+    Sealed {
+        login: &'a ployz_core::SealedLogin,
+        sealing: &'a crate::sealed_env::SealingKeyStore,
+    },
+}
+
+impl Credential<'_> {
+    /// `self` as a pull of `image` presents it. The only place a sealed login opens, so
+    /// only a pull that goes to the registry asks whether this Server may send it there.
+    async fn open(
+        self,
+        docker: &Docker,
+        image: &str,
+    ) -> Result<Option<RegistryAuth>, crate::docker::Error> {
+        match self {
+            Self::Auth(auth) => Ok(auth.cloned()),
+            Self::Sealed { login, sealing } => {
+                open_login(docker, sealing, image, login).await.map(Some)
+            }
+        }
+    }
+}
+
 /// How Container creation obtains its image.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum ImagePull<'auth> {
-    /// Prepare the image as the spec's pull policy asks, with these credentials.
-    Policy(Option<&'auth RegistryAuth>),
+    /// Prepare the image as the spec's pull policy asks, with this credential.
+    Policy(Credential<'auth>),
     /// A deploy's pull phase already placed the image; creation uses it as is.
     Prepared,
     /// A drain copied this image, by its content, here; creation runs exactly it, whatever
@@ -37,19 +67,63 @@ pub(crate) async fn prepare_image(
     policy: PullPolicy,
     auth: Option<&RegistryAuth>,
 ) -> Result<(), Error> {
-    let pull = match policy {
-        PullPolicy::Always => true,
-        PullPolicy::Never => false,
-        PullPolicy::Missing => match docker.inspect_image(image).await {
-            Ok(_) => false,
-            Err(error) if is_not_found(&error) => true,
-            Err(error) => return Err(error),
-        },
-    };
-    if pull {
+    if pulls(docker, image, policy).await? {
         pull_image(docker, image, auth).await?;
     }
     Ok(())
+}
+
+/// Make `image` present as `policy` asks, and present `credential` only to a pull that
+/// decision issues: an image held here, or one `Never` leaves, opens no login.
+///
+/// # Errors
+///
+/// Returns [`crate::docker::Error::ImagePull`] when Docker or the pull fails, and the
+/// login's refusal when a pull is issued that it can't open for.
+pub(crate) async fn prepare(
+    docker: &Docker,
+    image: &str,
+    policy: PullPolicy,
+    credential: Credential<'_>,
+) -> Result<(), crate::docker::Error> {
+    if pulls(docker, image, policy)
+        .await
+        .map_err(crate::docker::Error::ImagePull)?
+    {
+        pull_with(docker, image, credential).await?;
+    }
+    Ok(())
+}
+
+/// Pull `image` from its registry, presenting `credential`, which opens only now that the
+/// pull is issued.
+///
+/// # Errors
+///
+/// Returns the login's refusal, or [`crate::docker::Error::ImagePull`] when the pull fails.
+pub(crate) async fn pull_with(
+    docker: &Docker,
+    image: &str,
+    credential: Credential<'_>,
+) -> Result<(), crate::docker::Error> {
+    let auth = credential.open(docker, image).await?;
+    pull_image(docker, image, auth.as_ref())
+        .await
+        .map_err(crate::docker::Error::ImagePull)
+}
+
+/// Whether `policy` pulls `image`: always under `Always`, never under `Never`, and under
+/// `Missing` only when Docker doesn't hold it.
+async fn pulls(docker: &Docker, image: &str, policy: PullPolicy) -> Result<bool, Error> {
+    match policy {
+        PullPolicy::Always => Ok(true),
+        PullPolicy::Never => Ok(false),
+        PullPolicy::Missing => match docker.inspect_image(image).await {
+            Ok(_) => Ok(false),
+            Err(error) if is_not_found(&error) => Ok(true),
+            Err(error) => Err(error),
+        },
+    }
 }
 
 /// Pull `image` from its registry. A reference that names a digest is pulled by the digest
@@ -159,7 +233,7 @@ pub enum RegistryPull {
     Moved,
 }
 
-/// Pull `reference`, `repository@digest`, from its registry with `auth`, and answer the
+/// Pull `reference`, `repository@digest`, from its registry with `credential`, and answer the
 /// ID of the image that pull placed. The registry must answer `digest` for the reference
 /// first: whatever this Machine holds under the name, the image a Cloud push placed
 /// included, runs only when the registry serves the same content. The pull always asks
@@ -168,12 +242,18 @@ pub(crate) async fn pull_pinned(
     docker: &Docker,
     reference: &str,
     digest: &ployz_core::ImageDigest,
-    auth: Option<&RegistryAuth>,
+    credential: Credential<'_>,
 ) -> Result<ployz_core::ImageDigest, RegistryPull> {
     // A hint only: an address this Machine reaches may be public too.
     require_public_registry(reference)
         .await
         .map_err(RegistryPull::Registry)?;
+    // Every such pull asks the registry, so the login opens here.
+    let auth = credential
+        .open(docker, reference)
+        .await
+        .map_err(|error| RegistryPull::Login(Box::new(error)))?;
+    let auth = auth.as_ref();
     let credentials = || {
         auth.map(|auth| DockerCredentials {
             username: auth.username.clone(),
@@ -236,7 +316,7 @@ pub enum LoginRefused {
 
 /// The login `login` holds, to pull `image` with: only when it was sealed for the host
 /// Docker pulls `image` from, and Docker sends it to that host alone, over TLS.
-pub(crate) async fn open_login(
+async fn open_login(
     docker: &Docker,
     sealing: &crate::sealed_env::SealingKeyStore,
     image: &str,

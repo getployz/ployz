@@ -993,7 +993,10 @@ async fn a_service_created_after_its_hook_carries_the_verified_build_the_hook_go
         )
         .unwrap();
     let mut proofs = crate::deploy::RuleProofs::default();
-    proofs.insert(spec.name.clone(), online_proof(&spec.name));
+    proofs.insert(
+        spec.name.clone(),
+        ployz_core::authority::KeptRule::built(online_proof(&spec.name)),
+    );
     let client = crate::deploy::Approved::new(
         session.client().unwrap(),
         crate::deploy::Approvals::signed(Vec::new(), proofs.clone()),
@@ -1052,17 +1055,16 @@ async fn each_creation_under_a_registry_rule_carries_its_services_login() {
     let mut proofs = crate::deploy::RuleProofs::default();
     proofs.insert(
         spec.name.clone(),
-        RuleProof {
-            evidence: RuleEvidence::Registry,
-            claim: None,
-            ..online_proof(&spec.name)
-        },
-    );
-    proofs.login(
-        spec.name.clone(),
-        ployz_core::SealedLogin {
-            host: "registry.example".into(),
-            sealed: ployz_core::Ciphertext::from_bytes(vec![7; 48]),
+        ployz_core::authority::KeptRule {
+            proof: Box::new(RuleProof {
+                evidence: RuleEvidence::Registry,
+                claim: None,
+                ..online_proof(&spec.name)
+            }),
+            login: Some(ployz_core::SealedLogin {
+                host: "registry.example".into(),
+                sealed: ployz_core::Ciphertext::from_bytes(vec![7; 48]),
+            }),
         },
     );
     let client = crate::deploy::Approved::new(
@@ -1087,6 +1089,72 @@ async fn each_creation_under_a_registry_rule_carries_its_services_login() {
         );
     }
 
+    session.close().await;
+    server.abort();
+}
+
+// A Server drain recreates a registry rule's copy from what the Store keeps for it.
+// The destination pulls the private image itself, so the kept rule must bring the
+// login of what's applied with it.
+#[tokio::test]
+async fn a_drained_copy_under_a_registry_rule_pulls_with_the_applied_login() {
+    use crate::sdk::test_support as support;
+    use ployz_core::ContainerKind;
+    use ployz_store::testing::shop;
+    let one = support::machine('a', "one");
+    let unused = ployz_core::authority::VerifiedBuild::from_bytes([0x5a; 32]);
+    let service = support::DeployService::new(one.clone()).checking_rules(unused);
+    let (address, server) = support::listening(service).await;
+    let session = crate::sdk::connect_connections(
+        vec![Connection::tcp(address)],
+        Arc::new(SystemConnector::default()),
+    )
+    .await
+    .unwrap();
+    let (store, who) = shop::shop();
+    shop::registry_worker(&store, &who);
+    let view: ployz_store::RuleView = store
+        .read(
+            &who,
+            &ployz_store::RuleQuery {
+                environment: ployz_store::EnvironmentRef::default(),
+                staged: false,
+            },
+        )
+        .unwrap();
+    let spec = view
+        .target
+        .iter()
+        .find(|spec| spec.name.as_str() == "worker")
+        .unwrap()
+        .to_resolved(
+            crate::global_fixtures::service_id('a'),
+            ployz_core::ResolvedUpdateConfig::default(),
+        )
+        .unwrap();
+    let mut want = creation(&spec, ContainerKind::ServiceContainer, "global:test");
+    if let ployz_core::ContainerWant::Running {
+        container: ployz_core::RunTarget::New(new),
+        ..
+    } = &mut want
+    {
+        new.slot.namespace = view.namespace;
+    }
+    let client = crate::deploy::Approved::new(
+        session.client().unwrap(),
+        crate::deploy::Approvals::kept(crate::deploy::KeptVersions::new(
+            Arc::new(store),
+            who.organization,
+        )),
+    );
+
+    let created =
+        crate::deploy::CopyLifecycle::ensure_unsettled(&client, &one.machine.id, want, None).await;
+
+    assert!(
+        matches!(created, Ok(ployz_core::EnsuredContainer::Ensured { .. })),
+        "{created:?}"
+    );
     session.close().await;
     server.abort();
 }

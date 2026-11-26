@@ -1578,7 +1578,8 @@ async fn rule_proofs(
     run: &Run,
 ) -> crate::deploy::RuleProofs {
     use ployz_core::authority::{
-        BuildClaim, BuildStage, BuiltImageDigest, CommitSha, PolicyDigest, RuleEvidence, RuleProof,
+        BuildClaim, BuildStage, BuiltImageDigest, CommitSha, KeptRule, PolicyDigest, RuleEvidence,
+        RuleProof,
     };
     let mut proofs = crate::deploy::RuleProofs::default();
     let Some(signed) = &claimed.rule else {
@@ -1591,12 +1592,12 @@ async fn rule_proofs(
         if matches!(kept.claim.stage, BuildStage::Built { image, .. } if Some(image) == runs) {
             proofs.insert(
                 service.clone(),
-                RuleProof {
+                KeptRule::built(RuleProof {
                     rule: signed.clone(),
                     evidence: RuleEvidence::Verified(kept.verified),
                     claim: Some(kept.claim.clone()),
                     reader: None,
-                },
+                }),
             );
         }
     }
@@ -1620,7 +1621,7 @@ async fn rule_proofs(
         })
         .await
         {
-            Ok(Some(proof)) => proofs.insert(service.clone(), proof),
+            Ok(Some(proof)) => proofs.insert(service.clone(), KeptRule::built(proof)),
             Ok(None) => {}
             Err(error) => {
                 tracing::warn!(%error, %service, "could not read a reused image's verified build")
@@ -1685,12 +1686,12 @@ async fn rule_proofs(
         let token = ployz_core::GithubToken::new(token.token.clone());
         proofs.insert(
             service.clone(),
-            RuleProof {
+            KeptRule::built(RuleProof {
                 rule: signed.clone(),
                 evidence: RuleEvidence::Online(token),
                 claim: Some(claim),
                 reader: run.reader.clone(),
-            },
+            }),
         );
     }
     proofs
@@ -1701,7 +1702,7 @@ async fn rule_proofs(
 /// Server pulls that digest from the registry itself and checks the rule's settings, so
 /// one the rule no longer approves is refused there.
 fn registry_proofs(claimed: &Claimed, proofs: &mut crate::deploy::RuleProofs) {
-    use ployz_core::authority::{RuleEvidence, RuleProof};
+    use ployz_core::authority::{KeptRule, RuleEvidence, RuleProof};
     let Some(signed) = &claimed.rule else {
         return;
     };
@@ -1721,18 +1722,19 @@ fn registry_proofs(claimed: &Claimed, proofs: &mut crate::deploy::RuleProofs) {
                 && named.digest.is_some()
         });
         if ours {
+            // The logins this Deploy's own Deployment froze become what's applied.
             proofs.insert(
                 spec.name.clone(),
-                RuleProof {
-                    rule: signed.clone(),
-                    evidence: RuleEvidence::Registry,
-                    claim: None,
-                    reader: None,
+                KeptRule {
+                    proof: Box::new(RuleProof {
+                        rule: signed.clone(),
+                        evidence: RuleEvidence::Registry,
+                        claim: None,
+                        reader: None,
+                    }),
+                    login: claimed.intent.registry_logins.get(&spec.name).cloned(),
                 },
             );
-            if let Some(login) = claimed.intent.registry_logins.get(&spec.name) {
-                proofs.login(spec.name.clone(), login.clone());
-            }
         }
     }
 }

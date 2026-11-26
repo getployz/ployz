@@ -531,20 +531,6 @@ impl ContainerRuntime {
         self.observation.sealing()
     }
 
-    /// The login `login` opens to for pulling `image`, as
-    /// [`crate::docker_image::open_login`] allows it.
-    ///
-    /// # Errors
-    ///
-    /// Returns when the login is refused for `image` or does not open.
-    pub(crate) async fn open_login(
-        &self,
-        image: &str,
-        login: &ployz_core::SealedLogin,
-    ) -> Result<ployz_core::RegistryAuth, Error> {
-        crate::docker_image::open_login(&self.docker.client, self.sealing(), image, login).await
-    }
-
     /// Pull a registry rule's image by its digest, with `login` when the Service has one,
     /// as [`crate::docker_image::pull_pinned`] does, and answer the ID it placed.
     ///
@@ -558,21 +544,15 @@ impl ContainerRuntime {
         login: Option<&ployz_core::SealedLogin>,
     ) -> Result<ployz_core::ImageDigest, crate::docker_image::RegistryPull> {
         let reference = pin.reference();
-        let auth = match login {
-            Some(login) => Some(
-                self.open_login(&reference, login)
-                    .await
-                    .map_err(|error| crate::docker_image::RegistryPull::Login(Box::new(error)))?,
-            ),
-            None => None,
+        let credential = match login {
+            Some(login) => crate::docker_image::Credential::Sealed {
+                login,
+                sealing: self.sealing(),
+            },
+            None => crate::docker_image::Credential::Auth(None),
         };
-        crate::docker_image::pull_pinned(
-            &self.docker.client,
-            &reference,
-            &pin.digest,
-            auth.as_ref(),
-        )
-        .await
+        crate::docker_image::pull_pinned(&self.docker.client, &reference, &pin.digest, credential)
+            .await
     }
 
     /// The secret files this Machine keeps for the Containers that mount them.

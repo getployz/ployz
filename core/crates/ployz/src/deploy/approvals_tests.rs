@@ -125,12 +125,12 @@ async fn a_service_the_rule_doesnt_cover_carries_no_rule_proof() {
     let mut proofs = RuleProofs::default();
     proofs.insert(
         ployz_core::ServiceName::parse("web").unwrap(),
-        RuleProof {
+        ployz_core::authority::KeptRule::built(RuleProof {
             rule: Signed::sign(&rule, &signer).unwrap(),
             evidence: RuleEvidence::Registry,
             claim: None,
             reader: None,
-        },
+        }),
     );
     let approvals = Approvals::signed(Vec::new(), proofs);
     let other = requested(ServiceMode::Global);
