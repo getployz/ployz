@@ -198,7 +198,8 @@ fn a_built_service_is_refused_plainly_with_no_pin_hint() {
 /// An automatic deploy rule over web, built from main, ended or not.
 fn rule_over_web(ended: bool) -> ployz_core::authority::AutoDeployRule {
     use ployz_core::authority::rule::{
-        BuildPolicy, Builder, PolicyCache, PolicyMethod, RuleEvent, RuleSource, Runner,
+        BuildPolicy, Builder, GithubSource, PolicyCache, PolicyMethod, RuleEvent, RuleSource,
+        Runner,
     };
     use ployz_core::authority::{AutoDeployRule, RuleId, RuleService, SignerKey, Timestamp};
     AutoDeployRule {
@@ -208,7 +209,7 @@ fn rule_over_web(ended: bool) -> ployz_core::authority::AutoDeployRule {
         generation: 1,
         namespace: Namespace::parse("app").unwrap(),
         machines: Vec::new(),
-        source: RuleSource {
+        source: RuleSource::Github(GithubSource {
             repository_id: 1,
             owner_id: 1,
             repository: "acme/web".to_owned(),
@@ -217,11 +218,11 @@ fn rule_over_web(ended: bool) -> ployz_core::authority::AutoDeployRule {
             events: vec![RuleEvent::Push],
             builder: Builder::pinned(),
             runner: Runner::GithubHosted,
-        },
+        }),
         services: vec![RuleService {
             name: ServiceName::parse("web").unwrap(),
             template: PayloadDigest::parse(&"ab".repeat(32)).unwrap(),
-            policy: BuildPolicy {
+            policy: Some(BuildPolicy {
                 method: PolicyMethod::Dockerfile {
                     path: "Dockerfile".to_owned(),
                 },
@@ -231,7 +232,7 @@ fn rule_over_web(ended: bool) -> ployz_core::authority::AutoDeployRule {
                 secrets: Default::default(),
                 platforms: ["linux/amd64".to_owned()].into(),
                 cache: PolicyCache::Off,
-            },
+            }),
             secrets: None,
         }],
         issued_at: Timestamp::from_millis(1_800_000_000_000).unwrap(),
@@ -310,11 +311,13 @@ fn a_drafted_rule_that_drops_a_built_service_refuses_it_though_the_kept_rule_cov
     rule.services.clear();
     let summary = ployz_core::authority::RuleSummary {
         namespace: "app".to_owned(),
-        repository: "acme/web".to_owned(),
-        branch: "main".to_owned(),
-        workflow: rule.source.workflow.clone(),
-        builder: String::new(),
-        pinned: true,
+        source: ployz_core::authority::SourceSummary::Github {
+            repository: "acme/web".to_owned(),
+            branch: "main".to_owned(),
+            workflow: rule.source.github().unwrap().workflow.clone(),
+            builder: String::new(),
+            pinned: true,
+        },
         servers: 0,
         generation: 2,
         ended: false,

@@ -124,6 +124,10 @@ pub(crate) struct FakeDocker {
     /// When set, each image pull spends one; once none are left, a pull answers the
     /// registry's rate limit.
     pub(crate) pulls_left: Arc<Mutex<Option<usize>>>,
+    /// Images the registry serves only to a pull that sends a login.
+    pub(crate) private: Arc<Mutex<BTreeSet<String>>>,
+    /// The registry mirrors `/info` reports Docker is configured with.
+    pub(crate) mirrors: Arc<Mutex<Vec<String>>>,
 }
 
 impl FakeDocker {
@@ -148,8 +152,29 @@ async fn fake_docker(
     State(fake): State<FakeDocker>,
     method: Method,
     uri: Uri,
+    headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Response {
+    if method == Method::POST
+        && uri.path().ends_with("/images/create")
+        && !headers.contains_key("x-registry-auth")
+        && uri.query().is_some_and(|query| {
+            let query = query.replace("%2F", "/").replace("%3A", ":");
+            fake.private
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|image| query.contains(image.as_str()))
+        })
+    {
+        return (
+            StatusCode::NOT_FOUND,
+            axum::Json(
+                serde_json::json!({"message": "pull access denied: authentication required"}),
+            ),
+        )
+            .into_response();
+    }
     let hold = (method == Method::GET && is_inspect(uri.path()))
         .then(|| fake.answered_hold.lock().unwrap().take())
         .flatten()
@@ -207,8 +232,11 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
         } else {
             "overlay2"
         };
-        return axum::Json(serde_json::json!({"DriverStatus": [["driver-type", driver]]}))
-            .into_response();
+        return axum::Json(serde_json::json!({
+            "DriverStatus": [["driver-type", driver]],
+            "RegistryConfig": {"Mirrors": *fake.mirrors.lock().unwrap()},
+        }))
+        .into_response();
     }
     if method == Method::GET && path.contains("/containers/") && path.ends_with("/logs") {
         return fake.logs.lock().unwrap().clone().into_response();
@@ -1146,7 +1174,7 @@ pub(super) fn container_request<'spec, Storage>(
         deployment_id: None,
         r#gen: ployz_core::Gen::FIRST,
         replaces: None,
-        image: crate::docker_image::ImagePull::Policy(None),
+        image: crate::docker_image::ImagePull::Policy(crate::docker_image::Credential::Auth(None)),
         creation_key: "test-key",
         kind,
         namespace,

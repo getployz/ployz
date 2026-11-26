@@ -43,7 +43,7 @@ pub(crate) use targeting::Targeting;
 use targeting::scope_sql;
 pub use versions::{
     Parent, ParentQuery, ParentView, Pinned, PostedVersion, Running, RunningQuery, RunningView,
-    TagPin, VersionsQuery, VersionsView,
+    TagPin, VersionsFields, VersionsQuery, VersionsView,
 };
 
 pub use ployz_core::deploy_progress::{

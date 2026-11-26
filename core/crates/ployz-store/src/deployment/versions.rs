@@ -9,9 +9,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::authority::{
-    Births, BuiltImageDigest, CopyStep, PayloadDigest, ProposalRef, Purpose, RuleProof,
-    ServiceVersion, Signed, SignerKey, Statement, Timestamp, deploy::content_addressed,
-    version::MAX_PRESENTED,
+    AutoDeployRule, Births, BuiltImageDigest, CopyStep, KeptRule, PayloadDigest, ProposalRef,
+    Purpose, RuleProof, ServiceVersion, Signed, SignerKey, Statement, Timestamp,
+    deploy::content_addressed, version::MAX_PRESENTED,
 };
 use ployz_core::{
     MachineId, Namespace, OperationId, RequestedServiceSpec, RpcError, SealingPublicKey,
@@ -661,17 +661,33 @@ pub struct VersionsQuery {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[ts(as = "VersionsFields")]
 pub struct VersionsView {
     /// Newest first, and at most as many as one request carries.
     pub versions: Vec<Signed<ServiceVersion>>,
     /// The newest verified build kept for `image` under the Environment's rule, which a
-    /// Server takes in place of a signed version.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub rule: Option<Box<RuleProof>>,
+    /// Server takes in place of a signed version, with the login of what's applied when
+    /// it is a registry rule: its Server pulls the image itself.
+    #[serde(default, flatten)]
+    pub rule: Option<ployz_core::authority::KeptRule>,
     /// The Free receipt a free Build's Server gave for `image`, which an unsigned
     /// creation of it carries.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub free: Option<ployz_core::FreeReceipt>,
+}
+
+/// [`VersionsView`] as TypeScript reads it: ts-rs flattens no `Option`, so the kept
+/// rule's two fields stand beside the versions, absent when no rule is kept.
+#[derive(TS)]
+#[ts(rename = "VersionsView")]
+pub struct VersionsFields {
+    pub versions: Vec<Signed<ServiceVersion>>,
+    #[ts(optional)]
+    pub rule: Option<Box<ployz_core::authority::RuleProof>>,
+    #[ts(optional)]
+    pub registry_login: Option<ployz_core::SealedLogin>,
+    /// The Free receipt a free Build's Server gave for `image`, which an unsigned
+    /// creation of it carries.
     #[ts(optional)]
     pub free: Option<ployz_core::FreeReceipt>,
 }
@@ -688,18 +704,91 @@ pub(crate) fn versions(
 ) -> Result<VersionsView, RpcError> {
     let service = (&query.namespace, &query.service);
     let versions = versions_for(tx, organization, service, query.digest)?;
-    let (rule, free) = match query.image {
-        Some(image) => (
-            crate::build::verified_proof(tx, organization, service, image)?,
-            free_receipt(tx, organization, service, image)?,
-        ),
-        None => (None, None),
+    let rule = match query.image {
+        Some(image) => match crate::build::verified_proof(tx, organization, service, image)? {
+            Some(proof) => Some(KeptRule::built(proof)),
+            None => match registry_proof(tx, organization, service)? {
+                Some(proof) => Some(KeptRule {
+                    proof: Box::new(proof),
+                    login: applied_login(tx, organization, service)?,
+                }),
+                None => None,
+            },
+        },
+        None => None,
+    };
+    let free = match query.image {
+        Some(image) => free_receipt(tx, organization, service, image)?,
+        None => None,
     };
     Ok(VersionsView {
         versions,
-        rule: rule.map(Box::new),
+        rule,
         free,
     })
+}
+
+/// The sealed login of what's applied for `service` in `namespace`: the one the Deployment
+/// that confirmed its Applied State row froze for it, none when that one froze none. A
+/// Deployment that ran without advancing that row, queued, cancelled or taken over, never
+/// counts. A Move and a drain read it here; a Deploy pulls with the login its own
+/// Deployment froze, which becomes this one when it confirms the row.
+fn applied_login(
+    tx: &mut dyn Tx,
+    organization: &str,
+    (namespace, service): (&Namespace, &ServiceName),
+) -> Result<Option<ployz_core::SealedLogin>, RpcError> {
+    let rows = tx.query(
+        "SELECT a.node_id, d.nodes, d.logins FROM config_applied a \
+         JOIN config_deployment d ON d.id = a.deployment_id \
+         WHERE a.organization_id = ?1 AND d.namespace = ?2 AND a.node_type = 'service'",
+        &[organization.into(), namespace.as_str().into()],
+    )?;
+    for row in &rows {
+        let node = row.text(0)?;
+        let nodes: Vec<super::TargetNode> = row.json(1, "Deployment nodes")?;
+        let confirms = nodes.iter().any(|target| {
+            matches!(target, super::TargetNode::Service { id, runtime, .. }
+                if id.as_str() == node && runtime == service)
+        });
+        if confirms {
+            let mut logins: BTreeMap<ServiceName, ployz_core::SealedLogin> =
+                row.json(2, "Deployment logins")?;
+            return Ok(logins.remove(service));
+        }
+    }
+    Ok(None)
+}
+
+/// The proof a copy of `service` in `namespace` takes under its Environment's registry
+/// rule while that rule is on and names it: the signed rule alone. A drain sends it with a
+/// copy the rule made, and the Server pulls the copy's digest from the registry itself.
+fn registry_proof(
+    tx: &mut dyn Tx,
+    organization: &str,
+    (namespace, service): (&Namespace, &ServiceName),
+) -> Result<Option<RuleProof>, RpcError> {
+    let rows = tx.query(
+        "SELECT DISTINCT r.rule FROM config_auto_deploy_rule r \
+         JOIN config_deployment d ON d.environment_id = r.environment_id \
+         WHERE d.organization_id = ?1 AND d.namespace = ?2",
+        &[organization.into(), namespace.as_str().into()],
+    )?;
+    for row in &rows {
+        let signed: Signed<AutoDeployRule> = row.json(0, "Automatic deploy rule")?;
+        let covers = signed.open().is_ok_and(|rule| {
+            !rule.ended && rule.source.registry().is_some() && rule.service(service).is_some()
+        });
+        if covers {
+            return Ok(Some(RuleProof {
+                rule: signed,
+                evidence: ployz_core::authority::RuleEvidence::Registry,
+                claim: None,
+                reader: None,
+            }));
+        }
+    }
+    Ok(None)
 }
 
 /// Keep the Free receipt each of `receipts` carries under `namespace` and its Service, so
@@ -937,7 +1026,8 @@ fn written(spec: &RequestedServiceSpec, namespace: &Namespace) -> Option<RanServ
 /// claim would run covers, with what it needs before a person's Deploy can run it.
 ///
 /// A built Service is left to its automatic deploy rule while the rule is live, tracks
-/// the Service's branch and approves its spec. Its first Deploy still needs a build under
+/// the Service's branch and approves its spec. So is an image Service a live registry rule
+/// approves, once its spec names the image by digest. Its first Deploy still needs a build under
 /// the rule, which a push or the Deploy makes; once a Server verified that build under
 /// the rule's current generation, a Deploy reuses its image while only run fields
 /// change, and carries its proof.
@@ -981,6 +1071,11 @@ pub(crate) fn unsigned(
         }
         let built = service
             .is_some_and(|service| !matches!(service.config.source, ServiceSource::Image { .. }));
+        // An image the live registry rule approves runs under it once the spec names its
+        // digest: each Server pulls that digest from the registry itself.
+        if !built && approved.contains(&spec.name) && content_addressed(&spec.container.image) {
+            continue;
+        }
         let needs = match (built, approved.contains(&spec.name)) {
             (true, true)
                 if reused.is_some()

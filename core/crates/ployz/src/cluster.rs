@@ -68,7 +68,9 @@ const STORAGE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(3);
 /// image, that image's Free receipt.
 #[derive(Default)]
 pub struct Carried {
-    pub rule: Option<Box<ployz_core::authority::RuleProof>>,
+    /// A rule's proof, with the login of what's applied for a registry rule: one value, so
+    /// no creation takes the rule without its login.
+    pub rule: Option<ployz_core::authority::KeptRule>,
     pub versions: Vec<ployz_core::authority::Signed<ployz_core::authority::ServiceVersion>>,
     pub free: Option<ployz_core::FreeReceipt>,
 }
@@ -1119,6 +1121,21 @@ impl Client {
     ) -> Result<EnsureContainerRequest, RpcError> {
         crate::sealed_compat::admit(self, target, &want).await?;
         let carried = carry(&want).await;
+        let rule = carried.rule.map(|kept| {
+            // A registry rule's Server pulls the image itself, with the login of what's
+            // applied.
+            if let (
+                Some(login),
+                ContainerWant::Running {
+                    container: ployz_core::RunTarget::New(new),
+                    ..
+                },
+            ) = (kept.login, &mut want)
+            {
+                new.registry_login = Some(login);
+            }
+            kept.proof
+        });
         if let ContainerWant::Running {
             container: ployz_core::RunTarget::New(new),
             ..
@@ -1131,7 +1148,7 @@ impl Client {
         }
         Ok(EnsureContainerRequest {
             want,
-            rule: carried.rule,
+            rule,
             versions: carried.versions,
         })
     }

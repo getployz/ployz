@@ -769,7 +769,7 @@ impl Client {
     async fn ensure_approved<R>(
         &self,
         machine_id: &MachineId,
-        want: ContainerWant,
+        mut want: ContainerWant,
         approvals: Option<&Approvals>,
         timeout: Option<Duration>,
     ) -> Result<EnsuredContainer, RpcError>
@@ -782,7 +782,7 @@ impl Client {
         let created = if let ContainerWant::Running {
             container: RunTarget::New(new),
             ..
-        } = &want
+        } = &mut want
         {
             Some(new.slot.service.clone())
         } else {
