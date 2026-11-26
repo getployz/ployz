@@ -59,10 +59,31 @@ impl Departure {
     }
 }
 
+/// What a removal does with the Container's anonymous volumes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VolumeDisposal {
+    /// They stay.
+    Keep,
+    /// They go when this Machine recorded the named Container as made to replace this one,
+    /// and it still runs in the slot (see [`Lifecycle::replaced`]).
+    ReplacedBy(ContainerId),
+    /// They go with a system Container, whose spec is the daemon's own.
+    System,
+}
+
+impl From<ployz_core::AnonymousVolumes> for VolumeDisposal {
+    fn from(asked: ployz_core::AnonymousVolumes) -> Self {
+        asked.replaced_by().map_or(Self::Keep, Self::ReplacedBy)
+    }
+}
+
 /// How a Container leaves through [`Lifecycle::retire`].
 pub(super) enum How {
     /// A request to remove it, as asked.
-    Asked { remove_volumes: bool, force: bool },
+    Asked {
+        volumes: VolumeDisposal,
+        force: bool,
+    },
     /// The Machine is leaving: stopped, then removed with its anonymous volumes.
     Departing,
 }
@@ -80,6 +101,8 @@ pub(crate) struct ContainerRequest<'spec, Storage, Admission> {
     pub(crate) creation_key: &'spec str,
     pub(crate) deployment_id: Option<&'spec ployz_core::DeploymentLogId>,
     pub(crate) r#gen: Gen,
+    /// The copy on this Machine the new Container takes the place of.
+    pub(crate) replaces: Option<&'spec ContainerId>,
     /// How creation obtains the image.
     pub(crate) image: ImagePull<'spec>,
     /// Whether this is a long-running Service Container or a Pre-deploy Hook.
@@ -104,6 +127,7 @@ struct Creating<'a> {
     creation_key: &'a str,
     deployment_id: Option<&'a ployz_core::DeploymentLogId>,
     r#gen: Gen,
+    replaces: Option<&'a ContainerId>,
     image: ImagePull<'a>,
     kind: ContainerKind,
     namespace: &'a Namespace,
@@ -315,6 +339,13 @@ impl Lifecycle {
         self.standing.withdraw(container_id)
     }
 
+    /// As [`Self::withdraw`], for a caller that holds no config lock: the mark is set
+    /// under it, so a removal that read this Container unmarked has finished first.
+    pub async fn withdraw_locked(&self, container_id: ContainerId) -> Withdrawal {
+        let _operation = self.specs.config_operation().await;
+        self.standing.withdraw(container_id)
+    }
+
     /// Mark this Container leaving until the returned guard drops, so a peer's inspect
     /// reports it. The caller holds the Machine's exclusive admission turn.
     #[must_use]
@@ -390,6 +421,7 @@ impl Lifecycle {
                 creation_key: &format!("test:{}", MachineId::random()),
                 deployment_id: None,
                 r#gen: Gen::FIRST,
+                replaces: None,
                 image: ImagePull::Policy(None),
                 kind,
                 namespace,
@@ -422,6 +454,7 @@ impl Lifecycle {
             creation_key,
             deployment_id,
             r#gen,
+            replaces,
             image,
             kind,
             namespace,
@@ -452,7 +485,7 @@ impl Lifecycle {
                 .await
                 .map_err(E::from)?
             {
-                return Ok(existing);
+                return self.adopt(existing, image).await.map_err(E::from);
             }
         }
         tracing::info!(
@@ -477,6 +510,7 @@ impl Lifecycle {
             creation_key,
             deployment_id,
             r#gen,
+            replaces,
             image,
             kind,
             namespace,
@@ -519,7 +553,10 @@ impl Lifecycle {
                         )
                         .await?;
                 }
-                ImagePull::Policy(_) | ImagePull::Prepared => {
+                ImagePull::Placed(id) if self.images.is_free(id) => {
+                    body.image = Some(id.to_owned());
+                }
+                ImagePull::Policy(_) | ImagePull::Prepared | ImagePull::Placed(_) => {
                     // By ID: the spec's tag here may name what a caller with Full access
                     // put under it, which this creation must not run.
                     let id = self
@@ -529,6 +566,8 @@ impl Lifecycle {
                     body.image = Some(id);
                 }
             }
+        } else if let ImagePull::Placed(id) = creating.image {
+            body.image = Some(id.to_owned());
         } else if let ImagePull::Policy(registry_auth) = creating.image
             && let Err(error) = prepare_image(
                 &self.docker.client,
@@ -552,7 +591,7 @@ impl Lifecycle {
             )
             .await?
         {
-            return Ok(existing);
+            return self.adopt(existing, creating.image).await;
         }
         // A key that admitted the spec may have been removed, or a newer generation of
         // its rule may have arrived, while the image pulled.
@@ -574,8 +613,9 @@ impl Lifecycle {
             .pin_external_drivers(&machine.id, spec, mounts)
             .await?;
         mounts.extend(docker_config_mounts(&mut config_operation, spec).await?);
+        let replaced = self.slot_taken(&creating).await;
         let result = self
-            .create_and_record(&creating, &mut config_operation, body)
+            .create_and_record(&creating, &mut config_operation, body, replaced)
             .await;
         if result.is_err()
             && let Err(error) = config_operation.garbage_collect_configs().await
@@ -650,12 +690,15 @@ impl Lifecycle {
         Ok(body)
     }
 
-    /// Creates the Container under its slot's name, then writes its spec. A Container with no spec is removed again, so none outlives a failed write.
+    /// Creates the Container under its slot's name, then writes its spec, and that it
+    /// takes `replaced`'s place. A Container with no spec is removed again, so none
+    /// outlives a failed write.
     async fn create_and_record(
         &self,
         creating: &Creating<'_>,
         config_operation: &mut ConfigOperation<'_>,
         body: ContainerCreateBody,
+        replaced: Option<ContainerId>,
     ) -> Result<ContainerCreated, Error> {
         let Creating {
             machine,
@@ -721,10 +764,36 @@ impl Lifecycle {
             self.remove_if_present(&container_id).await?;
             return Err(error.into());
         }
+        // A daemon killed before this write leaves no record, so the old copy's anonymous
+        // volumes stay.
+        if let Some(replaced) = replaced {
+            config_operation
+                .record_replacement(&container_id, &replaced)
+                .await?;
+        }
         Ok(ContainerCreated {
             container_id,
             display_name,
         })
+    }
+
+    /// The copy whose slot this creation takes: the one the caller names, when it is a
+    /// Container of the same Service and kind on this Machine that is In or Held, so it
+    /// is what the slot routes. Read under the config lock, which every rotation write
+    /// takes. A copy this Machine can't read takes no record, so its volumes stay.
+    async fn slot_taken(&self, creating: &Creating<'_>) -> Option<ContainerId> {
+        let replaced = creating.replaces?;
+        let inspected = self.observation.ensure_managed(replaced).await.ok()?;
+        let labels = ServiceLabels::parse(inspected.labels()?).ok()?;
+        let new = ServiceLabels {
+            identity: ployz_core::QualifiedService::new(
+                creating.namespace.clone(),
+                creating.spec.name.clone(),
+            ),
+            kind: creating.kind,
+        };
+        let rotation = self.specs.rotation(replaced).await.ok()??;
+        (labels == new && slotted(&rotation)).then_some(*replaced)
     }
 
     /// The image ID `container_id` runs, as Docker resolved it when it made the Container.
@@ -796,6 +865,24 @@ impl Lifecycle {
             container_id: existing.container_id,
             display_name: existing.into_parts().display_name,
         }))
+    }
+
+    /// `existing`, the Container an earlier create under the key made, for a create that
+    /// asks for `image`. A create by a placed ID adopts only a Container Docker made from
+    /// that ID: [`same_creation`] reads the spec, whose tag can name another image since.
+    async fn adopt(
+        &self,
+        existing: ContainerCreated,
+        image: ImagePull<'_>,
+    ) -> Result<ContainerCreated, Error> {
+        let ImagePull::Placed(id) = image else {
+            return Ok(existing);
+        };
+        if self.image_of(&existing.container_id).await?.as_deref() == Some(id) {
+            Ok(existing)
+        } else {
+            Err(Error::SlotNameOccupied(existing.display_name))
+        }
     }
 
     /// Removes a Container a daemon killed between Docker's create and the spec's write
@@ -1076,14 +1163,16 @@ impl Lifecycle {
         Ok(true)
     }
 
+    /// Removes `container_id` and its records. Its anonymous volumes go only as
+    /// [`Self::replaced`] decides from `volumes`.
     pub async fn remove(
         &self,
         container_id: &ContainerId,
-        remove_volumes: bool,
+        volumes: VolumeDisposal,
         force: bool,
     ) -> Result<(), Error> {
         let mut config_operation = self.specs.config_operation().await;
-        self.remove_locked(&mut config_operation, container_id, remove_volumes, force)
+        self.remove_locked(&mut config_operation, container_id, volumes, force)
             .await
     }
 
@@ -1091,16 +1180,13 @@ impl Lifecycle {
         &self,
         config_operation: &mut super::spec_store::ConfigOperation<'_>,
         container_id: &ContainerId,
-        remove_volumes: bool,
+        volumes: VolumeDisposal,
         force: bool,
     ) -> Result<(), Error> {
         self.retire(
             config_operation,
             container_id,
-            How::Asked {
-                remove_volumes,
-                force,
-            },
+            How::Asked { volumes, force },
         )
         .await
     }
@@ -1135,38 +1221,93 @@ impl Lifecycle {
         container_id: &ContainerId,
         how: How,
     ) -> Result<(), Error> {
-        let removed = match how {
-            How::Asked {
-                remove_volumes,
-                force,
-            } => match self.observation.ensure_managed(container_id).await {
-                Ok(_) => {
-                    let options = RemoveContainerOptionsBuilder::default()
-                        .v(remove_volumes)
-                        .force(force)
-                        .build();
-                    self.docker
-                        .client
-                        .remove_container(container_id.as_str(), Some(options))
-                        .await
-                        .map_err(|error| docker_error(container_id, error))
+        let (removed, kept) = match how {
+            How::Asked { volumes, force } => {
+                match self.observation.ensure_managed(container_id).await {
+                    Ok(inspected) => {
+                        let remove_volumes = self
+                            .replaced(config_operation, container_id, &inspected, volumes)
+                            .await?;
+                        let kept = if remove_volumes {
+                            Vec::new()
+                        } else {
+                            self.anonymous_volumes(container_id, &inspected).await
+                        };
+                        let options = RemoveContainerOptionsBuilder::default()
+                            .v(remove_volumes)
+                            .force(force)
+                            .build();
+                        let removed = self
+                            .docker
+                            .client
+                            .remove_container(container_id.as_str(), Some(options))
+                            .await
+                            .map_err(|error| docker_error(container_id, error));
+                        (removed, kept)
+                    }
+                    Err(error) => (Err(error), Vec::new()),
                 }
-                Err(error) => Err(error),
-            },
+            }
             How::Departing => {
                 self.stop_if_running(container_id).await?;
-                self.remove_if_present(container_id).await
+                (self.remove_if_present(container_id).await, Vec::new())
             }
         };
         match removed {
             Ok(()) => {
-                config_operation.remove(container_id).await?;
+                // A daemon killed before this write keeps the Volumes unrecorded, which
+                // only this Machine's record would let anything remove.
+                config_operation.remove_keeping(container_id, kept).await?;
             }
             Err(Error::ContainerNotFound(_)) if config_operation.remove(container_id).await? => {}
             Err(error) => return Err(error),
         }
         self.forget(container_id).await;
         Ok(())
+    }
+
+    /// Whether `retiree`'s anonymous volumes go with it. Only when the removal names the
+    /// Container it relies on, this Machine recorded when it made that Container that it
+    /// takes `retiree`'s place (see [`Self::slot_taken`]), and that Container runs, In or
+    /// Held, and no stop is taking it out of routing. Read under the config lock, which
+    /// every create, removal, rotation write and stopping mark takes, so none lands
+    /// between this read and the removal. A system Container's, whose spec is the
+    /// daemon's own, go when the daemon asks.
+    async fn replaced(
+        &self,
+        config_operation: &mut ConfigOperation<'_>,
+        retiree: &ContainerId,
+        inspected: &Inspected,
+        volumes: VolumeDisposal,
+    ) -> Result<bool, Error> {
+        let named = match volumes {
+            VolumeDisposal::Keep => return Ok(false),
+            VolumeDisposal::System => {
+                let labels = inspected.labels().ok_or(Error::NotManaged)?;
+                return Ok(labels::Class::of(labels) == Some(labels::Class::System));
+            }
+            VolumeDisposal::ReplacedBy(named) => named,
+        };
+        let Some(replacement) = config_operation.replacement(retiree).await? else {
+            return Ok(false);
+        };
+        if replacement != named
+            || self.standing.is_withdrawn(&replacement)
+            || !self
+                .specs
+                .rotation(&replacement)
+                .await?
+                .is_some_and(|rotation| slotted(&rotation))
+        {
+            return Ok(false);
+        }
+        match self.docker.inspect(&replacement).await {
+            Ok(replacement) => {
+                Ok(super::runtime_observation(replacement.state.as_ref()).is_running())
+            }
+            Err(Error::ContainerNotFound(_)) => Ok(false),
+            Err(error) => Err(error),
+        }
     }
 
     /// Stops `container_id`. A Container already stopped or gone is success.
@@ -1302,13 +1443,34 @@ pub(super) fn idempotent_lifecycle_result(
     }
 }
 
+/// Whether a copy in `rotation` is what its slot routes: In, or Held by a run that may
+/// route it again.
+fn slotted(rotation: &ployz_core::CopyRotation) -> bool {
+    matches!(
+        rotation,
+        ployz_core::CopyRotation::In | ployz_core::CopyRotation::Held(_)
+    )
+}
+
+/// Whether `observed` is what a create of `spec` makes. The pull policy decides only how
+/// the image got here, not what runs, so a resend that asks for it differently, as a
+/// forward Release does after its Move's `never`, finds the Container that create made.
+/// The image reference must still match, and a create by ID adopts only a Container
+/// made from that ID ([`LocalLifecycle::adopt`]).
 pub(crate) fn same_creation(
     observed: &ContainerObservation,
     namespace: &Namespace,
     kind: ContainerKind,
     spec: &ResolvedServiceSpec,
 ) -> bool {
-    observed.namespace == *namespace && observed.kind == kind && observed.resolved_spec == *spec
+    let made = &observed.resolved_spec;
+    observed.namespace == *namespace
+        && observed.kind == kind
+        && (made == spec || {
+            let mut asked = spec.clone();
+            asked.container.pull_policy = made.container.pull_policy;
+            *made == asked
+        })
 }
 
 fn creation_name(
@@ -1482,6 +1644,57 @@ mod tests {
         }
     }
 
+    /// A resend under a creation's key that asks for the image by another placed ID gets
+    /// no Container: the spec's tag matches, but the Container runs what Docker made it
+    /// from. The same ID, under another pull policy, adopts it.
+    #[tokio::test]
+    async fn a_create_by_placed_id_adopts_only_a_container_made_from_that_id() {
+        let namespace = Namespace::parse("app").unwrap();
+        let containers = std::sync::Arc::default();
+        let (runtime, _fake) = fake_runtime_with(FakeDocker {
+            named_containers: Some(std::sync::Arc::clone(&containers)),
+            ..FakeDocker::default()
+        })
+        .await;
+        let mut spec = spec_with_sources(Vec::new());
+        let (made, other) = (
+            format!("sha256:{}", "a".repeat(64)),
+            format!("sha256:{}", "b".repeat(64)),
+        );
+        let machine = machine();
+        let create = |spec: ResolvedServiceSpec, id: String| {
+            let (lifecycle, machine, namespace) =
+                (runtime.lifecycle(), machine.clone(), namespace.clone());
+            async move {
+                lifecycle
+                    .create_with_admission::<_, _, Error>(
+                        &machine,
+                        ContainerRequest {
+                            image: ImagePull::Placed(&id),
+                            ..container_request(
+                                ContainerKind::ServiceContainer,
+                                &namespace,
+                                &spec,
+                                std::future::ready(None),
+                            )
+                        },
+                    )
+                    .await
+            }
+        };
+        spec.container.pull_policy = PullPolicy::Never;
+        let first = create(spec.clone(), made.clone()).await.unwrap();
+
+        spec.container.pull_policy = PullPolicy::Missing;
+        let refused = create(spec.clone(), other).await;
+        assert!(
+            matches!(refused, Err(Error::SlotNameOccupied(_))),
+            "{refused:?}"
+        );
+        let adopted = create(spec, made).await.unwrap();
+        assert_eq!(adopted.container_id, first.container_id);
+    }
+
     async fn stamped_labels(
         kind: ContainerKind,
         creation_key: &str,
@@ -1503,6 +1716,7 @@ mod tests {
                     creation_key,
                     deployment_id,
                     r#gen: generation,
+                    replaces: None,
                     ..container_request(kind, &namespace, &spec, std::future::ready(None))
                 },
             )
@@ -2494,7 +2708,7 @@ mod tests {
 
         runtime
             .lifecycle()
-            .remove(&container_id, false, true)
+            .remove(&container_id, VolumeDisposal::Keep, true)
             .await
             .unwrap();
 
@@ -2518,13 +2732,13 @@ mod tests {
 
         runtime
             .lifecycle()
-            .remove(&container_id, false, true)
+            .remove(&container_id, VolumeDisposal::Keep, true)
             .await
             .unwrap();
         assert!(runtime.specs.get(&container_id).await.unwrap().is_none());
 
         assert!(matches!(
-            runtime.lifecycle().remove(&container_id, false, true).await,
+            runtime.lifecycle().remove(&container_id, VolumeDisposal::Keep, true).await,
             Err(Error::ContainerNotFound(id)) if id == container_id
         ));
     }

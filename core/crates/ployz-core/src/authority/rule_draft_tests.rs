@@ -19,11 +19,10 @@ fn settings_of(spec: &RequestedServiceSpec) -> Vec<Shown> {
 
 const SEALED_A: &str = "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQQ==";
 
-/// The digest of the body [`golden`] drafts. The dashboard's `autoDeployRuleBody` test
-/// pins the same digest: a browser that drafts other bytes than the CLI fails there.
+/// The digest of the body [`golden`] drafts.
 const GOLDEN: &str = "820cfcdda3b2f3d7455a10ba99ec03028861f1eb3a3b63bdd812dded47aa97f7";
 
-/// What the dashboard's test passes as the rule view: one Git Service and one image
+/// The rule view a Save's tap drafts from: one Git Service and one image
 /// Service, as the Store's `rule` view writes them.
 pub(crate) fn view_json() -> Value {
     json!({
@@ -762,7 +761,7 @@ fn services_on_two_branches_are_refused() {
             .unwrap_err()
             .to_string(),
         "A rule deploys one branch, and cache builds from Ployz-test/lab-service at release, \
-         not Ployz-test/lab-service at main. Approve a rule for each."
+         not Ployz-test/lab-service at main. Pick one branch for automatic deploys."
     );
 }
 

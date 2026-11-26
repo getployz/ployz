@@ -14,7 +14,7 @@ use std::net::{TcpListener, TcpStream};
 use std::process::Command;
 
 use ployz_core::config::{ClientSealedValue, ServiceGitAccess};
-use ployz_core::{Keypair, RpcError, RpcErrorCode, SealedIdentity};
+use ployz_core::{Keypair, RpcError, RpcErrorCode, SealedIdentity, SealedLogin};
 use ployz_store::{
     Actor, AuthorizedRepository, ClusterDomain, ClusterDomainStatus, Command as StoreCommand,
     ConfigStore, DomainEvidence, Hostname, OrganizationId, Permission, Principal, Removal,
@@ -49,8 +49,14 @@ fn targets() -> [Target; 2] {
 
 /// A `ployz` process with its own home, away from any ambient Store or sign-in.
 fn isolated(home: &std::path::Path) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_ployz"));
+    let mut command = unexplained(home);
     command.arg("--why=test");
+    command
+}
+
+/// [`isolated`] before it says why, for a retry that already does.
+fn unexplained(home: &std::path::Path) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_ployz"));
     command
         .env("HOME", home)
         .env_remove("XDG_CONFIG_HOME")
@@ -66,7 +72,14 @@ fn isolated(home: &std::path::Path) -> Command {
 impl Target {
     /// A `ployz` process pointed at this Store.
     fn command(&self, home: &std::path::Path) -> Command {
-        let mut command = isolated(home);
+        let mut command = self.retrying(home);
+        command.arg("--why=test");
+        command
+    }
+
+    /// [`Self::command`] before it says why, for a retry that already does.
+    fn retrying(&self, home: &std::path::Path) -> Command {
+        let mut command = unexplained(home);
         match self {
             Self::Local(dir) => {
                 let store = dir.path().join("store.db");
@@ -139,6 +152,22 @@ fn ok(store: &Target, args: &[&str]) -> Value {
     json
 }
 
+/// Run `retry` as it reads, its `--why` and `--json` included; returns (exit code, stdout JSON).
+fn retried(target: &Target, retry: &str) -> (Option<i32>, Value) {
+    let home = tempfile::tempdir().unwrap();
+    let words = as_an_agent_runs(retry);
+    assert_eq!(words[0], "ployz", "{retry}");
+    let output = target
+        .retrying(home.path())
+        .args(&words[1..])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let json = serde_json::from_str(&stdout)
+        .unwrap_or_else(|error| panic!("stdout is not one JSON object ({error}): {stdout:?}"));
+    (output.status.code(), json)
+}
+
 /// A refusal, exiting 2 when the command must change and 1 otherwise.
 fn error(store: &Target, args: &[&str]) -> Value {
     let (code, json) = ployz(Some(store), args);
@@ -191,7 +220,7 @@ fn cloud(
 ) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
-    if let Some(SealingState::Ready(key)) = &sealing {
+    if let Some(SealingState::Ready(key) | SealingState::Misnames(key)) = &sealing {
         PINNED.lock().unwrap().insert(url.clone(), key.clone());
     }
     let store = std::sync::Arc::new(
@@ -318,16 +347,27 @@ fn serve(
                 SealingState::AwaitsRecovery => {
                     (200, json!({ "state": "no_server", "awaitsRecovery": true }))
                 }
-                SealingState::Ready(public_key) => {
+                SealingState::Ready(public_key) | SealingState::Misnames(public_key) => {
                     let query: ployz_store::SealingTargetsQuery =
                         serde_json::from_slice(&body).unwrap();
                     match store.read_trusted(&who, &query, &evidence()) {
-                        Ok(targets) => (
+                        Ok(mut targets) => (
                             200,
                             json!({
                                 "state": "ready",
                                 "publicKey": public_key,
-                                "targets": ployz_store::View::SealingTargets(targets),
+                                "targets": ployz_store::View::SealingTargets({
+                                    if let (
+                                        SealingState::Misnames(_),
+                                        ployz_store::SealingTargetsView::Edit { services, .. },
+                                    ) = (state, &mut targets)
+                                    {
+                                        for service in services {
+                                            service.image = Some(MISNAMED.into());
+                                        }
+                                    }
+                                    targets
+                                }),
                             }),
                         ),
                         // Cloud answers a Store's not_found with 404, as it does any read.
@@ -562,7 +602,13 @@ enum SealingState {
     AwaitsRecovery,
     /// The Organization seals on the client, to this key.
     Ready(String),
+    /// As `Ready`, but Cloud names every Service's image [`MISNAMED`], as a breached
+    /// Cloud could.
+    Misnames(String),
 }
+
+/// The image a [`SealingState::Misnames`] Cloud names, on a registry the person never chose.
+const MISNAMED: &str = "evil.example/acme/web:1";
 
 /// The Sealing Key each `ployz` run against a Cloud finds pinned, by the Cloud's URL. A
 /// Cloud that seals on the client starts with its own key pinned, as `ployz device pin`
@@ -1346,6 +1392,71 @@ fn an_env_value_prints_on_one_escaped_line_for_humans() {
     }
 }
 
+/// A variable that types another Service's address names the reference to set in its
+/// place, and neither the hint nor `--json` repeats any text typed around it, wherever a
+/// secret hides in it. Only a value that is the address alone gets a line that runs.
+#[test]
+fn a_typed_address_names_its_reference_and_repeats_nothing_typed_around_it() {
+    for store in &targets() {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "db", "--image", "postgres:16"]);
+        ok(store, &["service", "add", "web", "--image", "nginx:1"]);
+        let home = tempfile::tempdir().unwrap();
+        for hostile in [
+            // A password that reads as a URL.
+            "web.env.DSN=host=db.internal password=x://EXAMPLE",
+            // A token in the path.
+            "web.env.API_URL=http://db.internal/EXAMPLE/v1",
+            // A token as the user.
+            "web.env.REPO=https://EXAMPLE@db.internal/repo.git",
+            // A secret as the key before the address.
+            "web.env.PAIR=EXAMPLE=db.internal:5432",
+            // A URL in the query.
+            "web.env.NEXT=http://db.internal/?next=https://EXAMPLE@example.com/",
+            "web.env.DATABASE_URL=postgres://app:EXAMPLE@db.internal:5432/shop",
+        ] {
+            let set = ok(store, &["set", hostile]);
+            let path = hostile.split_once('=').unwrap().0;
+            assert_eq!(
+                set.pointer("/typed_addresses/0"),
+                Some(&json!({
+                    "path": path,
+                    "services": ["db"],
+                    "instead": {
+                        "kind": "reference",
+                        "references": ["${{ db.PLOYZ_PRIVATE_DOMAIN }}"],
+                    },
+                })),
+                "{hostile}"
+            );
+            assert!(!set.to_string().contains("EXAMPLE"), "{hostile}: {set}");
+            let (code, said) = person(store, home.path(), &["set", hostile]);
+            assert_eq!(code, Some(0), "{said}");
+            assert!(
+                said.contains(&format!(
+                    "Set {path} again with ${{{{ db.PLOYZ_PRIVATE_DOMAIN }}}} in place of db's address."
+                )),
+                "{hostile}: {said}"
+            );
+            assert!(!said.contains("retry:"), "{hostile}: {said}");
+            assert!(!said.contains("EXAMPLE"), "{hostile}: {said}");
+        }
+
+        let (code, said) = person(store, home.path(), &["set", "web.env.DB_HOST=db.internal"]);
+        assert_eq!(code, Some(0), "{said}");
+        let retry = said
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("retry: "))
+            .unwrap_or_else(|| panic!("no retry in {said}"));
+        let (code, json) = retried(store, &format!("{retry} --why=test --json"));
+        assert_eq!(code, Some(0), "{json}");
+        assert_eq!(
+            setting(store, "web.env.DB_HOST"),
+            json!("${{ db.PLOYZ_PRIVATE_DOMAIN }}")
+        );
+    }
+}
+
 #[test]
 fn get_lists_the_region_above_the_settings() {
     for store in &targets() {
@@ -1479,7 +1590,7 @@ fn the_typed_name_alone_removes_a_project_and_an_environment_that_ran_services()
         assert_eq!(asked["code"], "confirmation_required", "{asked}");
         assert_eq!(
             asked["details"]["retry"],
-            json!("ployz project rm shop --confirm shop")
+            json!("ployz --json --why '<REASON>' project rm shop --confirm shop")
         );
         // A stale `--expect-version` still binds, so a script that passes one is refused.
         let stale = error(
@@ -1532,6 +1643,9 @@ fn the_typed_name_alone_removes_a_project_and_an_environment_that_ran_services()
                     "ployz",
                     "--ployz-config",
                     config,
+                    "--json",
+                    "--why",
+                    "<REASON>",
                     "env",
                     "rm",
                     "staging",
@@ -1554,7 +1668,8 @@ fn the_typed_name_alone_removes_a_project_and_an_environment_that_ran_services()
                 assert_eq!(admitted["deployment"]["remove"], true, "{admitted}");
                 assert_eq!(admitted["deployments"][0]["remove"], true, "{admitted}");
                 assert_eq!(
-                    admitted["next"], "ployz project rm shop --confirm shop",
+                    admitted["next"],
+                    "ployz --json --why '<REASON>' project rm shop --confirm shop",
                     "{admitted}"
                 );
             }
@@ -1911,6 +2026,7 @@ fn status_keeps_a_down_server_past_a_slow_first_use_and_routes_read() {
                     run: None,
                     log_driver: None,
                     admission: None,
+                    replaced_by: None,
                 })
                 .unwrap();
             service.listed_containers.lock().unwrap().push(copy);
@@ -2017,7 +2133,7 @@ fn removing_a_referenced_service_stages_and_prints_the_broken_reference() {
         assert!(output.status.success(), "{args:?}: {output:?}");
         String::from_utf8(output.stdout).unwrap() + &String::from_utf8(output.stderr).unwrap()
     };
-    let line = "sentry.env.REDIS references redis, which was removed; deploys skip it until you change it: ployz set 'sentry.env.REDIS=VALUE'";
+    let line = "sentry.env.REDIS references redis, which was removed; deploys skip it until you change it: ployz set 'sentry.env.REDIS=<VALUE>'";
     let removed = human(&["service", "rm", "redis"]);
     assert!(removed.contains(line), "{removed}");
     let diff = human(&["diff"]);
@@ -2055,7 +2171,7 @@ fn a_broken_reference_in_an_invisible_file_name_prints_escaped() {
         String::from_utf8(output.stdout).unwrap() + &String::from_utf8(output.stderr).unwrap()
     };
     // The name shows as stored, and the fix command still pastes to that file.
-    let line = r"app/a\u{202e}b.txt references redis, which was removed; deploys skip it until you change it: ployz config put app $'a\xe2\x80\xaeb.txt' --from PATH";
+    let line = r"app/a\u{202e}b.txt references redis, which was removed; deploys skip it until you change it: ployz config put app $'a\xe2\x80\xaeb.txt' --from '<PATH>'";
     let removed = human(&["service", "rm", "redis"]);
     assert!(removed.contains(line), "{removed}");
     let diff = human(&["diff"]);
@@ -2497,7 +2613,7 @@ fn an_agent_lists_moves_the_default_and_removes_environments_without_servers() {
         assert_eq!(unconfirmed["details"]["services"], json!(["web"]));
         assert_eq!(
             unconfirmed["details"]["retry"],
-            json!("ployz env rm production --confirm shop/production")
+            json!("ployz --json --why '<REASON>' env rm production --confirm shop/production")
         );
         let mistyped = error(
             store,
@@ -2505,7 +2621,7 @@ fn an_agent_lists_moves_the_default_and_removes_environments_without_servers() {
         );
         assert_eq!(
             mistyped["details"]["retry"],
-            json!("ployz env rm production --confirm shop/production")
+            json!("ployz --json --why '<REASON>' env rm production --confirm shop/production")
         );
         let default = error(
             store,
@@ -2785,12 +2901,12 @@ fn an_agent_lists_and_removes_a_project_without_servers() {
         );
         assert_eq!(
             unconfirmed["details"]["retry"],
-            json!("ployz project rm shop --confirm shop")
+            json!("ployz --json --why '<REASON>' project rm shop --confirm shop")
         );
         let mistyped = error(store, &["project", "rm", "shop", "--confirm", "blog"]);
         assert_eq!(
             mistyped["details"]["retry"],
-            json!("ployz project rm shop --confirm shop")
+            json!("ployz --json --why '<REASON>' project rm shop --confirm shop")
         );
 
         // Nothing of it ever ran, so it goes at once, with no Server.
@@ -3828,7 +3944,7 @@ fn an_agent_reviews_saves_and_discards() {
         assert_eq!(
             stale.pointer("/details/next"),
             Some(&json!(format!(
-                "ployz deploy --skip-deploy --expect-version {fresh}"
+                "ployz --json --why '<REASON>' deploy --skip-deploy --expect-version {fresh}"
             )))
         );
 
@@ -4487,7 +4603,9 @@ fn an_agent_plans_deploys_and_reads_the_deployment() {
         assert_eq!(plan["unresolved"], json!(["operations"]));
         assert_eq!(
             plan["next"],
-            json!(format!("ployz deploy web --expect-version {version}"))
+            json!(format!(
+                "ployz --json --why '<REASON>' deploy web --expect-version {version}"
+            ))
         );
         assert_eq!(
             error(store, &["deploy", "nope", "--plan"])["code"],
@@ -4501,7 +4619,7 @@ fn an_agent_plans_deploys_and_reads_the_deployment() {
         assert_eq!(
             stale["details"]["next"],
             json!(format!(
-                "ployz deploy --expect-version {}",
+                "ployz --json --why '<REASON>' deploy --expect-version {}",
                 stale["details"]["diff"]["version"].as_str().unwrap()
             ))
         );
@@ -4631,7 +4749,7 @@ fn redeploying_an_older_deployment_asks_before_it_rolls_back() {
     assert_eq!(asked["details"]["rolls_back"], json!([2]));
     assert_eq!(
         asked["details"]["retry"],
-        json!("ployz '--why=test' --json deployment redeploy 1 --yes")
+        json!("ployz --json --why '<REASON>' deployment redeploy 1 --yes")
     );
 
     let rolled_back = no_server_answers(&store, &["deployment", "redeploy", "1", "--yes"]);
@@ -5540,7 +5658,7 @@ fn ctx_names_no_servers_when_the_config_picks_no_context() {
         (
             "contexts:\n  lab:\n    connections:\n      - unix: /tmp/MY-SERVER.sock\n",
             "servers = (none: no current context)\n",
-            "ployz ctx use CONTEXT",
+            "ployz ctx use '<CONTEXT>'",
         ),
         (
             "contexts: {}\n",
@@ -5909,42 +6027,247 @@ fn a_synced_secret_arrives_not_set_and_never_blocks_a_deploy() {
     assert_eq!(deployed["number"], json!(3), "{deployed}");
 }
 
-#[test]
-fn a_private_image_credential_arrives_on_stdin_and_rotates_at_once() {
-    for store in &targets() {
-        ok(store, &["project", "new", "shop"]);
-        ok(
-            store,
-            &["service", "add", "web", "--image", "ghcr.io/acme/web:1"],
-        );
-        let path = "web.registryCredential";
-        let (code, first) = ployz_with_stdin(store, &["set", path, "--secret"], "first-token\n");
-        assert_eq!(code, Some(0), "{first}");
-        let first: Value = serde_json::from_str(&first).unwrap();
-        assert_eq!(first["staged"], json!([path]));
-        assert_eq!(first["immediate"], json!([path]));
-        assert_eq!(
-            ok(store, &["get", path])["settings"][0]["value"],
-            json!({ "secret": true })
-        );
-        let body = r#"{"registryCredential":{"username":"octocat","secret":"second-token"}}"#;
-        let (code, rotated) = ployz_with_stdin(store, &["set", "web", "--patch", "-"], body);
-        assert_eq!(code, Some(0), "{rotated}");
-        let rotated: Value = serde_json::from_str(&rotated).unwrap();
-        assert_eq!(rotated["staged"], json!([]));
-        assert_eq!(rotated["immediate"], json!([path]));
-        failed(store, &["set", "web", "--patch", body], 2);
-        let refused = error(store, &["set", "web.registryCredential=plain-token"]);
-        assert_eq!(refused["code"], json!("invalid_argument"));
-        let shown = [
-            refused,
-            ok(store, &["get", "web"]),
-            ok(store, &["diff"]),
-            ok(store, &["explain", path]),
-        ];
-        for read in shown {
-            assert!(!read.to_string().contains("-token"), "{read}");
+/// Every login sealed in the CLI that `cloud`'s requests carried.
+fn sealed_logins(cloud: &Target) -> Vec<SealedLogin> {
+    fn logins(value: &Value, into: &mut Vec<SealedLogin>) {
+        match value {
+            Value::Object(fields) if fields.contains_key("sealed") => {
+                into.extend(serde_json::from_value(value.clone()).ok());
+            }
+            Value::Object(fields) => fields.values().for_each(|value| logins(value, into)),
+            Value::Array(values) => values.iter().for_each(|value| logins(value, into)),
+            Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
         }
+    }
+    let mut sealed = Vec::new();
+    for (url, _, body) in REQUESTS.lock().unwrap().iter() {
+        if url == cloud.url()
+            && let Ok(body) = serde_json::from_str::<Value>(body)
+        {
+            logins(&body, &mut sealed);
+        }
+    }
+    sealed
+}
+
+/// The registry hosts of every login sealed in the CLI that `cloud`'s requests carried.
+fn sealed_login_hosts(cloud: &Target) -> Vec<String> {
+    sealed_logins(cloud)
+        .into_iter()
+        .map(|login| login.host)
+        .collect()
+}
+
+/// Docker sends a login only with a username, so one without would pull as if there
+/// were none. The CLI refuses it before the token leaves, by `--secret` or a patch, and
+/// a login with one reaches the Server with both.
+#[test]
+fn a_login_reaches_the_server_with_its_username_or_never_leaves() {
+    let store = &cloud_target();
+    ok(store, &["project", "new", "shop"]);
+    ok(
+        store,
+        &["service", "add", "web", "--image", "ghcr.io/acme/web:1"],
+    );
+    let path = "web.registryCredential";
+    let writes = requests_to(store, "/api/config/write").len();
+    let (code, refused) = ployz_with_stdin(
+        store,
+        &["set", path, "--secret", "--registry", "ghcr.io"],
+        "unnamed-token\n",
+    );
+    assert_eq!(code, Some(2), "{refused}");
+    assert!(refused.contains("--username"), "{refused}");
+    let body = r#"{"registryCredential":{"secret":"patch-token"}}"#;
+    let (code, refused) = ployz_with_stdin(
+        store,
+        &["set", "web", "--patch", "-", "--registry", "ghcr.io"],
+        body,
+    );
+    assert_eq!(code, Some(2), "{refused}");
+    assert!(refused.contains("--username"), "{refused}");
+    assert_eq!(requests_to(store, "/api/config/write").len(), writes);
+    let (code, named) = ployz_with_stdin(
+        store,
+        &[
+            "set",
+            path,
+            "--secret",
+            "--registry",
+            "ghcr.io",
+            "--username",
+            "octo",
+        ],
+        "named-token\n",
+    );
+    assert_eq!(code, Some(0), "{named}");
+    let opened: Vec<_> = sealed_logins(store)
+        .iter()
+        .map(|login| {
+            let login = KEYPAIR.open_login(login).expect("sealed to the Cluster");
+            (login.username, login.password)
+        })
+        .collect();
+    assert_eq!(
+        opened,
+        [(Some("octo".to_owned()), "named-token".to_owned())]
+    );
+    for token in ["unnamed-token", "patch-token", "named-token"] {
+        cloud_never_saw(store, token);
+    }
+}
+
+#[test]
+fn a_private_image_login_is_sealed_here_for_its_registry_and_rotates_at_once() {
+    let store = &cloud_target();
+    ok(store, &["project", "new", "shop"]);
+    ok(
+        store,
+        &["service", "add", "web", "--image", "ghcr.io/acme/web:1"],
+    );
+    let path = "web.registryCredential";
+    let (code, first) = ployz_with_stdin(
+        store,
+        &[
+            "set",
+            path,
+            "--secret",
+            "--registry",
+            "ghcr.io",
+            "--username",
+            "octocat",
+        ],
+        "first-token\n",
+    );
+    assert_eq!(code, Some(0), "{first}");
+    let first: Value = serde_json::from_str(&first).unwrap();
+    assert_eq!(first["staged"], json!([path]));
+    assert_eq!(first["immediate"], json!([path]));
+    assert_eq!(
+        ok(store, &["get", path])["settings"][0]["value"],
+        json!({ "secret": true })
+    );
+    let body = r#"{"registryCredential":{"username":"octocat","secret":"second-token"}}"#;
+    let (code, rotated) = ployz_with_stdin(
+        store,
+        &["set", "web", "--patch", "-", "--registry", "ghcr.io"],
+        body,
+    );
+    assert_eq!(code, Some(0), "{rotated}");
+    let rotated: Value = serde_json::from_str(&rotated).unwrap();
+    assert_eq!(rotated["staged"], json!([]));
+    assert_eq!(rotated["immediate"], json!([path]));
+    // A write that moves the image seals for the registry it moves to.
+    let moved = r#"{"image":"quay.io/acme/web:2","registryCredential":{"username":"octocat","secret":"third-token"}}"#;
+    let (code, moved) = ployz_with_stdin(store, &["set", "web", "--patch", "-"], moved);
+    assert_eq!(code, Some(0), "{moved}");
+    failed(store, &["set", "web", "--patch", body], 2);
+    let refused = error(store, &["set", "web.registryCredential=plain-token"]);
+    assert_eq!(refused["code"], json!("invalid_argument"));
+    for token in ["first-token", "second-token", "third-token", "octocat"] {
+        cloud_never_saw(store, token);
+    }
+    assert_eq!(sealed_login_hosts(store), ["ghcr.io", "ghcr.io", "quay.io"]);
+}
+
+/// Cloud says which image a Service runs, so a breached one could name its own registry
+/// and collect the token. With no terminal to ask at, the CLI seals only for a registry
+/// the person names, never for the one Cloud names.
+#[test]
+fn a_login_is_never_sealed_for_a_registry_only_cloud_names() {
+    let cloud = sealing_cloud(Some(SealingState::Misnames(KEYPAIR.public().to_string())));
+    ok(&cloud, &["project", "new", "shop"]);
+    ok(
+        &cloud,
+        &["service", "add", "web", "--image", "ghcr.io/acme/web:1"],
+    );
+    let path = "web.registryCredential";
+    let (code, refused) = ployz_with_stdin(
+        &cloud,
+        &["set", path, "--secret", "--username", "octo"],
+        "first-token\n",
+    );
+    assert_eq!(code, Some(2), "{refused}");
+    let body = r#"{"registryCredential":{"username":"octo","secret":"second-token"}}"#;
+    let (code, refused) = ployz_with_stdin(&cloud, &["set", "web", "--patch", "-"], body);
+    assert_eq!(code, Some(2), "{refused}");
+    let (code, named) = ployz_with_stdin(
+        &cloud,
+        &[
+            "set",
+            path,
+            "--secret",
+            "--registry",
+            "ghcr.io",
+            "--username",
+            "octo",
+        ],
+        "third-token\n",
+    );
+    assert_eq!(code, Some(0), "{named}");
+    for token in ["first-token", "second-token", "third-token"] {
+        cloud_never_saw(&cloud, token);
+    }
+    assert_eq!(sealed_login_hosts(&cloud), ["ghcr.io"]);
+}
+
+/// A login the Store would refuse may still hold a token: the CLI refuses it before it
+/// sends anything, rather than pass the edit on as it stands.
+#[test]
+fn a_login_the_cli_cannot_read_never_leaves_it() {
+    let store = &cloud_target();
+    ok(store, &["project", "new", "shop"]);
+    ok(
+        store,
+        &["service", "add", "web", "--image", "ghcr.io/acme/web:1"],
+    );
+    let writes = requests_to(store, "/api/config/write").len();
+    for body in [
+        r#"{"registryCredential":{"username":"","secret":"empty-user-token"}}"#,
+        r#"{"registryCredential":{"secret":"extra-field-token","password":"x"}}"#,
+        r#"{"registryCredential":{"username":7,"secret":"odd-user-token"}}"#,
+    ] {
+        let (code, refused) = ployz_with_stdin(
+            store,
+            &["set", "web", "--patch", "-", "--registry", "ghcr.io"],
+            body,
+        );
+        assert_eq!(code, Some(2), "{body}: {refused}");
+    }
+    assert_eq!(requests_to(store, "/api/config/write").len(), writes);
+    for token in ["empty-user-token", "extra-field-token", "odd-user-token"] {
+        cloud_never_saw(store, token);
+    }
+}
+
+/// A login leaves this CLI only through `--secret`'s sealing: an edit that sets one by
+/// any other path or key the Store reads, such as a patch on the Setting's own path, is
+/// refused here, and its token never reaches Cloud.
+#[test]
+fn a_login_reaches_cloud_only_sealed_whatever_path_sets_it() {
+    let store = &cloud_target();
+    ok(store, &["project", "new", "shop"]);
+    ok(
+        store,
+        &["service", "add", "web", "--image", "ghcr.io/acme/web:1"],
+    );
+    let writes = requests_to(store, "/api/config/write").len();
+    for (args, body) in [
+        (
+            &["set", "web.registryCredential", "--patch", "-"][..],
+            r#"{"username":"octo","password":"setting-path-token"}"#,
+        ),
+        (
+            &["set", "web.registryCredential", "--patch", "-"][..],
+            r#"{"secret":"setting-secret-token"}"#,
+        ),
+    ] {
+        let (code, refused) = ployz_with_stdin(store, args, body);
+        assert_eq!(code, Some(2), "{body}: {refused}");
+    }
+    assert_eq!(requests_to(store, "/api/config/write").len(), writes);
+    for token in ["setting-path-token", "setting-secret-token"] {
+        cloud_never_saw(store, token);
     }
 }
 
@@ -6769,7 +7092,7 @@ fn history_lists_when_who_and_what_and_names_the_draft_an_action_overwrites() {
     );
     assert_eq!(
         refused["details"]["next"],
-        json!("ployz history undo 2 --accept-overwrite"),
+        json!("ployz --json --why '<REASON>' history undo 2 --accept-overwrite"),
         "{refused}"
     );
     ok(&store, &["history", "undo", "2", "--accept-overwrite"]);
@@ -7030,9 +7353,42 @@ fn a_bare_discard_names_every_change_it_drops() {
 
 /// `ployz ARGS` fed `input` on stdin: its exit code, stdout and stderr.
 fn ployz_fed(target: &Target, args: &[&str], input: &str) -> (Option<i32>, String, String) {
+    fed(target, true, args, input)
+}
+
+/// `retry` as it reads, `input` on stdin; returns (exit code, stdout, stderr).
+/// The words of `retry` as an agent runs it: with its reason given.
+fn as_an_agent_runs(retry: &str) -> Vec<String> {
+    shell_words::split(retry)
+        .unwrap()
+        .into_iter()
+        .map(|word| match word.as_str() {
+            "<REASON>" => "following the retry".to_owned(),
+            _ => word,
+        })
+        .collect()
+}
+
+fn retried_fed(target: &Target, retry: &str, input: &str) -> (Option<i32>, String, String) {
+    let words = as_an_agent_runs(retry);
+    assert_eq!(words[0], "ployz", "{retry}");
+    let words: Vec<&str> = words[1..].iter().map(String::as_str).collect();
+    fed(target, false, &words, input)
+}
+
+fn fed(
+    target: &Target,
+    explain: bool,
+    args: &[&str],
+    input: &str,
+) -> (Option<i32>, String, String) {
     let home = tempfile::tempdir().unwrap();
-    let mut child = target
-        .command(home.path())
+    let mut command = if explain {
+        target.command(home.path())
+    } else {
+        target.retrying(home.path())
+    };
+    let mut child = command
         .args(args)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -7071,11 +7427,12 @@ fn a_sync_a_pr_plan_and_a_build_order_retry_with_their_arguments_and_the_digest(
                 "web.env.DEBUG",
                 "--close",
             ][..],
-            "ployz env sync --to --only web --skip web.env.DEBUG --close --approval 3:abc --env fix-web",
+            "ployz --json --why '<REASON>' env sync --env fix-web --only web --skip web.env.DEBUG --close \
+             --approval 3:abc --to",
         ),
         (
             &["env", "sync", "--from", "fix-web", "--version", REVIEWED],
-            "ployz env sync --from fix-web --version 3:1:0.1 --approval 3:abc",
+            "ployz --json --why '<REASON>' env sync --from fix-web --version 3:1:0.1 --approval 3:abc",
         ),
         (
             &[
@@ -7088,7 +7445,7 @@ fn a_sync_a_pr_plan_and_a_build_order_retry_with_their_arguments_and_the_digest(
                 "--env",
                 "fix-web",
             ],
-            "ployz env sync --take production --only web --approval 3:abc --env fix-web",
+            "ployz --json --why '<REASON>' env sync --take production --only web --env fix-web --approval 3:abc",
         ),
         (
             &[
@@ -7100,8 +7457,6 @@ fn a_sync_a_pr_plan_and_a_build_order_retry_with_their_arguments_and_the_digest(
                 "production",
                 "--copy",
                 "web",
-                "--setup",
-                "web=make seed",
                 "--remove-on-close",
                 "false",
                 "--bots",
@@ -7109,27 +7464,27 @@ fn a_sync_a_pr_plan_and_a_build_order_retry_with_their_arguments_and_the_digest(
                 "--project",
                 "shop",
             ],
-            "ployz env pr acme/web --on --from production --copy web --setup 'web=make seed' \
-             --remove-on-close false --bots true --approval 3:abc --project shop",
+            "ployz --json --why '<REASON>' env pr acme/web --on --from production --copy web \
+             --remove-on-close false --bots true --project shop \
+             --approval 3:abc",
         ),
         (
             &["env", "pr", "acme/web", "--off"],
-            "ployz env pr acme/web --off --approval 3:abc",
+            "ployz --json --why '<REASON>' env pr acme/web --off --approval 3:abc",
         ),
         (
             &["org", "build-order", "servers-only"],
-            "ployz org build-order servers-only --approval 3:abc",
+            "ployz --json --why '<REASON>' org build-order servers-only --approval 3:abc",
         ),
     ] {
         let refused = error(&target, args);
         assert_eq!(refused["code"], json!("approval_required"), "{refused}");
         assert_eq!(refused["details"]["retry"], json!(retry), "{args:?}");
         // The retry parses, and Cloud weighs it again.
-        let words = shell_words::split(retry).unwrap();
-        let words: Vec<&str> = words[1..].iter().map(String::as_str).collect();
-        let again = error(&target, &words);
+        let (_, again) = retried(&target, retry);
+        let again = &again["error"];
         assert_eq!(again["code"], json!("approval_required"), "{again}");
-        assert_eq!(again["details"]["retry"], json!(retry), "{words:?}");
+        assert_eq!(again["details"]["retry"], json!(retry), "{retry}");
         // The retry sends the same request, but for a Sync's receipt, new each run.
         let gated = approvals.gated.lock().unwrap();
         let [.., first, retried] = gated.as_slice() else {
@@ -7173,7 +7528,7 @@ fn a_sync_that_gives_a_secret_names_its_row_in_the_retry_and_never_the_value() {
     let retry = refused["error"]["details"]["retry"].as_str().unwrap();
     assert_eq!(
         retry,
-        "ployz env sync --to --value web.env.API_KEY --env fix-web"
+        "ployz --json --why '<REASON>' env sync --env fix-web --value web.env.API_KEY --to"
     );
     let message = refused["error"]["message"].as_str().unwrap();
     assert!(
@@ -7207,9 +7562,7 @@ fn a_sync_that_gives_a_secret_names_its_row_in_the_retry_and_never_the_value() {
     );
 
     // The retry, its value on stdin again, asks again and names itself again.
-    let words = shell_words::split(retry).unwrap();
-    let words: Vec<&str> = words[1..].iter().map(String::as_str).collect();
-    let (code, stdout, stderr) = ployz_fed(&target, &[&["--json"][..], &words].concat(), &fed);
+    let (code, stdout, stderr) = retried_fed(&target, retry, &fed);
     assert_eq!(code, Some(1), "{stdout}{stderr}");
     assert!(
         !stdout.contains(SECRET) && !stderr.contains(SECRET),
@@ -7241,7 +7594,7 @@ fn under_json_a_save_names_its_digest_and_the_retry_saves() {
     assert_eq!(refused["details"]["approval"], json!("3:abc"));
     assert_eq!(
         refused["details"]["retry"],
-        json!("ployz deploy --skip-deploy --approval 3:abc"),
+        json!("ployz --json --why '<REASON>' deploy --skip-deploy --approval 3:abc"),
         "{refused}"
     );
     assert_eq!(ok(&target, &["diff"])["holds_staged"], json!(false));
@@ -7259,7 +7612,10 @@ fn a_patch_that_asks_retries_as_set() {
     let refused = error(&target, &["set", "web", "--patch", r#"{"replicas":3}"#]);
     assert_eq!(refused["code"], json!("approval_required"), "{refused}");
     let retry = refused["details"]["retry"].as_str().unwrap();
-    assert!(retry.starts_with("ployz set "), "{retry}");
+    assert_eq!(
+        retry,
+        r#"ployz --json --why '<REASON>' set web --patch '{"replicas":3}'"#
+    );
 }
 
 #[test]
@@ -7279,7 +7635,7 @@ fn without_a_terminal_a_save_shows_what_it_destroys_and_saves_nothing() {
         "{stderr}"
     );
     assert!(
-        stderr.contains("retry: ployz deploy --skip-deploy --approval 3:abc"),
+        stderr.contains("retry: ployz --why '<REASON>' deploy --skip-deploy --approval 3:abc"),
         "{stderr}"
     );
     assert_eq!(ok(&target, &["diff"])["holds_staged"], json!(false));
@@ -7291,33 +7647,28 @@ fn an_agent_following_each_retry_deploys_what_deletes_a_volume() {
         deletes_volume: Some("data"),
         ..Approvals::asking()
     });
-    let mut args = vec!["deploy".to_owned(), "--detach".to_owned()];
+    let mut retry: Option<String> = None;
     let mut refused = Vec::new();
     let deployed = loop {
-        let words: Vec<&str> = args.iter().map(String::as_str).collect();
-        let (code, json) = ployz(Some(&target), &words);
+        let (code, json) = match &retry {
+            None => ployz(Some(&target), &["deploy", "--detach"]),
+            Some(retry) => retried(&target, retry),
+        };
         if code == Some(0) {
             break json;
         }
         let error = &json["error"];
         refused.push(error["code"].as_str().unwrap().to_owned());
         assert!(refused.len() <= 2, "{refused:?}, then {json}");
-        let retry = shell_words::split(error["details"]["retry"].as_str().unwrap()).unwrap();
-        args = retry[1..].to_vec();
+        retry = Some(error["details"]["retry"].as_str().unwrap().to_owned());
     };
     assert_eq!(refused, ["confirmation_required", "approval_required"]);
     assert_eq!(
-        args,
-        [
-            "deploy",
-            "--detach",
-            "--accept-volume-loss",
-            "data",
-            "--expect-version",
-            REVIEWED,
-            "--approval",
-            "3:abc"
-        ]
+        retry.unwrap(),
+        format!(
+            "ployz --json --why '<REASON>' deploy --detach --accept-volume-loss data \
+             --expect-version {REVIEWED} --approval 3:abc"
+        )
     );
     assert_eq!(deployed["number"], json!(1), "admitted: {deployed}");
 }
@@ -7460,7 +7811,9 @@ fn signed_in_an_upgrade_runs_in_cloud_along_the_release_channel() {
     assert_eq!(mismatch["details"]["channel"], json!("stable"));
     assert_eq!(
         mismatch["details"]["retry"],
-        json!(format!("ployz server upgrade stable {CLOUD_SERVER}")),
+        json!(format!(
+            "ployz --json --why '<REASON>' server upgrade stable {CLOUD_SERVER}"
+        )),
         "{mismatch}"
     );
 
@@ -7514,7 +7867,7 @@ fn a_cloud_upgrade_skips_an_offline_or_busy_server_by_name_and_upgrades_the_rest
     assert_eq!(
         skipped["details"]["retry"],
         json!(format!(
-            "ployz server upgrade stable {OFFLINE_SERVER} {BUSY_SERVER}"
+            "ployz --json --why '<REASON>' server upgrade stable {OFFLINE_SERVER} {BUSY_SERVER}"
         ))
     );
     assert_eq!(
@@ -7609,7 +7962,9 @@ fn under_json_a_cleanup_names_the_retry_that_carries_its_digest() {
     );
     assert_eq!(
         refused["details"]["retry"],
-        json!("ployz server clean --namespace stray --confirm stray --approval clean:abc"),
+        json!(
+            "ployz --json --why '<REASON>' server clean --namespace stray --confirm stray --approval clean:abc"
+        ),
         "{refused}"
     );
     assert_eq!(approvals.runs(), ["POST namespaces/stray/clean"]);
@@ -7756,7 +8111,7 @@ fn a_drain_asks_and_without_a_terminal_starts_nothing() {
     assert_eq!(
         refused["details"]["retry"],
         json!(format!(
-            "ployz server drain {CLOUD_SERVER} --approval drain:abc"
+            "ployz --json --why '<REASON>' server drain {CLOUD_SERVER} --approval drain:abc"
         )),
         "{refused}"
     );
@@ -7896,9 +8251,9 @@ fn a_removal_no_server_answers_is_still_removing_and_retries_with_the_same_rm() 
         Some(1)
     );
 
-    let removing = |args: &[&str]| {
-        let home = tempfile::tempdir().unwrap();
-        let output = cloud.command(home.path()).args(args).output().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let removing = |mut command: Command, args: &[&str]| {
+        let output = command.args(args).output().unwrap();
         let stderr = String::from_utf8(output.stderr).unwrap();
         assert_eq!(output.status.code(), Some(3), "{args:?}: {stderr}");
         let retry = stderr
@@ -7908,14 +8263,17 @@ fn a_removal_no_server_answers_is_still_removing_and_retries_with_the_same_rm() 
             .to_owned();
         (output.stdout, retry)
     };
-    let (stdout, retry) = removing(&[
-        "--json",
-        "env",
-        "rm",
-        "staging",
-        "--confirm",
-        "shop/staging",
-    ]);
+    let (stdout, retry) = removing(
+        cloud.command(home.path()),
+        &[
+            "--json",
+            "env",
+            "rm",
+            "staging",
+            "--confirm",
+            "shop/staging",
+        ],
+    );
     let removed: Value = serde_json::from_slice(&stdout).unwrap();
     assert_eq!(removed["removal"], "removing", "{removed}");
     assert_eq!(removed["environment"]["name"], "staging", "{removed}");
@@ -7924,24 +8282,32 @@ fn a_removal_no_server_answers_is_still_removing_and_retries_with_the_same_rm() 
         removed["left"][0]["deployment"]["status"], "failed",
         "{removed}"
     );
-    assert_eq!(retry, "ployz env rm staging --confirm shop/staging");
+    assert_eq!(
+        retry,
+        "ployz --json --why '<REASON>' env rm staging --confirm shop/staging"
+    );
 
     // The retry it names runs the removal again rather than refusing.
-    let rerun: Vec<&str> = retry.split(' ').skip(1).collect();
-    let (stdout, retry) = removing(&rerun);
-    let said = String::from_utf8(stdout).unwrap();
-    assert!(
-        said.contains("Deployment #3 of shop/staging: failed"),
-        "{said}"
-    );
-    assert!(!said.contains("Cloud goes on"), "{said}");
-    assert_eq!(retry, "ployz env rm staging --confirm shop/staging");
+    let rerun = as_an_agent_runs(&retry);
+    let rerun: Vec<&str> = rerun.iter().skip(1).map(String::as_str).collect();
+    let (stdout, again) = removing(cloud.retrying(home.path()), &rerun);
+    let removed: Value = serde_json::from_slice(&stdout).unwrap();
+    assert_eq!(removed["removal"], "removing", "{removed}");
+    assert_eq!(removed["deployments"][0]["number"], 3, "{removed}");
+    assert_eq!(removed["deployments"][0]["status"], "failed", "{removed}");
+    assert_eq!(again, retry);
 
-    let (stdout, retry) = removing(&["--json", "project", "rm", "shop", "--confirm", "shop"]);
+    let (stdout, retry) = removing(
+        cloud.command(home.path()),
+        &["--json", "project", "rm", "shop", "--confirm", "shop"],
+    );
     let removed: Value = serde_json::from_slice(&stdout).unwrap();
     assert_eq!(removed["removal"], "removing", "{removed}");
     assert_eq!(removed["project"]["name"], "shop", "{removed}");
-    assert_eq!(retry, "ployz project rm shop --confirm shop");
+    assert_eq!(
+        retry,
+        "ployz --json --why '<REASON>' project rm shop --confirm shop"
+    );
 }
 
 #[test]
@@ -8272,7 +8638,19 @@ fn below_the_cli_read_bound_the_store_judges_an_input_as_on_main() {
 
     // A registry credential never becomes a variable, so the 128 KiB limit is not its.
     let (_, stdin) = file_of(&vec![b't'; 128 * 1024 + 1]);
-    let (code, set) = ployz_on(store, &["set", "web.registryCredential", "--secret"], stdin);
+    let (code, set) = ployz_on(
+        cloud,
+        &[
+            "set",
+            "web.registryCredential",
+            "--secret",
+            "--registry",
+            "docker.io",
+            "--username",
+            "octo",
+        ],
+        stdin,
+    );
     assert_eq!(code, Some(0), "{set}");
 
     // The path is judged before the value's length, as on main.
@@ -8697,7 +9075,7 @@ fn set_seals_only_to_the_key_this_computer_pinned_and_writes_nothing_otherwise()
         assert_eq!(refused["error"]["code"], json!("conflict"), "{refused}");
         assert_eq!(
             refused["error"]["details"]["next"],
-            json!("ployz device pin --connect ssh://USER@SERVER")
+            json!("ployz device pin --connect ssh://<USER>@SERVER")
         );
         cloud_never_saw(&cloud, plaintext);
         refused["error"]["message"].as_str().unwrap().to_owned()

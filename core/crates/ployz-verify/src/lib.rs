@@ -3,6 +3,7 @@
 //!
 //! A module calls the `ployz-core` and `ployz-decide` code its protocol runs where that code is
 //! pure: `ployz_decide::issuance` and `issuance_gate` in `acme_issuance`,
+//! `ployz_decide::bound_work` in `bound_work`,
 //! `ployz_decide::bridge` and `RestartPolicy` in `bridge_notes`, `ployz_decide::github_build` in
 //! `build_handoff`, `ployz_decide::caddy_load` in `caddy_load`, `ployz_decide::fate` in
 //! `mcp_login`, `ployz_decide::standing` in `runner_standing`, `ployz_decide::volume_root`
@@ -17,6 +18,8 @@
 mod acme_issuance;
 #[cfg(test)]
 mod approval_binding;
+#[cfg(test)]
+mod bound_work;
 #[cfg(test)]
 mod bridge_notes;
 #[cfg(test)]

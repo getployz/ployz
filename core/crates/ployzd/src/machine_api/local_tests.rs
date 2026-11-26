@@ -355,6 +355,7 @@ async fn a_pulled_image_answers_only_after_docker_holds_it() {
                 image: image.into(),
                 policy: ployz_core::PullPolicy::Always,
                 registry_auth: None,
+                registry_login: None,
             })
             .encode()
             .unwrap(),
@@ -409,6 +410,7 @@ async fn a_full_callers_pull_leaves_the_tag_its_creation_runs() {
                     image: image.into(),
                     policy,
                     registry_auth: None,
+                    registry_login: None,
                 })
                 .encode()
                 .unwrap(),
@@ -557,7 +559,11 @@ async fn keyed_creation_replays_conflicts_and_obeys_new_work_admission() {
     );
     service
         .local
-        .remove_container(first.container_id, false, false)
+        .remove_container(
+            first.container_id,
+            crate::docker::VolumeDisposal::Keep,
+            false,
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -2151,7 +2157,7 @@ mod ingress_doors {
                 | crate::docker::Door::Tunnel => {
                     runtime
                         .lifecycle()
-                        .remove(&entry.facts.id, true, true)
+                        .remove(&entry.facts.id, crate::docker::VolumeDisposal::Keep, true)
                         .await
                         .unwrap();
                 }
@@ -2976,6 +2982,15 @@ mod set_volume_copy {
             .unwrap()
     }
 
+    /// The reply without the image its promote recorded, which every Create start places.
+    fn unplaced(reply: &SetVolumeCopyReply) -> Value {
+        let mut reply = serde_json::to_value(reply).unwrap();
+        if let Some(copy) = reply.get_mut("copy").and_then(Value::as_object_mut) {
+            copy.remove("placed");
+        }
+        reply
+    }
+
     fn reply(response: &RpcResponse) -> SetVolumeCopyReply {
         response
             .clone()
@@ -3587,7 +3602,7 @@ mod set_volume_copy {
         let raised = reply(&set_copy(&service, raise).await);
 
         assert_eq!(
-            serde_json::to_value(&raised).unwrap(),
+            unplaced(&raised),
             json!({"copy": writer_root(2, Some(snapshot("f-1", 7))).get("Ok")})
         );
         assert_eq!(effects(&plugin), vec![WRITER_ROUTE]);
@@ -4796,7 +4811,7 @@ mod set_volume_copy {
         let late = reply(&set_copy(&service, step_five).await);
 
         assert_eq!(
-            serde_json::to_value(&late).unwrap(),
+            unplaced(&late),
             json!({"copy": writer_root(1, Some(snapshot("f-1", 900)))["Ok"]})
         );
         assert_eq!(holder_status(&fake), vec![json!("running")]);

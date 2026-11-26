@@ -70,8 +70,38 @@ a broken variable out, and any variable that references it, and warn, as for a
 Deleting a database's service also deletes its volume and data, unless another service mounts
 it. The deploy asks you to confirm first: see
 [Confirm a deploy that deletes data](../deploy/deployments.md#confirm-a-deploy-that-deletes-data).
-Anonymous volumes the service's image created, which no volume in Ployz names, stay on the
-server after the service is deleted.
+Anonymous volumes the service's image created, which no volume in Ployz names, are deleted only
+when a new container takes the old one's place on the same server and stays: the server deletes the
+old container's anonymous volumes once the new container runs and is routed in its place. That
+happens when a deploy replaces a container, when a retried deploy keeps the container its first
+attempt made and removes the old one it replaced, and when global catch-up replaces a server's older
+copy of a global service. Every other removal leaves them on the server: after the service is
+deleted, after you lower its replicas, after a deploy's placement stops allowing that server, after
+a drain moves it off that server, after you remove one of its containers, after a failed deploy
+removes the container it started, and when a deploy removes an old pre-deploy hook container. The
+server keeps them too when the new container has stopped, is stopping, isn't routed or is gone when
+the old one is removed, and when the same deploy removes the new container as well. A server on
+`ployz` 0.4.0-beta.2 or earlier doesn't say which container replaced which, so a deploy keeps them
+there on every removal, replaces included. A deploy run with `ployz` 0.4.0-beta.2 or earlier doesn't
+say either, so a newer server keeps them for it. Removing the server deletes them with it.
+
+### Delete the volumes a server kept
+
+To see them, run `ployz server volumes <server>`. It lists each one with the service it came from,
+where that service mounted it, when the server kept it and how much space it takes.
+`ployz server show` counts them too.
+
+`ployz server volumes <server> prune` deletes them. It shows which ones go and asks first; `--yes`
+skips the ask. Name volumes after `prune` to delete only those, or add `--older-than 30d` to keep
+the ones the server kept in the last 30 days. Prune never deletes a volume a container uses, even a
+stopped one, a volume a service mounts by name, or one the server didn't keep, like the volume of a
+service that still runs. If you delete a kept volume yourself, the server forgets it, and a new volume
+made under the same name isn't one it kept.
+
+A server on `ployz` 0.4.0-beta.2 or earlier says it needs an upgrade first. After the upgrade it
+lists only the volumes it keeps from then on. To find the older ones, run
+`sudo docker volume ls --filter dangling=true` on the server, and delete one with
+`sudo docker volume rm` only once you know you don't need its data.
 
 ## Restart, stop or open a shell
 

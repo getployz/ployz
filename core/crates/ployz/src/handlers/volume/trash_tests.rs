@@ -64,6 +64,7 @@ fn old_copy() -> VolumeCopy {
         role: Some(SlotRole::Mirror),
         pull_state: None,
         origin: None,
+        written_here: false,
     }
 }
 
@@ -199,10 +200,10 @@ fn the_retry_of_a_refused_empty_still_keeps_entries_being_restored() {
         "ployz volume trash empty",
         "ployz volume trash empty --keep-restoring",
         "ployz volume trash empty --",
-        "ployz --connect ssh://root@web-1 volume trash empty",
+        "ployz --connect tcp://127.0.0.1:7000 volume trash empty",
     ] {
         let refused = parse(shell_words::split(typed).unwrap());
-        let retry = parse(shell_words::split(&empty_retry(&refused, &ids)).unwrap());
+        let retry = parse(shell_words::split(&empty_retry(&refused, &ids).line()).unwrap());
 
         assert_eq!(
             empty_request(&retry, named(&retry)),
@@ -213,8 +214,8 @@ fn the_retry_of_a_refused_empty_still_keeps_entries_being_restored() {
             "the retry of `{typed}` must still keep pinned entries"
         );
         assert_eq!(
-            crate::cli::leaf_matches(&retry).get_one::<String>("connect"),
-            crate::cli::leaf_matches(&refused).get_one::<String>("connect"),
+            crate::cli::connection(crate::cli::leaf_matches(&retry)),
+            crate::cli::connection(crate::cli::leaf_matches(&refused)),
         );
     }
 }

@@ -207,6 +207,8 @@ fn shown_login<T: std::fmt::Debug>(result: Result<T, LoginError>) -> String {
 
 async fn run(entry: Entry, credential: &Credential, store: &CredentialStore) -> String {
     let body = serde_json::json!({ "a": 1 });
+    // A Store write leaves only as a command this CLI can read.
+    let write = serde_json::json!({ "command": "rename_project", "project": "a", "name": "b" });
     match entry {
         Entry::CallGet => shown_login(
             call::<serde_json::Value>(credential, Method::GET, "organizations", None).await,
@@ -235,7 +237,7 @@ async fn run(entry: Entry, credential: &Credential, store: &CredentialStore) -> 
                 credential,
                 Via::Agent,
                 Operation::Write,
-                &body,
+                &write,
                 Some("ap1"),
             )
             .await,
@@ -254,7 +256,7 @@ async fn run(entry: Entry, credential: &Credential, store: &CredentialStore) -> 
                 credential,
                 Via::Agent,
                 Operation::Write,
-                &body,
+                &write,
             )
             .await,
         ),

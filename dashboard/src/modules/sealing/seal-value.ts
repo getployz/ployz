@@ -103,6 +103,32 @@ export async function sealPlatform(
   return toBase64(out);
 }
 
+/** HPKE `info` and the first associated-data field of a registry login sealed to a Cluster. */
+const REGISTRY_LOGIN_INFO = "ployz-registry-login-v1";
+
+/**
+ * `login` sealed to the Cluster whose key is `publicKey` for registry `host`, as ployz-core's `seal_login` does. It
+ * opens on that Cluster only, and only to pull an image from `host`.
+ */
+export async function sealLogin(
+  publicKey: string,
+  host: string,
+  login: { readonly username: string | null; readonly password: string },
+): Promise<{ host: string; sealed: string }> {
+  const hpke = await warmSealing();
+  const recipientPublicKey = await hpke.kem.deserializePublicKey(fromBase64(publicKey));
+  const plaintext = JSON.stringify(login.username === null ? { password: login.password } : login);
+  const { enc, ct } = await hpke.seal(
+    { recipientPublicKey, info: encoder.encode(REGISTRY_LOGIN_INFO) },
+    encoder.encode(plaintext),
+    framed([encoder.encode(REGISTRY_LOGIN_INFO), encoder.encode(host), fromBase64(publicKey)]),
+  );
+  const out = new Uint8Array(enc.byteLength + ct.byteLength);
+  out.set(new Uint8Array(enc), 0);
+  out.set(new Uint8Array(ct), enc.byteLength);
+  return { host, sealed: toBase64(out) };
+}
+
 /** ployz-core's `SealedValue::associated_data` for a value scoped to one Service. */
 function associatedData(organizationId: string, target: { environment: string; service: string }, key: string) {
   return framed([

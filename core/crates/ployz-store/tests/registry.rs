@@ -1,13 +1,13 @@
-//! Registry credentials through the Store's interface only, on SQLite and on
-//! Postgres (see `backend`): a new secret applies at once, turning credentials on
-//! or off is staged, a Deployment pulls with what it was admitted with, and the
-//! secret leaves the Store only through `claim`.
+//! Registry logins through the Store's interface only, on SQLite and on Postgres (see
+//! `backend`): a login arrives only sealed, a new one applies at once, turning
+//! credentials on or off is staged, a Deployment pulls with what it was admitted with,
+//! and the sealed login leaves the Store only through `claim`.
 #![expect(
     clippy::indexing_slicing,
     reason = "Fixed JSON results use indexing; missing entries must fail the test."
 )]
 
-use ployz_core::{RegistryAuth, RpcError, RpcErrorCode, ServiceName};
+use ployz_core::{RpcError, RpcErrorCode, SealedLogin, ServiceName};
 use ployz_store::{
     Actor, Admit, Change, ConfigStore, CreateProject, CreateService, Deploy, DeploymentId,
     DeploymentsQuery, DiffQuery, Discard, Edit, Edited, EnvironmentId, EnvironmentQuery,
@@ -16,7 +16,17 @@ use ployz_store::{
 };
 use serde_json::{Value, json};
 
-use ployz_store::testing::backend;
+use ployz_store::testing::{backend, login_for, sealed_login_for};
+
+/// A login for web's registry, ghcr.io.
+fn login(tag: &str) -> SealedLogin {
+    login_for("ghcr.io", tag)
+}
+
+/// [`login`] as a client sends it.
+fn sealed_login(tag: &str) -> Value {
+    sealed_login_for("ghcr.io", tag)
+}
 
 const PATH: &str = "web.registryCredential";
 
@@ -110,73 +120,83 @@ fn value(store: &ConfigStore, path: &str) -> Value {
 }
 
 fn admit(store: &ConfigStore, n: u8) -> DeploymentId {
-    let id = DeploymentId::parse(format!("00000000-0000-4000-8000-0000000001{n:02}")).unwrap();
-    store
-        .write_trusted(
-            &who(),
-            &Admit::Deploy(Deploy {
-                id: id.clone(),
-                environment: EnvironmentRef::default(),
-                services: Vec::new(),
-                version: None,
-                // `blank` has no source of its own: it builds this upload.
-                upload: Some(ployz_store::UploadedSource {
-                    digest: ployz_core::UploadDigest::parse("d".repeat(64)).unwrap(),
-                    base: None,
-                    uploader: None,
-                }),
-                accept_volume_loss: Vec::new(),
-                message: None,
-                prune: false,
-                no_prune: false,
-                versions: Vec::new(),
-                copies: Vec::new(),
-                recreate: Vec::new(),
-                rule: None,
-            }),
-            &ployz_store::Trusted::default(),
-        )
-        .unwrap();
-    id
+    try_admit(store, n).unwrap()
 }
 
-fn pulls_with(store: &ConfigStore, id: &DeploymentId) -> Vec<(String, RegistryAuth)> {
+fn try_admit(store: &ConfigStore, n: u8) -> Result<DeploymentId, RpcError> {
+    let id = DeploymentId::parse(format!("00000000-0000-4000-8000-0000000001{n:02}")).unwrap();
+    store.write_trusted(
+        &who(),
+        &Admit::Deploy(Deploy {
+            id: id.clone(),
+            environment: EnvironmentRef::default(),
+            services: Vec::new(),
+            version: None,
+            // `blank` has no source of its own: it builds this upload.
+            upload: Some(ployz_store::UploadedSource {
+                digest: ployz_core::UploadDigest::parse("d".repeat(64)).unwrap(),
+                base: None,
+                uploader: None,
+            }),
+            accept_volume_loss: Vec::new(),
+            message: None,
+            prune: false,
+            no_prune: false,
+            versions: Vec::new(),
+            copies: Vec::new(),
+            recreate: Vec::new(),
+            rule: None,
+        }),
+        &ployz_store::Trusted::default(),
+    )?;
+    Ok(id)
+}
+
+fn retry(store: &ConfigStore, of: DeploymentId) -> Result<DeploymentId, RpcError> {
+    store.record(
+        &of,
+        &RunnerId::parse("runner").unwrap(),
+        RunEvidence::Abandoned,
+    )?;
+    let id = DeploymentId::parse("00000000-0000-4000-8000-000000000199").unwrap();
+    store.write_trusted(
+        &who(),
+        &Admit::Retry(Retry {
+            id: id.clone(),
+            deployment: of,
+            rolls_back: None,
+            version: None,
+            accept_volume_loss: Vec::new(),
+            versions: Vec::new(),
+            copies: Vec::new(),
+        }),
+        &ployz_store::Trusted::default(),
+    )?;
+    Ok(id)
+}
+
+fn pulls_with(store: &ConfigStore, id: &DeploymentId) -> Vec<(String, SealedLogin)> {
     store
         .claim(id, &RunnerId::parse("runner").unwrap())
         .unwrap()
         .intent
-        .registry_auth
+        .registry_logins
         .into_iter()
-        .map(|(service, auth)| (service.to_string(), auth))
+        .map(|(service, login)| (service.to_string(), login))
         .collect()
 }
 
-fn auth(username: Option<&str>, password: &str) -> RegistryAuth {
-    RegistryAuth {
-        username: username.map(Into::into),
-        password: password.into(),
-    }
-}
-
 #[test]
-fn a_new_secret_applies_at_once_and_admission_freezes_what_a_deployment_pulls_with() {
-    let dir = tempfile::tempdir().unwrap();
-    let url = backend::fresh_url(&dir);
-    let store = ConfigStore::open(&url, backend::key()).unwrap();
+fn a_new_login_applies_at_once_and_admission_freezes_what_a_deployment_pulls_with() {
+    let store = backend::open();
     shop(&store);
-    let first = json!({ "username": "octocat", "secret": "first-token" });
-    let edited = set(&store, PATH, first.clone()).unwrap();
+    let edited = set(&store, PATH, sealed_login("first")).unwrap();
     // Turning credentials on is staged; the secret itself is stored at once.
     assert_eq!(paths(&edited.staged), [PATH]);
     assert_eq!(paths(&edited.immediate), [PATH]);
     assert_eq!(value(&store, PATH), json!({ "secret": true }));
-    // Sending back what reads show, as an object or as `set`'s JSON text, or the same
-    // credential, changes nothing.
-    for same in [
-        json!({ "secret": true }),
-        json!(r#"{"secret":true}"#),
-        first,
-    ] {
+    // Sending back what reads show, as an object or as `set`'s JSON text, changes nothing.
+    for same in [json!({ "secret": true }), json!(r#"{"secret":true}"#)] {
         let edited = set(&store, PATH, same).unwrap();
         assert!(edited.staged.is_empty() && edited.immediate.is_empty());
     }
@@ -205,61 +225,36 @@ fn a_new_secret_applies_at_once_and_admission_freezes_what_a_deployment_pulls_wi
     );
     let plan = store.read(&who(), &PlanQuery::default()).unwrap();
     let one = admit(&store, 1);
-    assert_eq!(
-        pulls_with(&store, &one),
-        [("web".into(), auth(Some("octocat"), "first-token"))]
-    );
+    assert_eq!(pulls_with(&store, &one), [("web".into(), login("first"))]);
 
     // Rotation stages nothing and never reaches an admitted Deployment.
-    let rotated = set(&store, PATH, json!({ "secret": "second-token" })).unwrap();
+    let rotated = set(&store, PATH, sealed_login("second")).unwrap();
     assert!(rotated.staged.is_empty());
     assert_eq!(paths(&rotated.immediate), [PATH]);
     assert_eq!(
         pulls_with(&store, &one),
-        [("web".into(), auth(Some("octocat"), "first-token"))],
+        [("web".into(), login("first"))],
         "claiming again keeps the admitted credential"
     );
     // A retry of it ships the credential it froze, not the rotated one.
-    store
-        .record(
-            &one,
-            &RunnerId::parse("runner").unwrap(),
-            RunEvidence::Abandoned,
-        )
-        .unwrap();
-    let retried = DeploymentId::parse("00000000-0000-4000-8000-000000000199").unwrap();
-    store
-        .write_trusted(
-            &who(),
-            &Admit::Retry(Retry {
-                id: retried.clone(),
-                deployment: one,
-                rolls_back: None,
-                version: None,
-                accept_volume_loss: Vec::new(),
-                versions: Vec::new(),
-                copies: Vec::new(),
-            }),
-            &ployz_store::Trusted::default(),
-        )
-        .unwrap();
+    let retried = retry(&store, one).unwrap();
     assert_eq!(
         pulls_with(&store, &retried),
-        [("web".into(), auth(Some("octocat"), "first-token"))]
+        [("web".into(), login("first"))]
     );
     // Each Service's credential is its own.
     set(
         &store,
         "api.registryCredential",
-        json!({ "secret": "api-token" }),
+        sealed_login_for("docker.io", "api"),
     )
     .unwrap();
     let two = admit(&store, 2);
     assert_eq!(
         pulls_with(&store, &two),
         [
-            ("api".into(), auth(None, "api-token")),
-            ("web".into(), auth(None, "second-token")),
+            ("api".into(), login_for("docker.io", "api")),
+            ("web".into(), login("second")),
         ]
     );
 
@@ -276,17 +271,10 @@ fn a_new_secret_applies_at_once_and_admission_freezes_what_a_deployment_pulls_wi
         ),
         json!(store.read(&who(), &DeploymentsQuery::default()).unwrap()),
     ];
+    let sealed = String::from(login("second").sealed);
     for read in reads {
         let text = read.to_string();
-        assert!(
-            !text.contains("-token") && !text.contains("ciphertext"),
-            "{text}"
-        );
-    }
-    if let Some(path) = url.strip_prefix("sqlite:") {
-        drop(store);
-        let stored = String::from_utf8_lossy(&std::fs::read(path).unwrap()).into_owned();
-        assert!(!stored.contains("-token") && !stored.contains("octocat"));
+        assert!(!text.contains(&sealed), "{text}");
     }
 }
 
@@ -294,7 +282,7 @@ fn a_new_secret_applies_at_once_and_admission_freezes_what_a_deployment_pulls_wi
 fn unset_keeps_the_stored_secret_and_discard_returns_to_the_introduction() {
     let store = backend::open();
     shop(&store);
-    set(&store, PATH, json!({ "secret": "kept-token" })).unwrap();
+    set(&store, PATH, sealed_login("kept")).unwrap();
     // Turning credentials off is staged and keeps the secret for turning them back on.
     let off = unset(&store, PATH);
     assert_eq!(paths(&off.staged), [PATH]);
@@ -321,16 +309,25 @@ fn unset_keeps_the_stored_secret_and_discard_returns_to_the_introduction() {
     set(&store, PATH, json!({ "secret": true })).unwrap();
     assert_eq!(
         pulls_with(&store, &admit(&store, 1)),
-        [("web".into(), auth(None, "kept-token"))]
+        [("web".into(), login("kept"))]
     );
 }
 
 #[test]
-fn a_credential_arrives_only_as_a_secret_and_is_never_echoed() {
+fn a_login_arrives_only_sealed_and_is_never_echoed() {
     let store = backend::open();
     shop(&store);
+    let mut unknown = sealed_login("extra");
+    unknown["username"] = json!("octocat");
     for (path, bad) in [
         (PATH, json!("plain-token")),
+        (PATH, json!({ "secret": "plain-token" })),
+        (
+            PATH,
+            json!({ "username": "octocat", "secret": "plain-token" }),
+        ),
+        (PATH, json!({ "host": "ghcr.io", "sealed": "plain-token" })),
+        (PATH, unknown),
         (PATH, json!({ "secret": "" })),
         (PATH, json!(r#"{"secret":"plain-token"}"#)),
         (
@@ -345,22 +342,25 @@ fn a_credential_arrives_only_as_a_secret_and_is_never_echoed() {
         // Nothing stored to keep.
         (PATH, json!({ "secret": true })),
         // Only an image Service pulls one.
-        (
-            "blank.registryCredential",
-            json!({ "secret": "plain-token" }),
-        ),
+        ("blank.registryCredential", sealed_login("blank")),
     ] {
         let error = set(&store, path, bad.clone()).unwrap_err();
         assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{bad}");
         assert_eq!(error.details["setting"], "registryCredential");
         assert!(!error.to_string().contains("plain-token"), "{error:?}");
     }
+    // A login's plain text never reaches the Store: it is sealed on the person's device.
+    let refused = set(&store, PATH, json!({ "secret": "plain-token" })).unwrap_err();
+    assert!(
+        refused.message.contains("sealed on your device"),
+        "{refused:?}"
+    );
     // A patch takes the same shape, and what `get` prints sends back unchanged.
     let patched = edit(
         &store,
         Change::Patch {
             path: SettingPath::parse("web").unwrap(),
-            value: json!({ "registryCredential": { "username": "u", "secret": "patched-token" } }),
+            value: json!({ "registryCredential": sealed_login("patched") }),
         },
     )
     .unwrap();
@@ -376,13 +376,8 @@ fn a_credential_lost_from_the_store_says_to_set_it_again() {
     let url = backend::fresh_url(&dir);
     let store = ConfigStore::open(&url, backend::key()).unwrap();
     shop(&store);
-    set(
-        &store,
-        PATH,
-        json!({ "username": "octocat", "secret": "first-token" }),
-    )
-    .unwrap();
-    backend::execute(&url, "DELETE FROM config_registry_credential");
+    set(&store, PATH, sealed_login("first")).unwrap();
+    backend::execute(&url, "DELETE FROM config_registry_login");
     let refused = store
         .write_trusted(
             &who(),
@@ -406,6 +401,130 @@ fn a_credential_lost_from_the_store_says_to_set_it_again() {
         .unwrap_err();
     assert_eq!(
         refused.details["next"],
-        "ployz set web.registryCredential --secret"
+        "ployz set web.registryCredential --secret --username NAME"
+    );
+}
+
+/// A Deployment admitted before logins were sealed froze none, so redeploying it would
+/// pull its private image with no login, again and again: it says to deploy instead.
+#[test]
+fn a_deployment_that_froze_no_login_is_deployed_again_rather_than_redeployed() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let store = ConfigStore::open(&url, backend::key()).unwrap();
+    shop(&store);
+    set(&store, PATH, sealed_login("first")).unwrap();
+    let one = admit(&store, 1);
+    pulls_with(&store, &one);
+    // What the migration left a Deployment admitted with the Store's own credentials.
+    backend::execute(&url, "UPDATE config_deployment SET logins = '{}'");
+    let refused = retry(&store, one).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Conflict, "{refused:?}");
+    assert!(
+        refused
+            .message
+            .contains("deploy again rather than redeploy"),
+        "{refused:?}"
+    );
+    assert_eq!(
+        refused.details["next"],
+        "ployz set web.registryCredential --secret --username NAME"
+    );
+    assert_eq!(
+        pulls_with(&store, &admit(&store, 2)),
+        [("web".into(), login("first"))]
+    );
+}
+
+/// A login opens only for the registry it was sealed for, so once the image moves to
+/// another, admission says to enter it again rather than let the pull fail.
+#[test]
+fn a_login_for_another_registry_is_entered_again_before_admission() {
+    let store = backend::open();
+    shop(&store);
+    set(&store, PATH, sealed_login("first")).unwrap();
+    set(&store, "web.image", json!("quay.io/acme/web:1")).unwrap();
+    let refused = try_admit(&store, 1).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Conflict, "{refused:?}");
+    assert!(
+        refused
+            .message
+            .contains("are for ghcr.io, and the image is on quay.io"),
+        "{refused:?}"
+    );
+    assert_eq!(
+        refused.details["next"],
+        "ployz set web.registryCredential --secret --username NAME"
+    );
+}
+
+/// A Store from before sealed logins still writes during a rollout. It deploys public
+/// images as before, but the database refuses any credential it would store or freeze,
+/// so a token Cloud can read never comes back.
+#[test]
+fn a_store_from_before_sealed_logins_never_writes_a_readable_credential_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let store = ConfigStore::open(&url, backend::key()).unwrap();
+    shop(&store);
+    admit(&store, 1);
+    // That Store's own statements, word for word: saving a rotated credential, and
+    // freezing one into a Deployment.
+    let stored = backend::try_execute(
+        &url,
+        "INSERT INTO config_registry_credential \
+         (environment_id, service_id, organization_id, credential) \
+         VALUES ('00000000-0000-4000-8000-000000000002', 'web', 'org', '{\"ciphertext\":\"token\"}') \
+         ON CONFLICT (environment_id, service_id) \
+         DO UPDATE SET credential = excluded.credential",
+    );
+    assert!(stored.is_err(), "{stored:?}");
+    let frozen = backend::try_execute(
+        &url,
+        "UPDATE config_deployment SET credentials = '{\"web\":{\"ciphertext\":\"token\"}}'",
+    );
+    assert!(frozen.is_err(), "{frozen:?}");
+    let copied = backend::try_execute(
+        &url,
+        "INSERT INTO config_deployment (id, organization_id, environment_id, status, \
+         saved_revision, services, nodes, namespace, run, credentials, admitted, listed) \
+         SELECT '00000000-0000-4000-8000-000000000150', organization_id, environment_id, status, saved_revision, services, \
+         nodes, namespace, run, '{\"web\":{\"ciphertext\":\"token\"}}', admitted, listed + 100 \
+         FROM config_deployment",
+    );
+    assert!(copied.is_err(), "{copied:?}");
+    // What it writes for a public image still lands.
+    backend::try_execute(
+        &url,
+        "INSERT INTO config_deployment (id, organization_id, environment_id, status, \
+         saved_revision, services, nodes, namespace, run, credentials, admitted, listed) \
+         SELECT '00000000-0000-4000-8000-000000000150', organization_id, environment_id, status, saved_revision, services, \
+         nodes, namespace, run, '{}', admitted, listed + 100 \
+         FROM config_deployment",
+    )
+    .unwrap();
+    backend::try_execute(&url, "UPDATE config_deployment SET credentials = '{}'").unwrap();
+    assert_eq!(
+        backend::count(&url, "SELECT COUNT(*) FROM config_registry_credential"),
+        0
+    );
+    assert_eq!(pulls_with(&store, &admit(&store, 2)), []);
+}
+
+/// Docker reads an image's registry with a capital letter as a host no login names, so
+/// admission says to write it in lowercase rather than let the pull fail.
+#[test]
+fn a_login_for_an_image_on_an_uppercase_registry_is_refused_at_admission() {
+    let store = backend::open();
+    shop(&store);
+    set(&store, PATH, sealed_login("first")).unwrap();
+    set(&store, "web.image", json!("GHCR.io/acme/web:1")).unwrap();
+    let refused = try_admit(&store, 1).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::InvalidArgument, "{refused:?}");
+    assert!(
+        refused
+            .message
+            .contains("web: write the image's registry in lowercase"),
+        "{refused:?}"
     );
 }

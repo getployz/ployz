@@ -287,6 +287,22 @@ const ROWS: &[(&str, &str, &str, &str, &str, &str)] = &[
         "Unary",
     ),
     (
+        "ListKeptVolumes",
+        "list_kept_volumes",
+        "ployz.volume.kept.list.v1",
+        "Container",
+        "Operator",
+        "Unary",
+    ),
+    (
+        "RemoveKeptVolumes",
+        "remove_kept_volumes",
+        "ployz.volume.kept.remove.v1",
+        "Container",
+        "Operator",
+        "Unary",
+    ),
+    (
         "InspectVolumeCopy",
         "inspect_volume_copy",
         "ployz.volume.copy.inspect.v1",
@@ -528,7 +544,9 @@ const EXTRAS: &[(&str, &str)] = &[
     ("ployz.volume.size.shrink.v1", "Container"),
     ("ployz.volume.origin.v1", "Container"),
     ("ployz.volume.start.v1", "Container"),
+    ("ployz.volume.start.image.v1", "Container"),
     ("ployz.volume.cut.running.v1", "Container"),
+    ("ployz.volume.keep-written.v1", "Container"),
     ("ployz.certificates.policy.v1", "Always"),
     ("ployz.machine.storage-observation.v1", "Always"),
     ("ployz.management.scope.v1", "Always"),
@@ -546,6 +564,7 @@ const EXTRAS: &[(&str, &str)] = &[
     ("ployz.authority.scoped-keys.v1", "Always"),
     ("ployz.authority.parent-versions.v1", "Always"),
     ("ployz.authority.key-prior.v1", "Always"),
+    ("ployz.container.replaces.v1", "Container"),
 ];
 
 #[test]

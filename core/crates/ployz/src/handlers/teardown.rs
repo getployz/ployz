@@ -16,8 +16,9 @@ use serde_json::json;
 
 use super::Error;
 use super::deploy;
-use super::shared::accepted::{accepted, not_applied, with_accepted};
+use super::shared::accepted::{accepted, not_applied};
 use super::store::{self, Store};
+use crate::cli::Rerun;
 use crate::cloud::account::StoreCallError;
 
 use crate::ui::{self, Tree};
@@ -119,7 +120,7 @@ pub(super) fn remove(
 ) -> Result<Option<Removed>, Error> {
     deploy::refuse_local_detach(matches, store)?;
     let accept = accepted(matches)?;
-    let again = store.again(&with_accepted(&accept));
+    let again = store.again();
     let members = members(store, project, environment)?;
     let at = |name: &EnvironmentName| EnvironmentRef {
         project: Some(project.clone()),
@@ -261,7 +262,7 @@ pub(super) fn remove(
                 if gone(store, project, environment)? {
                     return removed(&mut ran);
                 }
-                return Err(stalled(project, environment, &left).hint(Hint::Next(again.clone())));
+                return Err(stalled(project, environment, &left).hint(Hint::Next(again.line())));
             }
         }
     })();
@@ -621,8 +622,12 @@ struct Stopped {
     view: DeploymentView,
     #[serde(skip)]
     ran: Result<(), Error>,
-    #[serde(rename = "next")]
-    again: String,
+    #[serde(rename = "next", serialize_with = "line")]
+    again: Rerun,
+}
+
+fn line<S: serde::Serializer>(again: &Rerun, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(&again.line())
 }
 
 impl Removed {

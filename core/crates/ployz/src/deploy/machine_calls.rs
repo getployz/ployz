@@ -11,7 +11,7 @@ use ployz_core::{
     IngressDoorsSet, InspectContainerRequest, ListContainersRequest, MachineFailure, MachineId,
     MachineName, MachineTarget, MembershipObservation, Namespace, ObservationGap,
     ObservationGapReason, ObservationKind, PrivateAccessSet, QualifiedService, ReadRoutesRequest,
-    RegistryAuth, RemoveVolumeRequest, ResolvedServiceSpec, RoutesRead, RpcError, RunTarget,
+    RemoveVolumeRequest, ResolvedServiceSpec, RoutesRead, RpcError, RunTarget, SealedLogin,
     SetIngressDoorsRequest, SetPrivateAccessRequest, SlotKey, UpdateContainerLimitsRequest,
     UpdateContainerPlacementRequest, op,
 };
@@ -184,7 +184,7 @@ pub(crate) trait DeployOperations: Session {
         &self,
         machine_id: &MachineId,
         spec: &ResolvedServiceSpec,
-        auth: Option<RegistryAuth>,
+        auth: Option<SealedLogin>,
     ) -> Result<ImagePulled, RpcError>;
 }
 
@@ -506,7 +506,7 @@ impl DeployOperations for Client {
         &self,
         machine_id: &MachineId,
         spec: &ResolvedServiceSpec,
-        auth: Option<RegistryAuth>,
+        auth: Option<SealedLogin>,
     ) -> Result<ImagePulled, RpcError> {
         crate::image::pull_cluster_image(
             self,
@@ -697,7 +697,7 @@ impl DeployOperations for Approved {
         &self,
         machine_id: &MachineId,
         spec: &ResolvedServiceSpec,
-        auth: Option<RegistryAuth>,
+        auth: Option<SealedLogin>,
     ) -> Result<ImagePulled, RpcError> {
         self.client.ensure_image(machine_id, spec, auth).await
     }

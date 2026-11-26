@@ -141,6 +141,7 @@ mod rule_f {
             run: None,
             log_driver: None,
             admission: None,
+            replaced_by: None,
         })
         .unwrap()
     }

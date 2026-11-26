@@ -661,7 +661,7 @@ fn credential(
     environment: &EnvironmentId,
     service: &str,
 ) -> Result<Option<String>, RpcError> {
-    Ok(registry::sealed(tx, environment, service)?.map(|sealed| {
+    Ok(registry::stored(tx, environment, service)?.map(|sealed| {
         let text = json_text(&sealed);
         hex::encode(ring::digest::digest(&ring::digest::SHA256, text.as_bytes()))
     }))

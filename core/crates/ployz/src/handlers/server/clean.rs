@@ -8,7 +8,7 @@ use serde_json::json;
 use super::super::shared::confirm::confirm;
 use super::super::{Error, leaf_matches, runtime, store};
 use crate::approval;
-use crate::cli::{base, value};
+use crate::cli::{Rerun, base, value};
 use crate::cloud;
 use crate::cloud::account::Credential;
 use crate::deploy::VolumeFate;
@@ -82,8 +82,8 @@ pub(crate) fn clean(root: &ArgMatches) -> Result<(), Error> {
     if let Some(namespace) = &named {
         let runtime = runtime()?;
         if let Some(credential) = super::super::route::cloud_runs(&runtime, matches)? {
-            confirm_in_cloud(&runtime, matches, &credential, namespace)?;
-            return through_cloud(&runtime, matches, &credential, namespace);
+            confirm_in_cloud(&runtime, root, &credential, namespace)?;
+            return through_cloud(&runtime, root, &credential, namespace);
         }
     }
     let store = store::store(root)?;
@@ -117,7 +117,7 @@ pub(crate) fn clean(root: &ArgMatches) -> Result<(), Error> {
         let unowned: Vec<_> = unowned.collect();
         let next = unowned
             .first()
-            .map(|first| retry(matches, &first.namespace));
+            .map(|first| retry(root, &first.namespace).line());
         let report = json!({
             "namespaces": unowned,
             "next": next,
@@ -182,7 +182,7 @@ pub(crate) fn clean(root: &ArgMatches) -> Result<(), Error> {
             ));
         });
     };
-    let next = retry(matches, &namespace);
+    let next = retry(root, &namespace);
     let doomed: Vec<_> = found
         .volumes
         .iter()
@@ -207,7 +207,7 @@ pub(crate) fn clean(root: &ArgMatches) -> Result<(), Error> {
                     "volumes": found.volumes,
                 }),
             )
-            .hint(Hint::Retry(next.clone()));
+            .hint(next.clone());
             Ok((refusal, loss))
         },
     )?;
@@ -258,7 +258,7 @@ pub(crate) fn clean(root: &ArgMatches) -> Result<(), Error> {
 /// Confirm the clean Cloud runs, naming the Volumes Cloud's preview lists.
 fn confirm_in_cloud(
     runtime: &tokio::runtime::Runtime,
-    matches: &ArgMatches,
+    root: &ArgMatches,
     credential: &Credential,
     namespace: &Namespace,
 ) -> Result<(), Error> {
@@ -266,9 +266,9 @@ fn confirm_in_cloud(
     struct Preview {
         volumes: Vec<Doomed>,
     }
-    let next = retry(matches, namespace);
+    let next = retry(root, namespace);
     confirm(
-        matches,
+        leaf_matches(root),
         namespace.as_str(),
         "Namespace",
         next.clone(),
@@ -287,7 +287,7 @@ fn confirm_in_cloud(
                 message,
                 json!({ "namespace": namespace, "volumes": volumes }),
             )
-            .hint(Hint::Retry(next.clone()));
+            .hint(next.clone());
             Ok((refusal, loss))
         },
     )
@@ -295,7 +295,7 @@ fn confirm_in_cloud(
 
 fn through_cloud(
     runtime: &tokio::runtime::Runtime,
-    matches: &ArgMatches,
+    root: &ArgMatches,
     credential: &Credential,
     namespace: &Namespace,
 ) -> Result<(), Error> {
@@ -304,19 +304,8 @@ fn through_cloud(
     let id = approval::approved(
         runtime,
         OperationVerb::Clean,
-        matches.get_one::<String>("approval").cloned(),
-        |id| {
-            let namespace = namespace.to_string();
-            let args = [
-                "server",
-                "clean",
-                "--namespace",
-                namespace.as_str(),
-                "--confirm",
-                namespace.as_str(),
-            ];
-            crate::cli::approved_rerun(matches, &args, id)
-        },
+        leaf_matches(root).get_one::<String>("approval").cloned(),
+        &retry(root, namespace),
         async |approval| {
             cloud::account::start_run(
                 credential,
@@ -373,30 +362,11 @@ fn owner<'a>(owned: &'a [OwnedNamespace], namespace: &Namespace) -> Option<&'a O
     owned.iter().find(|owned| &owned.namespace == namespace)
 }
 
-/// Removing `namespace`, reaching the same Servers as this command.
-fn retry(matches: &ArgMatches, namespace: &Namespace) -> String {
-    let mut words = vec!["ployz"];
-    words.extend(crate::cli::config_flag(matches).into_iter().flatten());
-    words.extend(["server", "clean"]);
-    for flag in ["context", "connect"] {
-        if let Some(value) = matches.get_one::<String>(flag) {
-            words.extend([
-                if flag == "context" {
-                    "--context"
-                } else {
-                    "--connect"
-                },
-                value,
-            ]);
-        }
-    }
-    words.extend([
-        "--namespace",
-        namespace.as_str(),
-        "--confirm",
-        namespace.as_str(),
-    ]);
-    shell_words::join(words)
+/// This command removing `namespace`, confirmed.
+fn retry(root: &ArgMatches, namespace: &Namespace) -> Rerun {
+    Rerun::again(root)
+        .set("namespace", namespace.as_str())
+        .set("confirm", namespace.as_str())
 }
 
 fn volume_names(volumes: &[DockerVolumeId]) -> String {
@@ -411,44 +381,7 @@ fn volume_names(volumes: &[DockerVolumeId]) -> String {
 mod tests {
     use ployz_core::{DockerVolumeId, DockerVolumeName, MachineId, Namespace};
 
-    use super::{Doomed, deletes, retry};
-    use crate::handlers::leaf_matches;
-
-    fn retry_of(args: &[&str]) -> String {
-        let root = crate::cli::command()
-            .try_get_matches_from(args.iter().copied())
-            .unwrap();
-        retry(leaf_matches(&root), &Namespace::parse("stray").unwrap())
-    }
-
-    #[test]
-    fn a_clean_retry_reaches_the_same_servers_and_keeps_the_typed_config() {
-        assert_eq!(
-            retry_of(&[
-                "ployz",
-                "server",
-                "clean",
-                "--context",
-                "prod",
-                "--connect",
-                "ssh://a"
-            ]),
-            "ployz server clean --context prod --connect ssh://a --namespace stray --confirm stray"
-        );
-        assert_eq!(
-            retry_of(&[
-                "ployz",
-                "--ployz-config",
-                "/home/me/my ployz/config.yaml",
-                "server",
-                "clean",
-                "--context",
-                "prod",
-            ]),
-            "ployz --ployz-config '/home/me/my ployz/config.yaml' server clean --context prod \
-             --namespace stray --confirm stray"
-        );
-    }
+    use super::{Doomed, deletes};
 
     #[test]
     fn a_clean_names_a_volume_by_its_label_and_falls_back_to_its_docker_name() {

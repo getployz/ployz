@@ -15,10 +15,11 @@ use ployz_core::{
     ContainerNow, ContainerObservation, ContainerPlacementUpdated, ContainerRefusal,
     ContainerRefusalReason, ContainerRuntimeObservation, ContainerWant, CopyRotation,
     DockerVolumeName, Drain, EnsuredContainer, ImageIngestOpened, ImageIngestReason, ImagePulled,
-    ImagesRemoved, LocalMachinePhase, MachineStorageObservation, Namespace, NewContainer,
-    PruneImagesRequest, PullFreeImageRequest, PullImageFromMachineRequest, PullImageRequest,
-    QualifiedService, ReservedKind, ResolvedServiceSpec, RotationTarget, RunRotation, RunTarget,
-    Start, StopOptions, VolumeGen, VolumeRemoved,
+    ImagesRemoved, KeptVolumes, KeptVolumesRemoved, ListKeptVolumesRequest, LocalMachinePhase,
+    MachineStorageObservation, Namespace, NewContainer, PruneImagesRequest, PullFreeImageRequest,
+    PullImageFromMachineRequest, PullImageRequest, QualifiedService, RemoveKeptVolumesRequest,
+    ReservedKind, ResolvedServiceSpec, RotationTarget, RunRotation, RunTarget, Start, StopOptions,
+    VolumeGen, VolumeRemoved,
 };
 use ployz_core::{
     AnswerWhen, ContainerRun, DeploymentLogId, Gen, HealthFailure, HealthPoll, HealthVerdict,
@@ -331,6 +332,7 @@ impl LocalMachine {
                     r#gen: Gen::FIRST,
                     image: ImagePull::Policy(registry_auth.as_ref()),
                     admitted,
+                    replaces: None,
                 })
                 .await
         })
@@ -356,10 +358,43 @@ impl LocalMachine {
         .await
     }
 
+    /// Pull `spec`'s image as a Writer start's Create would, under shared admission
+    /// like [`Self::pull_free_image`], and read its ID, so that Create, after the
+    /// promote, runs that ID and reaches no registry. A signed start whose promote
+    /// already `recorded` an ID takes that one, as Docker holds it, and pulls nothing.
+    /// An unsigned start pulls as [`Images::pull_free`] does whatever the record says,
+    /// since only that pull proves an image public.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker is unavailable, admission is busy, the pull is refused or
+    /// fails, or Docker no longer holds the `recorded` image.
+    ///
+    /// [`Images::pull_free`]: crate::docker::Images::pull_free
+    pub(crate) async fn place_holder_image(
+        &self,
+        spec: ResolvedServiceSpec,
+        admitted: AdmittedSpec,
+        recorded: Option<String>,
+    ) -> Result<PlacedHolder, Error> {
+        self.finish_shared(move |local| async move {
+            let images = local.docker()?.images();
+            let (image, policy) = (&spec.container.image, spec.container.pull_policy);
+            let id = match (recorded, admitted.signed()) {
+                (Some(id), true) => images.placed(&id).await?,
+                (None, true) => images.place(image, policy).await?,
+                (_, false) => images.pull_free(image, policy).await?,
+            };
+            Ok(PlacedHolder { admitted, id })
+        })
+        .await
+    }
+
     /// A Writer's start: create its Container when absent, then start it, under one
     /// exclusive turn. A floor raised above `gen` starts nothing, since the newer lane
     /// may have started its own holder of the Volume already. A start ordered after
-    /// the check waits for the turn, so it sees this holder running.
+    /// the check waits for the turn, so it sees this holder running. A Create runs the
+    /// image `placed` before the promote, and pulls nothing.
     ///
     /// # Errors
     ///
@@ -370,7 +405,7 @@ impl LocalMachine {
         start: Start,
         name: DockerVolumeName,
         r#gen: VolumeGen,
-        admitted: Option<AdmittedSpec>,
+        placed: Option<PlacedHolder>,
     ) -> Result<Result<(), VolumeGen>, Error> {
         self.finish_mutation(move |local| async move {
             let containers = local.docker()?;
@@ -395,6 +430,7 @@ impl LocalMachine {
                     r#gen: copy_gen,
                     ..
                 } => {
+                    let PlacedHolder { admitted, id } = placed.ok_or_else(unadmitted)?;
                     local
                         .create_container_admitted(CreationFacts {
                             kind: ContainerKind::ServiceContainer,
@@ -403,8 +439,9 @@ impl LocalMachine {
                             creation_key: creation_key.as_str().to_owned(),
                             deployment_id: None,
                             r#gen: copy_gen,
-                            image: ImagePull::Policy(None),
-                            admitted: admitted.ok_or_else(unadmitted)?,
+                            image: ImagePull::Placed(&id),
+                            admitted,
+                            replaces: None,
                         })
                         .await?
                         .container_id
@@ -426,14 +463,14 @@ impl LocalMachine {
     pub(crate) async fn remove_container(
         &self,
         container_id: ContainerId,
-        remove_volumes: bool,
+        volumes: crate::docker::VolumeDisposal,
         force: bool,
     ) -> Result<(), Error> {
         self.finish_mutation(move |local| async move {
             local
                 .docker()?
                 .lifecycle()
-                .remove(&container_id, remove_volumes, force)
+                .remove(&container_id, volumes, force)
                 .await?;
             Ok(())
         })
@@ -448,7 +485,9 @@ impl Installed {
     /// holding a turn deadlocks.
     ///
     /// The stopping mark is set without a turn so replication tells every proxy and
-    /// Internal DNS during the drain. An idle copy ends its drain early, though not
+    /// Internal DNS during the drain. It is set under the config lock, so a removal
+    /// that took a replaced copy's anonymous volumes on this Container's word finished
+    /// before it. An idle copy ends its drain early, though not
     /// before `WITHDRAWAL_PROPAGATION`, so Internal DNS has heard before the stop. A
     /// drain shorter than that, or a proxy slower to hear, may still dial the stopped
     /// copy and retry another. A daemon restart forgets the mark; a still-running
@@ -838,6 +877,43 @@ impl LocalMachine {
         .await
     }
 
+    /// This Machine's Kept Volumes, each measured if there is time.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker is unavailable or the record can't be read.
+    pub(crate) async fn list_kept_volumes(
+        &self,
+        _request: ListKeptVolumesRequest,
+    ) -> Result<KeptVolumes, Error> {
+        Ok(KeptVolumes {
+            volumes: self.docker()?.lifecycle().kept_volumes().await?,
+        })
+    }
+
+    /// Remove the named Kept Volumes that no Container mounts, holding Machine mutation
+    /// admission.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker is unavailable, admission is busy, or the record or Docker's
+    /// Container list can't be read.
+    pub(crate) async fn remove_kept_volumes(
+        &self,
+        request: RemoveKeptVolumesRequest,
+    ) -> Result<KeptVolumesRemoved, Error> {
+        self.finish_mutation(move |local| async move {
+            Ok(KeptVolumesRemoved {
+                results: local
+                    .docker()?
+                    .lifecycle()
+                    .remove_kept_volumes(request.volumes)
+                    .await?,
+            })
+        })
+        .await
+    }
+
     /// Start or reconcile image ingest without taking a turn in Machine admission:
     /// a Build Grant mint answers while a Deploy or image transfer runs. The ingest
     /// serializes its own reconciliation, and daemon shutdown removes its helper, so a
@@ -880,13 +956,17 @@ impl LocalMachine {
         let request = self.pull_as(self.scope_now()?, request)?;
         self.finish_shared(move |local| async move {
             let request = local.pull_as(local.scope(), request)?;
-            let exposed_ports = local
-                .docker()?
+            let docker = local.docker()?;
+            let login = match &request.registry_login {
+                Some(login) => Some(docker.open_login(&request.image, login).await?),
+                None => None,
+            };
+            let exposed_ports = docker
                 .images()
                 .pull_image(
                     &request.image,
                     request.policy,
-                    request.registry_auth.as_ref(),
+                    login.as_ref().or(request.registry_auth.as_ref()),
                 )
                 .await?;
             Ok(ImagePulled { exposed_ports })
@@ -926,6 +1006,19 @@ impl LocalMachine {
         &self,
         request: PullFreeImageRequest,
     ) -> Result<ImagePulled, Error> {
+        // What a free pull places runs with no signature, so a login never makes it.
+        let operator = matches!(self.scope_now()?, Scope::Operator);
+        if request.registry_login.is_some() || (operator && request.registry_auth.is_some()) {
+            return Err(Error::PullRefused(
+                ployz_core::RpcError::invalid_argument(
+                    "A free pull carries no registry login: sign the Service to pull its private image.",
+                )
+                .with_details(serde_json::json!({
+                    "target": self.record().id().to_string(),
+                    "capability": ployz_core::PULL_FREE_IMAGE_CAPABILITY,
+                })),
+            ));
+        }
         self.finish_shared(move |local| async move {
             let images = local.docker()?.images();
             let exposed_ports = match local.scope() {
@@ -999,7 +1092,7 @@ impl LocalMachine {
 
     /// Why this Server writes no tag for an Operator, naming the route's `capability`.
     fn tag_refusal(&self, capability: &str) -> Error {
-        Error::TagRefused(
+        Error::PullRefused(
             ployz_core::RpcError::unsupported(
                 "This Server writes an image tag only for a caller with Full access.",
             )
@@ -1627,13 +1720,8 @@ impl LocalMachine {
                     let turn = local.exclusive_turn().await?;
                     let containers = local.docker()?;
                     removed(
-                        remove_out_of_rotation(
-                            &turn,
-                            containers,
-                            &id,
-                            anonymous_volumes == AnonymousVolumes::Remove,
-                        )
-                        .await,
+                        remove_out_of_rotation(&turn, containers, &id, anonymous_volumes.into())
+                            .await,
                     )
                 })
                 .await?
@@ -1648,13 +1736,8 @@ impl LocalMachine {
                     let turn = local.exclusive_turn().await?;
                     let containers = local.docker()?;
                     removed(
-                        remove_out_of_rotation(
-                            &turn,
-                            containers,
-                            &id,
-                            anonymous_volumes == AnonymousVolumes::Remove,
-                        )
-                        .await,
+                        remove_out_of_rotation(&turn, containers, &id, anonymous_volumes.into())
+                            .await,
                     )
                 })
                 .await?
@@ -1758,6 +1841,16 @@ impl LocalMachine {
             .finish_mutation(move |local| async move {
                 let _switch = switch;
                 let pin = new.image_id.clone();
+                let login = match (&pin, new.image_prepared, &new.registry_login) {
+                    (None, false, Some(login)) => {
+                        let image = &new.resolved_spec.container.image;
+                        match local.docker()?.open_login(image, login).await {
+                            Ok(login) => Some(login),
+                            Err(error) => return create_refusal(error.into()).map(Made::Refused),
+                        }
+                    }
+                    _ => None,
+                };
                 let created = local
                     .create_container_admitted(CreationFacts {
                         kind: new.slot.kind,
@@ -1769,9 +1862,12 @@ impl LocalMachine {
                         image: match (&pin, new.image_prepared) {
                             (Some(pin), _) => ImagePull::Pinned(pin),
                             (None, true) => ImagePull::Prepared,
-                            (None, false) => ImagePull::Policy(new.registry_auth.as_ref()),
+                            (None, false) => {
+                                ImagePull::Policy(login.as_ref().or(new.registry_auth.as_ref()))
+                            }
                         },
                         admitted,
+                        replaces: new.replaces,
                     })
                     .await;
                 let created = match created {
@@ -1836,6 +1932,7 @@ impl LocalMachine {
             r#gen,
             image,
             admitted,
+            replaces,
         } = facts;
         let containers = self.docker()?;
         let record = self.record();
@@ -1857,6 +1954,7 @@ impl LocalMachine {
                     creation_key: &creation_key,
                     deployment_id: deployment_id.as_ref(),
                     r#gen,
+                    replaces: replaces.as_ref(),
                     image,
                     kind,
                     namespace,
@@ -1976,7 +2074,11 @@ impl<'a> StopGuard for Fence<'a> {
     }
 
     async fn withdraw(&self) -> Result<Result<Withdrawal, VolumeGen>, Error> {
-        Ok(Ok(self.containers.lifecycle().withdraw(*self.container)))
+        Ok(Ok(self
+            .containers
+            .lifecycle()
+            .withdraw_locked(*self.container)
+            .await))
     }
 
     async fn drained(&self) -> Result<Result<(), VolumeGen>, Error> {
@@ -2043,6 +2145,8 @@ pub(super) struct CreationFacts<'a> {
     pub(super) r#gen: Gen,
     pub(super) image: ImagePull<'a>,
     pub(super) admitted: AdmittedSpec,
+    /// The copy on this Machine the new Container takes the place of.
+    pub(super) replaces: Option<ContainerId>,
 }
 
 /// Whether Docker still runs the Container's process. Paused and restarting count as
@@ -2308,15 +2412,15 @@ async fn remove_out_of_rotation(
     _turn: &ExclusiveTurn,
     containers: &crate::docker::ContainerRuntime,
     container: &ContainerId,
-    remove_volumes: bool,
+    volumes: crate::docker::VolumeDisposal,
 ) -> Result<Option<ContainerRefusal>, Error> {
     match leave_rotation(containers, container, &RotationTarget::Gone).await {
-        Ok(Ok(turn)) => turn.remove(remove_volumes, false).await?,
+        Ok(Ok(turn)) => turn.remove(volumes, false).await?,
         Ok(Err(refusal)) => return Ok(Some(refusal)),
         Err(Error::Docker(crate::docker::Error::ContainerNotFound(_))) => {
             containers
                 .lifecycle()
-                .remove(container, remove_volumes, false)
+                .remove(container, volumes, false)
                 .await?;
         }
         Err(error) => return Err(error),
@@ -2412,7 +2516,7 @@ fn unadmitted() -> Error {
 }
 
 fn create_refusal(error: Error) -> Result<ContainerRefusal, Error> {
-    use crate::{docker::Error as Docker, sealed_env::OpenError};
+    use crate::{docker::Error as Docker, docker_image::LoginRefused, sealed_env::OpenError};
     #[expect(
         clippy::wildcard_enum_match_arm,
         reason = "only create-path errors a driver can act on become refusals"
@@ -2439,7 +2543,17 @@ fn create_refusal(error: Error) -> Result<ContainerRefusal, Error> {
         ) => ContainerRefusalReason::NotEligible,
         Error::Docker(Docker::SlotNameOccupied(_)) => ContainerRefusalReason::SlotOccupied,
         Error::Docker(
-            Docker::ImagePull(_) | Docker::UnsignedImage(_) | Docker::DiskFull { .. },
+            Docker::ImagePull(_)
+            | Docker::ImageAbsent { .. }
+            | Docker::PlacedImageGone { .. }
+            | Docker::UnsignedImage(_)
+            | Docker::DiskFull { .. }
+            | Docker::RegistryLogin(
+                LoginRefused::Uppercase(_)
+                | LoginRefused::OtherHost { .. }
+                | LoginRefused::Insecure(_)
+                | LoginRefused::Mirrored,
+            ),
         ) => ContainerRefusalReason::ImagePullFailed,
         Error::Docker(
             Docker::ExternalVolumeNotFound(_)
@@ -2458,6 +2572,7 @@ fn create_refusal(error: Error) -> Result<ContainerRefusal, Error> {
             | OpenError::Unopenable(_)
             | OpenError::TunnelToken
             | OpenError::PrivateAccessKey
+            | OpenError::RegistryLogin(_)
             | OpenError::ShortLine(_)
             | OpenError::Unsigned(_)
             | OpenError::OutOfReach(_) => ContainerRefusalReason::SealedValueUnopenable,
@@ -2476,6 +2591,21 @@ pub(crate) fn names_content(pull: &ployz_core::PeerImagePull) -> bool {
     pull.tag().is_none_or(|tag| {
         ployz_core::retained_digest(tag).is_some_and(|kept| kept.as_str() == digest)
     })
+}
+
+/// A Writer start's Create, admitted, with the ID of the image it placed before its
+/// promote, so the Create after the promote reaches no registry.
+pub(crate) struct PlacedHolder {
+    admitted: AdmittedSpec,
+    id: String,
+}
+
+impl PlacedHolder {
+    /// The record a promote to `epoch` writes, so a resend after it at that epoch, for
+    /// the same admitted spec, takes the same image.
+    pub(crate) fn record(&self, epoch: ployz_core::WriterEpoch) -> Option<ployz_core::PlacedImage> {
+        ployz_core::PlacedImage::new(epoch, self.admitted.placement(), &self.id).ok()
+    }
 }
 
 #[path = "drain_idle.rs"]

@@ -10033,7 +10033,7 @@ fn a_plan_asks_for_a_digest_for_a_tag_pulled_with_a_login() {
         &store,
         &who,
         "web.registryCredential",
-        json!({ "username": "bot", "secret": "pull-token" }),
+        ployz_store::testing::sealed_login("pull-token"),
     );
     assert_eq!(
         unsigned(&store, &who),

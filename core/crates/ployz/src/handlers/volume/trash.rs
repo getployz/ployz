@@ -13,7 +13,7 @@ use ployz_store::{NamespacesQuery, OwnedNamespace};
 use serde_json::json;
 
 use super::restore::{Seen, answered, copies};
-use crate::cli::{base, config_path, positional};
+use crate::cli::{Rerun, base, config_path, positional};
 use crate::cluster::{Call, Deadline};
 use crate::connect::{Client, TARGET_RPC_TIMEOUT};
 use crate::handlers::shared::disk::size;
@@ -124,7 +124,7 @@ pub(in crate::handlers) fn restore(root: &ArgMatches) -> Result<(), Error> {
                 })?;
                 restore_call(&server, id, true)
                     .await
-                    .map_err(|error| uncertain(&server, id, error))?
+                    .map_err(|error| uncertain(root, &server, id, error))?
             }
             TrashRestore::Landed | TrashRestore::Restored { .. } => first,
         };
@@ -178,7 +178,7 @@ async fn restore_call(server: &Server, id: TrashId, promote: bool) -> Result<Tra
 
 /// A promote that failed without the Server refusing it may have committed, so it says the
 /// same command finishes it: a rerun takes up a restore that happened and makes none twice.
-fn uncertain(server: &Server, id: TrashId, error: Error) -> Error {
+fn uncertain(root: &ArgMatches, server: &Server, id: TrashId, error: Error) -> Error {
     match error.report().code {
         RpcErrorCode::Conflict
         | RpcErrorCode::NotFound
@@ -193,7 +193,7 @@ fn uncertain(server: &Server, id: TrashId, error: Error) -> Error {
                  finish it; a second run changes nothing a first one did.",
                 server.name
             ))
-            .hint(Hint::Retry(sudo(&crate::cli::typed_with(&[])))),
+            .hint(Rerun::again(root).sudo_as_invoked()),
     }
 }
 
@@ -206,8 +206,8 @@ fn volume_next(root: &ArgMatches, name: &DockerVolumeName) -> (Option<String>, V
         Some(owned) => (
             format!(
                 " --project {} --env {}",
-                crate::ui::shell_word(owned.project.as_str()),
-                crate::ui::shell_word(owned.environment.as_str())
+                shell_words::quote(owned.project.as_str()),
+                shell_words::quote(owned.environment.as_str())
             ),
             format!("In {}/{}", owned.project, owned.environment),
         ),
@@ -268,13 +268,13 @@ fn empty_request(root: &ArgMatches, ids: Vec<TrashId>) -> EmptyTrashRequest {
 /// What a refused `trash empty` with no IDs offers to run, rebuilt from what it parsed:
 /// the entries it would have deleted, still keeping any a restore pins before the retry
 /// reaches the Server.
-fn empty_retry(root: &ArgMatches, ids: &[TrashId]) -> String {
+fn empty_retry(root: &ArgMatches, ids: &[TrashId]) -> Rerun {
     let ids: Vec<String> = ids.iter().map(ToString::to_string).collect();
     let args: Vec<&str> = ["volume", "trash", "empty", "--keep-restoring"]
         .into_iter()
         .chain(ids.iter().map(String::as_str))
         .collect();
-    crate::cli::rerun(leaf_matches(root), &args)
+    Rerun::then(root, &args).sudo_as_invoked()
 }
 
 pub(in crate::handlers) fn empty(root: &ArgMatches) -> Result<(), Error> {
@@ -328,7 +328,7 @@ pub(in crate::handlers) fn empty(root: &ArgMatches) -> Result<(), Error> {
         return unread;
     }
     if named.is_empty()
-        && let Err(refused) = confirm_all(&server.name, &empty_retry(root, &ids), ids.len())
+        && let Err(refused) = confirm_all(&server.name, empty_retry(root, &ids), ids.len())
     {
         // With unreadable entries left, the result says nothing was deleted and the
         // refusal, with its retry naming the readable entries, ends it partial.
@@ -401,7 +401,7 @@ fn unreadable(server: &str, kept: &[UnreadableTrash]) -> Result<(), Error> {
 }
 
 /// Ask before emptying every entry; `--json` and a script get `retry`, which names each one.
-fn confirm_all(server: &str, retry: &str, count: usize) -> Result<(), Error> {
+fn confirm_all(server: &str, retry: Rerun, count: usize) -> Result<(), Error> {
     crate::ui::confirm(
         &format!("Delete {} in {server}'s Trash for good?", entries(count)),
         || {
@@ -409,7 +409,7 @@ fn confirm_all(server: &str, retry: &str, count: usize) -> Result<(), Error> {
                 RpcErrorCode::ConfirmationRequired,
                 "Emptying the Trash needs confirmation. Nothing deleted.",
             )
-            .hint(Hint::Retry(sudo(retry)))
+            .hint(retry)
         },
         "Nothing deleted.",
     )
@@ -512,7 +512,7 @@ async fn connect(root: &ArgMatches) -> Result<Server, Error> {
     let matches = leaf_matches(root);
     let selected = crate::connect::resolve_connections(
         &config_path(matches)?,
-        matches.get_one::<String>("connect").map(String::as_str),
+        crate::cli::connection(matches),
         matches.get_one::<String>("context").map(String::as_str),
         &MachineLayout::production().socket(),
     )?;
@@ -521,10 +521,11 @@ async fn connect(root: &ArgMatches) -> Result<Server, Error> {
             "This context reaches {} Servers, and each has its own Trash. Pick one.",
             selected.connections.len()
         ))
-        .hint(Hint::Retry(sudo(&crate::cli::typed_with(&[
-            "--connect",
-            "ssh://USER@HOST",
-        ])))));
+        .hint(
+            Rerun::again(root)
+                .placeholder("connect", "CONNECT")
+                .sudo_as_invoked(),
+        ));
     }
     let client =
         crate::connect::connect_selected_with(selected, crate::cli::connector(matches)).await?;
@@ -558,15 +559,6 @@ async fn read(server: &Server) -> Result<TrashList, Error> {
                 error
             }
         })
-}
-
-/// `line` as the person typed it, with `sudo` kept when they ran it under sudo.
-fn sudo(line: &str) -> String {
-    if std::env::var_os("SUDO_USER").is_some_and(|user| !user.is_empty()) {
-        format!("sudo {line}")
-    } else {
-        line.to_owned()
-    }
 }
 
 fn once() -> crate::cluster::Once<'static> {

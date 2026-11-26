@@ -44,8 +44,7 @@ pub(crate) mod server;
 pub(crate) mod service;
 mod shared;
 use crate::cli::{
-    command_path, config_path, leaf_matches, recovery_command, rerun, string_values, takes_value,
-    typed_with,
+    Rerun, command_path, config_path, leaf_matches, rerun, string_values, takes_value,
 };
 mod status;
 mod status_servers;
@@ -113,13 +112,73 @@ pub fn run() -> Result<(), Error> {
     let internal = verbs::find(&command_path(&matches))
         .is_some_and(|verb| verb.surface == verbs::Surface::Internal);
     let run = crate::agent_call::cli::Run::begin(&matches, &command, internal);
-    let result = match run.refusal(&args) {
+    let refusal =
+        placeholder_refusal(&command, &matches).or_else(|| run.refusal(&matches, &command));
+    let result = match refusal {
         Some(refusal) => Err(refusal),
         None => dispatch(&matches, &mut command),
     };
     follow_cloud_revision();
     run.finish(&result);
     result
+}
+
+/// The refusal of a command line pasted with a placeholder output printed in place of a
+/// value, such as `set 'web.env.KEY=<VALUE>'`: it would send the placeholder as the value.
+/// A command a command runs, such as exec's, is refused only for a word that is a
+/// placeholder whole, since `<` is ordinary text there.
+fn placeholder_refusal(tree: &Command, root: &ArgMatches) -> Option<Error> {
+    use clap::parser::ValueSource;
+    let mut levels = vec![tree];
+    let mut matches = Some(root);
+    while let Some(at) = matches {
+        for id in at.ids() {
+            let id = id.as_str();
+            // A global this level doesn't define came down from the level that does.
+            if at.try_contains_id(id).is_err()
+                || !matches!(
+                    at.value_source(id),
+                    Some(ValueSource::CommandLine | ValueSource::EnvVariable)
+                )
+            {
+                continue;
+            }
+            let Some(arg) = levels
+                .iter()
+                .rev()
+                .find_map(|level| level.get_arguments().find(|arg| arg.get_id() == id))
+            else {
+                continue;
+            };
+            let holds = |typed: &str| match arg.is_trailing_var_arg_set() {
+                true => crate::cli::shown::is_placeholder(typed),
+                false => crate::cli::shown::placeholder_in(typed),
+            };
+            let Ok(Some(mut raw)) = at.try_get_raw(id) else {
+                continue;
+            };
+            if raw.any(|typed| holds(&typed.to_string_lossy())) {
+                let named = arg.get_long().map_or_else(
+                    || crate::cli::Shown::declared(arg).to_string(),
+                    |long| format!("--{long}"),
+                );
+                return Some(Error::detailed(
+                    ployz_core::RpcErrorCode::InvalidArgument,
+                    format!(
+                        "{named} holds a placeholder in angle brackets, which stands for a value output left out. Replace it with the value, then run the command again."
+                    ),
+                    serde_json::json!({ "argument": named }),
+                ));
+            }
+        }
+        matches = at.subcommand().map(|(name, child)| {
+            if let Some(level) = levels.last().and_then(|level| level.find_subcommand(name)) {
+                levels.push(level);
+            }
+            child
+        });
+    }
+    None
 }
 
 fn parse(command: &Command, args: &[std::ffi::OsString]) -> Result<ArgMatches, clap::Error> {
@@ -277,7 +336,10 @@ fn misplaced_flag(error: clap::Error, tree: &Command, args: &[std::ffi::OsString
     };
     clap::Error::raw(
         ErrorKind::UnknownArgument,
-        format!("unexpected argument '{invalid}' found\n\n  tip: {tip}\n"),
+        format!(
+            "unexpected argument '{}' found\n\n  tip: {tip}\n",
+            typed_word(tree, invalid)
+        ),
     )
 }
 
@@ -324,12 +386,96 @@ fn usage_failure(error: clap::Error, tree: &Command) -> Error {
         return Error::exit(0);
     }
     let args = std::env::args_os().skip(1).collect::<Vec<_>>();
-    let error = misplaced_flag(operator::container_column_asked(error, &args), tree, &args);
+    let error = withheld_words(
+        misplaced_flag(operator::container_column_asked(error, &args), tree, &args),
+        tree,
+    );
     if !wants_json {
-        error.exit();
+        let _ = write!(crate::ui::stderr(), "{}", error.render().ansi());
+        return Error::exit(u8::try_from(error.exit_code()).unwrap_or(2));
     }
     crate::ui::init(true, crate::ui::Color::Auto);
     clap_usage(&error)
+}
+
+/// clap's refusal, repeating no word typed but the commands and flags Ployz itself names: a
+/// value a parser refused shows as `<VALUE>`, and a word no argument takes as `<WORD>`,
+/// since either may be a credential typed in the wrong place.
+fn withheld_words(mut error: clap::Error, tree: &Command) -> clap::Error {
+    use clap::error::{ContextKind, ContextValue, ErrorKind};
+    // Each refusal that repeats a typed word, and where it keeps it.
+    const REPEATS: [(ErrorKind, ContextKind); 5] = [
+        (ErrorKind::InvalidValue, ContextKind::InvalidValue),
+        (ErrorKind::ValueValidation, ContextKind::InvalidValue),
+        (ErrorKind::TooManyValues, ContextKind::InvalidValue),
+        (ErrorKind::UnknownArgument, ContextKind::InvalidArg),
+        (ErrorKind::InvalidSubcommand, ContextKind::InvalidSubcommand),
+    ];
+    let Some(kind) = REPEATS
+        .iter()
+        .find_map(|(repeats, kind)| (*repeats == error.kind()).then_some(*kind))
+    else {
+        return error;
+    };
+    let Some(ContextValue::String(typed)) = error.get(kind).cloned() else {
+        return error;
+    };
+    let shown = if kind != ContextKind::InvalidValue {
+        typed_word(tree, &typed)
+    } else if typed.is_empty() {
+        return error;
+    } else {
+        "<VALUE>".to_owned()
+    };
+    error.insert(kind, ContextValue::String(shown));
+    // clap's own tips, such as `to pass 'WORD' as a value`, repeat the word whole.
+    if let Some(ContextValue::StyledStrs(tips)) = error.get(ContextKind::Suggested).cloned() {
+        let kept = tips
+            .into_iter()
+            .filter(|tip| !tip.to_string().contains(&typed))
+            .collect();
+        error.insert(ContextKind::Suggested, ContextValue::StyledStrs(kept));
+    }
+    error
+}
+
+/// A word typed where no argument takes it, as a refusal names it: a command or flag the
+/// tree names, with any value after `=` as `<VALUE>`; anything else as `<WORD>`.
+fn typed_word(tree: &Command, typed: &str) -> String {
+    fn names(command: &Command, word: &str) -> bool {
+        let flag = |arg: &clap::Arg| match word.strip_prefix("--") {
+            Some(long) => arg.get_long() == Some(long),
+            None => word
+                .strip_prefix('-')
+                .is_some_and(|short| arg.get_short().is_some_and(|own| short == own.to_string())),
+        };
+        command.get_name() == word
+            || command.get_arguments().any(flag)
+            || command.get_subcommands().any(|sub| names(sub, word))
+    }
+    let (word, value) = match typed.starts_with('-') {
+        true => typed
+            .split_once('=')
+            .map_or((typed, false), |(flag, _)| (flag, true)),
+        false => (typed, false),
+    };
+    // A flag the tree lacks still reads as one, which a credential's characters don't.
+    let flag_shaped = match word.strip_prefix("--") {
+        Some(long) => {
+            long.starts_with(|c: char| c.is_ascii_lowercase())
+                && long
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        }
+        None => word.strip_prefix('-').is_some_and(|short| {
+            short.len() == 1 && short.starts_with(|c: char| c.is_ascii_alphabetic())
+        }),
+    };
+    match (flag_shaped || names(tree, word), value) {
+        (true, true) => format!("{word}=<VALUE>"),
+        (true, false) => word.to_owned(),
+        (false, _) => "<WORD>".to_owned(),
+    }
 }
 
 fn clap_usage(error: &clap::Error) -> Error {
@@ -448,7 +594,7 @@ async fn connect_context(
 ) -> Result<crate::connect::Client, Error> {
     Ok(crate::connect::connect_with_ssh_timeout(
         &config_path(matches)?,
-        matches.get_one::<String>("connect").map(String::as_str),
+        crate::cli::connection(matches),
         context,
         crate::cli::ssh_timeout(matches),
     )
@@ -461,7 +607,7 @@ async fn connect_context_chosen(
     matches: &ArgMatches,
     context: Option<&str>,
 ) -> Result<crate::connect::Client, Error> {
-    let direct = matches.get_one::<String>("connect").map(String::as_str);
+    let direct = crate::cli::connection(matches);
     let selected = crate::connect::resolve_connections(
         &config_path(matches)?,
         direct,
@@ -484,7 +630,7 @@ async fn reconnect_client(
     context: Option<&str>,
 ) -> Result<crate::connect::Client, Error> {
     let config = config_path(matches)?;
-    let connect = matches.get_one::<String>("connect").map(String::as_str);
+    let connect = crate::cli::connection(matches);
     crate::setup_retry::run(
         &mut (),
         &crate::ui::WaitNotices,
@@ -727,11 +873,15 @@ mod tests {
 
     #[test]
     fn setup_recovery_preserves_config_and_context_and_parses_as_a_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("a config.yaml");
+        std::fs::write(&config, "").unwrap();
+        let config = config.to_str().unwrap();
         let matches = command()
             .try_get_matches_from([
                 "ployz",
                 "--ployz-config",
-                "/tmp/a config.yaml",
+                config,
                 "server",
                 "add",
                 "--standalone",
@@ -740,11 +890,12 @@ mod tests {
                 "staging",
             ])
             .unwrap();
-        let recovery = recovery_command(
-            leaf_matches(&matches),
-            "staging",
+        let recovery = Rerun::then(
+            &matches,
             &["server", "set", "edge", "--accepts-ingress=true"],
-        );
+        )
+        .set("context", "staging")
+        .line();
         let args = shell_words::split(&recovery).unwrap();
         let parsed = command().try_get_matches_from(args).unwrap();
         let leaf = leaf_matches(&parsed);
@@ -754,18 +905,18 @@ mod tests {
         );
         assert_eq!(
             leaf.get_one::<String>("ployz-config").map(String::as_str),
-            Some("/tmp/a config.yaml")
+            Some(config)
         );
     }
 
     #[test]
     #[cfg(debug_assertions)]
-    #[should_panic(expected = "recovery hint does not parse")]
+    #[should_panic(expected = "a rerun's words don't parse")]
     fn setup_recovery_refuses_a_command_outside_the_tree() {
         let matches = command()
             .try_get_matches_from(["ployz", "server", "add", "--standalone", "root@host"])
             .unwrap();
-        recovery_command(leaf_matches(&matches), "staging", &["no-such", "command"]);
+        let _ = Rerun::then(&matches, &["no-such", "command"]);
     }
 
     #[test]
@@ -829,26 +980,20 @@ mod tests {
     }
 
     #[test]
-    #[cfg(debug_assertions)]
-    #[should_panic(expected = "recovery hint does not parse")]
-    fn context_config_recovery_asserts_dispatch_accepts_the_context() {
-        let matches = command()
-            .try_get_matches_from(["ployz", "server", "ls"])
-            .unwrap();
-        recovery_command(leaf_matches(&matches), "b", &["org", "ls"]);
-    }
-
-    #[test]
     fn direct_recovery_uses_failed_identity_and_actual_scope_before_committed_json() {
         use crate::failure::{Diagnostic, LogTail};
         use ployz_core::{MachineId, QualifiedService};
         let failed = MachineId::random();
         let original = MachineId::random();
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("a config.yaml");
+        std::fs::write(&config, "").unwrap();
+        let config = config.to_str().unwrap();
         let matches = command()
             .try_get_matches_from([
                 "ployz",
                 "--ployz-config",
-                "/tmp/a config.yaml",
+                config,
                 "--connect",
                 "ssh://root@entry",
                 "server",
@@ -872,10 +1017,9 @@ mod tests {
                 ..Default::default()
             })
             .interrupted();
-        let error = crate::enrollment::output::ingress_hints(error, |args| {
-            rerun(leaf_matches(&matches), args)
-        })
-        .context("Server updated; the Ingress Proxy did not follow.");
+        let error =
+            crate::enrollment::output::ingress_hints(error, |args| Rerun::then(&matches, args))
+                .context("Server updated; the Ingress Proxy did not follow.");
         assert!(error.is_interrupted());
         let mode = crate::ui::test_mode(true);
         let (result, captured) = crate::ui::captured(|| {
@@ -905,12 +1049,9 @@ mod tests {
             let leaf = leaf_matches(&parsed);
             assert_eq!(
                 leaf.get_one::<String>("ployz-config").map(String::as_str),
-                Some("/tmp/a config.yaml")
+                Some(config)
             );
-            assert_eq!(
-                leaf.get_one::<String>("connect").map(String::as_str),
-                Some("ssh://root@entry")
-            );
+            assert_eq!(crate::cli::connection(leaf), Some("<CONNECT>"));
             assert_eq!(
                 leaf.get_one::<String>("context").map(String::as_str),
                 Some("staging")
@@ -935,17 +1076,17 @@ mod tests {
             (
                 "since",
                 "notatime",
-                r#"invalid time "notatime" for --since: expected a relative duration, RFC 3339 date, or Unix timestamp"#,
+                r#"invalid time for --since: expected a relative duration, RFC 3339 date, or Unix timestamp"#,
             ),
             (
                 "until",
                 "notatime",
-                r#"invalid time "notatime" for --until: expected a relative duration, RFC 3339 date, or Unix timestamp"#,
+                r#"invalid time for --until: expected a relative duration, RFC 3339 date, or Unix timestamp"#,
             ),
             (
                 "tail",
                 "abc",
-                r#"invalid log tail "abc": expected a non-negative integer or all"#,
+                r#"invalid log tail: expected a non-negative integer or all"#,
             ),
         ];
         for (flag, value, expected) in cases {
@@ -1159,10 +1300,7 @@ mod tests {
         assert_eq!(add.get_one::<bool>("accepts-ingress"), Some(&false));
         assert!(add.get_flag("reset"));
         assert_eq!(add.get_one::<u32>("wg-mtu").copied(), Some(1400));
-        assert_eq!(
-            add.get_one::<String>("cloud-url").map(String::as_str),
-            Some("example.test")
-        );
+        assert_eq!(crate::cli::cloud_url_of(add).unwrap(), Some("example.test"));
     }
 
     #[test]

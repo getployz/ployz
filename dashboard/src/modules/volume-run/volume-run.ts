@@ -1,4 +1,4 @@
-import type { ContainerId, MachineId, MachineName, Namespace, ResolvedServiceSpec, SlotRole, VolumeCopyView } from "@ployz/sdk";
+import type { ContainerId, MachineId, MachineName, Namespace, ResolvedServiceSpec, SlotId, SlotRole, SnapshotGuid, VolumeCopyView } from "@ployz/sdk";
 import { Schema } from "effect";
 import type { VolumeRunState, VolumeRunRequestKind, VolumeRunKind } from "#/modules/volume-run/volume-run-states";
 
@@ -42,6 +42,24 @@ export type ReleasePlan = {
   readonly forward?: { readonly after: string; readonly to: MachineId; readonly removeOn: MachineId[] };
 };
 
+/**
+ * A copy someone chose to delete, as its Server reported it when they did. `written_here` is null on a Server that
+ * doesn't say whether the copy may hold writes no other Server has.
+ */
+export type ConfirmedCopy = { readonly machine: MachineId; readonly slot: SlotId; readonly newest: SnapshotGuid; readonly written_here: boolean | null };
+
+/** Who chose a delete, and each copy it deletes as they saw it: a person who asked, or a Deployment they confirmed. */
+export type Confirmation = { readonly by: "person" | "deployment"; readonly copies: ConfirmedCopy[] };
+
+declare const chosen: unique symbol;
+
+/**
+ * A Confirmation as a run's row keeps it. Only the insert of the row makes one, from its caller, so a delete no one chose,
+ * such as the orphan sweep's, has none. A Forget says discard only for a copy listed here, and names that exact copy, so
+ * its Server deletes nothing replaced or written since. The brand sits on `by`, a string, so it survives a step's JSON.
+ */
+export type Discard = { readonly by: Confirmation["by"] & { readonly [chosen]: true }; readonly copies: ConfirmedCopy[] };
+
 export type VolumeRunArgs = {
   mirror: Destination;
   sync: { readonly full: boolean };
@@ -50,7 +68,13 @@ export type VolumeRunArgs = {
    * so the Machine refuses a slot that holds the other role by then. `any` is `volume mirror rm`, which deletes either. A
    * row without one was admitted before runs recorded it, and is refused rather than guessed.
    */
-  delete_mirror: { readonly slot: MachineName | null; readonly confirmed_name: string | null; readonly machine?: MachineId; readonly role?: SlotRole | "any" };
+  delete_mirror: {
+    readonly slot: MachineName | null;
+    readonly confirmed_name: string | null;
+    readonly machine?: MachineId;
+    readonly role?: SlotRole | "any";
+    readonly discard?: Discard;
+  };
   /**
    * `holder` is a drain's: the Server it drains and the Container it saw run the Service there. The move takes only that
    * Container, so one replaced or stopped before the cut ends the move before anything stops.
@@ -119,6 +143,8 @@ export type Member =
       readonly boundBytes?: number | null;
       /** The Server checks where a copy's data began, so it may send or take a born Volume's copy. */
       readonly checksOrigins?: boolean;
+      /** The Server keeps a slot that may hold writes no other Server has: a bare Forget refuses it, and a pull never replaces it. */
+      readonly keepsWritten?: boolean;
     }
   | {
       readonly machine: { readonly id: MachineId; readonly name: MachineName };

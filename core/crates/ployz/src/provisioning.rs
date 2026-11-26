@@ -29,7 +29,7 @@ pub enum ProvisionError {
     #[error("remote machine destination is required")]
     MissingDestination,
     #[error("Machine provisioning requires an SSH destination, not {0}")]
-    RemoteTransport(String),
+    RemoteTransport(crate::cli::Shown),
     /// The SSH destination is malformed or uses a removed transport spelling.
     #[error(transparent)]
     Connection(#[from] ConnectionError),
@@ -275,7 +275,7 @@ impl Remote {
             .ok_or(ProvisionError::MissingDestination)?;
         let connection = value.parse::<Connection>()?;
         let Transport::Ssh { destination, .. } = connection.transport() else {
-            return Err(ProvisionError::RemoteTransport(connection.to_string()));
+            return Err(ProvisionError::RemoteTransport(connection.shown()));
         };
         Ok(Self {
             destination: destination.clone(),
@@ -298,7 +298,11 @@ impl Remote {
         command.args(["-tt", self.destination.target()]);
         command.stdin(Stdio::inherit());
         // Remote installer chatter is progress, not the result: stdout stays for `--json`.
-        command.stdout(std::io::stderr());
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "ssh writes the installer's chatter itself"
+        )]
+        command.stdout(crate::ui::child_stderr());
         command
     }
 
@@ -701,9 +705,14 @@ async fn run_installer(
 ) -> Result<(), ProvisionError> {
     use tokio::io::AsyncBufReadExt;
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the installer writes its progress itself"
+    )]
+    let progress = crate::ui::child_stderr();
     let mut child = tokio::process::Command::new(daemon)
         .args(install_arguments(version, preparation))
-        .stdout(std::io::stderr())
+        .stdout(progress)
         .stderr(Stdio::piped())
         .spawn()
         .map_err(ProvisionError::Install)?;
@@ -718,7 +727,7 @@ async fn run_installer(
             != 0
         {
             let line = String::from_utf8_lossy(&bytes);
-            eprint!("{line}");
+            crate::ui::note_inline(&line);
             if !line.trim().is_empty() {
                 last = Some(line.trim_end().to_owned());
             }

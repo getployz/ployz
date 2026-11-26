@@ -152,7 +152,8 @@ describe("VolumeCopiesPanel", () => {
     expect(within(dialog).getByText(/^web-3 · data · /)).toBeTruthy();
     expect(within(dialog).getByText("This runs now, not on deploy. It can't be undone.")).toBeTruthy();
     fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
-    await waitFor(() => expect(deleteCopy).toHaveBeenCalledWith("web-3"));
+    // The copy the dialog showed, so Cloud deletes nothing once its Server reports another.
+    await waitFor(() => expect(deleteCopy).toHaveBeenCalledWith("web-3", { slot: "1", newest: "11", written_here: false }));
     expect(stage).not.toHaveBeenCalled();
   });
 
@@ -162,7 +163,7 @@ describe("VolumeCopiesPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Delete copy on web-3" }));
     fireEvent.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Delete" }));
     await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
-    expect(deleteCopy).toHaveBeenCalledWith("web-3");
+    expect(deleteCopy).toHaveBeenCalledWith("web-3", { slot: "1", newest: "11", written_here: false });
   });
 
   it("offers no restore from an old copy's latest point, and says restoring into a new volume is off", () => {

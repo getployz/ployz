@@ -931,6 +931,7 @@ impl Fleet {
                             role: Some(SlotRole::Mirror),
                             pull_state: None,
                             origin: None,
+                            written_here: false,
                         },
                         CopyRole::Writer | CopyRole::Switching => VolumeCopy::Root {
                             readonly: false,
@@ -939,6 +940,7 @@ impl Fleet {
                             seed: false,
                             mark: None,
                             origin: None,
+                            placed: None,
                         },
                     });
                 unary(VolumeCopyView::of(copy).into())
@@ -1349,6 +1351,7 @@ impl MachineState {
             run: None,
             log_driver: None,
             admission: None,
+            replaced_by: None,
         })
         .map_err(internal)
     }

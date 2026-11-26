@@ -12,6 +12,7 @@ use crate::env;
 pub(crate) fn project_arg() -> Arg {
     value("project", None)
         .env(env::PROJECT)
+        .hide_env_values(true)
         .help("Project [default: the only Project]")
 }
 
@@ -20,6 +21,7 @@ pub(crate) fn scoped(command: clap::Command) -> clap::Command {
     command.arg(project_arg()).arg(
         value("env", None)
             .env(env::ENVIRONMENT)
+            .hide_env_values(true)
             .help("Environment [default: the Project's Default Environment]"),
     )
 }

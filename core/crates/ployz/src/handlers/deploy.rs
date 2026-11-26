@@ -33,7 +33,7 @@ use ployz_store::{
 
 use super::store::{Store, environment, mint, next, scoped, store};
 use super::{Error, leaf_matches, required, runtime};
-use crate::cli::{base, positional, switch, value};
+use crate::cli::{Rerun, base, positional, switch, value};
 use crate::cloud::account::StoreCallError;
 
 pub(super) fn deploy_command(command: Command) -> Command {
@@ -152,18 +152,6 @@ fn detaches(matches: &ArgMatches) -> bool {
         .unwrap_or(false)
 }
 
-/// The [`following`] flags as typed, so a rerun follows (or detaches) the same way.
-pub(super) fn following_args(matches: &ArgMatches) -> Vec<&str> {
-    let mut args = Vec::new();
-    if let Some(events) = matches.get_one::<String>("events") {
-        args.extend(["--events", events.as_str()]);
-    }
-    if matches.get_flag("detach") {
-        args.push("--detach");
-    }
-    args
-}
-
 /// How often `deploy` reads a Deployment Cloud runs while following it.
 pub(super) const FOLLOW_POLL: Duration = Duration::from_secs(1);
 /// How long a followed Deployment may sit queued before the follow says why it waits.
@@ -232,26 +220,13 @@ fn id() -> clap::Arg {
 pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let services = super::store::service_names(matches, "service")?;
-    let names: Vec<&str> = services.iter().map(ServiceName::as_str).collect();
     let source = matches
         .get_one::<String>("upload")
         .map(|dir| Path::new(dir).canonicalize())
         .transpose()?;
-    // A retry uploads again, as the hidden `deploy --upload` does.
-    let upload = source.as_deref().and_then(Path::to_str);
-    let message = matches.get_one::<String>("message").map(String::as_str);
     let skip = matches.get_flag("skip-deploy");
     let no_prune = matches.get_flag("no-prune");
-    let store = store(root)?
-        .args(switches(matches))
-        .args(names.iter().copied())
-        .args(upload.into_iter().flat_map(|source| ["--upload", source]))
-        .args(
-            message
-                .into_iter()
-                .flat_map(|message| ["--message", message]),
-        )
-        .args(following_args(matches));
+    let store = store(root)?;
     if skip {
         return save(matches, &store);
     }
@@ -269,19 +244,6 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
         no_prune,
     };
     upload_and_ship(matches, &store, request, events)?.finish()
-}
-
-/// The switches of `deploy` as typed, so a retry the Store suggests repeats them.
-fn switches(matches: &ArgMatches) -> impl Iterator<Item = &'static str> {
-    [
-        ("skip-deploy", "--skip-deploy"),
-        ("no-prune", "--no-prune"),
-        ("forget-older", "--forget-older"),
-        ("recreate", "--recreate"),
-    ]
-    .into_iter()
-    .filter(|(id, _)| approve::flag(matches, id))
-    .map(|(_, typed)| typed)
 }
 
 /// The Services whose running Containers `deploy --recreate` replaces: those it names,
@@ -508,7 +470,7 @@ fn images(
         .iter()
         .find(|(service, _)| !services.is_empty() && !services.contains(service))
     {
-        return Err(silent::Refused::NotShipped(service.clone()).error(matches));
+        return Err(silent::Refused::NotShipped(service.clone()).error(matches, store.again()));
     }
     let runtime: BTreeMap<ServiceName, ServiceName> = store
         .read(&ployz_store::ServicesQuery {
@@ -636,7 +598,7 @@ fn ship(
     events: Option<std::io::BufWriter<std::fs::File>>,
 ) -> Result<(), Error> {
     let shipped = execute(matches, store, admitted, None, events)?;
-    let again = progress::removal_retry(&shipped.view, |words| super::rerun(matches, words));
+    let again = progress::removal_retry(&shipped.view, |words| Rerun::then(matches, words));
     shipped.finish().map_err(|error| match again {
         Some(again) => error.hint(again),
         None => error,
@@ -698,6 +660,17 @@ impl Shipped {
         } else {
             Ok(())
         })
+    }
+}
+
+/// What a Deploy that failed names to run again: `deploy` as typed, without the yes it
+/// carried, which Cloud weighs against the plan as it stands now; another command that
+/// deployed names `deploy` of the Services it named.
+fn again<'a>(store: &Store, named: &'a [&'a str]) -> progress::Again<'a> {
+    if store.command_path() == "deploy" {
+        progress::Again::Typed(Box::new(store.again().without("approval")))
+    } else {
+        progress::Again::Services(named)
     }
 }
 
@@ -784,7 +757,7 @@ pub(super) fn execute(
                 .flatten();
             let error = match newer {
                 Some(newer) => {
-                    progress::replaced(&followed.view, &newer, |args| super::rerun(matches, args))
+                    progress::replaced(&followed.view, &newer, |args| Rerun::then(matches, args))
                 }
                 None => error,
             };
@@ -840,7 +813,7 @@ pub(super) fn execute(
     }
     // A Deploy that failed carries these on its failure instead.
     if followed.view.deployment.status == DeploymentStatus::Applied {
-        for hint in progress::beside_volumes(&followed.view, |args| super::rerun(matches, args)) {
+        for hint in progress::beside_volumes(&followed.view, |args| Rerun::then(matches, args)) {
             ui::hint(&hint);
         }
     }
@@ -860,8 +833,8 @@ pub(super) fn execute(
             .flatten()
             .map(String::as_str)
             .collect();
-        progress::completion(&view, successor.as_ref(), &named, |args| {
-            super::rerun(matches, args)
+        progress::completion(&view, successor.as_ref(), again(store, &named), |args| {
+            Rerun::then(matches, args)
         })
     };
     // A run that found no upload or usable image for its Services says to upload.
@@ -894,7 +867,7 @@ fn run_here(
     source: Option<&Path>,
     ended: tokio_util::sync::CancellationToken,
 ) -> Result<std::thread::JoinHandle<Result<DeploymentSummary, Error>>, Error> {
-    let direct = matches.get_one::<String>("connect").map(String::as_str);
+    let direct = crate::cli::connection(matches);
     let context = matches.get_one::<String>("context").map(String::as_str);
     let connections = match crate::connect::resolve_connections(
         &super::config_path(matches)?,
@@ -1321,7 +1294,11 @@ fn plan(
         target: false,
         deployment: None,
     })?;
-    let hint = store.again(&["--expect-version", plan.version.as_str()]);
+    let hint = store
+        .again()
+        .without("plan")
+        .set("expect-version", plan.version.as_str())
+        .line();
     let placed = plan.regions.values().any(Option::is_some) || !plan.replicas.is_empty();
     let (ingress, ingress_unchecked, regions) = match ingress_check(matches, placed) {
         Ok((check, regions)) => (Some(check.repairs), check.unchecked, regions),
@@ -1752,16 +1729,7 @@ fn id_hint(id: &DeploymentId) -> String {
 pub(super) fn redeploy(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let yes = matches.get_flag("yes");
-    // A refusal to delete data names this command again, with the same answer.
-    let mut words: Vec<&str> = matches
-        .get_one::<String>("id")
-        .map(String::as_str)
-        .into_iter()
-        .collect();
-    if yes {
-        words.push("--yes");
-    }
-    let store = store(root)?.args(words);
+    let store = store(root)?;
     let source = deployment_id(matches, &store, "id")?;
     refuse_local_detach(matches, &store)?;
     // The Store refuses when what it rolls back changed after the ask.
@@ -1810,7 +1778,7 @@ fn confirm_rollback(store: &Store, source: &DeploymentId) -> Result<Vec<u64>, Er
                 format!("Rolling back to {number} needs confirmation. Nothing deployed."),
                 serde_json::json!({ "deployment": view.deployment.number, "rolls_back": view.rolls_back }),
             )
-            .hint(Hint::Retry(super::typed_with(&["--yes"])))
+            .hint(store.again().switch("yes"))
         },
         "Cancelled. Nothing deployed.",
     )?;
@@ -1871,13 +1839,7 @@ pub(super) fn start(root: &ArgMatches) -> Result<(), Error> {
 
 pub(super) fn cancel(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    // An approval refusal names this command again, with the same Deployment.
-    let words: Vec<&str> = matches
-        .get_one::<String>("id")
-        .map(String::as_str)
-        .into_iter()
-        .collect();
-    let store = store(root)?.args(words);
+    let store = store(root)?;
     let id = deployment_id(matches, &store, "id")?;
     store
         .try_write_checked(
@@ -2093,7 +2055,6 @@ mod tests {
                 "staging",
             ])
             .unwrap();
-        let matches = crate::handlers::leaf_matches(&root);
         let local =
             ConfigStore::open("sqlite::memory:", SealingKey::new(b"test").unwrap()).unwrap();
         let store = Store::for_test(
@@ -2101,9 +2062,8 @@ mod tests {
                 std::sync::Arc::new(local),
                 Actor::system(OrganizationId::parse("local").unwrap()),
             ),
-            matches,
-        )
-        .args(super::switches(matches));
+            &root,
+        );
         let refused =
             ployz_core::RpcError::confirmation_required("This Deploy deletes the data of data")
                 .with_details(serde_json::json!({ "version": "3:1:0.1", "accept": ["data"] }));
@@ -2114,7 +2074,7 @@ mod tests {
             panic!("no retry: {hints:?}");
         };
         let reparsed = crate::cli::command()
-            .try_get_matches_from(shell_words::split(retry).unwrap())
+            .try_get_matches_from(shell_words::split(retry.command()).unwrap())
             .unwrap_or_else(|error| panic!("{retry}: {error}"));
         assert!(
             super::approve::flag(crate::handlers::leaf_matches(&reparsed), "forget-older"),

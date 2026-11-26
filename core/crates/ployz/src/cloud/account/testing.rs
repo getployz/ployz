@@ -7,6 +7,7 @@ use std::{
 
 use super::credential::{Credential, TokenFrom};
 use crate::cloud::login::{CredentialStore, LoginError, Secret};
+use crate::cloud::origin::CloudOrigin;
 
 /// A fake Cloud on loopback: `reply("POST /api/auth/device/token", body)` → (status, JSON).
 pub(crate) fn fake_cloud(
@@ -80,18 +81,21 @@ pub(crate) fn every_login_error(status: u16) -> Vec<(&'static str, LoginError)> 
         (
             "Unreachable",
             LoginError::Unreachable {
-                cloud: cloud(),
+                cloud: CloudOrigin::new(&cloud()).shown(),
                 error: transport(),
             },
         ),
         (
             "Unanswered",
             LoginError::Unanswered {
-                cloud: cloud(),
+                cloud: CloudOrigin::new(&cloud()).shown(),
                 error: transport(),
             },
         ),
-        ("Unsupported", LoginError::Unsupported(cloud())),
+        (
+            "Unsupported",
+            LoginError::Unsupported(CloudOrigin::new(&cloud()).shown()),
+        ),
         (
             "Status",
             LoginError::Status {
@@ -121,8 +125,8 @@ pub(crate) fn every_login_error(status: u16) -> Vec<(&'static str, LoginError)> 
         (
             "OtherCloud",
             LoginError::OtherCloud {
-                signed_in: cloud(),
-                requested: "https://other.test".to_owned(),
+                signed_in: CloudOrigin::new(&cloud()).shown(),
+                requested: CloudOrigin::new("https://other.test").shown(),
             },
         ),
         ("SignedOut", LoginError::SignedOut),
@@ -142,11 +146,15 @@ pub(crate) fn every_login_error(status: u16) -> Vec<(&'static str, LoginError)> 
         ("TokenBound", LoginError::TokenBound),
         (
             "UnknownOrganization",
-            LoginError::UnknownOrganization("acme".to_owned()),
+            LoginError::UnknownOrganization(crate::cli::Shown::of(
+                &crate::cli::shown::Label::parse("acme").unwrap(),
+            )),
         ),
         (
             "UnknownCredential",
-            LoginError::UnknownCredential("t1".to_owned()),
+            LoginError::UnknownCredential(crate::cli::Shown::of(
+                &crate::cli::shown::Minted::parse("t1").unwrap(),
+            )),
         ),
         (
             "AmbiguousCredential",

@@ -80,6 +80,7 @@ fn copy(suffix: u8, machine: &Machine, r#gen: u64) -> ContainerObservation {
         run: None,
         log_driver: None,
         admission: None,
+        replaced_by: None,
     })
     .unwrap()
 }

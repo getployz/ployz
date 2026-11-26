@@ -125,6 +125,9 @@ pub struct PullImageRequest {
     /// Credentials for a private image; used for this pull only, never stored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub registry_auth: Option<crate::RegistryAuth>,
+    /// A login sealed for the image's registry; opened for this pull only, never stored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry_login: Option<crate::SealedLogin>,
 }
 
 /// Make one image present on this Machine as `policy` asks, the way the caller's own
@@ -140,6 +143,10 @@ pub struct PullFreeImageRequest {
     /// this pull only, never stored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub registry_auth: Option<crate::RegistryAuth>,
+    /// A sealed login, which a free pull never opens: a Machine refuses the pull rather
+    /// than drop it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry_login: Option<crate::SealedLogin>,
 }
 
 /// Successful `PullImage`, `PullFreeImage` and `PullImageFromMachine` payload.

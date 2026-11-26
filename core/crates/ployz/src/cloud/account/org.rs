@@ -79,7 +79,7 @@ pub(crate) async fn use_organization(
     let response = http::dispatch(credential.cloud(), request, Effect::Read).await?;
     let status = response.status();
     if matches!(status, StatusCode::BAD_REQUEST | StatusCode::FORBIDDEN) {
-        return Err(LoginError::UnknownOrganization(slug.to_owned()));
+        return Err(LoginError::unknown_organization(slug));
     }
     let body = http::read_body(credential.cloud(), response, Effect::Read).await?;
     let organization: Organization = answer(credential, status, &body)?;

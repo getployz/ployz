@@ -6,7 +6,7 @@ import type { AdmitDeploy } from "#/modules/config-store/admit-deploy";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { protector, protectorOnly } from "#/modules/config-store/protected.server";
 import { environmentProtected } from "#/modules/config-store/store-lookup.server";
-import { blocked, isPending, namesReview, underRule, versionService } from "#/modules/deploy-approval/deploy-tap";
+import { admission, isPending, namesReview, versionService } from "#/modules/deploy-approval/deploy-tap";
 import { prepareDeployTap } from "#/modules/deploy-approval/deploy-tap.server";
 import { type Caller, callerEnvironments, callerPermissions } from "#/modules/identity/actor";
 import type { DeployReview } from "#/modules/proposals/proposal";
@@ -39,20 +39,24 @@ export const linkDeploy = Effect.fn("DeployLink.link")(function* (caller: Caller
   if (again !== null) return again.refused === undefined ? yield* linked(caller, again) : { refused: again.refused };
   const agent = caller.via === "agent";
   const covered = new Set((command.versions ?? []).map(versionService));
+  // A Device that signed the rule with this Deploy already signed its Source step, so the rule isn't read for it.
+  const keyed = command.rule !== undefined;
   const planned = yield* prepareDeployTap(caller, {
-    organizationSlug: caller.organization.slug, environment: command.environment, services: command.services ?? [], classify: true,
+    organizationSlug: caller.organization.slug, environment: command.environment, services: command.services ?? [], classify: true, rule: !keyed,
   }).pipe(Effect.catchIf((error) => error instanceof Forbidden || error instanceof NotFound, () => Effect.succeed(null)));
   if (planned === null) return null;
   const pending = planned.kind === "refused" && isPending(planned.details);
   if (planned.kind === "refused" && !pending) return null;
   const plan = planned.kind === "plan" ? planned.plan : null;
-  const open = (plan?.unsigned ?? []).filter((entry) => !covered.has(entry.service) && !underRule(entry));
-  const tap = planned.kind === "plan" ? planned.tap : null;
-  // Only an agent waits on a person here. Anyone else's Deploy queues as it always did, and each Server checks it.
-  if (open.length > 0 && tap?.kind === "refused") return agent ? { refused: refusal("conflict", `${tap.message} Nothing deployed.`) } : null;
-  const cannot = tap?.kind === "ready" ? blocked(open) : null;
-  if (cannot !== null) return { refused: refusal("conflict", cannot) };
-  const signs = tap?.kind === "ready" && open.length > 0;
+  // A Pending plan has nothing to sign yet: the approval page makes the value, then plans.
+  const admits = planned.kind === "plan" ? admission({ plan: planned.plan, servers: planned.tap, source: planned.source, covered, rule: { kind: "none" } })
+    : { kind: "admit", source: false } as const;
+  // Only an agent waits on a person when Cloud couldn't reach the Servers. Anyone else's Deploy queues as it always did,
+  // and each Server checks it.
+  if (admits.kind === "refused" && admits.unreached) return agent ? { refused: refusal("conflict", `${admits.reason} Nothing deployed.`) } : null;
+  if (admits.kind === "refused") return { refused: refusal("conflict", admits.reason) };
+  // A Git build no rule covers needs one even when it reaches no data, so the approver's tap signs the rule with it.
+  const signs = admits.kind === "ask" || admits.source;
   const makes = pending && covered.size === 0;
   if (!agent && !signs && !makes && !mayGuard) return null;
 
@@ -75,7 +79,7 @@ export const linkDeploy = Effect.fn("DeployLink.link")(function* (caller: Caller
     if (diff === null) return null;
     version = diff.version;
   }
-  // The approval page never shows an automatic deploy rule, so approving a Deploy never signs one: the asker's is dropped.
+  // Only the approver's tap signs the rule the Deploy keeps: the asker's is dropped.
   const { rule: _rule, ...ruleless } = command;
   let bound: AdmitDeploy = {
     ...ruleless, services: [...command.services ?? []], version,

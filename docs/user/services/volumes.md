@@ -312,6 +312,11 @@ Deleting a deployed volume moves its data to the trash on each server that held 
 waits there for 7 days, counted only while the server runs, then Ployz deletes it for good.
 Until then it still takes its space. A server that hasn't been upgraded to a Ployz with the trash deletes the data at once.
 
+Ployz keeps any copy on another server that may hold writes no other server has, such as an old
+copy a move left. `ployz volume leftovers` lists those copies, and `ployz volume leftovers rm`
+deletes one after showing it, into that server's trash. See
+[Copies left behind by a deleted volume](../troubleshooting/volumes.md#copies-left-behind-by-a-deleted-volume).
+
 1. Open the volume and click **Delete volume** under **Danger**. **Keep volume** undoes it.
 2. Click **Delete data**, or **Deploy**.
 3. Ployz shows **Deletes data** with what goes. Type your `project/environment`, like

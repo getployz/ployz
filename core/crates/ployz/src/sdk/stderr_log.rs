@@ -65,6 +65,10 @@ pub fn install() {
     static INSTALLED: OnceLock<()> = OnceLock::new();
     INSTALLED.get_or_init(|| {
         let directives = std::env::var(FILTER).ok();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the SDK host's container log, which keeps only the fields named above"
+        )]
         let subscriber =
             tracing_subscriber::registry().with(lines(std::io::stderr, filter(directives)));
         // A host's own subscriber wins.

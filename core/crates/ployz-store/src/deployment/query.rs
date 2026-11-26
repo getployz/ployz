@@ -109,6 +109,13 @@ pub struct PlanView {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(optional, as = "Option<Vec<Unsigned>>")]
     pub unsigned: Vec<Unsigned>,
+    /// When the query asked for `target`: each Service this Deploy ships, by the name it
+    /// runs under, that builds from a Git repository and that the live automatic deploy
+    /// rule doesn't approve as it stands, whether or not it reaches data. Only a Source
+    /// step signed with the Deploy builds it. Absent from an older Store.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<Vec<ServiceName>>")]
+    pub sources: Vec<ServiceName>,
 }
 
 /// A Service a Deploy ships that its Servers run only signed, and nothing signed covers.
@@ -370,7 +377,7 @@ pub(crate) fn plan(
         namespace.clone(),
         None,
     )?;
-    let (lowered, volumes, unsigned) = match query.target {
+    let (lowered, volumes, unsigned, sources) = match query.target {
         true => {
             // The specs of the Services it ships, for a Device to approve before it
             // admits the Deploy.
@@ -387,9 +394,15 @@ pub(crate) fn plan(
                 (&frozen.nodes, &lowered),
             )?;
             let volumes = crate::volume::birth::planned(tx, &environment.summary.id, &target)?;
-            (Some(lowered), volumes, unsigned)
+            let sources = deployment::versions::unsourced(
+                tx,
+                (&environment.summary.id, &namespace),
+                &target,
+                (&frozen.nodes, &lowered),
+            )?;
+            (Some(lowered), volumes, unsigned, sources)
         }
-        false => (None, PlannedVolumes::new(), Vec::new()),
+        false => (None, PlannedVolumes::new(), Vec::new(), Vec::new()),
     };
     let regions = target
         .services
@@ -429,6 +442,7 @@ pub(crate) fn plan(
         replicas,
         volumes,
         unsigned,
+        sources,
     })
 }
 
@@ -479,6 +493,7 @@ fn redeploy_plan(
         replicas: BTreeMap::new(),
         volumes,
         unsigned: Vec::new(),
+        sources: Vec::new(),
     })
 }
 

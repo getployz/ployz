@@ -433,7 +433,7 @@ pub(crate) const GITHUB_DISCONNECT: Verb = Verb::cloud(
 .docs("deploy/github.md");
 pub(crate) const GITHUB_LS: Verb =
     Verb::cloud("github ls", Never, github::list_command, github::list).docs("deploy/github.md");
-pub(crate) const GITHUB_RULE_APPROVE: Verb = Verb::cloud(
+pub(crate) const GITHUB_RULE_APPROVE: Verb = Verb::internal(
     "github rule approve",
     Never,
     github_rule::approve_command,
@@ -677,6 +677,13 @@ pub(crate) const SERVER_UPGRADE: Verb = Verb::cloud(
     server::upgrade,
 )
 .docs("servers/manage-servers.md");
+pub(crate) const SERVER_VOLUMES: Verb = Verb::cloud(
+    "server volumes",
+    Depends,
+    server::volumes::command,
+    server::volumes::volumes,
+)
+.docs("troubleshooting/servers.md");
 pub(crate) const SERVER_UPGRADE_POLICY_SET: Verb = Verb::cloud(
     "server upgrade-policy set",
     Never,
@@ -810,6 +817,21 @@ pub(crate) const VOLUME_INSPECT: Verb = Verb::cloud(
     volume::inspect_command,
     volume::inspect,
 );
+pub(crate) const VOLUME_LEFTOVERS: Verb = Verb::cloud(
+    "volume leftovers",
+    Never,
+    volume::leftovers::list_command,
+    volume::leftovers::list,
+)
+.docs("services/volumes.md");
+pub(crate) const VOLUME_LEFTOVERS_RM: Verb = Verb::cloud(
+    "volume leftovers rm",
+    Always,
+    volume::leftovers::remove_command,
+    volume::leftovers::remove,
+)
+.keeps_running(KeepsRunning::With("--wait"))
+.docs("services/volumes.md");
 pub(crate) const VOLUME_LS: Verb =
     Verb::cloud("volume ls", Never, volume::list_command, volume::list).docs("services/volumes.md");
 pub(crate) const VOLUME_MIRROR: Verb = Verb::cloud(
@@ -1023,6 +1045,7 @@ pub(crate) const VERBS: &[Verb] = &[
     SERVER_TOKEN_REVOKE,
     SERVER_UPGRADE,
     SERVER_UPGRADE_POLICY_SET,
+    SERVER_VOLUMES,
     SERVICE_ADD,
     SERVICE_INSPECT,
     SERVICE_LS,
@@ -1041,6 +1064,8 @@ pub(crate) const VERBS: &[Verb] = &[
     UP,
     VOLUME_ADD,
     VOLUME_INSPECT,
+    VOLUME_LEFTOVERS,
+    VOLUME_LEFTOVERS_RM,
     VOLUME_LS,
     VOLUME_MIRROR,
     VOLUME_MIRROR_RM,
