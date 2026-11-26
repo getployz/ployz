@@ -648,6 +648,7 @@ impl Run {
         built: BTreeMap<ServiceName, BuildReceipt>,
     ) -> Result<DeploymentSummary, RpcError> {
         let deletes = claimed.deletes.clone();
+        let closes = claimed.closes.clone();
         let pins = pins(&claimed.ran);
         for spec in &mut claimed.intent.target {
             if let Some(image) = pins.get(&spec.name) {
@@ -737,7 +738,13 @@ impl Run {
                 self.record_warnings(&mut warnings).await;
                 let removed = if matches!(outcome, DeployOutcome::Success { .. }) {
                     // Deleting is never interrupted: a half-deleted set stays accepted.
-                    self.renewing(remove_volumes(session, deletes), || ()).await
+                    let removal = async {
+                        match &closes {
+                            Some(namespace) => session.close_preview(namespace, deletes).await,
+                            None => remove_volumes(session, deletes).await,
+                        }
+                    };
+                    self.renewing(removal, || ()).await
                 } else {
                     Vec::new()
                 };
@@ -1652,7 +1659,7 @@ async fn rule_proofs(
         if proofs.contains(service) {
             continue;
         }
-        let approved = rule.service(service);
+        let approved = rule.build_policy(service);
         let receipt = receipts.get(service);
         let commit = claimed
             .sources
@@ -1660,16 +1667,12 @@ async fn rule_proofs(
             .find(|source| source.service == *service)
             .and_then(|source| source.commit.as_ref())
             .and_then(|commit| CommitSha::parse(commit.as_str()).ok());
-        let (Some(policy), Some(receipt), Some(commit)) = (
-            approved.and_then(|approved| approved.policy.as_ref()),
-            receipt,
-            commit,
-        ) else {
+        let (Some(policy), Some(receipt), Some(commit)) = (approved, receipt, commit) else {
             continue;
         };
         let (Ok(image), Ok(policy)) = (
             BuiltImageDigest::parse(&receipt.image.reference),
-            PolicyDigest::of(policy),
+            PolicyDigest::of(&policy),
         ) else {
             continue;
         };
@@ -1682,7 +1685,7 @@ async fn rule_proofs(
             service: service.clone(),
             policy,
             commit,
-            authority: token.authority,
+            authority: token.authority.clone(),
             stage: BuildStage::Built { image, attest },
         };
         let token = ployz_core::GithubToken::new(token.token.clone());
@@ -1858,7 +1861,7 @@ fn refused_before_deletes(
 
 /// Delete exactly the Docker Volumes admission accepted, never others of the same
 /// name. Failing to reach the Cluster deletes none, so their Volumes stay deployed.
-async fn remove_volumes(
+pub(super) async fn remove_volumes(
     session: &Session,
     volumes: Vec<ployz_core::DockerVolumeId>,
 ) -> Vec<ployz_core::VolumeRemoval> {

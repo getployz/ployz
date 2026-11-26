@@ -1,6 +1,7 @@
 //! The record of what this Machine has consumed, kept in `restart-approvals.json`: joins,
 //! GitHub tokens, rule marks, the hook each rule's Service last ran, each Service's
-//! floor, and each Copy step taken.
+//! floor, each Copy step taken, and each preview this Machine opened and how far its
+//! Close got.
 //! Every verb goes through [`ConsumptionLog::transact`] or [`ConsumptionLog::read`], so the
 //! lock, the lazy load, the write and the cache reset after a failed write are one piece
 //! of code.
@@ -14,7 +15,7 @@ use std::{
 };
 
 use ployz_core::{
-    QualifiedService, SealingPublicKey, ServiceName,
+    Namespace, PreviewRefusal, QualifiedService, SealingPublicKey, ServiceName,
     authority::{
         AuthorityRefusal, AutoDeployRule, BuildClaim, CopyVerified, CopyWindow, ProposalRef,
         RuleId, RuleIdentity, Signed, StepDigest, Timestamp, version::Forget,
@@ -63,6 +64,21 @@ struct Consumption {
     /// Each Copy step taken here, by its operation and index.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     copies: BTreeMap<String, CopyTaken>,
+    /// Each preview Namespace this Machine created a Container in, and whether it closed.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    previews: BTreeMap<Namespace, PreviewState>,
+}
+
+/// How far a preview got on this Machine. It only moves forward, so a closed preview
+/// never runs here again.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum PreviewState {
+    Open,
+    /// A Close began: nothing more starts or arrives, and the sweep may be half done.
+    Closing,
+    /// The sweep finished.
+    Closed,
 }
 
 /// A Copy step this Machine took, as its bundle listed it.
@@ -136,8 +152,16 @@ impl Consumption {
 
 /// Where a rule's record for one Service is kept: one entry per rule and Service, so the
 /// record grows with rules, not with pushes.
-fn rule_service_key(rule: RuleId, service: &ServiceName) -> String {
-    format!("{rule}/{service}")
+/// A rule's Service, and for a preview rule the preview, which runs its own hooks: a second
+/// preview at the same push seeds its own empty database.
+fn rule_service_key(
+    (rule, preview): (RuleId, Option<&ployz_core::Namespace>),
+    service: &ServiceName,
+) -> String {
+    match preview {
+        Some(preview) => format!("{rule}/{preview}/{service}"),
+        None => format!("{rule}/{service}"),
+    }
 }
 
 /// The hook one push ran for a rule's Service: its build and the slot it was made in.
@@ -686,20 +710,113 @@ impl ConsumptionLog {
         })
     }
 
-    /// Take the hook place of `claim`'s push under `rule` for the slot named `slot`,
-    /// refusing one taken for another slot. A request resent for the same slot passes:
-    /// the Machine adopts the hook that ran. A later push of the Service replaces the
-    /// entry, so a push runs its hook once; a force push back to an earlier commit can
-    /// run that commit's hook again.
+    /// Open `preview` for a Container about to be created in it, or data about to arrive
+    /// into it, refusing one whose Close began.
+    ///
+    /// # Errors
+    /// Returns [`Error::ApprovalRecord`] when the record cannot be read or written.
+    pub(crate) fn open_preview(
+        &self,
+        preview: &Namespace,
+    ) -> Result<Result<(), PreviewRefusal>, Error> {
+        self.transact(Error::ApprovalRecord, |log| {
+            Ok(match log.previews.get(preview) {
+                Some(PreviewState::Open) => Edit::Keep(Ok(())),
+                Some(PreviewState::Closing | PreviewState::Closed) => {
+                    Edit::Keep(Err(closed(preview)))
+                }
+                None => {
+                    log.previews.insert(preview.clone(), PreviewState::Open);
+                    Edit::Write(Ok(()))
+                }
+            })
+        })
+    }
+
+    /// Refuse a start of, or data arriving into, `preview` once its Close began. A
+    /// Namespace this Machine never opened passes: what creates or lands in it opens it,
+    /// or refuses.
+    ///
+    /// # Errors
+    /// Returns [`Error::ApprovalRecord`] when the record cannot be read.
+    pub(crate) fn preview_runs(
+        &self,
+        preview: &Namespace,
+    ) -> Result<Result<(), PreviewRefusal>, Error> {
+        self.read(Error::ApprovalRecord, |log| {
+            match log.previews.get(preview) {
+                Some(PreviewState::Closing | PreviewState::Closed) => Err(closed(preview)),
+                Some(PreviewState::Open) | None => Ok(()),
+            }
+        })
+    }
+
+    /// Begin closing `preview`, written before anything of it is removed. Refuses a
+    /// preview this Machine never opened, which leaves nothing here.
+    ///
+    /// # Errors
+    /// Returns [`Error::ApprovalRecord`] when the record cannot be read or written.
+    pub(crate) fn begin_close(
+        &self,
+        preview: &Namespace,
+    ) -> Result<Result<(), PreviewRefusal>, Error> {
+        self.transact(Error::ApprovalRecord, |log| {
+            Ok(match log.previews.get(preview) {
+                None => Edit::Keep(Err(PreviewRefusal::NeverOpened {
+                    namespace: preview.clone(),
+                })),
+                Some(PreviewState::Closing | PreviewState::Closed) => Edit::Keep(Ok(())),
+                Some(PreviewState::Open) => {
+                    log.previews.insert(preview.clone(), PreviewState::Closing);
+                    Edit::Write(Ok(()))
+                }
+            })
+        })
+    }
+
+    /// Mark `preview` closed once its sweep finished, and drop the hook record each of its
+    /// Services kept, which no later push reads.
+    ///
+    /// # Errors
+    /// Returns [`Error::ApprovalRecord`] when the record cannot be read or written.
+    pub(crate) fn finish_close(&self, preview: &Namespace) -> Result<(), Error> {
+        let infix = format!("/{preview}/");
+        self.transact(Error::ApprovalRecord, |log| {
+            log.previews.insert(preview.clone(), PreviewState::Closed);
+            log.rule_hooks.retain(|key, _| !key.contains(&infix));
+            Ok(Edit::Write(()))
+        })
+    }
+
+    /// Every preview in `state`: Closing ones a daemon start resumes, and Open ones Cloud
+    /// checks against what it holds open.
+    ///
+    /// # Errors
+    /// Returns [`Error::ApprovalRecord`] when the record cannot be read.
+    pub(crate) fn previews(&self, state: PreviewState) -> Result<Vec<Namespace>, Error> {
+        self.read(Error::ApprovalRecord, |log| {
+            log.previews
+                .iter()
+                .filter(|(_, held)| **held == state)
+                .map(|(preview, _)| preview.clone())
+                .collect()
+        })
+    }
+
+    /// Take the hook place of `claim`'s push under `place`, a rule and for a preview rule
+    /// the preview, for the slot named `slot`, refusing one taken for another slot. A
+    /// request resent for the same slot passes: the Machine adopts the hook that ran. A
+    /// later push of the Service replaces the entry, so a push runs its hook once in each
+    /// place; a force push back to an earlier commit can run that commit's hook again.
     pub(crate) fn consume_rule_hook(
         &self,
-        rule: RuleId,
+        place: (RuleId, Option<&ployz_core::Namespace>),
         claim: &BuildClaim,
         slot: &ployz_core::CreationKey,
         refused: impl FnOnce(AuthorityRefusal) -> Error,
     ) -> Result<(), Error> {
         self.transact(Error::ApprovalRecord, |log| {
-            let key = rule_service_key(rule, &claim.service);
+            let key = rule_service_key(place, &claim.service);
             if let Some(taken) = log.rule_hooks.get(&key)
                 && taken.generation == claim.generation
                 && taken.commit == claim.commit
@@ -754,7 +871,7 @@ impl ConsumptionLog {
             }
             let hooks = log
                 .registry_hooks
-                .entry(rule_service_key(rule, service))
+                .entry(rule_service_key((rule, None), service))
                 .or_insert_with(|| RegistryHooks {
                     generation,
                     images: Vec::new(),
@@ -793,6 +910,12 @@ impl ConsumptionLog {
 /// Every registry hook a Service took, under its newest generation.
 fn registry_taken(hooks: &BTreeMap<String, RegistryHooks>) -> impl Iterator<Item = &RegistryHook> {
     hooks.values().flat_map(|hooks| hooks.images.iter())
+}
+
+fn closed(preview: &Namespace) -> PreviewRefusal {
+    PreviewRefusal::Closed {
+        namespace: preview.clone(),
+    }
 }
 
 #[cfg(test)]

@@ -16,6 +16,7 @@ pub(crate) fn set_plan(
     tx: &mut dyn Tx,
     who: &Actor,
     set: &SetPrPlan,
+    trusted: &Trusted,
 ) -> Result<PrPlansView, RpcError> {
     let project = scope::project(tx, who, set.project.as_ref())?;
     scope::lock_project(tx, &project.id)?;
@@ -38,6 +39,8 @@ pub(crate) fn set_plan(
             names,
         ));
     };
+    // Under the plan's own lock, as everything that opens or closes its previews holds it.
+    super::preview::lock_plan(tx, &project.id, *repository_id)?;
     let mut plan = load(tx, &project.id, *repository_id)?.unwrap_or_else(off);
     if let Some(enabled) = set.enabled {
         plan.enabled = enabled;
@@ -101,7 +104,32 @@ pub(crate) fn set_plan(
                 .collect::<Result<_, RpcError>>()?;
         }
     }
+    if let Some(rule) = &set.preview_rule {
+        super::preview::signed(rule, trusted)?;
+        super::preview::fit(tx, who, (&project.id, &plan, *repository_id), rule)?;
+        let cap = plan
+            .preview
+            .as_ref()
+            .map_or(super::preview::DEFAULT_CAP, |kept| kept.cap);
+        plan.preview = Some(super::preview::StoredPreview {
+            rule: (**rule).clone(),
+            cap,
+        });
+    }
+    if let Some(cap) = set.preview_cap {
+        let Some(preview) = &mut plan.preview else {
+            return Err(error::invalid(
+                "Keep a preview rule first: the cap counts its previews",
+                json!({}),
+            ));
+        };
+        preview.cap = cap;
+    }
     let name = set.repository.as_str();
+    crate::storage::ranked::take(crate::storage::ranked::Lock::plan(
+        &project.id,
+        *repository_id,
+    ));
     tx.execute(
         "INSERT INTO config_pr_plan (project_id, repository_id, organization_id, repository, plan) \
          VALUES (?1, ?2, ?3, ?4, ?5) \
@@ -174,6 +202,7 @@ pub(crate) fn plans(
                 .collect(),
             remove_on_close: stored.remove_on_close,
             include_bots: stored.include_bots,
+            preview: stored.preview.as_ref().and_then(Option::from),
             open,
         });
     }

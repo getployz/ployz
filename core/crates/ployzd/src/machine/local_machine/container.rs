@@ -155,7 +155,7 @@ impl LocalMachine {
                     .mounted_volumes()
                     .filter_map(|volume| volume.source.managed_docker_volume_name())
             }) {
-                local.admit_preview_arrival(name)?;
+                local.open_preview_arrival(name)?;
             }
             let storage = local.observe_storage().await;
             let mut requested = std::collections::BTreeMap::new();
@@ -2067,6 +2067,11 @@ impl LocalMachine {
             &spec.to_requested(),
         )
         .map_err(Error::PreviewRefused)?;
+        if ployz_core::PreviewNamespace::of(namespace).is_some() {
+            self.approvals
+                .open_preview(namespace)?
+                .map_err(Error::PreviewRefused)?;
+        }
         // Only a key or a rule keeps a name: Cloud never learns of a deploy through this
         // Server's own socket, so a name it kept would refuse every later Cloud deploy of a
         // Service that reaches no data. System Containers are skipped: the replica may be

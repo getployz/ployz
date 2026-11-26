@@ -26,6 +26,7 @@ mod peer_pull;
 mod placement;
 mod recovery;
 pub(crate) use peer_pull::ImageProxy;
+mod preview_fence;
 mod private_access;
 mod processes;
 mod spec_store;

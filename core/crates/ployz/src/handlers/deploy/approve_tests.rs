@@ -204,6 +204,7 @@ fn rule_over_web(ended: bool) -> ployz_core::authority::AutoDeployRule {
     use ployz_core::authority::{AutoDeployRule, RuleId, RuleService, SignerKey, Timestamp};
     AutoDeployRule {
         proposal: None,
+        preview: None,
         cluster: ployz_core::SealingPublicKey::from_bytes([9; 32]),
         rule: RuleId::from_bytes([0x11; 16]),
         generation: 1,
@@ -234,6 +235,7 @@ fn rule_over_web(ended: bool) -> ployz_core::authority::AutoDeployRule {
                 cache: PolicyCache::Off,
             }),
             secrets: None,
+            seeded: None,
         }],
         issued_at: Timestamp::from_millis(1_800_000_000_000).unwrap(),
         ended,

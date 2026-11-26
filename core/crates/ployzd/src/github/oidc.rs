@@ -14,7 +14,7 @@ use std::{
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use ployz_core::authority::{
-    AuthorityRefusal, AutoDeployRule, GithubClaims, Timestamp,
+    AuthorityRefusal, AutoDeployRule, CommitAuthority, GithubClaims, Timestamp,
     validity::{self, CLOCK_SKEW_MILLIS},
 };
 use ring::signature::{RSA_PKCS1_2048_8192_SHA256, RsaPublicKeyComponents};
@@ -282,7 +282,8 @@ impl IssuerKeys {
         verify(token, &keys, now)
     }
 
-    /// Verify `token` at `now` and check its claims against `rule`. A refusal is
+    /// Verify `token` at `now` and check its claims against `rule` for a build under
+    /// `authority`. A refusal is
     /// logged with the rule's ID and the reason, the claim's name for a claim, never the
     /// token.
     ///
@@ -293,6 +294,7 @@ impl IssuerKeys {
         &self,
         rule: &AutoDeployRule,
         token: &str,
+        authority: &CommitAuthority,
         now: Timestamp,
     ) -> Result<GithubClaims, ProofRefusal> {
         let id = rule.identity().rule;
@@ -300,7 +302,7 @@ impl IssuerKeys {
             tracing::warn!(rule = %id, %refusal, "refused a GitHub token");
             ProofRefusal::Token(refusal)
         })?;
-        rule.verify_claims(&claims).map_err(|refusal| {
+        rule.verify_claims(&claims, authority).map_err(|refusal| {
             if let AuthorityRefusal::Mismatch { field } = &refusal {
                 tracing::warn!(rule = %id, claim = field.text(), "refused a GitHub token's claim");
             }

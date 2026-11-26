@@ -878,6 +878,8 @@ fn open_as(store: &ConfigStore, who: &Actor, event: &SystemEvent) -> Automated {
                 setup: None,
                 remove_on_close: None,
                 include_bots: None,
+                preview_rule: None,
+                preview_cap: None,
             },
         )
         .unwrap();
@@ -1208,6 +1210,8 @@ fn another_repositorys_push_never_ships_a_build_of_a_pull_request_whose_author_l
                 setup: None,
                 remove_on_close: None,
                 include_bots: None,
+                preview_rule: None,
+                preview_cap: None,
             },
         )
         .unwrap();
@@ -1392,6 +1396,8 @@ fn a_bots_pull_request_stays_trusted_whoever_the_members_are() {
                 setup: None,
                 remove_on_close: None,
                 include_bots: Some(true),
+                preview_rule: None,
+                preview_cap: None,
             },
         )
         .unwrap();
@@ -2110,11 +2116,13 @@ fn signed_rule(
                     ))
                 },
                 secrets: None,
+                seeded: None,
             }
         })
         .collect();
     let rule = AutoDeployRule {
         proposal: None,
+        preview: None,
         cluster: ployz_core::SealingPublicKey::from_bytes([3; 32]),
         rule: RuleId::from_bytes([id; 16]),
         generation,

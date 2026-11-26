@@ -263,6 +263,7 @@ fn take(tx: &mut dyn Tx, mut stored: Stored, runner: &RunnerId) -> Result<Taken,
         ),
         (&stored.nodes, &intent.target),
     )?;
+    let closes = closes(tx, &stored)?;
     Ok(Taken::Claimed(Box::new(Claimed {
         deployment: stored.summary,
         intent,
@@ -278,8 +279,22 @@ fn take(tx: &mut dyn Tx, mut stored: Stored, runner: &RunnerId) -> Result<Taken,
         image_tokens,
         verified,
         ran,
+        closes,
         free,
     })))
+}
+
+/// The preview `stored` closes: a removal of a preview's PR Environment its close marked,
+/// not a shut down, which ships the same empty Environment and comes back.
+fn closes(tx: &mut dyn Tx, stored: &Stored) -> Result<Option<Namespace>, RpcError> {
+    let namespace = stored.namespace();
+    if !stored.summary.remove || ployz_core::PreviewNamespace::of(namespace).is_none() {
+        return Ok(None);
+    }
+    let target = crate::removal::Target::Environment(stored.summary.environment_id.clone());
+    let marked = crate::removal::mark::of(tx, &target)?
+        .is_some_and(|mark| mark.state == crate::removal::mark::State::Removing);
+    Ok(marked.then(|| namespace.clone()))
 }
 
 /// The Deployments of `claimed`'s Environment, itself aside, that ran and ended.

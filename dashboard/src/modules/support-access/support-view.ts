@@ -167,6 +167,7 @@ function viewRedactions(shows: SupportShows): ViewRedactions {
     consented: same,
     uploads: same,
     pr_plans: same,
+    open_previews: same,
     // Signed statements name a digest and a signer, never a value.
     versions: same,
     // Support reads where an Environment runs, never the specs its parents ran, which carry settings.

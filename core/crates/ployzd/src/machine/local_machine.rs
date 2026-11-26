@@ -90,6 +90,7 @@ mod consumption;
 mod container;
 mod forget;
 mod ingress_doors;
+mod preview_close;
 mod private_access;
 mod register;
 mod reserved;
@@ -442,6 +443,16 @@ impl LocalMachine {
     /// the daemon stopped. A step that fails is warned about and the other still runs, and
     /// what it could not place stays as it is until the operator asks again.
     pub(crate) async fn restore_held_at_boot(&self) {
+        // The daemon's first firewall install closed the preview sets; no two previews meet
+        // until this writes them again.
+        if let Ok(containers) = self.docker()
+            && let Err(error) = containers.lifecycle().sync_preview_fence().await
+        {
+            tracing::warn!(
+                error = %ployz_core::error_chain::inline(&error),
+                "could not write the preview fence; each preview's own Containers on this Server can't reach each other until one of its Containers starts"
+            );
+        }
         if let Err(error) = self.restore_private_access().await {
             tracing::warn!(
                 error = %ployz_core::error_chain::inline(&error),

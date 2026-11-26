@@ -10,7 +10,7 @@ use ployz_core::{
 use serde_json::{Value, json};
 
 use super::super::rule_grant::tests::{
-    Fixture, claim_for, commit, fixture, github, github_mut, now, rule_for, token_for,
+    Fixture, claim_for, commit, fixture, fork, github, github_mut, now, rule_for, token_for,
 };
 use super::*;
 
@@ -34,6 +34,10 @@ fn requested(spec: &Value) -> ployz_core::RequestedServiceSpec {
 }
 
 fn want(kind: &str, key: &str, spec: &Value) -> ContainerWant {
+    want_in("app", kind, key, spec)
+}
+
+fn want_in(namespace: &str, kind: &str, key: &str, spec: &Value) -> ContainerWant {
     let resolved = requested(spec)
         .to_resolved(
             ployz_core::ServiceId::parse("c".repeat(32)).unwrap(),
@@ -42,7 +46,7 @@ fn want(kind: &str, key: &str, spec: &Value) -> ContainerWant {
         .unwrap();
     serde_json::from_value(
         json!({"state":"running", "rotation":"pending", "container":{"new":{
-        "slot":{"namespace":"app", "service":"web", "kind":kind, "creation_key":key},
+        "slot":{"namespace":namespace, "service":spec["name"], "kind":kind, "creation_key":key},
         "resolved_spec":resolved, "gen":1}}}),
     )
     .unwrap()
@@ -147,10 +151,19 @@ impl Fixture {
 impl Fixture {
     /// Admit the hook in slot `key` under `proof` and take its place, as its create does.
     async fn create_hook(&self, key: &str, proof: &RuleProof) -> Result<(), Error> {
+        self.create_hook_in("app", key, proof).await
+    }
+
+    async fn create_hook_in(
+        &self,
+        namespace: &str,
+        key: &str,
+        proof: &RuleProof,
+    ) -> Result<(), Error> {
         let admitted = self
             .machine
             .admit_rule_deploy(
-                &want("pre_deploy_hook", key, &spec()),
+                &want_in(namespace, "pre_deploy_hook", key, &spec()),
                 proof,
                 (&github(commit()), &NoRegistry),
                 now(),
@@ -641,10 +654,11 @@ impl Github for Slow {
         &self,
         rule: &ployz_core::authority::AutoDeployRule,
         token: &str,
+        authority: &ployz_core::authority::CommitAuthority,
         now: Timestamp,
     ) -> Result<ployz_core::authority::GithubClaims, crate::github::oidc::ProofRefusal> {
         self.wait(SlowAt::Token).await;
-        self.inner.claims(rule, token, now).await
+        self.inner.claims(rule, token, authority, now).await
     }
 
     async fn head(
@@ -940,6 +954,210 @@ async fn a_rule_deploy_through_the_servers_socket_is_admitted_under_the_rule() {
     assert_eq!(admitted.admission(), ployz_core::Admission::Signed);
 }
 
+impl Fixture {
+    /// The preview `nonce` of `rule` on this Server.
+    fn preview(&self, rule: &ployz_core::authority::AutoDeployRule, nonce: &str) -> Namespace {
+        self.preview_of(rule, nonce)
+    }
+
+    /// The fixture's rule as a preview rule of the Environment `app`, approving `spec()` in
+    /// every preview, built from any branch.
+    fn preview_rule(&self) -> ployz_core::authority::AutoDeployRule {
+        let mut rule = self.deploy_rule(3);
+        if let ployz_core::authority::RuleSource::Github(github) = &mut rule.source {
+            github.branch = String::new();
+        }
+        rule.services[0].template = ployz_core::authority::preview_template(
+            &requested(&spec()),
+            &self.preview(&rule, "00000000"),
+            false,
+        )
+        .unwrap();
+        rule.preview = Some(ployz_core::authority::PreviewTerms {
+            parent: uuid::Uuid::nil(),
+            pushers: Vec::new(),
+            pinned: Vec::new(),
+        });
+        rule
+    }
+}
+
+/// A push to any branch deploys into each preview, whose hooks run once each, so a second
+/// preview at the same push seeds its own database.
+#[tokio::test]
+async fn a_preview_rule_deploys_a_push_and_runs_its_hook_once_in_each_preview() {
+    let fixture = fixture().await;
+    let rule = fixture.preview_rule();
+    let claim = fixture.built(&rule, fixture.attest());
+    let proof = fixture.proof(&rule, &claim, token_for(&claim, "preview"));
+    let [first, second] = ["0000aaaa", "0000bbbb"].map(|nonce| fixture.preview(&rule, nonce));
+    fixture
+        .create_hook_in(first.as_str(), "h1", &proof)
+        .await
+        .unwrap();
+    fixture
+        .create_hook_in(second.as_str(), "h2", &proof)
+        .await
+        .unwrap();
+    assert_eq!(
+        refused(fixture.create_hook_in(first.as_str(), "h3", &proof).await),
+        "a hook run"
+    );
+    assert_eq!(
+        refused(fixture.create_hook("h4", &proof).await),
+        "an Environment",
+        "a preview rule deploys nothing into its Parent"
+    );
+}
+
+/// A Service the preview rule pins runs its image with no build and no GitHub token.
+#[tokio::test]
+async fn a_preview_rules_pinned_service_runs_with_no_build() {
+    let fixture = fixture().await;
+    let mut rule = fixture.preview_rule();
+    let preview = fixture.preview(&rule, "0000aaaa");
+    let db = json!({
+        "name": "db",
+        "mode": {"mode": "replicated", "replicas": 1},
+        "container": {"image": format!("postgres@sha256:{IMAGE}"), "pull_policy": "missing"}
+    });
+    rule.preview.as_mut().unwrap().pinned = vec![ployz_core::authority::PinnedService {
+        name: ServiceName::parse("db").unwrap(),
+        template: ployz_core::authority::preview_template(&requested(&db), &preview, true).unwrap(),
+    }];
+    let pinned = |claim: Option<BuildClaim>| RuleProof {
+        rule: Signed::sign(&rule, &fixture.signer).unwrap(),
+        evidence: RuleEvidence::Pinned,
+        claim,
+        reader: None,
+    };
+    let fixture = &fixture;
+    let deploy = |spec: &Value, proof: RuleProof| {
+        let want = want_in(preview.as_str(), "service_container", "d1", spec);
+        async move { fixture.deploy(want, &proof, commit(), now()).await }
+    };
+    deploy(&db, pinned(None)).await.unwrap();
+    assert_eq!(refused(deploy(&spec(), pinned(None)).await), "a Service");
+    let claim = fixture.built(&rule, fixture.attest());
+    assert_eq!(refused(deploy(&db, pinned(Some(claim))).await), "a stage");
+}
+
+/// A fork's commit a person approved for one preview creates that preview's first
+/// Container online, though the run built on another commit and the branch head is a
+/// third, then again from the verified build through the admission every create runs. In any
+/// other preview it creates nothing, online or not, and without the approval it creates
+/// nothing at all.
+#[tokio::test]
+async fn an_approved_fork_commit_creates_only_in_its_own_preview() {
+    let fixture = fixture().await;
+    let rule = fixture.preview_rule();
+    let [preview, other] = ["0000aaaa", "0000bbbb"].map(|nonce| fixture.preview(&rule, nonce));
+    let claim = BuildClaim {
+        commit: fork(),
+        authority: fixture.approved(&fixture.approval(&rule, &preview)),
+        ..fixture.built(&rule, fixture.attest())
+    };
+    let online = fixture.proof(&rule, &claim, token_for(&claim, "fork"));
+    let create = |namespace: &Namespace, key: &str| {
+        want_in(namespace.as_str(), "service_container", key, &spec())
+    };
+    assert_eq!(
+        refused(
+            fixture
+                .deploy(create(&other, "o1"), &online, commit(), now())
+                .await
+        ),
+        "a commit approval"
+    );
+    let verified = fixture.issued(create(&preview, "k1"), &online).await;
+    let offline = Fixture::offline(&online, verified);
+    let admitted = fixture
+        .machine
+        .admit_spec(&create(&preview, "k2"), Some(&offline), &[], Admit::Record)
+        .await
+        .unwrap()
+        .expect("a new Container's admission");
+    assert!(
+        matches!(admitted.by(), AdmittedBy::Rule { .. }),
+        "{admitted:?}"
+    );
+    assert_eq!(
+        refused(
+            fixture
+                .deploy(create(&other, "o2"), &offline, commit(), now())
+                .await
+        ),
+        "a commit approval",
+        "a verified build stands only in the approved preview"
+    );
+
+    let unapproved = BuildClaim {
+        authority: CommitAuthority::Head,
+        ..claim
+    };
+    let head = fixture.proof(&rule, &unapproved, token_for(&unapproved, "head"));
+    assert_eq!(
+        refused(
+            fixture
+                .deploy(create(&preview, "h1"), &head, commit(), now())
+                .await
+        ),
+        "a commit"
+    );
+}
+
+/// An approval carrying more signatures than one admission may check is refused before
+/// the Machine verifies past that limit, offline as online.
+#[tokio::test]
+async fn an_approval_is_charged_for_every_signature_it_carries() {
+    let fixture = fixture().await;
+    let rule = fixture.preview_rule();
+    let preview = fixture.preview(&rule, "0000aaaa");
+    let CommitAuthority::Approved(mut approval) =
+        fixture.approved(&fixture.approval(&rule, &preview))
+    else {
+        unreachable!("an approved authority")
+    };
+    let honest = BuildClaim {
+        commit: fork(),
+        authority: CommitAuthority::Approved(approval.clone()),
+        ..fixture.built(&rule, fixture.attest())
+    };
+    let verified = fixture
+        .issued(
+            want_in(preview.as_str(), "service_container", "k1", &spec()),
+            &fixture.proof(&rule, &honest, token_for(&honest, "fork")),
+        )
+        .await;
+    let signature = approval.signatures[0].clone();
+    approval.signatures = vec![signature; 8];
+    let padded = BuildClaim {
+        authority: CommitAuthority::Approved(approval),
+        ..honest
+    };
+    let offline = Fixture::offline(
+        &fixture.proof(&rule, &padded, token_for(&padded, "fork")),
+        verified,
+    );
+    let result = fixture
+        .deploy(
+            want_in(preview.as_str(), "service_container", "k2", &spec()),
+            &offline,
+            commit(),
+            now(),
+        )
+        .await;
+    assert!(
+        matches!(
+            result,
+            Err(Error::RuleDeployRefused(RuleDeployRefusal::Rule(
+                AuthorityRefusal::Overspent
+            )))
+        ),
+        "{result:?}"
+    );
+}
+
 /// The image ID a registry pull places, which differs from the manifest digest it named.
 const PLACED: &str = "5555555555555555555555555555555555555555555555555555555555555555";
 
@@ -1015,6 +1233,7 @@ impl Fixture {
                 .unwrap(),
                 policy: None,
                 secrets: None,
+                seeded: None,
             })
             .collect();
         rule

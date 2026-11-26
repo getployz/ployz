@@ -1234,6 +1234,14 @@ impl Lifecycle {
         Ok(self.specs.admitted_by(container_id).await?)
     }
 
+    /// Write the preview Namespaces' sets from Docker.
+    ///
+    /// # Errors
+    /// As [`super::LocalDocker::sync_preview_fence`].
+    pub(crate) async fn sync_preview_fence(&self) -> Result<(), Error> {
+        self.docker.sync_preview_fence().await
+    }
+
     /// The Namespace a managed Container's label names, `None` when it names none.
     pub(crate) async fn namespace_of(
         &self,
@@ -1266,6 +1274,17 @@ impl Lifecycle {
         }
         if let Some(container_labels) = inspected.labels() {
             self.collector.cover(container_labels).await?;
+        }
+        // A preview Container's start writes every preview's set from Docker first, so it
+        // meets its siblings and an address another preview held stops meeting that one. A
+        // write that fails refuses the start.
+        let preview = inspected
+            .labels()
+            .and_then(|labels| labels.get(labels::NAMESPACE))
+            .and_then(|namespace| Namespace::parse(namespace).ok())
+            .is_some_and(|namespace| ployz_core::PreviewNamespace::of(&namespace).is_some());
+        if preview {
+            self.docker.sync_preview_fence().await?;
         }
         let spec = self.specs.get(container_id).await?;
         match super::holder::start_inspected(&self.docker.client, inspected, spec.as_ref()).await {
@@ -1388,6 +1407,32 @@ impl Lifecycle {
             How::Asked { volumes, force },
         )
         .await
+    }
+
+    /// Force-remove every managed Container in `namespace`, keeping their Volumes. The
+    /// preview fence keeps their addresses until the next preview start, which writes every
+    /// set from Docker before it runs anything.
+    ///
+    /// # Errors
+    /// Returns the Docker error of a list or removal that fails.
+    pub(crate) async fn remove_namespace(&self, namespace: &Namespace) -> Result<(), Error> {
+        let mut config_operation = self.specs.config_operation().await;
+        let managed = self
+            .docker
+            .labelled(vec![
+                labels::MANAGED.to_owned(),
+                format!("{}={namespace}", labels::NAMESPACE),
+            ])
+            .await?;
+        for (container_id, _) in managed {
+            let how = How::Asked {
+                volumes: VolumeDisposal::Keep,
+                force: true,
+            };
+            self.retire(&mut config_operation, &container_id, how)
+                .await?;
+        }
+        Ok(())
     }
 
     pub async fn remove_all_managed(&self) -> Result<(), Error> {

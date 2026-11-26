@@ -45,6 +45,9 @@ pub(crate) fn set_branch_setup(
         facts(&set.setup),
     )?;
     let setup = (!set.setup.is_empty()).then(|| json_text(&set.setup));
+    crate::storage::ranked::take(crate::storage::ranked::Lock::environment(
+        &environment.summary.id,
+    ));
     tx.execute(
         "UPDATE config_environment SET branch_setup = ?1 WHERE id = ?2",
         &[

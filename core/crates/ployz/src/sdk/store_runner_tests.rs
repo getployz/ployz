@@ -930,6 +930,7 @@ fn online_proof(service: &ServiceName) -> ployz_core::authority::RuleProof {
     let signer = Signer::from_seed(&[1; 32]);
     let rule = AutoDeployRule {
         proposal: None,
+        preview: None,
         cluster,
         rule: RuleId::from_bytes([9; 16]),
         generation: 1,

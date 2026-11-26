@@ -114,6 +114,8 @@ fn on() -> SetPrPlan {
         setup: None,
         remove_on_close: None,
         include_bots: None,
+        preview_rule: None,
+        preview_cap: None,
     }
 }
 
