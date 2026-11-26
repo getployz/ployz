@@ -16,6 +16,7 @@ pub(crate) fn set_plan(
     tx: &mut dyn Tx,
     who: &Actor,
     set: &SetPrPlan,
+    trusted: &Trusted,
 ) -> Result<PrPlansView, RpcError> {
     let project = scope::project(tx, who, set.project.as_ref())?;
     scope::lock_project(tx, &project.id)?;
@@ -102,6 +103,7 @@ pub(crate) fn set_plan(
         }
     }
     if let Some(rule) = &set.preview_rule {
+        super::preview::signed(rule, trusted)?;
         super::preview::fit(tx, who, (&project.id, &plan, *repository_id), rule)?;
         let cap = plan
             .preview

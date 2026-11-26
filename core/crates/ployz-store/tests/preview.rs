@@ -14,7 +14,7 @@ use ployz_store::{
     CreateGitService, CreateProject, DeploymentId, EnvironmentId, EnvironmentName, EnvironmentRef,
     OpenPreviewsQuery, OrganizationId, PrPlansQuery, ProjectId, ProjectName, PullRequest,
     RuleQuery, RunEvidence, RunnerId, ServiceLineageId, SetEnvironmentProtected, SetPrPlan,
-    ShutDown, Sweep, SystemEvent, Trusted, Written,
+    ShutDown, Signers, Sweep, SystemEvent, Trusted, Written,
 };
 
 const HEAD: &str = "1111111111111111111111111111111111111111";
@@ -117,6 +117,29 @@ fn namespace_of(store: &ConfigStore, who: &Actor, environment: &str) -> Namespac
     store.read(who, &query).unwrap().namespace
 }
 
+/// The Device that signs preview rules.
+fn device() -> Signer {
+    Signer::from_seed(&[7; 32])
+}
+
+/// Cloud's evidence that the Servers trust [`device`].
+fn trusting() -> Trusted {
+    Trusted {
+        signers: Some(Signers {
+            devices: vec![ployz_core::DeviceKey::from_bytes(
+                *device().public().as_bytes(),
+            )],
+            ..Signers::default()
+        }),
+        ..Trusted::default()
+    }
+}
+
+/// Save `set`, with Cloud's evidence of the keys the Servers trust.
+fn save(store: &ConfigStore, who: &Actor, set: &SetPrPlan) -> Result<(), ployz_core::RpcError> {
+    store.write_trusted(who, set, &trusting()).map(drop)
+}
+
 /// A preview rule of `acme/web` whose Parent is `parent`, signed by a Device.
 fn rule(store: &ConfigStore, who: &Actor, parent: (u8, &str)) -> Box<Signed<AutoDeployRule>> {
     edited(store, who, parent, |_| {})
@@ -129,7 +152,7 @@ fn edited(
     parent: (u8, &str),
     edit: impl FnOnce(&mut AutoDeployRule),
 ) -> Box<Signed<AutoDeployRule>> {
-    let signer = Signer::from_seed(&[7; 32]);
+    let signer = device();
     let mut rule = AutoDeployRule {
         proposal: None,
         preview: Some(PreviewTerms {
@@ -181,17 +204,13 @@ fn plan(from: &str) -> SetPrPlan {
 /// Turn previews of `staging` on, with at most `cap` open. The plan keeps a closed pull
 /// request's Environment, which a preview never does.
 fn previews(store: &ConfigStore, who: &Actor, cap: u8) {
-    store
-        .write(
-            who,
-            &SetPrPlan {
-                preview_rule: Some(rule(store, who, (3, "staging"))),
-                preview_cap: std::num::NonZeroU8::new(cap),
-                remove_on_close: Some(false),
-                ..plan("staging")
-            },
-        )
-        .unwrap();
+    let set = SetPrPlan {
+        preview_rule: Some(rule(store, who, (3, "staging"))),
+        preview_cap: std::num::NonZeroU8::new(cap),
+        remove_on_close: Some(false),
+        ..plan("staging")
+    };
+    save(store, who, &set).unwrap();
 }
 
 fn facts(number: u64, open: bool, target: &str, updated: &str) -> PullRequest {
@@ -259,7 +278,7 @@ fn skipped(automated: &Automated) -> Vec<&str> {
 fn a_preview_rule_is_kept_only_for_a_parent_that_cannot_be_production() {
     let (store, who) = shop();
     let refused = |set: SetPrPlan| {
-        let error = store.write(&who, &set).unwrap_err();
+        let error = save(&store, &who, &set).unwrap_err();
         assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{error:?}");
         error.message
     };
@@ -633,4 +652,223 @@ fn only_a_preview_s_removal_closes_it_on_its_server() {
         closes(&store, &who, &id, removal).as_ref(),
         Some(closing.namespace())
     );
+}
+
+#[test]
+fn a_preview_rule_is_kept_only_once_a_key_the_servers_trust_signed_it() {
+    let (store, who) = shop();
+    let set = SetPrPlan {
+        preview_rule: Some(rule(&store, &who, (3, "staging"))),
+        ..plan("staging")
+    };
+    let unread = store.write(&who, &set).unwrap_err();
+    assert_eq!(unread.code, RpcErrorCode::Unavailable, "{unread:?}");
+    let stranger = Trusted {
+        signers: Some(Signers {
+            devices: vec![ployz_core::DeviceKey::from_bytes(
+                *Signer::from_seed(&[8; 32]).public().as_bytes(),
+            )],
+            ..Signers::default()
+        }),
+        ..Trusted::default()
+    };
+    let error = store.write_trusted(&who, &set, &stranger).unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{error:?}");
+    assert!(
+        store
+            .read(&who, &PrPlansQuery::default())
+            .unwrap()
+            .plans
+            .iter()
+            .all(|plan| plan.preview.is_none())
+    );
+    save(&store, &who, &set).unwrap();
+}
+
+#[test]
+fn turning_previews_on_keeps_how_an_open_environment_closes() {
+    let (store, who) = shop();
+    let keep = SetPrPlan {
+        remove_on_close: Some(false),
+        ..plan("staging")
+    };
+    store.write(&who, &keep).unwrap();
+    let trusted = homes(&['a']);
+    pull(
+        &store,
+        &who,
+        facts(5, true, "main", "2026-01-01T00:00:00Z"),
+        &trusted,
+    );
+    assert_eq!(preview_of(&store, &who, 5), None, "an ordinary Environment");
+    previews(&store, &who, 1);
+
+    let closed = pull(
+        &store,
+        &who,
+        facts(5, false, "main", "2026-01-02T00:00:00Z"),
+        &trusted,
+    );
+
+    assert!(closed.closing.is_empty(), "{:?}", closed.closing);
+    let kept = store
+        .read(&who, &PrPlansQuery::default())
+        .unwrap()
+        .plans
+        .iter()
+        .flat_map(|plan| &plan.open)
+        .any(|pr| pr.environment.is_some());
+    assert!(kept, "the plan keeps a closed pull request's Environment");
+}
+
+#[test]
+fn a_sweep_that_cannot_reopen_a_member_s_preview_leaves_it_on_its_server() {
+    let (store, who) = shop();
+    previews(&store, &who, 1);
+    pull(
+        &store,
+        &who,
+        facts(5, true, "main", "2026-01-01T00:00:00Z"),
+        &homes(&['a']),
+    );
+    let first = preview_of(&store, &who, 5).unwrap().namespace().clone();
+    // A sweep that says which Servers can hold a preview but not who the members are
+    // couldn't open the member's preview again elsewhere.
+    let unknown = Trusted {
+        members: None,
+        ..homes(&['b'])
+    };
+
+    let swept = observe(&store, &who, SystemEvent::Sweep(Sweep { now: 0 }), &unknown);
+
+    assert!(swept.closing.is_empty(), "{:?}", swept.closing);
+    let asked = OpenPreviewsQuery {
+        namespaces: vec![first],
+    };
+    assert_eq!(store.read(&who, &asked).unwrap().open.len(), 1);
+}
+
+#[test]
+fn a_freed_slot_passes_over_a_pull_request_that_gets_no_preview() {
+    let (store, who) = shop();
+    previews(&store, &who, 1);
+    let trusted = homes(&['a']);
+    for (number, target) in [(5, "main"), (6, "staging"), (7, "main")] {
+        pull(
+            &store,
+            &who,
+            facts(number, true, target, "2026-01-01T00:00:00Z"),
+            &trusted,
+        );
+    }
+
+    let closed = pull(
+        &store,
+        &who,
+        facts(5, false, "main", "2026-01-02T00:00:00Z"),
+        &trusted,
+    );
+
+    assert_eq!(closed.admitted.len(), 1, "{:?}", skipped(&closed));
+    assert!(preview_of(&store, &who, 7).is_some());
+}
+
+#[test]
+fn a_pull_request_retargeted_into_its_parent_closes_its_preview_and_frees_the_slot() {
+    let (store, who) = shop();
+    previews(&store, &who, 1);
+    let trusted = homes(&['a']);
+    for number in [5, 6] {
+        pull(
+            &store,
+            &who,
+            facts(number, true, "main", "2026-01-01T00:00:00Z"),
+            &trusted,
+        );
+    }
+    let first = preview_of(&store, &who, 5).unwrap().namespace().clone();
+
+    let retargeted = pull(
+        &store,
+        &who,
+        facts(5, true, "staging", "2026-01-02T00:00:00Z"),
+        &trusted,
+    );
+
+    let asked = OpenPreviewsQuery {
+        namespaces: vec![first],
+    };
+    assert!(store.read(&who, &asked).unwrap().open.is_empty());
+    assert_eq!(retargeted.admitted.len(), 1, "{:?}", skipped(&retargeted));
+    assert!(
+        preview_of(&store, &who, 6).is_some(),
+        "the waiting one opens"
+    );
+}
+
+#[test]
+fn a_preview_a_sweep_may_have_closed_never_opens_again() {
+    let (store, who) = shop();
+    previews(&store, &who, 5);
+    let trusted = homes(&['a']);
+    let opened = pull(
+        &store,
+        &who,
+        facts(5, true, "main", "2026-01-01T00:00:00Z"),
+        &trusted,
+    );
+    run(&store, &opened.admitted.first().unwrap().deployment.id);
+    let asked = OpenPreviewsQuery {
+        namespaces: vec![preview_of(&store, &who, 5).unwrap().namespace().clone()],
+    };
+    pull(
+        &store,
+        &who,
+        facts(5, false, "main", "2026-01-02T00:00:00Z"),
+        &trusted,
+    );
+    // A sweep reading now closes it on its Server, which never opens it again.
+    assert!(store.read(&who, &asked).unwrap().open.is_empty());
+
+    let cancel = ployz_store::CancelRemoval {
+        project: ProjectName::parse("shop").unwrap(),
+        environment: Some(EnvironmentName::parse("pr-5").unwrap()),
+    };
+    let refused = store.write(&who, &cancel).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Conflict, "{refused:?}");
+    assert!(store.read(&who, &asked).unwrap().open.is_empty());
+
+    let id = DeploymentId::parse(uuid::Uuid::new_v4().to_string()).unwrap();
+    let removal = Admit::Remove(AdmitRemoval {
+        id: id.clone(),
+        environment: at("pr-5"),
+    });
+    store
+        .write_trusted(&who, &removal, &Trusted::default())
+        .unwrap();
+    store
+        .write(&who, &ployz_store::Cancel { deployment: id })
+        .unwrap();
+    assert!(
+        store.read(&who, &asked).unwrap().open.is_empty(),
+        "cancelling its removal's Deployment leaves it closing"
+    );
+    let swept = observe(&store, &who, SystemEvent::Sweep(Sweep { now: 0 }), &trusted);
+    assert!(
+        swept
+            .closing
+            .iter()
+            .any(|environment| environment.name.as_str() == "pr-5"),
+        "the sweep removes it again: {:?}",
+        swept.closing
+    );
+
+    let reopened = pull(
+        &store,
+        &who,
+        facts(5, true, "main", "2026-01-03T00:00:00Z"),
+        &trusted,
+    );
+    assert_eq!(reopened.admitted.len(), 1, "{:?}", skipped(&reopened));
+    assert!(store.read(&who, &asked).unwrap().open.is_empty());
 }

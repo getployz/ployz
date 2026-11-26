@@ -61,9 +61,9 @@ pub struct PreviewFailed {
 }
 
 /// Close, on each Server of the Cluster `connections` reach, every preview it holds open
-/// that the Store doesn't report open for `who`'s Organization. Each Server's list is read
-/// before the Store, and a preview's Namespace is never used again, so a preview the
-/// Store opens meanwhile is never one this closes. With `expect`, it reaches the Cluster
+/// that the Store doesn't report open for `who`'s Organization, and finish every Close
+/// one began. Each Server's list is read before the Store, and a preview's Namespace is
+/// never used again, so a preview the Store opens meanwhile is never one this closes. With `expect`, it reaches the Cluster
 /// only through an entry of it, as a Deployment runs.
 ///
 /// # Errors
@@ -128,6 +128,32 @@ pub async fn observe_preview_homes(
     })
 }
 
+/// The keys the Server `connections` reach first trusts, as its own record lists them:
+/// what a preview rule's signature checks against before the Store keeps it. With
+/// `expect`, only through an entry of its Cluster.
+///
+/// # Errors
+/// Returns the connection's error when no Server can be reached, or Inspect's.
+pub async fn observe_signers(
+    connections: Vec<Connection>,
+    expect: Option<crate::connect::ClusterExpectation>,
+) -> Result<Dialed<ployz_store::Signers>, RpcError> {
+    let connector = Arc::new(SystemConnector::default());
+    let session = connect_expecting(connections, connector, expect).await?;
+    let foreign = session.foreign();
+    let details = session.inspect().await;
+    session.close().await;
+    let details = details?;
+    Ok(Dialed {
+        outcome: ployz_store::Signers {
+            devices: details.devices,
+            passkeys: details.passkeys,
+            grants: details.grants,
+        },
+        foreign,
+    })
+}
+
 fn homes(machines: &[MachineObservation]) -> Vec<MachineId> {
     machines
         .iter()
@@ -154,6 +180,7 @@ where
 {
     let mut swept = PreviewsSwept::default();
     let mut held = Vec::new();
+    let mut closing = Vec::new();
     for machine in machines {
         let id = &machine.machine.id;
         if !machine.invites_rpc()
@@ -173,22 +200,24 @@ where
                     .within(Deadline::Target(crate::connect::target_read_timeout())),
             )
             .await;
-        match listed {
-            Ok(listed) => held.extend(listed.open.into_iter().map(|namespace| PreviewOn {
-                machine: *id,
-                namespace,
-            })),
-            Err(_) => swept.unanswered.push(*id),
-        }
-    }
-    if held.is_empty() {
-        return Ok(swept);
-    }
-    let open = open(held.iter().map(|on| on.namespace.clone()).collect()).await?;
-    for on in held {
-        if open.contains(&on.namespace) {
+        let Ok(listed) = listed else {
+            swept.unanswered.push(*id);
             continue;
-        }
+        };
+        let on = |namespace| PreviewOn {
+            machine: *id,
+            namespace,
+        };
+        held.extend(listed.open.into_iter().map(on));
+        closing.extend(listed.closing.into_iter().map(on));
+    }
+    // A Close that began never ends any other way, whatever the Store holds.
+    let mut closes = closing;
+    if !held.is_empty() {
+        let open = open(held.iter().map(|on| on.namespace.clone()).collect()).await?;
+        closes.extend(held.into_iter().filter(|on| !open.contains(&on.namespace)));
+    }
+    for on in closes {
         match close_on(client, &on.machine, &on.namespace).await {
             Ok(_) => swept.closed.push(on),
             Err(error) => swept.failed.push(PreviewFailed {

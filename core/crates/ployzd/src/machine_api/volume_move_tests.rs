@@ -742,6 +742,11 @@ async fn a_preview_start_refuses_a_kept_container_of_the_image_its_tag_left() {
 
 /// The previews this Server lists as open, which Cloud closes when the Store doesn't.
 async fn held_open(service: &MachineService) -> Vec<Namespace> {
+    held(service).await.open
+}
+
+/// The previews this Server lists, open and closing.
+async fn held(service: &MachineService) -> ployz_core::PreviewsHeld {
     let request = ployz_core::ListPreviewsRequest {};
     let response = service
         .list_previews(Request::new(
@@ -752,7 +757,7 @@ async fn held_open(service: &MachineService) -> Vec<Namespace> {
         .into_inner()
         .decode_response()
         .unwrap();
-    response.decode::<op::ListPreviews>().unwrap().open
+    response.decode::<op::ListPreviews>().unwrap()
 }
 
 async fn close(
@@ -1142,6 +1147,12 @@ async fn a_close_stopped_mid_sweep_is_finished_by_its_resume() {
     let stopped = close(&service, &namespace).await;
     assert!(stopped.is_err(), "{stopped:?}");
     assert!(!holds_a_container(node));
+    let listed = held(&service).await;
+    assert_eq!(
+        (listed.open, listed.closing),
+        (Vec::new(), vec![namespace.clone()]),
+        "Cloud's sweep sees it is left to close"
+    );
     let start = try_set_copy(&service, preview_writer_at(&namespace, &spec, &volume, 2)).await;
     assert!(
         start
@@ -1163,6 +1174,7 @@ async fn a_close_stopped_mid_sweep_is_finished_by_its_resume() {
         2,
         "a finished Close is not resumed again"
     );
+    assert_eq!(held(&service).await, ployz_core::PreviewsHeld::default());
 }
 
 /// A Close that can't remove the preview's Container leaves it Closing, and the Container

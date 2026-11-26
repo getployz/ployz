@@ -99,6 +99,23 @@ fn planned(tx: &mut dyn Tx, who: &Actor) -> Result<bool, RpcError> {
     Ok(false)
 }
 
+/// Refuse `rule` unless a key a Server trusts, as `trusted` says Cloud read them, signed
+/// it: every Server would refuse each preview it opened.
+pub(super) fn signed(rule: &Signed<AutoDeployRule>, trusted: &Trusted) -> Result<(), RpcError> {
+    let Some(signers) = &trusted.signers else {
+        return Err(error::unavailable(
+            "Ployz Cloud couldn't read which keys your Servers trust: try again",
+        ));
+    };
+    if rule.approvers(&signers.keys()).is_err() {
+        return Err(error::invalid(
+            "No key your Servers trust signed the preview rule: sign it again",
+            json!({}),
+        ));
+    }
+    Ok(())
+}
+
 /// The terms of `rule` when it fits `plan` for `repository_id`: a preview rule of that
 /// repository whose Parent is the plan's start-from, in its Namespace, and that Parent can't
 /// be production. Servers can't tell production, so the Store refuses here what could be:
@@ -112,7 +129,7 @@ pub(super) fn fit(
 ) -> Result<AutoDeployRule, RpcError> {
     let refuse = |message: &str| Err(error::invalid(message, json!({})));
     let Ok(terms) = rule.open() else {
-        return refuse("The preview rule's signature doesn't check: sign it again");
+        return refuse("The preview rule isn't one: sign it again");
     };
     let Some(preview) = &terms.preview else {
         return refuse("This rule deploys one Environment, not previews");
@@ -273,10 +290,12 @@ pub(super) fn fill(
             && record
                 .phase
                 .admits(&event.head, &record.facts, trusted.members.as_deref());
-        let has = current(tx, who, repository_id, number, false)?
-            .iter()
-            .any(|(_, has)| has == project);
-        if !waiting || has {
+        let has = |tx: &mut dyn Tx| -> Result<bool, RpcError> {
+            Ok(current(tx, who, repository_id, number, false)?
+                .iter()
+                .any(|(_, has)| has == project))
+        };
+        if !waiting || has(tx)? {
             continue;
         }
         let at = Opening {
@@ -285,21 +304,24 @@ pub(super) fn fill(
             trusted,
         };
         open(tx, who, &at, automated)?;
-        free -= 1;
+        // One that gets no preview, such as one into its Parent, leaves the slot free.
+        if has(tx)? {
+            free -= 1;
+        }
     }
     Ok(())
 }
 
 /// Close each open preview whose Server `trusted` no longer lists as able to hold one, so
 /// its pull request opens a new preview on another, with empty Volumes. Nothing closes
-/// while Cloud couldn't tell.
+/// while Cloud couldn't tell, nor without the members a new preview's admission reads.
 pub(crate) fn rehome(
     tx: &mut dyn Tx,
     who: &Actor,
     trusted: &Trusted,
     automated: &mut Automated,
 ) -> Result<(), RpcError> {
-    let Some(homes) = trusted.preview_homes.as_deref() else {
+    let (Some(homes), Some(_)) = (trusted.preview_homes.as_deref(), &trusted.members) else {
         return Ok(());
     };
     for open in live(tx, who)? {
@@ -317,6 +339,34 @@ pub(crate) fn rehome(
         )?;
     }
     Ok(())
+}
+
+/// `environment`'s preview, when it opened as one: what it closes as, whatever its plan
+/// says now.
+pub(crate) fn of(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+) -> Result<Option<PreviewNamespace>, RpcError> {
+    let rows = tx.query(
+        "SELECT namespace FROM config_namespace WHERE environment_id = ?1",
+        &[environment.as_str().into()],
+    )?;
+    let Some(row) = rows.first() else {
+        return Ok(None);
+    };
+    Ok(PreviewNamespace::of(
+        &row.parse::<Namespace>(0, "Namespace")?,
+    ))
+}
+
+/// Whether `environment` is a preview its own removal closes. A Close of it may have
+/// reached its Server, which then never opens that Namespace again, so nothing makes it
+/// live again.
+pub(crate) fn closing(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<bool, RpcError> {
+    let target = crate::removal::Target::Environment(environment.clone());
+    let removing = crate::removal::mark::of(tx, &target)?
+        .is_some_and(|mark| mark.state == crate::removal::mark::State::Removing);
+    Ok(removing && of(tx, environment)?.is_some())
 }
 
 /// One open preview: a PR Environment in a preview Namespace, not being closed.

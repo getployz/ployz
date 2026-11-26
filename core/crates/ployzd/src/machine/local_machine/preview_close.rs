@@ -31,13 +31,15 @@ impl LocalMachine {
         .await
     }
 
-    /// The previews this Server runs and hasn't begun to close.
+    /// The previews this Server runs, and those whose Close didn't finish.
     ///
     /// # Errors
     /// Returns [`Error::ApprovalRecord`] when the record cannot be read.
     pub(crate) fn list_previews(&self) -> Result<PreviewsHeld, Error> {
-        let open = self.approvals.previews(PreviewState::Open)?;
-        Ok(PreviewsHeld { open })
+        Ok(PreviewsHeld {
+            open: self.approvals.previews(PreviewState::Open)?,
+            closing: self.approvals.previews(PreviewState::Closing)?,
+        })
     }
 
     /// Run again the Close of every preview whose sweep a stop interrupted.

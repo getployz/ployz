@@ -4,7 +4,7 @@ import { eq } from "drizzle-orm";
 import { Effect } from "effect";
 import { gatherDomainEvidence, systemDomainEvidence } from "#/modules/config-store/domain-evidence.server";
 import { gatherGitEvidence } from "#/modules/config-store/git-evidence.server";
-import { gatherPreviewHomes } from "#/modules/config-store/preview-evidence.server";
+import { gatherPreviewHomes, gatherSigners } from "#/modules/config-store/preview-evidence.server";
 import { gatherRunning } from "#/modules/config-store/running-evidence.server";
 import { connectionsLoader, gatherUnanswered, gatherVolumeEvidence, systemVolumeEvidence } from "#/modules/config-store/volume-evidence.server";
 import type { Actor } from "#/modules/identity/actor";
@@ -124,8 +124,9 @@ export const storeSystem = Effect.fn("ConfigStore.system")(function* (organizati
   const trusted: Pick<ConfigTrusted, "servers" | "domains" | "volumes" | "members" | "preview_homes"> = { servers, domains };
   if (volumes !== undefined) trusted.volumes = volumes;
   if (deploys[event.event]) trusted.members = yield* githubMembers(organizationId);
+  // A preview's homes come with the members, since moving one opens it again for its pull request.
   const homes = places[event.event] ? yield* gatherPreviewHomes(organizationId, (query) => store.read(organizationId, query)) : undefined;
-  if (homes !== undefined) trusted.preview_homes = homes;
+  if (homes !== undefined) Object.assign(trusted, homes);
   return yield* storeTry(() => store.system(organizationId, event, trusted));
 });
 
@@ -160,6 +161,9 @@ export const gatherTrusted = Effect.fn("ConfigStore.gatherTrusted")(function* (
   const members = approves ? yield* githubMembers(organizationId) : undefined;
   // An approval can open the pull request's preview, on a Server that can hold one.
   const homes = approves ? yield* gatherPreviewHomes(organizationId, read) : undefined;
+  // A preview rule is kept only once a key the Servers trust signed it.
+  const signs = call.operation === "write" && call.command.command === "set_pr_plan" && call.command.preview_rule != null;
+  const signers = signs ? yield* gatherSigners(organizationId) : undefined;
   const sealing = call.operation === "write" ? yield* readClusterSealing(organizationId) : undefined;
   const trusted: ConfigTrusted = { ...git, domains };
   // Values the Store seals itself go where the browser's do: to the recipient key once the Cluster activated.
@@ -169,7 +173,8 @@ export const gatherTrusted = Effect.fn("ConfigStore.gatherTrusted")(function* (
   if (running !== undefined) trusted.running = running;
   if (servers !== undefined) trusted.servers = servers;
   if (members !== undefined) trusted.members = members;
-  if (homes !== undefined) trusted.preview_homes = homes;
+  if (homes !== undefined) trusted.preview_homes = homes.preview_homes;
+  if (signers !== undefined) trusted.signers = signers;
   return trusted;
 });
 

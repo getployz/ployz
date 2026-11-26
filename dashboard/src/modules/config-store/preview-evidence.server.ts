@@ -1,7 +1,9 @@
 import "@tanstack/react-start/server-only";
-import { observePreviewHomes } from "@ployz/sdk";
+import type { ConfigTrusted } from "@ployz/sdk";
+import { observePreviewHomes, observeSigners } from "@ployz/sdk";
 import { Effect, Option } from "effect";
-import { cloudStore, storeTry, withDeployDial } from "#/modules/config-store/store-sdk.server";
+import { cloudStore, deployDialOf, storeTry, withDeployDial } from "#/modules/config-store/store-sdk.server";
+import { githubMembers } from "#/modules/config-store/store-sources.server";
 import type { StoreRead } from "./store.contract";
 
 /** Whether the Organization has a preview to place or close: a PR plan keeps a preview rule, or a preview is open. */
@@ -13,23 +15,36 @@ const usesPreviews = (read: StoreRead) =>
 
 /**
  * The Servers that can hold a preview, as Cloud reads them from the Cluster, for the Store to place previews on and to
- * close those whose Server left. Undefined, so the Store opens and closes none, when the Organization uses no previews
- * or the Cluster can't be read.
+ * close those whose Server left, with the members whose pull requests a preview opens again for. Undefined, so the
+ * Store opens and closes none, when the Organization uses no previews or the Cluster can't be read.
  */
 export const gatherPreviewHomes = Effect.fn("ConfigStore.previewHomes")(function* (organizationId: string, read: StoreRead) {
   if (!(yield* usesPreviews(read))) return undefined;
   const observed = yield* withDeployDial(organizationId, ({ connections, expect }) =>
     observePreviewHomes(connections, expect)).pipe(Effect.option);
-  return Option.getOrUndefined(observed)?.homes;
+  const homes = Option.getOrUndefined(observed)?.homes;
+  if (homes === undefined) return undefined;
+  return { preview_homes: homes, members: yield* githubMembers(organizationId) } satisfies Pick<ConfigTrusted, "preview_homes" | "members">;
+});
+
+/** The keys a Server of the Cluster trusts, which a preview rule's signature must check against. Undefined when none answered. */
+export const gatherSigners = Effect.fn("ConfigStore.signers")(function* (organizationId: string) {
+  const observed = yield* withDeployDial(organizationId, ({ connections, expect }) =>
+    observeSigners(connections, expect)).pipe(Effect.option);
+  return Option.getOrUndefined(Option.map(observed, ({ devices, passkeys, grants }) =>
+    ({ devices, passkeys, grants }) satisfies NonNullable<ConfigTrusted["signers"]>));
 });
 
 /**
- * Close, on each Server, every preview it holds open that the Store doesn't: one whose Close never reached it, or one
- * from before a Server restarted. Each Server's list is read before the Store, so a preview opening meanwhile stays.
+ * Close, on each Server, every preview it holds open that the Store doesn't, and finish every Close one began: one whose
+ * Close never reached it, or one from before a Server restarted. Each Server's list is read before the Store, so a
+ * preview opening meanwhile stays. Every Server is asked, even once no plan keeps previews, since one that was down
+ * may still hold some.
  */
 export const closeUnheldPreviews = Effect.fn("ConfigStore.closeUnheldPreviews")(function* (organizationId: string) {
   const store = yield* cloudStore;
-  if (!(yield* usesPreviews((query) => store.read(organizationId, query)))) return;
+  const { connections } = yield* deployDialOf(organizationId);
+  if (connections.length === 0) return;
   const swept = yield* withDeployDial(organizationId, ({ connections, expect }) =>
     store.closeUnheldPreviews(organizationId, connections, expect));
   if (swept.closed.length > 0) yield* Effect.logInfo("Closed previews the Store no longer holds open.", { organizationId, closed: swept.closed });

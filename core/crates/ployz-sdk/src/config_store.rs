@@ -86,6 +86,23 @@ pub async fn observe_preview_homes(
     to_json(ployz::sdk::observe_preview_homes(connections, expect).await)
 }
 
+/// The keys the first Server of `connections` reaches trusts, as its own record lists
+/// them. Cloud tells the Store these as `ConfigTrusted.signers`, which a preview rule's
+/// signature must check against. `expect` is as `observeVolumes`'.
+///
+/// # Errors
+/// Returns `invalid_argument` for malformed input, or the connection's error when no
+/// Server can be reached.
+#[napi(ts_return_type = "Promise<Signers & { foreign: string[] }>")]
+pub async fn observe_signers(
+    #[napi(ts_arg_type = "Connections")] connections: serde_json::Value,
+    #[napi(ts_arg_type = "ExpectedCluster | null")] expect: Option<serde_json::Value>,
+) -> Result<serde_json::Value> {
+    let connections = parse_connections(connections)?;
+    let expect = parse_expect(expect)?;
+    to_json(ployz::sdk::observe_signers(connections, expect).await)
+}
+
 /// Every copy of every Volume on `connections`' Servers, by role
 /// (`CopyObservation`): what Cloud's sweep finds orphaned mirror slots with. Servers
 /// that don't answer are named, never assumed empty. `expect` is as `observeVolumes`';

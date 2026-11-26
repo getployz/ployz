@@ -836,6 +836,15 @@ pub(crate) fn cancel_removal(
         ),
         None => Target::Project(project.id.clone()),
     };
+    if let Target::Environment(id) = &target
+        && crate::pull_request::preview::closing(tx, id)?
+    {
+        return Err(error::conflict(
+            "A preview's removal can't be cancelled: its Server may have closed it already. \
+             Its pull request opens a new one.",
+            json!({}),
+        ));
+    }
     let Some(mut mark) = mark::of(tx, &target)?.filter(|mark| mark.state == State::Removing) else {
         return Err(error::conflict(
             format!(
@@ -887,7 +896,9 @@ pub(crate) fn cancel(
         approval::approve_cancel(tx, who, &summary, trusted)?;
     }
     let cancelled = deployment::cancel(tx, who, id)?;
+    // A preview's removal goes on: the sweep admits it again.
     if cancelled.remove
+        && !crate::pull_request::preview::closing(tx, &cancelled.environment_id)?
         && let Some(mut mark) = mark::naming(tx, &cancelled.environment_id)?
     {
         stop(tx, who, &mut mark, Some(id))?;

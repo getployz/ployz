@@ -55,7 +55,7 @@ pub use github_build::{
 pub use observe::{observe_copies, observe_running, observe_volumes};
 pub use preview::{
     PreviewFailed, PreviewHomes, PreviewOn, PreviewsSwept, close_unheld_previews,
-    observe_preview_homes,
+    observe_preview_homes, observe_signers,
 };
 pub use running::Running;
 pub use store_call::store_call;

@@ -41,6 +41,7 @@ export {
   observeCopies,
   observePreviewHomes,
   observeRunning,
+  observeSigners,
   observeVolumes,
   pinImages,
   ployzVersion,

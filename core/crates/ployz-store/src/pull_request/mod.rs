@@ -21,7 +21,7 @@
 mod checks;
 pub(crate) mod on_merge;
 mod plan;
-mod preview;
+pub(crate) mod preview;
 pub use crate::pr_environment::PullRequestRef;
 pub(crate) use checks::*;
 pub(crate) use on_merge::view as on_merge;
@@ -1001,9 +1001,10 @@ pub(crate) fn pull_request(
             };
             let merged =
                 on_merge::land(tx, who, environment, &at, (&mut automated, &mut unlanded))?;
-            if !merged.all {
+            // A close that came before the merge is undone, so it stays open. Not a
+            // preview's: a Close may have reached its Server, which never opens it again.
+            if !merged.all && !preview::closing(tx, environment)? {
                 kept.insert(environment.clone());
-                // A close that came before the merge is undone: it stays open.
                 mark::drop_live(tx, environment)?;
             }
         }
@@ -1026,8 +1027,21 @@ pub(crate) fn pull_request(
             .as_ref()
             .is_some_and(|before| before.target_branch != event.target_branch);
         if retargeted {
-            for (environment, _) in &current {
+            for (environment, project) in &current {
                 forget_edits(tx, environment)?;
+                // A preview of where it now merges closes, so its slot frees.
+                let plan = load(tx, project, repository_id)?.unwrap_or_else(off);
+                let destinations =
+                    destinations_of(tx, project, repository_id, &event.target_branch)?;
+                let into_parent = plan
+                    .start_from
+                    .as_ref()
+                    .is_some_and(|parent| destinations.contains(parent));
+                if into_parent && preview::of(tx, environment)?.is_some() {
+                    let because = crate::removal::mark::Closed::PullRequest;
+                    crate::removal::close(tx, who, environment, because, &mut automated)?;
+                    preview::fill(tx, who, (project, repository_id), trusted, &mut automated)?;
+                }
             }
             automated.checks.push(PullRequestRef {
                 repository_id,
@@ -1041,8 +1055,9 @@ pub(crate) fn pull_request(
     if !matches!(phase, Phase::Open { .. }) {
         for (environment, project) in &current {
             let plan = load(tx, project, event.repository_id)?.unwrap_or_else(off);
-            // A preview always closes with its pull request, so its slot frees.
-            if (plan.remove_on_close || plan.preview.is_some())
+            // A preview always closes with its pull request, so its slot frees. What it
+            // opened as decides, not the plan now.
+            if (plan.remove_on_close || preview::of(tx, environment)?.is_some())
                 && !kept.contains(environment)
                 && !on_merge::holds_open(tx, who, environment)?
             {

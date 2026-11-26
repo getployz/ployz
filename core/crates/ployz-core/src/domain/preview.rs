@@ -198,6 +198,9 @@ pub struct ListPreviewsRequest {}
 pub struct PreviewsHeld {
     #[serde(default)]
     pub open: Vec<Namespace>,
+    /// Those whose Close began and didn't finish, which only another Close finishes.
+    #[serde(default)]
+    pub closing: Vec<Namespace>,
 }
 
 /// What a Close took off this Server, and what it left.

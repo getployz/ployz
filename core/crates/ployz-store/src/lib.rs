@@ -134,7 +134,7 @@ pub use teardown::{
 };
 pub use trusted::{
     Approval, Asks, ObservationFailure, ObservationStage, RunningObservation, SealingRecipient,
-    Trusted, VolumeObservation,
+    Signers, Trusted, VolumeObservation,
 };
 pub use variables::holds_secret_text;
 pub use volume::size::{Unheld, VolumeResized};

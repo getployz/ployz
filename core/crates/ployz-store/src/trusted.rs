@@ -116,6 +116,35 @@ pub struct Trusted {
     #[serde(default)]
     #[ts(optional)]
     pub sealing: Option<SealingRecipient>,
+    /// The keys a Server of the Cluster trusts, as Cloud read them from it: a preview
+    /// rule's signature checks against them before the Store keeps it. None when Cloud
+    /// didn't read them, which keeps no preview rule.
+    #[serde(default)]
+    #[ts(optional)]
+    pub signers: Option<Signers>,
+}
+
+/// The keys one Server trusts, as its own record lists them.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct Signers {
+    #[serde(default)]
+    pub devices: Vec<ployz_core::DeviceKey>,
+    #[serde(default)]
+    pub passkeys: Vec<ployz_core::authority::TrustedPasskey>,
+    #[serde(default)]
+    #[ts(as = "Option<Vec<ployz_core::authority::TrustedGrant>>", optional)]
+    pub grants: Vec<ployz_core::authority::TrustedGrant>,
+}
+
+impl Signers {
+    #[must_use]
+    pub fn keys(&self) -> ployz_core::authority::TrustedKeys {
+        ployz_core::authority::TrustedKeys::new(
+            self.devices.iter().copied(),
+            self.passkeys.iter().cloned(),
+            self.grants.iter().cloned(),
+        )
+    }
 }
 
 /// The public key a value sealed in the Store is sealed to, which only the Cluster's

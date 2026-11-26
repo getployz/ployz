@@ -18,6 +18,7 @@ use crate::sdk::test_support::{self as support, DeployService};
 #[derive(Clone, Default)]
 struct Held {
     open: Arc<Mutex<BTreeMap<MachineId, Vec<Namespace>>>>,
+    closing: Arc<Mutex<BTreeMap<MachineId, Vec<Namespace>>>>,
     closed: Arc<Mutex<Vec<(MachineId, Namespace)>>>,
     removed: Arc<Mutex<Vec<(MachineId, DockerVolumeName)>>>,
     kept: Vec<DockerVolumeName>,
@@ -50,8 +51,10 @@ impl FakeMachine for Previews {
     ) -> Result<Response<OpaquePayload>, Status> {
         let machine = target(&request)?;
         let open = self.held.open.lock().unwrap().get(&machine).cloned();
+        let closing = self.held.closing.lock().unwrap().get(&machine).cloned();
         reply(PreviewsHeld {
             open: open.unwrap_or_default(),
+            closing: closing.unwrap_or_default(),
         })
     }
 
@@ -65,8 +68,10 @@ impl FakeMachine for Previews {
         else {
             return Err(Status::invalid_argument("expected close_preview"));
         };
-        if let Some(open) = self.held.open.lock().unwrap().get_mut(&machine) {
-            open.retain(|namespace| *namespace != close.namespace);
+        for held in [&self.held.open, &self.held.closing] {
+            if let Some(held) = held.lock().unwrap().get_mut(&machine) {
+                held.retain(|namespace| *namespace != close.namespace);
+            }
         }
         self.held
             .closed
@@ -171,6 +176,30 @@ async fn a_sweep_closes_only_the_previews_the_store_does_not_hold_open() {
         Some(&vec![open]),
         "the open preview was closed"
     );
+    session.close().await;
+    server.abort();
+}
+
+#[tokio::test]
+async fn a_sweep_finishes_a_close_its_server_left_halfway() {
+    let machine = support::machine('a', "one");
+    let stuck = preview_on(&machine, 1);
+    let held = Held::default();
+    held.closing
+        .lock()
+        .unwrap()
+        .insert(machine.machine.id, vec![stuck.clone()]);
+    let (session, server) = cluster(vec![machine.clone()], held.clone()).await;
+    let client = session.client().unwrap();
+
+    let swept = sweep(&client, std::slice::from_ref(&machine), |_| async {
+        Ok(Vec::new())
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(*held.closed.lock().unwrap(), [(machine.machine.id, stuck)]);
+    assert_eq!(swept.closed.len(), 1, "{swept:?}");
     session.close().await;
     server.abort();
 }
