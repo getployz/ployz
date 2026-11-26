@@ -73,6 +73,11 @@ pub struct PlanOptions {
     #[serde(skip)]
     #[ts(skip)]
     pub signed: BTreeSet<ServiceName>,
+    /// The Services whose new Containers carry a Free receipt, which only a Server that
+    /// takes one may run. Never serialized.
+    #[serde(skip)]
+    #[ts(skip)]
+    pub free: BTreeSet<ServiceName>,
 }
 
 impl PlanOptions {

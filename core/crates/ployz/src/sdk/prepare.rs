@@ -462,8 +462,10 @@ pub(super) async fn build_images(
     if targets.is_empty() {
         return Ok(builds);
     }
+    // Only the targets reuse left decide whether the Builder must run a Free Build.
+    let builds_free: Vec<_> = build.free().cloned().collect();
     let builders = crate::sealed_compat::builders(&machines, build.reads_sealed())
-        .and_then(|builders| crate::build::free_builders(&free, builders))
+        .and_then(|builders| crate::build::free_builders(&builds_free, builders))
         .map_err(PreparationError::Selection)?;
     let selected = read(cancellation, async {
         select_build_machine(

@@ -1109,7 +1109,8 @@ impl Client {
     }
 
     /// The one place an `EnsureContainer` is built: it admits `want` first, so no Sealed
-    /// value reaches a Machine that can't keep it sealed, and only then asks `carry`.
+    /// value reaches a Machine that can't keep it sealed, and only then asks `carry`. A
+    /// creation that carries a Free receipt goes only to a Machine that takes one.
     async fn ensure_request(
         &self,
         target: &MachineTarget,
@@ -1123,6 +1124,9 @@ impl Client {
             ..
         } = &mut want
         {
+            if carried.free.is_some() {
+                crate::build::admit_free(self, target, &new.slot.service).await?;
+            }
             new.free_receipt = carried.free;
         }
         Ok(EnsureContainerRequest {

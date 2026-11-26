@@ -100,8 +100,11 @@ pub(super) struct DeployService {
     image_pulls: Arc<Mutex<Vec<ImagePullCall>>>,
     /// Creations that arrived without a prepared image, so the Machine pulled inside them.
     creation_pulls: Arc<AtomicUsize>,
-    /// The Free receipt each creation carried, in arrival order.
-    free_receipts: Arc<Mutex<Vec<Option<ployz_core::FreeReceipt>>>>,
+    /// The Machine each creation went to and the Free receipt it carried, in arrival order.
+    free_receipts: Arc<Mutex<Vec<(MachineId, Option<ployz_core::FreeReceipt>)>>>,
+    /// A Machine `ListMachines` answers only once a Build has started, as one that joins
+    /// while it runs.
+    joins_while_building: Option<MachineObservation>,
     /// Machines whose registry rejects every pull.
     pull_failures: BTreeSet<MachineId>,
     /// What a rejected pull answers.
@@ -205,6 +208,7 @@ impl DeployService {
             image_pulls: Arc::new(Mutex::new(Vec::new())),
             creation_pulls: Arc::new(AtomicUsize::new(0)),
             free_receipts: Arc::new(Mutex::new(Vec::new())),
+            joins_while_building: None,
             pull_failures: BTreeSet::new(),
             pull_failure: RpcError::internal("registry refused the pull"),
             ingress_roles: Arc::default(),
@@ -454,8 +458,16 @@ impl DeployService {
         self.image_pulls.clone()
     }
 
-    pub(super) fn free_receipts(&self) -> Arc<Mutex<Vec<Option<ployz_core::FreeReceipt>>>> {
+    pub(super) fn free_receipts(
+        &self,
+    ) -> Arc<Mutex<Vec<(MachineId, Option<ployz_core::FreeReceipt>)>>> {
         self.free_receipts.clone()
+    }
+
+    /// `machine` joins once a Build has started: `ListMachines` answers it from then on.
+    pub(super) fn joins_while_building(mut self, machine: MachineObservation) -> Self {
+        self.joins_while_building = Some(machine);
+        self
     }
 
     pub(super) fn creation_pulls(&self) -> Arc<AtomicUsize> {
@@ -520,6 +532,13 @@ impl DeployService {
     fn listed_machines(&self) -> Vec<MachineObservation> {
         let roles = self.ingress_roles.lock().unwrap();
         let mut machines = self.machines.clone();
+        let building = self
+            .builds
+            .as_ref()
+            .is_some_and(|builds| !builds.definitions.lock().unwrap().is_empty());
+        if building && let Some(joined) = &self.joins_while_building {
+            machines.push(joined.clone());
+        }
         for observed in &mut machines {
             if let Some(role) = roles.get(&observed.machine.id) {
                 observed.machine.accepts_ingress = *role;
@@ -1197,7 +1216,7 @@ impl FakeMachine for DeployService {
                 self.free_receipts
                     .lock()
                     .unwrap()
-                    .push(new.free_receipt.clone());
+                    .push((machine_id, new.free_receipt.clone()));
                 if !new.image_prepared {
                     self.creation_pulls.fetch_add(1, Ordering::SeqCst);
                     if self.pull_failures.contains(&machine_id) {

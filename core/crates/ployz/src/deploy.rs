@@ -965,6 +965,17 @@ pub enum PlanError {
         /// The Servers left out for it, in snapshot order. Never empty.
         names: Vec<MachineName>,
     },
+    /// The Service's new Containers carry a Free receipt, and every Server it could run on
+    /// is too old to take one.
+    #[error(
+        "Upgrade {} first. {service} builds without approval, which needs a newer Ployz on the server it runs on.",
+        all_of(names.iter().map(ToString::to_string))
+    )]
+    FreeReceiptsUntaken {
+        service: ServiceName,
+        /// The Servers left out for it, in snapshot order. Never empty.
+        names: Vec<MachineName>,
+    },
     /// No Server in a region the Service runs in can run it.
     #[error("{}", region_unmatched(regions))]
     RegionUnmatched {
@@ -1325,7 +1336,8 @@ impl PlanError {
             ),
             Self::VolumeServerTakesNoServices { .. }
             | Self::FirstCopyUnfit { .. }
-            | Self::VolumeOriginsUnchecked { .. } => row(Conflict, Conflict, Internal, false),
+            | Self::VolumeOriginsUnchecked { .. }
+            | Self::FreeReceiptsUntaken { .. } => row(Conflict, Conflict, Internal, false),
             Self::RegionUnmatched { .. }
             | Self::VolumeOutsideRegion { .. }
             | Self::VolumesApart { .. }
@@ -1389,6 +1401,7 @@ impl PlanError {
             | Self::VolumeServerTakesNoServices { .. }
             | Self::FirstCopyUnfit { .. }
             | Self::VolumeOriginsUnchecked { .. }
+            | Self::FreeReceiptsUntaken { .. }
             | Self::RegionUnmatched { .. }
             | Self::VolumeOutsideRegion { .. }
             | Self::VolumesApart { .. }
@@ -1412,7 +1425,8 @@ impl PlanError {
                 serde_json::json!({ "reason": "volume_server_takes_no_services" })
             }
             Self::FirstCopyUnfit { .. } => serde_json::json!({ "reason": "first_copy_unfit" }),
-            Self::VolumeOriginsUnchecked { names, .. } => serde_json::json!({
+            Self::VolumeOriginsUnchecked { names, .. }
+            | Self::FreeReceiptsUntaken { names, .. } => serde_json::json!({
                 "reason": "upgrade_required",
                 "servers": names,
             }),

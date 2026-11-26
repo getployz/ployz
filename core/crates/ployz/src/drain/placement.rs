@@ -34,8 +34,8 @@ use crate::connect::{Client, ConnectError, TARGET_RPC_TIMEOUT};
 
 use crate::deploy::cleanup::{self, Copy, EmptyPolicy, NotIn, RotationFailure};
 use crate::deploy::{
-    Approved, DeploySnapshot, MachineOperations, MoveEnd, MoveError, destinations, health_error,
-    is_active_runtime, move_container, place_one, region_waits,
+    Approved, DeploySnapshot, MachineOperations, MoveEnd, MoveError, PlanError, PlanOptions,
+    destinations, health_error, is_active_runtime, move_container, place_one, region_waits,
 };
 
 /// A Server as a move names it.
@@ -544,7 +544,9 @@ fn refusal(
             .find(|container| promoted(snapshot, service, container).is_none())?
     };
     let moved = kept_in_region(spec, machine(snapshot, &placed.machine_id));
-    destination(spec, &moved, &service.namespace, snapshot).err()
+    // Whether the copy carries a Free receipt is the Config Store's to say, which this
+    // plan doesn't read; the move asks before it picks a Server.
+    destination(spec, &moved, &service.namespace, snapshot, false).err()
 }
 
 /// The copy an earlier drain's move of `old` brought In on a Server that can keep it, if
@@ -584,19 +586,38 @@ fn serves_healthy(runtime: &ContainerRuntimeObservation) -> bool {
 
 /// The Server for one more Container of `spec`. A spec whose image is a tag moves only
 /// to a Server that copies its image by ID, so a Server whose row lacks the pinned route
-/// is left out; when only such Servers fit, they need upgrading.
+/// is left out; when only such Servers fit, they need upgrading. A copy that carries a
+/// Free receipt (`free`) moves only to a Server that takes one, by the same rule.
 fn destination(
     spec: &ResolvedServiceSpec,
     requested: &RequestedServiceSpec,
     namespace: &Namespace,
     snapshot: &DeploySnapshot,
+    free: bool,
 ) -> Result<MachineId, StayReason> {
-    let no_destination = |error| StayReason::NoDestination {
-        detail: error_chain::row(&error),
-        upgrade: Vec::new(),
+    let options = PlanOptions {
+        free: if free {
+            BTreeSet::from([requested.name.clone()])
+        } else {
+            BTreeSet::new()
+        },
+        ..PlanOptions::default()
+    };
+    let no_destination = |error: PlanError| match error {
+        PlanError::FreeReceiptsUntaken { names, .. } => StayReason::needs_upgrade(
+            names
+                .iter()
+                .filter_map(|name| snapshot.machine_named(name))
+                .map(|observed| MachineRef::from(&observed.machine))
+                .collect(),
+        ),
+        error => StayReason::NoDestination {
+            detail: error_chain::row(&error),
+            upgrade: Vec::new(),
+        },
     };
     if content_addressed(&spec.container.image) {
-        return place_one(requested, namespace, snapshot).map_err(no_destination);
+        return place_one(requested, namespace, snapshot, &options).map_err(no_destination);
     }
     let lacks = |observed: &ployz_core::MachineObservation| {
         observed
@@ -607,14 +628,14 @@ fn destination(
     };
     let mut pinned = snapshot.clone();
     pinned.machines.retain(|observed| !lacks(observed));
-    let error = match place_one(requested, namespace, &pinned) {
+    let error = match place_one(requested, namespace, &pinned, &options) {
         Ok(id) => return Ok(id),
         Err(error) => error,
     };
     // Every Server that would fit, each one dropped once it is named.
     let mut rest = snapshot.clone();
     let mut servers = Vec::new();
-    while let Ok(id) = place_one(requested, namespace, &rest) {
+    while let Ok(id) = place_one(requested, namespace, &rest, &options) {
         servers.push(machine_ref(snapshot, &id));
         rest.machines.retain(|observed| observed.machine.id != id);
     }
@@ -643,6 +664,7 @@ pub(crate) fn needs_version(snapshot: &DeploySnapshot, service: &QualifiedServic
             ),
             &container.namespace,
             snapshot,
+            &PlanOptions::default(),
         )
         .is_ok_and(|machines| {
             machines
@@ -989,11 +1011,13 @@ async fn move_one(
     let source = machine(snapshot, &container.machine_id);
     let from = MachineRef::from(source);
     let spec = &container.resolved_spec;
+    let free = client.carries_free(&container.namespace, spec).await;
     let dest = destination(
         spec,
         &kept_in_region(spec, source),
         &container.namespace,
         snapshot,
+        free,
     )
     .map_err(|reason| match reason {
         StayReason::NoDestination { detail, upgrade } if upgrade.is_empty() => {
@@ -1016,6 +1040,13 @@ async fn move_one(
     })?;
     let dest = machine(snapshot, &dest);
     let to = MachineRef::from(dest);
+    // The last look before the image moves.
+    if free && !crate::build::takes_free_receipts(dest) {
+        return Err(MoveFailure::Refused {
+            from: Some(from),
+            reason: StayReason::needs_upgrade(vec![to]),
+        });
+    }
     let image_id = image_id(&client.client, &container.container_id, &from, &to).await?;
     let image = ImageDigest::parse(&image_id).map_err(|error| MoveFailure::ReadImage {
         from: from.clone(),

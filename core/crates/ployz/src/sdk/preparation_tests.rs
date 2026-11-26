@@ -1760,7 +1760,7 @@ async fn a_free_service_builds_free_and_each_creation_carries_its_receipt() {
     let carried = carried.lock().unwrap().clone();
     let built = format!("sha256:{}", "1".repeat(64));
     assert!(!carried.is_empty());
-    for receipt in &carried {
+    for (_, receipt) in &carried {
         assert_eq!(
             receipt.as_ref().map(|receipt| receipt.image.as_str()),
             Some(built.as_str())
@@ -1856,6 +1856,90 @@ async fn a_reused_free_image_names_the_server_that_cant_run_it() {
         "{cause}"
     );
     assert!(builds.definitions.lock().unwrap().is_empty());
+    redeploying.close().await;
+    server.abort();
+    fs::remove_dir_all(root).unwrap();
+}
+
+/// A Server too old to run a Free Build's image that joins while the Build runs gets none
+/// of the Service's Containers: the plan reads the Servers again after the Build, and the
+/// same rule that placement applies everywhere leaves it out there.
+#[tokio::test]
+async fn a_server_that_joins_during_a_free_build_gets_none_of_its_containers() {
+    let (root, service, _) = free_fixture(
+        &[ployz_core::BUILD_FREE_CAPABILITY],
+        &[ployz_core::FREE_RECEIPT_CAPABILITY],
+    );
+    let mut late = machine('c', "late");
+    late.machine.accepts_builds = false;
+    late.machine.runtime.architecture = "x86_64".into();
+    late.machine.runtime.capabilities = Default::default();
+    let late_id = late.machine.id;
+    let service = service.joins_while_building(late);
+    let carried = service.free_receipts();
+    let mut snapshot = git("one", "dockerfile");
+    snapshot["config"]["replicas"] = json!(2);
+    let mut free = input(&root, vec![snapshot]);
+    free.free = [ServiceName::parse("one").unwrap()].into();
+    deploy(service, free).await.unwrap();
+    let carried = carried.lock().unwrap().clone();
+    assert_eq!(carried.len(), 2, "{carried:?}");
+    for (machine, receipt) in &carried {
+        assert_ne!(*machine, late_id, "{carried:?}");
+        assert!(receipt.is_some(), "{carried:?}");
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+/// A redeploy that reuses a free Service's image and builds only a signed one needs no
+/// Builder that runs a Free Build.
+#[tokio::test]
+async fn a_reused_free_image_leaves_the_builder_to_the_signed_build() {
+    let one = ServiceName::parse("one").unwrap();
+    let both = |root: &Path| {
+        let mut both = input(
+            root,
+            vec![git("one", "dockerfile"), git("two", "dockerfile")],
+        );
+        both.free = [one.clone()].into();
+        both
+    };
+    let (root, service, built) = free_fixture(
+        &[ployz_core::BUILD_FREE_CAPABILITY],
+        &[ployz_core::FREE_RECEIPT_CAPABILITY],
+    );
+    let (building, server) = session(service).await;
+    let first = building
+        .prepare(both(&root))
+        .unwrap()
+        .finished()
+        .await
+        .unwrap();
+    let receipts: BTreeMap<_, _> = first
+        .build_receipts()
+        .iter()
+        .filter(|(service, _)| **service == one)
+        .map(|(service, receipt)| (service.clone(), vec![receipt.clone()]))
+        .collect();
+    first.close();
+    building.close().await;
+    server.abort();
+
+    // The builder no longer runs Free Builds; only two needs building.
+    let (_, older, builds) = free_fixture(&[], &[ployz_core::FREE_RECEIPT_CAPABILITY]);
+    *builds.stores.lock().unwrap() = built.stores.lock().unwrap().clone();
+    let (redeploying, server) = session(older).await;
+    let mut redeploy = both(&root);
+    redeploy.build_receipts = receipts;
+    let prepared = redeploying
+        .prepare(redeploy)
+        .unwrap()
+        .finished()
+        .await
+        .unwrap();
+    let definitions = builds.definitions.lock().unwrap().clone();
+    assert_eq!(definitions.len(), 1, "{definitions:?}");
+    prepared.close();
     redeploying.close().await;
     server.abort();
     fs::remove_dir_all(root).unwrap();

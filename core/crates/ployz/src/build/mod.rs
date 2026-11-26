@@ -21,7 +21,9 @@ use inputs::BuildInputs;
 pub use inputs::{UploadListing, content_digest};
 
 mod free;
-pub(crate) use free::{free_builders, free_destinations};
+pub(crate) use free::{
+    admit_free, free_builders, free_destinations, runs_free_receipt, takes_free_receipts,
+};
 mod ignore;
 mod inputs;
 mod local;
@@ -549,11 +551,18 @@ impl CapturedBuild {
 }
 
 /// Use each Service's completed content for Containers and hooks. A tag
-/// overwritten by another Service or client cannot substitute its image.
+/// overwritten by another Service or client cannot substitute its image. Each Service
+/// whose image runs by a Free receipt is planned only onto Servers that take one.
 ///
 /// # Errors
 /// Rejects a completed image whose reference cannot name its content.
 pub(crate) fn bind(intent: &mut DeployIntent, builds: &[BuiltService]) -> Result<(), Error> {
+    intent.options.free.extend(
+        builds
+            .iter()
+            .filter(|build| build.free.is_some())
+            .map(|build| build.name.clone()),
+    );
     for service in &mut intent.target {
         if let Some(build) = builds.iter().find(|build| build.name == service.name) {
             service.container.image =

@@ -168,12 +168,27 @@ async fn a_drained_free_copy_carries_the_receipt_of_the_image_it_runs() {
     let approvals = Approvals::kept(super::KeptVersions::new(store, organization));
     let mut free = requested(ServiceMode::Global);
     free.container.image = format!("ployz-build/api@{image}");
+    let resolved = |spec: ployz_core::RequestedServiceSpec| {
+        spec.to_resolved(service_id('a'), ResolvedUpdateConfig::default())
+            .unwrap()
+    };
+    // A drain asks the same before it picks a Server.
+    assert!(
+        approvals
+            .carries_free(&namespace, &resolved(free.clone()))
+            .await
+    );
     assert_eq!(
         approvals.carried(&want_of(free, &namespace)).await.free,
         Some(serde_json::from_value(receipt).unwrap())
     );
     let mut other = requested(ServiceMode::Global);
     other.container.image = format!("ployz-build/api@sha256:{}", "2".repeat(64));
+    assert!(
+        !approvals
+            .carries_free(&namespace, &resolved(other.clone()))
+            .await
+    );
     assert_eq!(
         approvals.carried(&want_of(other, &namespace)).await.free,
         None

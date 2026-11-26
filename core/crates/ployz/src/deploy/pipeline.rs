@@ -351,6 +351,12 @@ pub(crate) async fn push_namespace_images(
             if !compatible {
                 return Err(DeliveryError(format!("Build for Service {} contains {}; destination Machine {target} reports architecture {}. No Service, hook, or volume change was attempted; rerun once the Build covers that Machine.", service.name, service.built.platforms.join(", "), architecture.unwrap_or("unknown"))));
             }
+            if service.free.is_some()
+                && let Some(machine) = machines.iter().find(|machine| machine.machine.id == *target)
+            {
+                crate::build::runs_free_receipt(&machine.machine, &service.name)
+                    .map_err(|error| DeliveryError(error.to_string()))?;
+            }
         }
         Ok((service, targets.into_iter().map(|target| target.to_string()).collect::<Vec<_>>()))
     }).collect::<Result<Vec<_>, DeliveryError>>()?;
