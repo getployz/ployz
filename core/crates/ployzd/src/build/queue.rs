@@ -27,6 +27,10 @@ pub(crate) struct Runner {
     /// Builds running now, for the Machine's published observation.
     running: watch::Sender<u32>,
     pub(super) shutdown: CancellationToken,
+    /// Runs on a Build's execution thread after it said it stopped and before that thread
+    /// returns, so a test can look at the Machine in between.
+    #[cfg(test)]
+    pub(super) returning: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 /// `available + held - debt == size`. A lowered limit cannot take permits back
@@ -82,6 +86,8 @@ impl Runner {
             running: watch::Sender::new(0),
             policy,
             shutdown,
+            #[cfg(test)]
+            returning: Mutex::default(),
         }))
     }
 
