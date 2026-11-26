@@ -109,9 +109,15 @@ impl Enforcing {
         let data_dir =
             std::env::temp_dir().join(format!("ployzd-authorization-{}", MachineId::random()));
         let peer_dir = data_dir.with_extension("peer");
-        let store = founder(&data_dir, "local");
+        // The tests build dozens of Machines at once; enrolling on a runtime worker would
+        // hold it from every fake Corrosion's answers, past the client's I/O timeout.
+        let (store, peer_store) = tokio::task::spawn_blocking({
+            let (data_dir, peer_dir) = (data_dir.clone(), peer_dir.clone());
+            move || (founder(&data_dir, "local"), founder(&peer_dir, "peer"))
+        })
+        .await
+        .unwrap();
         let machine = store.record().machine().unwrap().clone();
-        let peer_store = founder(&peer_dir, "peer");
         let peer = peer_store.record().machine().unwrap().clone();
         let (replicated, cluster) = crate::corrosion::fake_cluster::store().await;
         replicated.publish_local_machine(&machine).await.unwrap();
