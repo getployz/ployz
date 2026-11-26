@@ -7103,7 +7103,7 @@ mod ensure_container {
             std::fs::remove_dir_all(fixture.data_dir).unwrap();
         }
 
-        /// The image a free Build loaded runs unsigned only by a receipt this Cluster
+        /// The image a Free Build loaded runs unsigned only by a receipt this Cluster
         /// made for that content, from what this Server already holds.
         #[tokio::test]
         #[expect(clippy::indexing_slicing, reason = "JSON fixture")]
@@ -7224,8 +7224,7 @@ mod ensure_container {
                         .await
                         .unwrap(),
                 )
-                .container_id
-                .clone();
+                .container_id;
                 for container in fixture
                     .fake
                     .named_containers

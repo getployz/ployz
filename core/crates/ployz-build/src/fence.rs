@@ -12,7 +12,7 @@ pub struct Fence {
     pub cgroup: CgroupPath,
     /// Loopback ports of this Build's image context proxies.
     pub image_ports: Vec<u16>,
-    /// Whether BuildKit may reach the mesh's image servers. A free Build may not.
+    /// Whether BuildKit may reach the mesh's image servers. A Free Build may not.
     pub mesh_images: bool,
 }
 

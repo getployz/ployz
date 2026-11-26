@@ -840,6 +840,20 @@ impl LocalMachine {
         .await
     }
 
+    /// Remove the Free Builds' images that went idle, as each Free Build ends, so a
+    /// Server only Cloud deploys to never keeps them all.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker is unavailable, admission is busy, or Docker cannot list
+    /// images or Containers.
+    pub(crate) async fn prune_free_images(&self) -> Result<ImagesRemoved, Error> {
+        self.finish_mutation(move |local| async move {
+            Ok(local.docker()?.images().prune_free_images().await?)
+        })
+        .await
+    }
+
     /// This Machine's Kept Volumes, each measured if there is time.
     ///
     /// # Errors

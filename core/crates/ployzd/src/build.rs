@@ -55,6 +55,7 @@ pub(crate) fn start(
     tokio::spawn(async move {
         let shutdown = runner.shutdown.clone();
         let state = Arc::new(AttemptState::default());
+        let cleanup = local.clone();
         let outcome = attempt(
             local,
             requests,
@@ -64,6 +65,7 @@ pub(crate) fn start(
             (sealing, access),
         )
         .await;
+        let loaded_free = matches!(outcome, Outcome::FreeImages { .. });
         let message = "Build terminal report exceeds the response size limit";
         let fallback = match &outcome {
             Outcome::Unknown { stage, .. } => Outcome::Unknown {
@@ -84,6 +86,14 @@ pub(crate) fn start(
             remote::encode(&Event::Finished(fallback)).expect("bounded terminal fallback")
         });
         let _ = tokio::time::timeout(Duration::from_secs(5), events.send(Ok(payload))).await;
+        // Each Free Build loads a new image, which nothing else removes on a Server only
+        // Cloud deploys to.
+        if loaded_free && let Err(error) = cleanup.prune_free_images().await {
+            tracing::warn!(
+                error = %ployz_core::error_chain::inline(&error),
+                "Free Build image cleanup failed"
+            );
+        }
         // Installation exclusion follows retained image cleanup because
         // releasing temporary tags mutates Docker.
         if state
@@ -182,13 +192,17 @@ async fn attempt(
                     .with_work(work);
             }
         },
-        // A free Build reads none of those, so no key's scope bounds it. It is refused
+        // A Free Build reads none of those, so no key's scope bounds it. It is refused
         // before it queues when it asks for another Service's image or a tag.
         Access::Free => {
             if let Input::Start(definition) = &request
-                && let Some(refusal) = free_refusal(definition)
+                && let Some(refusal) = definition.free_refusal()
             {
-                return failed(Stage::Admission, refusal).with_work(work);
+                return failed(
+                    Stage::Admission,
+                    format!("{refusal}; execution was not attempted"),
+                )
+                .with_work(work);
             }
             crate::machine::Bound::unbound()
         }
@@ -470,7 +484,7 @@ fn receive_and_execute(
             break;
         }
     }
-    // A free Build's upload refused any Sealed record as it arrived; none is looked for.
+    // A Free Build's upload refused any Sealed record as it arrived; none is looked for.
     let record = match access {
         Access::Full => upload.private_file(ployz_build::capture::SEALED_RECORD),
         Access::Free => Ok(None),
@@ -551,14 +565,17 @@ fn receive_and_execute(
                     _installation: installation,
                 });
             }
-            match (definition.output, access) {
-                (Output::Load, Access::Full) => Outcome::Images {
-                    machine_id,
-                    images: completed.images,
+            // A Free Build only loads: its definition was refused otherwise.
+            match access {
+                Access::Free => free_images(machine_id, completed.images, sealing),
+                Access::Full => match definition.output {
+                    Output::Load => Outcome::Images {
+                        machine_id,
+                        images: completed.images,
+                    },
+                    Output::Validate => Outcome::Validated { machine_id },
+                    Output::Registry => Outcome::Published { machine_id },
                 },
-                (Output::Load, Access::Free) => free_images(machine_id, completed.images, sealing),
-                (Output::Validate, _) => Outcome::Validated { machine_id },
-                (Output::Registry, _) => Outcome::Published { machine_id },
             }
         }
         Err(error) => failure(error.stage(), error),
@@ -569,19 +586,7 @@ fn receive_and_execute(
     }
 }
 
-/// Why a free Build is refused before it queues: it names another Service's image, a tag
-/// to keep, or an output other than loading here.
-fn free_refusal(definition: &Definition) -> Option<&'static str> {
-    if !definition.image_contexts.is_empty() {
-        Some("A free Build takes no other Service's image; execution was not attempted")
-    } else if !definition.retained_tags.is_empty() || definition.output != Output::Load {
-        Some("A free Build loads its image here under no name; execution was not attempted")
-    } else {
-        None
-    }
-}
-
-/// A free Build's images, each with this Cluster's receipt for its ID.
+/// A Free Build's images, each with this Cluster's receipt for its ID.
 fn free_images(
     machine_id: MachineId,
     images: Vec<ployz_build::BuiltImage>,

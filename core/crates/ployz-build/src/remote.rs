@@ -61,6 +61,20 @@ pub struct Definition {
     pub pull: bool,
 }
 
+impl Definition {
+    /// Why a Free Build refuses this definition: it names another Service's image, a tag
+    /// to keep, or an output other than loading on the Server that runs it.
+    #[must_use]
+    pub fn free_refusal(&self) -> Option<&'static str> {
+        (!self.image_contexts.is_empty()
+            || !self.retained_tags.is_empty()
+            || self.output != crate::Output::Load)
+            .then_some(
+                "A Free Build takes no other Service's image or tag, and loads its image on this Server",
+            )
+    }
+}
+
 /// Captured filesystem entry kind; special files are unsupported.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -109,7 +123,7 @@ pub enum Outcome {
         machine_id: MachineId,
         images: Vec<BuiltImage>,
     },
-    /// A free Build's images, loaded under no name, each with the receipt an unsigned
+    /// A Free Build's images, loaded under no name, each with the receipt an unsigned
     /// creation of it carries.
     FreeImages {
         machine_id: MachineId,
@@ -133,7 +147,7 @@ pub enum Outcome {
     },
 }
 
-/// One image a free Build loaded, and the receipt its Server gave for it.
+/// One image a Free Build loaded, and the receipt its Server gave for it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct FreeImage {
     pub image: BuiltImage,

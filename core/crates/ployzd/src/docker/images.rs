@@ -290,18 +290,42 @@ impl Images {
                 now,
             ));
         }
-        let untagged = self
-            .listed(&HashMap::from([("dangling", vec!["true"])]), true)
-            .await?;
-        references.extend(idle_untagged(
-            &untagged.images,
-            under_pressure(untagged.docker_root),
-            now,
-        ));
+        references.extend(self.idle_free(now).await?);
         if references.is_empty() {
             return Ok(ImagesRemoved::default());
         }
         self.remove_images(&references).await
+    }
+
+    /// Remove the Free Builds' images that went idle.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker cannot list images or Containers; per-reference failures
+    /// are results.
+    pub async fn prune_free_images(&self) -> Result<ImagesRemoved, Error> {
+        let references = self.idle_free(chrono::Utc::now().timestamp()).await?;
+        if references.is_empty() {
+            return Ok(ImagesRemoved::default());
+        }
+        self.remove_images(&references).await
+    }
+
+    /// The Free Builds' images [`idle_untagged`] removes. Only an image a Free Build
+    /// labelled counts, so an untagged image of the host's own stays.
+    async fn idle_free(&self, now: i64) -> Result<Vec<String>, Error> {
+        let label = format!("{}=true", ployz_build::FREE_IMAGE_LABEL);
+        let untagged = self
+            .listed(
+                &HashMap::from([("dangling", vec!["true"]), ("label", vec![label.as_str()])]),
+                true,
+            )
+            .await?;
+        Ok(idle_untagged(
+            &untagged.images,
+            under_pressure(untagged.docker_root),
+            now,
+        ))
     }
 
     /// Remove each reference without force. A reference whose image any Container
@@ -373,9 +397,9 @@ fn superseded(images: &[ImageSummary], repository: &str, pressure: bool, now: i6
         .collect()
 }
 
-/// Untagged images to remove: a free Build's, which no Container uses and no Build
+/// Untagged images to remove: a Free Build's, which no Container uses and no Build
 /// loaded again for a week, or for an hour when the Docker root is nearly full. The
-/// hour leaves a free Build's image on the Server until its creation arrives.
+/// hour leaves a Free Build's image on the Server until its creation arrives.
 fn idle_untagged(images: &[ImageSummary], pressure: bool, now: i64) -> Vec<String> {
     let idle = if pressure {
         FRESH_SECONDS

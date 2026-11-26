@@ -204,7 +204,7 @@ impl SealingKeyStore {
         serde_json::from_slice(&opened).map_err(|_| unopenable())
     }
 
-    /// The receipt for `image`, an image a free Build loaded here.
+    /// The receipt for `image`, an image a Free Build loaded here.
     ///
     /// # Errors
     /// Returns [`OpenError::KeyMissing`] or [`OpenError::KeyUnreadable`] as opening does.

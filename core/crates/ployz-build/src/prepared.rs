@@ -66,7 +66,7 @@ impl<'a> Prepared<'a> {
     }
 
     /// [`Self::capture`], staging into `staging`, which its owner can revoke, for a Build
-    /// with `access`. A free Build's capture is checked as one, and its Docker client reads
+    /// with `access`. A Free Build's capture is checked as one, and its Docker client reads
     /// an empty configuration this host made, never the one the capture brought.
     pub(crate) fn staged_in(
         staging: &SealedStaging,

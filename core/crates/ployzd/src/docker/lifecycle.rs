@@ -541,7 +541,7 @@ impl Lifecycle {
             // The caller's word that the image is here, and its login, count for nothing.
             match creating.image {
                 ImagePull::Free(free) => {
-                    // Never pulled: only a free Build of this Cluster made what its ID names.
+                    // Never pulled: only a Free Build of this Cluster made what its ID names.
                     match self.docker.client.inspect_image(free.id().as_str()).await {
                         Ok(_) => {}
                         Err(error) if crate::docker_image::is_not_found(&error) => {
@@ -819,7 +819,7 @@ impl Lifecycle {
     }
 
     /// Whether the Container just made runs an image [`Images::pull_free`] placed, or the
-    /// one a free Build receipt named. Its image was resolved when Docker made it, after
+    /// one a Free receipt named. Its image was resolved when Docker made it, after
     /// the pull, so a name another caller moved in between is caught here, before the
     /// Container starts.
     async fn runs_free_image(

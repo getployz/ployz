@@ -262,7 +262,7 @@ impl Upload {
                 {
                     return Err("Build entry is outside source and private material".into());
                 }
-                // Refused as it arrives, so a Sealed record never reaches a free Build's
+                // Refused as it arrives, so a Sealed record never reaches a Free Build's
                 // staging, let alone opens.
                 if self.access == crate::Access::Free
                     && relative.starts_with(crate::capture::PRIVATE)
@@ -568,7 +568,7 @@ pub(crate) fn environment(root: &Path) -> BTreeMap<String, String> {
     ])
 }
 
-/// A free Build's environment: HOME and DOCKER_CONFIG in an empty directory this host
+/// A Free Build's environment: HOME and DOCKER_CONFIG in an empty directory this host
 /// makes beside the capture, where no upload can write, so the Docker client reads no
 /// configuration or login the capture brought.
 pub(crate) fn free_environment(root: &Path) -> io::Result<BTreeMap<String, String>> {

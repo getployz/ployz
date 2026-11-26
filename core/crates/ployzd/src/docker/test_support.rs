@@ -116,6 +116,12 @@ pub(crate) struct FakeDocker {
     /// What the registry serves for each tag, by ID. A tag listed nowhere serves the ID
     /// made from its name. A pull of a tag writes it into [`Self::images`].
     pub(crate) registry: Arc<Mutex<BTreeMap<String, String>>>,
+    /// What an image listing answers before its `dangling` and `label` filters: Docker's
+    /// summaries, each with the `LastTagTime` an inspect of its ID answers.
+    pub(crate) listed_images: Arc<Mutex<Vec<serde_json::Value>>>,
+    /// Each image a remove named, in order, with a wake for each.
+    pub(crate) removed_images: Arc<Mutex<Vec<String>>>,
+    pub(crate) image_removed: Arc<tokio::sync::Notify>,
 }
 
 impl FakeDocker {
@@ -638,7 +644,15 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
             serde_json::json!({"Descriptor": {"digest": fake.served(tag)}, "Platforms": []}),
         )
     } else if method == Method::GET && path.ends_with("/images/json") {
-        (StatusCode::OK, serde_json::json!([]))
+        (
+            StatusCode::OK,
+            listed_images(&fake.listed_images.lock().unwrap(), uri.query()),
+        )
+    } else if method == Method::DELETE && path.contains("/images/") {
+        let image = path.split("/images/").nth(1).unwrap_or_default().to_owned();
+        fake.removed_images.lock().unwrap().push(image.clone());
+        fake.image_removed.notify_waiters();
+        (StatusCode::OK, serde_json::json!([{"Deleted": image}]))
     } else if method == Method::GET && path.contains("/images/") && path.ends_with("/json") {
         if let Some(barrier) = &fake.image_barrier {
             barrier.wait().await;
@@ -649,12 +663,25 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
             .nth(1)
             .unwrap_or_default()
             .trim_end_matches("/json");
-        match fake.image(image) {
-            Some(id) => (StatusCode::OK, serde_json::json!({"Id": id})),
-            None => (
-                StatusCode::NOT_FOUND,
-                serde_json::json!({"message": format!("No such image: {image}")}),
+        let tagged = fake
+            .listed_images
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|listed| listed["Id"] == image)
+            .map(|listed| listed["LastTagTime"].clone());
+        match tagged {
+            Some(time) => (
+                StatusCode::OK,
+                serde_json::json!({"Id": image, "Metadata": {"LastTagTime": time}}),
             ),
+            None => match fake.image(image) {
+                Some(id) => (StatusCode::OK, serde_json::json!({"Id": id})),
+                None => (
+                    StatusCode::NOT_FOUND,
+                    serde_json::json!({"message": format!("No such image: {image}")}),
+                ),
+            },
         }
     } else if method == Method::GET
         && path.ends_with("/volumes")
@@ -892,6 +919,50 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
 
 pub(super) async fn fake_runtime() -> (ContainerRuntime, FakeDocker) {
     fake_runtime_with(FakeDocker::default()).await
+}
+
+/// The images in `listed` an image listing's `dangling` and `label` filters keep.
+fn listed_images(listed: &[serde_json::Value], query: Option<&str>) -> serde_json::Value {
+    let filters = url::form_urlencoded::parse(query.unwrap_or_default().as_bytes())
+        .find(|(key, _)| key == "filters")
+        .map(|(_, filters)| serde_json::from_str::<serde_json::Value>(&filters).unwrap())
+        .unwrap_or_default();
+    let values = |key: &str| -> Vec<String> {
+        filters
+            .get(key)
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(serde_json::Value::as_str)
+            .map(str::to_owned)
+            .collect()
+    };
+    let dangling = values("dangling").iter().any(|value| value == "true");
+    let labels = values("label");
+    listed
+        .iter()
+        .filter(|image| {
+            !dangling
+                || image["RepoTags"]
+                    .as_array()
+                    .is_none_or(|tags| tags.is_empty())
+        })
+        .filter(|image| {
+            labels.iter().all(|label| {
+                let (key, value) = label.split_once('=').unwrap_or((label, ""));
+                image
+                    .get("Labels")
+                    .and_then(|labels| labels.get(key))
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|held| value.is_empty() || held == value)
+            })
+        })
+        .map(|image| {
+            let mut image = image.clone();
+            image.as_object_mut().unwrap().remove("LastTagTime");
+            image
+        })
+        .collect()
 }
 
 fn listed_by_labels(

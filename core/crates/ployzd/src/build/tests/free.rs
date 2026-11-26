@@ -1,4 +1,4 @@
-//! A free Build: it opens no Sealed value, reads no login and takes no other Service's
+//! A Free Build: it opens no Sealed value, reads no login and takes no other Service's
 //! image, and its image loads under no name with this Cluster's receipt.
 
 use super::*;
@@ -38,7 +38,7 @@ fn definition() -> Definition {
 }
 
 impl Fixture {
-    /// Send a free Build of the capture at `dir` and read its terminal report, holding the
+    /// Send a Free Build of the capture at `dir` and read its terminal report, holding the
     /// request open until then as a client does.
     async fn build_free(&self, definition: Definition, dir: &Path) -> Outcome {
         let mut frames = vec![remote::encode(&Input::Start(definition)).unwrap()];
@@ -107,6 +107,52 @@ async fn a_free_build_loads_its_image_untagged_with_its_clusters_receipt_and_rea
     assert_eq!(
         fs::read_to_string(fixture.root.join("docker-config-files")).unwrap(),
         ""
+    );
+}
+
+/// A Server only Cloud deploys to cleans up as each Free Build ends: a Free Build's image
+/// idle past a week goes, a recent one stays for its creation, and an untagged image Ployz
+/// didn't build is never touched.
+#[tokio::test]
+async fn each_free_build_removes_the_free_images_gone_idle_and_only_those() {
+    let cluster = crate::sealed_env::test_support::Cluster::new();
+    let fixture = Fixture::with(|_| {}, Some(cluster.dir.0.clone())).await;
+    let ago = |hours: i64| (chrono::Utc::now() - chrono::Duration::hours(hours)).to_rfc3339();
+    let image = |hex: &str, labels: serde_json::Value, tagged: String| {
+        serde_json::json!({
+            "Id": format!("sha256:{}", hex.repeat(64)), "ParentId": "", "RepoTags": [],
+            "RepoDigests": [], "Created": 0, "Size": 1, "SharedSize": 0, "Containers": 0,
+            "Labels": labels, "LastTagTime": tagged,
+        })
+    };
+    let free = serde_json::json!({ployz_build::FREE_IMAGE_LABEL: "true"});
+    // Listed, and so removed, first: a wrong removal is the one the cleanup makes first.
+    fixture.docker.listed_images.lock().unwrap().extend([
+        image("c", serde_json::json!({}), ago(30 * 24)),
+        image("b", free.clone(), ago(1)),
+        image("a", free, ago(30 * 24)),
+    ]);
+    let dir = fixture.root.join("free-capture");
+    capture(&dir, &[]);
+    let removed = fixture.docker.image_removed.clone();
+    let mut removal = std::pin::pin!(removed.notified());
+    removal.as_mut().enable();
+
+    let outcome = fixture.build_free(definition(), &dir).await;
+
+    assert!(matches!(outcome, Outcome::FreeImages { .. }), "{outcome:?}");
+    tokio::time::timeout(Duration::from_secs(10), removal)
+        .await
+        .expect("the Free Build's cleanup removed an image");
+    assert_eq!(
+        *fixture.docker.removed_images.lock().unwrap(),
+        [format!("sha256:{}", "a".repeat(64))]
+    );
+    let args = fs::read_to_string(fixture.root.join("bake-args")).unwrap();
+    assert!(
+        args.lines()
+            .any(|arg| arg == format!("api.labels.{}=true", ployz_build::FREE_IMAGE_LABEL)),
+        "{args}"
     );
 }
 

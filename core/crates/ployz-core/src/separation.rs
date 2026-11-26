@@ -48,10 +48,10 @@ pub const VERIFIED_BUILD_KEY: &[u8] = b"ployz-verified-build-key-v1";
 /// What a verified build's MAC input starts with.
 pub const VERIFIED_BUILD: &[u8] = b"ployz-verified-build/v1\n";
 
-/// HKDF label of the key a free build's receipt is a MAC under.
+/// HKDF label of the key a Free Build's receipt is a MAC under.
 pub const FREE_IMAGE_KEY: &[u8] = b"ployz-free-image-key-v1";
 
-/// What a free build's receipt MAC input starts with.
+/// What a Free Build's receipt MAC input starts with.
 pub const FREE_IMAGE: &[u8] = b"ployz-free-image/v1\n";
 
 /// Digest prefix of the code that names a joining Machine.

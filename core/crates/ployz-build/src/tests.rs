@@ -1263,7 +1263,7 @@ fn the_builder_cache_is_not_user_data() {
     assert!(super::is_builder_cache(
         "buildx_buildkit_ployz-0-2550_state"
     ));
-    // A free Build's builder keeps its own cache, also Ployz's.
+    // A Free Build's builder keeps its own cache, also Ployz's.
     for slot in [0, 3] {
         let free = format!(
             "buildx_buildkit_{}0_state",

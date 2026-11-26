@@ -180,8 +180,11 @@ impl Resources {
         arguments
     }
 
+    /// Each build slot keeps a Full and a Free cache, so each takes half of `cache_bytes`,
+    /// at least a byte: BuildKit reads 0 as no limit.
     fn max_used_bytes(&self) -> u64 {
-        self.cache_bytes.unwrap_or(UNCAPPED_CACHE_BYTES)
+        self.cache_bytes
+            .map_or(UNCAPPED_CACHE_BYTES, |bytes| (bytes / 2).max(1))
     }
 
     /// Every BuildKit runs on the host network and owns its bridge, so two
@@ -259,6 +262,11 @@ fn clear_slot_cache(
     };
     let result = (|| {
         docker.require_local()?;
+        // A Free Build's builder is made only by a Free Build: a host that never ran one
+        // has no cache to clear.
+        if access == crate::Access::Free && !holds_cache(&docker, &access.builder(slot))? {
+            return Ok(());
+        }
         let builder = Builder::acquire(
             &docker,
             admission.lock,
@@ -296,6 +304,23 @@ fn clear_slot_cache(
     result
 }
 
+/// Whether `builder` left a cache volume on this host.
+fn holds_cache(docker: &Docker<'_>, builder: &str) -> Result<bool, BuildError> {
+    let volume = format!("buildx_buildkit_{builder}0_state");
+    let listed = docker.run(
+        "look for the build cache",
+        &[
+            "volume",
+            "ls",
+            "--quiet",
+            "--filter",
+            &format!("name={volume}"),
+        ],
+        Streams::Captured,
+    )?;
+    Ok(listed.lines().any(|line| line.trim() == volume))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -313,7 +338,7 @@ mod tests {
             Resources::parse(b"cache_bytes: 1073741824")
                 .unwrap()
                 .buildkit_config(3),
-            "[worker.oci]\nnetworkMode = \"bridge\"\nbridgeName = \"ployz-build3\"\nbridgeSubnet = \"10.10.3.0/24\"\ngc = true\nreservedSpace = 0\nmaxUsedSpace = 1073741824\n"
+            "[worker.oci]\nnetworkMode = \"bridge\"\nbridgeName = \"ployz-build3\"\nbridgeSubnet = \"10.10.3.0/24\"\ngc = true\nreservedSpace = 0\nmaxUsedSpace = 536870912\n"
         );
         for invalid in [
             "cpu_cores: 0",
@@ -346,6 +371,8 @@ mod tests {
         };
         assert_eq!(max_used(b"{}"), "4611686018427387904");
         assert_eq!(max_used(b"min_free_bytes: 1"), "4611686018427387904");
-        assert_eq!(max_used(b"cache_bytes: 1073741824"), "1073741824");
+        // A slot's Full and Free caches together stay within it.
+        assert_eq!(max_used(b"cache_bytes: 1073741824"), "536870912");
+        assert_eq!(max_used(b"cache_bytes: 1"), "1");
     }
 }

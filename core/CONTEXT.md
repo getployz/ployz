@@ -189,7 +189,7 @@ A MAC a Machine issues over one rule build's claim and the exact rule approval i
 _Avoid_: Build Receipt, accepted build
 
 **Free Build**:
-A Build that opens no Sealed value, reads no registry login, takes no other Service's image and reaches no image server. It loads its image untagged on the Machine that ran it, which returns a Free receipt for each image.
+A Build that opens no Sealed value, reads no registry login, takes no other Service's image and reaches no mesh image server. It still pulls public base images and `# syntax=` frontends. It loads its image untagged and labelled on the Machine that ran it, which returns a Free receipt for each image and removes the image once it sits idle.
 _Avoid_: unsigned build, preview build
 
 **Free receipt**:

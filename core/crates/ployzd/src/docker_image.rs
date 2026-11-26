@@ -17,12 +17,12 @@ pub(crate) enum ImagePull<'auth> {
     /// the spec's tag names now. Unsigned, it runs only once this Machine pulled it from
     /// the spec's repository by digest, with no login.
     Pinned(&'auth ployz_core::ImageDigest),
-    /// A free Build loaded this image, and its receipt held: creation runs exactly it from
+    /// A Free Build loaded this image, and its receipt held: creation runs exactly it from
     /// this Machine's store, never pulled, whatever the spec's image names.
     Free(&'auth FreeImage),
 }
 
-/// An image a free Build of this Cluster loaded, by its ID: a receipt whose MAC held under
+/// An image a Free Build of this Cluster loaded, by its ID: a receipt whose MAC held under
 /// this Machine's Sealing Key.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct FreeImage(ployz_core::ImageDigest);
@@ -57,7 +57,7 @@ impl FreeImage {
     }
 }
 
-/// Why an unsigned creation won't run the image its free Build receipt names.
+/// Why an unsigned creation won't run the image its Free receipt names.
 #[derive(Debug, thiserror::Error)]
 pub enum FreeImageRefusal {
     #[error("no Server of this Cluster made the receipt for image {0}")]

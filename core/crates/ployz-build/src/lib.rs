@@ -104,14 +104,18 @@ pub fn builder_name() -> String {
     format!("ployz-{}", rustix::process::getuid().as_raw())
 }
 
+/// The label a Free Build's image carries, so its Server's cleanup removes only images
+/// Ployz built.
+pub const FREE_IMAGE_LABEL: &str = "ployz.build.free";
+
 /// Who a Build runs for, which decides what it may read and how it names its images.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Access {
     /// A Full caller's: its Sealed values, registry logins, other Services' images and tags.
     #[default]
     Full,
-    /// A free Build, which nothing signed: it reads none of those, and reaches no image
-    /// server. It runs on a builder and cache of its own, so it never takes a Full Build's
+    /// A Free Build, which nothing signed: it reads none of those, and reaches no mesh
+    /// image server. It runs on a builder and cache of its own, so it never takes a Full Build's
     /// cache, and loads its images by content under no name.
     Free,
 }
@@ -131,8 +135,8 @@ impl Access {
 }
 
 /// Whether `volume` is the build cache of a Ployz builder, any user's and any slot's, a
-/// free Build's included: Ployz's own, not data. Its node is `<uid>0`, or `<uid>-<slot>0`
-/// for slots 1 to 255, after `free-` for a free Build's.
+/// Free Build's included: Ployz's own, not data. Its node is `<uid>0`, or `<uid>-<slot>0`
+/// for slots 1 to 255, after `free-` for a Free Build's.
 #[must_use]
 pub fn is_builder_cache(volume: &str) -> bool {
     let digits = |part: &str| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit());
@@ -563,7 +567,7 @@ fn execute_produce(
             "multi-platform Railpack builds require local image output".into(),
         ));
     }
-    // A free Build's image loads under no name, and an assembled index would carry one.
+    // A Free Build's image loads under no name, and an assembled index would carry one.
     let free = admission.access == Access::Free;
     if free && request.targets.iter().any(|t| t.platforms.len() > 1) {
         return Err(BuildError::Request(
@@ -655,6 +659,8 @@ fn execute_produce(
                 // Loaded by content only, so no tag a Full creation runs can name it.
                 arguments.push("--set".into());
                 arguments.push(format!("{}.tags=", target.bake));
+                arguments.push("--set".into());
+                arguments.push(format!("{}.labels.{FREE_IMAGE_LABEL}=true", target.bake));
             }
             arguments.push("--set".into());
             arguments.push(format!(
@@ -682,8 +688,13 @@ fn execute_produce(
                 if produce == Produce::Output(Output::Load)
                     && !error.is_unknown()
                     && metadata.is_file()
-                    && let Err(verification) =
-                        built_image(&docker.releasing(), &metadata, target, free, progress)
+                    && let Err(verification) = built_image(
+                        &docker.releasing(),
+                        &metadata,
+                        target,
+                        admission.access,
+                        progress,
+                    )
                 {
                     return Err(error.at(Stage::Building).with_later_failure(verification));
                 }
@@ -692,7 +703,7 @@ fn execute_produce(
             progress(Progress::Stage(Stage::Output));
             match produce {
                 Produce::Output(Output::Load) => images.push(
-                    built_image(&docker, &metadata, target, free, progress)
+                    built_image(&docker, &metadata, target, admission.access, progress)
                         .map_err(|error| error.at(Stage::Output))?,
                 ),
                 Produce::Output(output @ (Output::Registry | Output::Validate)) => {
@@ -772,7 +783,11 @@ fn alone(printed: &str, bake: &str) -> Result<(), BuildError> {
         ))),
         _ => Err(BuildError::Request(format!(
             "A Free Build builds only '{bake}', but its plan builds {}",
-            plan.target.keys().map(String::as_str).collect::<Vec<_>>().join(", ")
+            plan.target
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
         ))),
     }
 }
@@ -894,12 +909,12 @@ fn bake_arguments<'a>(
 }
 
 /// The image one Bake run loaded, as its metadata names it and the image store holds it.
-/// A free Build's carries no tag; any other's must carry one.
+/// A Free Build's carries no tag; any other's must carry one.
 fn built_image(
     docker: &Docker<'_>,
     metadata: &Path,
     planned: &Planned<'_>,
-    free: bool,
+    access: Access,
     progress: &(dyn Fn(Progress) + Sync),
 ) -> Result<BuiltImage, BuildError> {
     let content = std::fs::read(metadata)
@@ -918,18 +933,18 @@ fn built_image(
             })
         })?;
     let tags = result.tags();
-    match (free, tags.is_empty()) {
-        (false, true) => {
+    match (access, tags.is_empty()) {
+        (Access::Full, true) => {
             return Err(BuildError::Result(format!(
                 "the build tagged no image for '{name}'"
             )));
         }
-        (true, false) => {
+        (Access::Free, false) => {
             return Err(BuildError::Result(format!(
-                "a free Build tagged its image for '{name}'"
+                "a Free Build tagged its image for '{name}'"
             )));
         }
-        (false, false) | (true, true) => {}
+        (Access::Full, false) | (Access::Free, true) => {}
     }
     let reference = result.digest;
     let platform = verify(

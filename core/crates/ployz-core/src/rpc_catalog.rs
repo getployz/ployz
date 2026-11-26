@@ -168,7 +168,7 @@ macro_rules! rpc_catalog {
                 SIGNED_VERSION_CAPABILITY: ("ployz.container.signed-version.v1", Always),
                 /// A signed version may be an unsigned step of a signed proposal bundle that rides in its envelope.
                 SIGNED_VERSION_PROPOSAL_CAPABILITY: ("ployz.container.signed-version.proposal.v1", Always),
-                /// `EnsureContainer` takes a free Build's receipt and runs an unsigned creation's Container from exactly the image it names, once its MAC holds under the Cluster's Sealing Key.
+                /// `EnsureContainer` takes a Free Build's receipt and runs an unsigned creation's Container from exactly the image it names, once its MAC holds under the Cluster's Sealing Key.
                 FREE_RECEIPT_CAPABILITY: ("ployz.container.free-receipt.v1", Always),
                 /// `EnsureContainer` takes an automatic deploy rule with its image token and creates an Operator's Container under it only for the head's image built under the rule.
                 DEPLOY_RULE_CAPABILITY: ("ployz.container.deploy-rule.v1", Always),

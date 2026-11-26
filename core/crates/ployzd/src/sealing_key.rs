@@ -163,7 +163,7 @@ impl SealingKey {
             .expect("HMAC takes a key of any length")
     }
 
-    /// The receipt for `image`, which a free Build loaded here: a MAC over its ID under a
+    /// The receipt for `image`, which a Free Build loaded here: a MAC over its ID under a
     /// key every Machine holding this Sealing Key derives, and nothing without it can.
     pub(crate) fn free_receipt(&self, image: &ployz_core::ImageDigest) -> ployz_core::FreeReceipt {
         use hkdf::hmac::Mac as _;

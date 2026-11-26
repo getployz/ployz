@@ -933,7 +933,7 @@ fn ipv4_fence(fence: &ployz_build::Fence) -> Vec<String> {
 
 fn ipv6_fence(fence: &ployz_build::Fence) -> Vec<String> {
     let mesh = mesh_cidr();
-    // A free Build reaches no image server; any other reaches them for its image contexts.
+    // A Free Build reaches no image server; any other reaches them for its image contexts.
     let allowed = if fence.mesh_images {
         vec![format!("-d {mesh} -p tcp --dport {UNREGISTRY_PORT}")]
     } else {

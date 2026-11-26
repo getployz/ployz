@@ -10,11 +10,11 @@ use std::{
     path::{Component, Path},
 };
 
-/// Why a free Build refuses a recipe that reads private material.
+/// Why a Free Build refuses a recipe that reads private material.
 const FREE_SECRETS: &str = "A free Build reads no secret, Sealed value or SSH key";
 
 /// Validate a captured recipe, isolate its registry configuration, and return
-/// checked private Railpack inputs for execution. A free Build's recipe is checked as one,
+/// checked private Railpack inputs for execution. A Free Build's recipe is checked as one,
 /// and its capture brings no registry configuration to isolate.
 /// # Errors
 /// Rejects uncaptured paths, unsupported host settings, and SSH contexts without
@@ -77,14 +77,9 @@ pub fn validate_capture(
         return Err("invalid temporary Build tags".into());
     }
     if sealed == SealedFiles::Free
-        && (!definition.image_contexts.is_empty()
-            || !definition.retained_tags.is_empty()
-            || definition.output != crate::Output::Load)
+        && let Some(refusal) = definition.free_refusal()
     {
-        return Err(
-            "A free Build takes no other Service's image or tag, and loads its image on this Server"
-                .into(),
-        );
+        return Err(refusal.into());
     }
     let context_names = names
         .iter()
@@ -358,7 +353,7 @@ pub enum SealedFiles {
     Opened,
     /// Captured but not yet opened: a Sealed value's file is checked by name only.
     Pending,
-    /// A free Build's, which may name no secret, SSH key, registry configuration, cache
+    /// A Free Build's, which may name no secret, SSH key, registry configuration, cache
     /// export or other Service's image, and loads its image here.
     Free,
 }

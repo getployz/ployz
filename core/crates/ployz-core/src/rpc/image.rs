@@ -149,7 +149,7 @@ pub struct PullFreeImageRequest {
     pub registry_login: Option<crate::SealedLogin>,
 }
 
-/// What a Server answers for each image a free Build loaded: the image's ID, and a MAC
+/// What a Server answers for each image a Free Build loaded: the image's ID, and a MAC
 /// over it under a key every Server of the Cluster derives from its Sealing Key. Cloud
 /// carries it to an unsigned creation, which then runs exactly that image, and can't make
 /// one: a creation's Server refuses a receipt whose MAC doesn't hold under its own key.

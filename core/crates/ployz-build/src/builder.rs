@@ -1137,7 +1137,7 @@ esac
         );
         drop(Lock::try_acquire_slot(directory.path(), slot, &docker).unwrap());
         let calls = fs::read_to_string(directory.path().join("calls")).unwrap();
-        // The slot ran a Build or a free Build: recovery can't tell which, so it removes both.
+        // The slot ran a Build or a Free Build: recovery can't tell which, so it removes both.
         for access in [Access::Full, Access::Free] {
             assert!(
                 calls.lines().any(|call| call

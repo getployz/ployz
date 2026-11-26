@@ -32,6 +32,7 @@ struct Fixture {
     address: String,
     server: tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
     running_builds: tokio::sync::watch::Receiver<u32>,
+    docker: crate::docker::test_support::FakeDocker,
 }
 
 impl Fixture {
@@ -68,7 +69,8 @@ impl Fixture {
             })
             .unwrap();
         let machine = store.record().machine().unwrap().clone();
-        let (runtime, _) = crate::docker::test_support::fake_runtime_with(Default::default()).await;
+        let (runtime, docker) =
+            crate::docker::test_support::fake_runtime_with(Default::default()).await;
         let runtime = match sealing_key_dir {
             Some(dir) => runtime.with_sealing_key(dir),
             None => runtime,
@@ -115,6 +117,7 @@ impl Fixture {
             address,
             server,
             running_builds,
+            docker,
         }
     }
     /// Trust a Device whose key also holds Cloud's slot, and serve this Machine to it as its
@@ -721,6 +724,9 @@ case "$1 $2" in
     printf '%s\n' '{{"Name":"{}","Nodes":[{{"Status":"running","Platforms":["linux/amd64"]}}]}}'
     printf '%s\n' '{{"Name":"ployz-free-{}","Nodes":[{{"Status":"running","Platforms":["linux/amd64"]}}]}}' ;;
   'buildx bake')
+    for arg in "$@"; do
+      if [ "$arg" = --print ]; then printf '%s\n' '{{"target":{{"api":{{"context":"source"}}}}}}'; exit 0; fi
+    done
     : > "$root/executed"
     printf '%s\n' "$@" > "$root/bake-args"
     printf '%s' "$BUILDX_METADATA_PROVENANCE" > "$root/metadata-provenance"
