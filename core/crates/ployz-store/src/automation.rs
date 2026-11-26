@@ -288,6 +288,11 @@ fn branch_head(
             json!({}),
         ));
     }
+    // A deleted branch deploys nothing: it locks only the holds it supersedes.
+    let Some(head) = &event.head else {
+        deployment::supersede_held(tx, who, (repository_id, branch), None)?;
+        return Ok(Automated::default());
+    };
     // Every Environment it may cancel a hold in or deploy, in ID order, before any.
     let environments = tx
         .query(
@@ -299,10 +304,7 @@ fn branch_head(
         .collect::<Result<Vec<_>, RpcError>>()?;
     scope::lock_all(tx, environments.iter().cloned())?;
     // A Deployment still waiting for an older head's CI never ships now.
-    deployment::supersede_held(tx, who, (repository_id, branch), event.head.as_ref())?;
-    let Some(head) = &event.head else {
-        return Ok(Automated::default());
-    };
+    deployment::supersede_held(tx, who, (repository_id, branch), Some(head))?;
     remember(tx, who, repository_id, branch, head)?;
     // The first head seen deploys every Service that follows the branch.
     let changed = event.base.as_ref().and(event.changed.as_deref());

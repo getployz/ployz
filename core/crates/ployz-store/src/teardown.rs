@@ -222,16 +222,15 @@ pub(crate) fn set_default(
     let project = scope::lock_project_of(tx, &found.summary.id)?;
     let environment = scope::lock(tx, who, &set.environment)?;
     crate::removal::marked(tx, &environment)?;
-    if let Some(project) = &project {
-        crate::storage::ranked::take(crate::storage::ranked::Lock::project(project));
-    }
+    let Some(project) = project else {
+        return Err(error::corrupt("Environment's Project"));
+    };
+    crate::storage::ranked::take(crate::storage::ranked::Lock::project(&project));
     tx.execute(
-        "UPDATE config_project SET default_environment_id = ?1 \
-         WHERE organization_id = ?2 AND name = ?3",
+        "UPDATE config_project SET default_environment_id = ?1 WHERE id = ?2",
         &[
             environment.summary.id.as_str().into(),
-            who.organization.as_str().into(),
-            environment.summary.project.as_str().into(),
+            project.as_str().into(),
         ],
     )?;
     environments(

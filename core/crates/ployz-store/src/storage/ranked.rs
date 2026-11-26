@@ -162,7 +162,7 @@ mod checked {
     pub(super) struct Held {
         locks: BTreeSet<Lock>,
         /// The last lock [`take`] named, until the statement that takes it runs.
-        named: bool,
+        named: Option<Lock>,
         /// Inside [`super::bounded`].
         bounded: bool,
     }
@@ -221,8 +221,8 @@ mod checked {
             {
                 panic!("lock order: {lock:?} taken after {last:?}");
             }
-            held.locks.insert(lock);
-            held.named = true;
+            held.locks.insert(lock.clone());
+            held.named = Some(lock);
         });
     }
 
@@ -257,8 +257,41 @@ mod checked {
         RANKED.into_iter().find(|ranked| *ranked == table)
     }
 
+    /// Whether a statement on `table` with `params` reaches the row `lock` names: its
+    /// table, with every part of its key among the parameters.
+    fn reaches(lock: &Lock, table: &str, params: &[Param<'_>]) -> bool {
+        let text = |value: &str| {
+            params
+                .iter()
+                .any(|param| matches!(param, Param::Text(text) if *text == value))
+        };
+        let int = |value: u64| {
+            params
+                .iter()
+                .any(|param| matches!(param, Param::Int(int) if u64::try_from(*int) == Ok(value)))
+        };
+        match lock {
+            Lock::PullRequest {
+                organization,
+                repository,
+                number,
+            } => {
+                table == "config_pull_request"
+                    && text(organization)
+                    && int(*repository)
+                    && int(*number)
+            }
+            Lock::Project(id) => table == "config_project" && text(id),
+            Lock::Plan {
+                project,
+                repository,
+            } => table == "config_pr_plan" && text(project) && int(*repository),
+            Lock::Environment(id) => table == "config_environment" && text(id),
+        }
+    }
+
     /// A write to a ranked table must follow the [`take`] that names its row.
-    fn written(sql: &str) {
+    fn written(sql: &str, params: &[Param<'_>]) {
         let Some(table) = ranked(sql) else {
             return;
         };
@@ -266,11 +299,14 @@ mod checked {
             let Some(held) = held else {
                 return;
             };
+            let named = held.named.take();
             assert!(
-                held.named,
-                "lock order: a write to {table} names no row: route it through a lock helper\n{sql}"
+                named
+                    .as_ref()
+                    .is_some_and(|lock| reaches(lock, table, params)),
+                "lock order: a write to {table} reaches no row named before it ({named:?}): \
+                 route it through a lock helper\n{sql}"
             );
-            held.named = false;
         });
     }
 
@@ -278,11 +314,11 @@ mod checked {
 
     impl Tx for Checked<'_> {
         fn execute(&mut self, sql: &str, params: &[Param<'_>]) -> Result<usize, RpcError> {
-            written(sql);
+            written(sql, params);
             self.0.execute(sql, params)
         }
         fn query(&mut self, sql: &str, params: &[Param<'_>]) -> Result<Vec<Row>, RpcError> {
-            written(sql);
+            written(sql, params);
             self.0.query(sql, params)
         }
         fn batch(&mut self, sql: &str) -> Result<(), RpcError> {
@@ -296,7 +332,7 @@ mod checked {
     #[cfg(test)]
     mod tests {
         use super::super::{Lock, take};
-        use super::Scope;
+        use super::{Scope, written};
 
         fn environment(id: &str) -> Lock {
             Lock::Environment(id.to_owned())
@@ -318,6 +354,19 @@ mod checked {
             take(environment("a"));
             let inverted = std::panic::catch_unwind(|| take(environment("b")));
             assert!(inverted.is_err());
+        }
+
+        #[test]
+        fn a_write_only_reaches_the_row_taken_before_it() {
+            const SAVE: &str = "UPDATE config_environment SET working = ?1 WHERE id = ?2";
+            let _scope = Scope::begin();
+            take(environment("a"));
+            written(SAVE, &["{}".into(), "a".into()]);
+            take(environment("a"));
+            let elsewhere = std::panic::catch_unwind(|| written(SAVE, &["{}".into(), "b".into()]));
+            assert!(elsewhere.is_err());
+            let unnamed = std::panic::catch_unwind(|| written(SAVE, &["{}".into(), "a".into()]));
+            assert!(unnamed.is_err());
         }
     }
 }
