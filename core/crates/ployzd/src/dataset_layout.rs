@@ -2,8 +2,9 @@
 //! reverse reading of a dataset name.
 //!
 //! A Volume has a writer root at `<pool>/ployz/<name>`, or a mirror slot at
-//! `<pool>/ployz-mirror/<name>` whose received copy is the `fs` child. Every route that
-//! names or reads one of these goes through here.
+//! `<pool>/ployz-mirror/<name>` whose received copy is the `fs` child. A copy this Machine
+//! deleted waits in the Trash at `<pool>/ployz-trash/<id>`. Every route that names or reads
+//! one of these goes through here.
 
 use std::{
     fmt::{self, Display},
@@ -23,6 +24,10 @@ pub const MOUNT_ROOT: &str = "/var/lib/ployz-volumes";
 pub const MIRROR_MOUNT_ROOT: &str = "/var/lib/ployz-mirror";
 
 const SLOT_FS: &str = "fs";
+
+/// The Trash parent's name under the Pool. A daemon from before the Trash reads it as
+/// [`Place::Outside`].
+const TRASH_ROOT: &str = "ployz-trash";
 
 /// A Docker Volume name safe to use as one ZFS dataset segment and one path component:
 /// ASCII letters and digits first, then letters, digits, `_`, `.` and `-`. Core's
@@ -115,6 +120,18 @@ impl<'pool> DatasetLayout<'pool> {
         format!("{}/{MIRROR_ROOT}", self.pool)
     }
 
+    /// `<pool>/ployz-trash`, the unmounted parent of every Trash entry.
+    #[must_use]
+    pub fn trash_parent(&self) -> String {
+        format!("{}/{TRASH_ROOT}", self.pool)
+    }
+
+    /// `<pool>/ployz-trash/<id>`, one Trash entry.
+    #[must_use]
+    pub fn trash_entry(&self, id: &(impl Display + ?Sized)) -> String {
+        format!("{}/{id}", self.trash_parent())
+    }
+
     /// `<pool>/ployz/<name>`, the Volume's writer root.
     #[must_use]
     pub fn root(&self, name: &(impl Display + ?Sized)) -> String {
@@ -176,6 +193,10 @@ pub enum Place<'name> {
         name: &'name str,
         at: SlotAt,
     },
+    /// Under `<pool>/ployz-trash/`: the entry with this ID, or a dataset inside it (the
+    /// ID then contains a `/`). The Pool's commitment leaves it out, so its bytes count as
+    /// used by something else.
+    Trash(&'name str),
     Outside,
 }
 
@@ -206,6 +227,12 @@ impl<'name> Place<'name> {
         {
             return Self::Root(name);
         }
+        if let Some(id) = rest
+            .strip_prefix(TRASH_ROOT)
+            .and_then(|rest| rest.strip_prefix('/'))
+        {
+            return Self::Trash(id);
+        }
         let Some(slot) = rest
             .strip_prefix(MIRROR_ROOT)
             .and_then(|rest| rest.strip_prefix('/'))
@@ -226,7 +253,7 @@ impl<'name> Place<'name> {
     pub fn volume(self) -> Option<&'name str> {
         match self {
             Self::Root(name) | Self::Slot { name, .. } => Some(name),
-            Self::Outside => None,
+            Self::Trash(_) | Self::Outside => None,
         }
     }
 
@@ -235,7 +262,7 @@ impl<'name> Place<'name> {
     pub fn writer_root(self) -> Option<&'name str> {
         match self {
             Self::Root(name) if !name.contains('/') => Some(name),
-            Self::Root(_) | Self::Slot { .. } | Self::Outside => None,
+            Self::Root(_) | Self::Slot { .. } | Self::Trash(_) | Self::Outside => None,
         }
     }
 
@@ -312,6 +339,9 @@ mod tests {
             ("tank/other/data", Place::Outside),
             ("tankard/ployz/data", Place::Outside),
             ("other/ployz/data", Place::Outside),
+            ("tank/ployz-trash", Place::Outside),
+            ("tank/ployz-trash/abc", Place::Trash("abc")),
+            ("tank/ployz-trash/abc/fs", Place::Trash("abc/fs")),
         ] {
             assert_eq!(layout.place(dataset), place, "{dataset}");
         }

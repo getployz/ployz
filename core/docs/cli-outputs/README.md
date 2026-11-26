@@ -35,7 +35,7 @@ These scripts are dev tooling that an operator runs on their own checkout. They 
 
 Each `.md` holds one block per command with its exit code, stdout and stderr. Each `.ansi` holds the same commands run under a terminal. Exit 124 means the capture's own timeout killed the command.
 
-Totals: 687 command blocks (store 247, cloud 155, cluster 105, cloud-cluster 180); the `deploy --events` file excerpt in [cluster/deploy.md](cluster/deploy.md) is not one. Exits: 0 x397, 1 x173, 2 x91, 3 x10, 124 x7, 127 x1, 7 x1, none x7 (piped, typed TTY or killed runs).
+Totals: 696 command blocks (store 247, cloud 155, cluster 114, cloud-cluster 180); the `deploy --events` file excerpt in [cluster/deploy.md](cluster/deploy.md) is not one. Exits: 0 x403, 1 x176, 2 x91, 3 x10, 124 x7, 127 x1, 7 x1, none x7 (piped, typed TTY or killed runs).
 
 ## The contract as the code states it
 
@@ -133,7 +133,7 @@ retry: ployz project rm scratch1 --confirm scratch1
 
 - Wrong value. `--confirm scratch does not match Project scratch1. No changes made.` also exits 2 ([store/project.md](store/project.md)). Same for org rm and env rm.
 - What you type differs: `--confirm scratch1` for a Project, `--confirm shop/qa` for an Environment ([store/env.md](store/env.md)).
-- Volume loss. `This permanently deletes the data of store. Accept each by name` (no period), then `retry: ployz deploy --accept-volume-loss store --expect-version 16:7:0.10:3db84a7b2f1973e4` ([cluster/volume.md](cluster/volume.md)).
+- Volume loss. `This deletes the data of store. Accept each by name` (no period), then `retry: ployz deploy --accept-volume-loss store --expect-version 16:7:0.10:3db84a7b2f1973e4` ([cluster/volume.md](cluster/volume.md)).
 - `--yes`. cloud reset refuses with `…then confirm with --yes` and `retry: ployz cloud reset --yes` ([cloud/deploy.md](cloud/deploy.md)).
 - Picker on a TTY. ctx use draws `Select a context:` over `  dev` and `> prod (current)`, moved with the arrow keys, On `<Down> <Enter>` it ends `Current context is now dev.` A typed `9` is ignored, and the picker keeps the current context, dev ([store/context.md](store/context.md)). Without a TTY: `Choosing a context needs a terminal; name one instead.` with `retry: ployz ctx use CONTEXT` and `valid: dev, prod`.
 - Cloud approval. A removal from `ployz` waits for a person: `This removal destroys 2 things:`, a `  ✕ removes Service api` line each, `Approve <id> in Ployz Cloud at http://localhost:…`, `next: ployz org approval approve <id>` and `Waiting for approval in Ployz Cloud… `. A project rm or org rm points at the Ployz agent instead, `Approve <id> under Waiting on you in the Ployz agent at …`. Once Ada approves, the line ends `approved.` and the removal runs ([cloud-cluster/env.md](cloud-cluster/env.md), [cloud-cluster/deploy.md](cloud-cluster/deploy.md), [cloud/org.md](cloud/org.md)).

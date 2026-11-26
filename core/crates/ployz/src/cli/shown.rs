@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use ployz_core::config::{ValuePart, parse_variable_template};
 use ployz_core::{
     ClusterName, ConfigFileName, ConfigName, DomainPrefix, IngressHost, MachineId, MachineLabelKey,
-    MachineRelease, Namespace, ServiceName, StorageChoice, StoragePreparation,
+    MachineRelease, Namespace, ServiceName, StorageChoice, StoragePreparation, TrashId,
 };
 use ployz_store::{
     BranchName, EnvironmentName, PlainValue, ProjectName, RegionName, RepositoryName,
@@ -380,6 +380,7 @@ public!(
     RepositoryName,
     ReviewVersion,
     SyncId,
+    TrashId,
     VolumeName,
     SettingPath,
     PlainValue,

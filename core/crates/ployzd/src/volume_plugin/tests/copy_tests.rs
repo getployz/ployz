@@ -536,6 +536,56 @@ async fn the_writer_route_promotes_a_pulled_slot() {
     server.abort();
 }
 
+/// The promote records the image its start placed just before the epoch, and the copy
+/// answers it, so a start resent after the promote reads back the image it chose.
+#[tokio::test]
+async fn the_writer_route_records_the_start_image_beside_the_epoch() {
+    let test = test_dir();
+    let (socket, server) = slot(&test, &[("f-1", 13)]);
+    let image = json!(format!("2 {} sha256:{}", "b".repeat(64), "a".repeat(64)));
+
+    let request = json!({"name": "data", "at": "13", "epoch": 2, "image": image});
+    let reply = post(&socket, "/Volume.Copy.Writer", request.clone()).await;
+    assert_eq!(reply.pointer("/Ok/placed"), Some(&image), "{reply}");
+    let made = effects(&commands(&test));
+    let at = |effect: &str| made.iter().position(|run| run.starts_with(effect));
+    assert!(
+        at("zfs set ployz:image=").unwrap() < at("zfs set ployz:epoch=2").unwrap(),
+        "{made:?}"
+    );
+
+    let before = commands(&test);
+    assert_eq!(post(&socket, "/Volume.Copy.Writer", request).await, reply);
+    assert!(effects(&commands(&test)[before.len()..]).is_empty());
+    server.abort();
+}
+
+/// A `ployz:image` that doesn't parse, whoever wrote it, reads as no record: the root
+/// still answers, and its next promote writes a record that does.
+#[tokio::test]
+async fn a_malformed_image_record_is_rewritten_by_the_next_promote() {
+    for malformed in ["\n\nmove-1", "sha256:aaaa move-1", "2 b sha256:a"] {
+        let test = test_dir();
+        let (socket, server) = writer(&test, &[("f-1", 13)]);
+        set_property(&test, ROOT, "ployz:epoch", "1");
+        set_property(&test, ROOT, "ployz:image", malformed);
+
+        let copy = post(&socket, "/Volume.Copy.Inspect", json!({"name": "data"})).await;
+        assert_eq!(copy.pointer("/Ok/kind"), Some(&json!("root")), "{copy}");
+        assert_eq!(copy.pointer("/Ok/placed"), None, "{copy}");
+
+        let image = format!("2 {} sha256:{}", "b".repeat(64), "a".repeat(64));
+        let request = json!({"name": "data", "at": "13", "epoch": 2, "image": image});
+        let reply = post(&socket, "/Volume.Copy.Writer", request).await;
+        assert_eq!(reply.pointer("/Ok/placed"), Some(&json!(image)), "{reply}");
+        assert_eq!(
+            property(&test, ROOT, "ployz:image").as_deref(),
+            Some(image.as_str())
+        );
+        server.abort();
+    }
+}
+
 #[tokio::test]
 async fn the_writer_route_promotes_a_pulled_slot_on_a_pool_without_the_managed_parent() {
     let test = test_dir();
@@ -1403,7 +1453,8 @@ async fn a_pull_whose_base_the_writer_lost_starts_over_from_a_full_send() {
         Some(&json!("12")),
         "{copy}"
     );
-    assert!(commands(&test).contains("zfs destroy -r tank/ployz-mirror/data/fs"));
+    let old = trashed_one(&test, "copy");
+    assert_eq!(snapshot_names(&test, &old), ["w-1-1"]);
     assert_eq!(
         source.requests(),
         [
@@ -1412,6 +1463,80 @@ async fn a_pull_whose_base_the_writer_lost_starts_over_from_a_full_send() {
             "/volume-send/data?target=w-1-2",
         ]
     );
+    server.abort();
+}
+
+/// The old copy's bytes stay on the Pool in the Trash, so a full send that would leave no
+/// room for them keeps the old copy, and the refusal says what the Trash holds.
+#[tokio::test]
+async fn a_full_send_the_pool_cannot_hold_beside_the_old_copy_keeps_it() {
+    let source = Source::start(Some(BOUND), "snapshot w-1-2 12\n").await;
+    source.answer(
+        "base=",
+        StatusCode::NOT_FOUND,
+        "snapshot 11 is not on tank/ployz/data",
+    );
+    let test = test_dir();
+    let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
+    set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
+    set_property(&test, SLOT_FS, "ployz:pulled", "11");
+    set_property(&test, SLOT_FS, "used", &(2u64 << 30).to_string());
+    set_property(&test, SLOT_FS, "usedbydataset", &(2u64 << 30).to_string());
+    let held = plant_trash(&test, &trash_id(1), "logs", "root", 0, false);
+    set_property(&test, &held, "used", "500000000");
+
+    post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
+    let copy = landed(&socket, "w-1-2").await;
+
+    let failure = copy
+        .pointer("/Ok/pull/failure")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        failure.contains("0.5 GB is in this Server's Trash until")
+            && failure.contains("sudo ployz volume trash empty"),
+        "{copy}"
+    );
+    assert_eq!(snapshot_names(&test, SLOT_FS), ["w-1-1"]);
+    assert_eq!(trashed(&test), [held]);
+    assert!(!commands(&test).contains("zfs rename tank/ployz-mirror/data/fs"));
+    server.abort();
+}
+
+/// The old copy's snapshots already count as the Pool's own bytes, so moving it to the
+/// Trash adds only its own: a full send that fits beside it goes ahead.
+#[tokio::test]
+async fn a_full_send_that_fits_beside_the_old_copy_moves_it_to_the_trash() {
+    let source = Source::start(Some(BOUND), "snapshot w-1-2 12\n").await;
+    source.answer(
+        "base=",
+        StatusCode::NOT_FOUND,
+        "snapshot 11 is not on tank/ployz/data",
+    );
+    let test = test_dir();
+    let (socket, server) = puller(&test, &["root", "mirror", "mirror-fs"], source.port);
+    set_snapshots(&test, SLOT_FS, &[("w-1-1", 11)]);
+    set_property(&test, SLOT_FS, "ployz:pulled", "11");
+    set_property(
+        &test,
+        "tank/ployz-mirror/data",
+        "refquota",
+        &(1u64 << 30).to_string(),
+    );
+    set_property(&test, SLOT_FS, "used", &(3u64 << 29).to_string());
+    set_property(&test, SLOT_FS, "usedbydataset", &(1u64 << 29).to_string());
+    super::trash_tests::pool_using(&test, 3 << 29);
+
+    post(&socket, "/Volume.Copy.Pull", pull("w-1-2")).await;
+    let copy = landed(&socket, "w-1-2").await;
+
+    assert_eq!(
+        copy.pointer("/Ok/newest/guid"),
+        Some(&json!("12")),
+        "{copy}"
+    );
+    let old = trashed_one(&test, "copy");
+    assert_eq!(snapshot_names(&test, &old), ["w-1-1"]);
     server.abort();
 }
 
@@ -1595,7 +1720,8 @@ async fn a_pull_whose_token_the_writer_cannot_send_starts_over_from_a_full_send(
     );
     let commands = commands(&test);
     assert!(commands.contains("zfs receive -A tank/ployz-mirror/data/fs"));
-    assert!(commands.contains("zfs destroy -r tank/ployz-mirror/data/fs"));
+    let old = trashed_one(&test, "copy");
+    assert_eq!(snapshot_names(&test, &old), ["w-1-1"]);
     assert_eq!(
         source.requests(),
         [
@@ -1624,8 +1750,9 @@ async fn a_pull_resent_with_its_first_expect_continues_a_full_send_that_emptied_
     let expect = mirror_expect(&machine.copy().await);
 
     machine.call("/Volume.Copy.Pull", pull("w-1-2")).await;
-    eventually("the slot's destroy", || {
-        commands(&machine.test).contains("zfs destroy -r tank/ployz-mirror/data/fs")
+    // The fake logs a command before it runs it, so wait on the entry itself.
+    eventually("the old copy's move to the Trash", || {
+        !trashed(&machine.test).is_empty()
     })
     .await;
     let copy = machine.copy().await;
@@ -2916,10 +3043,9 @@ async fn destroy_drops_the_slot_and_leaves_a_root_alone() {
         post(&socket, "/Volume.Copy.Destroy", json!({"name": "data"})).await,
         reply
     );
-    assert_eq!(
-        effects(&commands(&test)),
-        ["zfs destroy -r tank/ployz-mirror/data"]
-    );
+    assert!(!commands(&test).contains("zfs destroy"));
+    let old = trashed_one(&test, "slot");
+    assert_eq!(snapshot_names(&test, &format!("{old}/fs")), ["w-1-1"]);
     server.abort();
 
     let test = test_dir();
@@ -4184,9 +4310,9 @@ async fn drive(writing: Writing, test: &TestDir, socket: &Path, stop: Option<(&s
     assert!(ended.is_some(), "{writing:?} never ended");
 }
 
-/// The departure's verdict on the copy `name` held: whether it destroyed a slot that held
-/// a snapshot.
-async fn departure_destroys_a_point(test: &TestDir, socket: &Path, name: &str) -> bool {
+/// The departure's verdict on the copy `name` held: whether it moved a slot that held a
+/// snapshot to the Trash.
+async fn departure_drops_a_point(test: &TestDir, socket: &Path, name: &str) -> bool {
     let fs = format!("tank/ployz-mirror/{name}/fs");
     let held = test
         .0
@@ -4199,13 +4325,13 @@ async fn departure_destroys_a_point(test: &TestDir, socket: &Path, name: &str) -
     let before = commands(test);
     let reply = post(socket, "/Storage.Demote", json!(null)).await;
     assert!(reply.get("Ok").is_some(), "{reply}");
-    let destroy = format!("zfs destroy -r tank/ployz-mirror/{name}\n");
-    held && commands(test)[before.len()..].contains(&destroy)
+    let trash = format!("zfs rename tank/ployz-mirror/{name} tank/ployz-trash/");
+    held && commands(test)[before.len()..].contains(&trash)
 }
 
 /// Stops each head writer path at each effect it has, and asks the departure. Only a
 /// mirror pull that has marked the snapshot it received leaves a slot the departure
-/// destroys; every earlier stop, and every other path once it changed anything, leaves a
+/// drops into the Trash; every earlier stop, and every other path once it changed anything, leaves a
 /// slot it keeps.
 #[tokio::test]
 async fn every_stop_of_a_writer_path_leaves_a_slot_the_departure_keeps_until_a_pull_marked_it() {
@@ -4256,7 +4382,7 @@ async fn every_stop_of_a_writer_path_leaves_a_slot_the_departure_keeps_until_a_p
             }
         }
         assert_eq!(
-            departure_destroys_a_point(&test, &socket, name).await,
+            departure_drops_a_point(&test, &socket, name).await,
             writing.received(),
             "{writing:?} finished"
         );
@@ -4282,7 +4408,7 @@ async fn every_stop_of_a_writer_path_leaves_a_slot_the_departure_keeps_until_a_p
                 marked.is_some_and(|marked| index > marked)
             };
             assert_eq!(
-                departure_destroys_a_point(&test, &socket, name).await,
+                departure_drops_a_point(&test, &socket, name).await,
                 received,
                 "{writing:?} stopped at {step}"
             );
@@ -4471,5 +4597,26 @@ async fn send_point_answers_a_cut_listing_or_a_marked_parent_as_no_absence() {
         code.is_some() && code != Some(&json!("not_found")),
         "{reply}"
     );
+    server.abort();
+}
+
+/// A restore asks every Server for its copy, so a listing ZFS cut short answers an error,
+/// never "no copy": a degraded Pool's listing can stop early and still exit 0.
+#[tokio::test]
+async fn inspect_answers_a_cut_listing_as_an_error_not_no_copy() {
+    let test = test_dir();
+    let (socket, server) = start(&test, USABLE_POOL, &["root", "volume"]);
+    let inspect = || post(&socket, "/Volume.Inspect", json!({"name": "data"}));
+    let whole = inspect().await;
+    assert!(
+        whole
+            .pointer("/Ok/copy")
+            .is_some_and(|copy| !copy.is_null()),
+        "{whole}"
+    );
+    fs::create_dir_all(test.0.join("props")).unwrap();
+    fs::write(test.0.join("props/datasets-cut"), "").unwrap();
+    let cut = inspect().await;
+    assert!(cut.pointer("/Err/code").is_some(), "{cut}");
     server.abort();
 }

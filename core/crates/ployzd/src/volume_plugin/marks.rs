@@ -24,7 +24,7 @@
 
 use std::fmt;
 
-use ployz_core::{SlotRole, SnapshotName, WriterEpoch};
+use ployz_core::{PlacedImage, SlotRole, SnapshotName, WriterEpoch};
 
 use super::{PluginError, Result, VolumeStorage};
 
@@ -67,6 +67,40 @@ pub(super) enum Mark {
     /// On a slot parent a Copy step's seed made: the step's digest, set as ZFS makes the
     /// parent. Only a slot carrying it is that step's copy ([`super::seed`]).
     CopyStep,
+    /// On a root restored from the Trash until Docker's Create of its name registers it.
+    /// Get and List hide a marked root, as they hide a promoted one; unlike
+    /// `ployz:promote`, it says nothing about seeds or Forget.
+    Restored,
+    /// On a Trash entry, and set just before the move that makes one: the Docker Volume
+    /// name the copy was under ([`super::trash`]).
+    TrashName,
+    /// On a Trash entry: `root`, `slot` or `copy`, the place the copy was taken from.
+    TrashPlace,
+    /// On a Trash entry: the copy's own `canmount` before the move, `-` when it had the
+    /// default.
+    TrashWas,
+    /// On a Trash entry: the Trash's sweep hours when the move committed.
+    TrashedHour,
+    /// On a Trash entry: Unix seconds of the move, for people to read only.
+    TrashedAt,
+    /// On the Trash parent: how many hourly sweeps advanced it.
+    TrashHours,
+    /// On the Trash parent: Unix seconds of the wall hour the last advance counted.
+    TrashLast,
+    /// On a slot parent a restore of a Trash entry taken from `copy` made, until the copy
+    /// lands under it: the entry's ID. A restore stopped before its rename finds the
+    /// parent by it and finishes ([`super::trash`]).
+    TrashRestoring,
+    /// On a root entry a restore pinned: `<id>:<epoch>`, the entry's own ID and the epoch
+    /// it becomes the Volume's data at. It counts only on the entry whose ID it names.
+    TrashPin,
+    /// On a root a restore made from the Trash, until Docker's Create registers it: the
+    /// entry's ID, which a restore run again finds it by ([`super::trash`]).
+    TrashRestored,
+    /// On a root: the image a Writer start placed before its promote, with that promote's
+    /// epoch and the start's admitted spec digest ([`ployz_core::PlacedImage`]). Every
+    /// promote writes it just before `ployz:epoch`, set or cleared.
+    Image,
 }
 
 impl Mark {
@@ -83,6 +117,18 @@ impl Mark {
             Self::Origin => "ployz:origin",
             Self::PullOrigin => "ployz:pull-origin",
             Self::CopyStep => "ployz:copy-step",
+            Self::Restored => "ployz:restored",
+            Self::TrashName => "ployz:trash-name",
+            Self::TrashPlace => "ployz:trash-place",
+            Self::TrashWas => "ployz:trash-was",
+            Self::TrashedHour => "ployz:trashed-hour",
+            Self::TrashedAt => "ployz:trashed-at",
+            Self::TrashHours => "ployz:trash-hours",
+            Self::TrashLast => "ployz:trash-last",
+            Self::TrashRestoring => "ployz:trash-restoring",
+            Self::TrashPin => "ployz:trash-pin",
+            Self::TrashRestored => "ployz:trash-restored",
+            Self::Image => "ployz:image",
         }
     }
 }
@@ -151,6 +197,17 @@ impl Marks<'_> {
         self.is_set(Mark::Promote).await
     }
 
+    /// Whether Get and List keep the root from Docker: it waits for Docker's Create to
+    /// register it, promoted or restored from the Trash.
+    pub(super) async fn hidden(&self) -> Result<bool> {
+        Ok(self.unregistered().await? || self.is_set(Mark::Restored).await?)
+    }
+
+    /// `mark` as set on the dataset itself, ignoring any value it inherits.
+    pub(super) async fn local(&self, mark: Mark) -> Result<Option<String>> {
+        self.storage.local_property(self.dataset, mark.name()).await
+    }
+
     /// Whether the dataset is a seed root Docker has not adopted: it carries both
     /// `ployz:seed` and `ployz:promote`.
     pub(super) async fn unadopted_seed(&self) -> Result<bool> {
@@ -170,21 +227,7 @@ impl Marks<'_> {
 
     /// `ployz:pulled` as set on the dataset itself, ignoring any value it inherits.
     pub(super) async fn pulled_local(&self) -> Result<Option<String>> {
-        let value = self
-            .storage
-            .zfs(&[
-                "get",
-                "-H",
-                "-s",
-                "local",
-                "-o",
-                "value",
-                Mark::Pulled.name(),
-                self.dataset,
-            ])
-            .await?;
-        let value = value.trim_end_matches('\n');
-        Ok((!value.is_empty() && value != "-").then(|| value.to_owned()))
+        self.local(Mark::Pulled).await
     }
 
     /// The run of writes a root belongs to; a root SetVolumeCopy never numbered reads 0.
@@ -257,9 +300,35 @@ impl Marks<'_> {
         self.apply(&[Write::on(Mark::Cut)]).await
     }
 
+    /// The image a promote recorded, or `None` when it recorded none.
+    /// The image the root's epoch's start placed, when its mark reads as one. A mark that
+    /// doesn't parse answers none, so the start places afresh and its promote rewrites it.
+    pub(super) async fn placed(&self) -> Result<Option<PlacedImage>> {
+        Ok(self
+            .get(Mark::Image)
+            .await?
+            .and_then(|value| value.parse().ok()))
+    }
+
     pub(super) async fn set_epoch(&self, epoch: impl fmt::Display) -> Result<()> {
         self.apply(&[Write::Set(Mark::Epoch, epoch.to_string())])
             .await
+    }
+
+    /// Records the image a promote's start placed, or clears an earlier record when it
+    /// placed none. Every promote runs it just before it writes `ployz:epoch`, so a stop
+    /// between leaves the new image beside the old epoch, which no start at the new epoch
+    /// takes. Writes nothing when the mark already says so, as a resend finds it.
+    pub(super) async fn record_image(&self, image: Option<&PlacedImage>) -> Result<()> {
+        let image = image.map(PlacedImage::to_string);
+        if self.get(Mark::Image).await? == image {
+            return Ok(());
+        }
+        self.apply(&[match image {
+            Some(image) => Write::Set(Mark::Image, image),
+            None => Write::Inherit(Mark::Image),
+        }])
+        .await
     }
 
     /// Docker's Create registered the root, so it shows to Get and List.
@@ -284,7 +353,8 @@ impl Marks<'_> {
     }
 
     /// Any cut, epoch, promote or seed mark describes a point another writer has since
-    /// built on.
+    /// built on. A restore mark stays through a pull: only the Create that takes up the
+    /// restored root clears it, so Mount and Path keep refusing the root until then.
     pub(super) fn clear_provenance() -> Vec<Write> {
         [Mark::Cut, Mark::Epoch, Mark::Promote, Mark::Seed]
             .into_iter()
@@ -303,15 +373,20 @@ impl Marks<'_> {
     }
 
     /// The slot's `fs` takes a writer's marks before the rename that makes it the root:
-    /// `ployz:pulled` goes, `ployz:seed` goes whenever the slot carries it, `ployz:epoch`
-    /// becomes `epoch`, and `ployz:promote` is set unless the slot was cut. The reads sit
-    /// between the writes, as the plugin ran them before this type, and each follows the
-    /// write before it.
-    pub(super) async fn promote_slot(&self, epoch: impl fmt::Display) -> Result<()> {
+    /// `ployz:pulled` goes, `ployz:seed` goes whenever the slot carries it, `ployz:image`
+    /// becomes `image` ([`Self::record_image`]), `ployz:epoch` becomes `epoch`, and
+    /// `ployz:promote` is set unless the slot was cut. The reads sit between the writes,
+    /// as the plugin ran them before this type, and each follows the write before it.
+    pub(super) async fn promote_slot(
+        &self,
+        epoch: impl fmt::Display,
+        image: Option<&PlacedImage>,
+    ) -> Result<()> {
         self.apply(&[Write::Inherit(Mark::Pulled)]).await?;
         if self.is_set(Mark::Seed).await? {
             self.apply(&[Write::Inherit(Mark::Seed)]).await?;
         }
+        self.record_image(image).await?;
         self.set_epoch(epoch).await?;
         if !self.is_set(Mark::Cut).await? {
             self.apply(&[Write::on(Mark::Promote)]).await?;

@@ -213,7 +213,10 @@ impl LocalMachine {
             .plugin()
             .call(
                 crate::volume_copy::VOLUME_INSPECT_ROUTE,
-                &ployz_core::InspectVolumeCopyRequest { name: name.clone() },
+                &ployz_core::InspectVolumeCopyRequest {
+                    name: name.clone(),
+                    prove: false,
+                },
             )
             .await?;
         let replicated = self.replicated()?;
@@ -355,10 +358,43 @@ impl LocalMachine {
         .await
     }
 
+    /// Pull `spec`'s image as a Writer start's Create would, under shared admission
+    /// like [`Self::pull_free_image`], and read its ID, so that Create, after the
+    /// promote, runs that ID and reaches no registry. A signed start whose promote
+    /// already `recorded` an ID takes that one, as Docker holds it, and pulls nothing.
+    /// An unsigned start pulls as [`Images::pull_free`] does whatever the record says,
+    /// since only that pull proves an image public.
+    ///
+    /// # Errors
+    ///
+    /// Returns when Docker is unavailable, admission is busy, the pull is refused or
+    /// fails, or Docker no longer holds the `recorded` image.
+    ///
+    /// [`Images::pull_free`]: crate::docker::Images::pull_free
+    pub(crate) async fn place_holder_image(
+        &self,
+        spec: ResolvedServiceSpec,
+        admitted: AdmittedSpec,
+        recorded: Option<String>,
+    ) -> Result<PlacedHolder, Error> {
+        self.finish_shared(move |local| async move {
+            let images = local.docker()?.images();
+            let (image, policy) = (&spec.container.image, spec.container.pull_policy);
+            let id = match (recorded, admitted.signed()) {
+                (Some(id), true) => images.placed(&id).await?,
+                (None, true) => images.place(image, policy).await?,
+                (_, false) => images.pull_free(image, policy).await?,
+            };
+            Ok(PlacedHolder { admitted, id })
+        })
+        .await
+    }
+
     /// A Writer's start: create its Container when absent, then start it, under one
     /// exclusive turn. A floor raised above `gen` starts nothing, since the newer lane
     /// may have started its own holder of the Volume already. A start ordered after
-    /// the check waits for the turn, so it sees this holder running.
+    /// the check waits for the turn, so it sees this holder running. A Create runs the
+    /// image `placed` before the promote, and pulls nothing.
     ///
     /// # Errors
     ///
@@ -369,7 +405,7 @@ impl LocalMachine {
         start: Start,
         name: DockerVolumeName,
         r#gen: VolumeGen,
-        admitted: Option<AdmittedSpec>,
+        placed: Option<PlacedHolder>,
     ) -> Result<Result<(), VolumeGen>, Error> {
         self.finish_mutation(move |local| async move {
             let containers = local.docker()?;
@@ -394,6 +430,7 @@ impl LocalMachine {
                     r#gen: copy_gen,
                     ..
                 } => {
+                    let PlacedHolder { admitted, id } = placed.ok_or_else(unadmitted)?;
                     local
                         .create_container_admitted(CreationFacts {
                             kind: ContainerKind::ServiceContainer,
@@ -402,8 +439,8 @@ impl LocalMachine {
                             creation_key: creation_key.as_str().to_owned(),
                             deployment_id: None,
                             r#gen: copy_gen,
-                            image: ImagePull::Policy(None),
-                            admitted: admitted.ok_or_else(unadmitted)?,
+                            image: ImagePull::Placed(&id),
+                            admitted,
                             replaces: None,
                         })
                         .await?
@@ -2561,6 +2598,8 @@ fn create_refusal(error: Error) -> Result<ContainerRefusal, Error> {
         Error::Docker(Docker::SlotNameOccupied(_)) => ContainerRefusalReason::SlotOccupied,
         Error::Docker(
             Docker::ImagePull(_)
+            | Docker::ImageAbsent { .. }
+            | Docker::PlacedImageGone { .. }
             | Docker::UnsignedImage(_)
             | Docker::FreeImage(_)
             | Docker::DiskFull { .. }
@@ -2607,6 +2646,21 @@ pub(crate) fn names_content(pull: &ployz_core::PeerImagePull) -> bool {
     pull.tag().is_none_or(|tag| {
         ployz_core::retained_digest(tag).is_some_and(|kept| kept.as_str() == digest)
     })
+}
+
+/// A Writer start's Create, admitted, with the ID of the image it placed before its
+/// promote, so the Create after the promote reaches no registry.
+pub(crate) struct PlacedHolder {
+    admitted: AdmittedSpec,
+    id: String,
+}
+
+impl PlacedHolder {
+    /// The record a promote to `epoch` writes, so a resend after it at that epoch, for
+    /// the same admitted spec, takes the same image.
+    pub(crate) fn record(&self, epoch: ployz_core::WriterEpoch) -> Option<ployz_core::PlacedImage> {
+        ployz_core::PlacedImage::new(epoch, self.admitted.placement(), &self.id).ok()
+    }
 }
 
 #[path = "drain_idle.rs"]

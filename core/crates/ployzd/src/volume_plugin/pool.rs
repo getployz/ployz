@@ -14,7 +14,7 @@ use ployz_core::MachineLayout;
 use super::{
     CapacityAdmission, PluginError, Result, VolumeName, VolumeStorage, checked_command,
     checked_output,
-    storage::{CreateOptions, parse_create},
+    storage::{Commitment, CreateOptions, checked_listing, listed_output, parse_create},
 };
 
 /// Filename of the root-backed Machine Pool vdev.
@@ -65,15 +65,18 @@ impl CreatedPool<'_> {
 
 impl VolumeStorage {
     /// Grows the Pool for `commitment` after opting a managed Pool out of periodic trim.
+    /// Growth counts live data only: a Pool that holds the request only once its Trash is
+    /// emptied keeps its size and refuses, saying what the Trash holds, since a backing
+    /// file never shrinks.
     ///
     /// # Errors
     ///
-    /// Returns an error when the trim opt-out or growth fails.
+    /// Returns an error when the trim opt-out or growth fails, or the Pool can't hold
+    /// `commitment` beside what it holds.
     pub(super) async fn ensure_pool_capacity(
         &self,
         pool: &MachinePool,
-        commitment: u64,
-        unmanaged_used_bytes: u64,
+        commitment: &Commitment,
     ) -> Result<()> {
         if pool.name() == POOL_NAME
             && self
@@ -85,9 +88,47 @@ impl VolumeStorage {
             self.zfs(&["set", PERIODIC_TRIM_DISABLED, POOL_NAME])
                 .await?;
         }
-        self.pool
-            .ensure_capacity(pool, commitment, unmanaged_used_bytes)
+        // Only a root-backed Pool grows; any other refuses on the whole count.
+        let trash = if pool.name() == POOL_NAME {
+            commitment.trash_bytes.min(commitment.unmanaged_used_bytes)
+        } else {
+            0
+        };
+        let live = commitment.unmanaged_used_bytes - trash;
+        let required = ployz_core::storage_with_headroom(commitment.bytes)?
+            .checked_add(commitment.unmanaged_used_bytes)
+            .ok_or("Pool occupancy overflows u64")?;
+        let cannot_grow = |size| -> PluginError {
+            ployz_core::StorageCapacityError::PoolCannotGrow {
+                required_bytes: required,
+                capacity_bytes: size,
+            }
+            .into()
+        };
+        // The size growth for live data would reach decides before anything grows, so a
+        // request that fits only once the Trash is emptied leaves the backing file as it was.
+        let fits = match self
+            .pool
+            .live_growth_size(pool, commitment.bytes, live)
             .await
+        {
+            Ok(grown) if grown < required => Err(cannot_grow(pool.size_bytes().get())),
+            Ok(_) => match self
+                .pool
+                .ensure_capacity(pool, commitment.bytes, live)
+                .await
+            {
+                Ok(size) if size < required => Err(cannot_grow(size)),
+                result => result.map(drop),
+            },
+            Err(error) => Err(error),
+        };
+        match fits {
+            Err(PluginError::Capacity(error, _)) => {
+                Err(PluginError::Capacity(error, self.trash_held(pool).await))
+            }
+            result => result,
+        }
     }
 
     /// Creates a bounded Volume, creating its Machine Pool first when absent.
@@ -220,34 +261,30 @@ impl PoolStorage {
             })
     }
 
-    /// Selects the sole usable imported Machine Pool and records verified device ownership.
+    /// The Pool Volumes are written to, chosen by [`machine_pool::choose`] as every path
+    /// chooses it, with verified device ownership recorded. `None` where no Pool is
+    /// imported, so recovery may import or create one.
     ///
     /// # Errors
     ///
-    /// Returns an error for failed inspection, conflicting backing, or failed ownership recording.
+    /// Returns an error for failed inspection, a Pool that isn't this Machine's own or
+    /// can't be written, or failed ownership recording.
     pub(super) async fn one_usable(&self) -> Result<Option<MachinePool>> {
-        let args = machine_pool::ZPOOL_LIST;
-        let output = match host_command::run(&self.zpool, &args).await {
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-            output => checked_output(&self.zpool, &args, output)?,
-        };
-        let pool = machine_pool::one_usable(&output)
+        let inventory = self.inventory(false).await?;
+        self.writable(&inventory)
+    }
+
+    /// [`machine_pool::writable`] for `inventory`, recording verified device ownership.
+    fn writable(&self, inventory: &machine_pool::Inventory) -> Result<Option<MachinePool>> {
+        let pool = machine_pool::writable(inventory)
             .map_err(|error| ployz_core::error_chain::inline(&error))?;
-        if let Some(pool) = &pool {
-            let device = pool.name() == machine_pool::DEVICE_BACKED_POOL_NAME;
-            if path_exists(self.backing(), "Machine Pool backing file")?
-                && (device || self.has_device_pool()?)
-            {
-                return Err(
-                    "conflicting device and file-backed Machine Pool ownership; refusing to choose one"
-                        .into(),
-                );
-            }
-            if device && !matches!(self.files.read(), Ok(DeviceMarker::Confirmed)) {
-                self.files
-                    .confirm_in_place()
-                    .map_err(|error| format!("could not remember device Machine Pool: {error}"))?;
-            }
+        if let Some(pool) = &pool
+            && pool.name() == machine_pool::DEVICE_BACKED_POOL_NAME
+            && !matches!(self.files.read(), Ok(DeviceMarker::Confirmed))
+        {
+            self.files
+                .confirm_in_place()
+                .map_err(|error| format!("could not remember device Machine Pool: {error}"))?;
         }
         Ok(pool)
     }
@@ -271,6 +308,128 @@ impl PoolStorage {
         Ok(self.has_device_pool()?
             || path_exists(self.backing(), "Machine Pool backing file")?
             || path_exists(&self.volume_root, "Volume mount root")?)
+    }
+
+    /// Which Pool is this Machine's own for `need`, judged by [`machine_pool::read`] from
+    /// its records and what ZFS lists and could import. It writes nothing, not even the
+    /// device marker [`Self::one_usable`] records.
+    ///
+    /// # Errors
+    /// Returns an error when a record, listing or scan can't be read.
+    pub(super) async fn read(&self, need: machine_pool::Need) -> Result<machine_pool::Read> {
+        Ok(machine_pool::read(&self.inventory(true).await?, need))
+    }
+
+    /// The Pool a restore writes to and what a proof reads of it, from one listing, so the
+    /// two are one choice.
+    ///
+    /// # Errors
+    /// Returns an error when a record, listing or scan can't be read, or the Pool can't be
+    /// written.
+    pub(super) async fn restoring(&self) -> Result<(Option<MachinePool>, machine_pool::Read)> {
+        let inventory = self.inventory(true).await?;
+        Ok((
+            self.writable(&inventory)?,
+            machine_pool::read(&inventory, machine_pool::Need::Proof),
+        ))
+    }
+
+    /// What [`machine_pool::choose`] reads, from one `zpool list`: the records, the
+    /// imported Pools and the one on the backing file, and with `scans` what the label
+    /// scans could import. Every listing must be complete, so a cut one fails here rather
+    /// than hide a Pool.
+    async fn inventory(&self, scans: bool) -> Result<machine_pool::Inventory> {
+        let records = machine_pool::Records {
+            backing: path_exists(self.backing(), "Machine Pool backing file")?,
+            device: self.has_device_pool()?,
+            mount_root: path_exists(&self.volume_root, "Volume mount root")?,
+        };
+        let args = machine_pool::ZPOOL_IDS;
+        let imported = match host_command::run(&self.zpool, &args).await {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            output => Some(self.imported(output)?),
+        };
+        let mut inventory = machine_pool::Inventory {
+            records,
+            ..machine_pool::Inventory::default()
+        };
+        if let Some(imported) = &imported {
+            if scans {
+                inventory.scan = self.scan(&["import"]).await?;
+            }
+            if records.backing {
+                let backing = canonical(self.backing(), "Machine Pool backing file")?;
+                // Which Pools list each file, by the path it resolves to now: a backing file
+                // replaced while the old one is open, or a link moved, shows as two.
+                let mut listing: BTreeMap<PathBuf, Vec<&str>> = BTreeMap::new();
+                for pool in imported {
+                    let name = pool.pool.name();
+                    let args = ["list", "-v", "-H", "-P", "-o", "name", name];
+                    let output = checked_listing(&self.zpool, &args).await?;
+                    let vdevs = machine_pool::vdevs(&output, name)
+                        .map_err(|error| ployz_core::error_chain::inline(&error))?;
+                    let resolved: Vec<PathBuf> = vdevs
+                        .iter()
+                        .map(|vdev| fs::canonicalize(vdev).unwrap_or_else(|_| PathBuf::from(vdev)))
+                        .collect();
+                    if resolved == [backing.clone()] {
+                        inventory.on_backing = Some(name.to_owned());
+                    }
+                    for path in resolved {
+                        let pools = listing.entry(path).or_default();
+                        if !pools.contains(&name) {
+                            pools.push(name);
+                        }
+                    }
+                }
+                inventory.collisions = listing
+                    .into_iter()
+                    .filter(|(_, pools)| pools.len() > 1)
+                    .map(|(path, pools)| format!("{} ({})", path.display(), pools.join(", ")))
+                    .collect();
+                if scans {
+                    inventory.backing_scan =
+                        self.scan(&["import", "-d", self.backing_text()?]).await?;
+                }
+            }
+            // A Pool imported or exported between the first listing and the scans is in
+            // neither, so the scans are bracketed by a second listing to compare.
+            if scans {
+                let output = host_command::run(&self.zpool, &args).await;
+                inventory.relisted = Some(self.imported(output)?);
+            }
+        }
+        inventory.imported = imported;
+        Ok(inventory)
+    }
+
+    /// The imported Pools a complete [`machine_pool::ZPOOL_IDS`] listing printed.
+    fn imported(
+        &self,
+        output: io::Result<std::process::Output>,
+    ) -> Result<Vec<machine_pool::Imported>> {
+        let listed = listed_output(&self.zpool, &machine_pool::ZPOOL_IDS, output)?;
+        machine_pool::imported(&listed)
+            .map_err(|error| ployz_core::error_chain::inline(&error).into())
+    }
+
+    /// The Pools one `zpool import` label scan with `args` could import.
+    async fn scan(&self, args: &[&str]) -> Result<Vec<String>> {
+        let output = host_command::run_c(&self.zpool, args)
+            .await
+            .map_err(|error| {
+                format!(
+                    "could not run {}: {error}",
+                    self.zpool.display(),
+                    error = ployz_core::error_chain::inline(&error),
+                )
+            })?;
+        machine_pool::scan(
+            output.status,
+            &String::from_utf8_lossy(&output.stdout),
+            &String::from_utf8_lossy(&output.stderr),
+        )
+        .map_err(|error| ployz_core::error_chain::inline(&error).into())
     }
 
     /// Imports the device Pool or valid backing Pool, preserving device ownership when absent.
@@ -470,7 +629,33 @@ impl PoolStorage {
         }
     }
 
-    /// Makes the managed backing Pool large enough for all requested bounds.
+    /// The size [`Self::ensure_capacity`] would grow `pool` to for `commitment` beside
+    /// `unmanaged_used_bytes`, read without growing anything: its own size when that holds
+    /// them or it can't grow.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backing file can't be read or the growth overflows.
+    pub(super) async fn live_growth_size(
+        &self,
+        pool: &MachinePool,
+        commitment: u64,
+        unmanaged_used_bytes: u64,
+    ) -> Result<u64> {
+        let minimum = ployz_core::storage_with_headroom(commitment)?
+            .checked_add(unmanaged_used_bytes)
+            .ok_or("Pool occupancy overflows u64")?;
+        let size = pool.size_bytes().get();
+        if size >= minimum || pool.name() != POOL_NAME {
+            return Ok(size);
+        }
+        let (length, _) = self.backing_allocation(self.backing_text()?).await?;
+        let target = ployz_core::storage_growth_target(length, size, minimum)?;
+        Ok(size.saturating_add(target - length))
+    }
+
+    /// Makes the managed backing Pool large enough for all requested bounds; returns the
+    /// Pool's usable size.
     ///
     /// # Errors
     ///
@@ -480,7 +665,7 @@ impl PoolStorage {
         pool: &MachinePool,
         commitment: u64,
         unmanaged_used_bytes: u64,
-    ) -> Result<()> {
+    ) -> Result<u64> {
         let minimum = ployz_core::storage_with_headroom(commitment)?
             .checked_add(unmanaged_used_bytes)
             .ok_or("Pool occupancy overflows u64")?;
@@ -494,7 +679,7 @@ impl PoolStorage {
             }
         }
         if pool.size_bytes().get() >= minimum {
-            return Ok(());
+            return Ok(pool.size_bytes().get());
         }
         if pool.name() != POOL_NAME {
             return Err(ployz_core::StorageCapacityError::PoolCannotGrow {
@@ -543,7 +728,7 @@ impl PoolStorage {
             }
             let expanded_size = expanded.size_bytes().get();
             if expanded_size >= minimum {
-                return Ok(());
+                return Ok(expanded_size);
             }
             if expanded_size < observed || (expanded_size == observed && newly_allocated) {
                 return Err(format!(
@@ -817,6 +1002,19 @@ fn safe_ashift(physical_block_size: u64) -> Result<u32> {
     Ok(ashift)
 }
 
+/// `path` with every symlink resolved, so a Pool imported through a link still matches
+/// the file it is on.
+fn canonical(path: &Path, what: &str) -> Result<PathBuf> {
+    fs::canonicalize(path).map_err(|error| {
+        format!(
+            "could not resolve {what} {}: {error}",
+            path.display(),
+            error = ployz_core::error_chain::inline(&error),
+        )
+        .into()
+    })
+}
+
 fn path_exists(path: &Path, what: &str) -> Result<bool> {
     path.try_exists().map_err(|error| {
         format!(
@@ -854,8 +1052,9 @@ set -eu
 case "$*" in
   import) {scan} ;;
   'import -N ployz-device') {import} ;;
-  'list -Hp -o name,size,allocated,free,health,readonly')
-    [ ! -e '{}/imported' ] || printf 'ployz-device\t8589934592\t0\t8589934592\tONLINE\toff\n' ;;
+  'list -Hp -o name,guid,size,allocated,free,health,readonly')
+    [ ! -e '{0}/imported' ] || printf 'ployz-device\t7\t8589934592\t0\t8589934592\tONLINE\toff\n' ;;
+  'list -v -H -P -o name ployz-device') printf 'ployz-device\n\t/dev/sdb\t-\n' ;;
   *) echo unexpected command >&2; exit 2 ;;
 esac
 "#,
@@ -943,6 +1142,155 @@ esac
         assert!(!storage.backing().exists());
     }
 
+    /// The Pool on this Machine's backing file, imported read-only beside a writable Pool,
+    /// takes no write and proves nothing: the writable one may hold a root the proof
+    /// would never read.
+    #[tokio::test]
+    async fn a_read_only_file_pool_beside_a_writable_pool_is_neither_written_nor_read() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let program = root.path().join("zpool");
+        fs::write(
+            &program,
+            format!(
+                r#"#!/bin/sh
+set -eu
+case "$*" in
+ import|'import -d {root}/machine-pool') echo 'no pools available to import' >&2 ;;
+ 'list -Hp -o name,guid,size,allocated,free,health,readonly')
+   printf 'ployz\t7\t8589934592\t0\t8589934592\tONLINE\ton\ntank\t7\t8589934592\t0\t8589934592\tONLINE\toff\n' ;;
+ 'list -v -H -P -o name ployz') printf 'ployz\n\t%s\t-\n' '{root}/machine-pool' ;;
+ 'list -v -H -P -o name tank') printf 'tank\n\t/dev/sdb\t-\n' ;;
+ *) exit 97 ;;
+esac
+"#,
+                root = root.path().display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+        let storage = PoolStorage::new(program).with_backing(root.path().join("machine-pool"));
+        fs::write(storage.backing(), "file Pool").unwrap();
+
+        let written = storage.one_usable().await;
+        let read = storage.read(machine_pool::Need::Proof).await.unwrap();
+
+        assert!(written.is_err(), "{written:?}");
+        assert!(matches!(read, machine_pool::Read::Unproven(_)), "{read:?}");
+    }
+
+    /// A Pool imported between the listing and the scan is in neither, as is another Pool
+    /// imported under the same name, so the Pools listed again after the scans must match.
+    #[tokio::test]
+    async fn a_pool_imported_while_the_scans_ran_proves_nothing() {
+        use std::os::unix::fs::PermissionsExt;
+        for (later, changed) in [
+            (
+                "ployz-device\t11\t8589934592\t0\t8589934592\tONLINE\toff\nbackup\t12\t8589934592\t0\t8589934592\tONLINE\ton",
+                "from ployz-device (11, ONLINE) to backup (12, ONLINE, read-only), ployz-device (11, ONLINE)",
+            ),
+            (
+                "ployz-device\t13\t8589934592\t0\t8589934592\tONLINE\toff",
+                "from ployz-device (11, ONLINE) to ployz-device (13, ONLINE)",
+            ),
+            (
+                "ployz-device\t11\t8589934592\t0\t8589934592\tDEGRADED\toff",
+                "from ployz-device (11, ONLINE) to ployz-device (11, DEGRADED)",
+            ),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let program = root.path().join("zpool");
+            fs::write(root.path().join("later"), format!("{later}\n")).unwrap();
+            fs::write(
+                &program,
+                format!(
+                    r#"#!/bin/sh
+set -eu
+case "$*" in
+ import) echo 'no pools available to import' >&2 ;;
+ 'list -Hp -o name,guid,size,allocated,free,health,readonly')
+   if [ -e '{root}/listed' ]; then cat '{root}/later'
+   else printf 'ployz-device\t11\t8589934592\t0\t8589934592\tONLINE\toff\n'; touch '{root}/listed'; fi ;;
+ *) exit 97 ;;
+esac
+"#,
+                    root = root.path().display()
+                ),
+            )
+            .unwrap();
+            fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+            let storage = PoolStorage::new(program).with_backing(root.path().join("machine-pool"));
+            storage.files.confirm().unwrap();
+
+            let read = storage.read(machine_pool::Need::Proof).await.unwrap();
+
+            assert!(
+                matches!(&read, machine_pool::Read::Unproven(why) if why.contains(changed)),
+                "{read:?}"
+            );
+        }
+    }
+
+    /// Two imported Pools that list the backing file, as when it was replaced while the old
+    /// one was still open, leave the file's Pool unknown: nothing is written to either.
+    #[tokio::test]
+    async fn two_pools_on_one_backing_file_take_no_write() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let program = root.path().join("zpool");
+        fs::write(
+            &program,
+            format!(
+                r#"#!/bin/sh
+set -eu
+case "$*" in
+ 'list -Hp -o name,guid,size,allocated,free,health,readonly')
+   printf 'ployz\t7\t8589934592\t0\t8589934592\tONLINE\ton\nployz-new\t7\t8589934592\t0\t8589934592\tONLINE\toff\n' ;;
+ 'list -v -H -P -o name ployz') printf 'ployz\n\t%s\t-\n' '{root}/machine-pool' ;;
+ 'list -v -H -P -o name ployz-new') printf 'ployz-new\n\t%s\t-\n' '{root}/machine-pool' ;;
+ *) exit 97 ;;
+esac
+"#,
+                root = root.path().display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+        let storage = PoolStorage::new(program).with_backing(root.path().join("machine-pool"));
+        fs::write(storage.backing(), "replacement").unwrap();
+
+        let written = storage.one_usable().await;
+
+        assert!(
+            written
+                .as_ref()
+                .is_err_and(|error| error.to_string().contains("ployz, ployz-new")),
+            "{written:?}"
+        );
+    }
+
+    /// A Pool listing that warned on stderr may have left a Pool out, so neither a write nor
+    /// a proof reads it.
+    #[tokio::test]
+    async fn a_pool_listing_that_warned_is_not_read() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let program = root.path().join("zpool");
+        fs::write(
+            &program,
+            "#!/bin/sh\ncase \"$*\" in\n import) echo 'no pools available to import' >&2 ;;\n 'list -Hp -o name,guid,size,allocated,free,health,readonly')\n   printf 'tank\\t7\\t8589934592\\t0\\t8589934592\\tONLINE\\toff\\n'\n   echo \"cannot open 'other': I/O error\" >&2 ;;\n *) exit 97 ;;\nesac\n",
+        )
+        .unwrap();
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+        let storage = PoolStorage::new(program).with_backing(root.path().join("machine-pool"));
+
+        let written = storage.one_usable().await;
+        let read = storage.read(machine_pool::Need::Proof).await;
+
+        assert!(written.is_err(), "{written:?}");
+        assert!(read.is_err(), "{read:?}");
+    }
+
     #[tokio::test]
     async fn imported_device_admission_refuses_retained_file_backing() {
         let root = tempfile::tempdir().unwrap();
@@ -951,7 +1299,12 @@ esac
         fs::write(storage.backing(), "retained file Pool").unwrap();
 
         let failure = storage.one_usable().await.unwrap_err();
-        assert!(failure.to_string().contains("conflicting"), "{failure}");
+        assert!(
+            failure
+                .to_string()
+                .contains("can't tell which of these is its own: ployz-device (imported)"),
+            "{failure}"
+        );
         assert!(!storage.has_device_pool().unwrap());
         assert_eq!(
             fs::read_to_string(storage.backing()).unwrap(),
@@ -993,8 +1346,9 @@ case "$*" in
  'import -d {root}/machine-pool') printf 'pool: ployz\n' ;;
  'import -d {root}/machine-pool -f -N ployz') echo ployz > '{root}/selected' ;;
  'import -N ployz-device') echo ployz-device > '{root}/selected' ;;
- 'list -Hp -o name,size,allocated,free,health,readonly')
-   printf '%s\t8589934592\t0\t8589934592\tONLINE\toff\n' "$(cat '{root}/selected')" ;;
+ 'list -Hp -o name,guid,size,allocated,free,health,readonly')
+   printf '%s\t7\t8589934592\t0\t8589934592\tONLINE\toff\n' "$(cat '{root}/selected')" ;;
+ 'list -v -H -P -o name ployz') printf 'ployz\n\t%s\t-\n' '{root}/machine-pool' ;;
  *) exit 97 ;;
 esac
 "#,

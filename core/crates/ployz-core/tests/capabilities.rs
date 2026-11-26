@@ -162,6 +162,10 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
         "gated: nothing sends an Operator's Create with versions yet; Cloud must send one only to a Server advertising it. An older daemon ignores `versions`, `rule` and `check` and refuses an Operator's Create before any copy changes, so a Move there fails closed",
     ),
     (
+        "ployz.volume.start.image.v1",
+        "gated: Cloud starts a Move's Writer only on a destination advertising it, and otherwise refuses naming the Server to upgrade. An older daemon pulls the start's image again on a start resent after its promote, so the image could have moved",
+    ),
+    (
         "ployz.volume.cut.running.v1",
         "gated: a drain sends a cut that needs its holder running only to a Server advertising it, and otherwise leaves the Service where it is, naming the Server to upgrade. An older daemon ignores `running` and cuts a stopped holder",
     ),
@@ -268,6 +272,18 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
         "ployz.machine.join.approve.v1",
         "unreached: ApproveJoin goes only to the Machine that listed the pending join, which has it",
+    ),
+    (
+        "ployz.volume.trash.v1",
+        "refused legibly: Trash calls go only to the Server the caller connects to, and an older daemon's refusal names the capability",
+    ),
+    (
+        "ployz.volume.trash-restore.v1",
+        "refused legibly: Trash calls go only to the Server the caller connects to, and an older daemon's refusal names the capability",
+    ),
+    (
+        "ployz.volume.trash-empty.v1",
+        "refused legibly: Trash calls go only to the Server the caller connects to, and an older daemon's refusal names the capability",
     ),
     (
         "ployz.machine.join.device-approval.v1",

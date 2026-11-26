@@ -890,6 +890,27 @@ pub(crate) const VOLUME_RUNS: Verb = Verb::cloud(
     volume::run::runs,
 )
 .docs("services/move-a-volume.md");
+pub(crate) const VOLUME_TRASH_EMPTY: Verb = Verb::local(
+    "volume trash empty",
+    Always,
+    volume::trash::empty_command,
+    volume::trash::empty,
+)
+.docs("services/volumes.md");
+pub(crate) const VOLUME_TRASH_LS: Verb = Verb::local(
+    "volume trash ls",
+    Never,
+    volume::trash::list_command,
+    volume::trash::list,
+)
+.docs("services/volumes.md");
+pub(crate) const VOLUME_TRASH_RESTORE: Verb = Verb::local(
+    "volume trash restore",
+    Always,
+    volume::trash::restore_command,
+    volume::trash::restore,
+)
+.docs("services/volumes.md");
 pub(crate) const VOLUME_SET: Verb =
     Verb::cloud("volume set", Depends, volume::set_command, volume::set)
         .keeps_running(KeepsRunning::With("--wait"))
@@ -1056,6 +1077,9 @@ pub(crate) const VERBS: &[Verb] = &[
     VOLUME_RUNS,
     VOLUME_SET,
     VOLUME_SYNC,
+    VOLUME_TRASH_EMPTY,
+    VOLUME_TRASH_LS,
+    VOLUME_TRASH_RESTORE,
 ];
 
 const GROUPS: &[Group] = &[
@@ -1143,6 +1167,10 @@ const GROUPS: &[Group] = &[
     Group {
         path: "volume",
         command: volume::group,
+    },
+    Group {
+        path: "volume trash",
+        command: volume::trash::group,
     },
 ];
 

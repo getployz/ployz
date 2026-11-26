@@ -16,8 +16,8 @@ use crate::{
 use axum::{Json, extract::State};
 use ployz_core::{
     CopyPlan, CopyRefusal, CopyTransition, DockerVolumeName as WireName, RpcError, SendSource,
-    SendStream, SetVolumeCopyRefused, SlotRole, SnapshotName, VolumeCopy, VolumeGen, WantedCopy,
-    error_chain::inline,
+    SendStream, SetVolumeCopyRefused, SlotRole, SnapshotName, TrashPlace, VolumeCopy, VolumeGen,
+    WantedCopy, error_chain::inline,
 };
 
 use super::{
@@ -26,6 +26,7 @@ use super::{
     inspect::answering,
     marks::{Mark, Marks},
     pool::UnlabeledBacking,
+    storage::Holds,
     transfer::{Busy, Proof, ReceiveFailure, Stop, pulling},
 };
 
@@ -134,11 +135,14 @@ fn no_pool() -> RpcError {
     RpcError::internal("no usable existing Machine Pool")
 }
 
-fn no_room(bound: u64, name: &VolumeName) -> RpcError {
+fn no_room(bound: u64, name: &VolumeName, error: &PluginError) -> RpcError {
     refuse(
         CopyRefusal::NoCapacity,
         None,
-        format!("this Machine has no room for a {bound} byte copy of {name}"),
+        format!(
+            "this Machine has no room for a {bound} byte copy of {name}{}",
+            error.trash_note()
+        ),
     )
 }
 
@@ -181,8 +185,11 @@ impl VolumeStorage {
             return Ok(pool);
         }
         match self.pool.create(bound).await {
-            Ok(_) => self.one_pool().await.map_err(RpcError::from),
-            Err(PluginError::Capacity(_)) => Err(no_room(bound, name)),
+            Ok(created) => {
+                self.trash_new_pool(created.machine_pool()).await;
+                self.one_pool().await.map_err(RpcError::from)
+            }
+            Err(error @ PluginError::Capacity(..)) => Err(no_room(bound, name, &error)),
             Err(error) => Err(RpcError::from(error)),
         }
     }
@@ -386,7 +393,9 @@ impl VolumeStorage {
     ///   Create inherits only `ployz:promote`. Beside the `ployz:promote` set below, it
     ///   would read as a seed Docker never adopted ([`RootCopy::parse`]), which Forget
     ///   destroys. So `land` is the one step that leaves both on a root.
-    /// - `ployz:epoch` becomes `epoch`.
+    /// - `ployz:image` becomes the image the start placed before this promote, or goes,
+    ///   then `ployz:epoch` becomes `epoch`. A root already at `epoch` takes the image
+    ///   again, so a resend's record is the one its start reads back.
     /// - `ployz:promote` is set unless the slot was cut. A pulled copy has no Docker record
     ///   yet, so the root hides from Get and List until Docker's own Create registers it
     ///   with labels. A cut copy keeps its record, and hiding it would make Docker drop
@@ -414,12 +423,14 @@ impl VolumeStorage {
                     .await);
             }
             self.require_at(&scope, &root_name, request).await?;
+            let marks = self.marks(&root_name);
+            marks.record_image(request.image.as_ref()).await?;
             if epoch < request.epoch {
-                self.marks(&root_name).set_epoch(request.epoch).await?;
+                marks.set_epoch(request.epoch).await?;
             }
             if scope.slot().is_some() && scope.fs().is_none() {
-                self.z(&["destroy", &DatasetLayout::of(&scope.pool).slot_parent(name)])
-                    .await?;
+                let parent = DatasetLayout::of(&scope.pool).slot_parent(name);
+                self.destroy(&parent, Holds::Nothing).await?;
             }
             self.make_writable(&root_name, &mountpoint, readonly, name)
                 .await?;
@@ -480,13 +491,15 @@ impl VolumeStorage {
                     .await);
             }
         }
-        marks.promote_slot(request.epoch).await?;
+        marks
+            .promote_slot(request.epoch, request.image.as_ref())
+            .await?;
         // A Machine that only ever mirrored has no managed parent for the root yet.
         let parent = DatasetLayout::of(&scope.pool).root_parent();
         self.ensure_root(&scope.datasets, &parent).await?;
         self.z(&["rename", &fs_name, &root_name]).await?;
-        self.z(&["destroy", &DatasetLayout::of(&scope.pool).slot_parent(name)])
-            .await?;
+        let parent = DatasetLayout::of(&scope.pool).slot_parent(name);
+        self.destroy(&parent, Holds::Nothing).await?;
         self.make_writable(&root_name, "", true, name).await?;
         self.copy_now(&scope).await
     }
@@ -588,7 +601,7 @@ impl VolumeStorage {
                     .await
                 {
                     return Err(if error.is_capacity() {
-                        no_room(bound, name)
+                        no_room(bound, name, &error)
                     } else {
                         RpcError::from(error)
                     });
@@ -684,12 +697,12 @@ impl VolumeStorage {
             self.marks(&parent).set_pull(&target).await?;
         }
         let storage = self.clone();
-        let (from, r#gen) = (request.from, request.r#gen);
+        let (from, r#gen, pulled) = (request.from, request.r#gen, name.clone());
         let spawned = self
             .receives
             .spawn(&scope.held, name, &request.target, |stop| async move {
                 let result = match storage
-                    .pull_stream(from, stream, (&parent, &fs), bound, r#gen, &stop)
+                    .pull_stream(from, stream, (&parent, &fs, &pulled), bound, r#gen, &stop)
                     .await
                 {
                     Ok(()) => match storage.mark_pulled(&parent, &fs).await {
@@ -722,7 +735,7 @@ impl VolumeStorage {
         &self,
         from: ployz_core::ManagementAddress,
         stream: SendStream,
-        (parent, fs): (&str, &str),
+        (parent, fs, name): (&str, &str, &VolumeName),
         bound: u64,
         r#gen: VolumeGen,
         stop: &Stop,
@@ -774,9 +787,9 @@ impl VolumeStorage {
                 .await
                 .map_err(|error| error.to_string())?;
         }
-        // Aborting an interrupted first receive destroys the copy it began.
+        // The old copy moves to the Trash; an interrupted first receive goes outright.
         if self.exists(fs).await.map_err(|error| error.to_string())? {
-            self.zfs(&["destroy", "-r", fs])
+            self.discard_copy(parent, fs, name, Some(stop))
                 .await
                 .map_err(|error| error.to_string())?;
         }
@@ -864,13 +877,14 @@ impl VolumeStorage {
             .await
         {
             Ok(()) => Ok(writer),
-            Err(PluginError::Capacity(_)) => Err(self
+            Err(error @ PluginError::Capacity(..)) => Err(self
                 .refuse_found(
                     scope,
                     CopyRefusal::NoCapacity,
                     format!(
-                        "this Machine has no room for a {writer} byte copy of {}",
-                        scope.name
+                        "this Machine has no room for a {writer} byte copy of {}{}",
+                        scope.name,
+                        error.trash_note()
                     ),
                 )
                 .await),
@@ -964,7 +978,7 @@ impl VolumeStorage {
                     Point::Copy(CopyTransition::SeedToForget),
                     Some(forgetting(wire, request.r#gen)),
                 );
-                self.z(&["destroy", "-r", &root.name]).await?;
+                self.discard(&root.name, TrashPlace::Root, name).await?;
                 // A slot beside the seed is the parent its landing emptied; one holding a
                 // copy that may be the only one stays.
                 let kept = match scope.fs() {
@@ -972,12 +986,8 @@ impl VolumeStorage {
                     None => false,
                 };
                 if scope.slot().is_some() && !receiving && !kept {
-                    self.z(&[
-                        "destroy",
-                        "-r",
-                        &DatasetLayout::of(&scope.pool).slot_parent(name),
-                    ])
-                    .await?;
+                    self.discard_slot(&DatasetLayout::of(&scope.pool).slot_parent(name), name)
+                        .await?;
                     self.receives.forget(name);
                 }
                 return self.copy_now(&scope).await;
@@ -999,12 +1009,8 @@ impl VolumeStorage {
             Point::Copy(CopyTransition::MirrorToForget),
             Some(forgetting(wire, request.r#gen)),
         );
-        self.z(&[
-            "destroy",
-            "-r",
-            &DatasetLayout::of(&scope.pool).slot_parent(name),
-        ])
-        .await?;
+        self.discard_slot(&DatasetLayout::of(&scope.pool).slot_parent(name), name)
+            .await?;
         self.receives.forget(name);
         self.copy_now(&scope).await
     }

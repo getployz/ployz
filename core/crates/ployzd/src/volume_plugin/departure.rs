@@ -23,11 +23,14 @@
 
 use std::collections::BTreeSet;
 
-use crate::{dataset_layout::DatasetLayout, machine_pool::MachinePool};
+use crate::{
+    dataset_layout::DatasetLayout,
+    machine_pool::{MachinePool, Need, Read},
+};
 use axum::{Json, extract::State};
 use ployz_core::{DepartureFailure, RpcError, StorageDeparture};
 
-use super::{Dataset, VolumeName, VolumeStorage};
+use super::{Dataset, VolumeName, VolumeStorage, storage::Holds};
 
 /// Prefix of the snapshot a departure takes on each root before demoting it.
 pub(super) const DEPARTURE_SNAPSHOT_PREFIX: &str = "dep-";
@@ -61,8 +64,15 @@ impl VolumeStorage {
     ) -> super::Result<StorageDeparture> {
         let (held, _installation) = self.admit_mutation().await?;
         let _pool_guard = self.pool.lock_mutation().await?;
-        let Some(pool) = self.pool.one_usable().await? else {
-            return Ok(StorageDeparture::default());
+        // The seal covers the Pool this Machine knows is its own. One it held but can't
+        // tell apart now may hold a root that would come back as a writer, so the
+        // departure fails rather than leave it unsealed.
+        let pool = match self.pool.read(Need::Seal).await? {
+            Read::Unheld => return Ok(StorageDeparture::default()),
+            Read::Pool { pool, .. } => pool,
+            Read::Unproven(why) => {
+                return Err(format!("this Server's Volumes can't be sealed, since {why}").into());
+            }
         };
         // Every receive starts under admission, so once these stop only this departure
         // changes a slot until it ends. A stuck receive may still write, so its Volume is
@@ -71,7 +81,7 @@ impl VolumeStorage {
         if !stuck.is_empty() {
             tracing::warn!(stuck = %stuck.join(", "), deadline = ?self.stop_deadline, "copies did not stop; leaving their Volumes");
         }
-        let datasets = self.datasets(&pool).await?;
+        let datasets = self.complete_datasets(&pool).await?;
         let names = datasets
             .iter()
             .filter_map(|dataset| DatasetLayout::of(&pool).place(&dataset.name).volume())
@@ -129,7 +139,7 @@ impl VolumeStorage {
         {
             return;
         }
-        if let Err(error) = self.zfs(&["destroy", &mirror_root]).await {
+        if let Err(error) = self.destroy(&mirror_root, Holds::Nothing).await {
             tracing::warn!(%error, %mirror_root, "left the empty mirror root in place");
         }
     }
@@ -145,7 +155,8 @@ impl VolumeStorage {
         now_unix_seconds: i64,
         mirrors: Mirrors,
     ) -> super::Result<bool> {
-        let datasets = self.datasets(pool).await?;
+        // A root missing from a cut listing would stay unsealed, so only a finished one reads.
+        let datasets = self.complete_datasets(pool).await?;
         let demoted = match self.departure(pool, &datasets, name).await? {
             Departure::Root(root) | Departure::RootBesideEmptySlot(root) => {
                 self.freeze_root(root, name, now_unix_seconds).await?;
@@ -167,7 +178,7 @@ impl VolumeStorage {
             Departure::Departed => false,
             Departure::Mirror => match mirrors {
                 Mirrors::Destroy => {
-                    self.zfs(&["destroy", "-r", &DatasetLayout::of(pool).slot_parent(name)])
+                    self.discard_slot(&DatasetLayout::of(pool).slot_parent(name), name)
                         .await?;
                     self.receives.forget(name);
                     true

@@ -139,7 +139,11 @@ impl VolumeStorage {
                     .await
                 {
                     Ok(()) => {}
-                    Err(PluginError::Capacity(capacity)) => {
+                    Err(error @ PluginError::Capacity(..)) => {
+                        let note = error.trash_note();
+                        let PluginError::Capacity(capacity, _) = error else {
+                            unreachable!("matched a capacity refusal");
+                        };
                         return Err(SetVolumeSizeRefused {
                             reason: SizeRefusal::NoCapacity,
                             bound_bytes: Some(bound),
@@ -147,7 +151,7 @@ impl VolumeStorage {
                             floor_bytes: None,
                         }
                         .rpc_error(format!(
-                            "this Machine has no room to grow Volume {name} to {wanted}: {capacity}"
+                            "this Machine has no room to grow Volume {name} to {wanted}: {capacity}{note}"
                         )));
                     }
                     Err(error) => return Err(RpcError::from(error)),

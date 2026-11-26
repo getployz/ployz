@@ -38,6 +38,14 @@ pub const VOLUME_SEED_ROUTE: &str = "Volume.Seed";
 pub const VOLUME_SEED_COPY_ROUTE: &str = "Volume.SeedCopy";
 /// A Volume's bound set to a new size.
 pub const VOLUME_SIZE_SET_ROUTE: &str = "Volume.Size.Set";
+/// What this Server's Trash holds.
+pub const TRASH_LIST_ROUTE: &str = "Ployz.Trash.List";
+/// A Trash entry put back where it was taken from.
+pub const TRASH_RESTORE_ROUTE: &str = "Ployz.Trash.Restore";
+/// Named Trash entries destroyed.
+pub const TRASH_EMPTY_ROUTE: &str = "Ployz.Trash.Empty";
+/// The hourly sweep: one hour counted, and the entries 168 hours old destroyed.
+pub const TRASH_SWEEP_ROUTE: &str = "Ployz.Trash.Sweep";
 /// The copy as it is now, with no effect.
 pub const INSPECT_ROUTE: &str = "Volume.Copy.Inspect";
 /// The cut: the writer root becomes the slot's read-only copy at `target`.
@@ -167,6 +175,10 @@ pub struct WriterRequest {
     pub epoch: WriterEpoch,
     #[serde(default)]
     pub r#gen: VolumeGen,
+    /// The image the start placed before this promote, recorded beside `epoch` as
+    /// `ployz:image`. `None` clears an earlier record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<ployz_core::PlacedImage>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

@@ -183,6 +183,7 @@ const label = (fake: FakeMachine, want: WantedCopy) => {
 /** What a fake Server lists unless a test names its own: every Volume verb. */
 const ON_PLOYZ_04 = [
   requirements.volumeStart.capability,
+  requirements.volumeStartImage.capability,
   requirements.volumeMove.capability,
   requirements.volumeFloor.capability,
   requirements.volumeSize.capability,
@@ -2436,6 +2437,18 @@ describe("volume runs", () => {
     });
 
     it.each([
+      ["a Move, which copied A's image there first, pulls nothing", { id: idOf("fsn-1"), name: "fsn-1" }, "never"],
+      ["a forward Release, which copied no image, pulls it when it isn't there", null, "missing"],
+    ] as const)("starts B so %s", async (_, from, pullPolicy) => {
+      const ctx = await owned();
+      containers = [{ machine: "fsn-1", id: "web-fsn-1", running: false }];
+
+      await runEffect(commitAndStart(ctx, "run-1", { to: { id: B, name: "fsn-2" }, from, expect: { kind: "none" }, at: base.guid, epoch: 1 }));
+
+      expect(sent.at(-1)?.want).toMatchObject({ kind: "writer", start: { kind: "create", resolved_spec: { container: { pull_policy: pullPolicy } } } });
+    });
+
+    it.each([
       ["the size a resize recorded since the Deploy", 20 * GB, 20 * GB],
       ["the spec's own size while none is recorded", 0, 5_000_000],
     ])("starts B at %s", async (_, recordedBytes, maximumBytes) => {
@@ -2802,6 +2815,21 @@ describe("volume runs", () => {
         { kind: "release", state: "failed", phase: "committed", current: B },
         { id: later.id, kind: "release", state: "done" },
       ]);
+    });
+
+    it("on a committed row, a forward release onto a Server whose Ployz would pull the start's image again creates nothing there", async () => {
+      const G = newSnap("f-1");
+      named("fsn-1").copy = slotCopy(G);
+      for (const container of containers) container.running = false;
+      machines[1] = { name: "fsn-2", pool: true, copy: slotCopy(G, null, "2"), capabilities: ON_PLOYZ_04.filter((capability) => capability !== requirements.volumeStartImage.capability) };
+      await owned("committed");
+      await runEffect(closeVolumeRun("run-1", "failure"));
+      verbs = [];
+
+      const failed = await execute((await releaseRow()).id, "run-2");
+
+      expect(failed.error).toMatchObject({ message: expect.stringContaining("Volume move is not available on fsn-2.") });
+      expect(verbs.filter((verb) => verb.startsWith("writer@"))).toEqual([]);
     });
 
     describe("a committed Move whose release failed", () => {

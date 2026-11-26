@@ -239,7 +239,28 @@ it.effect("a Move onto a Server whose Ployz can't route the moved copy names its
   }).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllGlobals()))),
 );
 
-it.effect("a Move reads the copy of its destination when that Server routes and starts the moved copy, and of a source that can't", () =>
+it.effect("a Move onto a Server that would pull its start's image again after the promote names the release to upgrade to", () =>
+  Effect.gen(function* () {
+    vi.stubGlobal("fetch", async () => new Response("v0.2.0\n"));
+    const starts = [
+      requirements.volumeMove.capability,
+      requirements.volumeFloor.capability,
+      requirements.volumeSize.capability,
+      requirements.volumeStart.capability,
+    ];
+    const cluster = yield* lacking(starts, null);
+    const observing = yield* observeVolumeMembers("org-1", "pg-data", move).pipe(Effect.provide(cluster.layer(Promise.resolve())), Effect.forkChild);
+    (yield* Queue.take(cluster.queries))();
+    assert.deepStrictEqual(yield* Fiber.join(observing), [{
+      machine: { id: machine.id, name: machine.name },
+      answered: false,
+      lack: `Volume move needs a newer Ployz on box-1, which runs ${machine.runtime.daemon_version}. Upgrade it to 0.2.0.`,
+      outdated: true,
+    }]);
+  }).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllGlobals()))),
+);
+
+it.effect("a Move reads the copy of its destination when that Server routes and starts the moved copy from its recorded image, and of a source that can't", () =>
   Effect.gen(function* () {
     const read = (capabilities: readonly string[], run: typeof move | typeof moveAway) => Effect.gen(function* () {
       const cluster = yield* lacking(capabilities, null);
@@ -247,7 +268,8 @@ it.effect("a Move reads the copy of its destination when that Server routes and 
       return member?.answered;
     });
     const beta6 = [requirements.volumeMove.capability, requirements.volumeFloor.capability];
-    assert.strictEqual(yield* read([...beta6, requirements.volumeSize.capability, requirements.volumeStart.capability], move), true);
+    const starts = [...beta6, requirements.volumeSize.capability, requirements.volumeStart.capability];
+    assert.strictEqual(yield* read([...starts, requirements.volumeStartImage.capability], move), true);
     assert.strictEqual(yield* read(beta6, moveAway), true);
   }),
 );

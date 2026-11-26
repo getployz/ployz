@@ -48,7 +48,8 @@ the server the volume left. Discard it, edit the volume's mirrors again and depl
 The old server keeps a read-only copy, like `data-web-1`, under **Elsewhere**. It serves nothing
 and never refreshes.
 
-- Its × deletes it right away, after you click **Delete**. This can't be undone.
+- Its × deletes it right away, after you click **Delete**. Its data waits in that server's
+  [trash](volumes.md#get-deleted-data-back) for 7 days.
 - Restoring its last point into a new volume is turned off in this version. See
   [Restore a volume](restore-a-volume.md).
 

@@ -639,8 +639,10 @@ async fn volume_copy_inspect_refuses_a_machine_outside_the_cluster() {
     let store = RecordOwner::spawn(LocalMachineStore::open(&data_dir).unwrap()).unwrap();
     let service = MachineService::with_cluster(store, None);
     let name: ployz_core::DockerVolumeName = "data".parse().unwrap();
-    let inspect =
-        op::InspectVolumeCopy::into_request(ployz_core::InspectVolumeCopyRequest { name });
+    let inspect = op::InspectVolumeCopy::into_request(ployz_core::InspectVolumeCopyRequest {
+        name,
+        prove: false,
+    });
     let response = service
         .inspect_volume_copy(Request::new(inspect.encode().unwrap()))
         .await
@@ -2980,6 +2982,15 @@ mod set_volume_copy {
             .unwrap()
     }
 
+    /// The reply without the image its promote recorded, which every Create start places.
+    fn unplaced(reply: &SetVolumeCopyReply) -> Value {
+        let mut reply = serde_json::to_value(reply).unwrap();
+        if let Some(copy) = reply.get_mut("copy").and_then(Value::as_object_mut) {
+            copy.remove("placed");
+        }
+        reply
+    }
+
     fn reply(response: &RpcResponse) -> SetVolumeCopyReply {
         response
             .clone()
@@ -2990,6 +3001,7 @@ mod set_volume_copy {
     async fn inspect(service: &MachineService) -> ployz_core::VolumeCopyView {
         let request = ployz_core::InspectVolumeCopyRequest {
             name: VOLUME.parse().unwrap(),
+            prove: false,
         };
         let response = service
             .inspect_volume_copy(Request::new(
@@ -3590,7 +3602,7 @@ mod set_volume_copy {
         let raised = reply(&set_copy(&service, raise).await);
 
         assert_eq!(
-            serde_json::to_value(&raised).unwrap(),
+            unplaced(&raised),
             json!({"copy": writer_root(2, Some(snapshot("f-1", 7))).get("Ok")})
         );
         assert_eq!(effects(&plugin), vec![WRITER_ROUTE]);
@@ -4799,7 +4811,7 @@ mod set_volume_copy {
         let late = reply(&set_copy(&service, step_five).await);
 
         assert_eq!(
-            serde_json::to_value(&late).unwrap(),
+            unplaced(&late),
             json!({"copy": writer_root(1, Some(snapshot("f-1", 900)))["Ok"]})
         );
         assert_eq!(holder_status(&fake), vec![json!("running")]);

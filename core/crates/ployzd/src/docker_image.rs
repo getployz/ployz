@@ -20,6 +20,11 @@ pub(crate) enum ImagePull<'auth> {
     /// A Free Build loaded this image, and its receipt held: creation runs exactly it from
     /// this Machine's store, never pulled, whatever the spec's image names.
     Free(&'auth FreeImage),
+    /// The image a Volume start placed here before its promote, by the ID it read then:
+    /// creation runs that ID and reaches no registry, wherever the tag points since.
+    /// Unsigned, the ID must be one a free pull placed; any other is pulled again as
+    /// [`Self::Policy`] is.
+    Placed(&'auth str),
 }
 
 /// An image a Free Build of this Cluster loaded, by its ID: a receipt whose MAC held under

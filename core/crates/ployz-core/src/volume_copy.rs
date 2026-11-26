@@ -598,6 +598,7 @@ mod tests {
             seed: false,
             mark: None,
             origin: None,
+            placed: None,
         }
     }
 
@@ -609,6 +610,7 @@ mod tests {
             seed: true,
             mark: None,
             origin: None,
+            placed: None,
         }
     }
 

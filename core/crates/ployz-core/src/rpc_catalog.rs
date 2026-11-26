@@ -100,6 +100,9 @@ macro_rules! rpc_catalog {
                 SeedCopy: (seed_copy, SeedCopyRequest, VolumeCopyView, SEED_COPY_CAPABILITY, "ployz.volume.seed-copy.v1", Container, Operator),
                 SetVolumeCopy: (set_volume_copy, SetVolumeCopyRequest, SetVolumeCopyReply, SET_VOLUME_COPY_CAPABILITY, "ployz.volume.copy.set.v1", Container, Operator),
                 SetVolumeSize: (set_volume_size, SetVolumeSizeRequest, SetVolumeSizeReply, SET_VOLUME_SIZE_CAPABILITY, "ployz.volume.size.set.v1", Container, Operator),
+                ListTrash: (list_trash, ListTrashRequest, TrashList, LIST_TRASH_CAPABILITY, "ployz.volume.trash.v1", Container, Full),
+                RestoreTrash: (restore_trash, RestoreTrashRequest, TrashRestored, RESTORE_TRASH_CAPABILITY, "ployz.volume.trash-restore.v1", Container, Full),
+                EmptyTrash: (empty_trash, EmptyTrashRequest, TrashEmptied, EMPTY_TRASH_CAPABILITY, "ployz.volume.trash-empty.v1", Container, Full),
                 ListImages: (list_images, ListImagesRequest, MachineImages, LIST_IMAGES_CAPABILITY, "ployz.image.list.v1", Container, Operator),
                 PruneImages: (prune_images, PruneImagesRequest, ImagesRemoved, PRUNE_IMAGES_CAPABILITY, "ployz.image.prune.v1", Container, Operator),
                 EnsureImageIngest: (ensure_image_ingest, EnsureImageIngestRequest, ImageIngestOpened, ENSURE_IMAGE_INGEST_CAPABILITY, "ployz.image.ingest.ensure.v1", Container, Operator),
@@ -141,6 +144,8 @@ macro_rules! rpc_catalog {
                 VOLUME_ORIGIN_CAPABILITY: ("ployz.volume.origin.v1", Container),
                 /// `SetVolumeCopy` creates an Operator's Writer from the signed versions or rule proof its `Create` carries, for a spec that mounts the Volume, and answers a `check` without changing anything.
                 VOLUME_START_CAPABILITY: ("ployz.volume.start.v1", Container),
+                /// A Writer start's promote records the image the start placed, with its epoch and the admitted spec's digest, and a start resent after the promote creates its holder from that image with no pull. A start whose volume plugin promotes without that record is refused.
+                VOLUME_START_IMAGE_CAPABILITY: ("ployz.volume.start.image.v1", Container),
                 /// `SetVolumeCopy`'s cut with a `holder` takes `running`: it refuses `stopped` when that Container no longer runs, and records a stop it makes before making it, so a resent cut knows the stop as its own.
                 VOLUME_CUT_RUNNING_CAPABILITY: ("ployz.volume.cut.running.v1", Container),
                 /// `SetVolumeCopy` keeps a slot that may hold writes no other Machine has: a Forget without `discard` refuses `written_here`, and a pull never replaces it with a full send.

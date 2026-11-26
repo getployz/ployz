@@ -23,6 +23,8 @@ fn seen(name: &str, copy: Option<VolumeCopy>) -> Seen {
         id: MachineId::parse(name[name.len() - 1..].repeat(32)).unwrap(),
         name: name.to_owned(),
         copy: Ok(copy),
+        read: None,
+        pinned: None,
     }
 }
 
@@ -63,6 +65,7 @@ fn root(readonly: bool, epoch: u32) -> VolumeCopy {
         seed: false,
         mark: None,
         origin: None,
+        placed: None,
     }
 }
 

@@ -19,6 +19,39 @@ async fn finished(socket: &Path, target: &str) -> Value {
     .unwrap_or_else(|| panic!("the pull of {target} never finished"))
 }
 
+/// The part of `trace` that moved `dataset` to the Trash, which begins with its first
+/// trash mark: the marks set on the live copy, the rename, then the tombstone read on the
+/// entry. `None` when it never moved.
+fn trash_move<'trace>(trace: &'trace [String], dataset: &str) -> Option<&'trace [String]> {
+    let first = trace
+        .iter()
+        .position(|line| line.starts_with("zfs get -H -s local -o value ployz:trash-hours"))?;
+    let tail = trace.get(first..)?;
+    let rename = tail
+        .iter()
+        .position(|line| line.starts_with(&format!("zfs rename {dataset} tank/ployz-trash/")))?;
+    let (before, after) = tail.split_at(rename);
+    let (moved, after) = after.split_first()?;
+    let entry = moved.rsplit(' ').next()?;
+    let marked = [
+        "trash-name",
+        "trash-place",
+        "trash-was",
+        "trashed-hour",
+        "trashed-at",
+    ]
+    .iter()
+    .all(|mark| {
+        before.iter().any(|line| {
+            line.starts_with(&format!("zfs set ployz:{mark}=")) && line.ends_with(dataset)
+        })
+    });
+    let buried_after = after
+        .iter()
+        .any(|line| *line == format!("zfs get -r -H -s local -o value ployz:copy-step {entry}"));
+    (marked && buried_after).then_some(tail)
+}
+
 /// Every `zfs` call that reads or writes a mark, and the steps whose position among them
 /// matters, in the order the plugin ran them.
 fn trace(log: &str) -> Vec<String> {
@@ -90,6 +123,7 @@ async fn copy_writer_promotes_a_pulled_slot_in_this_order() {
             "zfs inherit ployz:pulled tank/ployz-mirror/data/fs",
             "zfs get -H -o value ployz:seed tank/ployz-mirror/data/fs",
             "zfs inherit ployz:seed tank/ployz-mirror/data/fs",
+            "zfs get -H -o value ployz:image tank/ployz-mirror/data/fs",
             "zfs set ployz:epoch=2 tank/ployz-mirror/data/fs",
             "zfs get -H -o value ployz:cut tank/ployz-mirror/data/fs",
             "zfs set ployz:promote=on tank/ployz-mirror/data/fs",
@@ -99,6 +133,7 @@ async fn copy_writer_promotes_a_pulled_slot_in_this_order() {
             "zfs get -H -o value ployz:promote tank/ployz/data",
             "zfs get -H -o value ployz:seed tank/ployz/data",
             "zfs get -H -o value ployz:epoch tank/ployz/data",
+            "zfs get -H -o value ployz:image tank/ployz/data",
         ]
     );
     server.abort();
@@ -123,6 +158,7 @@ async fn copy_writer_leaves_a_cut_slot_registered_and_drops_the_cut_after_the_re
             "zfs get -H -o value receive_resume_token tank/ployz-mirror/data/fs",
             "zfs inherit ployz:pulled tank/ployz-mirror/data/fs",
             "zfs get -H -o value ployz:seed tank/ployz-mirror/data/fs",
+            "zfs get -H -o value ployz:image tank/ployz-mirror/data/fs",
             "zfs set ployz:epoch=0 tank/ployz-mirror/data/fs",
             "zfs get -H -o value ployz:cut tank/ployz-mirror/data/fs",
             "zfs rename tank/ployz-mirror/data/fs tank/ployz/data",
@@ -131,6 +167,7 @@ async fn copy_writer_leaves_a_cut_slot_registered_and_drops_the_cut_after_the_re
             "zfs inherit ployz:cut tank/ployz/data",
             "zfs get -H -o value ployz:promote tank/ployz/data",
             "zfs get -H -o value ployz:epoch tank/ployz/data",
+            "zfs get -H -o value ployz:image tank/ployz/data",
         ]
     );
     server.abort();
@@ -159,11 +196,13 @@ async fn copy_writer_raises_a_roots_epoch_before_it_reopens_it() {
         trace(&commands(&test)),
         [
             "zfs get -H -o value ployz:epoch tank/ployz/data",
+            "zfs get -H -o value ployz:image tank/ployz/data",
             "zfs set ployz:epoch=2 tank/ployz/data",
             "zfs get -H -o value ployz:cut tank/ployz/data",
             "zfs inherit ployz:cut tank/ployz/data",
             "zfs get -H -o value ployz:promote tank/ployz/data",
             "zfs get -H -o value ployz:epoch tank/ployz/data",
+            "zfs get -H -o value ployz:image tank/ployz/data",
         ]
     );
     server.abort();
@@ -381,15 +420,19 @@ async fn a_departure_reads_the_four_marks_in_order_then_pulled_locally() {
     .await;
     assert_eq!(reply, DESTROYED);
     assert_eq!(
-        trace,
+        trace.iter().take(5).collect::<Vec<_>>(),
         [
             "zfs get -H -o value ployz:seed tank/ployz-mirror/data/fs",
             "zfs get -H -o value ployz:promote tank/ployz-mirror/data/fs",
             "zfs get -H -o value ployz:cut tank/ployz-mirror/data/fs",
             "zfs get -H -o value ployz:epoch tank/ployz-mirror/data/fs",
             "zfs get -H -s local -o value ployz:pulled tank/ployz-mirror/data/fs",
-            "zfs get -r -H -s local -o value ployz:copy-step tank/ployz-mirror/data",
         ]
+    );
+    assert_eq!(
+        trash_move(&trace, "tank/ployz-mirror/data").map(<[String]>::as_ptr),
+        trace.get(5..).map(<[String]>::as_ptr),
+        "{trace:#?}"
     );
 }
 
@@ -484,17 +527,16 @@ async fn remove_reads_promote_as_an_effective_value() {
         }
 
         let reply = post(&socket, "/VolumeDriver.Remove", json!({"Name": "data"})).await;
-        let log = commands(&test);
-        let mut read = vec!["zfs get -H -o value ployz:promote tank/ployz/data"];
-        if !inherited {
-            read.push("zfs get -r -H -s local -o value ployz:copy-step tank/ployz/data");
-        }
-        assert_eq!(trace(&log), read, "{inherited}");
+        let trace = trace(&commands(&test));
+        let read = ["zfs get -H -o value ployz:promote tank/ployz/data"];
         assert_eq!(
-            log.contains("zfs destroy -r tank/ployz/data"),
-            !inherited,
-            "{reply}"
+            trace.iter().take(read.len()).collect::<Vec<_>>(),
+            read,
+            "{inherited}"
         );
+        let moved = trash_move(&trace, ROOT);
+        assert_eq!(moved.is_some(), !inherited, "{reply}");
+        assert_eq!(trace.len(), read.len() + moved.map_or(0, <[String]>::len));
         server.abort();
     }
 }
@@ -515,6 +557,7 @@ async fn create_of_an_existing_unregistered_root_clears_its_promote() {
     assert_eq!(
         trace(&commands(&test)),
         [
+            "zfs get -H -o value ployz:restored tank/ployz/data",
             "zfs get -H -o value ployz:promote tank/ployz/data",
             "zfs inherit ployz:promote tank/ployz/data",
         ]
@@ -572,6 +615,7 @@ async fn list_reads_promote_once_per_volume_in_listing_order() {
         trace(&commands(&test)),
         [
             "zfs get -H -o value ployz:promote tank/ployz/data",
+            "zfs get -H -o value ployz:restored tank/ployz/data",
             "zfs get -H -o value ployz:promote tank/ployz/sibling",
         ]
     );
@@ -682,6 +726,7 @@ async fn inspect_reads_the_marks_of_a_read_only_root_in_order() {
             "zfs get -H -o value ployz:seed tank/ployz/data",
             "zfs get -H -o value ployz:cut tank/ployz/data",
             "zfs get -H -o value ployz:epoch tank/ployz/data",
+            "zfs get -H -o value ployz:image tank/ployz/data",
         ]
     );
     server.abort();
@@ -698,6 +743,7 @@ async fn inspect_of_an_unmarked_root_reads_promote_alone() {
         [
             "zfs get -H -o value ployz:promote tank/ployz/data",
             "zfs get -H -o value ployz:epoch tank/ployz/data",
+            "zfs get -H -o value ployz:image tank/ployz/data",
         ]
     );
     server.abort();
