@@ -1659,6 +1659,17 @@ async fn an_outside_build_reuses_a_held_unchanged_image_and_never_builds() {
         build(outside(&"a".repeat(40), Some(uncovered)).await.unwrap()),
         amd64
     );
+    // A free Build's receipt, kept from before the Service reached data, serves no
+    // Builder outside the Cluster: GitHub builds it signed.
+    let mut free = receipt.clone();
+    free.free = Some(Box::new(ployz_core::FreeReceipt {
+        image: ployz_core::ImageDigest::parse(receipt.image.reference.as_str()).unwrap(),
+        mac: serde_json::from_value(json!("0".repeat(64))).unwrap(),
+    }));
+    assert_eq!(
+        build(outside(&"a".repeat(40), Some(free)).await.unwrap()),
+        amd64
+    );
     // A Cluster that no longer holds the image must build.
     builds.stores.lock().unwrap().clear();
     assert_eq!(
@@ -1784,6 +1795,65 @@ async fn a_free_build_names_the_server_that_cant_run_it_before_anything_builds()
         assert!(builds.definitions.lock().unwrap().is_empty());
         fs::remove_dir_all(root).unwrap();
     }
+}
+
+/// A redeploy that reuses a free Build's image, with no source to build, still stops at a
+/// Server the Service may run on that can't run it by its receipt, and names it.
+#[tokio::test]
+async fn a_reused_free_image_names_the_server_that_cant_run_it() {
+    let one = ServiceName::parse("one").unwrap();
+    let free_input = |root: &Path| {
+        let mut free = input(root, vec![git("one", "dockerfile")]);
+        free.free = [one.clone()].into();
+        free
+    };
+    let (root, service, built) = free_fixture(
+        &[ployz_core::BUILD_FREE_CAPABILITY],
+        &[ployz_core::FREE_RECEIPT_CAPABILITY],
+    );
+    let (building, server) = session(service).await;
+    let first = building
+        .prepare(free_input(&root))
+        .unwrap()
+        .finished()
+        .await
+        .unwrap();
+    let receipts: BTreeMap<_, _> = first
+        .build_receipts()
+        .iter()
+        .map(|(service, receipt)| (service.clone(), vec![receipt.clone()]))
+        .collect();
+    assert!(receipts[&one][0].free.is_some());
+    first.close();
+    building.close().await;
+    server.abort();
+
+    // The builder still holds the image; the application Server can't run it unsigned.
+    let (_, behind, builds) = free_fixture(&[ployz_core::BUILD_FREE_CAPABILITY], &[]);
+    *builds.stores.lock().unwrap() = built.stores.lock().unwrap().clone();
+    let (redeploying, server) = session(behind).await;
+    let mut redeploy = free_input(&root);
+    redeploy.sources.clear();
+    redeploy.build_receipts = receipts;
+    let error = redeploying
+        .prepare(redeploy)
+        .unwrap()
+        .finished()
+        .await
+        .err()
+        .expect("a Server that can't run the image stops the Deploy");
+    let recorded = ployz_store::Failure::from(&error);
+    let cause = recorded.cause.last().expect("a cause names the Server");
+    assert!(
+        cause.contains(
+            "application can't run one, which builds without approval. Upgrade application"
+        ),
+        "{cause}"
+    );
+    assert!(builds.definitions.lock().unwrap().is_empty());
+    redeploying.close().await;
+    server.abort();
+    fs::remove_dir_all(root).unwrap();
 }
 
 /// A free Service runs only an image a Free Build vouched for, so only such a receipt serves

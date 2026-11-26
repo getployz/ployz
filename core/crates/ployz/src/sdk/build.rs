@@ -142,8 +142,11 @@ async fn reuse(
         input.deployment,
         std::collections::BTreeMap::from([(spec.name.clone(), input.commit)]),
     )?;
-    if fingerprints.get(&spec.name) != Some(&receipt.fingerprint)
-        || receipt.image.platforms.is_empty()
+    // A Builder outside the Cluster builds only a Service that runs signed: only a Server
+    // makes a Free receipt, so a free Build's receipt never serves one here.
+    if !fingerprints
+        .get(&spec.name)
+        .is_some_and(|fingerprint| receipt.serves(fingerprint, false))
     {
         return Ok(None);
     }

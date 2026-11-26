@@ -426,7 +426,21 @@ pub(super) async fn build_images(
     }
     let machines = observe_machines(client, intent, cancellation).await?;
     let free: Vec<_> = build.free().cloned().collect();
-    crate::build::free_destinations(&free, intent, &machines)
+    // Every Service whose image runs by a Free receipt, built now or reused, needs Servers
+    // that take one.
+    let runs_free: Vec<_> = free
+        .iter()
+        .chain(
+            reusable
+                .iter()
+                .filter(|built| built.free.is_some())
+                .map(|built| &built.name),
+        )
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    crate::build::free_destinations(&runs_free, intent, &machines)
         .map_err(PreparationError::Selection)?;
     let mut builds = if sourceless.is_empty() {
         Vec::new()

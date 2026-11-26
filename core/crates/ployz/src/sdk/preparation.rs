@@ -81,6 +81,18 @@ pub struct BuildReceipt {
     pub free: Option<Box<ployz_core::FreeReceipt>>,
 }
 
+impl BuildReceipt {
+    /// Whether this receipt's image may run a Service now: the build read the inputs that
+    /// give `fingerprint`, its image holds a platform, and it is a free Build's exactly when
+    /// the Service builds `free`. A free Service runs only an image a free Build vouched
+    /// for, and one that runs signed never reuses one.
+    pub(crate) fn serves(&self, fingerprint: &str, free: bool) -> bool {
+        !self.image.platforms.is_empty()
+            && self.fingerprint == fingerprint
+            && self.free.is_some() == free
+    }
+}
+
 /// Which variables are a build's inputs: a variable it never reads can change
 /// without a rebuild.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -349,11 +361,10 @@ fn capture_frozen(
             .unwrap_or_default()
             .into_iter()
             .filter(|receipt| {
-                !receipt.image.platforms.is_empty()
-                    && receipt.fingerprint == fingerprint(identity, service, &receipt.variables)
-                    // A free Service runs only an image a free Build vouched for, and a
-                    // signed one never needs one.
-                    && receipt.free.is_some() == input.free.contains(&service.name)
+                receipt.serves(
+                    &fingerprint(identity, service, &receipt.variables),
+                    input.free.contains(&service.name),
+                )
             })
             .collect();
         if !matching.is_empty() {
