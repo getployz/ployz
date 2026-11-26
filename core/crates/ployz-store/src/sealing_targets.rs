@@ -3,6 +3,7 @@
 //! Store reads them; Cloud adds the Sealing Key.
 
 use ployz_core::config::RowId;
+use ployz_core::config::ServiceSource;
 use ployz_core::{RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -63,6 +64,11 @@ pub struct SealingService {
     /// none a sealed value binds to.
     #[ts(type = "string | null")]
     pub service: Option<Uuid>,
+    /// The image it pulls, which a registry login is sealed for; `None` for a Service
+    /// with no image, or from a Cloud that predates sealed logins.
+    #[serde(default)]
+    #[ts(optional)]
+    pub image: Option<String>,
 }
 
 impl SealingService {
@@ -137,6 +143,10 @@ pub(crate) fn targets(
                     Ok(SealingService {
                         name: crate::scope::service_name(service)?,
                         service: Uuid::parse_str(&service.id).ok(),
+                        image: match &service.config.source {
+                            ServiceSource::Image { image, .. } => Some(image.clone()),
+                            ServiceSource::Empty { .. } | ServiceSource::Git { .. } => None,
+                        },
                     })
                 })
                 .collect::<Result<_, RpcError>>()?;

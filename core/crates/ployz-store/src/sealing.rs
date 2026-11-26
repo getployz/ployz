@@ -82,7 +82,9 @@ impl SealingKey {
         LessSafeKey::new(UnboundKey::new(&AES_256_GCM, &self.cipher).expect("a 32-byte key"))
     }
 
-    /// Seal `plaintext` under a fresh random IV.
+    /// Seal `plaintext` under a fresh random IV, as a Store sealed before secrets were
+    /// sealed on a person's device.
+    #[cfg(test)]
     pub(crate) fn seal(&self, plaintext: &str) -> EncryptedSecretValue {
         let mut iv = [0; NONCE_LEN];
         SystemRandom::new()

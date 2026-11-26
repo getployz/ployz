@@ -278,7 +278,7 @@ async fn run(
     events: Arc<Events>,
     cancellation: &CancellationToken,
 ) -> Result<Pushed, Error> {
-    let token = cancellation.clone();
+    let token = ployz_build::Cancellation::from(cancellation.clone());
     let building = Arc::clone(&events);
     let (build, built) = tokio::task::spawn_blocking(move || {
         let built = build.execute_local(&token, &|event| building.write(event));
@@ -295,7 +295,7 @@ async fn run(
     .await?;
     // The pushed image and its printed result are final; uploading cache only speeds up
     // the next Build, so its failure is a warning and it never reaches the events file.
-    let export = cancellation.clone();
+    let export = ployz_build::Cancellation::from(cancellation.clone());
     let exported = tokio::task::spawn_blocking(move || build.export_local_cache(&export))
         .await
         .map_err(std::io::Error::other)?;
@@ -319,7 +319,6 @@ impl Pushed {
     /// The Cloud runner's fixed result line, on stdout in every mode. A rule build adds
     /// its image token, which names the image and the attest key its secrets opened with.
     fn print(&self, image_token: Option<&ployz_core::GithubToken>) -> Result<(), Error> {
-        use std::io::Write as _;
         #[derive(serde::Serialize)]
         #[serde(rename_all = "camelCase")]
         struct Line<'a> {
@@ -335,11 +334,7 @@ impl Pushed {
             platforms: &self.platforms,
             image_token: image_token.map(ployz_core::GithubToken::as_str),
         };
-        writeln!(
-            crate::ui::stdout_bytes(),
-            "{}",
-            serde_json::to_string(&line).map_err(std::io::Error::other)?
-        )?;
+        crate::ui::Json::stdout().write(&line, false)?;
         Ok(())
     }
 }

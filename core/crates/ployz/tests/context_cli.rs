@@ -337,7 +337,7 @@ fn explicit_config_beats_environment_and_interactive_errors_do_not_mutate() {
     assert!(stderr.contains("needs a terminal"), "{stderr}");
     assert!(
         stderr.contains(&format!(
-            "retry: ployz ctx use --ployz-config {} CONTEXT",
+            "retry: ployz --ployz-config {} --why '<REASON>' ctx use '<CONTEXT>'",
             shell_words::quote(flag_path.to_str().unwrap())
         )),
         "{stderr}"
@@ -603,8 +603,10 @@ fn ctx_rm_of_an_unknown_name_fails_without_mutating() {
                 .unwrap();
             assert!(!output.status.success());
             let error = String::from_utf8_lossy(&output.stderr);
+            // A name that isn't a label shows as its placeholder.
+            let shown = if name == "gone" { "gone" } else { "<CONTEXT>" };
             assert!(
-                error.contains(&format!("context {} not found", name.escape_debug())),
+                error.contains(&format!("context {shown} not found")),
                 "{error}"
             );
             assert!(!error.trim().chars().any(char::is_control), "{error}");
@@ -1344,4 +1346,57 @@ fn context_config_status_accepts_a_zero_byte_config() {
     fs::write(&path, "").unwrap();
     let output = ployz_with(&path, &[])(&["status", "--json"]);
     assert!(output.status.success(), "{output:?}");
+}
+
+/// A connection given to `--connect` or `PLOYZ_CONNECT` never reaches the output with its
+/// secret: an error names the destination without its password, and help hides the
+/// variable's value, which may be a Management Capability.
+#[test]
+fn a_connections_secret_never_reaches_an_error_or_help() {
+    let home = tempfile::tempdir().unwrap();
+    let ployz = || {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_ployz"));
+        command
+            .env("HOME", home.path())
+            .env_remove("XDG_CONFIG_HOME")
+            .env("PLOYZ_CONFIG", home.path().join("config.yaml"))
+            .env_remove("PLOYZ_CONNECT")
+            .env_remove("PLOYZ_CONTEXT")
+            .env("NO_COLOR", "1");
+        command
+    };
+    for connection in [
+        "ssh://root:EXAMPLE@example.invalid",
+        "root:EXAMPLE@example.invalid",
+        "tcp://root:EXAMPLE@example.invalid",
+        "ssh+go://root:EXAMPLE@example.invalid",
+        "postgres://root:EXAMPLE@example.invalid",
+        "ssh://EXAMPLE@example.invalid",
+        "EXAMPLE@example.invalid",
+        "tcp://example.invalid:7/EXAMPLE?token=EXAMPLE#EXAMPLE",
+        "https://EXAMPLE@example.invalid/?token=EXAMPLE",
+    ] {
+        let refused = ployz()
+            .args([
+                "--why=test",
+                "--connect",
+                connection,
+                "logs",
+                "web",
+                "--json",
+            ])
+            .output()
+            .unwrap();
+        let said = String::from_utf8_lossy(&refused.stdout);
+        assert!(said.contains("example.invalid"), "{connection}: {said}");
+        assert!(!said.contains("EXAMPLE"), "{connection}: {said}");
+    }
+    let help = ployz()
+        .env("PLOYZ_CONNECT", "ployz1:EXAMPLE")
+        .args(["cloud", "reset", "--help"])
+        .output()
+        .unwrap();
+    let help = String::from_utf8_lossy(&help.stdout);
+    assert!(help.contains("PLOYZ_CONNECT"), "{help}");
+    assert!(!help.contains("EXAMPLE"), "{help}");
 }

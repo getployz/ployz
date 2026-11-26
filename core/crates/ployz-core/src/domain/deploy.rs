@@ -259,11 +259,11 @@ pub struct DeployIntent {
     pub options: PlanOptions,
     #[serde(default)]
     dependencies: BTreeMap<ServiceName, Vec<ServiceDependency>>,
-    /// Credentials each Service's private image is pulled with. They reach only the
-    /// Machine creating that Service's containers, never a Deploy Preview.
+    /// The sealed login each Service's private image is pulled with. Each reaches only
+    /// the Machines pulling that Service's image, never a Deploy Preview.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    #[ts(as = "Option<BTreeMap<ServiceName, RegistryAuth>>", optional)]
-    pub registry_auth: BTreeMap<ServiceName, RegistryAuth>,
+    #[ts(as = "Option<BTreeMap<ServiceName, crate::SealedLogin>>", optional)]
+    pub registry_logins: BTreeMap<ServiceName, crate::SealedLogin>,
     /// The authored name of each Volume whose Docker name does not carry it, such as a
     /// Cloud Volume named by its ID. Messages name a Volume by it.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -322,7 +322,7 @@ impl DeployIntent {
             target,
             options,
             dependencies: BTreeMap::new(),
-            registry_auth: BTreeMap::new(),
+            registry_logins: BTreeMap::new(),
             volume_names: BTreeMap::new(),
             deployed_volumes: BTreeSet::new(),
             first_copies: BTreeMap::new(),
@@ -722,15 +722,16 @@ pub enum StopContainerPurpose {
     FreeHostPorts,
 }
 
-/// Why a Deploy removes a Container.
+/// Why a Deploy removes a Container. What happens to its anonymous Volumes is the
+/// removal's [`crate::AnonymousVolumes`], never this.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum RemoveContainerPurpose {
-    /// Roll a Service out: its anonymous Volumes go with the Container.
+    /// Roll a Service out: it keeps serving from its other copies, so the copy leaves
+    /// routing only beside another In copy.
     #[default]
     Rollout,
-    /// Retire a Service the Deploy removes: its anonymous Volumes stay, since deleting
-    /// data is a Volume decision.
+    /// Retire a Service the Deploy removes: the copy may be its last.
     Retire,
 }
 
@@ -769,6 +770,11 @@ pub enum DeployOperation {
         container_id: ContainerId,
         #[serde(default)]
         purpose: RemoveContainerPurpose,
+        /// What the removal asks for the Container's anonymous Volumes, which the plan
+        /// decides from the copies it keeps ([`crate::AnonymousVolumes::of`]).
+        #[serde(flatten)]
+        #[ts(flatten)]
+        anonymous_volumes: crate::AnonymousVolumes,
     },
     /// Replace `old_container_id` with a new container from the replacement spec.
     ReplaceContainer(ReplacementOperation),

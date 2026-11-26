@@ -117,7 +117,7 @@ pub enum RuleDraftError {
     Disconnected(ServiceName),
     #[error(
         "A rule deploys one branch, and {service} builds from {repository} at {branch}, not \
-         {first_repository} at {first_branch}. Approve a rule for each."
+         {first_repository} at {first_branch}. Pick one branch for automatic deploys."
     )]
     TwoBranches {
         service: ServiceName,

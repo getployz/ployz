@@ -961,7 +961,7 @@ pub(crate) async fn retire_old<C: MachineOperations>(
         client,
         old,
         EmptyPolicy::RequireOtherIn,
-        AnonymousVolumes::Remove,
+        AnonymousVolumes::keep(),
         cancellation,
     )
     .await;
@@ -1646,6 +1646,7 @@ mod tests {
             run: None,
             log_driver: None,
             admission: None,
+            replaced_by: None,
         })
         .unwrap()
     }

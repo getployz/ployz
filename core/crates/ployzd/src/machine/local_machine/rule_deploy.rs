@@ -57,7 +57,7 @@ impl RuleDeployRefusal {
                 | AuthorityRefusal::UnknownKey { .. }
                 | AuthorityRefusal::UnknownPasskey
                 | AuthorityRefusal::Forgotten { .. },
-            ) => Some("ployz github rule approve from an approved device"),
+            ) => Some("Approve again under Automatic deploys in Ployz Cloud"),
             Self::Rule(_) | Self::Proof(_) | Self::Head(_) => None,
         }
     }
@@ -381,13 +381,13 @@ fn refusal_text(refusal: &AuthorityRefusal) -> String {
             None => return format!("This server refused the automatic deploy rule: {refusal}."),
         },
         AuthorityRefusal::RetiredBuilder { .. } => {
-            "This automatic deploy rule pins a builder Ployz no longer trusts. Approve the rule again to pin the current builder."
+            "This automatic deploy rule pins a builder Ployz no longer trusts. Approve again under Automatic deploys."
         }
         AuthorityRefusal::UnknownKey { .. } | AuthorityRefusal::UnknownPasskey => {
             "This server doesn't trust the device that approved the automatic deploy rule."
         }
         AuthorityRefusal::Forgotten { .. } => {
-            "This service's older versions were forgotten after the automatic deploy rule was approved. Approve the rule again. Until then it doesn't deploy this service, and Cloud can't move or drain what it built."
+            "This service's older versions were forgotten after the automatic deploy rule was approved. Approve again under Automatic deploys. Until then it doesn't deploy this service, and Cloud can't move or drain what it built."
         }
         AuthorityRefusal::Malformed { .. }
         | AuthorityRefusal::BadSignature { .. }

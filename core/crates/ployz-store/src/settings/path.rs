@@ -14,6 +14,31 @@ use crate::id::{ConfigRef, VolumeName};
 use crate::policy::PolicySetting;
 use crate::variables::VariableKey;
 
+/// A value a Setting's type validated, which [`SettingPath::plain_value`] alone makes:
+/// text as it was typed, or the JSON it was given.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlainValue(serde_json::Value);
+
+impl PlainValue {
+    #[must_use]
+    pub fn as_json(&self) -> &serde_json::Value {
+        &self.0
+    }
+}
+
+impl fmt::Display for PlainValue {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.0 {
+            serde_json::Value::String(text) => formatter.write_str(text),
+            value @ (serde_json::Value::Null
+            | serde_json::Value::Bool(_)
+            | serde_json::Value::Number(_)
+            | serde_json::Value::Array(_)
+            | serde_json::Value::Object(_)) => value.fmt(formatter),
+        }
+    }
+}
+
 /// A node of an Environment: `SERVICE` for a Service, `volumes.VOLUME` for a
 /// Volume, `configs.CONFIG` for a Config by name or `configs.@UUID` by identity.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
@@ -376,6 +401,20 @@ impl SettingPath {
         }
     }
 
+    /// `value`, set here, as output may repeat it: when this Setting's type is a number, a
+    /// switch, a choice, a name or an image, and `value` validates as that type the way
+    /// `set` checks it. None for any other Setting, whose text may hold a secret, and for a
+    /// value its type refuses.
+    #[must_use]
+    pub fn plain_value(&self, value: &serde_json::Value) -> Option<PlainValue> {
+        let Addressed::Service(_, Some(Target::Setting(setting))) = &self.0 else {
+            return None;
+        };
+        setting
+            .plain(value.clone())
+            .then(|| PlainValue(value.clone()))
+    }
+
     /// Whether it is a Service's Preferred Builder, `SERVICE.preferredBuilder`.
     #[must_use]
     pub const fn is_preferred_builder(&self) -> bool {
@@ -415,6 +454,12 @@ impl SettingPath {
             Addressed::Service(_, target) => target.as_ref(),
             Addressed::Volume(..) | Addressed::Config(..) | Addressed::Environment(_) => None,
         }
+    }
+
+    /// Whether it addresses a Service's registry login, `SERVICE.registryCredential`.
+    #[must_use]
+    pub fn names_registry_login(&self) -> bool {
+        self.target() == Some(&Target::Setting(ServiceSetting::RegistryCredential))
     }
 
     /// The path of `service` as a whole.

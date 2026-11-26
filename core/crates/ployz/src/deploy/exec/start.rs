@@ -36,7 +36,7 @@ pub(super) async fn discard_new<C: MachineOperations>(
         machine_id,
         ContainerLocator::Id(container_id),
         Drain::NONE,
-        AnonymousVolumes::Remove,
+        AnonymousVolumes::keep(),
         None,
     )
     .await;
@@ -64,7 +64,7 @@ pub(super) async fn discard_new<C: MachineOperations>(
                 client,
                 &copy,
                 EmptyPolicy::MayEmpty,
-                AnonymousVolumes::Remove,
+                AnonymousVolumes::keep(),
                 cancellation,
             )
             .await
@@ -118,7 +118,7 @@ pub(super) async fn remove_stray<C: MachineOperations>(
             machine_id,
             ContainerLocator::Id(container_id),
             Drain::NONE,
-            AnonymousVolumes::Remove,
+            AnonymousVolumes::keep(),
             Some(RESTART_WAIT),
         ),
     );
@@ -253,10 +253,13 @@ pub(crate) async fn move_container<C: MachineOperations>(
             resolved_spec: spec.clone(),
             deployment_id: deploy.clone(),
             registry_auth: None,
+            registry_login: None,
             image_prepared: true,
             answer: AnswerWhen::Settled,
             image_id: (!ployz_core::authority::deploy::content_addressed(&spec.container.image))
                 .then(|| image.clone()),
+            // A move's copy lands on another Machine, so it takes no copy's place there.
+            replaces: None,
         }),
         rotation: RunRotation::Pending,
     };
@@ -336,7 +339,7 @@ async fn emptied<C: CopyLifecycle>(
     let want = ContainerWant::Gone {
         container: ContainerLocator::Key(slot),
         drain: Drain::NONE,
-        anonymous_volumes: AnonymousVolumes::Remove,
+        anonymous_volumes: AnonymousVolumes::keep(),
     };
     let gone = client.ensure_unsettled(machine_id, want, Some(RESTART_WAIT));
     match tokio::time::timeout(RESTART_WAIT, gone).await {
@@ -355,6 +358,52 @@ async fn emptied<C: CopyLifecycle>(
 pub(super) enum FailedStart {
     Discard,
     Retain,
+}
+
+/// Who made the Container a start answered with.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Origin {
+    /// This run made it, so undoing the start removes it.
+    Made,
+    /// A Global start found a running Container of its spec in the slot, or could not
+    /// rule one out, and took it over. It may predate this run, so undoing the start
+    /// leaves it.
+    Adopted,
+}
+
+/// A Container a start answered with.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct NewCopy {
+    pub(super) container_id: ContainerId,
+    pub(super) origin: Origin,
+}
+
+impl NewCopy {
+    /// Its id when this run made it, so undoing the start removes it.
+    pub(super) fn made(self) -> Option<ContainerId> {
+        (self.origin == Origin::Made).then_some(self.container_id)
+    }
+}
+
+/// A start that failed with `error`.
+#[derive(Clone, Debug)]
+pub(super) struct Unstarted {
+    pub(super) error: ExecutionError,
+    origin: Origin,
+}
+
+impl Unstarted {
+    /// The copy that failed its health and still runs, which the start leaves to its
+    /// Service's cleanup.
+    pub(super) fn unhealthy(&self) -> Option<NewCopy> {
+        let ExecutionError::Health { container_id, .. } = &self.error else {
+            return None;
+        };
+        Some(NewCopy {
+            container_id: *container_id,
+            origin: self.origin,
+        })
+    }
 }
 
 /// One creation of a Container: the client that sends it, the row that shows it
@@ -394,13 +443,15 @@ pub(super) struct SlotRun<'a> {
     pub(super) deploy: Option<&'a DeploymentLogId>,
     pub(super) r#gen: Gen,
     pub(super) answer: AnswerWhen,
+    /// The copy on the same Machine the new Container takes the place of.
+    pub(super) replaces: Option<ContainerId>,
 }
 
 pub(super) async fn start<C: MachineOperations>(
     attempt: &Attempt<'_, C>,
     run: SlotRun<'_>,
     failed: FailedStart,
-) -> Result<ContainerId, ExecutionError> {
+) -> Result<NewCopy, Unstarted> {
     let Attempt {
         client,
         cancellation,
@@ -428,7 +479,17 @@ pub(super) async fn start<C: MachineOperations>(
             "couldn't remove a failed start's Container"
         );
     }
+    let origin = if adopts {
+        Origin::Adopted
+    } else {
+        Origin::Made
+    };
     started_container(started, spec, cancellation)
+        .map(|container_id| NewCopy {
+            container_id,
+            origin,
+        })
+        .map_err(|error| Unstarted { error, origin })
 }
 
 /// A Global start adopts a running Container of its spec, which a cancel must keep.
@@ -457,7 +518,7 @@ pub(super) async fn discard_attempt<C: MachineOperations>(
         ContainerWant::Gone {
             container: ContainerLocator::Key(slot),
             drain: Drain::NONE,
-            anonymous_volumes: AnonymousVolumes::Remove,
+            anonymous_volumes: AnonymousVolumes::keep(),
         },
     );
     within_restart(machine_id, discarded).await.map(|_| ())
@@ -492,6 +553,7 @@ pub(super) async fn run_new<C: MachineOperations>(
         deploy,
         r#gen,
         answer,
+        replaces,
     } = run;
     attempt.running(OperationPhase::CreatingContainer);
     let want = ContainerWant::Running {
@@ -501,9 +563,11 @@ pub(super) async fn run_new<C: MachineOperations>(
             resolved_spec: spec.clone(),
             deployment_id: deploy.cloned(),
             registry_auth: None,
+            registry_login: None,
             image_prepared: true,
             answer,
             image_id: None,
+            replaces,
         }),
         rotation: RunRotation::Pending,
     };

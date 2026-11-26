@@ -931,6 +931,7 @@ impl Fleet {
                             role: Some(SlotRole::Mirror),
                             pull_state: None,
                             origin: None,
+                            written_here: false,
                         },
                         CopyRole::Writer | CopyRole::Switching => VolumeCopy::Root {
                             readonly: false,
@@ -939,9 +940,10 @@ impl Fleet {
                             seed: false,
                             mark: None,
                             origin: None,
+                            placed: None,
                         },
                     });
-                unary(VolumeCopyView { copy }.into())
+                unary(VolumeCopyView::of(copy).into())
             }
             RpcRequestBody::RequestMachineUpgrade(request) => {
                 let machine = self.by_id_mut(target)?;
@@ -1349,6 +1351,7 @@ impl MachineState {
             run: None,
             log_driver: None,
             admission: None,
+            replaced_by: None,
         })
         .map_err(internal)
     }

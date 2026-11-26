@@ -111,6 +111,16 @@ fix Docker and run the command again. Or uninstall Docker, and Ployz installs a 
   `sudo systemctl restart docker`. Images you pulled before switching don't carry over, so pull
   them again.
 
+- `Docker's live-restore is off, so your Services stay stopped if Docker crashes. Add "live-restore": true to /etc/docker/daemon.json and run sudo systemctl reload docker (containers keep running), then run this again. If this Server runs Docker swarm mode, leave swarm first: Docker won't start with both on. Or uninstall Docker and run this again.`
+
+  Add `"live-restore": true` to `/etc/docker/daemon.json` and run `sudo systemctl reload docker`.
+  A reload keeps running containers up. Check it took with
+  `docker info -f '{{.LiveRestoreEnabled}}'`, which prints `true`. Older Docker refuses
+  live-restore while swarm mode is on, so leave swarm first.
+
+  A server that joined before this check can have live-restore off too. Run the same
+  `docker info` command on it, and turn live-restore on the same way if it prints `false`.
+
 ## See what Ployz reads from a server
 
 Once Ployz is installed, this prints what it reads from the server and what would stop it, without
@@ -959,6 +969,11 @@ sudo docker system df
   change them. A container started before your server ran this release keeps its old settings
   until its next deploy.
 - **Plain Docker volumes** have no size limit, and `docker system df` above counts them.
+- **Volumes kept from removed containers.** When a drain, a lower replica count or deleting a
+  service removes a container whose image made its own volume, like `postgres`, the server keeps
+  that volume and its data. `ployz server volumes <server>` lists them with their sizes, and
+  `ployz server volumes <server> prune` deletes the ones no container uses after asking. See
+  [Delete the volumes a server kept](../services/services.md#delete-the-volumes-a-server-kept).
 - **Kept metrics.** Ployz keeps the server's metrics in `ployz-observe` under Docker's directory.
   `docker system df` doesn't count them; `sudo du -sh /var/lib/docker/ployz-observe` does. They're
   capped at 5% of the disk, kept between 512 MB and 5 GB. When free space drops below 10% of the

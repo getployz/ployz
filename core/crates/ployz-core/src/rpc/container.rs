@@ -96,7 +96,8 @@ pub enum ContainerWant {
     Gone {
         container: ContainerLocator,
         drain: crate::Drain,
-        #[serde(default)]
+        #[serde(flatten)]
+        #[ts(flatten)]
         anonymous_volumes: AnonymousVolumes,
     },
     /// Take the copy out of routing for good. The Container keeps running.
@@ -132,22 +133,78 @@ pub enum RunRotation {
     },
 }
 
-/// What `Gone` does with the Container's anonymous Volumes.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
+/// What `Gone` asks for the Container's anonymous Volumes: keep them, or remove them
+/// relying on one named copy. Outside the wire, only [`Self::keep`] and [`Self::of`] make one, so no caller
+/// asks to remove them without naming the copy that took the Container's place.
+///
+/// A Machine advertising [`crate::CONTAINER_REPLACES_CAPABILITY`] removes them only when
+/// its own record says it made the named copy to replace this Container
+/// ([`NewContainer::replaces`]), and that copy runs, In or Held, with no stop taking it
+/// out. It keeps them for anything else, a `ployz.container.ensure.v1` caller's bare
+/// remove included. An older Machine removes them whenever asked, so it is only ever
+/// asked to keep them: no older Machine reports the record [`Self::of`] needs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct AnonymousVolumes {
+    /// Frozen with `ployz.container.ensure.v1`, whose `Gone` without it removes them.
+    #[serde(rename = "anonymous_volumes", default = "Disposal::when_omitted")]
+    #[ts(optional, as = "Option<Disposal>", inline)]
+    disposal: Disposal,
+    /// The copy the removal relies on, under [`crate::CONTAINER_REPLACES_CAPABILITY`].
+    /// An older Machine ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    replaced_by: Option<ContainerId>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
-pub enum AnonymousVolumes {
+enum Disposal {
     /// They go with the Container.
-    #[default]
     Remove,
     /// They stay, since deleting data is a Volume decision.
     Keep,
 }
 
-impl From<crate::RemoveContainerPurpose> for AnonymousVolumes {
-    fn from(purpose: crate::RemoveContainerPurpose) -> Self {
-        match purpose {
-            crate::RemoveContainerPurpose::Rollout => Self::Remove,
-            crate::RemoveContainerPurpose::Retire => Self::Keep,
+impl Disposal {
+    fn when_omitted() -> Self {
+        Self::Remove
+    }
+}
+
+impl AnonymousVolumes {
+    /// Keep them.
+    #[must_use]
+    pub const fn keep() -> Self {
+        Self {
+            disposal: Disposal::Keep,
+            replaced_by: None,
+        }
+    }
+
+    /// What removing `old` asks for its anonymous Volumes, when the caller keeps each copy
+    /// `kept` accepts. It asks to remove them only when `old`'s Machine reports the copy it
+    /// made to take `old`'s place ([`crate::ContainerObservationParts::replaced_by`]) and
+    /// the caller keeps that copy, and names it. Only a Machine advertising
+    /// [`crate::CONTAINER_REPLACES_CAPABILITY`] reports one. Otherwise it asks to keep them.
+    #[must_use]
+    pub fn of(old: &ContainerObservation, kept: impl FnOnce(&ContainerId) -> bool) -> Self {
+        match old.replaced_by {
+            Some(replacement) if kept(&replacement) => Self {
+                disposal: Disposal::Remove,
+                replaced_by: Some(replacement),
+            },
+            _ => Self::keep(),
+        }
+    }
+
+    /// The copy a removal of them relies on. `None` when the ask keeps them, or removes
+    /// them naming no copy, as only a caller before
+    /// [`crate::CONTAINER_REPLACES_CAPABILITY`] asks.
+    #[must_use]
+    pub fn replaced_by(self) -> Option<ContainerId> {
+        match self.disposal {
+            Disposal::Remove => self.replaced_by,
+            Disposal::Keep => None,
         }
     }
 }
@@ -172,6 +229,9 @@ pub struct NewContainer {
     /// Credentials for pulling the image; used for this pull only, never stored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub registry_auth: Option<crate::RegistryAuth>,
+    /// A login sealed for the image's registry; opened for this pull only, never stored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry_login: Option<crate::SealedLogin>,
     /// A `PullImage` already placed the image, so creation uses it without pulling.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub image_prepared: bool,
@@ -183,6 +243,16 @@ pub struct NewContainer {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub image_id: Option<crate::ImageDigest>,
+    /// The copy on this Machine the new Container takes the place of. The Machine records
+    /// that claim at create, and only for a Container of the same Service and kind that it
+    /// routes, In or Held, and that no other Container claimed, and reports it on that copy
+    /// ([`crate::ContainerObservationParts::replaced_by`]). A `Gone` of that copy that names
+    /// the new Container ([`AnonymousVolumes::of`]) may take its anonymous Volumes while the
+    /// new Container runs, In or Held, and no stop is taking it out. A resend that reuses
+    /// the Container keeps the first create's record. An older Machine ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub replaces: Option<crate::ContainerId>,
 }
 
 /// When the Machine answers a new creation: once it starts, or once its health settles.

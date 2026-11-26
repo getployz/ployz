@@ -12,15 +12,15 @@ use super::super::deploy;
 use super::super::store::{self, named_environment, project, store};
 use super::super::{Error, leaf_matches};
 use super::branch::setups;
-use crate::handlers::shared::accepted::{accepted, take_off, unfinished, with_accepted};
+use crate::handlers::shared::accepted::{accepted, take_off, unfinished};
 
 /// Take an Environment off the Servers and keep everything else of it.
 pub(crate) fn shutdown(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let (name, at) = named_environment(matches, "name")?;
-    let store = store(root)?.args([name.as_str()]);
+    let store = store(root)?;
     let accept = accepted(matches)?;
-    let again = store.again(&with_accepted(&accept));
+    let again = store.again();
     let events = deploy::open_events(matches)?;
     let version = matches.get_one::<String>("expect-version").cloned();
     let (view, ran) = take_off(matches, &store, &at, (&accept, version), events)?;
@@ -58,8 +58,7 @@ pub(crate) fn pr(root: &ArgMatches) -> Result<(), Error> {
         .transpose()?;
     let remove_on_close = matches.get_one::<bool>("remove-on-close").copied();
     let include_bots = matches.get_one::<bool>("bots").copied();
-    let retried = pr_args(matches);
-    let store = store(root)?.args(retried.iter().map(String::as_str));
+    let store = store(root)?;
     let query = PrPlansQuery {
         project: project.clone(),
     };
@@ -147,31 +146,6 @@ pub(crate) fn pr(root: &ArgMatches) -> Result<(), Error> {
         ]);
     }
     crate::ui::list(&json, &table)
-}
-
-/// The repository and plan flags as typed, which an approval's retry repeats.
-fn pr_args(matches: &ArgMatches) -> Vec<String> {
-    let mut args: Vec<String> = matches
-        .get_one::<String>("repository")
-        .cloned()
-        .into_iter()
-        .collect();
-    for flag in ["on", "off"] {
-        if matches.get_flag(flag) {
-            args.push(format!("--{flag}"));
-        }
-    }
-    for flag in ["from", "copy", "setup"] {
-        for value in matches.get_many::<String>(flag).into_iter().flatten() {
-            args.extend([format!("--{flag}"), value.clone()]);
-        }
-    }
-    for flag in ["remove-on-close", "bots"] {
-        if let Some(value) = matches.get_one::<bool>(flag) {
-            args.extend([format!("--{flag}"), value.to_string()]);
-        }
-    }
-    args
 }
 
 /// Let a pull request's current head deploy: only that head, so a push waits again.

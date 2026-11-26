@@ -48,6 +48,7 @@ const ELIGIBLE: &str = r#"{
         "buildx": "v0.37.1",
         "containerd_store": true,
         "error": null,
+        "live_restore": true,
         "version": "29.1.0"
       }
     },
@@ -169,6 +170,7 @@ fn a_document_reads_back_what_was_written() {
                 api: "1.53".into(),
                 buildx: None,
                 containerd_store: Some(false),
+                live_restore: None,
                 error: Some("docker buildx version failed".into()),
             },
             zpool_present: Some(true),
@@ -224,6 +226,29 @@ fn a_blocker_code_keeps_the_text_of_one_this_release_does_not_name() {
         json!("kernel_too_old")
     );
     assert!(serde_json::from_value::<BlockerCode>(json!(5)).is_err());
+}
+
+/// A ployzd from before live-restore was read leaves it out, which claims nothing.
+#[test]
+fn an_older_docker_reading_has_no_live_restore() {
+    let docker: DockerFacts = serde_json::from_value(json!({"Present": {
+        "version": "29.1.0",
+        "api": "1.53",
+        "buildx": "v0.37.1",
+        "containerd_store": true,
+        "error": null,
+    }}))
+    .unwrap();
+    assert!(
+        matches!(
+            docker,
+            DockerFacts::Present {
+                live_restore: None,
+                ..
+            }
+        ),
+        "{docker:?}"
+    );
 }
 
 /// An older ployzd's document lacks fields this release's type carries; each reads as its default.

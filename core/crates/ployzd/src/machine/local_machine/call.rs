@@ -5,7 +5,8 @@
 //! [`Checked`] handle, which an admission turn or the switch makes by checking the claim
 //! against the keys as they stand while it holds a lock every key change takes. A read,
 //! and an admission that [`super::AdmittedSpec::still_holds`] checks again before Docker
-//! acts, asks [`LocalMachine::scope_now`].
+//! acts, asks [`LocalMachine::scope_now`]. Work that outlives its call binds to its key
+//! through [`LocalMachine::bind_full`], and ends with that key's Full scope.
 
 use ployz_core::{ClientKey, ManagementScope};
 
@@ -96,12 +97,6 @@ impl FullCaller {
     pub(crate) fn cloud_routed(self) -> bool {
         self.0.cloud_routed
     }
-
-    /// The daemon's own Full access, for a test that has no Machine to ask.
-    #[cfg(test)]
-    pub(crate) fn for_test() -> Self {
-        Self(Call::daemon())
-    }
 }
 
 /// This Machine serving its call at the scope its caller held when a lock every key change
@@ -183,13 +178,6 @@ impl LocalMachine {
             ..self.call
         }
         .scope())
-    }
-
-    /// The call this Machine serves at Full access as the keys stand now, or `None` for
-    /// an Operator's or a removed caller's. Bound to no lock, as [`Self::scope_now`] is.
-    #[must_use]
-    pub fn full_now(&self) -> Option<FullCaller> {
-        self.scope_now().ok()?.full().ok()
     }
 
     /// This Machine serving its call at the scope the caller holds now, checked while

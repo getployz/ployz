@@ -493,7 +493,7 @@ mod tests {
                     "INSERT INTO config_deployment \
                      (id, organization_id, environment_id, number, status, saved_revision, services, \
                       nodes, namespace, run, credentials, admitted, listed) \
-                     VALUES (?1, ?2, ?3, 1, 'applied', 1, '[]', '[]', 'shop', '{}', '[]', 0, 0)",
+                     VALUES (?1, ?2, ?3, 1, 'applied', 1, '[]', '[]', 'shop', '{}', '{}', 0, 0)",
                     &[
                         uuid(4).as_str().into(),
                         ORGANIZATION.into(),

@@ -148,7 +148,8 @@ separate OAuth App, a sign-in token only reads the person's profile and email ad
 > [!WARNING]
 > Keep `APP_ENCRYPTION_SECRET` the same forever, and back it up with the Postgres volume
 > `ployz-cloud-self-host_postgres-data`. It encrypts the credentials Ployz Cloud stores, such as
-> registry credentials and domain tokens, so a new value makes them unreadable. Secret
+> domain tokens, so a new value makes them unreadable. Registry credentials are sealed on your
+> device and don't use it. Secret
 > variables saved on v0.3.4 or earlier are encrypted with it too, until the upgrade reseals them.
 > Variables saved after that are sealed on your device and don't use it.
 
@@ -220,6 +221,11 @@ The CLI signs in to ployz.dev unless you point it at yours:
 ```sh
 ployz login --cloud-url https://cloud.example.com
 ```
+
+Name the Cloud alone: you sign in on its approval page. `ployz login`, `ployz server add` and
+`ployz server checkin` refuse a Cloud URL with a user name, a password, a query or a fragment,
+from `--cloud-url` or `PLOYZ_CLOUD_URL`, before they store or send anything, since Ployz would
+store the URL and print it.
 
 In CI, set `PLOYZ_CLOUD_URL` next to `PLOYZ_TOKEN`; see
 [Make an organization token](cli/overview.md#make-an-organization-token).

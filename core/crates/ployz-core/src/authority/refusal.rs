@@ -43,7 +43,7 @@ pub enum AuthorityRefusal {
     #[error("the approval names {field} this request does not match")]
     Mismatch { field: MismatchField },
     #[error(
-        "the rule pins getployz/build {sha}, which installs a ployz no Ployz release built; approve the rule again to pin the current builder"
+        "the rule pins getployz/build {sha}, which installs a ployz no Ployz release built; approve again under Automatic deploys"
     )]
     RetiredBuilder { sha: String },
     #[error("the approval expired")]
@@ -389,7 +389,7 @@ impl MismatchField {
     pub const fn rule_deploy_refusal(self) -> Option<&'static str> {
         Some(match self {
             Self::Payload => {
-                "This service's settings differ from what the automatic deploy rule approves. Approve the rule again."
+                "This service's settings differ from what the automatic deploy rule approves. Approve again under Automatic deploys."
             }
             Self::Image => {
                 "This server runs only the image GitHub built for this commit under the rule."
@@ -409,7 +409,7 @@ impl MismatchField {
             Self::EndedRule => "Automatic deploys for this environment are off.",
             Self::Service => "The automatic deploy rule doesn't cover this service.",
             Self::Machine => {
-                "The automatic deploy rule was approved before this server joined. Approve it again."
+                "The automatic deploy rule was approved before this server joined. Approve again under Automatic deploys."
             }
             Self::Environment => "The automatic deploy rule is for another environment.",
             Self::Cluster => "The automatic deploy rule is for another cluster.",
@@ -419,7 +419,7 @@ impl MismatchField {
                 "Each of a preview's domains names the preview, so no two previews share one."
             }
             Self::Signer | Self::Passkey => {
-                "An automatic deploy rule needs your passkey or an approved device. Approve it again."
+                "An automatic deploy rule needs your passkey or an approved device. Approve again under Automatic deploys."
             }
             Self::SigningTime => {
                 "The automatic deploy rule was approved more than 10 minutes ahead of this server's clock. Check the clock of the device that approved it, and this server's."

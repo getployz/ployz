@@ -25,10 +25,9 @@ pub struct Surroundings {
 impl Surroundings {
     #[must_use]
     pub fn of_process(json: bool) -> Self {
-        use std::io::IsTerminal as _;
         Self {
             json,
-            stderr_is_terminal: std::io::stderr().is_terminal(),
+            stderr_is_terminal: super::stream::stderr_is_terminal(),
             term_is_dumb: std::env::var_os("TERM").is_some_and(|term| term == "dumb"),
             ci: std::env::var_os("CI").is_some(),
         }

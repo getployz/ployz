@@ -162,8 +162,8 @@ impl Client {
             .map_err(rpc_to_napi)
     }
 
-    /// Remove Container `container` from `machine` with its anonymous Volumes, keeping its
-    /// named Volumes. A Container the Machine no longer has answers Ok.
+    /// Remove Container `container` from `machine`, keeping its anonymous and named
+    /// Volumes. A Container the Machine no longer has answers Ok.
     ///
     /// # Errors
     /// Returns the Machine's refusal, or the transport's error when it did not answer. A

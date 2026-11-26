@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { createHash } from "node:crypto";
-import type { Change, ConfigTrusted, DeploymentStatus, DestructiveEffect, DiffView, EnvironmentRef, PostedVersion, ServerRef, ServiceVerb } from "@ployz/sdk";
+import type { Change, ConfigTrusted, DeploymentStatus, DestructiveEffect, DiffView, EnvironmentRef, PostedVersion, SavedRule, ServerRef, ServiceVerb } from "@ployz/sdk";
 import { and, desc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import { Effect, Option, Schema } from "effect";
 import { canonicalJson, projectJsonValue } from "#/lib/json";
@@ -12,8 +12,9 @@ import { protector } from "#/modules/config-store/protected.server";
 import { OWNER_OR_ADMIN } from "#/modules/operations/gate.server";
 import { withoutSealedBefore } from "#/modules/config-store/store-diff";
 import { environmentProtected, findService } from "#/modules/config-store/store-lookup.server";
-import { isPending, moved, namesReview, underRule, versionService } from "#/modules/deploy-approval/deploy-tap";
+import { admission, isPending, moved, namesReview, versionService } from "#/modules/deploy-approval/deploy-tap";
 import { prepareDeployTap } from "#/modules/deploy-approval/deploy-tap.server";
+import { sourceServices } from "#/modules/deploy-approval/signed-source.server";
 import { refusal, refused, type StoreRefusal } from "#/lib/refusal";
 import { oauthCaller } from "#/modules/identity/caller.server";
 import { oauthConsent } from "#/modules/identity/oauth-tables";
@@ -404,7 +405,7 @@ const halted = Effect.fn("Proposals.halted")(function* (row: ProposalRow, index:
 /** The request key that admits step `index` once: a second run of the same step replays the first. */
 const stepKey = (row: Pick<ProposalRow, "id">, index: number) => `proposal-${row.id}-${index}`;
 
-/** `command` without an automatic deploy rule, which no approval page shows, so no proposal admits one. */
+/** `command` without its automatic deploy rule: only the approver's tap signs one, and a denied Deploy keeps none. */
 const ruleless = ({ rule: _rule, ...command }: AdmitDeploy): AdmitDeploy => command;
 
 /** A Deploy that can't go is denied, and the passkey's signed versions are dropped with it: nothing is left to admit later. */
@@ -602,8 +603,13 @@ export const sweepProposals = Effect.fn("Proposals.sweep")(function* () {
   return rows.map((row) => row.id);
 });
 
-/** `versions` are what the decider's passkey signed for a Deploy that Servers run only signed. */
-export type ProposalDecision = { readonly approve: { readonly versions?: readonly PostedVersion[] } } | { readonly reject: { readonly reason?: string } };
+/**
+ * `versions` are what the decider's passkey signed for a Deploy that Servers run only signed, and `rule` the automatic
+ * deploy rule the same tap signed as its Source step, for the Services that build from source with no rule that covers them.
+ */
+export type ProposalDecision =
+  | { readonly approve: { readonly versions?: readonly PostedVersion[]; readonly rule?: SavedRule } }
+  | { readonly reject: { readonly reason?: string } };
 
 type Decider = Actor & { readonly organization: { readonly id: string; readonly slug: string } };
 
@@ -613,28 +619,30 @@ const settled = (row: ProposalRow): Decided =>
   ({ ok: false, message: row.status === "draft" ? "The agent hasn't presented this proposal yet." : `This proposal was already decided elsewhere (${row.status}).` });
 
 /**
- * A Deploy step as `decider` may approve it: the stored command with the versions their passkey signed, or why not. It
- * re-plans first: a plan that moved denies the proposal, one that needs a passkey answer takes no approval without it,
- * and a Pending value waits for the approval page to fill it.
+ * A Deploy step as `decider` may approve it: the stored command with the versions and rule their passkey signed, or why
+ * not. It re-plans first: a plan that moved denies the proposal, a Pending value waits for the approval page to fill it,
+ * and the rest is the link's own check, `admission`, run again on the fresh plan with what the passkey signed.
  */
-const approvedDeploy = Effect.fn("Proposals.approvedDeploy")(function* (decider: Decider, row: ProposalRow, step: DeployStep, versions: readonly PostedVersion[]) {
+const approvedDeploy = Effect.fn("Proposals.approvedDeploy")(function* (decider: Decider, row: ProposalRow, step: DeployStep, versions: readonly PostedVersion[], rule: SavedRule | undefined) {
   const { command } = step.deploy;
   const refuse = (message: string) => ({ message }) as const;
   const access = yield* requireAccessById({ userId: decider.userId }, row.organizationId, "changes:deploy");
   const isProtected = yield* environmentProtected(row.organizationId, row.project, row.environmentId).pipe(Effect.catchTag("StoreRefused", () => Effect.succeed(true)));
   if (isProtected && (access.kind !== "member" || !protector(access))) return refuse("Only an owner or admin can approve a deploy to a Protected Environment.");
-  const planned = yield* prepareDeployTap(decider, { organizationSlug: decider.organization.slug, environment: command.environment, services: command.services ?? [], classify: true });
+  const planned = yield* prepareDeployTap(decider, { organizationSlug: decider.organization.slug, environment: command.environment, services: command.services ?? [], classify: true, rule: true });
   if (planned.kind === "refused") return refuse(isPending(planned.details) ? "A password has no value yet. Approve this deploy on its approval page." : planned.message);
   if (step.deploy.review === undefined) return refuse("Approve this deploy on its approval page.");
   if (command.version !== null && command.version !== undefined && !namesReview(planned.plan.version, command.version)) return { moved: true } as const;
   // The asker's own versions still count: the decider signs only the Services those leave open.
   const signed = new Set(versions.map(versionService));
   const kept = (command.versions ?? []).filter((version) => !signed.has(versionService(version)));
-  const covered = new Set([...kept, ...versions].map(versionService));
-  const open = (planned.plan.unsigned ?? []).filter((entry) => !covered.has(entry.service) && !underRule(entry));
-  if (open.length > 0 && planned.tap.kind === "refused") return refuse(planned.tap.message);
-  if (open.length > 0 && planned.tap.kind === "ready") return refuse("Sign this deploy with your passkey on its approval page.");
-  return { step: { ...step, deploy: { ...step.deploy, command: { ...ruleless(command), versions: [...kept, ...versions] } } } satisfies DeployStep };
+  const admits = admission({
+    plan: planned.plan, servers: planned.tap, source: planned.source, covered: new Set([...kept, ...versions].map(versionService)),
+    rule: rule === undefined ? { kind: "none" } : { kind: "signed", sourced: sourceServices(rule, versions) },
+  });
+  if (admits.kind !== "admit") return refuse(admits.reason);
+  const approved: AdmitDeploy = { ...ruleless(command), versions: [...kept, ...versions] };
+  return { step: { ...step, deploy: { ...step.deploy, command: rule === undefined ? approved : { ...approved, rule } } } satisfies DeployStep };
 });
 
 /**
@@ -666,7 +674,7 @@ export const decideProposal = Effect.fn("Proposals.decide")(function* (decider: 
   const [first] = row.steps;
   let steps = row.steps;
   if (first !== undefined && isDeploy(first)) {
-    const checked = yield* approvedDeploy(decider, row, first, decision.approve.versions ?? []);
+    const checked = yield* approvedDeploy(decider, row, first, decision.approve.versions ?? [], decision.approve.rule);
     if ("moved" in checked) {
       yield* deny(DEPLOY_MOVED);
       return { ok: false, message: DEPLOY_MOVED } satisfies Decided;

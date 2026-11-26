@@ -36,9 +36,11 @@ pub(crate) use local_machine::{
     Admit, AdmittedBy, AdmittedSpec, Call, Caller, KeyChangeHeld, RecoveryError,
     RuntimeWatchTelemetry, Scope, SealingError,
 };
+pub use local_machine::{
+    Bound, Cause, Error as LocalMachineError, LocalMachine, Recheck, Seen, Tie, Work,
+};
 #[cfg(test)]
-pub(crate) use local_machine::{EnsurePause, EnsurePausePoint};
-pub use local_machine::{Error as LocalMachineError, FullCaller, LocalMachine};
+pub(crate) use local_machine::{EnsurePause, EnsurePausePoint, STOP_WITHIN};
 
 /// [`LocalMachineRecord::has_cluster_identity`] for a phase read on its own.
 pub(crate) fn has_cluster_identity(phase: &LocalMachinePhase) -> bool {

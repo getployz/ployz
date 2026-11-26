@@ -130,6 +130,34 @@ impl ImageIngest {
             .await
             .map_err(Into::into)
     }
+
+    /// Which process of the helper runs now, as its Container's ID and start time, or
+    /// `None` when none runs. A request one process took ends with that process.
+    ///
+    /// # Errors
+    /// Docker isn't available, didn't answer, or named no process for a running helper.
+    pub async fn process(&self) -> Result<Option<String>, ProcessUnread> {
+        let Some(docker) = &self.docker else {
+            return Err(ProcessUnread::NoDocker);
+        };
+        match super::inspect::inspect(docker.client(), NAME).await {
+            Ok(None) => Ok(None),
+            Ok(Some(helper)) if helper.has_no_process() => Ok(None),
+            Ok(Some(helper)) => helper.process().map(Some).ok_or(ProcessUnread::Unnamed),
+            Err(error) => Err(ProcessUnread::Docker(error)),
+        }
+    }
+}
+
+/// Docker couldn't say which process of Image Ingest runs.
+#[derive(Debug, thiserror::Error)]
+pub enum ProcessUnread {
+    #[error("Docker is not available to say which Image Ingest process runs")]
+    NoDocker,
+    #[error("Docker didn't say which Image Ingest process runs")]
+    Docker(#[source] bollard::errors::Error),
+    #[error("Docker reports Image Ingest running without naming its process")]
+    Unnamed,
 }
 
 async fn wait_for_unregistry(address: SocketAddr) -> Result<(), Error> {

@@ -345,21 +345,14 @@ impl Progress {
     /// Start the sole presentation worker with the caller's resolved output mode.
     pub(crate) fn start(initial: Frame) -> Self {
         let mode = super::mode();
-        let color = anstream::AutoStream::choice(&io::stderr()) != anstream::ColorChoice::Never;
+        let color = super::stream::stderr_colors();
         let (sender, receiver) = mpsc::channel();
         let previous = initial.clone();
         let worker = thread::Builder::new()
             .name("ployz-progress".into())
             .spawn(move || {
                 let backend = Backend::new(mode, terminal::draw_target(), terminal_size);
-                let mut writer = anstream::AutoStream::new(
-                    io::stderr(),
-                    if color {
-                        anstream::ColorChoice::Always
-                    } else {
-                        anstream::ColorChoice::Never
-                    },
-                );
+                let mut writer = super::stream::stderr_painted(color);
                 drive(
                     Channel {
                         receiver,
@@ -877,8 +870,10 @@ fn mark(state: &State, tick: usize) -> &'static str {
     }
 }
 
+/// `text` on one line within `width` columns. Masked before the cut, since a cut that
+/// drops a URL's `@` leaves nothing to mask by.
 fn clip(text: &str, width: usize) -> String {
-    let text = text.replace(['\n', '\r', '\t'], " ");
+    let text = super::mask(text).replace(['\n', '\r', '\t'], " ");
     if text.width() <= width {
         return text;
     }

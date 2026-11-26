@@ -307,9 +307,145 @@ fn replicated_plan_removes_containers_beyond_the_requested_count() {
             machine_id: target_machine_id,
             container_id: removed,
             purpose: ployz_core::RemoveContainerPurpose::Rollout,
+            anonymous_volumes,
         }] if target_machine_id == &machine_id('1')
+            && anonymous_volumes.replaced_by().is_none()
             && [container_id('b'), container_id('c')].contains(removed)
     ));
+}
+
+/// A copy on Server `1` of `spec`, which that Server reports was replaced by `by`.
+fn copy_of(
+    hex: char,
+    spec: &RequestedServiceSpec,
+    by: Option<char>,
+) -> ployz_core::ContainerObservation {
+    let mut copy = container(hex, '1', spec, &service_id('a'));
+    copy.try_update(|parts| parts.replaced_by = by.map(container_id))
+        .unwrap();
+    copy
+}
+
+/// The spec `requested` with another image, as an earlier Deploy ran it.
+fn image(requested: &RequestedServiceSpec, tag: &str) -> RequestedServiceSpec {
+    let mut older = requested.clone();
+    older.container.image = format!("ghcr.io/getployz/api:{tag}");
+    older
+}
+
+/// Each copy a one-replica Deploy of `requested` removes from `copies`, all on one
+/// Server, with the copy it names as having taken that one's place.
+fn removals(
+    requested: &RequestedServiceSpec,
+    copies: Vec<ployz_core::ContainerObservation>,
+) -> BTreeMap<ContainerId, Option<ContainerId>> {
+    let snapshot = DeploySnapshot {
+        machines: vec![machine('1', "first")],
+        containers: copies,
+        ..Default::default()
+    };
+    let plan = plan_deploy([requested], &snapshot, PlanOptions::default()).unwrap();
+    operations(&plan)
+        .into_iter()
+        .filter_map(|operation| match operation {
+            DeployOperation::RemoveContainer {
+                container_id,
+                anonymous_volumes,
+                ..
+            } => Some((container_id, anonymous_volumes.replaced_by())),
+            DeployOperation::PrepareVolumes { .. }
+            | DeployOperation::WaitHealthy { .. }
+            | DeployOperation::RunContainer { .. }
+            | DeployOperation::StopContainer { .. }
+            | DeployOperation::ReplaceContainer(_)
+            | DeployOperation::UpdateContainer(_)
+            | DeployOperation::StopHook { .. }
+            | DeployOperation::RunHook { .. }
+            | DeployOperation::RemoveVolume { .. } => None,
+        })
+        .collect()
+}
+
+fn one_replica() -> RequestedServiceSpec {
+    requested(ServiceMode::Replicated {
+        replicas: NonZeroU32::new(1).unwrap(),
+    })
+}
+
+/// An attempt made `b` to replace `a` and stopped before removing `a`. The retry keeps
+/// `b`, so it names `b`, and the Server removes `a`'s anonymous Volumes only if its own
+/// record agrees.
+#[test]
+fn a_leftover_names_its_recorded_replacement_when_the_deploy_keeps_it() {
+    let requested = one_replica();
+    let older = image(&requested, "old");
+    assert_eq!(
+        removals(
+            &requested,
+            vec![
+                copy_of('a', &older, Some('b')),
+                copy_of('b', &requested, None)
+            ]
+        ),
+        BTreeMap::from([(container_id('a'), Some(container_id('b')))])
+    );
+}
+
+/// A Server older than the replacement record reports none, so it is only asked to keep.
+#[test]
+fn a_leftover_with_no_recorded_replacement_keeps_its_volumes() {
+    let requested = one_replica();
+    let older = image(&requested, "old");
+    assert_eq!(
+        removals(
+            &requested,
+            vec![copy_of('a', &older, None), copy_of('b', &requested, None)]
+        ),
+        BTreeMap::from([(container_id('a'), None)])
+    );
+}
+
+/// `b` replaced `a`, and `c` is an unrelated copy of the same spec. The scale-down keeps
+/// only `c`, so `a`'s anonymous Volumes stay: `b` goes in the same Deploy.
+#[test]
+fn a_scale_down_that_removes_the_recorded_replacement_keeps_the_leftovers_volumes() {
+    let requested = one_replica();
+    let older = image(&requested, "old");
+    let mut b = copy_of('b', &requested, None);
+    b.try_update(|parts| {
+        parts.runtime = ContainerRuntimeObservation::Running {
+            health: HealthObservation::Starting,
+        }
+    })
+    .unwrap();
+    assert_eq!(
+        removals(
+            &requested,
+            vec![
+                copy_of('a', &older, Some('b')),
+                b,
+                copy_of('c', &requested, None),
+            ]
+        ),
+        BTreeMap::from([(container_id('a'), None), (container_id('b'), None)])
+    );
+}
+
+/// `b` replaced `a`, and this Deploy replaces `b` in turn, so nothing that stays took
+/// `a`'s place.
+#[test]
+fn a_leftover_whose_replacement_this_deploy_replaces_keeps_its_volumes() {
+    let requested = one_replica();
+    assert_eq!(
+        removals(
+            &requested,
+            vec![
+                copy_of('a', &image(&requested, "v1"), Some('b')),
+                copy_of('b', &image(&requested, "v2"), None),
+            ]
+        ),
+        BTreeMap::from([(container_id('a'), None)])
+    );
 }
 
 #[test]
@@ -363,6 +499,7 @@ fn global_plan_is_exactly_one_container_per_currently_available_machine() {
             machine_id: machine_id('2'),
             container_id: container_id('c'),
             purpose: ployz_core::RemoveContainerPurpose::Rollout,
+            anonymous_volumes: ployz_core::AnonymousVolumes::keep(),
         }]
     );
 }

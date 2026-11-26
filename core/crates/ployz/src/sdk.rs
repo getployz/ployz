@@ -843,7 +843,7 @@ impl Session {
         self.prepare_with(input, std::collections::BTreeMap::new(), None)
     }
 
-    /// [`Self::prepare`], pulling private images with `registry_auth`, which a
+    /// [`Self::prepare`], pulling private images with `registry_logins`, which a
     /// lowering input never carries. A `runner` plans as that operator and blocks a
     /// Service whose Volume nothing can mount instead of refusing the Deploy; it
     /// removes first the Pending copies its claim's ended runs left. A
@@ -852,9 +852,9 @@ impl Session {
     pub(crate) fn prepare_with<E>(
         &self,
         input: PreparationInput,
-        registry_auth: std::collections::BTreeMap<
+        registry_logins: std::collections::BTreeMap<
             ployz_core::ServiceName,
-            ployz_core::RegistryAuth,
+            ployz_core::SealedLogin,
         >,
         runner: Option<ployz_core::RunnerOptions>,
     ) -> Result<Running<PreparedDeploy, E>, RpcError>
@@ -866,7 +866,7 @@ impl Session {
         let session = Arc::downgrade(&self.inner);
         Ok(Running::spawn(token.clone(), move |reporter| async move {
             let mut captured = capture(input).await?;
-            captured.intent.registry_auth = registry_auth;
+            captured.intent.registry_logins = registry_logins;
             if let Some(runner) = runner {
                 captured.intent.options = captured.intent.options.as_runner(runner);
             }

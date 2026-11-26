@@ -1,5 +1,6 @@
 //! Every byte a person sees goes through here: the mode, the palette, hints,
 //! errors and exit codes. Handlers pass values and typed parts, never layout.
+//! The `stream` module masks URL user info in all of it, `--json` included.
 
 mod error;
 pub(crate) mod exit;
@@ -7,10 +8,11 @@ mod mode;
 pub(crate) mod progress;
 mod prompt;
 mod result;
-mod stdout;
+mod stream;
 mod table;
 mod tone;
 mod tree;
+mod userinfo;
 
 pub use error::VALID_SHOWN;
 pub(crate) use error::{WaitNotices, warn_cause};
@@ -25,13 +27,18 @@ pub(crate) use result::{
     finish_fanout, hint, interactive, list, note, note_inline, printed, record, record_warning,
     rows, show, stream, unanswered, warn, write_fields,
 };
-pub(crate) use stdout::{async_stdout, stdout, stdout_bytes, stdout_is_terminal};
+pub use stream::mask_panics;
+pub(crate) use stream::{
+    Json, async_stdout, child_stderr, relayed_stderr, relayed_stdout, stderr, stderr_bytes,
+    stderr_is_terminal, stdout, stdout_bytes, stdout_is_terminal,
+};
 pub use table::{Cell, Fields, Table};
 pub(crate) use table::{
-    REPLACED, escaped, escaped_lines, pasteable, printable, shell_word, short_id, unprintable,
+    REPLACED, escaped, escaped_lines, pasteable, printable, short_id, unprintable,
 };
 pub use tone::{Painted, Tone, clap_styles};
 pub(crate) use tree::Tree;
+pub(crate) use userinfo::mask;
 
 /// `--color`: when output carries color.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

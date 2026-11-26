@@ -291,6 +291,12 @@ pub struct ContainerObservationParts {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional = nullable)]
     pub admission: Option<Admission>,
+    /// The Container its owning Machine made to take this one's place, from that
+    /// Machine's own record ([`crate::NewContainer::replaces`]). Only a Machine advertising
+    /// [`crate::CONTAINER_REPLACES_CAPABILITY`] reports it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub replaced_by: Option<ContainerId>,
 }
 
 /// How a Machine admitted a Container it made. An observation reports a create through
@@ -1281,6 +1287,7 @@ mod tests {
             run: None,
             log_driver: None,
             admission: None,
+            replaced_by: None,
         })
         .unwrap()
     }

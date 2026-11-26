@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { MachineId, VolumeCopy } from "@ployz/sdk";
-import { expectOf, observedEpoch, type PlanInput, planForwardRelease, planFromCopies, restoreSource, type Role, roleOf, withdrawnMessage } from "#/modules/volume-run/plan";
-import type { AnsweredMember, Member } from "#/modules/volume-run/volume-run";
+import { confirmedCopy, expectOf, observedEpoch, type PlanInput, planForwardRelease, planFromCopies, restoreSource, type Role, roleOf, withdrawnMessage } from "#/modules/volume-run/plan";
+import type { AnsweredMember, ConfirmedCopy, Discard, Member } from "#/modules/volume-run/volume-run";
 import type { DeploymentsSeen } from "#/modules/volume-run/resize";
 import { COPIES, type Copy, member } from "#/modules/volume-run/volume-run.test-fixture";
 
@@ -56,6 +56,114 @@ function outcome(input: PlanInput, members: Member[]) {
   }
 }
 
+describe("a Server whose Ployz deletes any slot a Forget names", () => {
+  const older = (server: string, copy: Copy): Member => {
+    const each = member(server, copy);
+    if (!each.answered) throw new Error("an answered Server");
+    return { ...each, keepsWritten: false };
+  };
+  const departed = (server: string, keeps: boolean): Member => {
+    const each = member(server, "old");
+    if (!each.answered || each.view.copy?.kind !== "slot") throw new Error("a slot");
+    return { ...each, keepsWritten: keeps, view: { copy: { ...each.view.copy, newest: { name: "dep-1700000000", guid: "12", created_unix_seconds: 0 } } } };
+  };
+
+  const deletes = { ok: false, refusal: {
+    code: "server_lacks",
+    message: "Upgrade b first. Its Ployz would delete data-b even if it holds writes no other Server has, so nothing was changed",
+  } };
+  const replaces = { ok: false, refusal: {
+    code: "server_lacks",
+    message: "Upgrade b first. Its Ployz would replace data-b with a fresh copy even if it holds writes no other Server has, so nothing was changed",
+  } };
+  /** b's copy is a cut at a point the Writer never had: it left before its last cut reached a mirror. */
+  const cutAlone = (keeps: boolean): Member => {
+    const each = older("b", "old");
+    if (!each.answered || each.view.copy?.kind !== "slot") throw new Error("a slot");
+    return { ...each, keepsWritten: keeps, view: { copy: { ...each.view.copy, newest: { name: "f-1", guid: "12", created_unix_seconds: 0 } } } };
+  };
+
+  it("takes no sync --full or mirror rm of a copy, since nothing tells it to keep a copy only it holds", () => {
+    expect(planFromCopies(sync(true), [member("a", "writer"), older("b", "mirror")])).toEqual(deletes);
+    const remove: PlanInput = { kind: "delete_mirror", args: { slot: "b", confirmed_name: null, role: "any" }, ...data };
+    expect(planFromCopies(remove, [member("a", "writer"), older("b", "mirror")])).toEqual(deletes);
+    expect(outcome(sync(), [member("a", "writer"), older("b", "mirror")])).toBe("sync a->b");
+  });
+
+  it("takes no sync --full of a mirror whose first pull hasn't landed yet", () => {
+    const each = older("b", "pulling");
+    if (!each.answered || each.view.copy?.kind !== "slot") throw new Error("a slot");
+    const first: Member = { ...each, view: { copy: { ...each.view.copy, newest: null } } };
+    expect(planFromCopies(sync(true), [member("a", "writer"), first])).toEqual(deletes);
+  });
+
+  it("leaves a Server a Ployz Cloud from before keep-written looked at to the check at each step's send", () => {
+    const unrecorded = (server: string, copy: Copy): Member => {
+      const each = member(server, copy);
+      if (!each.answered) throw new Error("an answered Server");
+      const { keepsWritten: _, ...looked } = each;
+      return looked;
+    };
+    expect(outcome(sync(true), [member("a", "writer"), unrecorded("b", "mirror")])).toBe("sync a->b full");
+    expect(outcome(mirror("b"), [member("a", "writer"), unrecorded("b", "behind")])).toBe("mirror a->b");
+  });
+
+  it("takes no mirror or Move onto a copy its pull would replace whole, whatever the copy's snapshot is called", () => {
+    for (const onto of [departed("b", false), cutAlone(false), older("b", "behind")]) {
+      expect(planFromCopies(mirror("b"), [member("a", "writer"), onto])).toEqual(replaces);
+      expect(planFromCopies(move("b"), [member("a", "writer"), onto])).toEqual(replaces);
+    }
+    const resuming = older("b", "mirror");
+    if (!resuming.answered || resuming.view.copy?.kind !== "slot") throw new Error("a slot");
+    expect(planFromCopies(mirror("b"), [member("a", "writer"), { ...resuming, view: { copy: { ...resuming.view.copy, resume_token: "1-abc" } } }]))
+      .toEqual(replaces);
+    // A pull that starts from the Writer's newest snapshot only adds to the copy.
+    expect(outcome(mirror("b"), [member("a", "writer"), older("b", "old")])).toBe("mirror a->b");
+    expect(outcome(mirror("b"), [member("a", "writer"), older("b", "empty")])).toBe("mirror a->b");
+    // A Ployz that keeps a slot written there checks it itself.
+    expect(outcome(mirror("b"), [member("a", "writer"), cutAlone(true)])).toBe("mirror a->b");
+    expect(outcome(move("b"), [member("a", "writer"), departed("b", true)])).toMatch(/^move a->b/);
+  });
+
+  it("leaves an orphan slot to the user when its Server may hold the only writes, or would delete it whatever it holds", () => {
+    expect(outcome(orphan, [member("b", "writtenHere"), older("c", "mirror"), member("d", "mirror")])).toBe("delete d forget none");
+    expect(planFromCopies(orphan, [member("b", "writtenHere"), older("c", "mirror")])).toEqual({ ok: false, refusal: {
+      code: "written_here",
+      message: "kept ns_vol-1-b, which may hold writes no other Server has (ployz volume leftovers rm ns_vol-1 --on b deletes it); kept ns_vol-1-c until c runs a newer Ployz, which would delete it even if it holds writes no other Server has (ployz volume leftovers rm ns_vol-1 --on c deletes it)",
+    } });
+  });
+});
+
+describe("a delete someone confirmed", () => {
+  const seen = (server: string, copy: Copy) => {
+    const each = member(server, copy);
+    const confirmed = each.answered ? confirmedCopy(each) : null;
+    if (confirmed === null) throw new Error("a slot with a snapshot");
+    return confirmed;
+  };
+  // SAFETY: a confirmation as only the insert of a run's row makes one.
+  const confirmed = (by: "person" | "deployment", copies: ConfirmedCopy[]): Discard => ({ by, copies }) as Discard;
+  const removing = (slot: string, discard: Discard): PlanInput => ({ kind: "delete_mirror", args: { slot, confirmed_name: null, role: "any", discard }, ...data });
+
+  it("deletes the copy as it was confirmed, and nothing once it was replaced, moved on or written there since", () => {
+    const discard = confirmed("person", [seen("b", "mirror")]);
+    expect(outcome(removing("b", discard), [member("a", "writer"), member("b", "mirror")])).toBe("delete b forget a");
+    for (const now of [member("b", "mirror", { slot: "2" }), member("b", "behind"), member("b", "writtenHere")]) {
+      expect(planFromCopies(removing("b", discard), [member("a", "writer"), now])).toEqual({ ok: false, refusal: {
+        code: "copy_changed",
+        message: "data-b changed since its delete was confirmed, so nothing was deleted. Run ployz volume mirror rm data-b to delete it as it is now",
+      } });
+    }
+    expect(outcome(removing("b", confirmed("deployment", [seen("b", "mirror")])), [member("a", "writer"), member("b", "writtenHere")])).toBe("refuse copy_changed");
+  });
+
+  it("deletes the one copy a deleted Volume left that a person confirmed, even one written there", () => {
+    const input: PlanInput = { ...orphan, args: { slot: "b", confirmed_name: null, discard: confirmed("person", [seen("b", "writtenHere")]) } };
+    expect(outcome(input, [member("b", "writtenHere"), member("c", "writtenHere")])).toBe("delete b forget none");
+    expect(outcome({ ...orphan, args: { ...input.args, slot: "c" } }, [member("b", "writtenHere"), member("c", "writtenHere")])).toBe("refuse copy_changed");
+  });
+});
+
 describe("a born Volume's copies", () => {
   const born = (server: string, copy: "writer" | "mirror" | "empty", checks: boolean): Member => {
     const each = member(server, copy);
@@ -69,6 +177,11 @@ describe("a born Volume's copies", () => {
     expect(refused).toEqual({ ok: false, refusal: { code: "server_lacks", message: "Upgrade db-2 first. data needs a newer Ployz on every Server that holds it." } });
     expect(outcome(mirror("db-2"), [born("db-1", "writer", false), born("db-2", "empty", true)])).toBe("refuse server_lacks");
     expect(outcome(mirror("db-2"), [born("db-1", "writer", true), born("db-2", "empty", true)])).toBe("mirror db-1->db-2");
+  });
+
+  it("names the mirror rm that removes an old copy a full sync keeps", () => {
+    const refused = planFromCopies(sync(true), [member("a", "writer"), member("b", "old")]);
+    expect(refused.ok === false && refused.refusal.next).toBe("ployz volume mirror rm data-b --if-old-copy");
   });
 
   it("refuses a full sync to a Mirror whose Server can't check origins, so the run forgets nothing", () => {
@@ -132,6 +245,9 @@ describe("plan_from_copies_table", () => {
 
     ["sync onto its mirror", sync(), [member("a", "writer"), member("b", "mirror"), member("c", "empty")], "sync a->b"],
     ["sync --full onto its mirror", sync(true), [member("a", "writer"), member("b", "mirror")], "sync a->b full"],
+    ["sync --full onto an old copy", sync(true), [member("a", "writer"), member("b", "old")], "refuse written_here"],
+    ["sync --full onto a mirror written here", sync(true), [member("a", "writer"), member("b", "writtenHere")], "refuse written_here"],
+    ["sync onto an old copy", sync(), [member("a", "writer"), member("b", "old")], "sync a->b"],
     ["sync onto a mirror mid-pull", sync(), [member("a", "writer"), member("b", "pulling")], "sync a->b"],
     ["sync with no mirror", sync(), [member("a", "writer"), member("b", "empty")], "refuse no_mirror"],
     ["sync with two mirrors", sync(), [member("a", "writer"), member("b", "mirror"), member("c", "behind")], "refuse second_mirror"],
@@ -247,7 +363,7 @@ describe("plan_from_copies_table", () => {
 
   it("leaves a slot whose Server reports no role to that Server's own check", () => {
     const { role: _, ...unreported } = COPIES.mirror;
-    const silent: Member = { machine: member("fsn-2", "mirror").machine, address: "fdcc::1", answered: true, view: { copy: unreported }, floorless: false };
+    const silent: Member = { machine: member("fsn-2", "mirror").machine, address: "fdcc::1", answered: true, view: { copy: unreported }, floorless: false, keepsWritten: true };
     const input: PlanInput = { kind: "delete_mirror", args: { slot: "fsn-2", confirmed_name: null, role: "old_copy" }, ...data };
     expect(outcome(input, [member("fsn-1", "writer"), silent])).toBe("delete fsn-2 forget fsn-1");
   });
@@ -629,26 +745,26 @@ describe("follow every next step a refusal names", () => {
   type Complete<T> = T extends string | number | bigint | boolean | null | undefined ? T : { [K in keyof T]-?: Complete<T[K]> };
   const twin = (id: string, floorless: boolean, copy: Complete<VolumeCopy>): AnsweredMember => ({
     machine: { id: id.padEnd(32, "0") as MachineId, name: "twin" }, address: `fdcc::${id}`, answered: true, view: { copy }, floorless, boundBytes: floorless ? GB : null,
-    checksOrigins: !floorless,
+    checksOrigins: !floorless, keepsWritten: !floorless,
   } satisfies Required<AnsweredMember>);
   const at = (name: string, each: AnsweredMember): Member => ({ ...each, machine: { ...each.machine, name } });
   const newest = COPIES.mirror.newest;
   const earlier = { ...COPIES.behind.newest, created_unix_seconds: newest.created_unix_seconds - 60 };
-  const slotA = twin("a", false, { ...COPIES.behind, newest: earlier, pull: { target: earlier.name, failure: null }, pull_state: { kind: "landed", target: earlier.name }, origin: "sha256:a" });
+  const slotA = twin("a", false, { ...COPIES.behind, newest: earlier, pull: { target: earlier.name, failure: null }, pull_state: { kind: "landed", target: earlier.name }, origin: "sha256:a", written_here: false });
   const slotB = twin("b", true, {
     ...COPIES.mirror, slot: "2", resume_token: "tok", pull: { target: newest.name, failure: "no space" }, role: "old_copy",
-    pull_state: { kind: "failed", target: newest.name, failure: "no space" }, origin: "sha256:b",
+    pull_state: { kind: "failed", target: newest.name, failure: "no space" }, origin: "sha256:b", written_here: true,
   });
-  const bareA = twin("c", false, { ...COPIES.cut, epoch: 9, newest: null, mark: "cut", origin: "sha256:c" });
-  const bareB = twin("d", true, { ...COPIES.cut, epoch: 9, newest: null, mark: "promote", origin: "sha256:d" });
-  const heldA = twin("c", false, { ...COPIES.cut, epoch: 9, newest: earlier, mark: "cut", origin: "sha256:c" });
-  const heldB = twin("d", true, { ...COPIES.cut, epoch: 9, mark: "promote", origin: "sha256:d" });
+  const bareA = twin("c", false, { ...COPIES.cut, epoch: 9, newest: null, mark: "cut", origin: "sha256:c", placed: `9 ${"c".repeat(64)} sha256:${"1".repeat(64)}` });
+  const bareB = twin("d", true, { ...COPIES.cut, epoch: 9, newest: null, mark: "promote", origin: "sha256:d", placed: `9 ${"d".repeat(64)} sha256:${"2".repeat(64)}` });
+  const heldA = twin("c", false, { ...COPIES.cut, epoch: 9, newest: earlier, mark: "cut", origin: "sha256:c", placed: `9 ${"c".repeat(64)} sha256:${"1".repeat(64)}` });
+  const heldB = twin("d", true, { ...COPIES.cut, epoch: 9, mark: "promote", origin: "sha256:d", placed: `9 ${"d".repeat(64)} sha256:${"2".repeat(64)}` });
 
-  type Tree = string | number | bigint | boolean | null | undefined | { readonly [key: string]: Tree };
+  type Tree = string | number | bigint | boolean | null | undefined | readonly Tree[] | { readonly [key: string]: Tree };
   const tied = (a: Tree, b: Tree, path = ""): string[] => {
     if (!(a instanceof Object) && !(b instanceof Object)) return Object.is(a, b) ? [path] : [];
     const keys = new Set([...Object.keys(a instanceof Object ? a : {}), ...Object.keys(b instanceof Object ? b : {})]);
-    const read = (value: Tree, key: string): Tree => (value instanceof Object ? value[key] : undefined);
+    const read = (value: Tree, key: string): Tree => (value instanceof Object ? Object.entries(value).find(([name]) => name === key)?.[1] : undefined);
     return [...keys].flatMap((key) => tied(read(a, key), read(b, key), path === "" ? key : `${path}.${key}`)).sort();
   };
 

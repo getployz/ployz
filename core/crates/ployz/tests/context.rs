@@ -458,18 +458,20 @@ fn selecting_connections_with_a_missing_name_is_context_not_found() {
         )]),
     );
 
-    assert_eq!(
-        select_connections(
-            None,
-            Some(&config),
-            Some("gone"),
-            true,
-            "/run/ployz/ployz.sock"
+    let selected = select_connections(
+        None,
+        Some(&config),
+        Some("gone"),
+        true,
+        "/run/ployz/ployz.sock",
+    );
+    assert!(
+        matches!(
+            &selected,
+            Err(ContextError::ContextNotFound { name, path: named })
+                if name.to_string() == "gone" && *named == path
         ),
-        Err(ContextError::ContextNotFound {
-            name: "gone".into(),
-            path,
-        })
+        "{selected:?}"
     );
 }
 

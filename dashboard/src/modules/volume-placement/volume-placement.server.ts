@@ -13,13 +13,13 @@ import type { Access } from "#/modules/organization/access.server";
 import { ClusterOutOfTime, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
 import { failedRestore, volumePlacement } from "#/modules/volume-placement/tables";
 import { UNANSWERED, unlessOriginRefused, unlessPlacementRefused } from "#/modules/volume-placement/volume-placement.gates.server";
-import { lossByVolume, oldCopies, observePlacement, placementChanges, serversAnswer, placementLosses, type Placement, type PlacementRow, type Seed } from "#/modules/volume-placement/volume-placement";
+import { lossByVolume, oldCopies, observePlacement, placementChanges, serversAnswer, placementLosses, type Placement, type PlacementRow, type Seed, type ShownCopy } from "#/modules/volume-placement/volume-placement";
 import { lossVersion, storeVersion } from "#/modules/volume-placement/volume-placement.review";
 import { lossTime } from "#/utils/relative-time";
-import { ACTIVE_VOLUME_RUN_STATES, type VolumeRunInput } from "#/modules/volume-run/volume-run";
+import { ACTIVE_VOLUME_RUN_STATES, type ConfirmedCopy, type VolumeRunInput } from "#/modules/volume-run/volume-run";
 import { dockerVolumeName, parseDockerVolumeName } from "#/modules/runtime/naming";
 import { volumeRun } from "#/modules/volume-run/tables";
-import { admitRun, ClusterNotConnected, heldStorage, nameRefusal, resolveVolume, storeRefusal, unreachable } from "#/modules/volume-run/volume-run.rows.server";
+import { admitRun, type Caller, ClusterNotConnected, heldStorage, nameRefusal, resolveVolume, storeRefusal, unreachable } from "#/modules/volume-run/volume-run.rows.server";
 import { planVolumeRun, VolumeCluster } from "#/modules/volume-run/volume-run.cluster.server";
 import { planSeed } from "#/modules/volume-run/plan";
 import { whileLocked } from "#/server/advisory-lock.server";
@@ -351,8 +351,10 @@ export const writeAdmitted = <R>(
     const members = yield* Effect.forEach(kept, ({ row }) => inspect(organizationId, command.environment, row.volumeId), { concurrency: "unbounded" })
       .pipe(Effect.option);
     if (Option.isNone(members)) return yield* new StoreRefused(NO_ANSWER);
-    const lost = kept.flatMap(({ row, volume }, index) =>
-      placementLosses(placementChanges({ id: volume.id, name: volume.name }, members.value[index] ?? [], view(row))));
+    const lost = kept.flatMap(({ row, volume }, index) => {
+      const answered = members.value[index] ?? [];
+      return placementLosses(placementChanges({ id: volume.id, name: volume.name }, answered, view(row)), answered);
+    });
     const taken = listed.map(({ row }) => row.volumeId);
     const names = [...new Set(lost.map(({ volume }) => volume.name))];
     const accepted = command.accept_volume_loss ?? [];
@@ -372,7 +374,9 @@ export const writeAdmitted = <R>(
     written = yield* write({ ...command, version: store, accept_volume_loss: accepted.filter((name) => !names.includes(name)) });
     if (written.written === "deployment" && written.status !== "applied") {
       const after = yield* Effect.forEach(queued, (id) => holderState(organizationId, id));
-      yield* stampPlacements(organizationId, taken, written.id, [...ended, ...queued.filter((_, index) => after[index] === "ended")]);
+      // Each Volume's runs delete only the copies this confirm named, as the Servers reported them.
+      const confirmed = new Map(taken.map((volumeId) => [volumeId, lost.flatMap(({ volume, copy }) => volume.id === volumeId && copy !== null ? [copy] : [])]));
+      yield* stampPlacements(organizationId, taken, written.id, [...ended, ...queued.filter((_, index) => after[index] === "ended")], confirmed);
     }
     return written;
   })).pipe(
@@ -384,14 +388,20 @@ export const writeAdmitted = <R>(
   );
 }).pipe(Effect.withSpan("VolumePlacement.writeAdmitted"));
 
-/** Deploy `deploymentId` takes the placements staged on `volumeIds` that no other Deploy holds, or one of `ended` held. */
+/**
+ * Deploy `deploymentId` takes the placements staged on `volumeIds` that no other Deploy holds, or one of `ended` held,
+ * with the copies its confirm named on each: the only ones its runs may delete when they may hold writes no other
+ * Server has.
+ */
 export const stampPlacements = Effect.fn("VolumePlacement.stamp")(function* (
   organizationId: string, volumeIds: readonly string[], deploymentId: string, ended: readonly string[] = [],
+  confirmed: ReadonlyMap<string, readonly ConfirmedCopy[]> = new Map(),
 ) {
   if (volumeIds.length === 0) return;
   const { drizzle } = yield* Database;
+  const byVolume = JSON.stringify(Object.fromEntries(volumeIds.map((volumeId) => [volumeId, confirmed.get(volumeId) ?? []])));
   yield* drizzle.update(volumePlacement)
-    .set({ deploymentId, staged: sql`${volumePlacement.staged} - 'unreached'`, updatedAt: sql`now()` })
+    .set({ deploymentId, staged: sql`${volumePlacement.staged} - 'unreached'`, confirmed: sql`${byVolume}::jsonb -> ${volumePlacement.volumeId}`, updatedAt: sql`now()` })
     .where(and(
       eq(volumePlacement.organizationId, organizationId),
       inArray(volumePlacement.volumeId, [...volumeIds]),
@@ -405,7 +415,7 @@ const NOT_OLD = { message: "Not an old copy" };
 export const deleteOldCopy = Effect.fn("VolumePlacement.deleteOldCopy")(function* (
   organizationId: string,
   userId: string | null,
-  input: { readonly volumeId: string; readonly environment: EnvironmentRef; readonly server: string },
+  input: { readonly volumeId: string; readonly environment: EnvironmentRef; readonly server: string; readonly copy: ShownCopy | null },
 ) {
   const { inspect } = yield* VolumeCluster;
   const row = yield* readRow(organizationId, input.volumeId);
@@ -422,7 +432,14 @@ export const deleteOldCopy = Effect.fn("VolumePlacement.deleteOldCopy")(function
   if (!planned.ok) return { ok: false, refusal: { message: planned.refusal.message } } as const;
   const held = members.find((member) => member.machine.id === old.server.id);
   const point = held?.answered === true ? held.view.copy?.newest?.guid ?? null : null;
-  const requested = yield* requestUnclaimedRun({ userId, organizationId }, { ...run, args: { ...run.args, machine: old.server.id } }, { server: old.server.id, point });
+  // The person deletes the copy the dialog showed them, and nothing once its Server reports another.
+  const copies = "copies" in planned ? [...(planned.copies ?? [])] : [];
+  const shown = input.copy;
+  const same = shown !== null && copies.length === 1 && copies.every((copy) =>
+    copy.machine === old.server.id && copy.slot === shown.slot && copy.newest === shown.newest && copy.written_here === shown.written_here);
+  if (!same) return { ok: false, refusal: { message: `${input.server}'s copy changed since you opened Delete, so nothing was deleted. Look at it again before you delete it` } } as const;
+  const confirmed = { by: "person" as const, copies };
+  const requested = yield* requestUnclaimedRun({ userId, organizationId, confirmed }, { ...run, args: { ...run.args, machine: old.server.id } }, { server: old.server.id, point });
   return requested.ok ? { ok: true, run: requested.run } as const : { ok: false, refusal: { message: requested.refusal.message } } as const;
 });
 
@@ -439,7 +456,7 @@ class NotDeleted extends Data.TaggedError("NotDeleted")<{ readonly refusal: Stor
  * and waits for it. The Environment's lock, shared, does the same against stageRestore.
  */
 export const requestUnclaimedRun = Effect.fn("VolumePlacement.requestUnclaimedRun")(function* (
-  caller: { readonly userId: string | null; readonly organizationId: string },
+  caller: Caller,
   input: { readonly volumeId: string; readonly environment: EnvironmentRef } & Extract<VolumeRunInput, { kind: "delete_mirror" }>,
   deletes: { readonly server: MachineId; readonly point: string | null } | null = null,
 ) {

@@ -113,9 +113,13 @@ fn enroll_waiting_prints_clouds_founder_names_storage_and_skip_reasons() {
 #[test]
 fn enroll_waiting_yes_bypasses_the_plan_question() {
     let plan = plan();
-    assert!(review(&plan, &[], true, false).is_ok());
+    assert!(review(&plan, &[], None, false).is_ok());
     if !ui::can_prompt() {
-        let error = review(&plan, &[], false, false).unwrap_err();
+        let root = crate::cli::command()
+            .try_get_matches_from(["ployz", "server", "enroll"])
+            .unwrap();
+        let yes = crate::cli::Rerun::again(&root).switch("yes");
+        let error = review(&plan, &[], Some(yes), false).unwrap_err();
         assert_eq!(error.report().code, RpcErrorCode::ConfirmationRequired);
         assert!(error.json().to_string().contains("web-1"));
     }
