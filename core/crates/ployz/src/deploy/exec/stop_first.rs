@@ -1,6 +1,6 @@
 use super::publish::{gaps_still_routing, left_unless_done};
 use super::report::{Left, left_by};
-use super::start::{Attempt, FailedStart, Row, SlotRun, discard_new, start};
+use super::start::{Attempt, FailedStart, NewCopy, Row, SlotRun, Unstarted, discard_new, start};
 use super::{
     DeployOperation, ReplacementCompensation, ReplacementOperation, RestoreAttempt, StopAttempt,
     cleanup,
@@ -40,22 +40,23 @@ pub(super) async fn restore_group<C: MachineOperations>(
         unread,
         ..
     } = record;
-    let started: Vec<_> = started
+    // A copy a start adopted may predate this run, so it stays and blocks its Machine.
+    let started: Vec<(MachineId, Option<ContainerId>)> = started
         .into_iter()
-        .map(|(_, machine, id)| (machine, id))
+        .map(|(_, machine, copy)| (machine, copy.made()))
         .collect();
     let cleanup = CancellationToken::new();
     if stopped.is_empty() {
         if !unread {
-            join_all(started.iter().map(|(machine, id)| {
-                discard_new(
+            join_all(started.iter().filter_map(|(machine, made)| {
+                Some(discard_new(
                     client,
                     progress,
                     shared,
-                    (service, machine, *id),
+                    (service, machine, (*made)?),
                     None,
                     &cleanup,
-                )
+                ))
             }))
             .await;
         }
@@ -68,15 +69,22 @@ pub(super) async fn restore_group<C: MachineOperations>(
             .map(|(machine, _)| Withdrawn::Running(*machine))
             .collect()
     } else {
-        join_all(started.iter().map(|(machine, id)| {
-            discard_new(
-                client,
-                progress,
-                shared,
-                (service, machine, *id),
-                Some(shared.plan.run()),
-                &cleanup,
-            )
+        let cleanup = &cleanup;
+        join_all(started.iter().map(|(machine, made)| async move {
+            match made {
+                Some(id) => {
+                    discard_new(
+                        client,
+                        progress,
+                        shared,
+                        (service, machine, *id),
+                        Some(shared.plan.run()),
+                        cleanup,
+                    )
+                    .await
+                }
+                None => Withdrawn::Running(*machine),
+            }
         }))
         .await
     };
@@ -124,7 +132,7 @@ pub(super) async fn restore_group<C: MachineOperations>(
                 client,
                 &copy,
                 EmptyPolicy::RequireOtherIn,
-                AnonymousVolumes::Remove,
+                AnonymousVolumes::keep(),
                 &cleanup,
             )
             .await
@@ -197,18 +205,18 @@ pub(super) async fn replace_stop_first<C: MachineOperations>(
     };
     let started = start(&attempt, run, FailedStart::Retain).await;
     match started {
-        Ok(new_container) => Ok(Ran {
-            started: Some(new_container),
+        Ok(new_copy) => Ok(Ran {
+            started: Some(new_copy),
             held_old: held_old.map(Box::new),
         }),
-        Err(error) => Err(compensate(
+        Err(unstarted) => Err(compensate(
             client,
             row,
             operation,
             held_old,
             shared,
             cancellation,
-            error,
+            unstarted,
         )
         .await),
     }
@@ -247,10 +255,10 @@ pub(super) async fn withdraw<C: MachineOperations>(
 /// Removes one Container. A copy that is not there is already removed. Otherwise
 /// what the removal must reach decides how it goes:
 ///
-/// - A `Rollout` removal takes an old copy a new one replaced, with its anonymous
-///   Volumes. The Service keeps running, so a copy still In goes Out first, and
-///   the drain waits for every proxy to confirm.
-/// - A `Retire` keeps the anonymous Volumes and may leave the Service empty.
+/// - A `Rollout` removal takes a copy its Service outlives, such as an old copy a new
+///   one replaced or one a scale-down drops. A copy still In goes Out first, and the
+///   drain waits for every proxy to confirm.
+/// - A `Retire` may leave the Service empty.
 ///   - For a Service this Deploy keeps, such as an exited pre-deploy hook of one
 ///     that stays, it is plain cleanup. The Service's other copies are its own,
 ///     wherever they run, so none is named.
@@ -264,13 +272,19 @@ pub(super) async fn withdraw<C: MachineOperations>(
 ///     A store that could not be read names nothing here. The plan's observation
 ///     gap names those Machines, and the Deploy ends partial.
 ///
-/// A removal that fails, is refused, is cancelled or goes unconfirmed names the
+/// Either way it asks `anonymous_volumes`, what the plan asked of the copy's anonymous
+/// Volumes. A removal that fails, is refused, is cancelled or goes unconfirmed names the
 /// live copy as left running and no unreached copy, so a retry names them all.
 pub(super) async fn remove_container<C: MachineOperations>(
     client: &C,
     index: usize,
     progress: &Progress,
-    (machine_id, container_id, purpose): (&MachineId, &ContainerId, RemoveContainerPurpose),
+    (machine_id, container_id, purpose, anonymous_volumes): (
+        &MachineId,
+        &ContainerId,
+        RemoveContainerPurpose,
+        AnonymousVolumes,
+    ),
     shared: &Shared<'_>,
     cancellation: &CancellationToken,
 ) -> Result<Ran, OperationFailure> {
@@ -330,9 +344,9 @@ pub(super) async fn remove_container<C: MachineOperations>(
         .unreached(client, &copy.service, cancellation)
         .await?;
     let retired = if copy.drains() && unreached.may_keep_route() {
-        cleanup::retire_unconfirmed(client, &copy, empty, purpose.into()).await
+        cleanup::retire_unconfirmed(client, &copy, empty, anonymous_volumes).await
     } else {
-        cleanup::retire(client, &copy, empty, purpose.into(), cancellation).await
+        cleanup::retire(client, &copy, empty, anonymous_volumes, cancellation).await
     };
     match retired.map(cleanup::Rotated::failure) {
         Ok(Ok(())) => {
@@ -493,11 +507,13 @@ pub(super) async fn retire_older<C: MachineOperations>(
     copy: &cleanup::Copy,
     shared: &Shared<'_>,
 ) {
+    // The newer copy may serve from another Server, so nothing is known to take this
+    // copy's slot.
     let retired = cleanup::retire(
         client,
         copy,
         EmptyPolicy::RequireOtherIn,
-        AnonymousVolumes::Remove,
+        AnonymousVolumes::keep(),
         &CancellationToken::new(),
     )
     .await;
@@ -515,16 +531,14 @@ pub(super) async fn compensate<C: MachineOperations>(
     held_old: Option<(ResolvedServiceSpec, cleanup::Copy)>,
     shared: &Shared<'_>,
     cancellation: &CancellationToken,
-    error: ExecutionError,
+    unstarted: Unstarted,
 ) -> OperationFailure {
-    let new_container = if let ExecutionError::Health { container_id, .. } = &error {
-        Some(*container_id)
-    } else {
-        None
-    };
+    // A copy the start adopted may predate this run, so it stays.
+    let new_container = unstarted.unhealthy().and_then(NewCopy::made);
     if held_old.is_none() && new_container.is_none() {
-        return error.into();
+        return unstarted.into();
     }
+    let error = unstarted.error;
     let Row { progress, .. } = row;
     row.running(OperationPhase::Compensating);
     let stop_new_container = match new_container {
@@ -835,7 +849,7 @@ async fn withdraw_step<C: MachineOperations>(
             })
             .map(|(task, observed)| async move {
                 let copy = cleanup::Copy::observed(observed);
-                let removed = cleanup::remove(client, &copy, AnonymousVolumes::Remove).await;
+                let removed = cleanup::remove(client, &copy, AnonymousVolumes::keep()).await;
                 (task, removed)
             }),
     )

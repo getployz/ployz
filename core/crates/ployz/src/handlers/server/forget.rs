@@ -6,10 +6,10 @@ use crate::ui::Next;
 use clap::{ArgMatches, Command};
 use ployz_core::{Machine, RpcError, RpcErrorCode};
 
-use super::super::{Error, config_path, leaf_matches, rerun, runtime};
+use super::super::{Error, config_path, leaf_matches, runtime};
 use super::fence::{Forgotten, already_forgotten};
 use crate::approval;
-use crate::cli::{base, positional, value};
+use crate::cli::{Rerun, base, positional, value};
 use crate::cloud::account::{Credential, ForgetCheck, ObservedServer, ServersForgotten};
 use crate::cloud::login::CredentialStore;
 use crate::connect::Client;
@@ -64,17 +64,13 @@ fn forget_all(root: &ArgMatches) -> Result<(), Error> {
     let (credential, typed) = runtime.block_on(async {
         let credential = cloud::account::from_env(&store).await?;
         let Some(typed) = matches.get_one::<String>("confirm") else {
-            return Err(unconfirmed(&check(&credential).await?));
+            let check = check(&credential).await?;
+            let retry = Rerun::again(root).set("confirm", &check.organization);
+            return Err(unconfirmed(&check, retry));
         };
         Ok::<_, Error>((credential, typed))
     })?;
-    forget_through_cloud(
-        &runtime,
-        matches,
-        &credential,
-        typed,
-        &["server", "forget", "--confirm", typed],
-    )
+    forget_through_cloud(&runtime, root, &credential, typed, &Rerun::again(root))
 }
 
 /// `server forget <server>` when no Server answers, so no Cluster can take it out: Cloud
@@ -82,34 +78,29 @@ fn forget_all(root: &ArgMatches) -> Result<(), Error> {
 /// Server.
 pub(super) fn forget_unanswered(
     runtime: &tokio::runtime::Runtime,
-    matches: &ArgMatches,
+    root: &ArgMatches,
     credential: &Credential,
     selector: &str,
 ) -> Result<(), Error> {
-    let organization = runtime.block_on(unanswered(matches, credential, selector))?;
-    forget_through_cloud(
-        runtime,
-        matches,
-        credential,
-        &organization,
-        &["server", "forget", selector, "--confirm", "dead"],
-    )
+    let dead = Rerun::again(root).set("confirm", "dead");
+    let organization = runtime.block_on(unanswered(root, credential, selector, &dead))?;
+    forget_through_cloud(runtime, root, credential, &organization, &dead)
 }
 
 /// Cloud's forget, once a human approves it, which tries every Server again before it
-/// forgets them. `confirmed` is the command that reruns it with an approval's id.
+/// forgets them. `confirmed` is the command that reruns it, confirmed.
 fn forget_through_cloud(
     runtime: &tokio::runtime::Runtime,
-    matches: &ArgMatches,
+    root: &ArgMatches,
     credential: &Credential,
     organization: &str,
-    confirmed: &[&str],
+    confirmed: &Rerun,
 ) -> Result<(), Error> {
     let forgotten = approval::approved(
         runtime,
         OperationVerb::Forget,
-        matches.get_one::<String>("approval").cloned(),
-        |id| crate::cli::approved_rerun(matches, confirmed, id),
+        leaf_matches(root).get_one::<String>("approval").cloned(),
+        confirmed,
         async |approval| {
             if !crate::ui::json() {
                 crate::ui::note("Asking Cloud to forget the Servers…");
@@ -121,9 +112,10 @@ fn forget_through_cloud(
 }
 
 async fn unanswered(
-    matches: &ArgMatches,
+    root: &ArgMatches,
     credential: &Credential,
     selector: &str,
+    dead: &Rerun,
 ) -> Result<String, Error> {
     let check = check(credential).await?;
     let named =
@@ -139,11 +131,11 @@ async fn unanswered(
         }
         _ => return Err(Error::not_found(format!("Server {selector} not found"))),
     };
-    if matches.get_one::<String>("confirm").map(String::as_str) != Some("dead") {
-        let retry = rerun(
-            matches,
-            &["server", "forget", selector, "--confirm", "dead"],
-        );
+    if leaf_matches(root)
+        .get_one::<String>("confirm")
+        .map(String::as_str)
+        != Some("dead")
+    {
         return Err(Error::detailed(
             RpcErrorCode::ConfirmationRequired,
             format!(
@@ -159,7 +151,7 @@ async fn unanswered(
                 "answered": false,
             }),
         )
-        .hint(Hint::Retry(retry)));
+        .hint(dead.clone()));
     }
     Ok(check.organization)
 }
@@ -235,9 +227,8 @@ fn finished(forgotten: &ServersForgotten) -> Result<(), Error> {
 
 /// Without `--confirm` nothing changes: the error names what would go and the
 /// command that confirms it.
-fn unconfirmed(check: &ForgetCheck) -> Error {
+fn unconfirmed(check: &ForgetCheck, retry: Rerun) -> Error {
     let slug = &check.organization;
-    let retry = format!("ployz server forget --confirm {slug}");
     Error::detailed(
         RpcErrorCode::ConfirmationRequired,
         format!(
@@ -252,7 +243,7 @@ fn unconfirmed(check: &ForgetCheck) -> Error {
             "volumes": check.volumes,
         }),
     )
-    .hint(Hint::Retry(retry))
+    .hint(retry)
 }
 
 fn server_names(check: &ForgetCheck) -> String {
@@ -320,7 +311,8 @@ mod tests {
     async fn a_lone_server_that_does_not_answer_is_forgotten_by_name_through_cloud() {
         let (credential, forgot) = cloud_with(&["web-1"]);
         let unconfirmed = forget_args(&["web-1"]);
-        let error = unanswered(leaf_matches(&unconfirmed), &credential, "web-1")
+        let dead = Rerun::again(&unconfirmed).set("confirm", "dead");
+        let error = unanswered(&unconfirmed, &credential, "web-1", &dead)
             .await
             .unwrap_err()
             .report();
@@ -334,7 +326,7 @@ mod tests {
         assert!(forgot.try_recv().is_err(), "forgot without dead typed");
 
         let confirmed = forget_args(&["web-1", "--confirm", "dead"]);
-        let organization = unanswered(leaf_matches(&confirmed), &credential, "web-1")
+        let organization = unanswered(&confirmed, &credential, "web-1", &dead)
             .await
             .unwrap();
         assert_eq!(organization, "acme");
@@ -358,7 +350,8 @@ mod tests {
     async fn one_of_several_servers_that_do_not_answer_points_at_forgetting_them_all() {
         let (credential, forgot) = cloud_with(&["web-1", "web-2"]);
         let confirmed = forget_args(&["web-1", "--confirm", "dead"]);
-        let error = unanswered(leaf_matches(&confirmed), &credential, "web-1")
+        let dead = Rerun::again(&confirmed);
+        let error = unanswered(&confirmed, &credential, "web-1", &dead)
             .await
             .unwrap_err()
             .report();
@@ -367,7 +360,7 @@ mod tests {
             error.details.get("next"),
             Some(&serde_json::json!("ployz server forget"))
         );
-        let missing = unanswered(leaf_matches(&confirmed), &credential, "db-1")
+        let missing = unanswered(&confirmed, &credential, "db-1", &dead)
             .await
             .unwrap_err()
             .report();
@@ -407,7 +400,8 @@ mod tests {
                 volume: ployz_store::VolumeName::parse("data").unwrap(),
             }],
         };
-        let error = unconfirmed(&check).report();
+        let root = forget_args(&[]);
+        let error = unconfirmed(&check, Rerun::again(&root).set("confirm", "acme")).report();
         assert_eq!(error.code, RpcErrorCode::ConfirmationRequired);
         assert_eq!(
             error.details.get("retry"),

@@ -1,10 +1,13 @@
 //! What this Machine holds for one Volume name: its root or slot and its newest snapshot.
 
-use crate::{dataset_layout::DatasetLayout, machine_pool::MachinePool};
+use crate::{
+    dataset_layout::DatasetLayout,
+    machine_pool::{By, MachinePool, Need, Read},
+};
 use axum::{Json, extract::State};
 use ployz_core::{
-    InspectVolumeCopyRequest, Pull, PullState, RpcError, SlotId, Snapshot, SnapshotGuid,
-    SnapshotName, VolumeCopy, VolumeCopyView,
+    InspectVolumeCopyRequest, PoolBy, PoolRead, Pull, PullState, RpcError, SlotId, Snapshot,
+    SnapshotGuid, SnapshotName, VolumeCopy, VolumeCopyView,
 };
 
 use ployz_decide::volume_root::{PromoteMark, RootCopy, RootMarks};
@@ -104,6 +107,30 @@ impl VolumeStorage {
             .await?;
         let value = value.trim_end_matches('\n');
         Ok((!value.is_empty() && value != "-").then(|| value.to_owned()))
+    }
+
+    /// [`Self::local_property`] from the one row a listing ZFS finished prints for it, so
+    /// `None` means ZFS said nothing sets it there, never that it printed nothing.
+    pub(super) async fn listed_local(
+        &self,
+        dataset: &str,
+        property: &str,
+    ) -> Result<Option<String>> {
+        let output = self
+            .zfs_listing(&["get", "-Hp", "-o", "value,source", property, dataset])
+            .await?;
+        let mut rows = output.lines();
+        match (
+            rows.next().and_then(|row| row.split_once('\t')),
+            rows.next(),
+        ) {
+            (Some((value, "local")), None) => Ok(Some(value.to_owned())),
+            (Some((_, source)), None) if unset_source(source) => Ok(None),
+            _ => Err(format!(
+                "zfs get {property} {dataset} printed no row Ployz reads: {output:?}"
+            )
+            .into()),
+        }
     }
 
     /// The guid of a dataset's newest snapshot, whatever its name.
@@ -239,23 +266,26 @@ impl VolumeStorage {
                     Some((&root.name, newest.as_ref().map(|newest| &newest.name))),
                 )
                 .await?;
+            let marks = self.marks(&root.name);
             return Ok(Some(copy.view(
                 newest,
-                self.marks(&root.name).epoch().await?,
+                marks.epoch().await?,
                 origin,
+                marks.placed().await?,
             )));
         }
         let Some(slot) = Self::slot(datasets, pool, name) else {
             return Ok(None);
         };
         let fs = Self::slot_fs(datasets, pool, name);
-        let (readonly, newest, resume_token) = match fs {
+        let (readonly, newest, resume_token, written_here) = match fs {
             Some(fs) => (
                 fs.readonly,
                 self.newest_snapshot(&fs.name).await?,
                 self.marks(&fs.name).get(Mark::ResumeToken).await?,
+                self.written_here(&fs.name).await?,
             ),
-            None => (slot.readonly, None, None),
+            None => (slot.readonly, None, None, false),
         };
         let (pull, pull_state) = self
             .pull(slot, name, newest.as_ref(), resume_token.is_some())
@@ -276,6 +306,7 @@ impl VolumeStorage {
             role: Some(self.marks(&slot.name).role().await?),
             pull_state,
             origin,
+            written_here,
         }))
     }
 
@@ -308,23 +339,90 @@ impl VolumeStorage {
         pool: &MachinePool,
         name: &VolumeName,
     ) -> Result<Option<VolumeCopy>> {
+        // An answer of no copy is an absence, so it comes only from a listing ZFS finished.
         let busy = self.receives.status(name).busy();
-        let copy = self.copy(&self.datasets(pool).await?, pool, name).await?;
+        let copy = self
+            .copy(&self.complete_datasets(pool).await?, pool, name)
+            .await?;
         if busy && !self.receives.status(name).busy() {
-            return self.copy(&self.datasets(pool).await?, pool, name).await;
+            return self
+                .copy(&self.complete_datasets(pool).await?, pool, name)
+                .await;
         }
         Ok(copy)
     }
 
-    async fn inspect_copy(&self, name: &VolumeName) -> Result<VolumeCopyView> {
+    async fn inspect_copy(&self, name: &VolumeName, prove: bool) -> Result<VolumeCopyView> {
         let _guard = self.mutation.lock().await;
+        if prove {
+            // The installer changes the Pool under this lock, not the plugin's, so a proof
+            // takes both.
+            let _pool_guard = self.pool.lock_mutation().await?;
+            return self.prove_copy(name).await;
+        }
+        // A Pool this Machine held but can't read now may hold a copy, so it never answers none.
         let Some(pool) = self.pool.one_usable().await? else {
-            return Ok(VolumeCopyView { copy: None });
+            if self.pool.has_held_a_pool()? {
+                return Err(PluginError::HeldPoolNotImported);
+            }
+            return Ok(VolumeCopyView::of(None));
         };
+        Ok(VolumeCopyView::of(self.current_copy(&pool, name).await?))
+    }
+
+    /// The answer a restore's proof reads: the copy in the Pool [`PoolStorage::read`] says
+    /// is this Machine's own, and the Volume's entries there that a restore pinned. A
+    /// Machine that can't tell which Pool is its own answers why, and no copy or pins,
+    /// which proves nothing.
+    ///
+    /// [`PoolStorage::read`]: super::pool::PoolStorage::read
+    async fn prove_copy(&self, name: &VolumeName) -> Result<VolumeCopyView> {
+        let (pool, read) = match self.pool.read(Need::Proof).await? {
+            Read::Unheld => {
+                return Ok(VolumeCopyView {
+                    copy: None,
+                    read: Some(PoolRead::Unheld),
+                    pinned: Some(Vec::new()),
+                });
+            }
+            Read::Unproven(why) => {
+                return Ok(VolumeCopyView {
+                    copy: None,
+                    read: Some(PoolRead::Unproven { why }),
+                    pinned: None,
+                });
+            }
+            Read::Pool { pool, health, by } => {
+                let read = PoolRead::Pool {
+                    name: pool.name().to_owned(),
+                    health,
+                    by: match by {
+                        By::File => PoolBy::File,
+                        By::Device => PoolBy::Device,
+                        By::Sole => PoolBy::Sole,
+                    },
+                };
+                (pool, read)
+            }
+        };
+        let copy = self.current_copy(&pool, name).await?;
+        let datasets = self.complete_datasets(&pool).await?;
         Ok(VolumeCopyView {
-            copy: self.current_copy(&pool, name).await?,
+            copy,
+            read: Some(read),
+            pinned: Some(self.pinned_entries(&pool, &datasets, name).await?),
         })
     }
+}
+
+/// Whether `source` is one `zfs get` prints for a property not set on the dataset itself:
+/// `received`, `default`, `-` or `inherited from DATASET`. Anything else, such as a cut
+/// `loc`, reads as nothing.
+fn unset_source(source: &str) -> bool {
+    matches!(source, "received" | "default" | "-")
+        || source
+            .strip_prefix("inherited from ")
+            .is_some_and(|from| !from.is_empty() && !from.contains(char::is_whitespace))
 }
 
 pub(super) async fn inspect(
@@ -332,7 +430,10 @@ pub(super) async fn inspect(
     Json(request): Json<InspectVolumeCopyRequest>,
 ) -> Json<std::result::Result<VolumeCopyView, RpcError>> {
     let result = match request.name.as_str().parse::<VolumeName>() {
-        Ok(name) => storage.inspect_copy(&name).await.map_err(RpcError::from),
+        Ok(name) => storage
+            .inspect_copy(&name, request.prove)
+            .await
+            .map_err(RpcError::from),
         Err(error) => Err(error.into()),
     };
     Json(result)

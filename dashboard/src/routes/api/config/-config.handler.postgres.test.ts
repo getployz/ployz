@@ -33,7 +33,7 @@ const Answer = Schema.Union([
       target: Schema.String,
       organization: Schema.String,
       environment: Schema.Struct({ id: Schema.String, project: Schema.String, name: Schema.String }),
-      services: Schema.Array(Schema.Struct({ name: Schema.String, service: Schema.String })),
+      services: Schema.Array(Schema.Struct({ name: Schema.String, service: Schema.String, image: Schema.NullOr(Schema.String) })),
     }),
   }),
   Schema.Struct({ error: Schema.Struct({ code: Schema.String, message: Schema.String, details: Schema.Unknown }) }),
@@ -119,7 +119,7 @@ it.live("tells the CLI whether to seal: no server, then ready with where each se
       const { targets } = ready.json;
       assert.deepStrictEqual([targets.view, targets.target, targets.organization], ["sealing_targets", "edit", ORGANIZATION]);
       assert.deepStrictEqual([targets.environment.id, targets.environment.project, targets.environment.name], [ENVIRONMENT, "shop", "production"]);
-      assert.deepStrictEqual(targets.services, [{ name: "web", service: SERVICE }]);
+      assert.deepStrictEqual(targets.services, [{ name: "web", service: SERVICE, image: null }]);
       const refused = yield* send("sealing", { query: "environment" });
       assert.deepStrictEqual([refused.status, refused.json], [422, { error: { code: "invalid_argument", message: "Expected a sealing target.", details: null } }]);
     }).pipe(Effect.provide(yield* cloud));

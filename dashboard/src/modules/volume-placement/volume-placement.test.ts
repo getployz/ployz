@@ -520,7 +520,7 @@ describe("recovery", () => {
     const staged: PlacementRow = { ...row([...found.stage.mirrors]), staged: found.stage.placement };
     const planned = placementChanges(volume, forgotten, staged);
     expect(nextPlacementStep(planned, [])?.run).toEqual({ kind: "restore", args: { from: "web-2" } });
-    expect(placementLosses(planned)).toEqual([{ volume, server: null, writes: true, after: at }]);
+    expect(placementLosses(planned, forgotten)).toEqual([{ volume, server: null, writes: true, after: at, copy: null }]);
   });
 
   it("refuses with the planner's words while another copy answers, or the mirror holds no snapshot", () => {
@@ -702,9 +702,19 @@ describe("changeSteps", () => {
 
 describe("placementLoss", () => {
   const lossOf = (members: Member[], placement: PlacementRow) => {
-    const { version: _, ...loss } = placementLoss(changes(members, placement));
+    const { version: _, ...loss } = placementLoss(placementLosses(changes(members, placement), members));
     return loss;
   };
+  const versionOf = (members: Member[], placement: PlacementRow) => placementLoss(placementLosses(changes(members, placement), members)).version("v1");
+
+  it("binds a Deploy's confirm to each copy it deletes as its Server reported it", () => {
+    const placement = row([], { primary: "web-1" });
+    const confirmed = versionOf([member("web-1", "writer"), member("web-2", "mirror")], placement);
+    expect(versionOf([member("web-1", "writer"), member("web-2", "mirror")], placement)).toBe(confirmed);
+    expect(versionOf([member("web-1", "writer"), member("web-2", "mirror", { slot: "2" })], placement)).not.toBe(confirmed);
+    expect(versionOf([member("web-1", "writer"), member("web-2", "behind")], placement)).not.toBe(confirmed);
+    expect(versionOf([member("web-1", "writer"), member("web-2", "writtenHere")], placement)).not.toBe(confirmed);
+  });
 
   it("names each copy a Deploy deletes and the Volume to accept, and asks nothing of a move that keeps every copy", () => {
     const members = [member("web-1", "writer"), member("web-2", "mirror")];
@@ -743,16 +753,16 @@ describe("lossByVolume", () => {
       } },
     };
     const members = [member("web-1", "writer"), member("web-2", "mirror")];
-    const lost = [...placementLosses(changes([], seeded)), ...placementLosses(changes(members, row(["web-2"], { primary: "web-1" })))];
+    const lost = [...placementLosses(changes([], seeded), []), ...placementLosses(changes(members, row(["web-2"], { primary: "web-1" })), members)];
     expect(lossByVolume(lost)).toEqual([
       { name: "data", deletes: [], loss: "writes", after: at.getTime() / 1000 },
-      { name: "pg-data", deletes: [{ machine_id: id("web-2") }], loss: "data" },
+      { name: "pg-data", deletes: [{ machine_id: id("web-2"), slot: "1", newest: "11", written_here: false }], loss: "data" },
     ]);
   });
 
   it("tells a refused restore's Deploy it drops writes, naming the unanswered primary as the local check does", () => {
     const members = [member("web-1", "unanswered"), mirrorAsOf("web-2", at)];
-    expect(lossByVolume(placementLosses(changes(members, row(["web-2"], { primary: "web-2" })))))
+    expect(lossByVolume(placementLosses(changes(members, row(["web-2"], { primary: "web-2" })), members)))
       .toEqual([{ name: "pg-data", deletes: [{ machine_id: id("web-1") }], loss: "writes", after: at.getTime() / 1000 }]);
   });
 
@@ -765,16 +775,17 @@ describe("lossByVolume", () => {
     };
     const members = [member("web-1", "writer"), member("web-2", "mirror")];
     const staged = [...changes([], seeded), ...changes(members, row(["web-2"], { primary: "web-1" }))];
-    const details = JSON.parse(JSON.stringify({ volumes: lossByVolume(placementLosses(staged)), accept: ["data", "pg-data"], version: "9:1:0.1" }));
+    const lost = placementLosses(staged, members);
+    const details = JSON.parse(JSON.stringify({ volumes: lossByVolume(lost), accept: ["data", "pg-data"], version: "9:1:0.1" }));
     const refused = volumeLoss({ code: "confirmation_required", details });
-    expect(refused && volumeLossItems(refused.volumes, (machine) => machine.replace(/0+$/u, ""))).toEqual(placementLoss(staged).items);
+    expect(refused && volumeLossItems(refused.volumes, (machine) => machine.replace(/0+$/u, ""))).toEqual(placementLoss(lost).items);
   });
 });
 
 describe("two write losses on one Volume", () => {
   const data = { id: "src", name: "data" };
-  const restore = (when: Date): PlacementLost => ({ volume: data, server: null, writes: true, after: when });
-  const failover = (when: Date | null): PlacementLost => ({ volume: data, server: { id: id("web-1"), name: "web-1" }, writes: true, after: when });
+  const restore = (when: Date): PlacementLost => ({ volume: data, server: null, writes: true, after: when, copy: null });
+  const failover = (when: Date | null): PlacementLost => ({ volume: data, server: { id: id("web-1"), name: "web-1" }, writes: true, after: when, copy: null });
   const later = new Date(at.getTime() + 3_600_000);
   const item = (lost: PlacementLost[]) => volumeLossItems(lossByVolume(lost), () => undefined)[0];
 

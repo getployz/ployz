@@ -12,19 +12,21 @@ use clap::{Arg, ArgAction, ArgMatches, Command};
 use std::collections::BTreeSet;
 use std::io::{IsTerminal as _, Read};
 
-use ployz_core::{Hint, MachineId, MachineObservation, MachineTarget, RpcError, RpcErrorCode};
+use ployz_core::{MachineId, MachineObservation, MachineTarget, RpcError, RpcErrorCode};
 use ployz_store::{
     Change, DomainRow, DomainsQuery, DomainsView, Edit, Edited, EnvironmentQuery, EnvironmentView,
-    Instead, NodeName, Revision, SecretCell, SecretInput, SettingPath, SettingRow, TypedAddresses,
+    NodeName, Revision, SecretCell, SecretInput, SettingPath, SettingRow,
 };
 use serde::Serialize;
 use serde_json::Value;
 
 use super::input::{self, InputError, Source};
 use super::shared::staged::{StagedReport, Then};
-use super::store::{Store, environment, next, scoped, store, with_refresh_hint};
+use super::store::{Store, environment, scoped, store, with_refresh_hint};
 use super::{Error, leaf_matches};
-use crate::cli::{positional, switch, value};
+use crate::cli::{References, Shown, Withheld, positional, switch, value, withheld};
+
+mod typed_address;
 
 pub(super) fn get_command(command: Command) -> Command {
     scoped(command.about("Show Settings: every Service, one Service, or one Setting"))
@@ -41,19 +43,33 @@ pub(super) fn set_command(command: Command) -> Command {
         .arg(
             positional("assignment", true)
                 .action(ArgAction::Append)
+                .value_parser(withheld(shown_assignment))
                 .value_name("PATH=VALUE")
                 .help("For example web.replicas=3, web.env.LOG_LEVEL=info, or setup.web='pnpm db:seed' for a Branch's Setup Command; the SERVICE a --patch or --from-env-file applies to; web.env.KEY or web.registryCredential for --secret")
                 .add(super::catalog::setting_paths()),
         )
         .arg(
             value("patch", None)
+                .value_parser(withheld(shown_patch))
                 .conflicts_with_all(["secret", "from-env-file"])
                 .value_name("JSON")
                 .help("Set a Service's Settings from an object shaped like `get SERVICE --json` values; omitted Settings stay; - reads stdin"),
         )
         .arg(
             switch("secret", None)
-                .help("Seal a value read from stdin: set web.env.KEY --secret, or set web.registryCredential --secret for a private image's token. With --from-env-file, seal every value"),
+                .help("Seal a value read from stdin: set web.env.KEY --secret, or set web.registryCredential --secret --username octo for a private image's token. With --from-env-file, seal every value"),
+        )
+        .arg(
+            value("registry", None)
+                .value_name("HOST")
+                .help("Registry the credentials are for, like ghcr.io"),
+        )
+        .arg(
+            value("username", None)
+                .value_name("NAME")
+                .requires("secret")
+                .conflicts_with("from-env-file")
+                .help("Registry username for the token, like octo"),
         )
         .arg(
             value("from-env-file", None)
@@ -72,6 +88,47 @@ pub(super) fn set_command(command: Command) -> Command {
                 .help("With --rename: switch the variables that reference it to the new name too"),
         )
         .arg(expect())
+}
+
+/// A `PATH=VALUE` as output repeats it: the path when it parses, and the value when it is
+/// Ployz references alone or validates as the Setting's type and that type holds no
+/// secret, else `VALUE`. None when the path doesn't parse.
+fn shown_assignment(typed: &str) -> Option<Shown> {
+    let (path, value) = match typed.split_once('=') {
+        Some((path, value)) => (path, Some(value)),
+        None => (typed, None),
+    };
+    let path = SettingPath::parse(path).ok()?;
+    let named = Shown::of(&path);
+    let Some(value) = value else {
+        return Some(named);
+    };
+    let value = References::parse(value)
+        .map(|references| Shown::of(&references))
+        .or_else(|| {
+            path.plain_value(&Value::String(value.to_owned()))
+                .map(|plain| Shown::of(&plain))
+        })
+        .unwrap_or_else(|| Shown::placeholder("VALUE"));
+    Some(Shown::joined(named, "=", value))
+}
+
+/// A `--patch` as output repeats it: `-` for stdin, and the object again when each value
+/// validates as its Setting's type and that type holds no secret. None otherwise.
+fn shown_patch(typed: &str) -> Option<Shown> {
+    if typed == "-" {
+        return Some(Shown::word("-"));
+    }
+    let settings = serde_json::from_str::<serde_json::Map<String, Value>>(typed).ok()?;
+    let plain = settings
+        .into_iter()
+        .map(|(setting, value)| {
+            let path = SettingPath::parse(&format!("web.{setting}")).ok()?;
+            let plain = path.plain_value(&value)?;
+            Some((setting, plain.as_json().clone()))
+        })
+        .collect::<Option<serde_json::Map<_, _>>>()?;
+    Some(Shown::of(&crate::cli::shown::PlainPatch(plain)))
 }
 
 pub(super) fn unset_command(command: Command) -> Command {
@@ -137,7 +194,7 @@ pub(super) fn get(root: &ArgMatches) -> Result<(), Error> {
         })?;
         Ok((view, domains))
     };
-    let (view, domains) = super::store::at_one_revision("get", read, torn)?;
+    let (view, domains) = store.at_one_revision("get", read, torn)?;
     let domains = domains.map(|domains| domains.domains);
     let lines = match &only {
         Some(service) => vec![format!(
@@ -237,14 +294,14 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
     if let Some(file) = matches.get_one::<String>("from-env-file") {
         return set_from_env_file(root, file);
     }
-    if let Some(patch) = matches.get_one::<String>("patch") {
+    if let Some(patch) = matches.get_one::<Withheld>("patch").map(Withheld::typed) {
         let inline = patch != "-";
         let service = one_service(
             matches,
             "--patch takes one SERVICE, for example set web --patch '{\"replicas\":3}'",
         )?;
         let patch = if inline {
-            patch.clone()
+            patch.to_owned()
         } else {
             input::read_text(Source::Stdin, "a patch")?
         };
@@ -299,23 +356,30 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
                 "--secret reads the value from stdin, never the command line: set web.env.KEY --secret",
             ));
         }
+        let setting = SettingPath::parse(&path)?;
+        let username = secret_username(&path, &setting, matches.get_one::<String>("username"))?;
         let stdin = std::io::stdin();
         let stdin_is_terminal = stdin.is_terminal();
         let secret = read_secret(&path, stdin, stdin_is_terminal)?;
+        let value = match username {
+            Some(username) => serde_json::json!({ "username": username, "secret": secret }),
+            None => SecretInput::Seal(secret).to_value(),
+        };
         return edit(
             root,
             vec![Change::Set {
-                path: SettingPath::parse(&path)?,
-                value: SecretInput::Seal(secret).to_value(),
+                path: setting,
+                value,
             }],
         );
     }
     let assignments = matches
-        .get_many::<String>("assignment")
+        .get_many::<Withheld>("assignment")
         .into_iter()
         .flatten()
         .map(|assignment| {
             let (text, value) = assignment
+                .typed()
                 .split_once('=')
                 .ok_or_else(|| Error::usage("Expected PATH=VALUE, for example web.replicas=3"))?;
             Ok(Assignment {
@@ -426,11 +490,32 @@ struct Assignment<'a> {
 
 /// The one positional a flag applies to.
 fn one_service(matches: &ArgMatches, usage: &'static str) -> Result<String, Error> {
-    match matches.get_many::<String>("assignment") {
-        Some(mut paths) if paths.len() == 1 => paths.next().cloned(),
+    match matches.get_many::<Withheld>("assignment") {
+        Some(mut paths) if paths.len() == 1 => paths.next().map(|path| path.typed().to_owned()),
         Some(_) | None => None,
     }
     .ok_or_else(|| Error::usage(usage))
+}
+
+/// The username `set PATH --secret` seals with a registry login's token. Docker sends a
+/// login only with a username, so a login without one is refused before its token is
+/// read; `--username` names nothing for any other path.
+fn secret_username<'a>(
+    path: &str,
+    setting: &SettingPath,
+    username: Option<&'a String>,
+) -> Result<Option<&'a str>, Error> {
+    let username = username.map(|name| name.trim());
+    match (setting.names_registry_login(), username) {
+        (true, Some(name)) if !name.is_empty() => Ok(Some(name)),
+        (true, _) => Err(Error::usage(format!(
+            "{path} needs a username: add --username, like --username octo"
+        ))),
+        (false, None) => Ok(None),
+        (false, Some(_)) => Err(Error::usage(
+            "--username is only for registry credentials: set web.registryCredential --secret --username octo",
+        )),
+    }
 }
 
 /// The value for `set PATH --secret`. Typed at a terminal, it is asked for with
@@ -613,7 +698,9 @@ pub(super) fn edit_or_discard(
     };
     let store = store(root)?;
     let fail = |error| store.fail(with_refresh_hint(error, matches, "get"));
-    let edit = store.seal_edit(edit, fail)?;
+    // Only `set` names a registry; other edits carry no login.
+    let registry = matches.try_get_one::<String>("registry").ok().flatten();
+    let edit = store.seal_edit(edit, registry.map(String::as_str), fail)?;
     let edited = store.try_edit(&edit).map_err(fail)?;
     let (verb, then) = if discarded(&store, &edited)? {
         ("Discarded", Then::Diff)
@@ -622,6 +709,7 @@ pub(super) fn edit_or_discard(
     } else {
         ("Staged", Then::Deploy)
     };
+    let shown = typed_address::Reported::of(&edited);
     let followed = StagedReport::of(
         matches,
         &edited,
@@ -629,6 +717,7 @@ pub(super) fn edit_or_discard(
         unchanged,
         then,
     )
+    .shown(&shown)
     .print(|| {
         if !edited.immediate.is_empty() {
             crate::ui::stream(format_args!(
@@ -638,7 +727,7 @@ pub(super) fn edit_or_discard(
             ));
         }
         for typed in &edited.typed_addresses {
-            say_typed_addresses(matches, typed);
+            typed_address::say(matches, &edited.environment, typed);
         }
         for note in noted(edited.notes.iter().map(|noted| &noted.note)) {
             ui::note(note);
@@ -674,32 +763,49 @@ fn unchanged(changes: &[Change]) -> String {
     }
 }
 
-/// What a variable's Typed Addresses cost, and what to set instead.
-fn say_typed_addresses(matches: &ArgMatches, typed: &TypedAddresses) {
-    let (path, services) = (&typed.path, super::joined(&typed.services));
-    let them = if typed.services.len() == 1 {
-        "it"
-    } else {
-        "them"
-    };
-    let Some(consumer) = path.node() else {
-        return;
-    };
-    ui::warn(format!(
-        "{path} types the private address of {services}, so Ployz can't see that {consumer} uses {them}: a Branch that doesn't copy {them} can't reach {them}, and a Deploy won't start {them} first."
-    ));
-    let Instead::Reference { value } = &typed.instead;
-    ui::hint(&Hint::Retry(next(
-        matches,
-        &["set", &format!("{path}={value}")],
-    )));
-}
-
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
     use super::*;
+
+    /// A retry of `set` keeps the config and Environment typed, and never repeats a
+    /// variable's value, which may be a secret.
+    #[test]
+    fn a_set_retry_keeps_its_flags_and_withholds_a_variables_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("a b.yaml");
+        std::fs::write(&config, "").unwrap();
+        let config = config.to_str().unwrap();
+        let root = crate::cli::command()
+            .try_get_matches_from([
+                "ployz",
+                "--ployz-config",
+                config,
+                "set",
+                "web.env.TOKEN=hunter2",
+                "web.replicas=3",
+                "--env",
+                "staging",
+            ])
+            .unwrap();
+        let refusal = Error::usage("Working State moved on.")
+            .hint(crate::cli::Rerun::again(&root).set("expect", "7"))
+            .report();
+        assert_eq!(
+            refusal
+                .details
+                .get("retry")
+                .and_then(serde_json::Value::as_str),
+            Some(
+                format!(
+                    "ployz --ployz-config '{config}' set 'web.env.TOKEN=<VALUE>' 'web.replicas=3' \
+                     --env staging --expect 7"
+                )
+                .as_str()
+            )
+        );
+    }
 
     fn path(text: &str) -> SettingPath {
         SettingPath::parse(text).unwrap()

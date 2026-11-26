@@ -17,6 +17,8 @@ use std::{
 use ployz_core::cloud_contract::CLIENT_ID;
 use ployz_core::{Hint, RpcErrorCode};
 
+use crate::cli::Shown;
+use crate::cloud::origin::CloudOrigin;
 use crate::coded::Coded;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -34,18 +36,18 @@ const SLOW_DOWN: Duration = Duration::from_secs(5);
 pub(crate) enum LoginError {
     #[error("Could not reach Cloud at {cloud}.")]
     Unreachable {
-        cloud: String,
+        cloud: Shown,
         #[source]
         error: reqwest::Error,
     },
     #[error("Cloud at {cloud} stopped answering after it got this change, so it may have applied.")]
     Unanswered {
-        cloud: String,
+        cloud: Shown,
         #[source]
         error: reqwest::Error,
     },
     #[error("Cloud at {0} does not offer CLI access")]
-    Unsupported(String),
+    Unsupported(Shown),
     #[error("{}", crate::cloud::reply::answered("Cloud answered", *.status, .body))]
     Status { status: u16, body: String },
     #[error("Cloud sent an unexpected reply: {0}")]
@@ -63,10 +65,7 @@ pub(crate) enum LoginError {
     )]
     TokenCloudUnreadable(PathBuf),
     #[error("signed in to {signed_in}, not {requested}; run ployz logout first")]
-    OtherCloud {
-        signed_in: String,
-        requested: String,
-    },
+    OtherCloud { signed_in: Shown, requested: Shown },
     #[error("Not signed in to Cloud.")]
     SignedOut,
     #[error("the sign-in code expired before it was approved")]
@@ -94,11 +93,22 @@ pub(crate) enum LoginError {
     #[error("PLOYZ_TOKEN acts only in the Organization it was made in")]
     TokenBound,
     #[error("no Organization {0} of yours")]
-    UnknownOrganization(String),
+    UnknownOrganization(crate::cli::Shown),
     #[error("no token or signed-in device {0} in this Organization")]
-    UnknownCredential(String),
+    UnknownCredential(crate::cli::Shown),
     #[error("Tokens named `{name}` here: {}. No changes made.", ids.join(", "))]
     AmbiguousCredential { name: String, ids: Vec<String> },
+}
+
+impl LoginError {
+    /// No Organization of this user's has `slug`, as the refusal names it: whole when it
+    /// reads as a slug, else `<ORGANIZATION>`, since a word typed here may be a credential.
+    pub(crate) fn unknown_organization(slug: &str) -> Self {
+        Self::UnknownOrganization(crate::cli::shown::Label::parse(slug).map_or_else(
+            || crate::cli::Shown::placeholder("ORGANIZATION"),
+            |slug| crate::cli::Shown::of(&slug),
+        ))
+    }
 }
 
 impl Coded for LoginError {
@@ -425,13 +435,13 @@ pub(crate) enum Start {
 ///
 /// Returns [`LoginError::OtherCloud`] when signed in elsewhere, or a Cloud or store failure.
 pub(crate) async fn start(store: &CredentialStore, cloud: &str) -> Result<Start, LoginError> {
-    let cloud = crate::cloud::origin::CloudOrigin::new(cloud).into_string();
+    let cloud = CloudOrigin::new(cloud).into_string();
     let http = crate::cloud::http::client()?;
     match store.replaceable()? {
         Some(Stored::SignedIn(signed_in)) if signed_in.cloud != cloud => {
             return Err(LoginError::OtherCloud {
-                signed_in: signed_in.cloud,
-                requested: cloud,
+                signed_in: CloudOrigin::new(&signed_in.cloud).shown(),
+                requested: CloudOrigin::new(&cloud).shown(),
             });
         }
         Some(Stored::SignedIn(signed_in)) => {
@@ -580,7 +590,7 @@ async fn request_code(
         .map_err(|error| unreachable(&cloud, error))?;
     // Cloud answers 404 where CLI sign-in is not switched on.
     if response.status() == reqwest::StatusCode::NOT_FOUND {
-        return Err(LoginError::Unsupported(cloud));
+        return Err(LoginError::Unsupported(CloudOrigin::new(&cloud).shown()));
     }
     let reply: CodeReply = decode(ensure_success(response).await?)?;
     let pending = Pending {
@@ -719,7 +729,7 @@ pub(crate) fn decode<T: serde::de::DeserializeOwned>(body: Vec<u8>) -> Result<T,
 
 pub(crate) fn unreachable(cloud: &str, error: reqwest::Error) -> LoginError {
     LoginError::Unreachable {
-        cloud: cloud.to_owned(),
+        cloud: CloudOrigin::new(cloud).shown(),
         error: error.without_url(),
     }
 }
@@ -732,7 +742,7 @@ pub(crate) fn lost(cloud: &str, error: reqwest::Error) -> LoginError {
         return unreachable(cloud, error);
     }
     LoginError::Unanswered {
-        cloud: cloud.to_owned(),
+        cloud: CloudOrigin::new(cloud).shown(),
         error: error.without_url(),
     }
 }

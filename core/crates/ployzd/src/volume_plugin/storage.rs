@@ -215,8 +215,14 @@ impl VolumeStorage {
                 crate::faults::kill_inside(crate::faults::Point::Verb("Create"), None);
             }
             if restored {
+                // A promote stopped after its rename left the root unmountable; it finishes
+                // before the root loses the ID a restore run again would find it by.
+                self.finish_promote(&existing.name).await?;
                 marks
-                    .apply(&[super::marks::Write::Inherit(Mark::Restored)])
+                    .apply(&[
+                        super::marks::Write::Inherit(Mark::Restored),
+                        super::marks::Write::Inherit(Mark::TrashRestored),
+                    ])
                     .await?;
             }
             return Ok(());
@@ -390,7 +396,18 @@ impl VolumeStorage {
     /// [`Self::datasets`] from a listing that ZFS finished, for an answer that says a
     /// dataset is absent.
     pub(super) async fn complete_datasets(&self, pool: &MachinePool) -> Result<Vec<Dataset>> {
-        Self::parse_datasets(pool, &self.zfs_listing(&dataset_listing(pool)).await?)
+        let datasets =
+            Self::parse_datasets(pool, &self.zfs_listing(&dataset_listing(pool)).await?)?;
+        // A listing of the Pool always holds the Pool's own row, so one without it saw
+        // nothing, which is no absence.
+        if !datasets.iter().any(|dataset| dataset.name == pool.name()) {
+            return Err(format!(
+                "zfs list -r {} printed no row for the Pool itself",
+                pool.name()
+            )
+            .into());
+        }
+        Ok(datasets)
     }
 
     fn parse_datasets(pool: &MachinePool, output: &str) -> Result<Vec<Dataset>> {
@@ -470,19 +487,7 @@ impl VolumeStorage {
 
     /// Like [`Self::zfs`], under [`Exit::Listing`].
     pub(super) async fn zfs_listing(&self, args: &[&str]) -> Result<String> {
-        let output = host_command::run(&self.zfs, args).await;
-        if let Ok(output) = &output
-            && Exit::Listing.judge(output) == Ran::StoppedEarly
-        {
-            return Err(format!(
-                "{} {} stopped early: {}",
-                self.zfs.display(),
-                args.join(" "),
-                String::from_utf8_lossy(&output.stderr).trim()
-            )
-            .into());
-        }
-        checked_output(&self.zfs, args, output)
+        checked_listing(&self.zfs, args).await
     }
 
     /// What this Machine holds for `name` in `datasets`, if anything, with `receiving`
@@ -776,6 +781,33 @@ fn dataset_listing(pool: &MachinePool) -> [&str; 6] {
 
 pub(super) async fn checked_command(program: &Path, args: &[&str]) -> Result<String> {
     checked_output(program, args, host_command::run(program, args).await)
+}
+
+/// [`checked_command`] under [`Exit::Listing`], for output an absence or a choice is judged
+/// from.
+pub(super) async fn checked_listing(program: &Path, args: &[&str]) -> Result<String> {
+    listed_output(program, args, host_command::run(program, args).await)
+}
+
+/// [`checked_output`] under [`Exit::Listing`]: ZFS exits 0 when it stopped early and says
+/// so only on stderr, so any stderr fails it.
+pub(super) fn listed_output(
+    program: &Path,
+    args: &[&str],
+    output: io::Result<Output>,
+) -> Result<String> {
+    if let Ok(output) = &output
+        && Exit::Listing.judge(output) == Ran::StoppedEarly
+    {
+        return Err(format!(
+            "{} {} stopped early: {}",
+            program.display(),
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )
+        .into());
+    }
+    checked_output(program, args, output)
 }
 
 pub(super) fn checked_output(

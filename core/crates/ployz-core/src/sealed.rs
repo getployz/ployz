@@ -41,6 +41,31 @@ impl PlatformPurpose {
     }
 }
 
+/// A registry login a client sealed to a Cluster's Sealing Key for one registry host.
+/// It opens on that Cluster only, and only to pull an image from that host. Cloud
+/// carries it and never opens it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SealedLogin {
+    /// As [`crate::login_host`] names it, such as `ghcr.io` or `docker.io`.
+    pub host: String,
+    /// A [`crate::RegistryAuth`] as JSON.
+    pub sealed: Ciphertext,
+}
+
+impl SealedLogin {
+    /// HPKE associated data binding this login to its host and to the Cluster whose
+    /// Sealing Key is `cluster`.
+    #[must_use]
+    pub fn associated_data(&self, cluster: &crate::SealingPublicKey) -> Vec<u8> {
+        let mut aad = Vec::new();
+        put(&mut aad, separation::REGISTRY_LOGIN);
+        put(&mut aad, self.host.as_bytes());
+        put(&mut aad, cluster.as_bytes());
+        aad
+    }
+}
+
 /// HPKE X25519 encapsulated key plus the ChaCha20-Poly1305 tag.
 const MIN_CIPHERTEXT_LEN: usize = 32 + 16;
 
@@ -226,7 +251,9 @@ mod sealer {
     #[cfg(any(test, feature = "test-keypair"))]
     use zeroize::Zeroizing;
 
-    use super::{Ciphertext, PlatformPurpose, SealedIdentity, SealedScope, SealedValue};
+    use super::{
+        Ciphertext, PlatformPurpose, SealedIdentity, SealedLogin, SealedScope, SealedValue,
+    };
     #[cfg(any(test, feature = "test-keypair"))]
     use crate::hpke_suite::OpenAs;
     use crate::hpke_suite::{self, SealAs};
@@ -289,6 +316,32 @@ mod sealer {
         .map_err(|_| SealError)
     }
 
+    /// Seals `login` to the Cluster whose Sealing Key is `cluster`, for pulls from `host`.
+    ///
+    /// # Errors
+    /// [`SealError`] when HPKE refuses `cluster`.
+    pub fn seal_login(
+        cluster: &SealingPublicKey,
+        host: &str,
+        login: &crate::RegistryAuth,
+    ) -> Result<SealedLogin, SealError> {
+        let mut sealed = SealedLogin {
+            host: host.to_owned(),
+            sealed: Ciphertext::from_bytes(Vec::new()),
+        };
+        let plaintext = zeroize::Zeroizing::new(serde_json::to_vec(login).map_err(|_| SealError)?);
+        let bytes = hpke_suite::seal(
+            SealAs::Base,
+            cluster.as_bytes(),
+            separation::REGISTRY_LOGIN,
+            &sealed.associated_data(cluster),
+            &plaintext,
+        )
+        .map_err(|_| SealError)?;
+        sealed.sealed = Ciphertext::from_bytes(bytes);
+        Ok(sealed)
+    }
+
     /// A throwaway Sealing Key for tests that open what [`seal_value`] sealed, as a
     /// Machine does. Never a real Cluster's key.
     #[cfg(any(test, feature = "test-keypair"))]
@@ -329,6 +382,21 @@ mod sealer {
             )
             .ok()?;
             String::from_utf8(plaintext.to_vec()).ok()
+        }
+
+        /// The login `sealed` holds, as a Server opens it, or `None` when it was sealed
+        /// to another key or for another host.
+        #[must_use]
+        pub fn open_login(&self, sealed: &SealedLogin) -> Option<crate::RegistryAuth> {
+            let plaintext = hpke_suite::open(
+                OpenAs::Base,
+                &self.private,
+                separation::REGISTRY_LOGIN,
+                &sealed.associated_data(&self.public),
+                sealed.sealed.as_bytes(),
+            )
+            .ok()?;
+            serde_json::from_slice(&plaintext).ok()
         }
 
         /// The bytes of `sealed` as sealed for `purpose` to this key, or `None` when

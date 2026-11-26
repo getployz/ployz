@@ -669,6 +669,20 @@ doesn't exist and for a private image you have no access to.
 - If the image is private, add **Registry credentials**, or replace a token that expired. See
   [Use a private image](../deploy/docker-image.md#use-a-private-image).
 
+**Failed at pull**, with `this Server won't pull the image with its registry login`
+
+The cause line under it says why:
+
+- `the registry credentials are for ghcr.io, and the image is on quay.io`: the image moved to
+  another registry. Enter its credentials again under **Settings → Source**.
+- `Docker on this Server reaches … without TLS`: the registry is in the server's
+  `insecure-registries`, or its address is. Serve the registry over TLS.
+- `Docker on this Server pulls Docker Hub images through a mirror`: remove `registry-mirrors` from
+  the server's Docker settings, or use a public image.
+- `write the image's registry in lowercase`: fix the image name, like `ghcr.io/acme/web`.
+
+See [Use a private image](../deploy/docker-image.md#use-a-private-image).
+
 A server that can't look up a hostname while pulling says so instead:
 
 **Failed at pull**, with `Host registry.example.invalid does not resolve, so the image could not be pulled. Check the image's registry, or this Server's DNS`

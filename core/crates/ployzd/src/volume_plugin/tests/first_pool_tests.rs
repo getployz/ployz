@@ -957,7 +957,7 @@ case "$name" in
         [ ! -e '{fail_import}' ] || {{ echo 'import failed' >&2; exit 2; }}
         touch '{pool}'
         ;;
-      'list -Hp -o name,size,allocated,free,health,readonly')
+      'list -Hp -o name,guid,size,allocated,free,health,readonly')
         if [ -e '{concurrent}' ] && [ ! -e '{pool}' ]; then
           sleep 0.1
         else
@@ -968,11 +968,12 @@ case "$name" in
             [ ! -e '{pool_overhead}' ] || capacity=$((capacity - $(cat '{pool_overhead}')))
             used=0
             [ ! -e '{trash_entry}' ] || used=$(cut -d' ' -f2 '{trash_entry}')
-            printf 'ployz\t%s\t%s\t%s\tONLINE\toff\n' "$capacity" "$used" "$((capacity - used))"
+            printf 'ployz\t7\t%s\t%s\t%s\tONLINE\toff\n' "$capacity" "$used" "$((capacity - used))"
           fi
         fi
         ;;
       'list -H -o name') [ ! -e '{pool}' ] || printf 'ployz\n' ;;
+      'list -v -H -P -o name ployz') [ ! -e '{pool}' ] || printf 'ployz\n\t%s\t-\t-\n' '{backing}' ;;
       create*)
         case "$*" in *'-O org.debian:periodic-trim=disable'*) touch '{trim_disabled}' ;; esac
         touch '{pool}'; cp '{allocated}' '{claimed}'; [ ! -e '{fail_pool}' ] || exit 2 ;;
@@ -1045,7 +1046,7 @@ case "$name" in
       # A delete moves the Volume to the Trash; its bytes leave the commitment.
       'list -H -o name -t filesystem') [ ! -e '{other}.trash' ] || printf 'ployz/ployz-trash\n' ;;
       'get -H -s local -o value '*) ;;
-      'set ployz:trash'*' ployz/ployz/other'|'set ployz:trashed'*' ployz/ployz/other') ;;
+      'set ployz:trash'*' ployz/ployz/other'|'set ployz:trashed'*' ployz/ployz/other'|'inherit ployz:trash-'*' ployz/ployz/other') ;;
       'rename ployz/ployz/other ployz/ployz-trash/'*) rm '{other}' '{other_bound}' ;;
       'set canmount=off ployz/ployz-trash/'*) ;;
       'get -H -o value mounted ployz/ployz-trash/'*) echo no ;;

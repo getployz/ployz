@@ -274,6 +274,12 @@ pub enum VolumeCopy {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         origin: Option<crate::VolumeOrigin>,
+        /// The image a Writer start placed before its promote, with the epoch it promoted
+        /// to and its admitted spec's digest, as `ployz:image` records them. Absent for a
+        /// promote with no start, for a mark that doesn't parse, and from older daemons.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        placed: Option<PlacedImage>,
     },
     /// `<pool>/ployz-mirror/<name>`: a read-only copy Docker never sees. `newest` is of
     /// its `fs` child; `resume_token` is set while a receive into `fs` is interrupted.
@@ -305,7 +311,119 @@ pub enum VolumeCopy {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         origin: Option<crate::VolumeOrigin>,
+        /// The slot may hold writes no other Machine has: it carries a departure's
+        /// snapshot or a seed, promote, cut or epoch mark, or no pull is known to have
+        /// received its newest snapshot. A Forget without `discard` refuses it. A daemon
+        /// without [`crate::VOLUME_KEEP_WRITTEN_CAPABILITY`] never reports it.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        #[ts(optional, as = "Option<bool>")]
+        written_here: bool,
     },
+}
+
+/// The image a Writer start placed on this Machine before the promote it asked for: the
+/// epoch that promote wrote, the digest of the admitted spec (its namespace and whole
+/// spec, as ployzd's admission hashes them), and the image ID Docker named then. The
+/// promote records it in the same step as the epoch, so a resend of that same admitted
+/// spec at that epoch creates its holder from this ID, pulling nothing and reading no
+/// tag. Another spec, or another epoch, never matches it.
+///
+/// On the wire and on disk it is one string, `<epoch> <spec digest> <image ID>`: a decimal
+/// epoch, 64 lowercase hex digits, and `sha256:` with 64 more. Nothing else parses.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(try_from = "String", into = "String")]
+#[ts(type = "string")]
+pub struct PlacedImage {
+    epoch: WriterEpoch,
+    spec: [u8; 32],
+    id: [u8; 32],
+}
+
+impl PlacedImage {
+    /// The record of image `id` placed for the spec whose digest is `spec`, promoted at
+    /// `epoch`.
+    ///
+    /// # Errors
+    ///
+    /// When `id` is not `sha256:` and 64 lowercase hex digits.
+    pub fn new(epoch: WriterEpoch, spec: [u8; 32], id: &str) -> Result<Self, String> {
+        Ok(Self {
+            epoch,
+            spec,
+            id: image_id(id)?,
+        })
+    }
+
+    #[must_use]
+    pub const fn epoch(&self) -> WriterEpoch {
+        self.epoch
+    }
+
+    #[must_use]
+    pub const fn spec(&self) -> &[u8; 32] {
+        &self.spec
+    }
+
+    /// The image ID, as Docker names it.
+    #[must_use]
+    pub fn id(&self) -> String {
+        format!("sha256:{}", crate::hex::encode(&self.id))
+    }
+}
+
+impl fmt::Display for PlacedImage {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "{} {} {}",
+            self.epoch.get(),
+            crate::hex::encode(&self.spec),
+            self.id()
+        )
+    }
+}
+
+impl FromStr for PlacedImage {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let invalid = || format!("{value:?} is not `<epoch> <spec digest> <image ID>`");
+        let mut fields = value.split(' ');
+        let (Some(epoch), Some(spec), Some(id), None) =
+            (fields.next(), fields.next(), fields.next(), fields.next())
+        else {
+            return Err(invalid());
+        };
+        if epoch.is_empty() || !epoch.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(invalid());
+        }
+        let epoch = epoch.parse().map_err(|_| invalid())?;
+        Ok(Self {
+            epoch: WriterEpoch::new(epoch),
+            spec: crate::hex::decode(spec).ok_or_else(invalid)?,
+            id: image_id(id).map_err(|_| invalid())?,
+        })
+    }
+}
+
+impl TryFrom<String> for PlacedImage {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        value.parse()
+    }
+}
+
+impl From<PlacedImage> for String {
+    fn from(placed: PlacedImage) -> Self {
+        placed.to_string()
+    }
+}
+
+fn image_id(id: &str) -> Result<[u8; 32], String> {
+    id.strip_prefix("sha256:")
+        .and_then(crate::hex::decode)
+        .ok_or_else(|| format!("{id:?} is not an image ID"))
 }
 
 /// The `ployz:*` mark on a read-only root, named after the mark and claiming no more.
@@ -411,16 +529,104 @@ pub enum PullState {
     Unrecognized,
 }
 
-/// Live answer to `InspectVolumeCopy`: what this Machine holds.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+/// Live answer to `InspectVolumeCopy`: what this Machine holds. `read` and `pinned` come
+/// only when the request asked to `prove` absence, and only from a Machine that knows how;
+/// an older Machine leaves both out, which proves nothing. An answer with `read` must
+/// say `copy`, as `null` when there is none, so a dropped field never reads as no copy.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, TS)]
 pub struct VolumeCopyView {
     pub copy: Option<VolumeCopy>,
+    /// Which Pool the answer read, and how this Machine knows it is its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub read: Option<PoolRead>,
+    /// Every Trash entry of the Volume in that Pool that a restore pinned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, as = "Option<Vec<String>>")]
+    pub pinned: Option<Vec<crate::TrashId>>,
 }
 
-/// Ask a Machine what it holds for one Volume name.
+impl<'de> Deserialize<'de> for VolumeCopyView {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        /// `Some` for a field the answer holds, `null` included.
+        fn present<'de, D: serde::Deserializer<'de>>(
+            deserializer: D,
+        ) -> Result<Option<Option<VolumeCopy>>, D::Error> {
+            Option::deserialize(deserializer).map(Some)
+        }
+        #[derive(Deserialize)]
+        struct Wire {
+            #[serde(default, deserialize_with = "present")]
+            copy: Option<Option<VolumeCopy>>,
+            #[serde(default)]
+            read: Option<PoolRead>,
+            #[serde(default)]
+            pinned: Option<Vec<crate::TrashId>>,
+        }
+        let wire = Wire::deserialize(deserializer)?;
+        let copy = match (wire.copy, &wire.read) {
+            (Some(copy), _) => copy,
+            (None, None) => None,
+            (None, Some(_)) => return Err(serde::de::Error::missing_field("copy")),
+        };
+        Ok(Self {
+            copy,
+            read: wire.read,
+            pinned: wire.pinned,
+        })
+    }
+}
+
+impl VolumeCopyView {
+    /// An answer that carries no proof.
+    #[must_use]
+    pub const fn of(copy: Option<VolumeCopy>) -> Self {
+        Self {
+            copy,
+            read: None,
+            pinned: None,
+        }
+    }
+}
+
+/// Which Pool a Machine read to answer, judged from its own records and what ZFS lists and
+/// can import, without changing either.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PoolRead {
+    /// This Machine never held a Pool, and none is imported or importable.
+    Unheld,
+    /// The Pool this Machine owns.
+    Pool {
+        name: String,
+        health: String,
+        by: PoolBy,
+    },
+    /// This Machine can't tell which Pool is its own.
+    Unproven { why: String },
+    #[serde(other)]
+    Unknown,
+}
+
+/// How a Machine knows a Pool is its own.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum PoolBy {
+    /// Its only vdev is the backing file this Machine records.
+    File,
+    /// It is the one `ployz-device` Pool this Machine records.
+    Device,
+    /// It is the only Pool, and this Machine records nothing.
+    Sole,
+}
+
+/// Ask a Machine what it holds for one Volume name. With `prove`, the answer also says
+/// which Pool it read and which Trash entries of the Volume a restore pinned there.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct InspectVolumeCopyRequest {
     pub name: DockerVolumeName,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub prove: bool,
 }
 
 /// SeedVolume on the writer: a new Volume `into` holding the restore point `guid` of
@@ -769,6 +975,60 @@ mod tests {
         ));
     }
 
+    /// `ployz:image` parses only as the three fields a promote writes, so no caller's
+    /// string can make a root's mark unreadable to the next start.
+    #[test]
+    fn a_placed_image_parses_only_as_epoch_digest_and_id() {
+        let (spec, id) = ("ab".repeat(32), format!("sha256:{}", "cd".repeat(32)));
+        let mark = format!("7 {spec} {id}");
+        let placed: PlacedImage = mark.parse().unwrap();
+        assert_eq!(placed.epoch(), WriterEpoch::new(7));
+        assert_eq!(placed.id(), id);
+        assert_eq!(placed.to_string(), mark);
+        assert_eq!(
+            serde_json::from_value::<PlacedImage>(serde_json::json!(mark)).unwrap(),
+            placed
+        );
+        for bad in [
+            String::new(),
+            "\n\n".to_owned(),
+            format!("{id} \n\n"),
+            format!("{id} move-1"),
+            format!("7 {spec}"),
+            format!("7 {spec} {id} extra"),
+            format!("+7 {spec} {id}"),
+            format!("7 {} {id}", spec.to_uppercase()),
+            format!("7 {spec} sha256:{}", "cd".repeat(31)),
+            format!("7  {spec} {id}"),
+            format!("4294967296 {spec} {id}"),
+        ] {
+            assert!(bad.parse::<PlacedImage>().is_err(), "{bad:?} parsed");
+        }
+    }
+
+    #[test]
+    fn a_proof_answer_that_drops_its_copy_is_not_read_as_no_copy() {
+        let view = |answer| serde_json::from_value::<VolumeCopyView>(answer);
+        let unheld = serde_json::json!({ "kind": "unheld" });
+        assert!(
+            view(serde_json::json!({ "read": unheld, "pinned": [] })).is_err(),
+            "a proof without `copy` read as no copy"
+        );
+        assert_eq!(
+            view(serde_json::json!({ "copy": null, "read": unheld, "pinned": [] })).unwrap(),
+            VolumeCopyView {
+                copy: None,
+                read: Some(PoolRead::Unheld),
+                pinned: Some(Vec::new()),
+            }
+        );
+        // An older Machine's answer carries no proof, which the restore refuses on its own.
+        assert_eq!(
+            view(serde_json::json!({})).unwrap(),
+            VolumeCopyView::of(None)
+        );
+    }
+
     #[test]
     fn plain_mount_admission_table() {
         let root = |readonly| VolumeCopy::Root {
@@ -778,6 +1038,7 @@ mod tests {
             seed: false,
             mark: None,
             origin: None,
+            placed: None,
         };
         let slot = VolumeCopy::Slot {
             slot: SlotId::new(1),
@@ -788,6 +1049,7 @@ mod tests {
             role: Some(SlotRole::Mirror),
             pull_state: None,
             origin: None,
+            written_here: false,
         };
         let known = |role| {
             vec![KnownCopy {

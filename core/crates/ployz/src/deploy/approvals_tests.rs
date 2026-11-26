@@ -66,9 +66,11 @@ fn want_of(
             resolved_spec: resolved,
             deployment_id: None,
             registry_auth: None,
+            registry_login: None,
             image_prepared: false,
             image_id: None,
             answer: ployz_core::AnswerWhen::Started,
+            replaces: None,
         }),
         rotation: RunRotation::Pending,
     }

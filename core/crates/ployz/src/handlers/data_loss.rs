@@ -1,11 +1,9 @@
 //! CLI removal acceptance over a fixed, observer-relative deletion list.
 
 use super::{Error, leaf_matches, string_values};
-use crate::{connect::Client, context::ConnectionSource};
+use crate::{cli::Rerun, connect::Client, context::ConnectionSource};
 use clap::ArgMatches;
-use ployz_core::{
-    DataLoss, DataLossConfirmation, Hint, ObservedDataLoss, RpcError, UnconfirmedDataLoss,
-};
+use ployz_core::{DataLoss, DataLossConfirmation, ObservedDataLoss, RpcError, UnconfirmedDataLoss};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ui::{self, Tree};
@@ -65,8 +63,8 @@ pub(super) fn confirm_removal(
     typed: Typed<'_>,
     volume_effect: VolumeEffect,
     labels: &VolumeLabels,
-    refusal: impl FnOnce(String) -> Error,
-) -> Result<(DataLossConfirmation, Vec<String>), Error> {
+    refusal: impl FnOnce(Rerun) -> Error,
+) -> Result<(DataLossConfirmation, Rerun), Error> {
     let Typed { server, word } = typed;
     let leaf = leaf_matches(root);
     let request = Request {
@@ -76,7 +74,7 @@ pub(super) fn confirm_removal(
         word,
         named: &string_values(leaf, "accept-volume-loss"),
         typed: leaf.get_one::<String>("confirm").map(String::as_str),
-        retry: &retry_args(root, client.connection_source()),
+        retry: retry_args(root, client.connection_source()),
     };
     if matches!(volume_effect, VolumeEffect::LoseAccess)
         && observed.data_loss.is_empty()
@@ -87,7 +85,7 @@ pub(super) fn confirm_removal(
         )));
     }
     if !request.check()? {
-        let retry = request.retry();
+        let retry = request.accepting();
         if ui::can_prompt() {
             ui::note_inline(loss(
                 observed,
@@ -102,27 +100,14 @@ pub(super) fn confirm_removal(
     Ok((request.accept()?, request.accepting()))
 }
 
-pub(super) fn retry_args(root: &ArgMatches, source: &ConnectionSource) -> Vec<String> {
-    let mut args = vec!["ployz".into()];
-    let mut leaf = root;
-    while let Some((name, child)) = leaf.subcommand() {
-        args.push(name.into());
-        leaf = child;
+/// This removal again, reaching the Server through the context it was reached through.
+/// Any approval drops: the one a retry needs is for what it accepts.
+pub(super) fn retry_args(root: &ArgMatches, source: &ConnectionSource) -> Rerun {
+    let again = Rerun::again(root).without("approval");
+    match source {
+        ConnectionSource::Context(name) => again.set("context", name),
+        ConnectionSource::Direct | ConnectionSource::LocalSocket | ConnectionSource::Cloud => again,
     }
-    args.extend(string_values(leaf, "server"));
-    if let Some(connect) = leaf.try_get_one::<String>("connect").ok().flatten() {
-        args.extend(["--connect".into(), connect.clone()]);
-    }
-    args.extend(
-        crate::cli::config_flag(leaf)
-            .into_iter()
-            .flatten()
-            .map(String::from),
-    );
-    if let ConnectionSource::Context(name) = source {
-        args.extend(["--context".into(), name.clone()]);
-    }
-    args
 }
 
 fn loss(
@@ -181,7 +166,7 @@ struct Request<'a> {
     word: &'a str,
     named: &'a [String],
     typed: Option<&'a str>,
-    retry: &'a [String],
+    retry: Rerun,
 }
 
 impl Request<'_> {
@@ -195,17 +180,11 @@ impl Request<'_> {
     }
 
     /// The command that accepts everything observed now.
-    fn accepting(&self) -> Vec<String> {
-        let mut command = self.retry.to_vec();
-        command.extend(["--confirm".into(), self.word.to_owned()]);
-        for name in self.names() {
-            command.extend(["--accept-volume-loss".into(), name.to_owned()]);
-        }
-        command
-    }
-
-    fn retry(&self) -> String {
-        shell_words::join(self.accepting())
+    fn accepting(&self) -> Rerun {
+        self.retry
+            .clone()
+            .set("confirm", self.word)
+            .set_all("accept-volume-loss", self.names())
     }
 
     /// Whether the flags accept on their own; `false` means the word must be
@@ -242,7 +221,7 @@ impl Request<'_> {
                     self.server
                 )
             };
-            return Err(Error::usage(message).hint(Hint::Retry(self.retry())));
+            return Err(Error::usage(message).hint(self.accepting()));
         }
         let missing = names.difference(&supplied).copied().collect::<Vec<_>>();
         if !missing.is_empty() && (self.typed.is_some() || !supplied.is_empty()) {
@@ -250,7 +229,7 @@ impl Request<'_> {
                 "Missing volume acceptance: {}. No changes made.",
                 missing.join(", ")
             ))
-            .hint(Hint::Retry(self.retry())));
+            .hint(self.accepting()));
         }
         Ok(self.typed.is_some())
     }
@@ -308,16 +287,22 @@ mod tests {
             word: "worker",
             named,
             typed,
-            retry: &[],
+            retry: removing(&[]),
         }
+    }
+
+    /// `ployz server rm worker` with `flags`, again.
+    fn removing(flags: &[&str]) -> Rerun {
+        let words = ["ployz", "server", "rm", "worker"].iter().chain(flags);
+        Rerun::again(&crate::cli::command().try_get_matches_from(words).unwrap())
     }
 
     fn retry_of(error: &Error) -> String {
         let hints = error.hints();
-        let [Hint::Retry(retry)] = hints.as_slice() else {
+        let [ployz_core::Hint::Retry(retry)] = hints.as_slice() else {
             panic!("{hints:?}");
         };
-        retry.clone()
+        retry.command().to_owned()
     }
 
     #[test]
@@ -423,17 +408,9 @@ mod tests {
             data_loss: vec![loss('a', "data"), loss('b', "data"), loss('a', "logs")],
         };
         let labels = VolumeLabels::new();
-        let retry = [
-            "ployz".into(),
-            "server".into(),
-            "rm".into(),
-            "worker".into(),
-            "--context".into(),
-            "prod west".into(),
-        ];
         for named in [vec![], vec!["data".into()]] {
             let error = Request {
-                retry: &retry,
+                retry: removing(&["--context", "prod-west"]),
                 ..request(&observed, &labels, &named, Some("worker"))
             }
             .check()
@@ -452,7 +429,7 @@ mod tests {
             assert!(
                 shell_words::split(&retry)
                     .unwrap()
-                    .contains(&"prod west".into())
+                    .contains(&"prod-west".into())
             );
         }
         let named = ["data".into(), "logs".into(), "data".into()];
@@ -525,6 +502,13 @@ mod tests {
 
     #[test]
     fn retry_preserves_effective_selection_and_quotes_arguments() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("socket name");
+        let config = dir.path().join("config's file");
+        std::fs::write(&socket, "").unwrap();
+        std::fs::write(&config, "").unwrap();
+        let connect = format!("unix://{}", socket.display());
+        let config = config.to_str().unwrap();
         let root = crate::cli::command()
             .try_get_matches_from([
                 "ployz",
@@ -532,24 +516,19 @@ mod tests {
                 "forget",
                 "edge",
                 "--connect",
-                "unix:///tmp/socket name",
+                &connect,
                 "--ployz-config",
-                "/tmp/config's file",
+                config,
             ])
             .unwrap();
-        let args = retry_args(&root, &ConnectionSource::Direct);
-        let command = shell_words::join(&args);
-        assert_eq!(shell_words::split(&command).unwrap(), args);
-        let parsed = crate::cli::command().try_get_matches_from(&args).unwrap();
+        let line = retry_args(&root, &ConnectionSource::Direct).line();
+        let parsed = crate::cli::command()
+            .try_get_matches_from(shell_words::split(&line).unwrap())
+            .unwrap();
         let leaf = leaf_matches(&parsed);
-        assert_eq!(
-            args.get(..4),
-            Some(&["ployz", "server", "forget", "edge"].map(String::from)[..])
-        );
+        assert_eq!(crate::cli::command_path(&parsed), "server forget", "{line}");
         assert_eq!(string_values(leaf, "server"), ["edge"]);
-        assert_eq!(
-            leaf.get_one::<String>("connect").unwrap(),
-            "unix:///tmp/socket name"
-        );
+        assert_eq!(crate::cli::connection(leaf).unwrap(), connect);
+        assert_eq!(leaf.get_one::<String>("ployz-config").unwrap(), config);
     }
 }

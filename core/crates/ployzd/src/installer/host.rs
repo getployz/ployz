@@ -569,8 +569,8 @@ pub(super) async fn install_docker(paths: &InstallPaths) -> Result<(), Error> {
 
 const STAGE: &str = "checking Docker";
 
-/// Refuses a Docker Ployz can't use: too old an Engine API or buildx, or no containerd image
-/// store. A Machine without Docker passes.
+/// Refuses a Docker Ployz can't use: too old an Engine API or buildx, no containerd image
+/// store, or live-restore off. A Machine without Docker passes.
 pub(super) fn verify_docker() -> Result<(), Error> {
     let (docker, unread) = read_docker();
     if let Some(error) = unread {
@@ -920,18 +920,21 @@ RestrictNamespaces=true
         server: &'static str,
         buildx: &'static str,
         driver_status: &'static str,
+        /// `docker info`'s `LiveRestoreEnabled`.
+        live_restore: bool,
         refusal: Option<&'static str>,
     }
 
     const STORE: &str = "[[driver-type io.containerd.snapshotter.v1]]";
 
-    const DOCKER_CASES: [DockerCase; 8] = [
+    const DOCKER_CASES: [DockerCase; 9] = [
         DockerCase {
             name: "amazon-fresh",
             retained: false,
             server: "29.4.0 1.54",
             buildx: "v0.37.1",
             driver_status: STORE,
+            live_restore: true,
             refusal: None,
         },
         DockerCase {
@@ -940,6 +943,7 @@ RestrictNamespaces=true
             server: "29.1.3 1.52",
             buildx: "v0.37.1",
             driver_status: STORE,
+            live_restore: true,
             refusal: Some(
                 "Docker 29.1.3 is too old: Ployz needs Docker 29.2 or newer. Upgrade Docker, or uninstall it and run this again so Ployz installs a current one.",
             ),
@@ -950,6 +954,7 @@ RestrictNamespaces=true
             server: "25.0.16 1.44",
             buildx: "v0.12.1",
             driver_status: "[[Backing Filesystem extfs]]",
+            live_restore: true,
             refusal: Some(
                 "Docker 25.0.16 is too old: Ployz needs Docker 29.2 or newer. Upgrade Docker, or uninstall it and run this again so Ployz installs a current one.",
             ),
@@ -960,6 +965,7 @@ RestrictNamespaces=true
             server: "20.10.24+dfsg1 1.41",
             buildx: "",
             driver_status: "[[Backing Filesystem extfs]]",
+            live_restore: true,
             refusal: Some(
                 "Docker 20.10.24+dfsg1 is too old: Ployz needs Docker 29.2 or newer. Upgrade Docker, or uninstall it and run this again so Ployz installs a current one.",
             ),
@@ -970,6 +976,7 @@ RestrictNamespaces=true
             server: "29.2.0 1.53",
             buildx: "",
             driver_status: STORE,
+            live_restore: true,
             refusal: Some("docker: 'buildx' is not a docker command."),
         },
         DockerCase {
@@ -978,6 +985,7 @@ RestrictNamespaces=true
             server: "29.2.0 1.53",
             buildx: "v0.17.1",
             driver_status: STORE,
+            live_restore: true,
             refusal: Some(
                 "Docker Buildx v0.17.1 is too old: Ployz needs Buildx 0.18 or newer. Upgrade Docker, or uninstall it and run this again so Ployz installs a current one.",
             ),
@@ -988,6 +996,7 @@ RestrictNamespaces=true
             server: "",
             buildx: "v0.37.1",
             driver_status: STORE,
+            live_restore: true,
             refusal: Some(
                 "Docker is installed but not running. Start it (systemctl start docker) and run this again.",
             ),
@@ -998,9 +1007,19 @@ RestrictNamespaces=true
             server: "29.2.0 1.53",
             buildx: "v0.18.0",
             driver_status: "[[Backing Filesystem extfs]]",
+            live_restore: true,
             refusal: Some(
                 r#"Docker isn't using the containerd image store, which Ployz needs to build and move images between Servers. Enable it in /etc/docker/daemon.json ("features": {"containerd-snapshotter": true}) and restart Docker, or uninstall Docker and run this again."#,
             ),
+        },
+        DockerCase {
+            name: "retained-without-live-restore",
+            retained: true,
+            server: "29.2.0 1.53",
+            buildx: "v0.18.0",
+            driver_status: STORE,
+            live_restore: false,
+            refusal: Some(super::super::assess::LIVE_RESTORE_OFF),
         },
     ];
 
@@ -1052,8 +1071,8 @@ RestrictNamespaces=true
             write_script(
                 &commands.join("docker"),
                 &format!(
-                    "case \"$1\" in\nversion) [ \"$2 $3\" = '--format {{{{.Server.Version}}}} {{{{.Server.APIVersion}}}}' ] || exit 2; [ -n '{0}' ] || exit 1; echo '{0}' ;;\nbuildx) [ -n '{1}' ] || {{ echo \"docker: 'buildx' is not a docker command.\" >&2; exit 1; }}; echo 'github.com/docker/buildx {1} 0000000' ;;\ninfo) echo '{2}' ;;\nesac",
-                    case.server, case.buildx, case.driver_status
+                    "case \"$1\" in\nversion) [ \"$2 $3\" = '--format {{{{.Server.Version}}}} {{{{.Server.APIVersion}}}}' ] || exit 2; [ -n '{0}' ] || exit 1; echo '{0}' ;;\nbuildx) [ -n '{1}' ] || {{ echo \"docker: 'buildx' is not a docker command.\" >&2; exit 1; }}; echo 'github.com/docker/buildx {1} 0000000' ;;\ninfo) [ \"$2 $3\" = '-f {{{{.LiveRestoreEnabled}}}} {{{{.DriverStatus}}}}' ] || exit 2; echo '{3} {2}' ;;\nesac",
+                    case.server, case.buildx, case.driver_status, case.live_restore
                 ),
             );
             // Installing Docker puts `dockerd` on the PATH.

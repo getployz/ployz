@@ -85,11 +85,11 @@ fn parse_log_time_accepts_documented_formats_and_rejects_garbage() {
         parse_log_time("since", "notatime", now)
             .unwrap_err()
             .to_string(),
-        "invalid time \"notatime\" for --since: expected a relative duration, RFC 3339 date, or Unix timestamp"
+        "invalid time for --since: expected a relative duration, RFC 3339 date, or Unix timestamp"
     );
     assert_eq!(
         parse_tail("abc").unwrap_err().to_string(),
-        "invalid log tail \"abc\": expected a non-negative integer or all"
+        "invalid log tail: expected a non-negative integer or all"
     );
 }
 
@@ -157,11 +157,11 @@ fn input_refusals_say_what_they_said_and_carry_their_codes() {
     assert_eq!(
         shown,
         [
-            "invalid Service log selector \"api:\"",
-            "invalid Service Selector \"a/b/c\": a Service ID, Qualified Service (namespace/name), or Service Name",
+            "invalid Service log selector: expected SERVICE or SERVICE:CONTAINER",
+            "invalid Service Selector: a Service ID, Qualified Service (namespace/name), or Service Name",
             "invalid proxy port: expected [LOCAL_PORT:]REMOTE_PORT",
-            "invalid local port \"-1\": expected 0-65535",
-            "invalid remote port \"0\": expected 1-65535",
+            "invalid local port: expected 0-65535",
+            "invalid remote port: expected 1-65535",
             "cannot attach a terminal exec to non-terminal stdin; use -T",
         ]
     );

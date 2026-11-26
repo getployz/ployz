@@ -91,12 +91,11 @@ fn reason(message: &str, input: &Value) -> String {
     if message.starts_with("missing field `") || message.starts_with("duplicate field `") {
         return message.to_owned();
     }
-    // A `ValueError` reads `invalid KIND "VALUE": EXPECTED`, its value quoted and escaped.
-    if let Some((kind, expected)) = message.strip_prefix("invalid ").and_then(|rest| {
-        let (kind, _) = rest.split_once(" \"")?;
-        let (_, expected) = rest.rsplit_once("\": ")?;
-        Some((kind, expected))
-    }) {
+    // A `ValueError` reads `invalid KIND: EXPECTED`, without the value.
+    if let Some((kind, expected)) = message
+        .strip_prefix("invalid ")
+        .and_then(|rest| rest.split_once(": "))
+    {
         return format!("invalid {kind}, expected {expected}");
     }
     match quotes(message, input) {

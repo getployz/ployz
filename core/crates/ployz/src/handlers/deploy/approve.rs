@@ -31,6 +31,7 @@ use super::super::key::members::Member;
 use super::super::store::Store;
 use super::super::{Error, route};
 use super::silent::{self, ImageEdit};
+use crate::cli::Rerun;
 use crate::cluster::Call;
 use crate::connect::Client;
 use crate::device::DeviceSigning;
@@ -115,7 +116,7 @@ pub(in crate::handlers) fn sign(
         deployment: None,
     };
     if let Some(key) = silent::key()? {
-        silent::refuse_forget(matches)?;
+        silent::refuse_forget(matches, store.again())?;
         silent::servers_ready(matches)?;
         let plan = store.read(&plan_query)?;
         return silent::sign(matches, store, (environment, plan), edits, &key).map(Some);
@@ -126,8 +127,10 @@ pub(in crate::handlers) fn sign(
     let unsigned = |plan: Result<PlanView, Error>| -> Result<Option<DeviceApproval>, Error> {
         if silent {
             let plan = plan?;
-            silent::pending(&plan.changes, edits).map_err(|refused| refused.error(matches))?;
-            silent::moves(&plan.regions).map_err(|refused| refused.error(matches))?;
+            silent::pending(&plan.changes, edits)
+                .map_err(|refused| refused.error(matches, store.again()))?;
+            silent::moves(&plan.regions)
+                .map_err(|refused| refused.error(matches, store.again()))?;
         }
         Ok(None)
     };
@@ -136,7 +139,7 @@ pub(in crate::handlers) fn sign(
         return Ok(None);
     };
     if silent {
-        silent::refuse_forget(matches)?;
+        silent::refuse_forget(matches, store.again())?;
     }
     let needs = match silent {
         true => Needs::Silent,
@@ -275,6 +278,7 @@ pub(in crate::handlers) fn sign(
             &approved,
             source.as_ref().map(|drafted| &drafted.summary),
         ),
+        without_terminal(matches, store.again()),
         |question, refusal, declined| crate::ui::confirm(question, || refusal, declined),
     )?;
     let versions = approved
@@ -449,8 +453,9 @@ fn source(
         changed: view.changed.clone(),
         unread: None,
     };
-    // An owner or admin decides this Deploy and approves no rule with it, so this Device
-    // signs none. An older Store says only whether the Environment is Protected.
+    // An owner or admin decides this Deploy and signs the rule with it on its approval
+    // page, so this Device signs none. An older Store says only whether the Environment is
+    // Protected.
     if view
         .protector_decides
         .unwrap_or(view.protected != Some(false))
@@ -472,7 +477,7 @@ fn source(
         issued_at,
         signer,
     };
-    let mut rule = match source_rule(&mut basis, terms) {
+    let mut rule = match source_rule(&mut basis, terms, None) {
         Ok(Some(rule)) => rule,
         Ok(None) => return ruled(None),
         Err(error) => {
@@ -524,10 +529,26 @@ fn forgetting(approved: &[ApprovedChange]) -> String {
          of one that opens a secret, mounts a volume, pulls its image with a login or reaches \
          its server. Running containers keep running. An automatic deploy rule for these \
          services stops, and Ployz Cloud can't move or drain the containers it built, until \
-         you approve it again with ployz github rule approve <service>..., which also \
-         approves the commit now at the head of its branch.",
+         you approve again under Automatic deploys in Ployz Cloud, which also approves \
+         the commit now at the head of its branch.",
         services.join(", ")
     )
+}
+
+/// What a deploy that can't ask runs as without a terminal: itself with `--yes`, which
+/// ships only the images `--image` names. With `--forget-older` nothing does: `--yes`
+/// never forgets.
+fn without_terminal(matches: &ArgMatches, again: Rerun) -> Option<Rerun> {
+    if flag(matches, "forget-older") {
+        return None;
+    }
+    let images = matches!(matches.try_get_many::<String>("image"), Ok(Some(_)));
+    let again = if images {
+        again
+    } else {
+        again.add("image", "SERVICE=IMAGE")
+    };
+    Some(again.switch("yes"))
 }
 
 /// What a person says to signing `approved` in `namespace`, asked after its lines show:
@@ -538,6 +559,7 @@ fn forgetting(approved: &[ApprovedChange]) -> String {
 /// before the yes, not only those signed before the prompt.
 fn consent(
     (namespace, approved, rule): (&Namespace, &[ApprovedChange], Option<&RuleSummary>),
+    silent: Option<Rerun>,
     mut confirm: impl FnMut(&str, Error, &'static str) -> Result<(), Error>,
 ) -> Result<Timestamp, Error> {
     // A Deploy whose only signature is the rule asks about the Services it builds.
@@ -585,11 +607,7 @@ fn consent(
          terminal, or ship only new images. Nothing deployed.",
         json!({ "services": services }),
     )
-    .hint(Hint::Retry(super::super::typed_with(&[
-        "--image",
-        "SERVICE=IMAGE",
-        "--yes",
-    ])));
+    .hint(silent.map(Hint::from));
     let pushes = rule.map_or_else(String::new, |rule| {
         format!(", and deploy every push to {}", rule.branch)
     });

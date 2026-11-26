@@ -290,7 +290,17 @@ fn token_rm_revokes_a_token_by_the_name_token_ls_shows() {
         json!({
             "removed": { "id": "t2", "kind": "token" },
             "servers": { "confirmed": ["1".repeat(32)], "unconfirmed": ["2".repeat(32)] },
-            "next": "ployz token rm t2",
+            "next": shell_words::join([
+                "ployz",
+                "--ployz-config",
+                config.to_str().unwrap(),
+                "--json",
+                "--why",
+                "<REASON>",
+                "token",
+                "rm",
+                "t2",
+            ]),
         })
     );
     assert_eq!(
@@ -351,7 +361,14 @@ fn json_login_returns_the_code_at_once_and_finishes_on_the_next_run() {
             "cloud": cloud,
             "device": "d1",
             "servers": { "confirmed": ["1".repeat(32)], "unconfirmed": ["2".repeat(32)] },
-            "next": "ployz token rm d1",
+            "next": shell_words::join([
+                "ployz",
+                "--ployz-config",
+                config.to_str().unwrap(),
+                "token",
+                "rm",
+                "d1",
+            ]),
         })
     );
     let again = ployz(&config, &["logout", "--json"]);
@@ -593,4 +610,211 @@ fn org_leave_without_yes_and_no_terminal_refuses_before_cloud_hears_of_it() {
             .iter()
             .any(|route| route.contains("org_leave"))
     );
+}
+
+/// A login that fails names the Cloud by its scheme, host and port, with each other part
+/// it was given marked in place: no user info, path, query or fragment reaches stdout,
+/// stderr or `--json`, whether the URL is refused before anything is asked of it (exit 2),
+/// this device is signed in to another Cloud, or the one named doesn't answer (exit 1).
+#[test]
+fn a_failed_login_names_the_cloud_without_its_secret() {
+    let (_signed_in, elsewhere) = signed_in(Arc::default());
+    let fresh = tempfile::tempdir().unwrap();
+    let fresh = fresh.path().join("config.yaml");
+    for (config, cloud, named, code) in [
+        (
+            &elsewhere,
+            "https://SENTINEL:SENTINEL@other.example:8443/SENTINEL?t=SENTINEL#SENTINEL",
+            "https://<USER>:<PASSWORD>@other.example:8443/<PATH>?<QUERY>#<FRAGMENT>",
+            2,
+        ),
+        (
+            &elsewhere,
+            "https://SENTINEL@other.example/?next=SENTINEL",
+            "https://<USER>@other.example?<QUERY>",
+            2,
+        ),
+        (
+            &fresh,
+            "http://SENTINEL:SENTINEL@127.0.0.1:9/SENTINEL?token=SENTINEL",
+            "http://<USER>:<PASSWORD>@127.0.0.1:9/<PATH>?<QUERY>",
+            2,
+        ),
+        (
+            &elsewhere,
+            "https://other.example/SENTINEL",
+            "https://other.example/<PATH>",
+            1,
+        ),
+        (
+            &fresh,
+            "http://127.0.0.1:9/SENTINEL",
+            "http://127.0.0.1:9/<PATH>",
+            1,
+        ),
+    ] {
+        let human = ployz(config, &["login", "--cloud-url", cloud]);
+        let json = ployz(config, &["login", "--json", "--cloud-url", cloud]);
+        for output in [&human, &json] {
+            assert_eq!(output.status.code(), Some(code), "{cloud}");
+            let said = format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(said.contains(named), "{cloud}: {said}");
+            assert!(!said.contains("SENTINEL"), "{cloud}: {said}");
+        }
+        assert!(
+            json_of(&json).pointer("/error/message").is_some(),
+            "{cloud}"
+        );
+    }
+}
+
+/// A Cloud URL is stored with the sign-in and printed on success, so one with user info, a
+/// query or a fragment is refused before Cloud is asked anything and nothing is stored,
+/// whether `--cloud-url` or `PLOYZ_CLOUD_URL` gave it, for login and for the commands that
+/// hand a Cloud to a Server. A retry's `<CLOUD_URL>` pasted as printed is refused too.
+#[test]
+fn a_cloud_url_that_holds_a_credential_is_refused_before_it_is_stored() {
+    let routes = Arc::new(Mutex::new(Vec::new()));
+    let cloud = fake_cloud(Arc::new(Mutex::new(Browser::Approved)), routes.clone());
+    let with_user = cloud.replace("http://", "http://SENTINEL:SENTINEL@");
+    let with_query = format!("{cloud}/?token=SENTINEL");
+    for (args, variable) in [
+        (vec!["login", "--cloud-url", with_user.as_str()], None),
+        (
+            vec![
+                "login",
+                "--json",
+                "--wait",
+                "--cloud-url",
+                with_user.as_str(),
+            ],
+            None,
+        ),
+        (vec!["login", "--cloud-url", with_query.as_str()], None),
+        (vec!["login"], Some(with_user.as_str())),
+        (vec!["login", "--cloud-url", "<CLOUD_URL>"], None),
+        (
+            vec![
+                "server",
+                "add",
+                "root@203.0.113.7",
+                "--cloud-url",
+                with_user.as_str(),
+            ],
+            None,
+        ),
+        (
+            vec![
+                "server",
+                "checkin",
+                "--token-file",
+                "/nonexistent",
+                "--cloud-url",
+                with_user.as_str(),
+            ],
+            None,
+        ),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.yaml");
+        let mut command = Command::new(env!("CARGO_BIN_EXE_ployz"));
+        command
+            .arg("--why=test")
+            .args(["--ployz-config", config.to_str().unwrap()])
+            .args(&args)
+            .env_remove("PLOYZ_CLOUD_URL")
+            .env_remove("PLOYZ_TOKEN")
+            .env("NO_PROXY", "127.0.0.1")
+            .env("no_proxy", "127.0.0.1")
+            .env("NO_COLOR", "1")
+            .stdin(std::process::Stdio::null());
+        if let Some(variable) = variable {
+            command.env("PLOYZ_CLOUD_URL", variable);
+        }
+        let output = command.output().unwrap();
+        let said = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.status.code(), Some(2), "{args:?}: {said}");
+        assert!(!said.contains("SENTINEL"), "{args:?}: {said}");
+        assert!(
+            said.contains(if variable.is_some() {
+                "PLOYZ_CLOUD_URL"
+            } else {
+                "--cloud-url"
+            }),
+            "{args:?}: {said}"
+        );
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            0,
+            "{args:?}: stored something"
+        );
+    }
+    assert_eq!(
+        *routes.lock().unwrap(),
+        Vec::<String>::new(),
+        "Cloud was asked"
+    );
+}
+
+/// A sign-in stored before Ployz refused a Cloud URL with user info still holds one, and
+/// logout names that Cloud without it.
+#[test]
+fn logout_names_a_stored_cloud_without_its_user_info() {
+    let stored = json!({
+        "state": "pending",
+        "cloud": "http://user:SENTINEL@127.0.0.1:9",
+        "device_code": "device",
+        "code": "ABCD",
+        "url": "http://user:SENTINEL@127.0.0.1:9/device?code=ABCD",
+        "expires_at": 9_999_999_999_u64,
+        "interval_secs": 5,
+    });
+    for args in [&["logout"][..], &["--json", "logout"]] {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.yaml");
+        let cloud = dir.path().join("cloud.json");
+        std::fs::write(&cloud, stored.to_string()).unwrap();
+        std::fs::set_permissions(&cloud, std::os::unix::fs::PermissionsExt::from_mode(0o600))
+            .unwrap();
+        let output = ployz(&config, args);
+        let said = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!said.contains("SENTINEL"), "{args:?}: {said}");
+        assert!(said.contains("127.0.0.1:9"), "{args:?}: {said}");
+    }
+}
+
+/// `--help` names `PLOYZ_CLOUD_URL` without its value, which may carry a token in its user
+/// info, path or query.
+#[test]
+fn help_never_prints_the_cloud_urls_value() {
+    let home = tempfile::tempdir().unwrap();
+    for command in [&["login"][..], &["server", "checkin"], &["server", "add"]] {
+        let help = Command::new(env!("CARGO_BIN_EXE_ployz"))
+            .env("HOME", home.path())
+            .env("PLOYZ_CONFIG", home.path().join("config.yaml"))
+            .env(
+                "PLOYZ_CLOUD_URL",
+                "https://EXAMPLE:EXAMPLE@cloud.invalid/EXAMPLE?token=EXAMPLE",
+            )
+            .env("NO_COLOR", "1")
+            .args(command)
+            .arg("--help")
+            .output()
+            .unwrap();
+        let help = String::from_utf8_lossy(&help.stdout);
+        assert!(help.contains("PLOYZ_CLOUD_URL"), "{command:?}: {help}");
+        assert!(!help.contains("EXAMPLE"), "{command:?}: {help}");
+    }
 }

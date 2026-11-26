@@ -889,7 +889,7 @@ fn removing_a_deployed_volume_needs_evidence_and_a_typed_acceptance() {
     assert_eq!(refused.details["accept"], json!(["data"]));
     assert_eq!(
         refused.message,
-        "This permanently deletes the data of data. Accept each by name"
+        "This deletes the data of data. Accept each by name"
     );
     let bound = refused.details["version"].as_str().unwrap().to_owned();
     assert!(bound.starts_with(&format!("{}:", diff(&store, &who).version)));

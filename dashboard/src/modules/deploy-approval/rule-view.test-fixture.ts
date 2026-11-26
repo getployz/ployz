@@ -1,5 +1,5 @@
-import type { RuleTerms, RuleView } from "@ployz/sdk";
-import { autoDeployRuleBody } from "@ployz/sdk/authority";
+import type { RuleView } from "@ployz/sdk";
+import { versionSteps } from "@ployz/sdk/authority";
 import { asTestDouble } from "#/lib/test-double";
 import type { DeployTap } from "./deploy-tap.server";
 
@@ -41,12 +41,19 @@ export const view = (rule: RuleView["rule"] = null, web: ReturnType<typeof spec>
     protected: false,
   })) as RuleView;
 
-export const kept = () => ({
-  body: autoDeployRuleBody(view(), asTestDouble<RuleTerms>()({
-    cluster: CLUSTER, machines: ["1".repeat(32)], owner_id: 7, new_rule: "3".repeat(32), issued_at: 1_000, signer: "passkey",
-  })).body,
-  signatures: [],
-});
+/** The rule `web` gets when a Save's tap signs `rule` for `view(null, web)`, kept as the Store keeps it. */
+export const signedRule = (web: ReturnType<typeof spec> = spec("web")) => {
+  const { sources, target } = view(null, web);
+  const draft = versionSteps({
+    cluster: CLUSTER, namespace: "app", services: [], operation: "4".repeat(32), issued_at: 1_000, expires_at: 601_000,
+    seed: Array.from({ length: 16 }, () => 3), against: { trusted: { devices: [], passkeys: [], grants: [] }, containers: [] },
+    source: { rule: null, sources, target, machines: ["1".repeat(32)], owner_id: 7 },
+  });
+  if (draft?.source === undefined) throw new Error("a first Save signs a rule");
+  return { body: draft.source.body, signatures: [] };
+};
+
+export const kept = () => signedRule();
 
 /** A gate every enforcing Server answered, trusting no passkey of the person's in particular. */
 export const ready = asTestDouble<Extract<DeployTap, { kind: "ready" }>>()({

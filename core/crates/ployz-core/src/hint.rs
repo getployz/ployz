@@ -17,13 +17,46 @@ pub enum Hint {
     /// A read-only command that shows more.
     Inspect(String),
     /// The command again, with what it was missing.
-    Retry(String),
+    Retry(RetryCommand),
     /// The command that reverses what just happened.
     Undo(String),
     /// The choice closest to what the input named.
     Closest(String),
     /// The choices the input could have named.
     Valid(Vec<String>),
+}
+
+/// The command again, with what it was missing, as one line to paste.
+///
+/// The CLI renders its own from the command line it parsed, through `cli::Rerun` in the
+/// `ployz` crate: every argument given stays, and a secret's value never comes back. One
+/// read from `details` is a retry another process wrote.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RetryCommand(String);
+
+impl RetryCommand {
+    /// A line `cli::Rerun` rendered, its one caller: `clippy.toml` refuses this anywhere
+    /// else in the `ployz` crate, so no retry there is written by hand.
+    #[must_use]
+    pub const fn rendered(command: String) -> Self {
+        Self(command)
+    }
+
+    /// A retry another process wrote in `details`: the daemon, the Store or Cloud.
+    const fn relayed(command: String) -> Self {
+        Self(command)
+    }
+
+    #[must_use]
+    pub fn command(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for RetryCommand {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
 }
 
 impl Hint {
@@ -69,7 +102,7 @@ impl Hint {
             .map(Self::Next)
             .into_iter()
             .chain(list("inspect").into_iter().map(Self::Inspect))
-            .chain(text("retry").map(Self::Retry))
+            .chain(text("retry").map(|retry| Self::Retry(RetryCommand::relayed(retry))))
             .chain(text("undo").map(Self::Undo))
             .chain(text("did_you_mean").map(Self::Closest))
             .chain((!valid.is_empty()).then_some(Self::Valid(valid)))
@@ -95,8 +128,8 @@ impl Hint {
                 Self::Next(command) => {
                     fields.insert("next".into(), command.as_str().into());
                 }
-                Self::Retry(command) => {
-                    fields.insert("retry".into(), command.as_str().into());
+                Self::Retry(retry) => {
+                    fields.insert("retry".into(), retry.command().into());
                 }
                 Self::Undo(command) => {
                     fields.insert("undo".into(), command.as_str().into());
@@ -151,7 +184,9 @@ mod tests {
             Hint::Next("ployz deploy".into()),
             Hint::Inspect("ployz logs web".into()),
             Hint::Inspect("ployz ps".into()),
-            Hint::Retry("ployz project rm blog --confirm blog".into()),
+            Hint::Retry(RetryCommand::relayed(
+                "ployz project rm blog --confirm blog".into(),
+            )),
             Hint::Undo("ployz env sync --undo s3".into()),
             Hint::Closest("web".into()),
             Hint::valid(["web", "db"]),
@@ -308,7 +343,7 @@ mod tests {
             [
                 Hint::Next("ployz n".into()),
                 Hint::Inspect("ployz i".into()),
-                Hint::Retry("ployz r".into()),
+                Hint::Retry(RetryCommand::relayed("ployz r".into())),
                 Hint::Undo("ployz u".into()),
                 Hint::Closest("web".into()),
                 Hint::valid(["web"]),
@@ -320,7 +355,7 @@ mod tests {
     fn a_kind_a_reader_gets_one_of_replaces_another_and_inspects_replace_only_themselves() {
         let next = Hint::Next("ployz a".into());
         assert!(next.replaces(&Hint::Next("ployz b".into())));
-        assert!(!next.replaces(&Hint::Retry("ployz a".into())));
+        assert!(!next.replaces(&Hint::Retry(RetryCommand::relayed("ployz a".into()))));
         let inspect = Hint::Inspect("ployz ps".into());
         assert!(inspect.replaces(&Hint::Inspect("ployz ps".into())));
         assert!(!inspect.replaces(&Hint::Inspect("ployz ls".into())));

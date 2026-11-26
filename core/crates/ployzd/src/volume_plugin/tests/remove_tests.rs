@@ -452,10 +452,11 @@ async fn docker_lookups_and_mounts_recover_existing_pools_without_create_or_capa
                     r#"#!/bin/sh
 set -eu
 case "$*" in
- 'list -Hp -o name,size,allocated,free,health,readonly')
-  [ ! -e '{root}/imported' ] || printf '{pool}\t4294967296\t0\t4294967296\tONLINE\toff\n' ;;
+ 'list -Hp -o name,guid,size,allocated,free,health,readonly')
+  [ ! -e '{root}/imported' ] || printf '{pool}\t7\t4294967296\t0\t4294967296\tONLINE\toff\n' ;;
  import|'import -d {root}/machine-pool') printf 'pool: {pool}\n' ;;
  'import -N ployz-device'|'import -d {root}/machine-pool -f -N ployz') touch '{root}/imported' ;;
+ 'list -v -H -P -o name ployz') printf 'ployz\n\t%s\t-\n' '{root}/machine-pool' ;;
  *) exit 97 ;;
 esac
 "#,
@@ -551,6 +552,29 @@ async fn remove_refuses_while_a_held_pool_is_not_imported() {
     let response = post(&socket, "/VolumeDriver.Remove", json!({"Name":"data"})).await;
 
     assert!(error(&response).contains("not imported"), "{response}");
+    server.abort();
+}
+
+/// A restore asks every Server for its copy, and one whose Pool isn't imported may still hold
+/// one, so it answers unavailable, never none.
+#[tokio::test]
+async fn inspect_refuses_while_a_held_pool_is_not_imported() {
+    let test = test_dir();
+    let (zpool, zfs) = fake_zfs(&test.0, "");
+    let socket = test.0.join("plugin.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let server = tokio::spawn(serve(listener, VolumeStorage::with_programs(zpool, zfs)));
+    let inspect = || post(&socket, "/Volume.Inspect", json!({"name": "data"}));
+
+    assert_eq!(inspect().await, json!({"Ok": {"copy": null}}));
+    fs::create_dir(test.0.join("ployz-volumes")).unwrap();
+    let held = inspect().await;
+
+    assert_eq!(
+        held.pointer("/Err/code"),
+        Some(&json!("unavailable")),
+        "{held}"
+    );
     server.abort();
 }
 

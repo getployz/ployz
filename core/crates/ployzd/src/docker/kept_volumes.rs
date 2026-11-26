@@ -1,0 +1,595 @@
+//! Kept Volumes: the anonymous Docker Volumes a removal left behind because no copy took
+//! the removed Container's place, recorded so this Machine can list and remove them.
+//!
+//! The record is the only proof that Ployz kept a Volume. A prune deletes only the exact
+//! Docker Volume the record saw, told by the creation time Docker gave it, and only while
+//! no Ployz spec on this Machine could still mount it: no Container mounts it and no stored
+//! spec names it. A Volume a spec mounts by name is never recorded. All of it is checked
+//! under the config lock, which every Container create and removal takes, so no create can
+//! mount it between the check and Docker's removal. Docker refuses to remove a Volume any
+//! Container mounts as well, which covers a Container made outside Ployz.
+
+use std::{
+    os::unix::fs::MetadataExt as _,
+    path::{Path, PathBuf},
+    time::{Duration, Instant},
+};
+
+use chrono::{DateTime, Utc};
+use ployz_core::{
+    ContainerId, ContainerPath, DockerVolumeName, KeptVolume, KeptVolumeRemoval,
+    KeptVolumeRemovalOutcome, labels::ServiceLabels,
+};
+
+use super::{
+    Error, Lifecycle,
+    error::{Status, classify},
+    inspect::Inspected,
+    spec_store::KeptRecord,
+};
+
+/// Docker's mark on a Volume it made for a Container's anonymous mount.
+const ANONYMOUS_LABEL: &str = "com.docker.volume.anonymous";
+
+/// How long a listing may spend measuring Kept Volumes before it reports the rest
+/// unmeasured.
+const MEASURE_BUDGET: Duration = Duration::from_secs(2);
+
+const BLOCK_BYTES: u64 = 512;
+
+impl Lifecycle {
+    /// The anonymous Volumes `inspected` mounts, as Docker marked them when it made them,
+    /// which removing `container_id` without its Volumes keeps. A Volume Docker can't read
+    /// now or gave no creation time, or one a Container that isn't a Service's mounts, is
+    /// left out, so it is never recorded as kept.
+    pub(super) async fn anonymous_volumes(
+        &self,
+        container_id: &ContainerId,
+        inspected: &Inspected,
+    ) -> Vec<KeptRecord> {
+        let Some(identity) = inspected
+            .labels()
+            .and_then(|labels| ServiceLabels::parse(labels).ok())
+            .map(|labels| labels.identity)
+        else {
+            return Vec::new();
+        };
+        let kept_at = Utc::now().timestamp();
+        let mut kept = Vec::new();
+        for mount in inspected.mounts.iter().flatten() {
+            let (Some("volume"), Some(name), Some(path)) = (
+                mount.typ.as_deref(),
+                mount.name.as_deref(),
+                mount.destination.as_deref(),
+            ) else {
+                continue;
+            };
+            let created = match self.docker.client.inspect_volume(name).await {
+                Ok(volume) if volume.labels.contains_key(ANONYMOUS_LABEL) => created(&volume),
+                Ok(_) => None,
+                Err(error) => {
+                    tracing::warn!(
+                        container = container_id.as_str(),
+                        volume = name,
+                        error = %ployz_core::error_chain::inline(&error),
+                        "could not read a volume the removed container mounts; it is not recorded as kept"
+                    );
+                    None
+                }
+            };
+            let (Some(created), Ok(name), Ok(path)) = (
+                created,
+                DockerVolumeName::parse(name),
+                ContainerPath::parse(path),
+            ) else {
+                continue;
+            };
+            kept.push(KeptRecord {
+                volume: KeptVolume {
+                    name,
+                    namespace: identity.namespace.clone(),
+                    service: identity.name.clone(),
+                    container: *container_id,
+                    path,
+                    kept_at,
+                    size_bytes: None,
+                },
+                created,
+            });
+        }
+        kept
+    }
+
+    /// This Machine's Kept Volumes that Docker still has, oldest first, each measured
+    /// while [`MEASURE_BUDGET`] lasts. A record whose Volume Docker no longer has, under
+    /// its name or at all, is forgotten.
+    ///
+    /// # Errors
+    ///
+    /// Returns when the record can't be read or written.
+    pub async fn kept_volumes(&self) -> Result<Vec<KeptVolume>, Error> {
+        let mut listed = Vec::new();
+        let mut roots = Vec::new();
+        for record in self.specs.kept_volumes().await? {
+            match self
+                .docker
+                .client
+                .inspect_volume(record.volume.name.as_str())
+                .await
+            {
+                Ok(found) if is_kept(&record, &found) => {
+                    roots.push(Some(PathBuf::from(found.mountpoint)));
+                }
+                Ok(_) => {
+                    self.specs.forget_kept(&record).await?;
+                    continue;
+                }
+                Err(error) if classify(&error) == Status::Absent => {
+                    self.specs.forget_kept(&record).await?;
+                    continue;
+                }
+                // Still recorded, so still listed; its size is unknown.
+                Err(_) => roots.push(None),
+            }
+            listed.push(record.volume);
+        }
+        let sizes = tokio::task::spawn_blocking(move || {
+            let until = Instant::now() + MEASURE_BUDGET;
+            roots
+                .iter()
+                .map(|root| root.as_deref().and_then(|root| disk_bytes(root, until)))
+                .collect::<Vec<_>>()
+        })
+        .await
+        .unwrap_or_default();
+        for (volume, size) in listed.iter_mut().zip(sizes) {
+            volume.size_bytes = size;
+        }
+        Ok(listed)
+    }
+
+    /// Removes each of `names` that is still the exact Volume this Machine recorded as
+    /// kept, and that no Container, running or not, mounts and no stored spec names. Never
+    /// forced.
+    ///
+    /// # Errors
+    ///
+    /// Returns when the record or the stored specs can't be read, the record can't be
+    /// written, or Docker can't list who mounts a Volume. Results for the names before it
+    /// stand.
+    pub async fn remove_kept_volumes(
+        &self,
+        names: Vec<DockerVolumeName>,
+    ) -> Result<Vec<KeptVolumeRemoval>, Error> {
+        let mut results = Vec::with_capacity(names.len());
+        for volume in names {
+            let outcome = self.remove_kept_volume(&volume).await?;
+            results.push(KeptVolumeRemoval { volume, outcome });
+        }
+        Ok(results)
+    }
+
+    async fn remove_kept_volume(
+        &self,
+        name: &DockerVolumeName,
+    ) -> Result<KeptVolumeRemovalOutcome, Error> {
+        let mut operation = self.specs.config_operation().await;
+        let Some(record) = operation.kept_volume(name).await? else {
+            return Ok(KeptVolumeRemovalOutcome::NotKept);
+        };
+        // A spec whose Container Docker lost, or that has not started it again, still
+        // mounts the Volume by name when it runs.
+        let naming = operation.specs_naming(name).await?;
+        if !naming.is_empty() {
+            return Ok(in_use(naming));
+        }
+        let holders = self.volumes.volume_holder_ids(name).await?;
+        if !holders.is_empty() {
+            return Ok(in_use(holders));
+        }
+        match self.docker.client.inspect_volume(name.as_str()).await {
+            Ok(found) if is_kept(&record, &found) => {}
+            Ok(_) => {
+                self.specs.forget_kept(&record).await?;
+                return Ok(KeptVolumeRemovalOutcome::NotKept);
+            }
+            Err(error) => match classify(&error) {
+                Status::Absent => {
+                    self.specs.forget_kept(&record).await?;
+                    return Ok(KeptVolumeRemovalOutcome::Removed);
+                }
+                Status::Conflict | Status::Unchanged | Status::Other => {
+                    return Ok(KeptVolumeRemovalOutcome::Failed {
+                        message: ployz_core::error_chain::inline(&error),
+                    });
+                }
+            },
+        }
+        let outcome = match self
+            .docker
+            .client
+            .remove_volume(
+                name.as_str(),
+                None::<bollard::query_parameters::RemoveVolumeOptions>,
+            )
+            .await
+        {
+            Ok(()) => KeptVolumeRemovalOutcome::Removed,
+            Err(error) => match classify(&error) {
+                Status::Absent => KeptVolumeRemovalOutcome::Removed,
+                // A Container Ployz doesn't make, which took no config lock, mounts it.
+                Status::Conflict => {
+                    return Ok(in_use(self.volumes.volume_holder_ids(name).await?));
+                }
+                Status::Unchanged | Status::Other => {
+                    return Ok(KeptVolumeRemovalOutcome::Failed {
+                        message: ployz_core::error_chain::inline(&error),
+                    });
+                }
+            },
+        };
+        self.specs.forget_kept(&record).await?;
+        Ok(outcome)
+    }
+}
+
+/// Whether `found` is the exact Volume `record` kept, not one made later under its name.
+fn is_kept(record: &KeptRecord, found: &bollard::models::Volume) -> bool {
+    created(found) == Some(record.created)
+}
+
+/// When Docker made `volume`, compared as an instant so a daemon that formats it in
+/// another time zone still reads the same Volume.
+fn created(volume: &bollard::models::Volume) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(volume.created_at.as_deref()?)
+        .ok()
+        .map(|created| created.with_timezone(&Utc))
+}
+
+fn in_use(containers: Vec<ContainerId>) -> KeptVolumeRemovalOutcome {
+    KeptVolumeRemovalOutcome::InUse { containers }
+}
+
+/// Bytes allocated to the files under `root`, or `None` when the walk fails or runs past
+/// `until`. Symlinks are not followed.
+fn disk_bytes(root: &Path, until: Instant) -> Option<u64> {
+    let mut total = 0_u64;
+    let mut dirs = vec![root.to_path_buf()];
+    while let Some(dir) = dirs.pop() {
+        if Instant::now() > until {
+            return None;
+        }
+        for entry in std::fs::read_dir(&dir).ok()? {
+            let entry = entry.ok()?;
+            let metadata = entry.metadata().ok()?;
+            if metadata.is_dir() {
+                dirs.push(entry.path());
+            } else if metadata.is_file() {
+                total = total.saturating_add(metadata.blocks().saturating_mul(BLOCK_BYTES));
+            }
+        }
+    }
+    Some(total)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        collections::BTreeMap,
+        sync::{Arc, Mutex},
+    };
+
+    use futures_util::FutureExt as _;
+    use ployz_core::{ContainerKind, Namespace};
+
+    use super::*;
+    use crate::docker::{
+        ContainerRuntime, VolumeDisposal,
+        lifecycle::ContainerRequest,
+        test_support::{
+            FakeDocker, container_request, fake_runtime_with, machine, spec_with_sources,
+        },
+    };
+
+    type Containers = Arc<Mutex<BTreeMap<String, serde_json::Value>>>;
+
+    const DATA: &str = "/var/lib/postgresql/data";
+
+    /// A Machine whose image declares a `VOLUME` at [`DATA`], so Docker gives each new
+    /// Container a fresh anonymous Volume there.
+    async fn machine_with_image_volume() -> (ContainerRuntime, FakeDocker, Containers) {
+        let containers = Containers::default();
+        let (runtime, fake) = fake_runtime_with(FakeDocker {
+            named_containers: Some(containers.clone()),
+            list_named: true,
+            anonymous_mounts: Arc::new(Mutex::new(vec![DATA.to_owned()])),
+            ..Default::default()
+        })
+        .await;
+        (runtime, fake, containers)
+    }
+
+    async fn create(runtime: &ContainerRuntime, creation_key: &'static str) -> ContainerId {
+        create_with(runtime, creation_key, Vec::new()).await
+    }
+
+    async fn create_with(
+        runtime: &ContainerRuntime,
+        creation_key: &'static str,
+        sources: Vec<ployz_core::VolumeSource>,
+    ) -> ContainerId {
+        let namespace = Namespace::parse("app").unwrap();
+        let spec = spec_with_sources(sources);
+        runtime
+            .lifecycle()
+            .create_with_admission::<_, _, Error>(
+                &machine(),
+                ContainerRequest {
+                    creation_key,
+                    ..container_request(
+                        ContainerKind::ServiceContainer,
+                        &namespace,
+                        &spec,
+                        std::future::ready(None),
+                    )
+                },
+            )
+            .await
+            .unwrap()
+            .container_id
+    }
+
+    /// The anonymous Volume Docker gave `container` at [`DATA`].
+    fn data_volume(containers: &Containers, container: &ContainerId) -> DockerVolumeName {
+        let containers = containers.lock().unwrap();
+        let mounted = containers
+            .values()
+            .find(|found| {
+                found.get("Id").and_then(serde_json::Value::as_str) == Some(container.as_str())
+            })
+            .and_then(|found| found.get("Mounts"))
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .find(|mount| {
+                mount.get("Destination").and_then(serde_json::Value::as_str) == Some(DATA)
+            })
+            .and_then(|mount| mount.get("Name").and_then(serde_json::Value::as_str))
+            .unwrap_or_else(|| panic!("{container} mounts an anonymous Volume at {DATA}"));
+        DockerVolumeName::parse(mounted).unwrap()
+    }
+
+    /// A Container Docker has made, not started, mounting `volume`.
+    fn mount_elsewhere(containers: &Containers, volume: &DockerVolumeName) -> ContainerId {
+        let id = "c".repeat(64);
+        containers.lock().unwrap().insert(
+            "made-by-hand".to_owned(),
+            serde_json::json!({
+                "Id": id,
+                "Name": "/made-by-hand",
+                "Config": {"Labels": {}},
+                "State": {"Status": "created"},
+                "Mounts": [{"Type": "volume", "Name": volume.as_str(), "Destination": "/data"}],
+            }),
+        );
+        ContainerId::parse(id).unwrap()
+    }
+
+    /// A Service's mount of `volume` by its name, as an External Volume.
+    fn external(volume: &DockerVolumeName) -> ployz_core::VolumeSource {
+        ployz_core::RawVolumeSource::External {
+            name: volume.clone(),
+        }
+        .admit()
+        .unwrap()
+    }
+
+    fn exists(fake: &FakeDocker, volume: &DockerVolumeName) -> bool {
+        fake.volumes.lock().unwrap().contains_key(volume.as_str())
+    }
+
+    async fn prune(
+        runtime: &ContainerRuntime,
+        volume: &DockerVolumeName,
+    ) -> KeptVolumeRemovalOutcome {
+        let mut results = runtime
+            .lifecycle()
+            .remove_kept_volumes(vec![volume.clone()])
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        results.remove(0).outcome
+    }
+
+    /// Removes a Container no copy replaces, as a Drain or scale-down does, keeping its
+    /// anonymous Volume.
+    async fn scale_down(
+        runtime: &ContainerRuntime,
+        containers: &Containers,
+        creation_key: &'static str,
+    ) -> (ContainerId, DockerVolumeName) {
+        let container = create(runtime, creation_key).await;
+        let volume = data_volume(containers, &container);
+        runtime
+            .lifecycle()
+            .remove(&container, VolumeDisposal::Keep, true)
+            .await
+            .unwrap();
+        (container, volume)
+    }
+
+    #[tokio::test]
+    async fn a_removal_no_copy_replaces_records_the_volume_it_keeps() {
+        let (runtime, fake, containers) = machine_with_image_volume().await;
+        let (container, volume) = scale_down(&runtime, &containers, "plan:0").await;
+
+        assert!(exists(&fake, &volume), "the removal keeps the data");
+        let kept = runtime.lifecycle().kept_volumes().await.unwrap();
+        let [listed] = kept.as_slice() else {
+            panic!("the one kept Volume is listed once: {kept:?}");
+        };
+        assert_eq!(
+            listed,
+            &KeptVolume {
+                name: volume,
+                namespace: Namespace::parse("app").unwrap(),
+                service: ployz_core::ServiceName::parse("api").unwrap(),
+                container,
+                path: ContainerPath::parse(DATA).unwrap(),
+                kept_at: listed.kept_at,
+                size_bytes: None,
+            },
+            "listed with where it came from; a size it couldn't measure is unknown, not zero"
+        );
+    }
+
+    #[tokio::test]
+    async fn prune_refuses_a_volume_this_machine_did_not_keep() {
+        let (runtime, fake, containers) = machine_with_image_volume().await;
+        let live = create(&runtime, "plan:0").await;
+        let live_data = data_volume(&containers, &live);
+        containers.lock().unwrap().clear();
+
+        assert_eq!(
+            prune(&runtime, &live_data).await,
+            KeptVolumeRemovalOutcome::NotKept,
+            "an anonymous Volume no removal kept is not Ployz's to delete, mounted or not"
+        );
+        assert!(exists(&fake, &live_data));
+    }
+
+    #[tokio::test]
+    async fn prune_refuses_a_kept_volume_a_container_mounts_until_it_is_gone() {
+        let (runtime, fake, containers) = machine_with_image_volume().await;
+        let (_, volume) = scale_down(&runtime, &containers, "plan:0").await;
+        let holder = mount_elsewhere(&containers, &volume);
+
+        assert_eq!(
+            prune(&runtime, &volume).await,
+            KeptVolumeRemovalOutcome::InUse {
+                containers: vec![holder]
+            },
+            "a Container that is made but not running still holds the data"
+        );
+        assert!(exists(&fake, &volume));
+        assert_eq!(runtime.lifecycle().kept_volumes().await.unwrap().len(), 1);
+
+        containers.lock().unwrap().remove("made-by-hand");
+        assert_eq!(
+            prune(&runtime, &volume).await,
+            KeptVolumeRemovalOutcome::Removed
+        );
+        assert!(!exists(&fake, &volume));
+        assert!(runtime.lifecycle().kept_volumes().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn prune_refuses_a_volume_made_again_under_a_kept_name() {
+        let (runtime, fake, containers) = machine_with_image_volume().await;
+        let (_, volume) = scale_down(&runtime, &containers, "plan:0").await;
+        // Deleted with Docker, as a daemon killed between Docker's removal and forgetting
+        // the record leaves it too, then made again under the same name with new data.
+        let mut made_again = fake
+            .volumes
+            .lock()
+            .unwrap()
+            .remove(volume.as_str())
+            .unwrap();
+        made_again.as_object_mut().unwrap().insert(
+            "CreatedAt".to_owned(),
+            serde_json::json!("2031-01-01T00:00:00Z"),
+        );
+        fake.volumes
+            .lock()
+            .unwrap()
+            .insert(volume.as_str().to_owned(), made_again);
+
+        assert_eq!(
+            prune(&runtime, &volume).await,
+            KeptVolumeRemovalOutcome::NotKept,
+            "the record names the Volume that was deleted, not the one that took its name"
+        );
+        assert!(exists(&fake, &volume));
+        assert!(runtime.lifecycle().kept_volumes().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn prune_refuses_a_volume_a_service_mounted_by_name_then_scaled_to_zero() {
+        let (runtime, fake, containers) = machine_with_image_volume().await;
+        let (_, volume) = scale_down(&runtime, &containers, "plan:0").await;
+        let adopter = create_with(&runtime, "plan:1", vec![external(&volume)]).await;
+        runtime
+            .lifecycle()
+            .remove(&adopter, VolumeDisposal::Keep, true)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            prune(&runtime, &volume).await,
+            KeptVolumeRemovalOutcome::NotKept,
+            "an External Volume holds a Service's data, whatever label Docker gave it"
+        );
+        assert!(exists(&fake, &volume));
+        let listed = runtime.lifecycle().kept_volumes().await.unwrap();
+        assert!(listed.iter().all(|kept| kept.name != volume), "{listed:?}");
+    }
+
+    #[tokio::test]
+    async fn prune_refuses_a_kept_volume_a_stored_spec_mounts_by_name() {
+        let (runtime, fake, containers) = machine_with_image_volume().await;
+        let (_, volume) = scale_down(&runtime, &containers, "plan:0").await;
+        let adopter = create_with(&runtime, "plan:1", vec![external(&volume)]).await;
+        // Docker lost the Container, as `docker rm` by hand does; this Machine still holds
+        // its spec.
+        containers.lock().unwrap().retain(|_, found| {
+            found.get("Id").and_then(serde_json::Value::as_str) != Some(adopter.as_str())
+        });
+
+        assert_eq!(
+            prune(&runtime, &volume).await,
+            KeptVolumeRemovalOutcome::InUse {
+                containers: vec![adopter]
+            }
+        );
+        assert!(exists(&fake, &volume));
+    }
+
+    #[tokio::test]
+    async fn no_create_lands_between_prunes_check_and_its_removal() {
+        let (runtime, fake, containers) = machine_with_image_volume().await;
+        let (_, volume) = scale_down(&runtime, &containers, "plan:0").await;
+        // Prune lists who mounts only a Volume it kept, where this test holds it.
+        assert_eq!(runtime.lifecycle().kept_volumes().await.unwrap().len(), 1);
+        let checked = Arc::new(tokio::sync::Barrier::new(2));
+        *fake.listed_hold.lock().unwrap() = Some(checked.clone());
+
+        let pruning = tokio::spawn({
+            let runtime = runtime.clone();
+            let volume = volume.clone();
+            async move { prune(&runtime, &volume).await }
+        });
+        // Docker has answered prune that no Container mounts the Volume.
+        checked.wait().await;
+        assert!(
+            runtime
+                .lifecycle()
+                .specs
+                .config_operation()
+                .now_or_never()
+                .is_none(),
+            "a Container create waits for the config lock prune holds from its check to its removal"
+        );
+        checked.wait().await;
+
+        assert_eq!(pruning.await.unwrap(), KeptVolumeRemovalOutcome::Removed);
+        assert!(!exists(&fake, &volume));
+        assert!(
+            runtime
+                .lifecycle()
+                .specs
+                .config_operation()
+                .now_or_never()
+                .is_some()
+        );
+    }
+}

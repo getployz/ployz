@@ -149,6 +149,51 @@ impl Images {
         self.exposed_ports(image).await
     }
 
+    /// Make `image` present as `policy` asks, with no login, and answer the ID it names
+    /// here now, so a creation can run that ID whatever the tag names later.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::pull_image`], [`Error::ImageAbsent`] when `policy` pulls nothing and
+    /// the image isn't here, and when Docker names no ID for it.
+    pub(crate) async fn place(&self, image: &str, policy: PullPolicy) -> Result<String, Error> {
+        let docker = &self.docker.client;
+        if let Err(error) = crate::docker_image::prepare_image(docker, image, policy, None).await {
+            return Err(self.pull_failure(Error::ImagePull(error)).await);
+        }
+        match docker.inspect_image(image).await {
+            Ok(inspected) => inspected.id.ok_or(Error::MissingField("image ID")),
+            Err(source)
+                if policy == PullPolicy::Never && crate::docker_image::is_not_found(&source) =>
+            {
+                Err(Error::ImageAbsent {
+                    image: image.to_owned(),
+                    source,
+                })
+            }
+            Err(error) => Err(Error::ImagePull(error)),
+        }
+    }
+
+    /// The image `id` names, which [`Self::place`] answered before a promote, confirmed
+    /// here. Reaches no registry and reads no tag.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::PlacedImageGone`] when Docker no longer holds it.
+    pub(crate) async fn placed(&self, id: &str) -> Result<String, Error> {
+        match self.docker.client.inspect_image(id).await {
+            Ok(_) => Ok(id.to_owned()),
+            Err(source) if crate::docker_image::is_not_found(&source) => {
+                Err(Error::PlacedImageGone {
+                    image: id.to_owned(),
+                    source,
+                })
+            }
+            Err(error) => Err(Error::Docker(error)),
+        }
+    }
+
     /// [`Self::pull_free`] for a Deploy's pull phase: the ports the image it found exposes.
     ///
     /// # Errors
