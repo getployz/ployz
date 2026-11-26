@@ -818,6 +818,7 @@ impl Run {
                     } => *preferred_machine,
                     Build::Upload { .. } => None,
                 },
+                free: claimed.free.clone(),
                 ..PreparationInput::default()
             };
             target.input(&mut input);
@@ -982,6 +983,7 @@ impl Run {
                 .map(|(service, receipt)| (service, vec![receipt]))
                 .collect(),
             pins,
+            free: claimed.free.clone(),
             ..PreparationInput::default()
         };
         for target in &targets {

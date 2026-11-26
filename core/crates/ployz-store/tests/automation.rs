@@ -2659,14 +2659,47 @@ fn sources(store: &ConfigStore, who: &Actor, services: &[&str]) -> Vec<String> {
         .collect()
 }
 
+/// Mounts a new Docker Volume on `service`, so it reaches data.
+fn mount(store: &ConfigStore, who: &Actor, service: &str, id: u8) {
+    store
+        .write(
+            who,
+            &ployz_store::CreateVolume {
+                restored_from: None,
+                shared_writes: false,
+                storage_locked: false,
+                storage: ployz_core::config::VolumeKind::Docker {},
+                id: ployz_store::VolumeId::parse(format!(
+                    "00000000-0000-4000-8000-0000000000{id:02}"
+                ))
+                .unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ployz_store::VolumeName::parse(format!("data-{service}")).unwrap(),
+                mounts: vec![ployz_store::Mount {
+                    service: ServiceName::parse(service).unwrap(),
+                    path: "/data".into(),
+                }],
+            },
+        )
+        .unwrap();
+}
+
+/// A Git Service that reaches no data builds free on a Server, so a Deploy of it needs
+/// no Source step and nobody's signature.
+#[test]
+fn a_git_service_that_reaches_no_data_needs_no_source_step() {
+    let (store, who) = shop();
+    assert_eq!(unsigned(&store, &who), []);
+    assert_eq!(sources(&store, &who, &[]), Vec::<String>::new());
+}
+
 /// Cloud takes a Deploy's Source step only when it names each of these, so a Service
-/// renamed since its Private DNS name was fixed, or one that reaches no data, is never
-/// left for its build to refuse.
+/// renamed since its Private DNS name was fixed is never left for its build to refuse.
 #[test]
 fn a_plan_names_each_git_service_only_a_source_builds_by_the_name_it_runs_under() {
     let (store, who) = shop();
-    // Neither reaches data, so no person signs a version of either.
-    assert_eq!(unsigned(&store, &who), []);
+    mount(&store, &who, "web", 21);
+    mount(&store, &who, "api", 22);
     assert_eq!(sources(&store, &who, &[]), ["web", "api"]);
     // A Deploy of api alone ships no web, so it needs no Source step for it.
     assert_eq!(sources(&store, &who, &["api"]), ["api"]);

@@ -396,7 +396,11 @@ pub(crate) fn plan(
             let volumes = crate::volume::birth::planned(tx, &environment.summary.id, &target)?;
             let sources = deployment::versions::unsourced(
                 tx,
-                (&environment.summary.id, &namespace),
+                (
+                    &environment.summary.id,
+                    who.organization.as_str(),
+                    &namespace,
+                ),
                 &target,
                 (&frozen.nodes, &lowered),
             )?;

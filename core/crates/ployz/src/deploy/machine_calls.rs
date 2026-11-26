@@ -558,6 +558,15 @@ impl Approved {
             approvals: Arc::new(approvals),
         }
     }
+
+    /// Whether a new creation of `spec` in `namespace` carries a Free receipt.
+    pub(crate) async fn carries_free(
+        &self,
+        namespace: &ployz_core::Namespace,
+        spec: &ployz_core::ResolvedServiceSpec,
+    ) -> bool {
+        self.approvals.carries_free(namespace, spec).await
+    }
 }
 
 impl Session for Approved {

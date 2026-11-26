@@ -333,7 +333,14 @@ mod tests {
                     proof: Box::new(rule_omitting_every_machine()),
                     login: None,
                 });
-                (spec, VersionsView { versions, rule })
+                (
+                    spec,
+                    VersionsView {
+                        versions,
+                        rule,
+                        free: None,
+                    },
+                )
             })
             .collect();
 

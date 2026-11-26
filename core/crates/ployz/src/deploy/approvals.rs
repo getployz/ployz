@@ -6,8 +6,8 @@ use std::{
 };
 
 use ployz_core::{
-    ContainerLocator, ContainerWant, Namespace, NewContainer, ResolvedServiceSpec, RunTarget,
-    ServiceName,
+    ContainerLocator, ContainerWant, FreeReceipt, Namespace, NewContainer, ResolvedServiceSpec,
+    RunTarget, ServiceName,
     authority::{
         BuiltImageDigest, KeptRule, PayloadDigest, RuleEvidence, ServiceVersion, Signed,
         VerifiedBuild, version::MAX_PRESENTED,
@@ -26,6 +26,9 @@ pub(crate) struct Approvals {
     /// person's signature.
     proofs: RuleProofs,
     versions: Versions,
+    /// The Free receipt for each Service a Free Build built, which an unsigned creation of
+    /// its image carries.
+    free: BTreeMap<ServiceName, FreeReceipt>,
 }
 
 /// A signed version a Deploy hands its Servers, by the digest it signs and the one it
@@ -87,10 +90,15 @@ impl KeptVersions {
     }
 
     /// Every version kept for the spec `new` asks for, by the digest its Server checks,
-    /// and the newest verified build of its image when a rule built it. A Store that
-    /// doesn't answer gives none, and a Server that needs one refuses.
+    /// the newest verified build of its image when a rule built it, and the Free receipt
+    /// of its image when a free Build built it. A Store that doesn't answer gives none,
+    /// and a Server that needs one refuses.
     async fn of(&self, new: &NewContainer) -> Carried {
-        let Some(query) = kept_query(&new.slot.namespace, &new.resolved_spec) else {
+        self.read(&new.slot.namespace, &new.resolved_spec).await
+    }
+
+    async fn read(&self, namespace: &Namespace, spec: &ResolvedServiceSpec) -> Carried {
+        let Some(query) = kept_query(namespace, spec) else {
             return Carried::default();
         };
         let read = match self {
@@ -114,9 +122,10 @@ impl KeptVersions {
             Ok(view) => Carried {
                 rule: view.rule,
                 versions: view.versions,
+                free: view.free.filter(|receipt| runs(receipt, spec)),
             },
             Err(error) => {
-                tracing::warn!(%error, service = %new.slot.service, "could not read a copy's signed versions");
+                tracing::warn!(%error, service = %spec.name, "could not read a copy's signed versions");
                 Carried::default()
             }
         }
@@ -249,7 +258,15 @@ impl Approvals {
         Self {
             proofs,
             versions: Versions::ByService(by_service),
+            free: BTreeMap::new(),
         }
+    }
+
+    /// Hand each creation of a Service a Free Build built the Free receipt in `free` for
+    /// the image it runs.
+    #[must_use]
+    pub(crate) fn with_free(self, free: BTreeMap<ServiceName, FreeReceipt>) -> Self {
+        Self { free, ..self }
     }
 
     /// Read each new creation's versions from `kept` by the digest of its own spec.
@@ -257,6 +274,7 @@ impl Approvals {
         Self {
             proofs: RuleProofs::default(),
             versions: Versions::Kept(kept),
+            free: BTreeMap::new(),
         }
     }
 
@@ -323,8 +341,49 @@ impl Approvals {
         Carried {
             rule: self.proofs.carried(want),
             versions,
+            free: self.free_receipt(want),
         }
     }
+
+    /// The Free receipt a new creation carries: its Service's, when it runs the image that
+    /// receipt names.
+    fn free_receipt(&self, want: &ContainerWant) -> Option<FreeReceipt> {
+        let ContainerWant::Running {
+            container: RunTarget::New(new),
+            ..
+        } = want
+        else {
+            return None;
+        };
+        self.free
+            .get(&new.slot.service)
+            .filter(|receipt| runs(receipt, &new.resolved_spec))
+            .cloned()
+    }
+
+    /// Whether a new creation of `spec` in `namespace` carries a Free receipt, so only a
+    /// Server that takes one may run it.
+    pub(crate) async fn carries_free(
+        &self,
+        namespace: &Namespace,
+        spec: &ResolvedServiceSpec,
+    ) -> bool {
+        match &self.versions {
+            Versions::Kept(kept) => kept.read(namespace, spec).await.free.is_some(),
+            Versions::None | Versions::ByService(_) => self
+                .free
+                .get(&spec.name)
+                .is_some_and(|receipt| runs(receipt, spec)),
+        }
+    }
+}
+
+/// Whether `spec` runs the image `receipt` names.
+fn runs(receipt: &FreeReceipt, spec: &ResolvedServiceSpec) -> bool {
+    spec.container
+        .image
+        .rsplit_once('@')
+        .is_some_and(|(_, image)| image == receipt.image.as_str())
 }
 
 #[cfg(test)]

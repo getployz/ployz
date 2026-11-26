@@ -2022,6 +2022,8 @@ async fn a_deploy_with_a_reused_build_still_recreates_the_services_its_claim_lis
     runs.machine.accepts_builds = false;
     builder.machine.runtime.architecture = "x86_64".into();
     runs.machine.runtime.architecture = "x86_64".into();
+    builder.machine.runtime.capabilities = [ployz_core::BUILD_FREE_CAPABILITY.to_owned()].into();
+    runs.machine.runtime.capabilities = [ployz_core::FREE_RECEIPT_CAPABILITY.to_owned()].into();
     let mut service = support::DeployService::new(builder.clone())
         .with_machines(vec![builder, runs.clone()])
         .with_exec_exit(0);
@@ -2045,12 +2047,15 @@ async fn a_deploy_with_a_reused_build_still_recreates_the_services_its_claim_lis
     )
     .await
     .unwrap();
-    // The image an earlier Deployment built for `api`, as its receipt names it.
+    // The image an earlier Deployment built for `api`, as its receipt names it. `api` reaches
+    // no data, so it built free.
+    assert_eq!(claimed.free, [api.clone()].into());
     let built = session
         .prepare(PreparationInput {
             deployment: claimed.input.clone(),
             sources: BTreeMap::from([(api.clone(), root.clone())]),
             source_commits: BTreeMap::from([(api.clone(), commit)]),
+            free: claimed.free.clone(),
             ..PreparationInput::default()
         })
         .unwrap()
@@ -2058,6 +2063,7 @@ async fn a_deploy_with_a_reused_build_still_recreates_the_services_its_claim_lis
         .await
         .unwrap();
     let receipt = built.build_receipts().get(&api).unwrap().clone();
+    assert!(receipt.free.is_some());
     built.close();
 
     let ran = pins(&claimed.ran);

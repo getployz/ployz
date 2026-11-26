@@ -2021,6 +2021,26 @@ async fn cloud_runner_builds_nothing_on_servers_the_build_order_leaves_out() {
                 }),
             )
             .unwrap();
+        // web reaches data, so it builds where the Build Order says, not free on a Server.
+        store
+            .write(
+                &who,
+                &ployz_store::CreateVolume {
+                    restored_from: None,
+                    shared_writes: false,
+                    storage_locked: false,
+                    storage: ployz_core::config::VolumeKind::Docker {},
+                    id: ployz_store::VolumeId::parse("00000000-0000-4000-8000-000000000021")
+                        .unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: ployz_store::VolumeName::parse("data").unwrap(),
+                    mounts: vec![ployz_store::Mount {
+                        service: ployz_core::ServiceName::parse("web").unwrap(),
+                        path: "/data".into(),
+                    }],
+                },
+            )
+            .unwrap();
         let id = DeploymentId::parse("00000000-0000-4000-8000-000000000101").unwrap();
         store
             .write_trusted(

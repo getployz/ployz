@@ -64,13 +64,15 @@ use session::Session;
 const STORAGE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// What an `EnsureContainer` carries to the Machine beside its want: the signed versions
-/// and the rule's proof that approve it.
+/// and the rule's proof that approve it, and for an unsigned creation of a Free Build's
+/// image, that image's Free receipt.
 #[derive(Default)]
 pub struct Carried {
     /// A rule's proof, with the login of what's applied for a registry rule: one value, so
     /// no creation takes the rule without its login.
     pub rule: Option<ployz_core::authority::KeptRule>,
     pub versions: Vec<ployz_core::authority::Signed<ployz_core::authority::ServiceVersion>>,
+    pub free: Option<ployz_core::FreeReceipt>,
 }
 
 /// Reply timeout for mutations on a live Machine, which may be mid-Deploy and
@@ -1109,7 +1111,8 @@ impl Client {
     }
 
     /// The one place an `EnsureContainer` is built: it admits `want` first, so no Sealed
-    /// value reaches a Machine that can't keep it sealed, and only then asks `carry`.
+    /// value reaches a Machine that can't keep it sealed, and only then asks `carry`. A
+    /// creation that carries a Free receipt goes only to a Machine that takes one.
     async fn ensure_request(
         &self,
         target: &MachineTarget,
@@ -1133,6 +1136,16 @@ impl Client {
             }
             kept.proof
         });
+        if let ContainerWant::Running {
+            container: ployz_core::RunTarget::New(new),
+            ..
+        } = &mut want
+        {
+            if carried.free.is_some() {
+                crate::build::admit_free(self, target, &new.slot.service).await?;
+            }
+            new.free_receipt = carried.free;
+        }
         Ok(EnsureContainerRequest {
             want,
             rule,
@@ -1722,6 +1735,12 @@ pub(crate) trait StreamRpc {
 
 impl StreamRpc for op::Build {
     const PATH: &'static str = op::Build::PATH;
+    const CLIENT_STREAM: bool = true;
+    const ENTRY_ONLY: bool = true;
+}
+
+impl StreamRpc for op::BuildFree {
+    const PATH: &'static str = op::BuildFree::PATH;
     const CLIENT_STREAM: bool = true;
     const ENTRY_ONLY: bool = true;
 }
