@@ -213,7 +213,10 @@ impl LocalMachine {
             .plugin()
             .call(
                 crate::volume_copy::VOLUME_INSPECT_ROUTE,
-                &ployz_core::InspectVolumeCopyRequest { name: name.clone() },
+                &ployz_core::InspectVolumeCopyRequest {
+                    name: name.clone(),
+                    prove: false,
+                },
             )
             .await?;
         let replicated = self.replicated()?;

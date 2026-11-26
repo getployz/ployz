@@ -20,14 +20,30 @@ pub(super) enum PluginError {
     /// The dataset carries no Provisioned Volume bound, so the plugin does not use it.
     #[error("ZFS dataset {dataset} has no Provisioned Volume bound; refusing to use it")]
     NotProvisioned { dataset: String },
-    #[error(transparent)]
-    Capacity(#[from] ployz_core::StorageCapacityError),
+    /// The Pool has no room, with what this Server's Trash holds when it holds anything.
+    #[error("{0}{note}", note = trash_note(&.0.to_string(), .1.as_ref()))]
+    Capacity(
+        ployz_core::StorageCapacityError,
+        Option<super::trash::TrashHeld>,
+    ),
     /// A Container that mounts the name expects other data, so no fresh root goes under it.
     #[error(
         "Volume {name} {}, so no new data is made under its name until that Container is removed",
         crate::volume_copy::HELD_FOR_OTHER_DATA
     )]
     HeldForOtherData { name: String },
+    /// A root restored from the Trash carries an origin other than the one Docker's Create
+    /// asks for, so it stays hidden.
+    #[error(
+        "Volume {name} was restored from the Trash holding other data than this Deploy expects, so Docker doesn't get it; deploy the Volume it held"
+    )]
+    RestoredForOtherData { name: String },
+    /// A root restored from the Trash that no Create registered yet: Docker may still hold
+    /// a record of the name from before the delete, so it doesn't mount it.
+    #[error(
+        "Volume {name} was restored from the Trash and no Deploy has taken it up yet, so Docker doesn't mount it; deploy the Volume it held"
+    )]
+    RestoredUnregistered { name: String },
     /// Docker did not list the Containers that mount the name, so no fresh root goes under
     /// it yet.
     #[error(
@@ -42,6 +58,20 @@ pub(super) enum PluginError {
     /// answered, or the request that was invalid.
     #[error("{0}")]
     Message(String),
+}
+
+/// The Trash's sentence after `text`, which may already end its own sentence.
+fn trash_note(text: &str, trash: Option<&super::trash::TrashHeld>) -> String {
+    let joint = if text.ends_with('.') { " " } else { ". " };
+    trash
+        .map(|trash| format!("{joint}{trash}"))
+        .unwrap_or_default()
+}
+
+impl From<ployz_core::StorageCapacityError> for PluginError {
+    fn from(error: ployz_core::StorageCapacityError) -> Self {
+        Self::Capacity(error, None)
+    }
 }
 
 impl From<String> for PluginError {
@@ -62,12 +92,18 @@ impl From<&str> for PluginError {
     }
 }
 
-/// A capacity refusal answers with its own code, and every other refusal as internal.
+/// A capacity refusal answers with its own code, a Pool that isn't imported as unavailable,
+/// and every other refusal as internal.
 impl From<PluginError> for ployz_core::RpcError {
     fn from(error: PluginError) -> Self {
-        match error.into_capacity() {
-            Ok(error) => error.into_rpc_error(),
-            Err(error) => Self::internal(error.to_string()),
+        if let PluginError::Capacity(capacity, trash) = error {
+            let text = capacity.to_string();
+            let note = trash_note(&text, trash.as_ref());
+            Self::refused(&capacity, format!("{text}{note}"))
+        } else if matches!(error, PluginError::HeldPoolNotImported) {
+            Self::unavailable(error.to_string())
+        } else {
+            Self::internal(error.to_string())
         }
     }
 }
@@ -79,17 +115,17 @@ impl From<crate::dataset_layout::InvalidVolumeName> for ployz_core::RpcError {
 }
 
 impl PluginError {
-    /// The capacity refusal itself, or this error when it is anything else.
-    pub(super) fn into_capacity(self) -> Result<ployz_core::StorageCapacityError, Self> {
-        if let Self::Capacity(error) = self {
-            Ok(error)
-        } else {
-            Err(self)
-        }
+    pub(super) fn is_capacity(&self) -> bool {
+        matches!(self, Self::Capacity(..))
     }
 
-    pub(super) fn is_capacity(&self) -> bool {
-        matches!(self, Self::Capacity(_))
+    /// The sentence naming what the Trash holds, after a capacity refusal; empty otherwise.
+    pub(super) fn trash_note(&self) -> String {
+        if let Self::Capacity(_, trash) = self {
+            trash_note("", trash.as_ref())
+        } else {
+            String::new()
+        }
     }
 }
 

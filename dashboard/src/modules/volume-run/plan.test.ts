@@ -760,11 +760,11 @@ describe("follow every next step a refusal names", () => {
   const heldA = twin("c", false, { ...COPIES.cut, epoch: 9, newest: earlier, mark: "cut", origin: "sha256:c", placed: `9 ${"c".repeat(64)} sha256:${"1".repeat(64)}` });
   const heldB = twin("d", true, { ...COPIES.cut, epoch: 9, mark: "promote", origin: "sha256:d", placed: `9 ${"d".repeat(64)} sha256:${"2".repeat(64)}` });
 
-  type Tree = string | number | bigint | boolean | null | undefined | { readonly [key: string]: Tree };
+  type Tree = string | number | bigint | boolean | null | undefined | readonly Tree[] | { readonly [key: string]: Tree };
   const tied = (a: Tree, b: Tree, path = ""): string[] => {
     if (!(a instanceof Object) && !(b instanceof Object)) return Object.is(a, b) ? [path] : [];
     const keys = new Set([...Object.keys(a instanceof Object ? a : {}), ...Object.keys(b instanceof Object ? b : {})]);
-    const read = (value: Tree, key: string): Tree => (value instanceof Object ? value[key] : undefined);
+    const read = (value: Tree, key: string): Tree => (value instanceof Object ? Object.entries(value).find(([name]) => name === key)?.[1] : undefined);
     return [...keys].flatMap((key) => tied(read(a, key), read(b, key), path === "" ? key : `${path}.${key}`)).sort();
   };
 

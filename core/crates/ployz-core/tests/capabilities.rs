@@ -266,6 +266,18 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
         "unreached: ApproveJoin goes only to the Machine that listed the pending join, which has it",
     ),
     (
+        "ployz.volume.trash.v1",
+        "refused legibly: Trash calls go only to the Server the caller connects to, and an older daemon's refusal names the capability",
+    ),
+    (
+        "ployz.volume.trash-restore.v1",
+        "refused legibly: Trash calls go only to the Server the caller connects to, and an older daemon's refusal names the capability",
+    ),
+    (
+        "ployz.volume.trash-empty.v1",
+        "refused legibly: Trash calls go only to the Server the caller connects to, and an older daemon's refusal names the capability",
+    ),
+    (
         "ployz.machine.join.device-approval.v1",
         "falls back: an older daemon never refuses Register with it, so the join proceeds unsigned as before",
     ),

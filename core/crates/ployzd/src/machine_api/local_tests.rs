@@ -639,8 +639,10 @@ async fn volume_copy_inspect_refuses_a_machine_outside_the_cluster() {
     let store = RecordOwner::spawn(LocalMachineStore::open(&data_dir).unwrap()).unwrap();
     let service = MachineService::with_cluster(store, None);
     let name: ployz_core::DockerVolumeName = "data".parse().unwrap();
-    let inspect =
-        op::InspectVolumeCopy::into_request(ployz_core::InspectVolumeCopyRequest { name });
+    let inspect = op::InspectVolumeCopy::into_request(ployz_core::InspectVolumeCopyRequest {
+        name,
+        prove: false,
+    });
     let response = service
         .inspect_volume_copy(Request::new(inspect.encode().unwrap()))
         .await
@@ -2999,6 +3001,7 @@ mod set_volume_copy {
     async fn inspect(service: &MachineService) -> ployz_core::VolumeCopyView {
         let request = ployz_core::InspectVolumeCopyRequest {
             name: VOLUME.parse().unwrap(),
+            prove: false,
         };
         let response = service
             .inspect_volume_copy(Request::new(

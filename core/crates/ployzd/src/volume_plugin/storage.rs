@@ -61,7 +61,7 @@ pub(super) fn committed_bytes(dataset: &Dataset, pool: &str) -> u64 {
         | Place::Slot {
             at: SlotAt::Parent, ..
         } => dataset.refquota,
-        Place::Slot { .. } | Place::Outside => 0,
+        Place::Slot { .. } | Place::Trash(_) | Place::Outside => 0,
     }
 }
 
@@ -70,6 +70,9 @@ pub(super) fn committed_bytes(dataset: &Dataset, pool: &str) -> u64 {
 pub(super) struct Commitment {
     pub(super) bytes: u64,
     pub(super) unmanaged_used_bytes: u64,
+    /// The part of the unmanaged bytes the Trash's entries hold: admission never grows a
+    /// Pool for them ([`VolumeStorage::ensure_pool_capacity`]).
+    pub(super) trash_bytes: u64,
 }
 
 impl Commitment {
@@ -90,7 +93,18 @@ impl Commitment {
         Ok(Self {
             bytes,
             unmanaged_used_bytes: pool.used_bytes().saturating_sub(managed_used),
+            trash_bytes: Self::trash_of(pool, datasets),
         })
+    }
+
+    /// The bytes the Trash's entries of `pool` hold, without the Trash parent's slack.
+    pub(super) fn trash_of(pool: &MachinePool, datasets: &[Dataset]) -> u64 {
+        let layout = DatasetLayout::of(pool);
+        datasets
+            .iter()
+            .filter(|dataset| matches!(layout.place(&dataset.name), Place::Trash(id) if !id.contains('/')))
+            .map(|dataset| dataset.used_bytes)
+            .fold(0, u64::saturating_add)
     }
 }
 
@@ -188,9 +202,28 @@ impl VolumeStorage {
         if let Some(existing) = Self::dataset(&datasets, pool, name)? {
             existing.require_requested(name, requested)?;
             let marks = self.marks(&existing.name);
+            // A root restored from the Trash registers only for the data it holds; a Create
+            // for other data changes nothing on it.
+            let restored = marks.is_set(Mark::Restored).await?;
+            if restored && self.local_origin(&existing.name, Mark::Origin).await? != origin {
+                return Err(PluginError::RestoredForOtherData {
+                    name: name.to_string(),
+                });
+            }
             if marks.unregistered().await? {
                 marks.clear_promote().await?;
                 crate::faults::kill_inside(crate::faults::Point::Verb("Create"), None);
+            }
+            if restored {
+                // A promote stopped after its rename left the root unmountable; it finishes
+                // before the root loses the ID a restore run again would find it by.
+                self.finish_promote(&existing.name).await?;
+                marks
+                    .apply(&[
+                        super::marks::Write::Inherit(Mark::Restored),
+                        super::marks::Write::Inherit(Mark::TrashRestored),
+                    ])
+                    .await?;
             }
             return Ok(());
         }
@@ -224,6 +257,11 @@ impl VolumeStorage {
         }
 
         self.ensure_root(&datasets, &root).await?;
+        if matches!(admission, CapacityAdmission::Ensured) {
+            // A Pool made now gets its Trash while it has room: a delete is only a rename,
+            // and needs none. The daemon's first sweep makes it on a Pool from before.
+            self.ensure_trash_parent(pool.name(), &datasets).await?;
+        }
         // The first create carries the origin, so no crash leaves a born root unmarked.
         let mut args = vec![
             "create".to_owned(),
@@ -246,10 +284,8 @@ impl VolumeStorage {
         datasets: &[Dataset],
         requested: u64,
     ) -> Result<()> {
-        let commitment = Commitment::of(pool, datasets, requested)?;
-        self.ensure_pool_capacity(pool, commitment.bytes, commitment.unmanaged_used_bytes)
-            .await?;
-        Ok(())
+        self.ensure_pool_capacity(pool, &Commitment::of(pool, datasets, requested)?)
+            .await
     }
 
     /// Raises the bound `dataset` carries from `held` to `wanted`: the difference is
@@ -326,6 +362,11 @@ impl VolumeStorage {
             .ok_or_else(|| format!("Provisioned Volume {name} does not exist"))?;
         dataset.require_provisioned(name)?;
         dataset.require_not_switching(name)?;
+        if self.marks(&dataset.name).is_set(Mark::Restored).await? {
+            return Err(PluginError::RestoredUnregistered {
+                name: name.to_string(),
+            });
+        }
         if dataset.mounted {
             return Ok(dataset.mountpoint.clone());
         }
@@ -355,7 +396,18 @@ impl VolumeStorage {
     /// [`Self::datasets`] from a listing that ZFS finished, for an answer that says a
     /// dataset is absent.
     pub(super) async fn complete_datasets(&self, pool: &MachinePool) -> Result<Vec<Dataset>> {
-        Self::parse_datasets(pool, &self.zfs_listing(&dataset_listing(pool)).await?)
+        let datasets =
+            Self::parse_datasets(pool, &self.zfs_listing(&dataset_listing(pool)).await?)?;
+        // A listing of the Pool always holds the Pool's own row, so one without it saw
+        // nothing, which is no absence.
+        if !datasets.iter().any(|dataset| dataset.name == pool.name()) {
+            return Err(format!(
+                "zfs list -r {} printed no row for the Pool itself",
+                pool.name()
+            )
+            .into());
+        }
+        Ok(datasets)
     }
 
     fn parse_datasets(pool: &MachinePool, output: &str) -> Result<Vec<Dataset>> {
@@ -404,33 +456,38 @@ impl VolumeStorage {
         Ok(names.lines().any(|name| name == dataset))
     }
 
-    /// Runs `zfs` with `args`. A `destroy` of a dataset first leaves the tombstone of each
-    /// Copy step it, or with `-r` a dataset under it, carries ([`Self::bury`]), so no path
-    /// destroys a Copy's Volume without it.
+    /// Runs `zfs` with `args`. It refuses a `destroy` of a filesystem: data leaves through
+    /// the Trash ([`super::trash`]), and the few datasets that hold none go through
+    /// [`Self::destroy`].
     pub(super) async fn zfs(&self, args: &[&str]) -> Result<String> {
-        if let ["destroy", flags @ .., dataset] = args
+        if let ["destroy", .., dataset] = args
             && !dataset.contains('@')
         {
-            self.bury(dataset, flags.contains(&"-r")).await?;
+            return Err(format!("refusing to destroy {dataset} outside the Trash").into());
         }
         checked_command(&self.zfs, args).await
     }
 
+    /// Destroys `dataset`, which `holds` says holds no data a person could want back,
+    /// after leaving the tombstone of each Copy step it or a dataset under it carries
+    /// ([`Self::bury`]), so no path destroys a Copy's Volume without it.
+    pub(super) async fn destroy(&self, dataset: &str, holds: Holds) -> Result<()> {
+        let recursive = match holds {
+            Holds::Nothing => false,
+            Holds::Unreceived | Holds::Expired => true,
+        };
+        self.bury(dataset, recursive).await?;
+        let mut args = vec!["destroy"];
+        if recursive {
+            args.push("-r");
+        }
+        args.push(dataset);
+        checked_command(&self.zfs, &args).await.map(drop)
+    }
+
     /// Like [`Self::zfs`], under [`Exit::Listing`].
     pub(super) async fn zfs_listing(&self, args: &[&str]) -> Result<String> {
-        let output = host_command::run(&self.zfs, args).await;
-        if let Ok(output) = &output
-            && Exit::Listing.judge(output) == Ran::StoppedEarly
-        {
-            return Err(format!(
-                "{} {} stopped early: {}",
-                self.zfs.display(),
-                args.join(" "),
-                String::from_utf8_lossy(&output.stderr).trim()
-            )
-            .into());
-        }
-        checked_output(&self.zfs, args, output)
+        checked_listing(&self.zfs, args).await
     }
 
     /// What this Machine holds for `name` in `datasets`, if anything, with `receiving`
@@ -512,6 +569,8 @@ pub(super) struct Dataset {
     /// ZFS `referenced`: the copy's data as `refquota` bounds it, shared snapshot
     /// blocks included.
     pub(super) referenced_bytes: u64,
+    /// ZFS `used`: the dataset with its snapshots and descendants.
+    pub(super) used_bytes: u64,
     pub(super) active_used_bytes: u64,
     pub(super) mountpoint: String,
     pub(super) mounted: bool,
@@ -555,6 +614,7 @@ impl Dataset {
             name: name.to_owned(),
             refquota: parse_zfs_bytes(refquota)?,
             referenced_bytes: referenced_bytes.parse::<u64>().map_err(|_| invalid())?,
+            used_bytes,
             active_used_bytes,
             mountpoint: mountpoint.to_owned(),
             mounted: mounted == "yes",
@@ -641,6 +701,18 @@ fn parse_zfs_bytes(value: &str) -> Result<u64> {
     }
 }
 
+/// Why a dataset may be destroyed outright rather than moved to the Trash.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum Holds {
+    /// An empty slot parent, or the empty mirror root: ZFS refuses the destroy if a copy or
+    /// a snapshot is under it.
+    Nothing,
+    /// A receive's copy that never completed a first snapshot, so it holds no point.
+    Unreceived,
+    /// A Trash entry the sweep or an Empty destroys.
+    Expired,
+}
+
 /// What Docker's Create asks of a Provisioned Volume: its bound, and its origin when born.
 pub(super) struct CreateOptions {
     pub(super) size: u64,
@@ -709,6 +781,33 @@ fn dataset_listing(pool: &MachinePool) -> [&str; 6] {
 
 pub(super) async fn checked_command(program: &Path, args: &[&str]) -> Result<String> {
     checked_output(program, args, host_command::run(program, args).await)
+}
+
+/// [`checked_command`] under [`Exit::Listing`], for output an absence or a choice is judged
+/// from.
+pub(super) async fn checked_listing(program: &Path, args: &[&str]) -> Result<String> {
+    listed_output(program, args, host_command::run(program, args).await)
+}
+
+/// [`checked_output`] under [`Exit::Listing`]: ZFS exits 0 when it stopped early and says
+/// so only on stderr, so any stderr fails it.
+pub(super) fn listed_output(
+    program: &Path,
+    args: &[&str],
+    output: io::Result<Output>,
+) -> Result<String> {
+    if let Ok(output) = &output
+        && Exit::Listing.judge(output) == Ran::StoppedEarly
+    {
+        return Err(format!(
+            "{} {} stopped early: {}",
+            program.display(),
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )
+        .into());
+    }
+    checked_output(program, args, output)
 }
 
 pub(super) fn checked_output(

@@ -7,10 +7,12 @@
 //! digest and records the birth's origin from the moment ZFS makes it, and the root lands
 //! carrying both. Only a slot carrying both, or a root carrying the origin, is this copy's;
 //! any other refuses, so the seed never adopts, clears or lands on another copy of `into`.
-//! A copy killed partway starts over inside the slot it made, which it keeps. Every destroy
-//! of a dataset carrying a step's digest first leaves a tombstone of the step, in a file of
-//! its own ([`VolumeStorage::bury`]), so an `into` that is gone and a tombstone mean the
-//! step's Volume was deleted, and the step never makes it again. With no tombstone the step
+//! A copy killed partway starts over inside the slot it made, which it keeps. Every delete
+//! of a dataset carrying a step's digest leaves a tombstone of the step, in a file of its
+//! own ([`VolumeStorage::bury`]): a destroy first, a move to the Trash once its rename
+//! committed. A seed into an absent `into` buries the steps the Trash holds before it reads
+//! its own, which covers a move stopped between the two. So an `into` that is gone and a
+//! tombstone mean the step's Volume was deleted, and the step never makes it again. With no tombstone the step
 //! never made anything that was then destroyed, however a call before ended, so it may
 //! start. The step's window bounds only what makes a new destination: a copy into an
 //! absent `into` makes its slot and starts its receive only while the window holds on the
@@ -42,7 +44,7 @@ use super::{
     inspect::answering,
     marks::{Mark, Marks, Write},
     origin::Origin,
-    storage::{HeldMutation, checked_command},
+    storage::{Commitment, HeldMutation, Holds, checked_command},
     transfer::{Busy, Stop, ZfsChild, exited},
 };
 
@@ -111,7 +113,7 @@ impl Renamed {
         storage.zfs(&["inherit", "mountpoint", root]).await?;
         storage.zfs(&["set", "readonly=off", root]).await?;
         if let Some(parent) = &self.parent {
-            storage.zfs(&["destroy", parent]).await?;
+            storage.destroy(parent, Holds::Nothing).await?;
         }
         storage
             .zfs(&["destroy", &format!("{root}@{}", self.received)])
@@ -179,9 +181,18 @@ struct Stale {
 }
 
 impl Stale {
-    /// Destroys the slot so the copy starts over, unless its `fs` holds a point this Machine
-    /// may alone hold.
-    async fn clear(self, storage: &VolumeStorage, into: &VolumeName) -> Result<(), RpcError> {
+    /// Replaces the slot with a new one of `bound` so the copy starts over, unless its
+    /// `fs` holds a point this Machine may alone hold. The new slot is admitted before the
+    /// old one goes, as an absent slot's seed admits its own: the old bound leaves the
+    /// commitment, and a copy holding a point keeps its bytes in the Trash. A refusal of
+    /// either check leaves the slot, and the Pool, as they were.
+    async fn replace(
+        self,
+        storage: &VolumeStorage,
+        (pool, datasets): (&MachinePool, &[Dataset]),
+        into: &VolumeName,
+        bound: u64,
+    ) -> Result<(), RpcError> {
         if let Some(fs) = &self.fs
             && storage.written_here(fs).await?
         {
@@ -190,7 +201,26 @@ impl Stale {
                 self.parent
             )));
         }
-        storage.zfs(&["destroy", "-r", &self.parent]).await?;
+        let mut commitment = Commitment::of(pool, datasets, bound)?;
+        commitment.bytes = commitment.bytes.saturating_sub(self.bound);
+        if let Some(fs) = &self.fs
+            && storage.newest_guid(fs).await?.is_some()
+        {
+            let within = format!("{}/", self.parent);
+            for dataset in datasets {
+                if dataset.name == self.parent {
+                    commitment.trash_bytes =
+                        commitment.trash_bytes.saturating_add(dataset.used_bytes);
+                }
+                if dataset.name == self.parent || dataset.name.starts_with(&within) {
+                    commitment.unmanaged_used_bytes = commitment
+                        .unmanaged_used_bytes
+                        .saturating_add(dataset.active_used_bytes);
+                }
+            }
+        }
+        storage.ensure_pool_capacity(pool, &commitment).await?;
+        storage.discard_slot(&self.parent, into).await?;
         Ok(())
     }
 
@@ -208,7 +238,7 @@ impl Stale {
                 self.parent
             )));
         }
-        storage.zfs(&["destroy", "-r", fs]).await?;
+        storage.discard_copy(&self.parent, fs, into, None).await?;
         Ok(())
     }
 }
@@ -363,9 +393,10 @@ impl VolumeStorage {
             // otherwise.
             SeedProgress::Failed(failure) => {
                 tracing::warn!(%into, failure, "Volume seed copy failed");
-                return self.seeded(&pool, &into).await.map(|view| VolumeCopyView {
-                    copy: answering(view.copy, failure),
-                });
+                return self
+                    .seeded(&pool, &into)
+                    .await
+                    .map(|view| VolumeCopyView::of(answering(view.copy, failure)));
             }
             SeedProgress::Copied(copied) => {
                 copied.land(self, &request.into, (guid, copy)).await?;
@@ -388,12 +419,17 @@ impl VolumeStorage {
                         self.spawn_copy(&held, &pool, &into, source).await
                     }
                     None => {
-                        stale.clear(self, &into).await?;
+                        stale
+                            .replace(self, (&pool, &datasets), &into, source.bound)
+                            .await?;
                         self.copy_point(&held, &pool, &into, source).await
                     }
                 }
             }
             SeedProgress::Absent => {
+                if copy.is_some() {
+                    self.bury_trash(&pool, &datasets).await?;
+                }
                 if let Some(copy) = copy
                     && self.buried(copy.step)?
                 {
@@ -426,9 +462,7 @@ impl VolumeStorage {
                 }
             }
         }?;
-        Ok(VolumeCopyView {
-            copy: self.receiving(&into, view.copy),
-        })
+        Ok(VolumeCopyView::of(self.receiving(&into, view.copy)))
     }
 
     /// The one read of [`SeedProgress`], under the mutation `_held`, for a Seed of the seed
@@ -664,7 +698,7 @@ impl VolumeStorage {
         into: &VolumeName,
     ) -> Result<VolumeCopyView, RpcError> {
         let copy = self.current_copy(pool, into).await?;
-        Ok(VolumeCopyView { copy })
+        Ok(VolumeCopyView::of(copy))
     }
 
     /// `zfs send` of one local snapshot piped into a bounded, read-only receive of `fs`,

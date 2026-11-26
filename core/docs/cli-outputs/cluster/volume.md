@@ -332,7 +332,7 @@ $ ployz deploy
 
 stderr:
 ```
-error: This permanently deletes the data of store. Accept each by name
+error: This deletes the data of store. Accept each by name
 retry: ployz deploy --accept-volume-loss store --expect-version 16:7:0.10:3db84a7b2f1973e4
 ```
 
@@ -345,7 +345,7 @@ $ ployz deploy --json
 
 stdout:
 ```
-{"error":{"cause":[],"code":"confirmation_required","details":{"accept":["store"],"retry":"ployz deploy --accept-volume-loss store --expect-version 16:7:0.10:3db84a7b2f1973e4","version":"16:7:0.10:3db84a7b2f1973e4","volumes":[{"deletes":[{"machine_id":"91e8bbd81cd34c59a186d49d3375bbe8","name":"shop-production_vol-708d0431-a823-4abd-bace-7dd1461c5d21"}],"docker_volume":"shop-production_vol-708d0431-a823-4abd-bace-7dd1461c5d21","id":"708d0431-a823-4abd-bace-7dd1461c5d21","name":"store"}]},"message":"This permanently deletes the data of store. Accept each by name"}}
+{"error":{"cause":[],"code":"confirmation_required","details":{"accept":["store"],"retry":"ployz deploy --accept-volume-loss store --expect-version 16:7:0.10:3db84a7b2f1973e4","version":"16:7:0.10:3db84a7b2f1973e4","volumes":[{"deletes":[{"machine_id":"91e8bbd81cd34c59a186d49d3375bbe8","name":"shop-production_vol-708d0431-a823-4abd-bace-7dd1461c5d21"}],"docker_volume":"shop-production_vol-708d0431-a823-4abd-bace-7dd1461c5d21","id":"708d0431-a823-4abd-bace-7dd1461c5d21","name":"store"}]},"message":"This deletes the data of store. Accept each by name"}}
 ```
 
 ### volume inspect unknown
@@ -372,3 +372,156 @@ stderr:
 error: invalid Build Grant "[redacted]": `ployzgrant1:` followed by unpadded base64url of a 64-byte body
 ```
 
+
+### volume trash restore (a Server didn't answer, refused)
+
+```console
+$ ployz volume trash restore bxkvrx7hbd5vh4t5te7eggac44 --connect ssh://root@203.0.113.10:19054
+# exit 1
+```
+
+stderr:
+```
+error: Restore needs every Server to answer, since a copy on one that didn't would become a second writer. machine-1 did not answer (target Machine RPC timed out)
+```
+
+### volume trash ls (an entry being restored)
+
+```console
+$ ployz volume trash ls --connect ssh://root@203.0.113.10:19054
+# exit 0
+```
+
+stdout:
+```
+SERVER	ID	VOLUME	COPY	SIZE	DELETED	EXPIRES
+machine-2	bxkvrx7hbd5vh4t5te7eggac44	verify-production_vol-30d12bce-781b-4275-92f0-f3c7f9827e48	volume (restoring)	0 MB	2026-11-25 14:48 UTC	2026-12-02 14:48 UTC
+machine-2	iq6riqmlvqtlhqjfcc24gw3rhy	verify-production_vol-d62533bf-6a2a-47a0-b5c0-d099098f09be	volume	0 MB	2026-11-25 14:48 UTC	2026-12-02 14:48 UTC
+```
+
+### volume trash restore
+
+```console
+$ ployz volume trash restore bxkvrx7hbd5vh4t5te7eggac44 --connect ssh://root@203.0.113.10:19054
+# exit 0
+```
+
+stdout:
+```
+Restored verify-production_vol-30d12bce-781b-4275-92f0-f3c7f9827e48 on machine-2. No service mounts it yet.
+```
+
+stderr:
+```
+In verify/production, redeploy a deployment from before the removal, then discard the removal. Review it with `ployz diff` and save it before any automatic deploy runs, or that deploy deletes the Volume again.
+next: ployz deployment redeploy DEPLOYMENT --project verify --env production
+next: ployz discard volumes.VOLUME --project verify --env production
+next: ployz deploy --skip-deploy --project verify --env production
+```
+
+### volume trash restore --json (deleted and restored before)
+
+```console
+$ ployz --json volume trash restore 72r44tl6ubpcfn4rx7kjpb7y5i --connect ssh://root@203.0.113.10:19054
+# exit 0
+```
+
+stdout:
+```
+{
+  "next": [
+    "ployz deployment redeploy DEPLOYMENT --project verify --env production",
+    "ployz discard volumes.VOLUME --project verify --env production",
+    "ployz deploy --skip-deploy --project verify --env production"
+  ],
+  "restored": {
+    "id": "72r44tl6ubpcfn4rx7kjpb7y5i",
+    "name": "verify-production_vol-30d12bce-781b-4275-92f0-f3c7f9827e48",
+    "place": "root",
+    "state": {
+      "epoch": 2,
+      "kind": "restored"
+    }
+  },
+  "server": "machine-2"
+}
+```
+
+### volume trash restore (another entry of the Volume being restored, refused)
+
+```console
+$ ployz volume trash restore dupdupdupdupdupdupdupdupaa --connect ssh://root@203.0.113.10:19054
+# exit 1
+```
+
+stderr:
+```
+error: Volume verify-production_vol-00cdd286-af1a-4d59-8b6e-39a6a2430997 is also being restored on this Server from Trash entry mxcjurpeiue2nrzgf3dvhyovym. Pick the one to keep. Delete the other with `sudo ployz volume trash empty ID`, or stop restoring it and it expires in 7 days.
+```
+
+### volume trash restore (an ID not in the Trash, refused)
+
+```console
+$ ployz volume trash restore aaaaaaaaaaaaaaaaaaaaaaaaaa --connect ssh://root@203.0.113.10:19054
+# exit 1
+```
+
+stderr:
+```
+error: machine-2's Trash holds no aaaaaaaaaaaaaaaaaaaaaaaaaa, and no Volume on machine-2 came from that entry.
+inspect: ployz volume ls
+```
+
+### volume trash empty (entries being restored stay)
+
+```console
+$ ployz volume trash empty
+# exit 0
+```
+
+stdout:
+```
+Deleted 1 entry from machine-2's Trash for good.
+```
+
+stderr:
+```
+Delete 1 entry in machine-2's Trash for good? yes
+dupdupdupdupdupdupdupdupaa is being restored, so it stays in machine-2's Trash.
+mxcjurpeiue2nrzgf3dvhyovym is being restored, so it stays in machine-2's Trash.
+```
+
+### volume trash empty --json (only entries being restored)
+
+```console
+$ ployz --json volume trash empty
+# exit 0
+```
+
+stdout:
+```
+{
+  "emptied": {
+    "emptied": [],
+    "failed": [],
+    "missing": [],
+    "restoring": [
+      "dupdupdupdupdupdupdupdupaa",
+      "mxcjurpeiue2nrzgf3dvhyovym"
+    ]
+  },
+  "server": "machine-2"
+}
+```
+
+### volume trash empty ID (an entry being restored)
+
+```console
+$ ployz volume trash empty mxcjurpeiue2nrzgf3dvhyovym
+# exit 0
+```
+
+stdout:
+```
+Deleted 1 entry from machine-2's Trash for good.
+```

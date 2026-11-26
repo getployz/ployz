@@ -4,19 +4,22 @@ use super::copy_tests::{eventually, let_requests_act};
 use super::inspect_tests::set_property;
 use super::*;
 
+const ROOT: &str = "tank/ployz/data";
+
 #[tokio::test]
-async fn docker_can_remove_a_provisioned_volume() {
+async fn docker_remove_moves_the_data_to_the_trash_and_a_create_after_makes_a_fresh_root() {
     let test = test_dir();
     let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
     let socket = test.0.join("plugin.sock");
     let listener = UnixListener::bind(&socket).unwrap();
     let server = tokio::spawn(serve(listener, VolumeStorage::with_programs(zpool, zfs)));
+    let create = |origin: &str| json!({"Name":"data","Opts":{"size":"1g", ployz_core::PROVISIONED_ORIGIN_OPTION: origin}});
 
     assert_eq!(
         post(
             &socket,
             "/VolumeDriver.Create",
-            json!({"Name":"data","Opts":{"size":"1g"}}),
+            create(super::copy_tests::BORN)
         )
         .await,
         json!({"Err":""})
@@ -25,12 +28,38 @@ async fn docker_can_remove_a_provisioned_volume() {
         post(&socket, "/VolumeDriver.Remove", json!({"Name":"data"})).await,
         json!({"Err":""})
     );
-    assert!(
-        fs::read_to_string(test.0.join("commands"))
-            .unwrap()
-            .contains("zfs destroy -r tank/ployz/data")
-    );
     assert!(!test.0.join("volume").exists());
+    assert!(
+        !commands(&test).contains("zfs destroy"),
+        "{}",
+        commands(&test)
+    );
+    let [entry] = &trashed(&test)[..] else {
+        panic!("one Trash entry: {:?}", trashed(&test));
+    };
+    assert_eq!(
+        property(&test, entry, "ployz:trash-name").as_deref(),
+        Some("data")
+    );
+    assert_eq!(
+        property(&test, entry, "ployz:trash-place").as_deref(),
+        Some("root")
+    );
+    assert_eq!(
+        property(&test, entry, "ployz:origin").as_deref(),
+        Some(super::copy_tests::BORN)
+    );
+    assert_eq!(property(&test, entry, "canmount").as_deref(), Some("off"));
+
+    let other = "1".repeat(64);
+    assert_eq!(
+        post(&socket, "/VolumeDriver.Create", create(&other)).await,
+        json!({"Err":""})
+    );
+    assert!(test.0.join("volume").exists());
+    assert_eq!(property(&test, ROOT, "ployz:origin"), Some(other));
+    assert_eq!(property(&test, ROOT, "ployz:trash-name"), None);
+    assert_eq!(trashed(&test).as_slice(), std::slice::from_ref(entry));
     server.abort();
 }
 
@@ -109,11 +138,17 @@ async fn removing_an_unknown_volume_ignores_an_unusable_managed_root() {
 }
 
 #[tokio::test]
-async fn docker_receives_dataset_destruction_failures() {
+async fn a_remove_of_a_busy_volume_is_refused_and_leaves_it_mounted_and_mountable() {
     let test = test_dir();
-    fs::write(test.0.join("root"), "").unwrap();
-    fs::write(test.0.join("volume"), "").unwrap();
-    fs::write(test.0.join("destroy-fails"), "").unwrap();
+    for marker in ["root", "volume", "mounted", "trash"] {
+        fs::create_dir_all(test.0.join("props")).unwrap();
+        if marker == "trash" {
+            fs::create_dir(test.0.join(marker)).unwrap();
+        } else {
+            fs::write(test.0.join(marker), "").unwrap();
+        }
+    }
+    fs::write(test.0.join("props/busy-mount"), "").unwrap();
     let (zpool, zfs) = fake_zfs(&test.0, USABLE_POOL);
     let socket = test.0.join("plugin.sock");
     let listener = UnixListener::bind(&socket).unwrap();
@@ -121,8 +156,21 @@ async fn docker_receives_dataset_destruction_failures() {
 
     let response = post(&socket, "/VolumeDriver.Remove", json!({"Name":"data"})).await;
 
-    assert!(error(&response).contains("dataset is busy"));
+    assert!(error(&response).contains("busy"), "{response}");
     assert!(test.0.join("volume").exists());
+    assert!(test.0.join("mounted").exists());
+    assert_eq!(trashed(&test), Vec::<String>::new());
+    assert_eq!(property(&test, ROOT, "canmount"), None);
+    fs::remove_file(test.0.join("props/busy-mount")).unwrap();
+    assert_eq!(
+        post(
+            &socket,
+            "/VolumeDriver.Mount",
+            json!({"Name":"data","ID":"c"})
+        )
+        .await,
+        json!({"Err":"","Mountpoint":"/var/lib/ployz-volumes/data"})
+    );
     server.abort();
 }
 
@@ -378,11 +426,8 @@ async fn remove_waits_for_a_list_holding_the_storage_mutation() {
             .unwrap(),
         json!({"Err":""})
     );
-    assert!(
-        fs::read_to_string(test.0.join("commands"))
-            .unwrap()
-            .contains("zfs destroy -r tank/ployz/data")
-    );
+    assert!(!test.0.join("volume").exists());
+    assert_eq!(trashed(&test).len(), 1);
     server.abort();
 }
 
@@ -407,10 +452,11 @@ async fn docker_lookups_and_mounts_recover_existing_pools_without_create_or_capa
                     r#"#!/bin/sh
 set -eu
 case "$*" in
- 'list -Hp -o name,size,allocated,free,health,readonly')
-  [ ! -e '{root}/imported' ] || printf '{pool}\t4294967296\t0\t4294967296\tONLINE\toff\n' ;;
+ 'list -Hp -o name,guid,size,allocated,free,health,readonly')
+  [ ! -e '{root}/imported' ] || printf '{pool}\t7\t4294967296\t0\t4294967296\tONLINE\toff\n' ;;
  import|'import -d {root}/machine-pool') printf 'pool: {pool}\n' ;;
  'import -N ployz-device'|'import -d {root}/machine-pool -f -N ployz') touch '{root}/imported' ;;
+ 'list -v -H -P -o name ployz') printf 'ployz\n\t%s\t-\n' '{root}/machine-pool' ;;
  *) exit 97 ;;
 esac
 "#,
@@ -445,7 +491,7 @@ esac
                 "Remove" => assert!(
                     fs::read_to_string(test.0.join("commands"))
                         .unwrap()
-                        .contains(&format!("zfs destroy -r {pool}/ployz/data")),
+                        .contains(&format!("zfs rename {pool}/ployz/data {pool}/ployz-trash/")),
                     "{pool}: {reply}"
                 ),
                 _ => assert_eq!(
@@ -506,6 +552,29 @@ async fn remove_refuses_while_a_held_pool_is_not_imported() {
     let response = post(&socket, "/VolumeDriver.Remove", json!({"Name":"data"})).await;
 
     assert!(error(&response).contains("not imported"), "{response}");
+    server.abort();
+}
+
+/// A restore asks every Server for its copy, and one whose Pool isn't imported may still hold
+/// one, so it answers unavailable, never none.
+#[tokio::test]
+async fn inspect_refuses_while_a_held_pool_is_not_imported() {
+    let test = test_dir();
+    let (zpool, zfs) = fake_zfs(&test.0, "");
+    let socket = test.0.join("plugin.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let server = tokio::spawn(serve(listener, VolumeStorage::with_programs(zpool, zfs)));
+    let inspect = || post(&socket, "/Volume.Inspect", json!({"name": "data"}));
+
+    assert_eq!(inspect().await, json!({"Ok": {"copy": null}}));
+    fs::create_dir(test.0.join("ployz-volumes")).unwrap();
+    let held = inspect().await;
+
+    assert_eq!(
+        held.pointer("/Err/code"),
+        Some(&json!("unavailable")),
+        "{held}"
+    );
     server.abort();
 }
 

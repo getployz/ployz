@@ -157,7 +157,7 @@ fn pool_bytes(usage: &ZfsUsage, placement: Placement) -> PoolBytes {
                 volumes = volumes.saturating_add(usage.referenced);
             }
             Place::Slot { .. } => mirror_slots = mirror_slots.saturating_add(usage.referenced),
-            Place::Root(_) | Place::Outside => {}
+            Place::Root(_) | Place::Trash(_) | Place::Outside => {}
         }
         if let Some(root) = pool_of_root_parent(name).and_then(|pool| datasets.get(pool)) {
             free = Some(free.unwrap_or(0_u64).saturating_add(root.available));

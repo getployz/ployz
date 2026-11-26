@@ -90,6 +90,7 @@ server doesn't answer in time, the sync says the server may still have taken it.
 or a move, can take hours. If a copy hasn't finished after six hours, the run fails and says so.
 
 `ployz volume mirror rm` deletes the copy on that server, whether it's the mirror or an old copy.
+Its data waits in that server's trash for 7 days first, still taking its space.
 Add `--if-old-copy` to delete it only while it is still an old copy. Every cleanup line Ployz
 prints for an old copy includes it. A mirror that is the volume's only copy left is removed only
 with `--confirm data`, because its data goes with it.

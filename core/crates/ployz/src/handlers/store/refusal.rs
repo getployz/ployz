@@ -366,19 +366,15 @@ mod tests {
             ),
             &root,
         );
-        let refused = ployz_core::RpcError::confirmation_required(
-            "This Deploy permanently deletes the data of data",
-        )
-        .with_details(json!({ "version": "3:1:0.1", "accept": ["data"] }));
+        let refused =
+            ployz_core::RpcError::confirmation_required("This Deploy deletes the data of data")
+                .with_details(json!({ "version": "3:1:0.1", "accept": ["data"] }));
         let error = store.accepting(StoreCallError::Refused(refused));
         let retry = "ployz deploy --env staging --approval apr_1 --accept-volume-loss data --expect-version 3:1:0.1";
         assert_eq!(error.hints(), [crate::cli::retry_hint(retry)]);
         let error = error.report();
         assert_eq!(error.details.get("retry"), Some(&json!(retry)));
-        assert_eq!(
-            error.message,
-            "This Deploy permanently deletes the data of data"
-        );
+        assert_eq!(error.message, "This Deploy deletes the data of data");
     }
 
     #[test]
@@ -503,10 +499,9 @@ mod tests {
                 ),
                 &root,
             );
-            let refused = ployz_core::RpcError::confirmation_required(
-                "This permanently deletes the data of data",
-            )
-            .with_details(json!({ "version": "3:1:0.1", "accept": ["data"] }));
+            let refused =
+                ployz_core::RpcError::confirmation_required("This deletes the data of data")
+                    .with_details(json!({ "version": "3:1:0.1", "accept": ["data"] }));
             let hints = store.accepting(StoreCallError::Refused(refused)).hints();
             let [Hint::Retry(retry)] = &hints[..] else {
                 panic!("{words:?} names no retry");
@@ -739,7 +734,7 @@ mod tests {
             );
             let refused = StoreCallError::Refused(
                 ployz_core::RpcError::confirmation_required(String::from(
-                    "This permanently deletes the data of big1, big2. Accept each by name",
+                    "This deletes the data of big1, big2. Accept each by name",
                 ))
                 .with_details(json!({
                     "version": "33:4:0.4:481da69fb1927724",
@@ -777,7 +772,7 @@ mod tests {
         assert_eq!(hints, [crate::cli::retry_hint(retry)]);
         assert_eq!(
             message,
-            "This permanently deletes the data of big1, big2. Accept each by name"
+            "This deletes the data of big1, big2. Accept each by name"
         );
         // Naming only some of them is still answered by naming each.
         let (hints, message) = accepting(
@@ -794,7 +789,7 @@ mod tests {
         assert_eq!(hints, [crate::cli::retry_hint(retry)]);
         assert_eq!(
             message,
-            "This permanently deletes the data of big1, big2. Accept each by name"
+            "This deletes the data of big1, big2. Accept each by name"
         );
     }
 

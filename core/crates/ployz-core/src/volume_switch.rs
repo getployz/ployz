@@ -529,16 +529,104 @@ pub enum PullState {
     Unrecognized,
 }
 
-/// Live answer to `InspectVolumeCopy`: what this Machine holds.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+/// Live answer to `InspectVolumeCopy`: what this Machine holds. `read` and `pinned` come
+/// only when the request asked to `prove` absence, and only from a Machine that knows how;
+/// an older Machine leaves both out, which proves nothing. An answer with `read` must
+/// say `copy`, as `null` when there is none, so a dropped field never reads as no copy.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, TS)]
 pub struct VolumeCopyView {
     pub copy: Option<VolumeCopy>,
+    /// Which Pool the answer read, and how this Machine knows it is its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub read: Option<PoolRead>,
+    /// Every Trash entry of the Volume in that Pool that a restore pinned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, as = "Option<Vec<String>>")]
+    pub pinned: Option<Vec<crate::TrashId>>,
 }
 
-/// Ask a Machine what it holds for one Volume name.
+impl<'de> Deserialize<'de> for VolumeCopyView {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        /// `Some` for a field the answer holds, `null` included.
+        fn present<'de, D: serde::Deserializer<'de>>(
+            deserializer: D,
+        ) -> Result<Option<Option<VolumeCopy>>, D::Error> {
+            Option::deserialize(deserializer).map(Some)
+        }
+        #[derive(Deserialize)]
+        struct Wire {
+            #[serde(default, deserialize_with = "present")]
+            copy: Option<Option<VolumeCopy>>,
+            #[serde(default)]
+            read: Option<PoolRead>,
+            #[serde(default)]
+            pinned: Option<Vec<crate::TrashId>>,
+        }
+        let wire = Wire::deserialize(deserializer)?;
+        let copy = match (wire.copy, &wire.read) {
+            (Some(copy), _) => copy,
+            (None, None) => None,
+            (None, Some(_)) => return Err(serde::de::Error::missing_field("copy")),
+        };
+        Ok(Self {
+            copy,
+            read: wire.read,
+            pinned: wire.pinned,
+        })
+    }
+}
+
+impl VolumeCopyView {
+    /// An answer that carries no proof.
+    #[must_use]
+    pub const fn of(copy: Option<VolumeCopy>) -> Self {
+        Self {
+            copy,
+            read: None,
+            pinned: None,
+        }
+    }
+}
+
+/// Which Pool a Machine read to answer, judged from its own records and what ZFS lists and
+/// can import, without changing either.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PoolRead {
+    /// This Machine never held a Pool, and none is imported or importable.
+    Unheld,
+    /// The Pool this Machine owns.
+    Pool {
+        name: String,
+        health: String,
+        by: PoolBy,
+    },
+    /// This Machine can't tell which Pool is its own.
+    Unproven { why: String },
+    #[serde(other)]
+    Unknown,
+}
+
+/// How a Machine knows a Pool is its own.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum PoolBy {
+    /// Its only vdev is the backing file this Machine records.
+    File,
+    /// It is the one `ployz-device` Pool this Machine records.
+    Device,
+    /// It is the only Pool, and this Machine records nothing.
+    Sole,
+}
+
+/// Ask a Machine what it holds for one Volume name. With `prove`, the answer also says
+/// which Pool it read and which Trash entries of the Volume a restore pinned there.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct InspectVolumeCopyRequest {
     pub name: DockerVolumeName,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub prove: bool,
 }
 
 /// SeedVolume on the writer: a new Volume `into` holding the restore point `guid` of
@@ -916,6 +1004,29 @@ mod tests {
         ] {
             assert!(bad.parse::<PlacedImage>().is_err(), "{bad:?} parsed");
         }
+    }
+
+    #[test]
+    fn a_proof_answer_that_drops_its_copy_is_not_read_as_no_copy() {
+        let view = |answer| serde_json::from_value::<VolumeCopyView>(answer);
+        let unheld = serde_json::json!({ "kind": "unheld" });
+        assert!(
+            view(serde_json::json!({ "read": unheld, "pinned": [] })).is_err(),
+            "a proof without `copy` read as no copy"
+        );
+        assert_eq!(
+            view(serde_json::json!({ "copy": null, "read": unheld, "pinned": [] })).unwrap(),
+            VolumeCopyView {
+                copy: None,
+                read: Some(PoolRead::Unheld),
+                pinned: Some(Vec::new()),
+            }
+        );
+        // An older Machine's answer carries no proof, which the restore refuses on its own.
+        assert_eq!(
+            view(serde_json::json!({})).unwrap(),
+            VolumeCopyView::of(None)
+        );
     }
 
     #[test]

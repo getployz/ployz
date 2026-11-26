@@ -49,6 +49,8 @@ mod service_floor;
 #[cfg(test)]
 mod sign_in_store;
 #[cfg(test)]
+mod trash_restore;
+#[cfg(test)]
 mod upgrade_attempt;
 #[cfg(test)]
 mod volume_marks;

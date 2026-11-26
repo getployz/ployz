@@ -17,7 +17,7 @@ use ployz_core::config::FileMode;
 use ployz_core::{
     ClusterName, ConfigFileName, ConfigName, DomainPrefix, Hint, IngressHost, MachineId,
     MachineLabelKey, MachineRelease, Namespace, ProvisionedVolumeMaximumBytes, RetryCommand,
-    ServiceName, StorageChoice, StoragePreparation,
+    ServiceName, StorageChoice, StoragePreparation, TrashId,
 };
 use ployz_store::{
     BranchName, EnvironmentName, ProjectName, RegionName, RepositoryName, ReviewVersion,
@@ -34,6 +34,8 @@ pub(crate) struct Rerun {
     /// The subcommand words, or every word when they didn't parse.
     path: Vec<String>,
     given: Vec<Given>,
+    /// Whether the line starts with `sudo` ([`Self::sudo_as_invoked`]).
+    sudo: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -61,7 +63,12 @@ impl Rerun {
             "a rerun starts from the root matches, which name the command"
         );
         let (path, given) = given(&tree, root);
-        Self { tree, path, given }
+        Self {
+            tree,
+            path,
+            given,
+            sudo: false,
+        }
     }
 
     /// `words`, a command line without `ployz`, run with this command line's Ployz config,
@@ -104,7 +111,12 @@ impl Rerun {
         match tree.clone().try_get_matches_from(argv) {
             Ok(parsed) => {
                 let (path, given) = given(&tree, &parsed);
-                Self { tree, path, given }
+                Self {
+                    tree,
+                    path,
+                    given,
+                    sudo: false,
+                }
             }
             Err(error) => {
                 debug_assert!(false, "a rerun's words don't parse: {words:?}: {error}");
@@ -112,6 +124,7 @@ impl Rerun {
                     tree,
                     path: words.iter().map(|word| (*word).to_owned()).collect(),
                     given: Vec::new(),
+                    sudo: false,
                 }
             }
         }
@@ -212,6 +225,14 @@ impl Rerun {
         self
     }
 
+    /// Under `sudo` when this command ran under it, as `SUDO_USER` says: a command only root
+    /// may run, such as one on a Server's Trash, needs it again.
+    #[must_use]
+    pub(crate) fn sudo_as_invoked(mut self) -> Self {
+        self.sudo = std::env::var_os("SUDO_USER").is_some_and(|user| !user.is_empty());
+        self
+    }
+
     /// Without `id` and anything it was given.
     #[must_use]
     pub(crate) fn without(mut self, id: &str) -> Self {
@@ -232,7 +253,12 @@ impl Rerun {
         if let Err(error) = self.tree.clone().try_get_matches_from(&words) {
             panic!("a rerun doesn't parse: {words:?}: {error}");
         }
-        shell_words::join(words)
+        let line = shell_words::join(words);
+        if self.sudo {
+            format!("sudo {line}")
+        } else {
+            line
+        }
     }
 
     fn words(&self) -> Vec<String> {
@@ -544,7 +570,7 @@ fn image(typed: &str) -> Option<Shown> {
 }
 
 /// The parsers clap types a value with, each with the parse that shows one again.
-fn typed_parsers() -> [(TypeId, Parse); 12] {
+fn typed_parsers() -> [(TypeId, Parse); 13] {
     [
         (TypeId::of::<u16>(), parsed::<u16>),
         (TypeId::of::<u32>(), parsed::<u32>),
@@ -554,6 +580,8 @@ fn typed_parsers() -> [(TypeId, Parse); 12] {
         (TypeId::of::<PathBuf>(), path),
         (TypeId::of::<ipnet::Ipv4Net>(), parsed::<ipnet::Ipv4Net>),
         (TypeId::of::<MachineRelease>(), parsed::<MachineRelease>),
+        // A Trash entry's ID, as `ployz volume trash ls` lists it.
+        (TypeId::of::<TrashId>(), parsed::<TrashId>),
         (TypeId::of::<StorageChoice>(), parsed::<StorageChoice>),
         (
             TypeId::of::<StoragePreparation>(),

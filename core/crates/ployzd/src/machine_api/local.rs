@@ -581,6 +581,45 @@ impl MachineRpc for MachineService {
         finish(local.set_volume_size(&request).await)
     }
 
+    async fn list_trash(&self, request: Request<OpaquePayload>) -> Answer {
+        let request = expect::<op::ListTrash>(request)?;
+        finish(
+            self.local
+                .volume_verb::<ployz_core::TrashList>(
+                    "ListTrash",
+                    crate::volume_copy::TRASH_LIST_ROUTE,
+                    &request,
+                )
+                .await,
+        )
+    }
+
+    async fn restore_trash(&self, request: Request<OpaquePayload>) -> Answer {
+        let request = expect::<op::RestoreTrash>(request)?;
+        finish(
+            self.local
+                .volume_verb::<ployz_core::TrashRestored>(
+                    "RestoreTrash",
+                    crate::volume_copy::TRASH_RESTORE_ROUTE,
+                    &request,
+                )
+                .await,
+        )
+    }
+
+    async fn empty_trash(&self, request: Request<OpaquePayload>) -> Answer {
+        let request = expect::<op::EmptyTrash>(request)?;
+        finish(
+            self.local
+                .volume_verb::<ployz_core::TrashEmptied>(
+                    "EmptyTrash",
+                    crate::volume_copy::TRASH_EMPTY_ROUTE,
+                    &request,
+                )
+                .await,
+        )
+    }
+
     async fn build(
         &self,
         request: Request<tonic::Streaming<OpaquePayload>>,

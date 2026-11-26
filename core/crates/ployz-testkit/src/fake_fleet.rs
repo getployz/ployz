@@ -943,7 +943,7 @@ impl Fleet {
                             placed: None,
                         },
                     });
-                unary(VolumeCopyView { copy }.into())
+                unary(VolumeCopyView::of(copy).into())
             }
             RpcRequestBody::RequestMachineUpgrade(request) => {
                 let machine = self.by_id_mut(target)?;
