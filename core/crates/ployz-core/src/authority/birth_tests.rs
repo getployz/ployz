@@ -482,6 +482,7 @@ fn listed(spec: &RequestedServiceSpec, running: bool, legacy: bool) -> Container
         run: None,
         log_driver: None,
         admission: None,
+        replaced_by: None,
     })
     .unwrap()
 }

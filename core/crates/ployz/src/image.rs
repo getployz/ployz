@@ -4,8 +4,8 @@ use std::future::Future;
 use ployz_core::{
     FanoutSelector, ImageIngestReason, ImagePulled, Machine, MachineFailure, MachineId,
     MachineImages, MachineSuccess, MachineTarget, PULL_IMAGE_CAPABILITY, PartialResult,
-    PeerImagePull, PullFreeImageRequest, PullImageRequest, PullPolicy, RegistryAuth, RpcError,
-    RpcErrorCode, op, resolve_machine_selectors,
+    PeerImagePull, PullFreeImageRequest, PullImageRequest, PullPolicy, RpcError, RpcErrorCode,
+    SealedLogin, op, resolve_machine_selectors,
 };
 use thiserror::Error;
 
@@ -244,7 +244,7 @@ pub(crate) async fn pull_cluster_image(
     dest: &MachineId,
     image: &str,
     policy: PullPolicy,
-    registry_auth: Option<RegistryAuth>,
+    registry_login: Option<SealedLogin>,
 ) -> Result<ImagePulled, RpcError> {
     let target = MachineTarget::from(dest);
     if !ployz_core::authority::deploy::content_addressed(image)
@@ -257,7 +257,9 @@ pub(crate) async fn pull_cluster_image(
                 PullFreeImageRequest {
                     image: image.to_owned(),
                     policy,
-                    registry_auth: registry_auth.clone(),
+                    // What a free pull places runs unsigned, so it never carries a login.
+                    registry_auth: None,
+                    registry_login: None,
                 },
                 Call::keyed().to(&target),
             )
@@ -279,7 +281,8 @@ pub(crate) async fn pull_cluster_image(
             PullImageRequest {
                 image: image.to_owned(),
                 policy,
-                registry_auth,
+                registry_auth: None,
+                registry_login,
             },
             Call::keyed().to(&target),
         )

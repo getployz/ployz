@@ -4,7 +4,7 @@ use super::*;
 use crate::storage::json_text;
 
 /// Queue Deployment `id` shipping exactly what `source` froze: its Saved revision,
-/// targets, Namespace, registry credentials, upload and pinned commits, whatever
+/// targets, Namespace, registry logins, upload and pinned commits, whatever
 /// changed since. Any Deployment that ended can be redeployed, applied ones too.
 /// One older than a Deployment that may have changed the Servers rolls that back,
 /// once the caller confirmed exactly those. Its source's consent covered what the
@@ -151,6 +151,17 @@ pub(crate) fn retry(
     // A rollback retires each Service it ships that its revision doesn't hold. A
     // plain retry retires only what its source's review already covered.
     let revision = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
+    crate::registry::refuse_unfrozen(
+        tx,
+        source.as_str(),
+        &revision,
+        nodes.iter().filter_map(|node| match node {
+            TargetNode::Service { id, .. } => Some(id.as_str()),
+            TargetNode::Retire { .. } | TargetNode::Volume { .. } | TargetNode::Config { .. } => {
+                None
+            }
+        }),
+    )?;
     rollback.retires = nodes
         .iter()
         .filter_map(|node| match node {
@@ -292,11 +303,11 @@ pub(crate) fn retry(
             &format!(
                 "INSERT INTO config_deployment \
              (id, organization_id, environment_id, number, status, saved_revision, services, \
-              nodes, namespace, run, credentials, upload, cluster_domain, admitted, admitted_by, \
-              message, listed, service_uploads, ran) \
+              nodes, namespace, run, logins, credentials, upload, cluster_domain, admitted, \
+              admitted_by, message, listed, service_uploads, ran) \
              SELECT ?1, organization_id, environment_id, ?2, '{QUEUED}', saved_revision, ?7, \
-              ?8, namespace, ?3, credentials, upload, cluster_domain, ?5, ?6, message, ?9, \
-              ?10, ?11 \
+              ?8, namespace, ?3, logins, '{NO_LEGACY_CREDENTIALS}', upload, cluster_domain, \
+              ?5, ?6, message, ?9, ?10, ?11 \
              FROM config_deployment WHERE id = ?4"
             ),
             &[

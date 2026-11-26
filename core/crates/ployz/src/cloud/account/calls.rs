@@ -310,7 +310,9 @@ pub(crate) async fn call<T: DeserializeOwned>(
     let request = http::request(credential, method, &url, body)?;
     let reply = http::exchange(credential.cloud(), request, Effect::Read).await?;
     if read_only && reply.status == StatusCode::NOT_FOUND && refusal(&reply.body).is_none() {
-        return Err(LoginError::Unsupported(credential.cloud().to_owned()));
+        return Err(LoginError::Unsupported(
+            crate::cloud::origin::CloudOrigin::new(credential.cloud()).shown(),
+        ));
     }
     answer(credential, reply.status, &reply.body)
 }

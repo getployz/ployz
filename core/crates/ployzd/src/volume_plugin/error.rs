@@ -92,13 +92,16 @@ impl From<&str> for PluginError {
     }
 }
 
-/// A capacity refusal answers with its own code, and every other refusal as internal.
+/// A capacity refusal answers with its own code, a Pool that isn't imported as unavailable,
+/// and every other refusal as internal.
 impl From<PluginError> for ployz_core::RpcError {
     fn from(error: PluginError) -> Self {
         if let PluginError::Capacity(capacity, trash) = error {
             let text = capacity.to_string();
             let note = trash_note(&text, trash.as_ref());
             Self::refused(&capacity, format!("{text}{note}"))
+        } else if matches!(error, PluginError::HeldPoolNotImported) {
+            Self::unavailable(error.to_string())
         } else {
             Self::internal(error.to_string())
         }

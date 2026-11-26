@@ -31,7 +31,7 @@ type Open = {
 };
 
 /** Tells the person their Deploy went without the automatic deploy rule, and why. */
-function warnHeld(held: Held | null) {
+export function warnHeld(held: Held | null) {
   if (held === null) return;
   toast.warning(held.unchecked ? "Deployed. Pushes may wait for approval." : "Deployed. Pushes wait for approval.", { description: held.reason });
 }

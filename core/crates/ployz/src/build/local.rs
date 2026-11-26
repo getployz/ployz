@@ -14,6 +14,19 @@ pub struct LocalImage {
     pub repository: String,
 }
 
+/// Run `build` with a writer for its rendered progress: stderr, masked like everything
+/// the CLI prints and shared by the threads that report it. A token it still holds goes
+/// out when `build` returns.
+fn on_stderr<T>(build: impl FnOnce(&(dyn Fn(&[u8]) + Sync)) -> T) -> T {
+    use std::io::Write as _;
+    let stderr = std::sync::Mutex::new(crate::ui::stderr_bytes());
+    build(&|text| {
+        if let Ok(mut stderr) = stderr.lock() {
+            let _ = stderr.write_all(text);
+        }
+    })
+}
+
 impl CapturedBuild {
     /// Build the single captured target with local Docker and Buildx, rendering progress
     /// to stderr and to `observe`, both scrubbed of the Sealed values it holds. The
@@ -31,11 +44,16 @@ impl CapturedBuild {
             if let Some(scrub) = scrub
                 && std::env::var_os("GITHUB_ACTIONS").is_some_and(|value| value == "true")
             {
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "the runner hides a secret only when its mask line names it exactly"
+                )]
+                let stderr = crate::ui::relayed_stderr();
                 scrub
-                    .mask_github(&mut std::io::stderr().lock())
+                    .mask_github(&mut stderr.lock())
                     .map_err(|error| BuildError::Request(error.to_string()))?;
             }
-            ployz_build::execute(request, cancellation, scrub, observe)
+            on_stderr(|show| ployz_build::execute(request, cancellation, scrub, observe, show))
         })?;
         let image = images
             .into_iter()
@@ -62,7 +80,8 @@ impl CapturedBuild {
         cancellation: &ployz_build::Cancellation,
     ) -> Result<(), Error> {
         self.run_local(|request, scrub| {
-            ployz_build::export_cache(request, cancellation, scrub).map(|()| Vec::new())
+            on_stderr(|show| ployz_build::export_cache(request, cancellation, scrub, show))
+                .map(|()| Vec::new())
         })
         .map(drop)
     }

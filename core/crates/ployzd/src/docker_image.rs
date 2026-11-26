@@ -17,6 +17,11 @@ pub(crate) enum ImagePull<'auth> {
     /// the spec's tag names now. Unsigned, it runs only once this Machine pulled it from
     /// the spec's repository by digest, with no login.
     Pinned(&'auth ployz_core::ImageDigest),
+    /// The image a Volume start placed here before its promote, by the ID it read then:
+    /// creation runs that ID and reaches no registry, wherever the tag points since.
+    /// Unsigned, the ID must be one a free pull placed; any other is pulled again as
+    /// [`Self::Policy`] is.
+    Placed(&'auth str),
 }
 
 /// `image`'s repository, registry and port kept, pinned to `id`: `repo:tag` becomes
@@ -137,22 +142,94 @@ pub(crate) async fn pull_public(docker: &Docker, image: &str) -> Result<String, 
         .ok_or(UnsignedImage::NoDigest)
 }
 
-/// The host and port of the registry Docker pulls `image` from, or `None` for Docker Hub.
-/// Docker takes the first part for a host when it holds a dot, a colon or a capital
-/// letter, or is `localhost`.
-fn registry(image: &str) -> Option<&str> {
-    let (first, _) = image.split_once('/')?;
-    (first == "localhost" || first.contains(['.', ':']) || first.to_lowercase() != first)
-        .then_some(first)
+/// Why this Machine does not pull an image with a sealed registry login.
+#[derive(Debug, thiserror::Error)]
+pub enum LoginRefused {
+    #[error(transparent)]
+    Uppercase(#[from] ployz_core::UppercaseHost),
+    #[error(
+        "the registry credentials are for {sealed}, and the image is on {image}. Enter them again for {image}"
+    )]
+    OtherHost { sealed: String, image: String },
+    #[error(
+        "Docker on this Server reaches {0} without TLS, so it would send the login in clear text"
+    )]
+    Insecure(String),
+    #[error(
+        "Docker on this Server pulls Docker Hub images through a mirror, which would get the login"
+    )]
+    Mirrored,
+    #[error("could not read Docker's registry settings")]
+    Unread(#[source] Error),
 }
 
-/// Refuse a registry on this Machine or its private networks: reaching one proves
-/// nothing about who else can.
-async fn require_public_registry(image: &str) -> Result<(), UnsignedImage> {
-    let Some(registry) = registry(image) else {
-        return Ok(());
+/// The login `login` holds, to pull `image` with: only when it was sealed for the host
+/// Docker pulls `image` from, and Docker sends it to that host alone, over TLS.
+pub(crate) async fn open_login(
+    docker: &Docker,
+    sealing: &crate::sealed_env::SealingKeyStore,
+    image: &str,
+    login: &ployz_core::SealedLogin,
+) -> Result<RegistryAuth, crate::docker::Error> {
+    let host = ployz_core::login_host(image).map_err(LoginRefused::from)?;
+    if host != login.host {
+        return Err(LoginRefused::OtherHost {
+            sealed: login.host.clone(),
+            image: host.to_owned(),
+        }
+        .into());
+    }
+    let settings = docker
+        .info()
+        .await
+        .map_err(LoginRefused::Unread)?
+        .registry_config
+        .unwrap_or_default();
+    let index = settings.index_configs.unwrap_or_default();
+    if host == ployz_core::DOCKER_HUB {
+        let mirrored = index
+            .get(host)
+            .and_then(|hub| hub.mirrors.as_ref())
+            .into_iter()
+            .chain(settings.mirrors.as_ref())
+            .any(|mirrors| !mirrors.is_empty());
+        if mirrored {
+            return Err(LoginRefused::Mirrored.into());
+        }
+    } else if insecure(host, &index, settings.insecure_registry_cidrs.as_deref()).await {
+        return Err(LoginRefused::Insecure(host.to_owned()).into());
+    }
+    Ok(sealing.open_login(login)?)
+}
+
+/// Whether Docker reaches registry `host` without TLS, as it decides: the setting it
+/// holds under that name, else whether an address the name resolves to is in a range
+/// it was told is insecure, `127.0.0.0/8` and `::1/128` by default.
+async fn insecure(
+    host: &str,
+    index: &std::collections::HashMap<String, bollard::models::IndexInfo>,
+    ranges: Option<&[String]>,
+) -> bool {
+    if let Some(secure) = index.get(host).and_then(|setting| setting.secure) {
+        return !secure;
+    }
+    let ranges: Vec<ipnet::IpNet> = ranges
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|range| range.parse().ok())
+        .collect();
+    // Docker counts a name it can't resolve as secure; then the pull fails on its own.
+    let Ok(addresses) = tokio::net::lookup_host(registry_target(host)).await else {
+        return false;
     };
-    let target = if registry
+    addresses
+        .map(|address| address.ip())
+        .any(|ip| ranges.iter().any(|range| range.contains(&ip)))
+}
+
+/// `registry` as an address to resolve: HTTPS's port when it names none.
+fn registry_target(registry: &str) -> String {
+    if registry
         .rsplit(']')
         .next()
         .unwrap_or(registry)
@@ -161,7 +238,16 @@ async fn require_public_registry(image: &str) -> Result<(), UnsignedImage> {
         registry.to_owned()
     } else {
         format!("{registry}:443")
+    }
+}
+
+/// Refuse a registry on this Machine or its private networks: reaching one proves
+/// nothing about who else can.
+async fn require_public_registry(image: &str) -> Result<(), UnsignedImage> {
+    let Some(registry) = ployz_core::image_registry(image) else {
+        return Ok(());
     };
+    let target = registry_target(registry);
     let mut addresses = tokio::net::lookup_host(&target)
         .await
         .map_err(|error| UnsignedImage::Unresolved(registry.to_owned(), error))?
@@ -275,19 +361,124 @@ mod tests {
         }
     }
 
-    #[test]
-    fn an_image_names_its_registry_as_docker_reads_it() {
+    /// A fake Docker whose `info` reports `registry` as its registry settings.
+    async fn docker_with(registry: serde_json::Value) -> (Docker, tokio::task::JoinHandle<()>) {
+        let app = Router::new().fallback(move |uri: axum::http::Uri| {
+            let registry = registry.clone();
+            async move {
+                assert!(uri.path().ends_with("/info"), "only info is read: {uri}");
+                axum::Json(serde_json::json!({ "RegistryConfig": registry }))
+            }
+        });
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let docker = Docker::connect_with_http(
+            &format!("http://{address}"),
+            5,
+            bollard::API_DEFAULT_VERSION,
+        )
+        .unwrap();
+        (docker, server)
+    }
+
+    #[tokio::test]
+    async fn a_sealed_login_opens_only_for_its_registry_reached_over_tls() {
+        use crate::docker::Error as Refused;
+        let cluster = crate::sealed_env::test_support::Cluster::new();
+        let store = cluster.store();
+        let auth = RegistryAuth {
+            username: Some("octocat".into()),
+            password: "token".into(),
+        };
+        let (docker, server) = docker_with(serde_json::json!({
+            "InsecureRegistryCIDRs": ["127.0.0.0/8"],
+            "IndexConfigs": {
+                "docker.io": { "Name": "docker.io", "Secure": true, "Official": true },
+                "plain.example:5000": { "Name": "plain.example:5000", "Secure": false },
+            },
+        }))
+        .await;
+        let open = |image: &'static str, host: &str| {
+            let login = cluster.seal_login(host, &auth);
+            let (docker, store) = (&docker, &store);
+            async move { open_login(docker, store, image, &login).await }
+        };
+        assert_eq!(
+            open("ghcr.io/acme/api@sha256:aa", "ghcr.io").await.unwrap(),
+            auth
+        );
+        assert_eq!(open("acme/api:1", "docker.io").await.unwrap(), auth);
         for (image, host) in [
-            ("nginx", None),
-            ("library/nginx:1.29", None),
-            ("ghcr.io/acme/api:1", Some("ghcr.io")),
-            ("localhost/api", Some("localhost")),
-            ("registry:5000/api", Some("registry:5000")),
-            // A first part with a capital letter is a host to Docker, not a Hub account.
-            ("Registry/api:1", Some("Registry")),
+            ("evil.example/acme/api", "ghcr.io"),
+            ("ghcr.io/acme/api", "docker.io"),
+            ("acme/api", "ghcr.io"),
         ] {
-            assert_eq!(registry(image), host, "{image}");
+            let refused = open(image, host).await.unwrap_err();
+            assert!(
+                matches!(
+                    refused,
+                    Refused::RegistryLogin(LoginRefused::OtherHost { .. })
+                ),
+                "{image}: {refused:?}"
+            );
         }
+        // Docker reads an uppercase first part as a host, whatever the login says.
+        let refused = open("GHCR.io/acme/api", "GHCR.io").await.unwrap_err();
+        assert!(
+            matches!(refused, Refused::RegistryLogin(LoginRefused::Uppercase(_))),
+            "{refused:?}"
+        );
+        // Docker would send it in clear text: named insecure, or in an insecure range.
+        for (image, host) in [
+            ("plain.example:5000/api", "plain.example:5000"),
+            ("127.0.0.1:5000/api", "127.0.0.1:5000"),
+            ("localhost:5000/api", "localhost:5000"),
+        ] {
+            let refused = open(image, host).await.unwrap_err();
+            assert!(
+                matches!(refused, Refused::RegistryLogin(LoginRefused::Insecure(_))),
+                "{image}: {refused:?}"
+            );
+        }
+        // Sealed to another Cluster, it doesn't open here.
+        let other = crate::sealed_env::test_support::Cluster::new().seal_login("ghcr.io", &auth);
+        let refused = open_login(&docker, &store, "ghcr.io/acme/api", &other)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                refused,
+                Refused::Sealed(crate::sealed_env::OpenError::RegistryLogin(_))
+            ),
+            "{refused:?}"
+        );
+        server.abort();
+
+        // A mirror would get a Docker Hub login; another registry's still opens.
+        let (docker, server) = docker_with(serde_json::json!({
+            "Mirrors": ["https://mirror.example/"],
+            "IndexConfigs": {
+                "docker.io": { "Name": "docker.io", "Mirrors": ["https://mirror.example/"], "Secure": true },
+            },
+        }))
+        .await;
+        let hub = cluster.seal_login("docker.io", &auth);
+        let refused = open_login(&docker, &store, "acme/api", &hub)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(refused, Refused::RegistryLogin(LoginRefused::Mirrored)),
+            "{refused:?}"
+        );
+        let ghcr = cluster.seal_login("ghcr.io", &auth);
+        assert_eq!(
+            open_login(&docker, &store, "ghcr.io/acme/api", &ghcr)
+                .await
+                .unwrap(),
+            auth
+        );
+        server.abort();
     }
 
     #[tokio::test]

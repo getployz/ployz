@@ -62,7 +62,7 @@ still provides a Server route without Cloud sign-in.
 
 Signed out, without `--connect` or `--context`, and with a config file that sets no current
 context, commands reach no server, so it shows
-`servers = (none: no current context)` and `next: ployz ctx use CONTEXT`. With no contexts in the
+`servers = (none: no current context)` and `next: ployz ctx use '<CONTEXT>'`. With no contexts in the
 file, it shows `(none: no contexts)` and the step those commands name, such as `ployz login`. In
 JSON, `servers.via` is `none` then.
 
@@ -156,7 +156,12 @@ Some things are not tools. Run these yourself in a terminal:
 - `exec`, `service port-forward`, `logs --follow` and `up`.
 - Branches, tokens and Fleet Tokens (`server token`).
 - Secrets and registry credentials. `ployz set web.env.KEY --secret` seals a secret on this
-  computer. In a terminal it asks `Value for web.env.KEY:` and takes one line without showing what
+  computer, and `ployz set web.registryCredential --secret --username octo` seals an image's
+  token and its username for its registry. It takes the registry from the image the same command sets, or from
+  `--registry ghcr.io`. Otherwise Ployz Cloud names the service's registry, and you confirm it
+  at a terminal; a script must pass `--registry`. A login reaches Cloud only sealed:
+  a new token inline on the command line is refused before anything is sent, and one read
+  by `--patch -` from stdin is sealed here once its registry is known. In a terminal it asks `Value for web.env.KEY:` and takes one line without showing what
   you type; Ctrl-C, or Ctrl-D on an empty line, cancels. A paste of more than one line is
   refused and nothing is kept. Pipe in a value of several lines, such as a PEM key. A run that
   can't prompt (`--json`, `CI`, `TERM=dumb`, or stderr not a terminal) refuses with exit code 2
@@ -243,7 +248,7 @@ Any member can run `ployz org member ls`. Pending invites name who was invited, 
 Through Ployz Cloud, commands that talk to your servers directly need an owner or admin too: `exec`,
 `service start`, `service stop`, `service restart`, `service port-forward`,
 `server ls`, `server show`, `server logs`, `server set`, `server drain`, `server upgrade`,
-`server rm`, `server forget <server>` and `server clean` without `--namespace`. A member gets
+`server volumes`, `server rm`, `server forget <server>` and `server clean` without `--namespace`. A member gets
 `Server access needs an admin. Ask an owner or admin of <organization>.` and exit code 1. A `read` or
 `deploy` [token](#make-an-organization-token) can't run them either, even an owner's: it gets
 `This token's grant doesn't include servers:shell.`
@@ -412,6 +417,52 @@ context's name as a positional argument.
 
 A command prints its result on stdout and everything else on stderr: progress, warnings, the
 `next:` line, prompts and errors. `ployz service ls > services.txt` saves only the table.
+
+A `retry:` line is the command you ran, with every flag you typed, such as `--ployz-config`,
+`--json` and `--why`, plus what the retry adds, such as `--confirm` or `--approval`. Flags that
+pick where a command runs, `--context`, `--connect`, `--project` and `--env`, are spelled out
+even when they came from a variable. A retry repeats a value you typed only when it reads as what
+the argument takes, such as a name, a number, a choice, an image, a file on this computer or a
+`${{ service.VARIABLE }}` reference. Anything else shows as a placeholder in angle brackets that
+names what goes there:
+
+- A variable's value, a registry token, or a value its Setting refuses:
+  `ployz set 'web.env.TOKEN=<VALUE>'`. A `--patch` with any of these: `--patch '<JSON>'`.
+- A command: a Setting that runs one, such as `'web.startCommand=<VALUE>'`, a Setup Command as
+  `--setup '<SERVICE=COMMAND>'`, and what `ployz exec` runs as `-- '<COMMAND>'`.
+- Free text, such as `--why '<REASON>'`, and a value of the wrong kind, such as a URL in `--repo`:
+  `--repo '<OWNER/REPO[@BRANCH]>'`.
+- A `--connect` other than a `tcp://` address or a `unix://` socket on this computer, such as
+  `ssh://`: `--connect '<CONNECT>'`.
+- A Cloud URL with a user, a path, a query or a fragment: `--cloud-url '<CLOUD_URL>'`.
+
+Replace each placeholder before you run the line. A command that still holds one is refused
+before it does anything, naming the flag, so a placeholder is never sent as a value.
+
+An error never repeats a word you typed that doesn't read as what its place takes, since it may
+be a secret typed in the wrong place. A value an option refuses shows as `<VALUE>`, and a word no
+command takes as `<WORD>`, unless it is a command or a flag. A context name or a `server reject`
+pattern shows as typed when it reads as one, else as `<CONTEXT>` or `<PATTERN>`. An error that
+names a Cloud or a connection shows its scheme, host and port, and marks what it leaves out:
+`<USER>` or `<USER>:<PASSWORD>`, then `/<PATH>`, `?<QUERY>` and `#<FRAGMENT>`, as in
+`https://<USER>@cloud.example/<PATH>`. When SSH to a server fails, Ployz says why in its own words,
+such as a refused key or a host key that doesn't match, and never repeats ssh's output, which can
+include the user; run `ssh` to the server yourself to see it. `--help` names each variable it
+reads, such as `PLOYZ_CLOUD_URL` and `PLOYZ_CONTEXT`, without its value. `--ployz-config` takes a
+file path and refuses a URL.
+
+Nothing Ployz prints shows the user name or password of a URL, whether you typed it, stored it or
+an app logged it. Results, `--json`, errors, hints, `ployz get` and `ployz logs` all print
+`postgres://app:hunter2@db/shop` as `postgres://<USER>:<PASSWORD>@db/shop`, and
+`ssh://root@203.0.113.7` as `ssh://<USER>@203.0.113.7`. Ployz masks everything between a URL's
+`://` and the last `@` before the next space, so a password with `/`, `@` or `?` in it is hidden
+whole. A URL with an `@` after its host loses more: `https://registry.npmjs.org/@scope/pkg`
+prints as `https://<USER>@scope/pkg`. So does an image whose repository name ends in `http`,
+`https`, `ws`, `wss`, `ftp` or `file` and that is pinned to a digest: `ghcr.io/acme/my-http:v1@sha256:…`
+prints its tag as `<USER>`. Two commands pass output on exactly as
+it was written: `ployz exec`, which relays what your command prints in the container, and
+`ployz github cat`, which prints a file. To see a value whole, read it where it's used, such as
+`ployz exec web -- printenv DATABASE_URL`.
 `ployz logs` reading your servers prints each line on the stream your app wrote it to, so add
 `2>&1` to pipe every line; see [Logs](../observe/logs.md#read-logs-from-the-cli).
 
@@ -560,17 +611,18 @@ it exits 1 with `No running Service`.
 Once it starts, `ployz exec` exits with your command's own exit code. When the container stops under it,
 because a deploy replaced it or the service was stopped, it exits 1 with
 `The container for web stopped; exec ended.` A `retry:` line follows when another container of the
-service runs. It is the command you ran: the `-T` you typed, the `--context`, `--connect`,
-`--project` and `--env` you gave as flags or variables, and the `-- command`, like
-`retry: ployz exec -T web -- sleep 120`. Running it attaches there. It names no container, so it
-reaches whichever one runs. When `ployz exec` stops before your command does,
+service runs. It is the command you ran: `-T` as `--no-tty`, the `--context`, `--connect`,
+`--project` and `--env` you gave as flags or variables, and your command as `'<COMMAND>'`, since any word
+of it may be a secret, like `retry: ployz exec --no-tty web -- '<COMMAND>'`. Put your command back and
+run it to attach there. It names no container, so it reaches whichever one runs. When `ployz exec` stops before your command does,
 because you pressed Ctrl-C, a script killed it or the connection dropped, the server stops the
 command too: it sends SIGTERM, then SIGKILL after 10 seconds. The signal reaches the command
 you ran, not processes it started, so a shell like `sh -c 'a | b'` can leave `a` and `b` running.
 With a TTY, Ctrl-C reaches the command as a keypress first. When the connection drops, exec
 exits 1 with `Lost the connection to machine-1; exec ended, but the command may still be running
 there.` The server stops the command as above once it notices the connection is gone, and until
-then the command goes on.
+then the command goes on. When `ployz device rm` removes the device that ran it, the server stops
+the command the same way before the removal returns, also one started with `--detach`.
 
 A change can reach Ployz Cloud even when its answer never comes back. Then `ployz set`,
 `service add` and other changes exit 1 with `Cloud ... stopped answering after it got this

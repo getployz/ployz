@@ -12,16 +12,17 @@ pub(crate) fn word(value: &impl serde::Serialize) -> String {
 }
 
 /// A value as a change line shows it: a long one cut to the start that fits 80 columns, and its length, so one big variable doesn't fill the terminal.
+/// URL user info is masked before the cut, which could drop the `@` that marks it.
 pub(crate) fn shown(value: &serde_json::Value) -> String {
     const SHOWN: usize = 80;
-    let text = value.to_string();
-    let (start, whole) = fitted(&text, SHOWN);
+    let raw = value.to_string();
+    let (start, whole) = fitted(&crate::ui::mask(&raw), SHOWN);
     if whole {
         return start;
     }
     let length = value
         .as_str()
-        .map_or_else(|| text.chars().count(), |raw| raw.chars().count());
+        .map_or_else(|| raw.chars().count(), |raw| raw.chars().count());
     format!("{start}… ({length} chars)")
 }
 
@@ -482,6 +483,20 @@ mod tests {
         assert_eq!(
             shown(&json!(heart)),
             format!("\"{}… (80 chars)", "a".repeat(78))
+        );
+    }
+
+    /// The cut to 80 columns would drop the `@` the mask finds user info by.
+    #[test]
+    fn a_long_value_is_masked_before_it_is_cut() {
+        let password = "p".repeat(100);
+        let long = shown(&json!(format!(
+            "postgres://app:{password}@db.internal/shop"
+        )));
+        assert!(!long.contains("ppp"), "{long}");
+        assert!(
+            long.starts_with("\"postgres://<USER>:<PASSWORD>@db"),
+            "{long}"
         );
     }
 

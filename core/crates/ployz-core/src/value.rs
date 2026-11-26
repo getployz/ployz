@@ -10,9 +10,11 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use ts_rs::TS;
 
-/// A rejected shared value. Validation is identical on both sides of the wire.
+/// A rejected shared value. Validation is identical on both sides of the wire. The message
+/// names the kind and what it takes, never the value: a value refused as one kind may be a
+/// credential typed or sent in the wrong place.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
-#[error("invalid {kind} {value:?}: {expected}")]
+#[error("invalid {kind}: {expected}")]
 pub struct ValueError {
     kind: &'static str,
     value: String,
@@ -1465,23 +1467,23 @@ mod tests {
         );
         assert_eq!(
             refused(PayloadDigest::parse("zz").unwrap_err()),
-            r#"invalid payload digest "zz": 64 lowercase hex digits"#
+            r#"invalid payload digest: 64 lowercase hex digits"#
         );
         assert_eq!(
             refused(StepDigest::parse("zz").unwrap_err()),
-            r#"invalid step digest "zz": 64 lowercase hex digits"#
+            r#"invalid step digest: 64 lowercase hex digits"#
         );
         assert_eq!(
             refused(SigningPublicKey::parse("zz").unwrap_err()),
-            r#"invalid signing key "zz": 64 lowercase hex digits"#
+            r#"invalid signing key: 64 lowercase hex digits"#
         );
         assert_eq!(
             refused(RuleId::parse("zz").unwrap_err()),
-            r#"invalid rule ID "zz": lowercase hex of 16 bytes"#
+            r#"invalid rule ID: lowercase hex of 16 bytes"#
         );
         assert_eq!(
             refused(BuiltImageDigest::parse("zz").unwrap_err()),
-            r#"invalid image digest "zz": sha256:lowercase hex of 32 bytes"#
+            r#"invalid image digest: sha256:lowercase hex of 32 bytes"#
         );
         assert!(PayloadDigest::parse(&"ab".repeat(32)).is_ok());
         assert!(PayloadDigest::parse(&"AB".repeat(32)).is_err());
@@ -1503,34 +1505,32 @@ mod tests {
             key("AAAA")
                 .unwrap_err()
                 .to_string()
-                .starts_with(r#"invalid Sealing public key "AAAA": 32 bytes in base64"#)
+                .starts_with(r#"invalid Sealing public key: 32 bytes in base64"#)
         );
         assert!(
             serde_json::from_value::<FoundingClaim>("AAAA".into())
                 .unwrap_err()
                 .to_string()
-                .starts_with(r#"invalid Founding Claim "AAAA": 32 bytes in base64"#)
+                .starts_with(r#"invalid Founding Claim: 32 bytes in base64"#)
         );
         assert!(
             serde_json::from_value::<SealedSealingKey>("!!".into())
                 .unwrap_err()
                 .to_string()
-                .starts_with(r#"invalid sealed Sealing Key "!!": base64"#)
+                .starts_with(r#"invalid sealed Sealing Key: base64"#)
         );
         assert!(
             serde_json::from_value::<SealingKeyBackup>("!!".into())
                 .unwrap_err()
                 .to_string()
-                .starts_with(r#"invalid Sealing Key backup "!!": base64"#)
+                .starts_with(r#"invalid Sealing Key backup: base64"#)
         );
         let short = STANDARD.encode([9; 47]);
         assert!(
-            serde_json::from_value::<Ciphertext>(short.clone().into())
+            serde_json::from_value::<Ciphertext>(short.into())
                 .unwrap_err()
                 .to_string()
-                .starts_with(&format!(
-                    "invalid sealed value {short:?}: base64 of at least 48 bytes"
-                ))
+                .starts_with("invalid sealed value: base64 of at least 48 bytes")
         );
     }
 

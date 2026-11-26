@@ -225,10 +225,29 @@ async fn config_exchange(
     approval: Option<&str>,
 ) -> Result<Reply, StoreCallError> {
     let body = serde_json::to_value(body).map_err(|error| LoginError::Reply(error.to_string()))?;
+    if matches!(operation, Operation::Write) {
+        refuse_unsealed_logins(&body)?;
+    }
     let url = format!("{}/api/config/{}", credential.cloud(), operation.path());
     let request =
         http::approved_request(credential, via, Method::POST, &url, &body, approval, None)?;
     Ok(http::exchange(credential.cloud(), request, operation.effect()).await?)
+}
+
+/// Refuses a write before it leaves for Cloud unless each registry login it sets is
+/// one this CLI sealed, kept or removed, by any path or key the Store reads one from.
+/// Every Store write to Cloud, typed or JSON, from a command or an agent tool, passes
+/// here, so sealing is the only way a login leaves.
+fn refuse_unsealed_logins(body: &Value) -> Result<(), StoreCallError> {
+    let command = Command::decode(body.clone()).map_err(|error| {
+        StoreCallError::Refused(RpcError::new(
+            RpcErrorCode::Internal,
+            format!("this CLI could not read its own write: {error}"),
+        ))
+    })?;
+    command
+        .refuse_unsealed_logins()
+        .map_err(StoreCallError::Refused)
 }
 
 /// How long one upload may take, sending included: 95 MiB at about 1.3 Mbit/s.

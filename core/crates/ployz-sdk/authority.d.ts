@@ -49,15 +49,6 @@ import type {
   VersionsDraft,
 } from "./generated/payloads";
 
-/**
- * The automatic deploy rule a person approves for `view`, the Store's rule view, under `terms`: the canonical body to
- * answer as it is, and what it shows the approver. `services` are the Services it deploys, by default every one on the
- * kept rule's branch, or with no rule every one that builds from GitHub. The kept rule's next generation when it is for
- * the same repository, branch and Environment, else a new rule under `terms.new_rule`. Each Service's digest is taken
- * here, by the ployz-core code the CLI and the Servers run. Throws an Error naming what keeps the Services from one rule.
- */
-export function autoDeployRuleBody(view: RuleView, terms: RuleTerms, services?: readonly string[]): RuleDraft;
-
 /** The generation that turns `view`'s kept rule off, signed as `terms.signer` at `terms.issued_at`. Throws when no rule is on. */
 export function autoDeployRuleEndBody(view: RuleView, terms: Pick<RuleTerms, "issued_at" | "signer">): RuleDraft;
 
@@ -118,7 +109,12 @@ export type SourceAsked = {
   machines: readonly string[];
   owner_id: number;
   builder?: { ref: string; sha: string };
+  /** The branch the person turns Deploy every push on for: a rule they ended starts again, and it follows this branch. */
+  on?: PushBranch;
 };
+
+/** A branch a rule follows: the repository's GitHub ID and the branch's name. */
+export type PushBranch = { repository_id: number; branch: string };
 
 /**
  * What each mount is compared with: each Service's last approved version, the keys one enforcing Server trusts, the

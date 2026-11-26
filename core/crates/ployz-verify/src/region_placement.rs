@@ -609,6 +609,7 @@ impl RegionPlacement {
             run: None,
             log_driver: None,
             admission: None,
+            replaced_by: None,
         })
         .expect("a Container observation")
     }

@@ -16,6 +16,9 @@ use ployz_core::{
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use thiserror::Error;
 
+use crate::cli::ExistingPath;
+use crate::cli::Shown;
+use crate::cli::shown::Label;
 use crate::coded::Coded;
 
 /// Where the Ployz config lives when `PLOYZ_CONFIG` names nowhere: under
@@ -151,7 +154,7 @@ impl Config {
         match none_if_empty(name) {
             Some(name) if !self.contexts.contains_key(&name) => {
                 Err(ContextError::ContextNotFound {
-                    name,
+                    name: shown_context(&name),
                     path: self.path.clone(),
                 })
             }
@@ -170,7 +173,7 @@ impl Config {
     pub fn remove_context(&mut self, name: &str) -> Result<RemovedContext, ContextError> {
         if self.contexts.remove(name).is_none() {
             return Err(ContextError::ContextNotFound {
-                name: name.to_owned(),
+                name: shown_context(name),
                 path: self.path.clone(),
             });
         }
@@ -259,7 +262,7 @@ impl Config {
         self.update(|latest| {
             let context = latest.contexts.get_mut(context_name).ok_or_else(|| {
                 ContextError::ContextNotFound {
-                    name: context_name.to_owned(),
+                    name: shown_context(context_name),
                     path: self.path.clone(),
                 }
             })?;
@@ -443,12 +446,12 @@ pub fn select_connections(
             .contexts
             .get(name)
             .ok_or_else(|| ContextError::ContextNotFound {
-                name: name.to_owned(),
+                name: shown_context(name),
                 path: config.path.clone(),
             })?;
         if context.connections.is_empty() {
             return Err(ContextError::NoConnections {
-                name: name.to_owned(),
+                name: shown_context(name),
             });
         }
         return Ok(SelectedConnections {
@@ -520,6 +523,28 @@ enum TransportFile {
 }
 
 impl Connection {
+    /// As a message names it: an SSH destination as `ssh://USER@HOST`, without its user,
+    /// which may be a session token; a Management connection by its Machine ID; a TCP
+    /// address whole; a Unix socket by its path when that path exists here.
+    pub(crate) fn shown(&self) -> Shown {
+        match &self.transport {
+            Transport::Ssh { .. } => redacted(&self.to_string()),
+            Transport::Management(_) => match &self.machine_id {
+                Some(machine_id) => {
+                    Shown::joined(Shown::word("management"), ":", Shown::of(machine_id))
+                }
+                None => Shown::placeholder("CAPABILITY"),
+            },
+            Transport::Tcp(address) => Shown::joined(Shown::word("tcp"), "://", Shown::of(address)),
+            Transport::Unix(path) => Shown::joined(
+                Shown::word("unix"),
+                "://",
+                ExistingPath::parse(&path.to_string_lossy())
+                    .map_or_else(|| Shown::placeholder("PATH"), |path| Shown::of(&path)),
+            ),
+        }
+    }
+
     /// A Management Capability connection. The error never echoes the value.
     ///
     /// # Errors
@@ -559,7 +584,7 @@ impl Connection {
     pub fn unix(path: impl Into<PathBuf>) -> Result<Self, ConnectionError> {
         let path = path.into();
         if !path.is_absolute() {
-            return Err(ConnectionError::UnixPath(path));
+            return Err(ConnectionError::UnixPath);
         }
         Ok(Self {
             transport: Transport::Unix(path),
@@ -650,6 +675,47 @@ impl fmt::Display for Connection {
     }
 }
 
+/// A context's name as a message names it: whole when it is one lowercase DNS label, the
+/// shape `ployz link` names contexts by, else `<CONTEXT>`. Names aren't checked when a
+/// context is saved, and a name typed for one that doesn't exist may be anything.
+pub(crate) fn shown_context(name: &str) -> Shown {
+    Label::parse(name).map_or_else(|| Shown::placeholder("CONTEXT"), |label| Shown::of(&label))
+}
+
+/// A connection as typed, as `--connect` shows it again: whole when it parses and every
+/// part of it shows, a TCP address or an existing Unix socket. None for an SSH destination,
+/// whose user may be a session token, so the retry names `CONNECT` instead of reaching
+/// another user.
+pub(crate) fn shown(typed: &str) -> Option<Shown> {
+    match typed.parse::<Connection>().ok()?.transport {
+        Transport::Tcp(address) => Some(Shown::joined(
+            Shown::word("tcp"),
+            "://",
+            Shown::of(&address),
+        )),
+        Transport::Unix(path) => ExistingPath::parse(&path.to_string_lossy())
+            .map(|path| Shown::joined(Shown::word("unix"), "://", Shown::of(&path))),
+        Transport::Ssh { .. } | Transport::Management(_) => None,
+    }
+}
+
+/// A connection as typed, as an error names it: what parses of it as a URL, with its user
+/// info, path, query, fragment and any scheme Ployz doesn't know marked in their place. A
+/// Management Capability, or text that is no URL, as a placeholder.
+pub(crate) fn redacted(typed: &str) -> Shown {
+    if typed.starts_with("management:") || is_management_capability(typed) {
+        return Shown::placeholder("CAPABILITY");
+    }
+    let url = match typed.contains("://") {
+        true => url::Url::parse(typed),
+        false => url::Url::parse(&format!("ssh://{typed}")),
+    };
+    url.map_or_else(
+        |_| Shown::placeholder("CONNECTION"),
+        |url| Shown::url_redacted(&url, &["ssh", "tcp", "ssh+go", "ssh+cli"]),
+    )
+}
+
 // Management Capabilities are `ployz1:`-prefixed secrets, not SSH destinations.
 // Recognize even malformed pastes here so parse errors never echo their secret.
 pub(crate) fn is_management_capability(value: &str) -> bool {
@@ -667,16 +733,16 @@ impl FromStr for Connection {
             return address
                 .parse()
                 .map(Self::tcp)
-                .map_err(|_| ConnectionError::TcpAddress(value.to_owned()));
+                .map_err(|_| ConnectionError::TcpAddress(redacted(value)));
         }
         if let Some(path) = value.strip_prefix("unix://") {
             return Self::unix(path);
         }
         if value.starts_with("ssh+go://") || value.starts_with("ssh+cli://") {
-            return Err(ConnectionError::RemovedScheme(value.to_owned()));
+            return Err(ConnectionError::RemovedScheme(redacted(value)));
         }
         if value.contains("://") && !value.starts_with("ssh://") {
-            return Err(ConnectionError::UnsupportedScheme(value.to_owned()));
+            return Err(ConnectionError::UnsupportedScheme(redacted(value)));
         }
         SshDestination::parse(value.strip_prefix("ssh://").unwrap_or(value)).map(Self::ssh)
     }
@@ -717,8 +783,8 @@ impl<'de> Deserialize<'de> for Connection {
             (TransportFile::Management(capability), None) => Transport::Management(capability),
             (TransportFile::Tcp(address), None) => Transport::Tcp(address),
             (TransportFile::Unix(path), None) if path.is_absolute() => Transport::Unix(path),
-            (TransportFile::Unix(path), None) => {
-                return Err(de::Error::custom(ConnectionError::UnixPath(path)));
+            (TransportFile::Unix(_), None) => {
+                return Err(de::Error::custom(ConnectionError::UnixPath));
             }
             (
                 TransportFile::Management(_) | TransportFile::Tcp(_) | TransportFile::Unix(_),
@@ -750,19 +816,19 @@ impl SshDestination {
             return Err(ConnectionError::ManagementConfigOnly);
         }
         let Some((user, destination)) = value.split_once('@') else {
-            return Err(ConnectionError::SshDestination(value));
+            return Err(ConnectionError::SshDestination(redacted(&value)));
         };
         if !valid_ssh_user(user)
             || destination.is_empty()
             || destination.contains('@')
             || value.chars().any(char::is_whitespace)
         {
-            return Err(ConnectionError::SshDestination(value));
+            return Err(ConnectionError::SshDestination(redacted(&value)));
         }
         let (host, port) = split_ssh_port(destination)
-            .ok_or_else(|| ConnectionError::SshDestination(value.clone()))?;
+            .ok_or_else(|| ConnectionError::SshDestination(redacted(&value)))?;
         if !valid_ssh_host(host) {
-            return Err(ConnectionError::SshDestination(value));
+            return Err(ConnectionError::SshDestination(redacted(&value)));
         }
         let target = format!("{user}@{host}");
         let copy_target = if host.contains(':') {
@@ -910,17 +976,17 @@ pub enum ConnectionError {
     )]
     ManagementConfigOnly,
     #[error("invalid SSH destination {0:?}")]
-    SshDestination(String),
+    SshDestination(Shown),
     #[error("invalid TCP address {0:?}")]
-    TcpAddress(String),
-    #[error("Unix connection path must be absolute: {0}")]
-    UnixPath(PathBuf),
+    TcpAddress(Shown),
+    #[error("Unix connection path must be absolute")]
+    UnixPath,
     #[error("connection scheme was removed: {0:?}")]
-    RemovedScheme(String),
+    RemovedScheme(Shown),
     #[error("ssh_key_file requires the SSH transport")]
     SshKeyTransport,
     #[error("unsupported connection scheme: {0:?}")]
-    UnsupportedScheme(String),
+    UnsupportedScheme(Shown),
 }
 
 impl Coded for ConnectionError {
@@ -937,10 +1003,10 @@ pub enum ContextError {
     NoContexts(PathBuf),
     #[error("current context is not set in Ployz config {0}")]
     NoCurrentContext(PathBuf),
-    #[error("context {} not found in Ployz config {path}", .name.escape_debug())]
-    ContextNotFound { name: String, path: PathBuf },
-    #[error("Context {} has no Servers.", .name.escape_debug())]
-    NoConnections { name: String },
+    #[error("context {name} not found in Ployz config {path}")]
+    ContextNotFound { name: Shown, path: PathBuf },
+    #[error("Context {name} has no Servers.")]
+    NoConnections { name: Shown },
     #[error(transparent)]
     Connection(ConnectionError),
 }

@@ -13,6 +13,7 @@ use ployz_core::{
 use std::{
     borrow::Cow,
     collections::BTreeMap,
+    fmt,
     future::Future,
     io,
     path::{Path, PathBuf},
@@ -233,7 +234,7 @@ impl Connector for SystemConnector {
             )
             .await
             .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "tunnel open timed out"))?,
-            Transport::Tcp(_) => Err(ConnectError::ProxyUnsupported(connection.to_string())),
+            Transport::Tcp(_) => Err(ConnectError::ProxyUnsupported(connection.shown())),
             Transport::Unix(_) => TcpStream::connect(address)
                 .await
                 .map(|stream| Box::new(stream) as BoxProxyStream)
@@ -420,12 +421,12 @@ async fn connect_ssh(
         .await
         .map_err(ConnectError::from_ssh_spawn)?;
     if !output.status.success() {
-        let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        // Only what the text says went wrong goes on: ssh repeats the destination as typed,
+        // and its user may be a session token.
         return Err(ConnectError::SshProbe {
-            target: destination.target().to_owned(),
+            target: crate::context::redacted(destination.target()),
             status: output.status,
-            failure: SshFailure::of(&detail),
-            detail,
+            failure: SshFailure::of(&String::from_utf8_lossy(&output.stderr)),
         });
     }
     let args = ssh_args(
@@ -1164,7 +1165,7 @@ pub fn resolve_connections(
     }
     if let Some(name) = context_override {
         return Err(ConnectError::Context(ContextError::ContextNotFound {
-            name: name.to_owned(),
+            name: crate::context::shown_context(name),
             path: config_path.to_owned(),
         }));
     }
@@ -1275,19 +1276,18 @@ pub enum ConnectError {
     OlderMachine,
     #[error("local ssh client not found; install an ssh client")]
     SshClientMissing,
-    #[error("connection attempt failed: SSH probe to {target} exited with {status}: {detail}{}", failure.hint())]
+    #[error("connection attempt failed: SSH probe to {target} exited with {status}: {failure}")]
     SshProbe {
-        target: String,
+        target: crate::cli::Shown,
         status: std::process::ExitStatus,
         failure: SshFailure,
-        detail: String,
     },
     #[error("Machine RPC routing metadata is invalid.")]
     Routing(#[from] RoutingMetadataError),
     #[error("The connection task failed.")]
     Join(#[from] tokio::task::JoinError),
     #[error("proxy dialing is unsupported over {0}")]
-    ProxyUnsupported(String),
+    ProxyUnsupported(crate::cli::Shown),
     #[error("proxy dialing does not support network {0}")]
     UnsupportedNetwork(String),
     #[error(transparent)]
@@ -1934,11 +1934,16 @@ fn transient_io(error: &io::Error) -> bool {
 }
 
 /// What an SSH probe's stderr says went wrong. Exit status 255 covers every
-/// ssh failure, so its text is the only channel.
+/// ssh failure, so its text is the only channel. The text itself is never shown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SshFailure {
+    /// No answer on SSH: refused, timed out, reset, unreachable, or no DNS for now.
     Network,
+    /// Its host name doesn't resolve.
+    Unresolved,
     Auth,
+    /// Its host key doesn't match the one known for it, or none is known.
+    HostKey,
     Other,
 }
 
@@ -1956,20 +1961,35 @@ impl SshFailure {
         ];
         if detail.contains("Permission denied") {
             Self::Auth
+        } else if detail.contains("Host key verification failed")
+            || detail.contains("REMOTE HOST IDENTIFICATION HAS CHANGED")
+        {
+            Self::HostKey
         } else if NETWORK.iter().any(|message| detail.contains(message)) {
             Self::Network
+        } else if detail.contains("Could not resolve hostname") {
+            Self::Unresolved
         } else {
             Self::Other
         }
     }
+}
 
-    fn hint(self) -> &'static str {
-        match self {
+impl fmt::Display for SshFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Network => "the Server didn't answer on SSH",
+            Self::Unresolved => "its host name doesn't resolve",
             Self::Auth => {
-                "; SSH authentication is noninteractive: unlock your key with ssh-add or configure credentials that do not require a prompt"
+                "SSH authentication failed; it is noninteractive: unlock your key with ssh-add or configure credentials that do not require a prompt"
             }
-            Self::Network | Self::Other => "",
-        }
+            Self::HostKey => {
+                "its host key doesn't match the one in known_hosts, or none is known; run ssh to it once to check and accept the key"
+            }
+            Self::Other => {
+                "ssh failed for a reason Ployz doesn't repeat, since its words can include the user; run ssh to it yourself to see why"
+            }
+        })
     }
 }
 

@@ -5,7 +5,7 @@ use std::{fmt, str::FromStr};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{DockerVolumeName, ValueError, VolumeOrigin};
+use crate::{DockerVolumeName, ValueError, VolumeOrigin, WriterEpoch};
 
 /// How many hourly sweeps a Trash entry waits before the sweep destroys it: 7 days of
 /// hours the Server ran.
@@ -163,6 +163,10 @@ pub struct TrashEntry {
     /// it has left, which only advance while the Server runs.
     pub expires_at: i64,
     pub used_bytes: u64,
+    /// A restore pinned it: it waits to become the Volume's data, and `expires_at` counts
+    /// from the restore's last attempt.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub restoring: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -172,22 +176,44 @@ pub struct UnreadableTrash {
     pub reason: String,
 }
 
+/// A deleted root comes back in two calls: the first pins it, so it waits in the Trash for
+/// the restore, and the second, once every Server showed it holds no copy, makes it the
+/// Volume's data. A mirror or old copy lands as an old copy in the first.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RestoreTrashRequest {
     pub id: TrashId,
+    /// Make the pinned root the Volume's data, at the epoch its pin holds.
+    #[serde(default)]
+    pub promote: bool,
 }
 
-/// The entry back where it was taken from, under its Docker Volume name.
+/// Where a restore of `id` stands, under the entry's Docker Volume name.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TrashRestored {
     pub id: TrashId,
     pub name: DockerVolumeName,
     pub place: TrashPlace,
+    pub state: TrashRestore,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TrashRestore {
+    /// The root waits in the Trash for a promote at `epoch`.
+    Pinned { epoch: WriterEpoch },
+    /// The mirror or old copy is back as an old copy.
+    Landed,
+    /// The root is the Volume's data at `epoch`. It says only that the restore committed:
+    /// the root may have changed since.
+    Restored { epoch: WriterEpoch },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct EmptyTrashRequest {
     pub ids: Vec<TrashId>,
+    /// Emptying the whole Trash: entries a restore pinned stay. Named alone, they go.
+    #[serde(default)]
+    pub bulk: bool,
 }
 
 /// Each named entry destroyed, or why not. A named entry the Trash doesn't hold is
@@ -200,6 +226,9 @@ pub struct TrashEmptied {
     pub missing: Vec<TrashId>,
     #[serde(default)]
     pub failed: Vec<TrashFailure>,
+    /// Entries a bulk empty kept because a restore pinned them.
+    #[serde(default)]
+    pub restoring: Vec<TrashId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

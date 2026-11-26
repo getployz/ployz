@@ -15,6 +15,7 @@ import { serverWebTraffic } from "#/modules/machines/server-web-traffic.queries"
 import { volumePlacementsQueryOptions } from "#/modules/volume-placement/volume-placement.queries";
 import { prefetchRemote } from "#/collections/route-data";
 import { RunningHere } from "./-components/running-here";
+import { ServerLeftoversSection } from "./-components/server-leftovers-section";
 import { ServerResources } from "./-components/server-resources";
 import { ServerSettings } from "./-components/server-settings";
 import { ServerStatusLabel } from "./-components/server-status-label";
@@ -94,6 +95,7 @@ function RouteComponent() {
       <Suspense fallback={null}>
         <ServerUpgradeSection machine={machine} status={server.status} organizationSlug={organizationSlug} />
       </Suspense>
+      {server.status === "offline" ? null : <ServerLeftoversSection organizationSlug={organizationSlug} server={{ id: machine.id, name: server.name }} />}
       <Suspense fallback={null}>
         <ServerSettings organizationSlug={organizationSlug} server={server} servers={servers} stale={stale} />
       </Suspense>

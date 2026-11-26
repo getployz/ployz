@@ -1,6 +1,6 @@
 //! How a Volume's root reads from its `readonly` and its `ployz:*` marks.
 
-use ployz_core::{RootMark, Snapshot, VolumeCopy, VolumeOrigin, WriterEpoch};
+use ployz_core::{PlacedImage, RootMark, Snapshot, VolumeCopy, VolumeOrigin, WriterEpoch};
 
 /// The `ployz:*` marks [`RootCopy::parse`] reads off a root. They narrow which steps can
 /// have left it read-only and name none.
@@ -62,6 +62,7 @@ impl RootCopy {
         newest: Option<Snapshot>,
         epoch: WriterEpoch,
         origin: Option<VolumeOrigin>,
+        placed: Option<PlacedImage>,
     ) -> VolumeCopy {
         let (readonly, seed, mark) = match self {
             Self::Writable { seed } => (false, seed, None),
@@ -76,6 +77,7 @@ impl RootCopy {
             seed,
             mark,
             origin,
+            placed,
         }
     }
 }

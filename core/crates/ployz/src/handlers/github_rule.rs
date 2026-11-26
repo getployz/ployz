@@ -1,65 +1,43 @@
-//! `ployz github rule`: a Device's standing approval of every push to one branch, so a
-//! Cluster whose Servers enforce device approval deploys each push with no prompt.
-//!
-//! Approve reads the Environment's Saved settings from Cloud, drafts the rule the way
-//! the dashboard does, shows the person what it pins, and signs it with this CLI's Device
-//! key. Cloud only keeps and relays the signed rule: each Server checks the signature,
-//! the builder's GitHub tokens, the branch head and the settings before it runs anything.
+//! `ployz github rule`: ending the standing approval of every push to one branch, and what
+//! `ployz deploy` shows and reads when it signs that approval with this CLI's Device key.
+//! Cloud only keeps and relays the signed rule: each Server checks the signature, the
+//! builder's GitHub tokens, the branch head and the settings before it runs anything.
 
-use clap::{Arg, ArgAction, ArgMatches, Command};
-use ployz_core::authority::rule::{BUILDER_SHA, Builder};
-use ployz_core::authority::rule_draft::RuleDraftError;
+use clap::{ArgMatches, Command};
+use ployz_core::authority::rule::Builder;
 use ployz_core::authority::shown::Shown;
 use ployz_core::authority::{
-    AutoDeployRule, Births, CommitSha, RuleId, RuleSummary, RuleTerms, Signed, Signer, SignerKey,
-    Timestamp,
+    AutoDeployRule, Births, RuleId, RuleSummary, Signed, Signer, SignerKey, Timestamp,
 };
 use ployz_core::{RpcErrorCode, ServiceName};
 use ployz_store::{ApproveRule, RuleQuery};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::store::{self, Store};
-use super::{Error, deploy::approve, leaf_matches};
-use crate::cli::value;
+use super::store;
+use super::{Error, leaf_matches};
 
 pub(super) fn group(command: Command) -> Command {
-    command.about("Deploy every push of a branch on servers that enforce device approval")
+    command
+        .about("Deploy every push of a branch on servers that enforce device approval")
+        .after_help("Turn it on with Deploy every push in Ployz Cloud.")
 }
 
+/// The verb an older script still calls, kept hidden: it says where turning the rule on went.
 pub(super) fn approve_command(command: Command) -> Command {
-    store::scoped(command)
-        .about("Approve deploying every push of these services' branch with their current settings")
-        .long_about(
-            "Sign an automatic deploy rule with this device's key: every push to the services' \
-             branch deploys with the settings shown, built by the pinned builder, with no prompt. \
-             A change to those settings stops automatic deploys until you approve again. Your \
-             servers check the rule, GitHub's tokens and the branch head themselves.",
-        )
-        .arg(
-            Arg::new("service")
-                .required(true)
-                .action(ArgAction::Append)
-                .value_name("SERVICE")
-                .help("A service that builds from GitHub"),
-        )
-        .arg(
-            value("builder", None)
-                .value_name("WORKFLOW@REF")
-                .help(format!(
-                    "Another builder's reusable workflow, as GitHub names it in job_workflow_ref \
-             [default: {}]",
-                    Builder::pinned().r#ref
-                )),
-        )
-        .arg(value("builder-sha", None).value_name("SHA").help(format!(
-            "That builder's commit. Give it with --builder [default: {BUILDER_SHA}]"
-        )))
-        .arg(
-            value("platform", None)
-                .value_name("PLATFORM")
-                .help("What GitHub builds for [default: linux/amd64]"),
-        )
+    command.hide(true).arg(
+        clap::Arg::new("args")
+            .num_args(0..)
+            .trailing_var_arg(true)
+            .allow_hyphen_values(true),
+    )
+}
+
+pub(super) fn approve(_: &ArgMatches) -> Result<(), Error> {
+    Err(Error::coded(
+        RpcErrorCode::InvalidArgument,
+        ployz_store::RULE_APPROVE_GONE,
+    ))
 }
 
 pub(super) fn end_command(command: Command) -> Command {
@@ -73,7 +51,7 @@ pub(super) fn end_command(command: Command) -> Command {
 
 /// What the command did, for `--json`.
 #[derive(Serialize)]
-struct Approved<'a> {
+struct Ended<'a> {
     rule: RuleId,
     generation: u64,
     ended: bool,
@@ -81,69 +59,6 @@ struct Approved<'a> {
     branch: &'a str,
     builder: &'a Builder,
     services: Vec<&'a ServiceName>,
-}
-
-pub(super) fn approve(root: &ArgMatches) -> Result<(), Error> {
-    let matches = leaf_matches(root);
-    let signer = signer(root)?;
-    let names: Vec<ServiceName> = matches
-        .get_many::<String>("service")
-        .into_iter()
-        .flatten()
-        .map(|name| {
-            ServiceName::parse(name.as_str())
-                .map_err(|_| Error::usage(format!("{name} isn't a service name")))
-        })
-        .collect::<Result<_, _>>()?;
-    let builder = builder(matches)?;
-    let platform = matches
-        .get_one::<String>("platform")
-        .cloned()
-        .unwrap_or_else(|| "linux/amd64".to_owned());
-    let store = store::store(root)?;
-    let environment = store::environment(matches)?;
-    let enforcing = enforcing(root)?;
-    let view = store.read(&RuleQuery {
-        environment: environment.clone(),
-        staged: false,
-    })?;
-    let mut basis = view.basis();
-    let terms = RuleTerms {
-        cluster: enforcing.cluster,
-        machines: enforcing.machines,
-        owner_id: 0,
-        builder,
-        platform,
-        new_rule: RuleId::from_bytes(*uuid::Uuid::new_v4().as_bytes()),
-        issued_at: Timestamp::now(),
-        signer: SignerKey::Device(signer.public().into()),
-    };
-    let mut rule = AutoDeployRule::draft(&mut basis, &names, terms).map_err(drafting)?;
-    rule.source.owner_id = owner(
-        root,
-        (&rule.source.repository, rule.source.repository_id),
-        "approve",
-    )?;
-    let repository = rule.source.repository.clone();
-    let branch = rule.source.branch.clone();
-    let summary = rule.summary(&basis);
-    show(view.environment.name.as_str(), &summary);
-    consent(&summary)?;
-    keep(&store, environment, (&rule, &basis.minted), &signer)?;
-    crate::ui::stream(format_args!(
-        "Approved. Every push to {branch} now deploys {} with these settings.",
-        joined(&names)
-    ));
-    crate::ui::emit(&Approved {
-        rule: rule.rule,
-        generation: rule.generation,
-        ended: false,
-        repository: &repository,
-        branch: &branch,
-        builder: &rule.source.builder,
-        services: names.iter().collect(),
-    })?;
-    Ok(())
 }
 
 pub(super) fn end(root: &ArgMatches) -> Result<(), Error> {
@@ -174,13 +89,17 @@ pub(super) fn end(root: &ArgMatches) -> Result<(), Error> {
             ),
         )
     })?;
-    keep(&store, environment, (&rule, &Births::new()), &signer)?;
+    store.write(&ApproveRule {
+        environment,
+        rule: Box::new(Signed::sign(&rule, &signer).map_err(Error::command)?),
+        births: Births::new(),
+    })?;
     crate::ui::stream(format_args!(
         "Automatic deploys are off. Pushes to {} no longer deploy on servers that enforce \
          device approval.",
         rule.source.branch
     ));
-    crate::ui::emit(&Approved {
+    crate::ui::emit(&Ended {
         rule: rule.rule,
         generation: rule.generation,
         ended: true,
@@ -193,7 +112,7 @@ pub(super) fn end(root: &ArgMatches) -> Result<(), Error> {
 }
 
 /// This CLI's Device signer. Only a Device signs a rule: it stands for every future push.
-pub(super) fn signer(root: &ArgMatches) -> Result<Signer, Error> {
+fn signer(root: &ArgMatches) -> Result<Signer, Error> {
     let key = crate::device::key::path(&super::config_path(root)?);
     match crate::device::key::load(&key)? {
         Some(secret) => Ok(Signer::from_seed(&secret)),
@@ -205,47 +124,6 @@ pub(super) fn signer(root: &ArgMatches) -> Result<Signer, Error> {
     }
 }
 
-pub(super) fn builder(matches: &ArgMatches) -> Result<Builder, Error> {
-    match (
-        matches.get_one::<String>("builder"),
-        matches.get_one::<String>("builder-sha"),
-    ) {
-        (None, None) => Ok(Builder::pinned()),
-        (Some(r#ref), Some(sha)) => Ok(Builder {
-            r#ref: r#ref.clone(),
-            sha: CommitSha::parse(sha)
-                .map_err(|_| Error::usage("--builder-sha must be a full lowercase Git SHA"))?,
-        }),
-        _ => Err(Error::usage(
-            "Give --builder and --builder-sha together, or neither",
-        )),
-    }
-}
-
-/// The Cluster's key and Servers, as the Servers report them, through Cloud's relay when
-/// signed in. A key or Server Cloud gets wrong can't widen the rule: each Server admits
-/// it only when it names that Server's own Cluster key and Machine ID.
-pub(super) fn enforcing(root: &ArgMatches) -> Result<approve::Enforcing, Error> {
-    match approve::probe(root, approve::Needs::Person) {
-        approve::Probe::Enforcing(enforcing) => Ok(enforcing),
-        approve::Probe::Off => Err(Error::coded(
-            RpcErrorCode::Conflict,
-            "None of your servers reported that it checks device approval, so this device \
-             can't sign a rule. Upgrade your servers, then try again.",
-        )),
-        approve::Probe::NoClusterKey => Err(Error::coded(
-            RpcErrorCode::Unavailable,
-            "None of your servers reported the cluster's key, so this device can't sign a \
-             rule. Run ployz status, then try again.",
-        )),
-        approve::Probe::Unknown => Err(Error::coded(
-            RpcErrorCode::Unavailable,
-            "Couldn't reach your servers to read the cluster's key. Check ployz status, then \
-             try again.",
-        )),
-    }
-}
-
 #[derive(Deserialize)]
 struct Repository {
     repository_id: u64,
@@ -253,7 +131,7 @@ struct Repository {
 }
 
 /// The repository owner's GitHub ID, which each GitHub token the rule takes must name.
-/// `then` is what the person runs once they reconnect, such as `approve`.
+/// `then` is what the person runs once they reconnect, such as `deploy again`.
 pub(super) fn owner(
     root: &ArgMatches,
     (repository, repository_id): (&str, u64),
@@ -270,35 +148,6 @@ pub(super) fn owner(
         ));
     }
     Ok(found.owner_id)
-}
-
-fn keep(
-    store: &Store<'_>,
-    environment: ployz_store::EnvironmentRef,
-    (rule, births): (&AutoDeployRule, &Births),
-    signer: &Signer,
-) -> Result<(), Error> {
-    let signed = Signed::sign(rule, signer).map_err(Error::command)?;
-    store.write(&ApproveRule {
-        environment,
-        rule: Box::new(signed),
-        births: births.clone(),
-    })?;
-    Ok(())
-}
-
-/// Why a rule can't be drafted, as a coded error.
-fn drafting(error: RuleDraftError) -> Error {
-    let code = match error {
-        RuleDraftError::NotSaved(_) | RuleDraftError::NoRule => RpcErrorCode::NotFound,
-        RuleDraftError::Sealed(_) | RuleDraftError::Canonical(_) => return Error::command(error),
-        RuleDraftError::Birth(_) => RpcErrorCode::InvalidArgument,
-        RuleDraftError::NotGit(_)
-        | RuleDraftError::Disconnected(_)
-        | RuleDraftError::TwoBranches { .. }
-        | RuleDraftError::Nothing => RpcErrorCode::InvalidArgument,
-    };
-    Error::caused(code, "Can't draft the automatic deploy rule", error)
 }
 
 /// What the person approves, before it is signed. The summary's strings came through
@@ -347,40 +196,4 @@ pub(super) fn show(environment: &str, summary: &RuleSummary) {
     if !summary.pinned {
         crate::ui::note("This rule pins a builder other than Ployz's own release.");
     }
-}
-
-/// The person's yes to each mount of existing data the rule pins, asked once after its
-/// lines show. Every push deploys with those mounts, so a run that can't ask signs nothing.
-/// The lines show above the refusal and go in its detail, not its message.
-fn consent(summary: &RuleSummary) -> Result<(), Error> {
-    let marked: Vec<String> = summary
-        .services
-        .iter()
-        .flat_map(|service| {
-            let name = service.name.as_str();
-            service
-                .confirm
-                .iter()
-                .map(move |line| format!("{name}: {line}"))
-        })
-        .collect();
-    let refusal = Error::detailed(
-        RpcErrorCode::ConfirmationRequired,
-        "This rule uses data that needs your yes, and there's no terminal to ask in. Run ployz \
-         github rule approve at a terminal. Nothing signed.",
-        json!({ "confirm": marked }),
-    );
-    approve::ask_data(
-        &marked,
-        (refusal, "Cancelled. Nothing signed."),
-        &mut |question, refusal, declined| crate::ui::confirm(question, || refusal, declined),
-    )
-}
-
-pub(super) fn joined(names: &[ServiceName]) -> String {
-    names
-        .iter()
-        .map(ServiceName::as_str)
-        .collect::<Vec<_>>()
-        .join(", ")
 }

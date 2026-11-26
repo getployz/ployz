@@ -172,6 +172,12 @@ pub enum ExpectedCopy {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         role: Option<SlotRole>,
+        /// With it, only a slot whose `written_here` reads the same matches, so a Forget
+        /// someone confirmed on a copy written nowhere else refuses once it is. A Machine
+        /// without [`crate::VOLUME_KEEP_WRITTEN_CAPABILITY`] ignores it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        written_here: Option<bool>,
     },
     None,
 }
@@ -216,7 +222,18 @@ pub enum WantedCopy {
     /// since its newest one.
     Snapshot { name: SnapshotName },
     /// No run snapshots on a Writer, no slot on a Mirror.
-    Forget,
+    Forget {
+        /// Destroy a slot even when it may hold writes no other Machine has
+        /// (`written_here`). Without it, such a slot refuses [`CopyRefusal::WrittenHere`],
+        /// so a Forget from a sender that can't tell `ployz volume mirror rm` from a full
+        /// sync never destroys one. A sender says it only for a copy someone confirmed
+        /// deleting, and names that copy as `expect`, `written_here` included. A Machine without
+        /// [`crate::VOLUME_KEEP_WRITTEN_CAPABILITY`] ignores it and destroys any slot, so
+        /// a caller sends a Forget without it only to one advertising it.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        #[ts(optional, as = "Option<bool>")]
+        discard: bool,
+    },
     /// Raise the floor to `gen` and answer with the copy, whatever `expect` says.
     Floor,
 }
@@ -298,6 +315,9 @@ pub enum CopyRefusal {
     /// The cut's `holder` no longer runs, and no cut at this `gen` stopped it, so the
     /// cut stopped nothing.
     Stopped,
+    /// A Forget without `discard` names a slot that may hold writes no other Machine
+    /// has: a copy a cut or a departure parked, or one no pull is known to have made.
+    WrittenHere,
     /// A reason introduced after this build. This daemon never sends it.
     #[serde(other)]
     Unrecognized,
@@ -343,7 +363,8 @@ impl CodedRefusal for SetVolumeCopyRefused {
             | CopyRefusal::Stale
             | CopyRefusal::Foreign
             | CopyRefusal::Held
-            | CopyRefusal::Stopped => RpcErrorCode::Conflict,
+            | CopyRefusal::Stopped
+            | CopyRefusal::WrittenHere => RpcErrorCode::Conflict,
             CopyRefusal::Unrecognized => RpcErrorCode::Internal,
         }
     }
@@ -453,8 +474,10 @@ pub fn plan(
             }
             expected(WriterToSnapshot)
         }
-        (Some(VolumeCopy::Root { seed: true, .. }), WantedCopy::Forget) => expected(SeedToForget),
-        (Some(VolumeCopy::Root { newest, .. }), WantedCopy::Forget) => {
+        (Some(VolumeCopy::Root { seed: true, .. }), WantedCopy::Forget { .. }) => {
+            expected(SeedToForget)
+        }
+        (Some(VolumeCopy::Root { newest, .. }), WantedCopy::Forget { .. }) => {
             if newest.is_none() {
                 return AtWant;
             }
@@ -504,7 +527,12 @@ pub fn plan(
         (Some(VolumeCopy::Slot { .. }), WantedCopy::Snapshot { .. }) => {
             refuse(CopyRefusal::NoTransition)
         }
-        (Some(VolumeCopy::Slot { .. }), WantedCopy::Forget) => expected(MirrorToForget),
+        (Some(VolumeCopy::Slot { written_here, .. }), WantedCopy::Forget { discard }) => {
+            if *written_here && !*discard {
+                return refuse(CopyRefusal::WrittenHere);
+            }
+            expected(MirrorToForget)
+        }
         (None, WantedCopy::Writer { .. } | WantedCopy::Snapshot { .. }) => {
             refuse(CopyRefusal::NoTransition)
         }
@@ -514,7 +542,7 @@ pub fn plan(
             }
             expected(NoneToMirror)
         }
-        (None, WantedCopy::Forget) => AtWant,
+        (None, WantedCopy::Forget { .. }) => AtWant,
         (_, WantedCopy::Floor) => AtWant,
     }
 }
@@ -529,17 +557,20 @@ fn expect_matches(copy: Option<&VolumeCopy>, expect: &ExpectedCopy) -> bool {
                 slot,
                 newest: Some(newest),
                 role,
+                written_here,
                 ..
             }),
             ExpectedCopy::Mirror {
                 newest: expected,
                 slot: expected_slot,
                 role: expected_role,
+                written_here: expected_written,
             },
         ) => {
             newest.guid == *expected
                 && slot == expected_slot
                 && expected_role.is_none_or(|expected| expected == role.unwrap_or_default())
+                && expected_written.is_none_or(|expected| expected == *written_here)
         }
         (Some(VolumeCopy::Slot { newest: None, .. }) | None, ExpectedCopy::None) => true,
         _ => false,
@@ -567,6 +598,7 @@ mod tests {
             seed: false,
             mark: None,
             origin: None,
+            placed: None,
         }
     }
 
@@ -578,6 +610,7 @@ mod tests {
             seed: true,
             mark: None,
             origin: None,
+            placed: None,
         }
     }
 
@@ -591,6 +624,7 @@ mod tests {
             role: Some(SlotRole::Mirror),
             pull_state: None,
             origin: None,
+            written_here: false,
         }
     }
 
@@ -604,6 +638,7 @@ mod tests {
             role: Some(SlotRole::OldCopy),
             pull_state: None,
             origin: None,
+            written_here: true,
         }
     }
 
@@ -641,12 +676,14 @@ mod tests {
         newest: SnapshotGuid::new(10),
         slot: SLOT,
         role: None,
+        written_here: None,
     };
 
     const OLD_COPY_AT_10: ExpectedCopy = ExpectedCopy::Mirror {
         newest: SnapshotGuid::new(10),
         slot: SLOT,
         role: Some(SlotRole::OldCopy),
+        written_here: None,
     };
 
     type Row = (
@@ -661,7 +698,7 @@ mod tests {
     #[test]
     fn plans_every_cell_of_the_table() {
         use CopyPlan::{AtWant, Refuse, Transition};
-        use CopyRefusal::{Behind, Mismatch, NoSource, NoTransition};
+        use CopyRefusal::{Behind, Mismatch, NoSource, NoTransition, WrittenHere};
         use CopyTransition::*;
         let g = snapshot("f-1", 10);
         let w = snapshot("w-1-1", 9);
@@ -768,6 +805,7 @@ mod tests {
                     newest: SnapshotGuid::new(9),
                     slot: SLOT,
                     role: None,
+                    written_here: None,
                 },
                 writer(10, 2, true),
                 Refuse(Behind),
@@ -780,6 +818,7 @@ mod tests {
                     newest: SnapshotGuid::new(9),
                     slot: SLOT,
                     role: None,
+                    written_here: None,
                 },
                 writer(10, 2, true),
                 Refuse(Mismatch),
@@ -864,6 +903,7 @@ mod tests {
                     newest: SnapshotGuid::new(9),
                     slot: SLOT,
                     role: None,
+                    written_here: None,
                 },
                 mirror(true, "f-1"),
                 Transition(MirrorToMirror),
@@ -876,6 +916,7 @@ mod tests {
                     newest: SnapshotGuid::new(9),
                     slot: SLOT,
                     role: None,
+                    written_here: None,
                 },
                 mirror(true, "f-1"),
                 Transition(MirrorToMirror),
@@ -896,6 +937,7 @@ mod tests {
                     newest: SnapshotGuid::new(9),
                     slot: SLOT,
                     role: None,
+                    written_here: None,
                 },
                 mirror(false, "f-1"),
                 Refuse(NoSource),
@@ -993,7 +1035,7 @@ mod tests {
                 Some(root(1, false, None)),
                 false,
                 MIRROR_AT_10,
-                WantedCopy::Forget,
+                WantedCopy::Forget { discard: false },
                 AtWant,
             ),
             (
@@ -1001,7 +1043,7 @@ mod tests {
                 Some(root(1, false, Some(g.clone()))),
                 false,
                 WRITER_1,
-                WantedCopy::Forget,
+                WantedCopy::Forget { discard: false },
                 Transition(WriterToForget),
             ),
             (
@@ -1009,7 +1051,7 @@ mod tests {
                 Some(root(1, false, Some(g.clone()))),
                 false,
                 ExpectedCopy::None,
-                WantedCopy::Forget,
+                WantedCopy::Forget { discard: false },
                 Refuse(Mismatch),
             ),
             (
@@ -1019,7 +1061,7 @@ mod tests {
                 ExpectedCopy::Writer {
                     epoch: WriterEpoch::default(),
                 },
-                WantedCopy::Forget,
+                WantedCopy::Forget { discard: false },
                 Transition(SeedToForget),
             ),
             (
@@ -1027,7 +1069,7 @@ mod tests {
                 Some(seed_root()),
                 false,
                 ExpectedCopy::None,
-                WantedCopy::Forget,
+                WantedCopy::Forget { discard: false },
                 Refuse(Mismatch),
             ),
             (
@@ -1035,23 +1077,39 @@ mod tests {
                 Some(slot(Some(g.clone()), None)),
                 false,
                 MIRROR_AT_10,
-                WantedCopy::Forget,
+                WantedCopy::Forget { discard: false },
                 Transition(MirrorToForget),
             ),
             (
-                "destroy an old copy named by its role",
+                "destroy an old copy a mirror rm names by its role",
                 Some(old_copy(Some(g.clone()))),
                 false,
                 OLD_COPY_AT_10,
-                WantedCopy::Forget,
+                WantedCopy::Forget { discard: true },
                 Transition(MirrorToForget),
+            ),
+            (
+                "keep an old copy a Forget doesn't discard",
+                Some(old_copy(Some(g.clone()))),
+                false,
+                OLD_COPY_AT_10,
+                WantedCopy::Forget { discard: false },
+                Refuse(WrittenHere),
+            ),
+            (
+                "keep an old copy a Forget doesn't discard mismatch",
+                Some(old_copy(Some(g.clone()))),
+                false,
+                ExpectedCopy::None,
+                WantedCopy::Forget { discard: false },
+                Refuse(Mismatch),
             ),
             (
                 "destroy an old copy that became the mirror",
                 Some(slot(Some(g.clone()), None)),
                 false,
                 OLD_COPY_AT_10,
-                WantedCopy::Forget,
+                WantedCopy::Forget { discard: false },
                 Refuse(Mismatch),
             ),
             (
@@ -1059,7 +1117,7 @@ mod tests {
                 Some(slot(None, None)),
                 false,
                 ExpectedCopy::None,
-                WantedCopy::Forget,
+                WantedCopy::Forget { discard: false },
                 Transition(MirrorToForget),
             ),
             (
@@ -1067,7 +1125,7 @@ mod tests {
                 Some(slot(Some(g), None)),
                 false,
                 ExpectedCopy::None,
-                WantedCopy::Forget,
+                WantedCopy::Forget { discard: false },
                 Refuse(Mismatch),
             ),
             (
@@ -1075,7 +1133,7 @@ mod tests {
                 None,
                 false,
                 WRITER_1,
-                WantedCopy::Forget,
+                WantedCopy::Forget { discard: false },
                 AtWant,
             ),
         ];
@@ -1123,7 +1181,11 @@ mod tests {
         if let VolumeCopy::Slot { slot, .. } = &mut again {
             *slot = SlotId::new(2);
         }
-        for want in [writer(10, 2, true), mirror(true, "f-2"), WantedCopy::Forget] {
+        for want in [
+            writer(10, 2, true),
+            mirror(true, "f-2"),
+            WantedCopy::Forget { discard: false },
+        ] {
             assert_eq!(
                 plan(Some(&again), false, &MIRROR_AT_10, &want),
                 CopyPlan::Refuse(CopyRefusal::Mismatch),
@@ -1161,6 +1223,62 @@ mod tests {
         }
     }
 
+    /// An older Cloud sends the same bare Forget for `volume sync --full`, which would
+    /// copy again, as for `volume mirror rm`. Only `mirror rm` from a Cloud that knows
+    /// `discard` destroys a slot that may hold writes no other Machine has.
+    #[test]
+    fn a_forget_from_an_older_cloud_keeps_a_slot_written_here() {
+        let bare: WantedCopy = serde_json::from_str(r#"{"kind":"forget"}"#).unwrap();
+        let discard: WantedCopy =
+            serde_json::from_str(r#"{"kind":"forget","discard":true}"#).unwrap();
+        let parked = old_copy(Some(snapshot("dep-1700000000", 10)));
+        assert_eq!(
+            plan(Some(&parked), false, &MIRROR_AT_10, &bare),
+            CopyPlan::Refuse(CopyRefusal::WrittenHere)
+        );
+        assert_eq!(
+            plan(Some(&parked), false, &MIRROR_AT_10, &discard),
+            CopyPlan::Transition(CopyTransition::MirrorToForget)
+        );
+        let pulled = slot(Some(snapshot("w-1-0", 10)), None);
+        assert_eq!(
+            plan(Some(&pulled), false, &MIRROR_AT_10, &bare),
+            CopyPlan::Transition(CopyTransition::MirrorToForget)
+        );
+    }
+
+    /// A person confirmed deleting a copy written nowhere else is safe to lose. If the
+    /// same slot is written here by the time the Forget lands, it is no longer that copy.
+    #[test]
+    fn a_confirmed_forget_keeps_a_slot_whose_written_here_changed() {
+        let confirmed = |written: bool| -> ExpectedCopy {
+            serde_json::from_value(serde_json::json!({
+                "kind": "mirror", "newest": "10", "slot": SLOT, "written_here": written,
+            }))
+            .unwrap()
+        };
+        let discard: WantedCopy =
+            serde_json::from_str(r#"{"kind":"forget","discard":true}"#).unwrap();
+        let parked = old_copy(Some(snapshot("dep-1700000000", 10)));
+        assert_eq!(
+            plan(Some(&parked), false, &confirmed(false), &discard),
+            CopyPlan::Refuse(CopyRefusal::Mismatch)
+        );
+        assert_eq!(
+            plan(Some(&parked), false, &confirmed(true), &discard),
+            CopyPlan::Transition(CopyTransition::MirrorToForget)
+        );
+        let pulled = slot(Some(snapshot("w-1-0", 10)), None);
+        assert_eq!(
+            plan(Some(&pulled), false, &confirmed(true), &discard),
+            CopyPlan::Refuse(CopyRefusal::Mismatch)
+        );
+        assert_eq!(
+            plan(Some(&pulled), false, &confirmed(false), &discard),
+            CopyPlan::Transition(CopyTransition::MirrorToForget)
+        );
+    }
+
     #[test]
     fn a_root_from_an_older_daemon_reads_as_no_seed() {
         let old: VolumeCopy =
@@ -1174,7 +1292,7 @@ mod tests {
                 &ExpectedCopy::Writer {
                     epoch: WriterEpoch::default()
                 },
-                &WantedCopy::Forget
+                &WantedCopy::Forget { discard: false }
             ),
             CopyPlan::AtWant
         );

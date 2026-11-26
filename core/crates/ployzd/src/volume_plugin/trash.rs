@@ -21,6 +21,14 @@
 //! hour of wall time passed since its last advance, so a Server that was off, or a clock
 //! that jumped, adds at most one hour. It destroys an entry only when every mark reads and
 //! its hour is 168 behind the counter.
+//!
+//! A deleted root comes back in two calls. The first pins the entry (`ployz:trash-pin`),
+//! which needs no other Server and restarts its 7 days. Once every Server showed it holds
+//! no copy, the second makes it the Volume's root under the Pool lock: it checks this
+//! Server holds no copy and no other pinned entry of the Volume, readies the entry inside
+//! the Trash with `canmount=off`, renames it into place, then puts its `canmount` back and
+//! takes the trash marks off. The root keeps the entry's ID until Docker's Create, so a
+//! call stopped after the rename finishes when run again.
 
 use std::fmt;
 
@@ -28,7 +36,8 @@ use axum::{Json, extract::State};
 use chrono::DateTime;
 use ployz_core::{
     EmptyTrashRequest, RestoreTrashRequest, RpcError, SlotRole, TRASH_SWEEP_HOURS, TrashEmptied,
-    TrashEntry, TrashFailure, TrashId, TrashList, TrashPlace, TrashRestored, UnreadableTrash,
+    TrashEntry, TrashFailure, TrashId, TrashList, TrashPlace, TrashRestore, TrashRestored,
+    UnreadableTrash, WriterEpoch,
 };
 use ring::rand::{SecureRandom as _, SystemRandom};
 use serde::{Deserialize, Serialize};
@@ -43,7 +52,7 @@ use super::{
 };
 use crate::{
     dataset_layout::{DatasetLayout, Place},
-    machine_pool::MachinePool,
+    machine_pool::{MachinePool, Read},
 };
 
 const HOUR_SECONDS: i64 = 3600;
@@ -89,6 +98,30 @@ impl Was {
     }
 }
 
+/// A restore's pin on a root entry: the entry's ID and the epoch it becomes the Volume's
+/// data at.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Pin {
+    id: TrashId,
+    epoch: WriterEpoch,
+}
+
+impl Pin {
+    fn parse(value: &str) -> Option<Self> {
+        let (id, epoch) = value.split_once(':')?;
+        Some(Self {
+            id: TrashId::parse(id).ok()?,
+            epoch: WriterEpoch::new(epoch.parse().ok()?),
+        })
+    }
+}
+
+impl fmt::Display for Pin {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}:{}", self.id, self.epoch)
+    }
+}
+
 impl fmt::Display for Was {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -108,9 +141,17 @@ struct Entry<'datasets> {
     was: Was,
     hour: u64,
     at: i64,
+    pin: Option<Pin>,
 }
 
 impl Entry<'_> {
+    /// The epoch a restore of this entry pinned it at; a pin naming another ID is stale.
+    fn pinned(&self) -> Option<WriterEpoch> {
+        self.pin
+            .filter(|pin| pin.id == self.id)
+            .map(|pin| pin.epoch)
+    }
+
     /// Sweep hours left before the sweep destroys it, at `hours`.
     fn left(&self, hours: u64) -> u64 {
         (self.hour + TRASH_SWEEP_HOURS).saturating_sub(hours)
@@ -126,15 +167,23 @@ impl Entry<'_> {
 #[derive(Clone, Copy, Debug)]
 pub(super) struct TrashHeld {
     bytes: u64,
-    until: i64,
+    /// When the last entry no restore pinned expires, if any.
+    until: Option<i64>,
+    /// Whether a restore pinned any of it.
+    restoring: bool,
 }
 
 impl fmt::Display for TrashHeld {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let until = DateTime::from_timestamp(self.until, 0).map_or_else(
-            || self.until.to_string(),
-            |at| at.format("%Y-%m-%d").to_string(),
-        );
+        let until = self.until.map(|until| {
+            DateTime::from_timestamp(until, 0)
+                .map_or_else(|| until.to_string(), |at| at.format("%Y-%m-%d").to_string())
+        });
+        let when = match (self.restoring, until) {
+            (false, Some(until)) => format!(" until {until}"),
+            (true, Some(until)) => format!(", kept while restoring or until {until}"),
+            (_, None) => ", kept while restoring".to_owned(),
+        };
         let held = if self.bytes < 100_000_000 {
             format!("{} MB", self.bytes.div_ceil(1_000_000))
         } else {
@@ -142,7 +191,7 @@ impl fmt::Display for TrashHeld {
         };
         write!(
             formatter,
-            "{held} is in this Server's Trash until {until}. Run `sudo ployz volume trash empty` on this Server to free it."
+            "{held} is in this Server's Trash{when}. Run `sudo ployz volume trash empty` on this Server to free it."
         )
     }
 }
@@ -244,12 +293,21 @@ impl VolumeStorage {
             self.ensure_trash_parent(pool, &[]).await?;
         }
         let hour = self.sweep_hours(&parent).await?;
-        let was = Was::read(self, dataset).await?;
+        // A root whose restore stopped before `Was` came back still carries the `canmount`
+        // it was first deleted with; reading it live would keep the restore's `off` for good.
+        let was = match self.marks(dataset).local(Mark::TrashWas).await? {
+            Some(was) => was,
+            None => Was::read(self, dataset).await?.to_string(),
+        };
+        // A copy a restore made carries what that restore left; its new entry takes none.
         self.marks(dataset)
             .apply(&[
+                Write::Inherit(Mark::TrashPin),
+                Write::Inherit(Mark::TrashRestored),
+                Write::Inherit(Mark::TrashRestoring),
                 Write::Set(Mark::TrashName, name.to_string()),
                 Write::Set(Mark::TrashPlace, place.as_str().to_owned()),
-                Write::Set(Mark::TrashWas, was.to_string()),
+                Write::Set(Mark::TrashWas, was),
                 Write::Set(Mark::TrashedHour, hour.to_string()),
                 Write::Set(Mark::TrashedAt, self.now_seconds().to_string()),
             ])
@@ -404,9 +462,14 @@ impl VolumeStorage {
         let [name, place, was, hour, at] = &values[..] else {
             unreachable!("one value per entry mark");
         };
+        let pin = marks.local(Mark::TrashPin).await?;
         let unreadable = |mark: Mark, value: &str| format!("its {mark} {value:?} doesn't read");
         Ok((|| {
             Ok(Entry {
+                pin: pin
+                    .as_deref()
+                    .map(|pin| Pin::parse(pin).ok_or_else(|| unreadable(Mark::TrashPin, pin)))
+                    .transpose()?,
                 id,
                 dataset,
                 name: name
@@ -457,15 +520,24 @@ impl VolumeStorage {
         let now = self.now_seconds();
         let mut held = TrashHeld {
             bytes: 0,
-            until: now,
+            until: None,
+            restoring: false,
         };
         for entry in self.entries(pool, &datasets).await.ok()? {
             match entry {
                 Ok(entry) => {
                     held.bytes = held.bytes.saturating_add(entry.dataset.used_bytes);
-                    held.until = held.until.max(entry.expires_at(hours, now));
+                    if entry.pin.is_some() {
+                        held.restoring = true;
+                    } else {
+                        let until = entry.expires_at(hours, now);
+                        held.until = Some(held.until.map_or(until, |held| held.max(until)));
+                    }
                 }
-                Err((_, dataset, _)) => held.bytes = held.bytes.saturating_add(dataset.used_bytes),
+                Err((_, dataset, _)) => {
+                    held.bytes = held.bytes.saturating_add(dataset.used_bytes);
+                    held.until = Some(held.until.map_or(now, |held| held.max(now)));
+                }
             }
         }
         (held.bytes > 0).then_some(held)
@@ -504,6 +576,7 @@ impl VolumeStorage {
                     trashed_at: entry.at,
                     expires_at: entry.expires_at(hours, now),
                     used_bytes: entry.dataset.used_bytes,
+                    restoring: entry.pin.is_some(),
                 }),
                 Err((id, dataset, reason)) => list.unreadable.push(UnreadableTrash {
                     id,
@@ -517,45 +590,168 @@ impl VolumeStorage {
         Ok(list)
     }
 
-    /// Puts entry `id` back where it was taken from; see `ployz volume trash restore`.
-    async fn restore_trash(&self, id: TrashId) -> std::result::Result<TrashRestored, RpcError> {
+    /// Pins a root entry, makes a pinned one the Volume's root, or puts a mirror or old copy
+    /// back as an old copy; see the module doc and `ployz volume trash restore`.
+    async fn restore_trash(
+        &self,
+        id: TrashId,
+        promote: bool,
+    ) -> std::result::Result<TrashRestored, RpcError> {
         let _held = self.admit_mutation().await?;
         let _pool_guard = self.pool.lock_mutation().await?;
-        let pool = self.one_pool().await?;
+        // One listing gives the Pool it writes to and what a proof reads of it, so a root
+        // comes back only in the Pool every proof here was answered from.
+        let (pool, own) = self.pool.restoring().await?;
+        let pool = pool.ok_or_else(|| PluginError::from("no usable existing Machine Pool"))?;
         let layout = DatasetLayout::of(&pool);
-        let datasets = self.datasets(&pool).await?;
+        let datasets = self.complete_datasets(&pool).await?;
+        // A promote that renamed the entry left its ID on the root, so a call run again
+        // finishes it there before it looks for the entry.
+        if let Some(root) = self.restored_root(&layout, &datasets, id).await? {
+            return self.finish_restore(&layout, &root, id).await;
+        }
         let path = layout.trash_entry(&id);
         let Some(dataset) = datasets.iter().find(|dataset| dataset.name == path) else {
             return Err(RpcError::not_found(format!(
-                "This Server's Trash holds no {id}. If an earlier restore of this entry was interrupted, the data may already be back. Check `ployz volume ls` on this Server."
+                "This Server's Trash holds no {id}, and no Volume on it came from that entry. Check `ployz volume ls`."
             )));
         };
         let entry = self.entry(id, dataset).await?.map_err(|why| {
             RpcError::conflict(format!("Trash entry {id} can't be restored: {why}"))
         })?;
-        let name = &entry.name;
-        let slot = Self::slot(&datasets, &pool, name);
-        // A restore of a copy that stopped before its rename left the slot parent it made,
-        // which it takes up again.
-        let resumed = match slot {
-            Some(slot) if entry.place == TrashPlace::Copy => {
-                self.restoring_into(&datasets, slot, id).await?
+        if entry.place == TrashPlace::Root {
+            own_pool(own)?;
+        }
+        match (entry.place, promote) {
+            (TrashPlace::Root, false) => self.pin(&layout, &entry).await,
+            (TrashPlace::Root, true) => self.promote(&pool, &datasets, &entry).await,
+            (TrashPlace::Slot | TrashPlace::Copy, _) => {
+                self.land(&pool, &datasets, dataset, &entry).await
             }
-            _ => false,
-        };
-        if Self::dataset(&datasets, &pool, name)?.is_some() || (slot.is_some() && !resumed) {
+        }
+    }
+
+    /// The root carrying `id`'s restore, when a promote of it renamed it into place.
+    async fn restored_root(
+        &self,
+        layout: &DatasetLayout<'_>,
+        datasets: &[Dataset],
+        id: TrashId,
+    ) -> Result<Option<String>> {
+        let parent = layout.root_parent();
+        if !datasets.iter().any(|dataset| dataset.name == parent) {
+            return Ok(None);
+        }
+        let output = self
+            .zfs(&[
+                "get",
+                "-r",
+                "-H",
+                "-s",
+                "local",
+                "-o",
+                "name,value",
+                Mark::TrashRestored.name(),
+                &parent,
+            ])
+            .await?;
+        Ok(output.lines().find_map(|line| {
+            let (name, value) = line.split_once('\t')?;
+            (value == id.as_str()
+                && matches!(layout.place(name), Place::Root(root) if !root.contains('/')))
+            .then(|| name.to_owned())
+        }))
+    }
+
+    /// Pins the root entry for its restore, or refreshes the pin it has: either way its 7
+    /// days start again. The epoch it becomes the Volume's data at is the entry's next one,
+    /// kept from an earlier pin.
+    async fn pin(
+        &self,
+        layout: &DatasetLayout<'_>,
+        entry: &Entry<'_>,
+    ) -> std::result::Result<TrashRestored, RpcError> {
+        let name = &entry.name;
+        if entry.dataset.refquota == 0 {
             return Err(RpcError::conflict(format!(
-                "Volume {name} already has a copy on this Server; delete it or restore this entry after it is gone"
+                "Trash entry {} can't be restored: it carries no Volume bound",
+                entry.id
             )));
         }
-        if entry.place == TrashPlace::Slot
-            && self.marks(&path).local(Mark::CopyStep).await?.is_some()
+        let epoch = match entry.pinned() {
+            Some(epoch) => epoch,
+            None => {
+                let held = self.marks(&entry.dataset.name).local(Mark::Epoch).await?;
+                let next = match held.as_deref() {
+                    None => Some(1),
+                    Some(held) => held
+                        .parse::<u32>()
+                        .ok()
+                        .and_then(|held| held.checked_add(1)),
+                };
+                let Some(next) = next else {
+                    return Err(RpcError::conflict(format!(
+                        "{name}'s deleted copy shows epoch {}, the highest there is.",
+                        held.unwrap_or_default()
+                    )));
+                };
+                WriterEpoch::new(next)
+            }
+        };
+        let hours = self.sweep_hours(&layout.trash_parent()).await?;
+        let pin = Pin {
+            id: entry.id,
+            epoch,
+        };
+        // The clock first: a pin left on the old clock would let the next sweep destroy it.
+        self.marks(&entry.dataset.name)
+            .apply(&[
+                Write::Set(Mark::TrashedHour, hours.to_string()),
+                Write::Set(Mark::TrashPin, pin.to_string()),
+            ])
+            .await?;
+        Ok(TrashRestored {
+            id: entry.id,
+            name: name.wire(),
+            place: entry.place,
+            state: TrashRestore::Pinned { epoch },
+        })
+    }
+
+    /// Makes the pinned root entry the Volume's root; see the module doc.
+    async fn promote(
+        &self,
+        pool: &MachinePool,
+        datasets: &[Dataset],
+        entry: &Entry<'_>,
+    ) -> std::result::Result<TrashRestored, RpcError> {
+        let id = entry.id;
+        let name = &entry.name;
+        let path = &entry.dataset.name;
+        let layout = DatasetLayout::of(pool);
+        let Some(epoch) = entry.pinned() else {
+            return Err(RpcError::conflict(format!(
+                "Trash entry {id} isn't being restored any more."
+            )));
+        };
+        if Self::dataset(datasets, pool, name)?.is_some()
+            || Self::slot(datasets, pool, name).is_some()
         {
             return Err(RpcError::conflict(format!(
-                "Trash entry {id} is a copy a restore was still making into {name}; approve that restore again instead"
+                "Volume {name} already has a copy on this Server; delete it, then run this again."
             )));
         }
-        let origin = self.entry_origin(&entry).await?;
+        if let Some(other) = self
+            .pinned_entries(pool, datasets, name)
+            .await?
+            .into_iter()
+            .find(|other| *other != id)
+        {
+            return Err(RpcError::conflict(format!(
+                "Volume {name} is also being restored on this Server from Trash entry {other}. Pick the one to keep. Delete the other with `sudo ployz volume trash empty ID`, or stop restoring it and it expires in 7 days."
+            )));
+        }
+        let origin = self.entry_origin(entry).await?;
         self.admit_holders(&name.wire(), origin)
             .await
             .map_err(|unheld| match unheld {
@@ -564,69 +760,221 @@ impl VolumeStorage {
                     RpcError::unavailable(copy_unlisted(&name.wire(), &cause))
                 }
             })?;
-        // The entry's own bytes join the managed count, as `Commitment::of` reads a live
-        // copy; its snapshots' bytes only leave the Trash.
+        self.admit_restore(pool, datasets, entry.dataset, false)
+            .await?;
+        // A delete stopped before it settled the entry left it mountable.
+        self.settle_entry(path).await?;
+        self.marks(path)
+            .apply(&[
+                Write::Set(Mark::Epoch, epoch.to_string()),
+                Write::Set(Mark::Restored, "on".to_owned()),
+                Write::Set(Mark::TrashRestored, id.to_string()),
+                Write::Inherit(Mark::Cut),
+                Write::Inherit(Mark::Promote),
+                Write::Inherit(Mark::Seed),
+            ])
+            .await?;
+        self.zfs(&["set", "readonly=off", path]).await?;
+        self.ensure_root(datasets, &layout.root_parent()).await?;
+        crate::faults::kill_inside(crate::faults::Point::Verb("Trash.Readied"), None);
+        let root = layout.root(name);
+        self.zfs(&["rename", path, &root]).await?;
+        crate::faults::kill_inside(crate::faults::Point::Verb("Trash.Promoted"), None);
+        self.finish_restore(&layout, &root, id).await
+    }
+
+    /// The last steps of a promote, which a call run again repeats; it answers that the
+    /// restore committed.
+    async fn finish_restore(
+        &self,
+        layout: &DatasetLayout<'_>,
+        root: &str,
+        id: TrashId,
+    ) -> std::result::Result<TrashRestored, RpcError> {
+        self.finish_promote(root).await?;
+        let marks = self.marks(root);
+        let Place::Root(name) = layout.place(root) else {
+            return Err(PluginError::from(format!("{root} is not a Volume root")).into());
+        };
+        let name: VolumeName = name
+            .parse()
+            .map_err(|_| PluginError::from(format!("{root} names no Volume")))?;
+        Ok(TrashRestored {
+            id,
+            name: name.wire(),
+            place: TrashPlace::Root,
+            state: TrashRestore::Restored {
+                epoch: marks.epoch().await?,
+            },
+        })
+    }
+
+    /// Finishes a promote that renamed its entry into `root`: the `canmount` the copy had
+    /// before its delete, while its mark still says what it was, then the trash marks and
+    /// the pin off. Each step is safe to repeat.
+    pub(super) async fn finish_promote(&self, root: &str) -> Result<()> {
+        if let Some(was) = self.marks(root).local(Mark::TrashWas).await? {
+            let was = Was::parse(&was).ok_or_else(|| {
+                PluginError::from(format!(
+                    "{root} carries an unreadable {} {was:?}",
+                    Mark::TrashWas
+                ))
+            })?;
+            was.put_back(self, root).await?;
+            crate::faults::kill_inside(crate::faults::Point::Verb("Trash.WasBack"), None);
+        }
+        self.unmark(root).await
+    }
+
+    /// The IDs of `name`'s entries a restore pinned, whether or not their marks read. One
+    /// whose name doesn't read may be `name`'s, so it refuses.
+    pub(super) async fn pinned_entries(
+        &self,
+        pool: &MachinePool,
+        datasets: &[Dataset],
+        name: &VolumeName,
+    ) -> Result<Vec<TrashId>> {
+        let layout = DatasetLayout::of(pool);
+        let mut pinned = Vec::new();
+        for dataset in datasets {
+            let Place::Trash(id) = layout.place(&dataset.name) else {
+                continue;
+            };
+            let Ok(id) = TrashId::parse(id) else {
+                continue;
+            };
+            // A proof's "not pinned" is an absence, so it comes only from a row ZFS printed.
+            if self
+                .listed_local(&dataset.name, Mark::TrashPin.name())
+                .await?
+                .is_none()
+            {
+                continue;
+            }
+            match self
+                .listed_local(&dataset.name, Mark::TrashName.name())
+                .await?
+                .map(|held| held.parse::<VolumeName>())
+            {
+                Some(Ok(held)) if held == *name => pinned.push(id),
+                Some(Ok(_)) => {}
+                _ => {
+                    return Err(PluginError::from(format!(
+                        "Trash entry {id} is being restored, and its {} doesn't read",
+                        Mark::TrashName
+                    )));
+                }
+            }
+        }
+        Ok(pinned)
+    }
+
+    /// Refuses a restore the Pool can't hold beside what it holds: the entry's own bytes
+    /// join the managed count, as `Commitment::of` reads a live copy, and its snapshots'
+    /// bytes only leave the Trash. A copy whose slot a stopped restore already made adds
+    /// no bound.
+    async fn admit_restore(
+        &self,
+        pool: &MachinePool,
+        datasets: &[Dataset],
+        dataset: &Dataset,
+        resumed: bool,
+    ) -> Result<()> {
+        let path = &dataset.name;
         let within = format!("{path}/");
         let active = datasets
             .iter()
-            .filter(|held| held.name == path || held.name.starts_with(&within))
+            .filter(|held| held.name == *path || held.name.starts_with(&within))
             .map(|held| held.active_used_bytes)
             .fold(0u64, u64::saturating_add);
         let bound = if resumed { 0 } else { dataset.refquota };
-        let mut commitment = Commitment::of(&pool, &datasets, bound)?;
+        let mut commitment = Commitment::of(pool, datasets, bound)?;
         commitment.unmanaged_used_bytes = commitment.unmanaged_used_bytes.saturating_sub(active);
         commitment.trash_bytes = commitment.trash_bytes.saturating_sub(dataset.used_bytes);
-        self.ensure_pool_capacity(&pool, &commitment).await?;
-        match entry.place {
-            TrashPlace::Root => {
-                self.ensure_root(&datasets, &layout.root_parent()).await?;
-                self.marks(&path)
-                    .apply(&[Write::Set(Mark::Restored, "on".to_owned())])
-                    .await?;
-                entry.was.put_back(self, &path).await?;
-                self.zfs(&["rename", &path, &layout.root(name)]).await?;
-                self.unmark(&layout.root(name)).await?;
+        self.ensure_pool_capacity(pool, &commitment).await
+    }
+
+    /// Puts a mirror or old copy entry back as an old copy, as trash-1 restores it.
+    async fn land(
+        &self,
+        pool: &MachinePool,
+        datasets: &[Dataset],
+        dataset: &Dataset,
+        entry: &Entry<'_>,
+    ) -> std::result::Result<TrashRestored, RpcError> {
+        let id = entry.id;
+        let layout = DatasetLayout::of(pool);
+        let path = &dataset.name;
+        let name = &entry.name;
+        let slot = Self::slot(datasets, pool, name);
+        // A restore of a copy that stopped before its rename left the slot parent it made,
+        // which it takes up again.
+        let resumed = match slot {
+            Some(slot) if entry.place == TrashPlace::Copy => {
+                self.restoring_into(datasets, slot, id).await?
             }
-            TrashPlace::Slot => {
-                self.ensure_mirror_root(&pool, &datasets).await?;
-                self.marks(&path)
-                    .apply(&[
-                        Write::Set(Mark::Role, SlotRole::OldCopy.as_str().to_owned()),
-                        Write::Inherit(Mark::Pull),
-                    ])
-                    .await?;
-                self.zfs(&["set", "canmount=off", &path]).await?;
-                self.zfs(&["rename", &path, &layout.slot_parent(name)])
-                    .await?;
-                self.unmark(&layout.slot_parent(name)).await?;
-            }
-            TrashPlace::Copy => {
-                self.ensure_mirror_root(&pool, &datasets).await?;
-                let parent = layout.slot_parent(name);
-                if !resumed {
-                    self.create_marked_slot(
-                        &parent,
-                        dataset.refquota,
-                        &[
-                            (Mark::Role, SlotRole::OldCopy.as_str().to_owned()),
-                            (Mark::TrashRestoring, id.to_string()),
-                        ],
-                    )
-                    .await?;
+            _ => false,
+        };
+        if Self::dataset(datasets, pool, name)?.is_some() || (slot.is_some() && !resumed) {
+            return Err(RpcError::conflict(format!(
+                "Volume {name} already has a copy on this Server; delete it or restore this entry after it is gone"
+            )));
+        }
+        if entry.place == TrashPlace::Slot
+            && self.marks(path).local(Mark::CopyStep).await?.is_some()
+        {
+            return Err(RpcError::conflict(format!(
+                "Trash entry {id} is a copy a restore was still making into {name}; approve that restore again instead"
+            )));
+        }
+        let origin = self.entry_origin(entry).await?;
+        self.admit_holders(&name.wire(), origin)
+            .await
+            .map_err(|unheld| match unheld {
+                Unheld::Foreign => RpcError::conflict(copy_held_for_other_data(&name.wire())),
+                Unheld::Unlisted(cause) => {
+                    RpcError::unavailable(copy_unlisted(&name.wire(), &cause))
                 }
-                crate::faults::kill_inside(crate::faults::Point::Verb("Trash.SlotMade"), None);
-                entry.was.put_back(self, &path).await?;
-                self.zfs(&["rename", &path, &layout.slot_fs(name)]).await?;
-                self.unmark(&layout.slot_fs(name)).await?;
-                self.marks(&parent)
-                    .apply(&[Write::Inherit(Mark::TrashRestoring)])
-                    .await?;
+            })?;
+        self.admit_restore(pool, datasets, dataset, resumed).await?;
+        self.ensure_mirror_root(pool, datasets).await?;
+        if entry.place == TrashPlace::Slot {
+            self.marks(path)
+                .apply(&[
+                    Write::Set(Mark::Role, SlotRole::OldCopy.as_str().to_owned()),
+                    Write::Inherit(Mark::Pull),
+                ])
+                .await?;
+            self.zfs(&["set", "canmount=off", path]).await?;
+            self.zfs(&["rename", path, &layout.slot_parent(name)])
+                .await?;
+            self.unmark(&layout.slot_parent(name)).await?;
+        } else {
+            let parent = layout.slot_parent(name);
+            if !resumed {
+                self.create_marked_slot(
+                    &parent,
+                    dataset.refquota,
+                    &[
+                        (Mark::Role, SlotRole::OldCopy.as_str().to_owned()),
+                        (Mark::TrashRestoring, id.to_string()),
+                    ],
+                )
+                .await?;
             }
+            crate::faults::kill_inside(crate::faults::Point::Verb("Trash.SlotMade"), None);
+            entry.was.put_back(self, path).await?;
+            self.zfs(&["rename", path, &layout.slot_fs(name)]).await?;
+            self.unmark(&layout.slot_fs(name)).await?;
+            self.marks(&parent)
+                .apply(&[Write::Inherit(Mark::TrashRestoring)])
+                .await?;
         }
         Ok(TrashRestored {
             id,
             name: name.wire(),
             place: entry.place,
+            state: TrashRestore::Landed,
         })
     }
 
@@ -645,14 +993,20 @@ impl VolumeStorage {
         Ok(mark.as_deref() == Some(id.to_string().as_str()))
     }
 
-    /// Takes the trash marks off a restored copy.
+    /// Takes the trash marks and any pin off a restored copy. `ployz:trash-was` goes after
+    /// the `canmount` it records is back.
     async fn unmark(&self, dataset: &str) -> Result<()> {
         self.marks(dataset)
             .apply(&ENTRY_MARKS.map(Write::Inherit))
+            .await?;
+        self.marks(dataset)
+            .apply(&[Write::Inherit(Mark::TrashPin)])
             .await
     }
 
-    async fn empty_trash(&self, ids: &[TrashId]) -> Result<TrashEmptied> {
+    /// Destroys the entries `ids` names. Emptying the whole Trash (`bulk`) keeps any a
+    /// restore pinned, read again here under the lock; named, they go.
+    async fn empty_trash(&self, ids: &[TrashId], bulk: bool) -> Result<TrashEmptied> {
         let _held = self.admit_mutation().await?;
         let _pool_guard = self.pool.lock_mutation().await?;
         let mut emptied = TrashEmptied::default();
@@ -667,6 +1021,10 @@ impl VolumeStorage {
                 emptied.missing.push(id);
                 continue;
             };
+            if bulk && self.marks(&path).local(Mark::TrashPin).await?.is_some() {
+                emptied.restoring.push(id);
+                continue;
+            }
             let destroyed = match self.entry(id, dataset).await? {
                 Ok(_) => self.destroy(&path, Holds::Expired).await,
                 Err(why) => Err(PluginError::from(format!(
@@ -765,7 +1123,7 @@ pub(super) async fn restore(
     State(storage): State<VolumeStorage>,
     Json(request): Json<RestoreTrashRequest>,
 ) -> Json<std::result::Result<TrashRestored, RpcError>> {
-    Json(storage.restore_trash(request.id).await)
+    Json(storage.restore_trash(request.id, request.promote).await)
 }
 
 pub(super) async fn empty(
@@ -774,7 +1132,7 @@ pub(super) async fn empty(
 ) -> Json<std::result::Result<TrashEmptied, RpcError>> {
     Json(
         storage
-            .empty_trash(&request.ids)
+            .empty_trash(&request.ids, request.bulk)
             .await
             .map_err(RpcError::from),
     )
@@ -784,4 +1142,20 @@ pub(super) async fn sweep(
     State(storage): State<VolumeStorage>,
 ) -> Json<std::result::Result<TrashSwept, RpcError>> {
     Json(storage.sweep_trash().await.map_err(RpcError::from))
+}
+
+/// Refuses unless the Pool a restore writes to is the one a proof reads, `ONLINE` and the
+/// only one attached: the proof a restore relies on is answered from that Pool, so a root
+/// comes back only there.
+fn own_pool(own: Read) -> std::result::Result<(), RpcError> {
+    match own {
+        Read::Pool { .. } => Ok(()),
+        Read::Unheld => Err(RpcError::conflict(
+            "This Server records no Pool as its own, so it won't restore from its Trash."
+                .to_owned(),
+        )),
+        Read::Unproven(why) => Err(RpcError::conflict(format!(
+            "This Server won't restore from its Trash, since {why}."
+        ))),
+    }
 }

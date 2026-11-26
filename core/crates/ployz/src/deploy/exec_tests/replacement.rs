@@ -1110,6 +1110,7 @@ async fn a_removed_service_retires_every_copy_through_out_and_ends_empty() {
             machine_id,
             container_id,
             purpose: ployz_core::RemoveContainerPurpose::Retire,
+            anonymous_volumes: ployz_core::AnonymousVolumes::keep(),
         };
     let plan = vec![retire(first, one), retire(second, two)];
     let client = Scripted::new(vec![
@@ -1153,6 +1154,7 @@ async fn a_removal_beside_a_copy_on_an_unobserved_server_takes_the_live_copy_out
             machine_id: live,
             container_id: here,
             purpose: ployz_core::RemoveContainerPurpose::Retire,
+            anonymous_volumes: ployz_core::AnonymousVolumes::keep(),
         }],
         test_namespace(),
     )
@@ -1214,6 +1216,7 @@ async fn a_pending_copy_is_removed_beside_a_copy_on_an_unobserved_server() {
             machine_id: live,
             container_id: hook,
             purpose: ployz_core::RemoveContainerPurpose::Retire,
+            anonymous_volumes: ployz_core::AnonymousVolumes::keep(),
         }],
         test_namespace(),
     )
@@ -1267,6 +1270,7 @@ async fn removing_a_kept_services_exited_hook_names_no_copy_on_an_unobserved_ser
             machine_id: live,
             container_id: hook,
             purpose: ployz_core::RemoveContainerPurpose::Retire,
+            anonymous_volumes: ployz_core::AnonymousVolumes::keep(),
         }],
         test_namespace(),
     )
@@ -1309,6 +1313,7 @@ async fn a_removal_takes_the_live_copy_out_without_a_drain_wait_when_the_store_c
                 machine_id: live,
                 container_id: here,
                 purpose: ployz_core::RemoveContainerPurpose::Retire,
+                anonymous_volumes: ployz_core::AnonymousVolumes::keep(),
             }],
             test_namespace(),
         )
@@ -1361,6 +1366,7 @@ async fn a_failed_removal_does_not_name_the_copy_on_an_unobserved_server() {
             machine_id: live,
             container_id: here,
             purpose: ployz_core::RemoveContainerPurpose::Retire,
+            anonymous_volumes: ployz_core::AnonymousVolumes::keep(),
         }],
         test_namespace(),
     )
@@ -1405,6 +1411,7 @@ async fn a_removal_finishes_when_the_copy_on_an_unobserved_server_is_out() {
             machine_id: live,
             container_id: here,
             purpose: ployz_core::RemoveContainerPurpose::Retire,
+            anonymous_volumes: ployz_core::AnonymousVolumes::keep(),
         }],
         test_namespace(),
     )

@@ -145,6 +145,7 @@ fn router_on(
             run: None,
             log_driver: None,
             admission: None,
+            replaced_by: None,
         })
         .unwrap();
     ServiceObservation {

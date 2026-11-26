@@ -505,7 +505,7 @@ fn with_secrets(store: &ConfigStore, who: &Actor) {
         who,
         "production",
         "worker.registryCredential",
-        json!({ "username": "bot", "secret": "pull-token" }),
+        ployz_store::testing::sealed_login("pull-token"),
     );
 }
 

@@ -267,9 +267,19 @@ fn buildx_processes(builder: &str) -> std::io::Result<Vec<u32>> {
         if pid == own {
             continue;
         }
-        // A process that exits mid-scan, or another user's, cannot be one of ours.
-        let Ok(cmdline) = fs::read(format!("/proc/{pid}/cmdline")) else {
-            continue;
+        // A process that exits mid-scan, or another user's, cannot be one of ours. Any other
+        // failed read leaves the scan unable to say.
+        let cmdline = match fs::read(format!("/proc/{pid}/cmdline")) {
+            Ok(cmdline) => cmdline,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
+                ) || error.raw_os_error() == Some(rustix::io::Errno::SRCH.raw_os_error()) =>
+            {
+                continue;
+            }
+            Err(error) => return Err(error),
         };
         let arguments = cmdline
             .split(|&byte| byte == 0)

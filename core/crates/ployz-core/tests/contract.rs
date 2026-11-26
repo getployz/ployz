@@ -211,15 +211,15 @@ fn qualified_service_is_namespace_slash_name() {
 fn machine_name_rejects_spaces_uppercase_and_empty_strings() {
     assert_eq!(
         MachineName::parse("BAD NAME").unwrap_err().to_string(),
-        "invalid Machine Name \"BAD NAME\": a 1-63 character lowercase DNS label"
+        "invalid Machine Name: a 1-63 character lowercase DNS label"
     );
     assert_eq!(
         MachineName::parse("Vultr1").unwrap_err().to_string(),
-        "invalid Machine Name \"Vultr1\": a 1-63 character lowercase DNS label"
+        "invalid Machine Name: a 1-63 character lowercase DNS label"
     );
     assert_eq!(
         MachineName::parse("").unwrap_err().to_string(),
-        "invalid Machine Name \"\": a 1-63 character lowercase DNS label"
+        "invalid Machine Name: a 1-63 character lowercase DNS label"
     );
 }
 
@@ -342,12 +342,12 @@ fn namespace_rejects_underscores_and_uppercase_without_normalising() {
     for invalid in ["My_App", "SHOP", "shop_staging", "Shop", "-shop", "shop-"] {
         assert_eq!(
             Namespace::parse(invalid).unwrap_err().to_string(),
-            format!("invalid Namespace {invalid:?}: {expected}")
+            format!("invalid Namespace: {expected}")
         );
     }
     assert_eq!(
         Namespace::parse("").unwrap_err().to_string(),
-        format!("invalid Namespace \"\": {expected}")
+        format!("invalid Namespace: {expected}")
     );
     assert!(Namespace::parse("a".repeat(64)).is_err());
     assert!(Namespace::parse("shop.staging").is_err());
@@ -357,7 +357,7 @@ fn namespace_rejects_underscores_and_uppercase_without_normalising() {
 fn ingress_host_rejects_empty_and_invalid_names() {
     assert_eq!(
         IngressHost::parse("").unwrap_err().to_string(),
-        "invalid Ingress Hostname \"\": a 1-253 character lowercase DNS hostname"
+        "invalid Ingress Hostname: a 1-253 character lowercase DNS hostname"
     );
     assert!(IngressHost::parse("Example.com").is_err());
     assert!(IngressHost::parse("bad_host.example").is_err());
@@ -374,17 +374,17 @@ fn machine_subnet_rejects_prefixes_that_are_not_slash_24() {
         MachineSubnet::parse("10.210.0.0/16")
             .unwrap_err()
             .to_string(),
-        "invalid Machine Subnet \"10.210.0.0/16\": an IPv4 /24 CIDR"
+        "invalid Machine Subnet: an IPv4 /24 CIDR"
     );
     assert_eq!(
         MachineSubnet::parse("10.210.7.1/32")
             .unwrap_err()
             .to_string(),
-        "invalid Machine Subnet \"10.210.7.1/32\": an IPv4 /24 CIDR"
+        "invalid Machine Subnet: an IPv4 /24 CIDR"
     );
     assert_eq!(
         MachineSubnet::parse("not-a-cidr").unwrap_err().to_string(),
-        "invalid Machine Subnet \"not-a-cidr\": an IPv4 /24 CIDR"
+        "invalid Machine Subnet: an IPv4 /24 CIDR"
     );
     assert!(serde_json::from_str::<MachineSubnet>("\"10.210.0.0/16\"").is_err());
     assert!(MachineSubnet::try_from("10.210.0.0/16".parse::<ipnet::Ipv4Net>().unwrap()).is_err());
@@ -1557,9 +1557,11 @@ fn ensure_container_names_the_want_the_observation_and_the_refusal_on_the_wire()
                 resolved_spec: spec.clone(),
                 deployment_id: None,
                 registry_auth: None,
+                registry_login: None,
                 image_prepared: false,
                 answer: AnswerWhen::Started,
                 image_id: None,
+                replaces: None,
             }),
             rotation: RunRotation::Pending,
         },
@@ -1609,12 +1611,58 @@ fn ensure_container_names_the_want_the_observation_and_the_refusal_on_the_wire()
     }))
     .unwrap();
     assert_eq!(
-        gone.want,
-        ContainerWant::Gone {
-            container: ContainerLocator::Key(slot.clone()),
+        serde_json::to_value(&gone.want).unwrap(),
+        json!({ "state": "gone", "container": { "key": slot_json }, "drain": 0,
+                "anonymous_volumes": "remove" }),
+        "a Gone that omits what happens to anonymous Volumes asks to remove them, as v1 \
+         always has, and is passed on that way"
+    );
+    let ContainerWant::Gone {
+        anonymous_volumes, ..
+    } = gone.want
+    else {
+        panic!("a gone want decodes as one");
+    };
+    assert_eq!(
+        anonymous_volumes.replaced_by(),
+        None,
+        "an ask that names no copy relies on none"
+    );
+    let replacement = ContainerId::parse("b".repeat(64)).unwrap();
+    for (wire, relied_on) in [
+        (json!({ "anonymous_volumes": "keep" }), None),
+        (
+            json!({ "anonymous_volumes": "remove", "replaced_by": replacement }),
+            Some(replacement),
+        ),
+        (
+            json!({ "anonymous_volumes": "keep", "replaced_by": replacement }),
+            None,
+        ),
+    ] {
+        let mut want = json!({ "state": "gone", "container": { "id": id }, "drain": 0 });
+        want.as_object_mut()
+            .unwrap()
+            .extend(wire.as_object().unwrap().clone());
+        let decoded: ContainerWant = serde_json::from_value(want.clone()).unwrap();
+        let ContainerWant::Gone {
+            anonymous_volumes, ..
+        } = &decoded
+        else {
+            panic!("a gone want decodes as one");
+        };
+        assert_eq!(anonymous_volumes.replaced_by(), relied_on, "{wire}");
+        assert_eq!(serde_json::to_value(&decoded).unwrap(), want);
+    }
+    assert_eq!(
+        serde_json::to_value(ContainerWant::Gone {
+            container: ContainerLocator::Id(id),
             drain: Drain::NONE,
-            anonymous_volumes: ployz_core::AnonymousVolumes::Remove,
-        }
+            anonymous_volumes: ployz_core::AnonymousVolumes::keep(),
+        })
+        .unwrap(),
+        json!({ "state": "gone", "container": { "id": id }, "drain": 0,
+                "anonymous_volumes": "keep" })
     );
     assert!(
         serde_json::from_value::<EnsureContainerRequest>(json!({

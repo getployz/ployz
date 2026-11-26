@@ -121,7 +121,12 @@ impl LocalMachine {
     /// Change the keys this Machine trusts alone, as [`Self::finish_mutation`] runs work,
     /// holding the switch from before the turn, and the floor lock after it, until the
     /// change is written. A switch step or a floor raise under way ends first, so a removal
-    /// returns only once no step its caller asked for still runs.
+    /// returns only once no step its caller asked for still runs. Once the change is
+    /// written, the work a key it left short of Full scope started ends, and the change
+    /// returns only once that work has stopped: an exec, a tunnel or a Build closes, and a
+    /// Build Grant serves nothing more. Work that doesn't confirm it stopped within
+    /// [`super::bound::STOP_WITHIN`] fails the change with [`Error::WorkNotStopped`], though the
+    /// change itself is written.
     pub(super) async fn finish_key_change<T, F>(&self, work: F) -> Result<T, Error>
     where
         T: Send + 'static,
@@ -139,8 +144,13 @@ impl LocalMachine {
                 Some(containers) => Some(containers.lifecycle().floor_turn().await),
                 None => None,
             };
+            let bound = local.bound.clone();
             let held = KeyChangeHeld(());
-            work(local, &held).await
+            let changed = work(local, &held).await;
+            let stopped = bound.end_unheld().await;
+            let changed = changed?;
+            stopped?;
+            Ok(changed)
         })
         .await
     }

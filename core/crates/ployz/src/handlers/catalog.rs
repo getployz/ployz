@@ -41,7 +41,11 @@ pub(super) fn explain_command(command: Command) -> Command {
 pub(super) fn schema(root: &ArgMatches) -> Result<(), Error> {
     let path = leaf_matches(root).get_one::<String>("path");
     let mut schema = catalog::schema(path.map(String::as_str)).map_err(|mut error| {
-        let service = path.and_then(|path| path.split('.').next()).unwrap_or("SERVICE");
+        // The Service as typed, when it is one; output never repeats other typed text.
+        let service = path
+            .and_then(|path| path.split('.').next())
+            .and_then(|service| ServiceName::parse(service).ok())
+            .map_or_else(|| "<SERVICE>".to_owned(), |service| service.to_string());
         error.message = error_chain::then_sentence(
             &error.message,
             &format!(

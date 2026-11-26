@@ -5,9 +5,6 @@ const assert = require("node:assert/strict");
 const authority = import("../authority.mjs");
 
 const SEALED = "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQQ==";
-// `AutoDeployRule::draft`'s golden fixture in ployz-core's authority/rule_draft_tests.rs, and the digest of its body there.
-const RULE_GOLDEN = "820cfcdda3b2f3d7455a10ba99ec03028861f1eb3a3b63bdd812dded47aa97f7";
-const BUILDER_SHA = "39e1f488e492c0641e520777e481e8f5b266985b";
 const ruleSpec = (name, plain) => ({
   name,
   mode: { mode: "replicated", replicas: 1 },
@@ -38,44 +35,42 @@ const ruleView = {
   target: [ruleSpec("web", "one"), ruleSpec("cache", "two")],
   changed: [],
 };
-const ruleTerms = {
+// A Save's tap: no version, only the Source step drafted from `view`.
+const saving = (view) => ({
   cluster: "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk=",
-  machines: ["2".repeat(32), "1".repeat(32), "2".repeat(32)],
-  owner_id: 278111222,
-  builder: { ref: `getployz/build/.github/workflows/build.yml@${BUILDER_SHA}`, sha: BUILDER_SHA },
-  platform: "linux/amd64",
-  new_rule: "33".repeat(16),
+  namespace: view.namespace,
+  services: [],
+  operation: "44".repeat(16),
   issued_at: 1000,
-  signer: "passkey",
-};
+  expires_at: 601000,
+  seed: Array.from({ length: 16 }, () => 3),
+  against: { trusted: {}, containers: [] },
+  source: { rule: null, sources: view.sources, target: view.target, machines: ["2".repeat(32), "1".repeat(32)], owner_id: 278111222 },
+});
 
-test("a rule's body is the bytes the CLI drafts, naming no particular passkey", async () => {
-  const { autoDeployRuleBody } = await authority;
-  const { createHash } = require("node:crypto");
-  const { body, summary } = autoDeployRuleBody(ruleView, ruleTerms);
-  assert.equal(createHash("sha256").update(body).digest("hex"), RULE_GOLDEN);
+test("a rule covers each Service that builds from GitHub, naming no particular passkey", async () => {
+  const { versionSteps } = await authority;
+  const { body, summary } = versionSteps(saving(ruleView)).source;
   assert.equal(JSON.parse(body).signer, "passkey");
   assert.deepEqual(summary.services.map((service) => service.name), ["web"]);
-  assert.throws(() => autoDeployRuleBody(ruleView, ruleTerms, ["cache"]), /cache doesn't build from GitHub/);
 });
 
 test("turning a rule off signs its next generation, and refuses with no rule on", async () => {
-  const { autoDeployRuleBody, autoDeployRuleEndBody } = await authority;
-  const on = autoDeployRuleBody(ruleView, ruleTerms);
-  const kept = { ...ruleView, rule: { body: on.body, signatures: [] } };
+  const { autoDeployRuleEndBody, versionSteps } = await authority;
+  const kept = { ...ruleView, rule: { body: versionSteps(saving(ruleView)).source.body, signatures: [] } };
   const off = JSON.parse(autoDeployRuleEndBody(kept, { issued_at: 2000, signer: "passkey" }).body);
   assert.deepEqual([off.generation, off.ended, off.issued_at], [2, true, 2000]);
   assert.throws(() => autoDeployRuleEndBody(ruleView, { issued_at: 2000, signer: "passkey" }), /no automatic deploy rule/);
 });
 
 test("a rule over 20 Services drafts in under 20 ms", async () => {
-  const { autoDeployRuleBody } = await authority;
+  const { versionSteps } = await authority;
   const names = Array.from({ length: 20 }, (_, index) => `web${index}`);
   const view = { ...ruleView, sources: names.map(ruleSource), target: names.map((name) => ruleSpec(name, name)) };
-  autoDeployRuleBody(view, ruleTerms);
+  versionSteps(saving(view));
   const times = Array.from({ length: 21 }, () => {
     const started = process.hrtime.bigint();
-    autoDeployRuleBody(view, ruleTerms);
+    versionSteps(saving(view));
     return Number(process.hrtime.bigint() - started) / 1e6;
   }).sort((a, b) => a - b);
   const median = times[10];

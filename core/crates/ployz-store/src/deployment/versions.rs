@@ -904,21 +904,7 @@ pub(crate) fn unsigned(
     };
     let mut unsigned = Vec::new();
     for spec in target {
-        let service = nodes
-            .iter()
-            .find_map(|node| match node {
-                TargetNode::Service { id, runtime, .. } if *runtime == spec.name => Some(id),
-                TargetNode::Service { .. }
-                | TargetNode::Retire { .. }
-                | TargetNode::Volume { .. }
-                | TargetNode::Config { .. } => None,
-            })
-            .and_then(|id| {
-                saved
-                    .services
-                    .iter()
-                    .find(|service| service.id == id.as_str())
-            });
+        let service = saved_service(saved, nodes, spec);
         let login = service.is_some_and(crate::registry::uses_login);
         // A Service that reaches no data runs unsigned, unless it ran signed before:
         // every Server then keeps its name for a signed Container, and refuses it unsigned.
@@ -955,6 +941,63 @@ pub(crate) fn unsigned(
         });
     }
     Ok(unsigned)
+}
+
+/// The Saved Service `nodes` lowered into `spec`.
+fn saved_service<'a>(
+    saved: &'a ployz_core::config::SavedEnvironmentIntent,
+    nodes: &[TargetNode],
+    spec: &RequestedServiceSpec,
+) -> Option<&'a ployz_core::config::SavedServiceIntent> {
+    nodes
+        .iter()
+        .find_map(|node| match node {
+            TargetNode::Service { id, runtime, .. } if *runtime == spec.name => Some(id),
+            TargetNode::Service { .. }
+            | TargetNode::Retire { .. }
+            | TargetNode::Volume { .. }
+            | TargetNode::Config { .. } => None,
+        })
+        .and_then(|id| {
+            saved
+                .services
+                .iter()
+                .find(|service| service.id == id.as_str())
+        })
+}
+
+/// Each Service of `target`, by the name it runs under, that builds from a Git repository
+/// and that the live automatic deploy rule doesn't approve as it stands, whether or not it
+/// reaches data: only a Source step signed with the Deploy builds it. None while the
+/// rule is ended, since a person turns automatic deploys back on first.
+///
+/// # Errors
+/// Returns a storage error, or `corrupt` for a row that doesn't read.
+pub(crate) fn unsourced(
+    tx: &mut dyn Tx,
+    (environment, namespace): (&crate::id::EnvironmentId, &Namespace),
+    saved: &ployz_core::config::SavedEnvironmentIntent,
+    (nodes, target): (&[TargetNode], &[RequestedServiceSpec]),
+) -> Result<Vec<ServiceName>, RpcError> {
+    use ployz_core::config::ServiceSource;
+    let stored = crate::auto_rule::stored(tx, environment)?
+        .as_ref()
+        .and_then(crate::auto_rule::opened);
+    if stored.as_ref().is_some_and(|rule| rule.ended) {
+        return Ok(Vec::new());
+    }
+    let approved = stored.map_or_else(Vec::new, |rule| {
+        crate::auto_rule::approved(&rule, namespace, saved, target)
+    });
+    Ok(target
+        .iter()
+        .filter(|spec| !approved.contains(&spec.name))
+        .filter(|spec| {
+            saved_service(saved, nodes, spec)
+                .is_some_and(|service| matches!(service.config.source, ServiceSource::Git { .. }))
+        })
+        .map(|spec| spec.name.clone())
+        .collect())
 }
 
 /// Whether a person signed a version of `service`, or a Server verified a build of it a
