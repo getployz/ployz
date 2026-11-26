@@ -33,7 +33,7 @@ describe("prepareDeploy", () => {
     const read = async () => ({ kind: "plan" as const, plan: asTestDouble<PlanView>()({ version: "v1", namespace: "app", unsigned: [] }), tap: ready, source: { kind: "sign" as const, view: view(), unchecked: false } });
 
     expect(await prepareDeploy(admitDeploy(here, "d4"), read, async () => ({ ownerId: 7 }))).toMatchObject({
-      kind: "ask", ask: { services: [], prior: null, draft: { source: { summary: { branch: "main" } } }, command: { version: "v1" } },
+      kind: "ask", ask: { services: [], prior: null, draft: { source: { summary: { source: { branch: "main" } } } }, command: { version: "v1" } },
     });
   });
 
@@ -44,7 +44,7 @@ describe("prepareDeploy", () => {
     });
 
     expect(await prepareDeploy(admitDeploy(here, "d7"), read, async () => ({ ownerId: 7 }))).toMatchObject({
-      kind: "ask", ask: { services: [], draft: { steps: [], source: { summary: { branch: "main" } } } },
+      kind: "ask", ask: { services: [], draft: { steps: [], source: { summary: { source: { branch: "main" } } } } },
     });
   });
 

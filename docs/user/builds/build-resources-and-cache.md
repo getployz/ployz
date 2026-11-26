@@ -36,6 +36,8 @@ field, so watch the next build after you change it.
 - **The limits are per build.** With **Builds at once** set to 2, builds on the server can use
   twice as much.
 - **Cache sizes are targets.** A big build can briefly go over them.
+- **Each build slot keeps two caches**, one for services that reach no data and one for the
+  rest. Each keeps to half of `cache_bytes`.
 - **Without `cache_bytes` or `min_free_bytes`**, Ployz keeps a fifth of the server's Docker disk
   free.
 
@@ -67,3 +69,7 @@ It keeps your images and everything else in Docker.
 After each deploy, Ployz cleans up old images it built, but never images it pulled for
 [Docker image services](../deploy/docker-image.md). Remove those with `docker image prune`
 when you need the space.
+
+An image a server built for a service that reaches no data has no name. After each such build,
+the server removes the ones nothing has used for a week, or for an hour when its Docker disk is
+nearly full.

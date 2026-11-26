@@ -133,9 +133,14 @@ impl PreparedDeploy {
         }
         let cancel = session.inner.cancel.child_token();
         let (tx, rx) = mpsc::unbounded_channel();
+        let free = retained
+            .iter()
+            .flatten()
+            .filter_map(|built| Some((built.name.clone(), built.free.clone()?)))
+            .collect();
         let client = crate::deploy::Approved::new(
             session.client()?,
-            crate::deploy::Approvals::signed(versions, rules),
+            crate::deploy::Approvals::signed(versions, rules).with_free(free),
         );
         let preview = self.preview.clone();
         let token = cancel.clone();

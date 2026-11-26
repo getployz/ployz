@@ -50,6 +50,15 @@ fn spec(image: &str) -> ResolvedServiceSpec {
 }
 
 fn place(image: &str, servers: Vec<MachineObservation>) -> Result<MachineId, StayReason> {
+    place_carrying(image, servers, false)
+}
+
+/// Where a copy goes, carrying a Free receipt when `free`.
+fn place_carrying(
+    image: &str,
+    servers: Vec<MachineObservation>,
+    free: bool,
+) -> Result<MachineId, StayReason> {
     let spec = spec(image);
     let snapshot = DeploySnapshot {
         machines: servers,
@@ -60,6 +69,7 @@ fn place(image: &str, servers: Vec<MachineObservation>) -> Result<MachineId, Sta
         &spec.to_requested(),
         &Namespace::parse("app").unwrap(),
         &snapshot,
+        free,
     )
 }
 
@@ -86,6 +96,45 @@ fn a_tag_spec_moves_only_to_a_server_that_pins_its_image() {
     // A digest names its content, so any Server runs it.
     let digest = format!("app@sha256:{}", "7".repeat(64));
     assert_eq!(place(&digest, vec![older.clone()]), Ok(older.machine.id));
+}
+
+/// A copy that carries a Free receipt moves only to a Server that takes one, though an
+/// older Server fits too; when only older Servers fit, the drain says to upgrade them.
+#[test]
+fn a_free_copy_moves_only_to_a_server_that_takes_its_receipt() {
+    let image = format!("ployz-build/api@sha256:{}", "7".repeat(64));
+    let older = server('a', Some(PINNED));
+    let current = server(
+        'b',
+        Some(&[
+            ENSURE_PINNED_CONTAINER_CAPABILITY,
+            ployz_core::FREE_RECEIPT_CAPABILITY,
+        ]),
+    );
+    for servers in [
+        vec![older.clone(), current.clone()],
+        vec![current.clone(), older.clone()],
+    ] {
+        assert_eq!(
+            place_carrying(&image, servers, true),
+            Ok(current.machine.id)
+        );
+    }
+    let refused = place_carrying(&image, vec![older.clone()], true);
+    assert_eq!(
+        refused,
+        Err(StayReason::needs_upgrade(vec![MachineRef::from(
+            &older.machine
+        )]))
+    );
+    assert!(
+        refused
+            .unwrap_err()
+            .to_string()
+            .contains("upgrade with `ployz server upgrade`")
+    );
+    // A copy that carries none goes to any Server.
+    assert_eq!(place(&image, vec![older.clone()]), Ok(older.machine.id));
 }
 
 /// A Server whose row claims nothing may still be asked. If its daemon then turns the

@@ -24,6 +24,8 @@ pub(super) enum Exclusion {
     /// The Service mounts a born Volume, and the Machine doesn't advertise that it checks
     /// where a Volume's data began.
     ChecksNoOrigins,
+    /// The Service's new Containers carry a Free receipt, and the Machine doesn't take one.
+    TakesNoFreeReceipt,
     /// Membership is neither up nor down: no RPC goes to the Machine. A refusal names
     /// no Machine for this reason.
     Unreached,
@@ -41,11 +43,13 @@ pub(super) enum Candidacy {
 pub(super) struct Candidates<'snapshot>(Vec<(&'snapshot MachineObservation, Candidacy)>);
 
 impl DeploySnapshot {
-    /// Classify each Machine for `requested` in `namespace`.
+    /// Classify each Machine for `requested` in `namespace`, whose new Containers carry a
+    /// Free receipt when `free`.
     pub(super) fn candidates(
         &self,
         requested: &RequestedServiceSpec,
         namespace: &Namespace,
+        free: bool,
     ) -> Candidates<'_> {
         let born = requested
             .volume_graph()
@@ -80,6 +84,8 @@ impl DeploySnapshot {
                             != Claim::Advertises
                     {
                         Candidacy::Excluded(Exclusion::ChecksNoOrigins)
+                    } else if free && !crate::build::takes_free_receipts(&machine.machine) {
+                        Candidacy::Excluded(Exclusion::TakesNoFreeReceipt)
                     } else if !machine.invites_rpc() {
                         Candidacy::Excluded(Exclusion::Unreached)
                     } else {
@@ -135,7 +141,9 @@ impl<'snapshot> Candidates<'snapshot> {
                     Candidacy::Excluded(Exclusion::WorkNotAccepted) => ServerAway::TakesNoServices,
                     Candidacy::Excluded(Exclusion::Unreached) => ServerAway::Unreached,
                     Candidacy::Excluded(
-                        Exclusion::PlacementMismatch | Exclusion::ChecksNoOrigins,
+                        Exclusion::PlacementMismatch
+                        | Exclusion::ChecksNoOrigins
+                        | Exclusion::TakesNoFreeReceipt,
                     )
                     | Candidacy::Candidate(_) => {
                         return None;

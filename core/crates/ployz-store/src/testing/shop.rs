@@ -198,3 +198,133 @@ pub fn pinned(store: &ConfigStore, automated: &Automated, service: &str) -> Opti
         .and_then(|source| source.commit)
         .map(String::from)
 }
+
+/// Sign `generation` of a registry rule for `<host>/acme/worker` over Service worker's
+/// settings as they are Saved.
+pub fn signed_registry_rule_on(
+    store: &ConfigStore,
+    who: &Actor,
+    generation: u64,
+    host: &str,
+) -> Box<ployz_core::authority::Signed<ployz_core::authority::AutoDeployRule>> {
+    use ployz_core::authority::rule::{RegistrySource, RuleService, RuleSource, template};
+    use ployz_core::authority::{AutoDeployRule, RuleId, Signed, Signer, SignerKey, Timestamp};
+    let view: crate::RuleView = store
+        .read(
+            who,
+            &crate::RuleQuery {
+                environment: EnvironmentRef::default(),
+                staged: false,
+            },
+        )
+        .unwrap();
+    let worker = view
+        .target
+        .iter()
+        .find(|spec| spec.name.as_str() == "worker")
+        .unwrap();
+    let signer = Signer::from_seed(&[7; 32]);
+    let rule = AutoDeployRule {
+        proposal: None,
+        cluster: ployz_core::SealingPublicKey::from_bytes([3; 32]),
+        rule: RuleId::from_bytes([5; 16]),
+        generation,
+        namespace: view.namespace.clone(),
+        machines: Vec::new(),
+        source: RuleSource::Registry(RegistrySource {
+            host: host.into(),
+            repository: "acme/worker".into(),
+        }),
+        services: vec![RuleService {
+            name: worker.name.clone(),
+            template: template(worker, &view.namespace).unwrap(),
+            policy: None,
+            secrets: None,
+            seeded: None,
+        }],
+        issued_at: Timestamp::from_millis(1_800_000_000_000).unwrap(),
+        ended: false,
+        preview: None,
+        signer: SignerKey::Device(ployz_core::DeviceKey::from_bytes(
+            *signer.public().as_bytes(),
+        )),
+    };
+    Box::new(Signed::sign(&rule, &signer).unwrap())
+}
+
+/// Image Service `worker` on private `ghcr.io/acme/worker`, with its registry login,
+/// Saved under a registry rule and deployed. Returns its image.
+pub fn registry_worker(store: &ConfigStore, who: &Actor) -> String {
+    let image = format!("ghcr.io/acme/worker@sha256:{}", "a".repeat(64));
+    store
+        .write(
+            who,
+            &crate::CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000006").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("worker").unwrap(),
+                image: Some(image.clone()),
+                template: None,
+            },
+        )
+        .unwrap();
+    set(
+        store,
+        who,
+        "worker.registryCredential",
+        super::sealed_login_for("ghcr.io", "worker"),
+    );
+    publish(store, who);
+    let rule = signed_registry_rule_on(store, who, 1, "ghcr.io");
+    let staged: crate::RuleView = store
+        .read(
+            who,
+            &crate::RuleQuery {
+                environment: EnvironmentRef::default(),
+                staged: true,
+            },
+        )
+        .unwrap();
+    store
+        .write_trusted(
+            who,
+            &Command::Publish(Publish {
+                id: None,
+                environment: EnvironmentRef::default(),
+                version: staged.version,
+                message: None,
+                accept_volume_loss: Vec::new(),
+                rule: Some(crate::SavedRule {
+                    rule,
+                    births: Default::default(),
+                    prior: None,
+                }),
+            }),
+            &Trusted::default(),
+        )
+        .unwrap();
+    let id = crate::DeploymentId::parse("00000000-0000-4000-8000-000000000108").unwrap();
+    store
+        .write_trusted(
+            who,
+            &crate::Admit::Deploy(crate::Deploy {
+                id: id.clone(),
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+                prune: false,
+                no_prune: false,
+                versions: Vec::new(),
+                copies: Vec::new(),
+                recreate: Vec::new(),
+                rule: None,
+            }),
+            &Trusted::default(),
+        )
+        .unwrap();
+    backend::run(store, &id);
+    image
+}

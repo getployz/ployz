@@ -77,6 +77,7 @@ impl LocalMachine {
                 Some(Start::Create {
                     check: true,
                     resolved_spec,
+                    registry_login,
                     ..
                 }),
             ..
@@ -87,6 +88,29 @@ impl LocalMachine {
                 .lifecycle()
                 .check_start_volumes(resolved_spec, self.plugin(), &request.name)
                 .await?;
+            // It places the image as that Create would, so a pull or login that fails
+            // fails before the Writer stops. An image the Move copies here after the
+            // check may be absent now.
+            if let Some(admitted) = admitted {
+                match self
+                    .place_holder_image(
+                        resolved_spec.clone(),
+                        admitted,
+                        None,
+                        registry_login.clone(),
+                    )
+                    .await
+                {
+                    Ok(_)
+                    | Err(Error::Docker(
+                        crate::docker::Error::ImageAbsent { .. }
+                        | crate::docker::Error::UnsignedImage(
+                            crate::docker_image::UnsignedImage::NeverPulled,
+                        ),
+                    )) => {}
+                    Err(error) => return Err(error),
+                }
+            }
             return self.inspect_copy(&request.name).await;
         }
         if request.want == WantedCopy::Floor {
@@ -869,7 +893,15 @@ impl LocalMachine {
         start: Option<&Start>,
         admitted: Option<AdmittedSpec>,
     ) -> Result<Option<PlacedHolder>, Error> {
-        let (Some(Start::Create { resolved_spec, .. }), Some(admitted)) = (start, admitted) else {
+        let (
+            Some(Start::Create {
+                resolved_spec,
+                registry_login,
+                ..
+            }),
+            Some(admitted),
+        ) = (start, admitted)
+        else {
             return Ok(None);
         };
         let recorded = match copy {
@@ -881,9 +913,14 @@ impl LocalMachine {
             }
             _ => None,
         };
-        self.place_holder_image(resolved_spec.clone(), admitted, recorded)
-            .await
-            .map(Some)
+        self.place_holder_image(
+            resolved_spec.clone(),
+            admitted,
+            recorded,
+            registry_login.clone(),
+        )
+        .await
+        .map(Some)
     }
 
     /// Create the Container when `start` asks for one and it is absent, then start it.

@@ -52,6 +52,17 @@ pub fn docker_config(root: &Path) -> PathBuf {
     docker(root).join(DOCKER_CONFIG)
 }
 
+/// Whether a Free Build's capture may carry `relative`, a path under [`PRIVATE`]: only the
+/// directories every capture starts with and its Railpack recipes. Never a Sealed record,
+/// a registry configuration, a secret file or an SSH key.
+#[must_use]
+pub fn free_private(relative: &Path) -> bool {
+    let private = Path::new(PRIVATE);
+    relative == private
+        || relative == private.join(DOCKER)
+        || relative == private.join(RAILPACK_PLAN)
+}
+
 /// The Railpack recipes the capture carries.
 #[must_use]
 pub fn railpack_plan(root: &Path) -> PathBuf {

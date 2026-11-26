@@ -96,6 +96,29 @@ pub fn image_registry(image: &str) -> Option<&str> {
         .then_some(first)
 }
 
+/// The reference that pulls `image` from the Machine image server at `server`. Whatever
+/// pulls from one, a destination or BuildKit, asks for this.
+///
+/// The server reads the path after its address as the name its image store holds, so an
+/// image keeps its whole name there. A path can't hold a registry's port or an IPv6
+/// address, so an image from such a registry goes by its repository path and digest
+/// alone: the server finds a digest by content, whatever the path. A tag from such a
+/// registry has no path the server would read as its name, so it gets `None`.
+#[must_use]
+pub fn image_server_reference(server: std::net::SocketAddr, image: &str) -> Option<String> {
+    let path_safe = |host: &str| {
+        host.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"._-".contains(&byte)
+        })
+    };
+    let Some(host) = image_registry(image).filter(|host| !path_safe(host)) else {
+        return Some(format!("{server}/{image}"));
+    };
+    let digest = ImageRef::new(image).digest?;
+    let path = &image_repository(image)[host.len() + 1..];
+    Some(format!("{server}/{path}@{digest}"))
+}
+
 /// Docker Hub's host, as a login for it is sealed.
 pub const DOCKER_HUB: &str = "docker.io";
 
@@ -117,6 +140,83 @@ pub fn login_host(image: &str) -> Result<&str, UppercaseHost> {
 #[derive(Debug, thiserror::Error)]
 #[error("write the image's registry in lowercase, like ghcr.io")]
 pub struct UppercaseHost;
+
+/// An image named the way a registry rule names its repository: the host a login is
+/// sealed for, the path on it, and the digest the reference pins, if any.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RegistryImage {
+    /// As [`login_host`] reads it.
+    pub host: String,
+    /// The path Docker pulls from `host`, `library/` added for a Docker Hub official image.
+    pub repository: String,
+    pub digest: Option<ImageDigest>,
+}
+
+/// Why a registry rule can't name an image's repository.
+#[derive(Debug, Eq, PartialEq, thiserror::Error)]
+pub enum RegistryName {
+    #[error("write the image's registry in lowercase, like ghcr.io")]
+    Uppercase,
+    #[error("Docker can't read {0} as an image")]
+    Unreadable(String),
+    #[error("an automatic deploy rule needs a registry named by its host, not {0}")]
+    Address(String),
+    #[error("an automatic deploy rule can't deploy images from {0}, which Ployz runs")]
+    Ployz(String),
+}
+
+/// Hosts under these names are Ployz's own, never a customer's registry.
+const PLOYZ_HOSTS: [&str; 3] = ["ployz.app", "ployz.dev", "ployz.sh"];
+
+/// `image` as a registry rule reads it, the signer and every Server alike: its host as
+/// [`login_host`] reads it, its repository path, and its digest. A host that is an IP
+/// address, `localhost`, or Ployz's own is refused: a rule names a registry anyone can
+/// check, and never the image server inside a Cluster. A digest that names no content is
+/// left out.
+///
+/// # Errors
+/// Returns a [`RegistryName`] naming what the reference lacks.
+pub fn registry_image(image: &str) -> Result<RegistryImage, RegistryName> {
+    let host = login_host(image).map_err(|_| RegistryName::Uppercase)?;
+    if !is_image_reference(image) {
+        return Err(RegistryName::Unreadable(image.to_owned()));
+    }
+    let name = host.rsplit_once(':').map_or(host, |(name, port)| {
+        if port.bytes().all(|byte| byte.is_ascii_digit()) {
+            name
+        } else {
+            host
+        }
+    });
+    let bracketed = name.starts_with('[');
+    if bracketed || name == "localhost" || name.parse::<std::net::IpAddr>().is_ok() {
+        return Err(RegistryName::Address(host.to_owned()));
+    }
+    if PLOYZ_HOSTS
+        .iter()
+        .any(|ployz| name == *ployz || name.ends_with(&format!(".{ployz}")))
+    {
+        return Err(RegistryName::Ployz(host.to_owned()));
+    }
+    let written = image_repository(image);
+    let path = match image_registry(image) {
+        Some(registry) => written
+            .strip_prefix(registry)
+            .and_then(|rest| rest.strip_prefix('/'))
+            .unwrap_or(written),
+        None => written,
+    };
+    let repository = if host == DOCKER_HUB && !path.contains('/') {
+        format!("library/{path}")
+    } else {
+        path.to_owned()
+    };
+    Ok(RegistryImage {
+        host: host.to_owned(),
+        repository,
+        digest: ImageRef::new(image).content(),
+    })
+}
 
 /// Whether two tags name the same thing once Docker fills in what each leaves out:
 /// `app:v1` is `docker.io/library/app:v1`, and `app` is `app:latest`. `team/app:v1` and
@@ -289,6 +389,45 @@ mod tests {
         }
     }
 
+    /// A destination or BuildKit pulls from a Machine image server by this reference, so
+    /// Docker must parse it and the server must find the image by it: a tag by the
+    /// image's whole name, a digest by content.
+    #[test]
+    fn an_image_server_reference_is_one_docker_parses_and_the_server_finds() {
+        let server = "127.0.0.1:9".parse().unwrap();
+        let digest = format!("sha256:{}", "1".repeat(64));
+        let pinned = |path: &str| format!("{path}@{digest}");
+        for (image, served) in [
+            ("busybox:1.37.0".to_owned(), "busybox:1.37.0".to_owned()),
+            ("ghcr.io/acme/web:v1".into(), "ghcr.io/acme/web:v1".into()),
+            ("localhost/web:v1".into(), "localhost/web:v1".into()),
+            (pinned("busybox"), pinned("busybox")),
+            (pinned("ghcr.io/acme/web"), pinned("ghcr.io/acme/web")),
+            (pinned("registry.verify:5000/acme/web"), pinned("acme/web")),
+            (
+                pinned("registry.verify:5000/acme/web:v1"),
+                pinned("acme/web"),
+            ),
+            (pinned("localhost:5000/web"), pinned("web")),
+            (pinned("[fd00::1]:5000/acme/web"), pinned("acme/web")),
+        ] {
+            let reference = image_server_reference(server, &image).unwrap();
+            assert!(is_image_reference(&reference), "{image}: {reference}");
+            assert_eq!(
+                reference.strip_prefix("127.0.0.1:9/"),
+                Some(served.as_str()),
+                "{image}"
+            );
+        }
+        // The server holds such a tag under a name no path can spell.
+        for image in [
+            "registry.verify:5000/acme/web:v1",
+            "[fd00::1]:5000/acme/web",
+        ] {
+            assert_eq!(image_server_reference(server, image), None, "{image}");
+        }
+    }
+
     #[test]
     fn a_build_grant_repository_is_a_short_docker_repository_path() {
         assert!(BuildGrantRepository::parse("ployz-build/web").is_ok());
@@ -448,5 +587,55 @@ mod tests {
             assert_eq!(reference.content(), named, "{image}");
             assert_eq!(retention_tag(&image), retained, "{image}");
         }
+    }
+
+    // Catches a registry rule that names an address inside the network, or Ployz's own
+    // registry, being approved as a public registry.
+    #[test]
+    fn a_registry_rule_names_a_public_host_and_its_repository() {
+        let digest = format!("sha256:{}", "a".repeat(64));
+        for (image, host, repository) in [
+            ("nginx", "docker.io", "library/nginx"),
+            ("docker.io/acme/web:1", "docker.io", "acme/web"),
+            ("index.docker.io/acme/web", "docker.io", "acme/web"),
+            ("ghcr.io/acme/web", "ghcr.io", "acme/web"),
+            (
+                "registry.example.com:5000/team/web",
+                "registry.example.com:5000",
+                "team/web",
+            ),
+            ("notployz.app/web", "notployz.app", "web"),
+        ] {
+            let named = registry_image(&format!("{image}@{digest}")).unwrap();
+            assert_eq!(
+                (named.host.as_str(), named.repository.as_str()),
+                (host, repository),
+                "{image}"
+            );
+            assert_eq!(named.digest.map(|d| d.to_string()), Some(digest.clone()));
+        }
+        assert_eq!(registry_image("ghcr.io/acme/web:1").unwrap().digest, None);
+        for image in [
+            "localhost/web",
+            "localhost:5000/web",
+            "10.0.0.5:5000/web",
+            "127.0.0.1/web",
+        ] {
+            assert!(
+                matches!(registry_image(image), Err(RegistryName::Address(_))),
+                "{image}"
+            );
+        }
+        for image in [
+            "ployz.app/web",
+            "registry.ployz.dev/web",
+            "a.b.ployz.sh:443/web",
+        ] {
+            assert!(
+                matches!(registry_image(image), Err(RegistryName::Ployz(_))),
+                "{image}"
+            );
+        }
+        assert!(registry_image("GHCR.io/Acme/Web").is_err());
     }
 }
