@@ -49,6 +49,12 @@ impl FreeImage {
     pub(crate) fn id(&self) -> &ployz_core::ImageDigest {
         &self.0
     }
+
+    /// `image` as if its receipt held, for a test past the check.
+    #[cfg(test)]
+    pub(crate) fn for_test(image: ployz_core::ImageDigest) -> Self {
+        Self(image)
+    }
 }
 
 /// Why an unsigned creation won't run the image its free Build receipt names.

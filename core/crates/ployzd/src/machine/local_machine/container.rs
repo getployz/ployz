@@ -1565,9 +1565,28 @@ impl LocalMachine {
     ) -> Result<EnsuredContainer, Error> {
         let locator = want_locator(&want);
         let fence = start_fence(&want);
-        let pin = pinned(&want);
         let replan = (!self.in_switch.held()).then(|| want.clone());
         let mut now = self.container_now(&locator).await?;
+        // An unsigned creation runs a Free Build's image by its receipt, so the receipt
+        // holds before any Container serves it, and every Container it names runs that image.
+        let free = match (
+            free_receipt(&want),
+            admitted.as_ref().map(AdmittedSpec::signed),
+        ) {
+            (Some(receipt), Some(false)) => {
+                match crate::docker_image::FreeImage::check(receipt, self.docker()?.sealing()) {
+                    Ok(free) => Some(free),
+                    Err(error) => {
+                        return Ok(EnsuredContainer::Refused {
+                            now: redacted(now),
+                            refusal: create_refusal(error.into())?,
+                        });
+                    }
+                }
+            }
+            (Some(_) | None, _) => None,
+        };
+        let pin = pinned(&want).or_else(|| free.as_ref().map(|free| free.id().clone()));
         let admission = admitted
             .as_ref()
             .map_or(ployz_core::Admission::Free, AdmittedSpec::admission);
@@ -1612,7 +1631,7 @@ impl LocalMachine {
                 });
             }
             ContainerStep::CreateAndStart(new) => match self
-                .create_and_start(new, fence, admitted.ok_or_else(unadmitted)?, switch)
+                .create_and_start(new, free, fence, admitted.ok_or_else(unadmitted)?, switch)
                 .await?
             {
                 Made::Refused(refusal) => Some(refusal),
@@ -1796,6 +1815,7 @@ impl LocalMachine {
     async fn create_and_start(
         &self,
         new: NewContainer,
+        free: Option<crate::docker_image::FreeImage>,
         fence: Option<StartFence>,
         admitted: AdmittedSpec,
         switch: Option<SwitchGuard>,
@@ -1804,20 +1824,6 @@ impl LocalMachine {
             .finish_mutation(move |local| async move {
                 let _switch = switch;
                 let pin = new.image_id.clone();
-                // Only an unsigned creation runs a free Build's image by its receipt; a
-                // signed one runs what its signature names.
-                let free = match (&new.free_receipt, admitted.signed()) {
-                    (Some(receipt), false) => {
-                        match crate::docker_image::FreeImage::check(
-                            receipt,
-                            local.docker()?.sealing(),
-                        ) {
-                            Ok(free) => Some(free),
-                            Err(error) => return create_refusal(error.into()).map(Made::Refused),
-                        }
-                    }
-                    (Some(_) | None, _) => None,
-                };
                 let login = match (&pin, new.image_prepared, &new.registry_login) {
                     (None, false, Some(login)) => {
                         let image = &new.resolved_spec.container.image;
@@ -1856,7 +1862,10 @@ impl LocalMachine {
                 let acted = |refusal| Made::Acted(created.container_id, refusal);
                 // A create may adopt a Container another request made from the same spec,
                 // which may run another image: it never starts for a pinned request.
-                if let Some(pin) = &pin
+                if let Some(pin) = free
+                    .as_ref()
+                    .map(crate::docker_image::FreeImage::id)
+                    .or(pin.as_ref())
                     && let Some(refusal) = local.image_differs(&created.container_id, pin).await?
                 {
                     return Ok(acted(Some(refusal)));
@@ -2011,6 +2020,7 @@ impl LocalMachine {
 }
 
 /// What a creation did with the slot.
+#[derive(Debug)]
 enum Made {
     /// It made nothing, so the reply reads the slot.
     Refused(ContainerRefusal),
@@ -2454,6 +2464,21 @@ fn pinned(want: &ContainerWant) -> Option<ployz_core::ImageDigest> {
             container: RunTarget::New(new),
             ..
         } => new.image_id.clone(),
+        ContainerWant::Running { .. }
+        | ContainerWant::Stopped { .. }
+        | ContainerWant::Gone { .. }
+        | ContainerWant::Out { .. }
+        | ContainerWant::Held { .. } => None,
+    }
+}
+
+/// The Free Build receipt a new creation carries.
+fn free_receipt(want: &ContainerWant) -> Option<&ployz_core::FreeReceipt> {
+    match want {
+        ContainerWant::Running {
+            container: RunTarget::New(new),
+            ..
+        } => new.free_receipt.as_ref(),
         ContainerWant::Running { .. }
         | ContainerWant::Stopped { .. }
         | ContainerWant::Gone { .. }

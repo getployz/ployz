@@ -7190,6 +7190,75 @@ mod ensure_container {
             std::fs::remove_dir_all(fixture.data_dir).unwrap();
         }
 
+        /// A slot that already holds a Free Build's image answers a receipt only when it
+        /// names that image: never as already running, and never by starting what is there.
+        #[tokio::test]
+        #[expect(clippy::indexing_slicing, reason = "JSON fixture")]
+        async fn a_reused_slot_answers_a_receipt_only_for_the_image_it_holds() {
+            let (data_dir, store, service, fake, runtime, cluster) =
+                fake_docker_service_sealing("ployzd-free-reuse").await;
+            let mut fixture = enforce((data_dir, store, service, fake, runtime)).await;
+            let _replica = fixture.with_replica().await;
+            let service = &fixture.service;
+            let built =
+                ployz_core::ImageDigest::parse(format!("sha256:{}", "d".repeat(64))).unwrap();
+            let other =
+                ployz_core::ImageDigest::parse(format!("sha256:{}", "e".repeat(64))).unwrap();
+            let receipt = cluster.store().free_receipt(&built).unwrap();
+            let elsewhere = cluster.store().free_receipt(&other).unwrap();
+            let forged = ployz_core::FreeReceipt {
+                image: built.clone(),
+                mac: elsewhere.mac,
+            };
+            // One spec, so each request names the same creation in the slot.
+            let public = spec(PUBLIC);
+            let carrying = |key: &str, receipt: &ployz_core::FreeReceipt| {
+                let mut want = new_want("service_container", key, &public);
+                want["container"]["new"]["free_receipt"] = json!(receipt);
+                want
+            };
+            for state in ["running", "exited"] {
+                let key = format!("k-{state}");
+                let first = present(
+                    &deploy_ensure(service, carrying(&key, &receipt), None)
+                        .await
+                        .unwrap(),
+                )
+                .container_id
+                .clone();
+                for container in fixture
+                    .fake
+                    .named_containers
+                    .as_ref()
+                    .unwrap()
+                    .lock()
+                    .unwrap()
+                    .values_mut()
+                    .filter(|container| container["Id"] == json!(first.as_str()))
+                {
+                    container["State"] = json!({"Status": state});
+                }
+                let seen = requests(&fixture.fake).len();
+
+                for (wrong, why) in [
+                    (&elsewhere, "not the pinned"),
+                    (&forged, "no Server of this Cluster made the receipt"),
+                ] {
+                    let reply = deploy_ensure(service, carrying(&key, wrong), None)
+                        .await
+                        .unwrap();
+                    assert!(format!("{reply:?}").contains(why), "{state}: {reply:?}");
+                }
+                assert_eq!(
+                    ends_with(&requests_since(&fixture.fake, seen), Method::POST, "/start").count(),
+                    0,
+                    "{state}: nothing started"
+                );
+                assert_eq!(creates(&fixture.fake, seen), 0, "{state}: nothing made");
+            }
+            std::fs::remove_dir_all(fixture.data_dir).unwrap();
+        }
+
         #[tokio::test]
         async fn a_signed_hook_never_starts_again_but_adopts_a_resent_one() {
             let fixture = enforced("ployzd-deploy-hook-start").await;
