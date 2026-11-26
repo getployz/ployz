@@ -218,6 +218,8 @@ pub enum Ask<'a> {
         reach: &'a Reach,
     },
     Rule,
+    /// One commit approved for one preview of a preview rule.
+    Commit,
     Key,
     Join,
     PrivateAccess,
@@ -236,6 +238,7 @@ impl Ask<'_> {
             } => "a version that reaches its Server's host",
             Self::Version { .. } => "a version of this Service",
             Self::Rule => "an automatic deploy rule",
+            Self::Commit => "a preview's commit",
             Self::Key => "a key change",
             Self::Join => "a join",
             Self::PrivateAccess => "Private Access",
@@ -248,7 +251,7 @@ impl Ask<'_> {
             Self::Version {
                 reaches_host: true, ..
             } => CapSet::bit(Cap::Spec) | CapSet::bit(Cap::HostReach),
-            Self::Version { .. } | Self::Rule | Self::Copy => CapSet::bit(Cap::Spec),
+            Self::Version { .. } | Self::Rule | Self::Commit | Self::Copy => CapSet::bit(Cap::Spec),
             Self::Key => CapSet::bit(Cap::Key),
             Self::Join | Self::PrivateAccess => CapSet::bit(Cap::Join),
         })

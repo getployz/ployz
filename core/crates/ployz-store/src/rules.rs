@@ -823,6 +823,9 @@ pub(crate) mod tests {
             .write(|tx| {
                 let mut environment = crate::scope::lock(tx, who, &EnvironmentRef::default())?;
                 change(&mut environment.working);
+                crate::storage::ranked::take(crate::storage::ranked::Lock::environment(
+                    &environment.summary.id,
+                ));
                 tx.execute(
                     "UPDATE config_environment SET working = ?1 WHERE id = ?2",
                     &[

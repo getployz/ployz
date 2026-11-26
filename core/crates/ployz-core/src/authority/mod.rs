@@ -53,9 +53,10 @@ pub use proposal::{ProposalApproval, ProposalRef, ProposalStep, StepDigest, Step
 pub use refusal::{AuthorityRefusal, MismatchField};
 pub use rule::{
     AttestKey, AutoDeployRule, BuildClaim, BuildPolicy, BuildStage, BuiltImageDigest,
-    CommitAuthority, CommitSha, GithubClaims, GithubSource, KeptRule, PolicyDigest, RecipientKey,
+    ChargedAuthority, CommitApproval, CommitAuthority, CommitSha, GithubClaims, GithubSource,
+    KeptRule, PREVIEW_NAMESPACE, PinnedService, PolicyDigest, PreviewTerms, RecipientKey,
     RegistryPin, RegistrySource, RuleEvidence, RuleFacts, RuleId, RuleIdentity, RuleProof,
-    RuleService, RuleSource, SealedDigest, VerifiedBuild,
+    RuleService, RuleSource, SealedDigest, VerifiedBuild, preview_template,
 };
 pub use rule_draft::{
     RuleBasis, RuleDraft, RuleDraftError, RuleImageView, RuleSummary, RuleTerms, SourceSummary,
@@ -68,4 +69,4 @@ pub use trusted_key::{
     Passkey, PasskeyAccount, PasskeyApprover, PasskeyAssertion, PasskeyPublicKey, TrustedKey,
     TrustedKeys, TrustedPasskey,
 };
-pub use version::{Budget, ServiceVersion, VersionAdmitted, VersionFacts};
+pub use version::{Budget, Charged, ServiceVersion, VersionAdmitted, VersionFacts};

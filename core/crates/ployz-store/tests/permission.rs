@@ -315,6 +315,8 @@ fn the_build_order_a_project_rename_and_a_pr_plan_name_their_own_permissions() {
                 setup: None,
                 remove_on_close: None,
                 include_bots: None,
+                preview_rule: None,
+                preview_cap: None,
             },
             &everything_but(Permission::ProjectEdit),
         )

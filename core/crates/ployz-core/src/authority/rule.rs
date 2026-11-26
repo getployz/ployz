@@ -11,8 +11,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 use ts_rs::TS;
+use uuid::Uuid;
 
 use super::{
     canonical::{self, CanonicalError, Timestamp, drop_nulls},
@@ -23,11 +25,12 @@ use super::{
     refusal::{AuthorityRefusal, MismatchField, first_mismatch},
     scope::Ask,
     trusted_key::TrustedKeys,
+    version::{Budget, Charged},
 };
 use crate::value::hex_newtype;
 use crate::{
-    BuildGrantId, ContainerKind, GithubToken, MachineId, Namespace, RequestedServiceSpec,
-    SealedRecord, SealingPublicKey, ServiceName,
+    BuildGrantId, ContainerKind, GithubToken, MachineId, Namespace, PortPublication,
+    PreviewNamespace, RequestedServiceSpec, SealedRecord, SealingPublicKey, ServiceName,
 };
 
 /// What prefixes every build audience, so a token minted for a Ployz build names no other
@@ -377,6 +380,50 @@ pub struct RuleService {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub secrets: Option<SealedDigest>,
+    /// Under a preview rule, the [`preview_template`] of the same spec with its Setup
+    /// Command in the hook, which a preview's first deploy runs. `None` when it has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub seeded: Option<PayloadDigest>,
+}
+
+/// What makes a rule a preview rule: it deploys each pull request's preview into a preview
+/// Namespace of its own, opening the values of the Parent Environment, whose Namespace is
+/// the rule's. Its source builds any branch, and each Service's template is a
+/// [`preview_template`].
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct PreviewTerms {
+    /// The Parent Environment, the only one whose Sealed values a preview opens.
+    #[ts(type = "string")]
+    pub parent: Uuid,
+    /// The GitHub user IDs whose pushes deploy, sorted and distinct; empty for anyone who
+    /// can push to the repository.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "canonical::sorted_distinct"
+    )]
+    #[ts(optional, as = "Option<Vec<u64>>")]
+    pub pushers: Vec<u64>,
+    /// The Services that run an image the rule pins by digest, such as a database, rather
+    /// than one a push builds. Sorted by name and distinct.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "pinned_by_name"
+    )]
+    #[ts(optional, as = "Option<Vec<PinnedService>>")]
+    pub pinned: Vec<PinnedService>,
+}
+
+/// A Service a preview rule runs from the image its template pins, with no build.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct PinnedService {
+    pub name: ServiceName,
+    /// The [`preview_template`] of its spec with the image kept, a content digest.
+    pub template: PayloadDigest,
 }
 
 /// A person's standing approval of every push to one branch: built by one pinned builder,
@@ -407,6 +454,10 @@ pub struct AutoDeployRule {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub proposal: Option<ProposalRef>,
+    /// Present for a preview rule, which an older Server refuses as an unknown field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub preview: Option<PreviewTerms>,
 }
 
 impl Statement for AutoDeployRule {
@@ -442,15 +493,75 @@ impl AutoDeployRule {
         self.services.iter().find(|service| service.name == *name)
     }
 
+    /// The policy a build of `name` runs under, which its claim's digest binds: the one the
+    /// rule approves, with the Actions cache off under a preview rule. GitHub lets any
+    /// branch read the default branch's cache, so a preview's unreviewed code would read
+    /// what honest builds wrote, and write what they read. A builder told the rule is no
+    /// preview's digests the cache it would turn on, which the Machine refuses.
+    #[must_use]
+    pub fn build_policy(&self, name: &ServiceName) -> Option<BuildPolicy> {
+        let mut policy = self.service(name)?.policy.clone()?;
+        if self.preview.is_some() {
+            policy.cache = PolicyCache::Off;
+        }
+        Some(policy)
+    }
+
     /// Check a verified GitHub token's claims against this rule, in the order the body
     /// runs them. The audience is the caller's: it depends on the holder, recipient or
-    /// image in hand.
+    /// image in hand. A build of a commit a person approved runs on Cloud's dispatch, so the
+    /// rule's pushers don't bound it.
     ///
     /// # Errors
     /// Returns [`AuthorityRefusal::Mismatch`] naming the first claim that does not match.
-    pub fn verify_claims(&self, claims: &GithubClaims) -> Result<(), AuthorityRefusal> {
+    pub fn verify_claims(
+        &self,
+        claims: &GithubClaims,
+        authority: &CommitAuthority,
+    ) -> Result<(), AuthorityRefusal> {
         let github = self.github()?;
-        github.verify_claims(claims, &format!("refs/heads/{}", github.branch))
+        let Some(preview) = &self.preview else {
+            return github.verify_claims(claims, &format!("refs/heads/{}", github.branch));
+        };
+        first_mismatch([(
+            MismatchField::ClaimRef,
+            !self.head_branch(claims).is_empty(),
+        )])?;
+        github.verify_claims(claims, &claims.git_ref)?;
+        first_mismatch([(
+            MismatchField::ClaimActor,
+            matches!(authority, CommitAuthority::Approved(_))
+                || preview.pushers.is_empty()
+                || preview.pushers.contains(&claims.actor_id),
+        )])
+    }
+
+    /// The branch whose head a build under this rule must be: the rule's own, or under a
+    /// preview rule the branch the token was minted on. Empty for a registry rule.
+    #[must_use]
+    pub fn head_branch<'a>(&'a self, claims: &'a GithubClaims) -> &'a str {
+        match (&self.preview, &self.source) {
+            (Some(_), _) => claims
+                .git_ref
+                .strip_prefix("refs/heads/")
+                .unwrap_or_default(),
+            (None, RuleSource::Github(github)) => &github.branch,
+            (None, RuleSource::Registry(_)) => "",
+        }
+    }
+
+    /// Whether a Container in `namespace` deploys under this rule: the rule's own
+    /// Namespace, or under a preview rule a preview Namespace carrying this rule's ID and
+    /// never the Parent's.
+    fn deploys_in(&self, namespace: &Namespace) -> bool {
+        match self.preview {
+            None => &self.namespace == namespace,
+            Some(_) => {
+                PreviewNamespace::of(namespace).is_some()
+                    && namespace.as_str().get(3..19) == self.rule.to_string().get(..16)
+                    && &self.namespace != namespace
+            }
+        }
     }
 
     /// The GitHub branch this rule builds.
@@ -472,6 +583,11 @@ impl AutoDeployRule {
     /// # Errors
     /// Returns [`AuthorityRefusal::Mismatch`] naming the policy, or the repository.
     pub fn well_formed(&self) -> Result<(), AuthorityRefusal> {
+        if self.preview.is_some() && self.source.github().is_none() {
+            return Err(AuthorityRefusal::Mismatch {
+                field: MismatchField::RuleSource,
+            });
+        }
         let fits = match &self.source {
             RuleSource::Github(_) => self.services.iter().all(|service| service.policy.is_some()),
             RuleSource::Registry(registry) => {
@@ -581,17 +697,17 @@ pub struct RuleIdentity<'a> {
 
 /// Open a rule for this Machine's Cluster `cluster`: signed by a Device it trusts,
 /// answered by a trusted passkey's own prompt, or a Source step of a bundle either signed.
-/// It names this Cluster before anything records a mark of it.
+/// It names this Cluster before anything records a mark of it. It takes the rule as
+/// [`Budget::charge`] answered it, so its checks are paid for before any runs.
 ///
 /// # Errors
 /// Returns the refusal of [`open_approval`], and [`AuthorityRefusal::Mismatch`] naming
 /// the Cluster for a rule of another.
 pub fn verify_signature(
-    rule: &Signed<AutoDeployRule>,
-    trusted: &TrustedKeys,
+    rule: Charged<'_, AutoDeployRule>,
     cluster: Option<SealingPublicKey>,
 ) -> Result<(AutoDeployRule, Approver), AuthorityRefusal> {
-    let (body, by, cluster) = open_approval(rule, trusted, cluster)?;
+    let (body, by, cluster) = open_approval(rule.signed(), rule.trusted(), cluster)?;
     first_mismatch([(MismatchField::Cluster, body.cluster == cluster)])?;
     body.well_formed()?;
     Ok((body, by))
@@ -599,11 +715,125 @@ pub fn verify_signature(
 
 /// Which authority a build claims for its commit. Written into every claim, so the
 /// pinned builder's audience keeps its bytes.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum CommitAuthority {
     /// The commit is the branch head the Machine reads from GitHub itself.
     Head,
+    /// A person approved the commit for one preview of a preview rule, such as a fork's,
+    /// which no branch of the repository need hold.
+    Approved(Signed<CommitApproval>),
+}
+
+/// One commit a person approves for one preview of a preview rule: what a pull request
+/// from a fork, or from a pusher the rule doesn't name, builds under. It admits only its
+/// own commit, so each new push waits for its own approval.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct CommitApproval {
+    pub cluster: SealingPublicKey,
+    pub rule: RuleId,
+    pub generation: u64,
+    pub repository_id: u64,
+    pub commit: CommitSha,
+    /// The preview's own Namespace, never the Parent's.
+    pub namespace: Namespace,
+    pub issued_at: Timestamp,
+    pub signer: SignerKey,
+}
+
+impl Statement for CommitApproval {
+    const PURPOSE: Purpose = Purpose::Commit;
+    const TAKES_ASSERTION: bool = true;
+}
+
+impl StepBody for CommitApproval {
+    fn kind(&self) -> StepKind {
+        StepKind::Source
+    }
+    fn place(&self) -> Option<ProposalRef> {
+        None
+    }
+    fn signer(&self) -> SignerKey {
+        self.signer
+    }
+    fn cluster(&self) -> SealingPublicKey {
+        self.cluster
+    }
+    fn namespace(&self) -> Option<&Namespace> {
+        Some(&self.namespace)
+    }
+    fn ask(&self) -> Ask<'_> {
+        Ask::Commit
+    }
+}
+
+/// A [`CommitAuthority`] whose approval, if it carries one, an admission's [`Budget`]
+/// already paid for. Only [`CommitAuthority::charge`] makes one.
+#[derive(Debug)]
+pub enum ChargedAuthority<'a> {
+    Head,
+    Approved(Charged<'a, CommitApproval>),
+}
+
+impl CommitAuthority {
+    /// Charge to `budget` every check the approval this authority carries can cost, before
+    /// anything of the admission is verified.
+    ///
+    /// # Errors
+    /// Returns [`AuthorityRefusal::Overspent`] for an approval costing more than is left.
+    pub fn charge<'a>(
+        &'a self,
+        budget: &mut Budget,
+        trusted: &'a TrustedKeys,
+    ) -> Result<ChargedAuthority<'a>, AuthorityRefusal> {
+        Ok(match self {
+            Self::Head => ChargedAuthority::Head,
+            Self::Approved(approval) => {
+                ChargedAuthority::Approved(budget.charge(approval, trusted)?)
+            }
+        })
+    }
+}
+
+impl AutoDeployRule {
+    /// Check `authority` for a build of `commit` under this rule, in `namespace` when the
+    /// caller knows it. The head needs nothing here: its caller reads it from GitHub. An
+    /// approval must be one a trusted person signed for this Cluster, this preview rule's
+    /// generation and repository, `commit`, and a preview Namespace of this rule.
+    ///
+    /// # Errors
+    /// Returns the refusal of [`open_approval`], and [`AuthorityRefusal::Mismatch`] naming
+    /// the first fact the approval doesn't match.
+    pub fn verify_authority(
+        &self,
+        authority: ChargedAuthority<'_>,
+        cluster: SealingPublicKey,
+        commit: CommitSha,
+        namespace: Option<&Namespace>,
+    ) -> Result<(), AuthorityRefusal> {
+        let ChargedAuthority::Approved(approval) = authority else {
+            return Ok(());
+        };
+        let (approval, _, cluster) =
+            open_approval(approval.signed(), approval.trusted(), Some(cluster))?;
+        first_mismatch([
+            (MismatchField::Cluster, approval.cluster == cluster),
+            (
+                MismatchField::CommitApproval,
+                self.preview.is_some()
+                    && approval.rule == self.rule
+                    && approval.generation == self.generation
+                    && self
+                        .source
+                        .github()
+                        .is_some_and(|github| github.repository_id == approval.repository_id)
+                    && approval.commit == commit
+                    && self.deploys_in(&approval.namespace)
+                    && namespace.is_none_or(|namespace| *namespace == approval.namespace),
+            ),
+        ])
+    }
 }
 
 /// Which token of a build this is: the one that asks for the build secrets, or the one
@@ -677,8 +907,8 @@ pub fn template(
 pub struct RuleProof {
     pub rule: Signed<AutoDeployRule>,
     pub evidence: RuleEvidence,
-    /// The build GitHub evidence names. `None` exactly for [`RuleEvidence::Registry`],
-    /// whose proof is the signed rule alone: the Machine pulls the image itself.
+    /// The build the evidence names; `None` exactly for [`RuleEvidence::Registry`],
+    /// whose proof is the signed rule alone, and for a [`RuleEvidence::Pinned`] Service.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub claim: Option<BuildClaim>,
@@ -729,6 +959,8 @@ pub enum RuleEvidence {
     /// passed. It stands for any commit, the head or not, while the rule's signer is
     /// trusted and its generation is the newest a Machine has seen.
     Verified(VerifiedBuild),
+    /// No build: the Service is one a preview rule pins, whose template names its image.
+    Pinned,
     /// A registry rule's: the Machine asks the registry itself for the digest the
     /// Container names, with the Service's sealed login, and runs what that pull placed.
     Registry,
@@ -744,17 +976,19 @@ impl RuleProof {
     pub fn build_claim(&self) -> Result<Option<&BuildClaim>, AuthorityRefusal> {
         match (&self.evidence, &self.claim) {
             (RuleEvidence::Online(_) | RuleEvidence::Verified(_), Some(claim)) => Ok(Some(claim)),
-            (RuleEvidence::Registry, None) => Ok(None),
+            (RuleEvidence::Registry | RuleEvidence::Pinned, None) => Ok(None),
             (RuleEvidence::Online(_) | RuleEvidence::Verified(_), None) => {
                 Err(AuthorityRefusal::Malformed {
                     purpose: Purpose::Rule,
                     problem: "its GitHub evidence names no build".to_owned(),
                 })
             }
-            (RuleEvidence::Registry, Some(_)) => Err(AuthorityRefusal::Malformed {
-                purpose: Purpose::Rule,
-                problem: "its registry evidence names a build".to_owned(),
-            }),
+            (RuleEvidence::Registry | RuleEvidence::Pinned, Some(_)) => {
+                Err(AuthorityRefusal::Malformed {
+                    purpose: Purpose::Rule,
+                    problem: "its registry or pinned evidence names a build".to_owned(),
+                })
+            }
         }
     }
 }
@@ -836,9 +1070,8 @@ impl AutoDeployRule {
             });
         }
         let policy = self
-            .service(facts.service)
-            .and_then(|service| service.policy.as_ref())
-            .map(PolicyDigest::of);
+            .build_policy(facts.service)
+            .map(|policy| PolicyDigest::of(&policy));
         self.admits_here(facts, &creation)?;
         first_mismatch([
             (MismatchField::Cluster, claim.cluster == facts.cluster),
@@ -894,6 +1127,7 @@ impl AutoDeployRule {
         let source = self
             .source
             .registry()
+            .filter(|_| self.preview.is_none())
             .ok_or(mismatch(MismatchField::RuleSource))?;
         self.admits_here(facts, &creation)?;
         let named = crate::registry_image(&creation.spec.container.image)
@@ -924,10 +1158,7 @@ impl AutoDeployRule {
                 MismatchField::Machine,
                 !placement_signed(&requested) || self.machines.contains(facts.machine),
             ),
-            (
-                MismatchField::Environment,
-                &self.namespace == facts.namespace,
-            ),
+            (MismatchField::Environment, self.deploys_in(facts.namespace)),
             (MismatchField::EndedRule, !self.ended),
             (
                 MismatchField::Service,
@@ -950,13 +1181,19 @@ impl AutoDeployRule {
         if !creation.spec.volume_graph().born_in(facts.namespace) {
             return Err(mismatch(MismatchField::VolumesEnvironment));
         }
-        let approved = self
+        let service = self
             .service(facts.service)
-            .map(|service| service.template)
             .ok_or_else(|| mismatch(MismatchField::Service))?;
-        let template = template(&creation.spec.to_requested(), facts.namespace)
-            .map_err(|_| mismatch(MismatchField::Payload))?;
-        if template != approved {
+        let requested = creation.spec.to_requested();
+        let approved = match &self.preview {
+            None => template(&requested, facts.namespace).is_ok_and(|t| t == service.template),
+            Some(preview) => {
+                self.verify_preview(preview, facts.namespace, creation)?;
+                preview_template(&requested, facts.namespace, false)
+                    .is_ok_and(|t| t == service.template || Some(t) == service.seeded)
+            }
+        };
+        if !approved {
             return Err(mismatch(MismatchField::Payload));
         }
         Ok(())
@@ -976,6 +1213,176 @@ impl RegistryPin {
     #[must_use]
     pub fn reference(&self) -> String {
         format!("{}@{}", self.source.name(), self.digest)
+    }
+}
+
+impl AutoDeployRule {
+    /// Check a new Container of a Service this preview rule pins, which needs no build:
+    /// the rule's Cluster, a preview Namespace of the rule, a live generation, no hook, an
+    /// image named by its content, and the spec the rule approves, image included.
+    ///
+    /// # Errors
+    /// Returns [`AuthorityRefusal::Mismatch`] naming the first fact that does not hold.
+    pub fn verify_pinned(
+        &self,
+        facts: &RuleFacts<'_>,
+        creation: Creation<'_>,
+    ) -> Result<(), AuthorityRefusal> {
+        let mismatch = |field| AuthorityRefusal::Mismatch { field };
+        let pinned = self.preview.as_ref().and_then(|preview| {
+            let pinned = preview
+                .pinned
+                .iter()
+                .find(|pinned| &pinned.name == facts.service)?;
+            Some((preview, pinned))
+        });
+        let Some((preview, pinned)) = pinned
+            .filter(|_| creation.service == facts.service && &creation.spec.name == facts.service)
+        else {
+            return Err(mismatch(MismatchField::Service));
+        };
+        let requested = creation.spec.to_requested();
+        first_mismatch([
+            (MismatchField::Cluster, self.cluster == facts.cluster),
+            (
+                MismatchField::Machine,
+                !placement_signed(&requested) || self.machines.contains(facts.machine),
+            ),
+            (MismatchField::Environment, self.deploys_in(facts.namespace)),
+            (MismatchField::EndedRule, !self.ended),
+            (
+                MismatchField::Hook,
+                creation.kind != ContainerKind::PreDeployHook,
+            ),
+            (
+                MismatchField::Image,
+                super::deploy::content_addressed(&requested.container.image),
+            ),
+            (
+                MismatchField::VolumesEnvironment,
+                creation.spec.volume_graph().born_in(facts.namespace),
+            ),
+        ])?;
+        self.verify_preview(preview, facts.namespace, &creation)?;
+        if preview_template(&requested, facts.namespace, true).ok() != Some(pinned.template) {
+            return Err(mismatch(MismatchField::Payload));
+        }
+        Ok(())
+    }
+
+    /// What a preview's spec holds beyond its template: Volumes born for this preview
+    /// alone, only the Parent's Sealed values, and Ingress hostnames that each name the
+    /// preview, so no two previews share one.
+    fn verify_preview(
+        &self,
+        preview: &PreviewTerms,
+        namespace: &Namespace,
+        creation: &Creation<'_>,
+    ) -> Result<(), AuthorityRefusal> {
+        let spec = creation.spec;
+        first_mismatch([
+            (
+                MismatchField::VolumesEnvironment,
+                spec.volume_graph()
+                    .volumes()
+                    .iter()
+                    .filter_map(|volume| volume.source.birth())
+                    .all(|birth| &birth.namespace == namespace && birth.is_preview()),
+            ),
+            (
+                MismatchField::SealedValues,
+                spec.container
+                    .sealed_identity
+                    .as_ref()
+                    .is_none_or(|identity| identity.environment == preview.parent),
+            ),
+            (
+                MismatchField::Hostname,
+                spec.ports.iter().all(|port| match port {
+                    PortPublication::Ingress { hostname, .. } => {
+                        hostname.as_str().contains(namespace.as_str())
+                    }
+                    PortPublication::Host { .. } => true,
+                }),
+            ),
+        ])
+    }
+}
+
+/// What a preview rule writes in place of a preview's Namespace.
+pub const PREVIEW_NAMESPACE: &str = "{preview-namespace}";
+
+/// The digest a preview rule approves for `spec`, a preview's spec in its preview
+/// Namespace `namespace`: [`template`]'s, with the image kept only for a Service the rule
+/// pins, each Volume's birth left out, and `namespace` replaced by [`PREVIEW_NAMESPACE`]
+/// wherever it appears. So one approval covers every preview, each with its own Volumes.
+///
+/// A spec that already holds [`PREVIEW_NAMESPACE`] has no template: it would digest as one
+/// holding `namespace` there, and a key it renames could overwrite one it holds. Refusing
+/// it keeps the rewrite one-to-one, since the placeholder can't overlap itself.
+///
+/// # Errors
+/// Returns a [`CanonicalError`] when the spec has no [`PayloadDigest`] in `namespace`, or
+/// holds [`PREVIEW_NAMESPACE`].
+pub fn preview_template(
+    spec: &RequestedServiceSpec,
+    namespace: &Namespace,
+    keep_image: bool,
+) -> Result<PayloadDigest, CanonicalError> {
+    let mut spec = spec.clone();
+    if !keep_image {
+        spec.container.image = String::new();
+    }
+    spec.mount_graph = spec
+        .mount_graph
+        .scope_to_namespace(namespace)
+        .map_err(|error| CanonicalError::Parse(error.to_string()))?;
+    let mut holds_placeholder = false;
+    let digest = PayloadDigest::of_scoped(&spec, |value| {
+        holds_placeholder = value.to_string().contains(PREVIEW_NAMESPACE);
+        if let Some(Value::Array(volumes)) = value.get_mut("volumes") {
+            for volume in volumes {
+                if let Some(Value::Object(source)) = volume.get_mut("source") {
+                    source.remove("birth");
+                }
+            }
+        }
+        placeholder(value, namespace.as_str());
+    })?;
+    if holds_placeholder {
+        return Err(CanonicalError::Parse(format!(
+            "a preview's spec can't hold {PREVIEW_NAMESPACE}, which stands for its Namespace"
+        )));
+    }
+    Ok(digest)
+}
+
+fn placeholder(value: &mut Value, namespace: &str) {
+    match value {
+        Value::String(text) => {
+            if text.contains(namespace) {
+                *text = text.replace(namespace, PREVIEW_NAMESPACE);
+            }
+        }
+        Value::Array(items) => items
+            .iter_mut()
+            .for_each(|item| placeholder(item, namespace)),
+        Value::Object(fields) => {
+            let renamed: Vec<String> = fields
+                .keys()
+                .filter(|key| key.contains(namespace))
+                .cloned()
+                .collect();
+            for key in renamed {
+                if let Some(field) = fields.remove(&key) {
+                    fields.insert(key.replace(namespace, PREVIEW_NAMESPACE), field);
+                }
+            }
+            fields
+                .values_mut()
+                .for_each(|field| placeholder(field, namespace));
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
     }
 }
 
@@ -1030,6 +1437,12 @@ fn decimal<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> 
     }
     text.parse()
         .map_err(|_| serde::de::Error::custom("a GitHub ID is out of range"))
+}
+
+fn pinned_by_name<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<PinnedService>, D::Error> {
+    canonical::sorted_by(deserializer, |service: &PinnedService| &service.name)
 }
 
 fn services_by_name<'de, D: Deserializer<'de>>(

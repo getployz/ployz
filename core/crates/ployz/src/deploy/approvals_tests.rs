@@ -218,6 +218,7 @@ async fn a_service_the_rule_doesnt_cover_carries_no_rule_proof() {
         services: Vec::new(),
         issued_at: Timestamp::from_millis(1_800_000_000_000).unwrap(),
         ended: false,
+        preview: None,
         signer: SignerKey::Device(signer.public().into()),
     };
     let mut proofs = RuleProofs::default();

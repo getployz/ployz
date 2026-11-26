@@ -213,13 +213,13 @@ fn built_under_rule(
         ..PreparationInput::default()
     })?;
     let policy = rule::policy(&relayed, &service, &prepared)?.clone();
-    let authority = ployz_core::authority::CommitAuthority::Head;
+    let authority = checked_in.authority();
     let keys = rule::Keys::generate();
     let grant_claim = rule::grant_claim(
         checked_in,
         &relayed,
         &policy,
-        (commit, authority),
+        (commit, authority.clone()),
         keys.holder(),
         keys.recipient.recipient(),
     )?;
@@ -236,7 +236,7 @@ fn built_under_rule(
                     holder: keys.holder(),
                     recipient: keys.recipient.recipient(),
                     commit,
-                    authority,
+                    authority: authority.clone(),
                 },
             )
             .await?;
@@ -258,7 +258,7 @@ fn built_under_rule(
     let mut captured = prepared.capture(Some(opened))?.build;
     captured.pin_local(
         policy.platforms.iter().cloned().collect(),
-        rule::cache_scope(&policy, &checked_in.attest)?,
+        rule::cache_scope(&policy, &authority, &checked_in.attest)?,
     );
     let pushed = runtime.block_on(run(captured, &grant, Arc::clone(events), cancellation))?;
     let image = ployz_core::authority::BuiltImageDigest::parse(&pushed.digest)

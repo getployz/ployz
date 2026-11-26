@@ -106,6 +106,10 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
         "gated: the dashboard signs a rule with a passkey only when every enforcing Machine advertises it. An older daemon refuses the rule's envelope for its unknown `assertions` field, and its `\"passkey\"` signer, so a rule deploy there fails closed",
     ),
     (
+        "ployz.container.preview-rule.v1",
+        "gated: nothing signs a preview rule yet; Cloud must deploy one only to a Server advertising it. An older daemon refuses the rule for its unknown `preview` field, so a preview deploy there fails closed",
+    ),
+    (
         "ployz.authority.scoped-keys.v1",
         "fails closed: an older daemon never stores a grant, so it refuses a CI or agent key's signature as an unknown key, refuses a Key step that trusts one for its unknown kind, and an older joiner refuses a join approval carrying grants for its unknown field. A client that signs with a CI or agent key checks for it",
     ),
@@ -280,6 +284,14 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
     (
         "ployz.machine.join.approve.v1",
         "unreached: ApproveJoin goes only to the Machine that listed the pending join, which has it",
+    ),
+    (
+        "ployz.preview.list.v1",
+        "gated: Cloud lists a Server's previews only to close those it no longer holds open, on a Server advertising Close. An older daemon refuses the route, naming the capability",
+    ),
+    (
+        "ployz.preview.close.v1",
+        "gated: nothing closes a preview yet; Cloud must close one only on a Server advertising it. An older daemon refuses the route, naming the capability",
     ),
     (
         "ployz.volume.trash.v1",

@@ -68,6 +68,41 @@ pub async fn observe_volumes(
     to_json(ployz::sdk::observe_volumes(connections, sought, expect).await)
 }
 
+/// The Servers of `connections`' Cluster that can hold a preview: each takes Services,
+/// isn't leaving, and advertises a preview's home and its Close. Cloud tells the Store
+/// these as `ConfigTrusted.preview_homes`; a preview whose home isn't among them opens
+/// again on another. `expect` is as `observeVolumes`'.
+///
+/// # Errors
+/// Returns `invalid_argument` for malformed input, or the connection's error when no
+/// Server can be reached.
+#[napi(ts_return_type = "Promise<PreviewHomes & { foreign: string[] }>")]
+pub async fn observe_preview_homes(
+    #[napi(ts_arg_type = "Connections")] connections: serde_json::Value,
+    #[napi(ts_arg_type = "ExpectedCluster | null")] expect: Option<serde_json::Value>,
+) -> Result<serde_json::Value> {
+    let connections = parse_connections(connections)?;
+    let expect = parse_expect(expect)?;
+    to_json(ployz::sdk::observe_preview_homes(connections, expect).await)
+}
+
+/// The keys the first Server of `connections` reaches trusts, as its own record lists
+/// them. Cloud tells the Store these as `ConfigTrusted.signers`, which a preview rule's
+/// signature must check against. `expect` is as `observeVolumes`'.
+///
+/// # Errors
+/// Returns `invalid_argument` for malformed input, or the connection's error when no
+/// Server can be reached.
+#[napi(ts_return_type = "Promise<Signers & { foreign: string[] }>")]
+pub async fn observe_signers(
+    #[napi(ts_arg_type = "Connections")] connections: serde_json::Value,
+    #[napi(ts_arg_type = "ExpectedCluster | null")] expect: Option<serde_json::Value>,
+) -> Result<serde_json::Value> {
+    let connections = parse_connections(connections)?;
+    let expect = parse_expect(expect)?;
+    to_json(ployz::sdk::observe_signers(connections, expect).await)
+}
+
 /// Every copy of every Volume on `connections`' Servers, by role
 /// (`CopyObservation`): what Cloud's sweep finds orphaned mirror slots with. Servers
 /// that don't answer are named, never assumed empty. `expect` is as `observeVolumes`';
@@ -392,6 +427,31 @@ impl ConfigStore {
                 expect,
             )
             .await,
+        )
+    }
+
+    /// Close, on each Server of the Cluster `connections` (`Connection[]`) reach, every
+    /// preview it holds open that the Store doesn't report open for the Organization:
+    /// one whose Close never reached its Server, or that a Server holds from before.
+    /// Resolves to what it closed, what failed and which Servers didn't answer
+    /// (`PreviewsSwept`). Only Cloud's worker calls this. `expect` is as
+    /// `runDeployment`'s, and `foreign` as `observeCopies`'.
+    ///
+    /// # Errors
+    /// Returns the connection's error when no Server can be reached, or a storage error.
+    #[napi(ts_return_type = "Promise<PreviewsSwept & { foreign: string[] }>")]
+    pub async fn close_unheld_previews(
+        &self,
+        organization: String,
+        #[napi(ts_arg_type = "Connections")] connections: serde_json::Value,
+        #[napi(ts_arg_type = "ExpectedCluster | null")] expect: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value> {
+        let who = actor(organization, None)?;
+        let connections = parse_connections(connections)?;
+        let expect = parse_expect(expect)?;
+        to_json(
+            ployz::sdk::close_unheld_previews(Arc::clone(&self.store), who, connections, expect)
+                .await,
         )
     }
 

@@ -567,7 +567,7 @@ commands! {
     SetPrPlan(crate::SetPrPlan) -> PrPlans(crate::PrPlansView)
         needs ProjectEdit
         agent [environment_pr]
-        => crate::pull_request::set_plan(tx, who, c);
+        => crate::pull_request::set_plan(tx, who, c, trusted);
     /// Keep the automatic deploy rule a Device signed for an Environment.
     ApproveRule(crate::ApproveRule) -> Rule(crate::RuleView) as *
         needs ChangesDeploy

@@ -12,8 +12,9 @@ use std::future::Future;
 use ployz_core::{
     BuildGrantId, GithubToken, RuleGrant, SealedRecord,
     authority::{
-        AuthorityRefusal, AutoDeployRule, BuildClaim, BuildStage, CommitAuthority, CommitSha,
-        GithubClaims, PolicyDigest, RecipientKey, SealedDigest, Timestamp, rule::verify_signature,
+        AuthorityRefusal, AutoDeployRule, Budget, BuildClaim, BuildStage, ChargedAuthority,
+        CommitAuthority, CommitSha, GithubClaims, PolicyDigest, RecipientKey, SealedDigest,
+        Timestamp, rule::verify_signature,
     },
 };
 
@@ -26,12 +27,13 @@ use crate::github::{
 /// What a rule grant learns from GitHub: a token's verified claims, a branch head, and
 /// how a branch stands to a commit.
 pub(crate) trait Github: Sync {
-    /// The claims of `token` once its signature, issuer and every claim `rule` names
-    /// check out, and its lifetime at `now`.
+    /// The claims of `token` once its signature, issuer and every claim `rule` names for
+    /// a build under `authority` check out, and its lifetime at `now`.
     fn claims(
         &self,
         rule: &AutoDeployRule,
         token: &str,
+        authority: &CommitAuthority,
         now: Timestamp,
     ) -> impl Future<Output = Result<GithubClaims, ProofRefusal>> + Send;
 
@@ -76,9 +78,10 @@ impl Github for GithubOnline {
         &self,
         rule: &AutoDeployRule,
         token: &str,
+        authority: &CommitAuthority,
         now: Timestamp,
     ) -> Result<GithubClaims, ProofRefusal> {
-        self.keys.check(rule, token, now).await
+        self.keys.check(rule, token, authority, now).await
     }
 
     async fn head(
@@ -98,7 +101,7 @@ fn reader_token(reader: Option<&GithubToken>) -> Option<crate::github::head::Git
 }
 
 /// GitHub as a test fixes it: tokens verify against `keys` at `now` and every branch points
-/// at `head`.
+/// at `head`. Like GitHub, it names no branch without a name.
 #[cfg(test)]
 pub(crate) struct FixedGithub {
     pub(crate) keys: crate::github::oidc::KeySet,
@@ -120,20 +123,27 @@ impl Github for FixedGithub {
         &self,
         rule: &AutoDeployRule,
         token: &str,
+        authority: &CommitAuthority,
         now: Timestamp,
     ) -> Result<GithubClaims, ProofRefusal> {
         let claims =
             crate::github::oidc::verify(token, &self.keys, now).map_err(ProofRefusal::Token)?;
-        rule.verify_claims(&claims).map_err(ProofRefusal::Claim)?;
+        rule.verify_claims(&claims, authority)
+            .map_err(ProofRefusal::Claim)?;
         Ok(claims)
     }
 
     async fn head(
         &self,
         _repository_id: u64,
-        _branch: &str,
+        branch: &str,
         _reader: Option<&GithubToken>,
     ) -> Result<CommitSha, HeadError> {
+        if branch.is_empty() {
+            return Err(HeadError::Branch {
+                branch: branch.to_owned(),
+            });
+        }
         Ok(self.head)
     }
 }
@@ -154,7 +164,8 @@ pub(crate) struct AdmittedRule {
 impl LocalMachine {
     /// Admit a grant for `holder` under `grant`'s rule, with `sealed` the record Cloud
     /// relays, at `now`. Every check runs before anything opens, in the order the body
-    /// runs them, and the token is spent last. Only the branch head builds.
+    /// runs them, and the token is spent last. Only the branch head, or a commit a person
+    /// approved for a preview, builds.
     ///
     /// # Errors
     /// Returns [`Error::RuleGrantRefused`] naming what does not match,
@@ -175,8 +186,20 @@ impl LocalMachine {
             .held_sealing(record.phase())
             .and_then(ployz_core::Sealing::held_key)
             .ok_or(Error::RuleGrantRefused(AuthorityRefusal::NoClusterIdentity))?;
-        let (rule, _) = verify_signature(&grant.rule, &record.trusted_keys(), Some(cluster))
+        let trusted = record.trusted_keys();
+        // One budget across the rule, the approval and GitHub's token, each charged before
+        // any is checked, as a creation spends.
+        let mut budget = Budget::default();
+        let charged = budget
+            .charge(&grant.rule, &trusted)
             .map_err(Error::RuleGrantRefused)?;
+        let authority = grant
+            .authority
+            .charge(&mut budget, &trusted)
+            .map_err(Error::RuleGrantRefused)?;
+        budget.reserve_one().map_err(Error::RuleGrantRefused)?;
+        let (rule, _) =
+            verify_signature(charged, Some(cluster)).map_err(Error::RuleGrantRefused)?;
         let refused = |field: MismatchField| {
             tracing::warn!(rule = %rule.rule, field = field.text(), "refused a rule build's grant");
             Error::RuleGrantRefused(AuthorityRefusal::Mismatch { field })
@@ -204,12 +227,11 @@ impl LocalMachine {
             .source
             .github()
             .ok_or_else(|| refused(MismatchField::RuleSource))?;
-        let policy = service
-            .policy
-            .as_ref()
+        let policy = rule
+            .build_policy(&grant.service)
             .ok_or_else(|| refused(MismatchField::Policy))?;
         let claims = github
-            .claims(&rule, grant.proof.as_str(), now)
+            .claims(&rule, grant.proof.as_str(), &grant.authority, now)
             .await
             .map_err(Error::RuleProofRefused)?;
         let expected = BuildClaim {
@@ -217,9 +239,9 @@ impl LocalMachine {
             rule: rule.rule,
             generation: rule.generation,
             service: grant.service.clone(),
-            policy: PolicyDigest::of(policy).map_err(|_| refused(MismatchField::Policy))?,
+            policy: PolicyDigest::of(&policy).map_err(|_| refused(MismatchField::Policy))?,
             commit: grant.commit,
-            authority: grant.authority,
+            authority: grant.authority.clone(),
             stage: BuildStage::Grant {
                 holder: *holder,
                 recipient: grant.recipient,
@@ -231,16 +253,27 @@ impl LocalMachine {
         if claims.aud != audience {
             return Err(refused(MismatchField::Audience));
         }
-        let CommitAuthority::Head = grant.authority;
-        if grant.commit != claims.sha {
-            return Err(refused(MismatchField::Commit));
-        }
-        let head = github
-            .head(source.repository_id, &source.branch, grant.reader.as_ref())
-            .await
-            .map_err(Error::RuleHeadUnread)?;
-        if head != grant.commit {
-            return Err(refused(MismatchField::Commit));
+        match authority {
+            // The builder checked out the approved commit; Cloud's dispatch ran on another.
+            approved @ ChargedAuthority::Approved(_) => rule
+                .verify_authority(approved, cluster, grant.commit, None)
+                .map_err(Error::RuleGrantRefused)?,
+            ChargedAuthority::Head => {
+                if grant.commit != claims.sha {
+                    return Err(refused(MismatchField::Commit));
+                }
+                let head = github
+                    .head(
+                        source.repository_id,
+                        rule.head_branch(&claims),
+                        grant.reader.as_ref(),
+                    )
+                    .await
+                    .map_err(Error::RuleHeadUnread)?;
+                if head != grant.commit {
+                    return Err(refused(MismatchField::Commit));
+                }
+            }
         }
         let digest = sealed
             .map(SealedDigest::of)

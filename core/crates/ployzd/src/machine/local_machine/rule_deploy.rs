@@ -7,10 +7,12 @@
 //! MAC a Machine of this Cluster issued once that online check passed. The Container must
 //! also run the image the claim names, built with secrets sealed from this Machine's own
 //! attest key, with every other setting the rule approves. Nothing here trusts Cloud's
-//! word for a fact.
+//! word for a fact. A Service a preview rule pins has no build: its template names its
+//! image, so it skips the evidence.
 //!
 //!   signature and Cluster ─▶ mark ─▶ floor ─▶ evidence (token and head, or verified
 //!     build) ─▶ verify_creation ─▶ mark again and issue (online) ─▶ hook once
+//!                         └──▶ pinned: verify_pinned
 //!
 //! A registry rule builds nothing. Its creation names an image of the approved repository
 //! by digest, and this Machine pulls that digest from the registry itself, with the
@@ -28,9 +30,9 @@ use ployz_core::{
     ContainerKind, ContainerWant, ImageDigest, QualifiedService, RunTarget, SealedLogin, Sealing,
     ServiceName,
     authority::{
-        AuthorityRefusal, AutoDeployRule, Budget, BuildClaim, MismatchField, RegistryPin,
-        RuleEvidence, RuleFacts, RuleProof, RuleSource, Signed, Timestamp, VerifiedBuild,
-        deploy::Creation, rule::verify_signature,
+        AuthorityRefusal, AutoDeployRule, Budget, BuildClaim, ChargedAuthority, CommitAuthority,
+        MismatchField, RegistryPin, RuleEvidence, RuleFacts, RuleProof, RuleSource, Signed,
+        Timestamp, VerifiedBuild, deploy::Creation, rule::verify_signature,
     },
 };
 
@@ -177,6 +179,8 @@ pub(crate) struct RuleAdmitted {
 #[derive(Clone, Debug)]
 pub(crate) struct HookPlace {
     rule: ployz_core::authority::RuleId,
+    /// The preview a preview rule's hook runs in, each of which runs a push's hook once.
+    preview: Option<ployz_core::Namespace>,
     push: HookPush,
     slot: ployz_core::CreationKey,
 }
@@ -185,7 +189,7 @@ pub(crate) struct HookPlace {
 /// under one generation.
 #[derive(Clone, Debug)]
 enum HookPush {
-    Build(BuildClaim),
+    Build(Box<BuildClaim>),
     Image {
         service: ServiceName,
         generation: u64,
@@ -202,9 +206,12 @@ impl HookPlace {
     pub(crate) fn take(&self, approvals: &super::ConsumptionLog) -> Result<(), Error> {
         let refused = |refusal| Error::RuleDeployRefused(RuleDeployRefusal::Rule(refusal));
         match &self.push {
-            HookPush::Build(claim) => {
-                approvals.consume_rule_hook(self.rule, claim, &self.slot, refused)
-            }
+            HookPush::Build(claim) => approvals.consume_rule_hook(
+                (self.rule, self.preview.as_ref()),
+                claim,
+                &self.slot,
+                refused,
+            ),
             HookPush::Image {
                 service,
                 generation,
@@ -249,14 +256,22 @@ impl LocalMachine {
         let refused = |refusal| Error::RuleDeployRefused(RuleDeployRefusal::Rule(refusal));
         let record = self.record();
         let trusted = record.trusted_keys();
-        budget.reserve(&proof.rule, &trusted).map_err(refused)?;
+        // Every check the proof can cost is charged before any runs: the rule, the approval
+        // its claim carries, and GitHub's token signature.
+        let charged = budget.charge(&proof.rule, &trusted).map_err(refused)?;
+        let authority = match &proof.claim {
+            Some(claim) => claim.authority.charge(budget, &trusted).map_err(refused)?,
+            None => ChargedAuthority::Head,
+        };
+        if let RuleEvidence::Online(_) = proof.evidence {
+            budget.reserve_one().map_err(refused)?;
+        }
         let key = self.held_sealing_key(record.phase());
         let (cluster, key) = match (self.held_sealing(record.phase()), key) {
             (Some(Sealing::Held { public_key }), Some(key)) => (public_key, key),
             _ => return Err(refused(AuthorityRefusal::NoClusterIdentity)),
         };
-        let (rule, signer) =
-            verify_signature(&proof.rule, &trusted, Some(cluster)).map_err(refused)?;
+        let (rule, signer) = verify_signature(charged, Some(cluster)).map_err(refused)?;
         let held = |field: MismatchField| {
             tracing::warn!(rule = %rule.rule, field = field.text(), "refused a deploy under a rule");
             refused(AuthorityRefusal::Mismatch { field })
@@ -277,6 +292,13 @@ impl LocalMachine {
         let service = QualifiedService::new(new.slot.namespace.clone(), new.slot.service.clone());
         self.rule_floor(cluster, &service, &rule, now)
             .map_err(|refusal| logged(&rule, &new.slot.service, refusal))?;
+        let by = AdmittedBy::Rule {
+            service,
+            signer: signer.into(),
+            rule: rule.rule,
+            generation: rule.generation,
+            issued_at: rule.issued_at,
+        };
         let facts = RuleFacts {
             cluster,
             attest,
@@ -290,6 +312,26 @@ impl LocalMachine {
             kind: new.slot.kind,
             spec: &new.resolved_spec,
         };
+        if matches!(proof.evidence, RuleEvidence::Pinned) {
+            if proof.claim.is_some() {
+                return Err(held(MismatchField::Stage));
+            }
+            rule.verify_pinned(&facts, creation)
+                .map_err(|refusal| logged(&rule, &new.slot.service, refusal))?;
+            tracing::info!(
+                kind = %new.slot.kind,
+                "deploy of {} admitted under rule {} gen {} with its pinned image",
+                new.slot.service,
+                rule.rule,
+                rule.generation,
+            );
+            return Ok(RuleAdmitted {
+                by,
+                verified: None,
+                hook: None,
+                pin: None,
+            });
+        }
         let claim = match (proof.build_claim().map_err(refused)?, &rule.source) {
             (Some(claim), RuleSource::Github(_)) => claim,
             (None, RuleSource::Registry(_)) => {
@@ -316,6 +358,7 @@ impl LocalMachine {
                 }
                 let hook = (new.slot.kind == ContainerKind::PreDeployHook).then(|| HookPlace {
                     rule: rule.rule,
+                    preview: None,
                     push: HookPush::Image {
                         service: new.slot.service.clone(),
                         generation: rule.generation,
@@ -333,13 +376,7 @@ impl LocalMachine {
                     pin.reference(),
                 );
                 return Ok(RuleAdmitted {
-                    by: AdmittedBy::Rule {
-                        service,
-                        signer: signer.into(),
-                        rule: rule.rule,
-                        generation: rule.generation,
-                        issued_at: rule.issued_at,
-                    },
+                    by,
                     verified: None,
                     hook,
                     pin: Some(pulled),
@@ -352,10 +389,8 @@ impl LocalMachine {
         let github_source = rule.github().map_err(refused)?;
         let head = match &proof.evidence {
             RuleEvidence::Online(token) => {
-                // GitHub's token signature is one more check on the same budget.
-                budget.reserve_one().map_err(refused)?;
                 let claims = github
-                    .claims(&rule, token.as_str(), now)
+                    .claims(&rule, token.as_str(), &claim.authority, now)
                     .await
                     .map_err(|refusal| {
                         tracing::warn!(rule = %rule.rule, %refusal, "refused a deploy under a rule");
@@ -364,23 +399,33 @@ impl LocalMachine {
                 if claim.audience().ok().as_deref() != Some(claims.aud.as_str()) {
                     return Err(held(MismatchField::Audience));
                 }
-                // GitHub's `sha` is the commit the push built.
-                if claims.sha != claim.commit {
-                    return Err(held(MismatchField::Commit));
+                match claim.authority {
+                    // The approval names the commit: Cloud's dispatch ran on another.
+                    CommitAuthority::Approved(_) => None,
+                    CommitAuthority::Head => {
+                        // GitHub's `sha` is the commit the push built.
+                        if claims.sha != claim.commit {
+                            return Err(held(MismatchField::Commit));
+                        }
+                        let head = github
+                            .head(
+                                github_source.repository_id,
+                                rule.head_branch(&claims),
+                                proof.reader.as_ref(),
+                            )
+                            .await
+                            .map_err(|error| {
+                                Error::RuleDeployRefused(RuleDeployRefusal::Head(error))
+                            })?;
+                        Some(head)
+                    }
                 }
-                let head = github
-                    .head(
-                        github_source.repository_id,
-                        &github_source.branch,
-                        proof.reader.as_ref(),
-                    )
-                    .await
-                    .map_err(|error| Error::RuleDeployRefused(RuleDeployRefusal::Head(error)))?;
-                Some(head)
             }
-            RuleEvidence::Verified(_) => None,
+            RuleEvidence::Verified(_) | RuleEvidence::Pinned => None,
             RuleEvidence::Registry => return Err(held(MismatchField::RuleSource)),
         };
+        rule.verify_authority(authority, cluster, claim.commit, Some(&new.slot.namespace))
+            .map_err(|refusal| logged(&rule, &new.slot.service, refusal))?;
         let facts = RuleFacts { head, ..facts };
         rule.verify_creation(claim, &facts, creation)
             .map_err(|refusal| logged(&rule, &new.slot.service, refusal))?;
@@ -391,6 +436,7 @@ impl LocalMachine {
                 }
                 None
             }
+            RuleEvidence::Pinned => None,
             RuleEvidence::Online(_) => {
                 // Checked again: a newer generation may have landed while GitHub answered.
                 self.approvals.mark_rule(&rule, admit, superseded)?;
@@ -406,7 +452,8 @@ impl LocalMachine {
         };
         let hook = (new.slot.kind == ContainerKind::PreDeployHook).then(|| HookPlace {
             rule: rule.rule,
-            push: HookPush::Build(claim.clone()),
+            preview: rule.preview.as_ref().map(|_| new.slot.namespace.clone()),
+            push: HookPush::Build(Box::new(claim.clone())),
             slot: new.slot.creation_key.clone(),
         });
         tracing::info!(
@@ -420,13 +467,7 @@ impl LocalMachine {
             claim.commit.short(),
         );
         Ok(RuleAdmitted {
-            by: AdmittedBy::Rule {
-                service,
-                signer: signer.into(),
-                rule: rule.rule,
-                generation: rule.generation,
-                issued_at: rule.issued_at,
-            },
+            by,
             verified,
             hook,
             pin: None,

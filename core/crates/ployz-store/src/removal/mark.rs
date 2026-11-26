@@ -44,6 +44,8 @@ pub(crate) enum Closed {
     Idle,
     /// The Branch synced into its Parent and is not kept.
     Synced,
+    /// A preview whose Server left: its pull request opens a new one on another.
+    Moved,
 }
 
 /// What Cloud saw when it last admitted this member: a re-admission needs

@@ -26,6 +26,8 @@ pub enum Purpose {
     /// Standing authority over every future push, such as an automatic deploy rule. A
     /// Device signs one, or a passkey answers its own prompt for it.
     Rule,
+    /// One commit a person approves for one preview.
+    Commit,
 }
 
 impl Purpose {
@@ -35,6 +37,7 @@ impl Purpose {
             Self::Workflow => "workflow",
             Self::Join => "join",
             Self::Rule => "rule",
+            Self::Commit => "commit",
         }
     }
 }

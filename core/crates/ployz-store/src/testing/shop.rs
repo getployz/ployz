@@ -240,9 +240,11 @@ pub fn signed_registry_rule_on(
             template: template(worker, &view.namespace).unwrap(),
             policy: None,
             secrets: None,
+            seeded: None,
         }],
         issued_at: Timestamp::from_millis(1_800_000_000_000).unwrap(),
         ended: false,
+        preview: None,
         signer: SignerKey::Device(ployz_core::DeviceKey::from_bytes(
             *signer.public().as_bytes(),
         )),

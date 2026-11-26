@@ -1409,6 +1409,32 @@ impl Lifecycle {
         .await
     }
 
+    /// Force-remove every managed Container in `namespace`, keeping their Volumes. The
+    /// preview fence keeps their addresses until the next preview start, which writes every
+    /// set from Docker before it runs anything.
+    ///
+    /// # Errors
+    /// Returns the Docker error of a list or removal that fails.
+    pub(crate) async fn remove_namespace(&self, namespace: &Namespace) -> Result<(), Error> {
+        let mut config_operation = self.specs.config_operation().await;
+        let managed = self
+            .docker
+            .labelled(vec![
+                labels::MANAGED.to_owned(),
+                format!("{}={namespace}", labels::NAMESPACE),
+            ])
+            .await?;
+        for (container_id, _) in managed {
+            let how = How::Asked {
+                volumes: VolumeDisposal::Keep,
+                force: true,
+            };
+            self.retire(&mut config_operation, &container_id, how)
+                .await?;
+        }
+        Ok(())
+    }
+
     pub async fn remove_all_managed(&self) -> Result<(), Error> {
         self.departure.begin();
         let mut config_operation = self.specs.config_operation().await;

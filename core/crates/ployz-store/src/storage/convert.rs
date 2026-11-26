@@ -61,6 +61,11 @@ fn convert(tx: &mut dyn Tx) -> Result<Converted, RpcError> {
         }
         let commit = row.text(6).map_err(|_| corrupt())?;
         let target = row.text(5).map_err(|_| corrupt())?;
+        super::ranked::unordered(super::ranked::Lock::pull_request_row(
+            row.text(1).map_err(|_| corrupt())?,
+            row.int(3).map_err(|_| corrupt())?,
+            row.int(4).map_err(|_| corrupt())?,
+        ));
         tx.execute(
             "UPDATE config_pull_request SET merged = ?1 \
              WHERE organization_id = ?2 AND repository_id = ?3 AND number = ?4 \
@@ -111,6 +116,11 @@ fn facts(tx: &mut dyn Tx) -> Result<(), RpcError> {
             (None | Some(Value::Null), _) => None,
             _ => return Err(corrupt()),
         };
+        super::ranked::unordered(super::ranked::Lock::pull_request_row(
+            organization,
+            repository,
+            number,
+        ));
         tx.execute(
             "UPDATE config_pull_request SET facts = ?1, merged = COALESCE(merged, ?2) \
              WHERE organization_id = ?3 AND repository_id = ?4 AND number = ?5",

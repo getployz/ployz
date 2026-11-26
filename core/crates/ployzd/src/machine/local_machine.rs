@@ -90,6 +90,7 @@ mod consumption;
 mod container;
 mod forget;
 mod ingress_doors;
+mod preview_close;
 mod private_access;
 mod register;
 mod reserved;
