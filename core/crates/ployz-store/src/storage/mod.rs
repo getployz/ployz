@@ -356,9 +356,14 @@ const MIGRATIONS: &[(&str, Step)] = &[
         }),
     ),
     (
+        // The Free receipt of each image a free Build loaded, which a copy of it carries.
+        "0056_free_receipt",
+        Step::Sql(include_str!("migrations/0056_free_receipt.sql")),
+    ),
+    (
         // Drop the 0.4 preview rule's table: a PR plan keeps its preview rule.
-        "0056_preview_rule_gone",
-        Step::Sql(include_str!("migrations/0056_preview_rule_gone.sql")),
+        "0057_preview_rule_gone",
+        Step::Sql(include_str!("migrations/0057_preview_rule_gone.sql")),
     ),
 ];
 

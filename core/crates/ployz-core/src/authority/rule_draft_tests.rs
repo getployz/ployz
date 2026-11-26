@@ -10,6 +10,21 @@ use crate::authority::keys::OwnPrompt;
 use crate::authority::keys::Signer;
 use crate::authority::rule::{BUILDER_SHA, CommitSha};
 
+/// A GitHub rule's summary: its repository, branch, builder, and whether that is Ployz's
+/// own release.
+fn github(summary: &RuleSummary) -> (&str, &str, &str, bool) {
+    match &summary.source {
+        SourceSummary::Github {
+            repository,
+            branch,
+            builder,
+            pinned,
+            ..
+        } => (repository, branch, builder, *pinned),
+        SourceSummary::Registry { .. } => panic!("a GitHub rule's summary"),
+    }
+}
+
 fn settings_of(spec: &RequestedServiceSpec) -> Vec<Shown> {
     settings(
         spec,
@@ -143,9 +158,9 @@ fn a_rule_covers_only_services_that_build_from_github() {
 #[test]
 fn the_summary_shows_what_the_body_pins() {
     let summary = golden().summary;
-    assert_eq!(summary.repository, "Ployz-test/lab-service");
-    assert_eq!(summary.branch, "main");
-    assert!(summary.pinned);
+    assert_eq!(github(&summary).0, "Ployz-test/lab-service");
+    assert_eq!(github(&summary).1, "main");
+    assert!(github(&summary).3);
     assert_eq!(summary.servers, 2);
     let web = &summary.services[0];
     assert_eq!(
@@ -230,18 +245,18 @@ fn every_drafted_build_setting_shows() {
     let railpack =
         AutoDeployRule::draft(&mut planted.clone(), &planted.branch_services(), terms()).unwrap();
     assert!(
-        builds(&railpack.services[0].policy)
+        builds(railpack.services[0].policy.as_ref().unwrap())
             .as_str()
             .starts_with(r#"Railpack, with build command "curl x | sh", context .,"#),
         "{}",
-        builds(&railpack.services[0].policy)
+        builds(railpack.services[0].policy.as_ref().unwrap())
     );
 }
 
 /// The golden rule with its one Service's policy replaced, drafted again.
 fn with_policy(policy: BuildPolicy) -> RuleDraft {
     let mut rule: AutoDeployRule = canonical::from_canonical(&golden().body).unwrap();
-    rule.services[0].policy = policy;
+    rule.services[0].policy = Some(policy);
     rule.drafted(&basis(view_json())).unwrap()
 }
 
@@ -257,6 +272,7 @@ fn every_build_policy_field_shows() {
             .services[0]
             .policy
             .clone()
+            .unwrap()
     };
     let changed: Vec<(&str, BuildPolicy)> = vec![
         ("dockerfile path", {
@@ -371,6 +387,7 @@ fn a_planted_control_character_in_a_build_policy_shows_escaped() {
             .services[0]
             .policy
             .clone()
+            .unwrap()
     };
     let hostile = HOSTILE.to_owned();
     let planted: Vec<(&str, BuildPolicy)> = vec![
@@ -508,10 +525,10 @@ fn a_planted_control_character_in_the_source_shows_escaped() {
                 .unwrap()
                 .summary(&planted);
         let shown = match field {
-            "repository" => &summary.repository,
-            _ => &summary.branch,
+            "repository" => &github(&summary).0,
+            _ => &github(&summary).1,
         };
-        assert_eq!(shown, ESCAPED, "{field}");
+        assert_eq!(*shown, ESCAPED, "{field}");
     }
     let mut terms = terms();
     terms.builder.r#ref = HOSTILE.to_owned();
@@ -519,8 +536,12 @@ fn a_planted_control_character_in_the_source_shows_escaped() {
     let summary = AutoDeployRule::draft(&mut basis.clone(), &web(), terms)
         .unwrap()
         .summary(&basis);
-    assert!(summary.builder.starts_with(ESCAPED), "{}", summary.builder);
-    assert!(printable(&summary.builder));
+    assert!(
+        github(&summary).2.starts_with(ESCAPED),
+        "{}",
+        github(&summary).2
+    );
+    assert!(printable(github(&summary).2));
 }
 
 /// Each field Cloud could plant in a Saved spec changes what the person reads, since the
@@ -663,7 +684,7 @@ fn another_branch_starts_a_new_rule() {
         (next.rule, next.generation),
         (RuleId::from_bytes([0x33; 16]), 1)
     );
-    assert_eq!(next.source.branch, "release");
+    assert_eq!(next.source.github().unwrap().branch, "release");
 }
 
 #[test]
@@ -681,7 +702,7 @@ fn an_ended_rule_on_another_branch_turns_on_again_on_the_new_one() {
     let next =
         AutoDeployRule::draft(&mut basis.clone(), &basis.branch_services(), terms()).unwrap();
     assert_eq!(
-        (next.source.branch.as_str(), next.ended),
+        (next.source.github().unwrap().branch.as_str(), next.ended),
         ("release", false)
     );
 }
@@ -776,9 +797,9 @@ fn the_builder_a_person_reads_names_its_commit() {
     let summary = AutoDeployRule::draft(&mut basis.clone(), &web(), terms)
         .unwrap()
         .summary(&basis);
-    assert!(!summary.pinned);
+    assert!(!github(&summary).3);
     assert_eq!(
-        summary.builder,
+        github(&summary).2,
         format!(
             "Ployz-test/build/.github/workflows/build.yml@main at {}",
             "ab".repeat(20)
@@ -797,7 +818,10 @@ fn a_fork_at_the_pinned_commit_is_not_ployzs_release() {
     let summary = AutoDeployRule::draft(&mut basis.clone(), &web(), terms)
         .unwrap()
         .summary(&basis);
-    assert!(!summary.pinned, "GitHub names the fork in job_workflow_ref");
+    assert!(
+        !github(&summary).3,
+        "GitHub names the fork in job_workflow_ref"
+    );
 }
 
 fn hex(bytes: &[u8]) -> String {

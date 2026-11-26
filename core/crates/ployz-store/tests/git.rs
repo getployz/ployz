@@ -714,6 +714,7 @@ fn the_build_order_and_preferred_builder_apply_at_once_and_shape_each_walk() {
     store
         .write_trusted(&who, &create("acme/web", None), &evidence())
         .unwrap();
+    reach_data(&store, &who);
 
     // Auto: GitHub first, skipped at once where the repository has no build workflow.
     let View::BuildOrder(auto) = store
@@ -790,11 +791,62 @@ fn the_build_order_and_preferred_builder_apply_at_once_and_shape_each_walk() {
     );
 }
 
+/// A Git Service that reaches no data builds free: only on a Server, whatever its
+/// Preferred Builder, and its runner learns so. Once a Server verified a build of it, it
+/// ran signed and every Server keeps its name, so it walks its Builders again.
+#[test]
+fn a_service_that_reaches_no_data_builds_free_on_a_server_until_it_ran_signed() {
+    let (store, who, url, _dir) = own_git_shop();
+    store
+        .write(
+            &who,
+            &edit(vec![set("web.preferredBuilder", json!("github"))]),
+        )
+        .unwrap();
+    let first = admit(&store, &who, 1, &[]);
+    assert_eq!(
+        store.sources(&first).unwrap()[0].builders,
+        [Builder::Servers]
+    );
+    store
+        .pin(
+            &first,
+            &pins(&backend::sha(&"a".repeat(40))),
+            &backend::members(),
+        )
+        .unwrap();
+    let runner = RunnerId::parse("cloud-1").unwrap();
+    let claimed = store.claim(&first, &runner).unwrap();
+    assert_eq!(claimed.sources[0].builders, [Builder::Servers]);
+    assert_eq!(
+        claimed
+            .free
+            .iter()
+            .map(ServiceName::as_str)
+            .collect::<Vec<_>>(),
+        ["web"]
+    );
+    store
+        .record(&first, &runner, report(BuildStatus::Building, None, "#1\n"))
+        .unwrap();
+    backend::execute(
+        &url,
+        &format!("UPDATE config_build SET verified = '{{}}' WHERE deployment_id = '{first}'"),
+    );
+
+    let second = admit(&store, &who, 2, &[]);
+    assert_eq!(
+        store.sources(&second).unwrap()[0].builders,
+        [Builder::Github, Builder::Servers]
+    );
+}
+
 /// A stored Preferred Builder that names neither GitHub nor a Server fails only the
 /// build's walk: other Settings still read and the Setting can be repaired.
 #[test]
 fn a_corrupt_preferred_builder_fails_only_the_walk_and_can_be_repaired() {
     let (store, who, url, _dir) = own_git_shop();
+    reach_data(&store, &who);
     let deployment = admit(&store, &who, 1, &[]);
     store
         .write(
@@ -2083,6 +2135,17 @@ fn git_shop(dir: &tempfile::TempDir) -> (ConfigStore, Actor) {
         .write_trusted(&who, &create("acme/web", None), &evidence())
         .unwrap();
     (store, who)
+}
+
+/// Gives `web` a sealed value, so it reaches data and its build walks the Build Order
+/// rather than building free on a Server.
+fn reach_data(store: &ConfigStore, who: &Actor) {
+    store
+        .write(
+            who,
+            &edit(vec![set("web.env.NPM_TOKEN", sealed(SERVICE, "NPM_TOKEN"))]),
+        )
+        .unwrap();
 }
 
 /// Variable `key` of Service `service` as the browser sealed it.

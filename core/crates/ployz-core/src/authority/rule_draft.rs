@@ -15,8 +15,8 @@ use super::{
     deploy::run_fields_cleared,
     keys::{Signed, SignerKey},
     rule::{
-        AutoDeployRule, BuildPolicy, Builder, PolicyCache, PolicyMethod, RuleEvent, RuleId,
-        RuleService, RuleSource, Runner, SealedDigest, template,
+        AutoDeployRule, BuildPolicy, Builder, GithubSource, PolicyCache, PolicyMethod,
+        RegistrySource, RuleEvent, RuleId, RuleService, RuleSource, Runner, SealedDigest, template,
     },
     shown::Shown,
 };
@@ -50,6 +50,37 @@ const fn pushes() -> bool {
     true
 }
 
+/// A Saved Service that runs an image from a registry rather than building one.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+pub struct RuleImageView {
+    pub service: ServiceName,
+    /// As Saved, such as `ghcr.io/acme/web@sha256:…`.
+    pub image: String,
+    /// The repository a registry rule would name for `image`, or none when no rule can.
+    /// For display: a draft reads `image` again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub registry: Option<RegistrySource>,
+}
+
+impl RuleImageView {
+    /// `service`'s Saved `image`, with the repository a registry rule would name for it.
+    #[must_use]
+    pub fn new(service: ServiceName, image: String) -> Self {
+        let registry = crate::registry_image(&image)
+            .ok()
+            .map(|named| RegistrySource {
+                host: named.host,
+                repository: named.repository,
+            });
+        Self {
+            service,
+            image,
+            registry,
+        }
+    }
+}
+
 /// What a rule is drafted from, as the Store's rule view gives it: the Environment's
 /// Namespace, the rule kept for it, where its Saved Services build from, the latest
 /// Saved revision lowered as a push would deploy it, and the Volumes it mounts. Other
@@ -59,6 +90,9 @@ pub struct RuleBasis {
     pub namespace: Namespace,
     pub rule: Option<Signed<AutoDeployRule>>,
     pub sources: Vec<RuleSourceView>,
+    /// The Saved Services that run a registry's image, which a registry rule deploys.
+    #[serde(default)]
+    pub images: Vec<RuleImageView>,
     pub target: Vec<RequestedServiceSpec>,
     #[serde(default)]
     pub volumes: PlannedVolumes,
@@ -103,7 +137,8 @@ pub fn default_platform() -> String {
 #[must_use]
 pub fn renewed_platform(kept: Option<&AutoDeployRule>) -> String {
     kept.and_then(|kept| {
-        (kept.services.iter()).find_map(|service| service.policy.platforms.first().cloned())
+        (kept.services.iter())
+            .find_map(|service| service.policy.as_ref()?.platforms.first().cloned())
     })
     .unwrap_or_else(default_platform)
 }
@@ -134,6 +169,14 @@ pub enum RuleDraftError {
     Nothing,
     #[error("There's no automatic deploy rule to turn off.")]
     NoRule,
+    #[error("No service in this environment runs an image from {0}.")]
+    NoImages(String),
+    #[error("{service} runs {image}, which an automatic deploy rule can't name: {reason}")]
+    Unnamed {
+        service: ServiceName,
+        image: String,
+        reason: crate::RegistryName,
+    },
     #[error(transparent)]
     Birth(#[from] BirthError),
     #[error(transparent)]
@@ -158,13 +201,7 @@ pub struct RuleDraft {
 pub struct RuleSummary {
     /// The Namespace the rule deploys into, which every Server checks.
     pub namespace: String,
-    pub repository: String,
-    pub branch: String,
-    pub workflow: String,
-    /// The builder's `job_workflow_ref`, followed by `at <sha>` unless the ref ends in it.
-    pub builder: String,
-    /// Whether the builder is Ployz's own release.
-    pub pinned: bool,
+    pub source: SourceSummary,
     #[ts(type = "number")]
     pub servers: usize,
     #[ts(type = "number")]
@@ -173,11 +210,30 @@ pub struct RuleSummary {
     pub services: Vec<RuleServiceSummary>,
 }
 
+/// What a rule deploys, as a person reads it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SourceSummary {
+    /// Every push to `branch`, built by the pinned builder.
+    Github {
+        repository: String,
+        branch: String,
+        workflow: String,
+        /// The builder's `job_workflow_ref`, followed by `at <sha>` unless the ref ends in it.
+        builder: String,
+        /// Whether the builder is Ployz's own release.
+        pinned: bool,
+    },
+    /// Every image pushed to `repository`, `host/path`.
+    Registry { repository: String },
+}
+
 /// One Service of a rule as a person reads it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, TS)]
 pub struct RuleServiceSummary {
     pub name: ServiceName,
-    /// `Dockerfile in ., for linux/amd64, with the Actions cache`.
+    /// `Dockerfile in ., for linux/amd64, with the Actions cache`, or empty for a registry
+    /// rule, which builds nothing.
     pub builds: String,
     /// What differs from the rule this one replaces, such as `settings` or `build args`.
     /// Empty when nothing does; `new to the rule` for a Service it didn't cover.
@@ -213,7 +269,7 @@ impl RuleBasis {
         if branches.all(|branch| Some(branch) == first) {
             return all().collect();
         }
-        let Some(kept) = self.kept().map(|kept| kept.source) else {
+        let Some(kept) = self.kept().and_then(|kept| kept.source.github().cloned()) else {
             return all().collect();
         };
         let on_kept: Vec<ServiceName> = pushed()
@@ -293,10 +349,52 @@ impl RuleBasis {
         Ok(RuleService {
             name: name.clone(),
             template: template(spec, &self.namespace)?,
-            policy,
+            policy: Some(policy),
             secrets,
             seeded: None,
         })
+    }
+
+    /// The registry repository a registry rule covering the image Services would name: the
+    /// kept rule's while any of them still runs an image from it, else the one repository
+    /// they all run images from. `None` when there is no image Service, or they run images
+    /// from several repositories with none of them the kept one.
+    #[must_use]
+    pub fn image_source(&self) -> Option<RegistrySource> {
+        let named = |view: &RuleImageView| {
+            crate::registry_image(&view.image)
+                .ok()
+                .map(|named| RegistrySource {
+                    host: named.host,
+                    repository: named.repository,
+                })
+        };
+        let kept = self.kept().and_then(|kept| kept.source.registry().cloned());
+        if let Some(kept) = kept
+            && self
+                .images
+                .iter()
+                .any(|view| named(view).as_ref() == Some(&kept))
+        {
+            return Some(kept);
+        }
+        let mut repositories = self.images.iter().filter_map(named);
+        let first = repositories.next()?;
+        repositories.all(|other| other == first).then_some(first)
+    }
+
+    /// The image Services whose Saved image is in `source`.
+    #[must_use]
+    pub fn image_services(&self, source: &RegistrySource) -> Vec<ServiceName> {
+        self.images
+            .iter()
+            .filter(|view| {
+                crate::registry_image(&view.image).is_ok_and(|named| {
+                    named.host == source.host && named.repository == source.repository
+                })
+            })
+            .map(|view| view.service.clone())
+            .collect()
     }
 }
 
@@ -342,8 +440,9 @@ impl AutoDeployRule {
         let (rule, generation) = match basis.kept() {
             Some(kept)
                 if kept.namespace == basis.namespace
-                    && kept.source.repository_id == repository_id
-                    && kept.source.branch == branch =>
+                    && kept.source.github().is_some_and(|kept| {
+                        kept.repository_id == repository_id && kept.branch == branch
+                    }) =>
             {
                 (kept.rule, kept.generation + 1)
             }
@@ -355,7 +454,7 @@ impl AutoDeployRule {
             generation,
             namespace: basis.namespace.clone(),
             machines,
-            source: RuleSource {
+            source: RuleSource::Github(GithubSource {
                 repository_id,
                 owner_id: terms.owner_id,
                 repository,
@@ -366,7 +465,91 @@ impl AutoDeployRule {
                 events: vec![RuleEvent::Push, RuleEvent::WorkflowDispatch],
                 builder: terms.builder,
                 runner: Runner::GithubHosted,
-            },
+            }),
+            services,
+            issued_at: terms.issued_at,
+            ended: false,
+            signer: terms.signer,
+            proposal: None,
+            preview: None,
+        })
+    }
+
+    /// The rule that deploys every image pushed to `source` for `names`, with their Saved
+    /// settings in `basis`: the kept rule's next generation when it is a registry rule in
+    /// the same Environment, for this repository or another, so a Server that takes it
+    /// refuses the generation before; else a new rule's first. Births are minted as
+    /// [`Self::draft`] mints them. The rule builds nothing, so `terms`' builder, platform
+    /// and owner are not read.
+    ///
+    /// # Errors
+    /// Returns a [`RuleDraftError`] naming a Service that doesn't run an image of
+    /// `source`, or [`RuleDraftError::NoImages`] for none.
+    pub fn draft_images(
+        basis: &mut RuleBasis,
+        source: &RegistrySource,
+        names: &[ServiceName],
+        terms: RuleTerms,
+    ) -> Result<Self, RuleDraftError> {
+        if names.is_empty() {
+            return Err(RuleDraftError::NoImages(source.name()));
+        }
+        let covered = basis.image_services(source);
+        if let Some(name) = names.iter().find(|name| !covered.contains(name)) {
+            let image = (basis.images.iter())
+                .find(|view| view.service == *name)
+                .map(|view| view.image.clone());
+            return Err(match image {
+                Some(image) => match crate::registry_image(&image) {
+                    Err(reason) => RuleDraftError::Unnamed {
+                        service: name.clone(),
+                        image,
+                        reason,
+                    },
+                    Ok(_) => RuleDraftError::NoImages(source.name()),
+                },
+                None => RuleDraftError::NotSaved(name.clone()),
+            });
+        }
+        basis.minted = birth::mint(
+            basis
+                .target
+                .iter_mut()
+                .filter(|spec| names.contains(&spec.name)),
+            (&basis.namespace, &basis.volumes),
+            terms.issued_at,
+            |name| birth::nonce(terms.new_rule.as_bytes(), name),
+        )?;
+        let mut services = names
+            .iter()
+            .map(|name| {
+                Ok(RuleService {
+                    name: name.clone(),
+                    template: template(basis.spec(name)?, &basis.namespace)?,
+                    policy: None,
+                    secrets: None,
+                    seeded: None,
+                })
+            })
+            .collect::<Result<Vec<_>, RuleDraftError>>()?;
+        services.sort_by(|left, right| left.name.cmp(&right.name));
+        services.dedup_by(|left, right| left.name == right.name);
+        let mut machines = terms.machines;
+        machines.sort_unstable();
+        machines.dedup();
+        let (rule, generation) = match basis.kept() {
+            Some(kept) if kept.namespace == basis.namespace && kept.source.registry().is_some() => {
+                (kept.rule, kept.generation + 1)
+            }
+            _ => (terms.new_rule, 1),
+        };
+        Ok(Self {
+            cluster: terms.cluster,
+            rule,
+            generation,
+            namespace: basis.namespace.clone(),
+            machines,
+            source: RuleSource::Registry(source.clone()),
             services,
             issued_at: terms.issued_at,
             ended: false,
@@ -425,19 +608,29 @@ impl AutoDeployRule {
             now: self.issued_at,
             against: None,
         };
-        let builder = &self.source.builder;
-        let sha = builder.sha.to_string();
+        let source = match &self.source {
+            RuleSource::Github(github) => {
+                let builder = &github.builder;
+                let sha = builder.sha.to_string();
+                SourceSummary::Github {
+                    repository: Shown::text(&github.repository).into(),
+                    branch: Shown::text(&github.branch).into(),
+                    workflow: Shown::text(&github.workflow).into(),
+                    builder: match builder.r#ref.ends_with(&sha) {
+                        true => Shown::text(&builder.r#ref),
+                        false => Shown::text(&builder.r#ref).and_words(" at ").and_text(&sha),
+                    }
+                    .into(),
+                    pinned: *builder == Builder::pinned(),
+                }
+            }
+            RuleSource::Registry(registry) => SourceSummary::Registry {
+                repository: Shown::text(&registry.name()).into(),
+            },
+        };
         RuleSummary {
             namespace: self.namespace.to_string(),
-            repository: Shown::text(&self.source.repository).into(),
-            branch: Shown::text(&self.source.branch).into(),
-            workflow: Shown::text(&self.source.workflow).into(),
-            builder: match builder.r#ref.ends_with(&sha) {
-                true => Shown::text(&builder.r#ref),
-                false => Shown::text(&builder.r#ref).and_words(" at ").and_text(&sha),
-            }
-            .into(),
-            pinned: *builder == Builder::pinned(),
+            source,
             servers: self.machines.len(),
             generation: self.generation,
             ended: self.ended,
@@ -449,7 +642,11 @@ impl AutoDeployRule {
                     let mounted = spec.map(|spec| mounts.asked(spec)).unwrap_or_default();
                     RuleServiceSummary {
                         name: service.name.clone(),
-                        builds: builds(&service.policy).into(),
+                        builds: service
+                            .policy
+                            .as_ref()
+                            .map(|policy| builds(policy).into())
+                            .unwrap_or_default(),
                         changes: match &kept {
                             Some(kept) => changes(kept.service(&service.name), service),
                             None => Vec::new(),
@@ -527,24 +724,32 @@ fn pairs<'a>(pairs: impl IntoIterator<Item = (&'a String, Shown)>) -> Shown {
     )
 }
 
+/// `value` as JSON, to compare one policy field across two rules.
+fn json(value: &impl Serialize) -> Value {
+    serde_json::to_value(value).unwrap_or(Value::Null)
+}
+
 /// What differs between the kept rule's approval of a Service and `next`.
 fn changes(kept: Option<&RuleService>, next: &RuleService) -> Vec<String> {
     let Some(kept) = kept else {
         return vec!["new to the rule".to_owned()];
     };
-    let (old, new) = (&kept.policy, &next.policy);
+    let policy = |pick: fn(&BuildPolicy) -> Value| {
+        let read = |service: &RuleService| service.policy.as_ref().map(pick);
+        read(kept) != read(next)
+    };
     [
         ("settings", kept.template != next.template),
         (
             "build secrets",
-            kept.secrets != next.secrets || old.secrets != new.secrets,
+            kept.secrets != next.secrets || policy(|policy| json(&policy.secrets)),
         ),
-        ("build method", old.method != new.method),
-        ("build context", old.context != new.context),
-        ("build target", old.target != new.target),
-        ("build args", old.args != new.args),
-        ("platforms", old.platforms != new.platforms),
-        ("build cache", old.cache != new.cache),
+        ("build method", policy(|policy| json(&policy.method))),
+        ("build context", policy(|policy| json(&policy.context))),
+        ("build target", policy(|policy| json(&policy.target))),
+        ("build args", policy(|policy| json(&policy.args))),
+        ("platforms", policy(|policy| json(&policy.platforms))),
+        ("build cache", policy(|policy| json(&policy.cache))),
     ]
     .into_iter()
     .filter(|(_, changed)| *changed)

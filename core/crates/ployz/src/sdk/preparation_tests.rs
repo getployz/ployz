@@ -73,6 +73,7 @@ fn input(root: &Path, snapshots: Vec<Value>) -> crate::sdk::PreparationInput {
         build_receipts: BTreeMap::new(),
         build_index: 0,
         preferred_machine: None,
+        free: Default::default(),
         pins: BTreeMap::new(),
     }
 }
@@ -747,7 +748,7 @@ async fn builder_selection_filters_observations_without_using_service_policy_or_
     assert_eq!(
         crate::sdk::prepare::select_build_machine(
             &mut client,
-            &build_targets(&["linux/amd64"]),
+            (&build_targets(&["linux/amd64"]), ployz_build::Access::Full),
             &visible,
             Default::default(),
             &Default::default()
@@ -776,7 +777,7 @@ async fn builder_selection_reports_missing_capability() {
     let visible = client.machines().await.unwrap();
     let error = crate::sdk::prepare::select_build_machine(
         &mut client,
-        &build_targets(&["linux/amd64"]),
+        (&build_targets(&["linux/amd64"]), ployz_build::Access::Full),
         &visible,
         Default::default(),
         &Default::default(),
@@ -811,7 +812,7 @@ async fn failed_builder_selection_records_why_each_machine_was_rejected_without_
     let visible = client.machines().await.unwrap();
     let selection = crate::sdk::prepare::select_build_machine(
         &mut client,
-        &build_targets(&["linux/amd64"]),
+        (&build_targets(&["linux/amd64"]), ployz_build::Access::Full),
         &visible,
         Default::default(),
         &Default::default(),
@@ -854,7 +855,7 @@ async fn a_machine_that_enforces_device_approval_is_rejected_by_saying_so() {
     let visible = client.machines().await.unwrap();
     let selection = crate::sdk::prepare::select_build_machine(
         &mut client,
-        &build_targets(&["linux/amd64"]),
+        (&build_targets(&["linux/amd64"]), ployz_build::Access::Full),
         &visible,
         Default::default(),
         &Default::default(),
@@ -917,7 +918,7 @@ async fn builder_selection_requires_one_worker_for_every_command_target_before_u
     let visible = client.machines().await.unwrap();
     let selected = crate::sdk::prepare::select_build_machine(
         &mut client,
-        &build_targets(&["linux/arm64"]),
+        (&build_targets(&["linux/arm64"]), ployz_build::Access::Full),
         &visible,
         Default::default(),
         &Default::default(),
@@ -928,7 +929,7 @@ async fn builder_selection_requires_one_worker_for_every_command_target_before_u
     let targets = build_targets(&["linux/amd64", "linux/arm64"]);
     let error = crate::sdk::prepare::select_build_machine(
         &mut client,
-        &targets,
+        (&targets, ployz_build::Access::Full),
         &visible,
         Default::default(),
         &Default::default(),
@@ -1140,6 +1141,7 @@ async fn sdk_reuses_unchanged_git_image_when_another_service_changes() {
             .collect(),
         build_index: 0,
         preferred_machine: None,
+        free: Default::default(),
         pins: BTreeMap::new(),
     };
     let first = session
@@ -1343,6 +1345,7 @@ fn uploaded(root: &Path, with_source: bool) -> crate::sdk::PreparationInput {
         build_receipts: BTreeMap::new(),
         build_index: 0,
         preferred_machine: None,
+        free: Default::default(),
         pins: BTreeMap::new(),
     }
 }
@@ -1656,6 +1659,17 @@ async fn an_outside_build_reuses_a_held_unchanged_image_and_never_builds() {
         build(outside(&"a".repeat(40), Some(uncovered)).await.unwrap()),
         amd64
     );
+    // A free Build's receipt, kept from before the Service reached data, serves no
+    // Builder outside the Cluster: GitHub builds it signed.
+    let mut free = receipt.clone();
+    free.free = Some(Box::new(ployz_core::FreeReceipt {
+        image: ployz_core::ImageDigest::parse(receipt.image.reference.as_str()).unwrap(),
+        mac: serde_json::from_value(json!("0".repeat(64))).unwrap(),
+    }));
+    assert_eq!(
+        build(outside(&"a".repeat(40), Some(free)).await.unwrap()),
+        amd64
+    );
     // A Cluster that no longer holds the image must build.
     builds.stores.lock().unwrap().clear();
     assert_eq!(
@@ -1698,5 +1712,322 @@ async fn an_outside_build_refuses_an_invalid_deployment_and_an_unbuildable_place
     );
     sdk.close().await;
     server.abort();
+    fs::remove_dir_all(root).unwrap();
+}
+
+/// [`fixture`] whose builder and application Server advertise `builder` and `destination`.
+fn free_fixture(
+    builder: &[&str],
+    destination: &[&str],
+) -> (PathBuf, DeployService, Arc<BuildFixture>) {
+    let root = std::env::temp_dir().join(format!("ployz-prepare-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("Dockerfile"), "FROM scratch\n").unwrap();
+    let mut source = machine('a', "builder");
+    let mut application = machine('b', "application");
+    application.machine.accepts_builds = false;
+    source.machine.accepts_services = false;
+    source.machine.runtime.architecture = "x86_64".into();
+    application.machine.runtime.architecture = "x86_64".into();
+    source.machine.runtime.capabilities = builder.iter().map(|&name| name.to_owned()).collect();
+    application.machine.runtime.capabilities =
+        destination.iter().map(|&name| name.to_owned()).collect();
+    let builds = Arc::new(BuildFixture::default());
+    let mut service = DeployService::new(source.clone())
+        .with_machines(vec![source, application])
+        .with_exec_exit(0);
+    service.builds = Some(builds.clone());
+    (root, service, builds)
+}
+
+/// A Service that reaches no data builds free: on the free route, its image loaded under
+/// no name, and every creation of it carries the receipt its builder gave.
+#[tokio::test]
+async fn a_free_service_builds_free_and_each_creation_carries_its_receipt() {
+    let (root, service, builds) = free_fixture(
+        &[ployz_core::BUILD_FREE_CAPABILITY],
+        &[ployz_core::FREE_RECEIPT_CAPABILITY],
+    );
+    let carried = service.free_receipts();
+    let mut free = input(&root, vec![git("one", "dockerfile")]);
+    free.free = [ServiceName::parse("one").unwrap()].into();
+    deploy(service, free).await.unwrap();
+    let definitions = builds.definitions.lock().unwrap().clone();
+    let [definition] = definitions.as_slice() else {
+        panic!("{definitions:?}")
+    };
+    assert!(definition.retained_tags.is_empty(), "{definition:?}");
+    let carried = carried.lock().unwrap().clone();
+    let built = format!("sha256:{}", "1".repeat(64));
+    assert!(!carried.is_empty());
+    for (_, receipt) in &carried {
+        assert_eq!(
+            receipt.as_ref().map(|receipt| receipt.image.as_str()),
+            Some(built.as_str())
+        );
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+/// A Server a free Service may run on that can't run a Free Build's image by its receipt
+/// stops the Deploy before anything builds, and is named.
+#[tokio::test]
+async fn a_free_build_names_the_server_that_cant_run_it_before_anything_builds() {
+    for (builder, destination, named) in [
+        (
+            ployz_core::BUILD_FREE_CAPABILITY,
+            "",
+            "application can't run one, which builds without approval. Upgrade application",
+        ),
+        (
+            "",
+            ployz_core::FREE_RECEIPT_CAPABILITY,
+            "builder can't build one, which",
+        ),
+    ] {
+        let (root, service, builds) = free_fixture(&[builder], &[destination]);
+        let mut free = input(&root, vec![git("one", "dockerfile")]);
+        free.free = [ServiceName::parse("one").unwrap()].into();
+        let error = deploy(service, free).await.unwrap_err();
+        let recorded = ployz_store::Failure::from(&error);
+        let cause = recorded.cause.last().expect("a cause names the Server");
+        assert!(cause.contains(named), "{cause}");
+        assert!(builds.definitions.lock().unwrap().is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+/// A redeploy that reuses a free Build's image, with no source to build, still stops at a
+/// Server the Service may run on that can't run it by its receipt, and names it.
+#[tokio::test]
+async fn a_reused_free_image_names_the_server_that_cant_run_it() {
+    let one = ServiceName::parse("one").unwrap();
+    let free_input = |root: &Path| {
+        let mut free = input(root, vec![git("one", "dockerfile")]);
+        free.free = [one.clone()].into();
+        free
+    };
+    let (root, service, built) = free_fixture(
+        &[ployz_core::BUILD_FREE_CAPABILITY],
+        &[ployz_core::FREE_RECEIPT_CAPABILITY],
+    );
+    let (building, server) = session(service).await;
+    let first = building
+        .prepare(free_input(&root))
+        .unwrap()
+        .finished()
+        .await
+        .unwrap();
+    let receipts: BTreeMap<_, _> = first
+        .build_receipts()
+        .iter()
+        .map(|(service, receipt)| (service.clone(), vec![receipt.clone()]))
+        .collect();
+    assert!(
+        receipts
+            .get(&one)
+            .and_then(|built| built.first())
+            .is_some_and(|receipt| receipt.free.is_some())
+    );
+    first.close();
+    building.close().await;
+    server.abort();
+
+    // The builder still holds the image; the application Server can't run it unsigned.
+    let (_, behind, builds) = free_fixture(&[ployz_core::BUILD_FREE_CAPABILITY], &[]);
+    *builds.stores.lock().unwrap() = built.stores.lock().unwrap().clone();
+    let (redeploying, server) = session(behind).await;
+    let mut redeploy = free_input(&root);
+    redeploy.sources.clear();
+    redeploy.build_receipts = receipts;
+    let error = redeploying
+        .prepare(redeploy)
+        .unwrap()
+        .finished()
+        .await
+        .err()
+        .unwrap();
+    let recorded = ployz_store::Failure::from(&error);
+    let cause = recorded.cause.last().expect("a cause names the Server");
+    assert!(
+        cause.contains(
+            "application can't run one, which builds without approval. Upgrade application"
+        ),
+        "{cause}"
+    );
+    assert!(builds.definitions.lock().unwrap().is_empty());
+    redeploying.close().await;
+    server.abort();
+    fs::remove_dir_all(root).unwrap();
+}
+
+/// A Server too old to run a Free Build's image that joins while the Build runs gets none
+/// of the Service's Containers: the plan reads the Servers again after the Build, and the
+/// same rule that placement applies everywhere leaves it out there.
+#[tokio::test]
+async fn a_server_that_joins_during_a_free_build_gets_none_of_its_containers() {
+    let (root, service, _) = free_fixture(
+        &[ployz_core::BUILD_FREE_CAPABILITY],
+        &[ployz_core::FREE_RECEIPT_CAPABILITY],
+    );
+    let mut late = machine('c', "late");
+    late.machine.accepts_builds = false;
+    late.machine.runtime.architecture = "x86_64".into();
+    late.machine.runtime.capabilities = Default::default();
+    let late_id = late.machine.id;
+    let service = service.joins_while_building(late);
+    let carried = service.free_receipts();
+    let mut snapshot = git("one", "dockerfile");
+    snapshot
+        .pointer_mut("/config")
+        .and_then(serde_json::Value::as_object_mut)
+        .unwrap()
+        .insert("replicas".into(), json!(2));
+    let mut free = input(&root, vec![snapshot]);
+    free.free = [ServiceName::parse("one").unwrap()].into();
+    deploy(service, free).await.unwrap();
+    let carried = carried.lock().unwrap().clone();
+    assert_eq!(carried.len(), 2, "{carried:?}");
+    for (machine, receipt) in &carried {
+        assert_ne!(*machine, late_id, "{carried:?}");
+        assert!(receipt.is_some(), "{carried:?}");
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+/// A Server that stops taking Free receipts after the plan chose it gets no creation that
+/// carries one: each creation reads the Servers again before it goes out.
+#[tokio::test]
+async fn a_server_rolled_back_after_the_plan_gets_no_free_creation() {
+    let (root, service, _) = free_fixture(
+        &[ployz_core::BUILD_FREE_CAPABILITY],
+        &[ployz_core::FREE_RECEIPT_CAPABILITY],
+    );
+    let application = machine('b', "application").machine.id;
+    let service = service.rolls_back_on_delivery(application);
+    let carried = service.free_receipts();
+    let mut free = input(&root, vec![git("one", "dockerfile")]);
+    free.free = [ServiceName::parse("one").unwrap()].into();
+    let (session, server) = session(service).await;
+    let outcome = session
+        .prepare(free)
+        .unwrap()
+        .finished()
+        .await
+        .unwrap()
+        .confirm()
+        .unwrap()
+        .finished()
+        .await
+        .unwrap();
+    session.close().await;
+    server.abort();
+    let refused = format!("{outcome:?}");
+    assert!(refused.contains("Upgrade application first"), "{refused}");
+    let carried = carried.lock().unwrap().clone();
+    assert!(carried.is_empty(), "{carried:?}");
+    fs::remove_dir_all(root).unwrap();
+}
+
+/// A redeploy that reuses a free Service's image and builds only a signed one needs no
+/// Builder that runs a Free Build.
+#[tokio::test]
+async fn a_reused_free_image_leaves_the_builder_to_the_signed_build() {
+    let one = ServiceName::parse("one").unwrap();
+    let both = |root: &Path| {
+        let mut both = input(
+            root,
+            vec![git("one", "dockerfile"), git("two", "dockerfile")],
+        );
+        both.free = [one.clone()].into();
+        both
+    };
+    let (root, service, built) = free_fixture(
+        &[ployz_core::BUILD_FREE_CAPABILITY],
+        &[ployz_core::FREE_RECEIPT_CAPABILITY],
+    );
+    let (building, server) = session(service).await;
+    let first = building
+        .prepare(both(&root))
+        .unwrap()
+        .finished()
+        .await
+        .unwrap();
+    let receipts: BTreeMap<_, _> = first
+        .build_receipts()
+        .iter()
+        .filter(|(service, _)| **service == one)
+        .map(|(service, receipt)| (service.clone(), vec![receipt.clone()]))
+        .collect();
+    first.close();
+    building.close().await;
+    server.abort();
+
+    // The builder no longer runs Free Builds; only two needs building.
+    let (_, older, builds) = free_fixture(&[], &[ployz_core::FREE_RECEIPT_CAPABILITY]);
+    *builds.stores.lock().unwrap() = built.stores.lock().unwrap().clone();
+    let (redeploying, server) = session(older).await;
+    let mut redeploy = both(&root);
+    redeploy.build_receipts = receipts;
+    let prepared = redeploying
+        .prepare(redeploy)
+        .unwrap()
+        .finished()
+        .await
+        .unwrap();
+    let definitions = builds.definitions.lock().unwrap().clone();
+    assert_eq!(definitions.len(), 1, "{definitions:?}");
+    prepared.close();
+    redeploying.close().await;
+    server.abort();
+    fs::remove_dir_all(root).unwrap();
+}
+
+/// A free Service runs only an image a Free Build vouched for, so only such a receipt serves
+/// it; and a Service that runs signed never reuses one.
+#[test]
+fn only_a_free_builds_receipt_serves_a_free_service() {
+    let (root, _, _) = fixture();
+    let one = ServiceName::parse("one").unwrap();
+    let captured =
+        crate::sdk::preparation::capture(input(&root, vec![git("one", "dockerfile")])).unwrap();
+    let (fingerprint, _) = captured.fingerprints.get(&one).unwrap().clone();
+    let receipt = |free: bool| crate::sdk::BuildReceipt {
+        fingerprint: fingerprint.clone(),
+        variables: crate::sdk::BuildVariables::All,
+        image: ployz_build::BuiltImage {
+            reference: format!("sha256:{}", "1".repeat(64)),
+            tags: Vec::new(),
+            platforms: vec!["linux/amd64".into()],
+            location: "unused".into(),
+        },
+        machine_id: machine('a', "builder").machine.id,
+        free: free.then(|| {
+            Box::new(ployz_core::FreeReceipt {
+                image: ployz_core::ImageDigest::parse(format!("sha256:{}", "1".repeat(64)))
+                    .unwrap(),
+                mac: serde_json::from_value(json!("0".repeat(64))).unwrap(),
+            })
+        }),
+    };
+    for (free, receipt_free, reused) in [
+        (true, false, false),
+        (true, true, true),
+        (false, true, false),
+        (false, false, true),
+    ] {
+        let mut prepared = input(&root, vec![git("one", "dockerfile")]);
+        if free {
+            prepared.free = [one.clone()].into();
+        }
+        prepared.build_receipts = BTreeMap::from([(one.clone(), vec![receipt(receipt_free)])]);
+        let reusable = crate::sdk::preparation::capture(prepared).unwrap().reusable;
+        assert_eq!(
+            reusable.len(),
+            usize::from(reused),
+            "free {free}, free receipt {receipt_free}"
+        );
+        assert!(reusable.iter().all(|built| built.free.is_some() == free));
+    }
     fs::remove_dir_all(root).unwrap();
 }

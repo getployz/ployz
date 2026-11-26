@@ -2,7 +2,7 @@
 //! Parent that can't be production, the cap and its waiting pull requests, the one Server
 //! each preview names, and which previews Cloud closes on a Server.
 
-use ployz_core::authority::rule::{Builder, RuleEvent, RuleSource, Runner};
+use ployz_core::authority::rule::{Builder, GithubSource, RuleEvent, RuleSource, Runner};
 use ployz_core::authority::{AutoDeployRule, PreviewTerms, RuleId, Signed, Signer, SignerKey};
 use ployz_core::config::ServiceGitAccess;
 use ployz_core::{
@@ -200,7 +200,7 @@ fn edited(
         generation: 1,
         namespace: namespace_of(store, who, parent.1),
         machines: Vec::new(),
-        source: RuleSource {
+        source: RuleSource::Github(GithubSource {
             repository_id: 11,
             owner_id: 1,
             repository: "acme/web".into(),
@@ -209,7 +209,7 @@ fn edited(
             events: vec![RuleEvent::Push],
             builder: Builder::pinned(),
             runner: Runner::GithubHosted,
-        },
+        }),
         services: Vec::new(),
         issued_at: ployz_core::authority::Timestamp::from_millis(1_800_000_000_000).unwrap(),
         ended: false,
@@ -397,7 +397,9 @@ fn a_preview_rule_is_kept_only_for_a_parent_that_cannot_be_production() {
 
     // A rule of another repository, and one naming another Namespace than its Parent's.
     let elsewhere = edited(&store, &who, (3, "staging"), |rule| {
-        rule.source.repository_id = 12;
+        if let RuleSource::Github(github) = &mut rule.source {
+            github.repository_id = 12;
+        }
     });
     let message = refused(SetPrPlan {
         preview_rule: Some(elsewhere),

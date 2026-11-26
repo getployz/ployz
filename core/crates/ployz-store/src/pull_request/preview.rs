@@ -144,7 +144,11 @@ pub(super) fn fit(
     let Some(preview) = &terms.preview else {
         return refuse("This rule deploys one Environment, not previews");
     };
-    if terms.source.repository_id != repository_id.get() {
+    if terms
+        .source
+        .github()
+        .is_none_or(|github| github.repository_id != repository_id.get())
+    {
         return refuse("The preview rule is for another repository");
     }
     let Some(parent) = plan.start_from.as_ref() else {

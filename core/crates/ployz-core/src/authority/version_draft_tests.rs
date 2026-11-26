@@ -197,6 +197,7 @@ fn saving(rule: Option<&AutoDeployRule>, sources: serde_json::Value) -> Versions
         machines: vec![MachineId::parse("1".repeat(32)).unwrap()],
         owner_id: 278_111_222,
         builder: None,
+        images: Vec::new(),
         on: None,
     });
     asked
@@ -231,11 +232,16 @@ fn a_save_signs_the_rule_as_a_source_step_the_servers_accept() {
         Some(cluster),
     )
     .unwrap();
-    assert_eq!(opened.source.branch, "main");
+    assert_eq!(opened.source.github().unwrap().branch, "main");
     assert!(draft.steps.is_empty(), "a Save signs no version");
     let summary = &draft.source.unwrap().summary;
     assert_eq!(
-        (summary.repository.as_str(), summary.branch.as_str()),
+        match &summary.source {
+            SourceSummary::Github {
+                repository, branch, ..
+            } => (repository.as_str(), branch.as_str()),
+            SourceSummary::Registry { .. } => panic!("a GitHub rule"),
+        },
         ("Ployz-test/lab-service", "main"),
         "the person reads the branch the body signs"
     );
@@ -260,7 +266,7 @@ fn a_second_branch_saved_beside_a_kept_rule_leaves_the_rule_alone() {
 #[test]
 fn a_changed_setting_signs_the_kept_rules_next_generation() {
     let (_, mut kept) = first_rule();
-    kept.services[0].policy.context = "elsewhere".to_owned();
+    kept.services[0].policy.as_mut().unwrap().context = "elsewhere".to_owned();
 
     let draft = saving(Some(&kept), view_json()["sources"].clone())
         .draft()
@@ -274,7 +280,7 @@ fn a_changed_setting_signs_the_kept_rules_next_generation() {
 fn an_ended_rule_stays_ended() {
     let (_, mut kept) = first_rule();
     kept.ended = true;
-    kept.services[0].policy.context = "elsewhere".to_owned();
+    kept.services[0].policy.as_mut().unwrap().context = "elsewhere".to_owned();
 
     assert_eq!(
         saving(Some(&kept), view_json()["sources"].clone())
@@ -291,10 +297,10 @@ fn turning_on(
     branch: &str,
 ) -> Option<AutoDeployRule> {
     let mut asked = saving(rule, sources);
-    asked.source.as_mut().unwrap().on = Some(PushBranch {
+    asked.source.as_mut().unwrap().on = Some(SourceOn::Branch(PushBranch {
         repository_id: 1_450_985_696,
         branch: branch.to_owned(),
-    });
+    }));
     let draft = asked.draft().unwrap()?;
     Some(from_canonical(&draft.source.unwrap().body).unwrap())
 }
@@ -338,7 +344,7 @@ fn with_several_branches_the_switch_follows_the_one_the_person_picks() {
 
     let rule = turning_on(None, sources, "dev").unwrap();
 
-    assert_eq!(rule.source.branch, "dev");
+    assert_eq!(rule.source.github().unwrap().branch, "dev");
     let covered: Vec<&str> = rule
         .services
         .iter()
@@ -357,6 +363,7 @@ fn need(rule: Option<&AutoDeployRule>, sources: serde_json::Value) -> SourceNeed
         target: asked.target,
         volumes: PlannedVolumes::new(),
         minted: Births::new(),
+        images: Vec::new(),
     })
 }
 
@@ -365,7 +372,7 @@ fn a_save_knows_from_the_view_alone_whether_its_tap_signs_a_rule() {
     let sources = view_json()["sources"].clone();
     let (_, kept) = first_rule();
     let mut changed = kept.clone();
-    changed.services[0].policy.context = "elsewhere".to_owned();
+    changed.services[0].policy.as_mut().unwrap().context = "elsewhere".to_owned();
     let mut ended = changed.clone();
     ended.ended = true;
 
@@ -391,15 +398,15 @@ fn a_save_knows_from_the_view_alone_whether_its_tap_signs_a_rule() {
 fn a_rule_approved_for_another_platform_keeps_it() {
     let sources = view_json()["sources"].clone();
     let (_, mut kept) = first_rule();
-    kept.services[0].policy.platforms = ["linux/arm64".to_owned()].into();
+    kept.services[0].policy.as_mut().unwrap().platforms = ["linux/arm64".to_owned()].into();
 
     assert_eq!(need(Some(&kept), sources.clone()), SourceNeed::None);
     assert_eq!(saving(Some(&kept), sources.clone()).draft().unwrap(), None);
-    kept.services[0].policy.context = "elsewhere".to_owned();
+    kept.services[0].policy.as_mut().unwrap().context = "elsewhere".to_owned();
     let draft = saving(Some(&kept), sources).draft().unwrap().unwrap();
     let next: AutoDeployRule = from_canonical(&draft.source.unwrap().body).unwrap();
     assert_eq!(
-        next.services[0].policy.platforms,
+        next.services[0].policy.as_ref().unwrap().platforms,
         ["linux/arm64".to_owned()].into()
     );
 }
@@ -436,7 +443,7 @@ fn a_service_whose_pushes_dont_deploy_leaves_the_rule_to_the_others() {
     );
     let draft = saving(None, sources).draft().unwrap().unwrap();
     let rule: AutoDeployRule = from_canonical(&draft.source.unwrap().body).unwrap();
-    assert_eq!(rule.source.branch, "main");
+    assert_eq!(rule.source.github().unwrap().branch, "main");
 }
 
 #[test]
@@ -453,5 +460,111 @@ fn a_builder_other_than_ployzs_release_needs_a_yes() {
         draft.confirm.iter().any(|line| line.contains("evil/build")),
         "{:?}",
         draft.confirm
+    );
+}
+
+fn registry() -> RegistrySource {
+    RegistrySource {
+        host: "ghcr.io".to_owned(),
+        repository: "acme/web".to_owned(),
+    }
+}
+
+/// A Save beside `rule` with `images` Saved, turning image deploys on for `registry()`
+/// when `on`: the rule its tap signs, if any.
+fn images_saved(
+    rule: Option<&AutoDeployRule>,
+    images: serde_json::Value,
+    on: bool,
+) -> Option<AutoDeployRule> {
+    let mut asked = saving(rule, json!([]));
+    let source = asked.source.as_mut().unwrap();
+    source.images = serde_json::from_value(images).unwrap();
+    if on {
+        source.on = Some(SourceOn::Images(PushImages {
+            registry: registry(),
+        }));
+    }
+    let draft = asked.draft().unwrap()?;
+    Some(from_canonical(&draft.source.unwrap().body).unwrap())
+}
+
+// Catches the card's switch signing a rule that builds, covers a Service whose image is
+// elsewhere, or asks again for a rule that already approves what is Saved.
+#[test]
+fn turning_image_deploys_on_signs_a_registry_rule_over_that_repositorys_services() {
+    let images = json!([
+        {"service": "web", "image": format!("ghcr.io/acme/web@{DIGEST}")},
+        {"service": "cache", "image": "ghcr.io/acme/cache:1"}
+    ]);
+    let rule = images_saved(None, images.clone(), true).expect("the switch signs a rule");
+    assert_eq!(rule.source, RuleSource::Registry(registry()));
+    assert_eq!(rule.generation, 1);
+    let services: Vec<_> = rule
+        .services
+        .iter()
+        .map(|service| service.name.as_str())
+        .collect();
+    assert_eq!(services, ["web"]);
+    assert!(
+        rule.services
+            .iter()
+            .all(|service| service.policy.is_none() && service.secrets.is_none())
+    );
+    assert_eq!(rule.well_formed(), Ok(()));
+    // A Save of the same settings signs nothing more.
+    assert_eq!(images_saved(Some(&rule), images.clone(), false), None);
+    // A changed setting signs nothing on a Save: only the card approves it again.
+    let mut changed = rule.clone();
+    changed.services[0].template =
+        crate::authority::PayloadDigest::parse(&"cd".repeat(32)).unwrap();
+    assert_eq!(images_saved(Some(&changed), images.clone(), false), None);
+    let next = images_saved(Some(&changed), images.clone(), true).unwrap();
+    assert_eq!(
+        (next.rule, next.generation, next.source),
+        (rule.rule, 2, RuleSource::Registry(registry()))
+    );
+    // Once off, a Save leaves it off.
+    let mut ended = changed;
+    ended.ended = true;
+    assert_eq!(images_saved(Some(&ended), images, false), None);
+    // A second Service on the repository joins the rule.
+    let both = json!([
+        {"service": "web", "image": format!("ghcr.io/acme/web@{DIGEST}")},
+        {"service": "cache", "image": "ghcr.io/acme/web:cache"}
+    ]);
+    let rule = images_saved(None, both, true).unwrap();
+    let services: Vec<_> = rule
+        .services
+        .iter()
+        .map(|service| service.name.as_str())
+        .collect();
+    assert_eq!(services, ["cache", "web"]);
+}
+
+// Catches the card's switch to another repository starting a second rule, which leaves the
+// first one approving its repository on every Server.
+#[test]
+fn switching_image_deploys_to_another_repository_signs_the_kept_rules_next_generation() {
+    let web = json!([{"service": "web", "image": format!("ghcr.io/acme/web@{DIGEST}")}]);
+    let kept = images_saved(None, web, true).unwrap();
+    let mut asked = saving(Some(&kept), json!([]));
+    let source = asked.source.as_mut().unwrap();
+    source.images = serde_json::from_value(
+        json!([{"service": "web", "image": format!("ghcr.io/acme/api@{DIGEST}")}]),
+    )
+    .unwrap();
+    let api = RegistrySource {
+        host: "ghcr.io".to_owned(),
+        repository: "acme/api".to_owned(),
+    };
+    source.on = Some(SourceOn::Images(PushImages {
+        registry: api.clone(),
+    }));
+    let draft = asked.draft().unwrap().unwrap();
+    let next: AutoDeployRule = from_canonical(&draft.source.unwrap().body).unwrap();
+    assert_eq!(
+        (next.rule, next.generation, next.source),
+        (kept.rule, 2, RuleSource::Registry(api))
     );
 }

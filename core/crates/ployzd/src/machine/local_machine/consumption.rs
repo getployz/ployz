@@ -54,6 +54,9 @@ struct Consumption {
     /// The hook each rule's Service last ran here, one per push.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     rule_hooks: BTreeMap<String, RuleHook>,
+    /// The hooks each registry rule's Service ran here under its newest generation.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    registry_hooks: BTreeMap<String, RegistryHooks>,
     /// Each Service's floor, by [`floor_key`]: the newest forget that reached this
     /// Machine. It only rises.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -112,6 +115,13 @@ impl Consumption {
         if rule.branch != mark.branch {
             return refused(MismatchField::Branch);
         }
+        // A registry rule's newer generation may name another repository: the person
+        // switched it on Automatic deploys, which ends the one before.
+        let switched =
+            rule.generation > mark.generation && rule.registry.is_some() && mark.registry.is_some();
+        if rule.registry != mark.registry && !switched {
+            return refused(MismatchField::Repository);
+        }
         if rule.namespace != &mark.namespace {
             return refused(MismatchField::Namespace);
         }
@@ -123,9 +133,13 @@ impl Consumption {
             generation: rule.generation,
             repository_id: rule.repository_id,
             branch: rule.branch.to_owned(),
+            registry: rule.registry.clone(),
             namespace: rule.namespace.clone(),
         });
-        mark.generation = mark.generation.max(rule.generation);
+        if rule.generation > mark.generation {
+            mark.generation = rule.generation;
+            mark.registry.clone_from(&rule.registry);
+        }
     }
 
     /// `now`, raised to the highest time this log has taken, so a clock turned back
@@ -160,13 +174,40 @@ struct RuleHook {
     made: bool,
 }
 
+/// The hooks a registry rule's Service ran under its newest generation here, one per
+/// image. A newer generation starts the list again.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct RegistryHooks {
+    generation: u64,
+    images: Vec<RegistryHook>,
+}
+
+/// How many images' hooks one Service keeps under one generation. Past it the oldest
+/// image's place is let go, so a deploy back to that image runs its hook again.
+const REGISTRY_HOOKS_KEPT: usize = 64;
+
+/// The hook one image ran, and the slot it was made in.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct RegistryHook {
+    /// `host/repository@sha256:…`.
+    image: String,
+    slot: ployz_core::CreationKey,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    made: bool,
+}
+
 /// A rule's identity as this Machine first saw it, which no later generation may change,
 /// and the highest generation it has seen.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct RuleMark {
     generation: u64,
+    /// GitHub's repository ID, or 0 for a registry rule.
     repository_id: u64,
+    /// The GitHub branch, or empty for a registry rule.
     branch: String,
+    /// A registry rule's `host/repository`; absent for a GitHub rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    registry: Option<String>,
     namespace: ployz_core::Namespace,
 }
 
@@ -422,7 +463,9 @@ impl ConsumptionLog {
         self.read(Error::ApprovalRecord, |log| {
             log.rule_hooks
                 .values()
-                .any(|taken| taken.made && taken.slot.as_str() == key)
+                .map(|taken| (taken.made, &taken.slot))
+                .chain(registry_taken(&log.registry_hooks).map(|taken| (taken.made, &taken.slot)))
+                .any(|(made, slot)| made && slot.as_str() == key)
         })
     }
 
@@ -435,9 +478,19 @@ impl ConsumptionLog {
     pub(in crate::machine::local_machine) fn mark_hook_made(&self, key: &str) -> Result<(), Error> {
         self.transact(Error::ApprovalRecord, |log| {
             let mut marked = false;
-            for taken in log.rule_hooks.values_mut() {
-                if !taken.made && taken.slot.as_str() == key {
-                    taken.made = true;
+            let made = log
+                .rule_hooks
+                .values_mut()
+                .map(|taken| (&mut taken.made, &taken.slot))
+                .chain(
+                    log.registry_hooks
+                        .values_mut()
+                        .flat_map(|hooks| hooks.images.iter_mut())
+                        .map(|taken| (&mut taken.made, &taken.slot)),
+                );
+            for (made, slot) in made {
+                if !*made && slot.as_str() == key {
+                    *made = true;
                     marked = true;
                 }
             }
@@ -631,7 +684,7 @@ impl ConsumptionLog {
     ) -> Result<(), Error> {
         let rule = rule.identity();
         self.transact(Error::ApprovalRecord, |log| {
-            log.check_mark(rule).map_err(refused)?;
+            log.check_mark(rule.clone()).map_err(refused)?;
             if admit == Admit::Check
                 || log
                     .rules
@@ -640,7 +693,7 @@ impl ConsumptionLog {
             {
                 return Ok(Edit::Keep(()));
             }
-            log.raise_mark(rule);
+            log.raise_mark(rule.clone());
             Ok(Edit::Write(()))
         })
     }
@@ -787,6 +840,76 @@ impl ConsumptionLog {
             Ok(Edit::Write(()))
         })
     }
+
+    /// Take the hook place of `service`'s image `pin` under `rule` at `generation` for the
+    /// slot named `slot`, refusing one taken for another slot. The place is the rule, the
+    /// generation, the Service, the repository and the digest, so each Service runs its
+    /// own hook once for an image, and once again only under a newer approval. A request
+    /// resent for the same slot passes, as [`Self::consume_rule_hook`] lets one.
+    pub(crate) fn consume_registry_hook(
+        &self,
+        (rule, generation): (RuleId, u64),
+        service: &ServiceName,
+        pin: &ployz_core::authority::RegistryPin,
+        slot: &ployz_core::CreationKey,
+        refused: impl FnOnce(AuthorityRefusal) -> Error,
+    ) -> Result<(), Error> {
+        let image = pin.reference();
+        let run = MismatchField::HookRun;
+        self.transact(Error::ApprovalRecord, |log| {
+            let newer = |held: u64| held > generation;
+            // A newer approval landed after this one was admitted, for this Service's
+            // hooks or any of the rule's.
+            if log
+                .rules
+                .get(&rule)
+                .is_some_and(|mark| newer(mark.generation))
+            {
+                return Err(refused(AuthorityRefusal::Mismatch {
+                    field: MismatchField::Generation,
+                }));
+            }
+            let hooks = log
+                .registry_hooks
+                .entry(rule_service_key((rule, None), service))
+                .or_insert_with(|| RegistryHooks {
+                    generation,
+                    images: Vec::new(),
+                });
+            if newer(hooks.generation) {
+                return Err(refused(AuthorityRefusal::Mismatch {
+                    field: MismatchField::Generation,
+                }));
+            }
+            if hooks.generation < generation {
+                *hooks = RegistryHooks {
+                    generation,
+                    images: Vec::new(),
+                };
+            }
+            if let Some(taken) = hooks.images.iter().find(|taken| taken.image == image) {
+                return if &taken.slot == slot {
+                    Ok(Edit::Keep(()))
+                } else {
+                    Err(refused(AuthorityRefusal::Mismatch { field: run }))
+                };
+            }
+            if hooks.images.len() >= REGISTRY_HOOKS_KEPT {
+                hooks.images.remove(0);
+            }
+            hooks.images.push(RegistryHook {
+                image,
+                slot: slot.clone(),
+                made: false,
+            });
+            Ok(Edit::Write(()))
+        })
+    }
+}
+
+/// Every registry hook a Service took, under its newest generation.
+fn registry_taken(hooks: &BTreeMap<String, RegistryHooks>) -> impl Iterator<Item = &RegistryHook> {
+    hooks.values().flat_map(|hooks| hooks.images.iter())
 }
 
 fn closed(preview: &Namespace) -> PreviewRefusal {

@@ -61,23 +61,16 @@ pub(crate) fn prepare(request: &Request<'_>) -> Result<(), BuildError> {
                 let image = request.image_contexts.get(dependency).ok_or_else(|| {
                     invalid("Service image context has no completed Build output")
                 })?;
-                bound.insert(
-                    name.into(),
-                    format!(
-                        "docker-image://{}/{}",
-                        std::net::SocketAddr::new(
-                            image
-                                .source
-                                .management_address
-                                .0
-                                .to_ipv4_mapped()
-                                .map_or(IpAddr::V6(image.source.management_address.0), IpAddr::V4),
-                            image.source.port,
-                        ),
-                        image.reference
-                    )
-                    .into(),
+                let address = image.source.management_address.0;
+                let server = std::net::SocketAddr::new(
+                    address
+                        .to_ipv4_mapped()
+                        .map_or(IpAddr::V6(address), IpAddr::V4),
+                    image.source.port,
                 );
+                let reference = ployz_core::image_server_reference(server, &image.reference)
+                    .ok_or_else(|| invalid("Service image context is not pinned to a digest"))?;
+                bound.insert(name.into(), format!("docker-image://{reference}").into());
             } else {
                 bound.insert(name.into(), value.into());
             }

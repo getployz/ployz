@@ -2049,7 +2049,7 @@ fn eligible_machines<'snapshot>(
     snapshot: &'snapshot DeploySnapshot,
     options: &PlanOptions,
 ) -> Result<Vec<&'snapshot MachineObservation>, PlanError> {
-    let candidates = placement_candidates(requested, namespace, snapshot)?;
+    let candidates = placement_candidates(requested, namespace, snapshot, options)?;
     let mut unknown = Vec::new();
     let mut machines = Vec::new();
     for (machine, eligibility) in &candidates {
@@ -2091,6 +2091,7 @@ pub(crate) fn place_one(
     requested: &RequestedServiceSpec,
     namespace: &Namespace,
     snapshot: &DeploySnapshot,
+    options: &PlanOptions,
 ) -> Result<MachineId, PlanError> {
     let occupancy = |machine: &&MachineObservation| {
         snapshot
@@ -2104,7 +2105,7 @@ pub(crate) fn place_one(
             })
             .count()
     };
-    let machine = destinations(requested, namespace, snapshot)?
+    let machine = destinations(requested, namespace, snapshot, options)?
         .into_iter()
         .min_by_key(occupancy)
         .expect("destinations names at least one Machine");
@@ -2117,8 +2118,9 @@ pub(crate) fn destinations<'snapshot>(
     requested: &RequestedServiceSpec,
     namespace: &Namespace,
     snapshot: &'snapshot DeploySnapshot,
+    options: &PlanOptions,
 ) -> Result<Vec<&'snapshot MachineObservation>, PlanError> {
-    let machines = eligible_machines(requested, namespace, snapshot, &PlanOptions::default())?;
+    let machines = eligible_machines(requested, namespace, snapshot, options)?;
     let fitting = machines
         .iter()
         .copied()
@@ -2162,8 +2164,10 @@ fn placement_candidates<'snapshot>(
     requested: &RequestedServiceSpec,
     namespace: &Namespace,
     snapshot: &'snapshot DeploySnapshot,
+    options: &PlanOptions,
 ) -> Result<Vec<(&'snapshot MachineObservation, ServicePlacementEligibility)>, PlanError> {
-    let candidates = snapshot.candidates(requested, namespace);
+    let candidates =
+        snapshot.candidates(requested, namespace, options.free.contains(&requested.name));
     let placeable = candidates.placeable();
     if placeable.is_empty() {
         return Err(placement_error(requested, &candidates));
@@ -2255,6 +2259,13 @@ fn placement_error(spec: &RequestedServiceSpec, candidates: &Candidates<'_>) -> 
         return PlanError::VolumeOriginsUnchecked {
             service: spec.name.clone(),
             names: unchecked,
+        };
+    }
+    let behind = names(Exclusion::TakesNoFreeReceipt);
+    if !behind.is_empty() {
+        return PlanError::FreeReceiptsUntaken {
+            service: spec.name.clone(),
+            names: behind,
         };
     }
     let mut constraints = Vec::new();

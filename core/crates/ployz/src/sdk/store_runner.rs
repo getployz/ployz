@@ -663,6 +663,12 @@ impl Run {
         let scrub = Scrub::new(&claimed);
         let earlier = earlier(&targets);
         let mut rules = crate::deploy::RuleProofs::default();
+        registry_proofs(&claimed, &mut rules);
+        claimed
+            .intent
+            .options
+            .signed
+            .extend(rules.services().cloned());
         let prepared = if targets.is_empty() && built.is_empty() {
             self.renewing(session.plan(claimed.intent), || {
                 session.inner.cancel.cancel()
@@ -673,6 +679,7 @@ impl Run {
                 Ok(mut receipts) => {
                     receipts.extend(built);
                     rules = rule_proofs(session, &claimed, &receipts, self).await;
+                    registry_proofs(&claimed, &mut rules);
                     claimed
                         .intent
                         .options
@@ -699,6 +706,9 @@ impl Run {
                     .await;
             }
             Standing::Over(_) | Standing::Unread => return recorded,
+        }
+        if let Some(behind) = registry_rule_behind(session, &rules, prepared.preview()).await {
+            return self.not_executed(behind.into()).await;
         }
         let log_id = self.deployment.as_str().parse().ok();
         let issued = rules.clone();
@@ -815,6 +825,7 @@ impl Run {
                     } => *preferred_machine,
                     Build::Upload { .. } => None,
                 },
+                free: claimed.free.clone(),
                 ..PreparationInput::default()
             };
             target.input(&mut input);
@@ -979,6 +990,7 @@ impl Run {
                 .map(|(service, receipt)| (service, vec![receipt]))
                 .collect(),
             pins,
+            free: claimed.free.clone(),
             ..PreparationInput::default()
         };
         for target in &targets {
@@ -1575,7 +1587,8 @@ async fn rule_proofs(
     run: &Run,
 ) -> crate::deploy::RuleProofs {
     use ployz_core::authority::{
-        BuildClaim, BuildStage, BuiltImageDigest, CommitSha, PolicyDigest, RuleEvidence, RuleProof,
+        BuildClaim, BuildStage, BuiltImageDigest, CommitSha, KeptRule, PolicyDigest, RuleEvidence,
+        RuleProof,
     };
     let mut proofs = crate::deploy::RuleProofs::default();
     let Some(signed) = &claimed.rule else {
@@ -1588,12 +1601,12 @@ async fn rule_proofs(
         if matches!(kept.claim.stage, BuildStage::Built { image, .. } if Some(image) == runs) {
             proofs.insert(
                 service.clone(),
-                RuleProof {
+                KeptRule::built(RuleProof {
                     rule: signed.clone(),
                     evidence: RuleEvidence::Verified(kept.verified),
                     claim: Some(kept.claim.clone()),
                     reader: None,
-                },
+                }),
             );
         }
     }
@@ -1617,7 +1630,7 @@ async fn rule_proofs(
         })
         .await
         {
-            Ok(Some(proof)) => proofs.insert(service.clone(), proof),
+            Ok(Some(proof)) => proofs.insert(service.clone(), KeptRule::built(proof)),
             Ok(None) => {}
             Err(error) => {
                 tracing::warn!(%error, %service, "could not read a reused image's verified build")
@@ -1654,12 +1667,12 @@ async fn rule_proofs(
             .find(|source| source.service == *service)
             .and_then(|source| source.commit.as_ref())
             .and_then(|commit| CommitSha::parse(commit.as_str()).ok());
-        let (Some(approved), Some(receipt), Some(commit)) = (approved, receipt, commit) else {
+        let (Some(policy), Some(receipt), Some(commit)) = (approved, receipt, commit) else {
             continue;
         };
         let (Ok(image), Ok(policy)) = (
             BuiltImageDigest::parse(&receipt.image.reference),
-            PolicyDigest::of(&approved),
+            PolicyDigest::of(&policy),
         ) else {
             continue;
         };
@@ -1678,15 +1691,100 @@ async fn rule_proofs(
         let token = ployz_core::GithubToken::new(token.token.clone());
         proofs.insert(
             service.clone(),
-            RuleProof {
+            KeptRule::built(RuleProof {
                 rule: signed.clone(),
                 evidence: RuleEvidence::Online(token),
                 claim: Some(claim),
                 reader: run.reader.clone(),
-            },
+            }),
         );
     }
     proofs
+}
+
+/// The proof each image Service `claimed`'s registry rule covers creates with: the signed
+/// rule alone, for a spec that names an image of the rule's repository by digest. Each
+/// Server pulls that digest from the registry itself and checks the rule's settings, so
+/// one the rule no longer approves is refused there.
+fn registry_proofs(claimed: &Claimed, proofs: &mut crate::deploy::RuleProofs) {
+    use ployz_core::authority::{KeptRule, RuleEvidence, RuleProof};
+    let Some(signed) = &claimed.rule else {
+        return;
+    };
+    let Some(rule) = signed.open().ok().filter(|rule| !rule.ended) else {
+        return;
+    };
+    let Some(source) = rule.source.registry() else {
+        return;
+    };
+    for spec in &claimed.intent.target {
+        if proofs.contains(&spec.name) || rule.service(&spec.name).is_none() {
+            continue;
+        }
+        let ours = ployz_core::registry_image(&spec.container.image).is_ok_and(|named| {
+            named.host == source.host
+                && named.repository == source.repository
+                && named.digest.is_some()
+        });
+        if ours {
+            // The logins this Deploy's own Deployment froze become what's applied.
+            proofs.insert(
+                spec.name.clone(),
+                KeptRule {
+                    proof: Box::new(RuleProof {
+                        rule: signed.clone(),
+                        evidence: RuleEvidence::Registry,
+                        claim: None,
+                        reader: None,
+                    }),
+                    login: claimed.intent.registry_logins.get(&spec.name).cloned(),
+                },
+            );
+        }
+    }
+}
+
+/// Why this Deploy stops before it runs: a Server it places a Service on under a registry
+/// rule runs an older Ployz that can't check one. Asked once for the whole Deploy. A
+/// listing that fails lets it run, since each such Server still refuses the Service.
+async fn registry_rule_behind(
+    session: &Session,
+    rules: &crate::deploy::RuleProofs,
+    preview: &ployz_core::DeployPreview,
+) -> Option<String> {
+    let placed: BTreeSet<&MachineId> = rules
+        .registry_services()
+        .filter_map(|service| preview.placed_on.get(service))
+        .flatten()
+        .collect();
+    if placed.is_empty() {
+        return None;
+    }
+    let listed = match session.client() {
+        Ok(mut client) => client.machines().await.map_err(|error| error.to_string()),
+        Err(error) => Err(error.message),
+    };
+    let machines = listed
+        .inspect_err(|error| {
+            tracing::warn!(%error, "couldn't check each Server can deploy under a registry rule");
+        })
+        .ok()?;
+    machines
+        .iter()
+        .find(|observation| {
+            placed.contains(&observation.machine.id)
+                && !observation
+                    .machine
+                    .runtime
+                    .capabilities
+                    .contains(ployz_core::DEPLOY_REGISTRY_RULE_CAPABILITY)
+        })
+        .map(|observation| {
+            format!(
+                "{} runs an older Ployz that can't deploy images under a registry rule. Upgrade it, then deploy again.",
+                observation.machine.name
+            )
+        })
 }
 
 /// The image each Service's tag runs as, which the runner writes into its spec so the

@@ -26,7 +26,8 @@ const ruleSource = (view: { rule: { body: string } | null }) => {
   try {
     // SAFETY: the Store keeps only a rule body it parsed as an `AutoDeployRule`.
     const rule = JSON.parse(view.rule.body) as AutoDeployRule;
-    return rule.ended ? null : rule.source;
+    // A registry rule builds from no repository.
+    return rule.ended || !("repository_id" in rule.source) ? null : rule.source;
   } catch {
     return null;
   }

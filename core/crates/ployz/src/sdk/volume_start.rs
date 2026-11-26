@@ -4,8 +4,7 @@
 use std::sync::Arc;
 
 use ployz_core::{
-    MachineId, Namespace, Region, ResolvedServiceSpec, RpcError,
-    authority::{RuleProof, ServiceVersion, Signed},
+    MachineId, Namespace, Region, ResolvedServiceSpec, RpcError, authority::RuleProof,
 };
 use ployz_store::{ConfigStore, OrganizationId, VersionsView};
 use serde::{Deserialize, Serialize};
@@ -25,21 +24,35 @@ pub struct VolumeStartQuery {
     pub region: Option<Region>,
 }
 
-#[derive(Clone, Debug, Serialize, TS)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum VolumeStartProof {
     /// The spec `machine` starts, and the signed versions or verified build that admit it
     /// there while their signers stay trusted.
     Admits {
         spec: Box<ResolvedServiceSpec>,
-        versions: Vec<Signed<ServiceVersion>>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        #[ts(optional)]
-        rule: Option<Box<RuleProof>>,
+        /// The versions, and the rule's proof with the login a registry rule's start
+        /// pulls the image with.
+        #[serde(flatten)]
+        kept: VersionsView,
     },
     /// No version signs this spec and no rule built its image.
     Unsigned,
     /// Only a rule built it, and the rule doesn't list `machine` or was replaced since.
+    OffRule,
+}
+
+/// [`VolumeStartProof`] as TypeScript reads it, its versions and kept rule flattened as
+/// [`ployz_store::VersionsFields`] spells them.
+#[derive(TS)]
+#[ts(rename = "VolumeStartProof", tag = "kind", rename_all = "snake_case")]
+pub enum VolumeStartFields {
+    Admits {
+        spec: Box<ResolvedServiceSpec>,
+        #[ts(flatten)]
+        kept: ployz_store::VersionsFields,
+    },
+    Unsigned,
     OffRule,
 }
 
@@ -110,17 +123,16 @@ fn admitting(
                 && proof
                     .claim
                     .as_ref()
-                    .is_none_or(|claim| claim.generation == rule.generation)
+                    .is_none_or(|claim| rule.generation == claim.generation)
                 && rule.machines.contains(machine)
         })
     };
     let mut off_rule = false;
     for (spec, view) in found {
-        if !view.versions.is_empty() || view.rule.as_deref().is_some_and(lists) {
+        if !view.versions.is_empty() || view.rule.as_ref().is_some_and(|kept| lists(&kept.proof)) {
             return VolumeStartProof::Admits {
                 spec: Box::new(spec),
-                versions: view.versions,
-                rule: view.rule,
+                kept: view,
             };
         }
         off_rule |= view.rule.is_some();
@@ -134,6 +146,7 @@ fn admitting(
 
 #[cfg(test)]
 mod tests {
+    use ployz_core::authority::{ServiceVersion, Signed};
     use ployz_core::config::{RegionReplicas, Replicas, lower_placement};
 
     use super::*;
@@ -232,8 +245,8 @@ mod tests {
         use ployz_core::authority::rule::{Builder, RuleEvent, Runner};
         use ployz_core::authority::{
             AttestKey, AutoDeployRule, BuildClaim, BuildStage, BuiltImageDigest, CommitAuthority,
-            CommitSha, PolicyDigest, RuleEvidence, RuleId, RuleSource, Signer, SignerKey,
-            Timestamp,
+            CommitSha, GithubSource, PolicyDigest, RuleEvidence, RuleId, RuleSource, Signer,
+            SignerKey, Timestamp,
         };
         let cluster = ployz_core::SealingPublicKey::from_bytes([3; 32]);
         let signer = Signer::from_seed(&[1; 32]);
@@ -245,7 +258,7 @@ mod tests {
             generation: 1,
             namespace: namespace(),
             machines: Vec::new(),
-            source: RuleSource {
+            source: RuleSource::Github(GithubSource {
                 repository_id: 11,
                 owner_id: 1,
                 repository: "acme/web".into(),
@@ -254,7 +267,7 @@ mod tests {
                 events: vec![RuleEvent::Push],
                 builder: Builder::pinned(),
                 runner: Runner::GithubHosted,
-            },
+            }),
             services: Vec::new(),
             issued_at: Timestamp::from_millis(1_800_000_000_000).unwrap(),
             ended: false,
@@ -317,17 +330,27 @@ mod tests {
                 } else {
                     Vec::new()
                 };
-                let rule = Some(Box::new(rule_omitting_every_machine()));
-                (spec, VersionsView { versions, rule })
+                let rule = Some(ployz_core::authority::KeptRule {
+                    proof: Box::new(rule_omitting_every_machine()),
+                    login: None,
+                });
+                (
+                    spec,
+                    VersionsView {
+                        versions,
+                        rule,
+                        free: None,
+                    },
+                )
             })
             .collect();
 
         let proof = admitting(found, &MachineId::parse("b".repeat(32)).unwrap());
 
-        let VolumeStartProof::Admits { spec, versions, .. } = proof else {
+        let VolumeStartProof::Admits { spec, kept } = proof else {
             panic!("{proof:?}");
         };
         assert_eq!(digest(&spec), digest(&signed));
-        assert_eq!(versions, vec![version]);
+        assert_eq!(kept.versions, vec![version]);
     }
 }

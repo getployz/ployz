@@ -21,6 +21,10 @@ tokio-util = "0.7.19"
 thiserror = "2.0.20"
 tracing = "0.1.44"
 
+[features]
+# Staging for a Free Build's upload, for the fake Builders in ployz's tests.
+test-support = []
+
 [dev-dependencies]
 tempfile = "3.27.0"
 

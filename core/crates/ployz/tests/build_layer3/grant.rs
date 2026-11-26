@@ -48,6 +48,7 @@ async fn ployz_build_pushes_into_a_machine_with_a_build_grant() {
             build_receipts: BTreeMap::new(),
             build_index: 0,
             preferred_machine: None,
+            free: Default::default(),
             pins: BTreeMap::new(),
         })
         .unwrap()
