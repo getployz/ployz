@@ -58,6 +58,16 @@ Machine RPC evolves by capability, never by version compare:
 5. A new stream variant is opt-in through a request field.
 6. A removed verb is shimmed, or the daemon stops advertising it and refuses.
 7. Every refusal of a catalogued route names `details.capability`.
+8. The one exception to rule 4: when an old route's meaning can destroy user
+   data, it narrows in place to keep the data, and an older caller gets the
+   safe outcome instead of the destructive one. Each such narrowing is listed
+   here with its cost:
+   - `ensure.v1` and `ensure-pinned.v1` keep a removed Container's anonymous
+     volumes unless the removal names the copy that replaced it (#4562). An
+     older runner's in-place replace leaves zero to many volumes behind.
+   - A Volume Forget refuses a slot that may hold writes no other Machine has
+     unless it says `discard` (#4571). A self-hosted Cloud on 0.4.0-beta.2 or
+     earlier can't remove a Move's old copy until it upgrades.
 
 A breaking line protects older Clusters from its own side: daemons follow
 their own line's channel, and the new line refuses to mix with the old.

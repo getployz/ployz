@@ -1443,6 +1443,7 @@ fn observation(
         run: None,
         log_driver: None,
         admission: Some(Admission::Signed),
+        replaced_by: None,
     })
     .unwrap()
 }

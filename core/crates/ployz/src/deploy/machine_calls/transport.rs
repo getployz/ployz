@@ -5,9 +5,9 @@ use std::time::Duration;
 use ployz_core::{
     ContainerDetails, ContainerId, ContainerLimitsUpdated, ContainerNow, ContainerObservation,
     ContainerPlacementUpdated, ContainerWant, DockerVolumeId, EnsuredContainer, HealthVerdict,
-    ImagePulled, IngressDoorsSet, MachineId, PrivateAccessSet, QualifiedService, RegistryAuth,
-    ResolvedServiceSpec, Retry, RoutesRead, RpcError, RpcErrorCode, SetIngressDoorsRequest,
-    SetPrivateAccessRequest, SlotKey,
+    ImagePulled, IngressDoorsSet, MachineId, PrivateAccessSet, QualifiedService,
+    ResolvedServiceSpec, Retry, RoutesRead, RpcError, RpcErrorCode, SealedLogin,
+    SetIngressDoorsRequest, SetPrivateAccessRequest, SlotKey,
 };
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -156,7 +156,7 @@ restart_policy! {
         wait fn update_container_limits(&self, machine_id: &MachineId, container_id: &ContainerId, spec: &ResolvedServiceSpec) -> Result<ContainerLimitsUpdated, RpcError>;
         wait fn update_container_placement(&self, machine_id: &MachineId, container_id: &ContainerId, spec: &ResolvedServiceSpec) -> Result<ContainerPlacementUpdated, RpcError>;
         wait fn runs_global(&self, machine_id: &MachineId, slot: &SlotKey, spec: &ResolvedServiceSpec) -> Result<bool, RpcError>;
-        wait fn ensure_image(&self, machine_id: &MachineId, spec: &ResolvedServiceSpec, auth: Option<RegistryAuth>) -> Result<ImagePulled, RpcError>;
+        wait fn ensure_image(&self, machine_id: &MachineId, spec: &ResolvedServiceSpec, auth: Option<SealedLogin>) -> Result<ImagePulled, RpcError>;
     }
     ProxyPlacement {
         wait fn set_ingress_doors(&self, machine_id: &MachineId, request: SetIngressDoorsRequest) -> Result<IngressDoorsSet, RpcError>;

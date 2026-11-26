@@ -100,7 +100,7 @@ impl Drop for ImageRetention {
                 Streams::Captured,
             )
         }) {
-            eprintln!("Could not release temporary Build tags: {error}");
+            tracing::warn!(%error, "Could not release temporary Build tags");
         }
         let _ = fs::remove_dir_all(&self.root);
     }

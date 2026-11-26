@@ -10,11 +10,13 @@ pub(crate) mod holder;
 mod http_health;
 mod images;
 pub use images::Images;
+mod exec_watch;
 mod inspect;
+mod kept_volumes;
 use inspect::{Inspected, RawContainerConfig};
 mod lifecycle;
-pub use lifecycle::Lifecycle;
 pub(crate) use lifecycle::PreviewImage;
+pub use lifecycle::{Lifecycle, VolumeDisposal};
 mod limits;
 mod live_stats;
 mod managed_service;
@@ -25,6 +27,7 @@ mod placement;
 mod recovery;
 pub(crate) use peer_pull::ImageProxy;
 mod private_access;
+mod processes;
 mod spec_store;
 mod standing;
 use standing::Standing;
@@ -84,7 +87,7 @@ pub(crate) use managed_service::{DesiredContainer, Ensure, ManagedService};
 pub(crate) use peer_pull::pull_from_ingest;
 use ployz_core::{LimitsRefusal, PlacementRefusal};
 pub use spec_store::{Error as SpecStoreError, FloorTurn, MachineSpecStore};
-pub use unregistry::ImageIngest;
+pub use unregistry::{ImageIngest, ProcessUnread};
 
 #[cfg(test)]
 use create::{docker_healthcheck, docker_mounts, docker_ports, docker_resources};
@@ -312,14 +315,9 @@ impl RotationTurn<'_> {
     /// # Errors
     ///
     /// As [`Lifecycle::remove`].
-    pub async fn remove(mut self, remove_volumes: bool, force: bool) -> Result<(), Error> {
+    pub async fn remove(mut self, volumes: VolumeDisposal, force: bool) -> Result<(), Error> {
         self.runtime
-            .remove_locked(
-                &mut self.operation,
-                &self.container_id,
-                remove_volumes,
-                force,
-            )
+            .remove_locked(&mut self.operation, &self.container_id, volumes, force)
             .await
     }
 }
@@ -532,6 +530,20 @@ impl ContainerRuntime {
     /// The Sealing Key this Machine opens Sealed values with.
     pub(crate) fn sealing(&self) -> &SealingKeyStore {
         self.observation.sealing()
+    }
+
+    /// The login `login` opens to for pulling `image`, as
+    /// [`crate::docker_image::open_login`] allows it.
+    ///
+    /// # Errors
+    ///
+    /// Returns when the login is refused for `image` or does not open.
+    pub(crate) async fn open_login(
+        &self,
+        image: &str,
+        login: &ployz_core::SealedLogin,
+    ) -> Result<ployz_core::RegistryAuth, Error> {
+        crate::docker_image::open_login(&self.docker.client, self.sealing(), image, login).await
     }
 
     /// The secret files this Machine keeps for the Containers that mount them.
@@ -883,6 +895,7 @@ impl Observation {
             .await?
             .ok_or_else(|| Error::SpecNotFound(*container_id))?;
         let rotation = rotation.unwrap_or_default();
+        let replaced_by = self.specs.replaced_by(container_id).await?;
         let r#gen = labels::generation(labels);
 
         let environment = inspected.config.as_ref().and_then(inspected_environment);
@@ -974,6 +987,7 @@ impl Observation {
                     .and_then(|host| host.log_config.as_ref())
                     .and_then(|log| log.typ.clone()),
                 admission: Some(admission),
+                replaced_by,
             })?;
         let oom_killed = inspected.oom_killed();
         Ok(InspectedRun {
@@ -1449,6 +1463,28 @@ pub enum Error {
     ForeignTunnelNetwork,
     #[error("image pull failed")]
     ImagePull(#[source] bollard::errors::Error),
+    /// A start whose pull policy is `never` names an image this Server doesn't hold.
+    #[error(
+        "image {image} isn't on this Server, and its pull policy is never, so nothing pulls it"
+    )]
+    ImageAbsent {
+        image: String,
+        #[source]
+        source: bollard::errors::Error,
+    },
+    /// A Writer start resent after its promote names the image it placed before it,
+    /// which this Server no longer holds.
+    #[error(
+        "image {image}, which this Writer was promoted to run, is no longer on this Server, and a start after its promote pulls nothing"
+    )]
+    PlacedImageGone {
+        image: String,
+        #[source]
+        source: bollard::errors::Error,
+    },
+    /// A sealed registry login this Machine won't pull with.
+    #[error("this Server won't pull the image with its registry login")]
+    RegistryLogin(#[from] crate::docker_image::LoginRefused),
     /// A spec nothing signed names an image this Machine cannot pull itself with no login.
     #[error("nothing signed this Service, so its image must be public")]
     UnsignedImage(#[source] crate::docker_image::UnsignedImage),
@@ -1503,6 +1539,8 @@ impl Error {
             | Self::SpecNotFound(_)
             | Self::LimitsSpecNotFound(_)
             | Self::ExternalVolumeNotFound(_)
+            | Self::ImageAbsent { .. }
+            | Self::PlacedImageGone { .. }
             | Self::Docker(bollard::errors::Error::DockerResponseServerError {
                 status_code: 404,
                 ..
@@ -1541,6 +1579,7 @@ impl Error {
             | Self::PeerPull(_)
             | Self::UnregistryNotReady { .. }
             | Self::Sealed(crate::sealed_env::OpenError::KeyMissing)
+            | Self::RegistryLogin(crate::docker_image::LoginRefused::Unread(_))
             | Self::LogStoreUpgrading(_) => RpcErrorCode::Unavailable,
             Self::Sealed(_) | Self::MissingPreDeployHook
             | Self::EndpointCapacity
@@ -1557,6 +1596,7 @@ impl Error {
             | Self::TunnelOriginNotRunning
             | Self::UnrecognizedNetwork
             | Self::UnsignedImage(_)
+            | Self::RegistryLogin(_)
             | Self::NotAdmitted
             | Self::Unadmitted(_)
             | Self::PreviewRefused(_)

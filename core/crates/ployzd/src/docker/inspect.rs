@@ -177,6 +177,21 @@ impl Inspected {
             .unwrap_or(false)
     }
 
+    /// Docker's `State.Running` reads false: the Container has no process, so neither has
+    /// an exec in it. A field Docker left out says nothing.
+    pub(crate) fn has_no_process(&self) -> bool {
+        self.state_field("Running")
+            .and_then(serde_json::Value::as_bool)
+            == Some(false)
+    }
+
+    /// This run of the Container's process, as its ID and `State.StartedAt`: a restart
+    /// or a new Container names another.
+    pub(crate) fn process(&self) -> Option<String> {
+        let started = self.state_field("StartedAt")?.as_str()?;
+        Some(format!("{}@{started}", self.id.as_deref()?))
+    }
+
     /// Docker left this container created and recorded why its start failed.
     /// Docker clears `State.Error` when a start succeeds, so a container at rest with one
     /// recorded is one whose last start failed: its first, or the one at boot that

@@ -4011,6 +4011,7 @@ dependencies = [
  "ployz-decide",
  "ployz-store",
  "ployz-testkit",
+ "proc-macro2",
  "regex",
  "reqwest",
  "rmcp",
@@ -4077,6 +4078,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.20",
  "tokio-util",
+ "tracing",
  "url",
  "uuid",
 ]
@@ -4273,6 +4275,7 @@ dependencies = [
  "tokio-util",
  "toml",
  "tonic",
+ "tower",
  "tower-service",
  "tracing",
  "tracing-subscriber",

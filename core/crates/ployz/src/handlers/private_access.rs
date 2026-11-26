@@ -95,6 +95,7 @@ pub(crate) fn on(root: &ArgMatches) -> Result<(), Error> {
     };
     let config = super::config_path(root)?;
     let device_key = crate::device::key::path(&config);
+    let refused_retry = crate::cli::Rerun::again(root).switch("auth-key-stdin");
     with_client(root, |client| {
         Box::pin(async move {
             let seal_to = super::device::seal_to(&config, client).await?;
@@ -137,9 +138,7 @@ pub(crate) fn on(root: &ArgMatches) -> Result<(), Error> {
                 }
             });
             if refused {
-                ui::hint(&Hint::Retry(
-                    "ployz private-access on --auth-key-stdin".to_owned(),
-                ));
+                ui::hint(&refused_retry.into());
             }
             outcome
         })

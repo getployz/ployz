@@ -3,9 +3,10 @@ use std::time::Duration;
 
 use clap::ArgMatches;
 use ployz_core::{
-    InspectRequest, LargePackets, Machine, MachineDetails, MachineName, MachineObservation,
-    MachineRuntime, MachineStorageObservation, MachineTarget, MachineUpgradeAttempt,
-    MachineUpgradeOutcome, MembershipObservation, RpcErrorCode, TelemetryObservation, op,
+    Hint, InspectRequest, KeptVolume, LargePackets, ListKeptVolumesRequest, Machine,
+    MachineDetails, MachineName, MachineObservation, MachineRuntime, MachineStorageObservation,
+    MachineTarget, MachineUpgradeAttempt, MachineUpgradeOutcome, MembershipObservation,
+    RpcErrorCode, TelemetryObservation, op,
 };
 use serde_json::{Value, json};
 
@@ -321,7 +322,11 @@ async fn inspect(
     client: &mut crate::connect::Client,
     selector: &MachineTarget,
 ) -> Result<(), Error> {
-    let details = match read_details(direct, client, selector).await {
+    let (details, kept) = tokio::join!(
+        read_details(direct, client, selector),
+        kept_volumes(client, selector)
+    );
+    let details = match details {
         Ok(details) => details,
         Err(error) => {
             if error.target_unanswered()
@@ -345,10 +350,70 @@ async fn inspect(
             );
         }
     }
-    crate::ui::fields(
-        &json!({ "server": server, "upgrade": details.upgrade }),
-        &record(&details),
+    let mut record = record(&details);
+    if let Some(kept) = &kept {
+        record.push("kept volumes", kept_summary(kept));
+    }
+    let name = details.machine.as_ref().map_or_else(
+        || details.id.to_string(),
+        |machine| machine.name.to_string(),
+    );
+    crate::ui::finish(
+        &json!({ "server": server, "upgrade": details.upgrade, "kept_volumes": kept }),
+        || {
+            crate::ui::record(&record);
+            if kept.as_ref().is_some_and(|kept| !kept.is_empty()) {
+                crate::ui::hint(&Hint::Next(crate::cli::rerun(
+                    direct.leaf,
+                    &["server", "volumes", &name],
+                )));
+            }
+        },
     )
+}
+
+/// How long `server show` waits for the Server's kept volumes, which it measures, before
+/// it shows the rest without them.
+const KEPT_VOLUMES_WAIT: Duration = Duration::from_secs(5);
+
+/// The volumes the Server kept from removed containers, or `None` when its daemon predates
+/// them or didn't answer in time.
+async fn kept_volumes(
+    client: &crate::connect::Client,
+    selector: &MachineTarget,
+) -> Option<Vec<KeptVolume>> {
+    tokio::time::timeout(
+        KEPT_VOLUMES_WAIT,
+        client.call_shared::<op::ListKeptVolumes>(
+            ListKeptVolumesRequest {},
+            Call::once().to(selector),
+        ),
+    )
+    .await
+    .ok()?
+    .ok()
+    .map(|kept| kept.volumes)
+}
+
+/// How many volumes the Server kept and the space they take, at least, when some
+/// weren't measured.
+fn kept_summary(kept: &[KeptVolume]) -> String {
+    if kept.is_empty() {
+        return "none".into();
+    }
+    let measured: u64 = kept.iter().filter_map(|volume| volume.size_bytes).sum();
+    let unmeasured = kept
+        .iter()
+        .filter(|volume| volume.size_bytes.is_none())
+        .count();
+    let count = kept.len();
+    if unmeasured == count {
+        format!("{count}, size unknown")
+    } else if unmeasured > 0 {
+        format!("{count}, at least {}", size(measured))
+    } else {
+        format!("{count}, {}", size(measured))
+    }
 }
 
 /// How long a read routed through the entry runs alone before the same read starts on the

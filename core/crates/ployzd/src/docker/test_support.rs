@@ -72,6 +72,12 @@ pub(crate) struct FakeDocker {
     pub(crate) refuse_create_of: Arc<Mutex<BTreeSet<String>>>,
     /// Named mode: Docker refuses to remove a Container of these Service names.
     pub(crate) refuse_remove_of: Arc<Mutex<BTreeSet<String>>>,
+    /// Named mode: each removal's Container ID, and whether it took the Container's
+    /// anonymous volumes.
+    pub(crate) removals: Arc<Mutex<Vec<(String, bool)>>>,
+    /// Named mode: where every new Container gets a fresh anonymous volume, as an image's
+    /// `VOLUME` declares one. A removal with `v=true` takes them; Docker marks each.
+    pub(crate) anonymous_mounts: Arc<Mutex<Vec<String>>>,
     pub(crate) stopped_once: Arc<Mutex<BTreeSet<String>>>,
     /// Named mode: each start of a stopped Container stamps a new `StartedAt`, and a
     /// stop keeps it and stamps `FinishedAt`, as Docker does.
@@ -272,7 +278,7 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
                 .and_then(serde_json::Value::as_str)
                 .and_then(|image| fake.image(image));
             // Docker answers each mount by the Volume's name and where it is mounted.
-            let mounts: Vec<serde_json::Value> = host_config
+            let mut mounts: Vec<serde_json::Value> = host_config
                 .get("Mounts")
                 .and_then(serde_json::Value::as_array)
                 .into_iter()
@@ -286,6 +292,27 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
                     })
                 })
                 .collect();
+            for destination in fake.anonymous_mounts.lock().unwrap().iter() {
+                let volume = format!("{}{}", MachineId::random(), MachineId::random());
+                fake.volumes.lock().unwrap().insert(
+                    volume.clone(),
+                    serde_json::json!({
+                        "Name": volume,
+                        "Driver": "local",
+                        "Mountpoint": format!("/var/lib/docker/volumes/{volume}/_data"),
+                        "Labels": {ANONYMOUS_VOLUME_LABEL: ""},
+                        "CreatedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                        "Scope": "local",
+                        "Options": null,
+                    }),
+                );
+                mounts.push(serde_json::json!({
+                    "Type": "volume",
+                    "Name": volume,
+                    "Destination": destination,
+                    "Driver": "local",
+                }));
+            }
             containers.insert(name.into(), serde_json::json!({"Id": id, "Name": format!("/{name}"), "Image": image, "Config": config, "HostConfig": host_config, "Mounts": mounts, "State":{"Status":"created"}}));
             return (
                 StatusCode::CREATED,
@@ -370,6 +397,29 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
                         Json(serde_json::json!({"message":"cannot remove container"})),
                     )
                         .into_response();
+                }
+                let volumes = uri
+                    .query()
+                    .is_some_and(|query| query.split('&').any(|part| part == "v=true"));
+                fake.removals.lock().unwrap().push((
+                    container
+                        .get("Id")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                    volumes,
+                ));
+                if volumes {
+                    let mut held = fake.volumes.lock().unwrap();
+                    for mounted in mounted_volumes(&container) {
+                        if held
+                            .get(&mounted)
+                            .and_then(|volume| volume.pointer("/Labels"))
+                            .is_some_and(|labels| labels.get(ANONYMOUS_VOLUME_LABEL).is_some())
+                        {
+                            held.remove(&mounted);
+                        }
+                    }
                 }
                 containers.remove(&name);
                 return StatusCode::NO_CONTENT.into_response();
@@ -779,13 +829,27 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
         (StatusCode::NO_CONTENT, serde_json::Value::Null)
     } else if method == Method::DELETE && path.contains("/volumes/") {
         let name = path.rsplit('/').next().unwrap();
+        let mounting: Vec<serde_json::Value> = fake
+            .named_containers
+            .iter()
+            .flat_map(|containers| {
+                containers
+                    .lock()
+                    .unwrap()
+                    .values()
+                    .filter(|container| mounted_volumes(container).any(|mounted| mounted == name))
+                    .map(|container| serde_json::json!({"Id": container.get("Id")}))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
         let holders = fake
             .volume_users
             .lock()
             .unwrap()
             .get(name)
             .filter(|holders| !holders.is_empty())
-            .cloned();
+            .cloned()
+            .or_else(|| (!mounting.is_empty()).then_some(mounting));
         if let Some(holders) = holders {
             let ids: Vec<String> = holders
                 .iter()
@@ -852,6 +916,9 @@ fn listed_by_labels(
         .find(|(key, _)| key == "filters")
         .map(|(_, filters)| serde_json::from_str::<serde_json::Value>(&filters).unwrap())
         .unwrap_or_default();
+    // Docker lists only running Containers unless asked for all.
+    let all = url::form_urlencoded::parse(query.unwrap_or_default().as_bytes())
+        .any(|(key, value)| key == "all" && (value == "true" || value == "1"));
     let wanted = filters
         .get("label")
         .and_then(serde_json::Value::as_array)
@@ -864,6 +931,12 @@ fn listed_by_labels(
         .unwrap_or_default();
     containers
         .values()
+        .filter(|container| {
+            all || container
+                .pointer("/State/Status")
+                .and_then(serde_json::Value::as_str)
+                == Some("running")
+        })
         .filter_map(|container| {
             let labels = container.pointer("/Config/Labels")?;
             wanted
@@ -877,6 +950,21 @@ fn listed_by_labels(
                 .then(|| serde_json::json!({"Id": container.get("Id"), "Labels": labels}))
         })
         .collect()
+}
+
+/// Docker's mark on a volume it made for a Container's anonymous mount.
+const ANONYMOUS_VOLUME_LABEL: &str = "com.docker.volume.anonymous";
+
+/// The names of the volumes `container` mounts.
+fn mounted_volumes(container: &serde_json::Value) -> impl Iterator<Item = String> + '_ {
+    container
+        .get("Mounts")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|mount| mount.get("Type").and_then(serde_json::Value::as_str) == Some("volume"))
+        .filter_map(|mount| mount.get("Name").and_then(serde_json::Value::as_str))
+        .map(str::to_owned)
 }
 
 pub(crate) async fn fake_runtime_with(fake: FakeDocker) -> (ContainerRuntime, FakeDocker) {
@@ -986,6 +1074,7 @@ pub(super) fn container_request<'spec, Storage>(
     ContainerRequest {
         deployment_id: None,
         r#gen: ployz_core::Gen::FIRST,
+        replaces: None,
         image: crate::docker_image::ImagePull::Policy(None),
         creation_key: "test-key",
         kind,

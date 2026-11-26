@@ -594,7 +594,7 @@ fn a_column_flag_given_as_the_sort_value_keeps_claps_error() {
             "unexpected argument '--wide'",
         ),
         (&["ps", "--sort", "-w"], "unexpected argument '-w'"),
-        (&["ps", "--sort=--wide"], "invalid value '--wide'"),
+        (&["ps", "--sort=--wide"], "invalid value '<VALUE>'"),
     ] {
         let (code, stderr) = run_human(args);
         assert_eq!(code, Some(2), "{args:?}: {stderr}");
@@ -756,7 +756,7 @@ fn token_new_takes_the_three_presets_and_env_only_with_deploy() {
     for (args, wants) in [
         (
             &["--preset", "admin"][..],
-            "invalid value 'admin' for '--preset <preset>'",
+            "invalid value '<VALUE>' for '--preset <preset>'",
         ),
         (&["--preset", "deploy"], "--env"),
         (
@@ -1640,10 +1640,12 @@ fn removing_a_server_when_cloud_does_not_answer_says_to_retry_not_forget() {
         .as_str()
         .unwrap();
     // The retry keeps the reason this run gave, so an agent can run it as is.
+    assert!(retry.starts_with("ployz --ployz-config "), "{json}");
     assert!(
-        retry.starts_with("ployz '--why=test' server rm web-1 --json"),
+        retry.contains(" --json --why '<REASON>' server rm "),
         "{json}"
     );
+    assert!(retry.ends_with(" server rm web-1"), "{json}");
 }
 
 #[test]
@@ -1908,7 +1910,7 @@ fn server_reject_counts_a_refusal_it_cannot_read_as_uncertain() {
 }
 
 #[test]
-fn server_errors_print_a_hostile_selector_inert_and_retry_it_exactly() {
+fn server_errors_print_a_hostile_selector_inert_and_withhold_it_from_the_retry() {
     let hostile = "web\u{1b}[31mX\u{202E}'1";
     let routes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let cloud = waiting_cloud(
@@ -1940,10 +1942,9 @@ fn server_errors_print_a_hostile_selector_inert_and_retry_it_exactly() {
         .find(|line| line.contains("--yes"))
         .unwrap_or_else(|| panic!("{stderr:?}"));
     assert!(
-        retry.contains(r"$'web\x1b[31mX\xe2\x80\xae\'1'"),
+        retry.contains("server reject '<PATTERN>' --yes"),
         "{retry:?}"
     );
-    assert!(!retry.contains('\u{FFFD}'), "{retry:?}");
     assert!(rejected_ids(&routes).is_empty());
 }
 
@@ -2734,6 +2735,510 @@ fn no_error_derive_interpolates_its_source() {
     );
 }
 
+/// Every raw-text field a CLI error message repeats, as `Type::Variant.field`, with where
+/// its value comes from. None comes from a command line or a variable: a value typed there
+/// reaches a message only once it parsed into its type, or as a `Shown`, since a value
+/// refused as one kind may be a credential typed in the wrong place.
+const RAW_MESSAGE_FIELDS: &[(&str, &str)] = &[
+    (
+        "BuildCommandError::Docker.command",
+        "text the build runner composes from the Build Grant Cloud signed",
+    ),
+    (
+        "BuildCommandError::Docker.stderr",
+        "output of docker or git, run here on what the command builds",
+    ),
+    (
+        "BuildCommandError::Git.command",
+        "text the build runner composes from the Build Grant Cloud signed",
+    ),
+    (
+        "BuildCommandError::Git.stderr",
+        "output of docker or git, run here on what the command builds",
+    ),
+    (
+        "BuildCommandError::NotAtCommit.0",
+        "text the build runner composes from the Build Grant Cloud signed",
+    ),
+    (
+        "BuildCommandError::Sealed.0",
+        "text the build runner composes from the Build Grant Cloud signed",
+    ),
+    (
+        "CapabilityCheckError::RefusedByEnforcement.0",
+        "text a Server's daemon sent",
+    ),
+    (
+        "ConfigError::CreateDirectory.path",
+        "the Ployz config path: PLOYZ_CONFIG refuses a URL",
+    ),
+    (
+        "ConfigError::EmptyCurrentContext.0",
+        "the Ployz config path: PLOYZ_CONFIG refuses a URL",
+    ),
+    ("ConfigError::Parse.line", "text Ployz composes"),
+    (
+        "ConfigError::Parse.path",
+        "the Ployz config path: PLOYZ_CONFIG refuses a URL",
+    ),
+    (
+        "ConfigError::PrivatePermissions.0",
+        "the Ployz config path: PLOYZ_CONFIG refuses a URL",
+    ),
+    (
+        "ConfigError::Read.path",
+        "the Ployz config path: PLOYZ_CONFIG refuses a URL",
+    ),
+    (
+        "ConfigError::Write.path",
+        "the Ployz config path: PLOYZ_CONFIG refuses a URL",
+    ),
+    (
+        "ConnectError::AllFailed.server",
+        "a Server's name from Cloud, a context or the Server itself",
+    ),
+    ("ConnectError::Attempt.0", "text Ployz composes"),
+    (
+        "ConnectError::Path.path",
+        "the local daemon socket's path, compiled in",
+    ),
+    (
+        "ConnectError::UnsupportedNetwork.0",
+        "a network an SDK program asked to dial, not a command line",
+    ),
+    (
+        "ContextError::ContextNotFound.path",
+        "the Ployz config path: PLOYZ_CONFIG refuses a URL",
+    ),
+    (
+        "ContextError::NoContexts.0",
+        "the Ployz config path: PLOYZ_CONFIG refuses a URL",
+    ),
+    (
+        "ContextError::NoCurrentContext.0",
+        "the Ployz config path: PLOYZ_CONFIG refuses a URL",
+    ),
+    ("DeliveryError.0", "text Ployz composes"),
+    ("Stop::Unobservable.detail", "text a Server's daemon sent"),
+    (
+        "EnrollInstructionError::LeadingDash.value",
+        "Cloud's enroll instruction",
+    ),
+    (
+        "EnrollInstructionError::ZfsDevice.device",
+        "Cloud's enroll instruction",
+    ),
+    ("Error::CodedConflict.body", "text Cloud sent"),
+    ("Error::Exhausted.operation", "text Ployz composes"),
+    (
+        "Error::Invalid.0",
+        "text the build runner composes from the Build Grant Cloud signed",
+    ),
+    (
+        "Error::Io.0",
+        "text the build runner composes from the Build Grant Cloud signed",
+    ),
+    (
+        "Error::Sealed.0",
+        "text the build runner composes from the Build Grant Cloud signed",
+    ),
+    ("Error::Status.body", "text Cloud sent"),
+    (
+        "KeyError::Exposed.path",
+        "a file Ployz keeps beside its config",
+    ),
+    (
+        "KeyError::Malformed.path",
+        "a file Ployz keeps beside its config",
+    ),
+    (
+        "KeyError::NotAToken.path",
+        "a file path typed for the command to read: a residual, a path takes any text",
+    ),
+    (
+        "KeyError::Read.path",
+        "a file Ployz keeps beside its config",
+    ),
+    (
+        "KeyError::Token.path",
+        "a file path typed for the command to read: a residual, a path takes any text",
+    ),
+    (
+        "KeyError::Write.path",
+        "a file Ployz keeps beside its config",
+    ),
+    ("LogError::Message.0", "text a Server's daemon sent"),
+    ("LoginError::AmbiguousCredential.ids", "text Cloud sent"),
+    (
+        "LoginError::AmbiguousCredential.name",
+        "a token name typed that matched more than one Cloud lists",
+    ),
+    ("LoginError::AwaitingApproval.url", "text Cloud sent"),
+    (
+        "LoginError::Corrupt.path",
+        "a file Ployz keeps beside its config",
+    ),
+    (
+        "LoginError::NotMember.0",
+        "the stored sign-in's Organization, from Cloud",
+    ),
+    ("LoginError::Reply.0", "text Cloud sent"),
+    ("LoginError::Status.body", "text Cloud sent"),
+    (
+        "LoginError::Store.path",
+        "a file Ployz keeps beside its config",
+    ),
+    (
+        "LoginError::TokenCloudUnreadable.0",
+        "a file Ployz keeps beside its config",
+    ),
+    (
+        "OperatorError::ExecConnectionLost.server",
+        "a Service, Container or Server name typed, parsed as its selector, or one a Server reported",
+    ),
+    (
+        "OperatorError::ExecContainerStopped.service",
+        "a Service, Container or Server name typed, parsed as its selector, or one a Server reported",
+    ),
+    (
+        "OperatorError::NotRunning.name",
+        "a Service, Container or Server name typed, parsed as its selector, or one a Server reported",
+    ),
+    (
+        "OperatorError::NotRunningOnAnswered.service",
+        "a Service, Container or Server name typed, parsed as its selector, or one a Server reported",
+    ),
+    (
+        "OperatorError::OpenContainerLogs.container",
+        "a Service, Container or Server name typed, parsed as its selector, or one a Server reported",
+    ),
+    (
+        "OperatorError::OpenContainerLogs.server",
+        "a Service, Container or Server name typed, parsed as its selector, or one a Server reported",
+    ),
+    (
+        "OperatorError::StartExec.container",
+        "a Service, Container or Server name typed, parsed as its selector, or one a Server reported",
+    ),
+    (
+        "OperatorError::UnsupportedLogService.service",
+        "a Service, Container or Server name typed, parsed as its selector, or one a Server reported",
+    ),
+    (
+        "PinError::Malformed.path",
+        "a file Ployz keeps beside its config",
+    ),
+    (
+        "PinError::NeedsCredentials.reference",
+        "an image reference from the authored config or a build, parsed as one",
+    ),
+    (
+        "PinError::NeedsCredentials.registry",
+        "an image reference from the authored config or a build, parsed as one",
+    ),
+    (
+        "PinError::NotATag.reference",
+        "an image reference from the authored config or a build, parsed as one",
+    ),
+    (
+        "PinError::Read.path",
+        "a file Ployz keeps beside its config",
+    ),
+    (
+        "PinError::TimedOut.registry",
+        "an image reference from the authored config or a build, parsed as one",
+    ),
+    (
+        "PinError::Unread.reference",
+        "an image reference from the authored config or a build, parsed as one",
+    ),
+    (
+        "PinError::Unread.registry",
+        "an image reference from the authored config or a build, parsed as one",
+    ),
+    (
+        "PinError::Write.path",
+        "a file Ployz keeps beside its config",
+    ),
+    (
+        "PlanError::CopiesUnknown.name",
+        "a name from the Store or the authored config, parsed as its kind",
+    ),
+    (
+        "PlanError::DependencyCycle.service",
+        "a name from the Store or the authored config, parsed as its kind",
+    ),
+    (
+        "PlanError::FirstCopyUnfit.machine",
+        "a name from the Store or the authored config, parsed as its kind",
+    ),
+    (
+        "PlanError::FirstCopyUnfit.volume",
+        "a name from the Store or the authored config, parsed as its kind",
+    ),
+    (
+        "PlanError::MixedVolumeModes.global",
+        "a name from the Store or the authored config, parsed as its kind",
+    ),
+    (
+        "PlanError::MixedVolumeModes.replicated",
+        "a name from the Store or the authored config, parsed as its kind",
+    ),
+    (
+        "PlanError::NoWriter.name",
+        "a name from the Store or the authored config, parsed as its kind",
+    ),
+    (
+        "PlanError::Service.service",
+        "a name from the Store or the authored config, parsed as its kind",
+    ),
+    (
+        "PlanError::VolumeHandoverCycle.because",
+        "a name from the Store or the authored config, parsed as its kind",
+    ),
+    (
+        "PlanError::VolumeHandoverCycle.volume",
+        "a name from the Store or the authored config, parsed as its kind",
+    ),
+    (
+        "PlanError::VolumeHolderUnknown.name",
+        "a name from the Store or the authored config, parsed as its kind",
+    ),
+    (
+        "PlanError::VolumeOutsideRegion.volume",
+        "a name from the Store or the authored config, parsed as its kind",
+    ),
+    (
+        "PlanError::VolumeServerTakesNoServices.volume",
+        "a name from the Store or the authored config, parsed as its kind",
+    ),
+    (
+        "PlanError::VolumeSharedAcrossRegions.volume",
+        "a name from the Store or the authored config, parsed as its kind",
+    ),
+    ("PreparationError::Delivery.0", "text Ployz composes"),
+    (
+        "ProvisionError::BootstrapVerification.0",
+        "output of a command run on the Server over SSH",
+    ),
+    (
+        "ProvisionError::InstallRefused.reason",
+        "output of a command run on the Server over SSH",
+    ),
+    (
+        "ProvisionError::PlatformFailed.0",
+        "output of a command run on the Server over SSH",
+    ),
+    (
+        "ProvisionError::SudoRequired.user",
+        "output of a command run on the Server over SSH",
+    ),
+    (
+        "ProvisionError::UnsupportedArchitecture.0",
+        "output of a command run on the Server over SSH",
+    ),
+    (
+        "ProvisionError::WhoamiFailed.0",
+        "output of a command run on the Server over SSH",
+    ),
+    (
+        "PublishError::AgentRefused.path",
+        "a command path Cloud published",
+    ),
+    (
+        "PublishError::Cache.path",
+        "a file Ployz keeps beside its config",
+    ),
+    ("PublishError::Gone.path", "a command path Cloud published"),
+    ("PublishError::Malformed.reason", "text Cloud sent"),
+    (
+        "PublishError::NeedsTerminal.path",
+        "a command path Cloud published",
+    ),
+    ("PublishError::Unavailable.0", "text Cloud sent"),
+    (
+        "PushError::BuildIncomplete.image",
+        "an image reference from the authored config or a build, parsed as one",
+    ),
+    (
+        "PushError::BuildIncomplete.missing",
+        "an image reference from the authored config or a build, parsed as one",
+    ),
+    ("PushError::InvalidReference.message", "text Ployz composes"),
+    (
+        "PushError::InvalidReference.reference",
+        "an image reference from the authored config or a build, parsed as one",
+    ),
+    (
+        "PushError::VariantUnavailable.image",
+        "an image reference from the authored config or a build, parsed as one",
+    ),
+    (
+        "PushError::VariantUnavailable.platform",
+        "an image reference from the authored config or a build, parsed as one",
+    ),
+    (
+        "RemoteBuildFailure::Failed.message",
+        "text a Server's daemon sent",
+    ),
+    (
+        "RemoteBuildFailure::Unknown.message",
+        "text a Server's daemon sent",
+    ),
+    ("TransportError.message", "text a Server's daemon sent"),
+];
+
+/// A new raw-text field in an error message fails here until it is named above with its
+/// source, so a raw value from a command line never reaches one unasked.
+#[test]
+fn no_error_message_repeats_raw_text_from_the_command_line() {
+    use syn::visit::Visit;
+
+    struct Messages {
+        found: Vec<String>,
+    }
+
+    /// Text that came from somewhere at run time: a `&'static str` was compiled in.
+    fn raw(ty: &syn::Type) -> bool {
+        if let syn::Type::Reference(reference) = ty {
+            return reference
+                .lifetime
+                .as_ref()
+                .is_none_or(|lifetime| lifetime.ident != "static")
+                && raw(&reference.elem);
+        }
+        let syn::Type::Path(path) = ty else {
+            return false;
+        };
+        path.path.segments.last().is_some_and(|last| {
+            let wrapped = matches!(
+                &last.arguments,
+                syn::PathArguments::AngleBracketed(arguments)
+                    if arguments.args.iter().any(|argument| {
+                        matches!(argument, syn::GenericArgument::Type(inner) if raw(inner))
+                    })
+            );
+            ["String", "str", "PathBuf", "OsString", "Cow"]
+                .iter()
+                .any(|name| last.ident == name)
+                || (["Option", "Box", "Vec"]
+                    .iter()
+                    .any(|name| last.ident == name)
+                    && wrapped)
+        })
+    }
+
+    /// Each name and position the message and its arguments read, `{name}`, `{0}`, `.name`.
+    fn read(tokens: proc_macro2::TokenStream, names: &mut Vec<String>) {
+        let mut dotted = false;
+        for token in tokens {
+            match token {
+                proc_macro2::TokenTree::Literal(literal) => {
+                    if let Ok(message) = syn::parse2::<syn::LitStr>(
+                        proc_macro2::TokenTree::Literal(literal.clone()).into(),
+                    ) {
+                        let mut rest = message.value().replace("{{", "");
+                        while let Some(open) = rest.find('{') {
+                            let tail = rest.get(open + 1..).unwrap_or_default().to_owned();
+                            let close = tail.find('}').unwrap_or(tail.len());
+                            let name = tail.get(..close).unwrap_or_default();
+                            names.push(name.split(':').next().unwrap_or("").trim().to_owned());
+                            rest = tail.get(close..).unwrap_or_default().to_owned();
+                        }
+                    } else if dotted {
+                        names.push(literal.to_string());
+                    }
+                    dotted = false;
+                }
+                proc_macro2::TokenTree::Ident(ident) => {
+                    names.push(ident.to_string());
+                    dotted = false;
+                }
+                proc_macro2::TokenTree::Punct(punct) => dotted = punct.as_char() == '.',
+                proc_macro2::TokenTree::Group(group) => {
+                    read(group.stream(), names);
+                    dotted = false;
+                }
+            }
+        }
+    }
+
+    impl Messages {
+        fn check(&mut self, item: &str, attrs: &[syn::Attribute], fields: &syn::Fields) {
+            for attr in attrs.iter().filter(|attr| attr.path().is_ident("error")) {
+                let Ok(list) = attr.meta.require_list() else {
+                    continue;
+                };
+                let mut names = Vec::new();
+                read(list.tokens.clone(), &mut names);
+                for (at, field) in fields.iter().enumerate() {
+                    let name = field
+                        .ident
+                        .as_ref()
+                        .map_or_else(|| at.to_string(), ToString::to_string);
+                    if raw(&field.ty) && names.contains(&name) {
+                        self.found.push(format!("{item}.{name}"));
+                    }
+                }
+            }
+        }
+    }
+
+    impl<'ast> Visit<'ast> for Messages {
+        fn visit_item_struct(&mut self, item: &'ast syn::ItemStruct) {
+            self.check(&item.ident.to_string(), &item.attrs, &item.fields);
+        }
+
+        fn visit_item_enum(&mut self, item: &'ast syn::ItemEnum) {
+            for variant in &item.variants {
+                let name = format!("{}::{}", item.ident, variant.ident);
+                self.check(&name, &variant.attrs, &variant.fields);
+            }
+        }
+    }
+
+    let mut dirs =
+        vec![std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src")).to_owned()];
+    let mut messages = Messages { found: Vec::new() };
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                dirs.push(path);
+                continue;
+            }
+            let name = path.file_name().unwrap().to_string_lossy();
+            if !name.ends_with(".rs") || name.ends_with("tests.rs") || name == "testing.rs" {
+                continue;
+            }
+            let file = syn::parse_file(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            messages.visit_file(&file);
+        }
+    }
+    let named: Vec<&str> = RAW_MESSAGE_FIELDS.iter().map(|(field, _)| *field).collect();
+    let mut unnamed: Vec<&String> = messages
+        .found
+        .iter()
+        .filter(|field| !named.contains(&field.as_str()))
+        .collect();
+    unnamed.sort();
+    unnamed.dedup();
+    let stale: Vec<&&str> = named
+        .iter()
+        .filter(|field| !messages.found.iter().any(|found| found == **field))
+        .collect();
+    assert!(
+        unnamed.is_empty() && stale.is_empty(),
+        "parse a value typed into its type or a Shown before a message repeats it, or name where \\
+         the field's text comes from in RAW_MESSAGE_FIELDS.\nunnamed:\n{}\nno longer found: {stale:?}",
+        unnamed
+            .iter()
+            .map(|field| format!("    (\"{field}\", \"\"),"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}
+
 #[test]
 fn results_on_stdout_side_channel_on_stderr() {
     let home = tempfile::tempdir().unwrap();
@@ -3019,25 +3524,6 @@ fn checkin_help_names_install_and_the_token_file() {
         "--cloud-url",
     ] {
         assert!(stdout.contains(needle), "{needle}: {stdout}");
-    }
-}
-
-#[test]
-fn github_rule_approve_defaults_to_the_pinned_builder() {
-    let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
-        .arg("--why=test")
-        .args(["github", "rule", "approve", "--help"])
-        .output()
-        .unwrap();
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    assert_eq!(output.status.code(), Some(0), "{stdout}");
-    let sha = ployz_core::authority::rule::BUILDER_SHA;
-    for needle in [
-        "Usage: ployz github rule approve [OPTIONS] <SERVICE>...".to_owned(),
-        format!("[default: getployz/build/.github/workflows/build.yml@{sha}]"),
-        format!("[default: {sha}]"),
-    ] {
-        assert!(stdout.contains(&needle), "{needle}: {stdout}");
     }
 }
 

@@ -82,7 +82,19 @@ name=${{0##*/}}
 printf '%s %s\n' "$name" "$*" >> '{commands}'
 # props/pools, when a test writes it, stands for the Pools in place of the given ones.
 if [ "$name" = zpool ]; then
-  if [ -e '{props}/pools' ]; then cat '{props}/pools'; else printf '{pools}'; fi
+  # A label scan finds what props/importable lists, and otherwise says so on stderr as ZFS does.
+  if [ "$1" = import ]; then
+    if [ -e '{props}/importable' ]; then cat '{props}/importable'; else echo 'no pools available to import' >&2; fi
+    exit 0
+  fi
+  pools() {{ if [ -e '{props}/pools' ]; then cat '{props}/pools'; else printf '{pools}'; fi; }}
+  # A listing with guids gives each Pool the guid its name's checksum makes.
+  case "$*" in
+    'list -Hp -o name,guid,'*) pools | while IFS="$(printf '\t')" read -r pool rest || [ -n "$pool" ]; do
+        printf '%s\t%s\t%s\n' "$pool" "$(printf %s "$pool" | cksum | cut -d' ' -f1)" "$rest"
+      done ;;
+    *) pools ;;
+  esac
   exit 0
 fi
 # ZFS refuses a user property (a name with a colon) holding anything but a-z, 0-9 and :._-
@@ -216,6 +228,11 @@ case "$*" in
     if [ -e '{props}/datasets-cut' ]; then
       printf 'tank\t0\t0\t0\t0\t/tank\tyes\toff\n'; echo 'cannot iterate filesystems: I/O error' >&2; exit 0
     fi
+    # props/datasets-cut-later: this listing finishes, and the next one stops early.
+    [ ! -e '{props}/datasets-cut-later' ] || mv '{props}/datasets-cut-later' '{props}/datasets-cut'
+    # props/datasets-empty: ZFS printed nothing at all and exited 0; -later from the next one.
+    [ ! -e '{props}/datasets-empty' ] || exit 0
+    [ ! -e '{props}/datasets-empty-later' ] || mv '{props}/datasets-empty-later' '{props}/datasets-empty'
     if [ -e '{hold_list}' ]; then
       touch '{list_held}'
       while [ -e '{hold_list}' ]; do sleep 0.01; done
@@ -299,8 +316,21 @@ case "$*" in
       [ ! -e "$f" ] || prop "$d" "$8" -
     done
     ;;
+  'get -r -H -s local -o name,value '*)
+    require "$9"
+    check_property "$8"
+    for d in tank/ployz tank/ployz/data tank/ployz/data/child tank/ployz/sibling tank/ployz/{seed} $(trash_datasets); do
+      case "$d" in "$9"|"$9"/*) ;; *) continue ;; esac
+      exists "$d" || continue
+      f='{props}'/"$d/$8"
+      [ ! -e "$f" ] || printf '%s\t%s\n' "$d" "$(prop "$d" "$8" -)"
+    done
+    ;;
   'get -H -s local -o value '*)
     require "$8"
+    # props/get-cut/<dataset>: ZFS couldn't read the dataset's properties, said so on
+    # stderr, and still exited 0.
+    [ ! -e '{props}'/get-cut/"$8" ] || {{ echo "cannot get property: I/O error" >&2; exit 0; }}
     check_property "$7"
     f='{props}'/"$8/$7"
     [ ! -e "$f" ] || prop "$8" "$7" -
@@ -316,6 +346,9 @@ case "$*" in
     ;;
   'get -Hp -o value,source '*)
     require "$6"
+    [ ! -e '{props}'/get-cut/"$6" ] || {{ echo "cannot get property: I/O error" >&2; exit 0; }}
+    # props/source-cut/<dataset>: the row ends partway through its source.
+    [ ! -e '{props}'/source-cut/"$6" ] || {{ printf -- '-\tloc\n'; exit 0; }}
     v=$(prop "$6" "$5" -)
     if [ "$v" = - ]; then printf -- '-\t-\n'; else printf '%s\tlocal\n' "$v"; fi
     ;;

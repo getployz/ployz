@@ -19,6 +19,13 @@ use tokio::sync::mpsc;
 use tokio_stream::{Stream, StreamExt, wrappers::ReceiverStream};
 use tonic::Status;
 
+const BUILD_ENDED: &str = "Build stopped: this Device no longer has Full access to this Server.";
+
+/// A Build that did not confirm its builder stopped, in its own words.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+struct Unconfirmed(String);
+
 #[derive(Default)]
 struct AttemptState {
     evidence: Mutex<ployz_build::WorkEvidence>,
@@ -153,85 +160,106 @@ async fn attempt(
     if let Err(reason) = require_build_acceptance(&local) {
         return failed(Stage::Admission, reason.to_string()).with_work(work);
     }
-    let mut permit = match runner.enter() {
-        Ok(queue::Entry::Active(permit)) => permit,
-        Ok(queue::Entry::Waiting(waiting)) => {
-            let queued = remote::encode(&Event::Progress(Progress::Stage(Stage::Queued)))
-                .expect("bounded queue frame");
-            if events.send(Ok(queued)).await.is_err() {
-                return failed(Stage::Queued, "Build client disconnected").with_work(work);
-            }
-            tokio::select! {
-                biased;
-                () = runner.shutdown.cancelled() => return failed(Stage::Queued, "Build daemon stopped; execution was not attempted").with_work(work),
-                () = events.closed() => return failed(Stage::Queued, "Build client disconnected").with_work(work),
-                frame = requests.next() => {
-                    let reason = match frame {
-                        Some(Ok(payload)) if matches!(remote::decode::<Input>(&payload), Ok(Input::Cancel)) => "Build cancelled while queued; execution was not attempted",
-                        None | Some(Err(_)) => "Build client disconnected while queued; execution was not attempted",
-                        Some(Ok(_)) => "Build upload before admission is forbidden; execution was not attempted",
-                    };
-                    return failed(Stage::Queued, reason).with_work(work);
-                }
-                admitted = runner.admit(waiting) => match admitted {
-                    Ok(permit) => permit,
-                    Err(reason) => return failed(Stage::Queued, reason.to_string()).with_work(work),
-                },
-            }
-        }
-        Err(reason) => return failed(Stage::Queued, reason.to_string()).with_work(work),
-    };
-    let policy = runner.policy.clone();
-    // A Build takes only its build slot and installation exclusion. It never
-    // holds the Machine's mutation lock, so deploys on this Machine proceed.
-    let installation = match local.admit_installation() {
-        Ok(installation) => installation,
+    // Only a Full caller builds, and a Build opens Sealed build values. Bound before it
+    // queues, so a key change that leaves the key short of Full ends it queued or running,
+    // and returns only once it stopped.
+    let bound = match local.bind_full(crate::machine::Work::Build) {
+        Ok(bound) => bound,
         Err(error) => {
             return failed(Stage::Admission, ployz_core::error_chain::inline(&error))
                 .with_work(work);
         }
     };
-    // Only a Full caller builds, and a Build opens Sealed build values: a key that lost its
-    // Device slot while this Build queued builds nothing.
-    if let Err(error) = local.scope_now().and_then(crate::machine::Scope::full) {
-        return failed(Stage::Admission, ployz_core::error_chain::inline(&error)).with_work(work);
+    let admitted = async {
+        let mut permit = match runner.enter() {
+            Ok(queue::Entry::Active(permit)) => permit,
+            Ok(queue::Entry::Waiting(waiting)) => {
+                let queued = remote::encode(&Event::Progress(Progress::Stage(Stage::Queued)))
+                    .expect("bounded queue frame");
+                if events.send(Ok(queued)).await.is_err() {
+                    return Err(failed(Stage::Queued, "Build client disconnected").with_work(work.clone()));
+                }
+                tokio::select! {
+                    biased;
+                    () = runner.shutdown.cancelled() => return Err(failed(Stage::Queued, "Build daemon stopped; execution was not attempted").with_work(work.clone())),
+                    () = events.closed() => return Err(failed(Stage::Queued, "Build client disconnected").with_work(work.clone())),
+                    () = bound.ended() => return Err(failed(Stage::Queued, format!("{BUILD_ENDED} Execution was not attempted.")).with_work(work.clone())),
+                    frame = requests.next() => {
+                        let reason = match frame {
+                            Some(Ok(payload)) if matches!(remote::decode::<Input>(&payload), Ok(Input::Cancel)) => "Build cancelled while queued; execution was not attempted",
+                            None | Some(Err(_)) => "Build client disconnected while queued; execution was not attempted",
+                            Some(Ok(_)) => "Build upload before admission is forbidden; execution was not attempted",
+                        };
+                        return Err(failed(Stage::Queued, reason).with_work(work.clone()));
+                    }
+                    admitted = runner.admit(waiting) => match admitted {
+                        Ok(permit) => permit,
+                        Err(reason) => return Err(failed(Stage::Queued, reason.to_string()).with_work(work.clone())),
+                    },
+                }
+            }
+            Err(reason) => return Err(failed(Stage::Queued, reason.to_string()).with_work(work.clone())),
+        };
+        // A Build takes only its build slot and installation exclusion. It never
+        // holds the Machine's mutation lock, so deploys on this Machine proceed.
+        let installation = local.admit_installation().map_err(|error| {
+            failed(Stage::Admission, ployz_core::error_chain::inline(&error)).with_work(work.clone())
+        })?;
+        // Acceptance may have been revoked while this Build waited in the queue.
+        let (machine_id, concurrency) = require_build_acceptance(&local)
+            .map_err(|reason| failed(Stage::Admission, reason.to_string()).with_work(work.clone()))?;
+        let admission = match tokio::task::spawn_blocking({
+            let policy = runner.policy.clone();
+            move || Admission::try_acquire_within(&policy, concurrency)
+        })
+        .await
+        {
+            Ok(Ok(admission)) => admission,
+            Ok(Err(error)) => return Err(failure(Stage::Admission, error).with_work(work.clone())),
+            Err(_) => return Err(failed(Stage::Admission, "Build admission task failed")),
+        };
+        let admitted = remote::encode(&Event::Admitted {
+            machine_id,
+            active_timeout: runner.policy.active_timeout,
+        })
+        .expect("bounded admission frame");
+        tokio::select! {
+            sent = events.send(Ok(admitted)) => if sent.is_err() {
+                return Err(failed(Stage::Admission, "Build client disconnected"));
+            },
+            () = bound.ended() => return Err(failed(Stage::Admission, BUILD_ENDED)),
+        }
+        if matches!(request, Input::Start(_)) {
+            permit.count_as_build(&runner);
+        }
+        Ok((permit, installation, admission, machine_id))
     }
-    // Acceptance may have been revoked while this Build waited in the queue.
-    let (machine_id, concurrency) = match require_build_acceptance(&local) {
-        Ok(accepted) => accepted,
-        Err(reason) => return failed(Stage::Admission, reason.to_string()).with_work(work),
+    .await;
+    let (permit, installation, admission, machine_id) = match admitted {
+        Ok(admitted) => admitted,
+        Err(outcome) => {
+            // Nothing of this Build ran before its admission.
+            bound.stopped(crate::machine::Seen::NeverSent);
+            return outcome;
+        }
     };
-    let admission = match tokio::task::spawn_blocking({
-        let policy = policy.clone();
-        move || Admission::try_acquire_within(&policy, concurrency)
-    })
-    .await
-    {
-        Ok(Ok(admission)) => admission,
-        Ok(Err(error)) => return failure(Stage::Admission, error).with_work(work),
-        Err(_) => return failed(Stage::Admission, "Build admission task failed"),
-    };
+    let policy = runner.policy.clone();
     *state.evidence.lock().expect("Build evidence lock") = work;
     let observed = state.clone();
     let cancellation = admission.cancellation();
+    let staged = admission.sealed_staging();
+    let slot = admission.slot();
     let remaining = admission.remaining();
     let deadline = tokio::time::Instant::now() + remaining;
-    let admitted = remote::encode(&Event::Admitted {
-        machine_id,
-        active_timeout: policy.active_timeout,
-    })
-    .expect("bounded admission frame");
-    if events.send(Ok(admitted)).await.is_err() {
-        return failed(Stage::Admission, "Build client disconnected");
-    }
-    if matches!(request, Input::Start(_)) {
-        permit.count_as_build(&runner);
-    }
     let (upload, source) = mpsc::channel(2);
     let output = events.clone();
+    let tie = bound.tie().clone();
+    // The execution holds the Build bound until it has returned, which may be after this
+    // attempt reported it Unknown: a key change that ends it waits for the execution
+    // itself, and hears when its builder didn't confirm it stopped.
     let mut execution = tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        match request {
+        let outcome = match request {
             Input::Start(definition) => receive_and_execute(
                 machine_id,
                 definition,
@@ -240,8 +268,9 @@ async fn attempt(
                     build: admission,
                     installation,
                 },
-                policy,
+                policy.clone(),
                 &sealing,
+                &bound,
                 &output,
                 &observed,
             ),
@@ -257,7 +286,36 @@ async fn attempt(
             Input::Entry { .. } | Input::Data(_) | Input::Finish | Input::Cancel => {
                 unreachable!("only Build starts and capability checks reach admission")
             }
+        };
+        // The execution returned, so every process it started was reaped, unless it says
+        // Unknown: then the build slot it leaves quarantined says when they are gone.
+        match &outcome {
+            Outcome::Unknown { message, .. } => bound.unconfirmed(
+                Unconfirmed(message.clone()),
+                Some(Arc::new(move || {
+                    let policy = policy.clone();
+                    Box::pin(async move {
+                        let confirmed =
+                            tokio::task::spawn_blocking(move || policy.confirm_ended(slot))
+                                .await
+                                .map_err(|_| Unconfirmed("the Build slot's check failed".into()))?;
+                        match confirmed {
+                            Ok(()) => Ok(crate::machine::Seen::Reaped),
+                            // Another admission holds the slot, perhaps recovering it in
+                            // vain while the Build's processes still run.
+                            Err(ployz_build::BuildError::Busy) => Ok(crate::machine::Seen::Busy),
+                            Err(error) => Err(error.into()),
+                        }
+                    })
+                })),
+            ),
+            Outcome::Failed { .. }
+            | Outcome::CapabilitiesChecked { .. }
+            | Outcome::Images { .. }
+            | Outcome::Validated { .. }
+            | Outcome::Published { .. } => bound.stopped(crate::machine::Seen::Joined),
         }
+        outcome
     });
     // Dropping the input pump closes the upload channel. A receiver blocked
     // waiting for another file then wakes and can release unused admission.
@@ -270,9 +328,14 @@ async fn attempt(
             () = runner.shutdown.cancelled() => "Build daemon stopped".to_owned(),
             () = events.closed() => "Build client disconnected".to_owned(),
             () = tokio::time::sleep_until(deadline) => "Build active timeout expired".to_owned(),
+            () = tie.ended() => BUILD_ENDED.to_owned(),
         }
     };
     cancellation.cancel();
+    // An ended Build keeps no opened value, even while its builder takes time to stop.
+    if tie.is_ended() {
+        revoke(&staged);
+    }
     // Termination and cleanup have a bounded grace period. A task that cannot
     // confirm its end keeps both its admission and persistent quarantine.
     let outcome = match tokio::time::timeout(Duration::from_secs(70), execution).await {
@@ -299,7 +362,17 @@ async fn attempt(
             ),
         },
     };
+    // Unknown holds no opened value: one a builder still running staged is taken back.
+    if matches!(outcome, Outcome::Unknown { .. }) {
+        revoke(&staged);
+    }
     outcome.with_work(state.evidence.lock().expect("Build evidence lock").clone())
+}
+
+fn revoke(staged: &ployz_build::SealedStaging) {
+    if let Err(error) = staged.revoke() {
+        tracing::warn!(error = %ployz_core::error_chain::inline(&error), "could not remove a stopped Build's opened values");
+    }
 }
 
 async fn pump(
@@ -336,6 +409,7 @@ fn receive_and_execute(
     admission: ExecutionAdmission,
     policy: HostPolicy,
     sealing: &SealingKeyStore,
+    bound: &crate::machine::Bound,
     events: &mpsc::Sender<Result<OpaquePayload, Status>>,
     state: &AttemptState,
 ) -> Outcome {
@@ -370,12 +444,13 @@ fn receive_and_execute(
     }
     let sealed = match upload.private_file(ployz_build::capture::SEALED_RECORD) {
         Ok(None) => None,
-        Ok(Some(record)) => match open_sealed(&record, sealing) {
-            Ok(opened) => {
+        Ok(Some(record)) => match bound.read(|| open_sealed(&record, sealing)) {
+            Ok(Ok(opened)) => {
                 let scrub = ployz_build::OutputScrub::new(&opened);
                 Some((opened, scrub))
             }
-            Err(message) => return failed(Stage::Preparation, message),
+            Ok(Err(message)) => return failed(Stage::Preparation, message),
+            Err(_) => return failed(Stage::Preparation, BUILD_ENDED),
         },
         Err(error) => return failed(Stage::Upload, ployz_core::error_chain::inline(&error)),
     };

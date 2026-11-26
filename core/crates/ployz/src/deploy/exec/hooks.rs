@@ -43,8 +43,12 @@ pub(super) async fn run_hook<C: MachineOperations>(
         deploy: Some(run),
         r#gen: Gen::FIRST,
         answer: AnswerWhen::Started,
+        replaces: None,
     };
-    let container_id = start(&attempt, run, FailedStart::Discard).await?;
+    let container_id = start(&attempt, run, FailedStart::Discard)
+        .await
+        .map_err(|unstarted| unstarted.error)?
+        .container_id;
 
     let timeout = spec
         .pre_deploy

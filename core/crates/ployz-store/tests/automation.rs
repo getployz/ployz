@@ -2047,31 +2047,16 @@ fn a_status_or_conclusion_github_adds_later_reads_other() {
     assert_eq!(conclusion, ployz_store::CheckConclusion::Other);
 }
 
-/// Sign `generation` of an automatic deploy rule over web's and api's Saved settings, as
-/// `ployz github rule approve web api` does, and keep it.
+/// Sign `generation` of an automatic deploy rule over web's and api's settings and keep it
+/// with a Save of what is staged, as turning on Deploy every push does.
 fn approve_rule(
     store: &ConfigStore,
     who: &Actor,
     generation: u64,
-) -> Result<ployz_store::RuleView, ployz_core::RpcError> {
-    keep_rule(store, who, generation, false)
-}
-
-/// As [`approve_rule`], or ending the rule when `ended`.
-fn keep_rule(
-    store: &ConfigStore,
-    who: &Actor,
-    generation: u64,
-    ended: bool,
-) -> Result<ployz_store::RuleView, ployz_core::RpcError> {
-    store.write(
-        who,
-        &ployz_store::ApproveRule {
-            environment: EnvironmentRef::default(),
-            rule: rule_of(store, who, (9, generation, "main"), (false, ended)),
-            births: Default::default(),
-        },
-    )
+) -> Result<Written, ployz_core::RpcError> {
+    let prior = kept_rule(store, who).map(|(id, generation, _)| (id, generation));
+    let rule = signed_rule(store, who, (9, generation, "main"), true);
+    save_with_rule(store, who, &staged_version(store, who), (rule, prior))
 }
 
 type SignedRule = Box<ployz_core::authority::Signed<ployz_core::authority::AutoDeployRule>>;
@@ -2081,18 +2066,8 @@ type SignedRule = Box<ployz_core::authority::Signed<ployz_core::authority::AutoD
 fn signed_rule(
     store: &ConfigStore,
     who: &Actor,
-    rule: (u8, u64, &str),
-    staged: bool,
-) -> SignedRule {
-    rule_of(store, who, rule, (staged, false))
-}
-
-/// As [`signed_rule`], ending the rule when `ended`.
-fn rule_of(
-    store: &ConfigStore,
-    who: &Actor,
     (id, generation, branch): (u8, u64, &str),
-    (staged, ended): (bool, bool),
+    staged: bool,
 ) -> SignedRule {
     use ployz_core::authority::rule::{
         BuildPolicy, Builder, PolicyCache, RuleEvent, RuleService, RuleSource, Runner, template,
@@ -2156,7 +2131,7 @@ fn rule_of(
         },
         services,
         issued_at: Timestamp::from_millis(1_800_000_000_000).unwrap(),
-        ended,
+        ended: false,
         signer: SignerKey::Device(ployz_core::DeviceKey::from_bytes(
             *signer.public().as_bytes(),
         )),
@@ -2253,10 +2228,11 @@ fn of_two_saves_from_one_review_only_the_first_keeps_its_rule_and_its_push_deplo
 fn a_save_whose_rule_moved_since_its_tap_saves_nothing() {
     let (store, who) = shop();
     publish(&store, &who);
+    // Another tab turned automatic deploys on while this one's tap read none kept.
+    approve_rule(&store, &who, 1).unwrap();
     set(&store, &who, "web.env.GREETING", json!("hello"));
     let version = staged_version(&store, &who);
     let tapped = signed_rule(&store, &who, (8, 1, "main"), true);
-    approve_rule(&store, &who, 1).unwrap();
 
     let refused = save_with_rule(&store, &who, &version, (tapped, None)).unwrap_err();
 
@@ -2657,6 +2633,54 @@ fn unsigned(store: &ConfigStore, who: &Actor) -> Vec<(String, ployz_store::Needs
         .collect()
 }
 
+/// The Services a Deploy of `services` ships that only a Source step signed with it builds.
+fn sources(store: &ConfigStore, who: &Actor, services: &[&str]) -> Vec<String> {
+    store
+        .read(
+            who,
+            &ployz_store::PlanQuery {
+                services: services
+                    .iter()
+                    .map(|service| ServiceName::parse(*service).unwrap())
+                    .collect(),
+                target: true,
+                ..ployz_store::PlanQuery::default()
+            },
+        )
+        .unwrap()
+        .sources
+        .iter()
+        .map(|service| service.as_str().to_owned())
+        .collect()
+}
+
+/// Cloud takes a Deploy's Source step only when it names each of these, so a Service
+/// renamed since its Private DNS name was fixed, or one that reaches no data, is never
+/// left for its build to refuse.
+#[test]
+fn a_plan_names_each_git_service_only_a_source_builds_by_the_name_it_runs_under() {
+    let (store, who) = shop();
+    // Neither reaches data, so no person signs a version of either.
+    assert_eq!(unsigned(&store, &who), []);
+    assert_eq!(sources(&store, &who, &[]), ["web", "api"]);
+    // A Deploy of api alone ships no web, so it needs no Source step for it.
+    assert_eq!(sources(&store, &who, &["api"]), ["api"]);
+    store
+        .write(
+            &who,
+            &ployz_store::Command::RenameService(ployz_store::RenameService {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse("web").unwrap(),
+                name: ServiceName::parse("frontend").unwrap(),
+            }),
+        )
+        .unwrap();
+    assert_eq!(sources(&store, &who, &["frontend"]), ["web"]);
+    publish(&store, &who);
+    approve_rule(&store, &who, 1).unwrap();
+    assert_eq!(sources(&store, &who, &[]), Vec::<String>::new());
+}
+
 #[test]
 fn a_built_service_that_reaches_data_needs_a_build_its_rule_vouches_for() {
     use ployz_store::Needs;
@@ -2755,7 +2779,7 @@ fn a_service_a_rule_deployed_needs_approval_once_the_rule_ends() {
     publish(&store, &who);
     assert_eq!(unsigned(&store, &who), []);
     approve_rule(&store, &who, 1).unwrap();
-    keep_rule(&store, &who, 2, true).unwrap();
+    end_rule(&store, &who, 2);
     assert_eq!(
         unsigned(&store, &who),
         [
@@ -2806,8 +2830,8 @@ fn a_push_under_a_rule_waits_for_approval_again_once_a_setting_changed() {
     assert_eq!(
         reasons(&automated),
         vec![
-            "web changed since the automatic deploy rule was approved. Approve it again in \
-             the environment's settings, or run ployz github rule approve web."
+            "web changed since the automatic deploy rule was approved. Approve again under \
+             Automatic deploys."
         ]
     );
     // Approved again over the new settings, the next push deploys.
@@ -2822,8 +2846,8 @@ fn a_push_under_a_rule_waits_for_approval_again_once_a_setting_changed() {
     assert_eq!(
         reasons(&automated),
         vec![
-            "web changed since the automatic deploy rule was approved. Approve it again in \
-             the environment's settings, or run ployz github rule approve web."
+            "web changed since the automatic deploy rule was approved. Approve again under \
+             Automatic deploys."
         ]
     );
 }
@@ -2840,8 +2864,8 @@ fn a_new_service_on_the_rules_branch_holds_the_push_and_shows_in_the_rule_view()
     assert_eq!(
         reasons(&automated),
         vec![
-            "worker changed since the automatic deploy rule was approved. Approve it again in \
-             the environment's settings, or run ployz github rule approve worker."
+            "worker changed since the automatic deploy rule was approved. Approve again \
+             under Automatic deploys."
         ]
     );
     // The view the dashboard reads names what holds the push, so it can be approved.
@@ -2855,6 +2879,73 @@ fn a_new_service_on_the_rules_branch_holds_the_push_and_shows_in_the_rule_view()
         )
         .unwrap();
     assert_eq!(view.changed, [ServiceName::parse("worker").unwrap()]);
+}
+
+// Catches an older CLI's `ployz github rule approve` keeping a rule beside the one way to
+// sign one, a Save or a Deploy.
+#[test]
+fn a_rule_approved_on_its_own_is_refused_and_says_where_to_turn_it_on() {
+    let (store, who) = shop();
+    publish(&store, &who);
+
+    let refused = store
+        .write(
+            &who,
+            &ployz_store::ApproveRule {
+                environment: EnvironmentRef::default(),
+                rule: signed_rule(&store, &who, (9, 1, "main"), false),
+                births: Default::default(),
+            },
+        )
+        .unwrap_err();
+
+    assert_eq!(refused.code, RpcErrorCode::InvalidArgument, "{refused:?}");
+    assert!(
+        refused.message.contains("Turn on Deploy every push"),
+        "{refused:?}"
+    );
+    assert_eq!(kept_rule(&store, &who), None);
+    // Turning automatic deploys off still works as an older CLI's `rule end` sends it.
+    approve_rule(&store, &who, 1).unwrap();
+    end_rule(&store, &who, 2);
+    assert_eq!(kept_rule(&store, &who), Some((9, 2, "main".to_owned())));
+}
+
+// Catches an Off a page drafted before the rule moved to another branch ending the new rule.
+#[test]
+fn an_off_read_before_the_rule_moved_to_another_branch_saves_nothing() {
+    let (store, who) = shop();
+    publish(&store, &who);
+    approve_rule(&store, &who, 1).unwrap();
+    let dev = signed_rule(&store, &who, (8, 1, "dev"), true);
+    save_with_rule(
+        &store,
+        &who,
+        &staged_version(&store, &who),
+        (dev, Some((9, 1))),
+    )
+    .unwrap();
+
+    let stale = store
+        .write(
+            &who,
+            &ployz_store::ApproveRule {
+                environment: EnvironmentRef::default(),
+                rule: {
+                    use ployz_core::authority::{Signed, Signer};
+                    let mut main = signed_rule(&store, &who, (9, 2, "main"), false)
+                        .open()
+                        .unwrap();
+                    main.ended = true;
+                    Box::new(Signed::sign(&main, &Signer::from_seed(&[7; 32])).unwrap())
+                },
+                births: Default::default(),
+            },
+        )
+        .unwrap_err();
+
+    assert_eq!(stale.code, RpcErrorCode::Conflict, "{stale:?}");
+    assert_eq!(kept_rule(&store, &who), Some((8, 1, "dev".to_owned())));
 }
 
 #[test]

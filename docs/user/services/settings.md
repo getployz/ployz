@@ -73,8 +73,9 @@ copy, so give each release its own tag, like `1.5.0`. See
 ### Registry credentials
 
 Needed only for a private image: click **Add credentials** and fill in what your registry asks
-for. Adding or disconnecting credentials waits for your next deploy, but a new secret for
-credentials you already have **takes effect at once**, and Discard can't bring the old one back. See
+for. Your browser seals them for the image's registry, so Ployz Cloud can't read them. Adding or
+disconnecting credentials waits for your next deploy, but a new secret for credentials you
+already have **takes effect at once**, and Discard can't bring the old one back. See
 [Use a private image](../deploy/docker-image.md#use-a-private-image).
 
 ### Add a source

@@ -279,6 +279,22 @@ storage plugin is still working on after 2 minutes: the server stops waiting for
 can return before it does, and a resize like that can still finish afterward. If the same key also holds another connection slot on
 that server, such as Ployz Cloud's, the command goes on with Operator access only, so it can't start
 a container that only that device approved.
+What that device left running on a server stops there before `device rm` returns, even when its
+key holds another slot: an `exec`, with or without `--detach`, a `port-forward`, a build, queued or
+running, and a build grant, including an image push still on its way to the server. If any of it
+doesn't confirm it stopped within 90 seconds, for example because Docker stopped answering, that
+server reports the removal as failed and names each thing that didn't stop. The same goes for work
+that ended earlier without confirming it stopped, such as a build whose builder Docker couldn't
+remove. The device is removed there all the same, and every later key change on that server, such
+as another `device rm` or `ployz key add`, reports the same work again until the server sees it
+stopped. An image push whose last step got no answer stops being reported once the server finds
+the image stored, and the next key change names it as stored after the removal, once. It also
+stops once the server process that took the push has restarted without storing it. An `exec`
+that Docker lost track of by restarting before the server saw the command start stays reported,
+because the command may still run. A build that can't confirm it stopped has the secret values it opened deleted at once,
+and starts no further step. For an `exec`, "stops" means the command's own process. A child it
+started in the background, for example with `&` or `nohup`, can keep running in the container after
+the command exits; to be sure nothing a removed device started is left, redeploy the service.
 Every server that answers marks the key removed, including one that never
 trusted it, so an approval of that key still on its way there is refused. If no server can name
 the key in full, for example because every server that trusted or removed it is away, a server that never held
@@ -338,9 +354,9 @@ sudo ployz key add pk1_…
 It changes only the server you run it on, and names the servers that still don't trust the key.
 Run it on each of them. It also takes a device's key, as `ployz server add --command` prints it.
 It reaches the server through its local socket, which admits root and members of the `ployz`
-group, so anyone in that group can add a key. Until a server trusts your passkey, approve rules
-from an approved device with `ployz github rule approve`, and turn Private Access on with
-`ployz private-access on`.
+group, so anyone in that group can add a key. Until a server trusts your passkey, deploy from an
+approved device with `ployz deploy`, which also signs the automatic deploy rule unless you turned
+it off, and turn Private Access on with `ployz private-access on`.
 
 `ployz device ls` lists each passkey under your devices as `passkey, approve-only`, with its
 account and who approved it on each server: a device, or `on <server>` for that server's own
@@ -529,7 +545,10 @@ not, which stops the drain, as below.
 Draining turns services off for the server, then moves each replicated service's containers to
 your other servers one at a time. Each new container runs
 the same image, and each one starts, is healthy and is routed by every server's proxy before the
-old container is taken out of routing and removed.
+old container is taken out of routing and removed. Anonymous volumes of the containers a drain
+removes, such as the one a `postgres` image makes when no volume in Ployz is mounted at its data
+directory, stay on the drained server. `ployz server volumes <server>` lists them, and
+[`prune`](../services/services.md#delete-the-volumes-a-server-kept) deletes them.
 
 A service set to run on every server, from a Compose file with `deploy.mode: global` deployed
 before 0.1.2-beta.42, stops the drain before it moves anything, because its copy on this server
@@ -1056,7 +1075,7 @@ CLI use them only through a server on a newer release. While every newer server 
 **Servers** page reads **Upgrade your server over SSH**, and the CLI says:
 
 ```text
-Machine 0123… runs Ployz 0.3.2, which can't show which Cluster it belongs to. Upgrade it to 0.3.3 or later over SSH: ployz server upgrade stable SERVER --connect ssh://USER@HOST
+Machine 0123… runs Ployz 0.3.2, which can't show which Cluster it belongs to. Upgrade it to 0.3.3 or later over SSH: ployz server upgrade stable SERVER --connect ssh://<USER>@HOST
 ```
 
 The server keeps running your apps, so don't forget it. Upgrade it over SSH, as for a server on 0.2
@@ -1287,13 +1306,11 @@ Ployz refuses to forget a server that answers and holds a copy of any volume. Re
 `ployz server rm` instead, and the reset makes its copies read-only and deletes its mirrors.
 
 A mirror that Ployz v0.3.0-beta.2 or earlier refreshed last stays on the server after the reset.
-To have the reset delete it, the mirror must finish a pull from the writer before you run
-`ployz server rm`. `ployz volume sync <volume> --full --wait` copies the whole volume to the
-mirror again and returns only once the mirror holds the writer's newest data. Plain `ployz volume
-sync <volume>` hands the mirror its pull and returns before the download ends, and removing the
-server during the download stops the pull and keeps the mirror. It also pulls only what the
-volume wrote since the mirror's last refresh, so the mirror of a volume that wrote nothing since
-pulls nothing and stays.
+To have it gone, delete it with `ployz volume mirror rm` before you run `ployz server rm`.
+`ployz volume sync --full` refuses such a mirror, because Ployz can't tell whether it holds writes
+no other server has. On a server running Ployz 0.4.0-beta.2 or earlier, it refuses every mirror,
+and so does `ployz volume mirror rm`, since that server would delete the copy whatever it holds.
+Upgrade the server first.
 
 A forgotten server isn't told it was removed. If it runs again as it is, it starts its services on
 its own copy of each volume and they keep writing there, and a later move, mirror, sync or release

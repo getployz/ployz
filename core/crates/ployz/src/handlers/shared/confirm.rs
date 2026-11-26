@@ -1,7 +1,7 @@
 use clap::ArgMatches;
-use ployz_core::Hint;
 
 use super::super::Error;
+use crate::cli::Rerun;
 use crate::ui::{self, Tree};
 
 /// `--confirm` typed `name`, or a person typed it at the prompt after seeing
@@ -11,7 +11,7 @@ pub(in crate::handlers) fn confirm(
     matches: &ArgMatches,
     name: &str,
     what: &str,
-    retry: String,
+    retry: Rerun,
     unconfirmed: impl FnOnce() -> Result<(Error, Tree), Error>,
 ) -> Result<(), Error> {
     match matches.get_one::<String>("confirm") {
@@ -20,7 +20,7 @@ pub(in crate::handlers) fn confirm(
             "--confirm {} does not match {what} {name}. No changes made.",
             typed.escape_debug()
         ))
-        .hint(Hint::Retry(retry))),
+        .hint(retry)),
         None => {
             let (refusal, loss) = unconfirmed()?;
             if ui::can_prompt() {

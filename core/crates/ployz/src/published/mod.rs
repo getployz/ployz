@@ -22,6 +22,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+use crate::cli::Shown;
 use crate::cloud;
 use crate::cloud::account::Credential;
 use crate::cloud::login::{CredentialStore, LoginError};
@@ -123,7 +124,7 @@ pub(crate) enum ArgKind {
 pub(crate) enum PublishError {
     /// The Cloud predates published commands: `/api/cli/manifest` is not there.
     #[error("Ployz Cloud at {cloud} publishes no commands")]
-    Unsupported { cloud: String },
+    Unsupported { cloud: Shown },
     /// The Cloud has the route but this Organization cannot use it.
     #[error("{0}")]
     Unavailable(String),
@@ -132,7 +133,7 @@ pub(crate) enum PublishError {
     #[error(transparent)]
     Cloud(#[from] LoginError),
     #[error("Ployz Cloud at {cloud} sent a manifest ployz cannot read: {reason}")]
-    Malformed { cloud: String, reason: String },
+    Malformed { cloud: Shown, reason: String },
     #[error("could not keep the published commands at {path}")]
     Cache {
         path: PathBuf,
@@ -154,9 +155,9 @@ pub(crate) enum PublishError {
     #[error(
         "the published commands came from Ployz Cloud at {published}, but ployz acts in {acting}"
     )]
-    OtherCloud { published: String, acting: String },
+    OtherCloud { published: Shown, acting: Shown },
     #[error("Ployz Cloud at {cloud} did not list its commands within {budget:?}")]
-    Slow { cloud: String, budget: Duration },
+    Slow { cloud: Shown, budget: Duration },
 }
 
 impl Coded for PublishError {
@@ -274,8 +275,8 @@ impl Setup {
             return Ok(());
         }
         Err(PublishError::OtherCloud {
-            published: self.cloud.clone(),
-            acting: credential.cloud().to_owned(),
+            published: CloudOrigin::new(&self.cloud).shown(),
+            acting: CloudOrigin::new(credential.cloud()).shown(),
         })
     }
 
@@ -338,7 +339,7 @@ impl Setup {
             .await
             .unwrap_or_else(|_| {
                 Err(PublishError::Slow {
-                    cloud: self.cloud.clone(),
+                    cloud: CloudOrigin::new(&self.cloud).shown(),
                     budget: REFRESH_BUDGET,
                 })
             })
@@ -397,7 +398,7 @@ impl Setup {
             }
             return Err(match status {
                 StatusCode::NOT_FOUND => PublishError::Unsupported {
-                    cloud: self.cloud.clone(),
+                    cloud: CloudOrigin::new(&self.cloud).shown(),
                 },
                 StatusCode::UNAUTHORIZED => refused.into(),
                 status => LoginError::Status {
@@ -409,12 +410,12 @@ impl Setup {
         }
         let manifest: wire::Manifest =
             serde_json::from_slice(&bytes).map_err(|error| PublishError::Malformed {
-                cloud: self.cloud.clone(),
+                cloud: CloudOrigin::new(&self.cloud).shown(),
                 reason: error.to_string(),
             })?;
         if manifest.format != MANIFEST_FORMAT {
             return Err(PublishError::Malformed {
-                cloud: self.cloud.clone(),
+                cloud: CloudOrigin::new(&self.cloud).shown(),
                 reason: format!(
                     "manifest format {} is not {}",
                     manifest.format, MANIFEST_FORMAT

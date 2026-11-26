@@ -537,14 +537,31 @@ fn ruled(first: &DeploymentId, then: &DeploymentId) -> (Arc<ConfigStore>, Github
             *signer.public().as_bytes(),
         )),
     };
-    store
-        .write(
+    let staged = store
+        .read(
             &who,
-            &ployz_store::ApproveRule {
+            &ployz_store::RuleQuery {
                 environment: EnvironmentRef::default(),
-                rule: Box::new(Signed::sign(&rule, &signer).unwrap()),
-                births: Default::default(),
+                staged: true,
             },
+        )
+        .unwrap();
+    store
+        .write_trusted(
+            &who,
+            &ployz_store::Publish {
+                id: None,
+                environment: EnvironmentRef::default(),
+                version: staged.version,
+                message: None,
+                accept_volume_loss: Vec::new(),
+                rule: Some(ployz_store::SavedRule {
+                    rule: Box::new(Signed::sign(&rule, &signer).unwrap()),
+                    births: Default::default(),
+                    prior: None,
+                }),
+            },
+            &Trusted::default(),
         )
         .unwrap();
     let person = Actor {

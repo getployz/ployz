@@ -1,14 +1,15 @@
 //! What `server add` and `server init` read from the command line to provision a Machine.
 
 use clap::ArgMatches;
-use ployz_core::{Hint, MachineRelease, StoragePreparation};
+use ployz_core::{MachineRelease, StoragePreparation};
 
 use crate::failure::Failure;
 use crate::provisioning::{self, ProvisionError};
 use crate::ui;
 
 /// Resolve Machine storage preparation once before provisioning or enrollment.
-pub(crate) fn resolve_storage(matches: &ArgMatches) -> Result<StoragePreparation, Failure> {
+pub(crate) fn resolve_storage(root: &ArgMatches) -> Result<StoragePreparation, Failure> {
+    let matches = crate::cli::leaf_matches(root);
     let storage = match matches.get_one::<StoragePreparation>("storage").cloned() {
         Some(storage) => storage,
         None if matches.get_flag("yes") || matches.get_flag("no-install") => {
@@ -23,7 +24,7 @@ pub(crate) fn resolve_storage(matches: &ArgMatches) -> Result<StoragePreparation
                     Failure::usage(
                         "Choosing storage needs a terminal; pass --storage zfs or --storage none.",
                     )
-                    .hint(Hint::Retry(crate::cli::typed_with(&["--storage", "zfs"])))
+                    .hint(crate::cli::Rerun::again(root).set("storage", "zfs"))
                 },
                 "Cancelled. Nothing was installed.",
             )?;

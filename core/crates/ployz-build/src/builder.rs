@@ -483,7 +483,22 @@ impl Lock {
     ) -> Result<Self, BuildError> {
         let mut lock = Self::open_locked(directory, slot)?;
         if lock.marked()? {
-            lock.recover(docker)?;
+            lock.recover(docker, false)?;
+        }
+        Ok(lock)
+    }
+
+    /// Take `slot` as [`Self::try_acquire_slot`] does, from the process whose own Build
+    /// left its mark. Holding the slot shows that Build returned, so this process, its
+    /// owner, no longer keeps it quarantined; the Build's Docker CLIs and builder still do.
+    pub(crate) fn try_acquire_own_slot(
+        directory: &std::path::Path,
+        slot: usize,
+        docker: &std::path::Path,
+    ) -> Result<Self, BuildError> {
+        let mut lock = Self::open_locked(directory, slot)?;
+        if lock.marked()? {
+            lock.recover(docker, true)?;
         }
         Ok(lock)
     }
@@ -496,6 +511,10 @@ impl Lock {
 
     pub(crate) fn name(&self) -> String {
         slot_name(self.slot)
+    }
+
+    pub(crate) fn slot(&self) -> usize {
+        self.slot
     }
 
     pub(crate) fn recorder(&self) -> Recorder {
@@ -524,7 +543,7 @@ impl Lock {
     /// mid-removal leaves those CLIs for the next one to wait on, and one that
     /// fails leaves nothing alive that blocks a retry. The mark clears once
     /// Docker confirms the builder and its helpers are gone on every endpoint.
-    fn recover(&mut self, docker: &std::path::Path) -> Result<(), BuildError> {
+    fn recover(&mut self, docker: &std::path::Path, owned_here: bool) -> Result<(), BuildError> {
         let path = self.directory.join(lock_file(self.slot));
         let name = self.name();
         let quarantined = |observed: String| {
@@ -534,9 +553,17 @@ impl Lock {
             ))
         };
         let mark = crate::owner::Mark::parse(&fs::read_to_string(&path).map_err(lock_error)?);
-        let survivors = mark
+        let mut survivors = mark
             .survivors(&name)
             .map_err(|error| quarantined(format!("its processes could not be read: {error}")))?;
+        if owned_here {
+            let here = crate::owner::Process::current().map_err(|error| {
+                quarantined(format!("its processes could not be read: {error}"))
+            })?;
+            survivors.retain(|survivor| {
+                *survivor != crate::owner::Survivor::Recorded(crate::owner::Role::Owner, here)
+            });
+        }
         if !survivors.is_empty() {
             let unnamed = if mark == crate::owner::Mark::Unnamed {
                 " (its mark predates recorded processes)"

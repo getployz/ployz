@@ -24,6 +24,7 @@ struct Fixture {
     policy: HostPolicy,
     cluster: tokio::task::JoinHandle<()>,
     local: crate::machine::LocalMachine,
+    service: MachineService,
     machine: ployz_core::Machine,
     /// This Server's local socket, `unix://…`: a build sent there runs with Full scope,
     /// as one from an approved Device does. An Operator's build is refused.
@@ -98,7 +99,7 @@ impl Fixture {
         let socket = root.join("ployz.sock");
         let listener = tokio::net::UnixListener::bind(&socket).unwrap();
         let address = format!("unix://{}", socket.display());
-        let api = MachineApi::from_local(service);
+        let api = MachineApi::from_local(service.clone());
         let server = tokio::spawn(
             Server::builder().serve_with_incoming(api, UnixListenerStream::new(listener)),
         );
@@ -108,11 +109,44 @@ impl Fixture {
             policy,
             cluster,
             local,
+            service,
             machine,
             address,
             server,
             running_builds,
         }
+    }
+    /// Trust a Device whose key also holds Cloud's slot, and serve this Machine to it as its
+    /// own connection would: the Device and the `tcp://` address the CLI dials.
+    async fn device_in_two_slots(&self) -> (ployz_core::DeviceKey, String) {
+        let device = self
+            .local
+            .owner()
+            .mutate(crate::machine::test_support::device_in_two_slots)
+            .await
+            .unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = format!("tcp://{}", listener.local_addr().unwrap());
+        tokio::spawn(
+            Server::builder()
+                .add_routes(crate::machine_api::device_routes(
+                    self.service.clone(),
+                    device.into(),
+                ))
+                .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener)),
+        );
+        (device, address)
+    }
+    /// Remove `device` as `ployz device rm` on this Server does.
+    async fn remove(&self, device: ployz_core::DeviceKey) {
+        self.local
+            .clone()
+            .on_local_socket()
+            .set_device(ployz_core::SetDeviceRequest::Remove {
+                code: device.code(),
+            })
+            .await
+            .unwrap();
     }
     async fn request(
         &self,
@@ -678,6 +712,8 @@ case "$1 $2" in
   'buildx rm')
     if [ -f "$root/fail-cleanup" ] && {{ [ -f "$root/executed" ] || [ -f "$root/checking" ]; }}; then exit 1; fi ;;
   'buildx version'|'buildx create') exit 0 ;;
+  'rm --force')
+    if [ -f "$root/fail-cleanup" ]; then exit 1; fi ;;
   'buildx inspect')
     if [ -f "$root/slow-check" ]; then : > "$root/checking"; exec sleep 30; fi ;;
   'buildx ls') printf '%s\n' '{{"Name":"{}","Nodes":[{{"Status":"running","Platforms":["linux/amd64"]}}]}}' ;;
@@ -1322,6 +1358,253 @@ fn files_named(root: &Path, name: &str, found: &mut Vec<PathBuf>) {
             found.push(path);
         }
     }
+}
+
+/// A Device whose key also holds Cloud's slot starts a Build carrying a Sealed value and is
+/// removed once the Build was admitted, before its upload ends: the Build opens nothing and
+/// runs nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_build_whose_device_goes_before_its_upload_ends_opens_no_sealed_value() {
+    let cluster = crate::sealed_env::test_support::Cluster::new();
+    let fixture = Fixture::with(|_| {}, Some(cluster.dir.0.clone())).await;
+    let (device, address) = fixture.device_in_two_slots().await;
+    let capture = fixture.capture_with(Some(&cluster));
+    let client = ployz::connect::connect(Path::new("/missing-test-config"), Some(&address), None)
+        .await
+        .unwrap();
+    let (admitted, uploading) = std::sync::mpsc::channel::<()>();
+    let (removed, removal) = std::sync::mpsc::channel::<()>();
+    let paused = std::sync::atomic::AtomicBool::new(false);
+    // Its own task: the client's progress callback blocks the task the client runs on.
+    let remove = tokio::spawn({
+        let local = fixture.local.clone();
+        async move {
+            tokio::task::spawn_blocking(move || uploading.recv().unwrap())
+                .await
+                .unwrap();
+            local
+                .on_local_socket()
+                .set_device(ployz_core::SetDeviceRequest::Remove {
+                    code: device.code(),
+                })
+                .await
+                .unwrap();
+            removed.send(()).unwrap();
+        }
+    });
+    let result = capture
+        .execute_remote_images(
+            &client,
+            fixture.machine.id,
+            None,
+            Default::default(),
+            |progress| {
+                // The client reports the upload stage once admitted, before it uploads.
+                if matches!(progress, Progress::Stage(Stage::Upload))
+                    && !paused.swap(true, std::sync::atomic::Ordering::SeqCst)
+                {
+                    admitted.send(()).unwrap();
+                    removal.recv().unwrap();
+                }
+            },
+        )
+        .await;
+    remove.await.unwrap();
+    assert!(result.is_err(), "the Build went on for its removed Device");
+    assert!(!fixture.root.join("executed").exists());
+    assert!(!fixture.root.join("seen-secret").exists());
+    let mut leftovers = Vec::new();
+    files_named(&fixture.root, "NPM_TOKEN", &mut leftovers);
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+}
+
+/// A Device whose key also holds Cloud's slot is removed while its Build runs: the Build has
+/// stopped, and the values it opened are gone, by the time `device rm` returns.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_running_build_whose_device_goes_has_stopped_when_its_removal_returns() {
+    let cluster = crate::sealed_env::test_support::Cluster::new();
+    let fixture = Fixture::with(|_| {}, Some(cluster.dir.0.clone())).await;
+    let (device, address) = fixture.device_in_two_slots().await;
+    let capture = fixture.capture_with(Some(&cluster));
+    let client = ployz::connect::connect(Path::new("/missing-test-config"), Some(&address), None)
+        .await
+        .unwrap();
+    fs::write(fixture.root.join("hold-build"), "").unwrap();
+    let remove = async {
+        until_fake_docker(Duration::from_secs(10), || {
+            fixture.root.join("executed").exists()
+        })
+        .await
+        .unwrap();
+        fixture.remove(device).await;
+        let running = *fixture.running_builds.borrow();
+        let mut opened = Vec::new();
+        files_named(&fixture.root, "NPM_TOKEN", &mut opened);
+        fs::remove_file(fixture.root.join("hold-build")).unwrap();
+        (running, opened)
+    };
+    let (result, (running, opened)) = tokio::join!(
+        capture.execute_remote_images(
+            &client,
+            fixture.machine.id,
+            None,
+            Default::default(),
+            |_| {}
+        ),
+        remove,
+    );
+    assert_eq!(
+        running, 0,
+        "the Build still ran once its Device's removal returned"
+    );
+    assert!(opened.is_empty(), "{opened:?}");
+    assert!(result.is_err(), "the Build went on for its removed Device");
+}
+
+/// A Device whose key also holds Cloud's slot queues a Build behind another and is removed:
+/// the queued Build ends before `device rm` returns, without waiting for a build slot.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_queued_build_ends_with_its_device() {
+    let cluster = crate::sealed_env::test_support::Cluster::new();
+    let fixture = Fixture::with(|_| {}, Some(cluster.dir.0.clone())).await;
+    let (device, address) = fixture.device_in_two_slots().await;
+    let (_active, mut response) = fixture.request(Output::Load).await;
+    assert!(matches!(event(&mut response).await, Event::Admitted { .. }));
+    let capture = fixture.capture_with(Some(&cluster));
+    let client = ployz::connect::connect(Path::new("/missing-test-config"), Some(&address), None)
+        .await
+        .unwrap();
+    let (queued, mut waiting) = mpsc::channel(1);
+    let selected = fixture.machine.id;
+    let execution = tokio::spawn(async move {
+        capture
+            .execute_remote_images(&client, selected, None, Default::default(), |event| {
+                if matches!(event, Progress::Stage(Stage::Queued)) {
+                    queued.try_send(()).unwrap();
+                }
+            })
+            .await
+    });
+    waiting.recv().await.unwrap();
+
+    fixture.remove(device).await;
+
+    let result = tokio::time::timeout(Duration::from_secs(10), execution)
+        .await
+        .expect("the queued Build waited for a slot once its Device's removal returned")
+        .unwrap();
+    assert!(
+        matches!(failure(result), ployz::build::RemoteBuildFailure::Failed { stage: Stage::Queued, message, .. } if message.contains("no longer has Full access"))
+    );
+    assert!(!fixture.root.join("executed").exists());
+}
+
+/// A Device whose key also holds Cloud's slot is removed while its Build runs, and the
+/// builder doesn't confirm it stopped. `device rm` says so rather than that the Build
+/// stopped, and the Build holds no opened value.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_removal_says_when_a_build_cannot_confirm_it_stopped() {
+    let cluster = crate::sealed_env::test_support::Cluster::new();
+    let fixture = Fixture::with(|_| {}, Some(cluster.dir.0.clone())).await;
+    let (device, address) = fixture.device_in_two_slots().await;
+    let capture = fixture.capture_with(Some(&cluster));
+    let client = ployz::connect::connect(Path::new("/missing-test-config"), Some(&address), None)
+        .await
+        .unwrap();
+    fs::write(fixture.root.join("hold-build"), "").unwrap();
+    fs::write(fixture.root.join("fail-cleanup"), "").unwrap();
+    let remove = async {
+        until_fake_docker(Duration::from_secs(10), || {
+            fixture.root.join("executed").exists()
+        })
+        .await
+        .unwrap();
+        let removed = fixture
+            .local
+            .clone()
+            .on_local_socket()
+            .set_device(ployz_core::SetDeviceRequest::Remove {
+                code: device.code(),
+            })
+            .await;
+        let mut opened = Vec::new();
+        files_named(&fixture.root, "NPM_TOKEN", &mut opened);
+        fs::remove_file(fixture.root.join("hold-build")).unwrap();
+        (removed, opened)
+    };
+    let (result, (removed, opened)) = tokio::join!(
+        capture.execute_remote_images(
+            &client,
+            fixture.machine.id,
+            None,
+            Default::default(),
+            |_| {}
+        ),
+        remove,
+    );
+    let Err(crate::machine::LocalMachineError::WorkNotStopped(unstopped)) = removed else {
+        panic!("the removal said the Build stopped without knowing: {removed:?}");
+    };
+    assert_eq!(unstopped.works(), [crate::machine::Work::Build]);
+    assert!(opened.is_empty(), "{opened:?}");
+    assert!(matches!(
+        failure(result),
+        ployz::build::RemoteBuildFailure::Unknown { .. }
+    ));
+}
+
+/// A Device whose key also holds Cloud's slot runs a Build the builder doesn't confirm
+/// stopped, before anyone removes the Device. Removing the Device later says so, and so does
+/// the next key change, until one finds the Build's slot clear.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_build_that_ended_unconfirmed_before_its_removal_stays_reported_until_confirmed() {
+    let cluster = crate::sealed_env::test_support::Cluster::new();
+    let fixture = Fixture::with(|_| {}, Some(cluster.dir.0.clone())).await;
+    let (device, address) = fixture.device_in_two_slots().await;
+    let capture = fixture.capture_with(Some(&cluster));
+    let client = ployz::connect::connect(Path::new("/missing-test-config"), Some(&address), None)
+        .await
+        .unwrap();
+    fs::write(fixture.root.join("fail-cleanup"), "").unwrap();
+    let result = capture
+        .execute_remote_images(
+            &client,
+            fixture.machine.id,
+            None,
+            Default::default(),
+            |_| {},
+        )
+        .await;
+    assert!(matches!(
+        failure(result),
+        ployz::build::RemoteBuildFailure::Unknown { .. }
+    ));
+
+    let removed = fixture
+        .local
+        .clone()
+        .on_local_socket()
+        .set_device(ployz_core::SetDeviceRequest::Remove {
+            code: device.code(),
+        })
+        .await;
+    let Err(crate::machine::LocalMachineError::WorkNotStopped(unstopped)) = removed else {
+        panic!("the removal said an unconfirmed Build stopped: {removed:?}");
+    };
+    assert_eq!(unstopped.works(), [crate::machine::Work::Build]);
+
+    fs::remove_file(fixture.root.join("fail-cleanup")).unwrap();
+    fixture
+        .local
+        .clone()
+        .on_local_socket()
+        .set_device(ployz_core::SetDeviceRequest::Approve {
+            key: ployz_core::DeviceKey::from(
+                ployz_core::authority::Signer::from_seed(&[11; 32]).public(),
+            ),
+        })
+        .await
+        .expect("the next key change found the Build's slot clear");
 }
 
 #[tokio::test]

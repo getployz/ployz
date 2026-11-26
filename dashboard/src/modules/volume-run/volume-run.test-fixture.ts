@@ -18,6 +18,7 @@ export const COPIES = {
   mirror: { kind: "slot", slot: "1", readonly: true, newest: snapshot, resume_token: null, pull: null, role: "mirror" },
   final: { kind: "slot", slot: "1", readonly: true, newest: { ...snapshot, name: "f-1" }, resume_token: null, pull: null, role: "mirror" },
   old: { kind: "slot", slot: "1", readonly: true, newest: { ...snapshot, name: "f-1" }, resume_token: null, pull: null, role: "old_copy" },
+  writtenHere: { kind: "slot", slot: "1", readonly: true, newest: snapshot, resume_token: null, pull: null, role: "mirror", written_here: true },
   behind: { kind: "slot", slot: "1", readonly: true, newest: older, resume_token: null, pull: null, role: "mirror" },
   pulling: { kind: "slot", slot: "1", readonly: true, newest: older, resume_token: null, pull: { target: snapshot.name, failure: null }, role: "mirror" },
   failed: { kind: "slot", slot: "1", readonly: true, newest: older, resume_token: null, pull: { target: snapshot.name, failure: "no space" }, role: "mirror" },
@@ -38,7 +39,7 @@ export function member(server: string, copy: Copy, options: { epoch?: number; id
       : answer?.kind === "slot" && options.slot !== undefined ? { ...answer, slot: options.slot }
       : answer,
   };
-  const answered: Member = { machine, address: "fdcc::1", answered: true, view };
+  const answered: Member = { machine, address: "fdcc::1", answered: true, view, keepsWritten: true };
   return options.bound === undefined ? answered : { ...answered, boundBytes: options.bound };
 }
 
@@ -47,8 +48,8 @@ export const run = (kind: VolumeRunView["kind"], args: VolumeRunView["args"], st
   created_at: "2026-10-09T00:00:00.000Z", updated_at: "2026-10-09T00:00:00.000Z", finished_at: null,
 });
 
-/** The Volume verbs a Server's daemon serves: the placement set, and the check of where a copy's data began. */
-export const PLACEMENT_VERBS = [requirements.volumeMove.capability, requirements.volumeOrigin.capability];
+/** The Volume verbs a Server's daemon serves: the placement set, the check of where a copy's data began, and the keep of a slot written here. */
+export const PLACEMENT_VERBS = [requirements.volumeMove.capability, requirements.volumeOrigin.capability, requirements.volumeKeepWritten.capability];
 
 type OtherServer = { readonly name: string; readonly capabilities: readonly string[]; readonly storage?: "stateless" | "pool" };
 

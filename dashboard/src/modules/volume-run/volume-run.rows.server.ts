@@ -17,7 +17,7 @@ import { newestGuid, type Planned, planForwardRelease, type Refusal, type Refusa
 import { type DeploymentsSeen, deployingMessage, gb } from "#/modules/volume-run/resize";
 import { volumeRun } from "#/modules/volume-run/tables";
 import { originBlockers, originUpgradeMessage } from "#/modules/runtime/daemon-release";
-import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, copyName, type MachineRef, type Member, namesServer, VOLUME_RUN_MESSAGE_LIMIT, VOLUME_RUN_RUNNING_CHECK_MS, VOLUME_RUN_UNCLAIMED_LIMIT_MS, type VolumeLaneInput, type VolumeRunArgs, type VolumeRunInput, type VolumeRunView } from "#/modules/volume-run/volume-run";
+import { ACTIVE_VOLUME_RUN_STATES, type AnsweredMember, type Confirmation, type ConfirmedCopy, copyName, type Discard, type MachineRef, type Member, namesServer, VOLUME_RUN_MESSAGE_LIMIT, VOLUME_RUN_RUNNING_CHECK_MS, VOLUME_RUN_UNCLAIMED_LIMIT_MS, type VolumeLaneInput, type VolumeRunArgs, type VolumeRunInput, type VolumeRunView } from "#/modules/volume-run/volume-run";
 import { dockerVolumeName, parseDockerVolumeName } from "#/modules/runtime/naming";
 import { type VolumeRunKind, type VolumeRunPhase, type VolumeRunState } from "#/modules/volume-run/volume-run-states";
 import { Database } from "#/server/database.server";
@@ -374,6 +374,8 @@ const refusalCode = {
   no_copy: "conflict",
   another_copy: "conflict",
   role_changed: "conflict",
+  written_here: "conflict",
+  copy_changed: "conflict",
   deploying: "conflict",
   server_lacks: "unsupported",
 } satisfies Record<RefusalCode, string>;
@@ -509,7 +511,11 @@ export type PlanRequest = { readonly volumeId: string; readonly environment: Env
  * Environment makes of someone who can't protect it, when the run interrupts what runs there.
  */
 export type ClusterPlan =
-  | { readonly ok: true; readonly volume: ResolvedVolume; readonly asked: OperationAsked | null; readonly guard: OperationAsked | null; readonly input: PlanRequest }
+  | {
+      readonly ok: true; readonly volume: ResolvedVolume; readonly asked: OperationAsked | null; readonly guard: OperationAsked | null; readonly input: PlanRequest;
+      /** A delete's copies as the Servers report them now: what the person asking confirms. */
+      readonly copies?: readonly ConfirmedCopy[];
+    }
   | { readonly ok: false; readonly refusal: StoreRefusal; readonly effects?: readonly DestructiveEffect[] };
 
 export type VolumeRunPlan =
@@ -632,7 +638,7 @@ export type RequestOptions = {
 };
 
 export const requestVolumeRun = Effect.fn("VolumeRun.request")(function* (
-  caller: { readonly userId: string | null; readonly organizationId: string },
+  caller: Caller,
   input: { readonly volumeId: string; readonly environment: EnvironmentRef } & VolumeRunInput,
   options: RequestOptions = {},
 ) {
@@ -676,7 +682,53 @@ class LaneMoved extends Data.TaggedError("LaneMoved")<{ readonly active: VolumeR
 
 class LaneChurn extends Data.TaggedError("LaneChurn")<{ readonly message: string }> {}
 
-type Caller = { readonly userId: string | null; readonly organizationId: string };
+/**
+ * `confirmed` is what the caller saw of each copy a delete it chose deletes: a person's request read it from the Servers
+ * when they asked, and a Deployment from what its confirm listed.
+ */
+export type Caller = { readonly userId: string | null; readonly organizationId: string; readonly confirmed?: Confirmation };
+
+/**
+ * A delete's args as its row keeps them: only a delete someone chose carries a `Discard`, naming the copies they
+ * confirmed. This is the one place a `Discard` is made, so one in the input never reaches the row.
+ */
+const rowArgs = (caller: Caller, input: VolumeLaneInput): VolumeLaneInput["args"] => {
+  if (input.kind !== "delete_mirror") return input.args;
+  const { discard: _asked, ...args } = input.args;
+  if (caller.confirmed === undefined) return args;
+  // SAFETY: a Discard is a Confirmation whose `by` is branded, so no other module can make one.
+  const discard = { by: caller.confirmed.by, copies: [...caller.confirmed.copies] } as Discard;
+  return { ...args, discard };
+};
+
+/**
+ * A person's delete of the copy a deleted Volume left on `server`, as they confirmed it. It is an orphan run of the
+ * Docker Volume `name`: the sweep's run of that name refuses it as busy, and it deletes only the copy `confirmed` names.
+ */
+export const insertLeftoverDelete = Effect.fn("VolumeRun.insertLeftoverDelete")(function* (
+  caller: Caller & { readonly confirmed: Confirmation },
+  name: { readonly environmentId: string; readonly volumeId: string; readonly dockerVolume: string },
+  server: MachineRef,
+) {
+  const database = yield* Database;
+  const args = rowArgs(caller, { kind: "delete_mirror", args: { slot: server.name, confirmed_name: null, machine: server.id } });
+  return yield* database.transaction(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    const [inserted] = yield* drizzle.insert(volumeRun).values({
+      organizationId: caller.organizationId,
+      environmentId: name.environmentId,
+      volumeId: name.volumeId,
+      volumeName: name.dockerVolume,
+      dockerVolume: name.dockerVolume,
+      kind: "delete_mirror",
+      args,
+      orphan: true,
+      requestedByUserId: caller.userId,
+    }).onConflictDoNothing().returning();
+    if (inserted !== undefined) yield* enqueueRun(inserted);
+    return inserted === undefined ? null : volumeRunView(inserted);
+  }));
+});
 
 const TAKE_ROUNDS = 3;
 
@@ -707,7 +759,7 @@ export const takeLane = Effect.fn("VolumeRun.takeLane")(function* (caller: Calle
       refquotaBytes: volume.refquotaBytes,
       recordedBytes: volume.recordedBytes,
       kind: input.kind,
-      args: input.args,
+      args: rowArgs(caller, input),
       state: inngestRunId === null ? "requested" : "running",
       inngestRunId,
       requestedByUserId: caller.userId,

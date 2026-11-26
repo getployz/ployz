@@ -4,6 +4,7 @@ import { SettingsRow, SettingsWorkspace } from "#/components/settings/settings-s
 import {
   getRegistryHostFromImageReference,
   registryCredentialSecretSchema,
+  registryHostProblem,
   registryProvider,
 } from "#/modules/config-store/registry-credentials";
 import type { Write } from "#/modules/config-store/store-write";
@@ -35,7 +36,7 @@ export function RegistryCredentialsField({
   changed: boolean;
   baselineLabel?: string;
   baselineValue?: string;
-  onSet: (value: { username: string | null; secret: string }) => Write;
+  onSet: (value: { username: string; secret: string }) => Write;
   onClear: () => void;
   /** Turns the stored credentials back on, when there are some to restore. */
   onRestore?: () => void;
@@ -45,10 +46,10 @@ export function RegistryCredentialsField({
   const providerLabel = provider.label;
   const fixedUsername = provider.fixedUsername;
   const registryHost = getRegistryHostFromImageReference(image);
-  const usesSingleFieldUpdater =
-    provider.usernameLabel == null || fixedUsername != null;
+  // Credentials seal for one registry host, so a host Docker can't reach takes none.
+  const problem = registryHostProblem(image);
 
-  function handleSubmit(value: { username: string | null; secret: string }) {
+  function handleSubmit(value: { username: string; secret: string }) {
     onSet(value);
     setMode(null);
   }
@@ -61,10 +62,10 @@ export function RegistryCredentialsField({
   // Most images are public: none yet is a quiet row, not a prompt.
   if (mode == null && !configured) {
     return (
-      <SettingsRow label={label} hint="For private images." commit="none" control={
+      <SettingsRow label={label} hint={problem ?? "For private images."} commit="none" control={
         <>
           {onRestore ? <Button type="button" variant="ghost" onClick={onRestore}>Restore</Button> : null}
-          <Button type="button" variant="outline" data-changed={changed || undefined} onClick={() => setMode("create")}>
+          <Button type="button" variant="outline" data-changed={changed || undefined} disabled={problem !== null} onClick={() => setMode("create")}>
             Add credentials
           </Button>
         </>
@@ -77,12 +78,12 @@ export function RegistryCredentialsField({
       <SettingsRow label={label} tone={changed ? "changed" : undefined} commit="change"
         hint={(
           <span title={changed && baselineValue != null ? `${baselineLabel ?? "Deployed"}: ${baselineValue}` : undefined}>
-            {providerLabel} · {registryHost}{username ? ` · ${username}` : ""}
+            {problem ?? `${providerLabel} · ${registryHost}${username ? ` · ${username}` : ""}`}
           </span>
         )}
         control={
         <>
-          <Button type="button" variant="ghost" size="icon" onClick={() => setMode("edit")}>
+          <Button type="button" variant="ghost" size="icon" disabled={problem !== null} onClick={() => setMode("edit")}>
             <PencilIcon />
             <span className="sr-only">Edit registry credentials</span>
           </Button>
@@ -94,7 +95,7 @@ export function RegistryCredentialsField({
 
   return (
     <SettingsWorkspace label={label} hint={provider.description}>
-      {usesSingleFieldUpdater ? (
+      {fixedUsername != null ? (
         <ServiceRegistryCredentialSingleFieldEditor
           schema={registryCredentialSecretSchema}
           secretLabel={provider.secretLabel}
@@ -116,7 +117,7 @@ export function RegistryCredentialsField({
       ) : (
         <ServiceRegistryCredentialForm
           key={`${mode}:${username ?? ""}`}
-          usernameLabel={provider.usernameLabel ?? "Username"}
+          usernameLabel={provider.usernameLabel}
           secretLabel={provider.secretLabel}
           initialUsername={username ?? ""}
           baselineLabel={baselineLabel}

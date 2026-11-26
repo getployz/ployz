@@ -1,5 +1,4 @@
 use clap::ArgMatches;
-use ployz_core::Hint;
 use ployz_store::{
     Admit, DeploymentId, DeploymentSummary, DeploymentView, EnvironmentRef, ShutDown, VolumeName,
 };
@@ -7,18 +6,11 @@ use ployz_store::{
 use super::super::Error;
 use super::super::deploy;
 use super::super::store::{self, Store, mint};
+use crate::cli::Rerun;
 
 /// Every `--accept-volume-loss` name.
 pub(in crate::handlers) fn accepted(matches: &ArgMatches) -> Result<Vec<VolumeName>, Error> {
     store::volume_names(matches, "accept-volume-loss")
-}
-
-/// `--accept-volume-loss` for each of `accept`, the words a retry repeats.
-pub(in crate::handlers) fn with_accepted(accept: &[VolumeName]) -> Vec<&str> {
-    accept
-        .iter()
-        .flat_map(|name| ["--accept-volume-loss", name.as_str()])
-        .collect()
 }
 
 /// Whether removal Deployment `deployment` found no Server left to take it off, so
@@ -57,12 +49,12 @@ pub(in crate::handlers) fn unfinished(
     matches: &ArgMatches,
     view: &DeploymentView,
     ran: Result<(), Error>,
-    again: &str,
+    again: &Rerun,
 ) -> Result<(), Error> {
-    crate::ui::finish(&crate::ui::Next::new(view, Some(again.to_owned())), || {
+    crate::ui::finish(&crate::ui::Next::new(view, Some(again.line())), || {
         deploy::say_view(view);
     })?;
-    not_applied(matches, ran, again.to_owned())
+    not_applied(matches, ran, again.clone())
 }
 
 /// How a command ends after a removal Deployment didn't apply: how running it
@@ -71,9 +63,9 @@ pub(in crate::handlers) fn unfinished(
 pub(in crate::handlers) fn not_applied(
     matches: &ArgMatches,
     ran: Result<(), Error>,
-    again: String,
+    again: Rerun,
 ) -> Result<(), Error> {
-    ran.map_err(|error| error.hint(Hint::Retry(again)))
+    ran.map_err(|error| error.hint(again))
         .and_then(|()| match matches.get_flag("detach") {
             true => Ok(()),
             false => Err(Error::partial()),

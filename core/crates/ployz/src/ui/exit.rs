@@ -5,7 +5,7 @@ use std::{io, process::ExitCode};
 use ployz_core::RpcErrorCode;
 use serde_json::json;
 
-use super::{Mode, error};
+use super::{Json, Mode, error};
 use crate::failure::Failure;
 
 /// A result printed, but some Servers failed or did not answer, so part of it is missing.
@@ -39,28 +39,26 @@ pub fn exit_code(code: &RpcErrorCode) -> u8 {
 /// End the process: print the failure, if any, and return its exit code.
 #[must_use]
 pub fn exit(result: Result<(), Failure>) -> ExitCode {
-    // A result's last line may still sit in std's buffer, and std drops a
-    // flush error at exit.
-    let _ = io::Write::flush(&mut super::stdout_bytes());
+    super::stream::flush_stdout();
     let code = end(
         result,
-        super::stdout::take_broken(),
+        super::stream::take_broken(),
         super::mode(),
         super::emitted(),
-        &mut super::stdout_bytes(),
-        &mut anstream::stderr().lock(),
+        &mut Json::stdout(),
+        &mut super::stderr(),
     );
     ExitCode::from(code)
 }
 
 /// Print how the command ended and return its exit code. A result that could
 /// not be written to stdout fails with that write error, on stderr.
-fn end(
+fn end<W: io::Write>(
     result: Result<(), Failure>,
     broken: Option<io::Error>,
     mode: Mode,
     emitted: bool,
-    stdout: &mut dyn io::Write,
+    stdout: &mut Json<W>,
     stderr: &mut dyn io::Write,
 ) -> u8 {
     let Some(broken) = broken else {
@@ -72,17 +70,23 @@ fn end(
         Err(failure) if failure.is_interrupted() => failure,
         _ => Failure::from(broken).context("Could not write the result to stdout."),
     };
-    render(&failure, Mode::Plain, false, &mut io::sink(), stderr)
+    render(
+        &failure,
+        Mode::Plain,
+        false,
+        &mut Json::new(io::sink()),
+        stderr,
+    )
 }
 
 /// Print `failure` for `mode` and return its exit code. Once a result is
 /// printed, stdout keeps that one object and the failure turns it partial,
 /// unless the failure is that result's own outcome.
-fn render(
+fn render<W: io::Write>(
     failure: &Failure,
     mode: Mode,
     emitted: bool,
-    stdout: &mut dyn io::Write,
+    stdout: &mut Json<W>,
     stderr: &mut dyn io::Write,
 ) -> u8 {
     if let Some(code) = failure.printed_exit() {
@@ -95,7 +99,7 @@ fn render(
     let report = failure.report();
     // Nothing is left to report a failed write to.
     if mode == Mode::Json && !emitted {
-        let _ = writeln!(stdout, "{}", json!({ "error": failure.json() }));
+        let _ = stdout.write(&json!({ "error": failure.json() }), false);
     } else {
         let causes = failure.causes();
         let _ = error::write(
@@ -123,14 +127,26 @@ fn render(
 /// The exit code for `failure` once a result has printed.
 #[cfg(test)]
 pub(crate) fn after_result(failure: &Failure) -> u8 {
-    render(failure, Mode::Plain, true, &mut io::sink(), &mut io::sink())
+    render(
+        failure,
+        Mode::Plain,
+        true,
+        &mut Json::new(io::sink()),
+        &mut io::sink(),
+    )
 }
 
 /// What a person sees for `failure` in Plain mode.
 #[cfg(test)]
 pub(crate) fn plain(failure: &Failure) -> String {
     let mut stderr = anstream::StripStream::new(Vec::new());
-    render(failure, Mode::Plain, false, &mut Vec::new(), &mut stderr);
+    render(
+        failure,
+        Mode::Plain,
+        false,
+        &mut Json::new(Vec::new()),
+        &mut stderr,
+    );
     String::from_utf8(stderr.into_inner()).unwrap_or_default()
 }
 
@@ -149,16 +165,16 @@ mod tests {
     fn cancellation_survives_context_hints_and_committed_json() {
         let failure = Failure::cancelled()
             .context("Server initialized; ingress deployment incomplete.")
-            .hint(Hint::Retry(
-                "ployz server set alpha --accepts-ingress=true".into(),
+            .hint(crate::cli::retry_hint(
+                "ployz server set alpha --accepts-ingress=true",
             ));
-        let mut stdout = Vec::new();
+        let mut stdout = Json::new(Vec::new());
         let mut stderr = anstream::StripStream::new(Vec::new());
         assert_eq!(
             render(&failure, Mode::Json, true, &mut stdout, &mut stderr),
             130
         );
-        assert!(stdout.is_empty());
+        assert!(stdout.written().is_empty());
         let text = String::from_utf8(stderr.into_inner()).unwrap();
         assert!(text.contains("Server initialized; ingress deployment incomplete."));
         assert!(text.contains("retry: ployz server set alpha --accepts-ingress=true"));
@@ -170,7 +186,7 @@ mod tests {
             render(&failure, Mode::Json, false, &mut stdout, &mut Vec::new()),
             130
         );
-        let value: Value = serde_json::from_slice(&stdout).unwrap();
+        let value: Value = serde_json::from_slice(stdout.written()).unwrap();
         assert_eq!(
             value.pointer("/error/message").unwrap(),
             "Server initialized; ingress deployment incomplete."
@@ -184,12 +200,12 @@ mod tests {
     }
 
     fn end(failure: &Failure, mode: Mode, emitted: bool) -> Ended {
-        let mut stdout = Vec::new();
+        let mut stdout = Json::new(Vec::new());
         let mut stderr = anstream::StripStream::new(Vec::new());
         let code = render(failure, mode, emitted, &mut stdout, &mut stderr);
         Ended {
             code,
-            stdout: String::from_utf8(stdout).unwrap(),
+            stdout: String::from_utf8(stdout.written().clone()).unwrap(),
             stderr: String::from_utf8(stderr.into_inner()).unwrap(),
         }
     }
@@ -320,7 +336,7 @@ mod tests {
             name: "nope".into(),
             running_in_scope: vec!["web".into()],
         })
-        .hint(Hint::Retry("ployz exec web -- ls".into()))
+        .hint(crate::cli::retry_hint("ployz exec web -- ls"))
         .hint(Hint::Undo("ployz stop web".into()));
         assert_eq!(
             end(&not_running, Mode::Json, false).stdout,
@@ -407,26 +423,26 @@ mod tests {
         table.row(["web"]);
         assert!(
             table
-                .write(&mut super::super::stdout::Stdout(Full), false)
+                .write(&mut super::super::stream::Stdout(Full), false)
                 .is_err()
         );
-        let mut stdout = Vec::new();
+        let mut stdout = Json::new(Vec::new());
         let mut stderr = anstream::StripStream::new(Vec::new());
         let code = super::end(
             Ok(()),
-            super::super::stdout::take_broken(),
+            super::super::stream::take_broken(),
             Mode::Plain,
             true,
             &mut stdout,
             &mut stderr,
         );
         assert_eq!(code, 1);
-        assert!(stdout.is_empty());
+        assert!(stdout.written().is_empty());
         assert_eq!(
             String::from_utf8(stderr.into_inner()).unwrap(),
             "error: Could not write the result to stdout.\n  cause: No space left on device (os error 28)\n"
         );
-        assert!(super::super::stdout::take_broken().is_none());
+        assert!(super::super::stream::take_broken().is_none());
     }
 
     #[test]

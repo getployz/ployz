@@ -142,6 +142,45 @@ fn a_connection_reads_the_servers_name_and_never_writes_it() {
     assert_eq!(bare.server(), None);
 }
 
+/// A connection that doesn't parse is named by its scheme, host and port alone: what
+/// rides in its user info, path or query, or in a scheme of its own, never prints.
+#[test]
+fn a_connection_that_doesnt_parse_prints_no_part_that_may_be_a_secret() {
+    for (typed, said) in [
+        (
+            "https://SENTINEL@cloud.example/SENTINEL?t=SENTINEL",
+            "unsupported connection scheme: \"<SCHEME>://<USER>@cloud.example/<PATH>?<QUERY>\"",
+        ),
+        (
+            "tcp://SENTINEL@203.0.113.7:1",
+            "invalid TCP address \"tcp://<USER>@203.0.113.7:1\"",
+        ),
+        (
+            "ssh+go://SENTINEL:SENTINEL@203.0.113.7",
+            "connection scheme was removed: \"ssh+go://<USER>:<PASSWORD>@203.0.113.7\"",
+        ),
+        (
+            "x-SENTINEL://203.0.113.7/?q=SENTINEL",
+            "unsupported connection scheme: \"<SCHEME>://203.0.113.7?<QUERY>\"",
+        ),
+        // A password that holds a `/`: what reads as the host is part of it, so no URL
+        // parses.
+        (
+            "root:SENTINEL/SENTINEL@203.0.113.7",
+            "invalid SSH destination \"<CONNECTION>\"",
+        ),
+        // The same with digits before the `/`, which parse as a port: an `@` after the
+        // authority marks the host as one to withhold.
+        (
+            "ssh+go://root:1234/SENTINEL@203.0.113.7",
+            "connection scheme was removed: \"ssh+go://<HOST>/<PATH>\"",
+        ),
+    ] {
+        let refused = typed.parse::<super::Connection>().unwrap_err();
+        assert_eq!(refused.to_string(), said, "{typed}");
+    }
+}
+
 use std::{collections::BTreeMap, fs, path::PathBuf};
 
 use super::{Config, ConfigError, Context, ContextError, RemovedContext};
@@ -215,7 +254,7 @@ fn removing_a_missing_context_is_context_not_found_and_does_not_mutate() {
     assert_eq!(
         config.remove_context("gone"),
         Err(ContextError::ContextNotFound {
-            name: "gone".into(),
+            name: crate::context::shown_context("gone"),
             path,
         })
     );
@@ -268,7 +307,7 @@ fn set_current_context_rejects_an_unknown_name() {
     assert_eq!(
         config.set_current_context(Some("gone".into())),
         Err(ContextError::ContextNotFound {
-            name: "gone".into(),
+            name: crate::context::shown_context("gone"),
             path,
         })
     );

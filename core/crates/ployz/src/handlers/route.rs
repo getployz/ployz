@@ -39,12 +39,7 @@ pub(super) async fn connect_full(
 ) -> Result<Client, Error> {
     let config = super::config_path(matches)?;
     let key = crate::device::key::path(&config);
-    let direct: Vec<&str> = matches
-        .get_many::<String>("connect")
-        .into_iter()
-        .flatten()
-        .map(String::as_str)
-        .collect();
+    let direct: Vec<&str> = crate::cli::connection(matches).into_iter().collect();
     if let [_, _, ..] = direct[..] {
         let connections = direct
             .iter()
@@ -115,7 +110,7 @@ pub(super) async fn connect_each(
                 Ok::<_, ConnectError>((client, machine))
             };
             let (client, machine) = dial.await.map_err(|error| {
-                Error::from(error).context(format!("No Server answered at {connection}."))
+                Error::from(error).context(format!("No Server answered at {}.", connection.shown()))
             })?;
             Ok::<_, Error>((client, connection.with_machine_id(machine)))
         }
@@ -128,7 +123,9 @@ pub(super) async fn connect_each(
             .find(|route| route.machine_id() == connection.machine_id())
         {
             return Err(Error::usage(format!(
-                "{twice} and {connection} reach the same Server. Give each Server's connection once."
+                "{} and {} reach the same Server. Give each Server's connection once.",
+                twice.shown(),
+                connection.shown()
             )));
         }
         routes.push(connection.clone());
@@ -198,7 +195,7 @@ enum Access {
 }
 
 async fn access(matches: &ArgMatches, context: Option<&str>) -> Result<Access, Error> {
-    if matches.get_one::<String>("connect").is_some() || context.is_some() {
+    if crate::cli::connection(matches).is_some() || context.is_some() {
         return Ok(Access::Direct { signed_out: false });
     }
     match login(matches).await? {
@@ -375,7 +372,7 @@ pub(super) fn cloud_runs(
 
 /// Whether `--connect` or `--context` names a Cluster to dial.
 pub(super) fn names_cluster(matches: &ArgMatches) -> bool {
-    matches.get_one::<String>("connect").is_some() || matches.get_one::<String>("context").is_some()
+    crate::cli::connection(matches).is_some() || matches.get_one::<String>("context").is_some()
 }
 
 /// The signed-in Cloud credential, or `None` when signed out. Nothing on the command line
@@ -442,7 +439,7 @@ pub(super) async fn reach_or_silent(
     matches: &ArgMatches,
     context: Option<&str>,
 ) -> Result<Option<Reach>, Unreached> {
-    let direct = matches.get_one::<String>("connect").map(String::as_str);
+    let direct = crate::cli::connection(matches);
     let config = super::config_path(matches)?;
     let signed_out = match access(matches, context).await? {
         Access::Cloud(credential) => {
@@ -547,7 +544,7 @@ pub(super) async fn entries(
     matches: &ArgMatches,
     context: Option<&str>,
 ) -> Result<SelectedConnections, Error> {
-    let direct = matches.get_one::<String>("connect").map(String::as_str);
+    let direct = crate::cli::connection(matches);
     let signed_out = match access(matches, context).await? {
         Access::Cloud(credential) => {
             let access = cloud::account::server_access(&credential).await?;

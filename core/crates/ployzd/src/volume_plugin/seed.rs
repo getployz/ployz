@@ -393,9 +393,10 @@ impl VolumeStorage {
             // otherwise.
             SeedProgress::Failed(failure) => {
                 tracing::warn!(%into, failure, "Volume seed copy failed");
-                return self.seeded(&pool, &into).await.map(|view| VolumeCopyView {
-                    copy: answering(view.copy, failure),
-                });
+                return self
+                    .seeded(&pool, &into)
+                    .await
+                    .map(|view| VolumeCopyView::of(answering(view.copy, failure)));
             }
             SeedProgress::Copied(copied) => {
                 copied.land(self, &request.into, (guid, copy)).await?;
@@ -461,9 +462,7 @@ impl VolumeStorage {
                 }
             }
         }?;
-        Ok(VolumeCopyView {
-            copy: self.receiving(&into, view.copy),
-        })
+        Ok(VolumeCopyView::of(self.receiving(&into, view.copy)))
     }
 
     /// The one read of [`SeedProgress`], under the mutation `_held`, for a Seed of the seed
@@ -699,7 +698,7 @@ impl VolumeStorage {
         into: &VolumeName,
     ) -> Result<VolumeCopyView, RpcError> {
         let copy = self.current_copy(pool, into).await?;
-        Ok(VolumeCopyView { copy })
+        Ok(VolumeCopyView::of(copy))
     }
 
     /// `zfs send` of one local snapshot piped into a bounded, read-only receive of `fs`,
