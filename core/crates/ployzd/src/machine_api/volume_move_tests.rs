@@ -1,6 +1,8 @@
 use super::*;
 use crate::storage::test_support::FakePlugin;
-use crate::volume_copy::{CUT_ROUTE, DESTROY_ROUTE, INSPECT_ROUTE, WRITER_ROUTE};
+use crate::volume_copy::{
+    CUT_ROUTE, DESTROY_ROUTE, INSPECT_ROUTE, PREVIEW_CLOSE_ROUTE, VOLUME_SEED_ROUTE, WRITER_ROUTE,
+};
 use ployz_core::{DockerVolumeName, Gen, Namespace, SetVolumeCopyReply};
 
 const VOLUME: &str = "app_data";
@@ -804,6 +806,475 @@ async fn a_preview_start_refuses_a_kept_container_of_the_image_its_tag_left() {
         "{reply:?}"
     );
     assert_eq!(promotes(&plugin), 1, "a refused start promoted the copy");
+}
+
+/// The previews this Server lists as open, which Cloud closes when the Store doesn't.
+async fn held_open(service: &MachineService) -> Vec<Namespace> {
+    held(service).await.open
+}
+
+/// The previews this Server lists, open and closing.
+async fn held(service: &MachineService) -> ployz_core::PreviewsHeld {
+    let request = ployz_core::ListPreviewsRequest {};
+    let response = service
+        .list_previews(Request::new(
+            op::ListPreviews::into_request(request).encode().unwrap(),
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .decode_response()
+        .unwrap();
+    response.decode::<op::ListPreviews>().unwrap()
+}
+
+async fn close(
+    service: &MachineService,
+    namespace: &Namespace,
+) -> Result<ployz_core::PreviewClosed, String> {
+    let request = ployz_core::ClosePreviewRequest {
+        namespace: namespace.clone(),
+    };
+    let response = service
+        .close_preview(Request::new(
+            op::ClosePreview::into_request(request).encode().unwrap(),
+        ))
+        .await
+        .map_err(|status| status.message().to_owned())?
+        .into_inner()
+        .decode_response()
+        .unwrap();
+    response
+        .clone()
+        .decode::<op::ClosePreview>()
+        .map_err(|error| format!("{error}: {response:?}"))
+}
+
+fn calls_to(plugin: &FakePlugin, route: &str) -> usize {
+    plugin
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(called, _)| called == route)
+        .count()
+}
+
+/// A preview whose Service `api` this Server created, which opens the preview, and a Docker
+/// Volume of another driver in its Namespace.
+async fn created_preview(
+    fleet: &Fleet,
+    plugin: &FakePlugin,
+) -> (
+    MachineService,
+    Namespace,
+    ResolvedServiceSpec,
+    DockerVolumeName,
+) {
+    let node = fleet.node(0);
+    let (namespace, spec, volume) = preview_on(node);
+    let service = fleet.with_plugin(0, plugin);
+    create_in(&service, &namespace, &spec).await.unwrap();
+    assert!(holds_a_container(node));
+    node.fake.listed_volumes.lock().unwrap().push(json!({
+        "Name": format!("{namespace}_cache"), "Driver": "local", "Mountpoint": "/cache"}));
+    (service, namespace, spec, volume)
+}
+
+async fn create_in(
+    service: &MachineService,
+    namespace: &Namespace,
+    spec: &ResolvedServiceSpec,
+) -> Result<(), String> {
+    service
+        .local
+        .create_container(
+            ployz_core::ContainerKind::ServiceContainer,
+            namespace,
+            spec,
+            None,
+            None,
+            None,
+        )
+        .await
+        .map(drop)
+        .map_err(|error| ployz_core::error_chain::inline(&error))
+}
+
+fn preview_plugin(spec: &ResolvedServiceSpec, volume: &DockerVolumeName) -> FakePlugin {
+    plugin(
+        preview_root(spec, volume, 0),
+        WRITER_ROUTE,
+        preview_root(spec, volume, 1),
+    )
+}
+
+/// A Close removes the preview's Containers, has the plugin sweep its Volumes and reports
+/// a Volume of another driver kept. From then on no start creates a Container and no copy
+/// or Seed reaches its data, and a repeat Close sweeps again.
+#[tokio::test]
+async fn a_closed_preview_runs_and_receives_nothing_more() {
+    let fleet = Fleet::start().await;
+    let node = fleet.node(0);
+    let (_, spec, volume) = preview_on(node);
+    let plugin = preview_plugin(&spec, &volume);
+    plugin.reply(PREVIEW_CLOSE_ROUTE, json!({"Ok": {"destroyed": [volume]}}));
+    let (service, namespace, spec, volume) = created_preview(&fleet, &plugin).await;
+    let promoted = promotes(&plugin);
+    assert_eq!(held_open(&service).await, std::slice::from_ref(&namespace));
+
+    let closed = close(&service, &namespace).await.unwrap();
+
+    assert!(
+        held_open(&service).await.is_empty(),
+        "a closed preview is still listed open"
+    );
+
+    assert_eq!(closed.destroyed, std::slice::from_ref(&volume));
+    assert_eq!(
+        closed.kept,
+        [DockerVolumeName::parse(format!("{namespace}_cache")).unwrap()]
+    );
+    assert!(!holds_a_container(node), "the Close left its Container");
+    let start = try_set_copy(&service, preview_writer_at(&namespace, &spec, &volume, 2)).await;
+    assert!(
+        start
+            .as_ref()
+            .is_err_and(|error| error.contains("is closed")),
+        "{start:?}"
+    );
+    assert!(!holds_a_container(node), "a start after the Close made one");
+    let create = create_in(&service, &namespace, &spec).await;
+    assert!(
+        create
+            .as_ref()
+            .is_err_and(|error| error.contains("is closed")),
+        "{create:?}"
+    );
+    assert!(
+        !holds_a_container(node),
+        "a create after the Close made one"
+    );
+    assert_eq!(
+        promotes(&plugin),
+        promoted,
+        "a start after the Close promoted"
+    );
+    let pull = json!({"name":volume, "expect":{"kind":"writer", "epoch":0},
+        "want":{"kind":"mirror", "from":fleet.node(1).row.management_address(), "target":"f-2", "drain":0}});
+    let pull = try_set_copy(&service, pull).await;
+    assert!(
+        pull.as_ref()
+            .is_err_and(|error| error.contains("is closed")),
+        "{pull:?}"
+    );
+    let seed = ployz_core::SeedVolumeRequest {
+        name: DockerVolumeName::parse("app_data").unwrap(),
+        into: volume.clone(),
+        guid: ployz_core::SnapshotGuid::new(7),
+        r#gen: None,
+    };
+    let seed = service
+        .seed_volume(Request::new(
+            op::SeedVolume::into_request(seed).encode().unwrap(),
+        ))
+        .await;
+    assert!(
+        seed.as_ref()
+            .is_err_and(|status| status.message().contains("is closed")),
+        "{seed:?}"
+    );
+    assert_eq!(calls_to(&plugin, VOLUME_SEED_ROUTE), 0);
+
+    close(&service, &namespace).await.unwrap();
+    assert_eq!(
+        calls_to(&plugin, PREVIEW_CLOSE_ROUTE),
+        2,
+        "a repeat sweeps again"
+    );
+}
+
+/// A Close of a Namespace this Server never ran as a preview changes nothing: not an
+/// ordinary Namespace, not another Server's preview, not its own preview it never opened.
+#[tokio::test]
+async fn a_close_of_a_preview_this_server_never_opened_touches_nothing() {
+    let fleet = Fleet::start().await;
+    let (unopened, _, _) = preview_on(fleet.node(0));
+    let (elsewhere, _, _) = preview_on(fleet.node(1));
+    let plugin = FakePlugin::default();
+    plugin.reply(PREVIEW_CLOSE_ROUTE, json!({"Ok": {}}));
+    let service = fleet.with_plugin(0, &plugin);
+    for namespace in [unopened, elsewhere, Namespace::parse("app").unwrap()] {
+        let refused = close(&service, &namespace).await;
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|error| error.contains("never ran")),
+            "{namespace}: {refused:?}"
+        );
+    }
+    assert_eq!(calls_to(&plugin, PREVIEW_CLOSE_ROUTE), 0);
+}
+
+/// Data that lands in a preview before any Container is created in it opens the preview,
+/// so its Close sweeps that data rather than answering that the preview never ran here.
+#[tokio::test]
+async fn data_landing_before_any_create_opens_the_preview_for_its_close() {
+    let fleet = Fleet::start().await;
+    let (namespace, spec, volume) = preview_on(fleet.node(0));
+    let plugin = FakePlugin::default();
+    let root = preview_root(&spec, &volume, 0)["Ok"].clone();
+    plugin.reply(VOLUME_SEED_ROUTE, json!({"Ok": {"copy": root}}));
+    plugin.reply(PREVIEW_CLOSE_ROUTE, json!({"Ok": {}}));
+    let service = fleet.with_plugin(0, &plugin);
+    let seed = ployz_core::SeedVolumeRequest {
+        name: DockerVolumeName::parse("app_data").unwrap(),
+        into: volume,
+        guid: ployz_core::SnapshotGuid::new(7),
+        r#gen: None,
+    };
+    let seeded = service
+        .seed_volume(Request::new(
+            op::SeedVolume::into_request(seed).encode().unwrap(),
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .decode_response()
+        .unwrap();
+    assert!(
+        seeded.clone().decode::<op::SeedVolume>().is_ok(),
+        "{seeded:?}"
+    );
+    let closed = close(&service, &namespace).await;
+    assert!(closed.is_ok(), "{closed:?}");
+    assert_eq!(calls_to(&plugin, PREVIEW_CLOSE_ROUTE), 1);
+
+    let fleet = Fleet::start().await;
+    let (namespace, spec, volume) = preview_on(fleet.node(0));
+    let plugin = FakePlugin::default();
+    plugin.reply("Volume.Inspect", json!({"Ok": {"copy": null}}));
+    plugin.reply("Storage.Prepare", json!({"Ok": [volume]}));
+    plugin.reply(PREVIEW_CLOSE_ROUTE, json!({"Ok": {}}));
+    let service = fleet.with_plugin(0, &plugin);
+    let prepared = service
+        .local
+        .prepare_volumes(vec![ployz_core::ServiceStorageSpec::from(&spec)])
+        .await;
+    assert!(prepared.is_ok(), "{prepared:?}");
+    let closed = close(&service, &namespace).await;
+    assert!(closed.is_ok(), "{closed:?}");
+    assert_eq!(calls_to(&plugin, PREVIEW_CLOSE_ROUTE), 1);
+}
+
+/// A Seed or Seed copy this Server refuses, here a Seed below the Volume's floor and a step
+/// signed by a key it doesn't trust, opens no preview: a Close of it still answers that the
+/// preview never ran here.
+#[tokio::test]
+async fn a_refused_seed_or_seed_copy_opens_no_preview() {
+    use ployz_core::authority::{CopyStep, ProposalRef, Signed, Signer, Timestamp};
+    let fleet = Fleet::start().await;
+    let (namespace, _, volume) = preview_on(fleet.node(0));
+    let plugin = FakePlugin::default();
+    plugin.reply(PREVIEW_CLOSE_ROUTE, json!({"Ok": {}}));
+    plugin.reply(INSPECT_ROUTE, json!({"Ok": null}));
+    let service = fleet.with_plugin(0, &plugin);
+    let stranger = Signer::from_seed(&[42; 32]);
+    let source = DockerVolumeName::parse("app_data").unwrap();
+    let step = CopyStep {
+        cluster: crate::sealing_key::SealingKey::generate().public_key(),
+        namespace: namespace.clone(),
+        proposal: ProposalRef {
+            operation: ployz_core::OperationId::parse("0f8fad5bd9cb469fa16570867728950e").unwrap(),
+            index: 0,
+        },
+        signer: ployz_core::DeviceKey::from(stranger.public()).into(),
+        machine: fleet.node(0).row.id,
+        source: source.clone(),
+        origin: ployz_core::VolumeOrigin::legacy(&source),
+        point: ployz_core::SnapshotGuid::new(7),
+        taken_at: Timestamp::now(),
+        into: volume.clone(),
+        birth: ployz_core::PreviewNamespace::of(&namespace)
+            .unwrap()
+            .birth("data"),
+    };
+    let request = ployz_core::SeedCopyRequest {
+        seed: ployz_core::SeedVolumeRequest {
+            name: source,
+            into: volume,
+            guid: ployz_core::SnapshotGuid::new(7),
+            r#gen: None,
+        },
+        step: Signed::sign(&step, &stranger).unwrap(),
+    };
+    let floor = json!({"name":request.seed.into, "expect":{"kind":"none"}, "want":{"kind":"floor"}, "gen":5});
+    let floor = try_set_copy(&service, floor).await;
+    assert!(floor.is_ok(), "{floor:?}");
+    let stale = ployz_core::SeedVolumeRequest {
+        r#gen: Some(ployz_core::VolumeGen::new(1)),
+        ..request.seed.clone()
+    };
+    let stale = service
+        .seed_volume(Request::new(
+            op::SeedVolume::into_request(stale).encode().unwrap(),
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .decode_response()
+        .unwrap();
+    assert!(
+        stale.clone().decode::<op::SeedVolume>().is_err()
+            && format!("{stale:?}").contains("lane 5"),
+        "{stale:?}"
+    );
+    let refused = service
+        .seed_copy(Request::new(
+            op::SeedCopy::into_request(request).encode().unwrap(),
+        ))
+        .await
+        .map(|answer| answer.into_inner().decode_response().unwrap());
+    assert!(
+        refused.as_ref().map_or(true, |answer| answer
+            .clone()
+            .decode::<op::SeedCopy>()
+            .is_err()),
+        "{refused:?}"
+    );
+
+    let closed = close(&service, &namespace).await;
+    assert!(
+        closed
+            .as_ref()
+            .is_err_and(|error| error.contains("never ran")),
+        "{closed:?}"
+    );
+    assert_eq!(calls_to(&plugin, PREVIEW_CLOSE_ROUTE), 0);
+}
+
+/// A Seed that passed its early check while the preview was open, and then queued on the
+/// switch behind a Close, lands nothing: it reads the record again under the switch.
+#[tokio::test]
+async fn a_seed_queued_behind_a_close_lands_nothing() {
+    let fleet = Fleet::start().await;
+    let (_, spec, volume) = preview_on(fleet.node(0));
+    let plugin = preview_plugin(&spec, &volume);
+    let (service, namespace, _, volume) = created_preview(&fleet, &plugin).await;
+    let local = service.local.clone();
+    let held = local.lock_switch().await.unwrap();
+    let mut asked = local.switch_asked();
+    let before = *asked.borrow();
+    let seed = ployz_core::SeedVolumeRequest {
+        name: DockerVolumeName::parse("app_data").unwrap(),
+        into: volume,
+        guid: ployz_core::SnapshotGuid::new(7),
+        r#gen: None,
+    };
+    let call = tokio::spawn(async move {
+        service
+            .seed_volume(Request::new(
+                op::SeedVolume::into_request(seed).encode().unwrap(),
+            ))
+            .await
+    });
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        asked.wait_for(|asked| *asked > before),
+    )
+    .await
+    .expect("the Seed queues on the switch")
+    .unwrap();
+    local.begin_close_for_test(&namespace);
+    drop(held);
+
+    let seeded = call.await.unwrap();
+    assert!(
+        seeded
+            .as_ref()
+            .is_err_and(|status| status.message().contains("is closed")),
+        "{seeded:?}"
+    );
+    assert_eq!(calls_to(&plugin, VOLUME_SEED_ROUTE), 0);
+}
+
+/// A Close whose sweep fails leaves the preview Closing: its Container is gone and no start
+/// makes another. Its resume, which a daemon start runs, sweeps again and marks it Closed.
+#[tokio::test]
+async fn a_close_stopped_mid_sweep_is_finished_by_its_resume() {
+    let fleet = Fleet::start().await;
+    let node = fleet.node(0);
+    let (_, spec, volume) = preview_on(node);
+    let plugin = preview_plugin(&spec, &volume);
+    plugin.reply(
+        PREVIEW_CLOSE_ROUTE,
+        json!({"Err": {"code": "internal", "message": "zfs destroy failed", "details": null}}),
+    );
+    let (service, namespace, spec, volume) = created_preview(&fleet, &plugin).await;
+
+    let stopped = close(&service, &namespace).await;
+    assert!(stopped.is_err(), "{stopped:?}");
+    assert!(!holds_a_container(node));
+    let listed = held(&service).await;
+    assert_eq!(
+        (listed.open, listed.closing),
+        (Vec::new(), vec![namespace.clone()]),
+        "Cloud's sweep sees it is left to close"
+    );
+    let start = try_set_copy(&service, preview_writer_at(&namespace, &spec, &volume, 2)).await;
+    assert!(
+        start
+            .as_ref()
+            .is_err_and(|error| error.contains("is closed")),
+        "{start:?}"
+    );
+
+    plugin.reply(PREVIEW_CLOSE_ROUTE, json!({"Ok": {"destroyed": [volume]}}));
+    service.local.resume_preview_closes().await;
+    assert_eq!(
+        calls_to(&plugin, PREVIEW_CLOSE_ROUTE),
+        2,
+        "the resume swept again"
+    );
+    service.local.resume_preview_closes().await;
+    assert_eq!(
+        calls_to(&plugin, PREVIEW_CLOSE_ROUTE),
+        2,
+        "a finished Close is not resumed again"
+    );
+    assert_eq!(held(&service).await, ployz_core::PreviewsHeld::default());
+}
+
+/// A Close that can't remove the preview's Container leaves it Closing, and the Container
+/// it left starts no more.
+#[tokio::test]
+async fn a_container_a_close_left_behind_starts_no_more() {
+    let fleet = Fleet::start().await;
+    let node = fleet.node(0);
+    let (_, spec, volume) = preview_on(node);
+    let plugin = preview_plugin(&spec, &volume);
+    plugin.reply(PREVIEW_CLOSE_ROUTE, json!({"Ok": {}}));
+    let (service, namespace, spec, _) = created_preview(&fleet, &plugin).await;
+    node.fake
+        .refuse_remove_of
+        .lock()
+        .unwrap()
+        .insert(spec.name.to_string());
+
+    let stopped = close(&service, &namespace).await;
+    assert!(stopped.is_err(), "{stopped:?}");
+    assert_eq!(calls_to(&plugin, PREVIEW_CLOSE_ROUTE), 0);
+    let start = service
+        .local
+        .start_container(only_container(node), None)
+        .await
+        .map_err(|error| ployz_core::error_chain::inline(&error));
+    assert!(
+        start
+            .as_ref()
+            .is_err_and(|error| error.contains("is closed")),
+        "{start:?}"
+    );
 }
 
 /// A Move's Writer start pulls its image before the promote, and only then: a registry

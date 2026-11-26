@@ -6,7 +6,9 @@
 //! [`Storage`] variant and a [`Tx`] implementation; the Store's logic never changes.
 
 mod convert;
+pub(crate) mod counted;
 mod pg;
+pub(crate) mod ranked;
 mod sqlite;
 mod steps;
 pub(crate) mod tables;
@@ -358,6 +360,11 @@ const MIGRATIONS: &[(&str, Step)] = &[
         "0056_free_receipt",
         Step::Sql(include_str!("migrations/0056_free_receipt.sql")),
     ),
+    (
+        // Drop the 0.4 preview rule's table: a PR plan keeps its preview rule.
+        "0057_preview_rule_gone",
+        Step::Sql(include_str!("migrations/0057_preview_rule_gone.sql")),
+    ),
 ];
 
 enum Step {
@@ -438,6 +445,7 @@ impl Storage {
         &self,
         work: impl FnOnce(&mut dyn Tx) -> Result<T, RpcError>,
     ) -> Result<T, RpcError> {
+        let work = ranked::checked(counted::counted(work));
         match self {
             Self::Sqlite(sqlite) => sqlite
                 .transaction(true, work)
@@ -451,6 +459,7 @@ impl Storage {
         &self,
         work: impl FnOnce(&mut dyn Tx) -> Result<T, RpcError>,
     ) -> Result<T, RpcError> {
+        let work = ranked::checked(counted::counted(work));
         match self {
             Self::Sqlite(sqlite) => sqlite
                 .transaction(false, work)
@@ -504,9 +513,11 @@ pub(crate) fn attempt<T>(
     work: impl FnOnce(&mut dyn Tx) -> Result<T, RpcError>,
 ) -> Result<T, RpcError> {
     tx.execute("SAVEPOINT attempt", &[])?;
+    let held = ranked::mark();
     let result = work(tx);
     if result.is_err() {
         tx.execute("ROLLBACK TO SAVEPOINT attempt", &[])?;
+        ranked::rolled_back(held);
     }
     tx.execute("RELEASE SAVEPOINT attempt", &[])?;
     result

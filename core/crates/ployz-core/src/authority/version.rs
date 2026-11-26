@@ -118,6 +118,21 @@ impl Budget {
         Ok(())
     }
 
+    /// Reserve what opening `signed` can cost, and answer it as a statement this budget
+    /// paid for, which the verifiers that take one open. A caller charges every statement
+    /// a request carries before it verifies any.
+    ///
+    /// # Errors
+    /// As [`Self::reserve`].
+    pub fn charge<'a, T>(
+        &mut self,
+        signed: &'a Signed<T>,
+        trusted: &'a TrustedKeys,
+    ) -> Result<Charged<'a, T>, AuthorityRefusal> {
+        self.reserve(signed, trusted)?;
+        Ok(Charged { signed, trusted })
+    }
+
     /// Reserve one verification of a signature that is not a [`Signed`] statement.
     ///
     /// # Errors
@@ -128,6 +143,27 @@ impl Budget {
             .checked_sub(1)
             .ok_or(AuthorityRefusal::Overspent)?;
         Ok(())
+    }
+}
+
+/// A signed statement whose every possible check an admission's [`Budget`] already
+/// paid for, against the keys it was charged for. Only [`Budget::charge`] makes one, so a
+/// verifier that takes one never opens a statement nothing charged.
+#[derive(Debug)]
+pub struct Charged<'a, T> {
+    signed: &'a Signed<T>,
+    trusted: &'a TrustedKeys,
+}
+
+impl<'a, T> Charged<'a, T> {
+    #[must_use]
+    pub fn signed(&self) -> &'a Signed<T> {
+        self.signed
+    }
+
+    #[must_use]
+    pub fn trusted(&self) -> &'a TrustedKeys {
+        self.trusted
     }
 }
 

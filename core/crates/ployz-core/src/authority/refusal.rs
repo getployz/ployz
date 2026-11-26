@@ -117,6 +117,8 @@ pub enum MismatchField {
     AttestKey,
     Stage,
     Commit,
+    /// A person's approval of one commit for one preview.
+    CommitApproval,
     Policy,
     Generation,
     Rule,
@@ -218,6 +220,7 @@ impl MismatchField {
             Self::AttestKey => "the attest key",
             Self::Stage => "a stage",
             Self::Commit => "a commit",
+            Self::CommitApproval => "a commit approval",
             Self::Policy => "a policy",
             Self::Generation => "a generation",
             Self::Rule => "a rule",
@@ -338,6 +341,7 @@ impl MismatchField {
             | Self::AttestKey
             | Self::Stage
             | Self::Commit
+            | Self::CommitApproval
             | Self::Policy
             | Self::Rule
             | Self::EndedRule
@@ -403,6 +407,9 @@ impl MismatchField {
                 "This push was built under another approval of the automatic deploy rule. Push again."
             }
             Self::Commit => "This commit is no longer the head of its branch.",
+            Self::CommitApproval => {
+                "This commit was approved for another preview, or not at all. Approve it for this preview."
+            }
             Self::VerifiedBuild => {
                 "No server of this cluster checked this build with GitHub. Push again."
             }

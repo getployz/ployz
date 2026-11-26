@@ -962,6 +962,7 @@ impl Checked {
             preview
                 .admit_on(&self.record().id())
                 .map_err(Error::PreviewRefused)?;
+            self.admit_preview_runs(preview.namespace())?;
         }
         if let Scope::Operator = self.scope() {
             let refusal = match containers.lifecycle().admitted_by(id).await? {

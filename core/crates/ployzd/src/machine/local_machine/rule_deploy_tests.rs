@@ -10,7 +10,7 @@ use ployz_core::{
 use serde_json::{Value, json};
 
 use super::super::rule_grant::tests::{
-    Fixture, claim_for, commit, fixture, github, github_mut, now, rule_for, token_for,
+    Fixture, claim_for, commit, fixture, fork, github, github_mut, now, rule_for, token_for,
 };
 use super::*;
 
@@ -654,10 +654,11 @@ impl Github for Slow {
         &self,
         rule: &ployz_core::authority::AutoDeployRule,
         token: &str,
+        authority: &ployz_core::authority::CommitAuthority,
         now: Timestamp,
     ) -> Result<ployz_core::authority::GithubClaims, crate::github::oidc::ProofRefusal> {
         self.wait(SlowAt::Token).await;
-        self.inner.claims(rule, token, now).await
+        self.inner.claims(rule, token, authority, now).await
     }
 
     async fn head(
@@ -956,12 +957,7 @@ async fn a_rule_deploy_through_the_servers_socket_is_admitted_under_the_rule() {
 impl Fixture {
     /// The preview `nonce` of `rule` on this Server.
     fn preview(&self, rule: &ployz_core::authority::AutoDeployRule, nonce: &str) -> Namespace {
-        let home = ployz_core::PreviewHome::of(&self.machine.record().id());
-        Namespace::parse(format!(
-            "pv-{}-{home}-{nonce}",
-            &rule.rule.to_string()[..16]
-        ))
-        .unwrap()
+        self.preview_of(rule, nonce)
     }
 
     /// The fixture's rule as a preview rule of the Environment `app`, approving `spec()` in
@@ -1044,6 +1040,122 @@ async fn a_preview_rules_pinned_service_runs_with_no_build() {
     assert_eq!(refused(deploy(&spec(), pinned(None)).await), "a Service");
     let claim = fixture.built(&rule, fixture.attest());
     assert_eq!(refused(deploy(&db, pinned(Some(claim))).await), "a stage");
+}
+
+/// A fork's commit a person approved for one preview creates that preview's first
+/// Container online, though the run built on another commit and the branch head is a
+/// third, then again from the verified build through the admission every create runs. In any
+/// other preview it creates nothing, online or not, and without the approval it creates
+/// nothing at all.
+#[tokio::test]
+async fn an_approved_fork_commit_creates_only_in_its_own_preview() {
+    let fixture = fixture().await;
+    let rule = fixture.preview_rule();
+    let [preview, other] = ["0000aaaa", "0000bbbb"].map(|nonce| fixture.preview(&rule, nonce));
+    let claim = BuildClaim {
+        commit: fork(),
+        authority: fixture.approved(&fixture.approval(&rule, &preview)),
+        ..fixture.built(&rule, fixture.attest())
+    };
+    let online = fixture.proof(&rule, &claim, token_for(&claim, "fork"));
+    let create = |namespace: &Namespace, key: &str| {
+        want_in(namespace.as_str(), "service_container", key, &spec())
+    };
+    assert_eq!(
+        refused(
+            fixture
+                .deploy(create(&other, "o1"), &online, commit(), now())
+                .await
+        ),
+        "a commit approval"
+    );
+    let verified = fixture.issued(create(&preview, "k1"), &online).await;
+    let offline = Fixture::offline(&online, verified);
+    let admitted = fixture
+        .machine
+        .admit_spec(&create(&preview, "k2"), Some(&offline), &[], Admit::Record)
+        .await
+        .unwrap()
+        .expect("a new Container's admission");
+    assert!(
+        matches!(admitted.by(), AdmittedBy::Rule { .. }),
+        "{admitted:?}"
+    );
+    assert_eq!(
+        refused(
+            fixture
+                .deploy(create(&other, "o2"), &offline, commit(), now())
+                .await
+        ),
+        "a commit approval",
+        "a verified build stands only in the approved preview"
+    );
+
+    let unapproved = BuildClaim {
+        authority: CommitAuthority::Head,
+        ..claim
+    };
+    let head = fixture.proof(&rule, &unapproved, token_for(&unapproved, "head"));
+    assert_eq!(
+        refused(
+            fixture
+                .deploy(create(&preview, "h1"), &head, commit(), now())
+                .await
+        ),
+        "a commit"
+    );
+}
+
+/// An approval carrying more signatures than one admission may check is refused before
+/// the Machine verifies past that limit, offline as online.
+#[tokio::test]
+async fn an_approval_is_charged_for_every_signature_it_carries() {
+    let fixture = fixture().await;
+    let rule = fixture.preview_rule();
+    let preview = fixture.preview(&rule, "0000aaaa");
+    let CommitAuthority::Approved(mut approval) =
+        fixture.approved(&fixture.approval(&rule, &preview))
+    else {
+        unreachable!("an approved authority")
+    };
+    let honest = BuildClaim {
+        commit: fork(),
+        authority: CommitAuthority::Approved(approval.clone()),
+        ..fixture.built(&rule, fixture.attest())
+    };
+    let verified = fixture
+        .issued(
+            want_in(preview.as_str(), "service_container", "k1", &spec()),
+            &fixture.proof(&rule, &honest, token_for(&honest, "fork")),
+        )
+        .await;
+    let signature = approval.signatures[0].clone();
+    approval.signatures = vec![signature; 8];
+    let padded = BuildClaim {
+        authority: CommitAuthority::Approved(approval),
+        ..honest
+    };
+    let offline = Fixture::offline(
+        &fixture.proof(&rule, &padded, token_for(&padded, "fork")),
+        verified,
+    );
+    let result = fixture
+        .deploy(
+            want_in(preview.as_str(), "service_container", "k2", &spec()),
+            &offline,
+            commit(),
+            now(),
+        )
+        .await;
+    assert!(
+        matches!(
+            result,
+            Err(Error::RuleDeployRefused(RuleDeployRefusal::Rule(
+                AuthorityRefusal::Overspent
+            )))
+        ),
+        "{result:?}"
+    );
 }
 
 /// The image ID a registry pull places, which differs from the manifest digest it named.

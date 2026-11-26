@@ -18,7 +18,7 @@ use crate::deployment::loss::{RemovedVolume, VolumeLoss, held, removed};
 use crate::deployment::{self, DeploymentStatus, DeploymentSummary, Outcome};
 use crate::error;
 use crate::followup::FollowUp;
-use crate::id::{DeploymentId, EnvironmentId, ProjectId};
+use crate::id::{DeploymentId, EnvironmentId, ProjectId, RemovalId};
 use crate::review::approval;
 use crate::scope::{self, Environment, EnvironmentSummary};
 use crate::storage::Tx;
@@ -227,6 +227,12 @@ fn finish(tx: &mut dyn Tx, mark: &mut Mark) -> Result<Option<Vec<EnvironmentSumm
     match &mark.target {
         Target::Environment(id) => scope::purge(tx, id)?,
         Target::Project(id) => {
+            // The delete cascades onto its plans and Environments: take them first, in order.
+            scope::lock_project(tx, id)?;
+            crate::pull_request::preview::lock_project_plans(tx, id)?;
+            let members = scope::members(tx, id)?;
+            scope::lock_all(tx, members.into_iter().map(|member| member.id))?;
+            crate::storage::ranked::take(crate::storage::ranked::Lock::project(id));
             tx.execute(
                 "DELETE FROM config_project WHERE id = ?1",
                 &[id.as_str().into()],
@@ -312,15 +318,64 @@ pub(crate) fn close(
     settle(tx, who, &mut mark, automated)
 }
 
+/// The removals a [`sweep`] settles: those live before it locks anything. Settling a
+/// Project's removal deletes the Project, which takes its plans, so the sweep locks
+/// [`Settling::projects`] before any plan. A removal that starts after waits for the
+/// next sweep.
+pub(crate) struct Settling {
+    marks: BTreeSet<RemovalId>,
+    pub(crate) projects: BTreeSet<ProjectId>,
+}
+
+pub(crate) fn settling(tx: &mut dyn Tx, who: &Actor) -> Result<Settling, RpcError> {
+    let mut settling = Settling {
+        marks: BTreeSet::new(),
+        projects: BTreeSet::new(),
+    };
+    for mark in mark::live(tx, who)? {
+        if let Target::Project(project) = &mark.target {
+            settling.projects.insert(project.clone());
+        }
+        settling.marks.insert(mark.id);
+    }
+    Ok(settling)
+}
+
+impl Settling {
+    /// Each of its removals still live, read again under the caller's locks.
+    fn live(&self, tx: &mut dyn Tx, who: &Actor) -> Result<Vec<Mark>, RpcError> {
+        let live = mark::live(tx, who)?;
+        Ok(live
+            .into_iter()
+            .filter(|mark| self.marks.contains(&mark.id))
+            .collect())
+    }
+
+    /// Every Environment it settles, which the sweep's caller locks with everything
+    /// else it touches before it sweeps.
+    pub(crate) fn members(
+        &self,
+        tx: &mut dyn Tx,
+        who: &Actor,
+    ) -> Result<Vec<EnvironmentId>, RpcError> {
+        let mut members = Vec::new();
+        for mark in self.live(tx, who)? {
+            members.extend(alive(tx, &mark)?);
+        }
+        Ok(members)
+    }
+}
+
 /// Move every removal on, then close each Branch idle past its deadline.
 pub(crate) fn sweep(
     tx: &mut dyn Tx,
     who: &Actor,
     now: i64,
+    settling: &Settling,
     idle: &[(EnvironmentId, Option<i64>)],
 ) -> Result<Automated, RpcError> {
     let mut automated = Automated::default();
-    for mut mark in mark::live(tx, who)? {
+    for mut mark in settling.live(tx, who)? {
         settle(tx, who, &mut mark, &mut automated)?;
     }
     for (id, closes_at) in idle {

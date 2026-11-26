@@ -286,6 +286,14 @@ const ABOVE_FLOOR: &[(&str, &str)] = &[
         "unreached: ApproveJoin goes only to the Machine that listed the pending join, which has it",
     ),
     (
+        "ployz.preview.list.v1",
+        "gated: Cloud lists a Server's previews only to close those it no longer holds open, on a Server advertising Close. An older daemon refuses the route, naming the capability",
+    ),
+    (
+        "ployz.preview.close.v1",
+        "gated: nothing closes a preview yet; Cloud must close one only on a Server advertising it. An older daemon refuses the route, naming the capability",
+    ),
+    (
         "ployz.volume.trash.v1",
         "refused legibly: Trash calls go only to the Server the caller connects to, and an older daemon's refusal names the capability",
     ),

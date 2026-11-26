@@ -1,11 +1,12 @@
 //! `ployz build --cloud`: a build under an automatic deploy rule, on the GitHub run the
 //! rule's workflow started.
 //!
-//! The runner checks out the commit GitHub ran, never one Cloud names. Everything Cloud
-//! relays at check-in (the rule, the Cluster key, the attest key, the deployment) goes
-//! into the grant token's audience or opens the secrets, so a lie fails a check on the
-//! Machine or here. The runner's GitHub token credentials stay in this process: Buildx
-//! gets a fresh environment.
+//! The runner checks out the commit GitHub ran, or under a preview rule one a person
+//! approved, never one Cloud names alone. Everything Cloud relays at check-in (the rule,
+//! the Cluster key, the attest key, the deployment, an approval) goes into the grant
+//! token's audience or opens the secrets, so a lie fails a check on the Machine or here.
+//! The runner's GitHub token credentials stay in this process: Buildx gets a fresh
+//! environment.
 //!
 //!   check-in ─▶ grant token (holder K, recipient R) ─▶ grant ─▶ secrets opened with A
 //!     ─▶ build with the rule's policy ─▶ push ─▶ image token (image, A)
@@ -14,7 +15,8 @@ use ployz_core::{
     BuildGrantId, GithubToken, RpcErrorCode, ServiceName, X25519Secret,
     authority::{
         AttestKey, AutoDeployRule, BuildClaim, BuildPolicy, BuildStage, BuiltImageDigest,
-        CommitAuthority, CommitSha, PolicyDigest, RecipientKey, RuleId, Signed, rule::PolicyCache,
+        CommitApproval, CommitAuthority, CommitSha, PolicyDigest, RecipientKey, RuleId, Signed,
+        rule::PolicyCache,
     },
     separation,
 };
@@ -40,13 +42,26 @@ pub(super) struct CheckedIn {
     pub(super) service: ServiceName,
     /// The Deployment's lowering input narrowed to the Service, its Sealed values sealed.
     pub(super) deployment: Value,
+    /// A person's approval of the commit for one preview, which no branch head need hold.
+    #[serde(default)]
+    pub(super) approval: Option<Signed<CommitApproval>>,
+}
+
+impl CheckedIn {
+    /// The authority this build claims for its commit: the approval Cloud relayed, else
+    /// the branch head.
+    pub(super) fn authority(&self) -> CommitAuthority {
+        self.approval
+            .clone()
+            .map_or(CommitAuthority::Head, CommitAuthority::Approved)
+    }
 }
 
 /// What a build takes from the relayed rule, once its signature checks.
 pub(super) struct Opened {
     pub(super) rule: RuleId,
     pub(super) generation: u64,
-    /// The policy it approves for the built Service; `None` when it names no such Service.
+    /// The policy a build of the Service runs under; `None` when it names no such Service.
     policy: Option<BuildPolicy>,
 }
 
@@ -64,9 +79,7 @@ pub(super) fn open(
     Ok(Opened {
         rule: rule.rule,
         generation: rule.generation,
-        policy: rule
-            .service(service)
-            .and_then(|approved| approved.policy.clone()),
+        policy: rule.build_policy(service),
     })
 }
 
@@ -168,7 +181,10 @@ pub(super) fn built_claim(
 }
 
 /// The Actions cache scope of a rule build: a digest of its policy and of `attest`, the
-/// attest key its secrets opened with. `None` keeps the cache off.
+/// attest key its secrets opened with. `None` keeps the cache off. A preview rule's policy
+/// has it off ([`AutoDeployRule::build_policy`]), and the grant's audience binds that
+/// policy, so a rule relayed as no preview's gets no grant. A build of a commit a person
+/// approved, which only a preview rule admits, has it off whatever the relayed rule says.
 ///
 /// BuildKit leaves secret values out of its cache keys, so a scope shared with a build
 /// that opened values from another key would let that build's layers into honest
@@ -179,11 +195,12 @@ pub(super) fn built_claim(
 /// scope no honest build reads.
 pub(super) fn cache_scope(
     policy: &BuildPolicy,
+    authority: &CommitAuthority,
     attest: &AttestKey,
 ) -> Result<Option<String>, Error> {
-    match policy.cache {
-        PolicyCache::Off => Ok(None),
-        PolicyCache::Actions => {
+    match (policy.cache, authority) {
+        (PolicyCache::Off, _) | (PolicyCache::Actions, CommitAuthority::Approved(_)) => Ok(None),
+        (PolicyCache::Actions, CommitAuthority::Head) => {
             let policy = PolicyDigest::of(policy).map_err(Error::command)?;
             let scope = Sha256::new()
                 .chain_update(separation::BUILD_CACHE)

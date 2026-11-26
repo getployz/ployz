@@ -198,6 +198,7 @@ pub(crate) fn reseal(
     let mut working = row.intent(1, "Working State")?;
     if resealing.intent(&mut working)? {
         let revision = Revision(row.number(2, "revision")?).next();
+        crate::storage::ranked::take(crate::storage::ranked::Lock::environment(environment));
         tx.execute(
             "UPDATE config_environment SET working_revision = ?1, working = ?2 WHERE id = ?3",
             &[

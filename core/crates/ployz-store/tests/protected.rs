@@ -308,6 +308,8 @@ fn a_pr_environment_cannot_be_protected() {
                 setup: None,
                 remove_on_close: None,
                 include_bots: None,
+                preview_rule: None,
+                preview_cap: None,
             },
         )
         .unwrap();

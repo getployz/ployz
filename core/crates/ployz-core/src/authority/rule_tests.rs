@@ -107,6 +107,15 @@ fn claims(edit: impl FnOnce(&mut Value)) -> GithubClaims {
     serde_json::from_value(value).unwrap()
 }
 
+/// [`super::verify_signature`] on a fresh admission's budget.
+fn verify_signature(
+    rule: &Signed<AutoDeployRule>,
+    trusted: &TrustedKeys,
+    cluster: Option<SealingPublicKey>,
+) -> Result<(AutoDeployRule, Approver), AuthorityRefusal> {
+    super::verify_signature(Budget::default().charge(rule, trusted)?, cluster)
+}
+
 #[test]
 fn claims_parse_ids_and_seconds_from_githubs_strings() {
     let claims = claims(|_| {});
@@ -131,9 +140,15 @@ fn claims_parse_ids_and_seconds_from_githubs_strings() {
 
 #[test]
 fn the_rule_admits_the_claims_it_names() {
-    assert_eq!(rule().verify_claims(&claims(|_| {})), Ok(()));
+    assert_eq!(
+        rule().verify_claims(&claims(|_| {}), &CommitAuthority::Head),
+        Ok(())
+    );
     let dispatched = claims(|value| value["event_name"] = json!("workflow_dispatch"));
-    assert_eq!(rule().verify_claims(&dispatched), Ok(()));
+    assert_eq!(
+        rule().verify_claims(&dispatched, &CommitAuthority::Head),
+        Ok(())
+    );
 }
 
 type Edit = fn(&mut Value);
@@ -173,7 +188,7 @@ fn each_claim_the_rule_names_is_refused_by_name() {
     ];
     for (field, edit) in cases {
         assert_eq!(
-            rule().verify_claims(&claims(edit)),
+            rule().verify_claims(&claims(edit), &CommitAuthority::Head),
             Err(AuthorityRefusal::Mismatch { field }),
             "{field}"
         );
@@ -187,7 +202,7 @@ fn a_tag_with_the_branchs_name_is_refused_as_a_tag() {
         value["ref"] = json!("refs/tags/main");
     });
     assert_eq!(
-        rule().verify_claims(&tag),
+        rule().verify_claims(&tag, &CommitAuthority::Head),
         Err(AuthorityRefusal::Mismatch {
             field: MismatchField::ClaimRefType
         })
@@ -203,7 +218,7 @@ fn the_first_failing_claim_in_table_order_is_named() {
         value["repository_owner_id"] = json!("1");
     });
     assert_eq!(
-        rule().verify_claims(&many),
+        rule().verify_claims(&many, &CommitAuthority::Head),
         Err(AuthorityRefusal::Mismatch {
             field: MismatchField::ClaimRepositoryOwnerId
         })
@@ -216,7 +231,7 @@ fn an_event_the_rule_leaves_out_is_refused() {
     github_mut(&mut push_only).events = vec![RuleEvent::Push];
     let dispatched = claims(|value| value["event_name"] = json!("workflow_dispatch"));
     assert_eq!(
-        push_only.verify_claims(&dispatched),
+        push_only.verify_claims(&dispatched, &CommitAuthority::Head),
         Err(AuthorityRefusal::Mismatch {
             field: MismatchField::ClaimEventName
         })
@@ -899,7 +914,7 @@ fn a_build_by_a_builder_that_installs_a_lab_ployz_is_refused_under_a_rule_pinnin
         value["job_workflow_sha"] = json!(lab);
     });
     assert_eq!(
-        pinned.verify_claims(&ran),
+        pinned.verify_claims(&ran, &CommitAuthority::Head),
         Err(AuthorityRefusal::RetiredBuilder {
             sha: lab.to_owned()
         })
@@ -1113,7 +1128,12 @@ fn create_in(
     if pinned {
         rule.verify_pinned(&facts, creation)
     } else {
-        rule.verify_creation(&built(), &facts, creation).map(|_| ())
+        // A preview rule's build runs with its cache off, so its claim digests that policy.
+        let claim = BuildClaim {
+            policy: PolicyDigest::of(&rule.build_policy(&spec.name).unwrap()).unwrap(),
+            ..built()
+        };
+        rule.verify_creation(&claim, &facts, creation).map(|_| ())
     }
 }
 
@@ -1251,29 +1271,38 @@ fn a_preview_rule_builds_any_branch_pushed_by_its_pushers() {
         })
     };
     let anyone = preview_rule(Vec::new());
-    assert_eq!(anyone.verify_claims(&feature("1234")), Ok(()));
+    assert_eq!(
+        anyone.verify_claims(&feature("1234"), &CommitAuthority::Head),
+        Ok(())
+    );
     assert_eq!(anyone.head_branch(&feature("1234")), "feature");
     let named = preview_rule(vec![1234, 5678]);
-    assert_eq!(named.verify_claims(&feature("5678")), Ok(()));
     assert_eq!(
-        named.verify_claims(&feature("9999")),
+        named.verify_claims(&feature("5678"), &CommitAuthority::Head),
+        Ok(())
+    );
+    assert_eq!(
+        named.verify_claims(&feature("9999"), &CommitAuthority::Head),
         Err(AuthorityRefusal::Mismatch {
             field: MismatchField::ClaimActor
         })
     );
+    // Cloud dispatches an approved commit, so no pusher names the run's actor.
+    let approved = CommitAuthority::Approved(Signed::sign(&approval(&named), &signer()).unwrap());
+    assert_eq!(named.verify_claims(&feature("9999"), &approved), Ok(()));
     let tag = claims(|value| {
         value["ref"] = json!("refs/tags/v1");
         value["ref_type"] = json!("tag");
     });
     assert_eq!(
-        anyone.verify_claims(&tag),
+        anyone.verify_claims(&tag, &CommitAuthority::Head),
         Err(AuthorityRefusal::Mismatch {
             field: MismatchField::ClaimRef
         })
     );
     // A rule that isn't a preview's still builds only its own branch.
     assert_eq!(
-        rule().verify_claims(&feature("1234")),
+        rule().verify_claims(&feature("1234"), &CommitAuthority::Head),
         Err(AuthorityRefusal::Mismatch {
             field: MismatchField::ClaimRef
         })
@@ -1313,6 +1342,81 @@ fn a_pinned_service_runs_only_the_digest_its_template_names() {
         Err(AuthorityRefusal::Mismatch {
             field: MismatchField::Service
         })
+    );
+}
+
+/// The fixture Device's approval of a commit for the preview `0000aaaa` of `rule`.
+fn approval(rule: &AutoDeployRule) -> CommitApproval {
+    CommitApproval {
+        cluster: rule.cluster,
+        rule: rule.rule,
+        generation: rule.generation,
+        repository_id: rule.source.github().unwrap().repository_id,
+        commit: head(),
+        namespace: preview("0000aaaa"),
+        issued_at: Timestamp::from_millis(2_000).unwrap(),
+        signer: SignerKey::Device(DeviceKey::from_bytes(*signer().public().as_bytes())),
+    }
+}
+
+#[test]
+fn only_a_person_or_a_full_device_approves_a_commit() {
+    use crate::authority::{
+        Cap, CapSet, Grant, GrantKind, KeyKind, KeyPlaces, KeyScope, TrustedGrant,
+    };
+    let rule = preview_rule(Vec::new());
+    let device = TrustedKeys::new(
+        vec![DeviceKey::from_bytes(*signer().public().as_bytes())],
+        Vec::new(),
+        [],
+    );
+    let check = |signed: Signed<CommitApproval>, trusted: &TrustedKeys| {
+        let authority = CommitAuthority::Approved(signed);
+        rule.verify_authority(
+            authority.charge(&mut Budget::default(), trusted)?,
+            rule.cluster,
+            head(),
+            Some(&preview("0000aaaa")),
+        )
+    };
+    let signed = Signed::sign(&approval(&rule), &signer()).unwrap();
+    assert!(
+        signed
+            .signing_input()
+            .starts_with(b"ployz-authority/v1\ncommit\n")
+    );
+    assert_eq!(check(signed, &device), Ok(()));
+
+    let ci = Signer::from_seed(&[2; 32]);
+    let by_ci = CommitApproval {
+        signer: SignerKey::Device(ci.public().into()),
+        ..approval(&rule)
+    };
+    let trusted = TrustedKeys::new(
+        [],
+        [],
+        [TrustedGrant {
+            grant: Grant {
+                key: ci.public(),
+                kind: GrantKind::Ci,
+                scope: KeyScope {
+                    caps: CapSet::of(&[Cap::Spec]),
+                    places: KeyPlaces::Cluster,
+                },
+                volumes: Vec::new(),
+                issued_at: Timestamp::from_millis(1).unwrap(),
+                name: None,
+            },
+            approved_by: crate::authority::PasskeyApprover::Server,
+        }],
+    );
+    assert_eq!(
+        check(Signed::sign(&by_ci, &ci).unwrap(), &trusted),
+        Err(AuthorityRefusal::OutOfScope {
+            code: ci.public().code(),
+            kind: KeyKind::Ci,
+            what: "a preview's commit",
+        }),
     );
 }
 

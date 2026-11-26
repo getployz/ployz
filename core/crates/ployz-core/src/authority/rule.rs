@@ -25,6 +25,7 @@ use super::{
     refusal::{AuthorityRefusal, MismatchField, first_mismatch},
     scope::Ask,
     trusted_key::TrustedKeys,
+    version::{Budget, Charged},
 };
 use crate::value::hex_newtype;
 use crate::{
@@ -492,13 +493,32 @@ impl AutoDeployRule {
         self.services.iter().find(|service| service.name == *name)
     }
 
+    /// The policy a build of `name` runs under, which its claim's digest binds: the one the
+    /// rule approves, with the Actions cache off under a preview rule. GitHub lets any
+    /// branch read the default branch's cache, so a preview's unreviewed code would read
+    /// what honest builds wrote, and write what they read. A builder told the rule is no
+    /// preview's digests the cache it would turn on, which the Machine refuses.
+    #[must_use]
+    pub fn build_policy(&self, name: &ServiceName) -> Option<BuildPolicy> {
+        let mut policy = self.service(name)?.policy.clone()?;
+        if self.preview.is_some() {
+            policy.cache = PolicyCache::Off;
+        }
+        Some(policy)
+    }
+
     /// Check a verified GitHub token's claims against this rule, in the order the body
     /// runs them. The audience is the caller's: it depends on the holder, recipient or
-    /// image in hand.
+    /// image in hand. A build of a commit a person approved runs on Cloud's dispatch, so the
+    /// rule's pushers don't bound it.
     ///
     /// # Errors
     /// Returns [`AuthorityRefusal::Mismatch`] naming the first claim that does not match.
-    pub fn verify_claims(&self, claims: &GithubClaims) -> Result<(), AuthorityRefusal> {
+    pub fn verify_claims(
+        &self,
+        claims: &GithubClaims,
+        authority: &CommitAuthority,
+    ) -> Result<(), AuthorityRefusal> {
         let github = self.github()?;
         let Some(preview) = &self.preview else {
             return github.verify_claims(claims, &format!("refs/heads/{}", github.branch));
@@ -510,7 +530,9 @@ impl AutoDeployRule {
         github.verify_claims(claims, &claims.git_ref)?;
         first_mismatch([(
             MismatchField::ClaimActor,
-            preview.pushers.is_empty() || preview.pushers.contains(&claims.actor_id),
+            matches!(authority, CommitAuthority::Approved(_))
+                || preview.pushers.is_empty()
+                || preview.pushers.contains(&claims.actor_id),
         )])
     }
 
@@ -675,17 +697,17 @@ pub struct RuleIdentity<'a> {
 
 /// Open a rule for this Machine's Cluster `cluster`: signed by a Device it trusts,
 /// answered by a trusted passkey's own prompt, or a Source step of a bundle either signed.
-/// It names this Cluster before anything records a mark of it.
+/// It names this Cluster before anything records a mark of it. It takes the rule as
+/// [`Budget::charge`] answered it, so its checks are paid for before any runs.
 ///
 /// # Errors
 /// Returns the refusal of [`open_approval`], and [`AuthorityRefusal::Mismatch`] naming
 /// the Cluster for a rule of another.
 pub fn verify_signature(
-    rule: &Signed<AutoDeployRule>,
-    trusted: &TrustedKeys,
+    rule: Charged<'_, AutoDeployRule>,
     cluster: Option<SealingPublicKey>,
 ) -> Result<(AutoDeployRule, Approver), AuthorityRefusal> {
-    let (body, by, cluster) = open_approval(rule, trusted, cluster)?;
+    let (body, by, cluster) = open_approval(rule.signed(), rule.trusted(), cluster)?;
     first_mismatch([(MismatchField::Cluster, body.cluster == cluster)])?;
     body.well_formed()?;
     Ok((body, by))
@@ -693,11 +715,125 @@ pub fn verify_signature(
 
 /// Which authority a build claims for its commit. Written into every claim, so the
 /// pinned builder's audience keeps its bytes.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum CommitAuthority {
     /// The commit is the branch head the Machine reads from GitHub itself.
     Head,
+    /// A person approved the commit for one preview of a preview rule, such as a fork's,
+    /// which no branch of the repository need hold.
+    Approved(Signed<CommitApproval>),
+}
+
+/// One commit a person approves for one preview of a preview rule: what a pull request
+/// from a fork, or from a pusher the rule doesn't name, builds under. It admits only its
+/// own commit, so each new push waits for its own approval.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct CommitApproval {
+    pub cluster: SealingPublicKey,
+    pub rule: RuleId,
+    pub generation: u64,
+    pub repository_id: u64,
+    pub commit: CommitSha,
+    /// The preview's own Namespace, never the Parent's.
+    pub namespace: Namespace,
+    pub issued_at: Timestamp,
+    pub signer: SignerKey,
+}
+
+impl Statement for CommitApproval {
+    const PURPOSE: Purpose = Purpose::Commit;
+    const TAKES_ASSERTION: bool = true;
+}
+
+impl StepBody for CommitApproval {
+    fn kind(&self) -> StepKind {
+        StepKind::Source
+    }
+    fn place(&self) -> Option<ProposalRef> {
+        None
+    }
+    fn signer(&self) -> SignerKey {
+        self.signer
+    }
+    fn cluster(&self) -> SealingPublicKey {
+        self.cluster
+    }
+    fn namespace(&self) -> Option<&Namespace> {
+        Some(&self.namespace)
+    }
+    fn ask(&self) -> Ask<'_> {
+        Ask::Commit
+    }
+}
+
+/// A [`CommitAuthority`] whose approval, if it carries one, an admission's [`Budget`]
+/// already paid for. Only [`CommitAuthority::charge`] makes one.
+#[derive(Debug)]
+pub enum ChargedAuthority<'a> {
+    Head,
+    Approved(Charged<'a, CommitApproval>),
+}
+
+impl CommitAuthority {
+    /// Charge to `budget` every check the approval this authority carries can cost, before
+    /// anything of the admission is verified.
+    ///
+    /// # Errors
+    /// Returns [`AuthorityRefusal::Overspent`] for an approval costing more than is left.
+    pub fn charge<'a>(
+        &'a self,
+        budget: &mut Budget,
+        trusted: &'a TrustedKeys,
+    ) -> Result<ChargedAuthority<'a>, AuthorityRefusal> {
+        Ok(match self {
+            Self::Head => ChargedAuthority::Head,
+            Self::Approved(approval) => {
+                ChargedAuthority::Approved(budget.charge(approval, trusted)?)
+            }
+        })
+    }
+}
+
+impl AutoDeployRule {
+    /// Check `authority` for a build of `commit` under this rule, in `namespace` when the
+    /// caller knows it. The head needs nothing here: its caller reads it from GitHub. An
+    /// approval must be one a trusted person signed for this Cluster, this preview rule's
+    /// generation and repository, `commit`, and a preview Namespace of this rule.
+    ///
+    /// # Errors
+    /// Returns the refusal of [`open_approval`], and [`AuthorityRefusal::Mismatch`] naming
+    /// the first fact the approval doesn't match.
+    pub fn verify_authority(
+        &self,
+        authority: ChargedAuthority<'_>,
+        cluster: SealingPublicKey,
+        commit: CommitSha,
+        namespace: Option<&Namespace>,
+    ) -> Result<(), AuthorityRefusal> {
+        let ChargedAuthority::Approved(approval) = authority else {
+            return Ok(());
+        };
+        let (approval, _, cluster) =
+            open_approval(approval.signed(), approval.trusted(), Some(cluster))?;
+        first_mismatch([
+            (MismatchField::Cluster, approval.cluster == cluster),
+            (
+                MismatchField::CommitApproval,
+                self.preview.is_some()
+                    && approval.rule == self.rule
+                    && approval.generation == self.generation
+                    && self
+                        .source
+                        .github()
+                        .is_some_and(|github| github.repository_id == approval.repository_id)
+                    && approval.commit == commit
+                    && self.deploys_in(&approval.namespace)
+                    && namespace.is_none_or(|namespace| *namespace == approval.namespace),
+            ),
+        ])
+    }
 }
 
 /// Which token of a build this is: the one that asks for the build secrets, or the one
@@ -934,9 +1070,8 @@ impl AutoDeployRule {
             });
         }
         let policy = self
-            .service(facts.service)
-            .and_then(|service| service.policy.as_ref())
-            .map(PolicyDigest::of);
+            .build_policy(facts.service)
+            .map(|policy| PolicyDigest::of(&policy));
         self.admits_here(facts, &creation)?;
         first_mismatch([
             (MismatchField::Cluster, claim.cluster == facts.cluster),
