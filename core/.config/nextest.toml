@@ -9,7 +9,9 @@ priority = 100
 
 # These tests run Builds as this user, so they share the builder ployz-<uid>. A Build that
 # ended unconfirmed keeps that builder quarantined while any Buildx process on the host
-# names it, and another test's fake Build is one. Run them one at a time.
+# names it, and another test's fake Build is one, whatever its package. Run them one at a
+# time. Each test here starts a Buildx process naming that builder, or recovers the builder
+# and expects none to run.
 [test-groups]
 host-builder = { max-threads = 1 }
 
@@ -19,5 +21,29 @@ package(ployzd) & (
   test(/^build::tests::/)
   | test(=daemon::tests::startup_recovers_an_abandoned_builder_without_a_build_request)
 )
+| binary_id(ployz-build::killed_build)
+| binary_id(ployz-build::host_policy) & (
+  test(=admitted_limits_cover_worker_and_railpack_preparation_despite_later_policy_edits)
+  | test(=cache_clearing_and_builds_share_exclusive_ownership_and_quarantine)
+  | test(=cache_clearing_makes_no_free_builder_on_a_host_that_never_ran_a_free_build)
+  | test(=opened_values_are_private_files_for_the_solve_and_vanish_when_it_fails)
+  | test(=opened_values_vanish_from_a_retained_unknown_root)
+  | test(=resource_launch_failure_reports_preparation_and_releases_confirmed_ownership)
+)
+| binary_id(ployz-build) & (
+  test(=builder::tests::a_mark_that_names_no_processes_waits_for_buildx_using_its_builder)
+  | test(=builder::tests::dockerfile_platforms_follow_the_running_workers_capabilities)
+  | test(=builder::tests::every_attempt_replaces_the_container_and_leaves_its_cache)
+  | test(=builder::tests::quarantine_clear_failure_preserves_cleanup_and_prior_failure_stages)
+  | test(=execution::tests::restart_removes_abandoned_uploads_but_keeps_unknown_ownership_unavailable)
+  | test(=scrub::tests::a_character_split_by_parser_completion_still_scrubs_the_whole_value)
+  | test(=tests::a_cgroup_v1_host_is_refused_before_anything_builds)
+  | test(=tests::a_free_build_whose_plan_resolves_to_a_group_never_runs)
+  | test(=tests::cancellation_between_pushes_leaves_later_targets_unattempted)
+  | test(=tests::cross_platform_image_context_reaches_buildkit)
+  | test(=tests::each_loaded_image_builds_in_its_own_sequential_bake_run)
+  | test(=tests::executing_a_build_does_not_change_process_signal_handlers)
+)
+| binary_id(ployz) & test(=handlers::build::tests::terminated::a_sigterm_mid_build_unwinds_its_staged_values_and_capture)
 """
 test-group = "host-builder"
