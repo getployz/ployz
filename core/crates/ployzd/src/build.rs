@@ -30,6 +30,8 @@ struct Unconfirmed(String);
 struct AttemptState {
     evidence: Mutex<ployz_build::WorkEvidence>,
     retained: Mutex<Option<RetainedBuild>>,
+    /// Set once the Build runs Docker, from which point it may have loaded an image.
+    ran: std::sync::atomic::AtomicBool,
 }
 
 struct RetainedBuild {
@@ -86,9 +88,12 @@ pub(crate) fn start(
             remote::encode(&Event::Finished(fallback)).expect("bounded terminal fallback")
         });
         let _ = tokio::time::timeout(Duration::from_secs(5), events.send(Ok(payload))).await;
-        // A Free Build may load images whatever its outcome, one target at a time, and
-        // nothing else removes them on a Server only Cloud deploys to.
-        if free && let Err(error) = cleanup.prune_free_images().await {
+        // A Free Build that ran may have loaded images whatever its outcome, one target at
+        // a time, and nothing else removes them on a Server only Cloud deploys to.
+        if free
+            && state.ran.load(std::sync::atomic::Ordering::Acquire)
+            && let Err(error) = cleanup.prune_free_images().await
+        {
             tracing::warn!(
                 error = %ployz_core::error_chain::inline(&error),
                 "Free Build image cleanup failed"
@@ -547,6 +552,7 @@ fn receive_and_execute(
         context.source.port = proxy.port;
         proxies.push(proxy);
     }
+    state.ran.store(true, std::sync::atomic::Ordering::Release);
     let result = upload.execute(
         &definition,
         Some(&policy.docker),

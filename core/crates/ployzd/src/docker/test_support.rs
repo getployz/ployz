@@ -119,9 +119,8 @@ pub(crate) struct FakeDocker {
     /// What an image listing answers before its `dangling` and `label` filters: Docker's
     /// summaries, each with the `LastTagTime` an inspect of its ID answers.
     pub(crate) listed_images: Arc<Mutex<Vec<serde_json::Value>>>,
-    /// Each image a remove named, in order, with a wake for each.
+    /// Each image a remove named, in order.
     pub(crate) removed_images: Arc<Mutex<Vec<String>>>,
-    pub(crate) image_removed: Arc<tokio::sync::Notify>,
     /// When set, each image pull spends one; once none are left, a pull answers the
     /// registry's rate limit.
     pub(crate) pulls_left: Arc<Mutex<Option<usize>>>,
@@ -667,7 +666,6 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
     } else if method == Method::DELETE && path.contains("/images/") {
         let image = path.split("/images/").nth(1).unwrap_or_default().to_owned();
         fake.removed_images.lock().unwrap().push(image.clone());
-        fake.image_removed.notify_waiters();
         (StatusCode::OK, serde_json::json!([{"Deleted": image}]))
     } else if method == Method::GET && path.contains("/images/") && path.ends_with("/json") {
         if let Some(barrier) = &fake.image_barrier {

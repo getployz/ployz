@@ -61,13 +61,32 @@ impl Fixture {
             .await
             .unwrap()
             .into_inner();
-        loop {
-            let event = events.message().await.unwrap().unwrap();
+        // The stream ends only once the Server is done with the Build, cleanup included.
+        let mut sender = Some(sender);
+        let mut finished = None;
+        while let Some(event) = events.message().await.unwrap() {
             if let Event::Finished(outcome) = remote::decode(&event).unwrap() {
-                drop(sender);
-                return outcome;
+                drop(sender.take());
+                finished = Some(outcome);
             }
         }
+        finished.expect("the Server reported the Build's end")
+    }
+
+    /// List a labelled untagged image that has sat idle for 30 days, and return its ID.
+    fn list_idle_free_image(&self) -> String {
+        let idle = format!("sha256:{}", "a".repeat(64));
+        self.docker
+            .listed_images
+            .lock()
+            .unwrap()
+            .push(serde_json::json!({
+                "Id": idle, "ParentId": "", "RepoTags": [], "RepoDigests": [], "Created": 0,
+                "Size": 1, "SharedSize": 0, "Containers": 0,
+                "Labels": {ployz_build::FREE_IMAGE_LABEL: "true"},
+                "LastTagTime": (chrono::Utc::now() - chrono::Duration::days(30)).to_rfc3339(),
+            }));
+        idle
     }
 }
 
@@ -134,16 +153,10 @@ async fn each_free_build_removes_the_free_images_gone_idle_and_only_those() {
     ]);
     let dir = fixture.root.join("free-capture");
     capture(&dir, &[]);
-    let removed = fixture.docker.image_removed.clone();
-    let mut removal = std::pin::pin!(removed.notified());
-    removal.as_mut().enable();
 
     let outcome = fixture.build_free(definition(), &dir).await;
 
     assert!(matches!(outcome, Outcome::FreeImages { .. }), "{outcome:?}");
-    tokio::time::timeout(Duration::from_secs(10), removal)
-        .await
-        .expect("the Free Build's cleanup removed an image");
     assert_eq!(
         *fixture.docker.removed_images.lock().unwrap(),
         [format!("sha256:{}", "a".repeat(64))]
@@ -162,33 +175,43 @@ async fn each_free_build_removes_the_free_images_gone_idle_and_only_those() {
 async fn a_failed_free_build_still_removes_the_free_images_gone_idle() {
     let cluster = crate::sealed_env::test_support::Cluster::new();
     let fixture = Fixture::with(|_| {}, Some(cluster.dir.0.clone())).await;
-    let idle = format!("sha256:{}", "a".repeat(64));
-    fixture
-        .docker
-        .listed_images
-        .lock()
-        .unwrap()
-        .push(serde_json::json!({
-            "Id": idle, "ParentId": "", "RepoTags": [], "RepoDigests": [], "Created": 0,
-            "Size": 1, "SharedSize": 0, "Containers": 0,
-            "Labels": {ployz_build::FREE_IMAGE_LABEL: "true"},
-            "LastTagTime": (chrono::Utc::now() - chrono::Duration::days(30)).to_rfc3339(),
-        }));
+    let idle = fixture.list_idle_free_image();
     let dir = fixture.root.join("free-capture");
     capture(&dir, &[]);
     // The run writes its output, so its image may be loaded, then fails.
     fs::write(fixture.root.join("fail-after-output"), "").unwrap();
-    let removed = fixture.docker.image_removed.clone();
-    let mut removal = std::pin::pin!(removed.notified());
-    removal.as_mut().enable();
 
     let outcome = fixture.build_free(definition(), &dir).await;
 
     assert!(matches!(outcome, Outcome::Failed { .. }), "{outcome:?}");
-    tokio::time::timeout(Duration::from_secs(10), removal)
-        .await
-        .expect("the failed Free Build's cleanup removed the idle image");
     assert_eq!(*fixture.docker.removed_images.lock().unwrap(), [idle]);
+}
+
+#[tokio::test]
+async fn a_free_build_its_server_refuses_removes_no_image() {
+    let cluster = crate::sealed_env::test_support::Cluster::new();
+    let fixture = Fixture::with(|_| {}, Some(cluster.dir.0.clone())).await;
+    fixture.list_idle_free_image();
+    fixture
+        .local
+        .update_machine(
+            serde_json::from_value(serde_json::json!({
+                "update": { "accepts_builds": false }
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let dir = fixture.root.join("free-capture");
+    capture(&dir, &[]);
+
+    let outcome = fixture.build_free(definition(), &dir).await;
+
+    assert!(
+        matches!(&outcome, Outcome::Failed { message, .. } if message.contains("does not accept Builds")),
+        "{outcome:?}"
+    );
+    assert!(fixture.docker.removed_images.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
