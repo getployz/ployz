@@ -189,7 +189,7 @@ pub(crate) struct HookPlace {
 /// under one generation.
 #[derive(Clone, Debug)]
 enum HookPush {
-    Build(BuildClaim),
+    Build(Box<BuildClaim>),
     Image {
         service: ServiceName,
         generation: u64,
@@ -453,7 +453,7 @@ impl LocalMachine {
         let hook = (new.slot.kind == ContainerKind::PreDeployHook).then(|| HookPlace {
             rule: rule.rule,
             preview: rule.preview.as_ref().map(|_| new.slot.namespace.clone()),
-            push: HookPush::Build(claim.clone()),
+            push: HookPush::Build(Box::new(claim.clone())),
             slot: new.slot.creation_key.clone(),
         });
         tracing::info!(
