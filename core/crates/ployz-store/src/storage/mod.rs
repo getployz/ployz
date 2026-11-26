@@ -6,6 +6,7 @@
 //! [`Storage`] variant and a [`Tx`] implementation; the Store's logic never changes.
 
 mod convert;
+pub(crate) mod counted;
 mod pg;
 mod sqlite;
 mod steps;
@@ -426,6 +427,7 @@ impl Storage {
         &self,
         work: impl FnOnce(&mut dyn Tx) -> Result<T, RpcError>,
     ) -> Result<T, RpcError> {
+        let work = counted::counted(work);
         match self {
             Self::Sqlite(sqlite) => sqlite
                 .transaction(true, work)
@@ -439,6 +441,7 @@ impl Storage {
         &self,
         work: impl FnOnce(&mut dyn Tx) -> Result<T, RpcError>,
     ) -> Result<T, RpcError> {
+        let work = counted::counted(work);
         match self {
             Self::Sqlite(sqlite) => sqlite
                 .transaction(false, work)

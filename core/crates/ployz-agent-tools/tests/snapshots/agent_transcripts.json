@@ -4968,7 +4968,9 @@
               "copy": null,
               "setup": null,
               "remove_on_close": null,
-              "include_bots": null
+              "include_bots": null,
+              "preview_rule": null,
+              "preview_cap": null
             }
           }
         },
@@ -5084,7 +5086,9 @@
               "copy": null,
               "setup": null,
               "remove_on_close": null,
-              "include_bots": null
+              "include_bots": null,
+              "preview_rule": null,
+              "preview_cap": null
             }
           }
         },

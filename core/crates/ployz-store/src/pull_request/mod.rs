@@ -976,11 +976,13 @@ pub(crate) fn pull_request(
     };
     let current = current(tx, who, event.repository_id, event.number, false)?;
     // Everything this event may touch, locked first and in ID order: its PR
-    // Environments, where new ones start from, and at the merge the Destinations it
-    // lands in.
+    // Environments, where new ones start from, the repository's previews, and at the
+    // merge the Destinations it lands in.
+    let previews = preview::Locked::of(tx, who, Some(repository_id))?;
     let mut touched: Vec<EnvironmentId> = current.iter().map(|(id, _)| id.clone()).collect();
     touched.extend(landing.iter().map(|(id, _)| id.clone()));
     touched.extend(start_froms(tx, who, event.repository_id)?);
+    touched.extend(previews.ids());
     let target = facts(tx, who, repository_id, number)?.map(|facts| facts.target_branch);
     if let Some(target) = &target {
         for (_, project) in &landing {
@@ -1078,8 +1080,7 @@ pub(crate) fn pull_request(
             }
         }
     }
-    let asked = (Some(repository_id), Some(number));
-    preview::reconcile(tx, who, asked, trusted, &mut automated)?;
+    preview::reconcile(tx, who, &previews, Some(number), trusted, &mut automated)?;
     let has_environments =
         !current.is_empty() || !landing.is_empty() || !automated.admitted.is_empty();
     if has_environments && !automated.checks.contains(&reported) {
@@ -1115,8 +1116,10 @@ pub(crate) fn approve(
     }
     let event = record.facts();
     let current = current(tx, who, repository_id, number, false)?;
+    let previews = preview::Locked::of(tx, who, Some(repository_id))?;
     let mut touched: Vec<EnvironmentId> = current.iter().map(|(id, _)| id.clone()).collect();
     touched.extend(start_froms(tx, who, repository_id)?);
+    touched.extend(previews.ids());
     scope::lock_all(tx, touched)?;
     let pr = PullRequestRef {
         repository_id,
@@ -1142,8 +1145,7 @@ pub(crate) fn approve(
             crate::automation::deploy_head(tx, who, environment, &event, trusted, &mut automated)?;
         }
     }
-    let asked = (Some(repository_id), Some(number));
-    preview::reconcile(tx, who, asked, trusted, &mut automated)?;
+    preview::reconcile(tx, who, &previews, Some(number), trusted, &mut automated)?;
     automated.checks.push(pr);
     Ok(automated)
 }
@@ -1561,11 +1563,19 @@ pub(crate) fn sweep(
             idle.push((id, closes_at));
         }
     }
+    // What it closes, shuts down and opens previews under, locked first and in ID order,
+    // as news of a pull request locks it.
+    let previews = preview::Locked::of(tx, who, None)?;
+    let due = idle
+        .iter()
+        .filter(|(_, closes_at)| closes_at.is_some_and(|at| sweep.now >= at))
+        .map(|(id, _)| id.clone());
+    scope::lock_all(tx, previews.ids().chain(due).chain(held.iter().cloned()))?;
     let mut automated = crate::removal::sweep(tx, who, sweep.now, &idle)?;
     for id in &held {
         shut_down(tx, who, id, &mut automated)?;
     }
-    preview::reconcile(tx, who, (None, None), trusted, &mut automated)?;
+    preview::reconcile(tx, who, &previews, None, trusted, &mut automated)?;
     Ok(automated)
 }
 

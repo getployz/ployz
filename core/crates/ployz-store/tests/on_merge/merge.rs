@@ -743,7 +743,7 @@ fn what_landed_waits_for_ci_with_the_push() {
 }
 
 #[test]
-fn a_merge_into_a_branch_nothing_deploys_keeps_the_preview() {
+fn a_merge_into_a_branch_nothing_deploys_keeps_the_pr_environment() {
     let (store, who) = shop();
     set(&store, &who, "pr-5", &[("web.env.A", json!("2"))]);
     pull(&store, &who, "release", "2026-09-29T10:00:01Z");
@@ -768,7 +768,7 @@ fn a_merge_into_a_branch_nothing_deploys_keeps_the_preview() {
             updated: ployz_store::GithubTimestamp::parse("2026-09-29T11:00:00Z").unwrap(),
         }),
     );
-    // Nothing landed its change anywhere, so the preview holding it stays.
+    // Nothing landed its change anywhere, so the PR Environment holding it stays.
     assert!(
         automated.closing.is_empty() && automated.removed.is_empty(),
         "{automated:?}"

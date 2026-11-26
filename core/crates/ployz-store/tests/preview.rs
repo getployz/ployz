@@ -37,7 +37,11 @@ fn machine(byte: char) -> MachineId {
 /// Project `shop`: Protected `production` runs `web` from `acme/web`'s `main`, and root
 /// `staging` runs `web` and `api` from its `staging` branch, each published.
 fn shop() -> (ConfigStore, Actor) {
-    let store = backend::open();
+    shop_in(backend::open())
+}
+
+/// [`shop`] in `store`.
+fn shop_in(store: ConfigStore) -> (ConfigStore, Actor) {
     let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
         .write(
@@ -1043,4 +1047,173 @@ fn a_preview_rule_naming_another_signer_than_the_one_who_signed_it_is_refused() 
     let error = save(&store, &who, &set).unwrap_err();
 
     assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{error:?}");
+}
+
+#[test]
+fn approving_a_stranger_s_pull_request_opens_its_preview() {
+    let (store, who) = shop();
+    previews(&store, &who, 2);
+    let trusted = homes(&['a']);
+    let mut stranger = facts(5, true, "main", "2026-01-01T00:00:00Z");
+    stranger.author_id = Some(ployz_store::GithubUserId::parse(999_999).unwrap());
+    pull(&store, &who, stranger, &trusted);
+    assert_eq!(preview_of(&store, &who, 5), None, "it waits for a member");
+
+    let approve = ployz_store::ApprovePullRequest {
+        repository_id: backend::repo_id(11),
+        number: backend::pr_number(5),
+        head: backend::sha(HEAD),
+    };
+    store.write_trusted(&who, &approve, &trusted).unwrap();
+
+    assert!(preview_of(&store, &who, 5).is_some());
+}
+
+/// Set `path` to `value` in `environment`.
+fn set(store: &ConfigStore, who: &Actor, environment: &str, path: &str, value: &str) {
+    let edit = ployz_store::Edit {
+        environment: at(environment),
+        expect: None,
+        changes: vec![ployz_store::Change::Set {
+            path: ployz_store::SettingPath::parse(path).unwrap(),
+            value: serde_json::Value::String(value.into()),
+        }],
+    };
+    store.write(who, &edit).unwrap();
+}
+
+#[test]
+fn a_preview_holding_what_its_merge_left_to_land_stays_open_and_gets_no_close() {
+    let (store, who) = shop();
+    previews(&store, &who, 1);
+    let trusted = homes(&['a']);
+    pull(
+        &store,
+        &who,
+        facts(5, true, "feature", "2026-01-01T00:00:00Z"),
+        &trusted,
+    );
+    let opened = preview_of(&store, &who, 5).unwrap().namespace().clone();
+    set(&store, &who, "pr-5", "web.env.A", "2");
+    // Nothing deploys `feature`, so the change stays for its Parent to take.
+    let mut merged = facts(5, false, "feature", "2026-01-02T00:00:00Z");
+    merged.merge_commit = Some(backend::sha(HEAD));
+
+    let first = pull(&store, &who, merged.clone(), &trusted);
+    let swept = observe(&store, &who, SystemEvent::Sweep(Sweep { now: 0 }), &trusted);
+    merged.updated = ployz_store::GithubTimestamp::parse("2026-01-03T00:00:00Z").unwrap();
+    let later = pull(&store, &who, merged, &trusted);
+
+    for automated in [&first, &swept, &later] {
+        assert!(
+            automated.closing.is_empty() && automated.removed.is_empty(),
+            "{automated:?}"
+        );
+    }
+    let asked = OpenPreviewsQuery {
+        namespaces: vec![opened],
+    };
+    assert_eq!(store.read(&who, &asked).unwrap().open.len(), 1);
+}
+
+#[test]
+fn a_full_cap_costs_the_same_however_many_pull_requests_wait() {
+    let (store, who) = shop();
+    previews(&store, &who, 1);
+    let trusted = homes(&['a']);
+    let opened = |number: u64| facts(number, true, "main", "2026-01-01T00:00:00Z");
+    // What news of one more pull request costs once `waiting` wait behind the full cap.
+    let cost = |first: u64, waiting: u64| {
+        for number in first..first + waiting {
+            pull(&store, &who, opened(number), &trusted);
+        }
+        let (asked, statements) =
+            backend::statements(|| pull(&store, &who, opened(first + waiting), &trusted));
+        assert_eq!(skipped(&asked).len(), 1, "it waits: {asked:?}");
+        statements
+    };
+    pull(&store, &who, opened(1), &trusted);
+    assert!(preview_of(&store, &who, 1).is_some());
+
+    let few = cost(2, 2);
+    let many = cost(10, 40);
+
+    assert_eq!(few, many, "news of a pull request reads each one waiting");
+}
+
+/// Two writes that each close preview `pr-5` as its Server leaves and open the oldest
+/// waiting pull request in its place, queued behind a third holding the plan's
+/// start-from, both finish and keep the cap:
+/// each takes the plan's previews in the same order. Postgres only: SQLite writers
+/// never overlap.
+#[test]
+fn a_sweep_and_news_of_a_pull_request_both_moving_a_preview_both_finish() {
+    if std::env::var_os("PLOYZ_STORE_TEST_POSTGRES").is_none() {
+        return;
+    }
+    let url = backend::fresh_url(&tempfile::tempdir().unwrap());
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
+    previews(&store, &who, 1);
+    for number in [5, 6] {
+        pull(
+            &store,
+            &who,
+            facts(number, true, "main", "2026-01-01T00:00:00Z"),
+            &homes(&['a']),
+        );
+    }
+    let five = preview_of(&store, &who, 5).unwrap().namespace().clone();
+    let mut other = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    let mut held = other.transaction().unwrap();
+    held.execute(
+        "UPDATE config_environment SET working_revision = working_revision WHERE id = $1",
+        &[&uuid(3)],
+    )
+    .unwrap();
+
+    // Until `writes` of this Store's wait for a row lock.
+    let queued = |writes: i64| {
+        let waiting = "SELECT COUNT(*) FROM pg_stat_activity \
+                       WHERE datname = current_database() AND wait_event_type = 'Lock'";
+        while backend::count(&url, waiting) < writes {}
+    };
+    let moved = homes(&['b']);
+    let (news, sweep) = std::thread::scope(|threads| {
+        let news = threads.spawn(|| {
+            let event = SystemEvent::PullRequest(facts(6, true, "main", "2026-01-02T00:00:00Z"));
+            store.system(&who.organization, &event, &moved).map(drop)
+        });
+        queued(1);
+        let sweep = threads.spawn(|| {
+            let event = SystemEvent::Sweep(Sweep { now: 0 });
+            store.system(&who.organization, &event, &moved).map(drop)
+        });
+        queued(2);
+        held.rollback().unwrap();
+        (news.join().unwrap(), sweep.join().unwrap())
+    });
+
+    assert_eq!((news, sweep), (Ok(()), Ok(())));
+    let asked = OpenPreviewsQuery {
+        namespaces: vec![five.clone()],
+    };
+    assert!(store.read(&who, &asked).unwrap().open.is_empty());
+    // The oldest waiting pull request, 5 again, takes the one slot, on b.
+    let reopened = store
+        .read(&who, &ployz_store::EnvironmentsQuery::default())
+        .unwrap()
+        .environments
+        .into_iter()
+        .filter_map(|listing| {
+            PreviewNamespace::of(&namespace_of(&store, &who, listing.name.as_str()))
+        })
+        .filter(|preview| preview.namespace() != &five)
+        .collect::<Vec<_>>();
+    assert_eq!(reopened.len(), 1, "{reopened:?}");
+    assert!(
+        reopened
+            .iter()
+            .all(|preview| preview.homed_on(&machine('b')))
+    );
+    assert_eq!(preview_of(&store, &who, 6), None, "the cap holds");
 }
