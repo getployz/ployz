@@ -6,8 +6,8 @@ use chrono::DateTime;
 use clap::{ArgAction, ArgMatches, Command};
 use ployz_core::{
     DockerVolumeName, EmptyTrashRequest, Hint, ListTrashRequest, MachineId, MachineLayout,
-    RestoreTrashRequest, RpcErrorCode, RuntimeWatchFrame, TrashEmptied, TrashEntry, TrashId,
-    TrashList, TrashPlace, TrashRestore, TrashRestored, UnreadableTrash, op,
+    PoolRead, RestoreTrashRequest, RpcErrorCode, RuntimeWatchFrame, TrashEmptied, TrashEntry,
+    TrashId, TrashList, TrashPlace, TrashRestore, TrashRestored, UnreadableTrash, op,
 };
 use ployz_store::{NamespacesQuery, OwnedNamespace};
 use serde_json::json;
@@ -61,13 +61,11 @@ fn id_arg(required: bool) -> clap::Arg {
         .value_parser(|id: &str| TrashId::parse(id).map_err(|error| error.to_string()))
 }
 
-/// One Server's socket, its name for every line, and the one runtime frame whose members
-/// a restore asks.
+/// One Server's socket and its name for every line.
 struct Server {
     client: Client,
     id: MachineId,
     name: String,
-    frame: RuntimeWatchFrame,
 }
 
 pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
@@ -113,8 +111,17 @@ pub(in crate::handlers) fn restore(root: &ArgMatches) -> Result<(), Error> {
         let restored = match first.state {
             // A deleted root waits, pinned, until every Server shows it holds no copy.
             TrashRestore::Pinned { .. } => {
-                let seen = copies(&server.client, &server.frame, &first.name).await;
-                no_copy(&first.name, server.id, &seen, &server.frame)?;
+                // The members asked are the ones after the pin: a Server that joined before
+                // it, holding its own entry, reads this pin or is read here.
+                let frame = server.client.runtime_frame().await?;
+                let seen = copies(&server.client, &frame, &first.name, true).await;
+                proven(&first.name, id, server.id, &frame, &seen).map_err(|refused| {
+                    refused.context(format!(
+                        "Didn't restore {id}. It stays in {}'s Trash as restoring for 7 more \
+                         days.",
+                        server.name
+                    ))
+                })?;
                 restore_call(&server, id, true)
                     .await
                     .map_err(|error| uncertain(&server, id, error))?
@@ -409,12 +416,16 @@ fn confirm_all(server: &str, retry: &str, count: usize) -> Result<(), Error> {
 }
 
 /// Refuses unless every member of `frame` answered, the frame lists this Server `here`, and
-/// no member holds a copy of `name`: the pinned root then can't become a second writer.
-fn no_copy(
+/// each member proved from the Pool it knows is its own, healthy, that it holds no copy of
+/// `name` and no entry of it a restore pinned, besides `id` here: the pinned root then
+/// can't become a second writer. An answer without that proof, from a Ployz that doesn't
+/// know how, proves nothing.
+fn proven(
     name: &DockerVolumeName,
+    id: TrashId,
     here: MachineId,
-    seen: &[Seen],
     frame: &RuntimeWatchFrame,
+    seen: &[Seen],
 ) -> Result<(), Error> {
     answered(name, seen)?;
     let members_answered = frame
@@ -438,10 +449,58 @@ fn no_copy(
         .collect();
     if !holding.is_empty() {
         return Err(Error::conflict(format!(
-            "Volume {name} has a copy on {}, so this data would come back as a second copy. \
-             It stays in the Trash.",
+            "Volume {name} has a copy on {}, so this data would come back as a second copy.",
             holding.join(", ")
         )));
+    }
+    for seen in seen {
+        let unproven = |why: &str| {
+            Err(Error::unavailable(format!(
+                "{} can't show that it holds no copy of {name}, since {why}.",
+                seen.name
+            )))
+        };
+        let older = || {
+            Err(Error::unavailable(format!(
+                "{} runs a Ployz too old to show that it holds no copy of {name}. Upgrade Ployz \
+                 there first.",
+                seen.name
+            )))
+        };
+        match &seen.read {
+            None | Some(PoolRead::Unknown) => return older(),
+            Some(PoolRead::Unproven { why }) => return unproven(why),
+            Some(PoolRead::Pool {
+                name: pool, health, ..
+            }) if health != "ONLINE" => {
+                return unproven(&format!("its Pool {pool} is {health}"));
+            }
+            Some(PoolRead::Pool { .. } | PoolRead::Unheld) => {}
+        }
+        let Some(pinned) = &seen.pinned else {
+            return older();
+        };
+        if let Some(other) = pinned
+            .iter()
+            .find(|pinned| !(seen.id == here && **pinned == id))
+        {
+            return Err(Error::conflict(format!(
+                "Volume {name} is also being restored on {} from Trash entry {other}. Pick the \
+                 one to keep, and delete the other with `sudo ployz volume trash empty ID` on \
+                 its Server.",
+                seen.name
+            )));
+        }
+        // This Server must still show the pin it just took, in the Pool it proves from: an
+        // answer from another Pool, or none, says nothing about the one the promote lands in.
+        if seen.id == here
+            && (!matches!(seen.read, Some(PoolRead::Pool { .. })) || pinned.as_slice() != [id])
+        {
+            return Err(Error::unavailable(format!(
+                "{} no longer shows {id} pinned in its own Pool. Run the restore again.",
+                seen.name
+            )));
+        }
     }
     Ok(())
 }
@@ -479,12 +538,7 @@ async fn connect(root: &ArgMatches) -> Result<Server, Error> {
             || id.to_string(),
             |observed| observed.machine.name.to_string(),
         );
-    Ok(Server {
-        client,
-        id,
-        name,
-        frame,
-    })
+    Ok(Server { client, id, name })
 }
 
 async fn read(server: &Server) -> Result<TrashList, Error> {

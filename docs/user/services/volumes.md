@@ -340,11 +340,14 @@ Each entry names its volume by project, environment and volume ID, like
 `shop-production_vol-0500e190-…`, and says when the trash deletes it.
 
 `ployz volume trash restore ID` puts one entry back. A deleted volume comes back only once every
-server in the Cluster answers that it holds no copy of it, because the restored data would
-otherwise be a second copy. Until then it stays in the trash, and `trash ls` shows it as
-restoring. Each try keeps it there 7 more days, so run the restore again once the servers
-answer. If the restore stops without an answer, it may have happened: run the same command
-again to finish it.
+server in the Cluster shows that it holds no copy of it and isn't restoring it too, because the
+restored data would otherwise be a second copy. A server shows that only from a healthy pool
+it knows is its own, so the restore waits on a server that runs an older Ployz, whose pool is
+degraded or read-only, or that has another pool attached it could write to. Until then the entry stays
+in the trash, and `trash ls` shows it as restoring. Each try keeps it there 7 more days, so run
+the restore again once the servers answer. If two servers restore the same volume, keep one
+and delete the other entry with `trash empty ID`. If the restore stops without an answer, it
+may have happened: run the same command again to finish it.
 
 A deleted volume comes back unused. Redeploy a deployment from before the removal, and its
 services mount the restored data. That rollback lasts until your next deploy, so discard the

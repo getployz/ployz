@@ -13,9 +13,9 @@ use clap::ArgMatches;
 use futures_util::{StreamExt, stream};
 use ployz_core::{
     Claim, CopyRefusal, DockerVolumeName, ExpectedCopy, Hint, InspectVolumeCopyRequest, MachineId,
-    MachineName, MachineTarget, Namespace, RpcErrorCode, RuntimeWatchFrame, SetVolumeCopyRefused,
-    SetVolumeCopyRequest, Snapshot, VOLUME_FLOOR_CAPABILITY, VolumeCopy, VolumeGen, WantedCopy,
-    WriterEpoch, op,
+    MachineName, MachineTarget, Namespace, PoolRead, RpcErrorCode, RuntimeWatchFrame,
+    SetVolumeCopyRefused, SetVolumeCopyRequest, Snapshot, TrashId, VOLUME_FLOOR_CAPABILITY,
+    VolumeCopy, VolumeGen, WantedCopy, WriterEpoch, op,
 };
 use ployz_store::{EnvironmentSummary, NamespacesQuery, VolumeId, VolumeName};
 use serde::Serialize;
@@ -37,6 +37,10 @@ pub(super) struct Seen {
     pub(super) id: MachineId,
     pub(super) name: String,
     pub(super) copy: Result<Option<VolumeCopy>, Unseen>,
+    /// Which Pool it read, when asked to prove and it knows how.
+    pub(super) read: Option<PoolRead>,
+    /// The Volume's entries a restore pinned there, when asked to prove and it knows how.
+    pub(super) pinned: Option<Vec<TrashId>>,
 }
 
 #[derive(Debug)]
@@ -245,20 +249,23 @@ pub(super) fn docker_volume(
 }
 
 /// What every member Server in `frame` reports for `docker`, sorted by name. A Server that
-/// can't say is [`Unseen`], with why.
+/// can't say is [`Unseen`], with why. With `prove`, each is asked which Pool it read and
+/// what a restore pinned there.
 pub(super) async fn copies(
     client: &crate::connect::Client,
     frame: &RuntimeWatchFrame,
     docker: &DockerVolumeName,
+    prove: bool,
 ) -> Vec<Seen> {
     // A Server Docker-only now may still hold a Pool it can't import, so every member answers.
     let mut seen: Vec<Seen> = stream::iter(frame.machines.iter())
         .map(|observed| async move {
-            let copy = if observed.invites_rpc() {
+            let (copy, read, pinned) = if observed.invites_rpc() {
                 let inspected = client
                     .call_shared::<op::InspectVolumeCopy>(
                         InspectVolumeCopyRequest {
                             name: docker.clone(),
+                            prove,
                         },
                         Call::once()
                             .to(&MachineTarget::from(&observed.machine.id))
@@ -269,20 +276,32 @@ pub(super) async fn copies(
                 let unfenced =
                     observed.machine.runtime.claim(VOLUME_FLOOR_CAPABILITY) == Claim::Lacks;
                 match inspected {
-                    Ok(view) if unfenced && view.copy.is_some() => Err(Unseen::Unfenced),
-                    Ok(view) => Ok(view.copy),
-                    Err(error) => Err(Unseen::Silent(format!(
-                        "did not answer ({})",
-                        error.message
-                    ))),
+                    Ok(view) if unfenced && view.copy.is_some() => {
+                        (Err(Unseen::Unfenced), view.read, view.pinned)
+                    }
+                    Ok(view) => (Ok(view.copy), view.read, view.pinned),
+                    Err(error) => (
+                        Err(Unseen::Silent(format!(
+                            "did not answer ({})",
+                            error.message
+                        ))),
+                        None,
+                        None,
+                    ),
                 }
             } else {
-                Err(Unseen::Silent("is down or hasn't joined yet".to_owned()))
+                (
+                    Err(Unseen::Silent("is down or hasn't joined yet".to_owned())),
+                    None,
+                    None,
+                )
             };
             Seen {
                 id: observed.machine.id,
                 name: observed.machine.name.to_string(),
                 copy,
+                read,
+                pinned,
             }
         })
         .buffer_unordered(INSPECTS_AT_ONCE)
@@ -294,6 +313,8 @@ pub(super) async fn copies(
         copy: Err(Unseen::Silent(
             "is still arriving at the Server this connects through".to_owned(),
         )),
+        read: None,
+        pinned: None,
     }));
     seen.sort_by(|a, b| a.name.cmp(&b.name));
     seen
@@ -319,7 +340,7 @@ pub(super) fn standalone(
     let planned = runtime.block_on(async {
         let client = super::super::route::connect(matches, context).await?;
         let frame = client.runtime_frame().await?;
-        let seen = copies(&client, &frame, &docker).await;
+        let seen = copies(&client, &frame, &docker, false).await;
         let docker = &docker;
         let client = &client;
         let planned = plan(volume, docker, from, &seen)?;

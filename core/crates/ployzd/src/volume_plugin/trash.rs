@@ -52,7 +52,7 @@ use super::{
 };
 use crate::{
     dataset_layout::{DatasetLayout, Place},
-    machine_pool::MachinePool,
+    machine_pool::{MachinePool, Read},
 };
 
 const HOUR_SECONDS: i64 = 3600;
@@ -599,7 +599,10 @@ impl VolumeStorage {
     ) -> std::result::Result<TrashRestored, RpcError> {
         let _held = self.admit_mutation().await?;
         let _pool_guard = self.pool.lock_mutation().await?;
-        let pool = self.one_pool().await?;
+        // One listing gives the Pool it writes to and what a proof reads of it, so a root
+        // comes back only in the Pool every proof here was answered from.
+        let (pool, own) = self.pool.restoring().await?;
+        let pool = pool.ok_or_else(|| PluginError::from("no usable existing Machine Pool"))?;
         let layout = DatasetLayout::of(&pool);
         let datasets = self.complete_datasets(&pool).await?;
         // A promote that renamed the entry left its ID on the root, so a call run again
@@ -616,6 +619,9 @@ impl VolumeStorage {
         let entry = self.entry(id, dataset).await?.map_err(|why| {
             RpcError::conflict(format!("Trash entry {id} can't be restored: {why}"))
         })?;
+        if entry.place == TrashPlace::Root {
+            own_pool(own)?;
+        }
         match (entry.place, promote) {
             (TrashPlace::Root, false) => self.pin(&layout, &entry).await,
             (TrashPlace::Root, true) => self.promote(&pool, &datasets, &entry).await,
@@ -822,7 +828,7 @@ impl VolumeStorage {
 
     /// The IDs of `name`'s entries a restore pinned, whether or not their marks read. One
     /// whose name doesn't read may be `name`'s, so it refuses.
-    async fn pinned_entries(
+    pub(super) async fn pinned_entries(
         &self,
         pool: &MachinePool,
         datasets: &[Dataset],
@@ -837,12 +843,16 @@ impl VolumeStorage {
             let Ok(id) = TrashId::parse(id) else {
                 continue;
             };
-            let marks = self.marks(&dataset.name);
-            if marks.local(Mark::TrashPin).await?.is_none() {
+            // A proof's "not pinned" is an absence, so it comes only from a row ZFS printed.
+            if self
+                .listed_local(&dataset.name, Mark::TrashPin.name())
+                .await?
+                .is_none()
+            {
                 continue;
             }
-            match marks
-                .local(Mark::TrashName)
+            match self
+                .listed_local(&dataset.name, Mark::TrashName.name())
                 .await?
                 .map(|held| held.parse::<VolumeName>())
             {
@@ -1132,4 +1142,20 @@ pub(super) async fn sweep(
     State(storage): State<VolumeStorage>,
 ) -> Json<std::result::Result<TrashSwept, RpcError>> {
     Json(storage.sweep_trash().await.map_err(RpcError::from))
+}
+
+/// Refuses unless the Pool a restore writes to is the one a proof reads, `ONLINE` and the
+/// only one attached: the proof a restore relies on is answered from that Pool, so a root
+/// comes back only there.
+fn own_pool(own: Read) -> std::result::Result<(), RpcError> {
+    match own {
+        Read::Pool { .. } => Ok(()),
+        Read::Unheld => Err(RpcError::conflict(
+            "This Server records no Pool as its own, so it won't restore from its Trash."
+                .to_owned(),
+        )),
+        Read::Unproven(why) => Err(RpcError::conflict(format!(
+            "This Server won't restore from its Trash, since {why}."
+        ))),
+    }
 }

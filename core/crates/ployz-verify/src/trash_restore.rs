@@ -11,16 +11,25 @@
 //!
 //! DESIGN.md bet 6 needs one writer: no two Servers hold a root of the Volume. On one Server,
 //! the promote's check for a root holds it, whatever lands late, even for a caller that sends
-//! the promote without asking anyone (`direct`). Across Servers, a restore
-//! whose promote is still in flight is invisible to another restore's reads unless each
-//! Server's answer lists the pins it holds (`ProofReadsPins`), which it doesn't carry yet:
-//! every restore pins before it reads, so of two in flight, one then reads the other's pin.
+//! the promote without asking anyone (`direct`). Across Servers, a restore whose promote is
+//! still in flight is invisible to another restore's reads unless each Server's answer lists
+//! the pins it holds, which a proof asks for (`prove_copy` in
+//! core/crates/ployzd/src/volume_plugin/inspect.rs, `proven` in
+//! core/crates/ployz/src/handlers/volume/trash.rs): every restore pins before it reads, so of
+//! two in flight, one then reads the other's pin.
+//!
+//! With `late_join`, B joins the Cluster at any moment, holding its entry, and its own
+//! restore can start only then. A restore asks the members of the runtime frame it fetched,
+//! after its pin (`restore` in core/crates/ployz/src/handlers/volume/trash.rs). A frame taken
+//! before the pin, at connect, misses a Server that joined between the two.
+//!
+//! The model is a hand-written copy of that logic; it calls none of it.
 
 use std::fmt::Write as _;
 
 use stateright::{Model, Property};
 
-use crate::harness::{Narrated, Variant};
+use crate::harness::Narrated;
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub(crate) enum Server {
@@ -60,6 +69,10 @@ enum Held {
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum Run {
     Idle,
+    /// Connected to its Server, which saw B as a member or not.
+    Connected {
+        b: bool,
+    },
     /// Pinned, with the Servers that answered no copy so far.
     Reading {
         a: bool,
@@ -82,6 +95,8 @@ pub(crate) struct State {
     e1: Slot,
     e2: Slot,
     e3: Slot,
+    /// Whether B is a member yet.
+    joined: bool,
 }
 
 impl State {
@@ -108,6 +123,8 @@ impl State {
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub(crate) enum Action {
+    Join,
+    Connect(Entry),
     Pin(Entry),
     Read(Entry, Server),
     Send(Entry),
@@ -116,23 +133,17 @@ pub(crate) enum Action {
 }
 
 impl Action {
-    const fn entry(self) -> Entry {
-        match self {
-            Self::Pin(entry)
+    const fn entry(self) -> Option<Entry> {
+        Some(match self {
+            Self::Join => return None,
+            Self::Connect(entry)
+            | Self::Pin(entry)
             | Self::Read(entry, _)
             | Self::Send(entry)
             | Self::Promote(entry)
             | Self::Empty(entry) => entry,
-        }
+        })
     }
-}
-
-/// A change proposed to the restore.
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-pub(crate) enum Fix {
-    /// Each Server's answer lists the entries of the Volume it holds pinned, and a pin other
-    /// than this restore's own refuses it.
-    ProofReadsPins,
 }
 
 /// A guard taken out, to show it is what holds the property.
@@ -140,24 +151,29 @@ pub(crate) enum Fix {
 pub(crate) enum Broken {
     /// The promote skips its check for a root of the Volume on its Server.
     NoLocalRootCheck,
+    /// The answers leave out the pins, as before a proof asked for them.
+    AnswersWithoutPins,
+    /// The restore asks the members of the frame it fetched at connect, before its pin.
+    FrameBeforePin,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct TrashRestore {
-    variant: Variant<Fix>,
     broken: Option<Broken>,
     entries: &'static [Entry],
     /// A caller may send the promote right after the pin, skipping the reads.
     direct: bool,
+    /// B joins the Cluster during the run.
+    late_join: bool,
 }
 
 impl TrashRestore {
     const fn on(entries: &'static [Entry]) -> Self {
         Self {
-            variant: Variant::Shipped,
             broken: None,
             entries,
             direct: false,
+            late_join: false,
         }
     }
 
@@ -192,6 +208,7 @@ impl Model for TrashRestore {
             e1: gone,
             e2: gone,
             e3: gone,
+            joined: !self.late_join,
         };
         for entry in self.entries {
             state.at_mut(*entry).held = Held::Trash { pinned: false };
@@ -200,9 +217,17 @@ impl Model for TrashRestore {
     }
 
     fn actions(&self, state: &State, actions: &mut Vec<Action>) {
+        if !state.joined {
+            actions.push(Action::Join);
+        }
         for &entry in self.entries {
+            // B's restore starts once B is a member.
+            if entry.server() == Server::B && !state.joined {
+                continue;
+            }
             match state.at(entry).run {
-                Run::Idle => actions.push(Action::Pin(entry)),
+                Run::Idle => actions.push(Action::Connect(entry)),
+                Run::Connected { .. } => actions.push(Action::Pin(entry)),
                 Run::Reading { a: true, b: true } => actions.push(Action::Send(entry)),
                 Run::Reading { a, b } => {
                     if self.direct {
@@ -225,19 +250,37 @@ impl Model for TrashRestore {
 
     fn next_state(&self, state: &State, action: Action) -> Option<State> {
         let mut next = *state;
-        let slot = next.at_mut(action.entry());
+        let Some(entry) = action.entry() else {
+            next.joined = true;
+            return Some(next);
+        };
+        let slot = next.at_mut(entry);
         match action {
+            Action::Join => {}
+            Action::Connect(_) => slot.run = Run::Connected { b: state.joined },
             Action::Pin(_) => {
+                let Run::Connected { b: at_connect } = slot.run else {
+                    return None;
+                };
+                // A Server outside the frame isn't asked, so it reads as answered.
+                let asks_b = if self.broken == Some(Broken::FrameBeforePin) {
+                    at_connect
+                } else {
+                    state.joined
+                };
                 slot.run = match slot.held {
                     Held::Trash { .. } => {
                         slot.held = Held::Trash { pinned: true };
-                        Run::Reading { a: false, b: false }
+                        Run::Reading {
+                            a: false,
+                            b: !asks_b,
+                        }
                     }
                     Held::Gone | Held::Root => Run::Done,
                 };
             }
             Action::Read(entry, server) => {
-                let pinned = self.variant.proposal() == Some(Fix::ProofReadsPins)
+                let pinned = self.broken != Some(Broken::AnswersWithoutPins)
                     && Self::pinned_beside(state, server, entry);
                 if Self::roots(state, server) || pinned {
                     slot.run = Run::Done;
@@ -287,7 +330,7 @@ impl Narrated for TrashRestore {
     fn story(&self, path: &[(State, Option<Action>)]) -> String {
         let mut story = String::new();
         for (state, action) in path {
-            let _ = writeln!(story, "  {:?}", state.held());
+            let _ = writeln!(story, "  {:?} joined={}", state.held(), state.joined);
             if let Some(action) = action {
                 let _ = writeln!(story, "{action:?}");
             }
@@ -298,8 +341,8 @@ impl Narrated for TrashRestore {
 
 #[cfg(test)]
 mod tests {
-    use super::{Broken, Entry, Fix, TrashRestore};
-    use crate::harness::{Variant, breaks, check};
+    use super::{Broken, Entry, TrashRestore};
+    use crate::harness::{breaks, check};
     use stateright::Checker;
 
     const ONE_SERVER: &[Entry] = &[Entry::E1, Entry::E3];
@@ -324,15 +367,37 @@ mod tests {
         );
     }
 
-    /// Across Servers, a restore whose promote is still in flight is invisible to another
-    /// restore's reads, so both can land. Reading pins in each answer closes it.
+    /// A Server that joins between a restore's connect and its pin is asked, since the
+    /// restore fetches the frame after its pin: of two restores in flight, one still reads
+    /// the other's pin. A frame taken at connect leaves the joiner unasked, and both land.
     #[test]
-    fn restores_across_servers_need_the_answers_to_carry_pins() {
-        breaks(TrashRestore::on(BOTH), "one writer");
-        let fixed = TrashRestore {
-            variant: Variant::Proposed(Fix::ProofReadsPins),
+    fn a_server_that_joins_before_the_pin_is_asked() {
+        let model = TrashRestore {
+            late_join: true,
             ..TrashRestore::on(BOTH)
         };
-        check(fixed).assert_properties();
+        check(model.clone()).assert_properties();
+        breaks(
+            TrashRestore {
+                broken: Some(Broken::FrameBeforePin),
+                ..model
+            },
+            "one writer",
+        );
+    }
+
+    /// Across Servers, each answer lists its pins, so of two restores in flight one reads the
+    /// other's pin and leaves one writer. Without the pins in the answers, a restore whose
+    /// promote is still in flight is invisible to the other's reads, and both land.
+    #[test]
+    fn restores_across_servers_leave_one_writer_through_the_pins_in_each_answer() {
+        check(TrashRestore::on(BOTH)).assert_properties();
+        breaks(
+            TrashRestore {
+                broken: Some(Broken::AnswersWithoutPins),
+                ..TrashRestore::on(BOTH)
+            },
+            "one writer",
+        );
     }
 }

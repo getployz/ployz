@@ -109,6 +109,70 @@ async fn departure_without_a_pool_demotes_nothing() {
     server.abort();
 }
 
+/// A Machine that held a Pool it can't read now may hold a root there, which would come back
+/// as a writer once imported, so its departure fails rather than seal nothing.
+#[tokio::test]
+async fn departure_fails_while_a_held_pool_is_not_imported() {
+    let test = test_dir();
+    let (socket, server) = start(&test, "", &[]);
+    fs::create_dir(test.0.join("ployz-volumes")).unwrap();
+
+    let response = post(&socket, "/Storage.Demote", json!(null)).await;
+
+    assert!(response.get("Err").is_some(), "{response}");
+    server.abort();
+}
+
+/// A root missing from a listing ZFS cut short isn't departed: the departure says the
+/// Volume failed, where it once left its root a writer and answered nothing.
+#[tokio::test]
+async fn departure_fails_a_volume_whose_listing_zfs_cut_short() {
+    let test = test_dir();
+    let (socket, server) = start(&test, USABLE_POOL, &["root", "volume", "mounted"]);
+    fs::create_dir_all(test.0.join("props")).unwrap();
+    fs::write(test.0.join("props/datasets-cut-later"), "").unwrap();
+
+    let response = post(&socket, "/Storage.Demote", json!(null)).await;
+
+    assert_eq!(
+        response.pointer("/Ok/failed/0/name"),
+        Some(&json!("data")),
+        "{response}"
+    );
+    assert!(
+        failure_reason(&response).contains("stopped early"),
+        "{response}"
+    );
+    server.abort();
+}
+
+/// The seal's own listing must show the Pool: an empty one, after the first listing found
+/// the Volume, fails it rather than leave its root a writer.
+#[tokio::test]
+async fn departure_fails_a_volume_whose_listing_came_back_empty() {
+    let test = test_dir();
+    let (socket, server) = start(&test, USABLE_POOL, &["root", "volume", "mounted"]);
+    fs::create_dir_all(test.0.join("props")).unwrap();
+    fs::write(test.0.join("props/datasets-empty-later"), "").unwrap();
+
+    let response = post(&socket, "/Storage.Demote", json!(null)).await;
+
+    assert_eq!(
+        response.pointer("/Ok/failed/0/name"),
+        Some(&json!("data")),
+        "{response}"
+    );
+    assert!(
+        failure_reason(&response).contains("printed no row for the Pool itself"),
+        "{response}"
+    );
+    assert!(
+        !commands(&test).contains("zfs rename tank/ployz/data"),
+        "{response}"
+    );
+    server.abort();
+}
+
 #[tokio::test]
 async fn departure_on_a_machine_without_zfs_demotes_nothing() {
     let test = test_dir();

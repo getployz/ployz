@@ -1006,3 +1006,149 @@ async fn a_half_restored_root_deleted_again_keeps_the_canmount_it_was_deleted_wi
 
     assert_eq!(property(&test, ROOT, "canmount").as_deref(), Some("on"));
 }
+
+/// A restore's proof asks each Server which Pool it read and what a restore pinned there,
+/// so two restores of one Volume on two Servers each see the other's pin.
+#[tokio::test]
+async fn a_proof_lists_each_entry_of_the_volume_a_restore_pinned() {
+    let test = test_dir();
+    let plugin = Plugin::start(&test, &["root"], Ok(vec![]));
+    let first = plant_trash(&test, &trash_id(1), "data", "root", 0, false);
+    plant_trash(&test, &trash_id(2), "data", "root", 0, false);
+    plant_trash(&test, &trash_id(3), "other", "root", 0, false);
+    let prove = || plugin.post("/Volume.Inspect", json!({"name": "data", "prove": true}));
+
+    assert_eq!(prove().await.pointer("/Ok/pinned"), Some(&json!([])));
+    plugin.call(&first, false).await;
+    plugin.call(&trash_id(3), false).await;
+    let proof = prove().await;
+
+    assert_eq!(
+        proof,
+        json!({"Ok": {
+            "copy": null,
+            "read": {"kind": "pool", "name": "tank", "health": "ONLINE", "by": "sole"},
+            "pinned": [trash_id(1)],
+        }})
+    );
+}
+
+/// A Pool that turned `DEGRADED` after the pin proves nothing, so its promote refuses and
+/// the entry stays pinned.
+#[tokio::test]
+async fn a_promote_refuses_once_its_pool_is_degraded() {
+    let test = test_dir();
+    let plugin = Plugin::start(&test, &["root"], Ok(vec![]));
+    let entry = plant_trash(&test, &trash_id(1), "data", "root", 0, false);
+    plugin.call(&entry, false).await;
+    fs::write(
+        test.0.join("props/pools"),
+        USABLE_POOL.replace("ONLINE", "DEGRADED"),
+    )
+    .unwrap();
+
+    let promoted = plugin.call(&entry, true).await;
+
+    assert_eq!(
+        promoted.pointer("/Err/code"),
+        Some(&json!("conflict")),
+        "{promoted}"
+    );
+    assert!(
+        refusal(&promoted).contains("its Pool tank is DEGRADED"),
+        "{promoted}"
+    );
+    assert!(property(&test, &entry, "ployz:trash-pin").is_some());
+}
+
+/// A proof reads a pin as absent only from a source ZFS prints. A row cut partway through
+/// its source reads as nothing, where it once read as not pinned.
+#[tokio::test]
+async fn a_proof_fails_where_a_pin_reads_with_a_source_zfs_never_prints() {
+    let test = test_dir();
+    let plugin = Plugin::start(&test, &["root"], Ok(vec![]));
+    let entry = plant_trash(&test, &trash_id(1), "data", "root", 0, false);
+    plugin.call(&entry, false).await;
+    let cut = test
+        .0
+        .join("props/source-cut")
+        .join(format!("tank/ployz-trash/{}", trash_id(1)));
+    fs::create_dir_all(cut.parent().unwrap()).unwrap();
+    fs::write(&cut, "").unwrap();
+
+    let proof = plugin
+        .post("/Volume.Inspect", json!({"name": "data", "prove": true}))
+        .await;
+
+    assert!(proof.get("Err").is_some(), "{proof}");
+}
+
+/// A listing of the Pool without the Pool's own row saw nothing, so the proof fails
+/// rather than answer that there's no copy and no pin.
+#[tokio::test]
+async fn a_proof_fails_on_a_dataset_listing_without_the_pool() {
+    let test = test_dir();
+    let plugin = Plugin::start(&test, &["root"], Ok(vec![]));
+    fs::create_dir_all(test.0.join("props")).unwrap();
+    fs::write(test.0.join("props/datasets-empty"), "").unwrap();
+
+    let proof = plugin
+        .post("/Volume.Inspect", json!({"name": "data", "prove": true}))
+        .await;
+
+    assert!(proof.get("Err").is_some(), "{proof}");
+}
+
+/// A proof says no restore is pinned only from a row ZFS printed: a read cut short, which
+/// once read as not pinned, fails the proof.
+#[tokio::test]
+async fn a_proof_fails_where_zfs_cut_short_the_read_of_a_pin() {
+    let test = test_dir();
+    let plugin = Plugin::start(&test, &["root"], Ok(vec![]));
+    let entry = plant_trash(&test, &trash_id(1), "data", "root", 0, false);
+    plugin.call(&entry, false).await;
+    let dataset = format!("tank/ployz-trash/{}", trash_id(1));
+    let cut = test.0.join("props/get-cut").join(&dataset);
+    fs::create_dir_all(cut.parent().unwrap()).unwrap();
+    fs::write(&cut, "").unwrap();
+
+    let proof = plugin
+        .post("/Volume.Inspect", json!({"name": "data", "prove": true}))
+        .await;
+
+    assert!(proof.get("Err").is_some(), "{proof}");
+}
+
+/// A Server that can't tell which attached Pool is its own answers that it can't prove
+/// anything, and pins or promotes nothing: the root would come back in a Pool no proof read.
+#[tokio::test]
+async fn a_server_that_cant_tell_its_own_pool_proves_nothing_and_restores_nothing() {
+    let test = test_dir();
+    let plugin = Plugin::start(&test, &["root"], Ok(vec![]));
+    let entry = plant_trash(&test, &trash_id(1), "data", "root", 0, false);
+    fs::create_dir_all(test.0.join("props")).unwrap();
+    fs::write(
+        test.0.join("props/importable"),
+        "   pool: ployz-device\n     id: 1\n  state: ONLINE\n action: The pool can be imported using its name or numeric identifier.\n config:\n\n\tployz-device  ONLINE\n\t  sdb       ONLINE\n",
+    )
+    .unwrap();
+
+    let proof = plugin
+        .post("/Volume.Inspect", json!({"name": "data", "prove": true}))
+        .await;
+    let pinned = plugin.call(&entry, false).await;
+
+    assert_eq!(
+        proof.pointer("/Ok/read/kind"),
+        Some(&json!("unproven")),
+        "{proof}"
+    );
+    assert_eq!(proof.pointer("/Ok/pinned"), None, "{proof}");
+    assert_eq!(
+        pinned.pointer("/Err/code"),
+        Some(&json!("conflict")),
+        "{pinned}"
+    );
+    assert!(refusal(&pinned).contains("ployz-device"), "{pinned}");
+    assert_eq!(property(&test, &entry, "ployz:trash-pin"), None);
+}
