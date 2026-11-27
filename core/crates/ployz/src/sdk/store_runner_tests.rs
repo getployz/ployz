@@ -2162,6 +2162,226 @@ async fn a_deploy_with_a_reused_build_still_recreates_the_services_its_claim_lis
     assert_eq!(replaced, vec![web]);
 }
 
+/// A claimed Deployment of every Service in `store`'s Environment, its Git Services
+/// pinned at `commit`.
+async fn redeploy(
+    store: &Arc<ConfigStore>,
+    actor: &Actor,
+    id: u128,
+    pinned: &[ServiceName],
+    commit: &str,
+) -> (Run, Claimed) {
+    let deployment = DeploymentId::parse(uuid::Uuid::from_u128(id).to_string()).unwrap();
+    store
+        .write_trusted(
+            actor,
+            &ployz_store::Admit::Deploy(ployz_store::Deploy {
+                id: deployment.clone(),
+                environment: ployz_store::EnvironmentRef::default(),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: None,
+                prune: false,
+                no_prune: false,
+                versions: Vec::new(),
+                copies: Vec::new(),
+                recreate: Vec::new(),
+                rule: None,
+            }),
+            &ployz_store::Trusted::default(),
+        )
+        .unwrap();
+    store
+        .pin(
+            &deployment,
+            &pinned
+                .iter()
+                .map(|service| (service.clone(), CommitSha::parse(commit).unwrap()))
+                .collect(),
+            &ployz_store::Trusted::default(),
+        )
+        .unwrap();
+    let run = Run {
+        store: store.clone(),
+        deployment,
+        runner: RunnerId::parse("owner").unwrap(),
+        over: Latch::new(),
+        reader: None,
+        steps: std::sync::Mutex::default(),
+        pending_live_at: std::sync::Mutex::default(),
+    };
+    let claimed = run.claim(Operator::Cloud).await.unwrap();
+    (run, claimed)
+}
+
+// Catches a same-commit redeploy that builds again: five Services built from one
+// repository and Dockerfile, deployed twice at one commit, build five images and then
+// none, and a changed build argument or commit builds again.
+#[tokio::test]
+async fn a_same_commit_redeploy_of_services_sharing_a_dockerfile_builds_nothing() {
+    use crate::sdk::test_support as support;
+    use ployz_core::config::ServiceGitAccess;
+    use ployz_store::{
+        AuthorizedRepository, Change, CreateGitService, CreateProject, Edit, EnvironmentRef,
+        OrganizationId, ProjectId, ProjectName, SealingKey, ServiceLineageId, SettingPath, Trusted,
+    };
+    let store =
+        Arc::new(ConfigStore::open("sqlite::memory:", SealingKey::new(b"test").unwrap()).unwrap());
+    let actor = Actor::system(OrganizationId::parse("test").unwrap());
+    store
+        .write(
+            &actor,
+            &CreateProject {
+                id: ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
+                name: ProjectName::parse("test").unwrap(),
+                default_environment: environment(),
+                region: None,
+            },
+        )
+        .unwrap();
+    let repository = ployz_store::RepositoryName::parse("acme/app").unwrap();
+    let services: Vec<ServiceName> = ["api", "web", "worker", "cron", "jobs"]
+        .into_iter()
+        .map(|name| ServiceName::parse(name).unwrap())
+        .collect();
+    for (index, service) in (5_u128..).zip(&services) {
+        store
+            .write_trusted(
+                &actor,
+                &CreateGitService {
+                    id: ServiceLineageId::parse(uuid::Uuid::from_u128(index).to_string()).unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: service.clone(),
+                    repository: repository.clone(),
+                    branch: None,
+                },
+                &Trusted {
+                    repositories: vec![AuthorizedRepository {
+                        repository: repository.clone(),
+                        repository_id: ployz_store::RepositoryId::parse(11).unwrap(),
+                        access: ServiceGitAccess::Public,
+                        default_branch: ployz_store::BranchName::parse("main").unwrap(),
+                        branches: Vec::new(),
+                    }],
+                    ..Trusted::default()
+                },
+            )
+            .unwrap();
+    }
+    let edit = |changes: Vec<(String, &str)>| {
+        store
+            .write(
+                &actor,
+                &Edit {
+                    environment: EnvironmentRef::default(),
+                    expect: None,
+                    changes: changes
+                        .into_iter()
+                        .map(|(path, value)| Change::Set {
+                            path: SettingPath::parse(&path).unwrap(),
+                            value: serde_json::json!(value),
+                        })
+                        .collect(),
+                },
+            )
+            .unwrap();
+    };
+    edit(
+        services
+            .iter()
+            .flat_map(|service| {
+                [
+                    (format!("{service}.buildMethod"), "dockerfile"),
+                    (format!("{service}.env.ROLE"), service.as_str()),
+                ]
+            })
+            .collect(),
+    );
+
+    let root = std::env::temp_dir().join(format!("ployz-redeploy-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("Dockerfile"), "FROM scratch\n").unwrap();
+    let mut builder = support::machine('a', "builder");
+    let mut runs = support::machine('b', "application");
+    builder.machine.accepts_services = false;
+    runs.machine.accepts_builds = false;
+    builder.machine.runtime.architecture = "x86_64".into();
+    runs.machine.runtime.architecture = "x86_64".into();
+    builder.machine.runtime.capabilities = [ployz_core::BUILD_FREE_CAPABILITY.to_owned()].into();
+    runs.machine.runtime.capabilities = [ployz_core::FREE_RECEIPT_CAPABILITY.to_owned()].into();
+    let mut service = support::DeployService::new(builder.clone())
+        .with_machines(vec![builder, runs])
+        .with_exec_exit(0);
+    let builds = Arc::new(support::BuildFixture::default());
+    service.builds = Some(builds.clone());
+    let (address, server) = support::listening(service).await;
+    let session = crate::sdk::connect_connections(
+        vec![Connection::tcp(address)],
+        Arc::new(SystemConnector::default()),
+    )
+    .await
+    .unwrap();
+    let checkouts = || Sources {
+        checkouts: services
+            .iter()
+            .map(|service| (service.clone(), root.clone()))
+            .collect(),
+        ..Sources::default()
+    };
+    // Every Build and BuildFree call the Server gets while the Deployment builds and then
+    // prepares: a rebuild that lands on the same digest still counts.
+    let sent = |commit: String, id: u128| {
+        let (store, actor, services, session, checkouts, builds) =
+            (&store, &actor, &services, &session, &checkouts, &builds);
+        async move {
+            let before = builds.calls.load(Ordering::SeqCst);
+            let (run, claimed) = redeploy(store, actor, id, services, &commit).await;
+            let Ok((targets, _)) = targets(&claimed, checkouts()) else {
+                panic!("every Service has its checkout at the pinned commit");
+            };
+            let Ok(Ok(receipts)) = run.build(session, &claimed, &targets).await else {
+                panic!("every Service builds");
+            };
+            assert_eq!(receipts.len(), 5);
+            let ran = pins(&claimed.ran);
+            run.prepare(session, claimed, targets, (receipts, ran))
+                .await
+                .unwrap_or_else(|unprepared| panic!("{}", unprepared.error))
+                .close();
+            builds.calls.load(Ordering::SeqCst) - before
+        }
+    };
+    let started = || builds.definitions.lock().unwrap().len();
+    let first = || "a".repeat(40);
+
+    let rollout = sent(first(), 20).await;
+    assert_eq!(started(), 5, "the first Deployment builds every Service");
+    assert_eq!(
+        sent(first(), 21).await,
+        0,
+        "a same-commit redeploy sends no Build"
+    );
+    assert_eq!(started(), 5);
+
+    edit(vec![("worker.env.ROLE".into(), "changed")]);
+    let changed = sent(first(), 22).await;
+    assert!(0 < changed && changed < rollout, "{changed} of {rollout}");
+    assert_eq!(
+        started(),
+        6,
+        "a changed build argument builds its Service again"
+    );
+
+    sent("b".repeat(40), 23).await;
+    assert_eq!(started(), 11, "a new commit builds every Service again");
+
+    session.close().await;
+    server.abort();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn planning_ends_when_the_first_image_is_sent() {
     let mut steps = Steps::default();

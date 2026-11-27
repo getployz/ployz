@@ -239,6 +239,7 @@ function CloudflareSetupForm({ organizationSlug, onCancel, onDone }: {
                 value={zone}
                 spellCheck={false}
                 autoComplete="off"
+                disabled={pending}
                 aria-invalid={problem !== null && zone !== ""}
                 aria-describedby={problem === null ? undefined : "cloudflare-zone-problem"}
                 className="font-mono"

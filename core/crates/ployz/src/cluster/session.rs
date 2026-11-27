@@ -43,7 +43,7 @@ pub(crate) struct Session {
     /// Shared by every clone, so a redial on any of them reaches the rest.
     channel: Arc<RwLock<Channel>>,
     endpoint: Arc<Endpoint>,
-    pub(super) entry: Entry,
+    entry: Entry,
     /// The Cluster the dial expected and what the first dial confirmed about it; None when
     /// it expected none. Boxed so a client stays small beside the enums that carry it.
     pub(super) cluster: Option<Box<ExpectedCluster>>,
@@ -53,7 +53,7 @@ pub(crate) struct Session {
 
 /// Which Machine this clone's channel reaches, as its daemon described itself.
 #[derive(Clone, Copy)]
-pub(super) enum Entry {
+enum Entry {
     /// No dial confirmed one: the daemon didn't describe itself, or nothing dialed yet.
     Unconfirmed,
     /// The Machine the channel was last confirmed to reach.
@@ -65,7 +65,7 @@ pub(super) enum Entry {
 
 impl Entry {
     /// The Machine the channel reaches now, when confirmed.
-    pub(super) fn current(self) -> Option<MachineId> {
+    fn current(self) -> Option<MachineId> {
         match self {
             Self::Confirmed(machine) => Some(machine),
             Self::Unconfirmed | Self::Lost { .. } => None,
@@ -143,6 +143,23 @@ impl Session {
             cluster: None,
             refused: Refusal::default(),
         }
+    }
+
+    /// The Machine the channel reaches now, when a dial confirmed it and no redial lost it.
+    pub(super) fn entry(&self) -> Option<MachineId> {
+        self.entry.current()
+    }
+
+    /// Record that a dial confirmed the channel reaches `machine`, as a test's connection does.
+    #[cfg(test)]
+    pub(super) fn confirm_at(&mut self, machine: MachineId) {
+        self.entry.confirm(Some(machine));
+    }
+
+    /// Forget the current Machine, as a failed redial does.
+    #[cfg(test)]
+    pub(super) fn lose_entry(&mut self) {
+        self.entry.lose();
     }
 
     pub(super) fn connection(&self) -> &Connection {

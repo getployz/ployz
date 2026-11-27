@@ -81,7 +81,7 @@ impl PreparedDeploy {
         }
     }
 
-    /// Execute these operations. Illegal after a previous confirm.
+    /// Execute these operations. Illegal once this preview confirmed or closed.
     ///
     /// # Errors
     ///

@@ -139,9 +139,9 @@ impl SolveParser {
             }
             return;
         };
-        // Register steps before their first output, but publish completion only
-        // after the status's final logs. Repeated completions must not reopen rows.
-        let mut completed = Vec::new();
+        // Register steps before their first output, but publish a step's end only
+        // after the status's final logs. Repeated ends must not reopen rows.
+        let mut ended = Vec::new();
         for vertex in status.vertexes {
             if let Some(error) = &vertex.error
                 && self.failed.as_ref().is_none_or(|failed| {
@@ -162,7 +162,7 @@ impl SolveParser {
                 error: vertex.error,
             };
             let first_start = step.started.is_some() && self.started.insert(step.id.clone());
-            if step.completed.is_none() {
+            if matches!(step.phase(), StepPhase::Waiting | StepPhase::Running) {
                 progress(Progress::Step(step));
             } else {
                 if first_start {
@@ -173,7 +173,7 @@ impl SolveParser {
                         ..step.clone()
                     }));
                 }
-                completed.push(step);
+                ended.push(step);
             }
         }
         for log in status.logs {
@@ -205,7 +205,7 @@ impl SolveParser {
                 self.partial.insert(key, rest);
             }
         }
-        for step in completed {
+        for step in ended {
             for stderr in [false, true] {
                 let key = StreamKey {
                     step: step.id.clone(),
@@ -685,5 +685,22 @@ mod tests {
             rendered,
             "#1 COPY . .\n#1 DONE\n#2 RUN x\n#2 ERROR: exit code: 1\n"
         );
+    }
+
+    #[test]
+    fn a_failed_step_prints_its_last_logs_before_its_error() {
+        // BuildKit can report a step's error, without its completion, in the same status
+        // as the step's last output.
+        let status = format!(
+            "{{\"vertexes\":[{{\"digest\":\"sha256:a\",\"name\":\"RUN x\",\"started\":\"2026-09-22T21:09:06Z\",\"error\":\"exit code: 1\"}}],{}\n",
+            record(b"boom\n").trim_end().strip_prefix('{').unwrap()
+        );
+        let events = collect(|parser, progress| parser.feed(status.as_bytes(), progress));
+        let renderer = PlainRenderer::default();
+        let rendered: String = events
+            .iter()
+            .filter_map(|event| renderer.render(event))
+            .collect();
+        assert_eq!(rendered, "#1 RUN x\n#1 boom\n#1 ERROR: exit code: 1\n");
     }
 }
