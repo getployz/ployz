@@ -321,7 +321,12 @@ async fn resolve(server: SocketAddr, image: &str) -> Result<String, Error> {
         Some((repository, tag)) if !tag.contains('/') => (repository, tag),
         _ => (path, "latest"),
     };
-    let failed = |error: reqwest::Error| Error::PeerPull(ployz_core::error_chain::inline(&error));
+    let failed = |error: reqwest::Error| {
+        Error::PeerPull(format!(
+            "could not ask the source Machine for {image}'s digest: {}",
+            ployz_core::error_chain::inline(&error.without_url())
+        ))
+    };
     let response = reqwest::Client::builder()
         .no_proxy()
         .build()
