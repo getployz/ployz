@@ -134,7 +134,6 @@ const serversBuild = (organizationId: string) => firstRuntimeFrame(organizationI
  */
 const serversLackingGrants = (organizationId: string) => serversLackingIn(organizationId, requirements.buildGrantInspect);
 
-/** Pin the Deployment's Git Services and start fetching each pin for the runner. */
 const pinAndPrefetch = Effect.fn("StoreGithub.pinAndPrefetch")(function* (store: ConfigStore, data: ConfigDeploymentAdmittedEventData) {
   const sources = yield* pinStoreSources(store, data.organizationId, data.deploymentId).pipe(
     Effect.catchTag("SourceUnreadable", () => Effect.succeed([])),
@@ -194,10 +193,6 @@ type StartReads = {
 };
 const directReads = (organizationId: string): StartReads => ({ workflow: checkGithubBuildWorkflow, lacking: serversLackingGrants(organizationId) });
 
-/**
- * Start every build the walk hands GitHub first, as {@link startStoreGithubBuild} does, together: each repository's
- * workflow and the Servers' grants are read once for all of them.
- */
 export const startStoreGithubBuilds = Effect.fn("StoreGithub.startAll")(function* (organizationId: string, targets: ReadonlyArray<StoreGithubTarget>) {
   // A repository reaches the Organization through one installation.
   const workflows = new Map<number, WorkflowRead>();

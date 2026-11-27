@@ -26,33 +26,26 @@ import { admitDeploy } from "./admit-deploy";
 /** What Cloud's Store workers need from Cloud. */
 export type StoreServices = AppConfig | Database | SecretEncryption | GithubApi | GithubSources | GithubAuthority | CloudStore | InngestClient | OrganizationRuntime | Polar;
 
-/**
- * Pin the Deployment's Git Services, then check out each pinned repository once for the runner until the scope closes.
- * Every Service at one commit shares its checkout, with its own root and Dockerfile checked inside it.
- */
 const checkoutSources = Effect.fn("StoreDeployment.checkoutSources")(function* (
   store: ConfigStore, organizationId: string, deploymentId: string,
 ) {
   const sources = yield* pinStoreSources(store, organizationId, deploymentId);
-  const unpinned = sources.find((source) => source.commit === null);
-  if (unpinned !== undefined) return yield* new SourceUnreadable({ message: `${unpinned.service} has no pinned commit.` });
   const githubSources = yield* GithubSources;
-  const pins = new Map(sources.map((source) => {
-    const pin = { ...sourceIdentity(organizationId, source), sha: source.commit ?? "" };
-    return [`${pin.repositoryId}@${pin.sha}`, pin] as const;
-  }));
-  const repositories = new Map(yield* Effect.forEach(pins, ([key, pin]) =>
-    fromGithub(githubSources.checkout(pin)).pipe(Effect.map((directory) => [key, directory] as const)), { concurrency: "unbounded" }));
-  const checkouts: Record<string, string> = {};
+  const commits = new Map<string, { pin: Parameters<typeof githubSources.checkout>[0]; sources: typeof sources }>();
   for (const source of sources) {
-    const repository = repositories.get(`${source.repository_id}@${source.commit}`) ?? "";
-    yield* fromGithub(Effect.tryPromise({
+    if (source.commit === null) return yield* new SourceUnreadable({ message: `${source.service} has no pinned commit.` });
+    const key = `${source.repository_id}@${source.commit}`;
+    const commit = commits.get(key);
+    if (commit === undefined) commits.set(key, { pin: { ...sourceIdentity(organizationId, source), sha: source.commit }, sources: [source] });
+    else commit.sources.push(source);
+  }
+  const checkouts = yield* Effect.forEach(commits.values(), ({ pin, sources }) => fromGithub(githubSources.checkout(pin)).pipe(
+    Effect.flatMap((repository) => Effect.forEach(sources, (source) => fromGithub(Effect.tryPromise({
       try: () => resolveSourcePaths(repository, source.root_dir, source.dockerfile_path ?? undefined),
       catch: (error) => error instanceof GithubSourceError ? error : new GithubSourceError({ message: "Could not acquire the pinned repository source." }),
-    }));
-    checkouts[source.service] = repository;
-  }
-  return checkouts;
+    })).pipe(Effect.as([source.service, repository] as const)))),
+  ), { concurrency: "unbounded" });
+  return Object.fromEntries(checkouts.flat());
 });
 
 /**

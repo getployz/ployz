@@ -7,7 +7,6 @@ import { accessFor } from "./github-access";
 import { GithubApi, type GithubReadError } from "./github-observation.api";
 import { authorizeRepository, extractGithubSource, GithubSourceError, type SourceIdentity } from "./github-source.server";
 
-/** How long a checkout no Deployment holds stays for the next one at the same commit. */
 const IDLE_MS = 10 * 60_000;
 /** Checkouts no Deployment holds, newest kept, past which the oldest goes at once. */
 const IDLE_KEPT = 2;
@@ -61,7 +60,6 @@ export const makeGithubSources = Effect.gen(function* () {
     });
   });
 
-  /** The checkout of `pin`, started when there is none; held, it isn't evicted until released. */
   const ensure = Effect.fn("GithubSources.ensure")(function* (pin: Pin, hold: boolean) {
     const repository = yield* authorizeRepository(pin);
     const key = keyOf(pin);

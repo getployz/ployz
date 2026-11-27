@@ -46,7 +46,6 @@ export const pinStoreSources = Effect.fn("StoreDeployment.pinSources")(function*
 ) {
   const sources = yield* storeTry(() => store.deploymentSources(deploymentId));
   const heads: Record<string, string> = {};
-  // Services on one branch pin one head, read once.
   const resolved = new Map<string, string>();
   for (const source of sources) {
     if (source.commit !== null) continue;
