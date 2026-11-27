@@ -334,22 +334,11 @@ async fn execute_attempt(
         let stop = cancellation.child_token();
         let _stop_upload = stop.clone().drop_guard();
         let producer = sender.clone();
+        let runtime = tokio::runtime::Handle::current();
         let mut upload = tokio::task::spawn_blocking(move || {
             remote::upload(inputs.root(), |frame| {
-                let mut payload = remote::encode(&frame)?;
-                loop {
-                    if stop.is_cancelled() {
-                        return Err("Build upload cancelled".into());
-                    }
-                    match producer.try_send(payload) {
-                        Ok(()) => return Ok(()),
-                        Err(mpsc::error::TrySendError::Closed(_)) => {
-                            return Err("Build upload stream closed".into());
-                        }
-                        Err(mpsc::error::TrySendError::Full(value)) => payload = value,
-                    }
-                    std::thread::sleep(Duration::from_millis(10));
-                }
+                let payload = remote::encode(&frame)?;
+                runtime.block_on(send_upload_frame(&producer, &stop, payload))
             })
         });
         let mut uploaded = false;
@@ -408,6 +397,18 @@ async fn execute_attempt(
             )),
         },
         Err(failure) => Completion::Failed(failure),
+    }
+}
+
+async fn send_upload_frame(
+    sender: &mpsc::Sender<ployz_core::OpaquePayload>,
+    stop: &CancellationToken,
+    payload: ployz_core::OpaquePayload,
+) -> Result<(), remote::InputError> {
+    tokio::select! {
+        biased;
+        () = stop.cancelled() => Err("Build upload cancelled".into()),
+        sent = sender.send(payload) => sent.map_err(|_| "Build upload stream closed".into()),
     }
 }
 
@@ -744,5 +745,19 @@ mod tests {
         .expect("cancellation was dropped behind queued upload frames");
         drop(receiver);
         assert!(send_cancellation(&sender).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_stopped_upload_does_not_wait_on_a_full_channel() {
+        let (sender, _receiver) = mpsc::channel(1);
+        let frame = || remote::encode(&Input::Data(vec![1])).unwrap();
+        let stop = CancellationToken::new();
+        send_upload_frame(&sender, &stop, frame()).await.unwrap();
+        let blocked = send_upload_frame(&sender, &stop, frame());
+        stop.cancel();
+        tokio::time::timeout(Duration::from_secs(1), blocked)
+            .await
+            .expect("a stopped upload stayed blocked on a full channel")
+            .unwrap_err();
     }
 }
