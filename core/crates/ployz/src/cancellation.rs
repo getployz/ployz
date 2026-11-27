@@ -156,11 +156,29 @@ pub(crate) fn while_prompting<T>(ask: impl FnOnce() -> T) -> std::io::Result<T> 
 mod tests {
     use std::time::Duration;
 
-    // These raise real signals at the test process; nextest runs every test in
-    // a process of its own, so the shared token never leaks into another test.
+    fn assert_cancelled_in_child(test: &str) {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg(format!("cancellation::tests::{test}"))
+            .args(["--exact", "--ignored", "--nocapture"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{test} exited with {}\n{}{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn sigterm_cancels_like_ctrl_c_while_a_deploy_holds_it() {
+        assert_cancelled_in_child(stringify!(sigterm_cancels_in_child));
+    }
 
     #[tokio::test]
-    async fn sigterm_cancels_like_ctrl_c_while_a_deploy_holds_it() {
+    #[ignore = "child of sigterm_cancels_like_ctrl_c_while_a_deploy_holds_it"]
+    async fn sigterm_cancels_in_child() {
         let (token, _sigterm) = super::interrupted_or_terminated().unwrap();
         signal_hook::low_level::raise(signal_hook::consts::SIGTERM).unwrap();
         tokio::time::timeout(Duration::from_secs(5), token.cancelled())
@@ -197,8 +215,15 @@ mod tests {
 
     // A closed terminal or a dropped SSH session sends SIGHUP.
     #[cfg(target_os = "linux")]
+    #[test]
+    fn sighup_cancels_like_ctrl_c_while_a_deploy_holds_it() {
+        assert_cancelled_in_child(stringify!(sighup_cancels_in_child));
+    }
+
+    #[cfg(target_os = "linux")]
     #[tokio::test]
-    async fn sighup_cancels_like_ctrl_c_while_a_deploy_holds_it() {
+    #[ignore = "child of sighup_cancels_like_ctrl_c_while_a_deploy_holds_it"]
+    async fn sighup_cancels_in_child() {
         let (token, _sigterm) = super::interrupted_or_terminated().unwrap();
         signal_hook::low_level::raise(signal_hook::consts::SIGHUP).unwrap();
         tokio::time::timeout(Duration::from_secs(5), token.cancelled())
