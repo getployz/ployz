@@ -230,11 +230,15 @@ fn docker_root_total_bytes(docker: &Docker<'_>) -> Option<u64> {
 /// reports upstream launch/prune errors or unconfirmed cleanup.
 pub fn clear_cache(policy: &HostPolicy) -> Result<(), BuildError> {
     // Every build slot keeps a cache for each access; stop at the first refusal.
-    crate::builder::Lock::known_slots(&policy.state_directory).try_for_each(|slot| {
+    let environment: BTreeMap<String, String> = std::env::vars().collect();
+    let (slots, listed) = crate::builder::Lock::slots(policy, &environment, true);
+    slots.into_iter().try_for_each(|slot| {
         [crate::Access::Full, crate::Access::Free]
             .into_iter()
             .try_for_each(|access| clear_slot_cache(policy, slot, access))
-    })
+    })?;
+    // Slots only Docker knows were missed if it could not list them.
+    listed
 }
 
 fn clear_slot_cache(

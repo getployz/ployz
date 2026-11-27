@@ -420,7 +420,7 @@ mod tests {
         crate::tests::executable(
             &policy.docker,
             &format!(
-                "#!/bin/sh\n[ \"$1\" = --ready ] && exit 0\nprintf cleaned > '{}/cleaned'\n",
+                "#!/bin/sh\n[ \"$1\" = --ready ] && exit 0\n[ \"$1\" = rm ] && printf cleaned > '{}/cleaned'\nexit 0\n",
                 root.display()
             ),
         );
