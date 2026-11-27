@@ -36,10 +36,14 @@ pub async fn push_from_machine(
         selectors,
         &machines,
         cancellation,
+        &|_| {},
     )
     .await
 }
 
+/// Deliver to every destination at once, calling `delivered` as each one lands.
+/// The result lists destinations in selection order.
+#[expect(clippy::too_many_arguments, reason = "one delivery's inputs")]
 pub(crate) async fn push_from_machine_using_machines(
     client: &mut Client,
     image: &BuiltImage,
@@ -48,6 +52,7 @@ pub(crate) async fn push_from_machine_using_machines(
     selectors: &[String],
     machines: &[MachineObservation],
     cancellation: &tokio_util::sync::CancellationToken,
+    delivered: &impl Fn(MachineId),
 ) -> Result<PartialResult<(), PushError>, PushError> {
     let selection = delivery_selection(machines, selectors)?;
     let mut result = PartialResult {
@@ -67,22 +72,37 @@ pub(crate) async fn push_from_machine_using_machines(
                 reference: image.reference.clone(),
                 message: error.to_string(),
             })?;
-    let deliveries = selection.targets.iter().map(|machine| {
-        let (mut client, source, reference) = (client.clone(), &source, &reference);
-        async move {
-            let delivery = source
-                .deliver(
-                    &mut client,
-                    reference,
-                    &image.reference,
-                    machine,
-                    &mut Cancellation::new(cancellation),
-                )
-                .await;
-            (machine.id, delivery)
+    let mut deliveries: futures_util::stream::FuturesUnordered<_> = selection
+        .targets
+        .iter()
+        .enumerate()
+        .map(|(index, machine)| {
+            let (mut client, source, reference) = (client.clone(), &source, &reference);
+            async move {
+                let delivery = source
+                    .deliver(
+                        &mut client,
+                        reference,
+                        &image.reference,
+                        machine,
+                        &mut Cancellation::new(cancellation),
+                    )
+                    .await;
+                (index, machine.id, delivery)
+            }
+        })
+        .collect();
+    let mut landed = Vec::with_capacity(selection.targets.len());
+    while let Some((index, machine_id, delivery)) =
+        futures_util::StreamExt::next(&mut deliveries).await
+    {
+        if delivery.is_ok() {
+            delivered(machine_id);
         }
-    });
-    for (machine_id, delivery) in futures_util::future::join_all(deliveries).await {
+        landed.push((index, machine_id, delivery));
+    }
+    landed.sort_by_key(|(index, ..)| *index);
+    for (_, machine_id, delivery) in landed {
         match delivery {
             Ok(()) => result.successes.push(MachineSuccess {
                 machine_id,

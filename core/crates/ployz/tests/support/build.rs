@@ -28,6 +28,8 @@ pub struct BuildFixture {
     pub pull_failures: Mutex<BTreeMap<MachineId, ployz_core::RpcError>>,
     /// Every peer pull waits here before it answers.
     pub pull_gate: Mutex<Option<Arc<tokio::sync::Barrier>>>,
+    /// A peer pull into one of these Machines answers only once its Notify fires.
+    pub pull_holds: Mutex<BTreeMap<MachineId, Arc<tokio::sync::Notify>>>,
     /// Keep every Build waiting in the daemon queue until its client leaves.
     pub hold_in_queue: std::sync::atomic::AtomicBool,
 }
