@@ -639,9 +639,8 @@ async fn redeploys_sharing_a_dockerfile(reaches_data: bool) {
         ..Trusted::default()
     };
     let checkout = tempfile::tempdir().unwrap();
-    // No step writes a layer: one that did would date its files by each build's clock,
-    // so four builds running at once would give four digests. These give one, as cached
-    // builds of a shared Dockerfile do in production.
+    // No step writes a layer, so the four builds give one image whatever their timing, as
+    // the Services sharing a Dockerfile in production ran one.
     std::fs::write(
         checkout.path().join("Dockerfile"),
         "FROM alpine:3.23.3\nCMD [\"sleep\", \"600\"]\n",
@@ -827,24 +826,15 @@ async fn redeploys_sharing_a_dockerfile(reaches_data: bool) {
     let sent = || rpcs.swap(0, std::sync::atomic::Ordering::SeqCst);
 
     // The image each Service's container runs on the Machine.
+    // The image each Service's container runs on the Machine.
     let running = || {
         let listed = cluster
             .machine_shell(
                 0,
-                "for c in $(docker ps --format '{{.Names}}'); do echo \"$c $(docker inspect --format '{{.Image}}' \"$c\")\"; done",
+                "set -e; ids=$(docker ps -q); [ -n \"$ids\" ]; docker inspect --format '{{.Name}} {{.Image}}' $ids",
             )
             .unwrap();
-        listed
-            .lines()
-            .filter_map(|line| {
-                let (container, image) = line.split_once(' ')?;
-                let (service, suffix) = container.rsplit_once('-')?;
-                (names.contains(&service)
-                    && suffix.len() == 12
-                    && suffix.chars().all(|c| c.is_ascii_hexdigit()))
-                .then(|| (service.to_owned(), image.to_owned()))
-            })
-            .collect::<BTreeMap<_, _>>()
+        service_images(&listed, &names)
     };
     let reused = || {
         names
@@ -862,11 +852,6 @@ async fn redeploys_sharing_a_dockerfile(reaches_data: bool) {
     let first = deploy(1, "c".repeat(40)).await;
     let images = running();
     eprintln!("images after the rollout: {images:?}");
-    assert_eq!(
-        images.keys().map(String::as_str).collect::<Vec<_>>(),
-        ["ai", "queue", "reverb", "scheduler", "web"],
-        "{images:?}"
-    );
     assert!(
         ["web", "reverb", "scheduler"]
             .iter()
@@ -915,6 +900,49 @@ async fn redeploys_sharing_a_dockerfile(reaches_data: bool) {
         sent() >= 5,
         "a new commit builds every Service again: {moved:?}"
     );
+}
+
+/// The one image each of `services` runs, from `docker inspect`'s `{{.Name}} {{.Image}}`
+/// lines for a Machine's running containers. Each Service runs exactly one container, and
+/// each container an image ID.
+fn service_images(listed: &str, services: &[&str]) -> std::collections::BTreeMap<String, String> {
+    let mut running = std::collections::BTreeMap::<String, Vec<String>>::new();
+    for line in listed.lines() {
+        let (container, image) = line.split_once(' ').unwrap_or((line, ""));
+        let container = container.trim_start_matches('/');
+        let Some((service, suffix)) = container.rsplit_once('-') else {
+            continue;
+        };
+        if !services.contains(&service)
+            || suffix.len() != 12
+            || !suffix.chars().all(|c| c.is_ascii_hexdigit())
+        {
+            continue;
+        }
+        let digest = image.strip_prefix("sha256:").unwrap_or_default();
+        assert!(
+            digest.len() == 64 && digest.chars().all(|c| c.is_ascii_hexdigit()),
+            "{container} runs no image ID: {listed}"
+        );
+        running
+            .entry(service.to_owned())
+            .or_default()
+            .push(image.to_owned());
+    }
+    let mut expected = services.to_vec();
+    expected.sort_unstable();
+    assert_eq!(
+        running.keys().map(String::as_str).collect::<Vec<_>>(),
+        expected,
+        "{listed}"
+    );
+    running
+        .into_iter()
+        .map(|(service, images)| match images.as_slice() {
+            [image] => (service, image.clone()),
+            _ => panic!("{service} runs one container, not {images:?}"),
+        })
+        .collect()
 }
 
 /// Listens for the runner's connection and forwards each of its requests to the Server at
