@@ -72,7 +72,7 @@ class Underlay:
 
 
 class Reachability(unittest.TestCase):
-    machines = [{"name": f"machine-{n}", "address": f"2001:db8:{n}::1", "ssh": f"198.51.100.{n}:22"} for n in (1, 2, 3)]
+    machines = [{"name": f"machine-{n}", "address": f"2001:db8:{n}::1", "ssh": f"root@198.51.100.{n}:19032"} for n in (1, 2, 3)]
 
     def require(self, cut, nodes=None, others=None):
         cluster.require_reachable({}, Underlay(cut), nodes or self.machines, others)

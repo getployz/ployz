@@ -381,7 +381,7 @@ def require_reachable(run, backend, nodes, others=None):
         return backend.exec(source, ["ping", "-c3", "-W2", target["address"]], check=False, timeout=30).returncode == 0
     silent = [pair for pair, ok in zip(pairs, parallel(answers, pairs)) if not ok]
     if silent:
-        hosts = {name: named[name]["ssh"].rsplit(":", 1)[0] for pair in silent for name in pair}
+        hosts = {name: named[name]["ssh"].rsplit(":", 1)[0].rsplit("@", 1)[-1] for pair in silent for name in pair}
         raise Infrastructure(
             "these Machines can't reach each other on their underlay address, so WireGuard between them never "
             "comes up; this is the host network, not ployz: " +
