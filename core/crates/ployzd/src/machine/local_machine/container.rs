@@ -583,9 +583,9 @@ impl Installed {
     }
 
     /// The rotation is read before the withdrawal, so a copy In is never taken out of
-    /// routing, and again under a shared turn: an In write that won the turn since the
-    /// stop was planned keeps the copy running. Stops of other copies run beside this
-    /// one, while an In write or a start waits for the exclusive turn until it ends.
+    /// routing, and again under a shared turn: an In write that won the exclusive turn
+    /// since the stop was planned keeps the copy running. Stops of other copies run beside
+    /// this one, while an In write or a start waits for the exclusive turn until it ends.
     async fn stop_out_of_rotation(
         &self,
         container: &ContainerId,

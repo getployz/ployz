@@ -145,8 +145,8 @@ enum Route {
     /// checks the caller's access under it.
     Turned,
     /// `finish_installed`: `admit_installation` checks the caller's access when the call
-    /// arrives, and the work takes `Installed::exclusive_turn` or, for the stop of a copy
-    /// out of routing, `Installed::shared_turn` itself after its drain, which checks the
+    /// arrives, and the work itself takes `Installed::exclusive_turn` after its drain, or
+    /// `Installed::shared_turn` for the stop of a copy out of routing, and each checks the
     /// caller again under it: `ContainerStep::StopThenRemove` and `ContainerStep::Remove`
     /// (`machine/local_machine/container.rs`), `stop_checked`'s stop, and a Volume cut.
     Installed,

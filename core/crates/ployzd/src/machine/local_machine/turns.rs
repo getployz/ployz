@@ -1,6 +1,6 @@
 //! Machine admission, taken only here: the in-process turn that orders admitted work,
 //! exclusive for changes and shared for image transfers, in-place updates, policy
-//! edits and the stop of a Container out of routing, then the installation guard that
+//! edits and the stop of a copy out of routing, then the installation guard that
 //! keeps an upgrade or `ployzd install` out. The turn always comes first, and the switch,
 //! when work takes it, before both, as [`super::switch`] sets out, so no two callers take
 //! them in different orders.
