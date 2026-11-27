@@ -79,12 +79,13 @@ pub use client_sealed::SecretValue;
 pub use command::*;
 pub use deployment::loss::{VolumeLoss, docker_volume};
 pub use deployment::{
-    CiVerdict, Claimed, DeployedNode, DeploymentStatus, DeploymentStep, DeploymentSummary,
-    DeploymentView, DeploymentWarning, FailedAt, Failure, GitPush, IngressAction, IngressFailure,
-    IngressRepair, NodeLabel, NodeOutcome, NodeStatus, Outcome, Parent, ParentQuery, ParentView,
-    Pinned, PostedVersion, RowPhase, RowState, RowTracker, RowTransition, RunEvidence, Running,
-    RunningQuery, RunningView, ServerProgress, ServerRow, StepName, StoppedBy, TagPin, Unclaimed,
-    UploadBase, UploadedSource, VersionsFields, VersionsQuery, VersionsView, WaitingService,
+    CiVerdict, Claimed, CleanupStatus, DeployedNode, DeploymentStatus, DeploymentStep,
+    DeploymentSummary, DeploymentView, DeploymentWarning, FailedAt, Failure, GitPush,
+    IngressAction, IngressFailure, IngressRepair, NodeLabel, NodeOutcome, NodeStatus, Outcome,
+    Parent, ParentQuery, ParentView, Pinned, PostedVersion, RowPhase, RowState, RowTracker,
+    RowTransition, RunEvidence, Running, RunningQuery, RunningView, ServerProgress, ServerRow,
+    StepName, StoppedBy, TagPin, Unclaimed, UploadBase, UploadedSource, VersionsFields,
+    VersionsQuery, VersionsView, WaitingService,
 };
 pub use domain::{
     AddDomain, ClusterDomain, ClusterDomainStatus, DnsLookup, Domain, DomainAction, DomainAdded,
@@ -212,8 +213,9 @@ impl ConfigStore {
         query: &Q,
         trusted: &Trusted,
     ) -> Result<Q::View, RpcError> {
-        self.storage
-            .read(|tx| query.answer(&mut Call { tx, who, trusted }))
+        deployment::cleanup::read(&self.storage, |tx| {
+            query.answer(&mut Call { tx, who, trusted })
+        })
     }
 
     /// Apply `command` — a [`Command`], or one of its payloads for its own result —
@@ -448,8 +450,34 @@ impl ConfigStore {
         runner: &RunnerId,
         evidence: RunEvidence,
     ) -> Result<DeploymentSummary, RpcError> {
+        self.record_with_live_at(deployment, runner, evidence, None)
+            .map(|(summary, _)| summary)
+    }
+
+    /// Record evidence and a pending switch. Also return the last saved runner or
+    /// cleanup lease deadline in Unix seconds.
+    ///
+    /// # Errors
+    /// Returns the same errors as [Self::record].
+    pub fn record_with_live_at(
+        &self,
+        deployment: &DeploymentId,
+        runner: &RunnerId,
+        evidence: RunEvidence,
+        pending_live_at: Option<i64>,
+    ) -> Result<(DeploymentSummary, Option<i64>), RpcError> {
         self.storage
-            .write(|tx| deployment::record(tx, deployment, runner, evidence))
+            .write(|tx| deployment::record(tx, deployment, runner, evidence, pending_live_at))
+    }
+
+    /// Whether the Store stopped this runner's cleanup after the traffic switch.
+    /// # Errors
+    /// Returns a storage error, or not found for a missing Deployment.
+    pub fn cleanup_unconfirmed(&self, deployment: &DeploymentId) -> Result<bool, RpcError> {
+        self.storage.read(|tx| {
+            Ok(deployment::load(tx, deployment)?.summary.cleanup
+                == Some(CleanupStatus::Unconfirmed))
+        })
     }
 
     /// Every queued Deployment no runner claimed, admitted before `before` (Unix

@@ -161,6 +161,7 @@ pub(crate) struct Schedule {
     published: BTreeSet<ServiceName>,
     publish_requested: BTreeSet<usize>,
     routed: BTreeSet<ServiceName>,
+    listed: BTreeSet<ServiceName>,
     /// Starts dispatched and not yet returned, whatever their group's phase.
     starting: BTreeSet<usize>,
     unconfirmed: BTreeSet<usize>,
@@ -233,6 +234,7 @@ impl Schedule {
             published: BTreeSet::new(),
             publish_requested: BTreeSet::new(),
             routed: BTreeSet::new(),
+            listed: BTreeSet::new(),
             starting: BTreeSet::new(),
             unconfirmed: BTreeSet::new(),
             newer_serving: BTreeSet::new(),
@@ -374,6 +376,12 @@ impl Schedule {
             }
         }
         blocked
+    }
+
+    /// A listed Service can satisfy a start dependency while its old routes
+    /// wait for the Deployment's switch to commit.
+    pub(crate) fn listed(&mut self, service: ServiceName) {
+        self.listed.insert(service);
     }
 
     pub(crate) fn apply(&mut self, event: Event) {
@@ -561,7 +569,9 @@ impl Schedule {
                 self.slots
                     .iter()
                     .find(|slot| slot.group.service() == Some(dependency))
-                    .is_none_or(|slot| matches!(slot.phase, Phase::Done))
+                    .is_none_or(|slot| {
+                        matches!(slot.phase, Phase::Done) || self.listed.contains(dependency)
+                    })
             })
     }
 

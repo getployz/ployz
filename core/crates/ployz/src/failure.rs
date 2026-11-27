@@ -158,6 +158,11 @@ impl Failure {
         self
     }
 
+    pub(crate) fn partial_outcome(mut self) -> Self {
+        self.outcome = false;
+        self
+    }
+
     pub(crate) const fn is_outcome(&self) -> bool {
         self.outcome
     }

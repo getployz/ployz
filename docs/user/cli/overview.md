@@ -676,6 +676,17 @@ and saved revision. `ployz deploy` keeps following a queued deployment. If it is
 that one. If nothing is ahead of it, the CLI says no server has started it yet and points at
 `ployz server ls`.
 
+`ployz deploy` prints **Live** when the last new copy is in rotation and listed by the
+proxies and the Store has recorded the switch. A start-first replacement keeps its
+old copies in rotation until that record commits. You can keep watching `stopping_old`
+while Ployz retires the old copies. A cancellation that reaches the Store before the
+switch rolls the replacement back. After Live, cancellation stops cleanup and leaves
+the new copies serving. Cleanup names each old copy whose removal could not be
+confirmed. The command returns after cleanup and exits 3 if an old container was
+left running, including when a later scale-down step failed. If cancellation
+interrupts a removal reply, the command reports the copy's cleanup as unconfirmed
+and exits 3. A removal whose reply was interrupted may still complete.
+
 To inspect per-server progress, run:
 
 ```sh
@@ -691,13 +702,22 @@ and secret-shaped values such as `password=…` replaced. Other values, such as 
 the image, show as the container printed them. These outcomes stay with that deployment
 when you deploy again. Unchanged services have no rows because no server work ran.
 
-`ployz deployment show` ends with the deployment's steps and how long each took, such as
+`ployz deployment show` shows when the deployment went live, including deployments that
+reported a later failure. In JSON, `live_at` is in Unix seconds. Every Service with new
+copies must confirm its switch before the timestamp is recorded. A waiting Service
+prevents that confirmation. A plan that only removes copies or updates them in place
+goes Live when its last step succeeds. History marks the revision with the most
+recent recorded switch as Live, even if cleanup failed. Deployments recorded by
+older Stores use their Applied result. An Applied shutdown clears the Live marker.
+
+The command ends with the deployment's steps and how long each took, such as
 `building api  +2.1s  41.3s`. A step the deployment stopped in reads `stopped here`. Old
 replicas retire once traffic switched to the new ones. Usually that is after the deployment
 applied; a deployment that also deletes volumes retires them first and applies only once the
 deletion succeeds, so it can still fail after they are gone. On an applied deployment, a
-`stopping_old` still going reads `not seen gone` until that service's old replicas are gone,
-or `left running` when one was left. With
+`stopping_old` still going reads `running` while the runner is cleaning up. It reads
+`left running` when a replica was left running or `not seen gone` when removal could not
+be confirmed. With
 `--json`, `steps[]` has each step's `name`, its `service` when it belongs to one, and
 `started_at` and `ended_at` in Unix milliseconds. A step it stopped in has no `ended_at`.
 

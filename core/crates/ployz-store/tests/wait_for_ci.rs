@@ -355,7 +355,7 @@ fn holds_number_in_the_order_they_pass_ci() {
             },
         )
         .unwrap();
-    assert_eq!(history.live, Some(web_saved));
+    assert_eq!(history.live, None);
 }
 
 #[test]

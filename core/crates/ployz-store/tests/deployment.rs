@@ -414,6 +414,559 @@ fn step(
 }
 
 #[test]
+fn a_deployment_keeps_live_at_after_the_store_records_its_end_and_cleanup() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    let claimed = store.claim(&id(1), &a).unwrap();
+    let at = claimed.deployment.started_at.unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Finishing { live_at: Some(at) })
+        .unwrap();
+    let switching = summary(&store, &who, 1);
+    assert_eq!(switching.live_at, Some(at));
+    assert_eq!(switching.ended_at, None);
+
+    store
+        .record(&id(1), &a, succeeded(&["web", "api"]))
+        .unwrap();
+    store
+        .record(
+            &id(1),
+            &a,
+            RunEvidence::Finished {
+                warnings: Vec::new(),
+            },
+        )
+        .unwrap();
+
+    let deployment = summary(&store, &who, 1);
+    assert_eq!(deployment.live_at, Some(at));
+    assert!(at <= deployment.ended_at.unwrap());
+    assert_eq!(deployment.cleanup, None);
+    assert_eq!(serde_json::to_value(deployment).unwrap()["live_at"], at);
+}
+
+#[test]
+fn a_late_finishing_write_cannot_reopen_expired_cleanup() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    let at = store.claim(&id(1), &a).unwrap().deployment.started_at;
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Finishing { live_at: at })
+        .unwrap();
+    assert_eq!(
+        summary(&store, &who, 1).cleanup,
+        Some(ployz_store::CleanupStatus::Pending)
+    );
+    backend::execute(&url, "UPDATE config_deployment SET cleanup_deadline = 1");
+    store
+        .record(&id(1), &a, succeeded(&["web", "api"]))
+        .unwrap();
+    let expired = summary(&store, &who, 1);
+    assert_eq!(
+        expired.cleanup,
+        Some(ployz_store::CleanupStatus::Unconfirmed)
+    );
+
+    for live_at in [None, at] {
+        assert_eq!(
+            code(store.record(&id(1), &a, RunEvidence::Finishing { live_at })),
+            RpcErrorCode::Conflict
+        );
+        assert_eq!(summary(&store, &who, 1), expired);
+    }
+}
+
+#[test]
+fn history_keeps_the_newest_switch_after_its_cleanup_task_fails() {
+    let (store, who) = shop();
+    deployment_with_pending_cleanup(&store, &who);
+    set_replicas(&store, &who, "web", 3);
+    let second = admit(&store, &who, 2, &[], None).unwrap().saved;
+    let runner = runner("runner-a");
+    store.claim(&id(2), &runner).unwrap();
+    store
+        .record(
+            &id(2),
+            &runner,
+            RunEvidence::Prepared(preview(&["web", "api"])),
+        )
+        .unwrap();
+    let at = summary(&store, &who, 1).live_at.unwrap() + 1;
+    store
+        .record(
+            &id(2),
+            &runner,
+            RunEvidence::Finishing { live_at: Some(at) },
+        )
+        .unwrap();
+    assert_eq!(
+        marks(&store, &who).0,
+        Some(second),
+        "the switch is live before Apply"
+    );
+    store
+        .record(&id(2), &runner, succeeded(&["web", "api"]))
+        .unwrap();
+    let failed = store
+        .record(&id(2), &runner, RunEvidence::RuntimeFailed)
+        .unwrap();
+    assert_eq!(failed.status, DeploymentStatus::Applied);
+    assert_eq!(
+        failed.cleanup,
+        Some(ployz_store::CleanupStatus::Unconfirmed)
+    );
+    assert_eq!(failed.live_at, Some(at));
+    assert_eq!(marks(&store, &who).0, Some(second));
+}
+
+fn deployment_with_pending_cleanup(store: &ConfigStore, who: &Actor) -> RunnerId {
+    admit(store, who, 1, &[], None).unwrap();
+    let runner = runner("runner-a");
+    let at = store.claim(&id(1), &runner).unwrap().deployment.started_at;
+    store
+        .record(
+            &id(1),
+            &runner,
+            RunEvidence::Prepared(preview(&["web", "api"])),
+        )
+        .unwrap();
+    store
+        .record(&id(1), &runner, RunEvidence::Finishing { live_at: at })
+        .unwrap();
+    store
+        .record(&id(1), &runner, succeeded(&["web", "api"]))
+        .unwrap();
+    let deployment = summary(store, who, 1);
+    assert_eq!(deployment.status, DeploymentStatus::Applied);
+    assert_eq!(
+        deployment.cleanup,
+        Some(ployz_store::CleanupStatus::Pending)
+    );
+    runner
+}
+
+#[test]
+fn a_held_postgres_renewal_cannot_overwrite_unconfirmed_cleanup() {
+    if let Some(result) = expire_cleanup_while_postgres_write_is_held(HeldCleanupWrite::Renewal) {
+        assert_eq!(code(result), RpcErrorCode::Conflict);
+    }
+}
+
+#[test]
+fn a_held_postgres_runtime_failure_keeps_the_applied_status_after_cleanup_expires() {
+    if let Some(result) =
+        expire_cleanup_while_postgres_write_is_held(HeldCleanupWrite::RuntimeFailure)
+    {
+        result.unwrap();
+    }
+}
+
+enum HeldCleanupWrite {
+    Renewal,
+    RuntimeFailure,
+}
+
+fn expire_cleanup_while_postgres_write_is_held(
+    write: HeldCleanupWrite,
+) -> Option<Result<DeploymentSummary, RpcError>> {
+    use ployz_store::CleanupStatus;
+    use std::time::{Duration, Instant};
+
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    if url.starts_with("sqlite:") {
+        return None;
+    }
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
+    let runner = deployment_with_pending_cleanup(&store, &who);
+    let writer = ConfigStore::open(
+        &format!("{url}?application_name=held_cleanup_write"),
+        backend::key(),
+    )
+    .unwrap();
+    let mut database = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    let (column, evidence) = match write {
+        HeldCleanupWrite::Renewal => ("cleanup_deadline", RunEvidence::Finishing { live_at: None }),
+        HeldCleanupWrite::RuntimeFailure => ("cleanup_status", RunEvidence::RuntimeFailed),
+    };
+    database
+        .batch_execute(&format!(
+            "CREATE FUNCTION hold_cleanup_write() RETURNS trigger LANGUAGE plpgsql AS $$
+         BEGIN
+           IF current_setting('application_name') = 'held_cleanup_write' THEN
+             PERFORM pg_advisory_xact_lock(8111);
+           END IF;
+           RETURN NULL;
+         END $$;
+         CREATE TRIGGER hold_cleanup_write
+           BEFORE UPDATE OF {column} ON config_deployment
+           FOR EACH STATEMENT EXECUTE FUNCTION hold_cleanup_write();
+         SELECT pg_advisory_lock(8111);",
+        ))
+        .unwrap();
+    let write = std::thread::spawn(move || writer.record(&id(1), &runner, evidence));
+    let through = Instant::now() + Duration::from_secs(5);
+    loop {
+        let waiting: bool = database
+            .query_one(
+                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+              WHERE application_name = 'held_cleanup_write' AND datname = current_database()
+                AND wait_event_type = 'Lock' AND wait_event = 'advisory')",
+                &[],
+            )
+            .unwrap()
+            .get(0);
+        if waiting {
+            break;
+        }
+        assert!(
+            Instant::now() < through,
+            "the runner did not reach its held write"
+        );
+        // real-wait: Postgres exposes the gate only once the independent writer is waiting.
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    database
+        .execute("UPDATE config_deployment SET cleanup_deadline = 1", &[])
+        .unwrap();
+    assert_eq!(
+        summary(&store, &who, 1).cleanup,
+        Some(CleanupStatus::Unconfirmed)
+    );
+    let stored: String = database
+        .query_one("SELECT cleanup_status FROM config_deployment", &[])
+        .unwrap()
+        .get(0);
+    assert_eq!(stored, "unconfirmed");
+    database
+        .execute(
+            "UPDATE config_deployment SET cleanup_deadline = 9223372036854775807",
+            &[],
+        )
+        .unwrap();
+    database
+        .batch_execute("SELECT pg_advisory_unlock(8111)")
+        .unwrap();
+    let result = write.join().unwrap();
+    let view = summary(&store, &who, 1);
+    assert_eq!(view.cleanup, Some(CleanupStatus::Unconfirmed));
+    assert_eq!(view.status, DeploymentStatus::Applied);
+    if let Ok(receipt) = &result {
+        assert_eq!(receipt, &view);
+    }
+    Some(result)
+}
+
+#[test]
+fn finished_saves_warnings_without_clearing_unconfirmed_cleanup() {
+    use ployz_core::{ContainerId, DeployWarning};
+    use ployz_store::CleanupStatus;
+
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
+    let runner = deployment_with_pending_cleanup(&store, &who);
+    backend::execute(&url, "UPDATE config_deployment SET cleanup_deadline = 1");
+    assert_eq!(
+        summary(&store, &who, 1).cleanup,
+        Some(CleanupStatus::Unconfirmed)
+    );
+
+    // Even a deadline that would now be in the future cannot undo the observed state.
+    backend::execute(
+        &url,
+        "UPDATE config_deployment SET cleanup_deadline = 9223372036854775807",
+    );
+    let warning = DeployWarning::LeftRunning {
+        service: "shop-production/web".parse().unwrap(),
+        machine: "edge".into(),
+        container_id: ContainerId::parse("a".repeat(64)).unwrap(),
+        reason: "docker is busy".into(),
+    };
+    let finished = store
+        .record(
+            &id(1),
+            &runner,
+            RunEvidence::Finished {
+                warnings: vec![warning.clone()],
+            },
+        )
+        .unwrap();
+    assert_eq!(finished.status, DeploymentStatus::Applied);
+    assert_eq!(finished.cleanup, Some(CleanupStatus::Unconfirmed));
+    assert!(
+        finished
+            .warnings
+            .contains(&DeploymentWarning::Deploy { warning })
+    );
+    drop(store);
+    let reopened = ConfigStore::open(&url, backend::key()).unwrap();
+    assert_eq!(summary(&reopened, &who, 1), finished);
+}
+
+#[test]
+fn cleanup_migration_keeps_a_runner_deadline_from_the_legacy_document() {
+    use ployz_core::{ContainerId, DeployWarning};
+    use ployz_store::CleanupStatus;
+
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
+    let runner = deployment_with_pending_cleanup(&store, &who);
+    let warning = DeployWarning::LeftRunning {
+        service: "shop-production/web".parse().unwrap(),
+        machine: "edge".into(),
+        container_id: ContainerId::parse("a".repeat(64)).unwrap(),
+        reason: "docker is busy\0still running".into(),
+    };
+    store
+        .record(&id(1), &runner, RunEvidence::Warned(warning.clone()))
+        .unwrap();
+    rewrite_run(&url, 1, |run| run["cleanup_until"] = json!(1));
+    drop(store);
+    for sql in [
+        "ALTER TABLE config_deployment DROP COLUMN cleanup_status",
+        "ALTER TABLE config_deployment DROP COLUMN cleanup_deadline",
+        "DELETE FROM config_migration WHERE name = '0059_deployment_cleanup'",
+    ] {
+        backend::execute(&url, sql);
+    }
+    let reopened = ConfigStore::open(&url, backend::key()).unwrap();
+    let migrated = summary(&reopened, &who, 1);
+    assert_eq!(migrated.cleanup, Some(CleanupStatus::Unconfirmed));
+    assert!(
+        migrated
+            .warnings
+            .contains(&DeploymentWarning::Deploy { warning })
+    );
+}
+
+#[test]
+fn a_waiting_service_keeps_a_partial_switch_from_being_live() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    let at = store
+        .claim(&id(1), &a)
+        .unwrap()
+        .deployment
+        .started_at
+        .unwrap();
+    store
+        .record(
+            &id(1),
+            &a,
+            RunEvidence::Prepared(preview_with_waiting(&["web"], "api")),
+        )
+        .unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Finishing { live_at: Some(at) })
+        .unwrap();
+    let view = store
+        .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
+        .unwrap();
+    assert_eq!(
+        view.deployment.live_at, None,
+        "api had no Volume writer and was never executed"
+    );
+}
+
+#[test]
+fn an_applied_deploy_without_a_switch_has_no_live_at() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    let mut plan = preview_with_waiting(&[], "api");
+    plan.blocked
+        .extend(preview_with_waiting(&[], "web").blocked);
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(plan))
+        .unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Finishing { live_at: None })
+        .unwrap();
+    assert_eq!(summary(&store, &who, 1).live_at, None);
+    store.record(&id(1), &a, succeeded(&[])).unwrap();
+    let applied = summary(&store, &who, 1);
+    assert_eq!(applied.status, DeploymentStatus::Applied);
+    assert_eq!(
+        applied.live_at, None,
+        "zero operations ran and no Service switched"
+    );
+}
+
+#[test]
+fn a_live_switch_does_not_complete_a_siblings_in_place_update() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let runner = runner("runner-a");
+    let at = store
+        .claim(&id(1), &runner)
+        .unwrap()
+        .deployment
+        .started_at
+        .unwrap();
+    let mut plan = preview(&["web", "api"]);
+    let spec = |name, service_id: &str| {
+        json!({
+            "service_id": service_id.repeat(32), "name": name,
+            "mode": {"mode": "replicated", "replicas": 1},
+            "container": {"image": "nginx:1", "pull_policy": "missing"},
+        })
+    };
+    plan.operations[0].operation = serde_json::from_value(json!({
+        "type": "run_container", "machine_id": "a".repeat(32),
+        "skip_health_monitor": false, "spec": spec("web", "c"),
+    }))
+    .unwrap();
+    plan.operations[1].operation = serde_json::from_value(json!({
+        "type": "update_container", "machine_id": "a".repeat(32),
+        "container_id": "b".repeat(64), "spec": spec("api", "d"),
+    }))
+    .unwrap();
+    let rows_at_switch = [
+        ("web", RowPhase::WaitingForSwitch),
+        ("api", RowPhase::UpdatingContainer),
+    ]
+    .into_iter()
+    .map(
+        |(service, phase)| ployz_core::deploy_progress::ServerProgress {
+            service: ServiceName::parse(service).unwrap(),
+            machine: MachineId::parse("a".repeat(32)).unwrap(),
+            server: "a".into(),
+            state: RowState::Running {
+                phase,
+                serving: service == "api",
+            },
+            stopped: false,
+        },
+    )
+    .collect();
+    store
+        .record(&id(1), &runner, RunEvidence::Prepared(plan))
+        .unwrap();
+    store
+        .record(&id(1), &runner, RunEvidence::Progress(rows_at_switch))
+        .unwrap();
+
+    store
+        .record(
+            &id(1),
+            &runner,
+            RunEvidence::Finishing { live_at: Some(at) },
+        )
+        .unwrap();
+    assert_eq!(summary(&store, &who, 1).live_at, Some(at));
+    let states: std::collections::BTreeMap<_, _> = rows(&store, &who, 1)
+        .into_iter()
+        .map(|(name, rows)| (name, rows.into_iter().next().unwrap().state))
+        .collect();
+    assert_eq!(states["web"], RowState::Completed);
+    assert_eq!(
+        states["api"],
+        RowState::Running {
+            phase: RowPhase::UpdatingContainer,
+            serving: true,
+        }
+    );
+}
+
+#[test]
+fn a_late_switch_changes_neither_an_applied_deployment_nor_its_cleanup() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    let at = store
+        .claim(&id(1), &a)
+        .unwrap()
+        .deployment
+        .started_at
+        .unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Finishing { live_at: None })
+        .unwrap();
+    store
+        .record(&id(1), &a, succeeded(&["web", "api"]))
+        .unwrap();
+    let before = summary(&store, &who, 1);
+    assert_eq!(before.status, DeploymentStatus::Applied);
+    assert_eq!(before.live_at, None);
+
+    store
+        .record(&id(1), &a, RunEvidence::Finishing { live_at: Some(at) })
+        .unwrap();
+    assert_eq!(summary(&store, &who, 1), before);
+
+    store
+        .record(
+            &id(1),
+            &a,
+            RunEvidence::Finished {
+                warnings: Vec::new(),
+            },
+        )
+        .unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Finishing { live_at: Some(at) })
+        .unwrap();
+    let after = summary(&store, &who, 1);
+    assert_eq!(
+        (after.status, after.live_at, after.cleanup),
+        (DeploymentStatus::Applied, None, None)
+    );
+}
+
+#[test]
+fn live_at_stays_at_the_switch_when_the_end_clock_is_earlier() {
+    let (store, who, url, _dir) = own_shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    let at = store
+        .claim(&id(1), &a)
+        .unwrap()
+        .deployment
+        .started_at
+        .unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Finishing { live_at: Some(at) })
+        .unwrap();
+    assert_eq!(summary(&store, &who, 1).live_at, Some(at));
+    store
+        .record(&id(1), &a, succeeded(&["web", "api"]))
+        .unwrap();
+
+    // Simulate the end written after the wall clock stepped back.
+    let ended = at - 120;
+    backend::execute(
+        &url,
+        &format!("UPDATE config_deployment SET ended = {ended}"),
+    );
+    let view = store
+        .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
+        .unwrap();
+    assert_eq!(view.deployment.ended_at, Some(ended));
+    assert_eq!(view.deployment.live_at, Some(at));
+}
+
+#[test]
 fn a_deployment_keeps_its_steps_in_order_and_the_one_it_stopped_in_open() {
     let (store, who) = shop();
     admit(&store, &who, 1, &[], None).unwrap();
@@ -5839,12 +6392,21 @@ fn an_approval_given_while_every_server_answered_doesnt_admit_an_unseen_prune() 
 }
 
 fn apply_both(store: &ConfigStore, who: &Actor, n: u8) {
+    apply_both_with_switch(store, who, n, None);
+}
+
+fn apply_both_with_switch(store: &ConfigStore, who: &Actor, n: u8, at: Option<i64>) {
     admit(store, who, n, &[], None).unwrap();
     let a = runner("runner-a");
     store.claim(&id(n), &a).unwrap();
     store
         .record(&id(n), &a, RunEvidence::Prepared(preview(&["web", "api"])))
         .unwrap();
+    if at.is_some() {
+        store
+            .record(&id(n), &a, RunEvidence::Finishing { live_at: at })
+            .unwrap();
+    }
     store
         .record(&id(n), &a, succeeded(&["web", "api"]))
         .unwrap();
@@ -7003,12 +7565,52 @@ fn save(store: &ConfigStore, who: &Actor) -> Revision {
 }
 
 #[test]
-fn history_marks_the_last_applied_revision_live_and_a_newest_one_that_failed() {
+fn history_keeps_a_legacy_applied_revision_live_after_upgrade() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
+    let saved = save(&store, &who);
+    apply_both(&store, &who, 1);
+    // Recreate the document an older Store wrote, before it tracked switches.
+    backend::execute(
+        &url,
+        r#"UPDATE config_deployment SET run = replace(run, '"tracks_live":true,', '')"#,
+    );
+    assert_eq!(summary(&store, &who, 1).live_at, None);
+    assert_eq!(marks(&store, &who).0, Some(saved));
+}
+
+#[test]
+fn history_keeps_the_previous_switch_when_a_current_deploy_applies_beside_a_wait() {
+    let (store, who) = shop();
+    apply_both_with_switch(&store, &who, 1, Some(1));
+    let first = summary(&store, &who, 1).saved;
+    set_replicas(&store, &who, "api", 2);
+    let second = admit(&store, &who, 2, &[], None).unwrap().saved;
+    assert_ne!(first, second);
+    let a = runner("runner-a");
+    store.claim(&id(2), &a).unwrap();
+    store
+        .record(
+            &id(2),
+            &a,
+            RunEvidence::Prepared(preview_with_waiting(&["api"], "web")),
+        )
+        .unwrap();
+    let applied = store.record(&id(2), &a, succeeded(&["api"])).unwrap();
+    assert_eq!(applied.status, DeploymentStatus::Applied);
+    assert!(!applied.all_waiting);
+    assert_eq!(applied.live_at, None);
+    assert_eq!(marks(&store, &who).0, Some(first));
+}
+
+#[test]
+fn history_marks_the_routed_revision_live_and_a_newest_one_that_failed() {
     let (store, who) = shop();
     let first = save(&store, &who);
     assert_eq!(marks(&store, &who), (None, None), "saved, never deployed");
 
-    apply_both(&store, &who, 1);
+    apply_both_with_switch(&store, &who, 1, Some(1));
     assert_eq!(marks(&store, &who), (Some(first), None));
 
     set_replicas(&store, &who, "web", 3);
@@ -7030,6 +7632,9 @@ fn history_marks_the_last_applied_revision_live_and_a_newest_one_that_failed() {
     store.claim(&id(3), &a).unwrap();
     store
         .record(&id(3), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(&id(3), &a, RunEvidence::Finishing { live_at: Some(2) })
         .unwrap();
     store
         .record(&id(3), &a, succeeded(&["web", "api"]))
@@ -10960,7 +11565,7 @@ fn a_deploy_restoring_one_volume_twice_replays_its_birth_or_conflicts() {
 fn history_keeps_live_until_a_deployment_that_confirmed_every_service_applied() {
     let (store, who) = shop();
     let first = save(&store, &who);
-    apply_both(&store, &who, 1);
+    apply_both_with_switch(&store, &who, 1, Some(1));
     set_replicas(&store, &who, "web", 3);
     admit(&store, &who, 2, &[], None).unwrap();
     let a = runner("runner-a");
@@ -11004,7 +11609,7 @@ fn history_keeps_live_until_a_deployment_that_confirmed_every_service_applied() 
 fn history_keeps_live_while_a_deployment_that_changes_no_service_runs() {
     let (store, who) = shop();
     let first = save(&store, &who);
-    apply_both(&store, &who, 1);
+    apply_both_with_switch(&store, &who, 1, Some(1));
     set_replicas(&store, &who, "web", 3);
     admit(&store, &who, 2, &[], None).unwrap();
     let a = runner("runner-a");

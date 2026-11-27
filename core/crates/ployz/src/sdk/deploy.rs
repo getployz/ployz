@@ -105,6 +105,7 @@ impl PreparedDeploy {
             cleanup,
             crate::deploy::RuleProofs::default(),
             Vec::new(),
+            None,
         )
     }
 
@@ -119,6 +120,7 @@ impl PreparedDeploy {
         cleanup: ImageCleanup,
         rules: crate::deploy::RuleProofs,
         versions: Vec<ployz_core::authority::Signed<ployz_core::authority::ServiceVersion>>,
+        switch_commit: Option<tokio::sync::oneshot::Receiver<crate::deploy::SwitchDecision>>,
     ) -> Result<RunningDeploy, RpcError> {
         let session = Session {
             inner: self.session.upgrade().ok_or_else(closed)?,
@@ -151,10 +153,10 @@ impl PreparedDeploy {
             let outcome = tokio::select! {
                 biased;
                 () = session_cancel.cancelled() => return Err(RpcError::unavailable("session closed; in-flight Deploy outcome may be uncertain")),
-                outcome = client.confirm(&preview, deployment_id, &token, Some(tx)) => outcome,
+                outcome = client.confirm(&preview, deployment_id, &token, Some(tx), switch_commit) => outcome,
             };
             if !token.is_cancelled() {
-                session_cancel
+                token
                     .run_until_cancelled(clean_up(&client.client, &prune_targets, &events))
                     .await;
             }
@@ -206,7 +208,7 @@ impl Deref for PreparedDeploy {
 }
 
 impl RunningDeploy {
-    /// Cancel this Deploy. The outcome is a failed Deploy with `cancelled`.
+    /// Cancel this Deploy. If its traffic switch committed, only cleanup is interrupted.
     pub fn abort(&self) {
         self.cancel.cancel();
     }
@@ -228,17 +230,23 @@ impl RunningDeploy {
     /// Returns unavailable when session closure interrupts execution; mutations may have completed.
     /// Rejects a second await.
     pub async fn finished(&self) -> Result<DeployOutcome<ExecutionError>, RpcError> {
-        let handle = self
-            .join
-            .lock()
-            .await
-            .take()
-            .ok_or_else(|| RpcError::invalid_argument("Deploy outcome already awaited"))?;
+        self.join_if_pending()
+            .await?
+            .ok_or_else(|| RpcError::invalid_argument("Deploy outcome already awaited"))
+    }
+
+    /// Join the task if the caller still owns its handle.
+    pub(super) async fn join_if_pending(
+        &self,
+    ) -> Result<Option<DeployOutcome<ExecutionError>>, RpcError> {
+        let Some(handle) = self.join.lock().await.take() else {
+            return Ok(None);
+        };
         let outcome = handle
             .await
             .map_err(|_| RpcError::internal("Deploy task failed"))?;
         while self.next().await.is_some() {}
-        outcome
+        outcome.map(Some)
     }
 }
 

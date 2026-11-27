@@ -1660,6 +1660,45 @@ fn approving(asked: &RpcError, trusted: Trusted) -> Trusted {
 }
 
 #[test]
+fn a_runnerless_shutdown_clears_a_recorded_live_switch() {
+    let (store, who) = shop();
+    admit_deploy(&store, &who, "production", 1);
+    let claimed = prepare(&store, &id(1), &["web", "db"]);
+    let live_at = claimed.deployment.started_at;
+    store
+        .record(&id(1), &runner(), RunEvidence::Finishing { live_at })
+        .unwrap();
+    succeed(&store, &id(1), &["web", "db"], Vec::new());
+    let live = || {
+        store
+            .read(
+                &who,
+                &ployz_store::HistoryQuery {
+                    environment: at("production"),
+                    limit: None,
+                },
+            )
+            .unwrap()
+            .live
+    };
+    assert_eq!(live(), Some(claimed.deployment.saved));
+    let shutdown = shut_down(
+        &store,
+        &who,
+        ("production", 2),
+        &[],
+        &Trusted {
+            servers: Some(0),
+            ..Trusted::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(shutdown.status, DeploymentStatus::Applied);
+    assert_eq!((shutdown.runner, shutdown.live_at), (None, None));
+    assert_eq!(live(), None);
+}
+
+#[test]
 fn a_shutdown_that_takes_services_off_asks_a_human() {
     let (store, who) = branched();
     set_default(&store, &who, "staging");

@@ -50,6 +50,10 @@ mod counting {
     }
 
     impl Tx for Counted<'_> {
+        fn backend(&self) -> crate::storage::Backend {
+            self.0.backend()
+        }
+
         fn execute(&mut self, sql: &str, params: &[Param<'_>]) -> Result<usize, RpcError> {
             one();
             self.0.execute(sql, params)

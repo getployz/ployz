@@ -1,8 +1,22 @@
 //! Recording what a runner did with a Deployment it claimed, and ending it: each confirmed
 //! Node Outcome advances Applied State.
 
+use super::cleanup::{self, Cleanup};
 use super::*;
 use crate::storage::json_text;
+
+pub(crate) type Recorded = (DeploymentSummary, Option<i64>);
+
+fn receipt(stored: Stored) -> Recorded {
+    let lease = if stored.summary.status.claimed() {
+        Some(stored.recorded_runner_lease)
+    } else if let Cleanup::Pending(deadline) = stored.cleanup {
+        Some(deadline)
+    } else {
+        None
+    };
+    (stored.summary, lease)
+}
 
 /// Record `runner`'s evidence. Only the runner that claimed the Deployment may, and
 /// recording the same evidence again changes nothing.
@@ -11,7 +25,8 @@ pub(crate) fn record(
     id: &DeploymentId,
     runner: &RunnerId,
     evidence: RunEvidence,
-) -> Result<DeploymentSummary, RpcError> {
+    pending_live_at: Option<i64>,
+) -> Result<Recorded, RpcError> {
     // What it records may follow into its Branches.
     let environment = super::load(tx, id)?.summary.environment_id;
     scope::lock_project_of(tx, &environment)?;
@@ -19,11 +34,69 @@ pub(crate) fn record(
     if stored.summary.runner.as_ref() != Some(runner) {
         return Err(owned_elsewhere(id));
     }
-    if matches!(
+    if !matches!(
+        evidence,
+        RunEvidence::Finishing { .. } | RunEvidence::Finished { .. }
+    ) && matches!(
         stored.summary.status,
         DeploymentStatus::Running | DeploymentStatus::Cancelling
     ) {
         stored.standing.renew(now());
+    }
+    let live_at = pending_live_at.or({
+        if let RunEvidence::Finishing { live_at } = &evidence {
+            *live_at
+        } else {
+            None
+        }
+    });
+    let claimed = stored.summary.status.claimed();
+    let stamped = claimed
+        && live_at.is_some()
+        && stored.run.live_at.is_none()
+        && stored
+            .run
+            .preview
+            .as_ref()
+            .is_some_and(|preview| preview.waits().next().is_none());
+    let switch_request = matches!(evidence, RunEvidence::Finishing { live_at: Some(_) });
+    if switch_request && claimed && stored.run.live_at.is_some() {
+        return Ok(receipt(stored));
+    }
+    let stamped = if stamped {
+        stored.run.live_at = live_at;
+        let saved = tx.execute(
+            "UPDATE config_deployment SET run = ?2 WHERE id = ?1 AND status = 'running'",
+            &[id.as_str().into(), json_text(&stored.run).as_str().into()],
+        )? != 0;
+        if !saved {
+            stored.run.live_at = None;
+        }
+        saved
+    } else {
+        false
+    };
+    if switch_request
+        && matches!(
+            stored.summary.status,
+            DeploymentStatus::Cancelling | DeploymentStatus::Cancelled
+        )
+        && !stamped
+    {
+        return Err(error::conflict(
+            "Cancellation won the Deployment's traffic switch",
+            json!({ "deployment": id, "switch_cancelled": true }),
+        ));
+    }
+    if stamped
+        && stored.cleanup == Cleanup::NotStarted
+        && !matches!(
+            evidence,
+            RunEvidence::Finishing { .. } | RunEvidence::Finished { .. }
+        )
+        && let Some(cleanup) = cleanup::renewed(tx, id, true)?
+    {
+        stored.cleanup = cleanup;
     }
     match evidence {
         RunEvidence::Alive => {
@@ -35,7 +108,66 @@ pub(crate) fn record(
                 running(&stored)?;
             }
             save(tx, &mut stored)?;
-            Ok(stored.summary)
+            Ok(receipt(stored))
+        }
+        RunEvidence::Finishing { live_at } => {
+            if stored.cleanup == Cleanup::Done {
+                return Ok(receipt(stored));
+            }
+            if live_at.is_some() && !claimed && stored.cleanup != Cleanup::Unconfirmed {
+                return Ok(receipt(stored));
+            }
+            let start = stored.cleanup == Cleanup::NotStarted;
+            if start {
+                running(&stored)?;
+                if stored.run.preview.is_none() {
+                    return Err(invalid_evidence("Deploy Preview"));
+                }
+            }
+            let Some(cleanup) = cleanup::renewed(tx, id, start)? else {
+                return Err(error::conflict(
+                    "The Deployment's cleanup lease expired",
+                    json!({ "deployment": id }),
+                ));
+            };
+            stored.cleanup = cleanup;
+            if stamped {
+                save(tx, &mut stored)?;
+            } else {
+                stored.summary.cleanup = cleanup.status();
+            }
+            Ok(receipt(stored))
+        }
+        RunEvidence::Finished { warnings } => {
+            if stored.cleanup == Cleanup::Done {
+                return Ok(receipt(stored));
+            }
+            let unconfirmed = warnings
+                .iter()
+                .any(|warning| matches!(warning, DeployWarning::CleanupUnconfirmed { .. }))
+                || stored.run.warnings.iter().any(|warning| {
+                    matches!(
+                        warning,
+                        DeploymentWarning::Deploy {
+                            warning: DeployWarning::CleanupUnconfirmed { .. }
+                        }
+                    )
+                });
+            stored.cleanup = if unconfirmed {
+                cleanup::interrupt(tx, id)?
+            } else {
+                cleanup::finished(tx, id)?
+            };
+            let mut changed = stamped;
+            for warning in warnings {
+                changed |= add_warning(&mut stored, DeploymentWarning::Deploy { warning });
+            }
+            if changed {
+                save(tx, &mut stored)?;
+            } else {
+                stored.summary.cleanup = stored.cleanup.status();
+            }
+            Ok(receipt(stored))
         }
         RunEvidence::Prepared(preview) => {
             let preview = serde_json::to_value(preview)
@@ -44,7 +176,7 @@ pub(crate) fn record(
                 .ok_or_else(|| invalid_evidence("Deploy Preview"))?;
             match &stored.run.preview {
                 Some(recorded) if redacted_runtime_preview(recorded.clone()) == preview => {
-                    return Ok(stored.summary);
+                    return Ok(receipt(stored));
                 }
                 Some(_) => {
                     return Err(error::conflict(
@@ -105,7 +237,7 @@ pub(crate) fn record(
             })?;
             stored.run.preview = Some(preview);
             save(tx, &mut stored)?;
-            Ok(stored.summary)
+            Ok(receipt(stored))
         }
         RunEvidence::Executed {
             outcome,
@@ -117,7 +249,7 @@ pub(crate) fn record(
             let executed = crate::digest::short_digest(&json_text(&(&outcome, &removed)));
             if stored.run.outcome.is_some() {
                 if stored.run.executed.as_ref() == Some(&executed) {
-                    return Ok(stored.summary);
+                    return Ok(receipt(stored));
                 }
                 return Err(error::conflict(
                     "This Deployment already recorded a different outcome",
@@ -255,11 +387,14 @@ pub(crate) fn record(
                 .blocked
                 .iter()
                 .any(|entry| entry.kind == BlockedKind::Refusal);
-            let status = if success && !refused && !nodes.iter().any(unfinished) {
-                End::Applied
-            } else {
-                End::Failed
-            };
+            let post_live_cancel =
+                stored.run.live_at.is_some() && stopped_by_cancel && failed.is_empty() && !refused;
+            let status =
+                if post_live_cancel || (success && !refused && !nodes.iter().any(unfinished)) {
+                    End::Applied
+                } else {
+                    End::Failed
+                };
             let mut waiting: Vec<WaitingService> = preview
                 .waits()
                 .filter(|wait| wait.kind == BlockedKind::Wait)
@@ -287,13 +422,14 @@ pub(crate) fn record(
                     | DeployOutcome::Success { .. }
                     | DeployOutcome::Interrupted { .. } => Vec::new(),
                 },
-                cancelled: stopped_by_cancel && failed.is_empty(),
+                cancelled: stored.run.live_at.is_none() && stopped_by_cancel && failed.is_empty(),
                 waiting,
             };
             super::rows::settle(tx, &stored)?;
             stored.run.nodes = nodes;
             stored.run.cancelled = cancelled;
             stored.run.executed = Some(executed);
+            stored.run.tracks_live = true;
             if taken_over {
                 // Another runner owns the Environment now: the run stays Unknown and
                 // moves no Applied State. It ended when its runner says it stopped.
@@ -303,7 +439,7 @@ pub(crate) fn record(
                 stored.summary.outcome = Some(outcome.clone());
                 stored.run.outcome = Some(outcome);
                 save(tx, &mut stored)?;
-                return Ok(stored.summary);
+                return Ok(receipt(stored));
             }
             finish(tx, stored, outcome, status)
         }
@@ -339,12 +475,15 @@ pub(crate) fn record(
             // The seal's walk below waits for the end, so it runs once (#3780).
             advance(tx, &stored, false, false)?;
             save(tx, &mut stored)?;
-            Ok(stored.summary)
+            Ok(receipt(stored))
         }
         RunEvidence::Progress(rows) => {
             running(&stored)?;
             super::rows::record(tx, &stored, &rows)?;
-            Ok(stored.summary)
+            if stamped {
+                save(tx, &mut stored)?;
+            }
+            Ok(receipt(stored))
         }
         RunEvidence::Built(receipts) => {
             running(&stored)?;
@@ -357,12 +496,12 @@ pub(crate) fn record(
                 (organization.as_str(), stored.namespace()),
                 &receipts,
             )?;
-            Ok(stored.summary)
+            Ok(receipt(stored))
         }
         RunEvidence::Build(report) => {
             running(&stored)?;
             build::record(tx, &stored, &report)?;
-            Ok(stored.summary)
+            Ok(receipt(stored))
         }
         RunEvidence::NotExecuted(Failure {
             reason,
@@ -388,7 +527,7 @@ pub(crate) fn record(
             stored.summary.warnings = stored.run.summary_warnings();
             stored.summary.ingress.clone_from(&stored.run.ingress);
             save(tx, &mut stored)?;
-            Ok(stored.summary)
+            Ok(receipt(stored))
         }
         RunEvidence::IngressUnchecked(cause) => {
             warn(tx, stored, DeploymentWarning::IngressUnchecked { cause })
@@ -415,9 +554,36 @@ pub(crate) fn record(
                 End::Failed,
             )
         }
+        RunEvidence::RuntimeFailed => {
+            if stored.run.live_at.is_some()
+                && matches!(
+                    stored.summary.status,
+                    DeploymentStatus::Applied | DeploymentStatus::Failed
+                )
+            {
+                stored.cleanup = cleanup::interrupt(tx, id)?;
+                stored.show();
+                return Ok(receipt(stored));
+            }
+            if stored.summary.status == DeploymentStatus::Unknown {
+                return Ok(receipt(stored));
+            }
+            stored.standing = stored.standing.runtime_failed(now());
+            let when = if claimed {
+                SaveWhen::Always
+            } else {
+                SaveWhen::ActiveCleanup
+            };
+            if save_when(tx, &mut stored, when)? {
+                Ok(receipt(stored))
+            } else {
+                cleanup::expire(tx, id)?;
+                Ok(receipt(load(tx, id)?))
+            }
+        }
         RunEvidence::Abandoned => {
             if stored.run.outcome.is_some() || stored.summary.status == DeploymentStatus::Unknown {
-                return Ok(stored.summary);
+                return Ok(receipt(stored));
             }
             running(&stored)?;
             if stored.run.preview.is_none() {
@@ -436,7 +602,7 @@ pub(crate) fn record(
             }
             stored.standing = stored.standing.lose_runner(now());
             save(tx, &mut stored)?;
-            Ok(stored.summary)
+            Ok(receipt(stored))
         }
     }
 }
@@ -447,11 +613,13 @@ fn warn(
     tx: &mut dyn Tx,
     mut stored: Stored,
     warning: DeploymentWarning,
-) -> Result<DeploymentSummary, RpcError> {
+) -> Result<Recorded, RpcError> {
     let retiring = matches!(
         &warning,
         DeploymentWarning::Deploy {
-            warning: DeployWarning::LeftRunning { .. } | DeployWarning::MixedAfterReturn { .. }
+            warning: DeployWarning::LeftRunning { .. }
+                | DeployWarning::MixedAfterReturn { .. }
+                | DeployWarning::CleanupUnconfirmed { .. }
         }
     ) && matches!(
         stored.summary.status,
@@ -460,12 +628,18 @@ fn warn(
     if !retiring {
         running(&stored)?;
     }
-    if !stored.run.warnings.contains(&warning) {
-        stored.run.warnings.push(warning);
-    }
-    stored.summary.warnings = stored.run.summary_warnings();
+    add_warning(&mut stored, warning);
     save(tx, &mut stored)?;
-    Ok(stored.summary)
+    Ok(receipt(stored))
+}
+
+fn add_warning(stored: &mut Stored, warning: DeploymentWarning) -> bool {
+    if stored.run.warnings.contains(&warning) {
+        return false;
+    }
+    stored.run.warnings.push(warning);
+    stored.summary.warnings = stored.run.summary_warnings();
+    true
 }
 
 /// Why a Deploy failed, for users: the failed operation's Service, by its current
@@ -615,9 +789,9 @@ pub(super) fn finish(
     stored: Stored,
     outcome: Outcome,
     status: End,
-) -> Result<DeploymentSummary, RpcError> {
+) -> Result<Recorded, RpcError> {
     match &stored.run.outcome {
-        Some(recorded) if *recorded == outcome => return Ok(stored.summary),
+        Some(kept) if *kept == outcome => return Ok(receipt(stored)),
         Some(_) => {
             return Err(error::conflict(
                 "This Deployment already recorded a different outcome",
@@ -635,17 +809,25 @@ pub(super) fn end(
     mut stored: Stored,
     outcome: Outcome,
     status: End,
-) -> Result<DeploymentSummary, RpcError> {
+) -> Result<Recorded, RpcError> {
     advance(tx, &stored, status == End::Applied, true)?;
-    let status = match (stored.summary.status, status) {
-        (DeploymentStatus::Cancelling, End::Failed) => End::Cancelled,
+    let status = match (stored.summary.status, status, stored.run.live_at) {
+        (DeploymentStatus::Cancelling, End::Failed, None) => End::Cancelled,
         _ => status,
     };
-    stored.standing = stored.standing.end(status, now());
+    let ended_at = now();
+    if matches!(stored.cleanup, Cleanup::Pending(_)) {
+        let id = &stored.summary.id;
+        stored.cleanup = match cleanup::renewed(tx, id, false)? {
+            Some(cleanup) => cleanup,
+            None => cleanup::expire_and_read(tx, id)?,
+        };
+    }
+    stored.standing = stored.standing.end(status, ended_at);
     stored.summary.outcome = Some(outcome.clone());
     stored.run.outcome = Some(outcome);
     save(tx, &mut stored)?;
-    Ok(stored.summary)
+    Ok(receipt(stored))
 }
 
 /// Put each node `stored` confirmed into Applied State as its Saved revision has

@@ -1175,6 +1175,13 @@ pub enum DeployWarning {
         machine: String,
         reason: String,
     },
+    /// Cleanup could not confirm the removal of this copy.
+    CleanupUnconfirmed {
+        service: QualifiedService,
+        container_id: ContainerId,
+        machine: String,
+        reason: String,
+    },
     /// Cleanup could not reach or confirm `machine` (cut off or powered off).
     /// If it restarts and confirms the new copies within its boot pass, it takes
     /// its replaced copies out of traffic. Otherwise they keep serving beside
@@ -1218,6 +1225,7 @@ impl DeployWarning {
             | Self::ObserverRelativeHostnameConflict
             | Self::SkippedDependencyHealth { .. }
             | Self::ImagePortMismatch { .. }
+            | Self::CleanupUnconfirmed { .. }
             | Self::MixedAfterReturn { .. }
             | Self::NotInStore { .. } => None,
         }
@@ -1241,6 +1249,7 @@ impl DeployWarning {
             | Self::SkippedDependencyHealth { .. }
             | Self::ImagePortMismatch { .. }
             | Self::LeftRunning { .. }
+            | Self::CleanupUnconfirmed { .. }
             | Self::MixedAfterReturn { .. }
             | Self::NotInStore { .. } => None,
         }
@@ -1304,6 +1313,16 @@ impl Display for DeployWarning {
             } => write!(
                 f,
                 "{service} copy {} left running on {machine} ({reason}). The next deploy cleans it up.",
+                container_id.as_str().get(..12).unwrap_or(container_id.as_str())
+            ),
+            Self::CleanupUnconfirmed {
+                service,
+                container_id,
+                machine,
+                reason,
+            } => write!(
+                f,
+                "{service} copy {} removal unconfirmed on {machine} ({reason}).",
                 container_id.as_str().get(..12).unwrap_or(container_id.as_str())
             ),
             Self::MixedAfterReturn { machine } => write!(
@@ -1578,10 +1597,20 @@ pub enum DeployEvent {
         completed: u32,
         total: u32,
         rows: Vec<OperationRow>,
+        /// When the new copies were confirmed In and listed, or the last step of a
+        /// plan with no switch succeeded. The runner records this independently of Outcome.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional, type = "number")]
+        live_at: Option<i64>,
     },
-    /// Terminal evidence for this Deploy.
+    /// Runtime outcome, before any remaining cleanup.
     Outcome {
         outcome: DeployOutcome<ExecutionError>,
+        /// When the last Service switched traffic, in Unix seconds. Absent when
+        /// the plan was empty, failed, or a switch could not be confirmed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional, type = "number")]
+        live_at: Option<i64>,
     },
     /// Image Cleanup after the Outcome; only when the caller left cleanup automatic.
     ImagesPruned { report: super::ImageCleanupReport },
