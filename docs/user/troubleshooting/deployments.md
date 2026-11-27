@@ -22,7 +22,7 @@ Server is ready it reads `switching N/N` until they switch together, then
 can't start after Ployz stopped the old one, makes the row read `rolling back` while Ployz undoes
 that Server's change, such as `rolling back (1 failed)`. It counts the Servers
 whose new Container already serves, as in `rolling back 1/2`, and shows no count when none does. A row whose new Containers already serve shows a `draining old` line
-until every Server routes to the new ones. The deploy then reads applied and removes the Containers it no longer needs. Old copies that a
+until every Server routes to the new ones. The deploy then reads applied and removes the Containers it no longer needs. Without Ployz Cloud, `ployz deploy` returns once it reads applied and each Server removes its old Containers on its own, unless the deploy deletes a volume or closes a preview. Old copies that a
 replacement leaves behind drain on each Server after the switch, so they show in
 `ployz ps`, not in the live block. A Service the deploy removes reads `waiting to remove`,
 then `stopping` and `removing`, then `removed`, and the summary counts it as removed. A Service

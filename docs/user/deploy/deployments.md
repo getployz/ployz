@@ -587,8 +587,9 @@ a server was cut off. Click it to see each old replica that is still running and
 | **Failed** | Cleanup itself hit an error, shown on the card. A cleanup Cloud lost track of also ends here, after about an hour, and lists the old replicas it last saw running. |
 
 A replica left running keeps serving alongside the new ones once its server is back. Deploy again
-to stop it. CLI deployments clean up while they run, report a replica left running at the end, and
-show no **Cleanup** card.
+to stop it. Without Ployz Cloud, a deployment hands each old replica to its server once it's
+applied and shows no **Cleanup** card. `ployz deploy` reports a replica a server won't take. One
+that fails to stop after that stays in `ployz ps` until your next deploy removes it.
 
 Work your cancel stopped reads **Cancelled**. Work that failed on its own reads Failed, even in a
 cancelled deployment. So does work Ployz stopped for another reason, such as another service

@@ -10,7 +10,9 @@ requests, finish the ones they have, and stop. An old replica with no open conne
 once; one still answering a request gets up to 3 seconds. A replica that listens on no port,
 such as a worker, gets the 3 seconds whenever it holds a connection to anything outside itself.
 The deploy reads applied as soon as every server has switched. The old replicas stop after
-that, all at once, and one that won't stop is a warning, not a failed deploy.
+that, all at once, and one that won't stop is a warning, not a failed deploy. Without Ployz
+Cloud, `ployz deploy` returns at that point and each server stops its own old replicas, which
+`ployz ps` lists until they're gone.
 Your app keeps serving the whole time.
 
 ## Keep your app serving through a deploy
