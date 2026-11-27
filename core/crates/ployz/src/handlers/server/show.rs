@@ -672,6 +672,20 @@ fn record(details: &MachineDetails) -> Fields {
             .machine
             .as_ref()
             .map_or_else(|| rtt.address.to_string(), |peer| peer.name.to_string());
+        // Corrosion can measure the round trip by way of another Server, so it says nothing here.
+        if let Some(ployz_core::WireGuardObservation::Down {
+            since_handshake_secs,
+        }) = rtt.wireguard
+        {
+            let since = since_handshake_secs.map_or_else(
+                || "ever".to_owned(),
+                |secs| format!("for {}", crate::deploy::span(Duration::from_secs(secs))),
+            );
+            return (
+                "peer",
+                format!("{peer} down, no WireGuard handshake {since}"),
+            );
+        }
         let tenths = rtt.statistics.median_ns / 100_000;
         let path = match rtt.path {
             Some(path) if path.large_packets == LargePackets::Dropped => {

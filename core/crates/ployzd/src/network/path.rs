@@ -162,7 +162,21 @@ impl PathBook {
         status: PeerStatus,
         last_handshake: Option<SystemTime>,
     ) {
-        let _ = (machine_id, status, last_handshake);
+        let mut paths = self.paths();
+        let peer = paths.entry(machine_id).or_default();
+        peer.wireguard = match status {
+            PeerStatus::Up => Some(Judged {
+                down: false,
+                last_handshake,
+            }),
+            PeerStatus::Down => Some(Judged {
+                down: true,
+                last_handshake,
+            }),
+            PeerStatus::Unknown => peer
+                .wireguard
+                .filter(|judged| judged.last_handshake == last_handshake),
+        };
     }
 
     /// This Machine's WireGuard view of a peer; none before it could tell.

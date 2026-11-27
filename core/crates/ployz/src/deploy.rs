@@ -415,8 +415,27 @@ pub(crate) fn dead_links(
     machines: &[MachineObservation],
     entry: Option<MachineId>,
 ) -> Vec<DeadLink> {
-    let _ = (machines, entry);
-    Vec::new()
+    let entry = entry.and_then(|entry| {
+        machines
+            .iter()
+            .find(|observed| observed.machine.id == entry)
+            .map(|observed| observed.machine.name.clone())
+    });
+    machines
+        .iter()
+        .filter_map(|observed| match observed.wireguard? {
+            ployz_core::WireGuardObservation::Down {
+                since_handshake_secs,
+            } => Some(DeadLink {
+                machine: observed.machine.id,
+                name: observed.machine.name.clone(),
+                entry: entry.clone(),
+                since_handshake: since_handshake_secs.map(std::time::Duration::from_secs),
+            }),
+            ployz_core::WireGuardObservation::Up
+            | ployz_core::WireGuardObservation::Unrecognized => None,
+        })
+        .collect()
 }
 
 /// The Machine `selector` names, when the entry's listing sees it down.
