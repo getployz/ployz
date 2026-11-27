@@ -254,10 +254,10 @@ impl BuildFixture {
                         .iter()
                         .enumerate()
                         .map(|(index, _)| ployz_build::BuiltImage {
-                            reference: format!(
-                                "sha256:{}",
-                                (offset + index + 1).to_string().repeat(64)
-                            ),
+                            reference: match offset + index + 1 {
+                                digit @ 1..=9 => format!("sha256:{}", digit.to_string().repeat(64)),
+                                count => format!("sha256:{count:064x}"),
+                            },
                             tags: if free {
                                 Vec::new()
                             } else {

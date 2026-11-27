@@ -572,6 +572,232 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
     );
 }
 
+/// Five Services built from one repository and one Dockerfile, as a monorepo's web,
+/// workers and cron are: Cloud's runner builds each once, a redeploy of the same commit
+/// reuses every image, and only a changed build argument or commit builds again.
+#[tokio::test]
+#[ignore = "informing: requires the privileged Ployz testkit image with Buildx"]
+async fn a_same_commit_redeploy_of_services_sharing_a_dockerfile_reuses_every_build() {
+    use std::collections::BTreeMap;
+
+    use ployz_core::ServiceName;
+    use ployz_core::config::ServiceGitAccess;
+    use ployz_store::{
+        Actor, Admit, AuthorizedRepository, BuildStatus, Change, ConfigStore, CreateGitService,
+        CreateProject, Deploy, DeploymentId, DeploymentStatus, Edit, EnvironmentId, EnvironmentRef,
+        OrganizationId, ProjectId, ProjectName, RunnerId, SealingKey, ServiceLineageId,
+        SettingPath, Trusted,
+    };
+
+    let plan = ClusterPlan::new(&format!("l3-store-reuse-{}", std::process::id()), 1).unwrap();
+    let cluster = Cluster::create(plan).unwrap();
+    cluster.initialize_entry().await.unwrap();
+    let address = cluster.api_socket_address(0).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let url = format!("sqlite:{}", dir.path().join("store.db").display());
+    let store = Arc::new(ConfigStore::open(&url, SealingKey::new(b"rung4").unwrap()).unwrap());
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
+    store
+        .write(
+            &who,
+            &CreateProject {
+                id: ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
+                name: ProjectName::parse("shop").unwrap(),
+                default_environment: EnvironmentId::parse("00000000-0000-4000-8000-000000000002")
+                    .unwrap(),
+                region: None,
+            },
+        )
+        .unwrap();
+    let names = ["web", "api", "worker", "cron", "jobs"];
+    let repository = ployz_store::RepositoryName::parse("acme/shop").unwrap();
+    let evidence = Trusted {
+        repositories: vec![AuthorizedRepository {
+            repository: repository.clone(),
+            repository_id: ployz_store::RepositoryId::parse(11).unwrap(),
+            access: ServiceGitAccess::Public,
+            default_branch: ployz_store::BranchName::parse("main").unwrap(),
+            branches: Vec::new(),
+        }],
+        ..Trusted::default()
+    };
+    let checkout = tempfile::tempdir().unwrap();
+    std::fs::write(
+        checkout.path().join("Dockerfile"),
+        "FROM alpine:3.23.3\nARG ROLE\nRUN sleep 5 && echo \"built $ROLE\" > /role\nCMD [\"sleep\", \"600\"]\n",
+    )
+    .unwrap();
+    for (n, name) in names.iter().enumerate() {
+        store
+            .write_trusted(
+                &who,
+                &CreateGitService {
+                    id: ServiceLineageId::parse(format!("00000000-0000-4000-8000-00000000001{n}"))
+                        .unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: ServiceName::parse(*name).unwrap(),
+                    repository: repository.clone(),
+                    branch: None,
+                },
+                &evidence,
+            )
+            .unwrap();
+    }
+    let edit = |changes: Vec<(String, String)>| {
+        store
+            .write(
+                &who,
+                &Edit {
+                    environment: EnvironmentRef::default(),
+                    expect: None,
+                    changes: changes
+                        .into_iter()
+                        .map(|(path, value)| Change::Set {
+                            path: SettingPath::parse(&path).unwrap(),
+                            value: json!(value),
+                        })
+                        .collect(),
+                },
+            )
+            .unwrap();
+    };
+    edit(
+        names
+            .iter()
+            .flat_map(|name| {
+                [
+                    (format!("{name}.buildMethod"), "dockerfile".to_owned()),
+                    (format!("{name}.env.ROLE"), (*name).to_owned()),
+                ]
+            })
+            .collect(),
+    );
+    let checkouts: BTreeMap<_, _> = names
+        .iter()
+        .map(|name| {
+            (
+                ServiceName::parse(*name).unwrap(),
+                checkout.path().to_owned(),
+            )
+        })
+        .collect();
+
+    let deploy = |n: u8, commit: String| {
+        let store = Arc::clone(&store);
+        let (who, checkouts) = (who.clone(), checkouts.clone());
+        async move {
+            let id =
+                DeploymentId::parse(format!("00000000-0000-4000-8000-0000000002{n:02}")).unwrap();
+            store
+                .write_trusted(
+                    &who,
+                    &Admit::Deploy(Deploy {
+                        id: id.clone(),
+                        environment: EnvironmentRef::default(),
+                        services: Vec::new(),
+                        version: None,
+                        upload: None,
+                        accept_volume_loss: Vec::new(),
+                        message: None,
+                        prune: false,
+                        no_prune: false,
+                        versions: Vec::new(),
+                        copies: Vec::new(),
+                        recreate: Vec::new(),
+                        rule: None,
+                    }),
+                    &Trusted::default(),
+                )
+                .unwrap();
+            let pins = names
+                .iter()
+                .map(|name| {
+                    (
+                        ServiceName::parse(*name).unwrap(),
+                        ployz_store::CommitSha::parse(commit.as_str()).unwrap(),
+                    )
+                })
+                .collect();
+            store.pin(&id, &pins, &Trusted::default()).unwrap();
+            let started = std::time::Instant::now();
+            ployz::sdk::run_deployment(
+                ployz_core::Operator::Cloud,
+                Arc::clone(&store),
+                id.clone(),
+                RunnerId::parse(format!("cloud-{n}")).unwrap(),
+                vec![Connection::tcp(address)],
+                Ok(ployz::sdk::Sources {
+                    checkouts,
+                    upload: None,
+                    reader: None,
+                }),
+            )
+            .await
+            .unwrap();
+            let view = store
+                .read(&who, &ployz_store::DeploymentQuery { id: id.clone() })
+                .unwrap();
+            let build_phase = view
+                .builds
+                .iter()
+                .filter_map(|build| build.finished_at)
+                .max()
+                .zip(
+                    view.builds
+                        .iter()
+                        .filter_map(|build| build.started_at)
+                        .min(),
+                )
+                .map(|(finished, started)| finished - started);
+            eprintln!(
+                "deployment {n}: build phase {build_phase:?}s, run {:.1}s\n  builds {:?}\n  nodes {:?}",
+                started.elapsed().as_secs_f64(),
+                view.builds
+                    .iter()
+                    .map(|build| (build.service.to_string(), build.status))
+                    .collect::<Vec<_>>(),
+                view.nodes
+                    .iter()
+                    .map(|node| (&node.node, node.outcome))
+                    .collect::<Vec<_>>(),
+            );
+            assert_eq!(
+                view.deployment.status,
+                DeploymentStatus::Applied,
+                "{view:?}"
+            );
+            view
+        }
+    };
+    let built = |view: &ployz_store::DeploymentView, status| {
+        view.builds
+            .iter()
+            .filter(|build| build.status == status)
+            .map(|build| build.service.to_string())
+            .collect::<Vec<_>>()
+    };
+
+    let first = deploy(1, "c".repeat(40)).await;
+    assert_eq!(built(&first, BuildStatus::Built).len(), 5, "{first:?}");
+    let again = deploy(2, "c".repeat(40)).await;
+    assert_eq!(
+        built(&again, BuildStatus::Reused).len(),
+        5,
+        "a same-commit redeploy must reuse every build: {again:?}"
+    );
+    let again = deploy(3, "c".repeat(40)).await;
+    assert_eq!(built(&again, BuildStatus::Reused).len(), 5, "{again:?}");
+    edit(vec![("worker.env.ROLE".into(), "changed".into())]);
+    let changed = deploy(4, "c".repeat(40)).await;
+    assert_eq!(
+        built(&changed, BuildStatus::Built),
+        ["worker"],
+        "{changed:?}"
+    );
+    let moved = deploy(5, "d".repeat(40)).await;
+    assert_eq!(built(&moved, BuildStatus::Built).len(), 5, "{moved:?}");
+}
+
 /// Cloud's runner builds an uploaded Service on a Server, never GitHub. Once Cloud no
 /// longer holds the upload, a later Deployment reuses the image while its build inputs
 /// hold, and otherwise records that it needs a new upload.
