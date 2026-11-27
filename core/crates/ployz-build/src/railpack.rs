@@ -22,11 +22,11 @@ pub const CONFIG_FILE: &str = "RAILPACK_CONFIG_FILE";
 pub const DEFAULT_PLAN_FILE: &str = "railpack.json";
 
 // Railpack 0.39.0: the frontend image also ships the matching /railpack CLI.
-const IMAGE: &str = "ghcr.io/railwayapp/railpack-frontend@sha256:db24dc37640b6887c3d455b40876ea30f75182964479670cba6e4cde7ffef103";
+pub(crate) const IMAGE: &str = "ghcr.io/railwayapp/railpack-frontend@sha256:db24dc37640b6887c3d455b40876ea30f75182964479670cba6e4cde7ffef103";
 
 /// Preparation runs the frontend's CLI here: mise resolves Python versions with
 /// a bash script, and the Alpine frontend image has no bash.
-const PREPARATION_IMAGE: &str = "buildpack-deps:trixie-curl@sha256:3dd78c060b4d7c97b426d0160f7d8876c84fbf2fc36e651e9c75620ac9a7da24";
+pub(crate) const PREPARATION_IMAGE: &str = "buildpack-deps:trixie-curl@sha256:3dd78c060b4d7c97b426d0160f7d8876c84fbf2fc36e651e9c75620ac9a7da24";
 
 /// Preparation's own bridge. The `ployz-build` prefix puts it behind the same
 /// host firewall as build steps: internet only.

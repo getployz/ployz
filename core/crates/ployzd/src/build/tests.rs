@@ -717,6 +717,11 @@ case "$1 $2" in
     if [ -f "$root/fail-cleanup" ] && {{ [ -f "$root/executed" ] || [ -f "$root/checking" ]; }}; then exit 1; fi ;;
   'buildx version'|'buildx create'|'volume create') exit 0 ;;
   'inspect --format') printf 'Error: no such object: %s\n' "$4" >&2; exit 1 ;;
+  'inspect --type')
+    case "$6" in
+      buildx_buildkit_*) printf '%s\n' '{{"Id":"worker","Config":{{"Image":"{}","Env":["PLOYZ_BUILD_OWNER={}"]}}}}' ;;
+      *) printf 'Error: No such container: %s\n' "$6" >&2; exit 1 ;;
+    esac ;;
   'rm --force')
     if [ -f "$root/fail-cleanup" ] && {{ [ -f "$root/executed" ] || [ -f "$root/checking" ]; }}; then exit 1; fi ;;
   'buildx inspect')
@@ -761,6 +766,8 @@ case "$1 $2" in
 esac
 "#,
         root.display(),
+        ployz_build::BUILDKIT_IMAGE,
+        rustix::process::getuid().as_raw(),
         ployz_build::builder_name(),
         rustix::process::getuid().as_raw(),
         "1".repeat(64),

@@ -9,7 +9,7 @@ use crate::{
 use std::{collections::BTreeMap, path::Path};
 
 // regctl 0.11.6, matching the prototype. Containerized so remote Docker also works.
-const REGCTL: &str =
+pub(crate) const REGCTL: &str =
     "regclient/regctl@sha256:5fe7c6a6206e1d9d71af719674c9db03e74a4ae221a32089b691f5b55533d6ea";
 
 /// Solve each requested platform, assemble its exact content, and verify the local image.

@@ -1178,6 +1178,7 @@ impl<'a> Docker<'a> {
     }
 
     /// Run work with a private helper container, confirming its absence afterwards.
+    /// The work and the removal act on the container's ID, never its name.
     ///
     /// # Errors
     /// Preserves the work's failure unless container removal cannot be confirmed.
@@ -1188,30 +1189,43 @@ impl<'a> Docker<'a> {
         work: impl FnOnce(&str) -> Result<T, BuildError>,
     ) -> Result<T, BuildError> {
         // A container Ployz did not create under this name is never removed.
-        if crate::builder::holder(self, name)? == crate::builder::Holder::Other {
-            return Err(crate::builder::foreign(name).at(Stage::Preparation));
+        match crate::builder::holder(self, name)? {
+            crate::builder::Holder::Other => {
+                return Err(crate::builder::foreign(name).at(Stage::Preparation));
+            }
+            crate::builder::Holder::Ployz(id) => self.remove_container(&id)?,
+            crate::builder::Holder::Nobody => {}
         }
-        self.remove_container(name)?;
-        // A failed or interrupted create may still have reached Docker. Always
-        // confirm absence, including when no successful create was observed.
         let marker = format!("{}={}", crate::builder::OWNER, crate::builder::owner());
         let mut create = vec!["create", "--name", name, "--env", &marker];
         create.extend_from_slice(arguments);
-        let result = self
+        // A create that failed reports no ID, so nothing is removed: another
+        // container may hold the name. One that reached Docker anyway left a
+        // marked helper, which its next use or recovery removes by ID.
+        let id = self
             .run("create build helper", &create, Streams::Captured)
-            .map_err(|error| error.at(Stage::Preparation))
-            .and_then(|_| work(name));
-        match (result, self.remove_container(name)) {
+            .map_err(|error| error.at(Stage::Preparation))?
+            .trim()
+            .to_owned();
+        if id.is_empty() {
+            return Err(BuildError::Prerequisite(format!(
+                "Docker created the build helper {name} without reporting its ID"
+            ))
+            .at(Stage::Preparation));
+        }
+        let result = work(&id);
+        match (result, self.remove_container(&id)) {
             (result, Ok(())) => result,
             (Ok(_), Err(cleanup)) => Err(cleanup),
             (Err(error), Err(cleanup)) => Err(error.with_later_failure(cleanup)),
         }
     }
 
-    fn remove_container(&self, name: &str) -> Result<(), BuildError> {
+    /// Remove the container with ID `id`.
+    fn remove_container(&self, id: &str) -> Result<(), BuildError> {
         match self.releasing().run(
             "remove build helper",
-            &["rm", "--force", name],
+            &["rm", "--force", id],
             Streams::Captured,
         ) {
             Ok(_) => Ok(()),

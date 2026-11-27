@@ -12,6 +12,17 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// A script line through which Docker reports the BuildKit worker as the one
+/// Buildx started for this host user's Ployz.
+fn worker_started() -> String {
+    format!(
+        r#"[ "$1 $2" = 'inspect --type' ] && case "$6" in buildx_buildkit_*) printf '%s\n' '{{"Id":"worker","Config":{{"Image":"{}","Env":["PLOYZ_BUILD_OWNER={}"]}}}}'; exit 0 ;; esac
+"#,
+        ployz_build::BUILDKIT_IMAGE,
+        rustix::process::getuid().as_raw()
+    )
+}
+
 struct Host {
     policy: HostPolicy,
 }
@@ -165,7 +176,7 @@ fn admitted_limits_cover_worker_and_railpack_preparation_despite_later_policy_ed
     // This stand-in checks the upstream launch contract. Real workload
     // enforcement is exercised separately at rung 4.
     let host = Host::new(&format!(
-        r#"
+        r#"{}
 case "$1 $2" in
  'context show') echo default ;;
  'info --format') echo '{{"DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]],"Architecture":"amd64","OSType":"linux","CgroupVersion":"2","CpuCfsPeriod":true,"CpuCfsQuota":true,"MemoryLimit":true,"SwapLimit":true}}' ;;
@@ -179,7 +190,8 @@ case "$1 $2" in
             case " $* " in *" $expected "*) ;; *) echo 'preparation limits missing' >&2; exit 1 ;; esac
         done
         touch preparation-created ;;
-    esac ;;
+    esac
+    echo helper ;;
  'buildx prune')
     for expected in '--max-used-space 536870912' '--min-free-space 2147483648'; do
         case " $* " in *" $expected "*) ;; *) echo 'GC targets missing' >&2; exit 1 ;; esac
@@ -190,6 +202,7 @@ if [ "$1" = cp ]; then
 fi
 exit 0
 "#,
+        worker_started(),
         ployz_build::builder_name()
     ));
     host.configure("cpu_cores: 0.5\nmemory_bytes: 536870912\ncache_bytes: 1073741824\nmin_free_bytes: 2147483648");
@@ -511,8 +524,11 @@ exit 0
 
 #[test]
 fn opened_values_are_private_files_for_the_solve_and_vanish_when_it_fails() {
-    let host =
-        Host::new(&RECORDING_FAILING_DOCKER.replace("$BUILDER", &ployz_build::builder_name()));
+    let host = Host::new(&format!(
+        "{}{}",
+        worker_started(),
+        RECORDING_FAILING_DOCKER.replace("$BUILDER", &ployz_build::builder_name())
+    ));
     let capture = sealed_capture(&host);
     let admission = Admission::try_acquire_with(&host.policy).unwrap();
     let mut upload = admission.upload().unwrap();
@@ -551,7 +567,7 @@ fn opened_values_vanish_from_a_retained_unknown_root() {
             " 'buildx bake')",
             " 'buildx rm') [ -f \"$root/seen-secret\" ] && { echo 'injected removal failure' >&2; exit 1; } ;;\n 'buildx bake')",
         );
-    let host = Host::new(&docker);
+    let host = Host::new(&format!("{}{docker}", worker_started()));
     let capture = sealed_capture(&host);
     let admission = Admission::try_acquire_with(&host.policy).unwrap();
     let mut upload = admission.upload().unwrap();

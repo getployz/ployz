@@ -28,6 +28,9 @@ pub(crate) struct Builder<'a> {
     fence: Option<(crate::FenceInstaller, Vec<u16>)>,
     reuse: Reuse,
     spec: String,
+    /// The ID of the worker this Build runs on, from the inspect that showed
+    /// it is Ployz's. Only that container is ever kept.
+    worker: std::sync::OnceLock<String>,
 }
 
 /// Whether an attempt may start in the builder its slot's last attempt kept.
@@ -85,6 +88,7 @@ impl<'a> Builder<'a> {
             fence,
             reuse,
             spec: String::new(),
+            worker: std::sync::OnceLock::new(),
         };
         // Mark before any Docker mutation so a killed daemon cannot silently
         // reuse state whose termination was never observed.
@@ -109,6 +113,7 @@ impl<'a> Builder<'a> {
             let index = bridge.index;
             self.bridge = Some(bridge);
             self.spec = kept.spec;
+            self.worker = kept.container.into();
             return create(self.docker, &self.name, index, resources);
         }
         // A worker this process did not keep for this attempt, such as one a
@@ -166,12 +171,35 @@ impl<'a> Builder<'a> {
             .map(str::to_owned)
     }
 
-    /// Leave the worker running for the slot's next attempt. Its bridge stays
-    /// claimed by this process, so no other builder takes it meanwhile.
+    /// Record the worker Buildx started for this Build, once one inspect
+    /// shows it is Ployz's. A reused worker must be the one this process kept.
+    fn take_worker(&self) -> Result<(), BuildError> {
+        let container = container(&self.name);
+        let Holder::Ployz(id) = holder(self.docker, &container)? else {
+            return Err(BuildError::Prerequisite(format!(
+                "{container} is not the BuildKit worker Ployz created for this Build"
+            )));
+        };
+        if *self.worker.get_or_init(|| id.clone()) != id {
+            return Err(BuildError::Prerequisite(format!(
+                "{container} was replaced while this Build used it"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Leave the worker running for the slot's next attempt, only if it is
+    /// still the container this Build ran on. Its bridge stays claimed by
+    /// this process, so no other builder takes it meanwhile.
     fn keep(&mut self) -> Result<(), BuildError> {
-        let container = self.running().ok_or_else(|| {
-            BuildError::Prerequisite("the BuildKit worker stopped before it could be kept".into())
-        })?;
+        let container = self
+            .running()
+            .filter(|running| self.worker.get() == Some(running))
+            .ok_or_else(|| {
+                BuildError::Prerequisite(
+                    "the BuildKit worker stopped or was replaced before it could be kept".into(),
+                )
+            })?;
         let bridge = self
             .bridge
             .take()
@@ -262,6 +290,7 @@ impl<'a> Builder<'a> {
             &["buildx", "inspect", &self.name, "--bootstrap"],
             Streams::Captured,
         )?;
+        self.take_worker()?;
         self.fence()?;
         let workers = self.docker.run(
             "inspect BuildKit platforms",
@@ -375,6 +404,11 @@ impl<'a> Builder<'a> {
             .split_once(' ')
             .filter(|(_, pid)| pid.parse::<u32>().is_ok_and(|pid| pid > 0))
             .ok_or_else(|| refuse(format!("{container} is not running")))?;
+        if self.worker.get().is_some_and(|worker| worker != id) {
+            return Err(refuse(format!(
+                "{container} is not the worker this Build ran on"
+            )));
+        }
         let cgroups = fs::read_to_string(format!("/proc/{pid}/cgroup"))
             .map_err(|error| refuse(format!("read its cgroup: {error}")))?;
         let cgroup = crate::fence::container_cgroup(&cgroups, id)
@@ -528,94 +562,129 @@ pub(crate) fn slot_names(access: Access, slot: usize) -> Vec<String> {
         .collect()
 }
 
-/// The exact image references an earlier Ployz ran each of its containers
-/// from, before they carried the owner marker: its BuildKit worker, then
-/// each helper under its own name.
-const EARLIER_WORKER_IMAGES: [&str; 2] = [
-    "moby/buildkit:v0.26.2",
-    "moby/buildkit:v0.26.2@sha256:de10faf919fc71ba4eb1dd7bd6449566d012b0c9436b1c61bfee21d621b009aa",
+/// The exact image references Ployz runs each of its containers from: its
+/// BuildKit worker, then each helper under its own name. When a pin changes,
+/// the earlier reference stays listed, so containers it made stay Ployz's.
+const WORKER_IMAGES: [&str; 2] = [crate::BUILDKIT_IMAGE.as_str(), "moby/buildkit:v0.26.2"];
+const HELPER_IMAGES: [(&str, &[&str]); 3] = [
+    ("railpack", &[crate::railpack::IMAGE]),
+    ("prepare", &[crate::railpack::PREPARATION_IMAGE]),
+    ("assemble", &[crate::index::REGCTL]),
 ];
-const EARLIER_HELPER_IMAGES: [(&str, &str); 3] = [
-    (
-        "railpack",
-        "ghcr.io/railwayapp/railpack-frontend@sha256:db24dc37640b6887c3d455b40876ea30f75182964479670cba6e4cde7ffef103",
-    ),
-    (
-        "prepare",
-        "buildpack-deps:trixie-curl@sha256:3dd78c060b4d7c97b426d0160f7d8876c84fbf2fc36e651e9c75620ac9a7da24",
-    ),
-    (
-        "assemble",
-        "regclient/regctl@sha256:5fe7c6a6206e1d9d71af719674c9db03e74a4ae221a32089b691f5b55533d6ea",
-    ),
-];
+const WORKER_PREFIX: &str = "buildx_buildkit_";
+/// Buildx sets this on every worker it starts.
+const BUILDX_WORKER_VARIABLE: &str = "BUILDKIT_SETUP_CGROUPV2_ROOT";
 
-/// Whether the container named `name`, made from `image` with `environment`,
-/// is one an earlier Ployz made: its image is exactly the one it shipped for
-/// that name, and a worker was started by Buildx.
-fn earlier(name: &str, image: &str, environment: &[&str]) -> bool {
-    if name.starts_with("buildx_buildkit_") {
-        // Buildx sets this on every worker it starts.
-        return EARLIER_WORKER_IMAGES.contains(&image)
-            && environment
-                .iter()
-                .any(|variable| variable.starts_with("BUILDKIT_SETUP_CGROUPV2_ROOT="));
-    }
-    EARLIER_HELPER_IMAGES
-        .iter()
-        .any(|(helper, pinned)| name.ends_with(&format!("-{helper}")) && image == *pinned)
+/// How Docker reports a container was made.
+#[derive(Debug, Default, serde::Deserialize)]
+pub(crate) struct Made {
+    #[serde(rename = "Image", default)]
+    image: Option<String>,
+    #[serde(rename = "Env", default)]
+    environment: Option<Vec<String>>,
 }
 
-/// Who holds a worker's container name.
+/// An environment variable's name.
+fn key(variable: &str) -> &str {
+    variable.split_once('=').map_or(variable, |(key, _)| key)
+}
+
+/// Whether host user `uid`'s Ployz made the container named `name`, as `made`
+/// reports. Its image is exactly one Ployz pins for that name, and it carries
+/// one owner marker, naming `uid`. A container with no owner marker at all is
+/// an earlier Ployz's, which marked none: a helper, or a worker Buildx started.
+fn made_by_ployz(name: &str, made: &Made, uid: &str) -> bool {
+    let pinned: &[&str] = if name.starts_with(WORKER_PREFIX) {
+        &WORKER_IMAGES
+    } else {
+        HELPER_IMAGES
+            .iter()
+            .find(|(helper, _)| name.ends_with(&format!("-{helper}")))
+            .map_or(&[], |(_, images)| images)
+    };
+    if !made
+        .image
+        .as_deref()
+        .is_some_and(|image| pinned.contains(&image))
+    {
+        return false;
+    }
+    let environment = made.environment.as_deref().unwrap_or_default();
+    let mut owners = environment.iter().filter(|variable| key(variable) == OWNER);
+    match (owners.next(), owners.next()) {
+        (Some(marker), None) => *marker == format!("{OWNER}={uid}"),
+        (Some(_), Some(_)) => false,
+        (None, _) => {
+            !name.starts_with(WORKER_PREFIX)
+                || environment
+                    .iter()
+                    .any(|variable| key(variable) == BUILDX_WORKER_VARIABLE)
+        }
+    }
+}
+
+/// Who holds a slot's container name.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Holder {
     Nobody,
-    Ployz,
+    /// This host user's Ployz made it: the container's ID, from the same
+    /// inspect that showed so. Ployz acts on that ID, never on the name, which
+    /// another container can take meanwhile.
+    Ployz(String),
     /// A container this host user's Ployz did not make: never adopted or removed.
     Other,
 }
 
-/// Whether `container` exists and this host user's Ployz made it.
-fn owned(docker: &Docker<'_>, container: &str) -> Result<bool, BuildError> {
-    Ok(holder(docker, container)? == Holder::Ployz)
+/// The ID of the container named `container`, when it exists and this host
+/// user's Ployz made it.
+fn owned(docker: &Docker<'_>, container: &str) -> Result<Option<String>, BuildError> {
+    Ok(match holder(docker, container)? {
+        Holder::Ployz(id) => Some(id),
+        Holder::Nobody | Holder::Other => None,
+    })
 }
 
 pub(crate) fn holder(docker: &Docker<'_>, container: &str) -> Result<Holder, BuildError> {
     match docker.run(
         "inspect a build container",
-        &["inspect", "--format", "{{json .Config}}", container],
+        &[
+            "inspect",
+            "--type",
+            "container",
+            "--format",
+            "{{json .}}",
+            container,
+        ],
         Streams::Captured,
     ) {
-        // Docker prints an existing container's configuration, so nothing names none.
+        // Docker prints an existing container, so nothing names none.
         Ok(inspected) if inspected.trim().is_empty() => Ok(Holder::Nobody),
         Ok(inspected) => {
             #[derive(serde::Deserialize)]
-            struct Config {
-                #[serde(rename = "Image", default)]
-                image: String,
-                #[serde(rename = "Env", default)]
-                environment: Option<Vec<String>>,
+            struct Inspected {
+                #[serde(rename = "Id", default)]
+                id: String,
+                #[serde(rename = "Config", default)]
+                made: Made,
             }
-            let config: Config = serde_json::from_str(inspected.trim()).map_err(|error| {
+            let unreadable = |reason: String| {
                 BuildError::Prerequisite(format!(
-                    "Docker reported an unreadable configuration for {container}: {error}"
+                    "Docker reported an unreadable container {container}: {reason}"
                 ))
-            })?;
-            let environment = config.environment.unwrap_or_default();
-            let environment = environment.iter().map(String::as_str).collect::<Vec<_>>();
-            let marker = format!("{OWNER}={}", owner());
-            Ok(
-                if earlier(container, &config.image, &environment)
-                    || environment.contains(&marker.as_str())
-                {
-                    Holder::Ployz
-                } else {
-                    Holder::Other
-                },
-            )
+            };
+            let inspected: Inspected = serde_json::from_str(inspected.trim())
+                .map_err(|error| unreadable(error.to_string()))?;
+            if inspected.id.is_empty() {
+                return Err(unreadable("it has no ID".into()));
+            }
+            Ok(if made_by_ployz(container, &inspected.made, &owner()) {
+                Holder::Ployz(inspected.id)
+            } else {
+                Holder::Other
+            })
         }
         Err(BuildError::Docker { diagnostic, .. })
-            if diagnostic.to_ascii_lowercase().contains("no such object") =>
+            if diagnostic.to_ascii_lowercase().contains("no such") =>
         {
             Ok(Holder::Nobody)
         }
@@ -645,17 +714,16 @@ fn label_cache(docker: &Docker<'_>, name: &str) -> Result<(), BuildError> {
 /// access each ran with. Another container with a worker's name is left.
 fn discard(docker: &Docker<'_>, slot: usize) -> Result<(), BuildError> {
     [Access::Full, Access::Free].iter().try_for_each(|access| {
-        let container = container(&access.builder(slot));
-        if !owned(docker, &container)? {
+        let Some(id) = owned(docker, &container(&access.builder(slot)))? else {
             return Ok(());
-        }
+        };
         // A graceful stop lets BuildKit delete its bridge; a forced removal leaves it behind.
         let _ = docker.releasing().run(
             "stop the build container",
-            &["stop", &container],
+            &["stop", &id],
             Streams::Captured,
         );
-        docker.remove_container(&container)
+        docker.remove_container(&id)
     })
 }
 
@@ -689,22 +757,27 @@ pub(crate) fn foreign_all(containers: &[String]) -> BuildError {
 /// without registering, so an unmarked slot keeps none but a recorded one.
 /// A container Ployz did not create is not this attempt's, so it stays.
 fn release(docker: &Docker<'_>, name: &str) -> Result<(), BuildError> {
-    let container = container(name);
-    if holder(docker, &container)? == Holder::Other {
+    let held = holder(docker, &container(name))?;
+    if held == Holder::Other {
         return Ok(());
     }
     remove(docker, name)?;
-    docker.remove_container(&container)
+    match held {
+        Holder::Ployz(id) => docker.remove_container(&id),
+        Holder::Nobody | Holder::Other => Ok(()),
+    }
 }
 
 pub(crate) fn container(builder: &str) -> String {
-    format!("buildx_buildkit_{builder}0")
+    format!("{WORKER_PREFIX}{builder}0")
 }
 
+/// Forget the builder in Buildx without touching any container: Buildx would
+/// remove whichever container holds the worker's name by then.
 fn remove(docker: &Docker<'_>, name: &str) -> Result<(), BuildError> {
     match docker.run(
         "remove the build container",
-        &["buildx", "rm", "--keep-state", name],
+        &["buildx", "rm", "--keep-state", "--keep-daemon", name],
         Streams::Captured,
     ) {
         Ok(_) => Ok(()),
@@ -936,7 +1009,7 @@ impl Lock {
                         continue;
                     }
                     for worker in named(slot, "") {
-                        if listed.contains(&worker) && owned(&docker, &worker)? {
+                        if listed.contains(&worker) && owned(&docker, &worker)?.is_some() {
                             found.push(slot);
                         }
                     }
@@ -1151,11 +1224,9 @@ impl Lock {
                 .try_for_each(|name| {
                     std::iter::once(container(name))
                         .chain(HELPERS.iter().map(|helper| format!("{name}-{helper}")))
-                        .try_for_each(|held| {
-                            if holder(&docker, &held)? == Holder::Other {
-                                return Ok(());
-                            }
-                            docker.remove_container(&held)
+                        .try_for_each(|held| match holder(&docker, &held)? {
+                            Holder::Ployz(id) => docker.remove_container(&id),
+                            Holder::Nobody | Holder::Other => Ok(()),
                         })
                 })
                 .map_err(|error| {
@@ -1514,7 +1585,7 @@ mod tests {
         let program = directory.join("docker");
         crate::tests::executable(
             &program,
-            &format!(
+            &crate::tests::as_ployz(&format!(
                 r#"#!/bin/sh
 case "$1 $2" in
   'info --format') echo '{{"DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]],"Architecture":"amd64","OSType":"linux","CgroupVersion":"2"}}' ;;
@@ -1522,7 +1593,7 @@ case "$1 $2" in
 esac
 "#,
                 crate::builder_name()
-            ),
+            )),
         );
         let environment = BTreeMap::new();
         let docker = Docker {
@@ -1636,8 +1707,9 @@ esac
         crate::tests::executable(
             &docker,
             &format!(
-                "#!/bin/sh\n[ \"$1\" = --ready ] && exit 0\nprintf '%s\\n' \"$*\" >> '{}/calls'\n",
-                directory.path().display()
+                "#!/bin/sh\n[ \"$1\" = --ready ] && exit 0\nprintf '%s\\n' \"$*\" >> '{}/calls'\n{}[ \"$1 $2\" = 'inspect --type' ] && made_by_ployz \"$6\"\nexit 0\n",
+                directory.path().display(),
+                crate::tests::made_by_ployz_sh()
             ),
         );
         fs::write(directory.path().join(lock_file(slot)), mark).unwrap();
@@ -1695,10 +1767,10 @@ esac
         let calls = fs::read_to_string(directory.path().join("calls")).unwrap();
         let name = slot_name(slot);
         for removed in [
-            format!("rm --force buildx_buildkit_{name}0"),
-            format!("rm --force {name}-railpack"),
-            format!("rm --force {name}-prepare"),
-            format!("rm --force {name}-assemble"),
+            format!("rm --force id-buildx_buildkit_{name}0"),
+            format!("rm --force id-{name}-railpack"),
+            format!("rm --force id-{name}-prepare"),
+            format!("rm --force id-{name}-assemble"),
         ] {
             assert!(calls.lines().any(|call| call == removed), "{calls}");
         }
@@ -1734,8 +1806,9 @@ esac
         crate::tests::executable(
             &docker,
             &format!(
-                "#!/bin/sh\n[ \"$1\" = --ready ] && exit 0\nprintf '%s %s\\n' \"$DOCKER_HOST\" \"$*\" >> '{}/calls'\n",
-                directory.path().display()
+                "#!/bin/sh\n[ \"$1\" = --ready ] && exit 0\nprintf '%s %s\\n' \"$DOCKER_HOST\" \"$*\" >> '{}/calls'\n{}[ \"$1 $2\" = 'inspect --type' ] && made_by_ployz \"$6\"\nexit 0\n",
+                directory.path().display(),
+                crate::tests::made_by_ployz_sh()
             ),
         );
         drop(Lock::try_acquire_slot(directory.path(), slot, &docker).unwrap());
@@ -1745,7 +1818,7 @@ esac
             assert!(
                 calls.lines().any(|call| call
                     == format!(
-                        "unix:///run/user/7/docker.sock rm --force buildx_buildkit_{}0",
+                        "unix:///run/user/7/docker.sock rm --force id-buildx_buildkit_{}0",
                         access.builder(slot)
                     )),
                 "{calls}"
@@ -1806,8 +1879,9 @@ esac
             crate::tests::executable(
                 &docker,
                 &format!(
-                    "#!/bin/sh\n[ \"$1\" = --ready ] && exit 0\n[ -e '{root}/docker-up' ] || {{ echo 'Cannot connect to the Docker daemon' >&2; exit 1; }}\nprintf '%s %s\\n' \"$DOCKER_HOST\" \"$*\" >> '{root}/calls'\n",
-                    root = directory.path().display()
+                    "#!/bin/sh\n[ \"$1\" = --ready ] && exit 0\n[ -e '{root}/docker-up' ] || {{ echo 'Cannot connect to the Docker daemon' >&2; exit 1; }}\nprintf '%s %s\\n' \"$DOCKER_HOST\" \"$*\" >> '{root}/calls'\n{made}[ \"$1 $2\" = 'inspect --type' ] && made_by_ployz \"$6\"\nexit 0\n",
+                    root = directory.path().display(),
+                    made = crate::tests::made_by_ployz_sh()
                 ),
             );
             let refused = Lock::try_acquire_slot(directory.path(), slot, &docker)
@@ -1828,7 +1902,10 @@ esac
             let calls = fs::read_to_string(directory.path().join("calls")).unwrap();
             assert!(
                 calls.lines().any(|call| call
-                    == format!("{endpoint} rm --force buildx_buildkit_{}0", slot_name(slot))),
+                    == format!(
+                        "{endpoint} rm --force id-buildx_buildkit_{}0",
+                        slot_name(slot)
+                    )),
                 "the retry forgot where the builder lives: {calls}"
             );
         }
@@ -1931,25 +2008,21 @@ esac
                 r#"#!/bin/sh
 [ "$1" = --ready ] && exit 0
 printf '%s\n' "$*" >> '{0}/calls'
-case "$1 $2" in
-  'inspect --format')
-    case "$3" in
-      *Config*)
-        if grep -qx "$4" '{0}/owned' 2>/dev/null; then
-          printf '%s\n' '{{"Image":"alpine","Env":["{OWNER}={1}"]}}'
-        elif grep -qx "$4" '{0}/foreign' 2>/dev/null; then
-          printf '%s\n' '{{"Image":"alpine","Env":["PATH=/bin"]}}'
-        elif grep -qx "$4" '{0}/borrowed' 2>/dev/null; then
-          printf '%s\n' '{{"Image":"alpine:3","Env":["NOTE=an earlier pin\nmoby/buildkit:v0.26.2\nghcr.io/railwayapp/railpack-frontend@sha256:db24dc37640b6887c3d455b40876ea30f75182964479670cba6e4cde7ffef103","BUILDKIT_SETUP_CGROUPV2_ROOT=1"]}}'
-        elif grep -qx "$4" '{0}/forged' 2>/dev/null; then
-          printf '%s\n' '{{"Image":"moby/buildkit:v0.26.2","Env":["NOTE=x\n{OWNER}={1}\nBUILDKIT_SETUP_CGROUPV2_ROOT=1"]}}'
-        elif grep -qx "$4" '{0}/earlier' 2>/dev/null; then
-          printf '%s\n' '{{"Image":"moby/buildkit:v0.26.2","Env":["PATH=/bin","BUILDKIT_SETUP_CGROUPV2_ROOT=1"]}}'
-        elif grep -qx "$4" '{0}/unpinned' 2>/dev/null; then
-          printf '%s\n' '{{"Image":"buildpack-deps:bookworm","Env":["PATH=/bin","BUILDKIT_SETUP_CGROUPV2_ROOT=1"]}}'
-        else echo "Error: no such object: $4" >&2; exit 1; fi ;;
-      *) cat '{0}/worker' 2>/dev/null ;;
-    esac ;;
+{2}case "$1 $2" in
+  'inspect --type')
+    if grep -qx "$6" '{0}/owned' 2>/dev/null; then made_by_ployz "$6"
+    elif grep -qx "$6" '{0}/foreign' 2>/dev/null; then
+      printf '%s\n' '{{"Id":"id-'"$6"'","Config":{{"Image":"alpine","Env":["PATH=/bin"]}}}}'
+    elif grep -qx "$6" '{0}/borrowed' 2>/dev/null; then
+      printf '%s\n' '{{"Id":"id-'"$6"'","Config":{{"Image":"alpine:3","Env":["NOTE=an earlier pin\nmoby/buildkit:v0.26.2\nghcr.io/railwayapp/railpack-frontend@sha256:db24dc37640b6887c3d455b40876ea30f75182964479670cba6e4cde7ffef103","BUILDKIT_SETUP_CGROUPV2_ROOT=1"]}}}}'
+    elif grep -qx "$6" '{0}/forged' 2>/dev/null; then
+      printf '%s\n' '{{"Id":"id-'"$6"'","Config":{{"Image":"moby/buildkit:v0.26.2","Env":["NOTE=x\n{OWNER}={1}\nBUILDKIT_SETUP_CGROUPV2_ROOT=1"]}}}}'
+    elif grep -qx "$6" '{0}/earlier' 2>/dev/null; then
+      printf '%s\n' '{{"Id":"id-'"$6"'","Config":{{"Image":"moby/buildkit:v0.26.2","Env":["PATH=/bin","BUILDKIT_SETUP_CGROUPV2_ROOT=1"]}}}}'
+    elif grep -qx "$6" '{0}/unpinned' 2>/dev/null; then
+      printf '%s\n' '{{"Id":"id-'"$6"'","Config":{{"Image":"buildpack-deps:bookworm","Env":["PATH=/bin","BUILDKIT_SETUP_CGROUPV2_ROOT=1"]}}}}'
+    else echo "Error: No such container: $6" >&2; exit 1; fi ;;
+  'inspect --format') cat '{0}/worker' 2>/dev/null ;;
   'ps --all') cat '{0}/names' 2>/dev/null ;;
   'volume ls')
     case "$*" in
@@ -1959,11 +2032,17 @@ case "$1 $2" in
     esac ;;
   'context show') echo default ;;
   'rm --force'|'buildx rm') [ -f '{0}/fail-rm' ] && exit 1 ;;
+  'create --name')
+    if [ -f '{0}/create-conflict' ]; then
+      echo "Error response from daemon: Conflict. The container name \"/$3\" is already in use" >&2; exit 1
+    fi
+    echo "id-$3" ;;
 esac
 exit 0
 "#,
                 directory.path().display(),
                 owner(),
+                crate::tests::made_by_ployz_sh(),
             ),
         );
         directory
@@ -2029,11 +2108,11 @@ exit 0
             let worker = container(&access.builder(slot));
             calls.push(inspect_owner(&worker));
             if owned.contains(&worker) {
-                calls.push(format!("stop {worker}"));
-                calls.push(format!("rm --force {worker}"));
+                calls.push(format!("stop id-{worker}"));
+                calls.push(format!("rm --force id-{worker}"));
             }
         }
-        calls.push(format!("buildx rm --keep-state {name}"));
+        calls.push(format!("buildx rm --keep-state --keep-daemon {name}"));
         calls.push(format!(
             "volume create --label {OWNER_LABEL}={} {}_state",
             owner(),
@@ -2044,7 +2123,7 @@ exit 0
     }
 
     fn inspect_owner(worker: &str) -> String {
-        ["inspect --format ", "{{json .Config}} ", worker].concat()
+        ["inspect --type container --format ", "{{json .}} ", worker].concat()
     }
 
     fn create_call(directory: &std::path::Path, name: &str) -> String {
@@ -2095,7 +2174,18 @@ exit 0
             calls_since(directory, &mut seen),
             fresh_calls(directory, 0, &[])
         );
-        fs::write(directory.join("worker"), "c0ffee true\n").unwrap();
+        // Buildx starts the worker.
+        fs::write(directory.join("owned"), container(&name)).unwrap();
+        fs::write(
+            directory.join("worker"),
+            format!("id-{} true\n", container(&name)),
+        )
+        .unwrap();
+        first.take_worker().unwrap();
+        assert_eq!(
+            calls_since(directory, &mut seen),
+            [inspect_owner(&container(&name))]
+        );
         first.finish(Ok(())).unwrap();
         assert_eq!(
             calls_since(directory, &mut seen),
@@ -2122,8 +2212,8 @@ exit 0
             calls_since(directory, &mut seen),
             [
                 inspect_owner(&container(&name)),
-                format!("buildx rm --keep-state {name}"),
-                format!("rm --force {}", container(&name)),
+                format!("buildx rm --keep-state --keep-daemon {name}"),
+                format!("rm --force id-{}", container(&name)),
             ],
             "teardown keeps the cache volume"
         );
@@ -2327,7 +2417,7 @@ exit 0
         .unwrap();
         let calls = calls_since(directory, &mut 0);
         assert!(
-            calls.contains(&format!("rm --force {worker}")),
+            calls.contains(&format!("rm --force id-{worker}")),
             "the earlier worker stayed: {calls:?}"
         );
         assert!(
@@ -2394,7 +2484,10 @@ exit 0
         let policy = crashed_slot(directory);
         Lock::cleanup_abandoned(&policy).unwrap();
         let calls = calls_since(directory, &mut 0);
-        assert!(calls.contains(&format!("rm --force {worker}")), "{calls:?}");
+        assert!(
+            calls.contains(&format!("rm --force id-{worker}")),
+            "{calls:?}"
+        );
         assert!(
             !calls
                 .iter()
@@ -2516,7 +2609,7 @@ exit 0
         let calls = calls_since(directory, &mut 0);
         for worker in &workers {
             assert!(
-                calls.contains(&format!("rm --force {worker}")),
+                calls.contains(&format!("rm --force id-{worker}")),
                 "{worker}: {calls:?}"
             );
         }
@@ -2544,7 +2637,10 @@ exit 0
         };
         crate::clear_cache(&policy).unwrap();
         let calls = calls_since(directory, &mut 0);
-        assert!(calls.contains(&format!("rm --force {worker}")), "{calls:?}");
+        assert!(
+            calls.contains(&format!("rm --force id-{worker}")),
+            "{calls:?}"
+        );
     }
 
     #[test]
@@ -2578,8 +2674,20 @@ exit 0
                 .any(|call| call.ends_with(&foreign) && !call.starts_with("inspect")),
             "{calls:?}"
         );
+        let unlabelled = [Access::Full, Access::Free]
+            .into_iter()
+            .flat_map(|access| {
+                let builder = access.builder(78);
+                let mut names = slot_names(access, 78);
+                names.push(format!("{}_state", container(&builder)));
+                names.push(builder);
+                names
+            })
+            .collect::<Vec<_>>();
         assert!(
-            !calls.iter().any(|call| call.contains("-78")),
+            !calls.iter().any(|call| call
+                .split(' ')
+                .any(|word| unlabelled.iter().any(|name| name == word))),
             "a volume without this user's label named a slot: {calls:?}"
         );
     }
@@ -2601,7 +2709,10 @@ exit 0
         let error = crate::clear_cache(&policy).unwrap_err();
         assert!(error.to_string().contains("list build caches"), "{error}");
         let calls = calls_since(directory, &mut 0);
-        assert!(calls.contains(&format!("rm --force {worker}")), "{calls:?}");
+        assert!(
+            calls.contains(&format!("rm --force id-{worker}")),
+            "{calls:?}"
+        );
     }
 
     #[test]
@@ -2689,7 +2800,7 @@ exit 0
         let lock = Lock::try_acquire_slot(directory.path(), slot, &docker).unwrap();
         let calls = fs::read_to_string(directory.path().join("calls")).unwrap();
         assert!(
-            calls.contains(&format!("rm --force {}", container(&name))),
+            calls.contains(&format!("rm --force id-{}", container(&name))),
             "{calls}"
         );
         assert!(
@@ -2716,11 +2827,213 @@ exit 0
             Reuse::WhenClean,
         )
         .unwrap();
+        // This Docker reports every worker as one Ployz made.
+        let workers = [Access::Full, Access::Free].map(|access| container(&access.builder(slot)));
         assert_eq!(
             calls_since(directory.path(), &mut 0),
-            fresh_calls(directory.path(), slot, &[])
+            fresh_calls(directory.path(), slot, &workers)
         );
         drop(builder);
+    }
+
+    /// Another container takes the worker's name after the solve: the Build
+    /// keeps no record of it, and removes nothing under that name.
+    #[test]
+    fn a_worker_name_taken_over_after_the_solve_is_not_kept() {
+        let directory = host_slot();
+        let directory = directory.path();
+        let program = directory.join("docker");
+        let environment = BTreeMap::new();
+        let docker = Docker {
+            program: &program,
+            environment: &environment,
+            working_dir: directory,
+            deadline: crate::Deadline::starting_now(crate::EXECUTION_TIMEOUT),
+            cancellation: None,
+            progress: None,
+            recorder: None,
+        };
+        let worker = container(&crate::builder_name());
+        let builder = Builder::acquire(
+            &docker,
+            Lock::try_acquire_in(directory).unwrap(),
+            Access::Full,
+            &crate::policy::Resources::default(),
+            None,
+            Reuse::WhenClean,
+        )
+        .unwrap();
+        fs::write(directory.join("owned"), &worker).unwrap();
+        builder.take_worker().unwrap();
+        let mut seen = 0;
+        calls_since(directory, &mut seen);
+        // The solve ends, and another container now holds the name.
+        fs::remove_file(directory.join("owned")).unwrap();
+        fs::write(directory.join("foreign"), &worker).unwrap();
+        fs::write(directory.join("worker"), "intruder true").unwrap();
+        builder.finish(Ok(())).unwrap();
+        assert!(
+            !parks(directory, 0),
+            "the Build kept a record of another container"
+        );
+        let calls = calls_since(directory, &mut seen);
+        assert!(
+            calls.iter().all(|call| call.starts_with("inspect")),
+            "the Build acted on the name another container took: {calls:?}"
+        );
+    }
+
+    /// Another container takes a helper's name between Ployz's look and its
+    /// create: the failed create reports no ID, so nothing is removed.
+    #[test]
+    fn a_helper_whose_create_lost_its_name_removes_nothing() {
+        let directory = host_slot();
+        let directory = directory.path();
+        fs::write(directory.join("create-conflict"), "").unwrap();
+        let program = directory.join("docker");
+        let environment = BTreeMap::new();
+        let docker = Docker {
+            program: &program,
+            environment: &environment,
+            working_dir: directory,
+            deadline: crate::Deadline::starting_now(crate::EXECUTION_TIMEOUT),
+            cancellation: None,
+            progress: None,
+            recorder: None,
+        };
+        let helper = format!("{}-railpack", crate::builder_name());
+        let created = docker.with_container(&helper, &[crate::railpack::IMAGE], |_| Ok(()));
+        assert!(created.is_err());
+        let calls = calls_since(directory, &mut 0);
+        assert!(
+            !calls.iter().any(|call| call.starts_with("rm")),
+            "a helper whose create failed removed a container: {calls:?}"
+        );
+
+        fs::remove_file(directory.join("create-conflict")).unwrap();
+        let mut worked = String::new();
+        docker
+            .with_container(&helper, &[crate::railpack::IMAGE], |id| {
+                worked = id.to_owned();
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(worked, format!("id-{helper}"));
+        assert!(
+            calls_since(directory, &mut 0).contains(&format!("rm --force id-{helper}")),
+            "the helper was not removed by its ID"
+        );
+    }
+
+    /// Recovery of a crashed slot whose names no container holds removes
+    /// nothing: a container that takes one meanwhile is not the slot's.
+    #[test]
+    fn recovery_removes_nothing_under_a_name_no_container_held() {
+        let directory = host_slot();
+        let directory = directory.path();
+        let policy = crashed_slot(directory);
+        drop(Lock::try_acquire_slot(&policy.state_directory, 0, &policy.docker).unwrap());
+        let calls = calls_since(directory, &mut 0);
+        assert!(
+            calls.iter().all(|call| call.starts_with("inspect")),
+            "recovery removed by name: {calls:?}"
+        );
+    }
+
+    #[test]
+    fn only_a_container_made_from_its_pinned_image_with_one_owner_marker_is_ployzs() {
+        let worker = container(&crate::builder_name());
+        let helper = format!("{}-railpack", crate::builder_name());
+        let made = |image: Option<&str>, environment: &[&str]| Made {
+            image: image.map(str::to_owned),
+            environment: Some(
+                environment
+                    .iter()
+                    .map(|&variable| variable.to_owned())
+                    .collect(),
+            ),
+        };
+        let pinned = Some(crate::BUILDKIT_IMAGE.as_str());
+        let legacy = Some("moby/buildkit:v0.26.2");
+        for (case, name, made, ployzs) in [
+            (
+                "marked worker",
+                &worker,
+                made(pinned, &["PLOYZ_BUILD_OWNER=1000"]),
+                true,
+            ),
+            (
+                "earlier worker",
+                &worker,
+                made(legacy, &["BUILDKIT_SETUP_CGROUPV2_ROOT=1"]),
+                true,
+            ),
+            (
+                "earlier helper",
+                &helper,
+                made(Some(crate::railpack::IMAGE), &[]),
+                true,
+            ),
+            (
+                "no image",
+                &worker,
+                made(None, &["PLOYZ_BUILD_OWNER=1000"]),
+                false,
+            ),
+            (
+                "a second, conflicting marker",
+                &worker,
+                made(
+                    pinned,
+                    &["PLOYZ_BUILD_OWNER=1000x", "PLOYZ_BUILD_OWNER=1000"],
+                ),
+                false,
+            ),
+            (
+                "the same marker twice",
+                &worker,
+                made(
+                    pinned,
+                    &["PLOYZ_BUILD_OWNER=1000", "PLOYZ_BUILD_OWNER=1000"],
+                ),
+                false,
+            ),
+            (
+                "earlier worker with another user's marker",
+                &worker,
+                made(
+                    legacy,
+                    &["BUILDKIT_SETUP_CGROUPV2_ROOT=1", "PLOYZ_BUILD_OWNER=1000x"],
+                ),
+                false,
+            ),
+            (
+                "earlier helper with an empty marker",
+                &helper,
+                made(Some(crate::railpack::IMAGE), &["PLOYZ_BUILD_OWNER"]),
+                false,
+            ),
+            (
+                "another user's worker",
+                &worker,
+                made(pinned, &["PLOYZ_BUILD_OWNER=1001"]),
+                false,
+            ),
+            (
+                "marked helper from the worker's image",
+                &helper,
+                made(pinned, &["PLOYZ_BUILD_OWNER=1000"]),
+                false,
+            ),
+            (
+                "unmarked worker Buildx never started",
+                &worker,
+                made(legacy, &[]),
+                false,
+            ),
+        ] {
+            assert_eq!(made_by_ployz(name, &made, "1000"), ployzs, "{case}");
+        }
     }
 
     #[test]
@@ -2758,6 +3071,7 @@ exit 1
             fence: None,
             reuse: Reuse::Never,
             spec: String::new(),
+            worker: std::sync::OnceLock::new(),
         };
         let error = builder.run(&[], false, || {}).unwrap_err();
         assert_eq!(

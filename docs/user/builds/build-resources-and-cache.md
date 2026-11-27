@@ -66,15 +66,22 @@ ployz server build-cache-clear
 
 It keeps your images and everything else in Docker.
 
-Ployz names its build containers `buildx_buildkit_ployz-…` and `ployz-…-railpack`,
-`-prepare` or `-assemble`, and marks each one it creates. Ployz never builds in or removes a
-container that has one of those names but not the mark. The cache clear names it so you can
-remove or rename it. A Build that would need the name moves to another build slot,
-except when Ployz kept that slot's worker running after an earlier Build. Then the Build stops,
-with an error naming the container.
+Ployz names its build containers `buildx_buildkit_ployz-…` and `ployz-…-railpack`, `-prepare` or
+`-assemble`. Ployz counts a container with one of those names as its own only when its image is
+exactly the one Ployz uses under that name, listed below, and it has the environment variable
+`PLOYZ_BUILD_OWNER` exactly once, set to the ID of the server user Ployz runs as. Ployz sets
+that variable on every build container it creates. Ployz never builds in or removes any other
+container with one of those names. The cache clear names such a container so you can remove or
+rename it. A Build that would need the name moves to another build slot, except when Ployz kept
+that slot's worker running after an earlier Build. Then the Build stops, with an error naming
+the container.
 
-One exception covers containers from Ployz versions before the mark. Ployz counts an unmarked
-container as its own when one of these is true:
+Ployz acts on a build container by its Docker ID, read when it checked the container is its own,
+never by its name. If another container takes the name meanwhile, Ployz leaves it alone. A
+worker that Ployz kept running after a Build is the exact container that Build ran on.
+
+Ployz versions before `PLOYZ_BUILD_OWNER` didn't set it. Ployz counts a container that has no
+`PLOYZ_BUILD_OWNER` at all as its own when one of these is true:
 
 - It's named `buildx_buildkit_ployz-…`, its image is exactly `moby/buildkit:v0.26.2` or
   `moby/buildkit:v0.26.2@sha256:de10faf919fc71ba4eb1dd7bd6449566d012b0c9436b1c61bfee21d621b009aa`,
@@ -87,11 +94,16 @@ container as its own when one of these is true:
 - It's named `ployz-…-assemble` and its image is exactly
   `regclient/regctl@sha256:5fe7c6a6206e1d9d71af719674c9db03e74a4ae221a32089b691f5b55533d6ea`.
 
-When Ployz starts on the server, it finds build slots in two places: the slot records it keeps
-on disk, and the workers Docker lists that count as Ployz's. It removes the workers that count
-as Ployz's in each slot it finds. If a slot's record shows a Build was interrupted, Ployz also
-removes that slot's helpers that count as Ployz's, then or when a later Build takes the slot. A
-helper in a slot Ployz has no record of stays until you remove it.
+Those are also the images Ployz runs today under each name, the worker from the
+`@sha256:` reference.
+
+When Ployz starts on the server, it always visits build slot 0, plus the slots it finds in two
+places: the slot records it keeps on disk, and the workers Docker lists that count as Ployz's. It
+removes the workers that count as Ployz's in each slot it visits. If a slot's record shows a Build
+was interrupted, Ployz also removes that slot's helpers that count as Ployz's, then or when a
+later Build takes the slot. Any later Build that uses a helper's name also removes a helper that
+counts as Ployz's under that name before it creates its own. Otherwise a helper in a slot Ployz
+has no record of stays until you remove it.
 
 Ployz can't tell such a container from one you made the same way, so don't run those images
 under those names yourself.

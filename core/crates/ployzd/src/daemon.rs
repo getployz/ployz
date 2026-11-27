@@ -911,9 +911,18 @@ mod tests {
         };
         let marker = root.0.join(format!("{}.lock", ployz_build::builder_name()));
         fs::write(&marker, "termination unconfirmed\n").unwrap();
+        // Docker reports the abandoned worker as one Ployz made.
         fs::write(
             &policy.docker,
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> cleaned\n",
+            format!(
+                r#"#!/bin/sh
+printf '%s\n' "$*" >> cleaned
+[ "$1 $2" = 'inspect --type' ] && case "$6" in buildx_buildkit_*) printf '%s\n' '{{"Id":"abandoned","Config":{{"Image":"{}","Env":["PLOYZ_BUILD_OWNER={}"]}}}}' ;; esac
+exit 0
+"#,
+                ployz_build::BUILDKIT_IMAGE,
+                rustix::process::getuid().as_raw()
+            ),
         )
         .unwrap();
         fs::set_permissions(&policy.docker, fs::Permissions::from_mode(0o700)).unwrap();
@@ -925,7 +934,7 @@ mod tests {
         assert!(
             fs::read_to_string(root.0.join("cleaned"))
                 .unwrap()
-                .contains("rm --force buildx_buildkit_")
+                .contains("rm --force abandoned")
         );
         // A mark from before marks named processes, and no Buildx process left.
         assert!(fs::read_to_string(marker).unwrap().is_empty());

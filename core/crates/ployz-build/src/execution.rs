@@ -464,10 +464,10 @@ mod tests {
         };
         crate::tests::executable(
             &policy.docker,
-            &format!(
+            &crate::tests::as_ployz(&format!(
                 "#!/bin/sh\n[ \"$1\" = --ready ] && exit 0\n[ \"$1\" = rm ] && printf cleaned > '{}/cleaned'\nexit 0\n",
                 root.display()
-            ),
+            )),
         );
         std::fs::create_dir(root.join("build-upload")).unwrap();
         std::fs::write(root.join("build-upload/abandoned"), "private old capture").unwrap();
@@ -476,6 +476,8 @@ mod tests {
             !root.join("build-upload").exists(),
             "startup left abandoned inputs"
         );
+        // Startup removed the worker Docker reported as Ployz's.
+        std::fs::remove_file(root.join("cleaned")).unwrap();
         let admission = Admission::try_acquire_with(&policy).unwrap();
         let upload = admission.upload().unwrap();
         assert!(!root.join("build-upload/abandoned").exists());
