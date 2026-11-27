@@ -26,6 +26,8 @@ import { closeVolumeRun } from "#/modules/volume-run/volume-run.rows.server";
 import { type EffectRunner, runInngestEffect } from "#/modules/inngest/run.server";
 
 export const RUN_STORE_DEPLOYMENT_FUNCTION_ID = "run-store-deployment";
+/** A step's tries past its first. Each step gets them anew. */
+const STORE_DEPLOYMENT_RETRIES = 2;
 
 /**
  * Cloud's worker runs each admitted Config Store Deployment: one step claims, prepares, confirms and records it in
@@ -39,7 +41,7 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Effec
     {
       id: RUN_STORE_DEPLOYMENT_FUNCTION_ID,
       // A retried step claims again: before it prepared, it runs; after, the Store records the outcome unknown.
-      retries: 2,
+      retries: STORE_DEPLOYMENT_RETRIES,
       triggers: [{ event: configDeploymentAdmitted.eventType }],
       concurrency: [{ key: "event.data.environmentId", limit: 1 }],
       onFailure: async ({ event }) => {
@@ -50,7 +52,7 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Effec
         return stopped;
       },
     },
-    async ({ event, step, runId }) => {
+    async ({ event, step, runId, attempt, maxAttempts }) => {
       await step.run("record-run", () => runEffect(recordStoreDeploymentRun(runId, event.data)));
       const lacking = await step.run("servers-lacking", () => runEffect(serversLackingWhilePrefetching(event.data)));
       if (lacking.length > 0) {
@@ -60,7 +62,7 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Effec
         return failed;
       }
       const github = await step.run("plan-builds", () => runEffect(planStoreGithubBuilds(event.data)));
-      const started = await startGithubBuilds(step, runEffect, event.data, github);
+      const started = await startGithubBuilds(step, runEffect, event.data, github, attempt + 1 >= (maxAttempts ?? STORE_DEPLOYMENT_RETRIES + 1));
       const walked = await Promise.all(github.map((target, index) => walkGithub(event.data.organizationId, target, started[index], step, runEffect)));
       const disconnected = walked.find((failed) => failed !== null);
       if (disconnected !== undefined) {
@@ -148,10 +150,12 @@ type Step = Parameters<Parameters<PloyzInngest["createFunction"]>[1]>[0]["step"]
  * Start a Deployment's GitHub builds, in one step when the Store records each. GitHub may have taken a request it
  * never answered, so a build it was asked for is never asked for again: the step records each build before asking for
  * the next, and a record the Store refused gets a step of its own, retried from the first step's memo. The builds after
- * it start in the next round.
+ * it start in the next round. On the function's `last` try, a run that step still can't record is cancelled before the
+ * step fails, as nothing else would stop it.
  */
 export async function startGithubBuilds(
   step: Pick<Step, "run">, runEffect: EffectRunner<StoreServices>, data: ConfigDeploymentAdmittedEventData, github: ReadonlyArray<StoreGithubTarget>,
+  last = false,
 ): Promise<ReadonlyArray<StoreGithubStart>> {
   const started: StoreGithubStart[] = [];
   let rest = github;
@@ -160,7 +164,7 @@ export async function startGithubBuilds(
     const starts = await step.run(`github-start-round-${round}`, () => runEffect(startStoreGithubBuilds(data.organizationId, data.deploymentId, targets)));
     started.push(...starts.started);
     const { unrecorded } = starts;
-    if (unrecorded !== null) started.push(await step.run(`github-record-round-${round}`, () => runEffect(recordStoreGithubBuild(data.organizationId, unrecorded))));
+    if (unrecorded !== null) started.push(await step.run(`github-record-round-${round}`, () => runEffect(recordStoreGithubBuild(unrecorded, last))));
     rest = starts.rest;
   }
   return started;

@@ -7,6 +7,7 @@ import { Clock, Deferred, Effect, Exit, Fiber, Redacted } from "effect";
 import { TestClock } from "effect/testing";
 import { expect } from "vitest";
 import { startGithubBuilds } from "#/modules/config-store/store-deployment.inngest";
+import { recordStoreDeploymentRun, stopStoreDeploymentRun } from "#/modules/config-store/store-deployment.server";
 import { planStoreGithubBuilds, startStoreGithubBuilds, type StoreGithubTarget } from "#/modules/config-store/store-github-builds.server";
 import { asTestDouble } from "#/lib/test-double";
 import { GithubObservationError } from "#/modules/github/github-observation.api";
@@ -209,6 +210,51 @@ it.effect.each(["answered", "stalled"] as const)(
     expect(yield* web()).toMatchObject(answer === "answered" ? { status: "building" } : { status: "pending", message: expect.stringContaining("GitHub couldn't take the build") });
     expect(yield* provided(planStoreGithubBuilds(data))).toEqual([]);
     expect(dispatched).toEqual([RUN]);
+  }),
+  60_000,
+);
+
+it.effect("a run whose record the Store refuses on every try is cancelled before the Deployment fails", () =>
+  Effect.gen(function* () {
+    const dispatched: number[] = [];
+    const cancelled: number[] = [];
+    const authority = fakeGithubAuthority({
+      buildWorkflow: () => Effect.succeed(activeWorkflow),
+      dispatchBuild: () => Effect.sync(() => {
+        const runId = RUN + dispatched.length;
+        dispatched.push(runId);
+        return { runId, runUrl: runUrl(runId), headSha: HEAD, workflowRef: WORKFLOW };
+      }),
+      cancelBuild: ({ runId }) => Effect.sync(() => void cancelled.push(runId)),
+    });
+    const { provided, web } = yield* pinnedWeb(authority);
+    const clock = yield* Clock.Clock;
+    let locked = true;
+    const cloud = yield* provided(cloudStore);
+    const recordRun = cloud.githubDispatched.bind(cloud);
+    cloud.githubDispatched = (build, run) => locked ? Promise.reject(unavailable()) : recordRun(build, run);
+    const steps = memoSteps();
+    const data = { organizationId: ORGANIZATION, environmentId: ENVIRONMENT, deploymentId: DEPLOYMENT, trigger: "user" as const };
+    const runEffect: EffectRunner<StoreServices> = (program) =>
+      Effect.runPromise(provided(program).pipe(Effect.provideService(Clock.Clock, clock)));
+    const run = (last: boolean) => Effect.gen(function* () {
+      const trying = yield* Effect.promise(() => startGithubBuilds(steps, runEffect, data, [target], last)).pipe(Effect.exit, Effect.forkChild);
+      while (trying.pollUnsafe() === undefined) yield* TestClock.adjust("1 second");
+      return yield* Fiber.join(trying);
+    });
+    yield* provided(recordStoreDeploymentRun("worker-run", data));
+
+    // Inngest's three tries; only the last gives the run up.
+    for (const last of [false, false, true]) {
+      expect(Exit.isFailure(yield* run(last))).toBe(true);
+      expect(cancelled).toEqual(last ? [RUN] : []);
+    }
+    // The Store is back for the function's failure, which stops only the runs it recorded.
+    locked = false;
+    yield* provided(stopStoreDeploymentRun(ORGANIZATION, DEPLOYMENT, "worker-run"));
+    expect(dispatched).toEqual([RUN]);
+    expect(cancelled).toEqual([RUN]);
+    expect(yield* web()).toMatchObject({ status: "pending" });
   }),
   60_000,
 );
