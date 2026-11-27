@@ -4,6 +4,7 @@ import type {
   ConfigTrusted,
   ConfigView,
   BuildStatus,
+  GithubSettled,
   DeployEvent,
   DeployIntent,
   DeployOutcome,
