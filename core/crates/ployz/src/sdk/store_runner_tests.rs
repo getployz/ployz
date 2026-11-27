@@ -2262,11 +2262,11 @@ async fn a_same_commit_redeploy_of_services_sharing_a_dockerfile_builds_nothing(
             .collect(),
         ..Sources::default()
     };
-    let built = |commit: &'static str, id: u128| {
+    let built = |commit: String, id: u128| {
         let (store, actor, services, session, checkouts) =
             (&store, &actor, &services, &session, &checkouts);
         async move {
-            let (run, claimed) = redeploy(store, actor, id, services, commit).await;
+            let (run, claimed) = redeploy(store, actor, id, services, &commit).await;
             let Ok((targets, _)) = targets(&claimed, checkouts()) else {
                 panic!("every Service has its checkout at the pinned commit");
             };
@@ -2277,22 +2277,22 @@ async fn a_same_commit_redeploy_of_services_sharing_a_dockerfile_builds_nothing(
         }
     };
     let started = || builds.definitions.lock().unwrap().len();
-    let first = "a".repeat(40).leak();
+    let first = || "a".repeat(40);
 
-    assert_eq!(built(first, 20).await.len(), 5);
+    assert_eq!(built(first(), 20).await.len(), 5);
     assert_eq!(started(), 5, "the first Deployment builds every Service");
-    assert_eq!(built(first, 21).await.len(), 5);
+    assert_eq!(built(first(), 21).await.len(), 5);
     assert_eq!(started(), 5, "a same-commit redeploy builds nothing");
 
     edit(vec![("worker.env.ROLE".into(), "changed")]);
-    built(first, 22).await;
+    built(first(), 22).await;
     assert_eq!(
         started(),
         6,
         "a changed build argument builds its Service again"
     );
 
-    built("b".repeat(40).leak(), 23).await;
+    built("b".repeat(40), 23).await;
     assert_eq!(started(), 11, "a new commit builds every Service again");
 
     session.close().await;
