@@ -38,40 +38,36 @@ pub(super) enum Late {
     Oom,
 }
 
+/// What Docker's events said of a container's current run.
+#[derive(Debug)]
+enum Run {
+    Live(Evidence),
+    /// It died and has not started again. Its evidence went with its exit.
+    Exited,
+}
+
 /// The evidence Docker's events gave about one run of a container.
 #[derive(Debug, Default)]
-struct Run {
+struct Evidence {
     oom: bool,
     /// The signals Docker was asked to send it, as `docker stop` does.
     kills: Vec<Signal>,
     /// Docker's stop API stopped it, whatever signal it sent. A bare
     /// `docker kill` sends no `stop` event.
     stop_requested: bool,
-    exited: bool,
 }
 
-impl Run {
-    /// Whether `late` belongs to this live run. Otherwise it belongs to the
-    /// last exit still queued: Docker can send `stop` or `oom` after the
-    /// `die` of the run it stopped or killed, even after a later run started.
-    /// Its stop API signals a run before it sends `stop`, so a live run with
-    /// no `kill` is not the one stopped. A `kill` after the exit belongs to
-    /// no exit, so it stays with the run it came after.
+impl Evidence {
+    /// Whether `late` belongs to this live run. Docker's stop API signals a
+    /// run before it sends `stop`, so a live run with no `kill` is not the
+    /// one stopped.
     fn awaits(&self, late: &Late) -> bool {
-        match late {
-            Late::Kill(_) => true,
-            Late::Stop => !self.exited && !self.kills.is_empty(),
-            Late::Oom => !self.exited,
-        }
+        !matches!(late, Late::Stop) || !self.kills.is_empty()
     }
 
     fn apply(&mut self, late: Late) {
         match late {
-            Late::Kill(signal) => {
-                if !self.exited {
-                    self.kills.push(signal);
-                }
-            }
+            Late::Kill(signal) => self.kills.push(signal),
             Late::Stop => self.stop_requested = true,
             Late::Oom => self.oom = true,
         }
@@ -82,7 +78,7 @@ impl Run {
 #[derive(Debug)]
 struct Exit {
     marker: MetricMarker,
-    run: Run,
+    evidence: Evidence,
     /// The harvester saw nothing of the run before its exit, as after a
     /// restart of `ployz observe` while Docker stopped the container.
     unseen: bool,
@@ -98,12 +94,11 @@ impl Exit {
     fn settle(self, state: Option<&ContainerState>, stop_signal: Option<Signal>) -> MetricMarker {
         let Exit {
             mut marker,
-            run:
-                Run {
+            evidence:
+                Evidence {
                     oom,
                     kills,
                     stop_requested,
-                    ..
                 },
             unseen,
             resumed,
@@ -179,13 +174,23 @@ impl ExitLedger {
         self.stop_signals.remove(id);
     }
 
-    /// Gives `late` to the live run of `id`, else to its last queued exit.
+    /// Gives `late` to the live run of `id`, else to its last queued exit:
+    /// Docker can send `stop` or `oom` after the `die` of the run it stopped
+    /// or killed, even after a later run started. A `kill` after the exit
+    /// belongs to no exit, so it is dropped.
     pub(super) fn late(&mut self, id: ContainerId, late: Late) {
-        let run = self.runs.entry(id).or_default();
-        if run.awaits(&late) {
-            run.apply(late);
-        } else if let Some(exit) = self.exits.get_mut(&id).and_then(|exits| exits.last_mut()) {
-            exit.run.apply(late);
+        let run = self
+            .runs
+            .entry(id)
+            .or_insert_with(|| Run::Live(Evidence::default()));
+        match (run, late) {
+            (Run::Exited, Late::Kill(_)) => {}
+            (Run::Live(evidence), late) if evidence.awaits(&late) => evidence.apply(late),
+            (_, late) => {
+                if let Some(exit) = self.exits.get_mut(&id).and_then(|exits| exits.last_mut()) {
+                    exit.evidence.apply(late);
+                }
+            }
         }
     }
 
@@ -193,18 +198,14 @@ impl ExitLedger {
     /// `resumed` says the open stream resumed from an earlier event.
     pub(super) fn died(&mut self, marker: MetricMarker, resumed: bool) {
         let id = marker.container_id;
-        let unseen = !self.runs.contains_key(&id);
-        let run = self.runs.entry(id).or_default();
-        let run = std::mem::replace(
-            run,
-            Run {
-                exited: true,
-                ..Run::default()
-            },
-        );
+        let (unseen, evidence) = match self.runs.insert(id, Run::Exited) {
+            Some(Run::Live(evidence)) => (false, evidence),
+            Some(Run::Exited) => (false, Evidence::default()),
+            None => (true, Evidence::default()),
+        };
         let exit = Exit {
             marker,
-            run,
+            evidence,
             unseen,
             resumed,
             stop_signal: self.stop_signals.get(&id).copied(),
@@ -213,7 +214,7 @@ impl ExitLedger {
     }
 
     pub(super) fn started(&mut self, id: ContainerId) {
-        self.runs.insert(id, Run::default());
+        self.runs.insert(id, Run::Live(Evidence::default()));
     }
 
     /// Settles the exits waiting on `id` with what Docker says now, from
