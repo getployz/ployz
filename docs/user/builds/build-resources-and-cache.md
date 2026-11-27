@@ -67,9 +67,14 @@ ployz server build-cache-clear
 It keeps your images and everything else in Docker.
 
 Ployz names its build containers `buildx_buildkit_ployz-…` and `ployz-…-railpack`,
-`-prepare` or `-assemble`. If a container Ployz didn't create has one of those names, Ployz
-never builds in it or removes it. Builds use another build slot, and the cache clear names every
-such container so you can remove or rename it.
+`-prepare` or `-assemble`, and marks each one it creates. A container with one of those names
+but without the mark is left alone: Ployz never builds in it or removes it, builds use another
+build slot, and the cache clear names it so you can remove or rename it.
+
+One exception covers containers from Ployz versions before the mark. An unmarked container with
+one of those names that runs exactly the image those versions used for that name counts as
+Ployz's, and Ployz removes it after a crash or on restart. Ployz can't tell such a container
+from one you made the same way, so don't run that image under those names yourself.
 
 After each deploy, Ployz cleans up old images it built, but never images it pulled for
 [Docker image services](../deploy/docker-image.md). Remove those with `docker image prune`
