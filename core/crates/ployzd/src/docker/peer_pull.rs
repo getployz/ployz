@@ -294,6 +294,18 @@ impl PeerPulls {
         }
     }
 
+    /// Run cleanup `work` until it ends, the caller is `gone`, or the deadline passes. One
+    /// that stops early kills the Docker commands it ran and leaves the rest to the sweep.
+    async fn bounded(&self, gone: &CancellationToken, work: impl Future<Output = ()>) {
+        if gone
+            .run_until_cancelled(tokio::time::timeout(self.deadline, work))
+            .await
+            .is_none_or(|ended| ended.is_err())
+        {
+            tracing::warn!("a peer pull's cleanup stopped before it ended; the sweep finishes it");
+        }
+    }
+
     /// Drop `name`'s row if Docker doesn't hold the name. Asked once the pull that would
     /// write it has ended in Docker, so a name absent now never comes.
     async fn forget_unwritten(&self, name: &str) {
@@ -694,7 +706,9 @@ async fn pull_and_tag(
         // The publish point, under the retention lock taken in the caller's race. Once
         // begun it runs to its end, so a caller that stopped waiting finds the names
         // either unwritten or written, and told which. The retention name goes first, and
-        // the staging name goes beside it.
+        // the staging name goes beside it. That untag is cleanup, not publishing: it races
+        // the caller and a deadline, so a Docker that hangs on it can't keep the lock and
+        // the turn, and a staging name it leaves is swept later.
         Some(Ok(held)) if !gone.is_cancelled() => {
             for name in names {
                 docker.run(&["tag", "--", from, name]).await?;
@@ -702,12 +716,12 @@ async fn pull_and_tag(
             if names.iter().any(|name| {
                 retained_digest(name).is_some_and(|kept| kept.as_str() == staging.digest)
             }) {
-                pulls.untag(&held, from).await;
+                pulls.bounded(gone, pulls.untag(&held, from)).await;
             }
             Ok(())
         }
         Some(Err(Failed::Unpulled(error))) => {
-            gone.run_until_cancelled(pulls.forget_unwritten(from)).await;
+            pulls.bounded(gone, pulls.forget_unwritten(from)).await;
             Err(error)
         }
         Some(Err(Failed::After(error))) => Err(error),
@@ -1089,7 +1103,8 @@ esac
     /// fails as Docker does when it can't answer, and `hang-once` makes the next one hang,
     /// naming its pid in `started`. A names query for a name `hangs` lists hangs every
     /// time.
-    /// The name `moves` holds is moved away just after the next names query answers.
+    /// The name `moves` holds is moved away just after the next names query answers. While
+    /// `rm-hangs` exists, `image rm` names its pid in `started` and hangs.
     /// Every command must name its host first: one that doesn't goes to the Engine of the
     /// CLI's own context, recorded in `context`.
     fn docker_with_unnamed_copy(root: &std::path::Path) -> PathBuf {
@@ -1138,6 +1153,7 @@ case "$1 $2 $5" in
     elif [ -e unnamed ]; then :
     else echo "No such image: $3" >&2; exit 1; fi ;;
   'image rm '*)
+    if [ -e rm-hangs ]; then echo $$ > started; exec sleep 600; fi
     if grep -qxF "$3" names; then grep -vxF "$3" names > names.new; mv names.new names
     elif [ -e unnamed ]; then rm unnamed; echo Deleted
     else echo "No such image: $3" >&2; exit 1; fi ;;
@@ -2224,5 +2240,55 @@ esac
         );
         assert_eq!(ledger(&root), "");
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Docker may write a delivery's names and then hang on untagging its staging name.
+    /// The delivery still answers once its caller leaves or its deadline passes, freeing
+    /// the retention lock and its turn for the next delivery and the Machine's exclusive
+    /// work. The sweep removes the staging name later.
+    #[tokio::test]
+    async fn a_hung_untag_holds_neither_the_lock_nor_the_turn() {
+        for cancelled in [true, false] {
+            let root = temp("ployz-hung-untag");
+            let pulls = Arc::new(
+                PeerPulls::new(
+                    docker_with_unnamed_copy(&root),
+                    "unix:///run/test-engine.sock".into(),
+                    Some(root.join("staging-ledger")),
+                )
+                .with_deadline(std::time::Duration::from_secs(2)),
+            );
+            std::fs::remove_file(root.join("unnamed")).unwrap();
+            std::fs::write(root.join("mode"), "deliver").unwrap();
+            std::fs::write(root.join("rm-hangs"), "").unwrap();
+            let image = format!("app@sha256:{HEX}");
+            let retained = retained();
+            let (staging, pulled) = staging(&pulls, &image).await;
+            let gone = CancellationToken::new();
+            let written = [retained.as_str()];
+
+            let delivery = pull_and_tag(&pulls, &image, staging, &written, "linux/amd64", &gone);
+            let (result, pid) = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+                tokio::join!(delivery, async {
+                    let pid = started(&root).await;
+                    if cancelled {
+                        gone.cancel();
+                    }
+                    pid
+                })
+            })
+            .await
+            .expect("a hung untag must not hold the delivery");
+
+            result.unwrap();
+            assert!(pulls.retention.try_lock().is_ok(), "cancelled: {cancelled}");
+            assert!(exited(&pid), "the hung `image rm` still runs");
+            assert_eq!(names(&root), format!("{pulled}\n{retained}\n"));
+            std::fs::remove_file(root.join("rm-hangs")).unwrap();
+            sweep(&pulls).await;
+            assert_eq!(names(&root), format!("{retained}\n"));
+            assert_eq!(ledger(&root), "");
+            std::fs::remove_dir_all(root).unwrap();
+        }
     }
 }
