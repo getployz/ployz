@@ -205,6 +205,8 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
       {field("restartPolicy")}
       {(restartPolicy?.value ?? restartPolicy?.default) === "on-failure" ? field("maxRetries") : null}
       {field("updateOrder")}
+      {field("stopSignal")}
+      {field("stopGracePeriod")}
     </>,
     danger: <StoreDangerSection state={state} />,
   } satisfies Record<ServiceSettingsSectionId, ReactNode>;
@@ -301,14 +303,20 @@ const HINTS = new Map<ServiceSettingName, string | undefined>([
   ["preDeployCommand", undefined],
   ["restartPolicy", undefined],
   ["updateOrder", undefined],
+  ["stopGracePeriod", undefined],
 ]);
 const hint = (name: ServiceSettingName, setting: SettingSchema) => HINTS.has(name) ? HINTS.get(name) : setting.description;
 /** What an unset limit means, shown in its empty field. */
-const UNSET = new Map<ServiceSettingName, string>([["cpuLimit", "No limit"], ["memLimit", "No limit"], ["updateOrder", "Automatic"]]);
+const UNSET = new Map<ServiceSettingName, string>([
+  ["cpuLimit", "No limit"], ["memLimit", "No limit"], ["updateOrder", "Automatic"], ["stopSignal", "Auto"], ["stopGracePeriod", "30"],
+]);
 /** The choice that unsets a Setting whose empty value means something, such as an automatic update order. */
 const UNSET_CHOICE = "unset";
 
-const SUFFIXES = new Map<ServiceSettingName, string>([["memLimit", "GB"], ["cpuLimit", "vCPUs"]]);
+const SUFFIXES = new Map<ServiceSettingName, string>([["memLimit", "GB"], ["cpuLimit", "vCPUs"], ["stopGracePeriod", "s"]]);
+
+/** What the unset choice does, shown under it. */
+const UNSET_HELP = new Map<ServiceSettingName, string>([["updateOrder", "Stop first with a volume, else start first."]]);
 
 /** What each choice does, shown under it. */
 const OPTION_HELP = new Map([
@@ -316,7 +324,6 @@ const OPTION_HELP = new Map([
   ["always", "Restart whenever it stops."],
   ["on-failure", "Restart when it exits with an error, up to Max retries."],
   ["no", "Never restart."],
-  [UNSET_CHOICE, "Stop first with a volume, else start first."],
   ["start-first", "New copies start before old ones stop."],
   ["stop-first", "Old copies stop first. Brief downtime."],
   ["rolling", "Stop first, one server at a time."],
@@ -356,7 +363,7 @@ function StoreSettingInput({ state, name, setting, row, onCommit }: {
       suffix={SUFFIXES.get(name)}
       placeholder={UNSET.get(name) ?? (settingText(setting.default) || undefined)}
       value={settingText(row.value)}
-      {...changedProps(state.changes.get(name))}
+      {...changedProps(state.changes.get(name), (value) => settingText(value) || (UNSET.get(name) ?? ""))}
       validate={(raw) => settingError(setting, raw)}
       onCommit={onCommit}
     />
@@ -405,6 +412,7 @@ function StoreSettingField({ state, name, noted = false }: { state: StoreService
   const options = unset ? [UNSET_CHOICE, ...setting.enum] : setting.enum;
   const choice = (text: string) => unset && text === "" ? UNSET_CHOICE : text;
   const label = (option: string) => option === UNSET_CHOICE && unset ? unset : OPTION_LABELS.get(option) ?? option;
+  const help = (option: string) => option === UNSET_CHOICE ? UNSET_HELP.get(name) : OPTION_HELP.get(option);
   const shown = choice(current);
   return (
     <SettingsRow label={setting.title} hint={hint(name, setting)} commit="change" control={
@@ -413,12 +421,12 @@ function StoreSettingField({ state, name, noted = false }: { state: StoreService
         const raw = next === UNSET_CHOICE ? "" : next;
         hold(raw, edit(raw));
       }}>
-        <SelectTrigger aria-label={setting.title} className={OPTION_HELP.has(shown) ? "py-1.5 data-[size=default]:h-auto" : undefined} data-changed={change ? true : undefined}
+        <SelectTrigger aria-label={setting.title} className={help(shown) ? "py-1.5 data-[size=default]:h-auto" : undefined} data-changed={change ? true : undefined}
           title={change ? `Deployed: ${label(choice(settingText(change.before)))}` : undefined}>
           <SelectValue>
             <span className="flex flex-col items-start">
               <span>{label(shown)}</span>
-              {OPTION_HELP.has(shown) ? <span className="text-xs text-muted-foreground">{OPTION_HELP.get(shown)}</span> : null}
+              {help(shown) ? <span className="text-xs text-muted-foreground">{help(shown)}</span> : null}
             </span>
           </SelectValue>
         </SelectTrigger>
@@ -428,7 +436,7 @@ function StoreSettingField({ state, name, noted = false }: { state: StoreService
               <SelectItem key={option} value={option} label={label(option)}>
                 <span className="flex flex-col">
                   <span>{label(option)}</span>
-                  {OPTION_HELP.has(option) ? <span className="text-xs text-muted-foreground">{OPTION_HELP.get(option)}</span> : null}
+                  {help(option) ? <span className="text-xs text-muted-foreground">{help(option)}</span> : null}
                 </span>
               </SelectItem>
             ))}
