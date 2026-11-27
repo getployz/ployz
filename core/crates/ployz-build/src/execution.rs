@@ -327,91 +327,135 @@ impl Admission {
         policy: &HostPolicy,
         concurrency: BuildConcurrency,
     ) -> Result<Self, BuildError> {
+        Self::try_acquire_waiting(policy, concurrency, || {})
+    }
+
+    /// [`Self::try_acquire_within`], calling `waiting` once before the first
+    /// wait: for another admission to leave the gate, or for Docker to clean a
+    /// slot this admission recovers.
+    /// # Errors
+    /// As [`Self::try_acquire_within`].
+    pub fn try_acquire_waiting(
+        policy: &HostPolicy,
+        concurrency: BuildConcurrency,
+        waiting: impl FnOnce(),
+    ) -> Result<Self, BuildError> {
         let limit = usize::from(concurrency);
-        // Counting the slots and taking one is one critical section: no other
-        // admission takes a slot between the count and the take.
         policy.validate()?;
-        let gate = Gate::enter(&policy.state_directory)?;
+        let resources = crate::policy::Resources::load(&policy.configuration_file)?;
+        let directory = &policy.state_directory;
+        let mut waiting = Some(waiting);
+        let mut wait = || {
+            if let Some(waiting) = waiting.take() {
+                waiting();
+            }
+        };
+        // Slots whose recovery failed in this admission: they stay counted.
+        let mut failed = Vec::new();
         let mut quarantined = None;
-        let mut foreign = None;
-        // Slots that count against the limit: held by an admission, from the
-        // moment it takes the slot through its upload and Build, or quarantined.
-        let mut held = 0;
-        let mut candidate = None;
-        // Every slot used before counts before a new one is taken, marked or
-        // not, and a marked one is recovered first if it can be. One that
-        // recovers stops counting. The first free one stays held while the
-        // rest are looked at, so two admissions cannot each miss the other.
-        let known = Lock::known_slots(&policy.state_directory);
-        for &slot in &known {
-            match Self::take_slot(&gate, policy, slot) {
-                Ok(_) if candidate.is_some() => {}
-                // A slot whose worker name a container Ployz did not create
-                // holds is passed over without counting against the limit.
-                Ok(admission) => match admission.lock.foreign_holder(&policy.docker) {
-                    None => candidate = Some(admission),
-                    Some(container) => {
-                        foreign.get_or_insert(container);
+        // Slots whose worker name a container Ployz did not create holds:
+        // passed over without counting against the limit.
+        let mut passed = Vec::new();
+        let mut foreign: Option<String> = None;
+        loop {
+            // Counting the slots and taking one is one critical section, of
+            // file work only: no other admission takes a slot between the
+            // count and the take, and none waits on Docker for it.
+            let gate = Gate::enter_or(directory, &mut wait)?;
+            // Slots that count against the limit: held by an admission, from
+            // the moment it takes the slot through its upload and Build, or
+            // marked. The first free one stays held while the rest are looked
+            // at, so two admissions cannot each miss the other.
+            let mut held = 0;
+            let mut recover = Vec::new();
+            let mut candidate = None;
+            let known = Lock::known_slots(directory);
+            for &slot in &known {
+                match Lock::open_locked(&gate, directory, slot) {
+                    // A slot passed over counts once another admission holds it.
+                    Err(BuildError::Busy) => held += 1,
+                    Err(error) => return Err(error),
+                    Ok(lock) if lock.marked()? => {
+                        held += 1;
+                        if !failed.contains(&slot) {
+                            recover.push(lock);
+                        }
                     }
-                },
-                Err(BuildError::Busy) => held += 1,
-                Err(error) if error.is_unknown() => {
-                    held += 1;
-                    quarantined.get_or_insert(error);
+                    Ok(_) if passed.contains(&slot) => {}
+                    Ok(lock) => {
+                        candidate.get_or_insert(lock);
+                    }
                 }
-                Err(error) => return Err(error),
             }
-        }
-        if held < limit
-            && let Some(admission) = candidate
-        {
-            return Ok(admission);
-        }
-        for slot in 0..=usize::from(u8::MAX) {
-            if held >= limit {
-                break;
-            }
-            if known.contains(&slot) {
+            if !recover.is_empty() {
+                // Recover after the gate, holding only those slots' locks, and
+                // count again: a slot that recovers is free.
+                drop((gate, candidate));
+                wait();
+                for mut lock in recover {
+                    match lock.recover(&policy.docker, false) {
+                        Ok(()) => {}
+                        Err(error) if error.is_unknown() => {
+                            failed.push(lock.slot());
+                            quarantined.get_or_insert(error);
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
                 continue;
             }
-            match Self::take_slot(&gate, policy, slot) {
-                Ok(admission) => match admission.lock.foreign_holder(&policy.docker) {
-                    None => return Ok(admission),
-                    Some(container) => {
-                        foreign.get_or_insert(container);
+            if candidate.is_none() {
+                for slot in 0..=usize::from(u8::MAX) {
+                    if held >= limit {
+                        break;
                     }
-                },
-                Err(BuildError::Busy) => held += 1,
-                Err(error) if error.is_unknown() => {
-                    held += 1;
-                    quarantined.get_or_insert(error);
+                    if known.contains(&slot) || passed.contains(&slot) {
+                        continue;
+                    }
+                    match Lock::open_locked(&gate, directory, slot) {
+                        Err(BuildError::Busy) => held += 1,
+                        Err(error) => return Err(error),
+                        Ok(lock) => {
+                            candidate = Some(lock);
+                            break;
+                        }
+                    }
                 }
-                Err(error) => return Err(error),
+            }
+            #[cfg(test)]
+            inside_gate(directory);
+            drop(gate);
+            let Some(lock) = candidate.filter(|_| held < limit) else {
+                return Err(quarantined
+                    .or_else(|| foreign.map(|container| crate::builder::foreign(&container)))
+                    .unwrap_or(BuildError::Busy));
+            };
+            match lock.foreign_holder(&policy.docker) {
+                None => return Ok(Self::owning_slot(policy, lock, resources)),
+                Some(container) => {
+                    passed.push(lock.slot());
+                    foreign.get_or_insert(container);
+                }
             }
         }
-        Err(quarantined
-            .or_else(|| foreign.map(|container| crate::builder::foreign(&container)))
-            .unwrap_or(BuildError::Busy))
     }
 
     pub(crate) fn try_acquire_slot(policy: &HostPolicy, slot: usize) -> Result<Self, BuildError> {
         policy.validate()?;
-        let gate = Gate::enter(&policy.state_directory)?;
-        Self::take_slot(&gate, policy, slot)
+        let resources = crate::policy::Resources::load(&policy.configuration_file)?;
+        let lock = Lock::try_acquire_slot(&policy.state_directory, slot, &policy.docker)?;
+        Ok(Self::owning_slot(policy, lock, resources))
     }
 
-    fn take_slot(gate: &Gate, policy: &HostPolicy, slot: usize) -> Result<Self, BuildError> {
-        policy.validate()?;
-        let resources = crate::policy::Resources::load(&policy.configuration_file)?;
-        let lock = Lock::take_slot(gate, &policy.state_directory, slot, &policy.docker)?;
-        Ok(Self::owning(
+    fn owning_slot(policy: &HostPolicy, lock: Lock, resources: crate::policy::Resources) -> Self {
+        Self::owning(
             lock,
             resources,
             Deadline::starting_now(policy.active_timeout),
             Cancellation::default(),
             policy.fence,
             crate::builder::Reuse::WhenClean,
-        ))
+        )
     }
     pub(crate) fn wait(docker: &Path, cancellation: &Cancellation) -> Result<Self, BuildError> {
         let lock = Lock::acquire(docker, cancellation)?;
@@ -490,6 +534,28 @@ impl Admission {
             return Err(BuildError::TimedOut(self.deadline.budget.as_secs()));
         }
         Ok(())
+    }
+}
+
+/// Runs once inside the next admission's critical section in a directory.
+#[cfg(test)]
+pub(crate) static INSIDE_GATE: std::sync::Mutex<Vec<(std::path::PathBuf, Hook)>> =
+    std::sync::Mutex::new(Vec::new());
+
+#[cfg(test)]
+pub(crate) type Hook = Box<dyn FnOnce() + Send>;
+
+#[cfg(test)]
+fn inside_gate(directory: &Path) {
+    let hook = {
+        let mut hooks = INSIDE_GATE.lock().unwrap();
+        hooks
+            .iter()
+            .position(|(hooked, _)| hooked == directory)
+            .map(|index| hooks.remove(index).1)
+    };
+    if let Some(hook) = hook {
+        hook();
     }
 }
 

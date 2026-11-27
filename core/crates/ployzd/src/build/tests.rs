@@ -720,8 +720,8 @@ case "$1 $2" in
   'stop --time')
     # A listed worker that won't stop while `fail-stop` exists.
     case "$4" in id-*) if [ -f "$root/fail-stop" ]; then echo 'Error response from daemon: cannot stop container' >&2; exit 1; fi ;; esac
-    # A worker that takes up to 11s to stop while `slow-stop` exists.
-    waited=0; while [ -f "$root/slow-stop" ] && [ $waited -lt 110 ]; do sleep 0.1; waited=$((waited + 1)); done
+    # A listed worker takes up to 11s to stop while `slow-stop` exists.
+    case "$4" in id-*) waited=0; while [ -f "$root/slow-stop" ] && [ $waited -lt 110 ]; do sleep 0.1; waited=$((waited + 1)); done ;; esac
     if [ -f "$root/fail-cleanup" ] && {{ [ -f "$root/executed" ] || [ -f "$root/checking" ]; }}; then exit 1; fi
     if [ "$4" = worker ]; then echo stopped > "$root/worker-state"; fi ;;
   'inspect --type')
@@ -757,7 +757,8 @@ case "$1 $2" in
     if [ -f "$root/slow-check" ]; then : > "$root/checking"; exec sleep 30; fi ;;
   'buildx ls')
     printf '%s\n' '{{"Name":"{}","Nodes":[{{"Status":"running","Platforms":["linux/amd64"]}}]}}'
-    printf '%s\n' '{{"Name":"ployz-free-{}","Nodes":[{{"Status":"running","Platforms":["linux/amd64"]}}]}}' ;;
+    printf '%s\n' '{{"Name":"ployz-free-{}","Nodes":[{{"Status":"running","Platforms":["linux/amd64"]}}]}}'
+    printf '%s\n' '{{"Name":"{builder}-1","Nodes":[{{"Status":"running","Platforms":["linux/amd64"]}}]}}' ;;
   'buildx bake')
     for arg in "$@"; do
       if [ "$arg" = --print ]; then printf '%s\n' '{{"target":{{"api":{{"context":"source"}}}}}}'; exit 0; fi
@@ -804,6 +805,7 @@ esac
         "1".repeat(64),
         image = ployz_build::BUILDKIT_IMAGE,
         uid = rustix::process::getuid().as_raw(),
+        builder = ployz_build::builder_name(),
     );
     fs::write(path, script).unwrap();
     fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
@@ -1797,4 +1799,78 @@ async fn builds_go_on_after_startup_cleanup_fails_or_panics() {
         .await;
         assert!(admitted.is_ok(), "no Build was admitted (panics: {panics})");
     }
+}
+
+/// An admission that recovers a slot waits for Docker, never holding the
+/// others back: it is queued, a Build beside it is admitted within its
+/// deadline, and its client leaving frees the Machine at once.
+#[tokio::test]
+async fn an_admission_recovering_a_slot_queues_and_holds_no_one_else_back() {
+    let fixture = Fixture::new().await;
+    fixture
+        .local
+        .update_machine(
+            serde_json::from_value(serde_json::json!({
+                "update": {"build_concurrency": {"action": "set", "value": 2}}
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    // Slot 0's Build died and left its worker, which takes 11s to stop.
+    let builder = ployz_build::builder_name();
+    fs::write(
+        fixture.root.join("workers"),
+        format!("buildx_buildkit_{builder}0"),
+    )
+    .unwrap();
+    let boot = fs::read_to_string("/proc/sys/kernel/random/boot_id").unwrap();
+    fs::write(
+        fixture.root.join(format!("{builder}.lock")),
+        format!("termination unconfirmed\nboot {}\n", boot.trim()),
+    )
+    .unwrap();
+    fs::write(fixture.root.join("slow-stop"), "").unwrap();
+
+    // The first Build's admission recovers slot 0, so it is queued.
+    let (recovering, mut recovering_response) = fixture.request(Output::Load).await;
+    assert!(matches!(
+        event(&mut recovering_response).await,
+        Event::Progress(Progress::Stage(Stage::Queued))
+    ));
+    // Another Build is admitted to a free slot within its deadline and runs.
+    let capture = fixture.capture();
+    let client = ployz::connect::connect(
+        Path::new("/missing-test-config"),
+        Some(fixture.address.as_str()),
+        None,
+    )
+    .await
+    .unwrap();
+    let result = capture
+        .execute_remote_images(
+            &client,
+            fixture.machine.id,
+            None,
+            Default::default(),
+            |_| {},
+        )
+        .await;
+    assert!(result.is_ok(), "{:?}", result.err());
+    assert!(fixture.root.join("slow-stop").exists());
+    drop(result);
+
+    // The first client leaves while its worker still stops: the Machine is free.
+    drop((recovering, recovering_response));
+    let freed = until_fake_docker(Duration::from_secs(5), || {
+        fixture
+            .local
+            .owner()
+            .mutation_gate()
+            .try_installation()
+            .is_ok()
+    })
+    .await;
+    assert!(freed.is_ok(), "the left Build still holds the Machine");
+    fs::remove_file(fixture.root.join("slow-stop")).unwrap();
 }

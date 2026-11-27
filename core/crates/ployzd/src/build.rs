@@ -259,18 +259,40 @@ async fn attempt(
         // Acceptance may have been revoked while this Build waited in the queue.
         let (machine_id, concurrency) = require_build_acceptance(&local)
             .map_err(|reason| failed(Stage::Admission, reason.to_string()).with_work(work.clone()))?;
-        let admission = match tokio::task::spawn_blocking({
+        // Admission may wait for another one to leave the gate, or for Docker
+        // to clean a slot it recovers. That is a queue wait: the client hears
+        // Queued, and a cancel or disconnect ends it, freeing the installation
+        // exclusion. A slot the abandoned admission takes later goes with it.
+        let (waiting, mut waited) = tokio::sync::oneshot::channel();
+        let mut acquiring = tokio::task::spawn_blocking({
             let policy = runner.policy.clone();
             move || {
-                Admission::try_acquire_within(&policy, concurrency)
-                    .map(|admission| admission.with_access(access))
+                Admission::try_acquire_waiting(&policy, concurrency, move || {
+                    let _ = waiting.send(());
+                })
+                .map(|admission| admission.with_access(access))
             }
-        })
-        .await
-        {
-            Ok(Ok(admission)) => admission,
-            Ok(Err(error)) => return Err(failure(Stage::Admission, error).with_work(work.clone())),
-            Err(_) => return Err(failed(Stage::Admission, "Build admission task failed")),
+        });
+        let mut heard = false;
+        let admission = loop {
+            tokio::select! {
+                biased;
+                () = runner.shutdown.cancelled() => return Err(failed(Stage::Queued, "Build daemon stopped; execution was not attempted").with_work(work.clone())),
+                () = events.closed() => return Err(failed(Stage::Queued, "Build client disconnected").with_work(work.clone())),
+                () = bound.ended() => return Err(failed(Stage::Queued, format!("{BUILD_ENDED} Execution was not attempted.")).with_work(work.clone())),
+                frame = requests.next(), if queued => return Err(failed(Stage::Queued, left_queue(frame)).with_work(work.clone())),
+                notice = &mut waited, if !heard => {
+                    heard = true;
+                    if notice.is_ok() && !std::mem::replace(&mut queued, true) && events.send(Ok(queued_frame())).await.is_err() {
+                        return Err(failed(Stage::Queued, "Build client disconnected").with_work(work.clone()));
+                    }
+                }
+                acquired = &mut acquiring => match acquired {
+                    Ok(Ok(admission)) => break admission,
+                    Ok(Err(error)) => return Err(failure(Stage::Admission, error).with_work(work.clone())),
+                    Err(_) => return Err(failed(Stage::Admission, "Build admission task failed")),
+                },
+            }
         };
         let admitted = remote::encode(&Event::Admitted {
             machine_id,
