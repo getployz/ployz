@@ -213,12 +213,12 @@ async fn attempt(
         }
     };
     let admitted = async {
+        // The client takes one Queued, whichever wait comes first.
+        let mut queued = false;
         let mut permit = match runner.enter() {
             Ok(queue::Entry::Active(permit)) => permit,
             Ok(queue::Entry::Waiting(waiting)) => {
-                let queued = remote::encode(&Event::Progress(Progress::Stage(Stage::Queued)))
-                    .expect("bounded queue frame");
-                if events.send(Ok(queued)).await.is_err() {
+                if !std::mem::replace(&mut queued, true) && events.send(Ok(queued_frame())).await.is_err() {
                     return Err(failed(Stage::Queued, "Build client disconnected").with_work(work.clone()));
                 }
                 tokio::select! {
@@ -226,14 +226,7 @@ async fn attempt(
                     () = runner.shutdown.cancelled() => return Err(failed(Stage::Queued, "Build daemon stopped; execution was not attempted").with_work(work.clone())),
                     () = events.closed() => return Err(failed(Stage::Queued, "Build client disconnected").with_work(work.clone())),
                     () = bound.ended() => return Err(failed(Stage::Queued, format!("{BUILD_ENDED} Execution was not attempted.")).with_work(work.clone())),
-                    frame = requests.next() => {
-                        let reason = match frame {
-                            Some(Ok(payload)) if matches!(remote::decode::<Input>(&payload), Ok(Input::Cancel)) => "Build cancelled while queued; execution was not attempted",
-                            None | Some(Err(_)) => "Build client disconnected while queued; execution was not attempted",
-                            Some(Ok(_)) => "Build upload before admission is forbidden; execution was not attempted",
-                        };
-                        return Err(failed(Stage::Queued, reason).with_work(work.clone()));
-                    }
+                    frame = requests.next() => return Err(failed(Stage::Queued, left_queue(frame)).with_work(work.clone())),
                     admitted = runner.admit(waiting) => match admitted {
                         Ok(permit) => permit,
                         Err(reason) => return Err(failed(Stage::Queued, reason.to_string()).with_work(work.clone())),
@@ -242,21 +235,27 @@ async fn attempt(
             }
             Err(reason) => return Err(failed(Stage::Queued, reason.to_string()).with_work(work.clone())),
         };
+        // Startup may still be cleaning abandoned slots. That is a queue wait:
+        // the client hears Queued, so it waits past its initial deadline.
+        let mut cleaned = runner.cleaned();
+        if !*cleaned.borrow_and_update() {
+            if !std::mem::replace(&mut queued, true) && events.send(Ok(queued_frame())).await.is_err() {
+                return Err(failed(Stage::Queued, "Build client disconnected").with_work(work.clone()));
+            }
+            tokio::select! {
+                biased;
+                () = runner.shutdown.cancelled() => return Err(failed(Stage::Queued, "Build daemon stopped; execution was not attempted").with_work(work.clone())),
+                () = events.closed() => return Err(failed(Stage::Queued, "Build client disconnected").with_work(work.clone())),
+                () = bound.ended() => return Err(failed(Stage::Queued, format!("{BUILD_ENDED} Execution was not attempted.")).with_work(work.clone())),
+                frame = requests.next() => return Err(failed(Stage::Queued, left_queue(frame)).with_work(work.clone())),
+                _ = cleaned.wait_for(|cleaned| *cleaned) => {}
+            }
+        }
         // A Build takes only its build slot and installation exclusion. It never
         // holds the Machine's mutation lock, so deploys on this Machine proceed.
         let installation = local.admit_installation().map_err(|error| {
             failed(Stage::Admission, ployz_core::error_chain::inline(&error)).with_work(work.clone())
         })?;
-        // Startup may still be cleaning abandoned slots: wait for it, so the
-        // slots it holds never count as busy against this Build.
-        let mut cleaned = runner.cleaned();
-        tokio::select! {
-            biased;
-            () = runner.shutdown.cancelled() => return Err(failed(Stage::Admission, "Build daemon stopped; execution was not attempted").with_work(work.clone())),
-            () = events.closed() => return Err(failed(Stage::Admission, "Build client disconnected").with_work(work.clone())),
-            () = bound.ended() => return Err(failed(Stage::Admission, BUILD_ENDED).with_work(work.clone())),
-            _ = cleaned.wait_for(|cleaned| *cleaned) => {}
-        }
         // Acceptance may have been revoked while this Build waited in the queue.
         let (machine_id, concurrency) = require_build_acceptance(&local)
             .map_err(|reason| failed(Stage::Admission, reason.to_string()).with_work(work.clone()))?;
@@ -656,6 +655,23 @@ fn open_sealed(record: &[u8], sealing: &SealingKeyStore) -> Result<OpenedSealed,
     sealing
         .open_for_build(&record)
         .map_err(|error| error.to_string())
+}
+
+fn queued_frame() -> OpaquePayload {
+    remote::encode(&Event::Progress(Progress::Stage(Stage::Queued))).expect("bounded queue frame")
+}
+
+/// Why a queued Build ended on its client's next frame.
+fn left_queue(frame: Option<Result<OpaquePayload, Status>>) -> &'static str {
+    match frame {
+        Some(Ok(payload)) if matches!(remote::decode::<Input>(&payload), Ok(Input::Cancel)) => {
+            "Build cancelled while queued; execution was not attempted"
+        }
+        None | Some(Err(_)) => {
+            "Build client disconnected while queued; execution was not attempted"
+        }
+        Some(Ok(_)) => "Build upload before admission is forbidden; execution was not attempted",
+    }
 }
 
 fn failed(stage: Stage, message: impl Into<String>) -> Outcome {

@@ -842,8 +842,6 @@ pub(crate) struct Lock {
 
 struct LockedFile {
     file: fs::File,
-    // The slot's claim in shared memory, which every mount namespace sees.
-    claim: fs::File,
     // Serializes writes to the mark between threads of one attempt.
     writes: std::sync::Mutex<()>,
 }
@@ -947,6 +945,17 @@ impl Lock {
         slot: usize,
         docker: &std::path::Path,
     ) -> Result<Self, BuildError> {
+        let gate = Gate::enter(directory)?;
+        Self::take_slot(&gate, directory, slot, docker)
+    }
+
+    /// [`Self::try_acquire_slot`] inside an admission that holds the gate.
+    pub(crate) fn take_slot(
+        _gate: &Gate,
+        directory: &std::path::Path,
+        slot: usize,
+        docker: &std::path::Path,
+    ) -> Result<Self, BuildError> {
         let mut lock = Self::open_locked(directory, slot)?;
         if lock.marked()? {
             lock.recover(docker, false)?;
@@ -962,6 +971,7 @@ impl Lock {
         slot: usize,
         docker: &std::path::Path,
     ) -> Result<Self, BuildError> {
+        let _gate = Gate::enter(directory)?;
         let mut lock = Self::open_locked(directory, slot)?;
         if lock.marked()? {
             lock.recover(docker, true)?;
@@ -970,6 +980,7 @@ impl Lock {
     }
 
     /// Slots that have ever been used in `directory`. Slot 0 always exists.
+    /// Only an admission holding the gate sees a list no other one changes.
     pub(crate) fn known_slots(directory: &std::path::Path) -> Vec<usize> {
         (0..=usize::from(u8::MAX))
             .filter(|&slot| slot == 0 || directory.join(lock_file(slot)).exists())
@@ -978,8 +989,8 @@ impl Lock {
 
     /// Slots with a lock in the policy's directory or a worker in Docker, and
     /// with `caches`, a cache volume too. Slot 0 always exists. Lock files
-    /// can vanish in a restart or sit in another process's private /tmp, but
-    /// Docker sees every slot's workers and caches.
+    /// can vanish, as an earlier version's in a private /tmp did, but Docker
+    /// sees every slot's workers and caches.
     pub(crate) fn slots(
         policy: &crate::HostPolicy,
         environment: &std::collections::BTreeMap<String, String>,
@@ -1292,75 +1303,45 @@ impl Lock {
         let environment = crate::upload::environment(&policy.state_directory);
         // Docker failing to list its workers still leaves the known slots to clean.
         let (slots, listed) = Self::slots(policy, &environment, false);
+        // Every slot is marked before any is cleaned, so one this cleanup
+        // never reaches, after a failure or a panic, stays quarantined until
+        // an admission recovers it, instead of passing for clean.
+        let marked = slots
+            .iter()
+            .map(|&slot| Self::mark_abandoned(policy, slot))
+            .fold(listed, Result::and);
         slots
             .into_iter()
             .map(|slot| Self::cleanup_abandoned_slot(policy, slot))
-            .fold(listed, Result::and)
+            .fold(marked, Result::and)
     }
 
+    /// Leave `slot` with a mark that names no owner, for recovery to clean.
+    fn mark_abandoned(policy: &crate::HostPolicy, slot: usize) -> Result<(), BuildError> {
+        Self::try_acquire_slot(&policy.state_directory, slot, &policy.docker)?.take_over(&[])
+    }
+
+    /// Take a slot [`Self::mark_abandoned`] marked: recovering its mark removes
+    /// its workers and helpers, even a worker the last daemon kept. A removal
+    /// that fails leaves the mark, naming no owner, for the next admission.
     fn cleanup_abandoned_slot(policy: &crate::HostPolicy, slot: usize) -> Result<(), BuildError> {
-        let mut lock = Self::try_acquire_slot(&policy.state_directory, slot, &policy.docker)?;
+        let lock = Self::try_acquire_slot(&policy.state_directory, slot, &policy.docker)?;
         crate::upload::remove_abandoned(&lock.upload_directory()).map_err(|error| {
             BuildError::Prerequisite(format!("remove abandoned Build upload: {error}"))
-        })?;
-        // A worker the last daemon kept outlives it, so startup removes it.
-        // The mark names no owner, only the Docker CLIs recorded below: a
-        // removal that fails leaves the slot for the next admission to
-        // recover, not held by this process.
-        lock.take_over(&[])?;
-        let environment = crate::upload::environment(&lock.upload_directory());
-        let recorder = lock.recorder();
-        let directory = lock.directory.clone();
-        let docker = Docker {
-            program: &policy.docker,
-            environment: &environment,
-            working_dir: &directory,
-            deadline: crate::Deadline::starting_now(crate::CLEANUP_TIMEOUT),
-            cancellation: None,
-            progress: None,
-            recorder: Some(&recorder),
-        };
-        discard(&docker, slot)?;
-        lock.clear()
+        })
     }
 
     fn open_locked(directory: &std::path::Path, slot: usize) -> Result<Self, BuildError> {
         use rustix::fs::{FlockOperation, flock};
-        use std::os::unix::fs::MetadataExt as _;
-        match fs::DirBuilder::new().mode(0o700).create(directory) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(lock_error(error)),
-        }
-        let metadata = fs::symlink_metadata(directory).map_err(lock_error)?;
-        if !metadata.is_dir()
-            || metadata.uid() != rustix::process::getuid().as_raw()
-            || metadata.mode() & 0o022 != 0
-        {
-            return Err(BuildError::Prerequisite(
-                "builder state must be an owned directory without group/other write access".into(),
-            ));
-        }
-        let path = directory.join(lock_file(slot));
-        let file = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
-            .open(&path)
-            .map_err(lock_error)?;
+        let file = open_state(directory, &lock_file(slot))?;
         match flock(&file, FlockOperation::NonBlockingLockExclusive) {
             Ok(()) => {}
             Err(rustix::io::Errno::WOULDBLOCK) => return Err(BuildError::Busy),
             Err(error) => return Err(lock_error(error.into())),
         }
-        let claim = claim_slot(directory, slot)?;
         Ok(Self {
             file: std::sync::Arc::new(LockedFile {
                 file,
-                claim,
                 writes: std::sync::Mutex::default(),
             }),
             directory: directory.to_owned(),
@@ -1454,7 +1435,6 @@ impl Drop for LockedFile {
         // Another thread may have forked a child that briefly inherited this
         // CLOEXEC descriptor. Release ownership now, without waiting for exec.
         let _ = rustix::fs::flock(&self.file, rustix::fs::FlockOperation::Unlock);
-        let _ = rustix::fs::flock(&self.claim, rustix::fs::FlockOperation::Unlock);
     }
 }
 
@@ -1540,49 +1520,6 @@ pub(crate) fn bridge_name(index: u8) -> String {
     format!("{}{index}", crate::BUILD_BRIDGE_PREFIX)
 }
 
-/// Claim a slot where every process sees it. `ployz.service` runs with
-/// `PrivateTmp`, so a CLI's lock file for the same slot is another file, and
-/// only this claim keeps a cache clear out of the daemon's running Build.
-/// Directories name the claim by their path, which the daemon and its host's
-/// CLI share, so unrelated state directories never contend.
-fn claim_slot(directory: &std::path::Path, slot: usize) -> Result<fs::File, BuildError> {
-    use rustix::fs::{FlockOperation, flock};
-    use sha2::Digest as _;
-    use std::os::unix::{ffi::OsStrExt as _, fs::PermissionsExt as _};
-    let claims = slot_claim_directory();
-    match fs::DirBuilder::new().mode(0o1777).create(&claims) {
-        Ok(()) => {
-            fs::set_permissions(&claims, fs::Permissions::from_mode(0o1777)).map_err(lock_error)?
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(error) => return Err(lock_error(error)),
-    }
-    let digest = sha2::Sha256::digest(directory.as_os_str().as_bytes());
-    let name = digest
-        .iter()
-        .take(16)
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    let file = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
-        .open(claims.join(format!("{name}-{slot}.lock")))
-        .map_err(lock_error)?;
-    match flock(&file, FlockOperation::NonBlockingLockExclusive) {
-        Ok(()) => Ok(file),
-        Err(rustix::io::Errno::WOULDBLOCK) => Err(BuildError::Busy),
-        Err(error) => Err(lock_error(error.into())),
-    }
-}
-
-fn slot_claim_directory() -> PathBuf {
-    PathBuf::from("/dev/shm/ployz-build-slots")
-}
-
 /// `ployz.service` runs with `PrivateTmp`, so `/var/tmp` would hide its claims
 /// from builders outside it, and some distributions make `/run/lock` root-only.
 /// `/dev/shm` is shared and writable by every user.
@@ -1600,17 +1537,82 @@ fn slot_name(slot: usize) -> String {
     Access::Full.builder(slot)
 }
 
+/// Open `name` in the state directory, creating both, once the directory is
+/// shown to be this user's alone.
+fn open_state(directory: &std::path::Path, name: &str) -> Result<fs::File, BuildError> {
+    use std::os::unix::fs::MetadataExt as _;
+    match fs::DirBuilder::new().mode(0o700).create(directory) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(lock_error(error)),
+    }
+    let metadata = fs::symlink_metadata(directory).map_err(lock_error)?;
+    if !metadata.is_dir()
+        || metadata.uid() != rustix::process::getuid().as_raw()
+        || metadata.mode() & 0o022 != 0
+    {
+        return Err(BuildError::Prerequisite(
+            "builder state must be an owned directory without group/other write access".into(),
+        ));
+    }
+    fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+        .open(directory.join(name))
+        .map_err(lock_error)
+}
+
+/// Admission's critical section, shared by every process using the state
+/// directory: looking at the slots and taking one happen under it, so no
+/// admission counts slots from a view another changed meanwhile. Every path
+/// that takes a slot enters it.
+pub(crate) struct Gate(fs::File);
+
+impl Gate {
+    /// Wait for the other admissions in this state directory to finish.
+    pub(crate) fn enter(directory: &std::path::Path) -> Result<Self, BuildError> {
+        let file = open_state(directory, "admission.lock")?;
+        loop {
+            match rustix::fs::flock(&file, rustix::fs::FlockOperation::LockExclusive) {
+                Ok(()) => return Ok(Self(file)),
+                Err(rustix::io::Errno::INTR) => {}
+                Err(error) => return Err(lock_error(error.into())),
+            }
+        }
+    }
+}
+
+impl Drop for Gate {
+    fn drop(&mut self) {
+        // A child forked meanwhile may hold this descriptor until it execs.
+        let _ = rustix::fs::flock(&self.0, rustix::fs::FlockOperation::Unlock);
+    }
+}
+
 fn lock_file(slot: usize) -> String {
     format!("{}.lock", slot_name(slot))
 }
 
 /// Stable across HOME, captures, and Docker configuration directories: a local
 /// CLI and daemon with the same builder name must lock the same retained state.
+///
+/// The daemon runs as root with `PrivateTmp`, which gives it its own `/tmp` and
+/// `/var/tmp`, so root's slot locks, marks and uploads live in Ployz's data
+/// directory, the same files for the daemon and a root CLI. Another user's
+/// builders are named after that user, so no daemon shares their state.
 pub(crate) fn directory() -> PathBuf {
-    PathBuf::from("/var/tmp").join(format!(
-        "ployz-build-{}",
-        rustix::process::getuid().as_raw()
-    ))
+    let uid = rustix::process::getuid().as_raw();
+    let layout = ployz_core::MachineLayout::production();
+    let data = layout.data_dir();
+    if uid == 0 && data.is_dir() {
+        data.join("build")
+    } else {
+        PathBuf::from("/var/tmp").join(format!("ployz-build-{uid}"))
+    }
 }
 
 fn lock_error(error: std::io::Error) -> BuildError {
@@ -1756,7 +1758,6 @@ esac
             builder.lock.as_mut().unwrap().file = std::sync::Arc::new(LockedFile {
                 file: fs::File::open(directory.join(format!("{}.lock", crate::builder_name())))
                     .unwrap(),
-                claim: fs::File::open("/dev/null").unwrap(),
                 writes: std::sync::Mutex::default(),
             });
             let result = if prior_failure {
@@ -2808,37 +2809,47 @@ exit 0
         );
     }
 
+    /// The daemon and a CLI read one mark: a cache clear leaves a slot whose
+    /// mark names a live process, whichever process wrote it.
     #[test]
-    fn a_cache_clear_from_another_mount_namespace_leaves_a_running_builds_slot() {
+    fn a_cache_clear_leaves_a_slot_whose_mark_names_a_live_process() {
+        use crate::owner::{Process, Role};
         let directory = host_slot();
         let directory = directory.path();
         let state = directory.join("state");
+        fs::DirBuilder::new().mode(0o700).create(&state).unwrap();
         let worker = container(&Access::Full.builder(1));
         fs::write(directory.join("names"), &worker).unwrap();
         fs::write(directory.join("owned"), &worker).unwrap();
-        let program = directory.join("docker");
-        let building = Lock::try_acquire_slot(&state, 1, &program).unwrap();
-        // The daemon's PrivateTmp hides its lock file: the CLI opens another.
-        fs::rename(
+        // A CLI's Build runs in slot 1; the daemon wrote nothing there.
+        let mut cli = sleeper(&[]);
+        let owner = Process::observe(cli.id()).unwrap().unwrap();
+        fs::write(
             state.join(lock_file(1)),
-            directory.join("daemon-private.lock"),
+            crate::owner::named(&[(Role::Owner, owner)]),
         )
         .unwrap();
         let policy = crate::HostPolicy {
-            state_directory: state,
+            state_directory: state.clone(),
             configuration_file: directory.join("build.yaml"),
-            docker: program,
+            docker: directory.join("docker"),
             ..Default::default()
         };
-        assert!(matches!(crate::clear_cache(&policy), Err(BuildError::Busy)));
+        let cleared = crate::clear_cache(&policy);
+        assert!(
+            cleared.as_ref().is_err_and(BuildError::is_unknown),
+            "{cleared:?}"
+        );
         let calls = calls_since(directory, &mut 0);
         assert!(
             !calls
                 .iter()
-                .any(|call| call.ends_with(&worker) && !call.starts_with("inspect")),
-            "{calls:?}"
+                .any(|call| call.contains(&worker) && !call.starts_with("inspect")),
+            "the cache clear touched the running Build's worker: {calls:?}"
         );
-        drop(building);
+        assert!(!fs::read(state.join(lock_file(1))).unwrap().is_empty());
+        cli.kill().unwrap();
+        cli.wait().unwrap();
     }
 
     #[test]
@@ -3325,6 +3336,83 @@ exit 0
         // The upload ends: its slot frees and the next Build is admitted.
         drop(uploading);
         assert!(crate::Admission::try_acquire_within(&policy, two).is_ok());
+    }
+
+    /// Two admissions never count from views the other changes: while one
+    /// looks at the slots, another can't take one it hasn't seen.
+    #[test]
+    fn an_admission_never_misses_a_slot_taken_while_it_counts() {
+        let directory = host_slot();
+        let directory = directory.path();
+        let two = "2".parse::<ployz_core::BuildConcurrency>().unwrap();
+        // Slot 0's Build died, leaving its worker running, and it won't stop.
+        let policy = crashed_slot(directory);
+        fs::write(directory.join("owned"), container(&Access::Full.builder(0))).unwrap();
+        fs::write(directory.join("fail-stop"), "").unwrap();
+        fs::write(directory.join("running"), "true").unwrap();
+        // Containers Ployz did not create hold slots 1 and 2's worker names,
+        // and both slots were used before.
+        let foreign = [1, 2].map(|slot| container(&Access::Full.builder(slot)));
+        fs::write(directory.join("foreign"), foreign.join("\n")).unwrap();
+        fs::write(directory.join("names"), foreign.join("\n")).unwrap();
+        for slot in [1, 2] {
+            fs::write(policy.state_directory.join(lock_file(slot)), "").unwrap();
+        }
+        // The first stop of slot 0's worker waits until the test lets it on.
+        let paused = directory.join("paused");
+        let resume = directory.join("resume");
+        for fifo in [&paused, &resume] {
+            assert!(
+                std::process::Command::new("mkfifo")
+                    .arg(fifo)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        let program = directory.join("docker");
+        let script = fs::read_to_string(&program).unwrap();
+        let (shebang, rest) = script.split_once('\n').unwrap();
+        crate::tests::executable(
+            &program,
+            &format!(
+                "{shebang}\nif [ \"$1\" = stop ] && mkdir '{}/once' 2>/dev/null; then echo > '{}'; cat '{}' > /dev/null; fi\n{rest}",
+                directory.display(),
+                paused.display(),
+                resume.display(),
+            ),
+        );
+
+        // A recovers slot 0 first, before it looks at slots 1 and 2.
+        let first = std::thread::spawn({
+            let policy = policy.clone();
+            move || crate::Admission::try_acquire_within(&policy, two)
+        });
+        fs::read(&paused).unwrap();
+        // B, unhindered, would count slot 0 busy, pass 1 and 2 over, and take slot 3.
+        let (second_done, second) = std::sync::mpsc::channel();
+        let racing = std::thread::spawn({
+            move || {
+                let admitted = crate::Admission::try_acquire_within(&policy, two);
+                second_done
+                    .send(admitted.as_ref().ok().map(crate::Admission::slot))
+                    .unwrap();
+                admitted
+            }
+        });
+        let early = second.recv_timeout(std::time::Duration::from_secs(3));
+        // The other containers go, and A goes on: slot 0 stays quarantined.
+        fs::remove_file(directory.join("foreign")).unwrap();
+        fs::remove_file(directory.join("names")).unwrap();
+        fs::write(&resume, "").unwrap();
+        let first = first.join().unwrap();
+        let racing = racing.join().unwrap();
+        assert!(
+            !(first.is_ok() && racing.is_ok()),
+            "three Builds at limit 2: slot 0 quarantined, A in slot {:?}, B in slot {:?} (B before A: {early:?})",
+            first.map(|admission| admission.slot()),
+            racing.map(|admission| admission.slot()),
+        );
     }
 
     /// Recovery stops a worker before removing it, and leaves one that

@@ -1,6 +1,9 @@
 //! Admission and connection-scoped cancellation for the shared host executor.
 
-use crate::{BuildError, Deadline, EXECUTION_TIMEOUT, builder::Lock};
+use crate::{
+    BuildError, Deadline, EXECUTION_TIMEOUT,
+    builder::{Gate, Lock},
+};
 use ployz_core::BuildConcurrency;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -325,6 +328,10 @@ impl Admission {
         concurrency: BuildConcurrency,
     ) -> Result<Self, BuildError> {
         let limit = usize::from(concurrency);
+        // Counting the slots and taking one is one critical section: no other
+        // admission takes a slot between the count and the take.
+        policy.validate()?;
+        let gate = Gate::enter(&policy.state_directory)?;
         let mut quarantined = None;
         let mut foreign = None;
         // Slots that count against the limit: held by an admission, from the
@@ -337,7 +344,7 @@ impl Admission {
         // rest are looked at, so two admissions cannot each miss the other.
         let known = Lock::known_slots(&policy.state_directory);
         for &slot in &known {
-            match Self::try_acquire_slot(policy, slot) {
+            match Self::take_slot(&gate, policy, slot) {
                 Ok(_) if candidate.is_some() => {}
                 // A slot whose worker name a container Ployz did not create
                 // holds is passed over without counting against the limit.
@@ -367,7 +374,7 @@ impl Admission {
             if known.contains(&slot) {
                 continue;
             }
-            match Self::try_acquire_slot(policy, slot) {
+            match Self::take_slot(&gate, policy, slot) {
                 Ok(admission) => match admission.lock.foreign_holder(&policy.docker) {
                     None => return Ok(admission),
                     Some(container) => {
@@ -389,8 +396,14 @@ impl Admission {
 
     pub(crate) fn try_acquire_slot(policy: &HostPolicy, slot: usize) -> Result<Self, BuildError> {
         policy.validate()?;
+        let gate = Gate::enter(&policy.state_directory)?;
+        Self::take_slot(&gate, policy, slot)
+    }
+
+    fn take_slot(gate: &Gate, policy: &HostPolicy, slot: usize) -> Result<Self, BuildError> {
+        policy.validate()?;
         let resources = crate::policy::Resources::load(&policy.configuration_file)?;
-        let lock = Lock::try_acquire_slot(&policy.state_directory, slot, &policy.docker)?;
+        let lock = Lock::take_slot(gate, &policy.state_directory, slot, &policy.docker)?;
         Ok(Self::owning(
             lock,
             resources,

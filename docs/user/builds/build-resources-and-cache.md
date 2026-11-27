@@ -106,7 +106,8 @@ counts as Ployz's under that name before it creates its own. Otherwise a helper 
 has no record of stays until you remove it.
 
 Ployz reports itself started before this cleanup finishes, since stopping a worker can take up
-to 20 seconds. A build that arrives meanwhile waits for the cleanup, then starts.
+to 20 seconds. A build that arrives meanwhile shows as queued, then starts once the cleanup
+ends. A slot the cleanup couldn't clean stays out of use until a later build cleans it.
 
 Ployz can't tell such a container from one you made the same way, so don't run those images
 under those names yourself.

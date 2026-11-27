@@ -978,7 +978,7 @@ root=$(dirname "$0")
 printf '%s\n' "$*" >> "$root/calls"
 case "$1 $2" in
   'ps --all') printf '%s\n' {first} {second} ;;
-  'inspect --type') case "$6" in buildx_buildkit_*) printf '%s\n' '{{"Id":"id-'"$6"'","Config":{{"Image":"{image}","Env":["PLOYZ_BUILD_OWNER={uid}"]}}}}' ;; esac ;;
+  'inspect --type') case "$6" in {first}|{second}) printf '%s\n' '{{"Id":"id-'"$6"'","Config":{{"Image":"{image}","Env":["PLOYZ_BUILD_OWNER={uid}"]}}}}' ;; esac ;;
   'stop --time') waited=0; while [ -f "$root/slow" ] && [ $waited -lt 110 ]; do sleep 0.1; waited=$((waited + 1)); done ;;
 esac
 exit 0
@@ -1010,6 +1010,14 @@ exit 0
             .await
             .unwrap();
         let calls = fs::read_to_string(root.0.join("calls")).unwrap();
+        assert_eq!(
+            calls
+                .lines()
+                .filter(|call| call.starts_with("stop "))
+                .count(),
+            2,
+            "{calls}"
+        );
         for worker in &workers {
             assert!(
                 calls.contains(&format!("rm --force id-{worker}")),

@@ -718,9 +718,15 @@ case "$1 $2" in
   'buildx version'|'buildx create'|'volume create') exit 0 ;;
   'inspect --format') printf 'Error: no such object: %s\n' "$4" >&2; exit 1 ;;
   'stop --time')
+    # A listed worker that won't stop while `fail-stop` exists.
+    case "$4" in id-*) if [ -f "$root/fail-stop" ]; then echo 'Error response from daemon: cannot stop container' >&2; exit 1; fi ;; esac
+    # A worker that takes up to 11s to stop while `slow-stop` exists.
+    waited=0; while [ -f "$root/slow-stop" ] && [ $waited -lt 110 ]; do sleep 0.1; waited=$((waited + 1)); done
     if [ -f "$root/fail-cleanup" ] && {{ [ -f "$root/executed" ] || [ -f "$root/checking" ]; }}; then exit 1; fi
     if [ "$4" = worker ]; then echo stopped > "$root/worker-state"; fi ;;
   'inspect --type')
+    # A listed worker that won't stop still runs.
+    case "$6" in id-*) if [ -f "$root/fail-stop" ]; then echo true; exit 0; fi ;; esac
     # The worker's state by its ID, for a failed stop: running, stopped, or gone.
     if [ "$6" = worker ]; then
       case "$(cat "$root/worker-state" 2>/dev/null || echo running)" in
@@ -732,6 +738,10 @@ case "$1 $2" in
     fi
     case "$6" in
       buildx_buildkit_*)
+        # Workers of their own, one per name, when `workers` lists them.
+        if grep -qx "$6" "$root/workers" 2>/dev/null; then
+          printf '%s\n' '{{"Id":"id-'"$6"'","Config":{{"Image":"{image}","Env":["PLOYZ_BUILD_OWNER={uid}"]}}}}'; exit 0
+        fi
         if [ "$(cat "$root/worker-state" 2>/dev/null)" = gone ]; then
           printf 'Error: No such container: %s\n' "$6" >&2; exit 1
         fi
@@ -791,7 +801,9 @@ esac
         rustix::process::getuid().as_raw(),
         "1".repeat(64),
         "1".repeat(64),
-        "1".repeat(64)
+        "1".repeat(64),
+        image = ployz_build::BUILDKIT_IMAGE,
+        uid = rustix::process::getuid().as_raw(),
     );
     fs::write(path, script).unwrap();
     fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
@@ -1695,5 +1707,94 @@ async fn a_sealed_value_this_machine_cannot_open_fails_closed_before_docker() {
         assert!(!message.contains(OPENED_TOKEN), "{message}");
         assert!(!fixture.root.join("executed").exists());
         assert!(!fixture.root.join("seen-secret").exists());
+    }
+}
+
+/// Startup cleanup that takes long is a queue wait: the client hears Queued
+/// within its initial deadline, and the Build runs once cleanup ends.
+#[tokio::test]
+async fn a_build_queues_behind_startup_cleanup_and_then_runs() {
+    let fixture = Fixture::new().await;
+    // Two abandoned workers, each taking 11s to stop.
+    let builder = ployz_build::builder_name();
+    let workers = [
+        format!("buildx_buildkit_{builder}0"),
+        format!("buildx_buildkit_{builder}-10"),
+    ];
+    fs::write(fixture.root.join("workers"), workers.join("\n")).unwrap();
+    fs::write(fixture.root.join(format!("{builder}-1.lock")), "").unwrap();
+    fs::write(fixture.root.join("slow-stop"), "").unwrap();
+    fixture.service.builds.clean_up_abandoned();
+
+    let capture = fixture.capture();
+    let client = ployz::connect::connect(
+        Path::new("/missing-test-config"),
+        Some(fixture.address.as_str()),
+        None,
+    )
+    .await
+    .unwrap();
+    let (waiting, mut observed) = mpsc::channel(1);
+    let selected = fixture.machine.id;
+    let execution = tokio::spawn(async move {
+        capture
+            .execute_remote_images(&client, selected, None, Default::default(), |event| {
+                if matches!(event, Progress::Stage(Stage::Queued)) {
+                    waiting.try_send(()).unwrap();
+                }
+            })
+            .await
+    });
+    assert!(
+        observed.recv().await.is_some(),
+        "the client never heard Queued: {:?}",
+        execution.await.unwrap().err()
+    );
+    fs::remove_file(fixture.root.join("slow-stop")).unwrap();
+    let result = execution.await.unwrap();
+    assert!(result.is_ok(), "{:?}", result.err());
+}
+
+/// However startup cleanup ends, a failure or a panic, later Builds are
+/// admitted on the slots it did not leave quarantined.
+#[tokio::test]
+async fn builds_go_on_after_startup_cleanup_fails_or_panics() {
+    for panics in [false, true] {
+        let fixture = Fixture::new().await;
+        if panics {
+            fixture
+                .service
+                .builds
+                .clean_up_with(|_| panic!("startup cleanup panicked"));
+        } else {
+            // Slot 0's abandoned worker won't stop, so cleanup fails and
+            // leaves slot 0 quarantined; a Build takes slot 1.
+            let worker = format!("buildx_buildkit_{}0", ployz_build::builder_name());
+            fs::write(fixture.root.join("workers"), worker).unwrap();
+            fs::write(fixture.root.join("fail-stop"), "").unwrap();
+            fixture
+                .local
+                .update_machine(
+                    serde_json::from_value(serde_json::json!({
+                        "update": {"build_concurrency": {"action": "set", "value": 2}}
+                    }))
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+            fixture.service.builds.clean_up_abandoned();
+        }
+        let (_sender, mut response) = fixture.request(Output::Load).await;
+        let admitted = tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                match event(&mut response).await {
+                    Event::Admitted { .. } => return,
+                    Event::Progress(_) => {}
+                    other => panic!("{other:?}"),
+                }
+            }
+        })
+        .await;
+        assert!(admitted.is_ok(), "no Build was admitted (panics: {panics})");
     }
 }

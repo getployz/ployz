@@ -103,24 +103,36 @@ impl Runner {
     /// Remove abandoned build slots' leftovers in the background, so the
     /// daemon reports ready without waiting on Docker to stop workers.
     pub(crate) fn clean_up_abandoned(&self) {
-        self.cleaned.send_replace(false);
-        let policy = self.policy.clone();
-        let cleaned = self.cleaned.clone();
-        tokio::spawn(async move {
-            let cleanup = tokio::task::spawn_blocking(move || {
-                ployz_build::Admission::cleanup_abandoned(&policy)
-            })
-            .await;
-            match cleanup {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => eprintln!(
-                    "WARNING: abandoned Build cleanup: {error}",
-                    error = ployz_core::error_chain::inline(&error),
-                ),
-                Err(error) => eprintln!("WARNING: abandoned Build cleanup stopped: {error}"),
+        self.clean_up_with(ployz_build::Admission::cleanup_abandoned);
+    }
+
+    /// Run `cleanup` in the background, with Builds waiting for it. However
+    /// it ends, a panic included, Builds go on: a slot it did not clean keeps
+    /// its mark and stays quarantined until an admission recovers it.
+    pub(crate) fn clean_up_with(
+        &self,
+        cleanup: impl FnOnce(&ployz_build::HostPolicy) -> Result<(), ployz_build::BuildError>
+        + Send
+        + 'static,
+    ) {
+        /// Lets Builds go on when dropped.
+        struct Done(watch::Sender<bool>);
+        impl Drop for Done {
+            fn drop(&mut self) {
+                self.0.send_replace(true);
             }
-            // Slots it left marked stay quarantined, so Builds may go on.
-            cleaned.send_replace(true);
+        }
+        self.cleaned.send_replace(false);
+        let done = Done(self.cleaned.clone());
+        let policy = self.policy.clone();
+        tokio::task::spawn_blocking(move || {
+            let _done = done;
+            if let Err(error) = cleanup(&policy) {
+                tracing::warn!(
+                    error = %ployz_core::error_chain::inline(&error),
+                    "abandoned Build cleanup left slots quarantined"
+                );
+            }
         });
     }
 
