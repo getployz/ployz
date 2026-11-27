@@ -1125,6 +1125,10 @@ impl LocalMachine {
     /// creation could run: refused before the turn at the scope the caller holds now, and
     /// checked again under it.
     ///
+    /// Unlike other admitted work, a transfer stops once its caller stops waiting, and
+    /// frees its turn after removing its staging name: a cancelled Deployment's pull must
+    /// not hold up the creates of the next one.
+    ///
     /// # Errors
     ///
     /// Returns when Docker is unavailable, admission is busy, an Operator names a tag, or
@@ -1134,6 +1138,8 @@ impl LocalMachine {
         request: PullImageFromMachineRequest,
     ) -> Result<ImagePulled, Error> {
         self.peer_pull_as(self.scope_now()?, &request)?;
+        let gone = tokio_util::sync::CancellationToken::new();
+        let _caller = gone.clone().drop_guard();
         self.finish_shared(move |local| async move {
             local.peer_pull_as(local.scope(), &request)?;
             let containers = local.docker()?;
@@ -1142,6 +1148,7 @@ impl LocalMachine {
                 &request.pull,
                 request.source,
                 &request.platform,
+                &gone,
             )
             .await
             {

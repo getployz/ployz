@@ -5,7 +5,9 @@
 //! [`super::switch`] sets out, so no two callers take them in different orders.
 //!
 //! Admitted work is detached from its RPC: a caller that stops waiting does not abandon
-//! it halfway, and the task holds its guards until the work ends.
+//! it halfway, and the task holds its guards until the work ends. A peer image transfer
+//! is the one exception: it stops when its caller does, and cleans up before it frees
+//! its turn.
 //!
 //! Each turn admitted work acts under checks the caller's access once taken, against the
 //! keys as they stand, and the work acts at the scope that check found: removing a key

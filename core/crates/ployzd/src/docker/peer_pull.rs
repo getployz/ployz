@@ -11,6 +11,7 @@ use tokio::{
     net::{TcpListener, TcpStream},
     process::Command,
 };
+use tokio_util::sync::CancellationToken;
 
 use super::{Error, LocalDocker};
 
@@ -20,16 +21,19 @@ use super::{Error, LocalDocker};
 /// through localhost instead of asking dockerd to speak HTTP to the WireGuard IP.
 /// `platform` makes Docker fetch that variant's manifest, configuration and
 /// layers; a source holding only the index fails the pull. An optional `tag`
-/// is published only after the pulled digest has been verified.
+/// is published only after the pulled digest has been verified. Once `gone`
+/// fires, the transfer stops and only its cleanup runs.
 ///
 /// # Errors
 ///
-/// Returns when the localhost proxy cannot listen or Docker cannot pull or tag.
+/// Returns when the localhost proxy cannot listen, Docker cannot pull or tag, or
+/// `gone` fired first.
 pub(crate) async fn pull_from_ingest(
     docker: &LocalDocker,
     pull: &PeerImagePull,
     source: ImageIngestDestination,
     platform: &str,
+    gone: &CancellationToken,
 ) -> Result<(), Error> {
     let image = pull.image();
     let retained = if image.contains('@') {
@@ -55,6 +59,7 @@ pub(crate) async fn pull_from_ingest(
         pull.tag().or(retained.as_deref()),
         platform,
         std::path::Path::new("docker"),
+        gone,
     )
     .await
 }
@@ -65,8 +70,9 @@ async fn pull_and_tag(
     tag: Option<&str>,
     platform: &str,
     docker: &std::path::Path,
+    gone: &CancellationToken,
 ) -> Result<(), Error> {
-    let result = async {
+    let transfer = async {
         docker_cli(docker, &["pull", "--platform", platform, pulled]).await?;
         if let Some(digest) = ployz_core::ImageRef::new(image).digest
             && descriptor_digest(docker, pulled).await?.as_deref() != Some(digest)
@@ -83,8 +89,13 @@ async fn pull_and_tag(
         // attempt must not leave a tag or remove one from an earlier delivery.
         docker_cli(docker, &["tag", "--", pulled, tag]).await?;
         Ok(())
-    }
-    .await;
+    };
+    // A caller gone stops the transfer here, killing the Docker CLI it runs, so Docker
+    // drops the pull and the admission turn it holds frees for the next Deployment.
+    let result = gone
+        .run_until_cancelled(transfer)
+        .await
+        .unwrap_or_else(|| Err(Error::PeerPull("the caller stopped waiting".into())));
     let _ = docker_cli(docker, &["image", "rm", pulled]).await;
     result
 }
@@ -177,6 +188,7 @@ impl Drop for ImageProxy {
 async fn docker_cli(docker: &std::path::Path, args: &[&str]) -> Result<String, Error> {
     let output = Command::new(docker)
         .args(args)
+        .kill_on_drop(true)
         .output()
         .await
         .map_err(|error| Error::PeerPull(ployz_core::error_chain::inline(&error)))?;
@@ -205,9 +217,15 @@ mod tests {
                 image: image.into(),
             };
             let (runtime, _fake) = crate::docker::test_support::fake_runtime().await;
-            let error = pull_from_ingest(&runtime.local_docker(), &pull, source, "linux/amd64")
-                .await
-                .unwrap_err();
+            let error = pull_from_ingest(
+                &runtime.local_docker(),
+                &pull,
+                source,
+                "linux/amd64",
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
             assert!(matches!(&error, Error::PeerPull(_)), "{error}");
             assert!(error.to_string().contains("digest"), "{error}");
         }
@@ -224,9 +242,15 @@ mod tests {
         };
         let (runtime, fake) = crate::docker::test_support::fake_runtime().await;
 
-        let error = pull_from_ingest(&runtime.local_docker(), &pull, source, "linux/amd64")
-            .await
-            .unwrap_err();
+        let error = pull_from_ingest(
+            &runtime.local_docker(),
+            &pull,
+            source,
+            "linux/amd64",
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap_err();
 
         assert!(matches!(error, Error::UnsupportedImageStore), "{error}");
         assert_eq!(fake.requests.lock().unwrap().len(), 1);
@@ -276,7 +300,15 @@ esac
             for mode in ["inspect", "json", "digest", "tag", "pull", "success"] {
                 fs::write(root.join("mode"), mode).unwrap();
                 fs::write(root.join("calls"), "").unwrap();
-                let result = pull_and_tag(&image, &pulled, Some(tag), "linux/arm64", &docker).await;
+                let result = pull_and_tag(
+                    &image,
+                    &pulled,
+                    Some(tag),
+                    "linux/arm64",
+                    &docker,
+                    &CancellationToken::new(),
+                )
+                .await;
                 assert_eq!(result.is_ok(), mode == "success", "{mode}: {result:?}");
                 if let Err(error) = result {
                     assert!(!error.to_string().contains("cleanup-failed"), "{error}");
@@ -368,7 +400,15 @@ esac
             )
             .unwrap();
             fs::write(root.join("calls"), "").unwrap();
-            let result = pull_and_tag(&image, &pulled, Some(&name), "linux/amd64", &docker).await;
+            let result = pull_and_tag(
+                &image,
+                &pulled,
+                Some(&name),
+                "linux/amd64",
+                &docker,
+                &CancellationToken::new(),
+            )
+            .await;
             let calls = fs::read_to_string(root.join("calls")).unwrap();
             assert_eq!(
                 calls.contains(&format!("tag -- {pulled} {name}")),
@@ -391,9 +431,98 @@ esac
         let ordinary = "app:ployz-sha256-staging";
         let pulled = format!("127.0.0.1:1234/{ordinary}");
         fs::write(root.join("name"), "free").unwrap();
-        pull_and_tag(ordinary, &pulled, None, "linux/amd64", &docker)
-            .await
-            .unwrap();
+        pull_and_tag(
+            ordinary,
+            &pulled,
+            None,
+            "linux/amd64",
+            &docker,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A cancelled Deployment's transfer must not run on: it holds the admission turn the
+    /// next Deployment's creates wait for. Once the caller is gone, the pull ends, its
+    /// Docker CLI is killed, and the staging name is removed, with no tag written.
+    #[tokio::test]
+    async fn a_pull_whose_caller_is_gone_stops_and_cleans_up() {
+        use std::{fs, os::unix::fs::PermissionsExt as _};
+
+        let root = std::env::temp_dir().join(format!(
+            "ployz-gone-pull-{}",
+            ployz_core::MachineId::random()
+        ));
+        fs::create_dir(&root).unwrap();
+        let started = root.join("started");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&started)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let docker = root.join("docker");
+        fs::write(
+            &docker,
+            r#"#!/bin/sh
+cd "$(dirname "$0")"
+printf '%s\n' "$*" >> calls
+case "$1" in
+  pull) echo $$ > started; exec sleep 600 ;;
+esac
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&docker, fs::Permissions::from_mode(0o700)).unwrap();
+        let image = format!("app@sha256:{}", "1".repeat(64));
+        let pulled = format!("127.0.0.1:1234/{image}");
+        let gone = CancellationToken::new();
+
+        let pull = pull_and_tag(&image, &pulled, None, "linux/amd64", &docker, &gone);
+        let pid = async {
+            let started = started.clone();
+            let pid = tokio::task::spawn_blocking(move || fs::read_to_string(started))
+                .await
+                .unwrap()
+                .unwrap();
+            gone.cancel();
+            pid.trim().to_owned()
+        };
+        let (result, pid) = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            tokio::join!(pull, pid)
+        })
+        .await
+        .expect("a pull whose caller is gone must end");
+
+        assert!(result.is_err(), "{result:?}");
+        let calls = fs::read_to_string(root.join("calls")).unwrap();
+        assert_eq!(
+            calls.lines().last(),
+            Some(format!("image rm {pulled}").as_str()),
+            "{calls}"
+        );
+        assert!(
+            !calls.lines().any(|line| line.starts_with("tag ")),
+            "{calls}"
+        );
+        let stat = format!("/proc/{pid}/stat");
+        let ended = || {
+            fs::read_to_string(&stat).map_or(true, |stat| {
+                stat.rsplit_once(") ")
+                    .is_some_and(|(_, rest)| rest.starts_with('Z'))
+            })
+        };
+        for _ in 0..200 {
+            if ended() {
+                break;
+            }
+            // real-wait: the killed pull exits on the kernel's schedule, with nothing to await.
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(ended(), "the Docker pull still runs");
         fs::remove_dir_all(root).unwrap();
     }
 }
