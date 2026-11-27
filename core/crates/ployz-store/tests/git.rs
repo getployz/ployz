@@ -913,6 +913,42 @@ fn github_run(run_id: u64) -> GithubRun {
     }
 }
 
+/// A deadline a test's write always meets.
+fn in_time() -> std::time::Instant {
+    std::time::Instant::now() + std::time::Duration::from_secs(60)
+}
+
+#[test]
+fn a_run_recorded_after_its_deadline_is_refused_and_leaves_the_build_waiting() {
+    let (store, who) = shop();
+    store
+        .write_trusted(&who, &create("acme/web", None), &evidence())
+        .unwrap();
+    let deployment = admit(&store, &who, 1, &[]);
+    store
+        .pin(
+            &deployment,
+            &pins(&backend::sha(&"a".repeat(40))),
+            &backend::members(),
+        )
+        .unwrap();
+    let id = GithubBuildId::parse(&format!("{deployment}.web")).unwrap();
+    // A write whose caller already stopped waiting: Cloud may have moved on to another run.
+    let late = store
+        .github_dispatched(&id, &github_run(RUN), std::time::Instant::now())
+        .unwrap_err();
+    assert_eq!(late.code, RpcErrorCode::Unavailable);
+    assert_eq!(
+        store.github_build(&id).unwrap_err().code,
+        RpcErrorCode::NotFound
+    );
+    // The run Cloud moved on to still takes the build.
+    store
+        .github_dispatched(&id, &github_run(RUN + 1), in_time())
+        .unwrap();
+    assert!(store.github_build(&id).is_ok());
+}
+
 fn claims() -> GithubClaims {
     GithubClaims {
         repository_id: "11".into(),
@@ -965,11 +1001,15 @@ fn dispatched(store: &ConfigStore, who: &Actor) -> GithubBuildId {
         )
         .unwrap();
     let id = GithubBuildId::parse(&format!("{deployment}.web")).unwrap();
-    store.github_dispatched(&id, &github_run(RUN)).unwrap();
+    store
+        .github_dispatched(&id, &github_run(RUN), in_time())
+        .unwrap();
     // A retried dispatch step replays; another run can't take it.
-    store.github_dispatched(&id, &github_run(RUN)).unwrap();
+    store
+        .github_dispatched(&id, &github_run(RUN), in_time())
+        .unwrap();
     let error = store
-        .github_dispatched(&id, &github_run(RUN + 1))
+        .github_dispatched(&id, &github_run(RUN + 1), in_time())
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::Conflict);
     id
@@ -1186,7 +1226,7 @@ fn a_skipped_github_build_goes_back_to_the_next_builder_and_cancellation_lists_o
         .unwrap();
     assert_eq!(
         store
-            .github_dispatched(&id, &github_run(RUN + 1))
+            .github_dispatched(&id, &github_run(RUN + 1), in_time())
             .unwrap_err()
             .code,
         RpcErrorCode::Conflict
@@ -1648,11 +1688,11 @@ fn a_build_github_passed_on_stays_passed_on_for_its_deployment() {
             );
         };
         refused(
-            store.github_dispatched(&id, &github_run(RUN + 1)),
+            store.github_dispatched(&id, &github_run(RUN + 1), in_time()),
             "a retried start's new run",
         );
         refused(
-            store.github_dispatched(&id, &github_run(RUN)),
+            store.github_dispatched(&id, &github_run(RUN), in_time()),
             "the run it passed on",
         );
         refused(

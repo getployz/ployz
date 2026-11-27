@@ -556,18 +556,32 @@ impl ConfigStore {
         self.storage.read(|tx| teardown::applied_volumes(tx, who))
     }
 
-    /// Hand a pinned Git build that hasn't started to GitHub run `run`. In-process only.
+    /// Hand a pinned Git build that hasn't started to GitHub run `run`, only if the
+    /// write is ready to commit before `until`. In-process only.
+    ///
+    /// The deadline is checked last, after every statement but the commit, so a caller
+    /// that stops waiting once `until` and the commit's bound have passed knows the run
+    /// was never recorded: a late write is refused, never the build's holder.
     ///
     /// # Errors
     /// Returns `conflict` once the Deployment no longer wants it or it went to
-    /// another run or Builder, `not_found` for an unknown build, or a storage error.
+    /// another run or Builder, `not_found` for an unknown build, `unavailable` when
+    /// `until` passed first, or a storage error.
     pub fn github_dispatched(
         &self,
         id: &GithubBuildId,
         github: &GithubRun,
+        until: std::time::Instant,
     ) -> Result<(), RpcError> {
-        self.storage
-            .write(|tx| build::github_dispatched(tx, id, github))
+        self.storage.write(|tx| {
+            build::github_dispatched(tx, id, github)?;
+            if std::time::Instant::now() >= until {
+                return Err(RpcError::unavailable(
+                    "The Config Store answered too late to record the run; nothing was recorded",
+                ));
+            }
+            Ok(())
+        })
     }
 
     /// A Git build handed to GitHub. In-process only.

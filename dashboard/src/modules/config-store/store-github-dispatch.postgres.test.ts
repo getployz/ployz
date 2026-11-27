@@ -302,8 +302,8 @@ it.effect.each(["committed", "late", "unanswered"] as const)(
     const clock = yield* Clock.Clock;
     const cloud = yield* provided(cloudStore);
     const recordRun = cloud.githubDispatched.bind(cloud);
-    // Every record answers unavailable. The last one either committed anyway or is still running when its step ends,
-    // as a timed-out Store call can.
+    // Every record answers unavailable. The last one either committed anyway, as when the connection drops while
+    // committing, or reaches the Store again only after the step gave up.
     let writes = 0;
     cloud.githubDispatched = async (build, run) => {
       writes += 1;
@@ -330,8 +330,7 @@ it.effect.each(["committed", "late", "unanswered"] as const)(
     } else if (write === "unanswered") {
       expect(cancelled).toEqual([]);
     } else {
-      // The last write, still running, reaches the Store only after the step gave up. The build was passed on first,
-      // so it is refused.
+      // The record reaches the Store only after the step gave up. The build was passed on first, so it is refused.
       const late = yield* Effect.exit(Effect.tryPromise(() => recordRun(target.build, {
         run_id: RUN, run_url: runUrl(RUN), workflow_ref: WORKFLOW, repository: "acme/web", installation_id: 7,
       })));

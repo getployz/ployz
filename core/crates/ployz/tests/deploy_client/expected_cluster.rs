@@ -197,7 +197,13 @@ fn dispatched() -> (Arc<ConfigStore>, Actor, GithubBuildId) {
         repository: RepositoryName::parse("acme/web").unwrap(),
         installation_id: 7,
     };
-    store.github_dispatched(&id, &run).unwrap();
+    store
+        .github_dispatched(
+            &id,
+            &run,
+            std::time::Instant::now() + std::time::Duration::from_secs(60),
+        )
+        .unwrap();
     (store, who, id)
 }
 

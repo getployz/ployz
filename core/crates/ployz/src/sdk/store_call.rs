@@ -16,6 +16,14 @@ const QUEUE_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long a caller waits for a call. The database's own statement and lock
 /// timeouts end the work itself; past this the outcome is unknown.
 const RUN_TIMEOUT: Duration = Duration::from_secs(30);
+/// The longest the database runs one statement, the commit included
+/// (`ployz_store`'s Postgres timeout).
+const STATEMENT_BOUND: Duration = Duration::from_secs(10);
+/// How long after it is sent a write that must not land late may still be ready to
+/// commit. Its commit then ends within [`STATEMENT_BOUND`], before the caller stops
+/// waiting, so an `unavailable` answer means it never committed.
+pub const LANDS_WITHIN: Duration = Duration::from_secs(15);
+const _: () = assert!(LANDS_WITHIN.as_secs() + STATEMENT_BOUND.as_secs() < RUN_TIMEOUT.as_secs());
 
 // ponytail: one bound per process, not per Store handle; Cloud opens one Store.
 static PERMITS: Semaphore = Semaphore::const_new(CONCURRENCY);
