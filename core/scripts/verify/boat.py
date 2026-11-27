@@ -14,6 +14,7 @@ import re
 import shlex
 import shutil
 import signal
+import socket
 import stat
 import subprocess
 import sys
@@ -287,6 +288,24 @@ def endpoint(text):
     """Host and port from a sandbox's sshEndpoint, such as 213.32.24.158:19040."""
     address, _, port = text.rpartition(":")
     return address.strip("[]"), int(port)
+
+
+RELAY = "relay.ployz.dev"
+
+
+def relay_block():
+    """A guest script that keeps a test Machine off the production relay: the name points at loopback, and new
+    connections to its addresses, resolved here at run time, are refused. Replies to connections the relay's host
+    opens, such as this host's SSH when it is the same box, are not new, so they pass."""
+    try:
+        addresses = sorted({info[4][0] for info in socket.getaddrinfo(RELAY, 443, proto=socket.IPPROTO_TCP)})
+    except socket.gaierror:
+        addresses = []
+    rules = "".join(
+        f"{table} -C OUTPUT -d {address} -m conntrack --ctstate NEW -j REJECT 2>/dev/null"
+        f" || {table} -I OUTPUT 1 -d {address} -m conntrack --ctstate NEW -j REJECT\n"
+        for address in addresses for table in ["ip6tables" if ":" in address else "iptables"])
+    return (f"grep -q ' {RELAY}$' /etc/hosts || printf '127.0.0.1 {RELAY}\\n::1 {RELAY}\\n' >> /etc/hosts\n" + rules)
 
 
 def boat_node(address):
@@ -821,7 +840,7 @@ class Provider:
             self.install_key(node, sandbox)
         self.wait_agent(node)
         if self.run.get("bare"):
-            self.exec(node, ["sh", "-ec", OPEN_WEB])
+            self.exec(node, ["sh", "-ec", relay_block() + OPEN_WEB])
             if self.run.get("distro") == "debian-12":
                 key = (self.private / "id_ed25519.pub").read_text().strip()
                 self.exec(node, ["bash", "-ec", GUEST, "guest", key], timeout=900)
@@ -840,7 +859,7 @@ for pid in $(pgrep -f {LISTENER}); do [ "$pid" = "$main" ] || kill "$pid"; done
 if [ -n "$(ss -Hlun 'sport = :51820')" ]; then echo "UDP port 51820 is taken" >&2; exit 1; fi
 # Boat turns UFW back on in every clone, so the bake cannot keep it off.
 ufw disable >/dev/null
-{REOPEN_DOCKER}
+{relay_block()}{REOPEN_DOCKER}
 {bake}""", "boot", self.run["corrosion"], *IMAGES], timeout=600)
         if POOL_SIZE and not reused and self.run["image"] != SNAPSHOT and not fingerprints(self.run["image"]).exists():
             # The first fresh clone of a bake records what reset must return every later sandbox to.

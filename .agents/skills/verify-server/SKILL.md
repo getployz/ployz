@@ -244,7 +244,7 @@ The lab's network differs from production in ways that can pass for product bugs
 
 - Boat Machines are public on IPv6 only; their IPv4 is private behind the node's NAT.
 - This host and the lab Cloud are IPv4-only, and reach the Machines over SSH.
-- Lab daemons use the production relay, so a relay outage fails every enrollment. When all of them time out, check the relay first.
+- Lab Machines never reach the production relay: each Boat start points `relay.ployz.dev` at loopback and refuses new connections to the addresses it resolves to on this host. Replies to this host's own SSH still pass. Management goes direct, never relayed.
 - No lab path exercises NAT64.
 - A bare host reports the node's shared IPv4 until `server set --public-ip`; see [Bare hosts](#bare-hosts).
 

@@ -794,7 +794,9 @@ class Pool(unittest.TestCase):
         scripts = []
         provider.exec = lambda node, argv, **kwargs: scripts.append(" ".join(argv))
         provider.start(dict(name="machine-1"))
-        self.assertEqual(scripts, ["sh -ec ufw allow 80/tcp >/dev/null; ufw allow 443/tcp >/dev/null"])
+        [script] = scripts
+        self.assertIn("ufw allow 80/tcp >/dev/null; ufw allow 443/tcp >/dev/null", script)
+        self.assertIn("relay.ployz.dev", script, "a bare host stays off the production relay too")
 
     def test_down_deletes_a_bare_sandbox_and_never_pools_it(self):
         provider = self.provider("machine-1")
@@ -1197,6 +1199,27 @@ class Reset(unittest.TestCase):
         self.assertEqual(journal, {"var/log/journal": "/", "var/log/journal/abc": "/", "var/log/journal/abc/system.journal": ""})
         # Reset runs it after RESTORE, from /.
         self.assertGreater(boat.RESET.find(boat.JOURNAL_RESET), boat.RESET.find("cd /\n" + boat.RESTORE))
+
+
+class RelayBlock(unittest.TestCase):
+    """A test Machine never reaches the production relay: its name points at loopback and each address it
+    resolves to refuses new connections, IPv4 and IPv6 alike."""
+
+    def script(self, resolved):
+        with unittest.mock.patch.object(boat.socket, "getaddrinfo", side_effect=resolved):
+            return boat.relay_block()
+
+    def test_every_address_the_relay_resolves_to_is_refused(self):
+        script = self.script(lambda *_, **__: [(None, None, None, "", ("192.0.2.9", 443)),
+                                               (None, None, None, "", ("2001:db8::9", 443, 0, 0))])
+        self.assertIn("127.0.0.1 relay.ployz.dev", script)
+        self.assertIn("iptables -I OUTPUT 1 -d 192.0.2.9 -m conntrack --ctstate NEW -j REJECT", script)
+        self.assertIn("ip6tables -I OUTPUT 1 -d 2001:db8::9 -m conntrack --ctstate NEW -j REJECT", script)
+
+    def test_a_relay_that_does_not_resolve_still_has_its_name_pointed_away(self):
+        script = self.script(boat.socket.gaierror("no name"))
+        self.assertIn("::1 relay.ployz.dev", script)
+        self.assertNotIn("REJECT", script)
 
 
 if __name__ == "__main__":
