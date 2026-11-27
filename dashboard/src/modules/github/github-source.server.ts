@@ -9,7 +9,7 @@ import { createGunzip } from "node:zlib";
 import { Data, Effect } from "effect";
 import * as tar from "tar";
 import { accessFor } from "./github-access";
-import { GithubApi, resolveGithubBranchHead, resolveGithubRepository } from "./github-observation.api";
+import { resolveGithubBranchHead, resolveGithubRepository } from "./github-observation.api";
 import { getCachedGithubRepositoryForOrganization } from "./github.repository";
 
 /** A repository or uploaded source Cloud can't read or refuses; users read the message. */
@@ -17,8 +17,8 @@ export class GithubSourceError extends Data.TaggedError("GithubSourceError")<{
   readonly message: string;
 }> { readonly publicErrorCategory = "validation" as const; }
 
-type SourceIdentity = { organizationId: string; installationId: number | null; repositoryId: number };
-const authorizeRepository = Effect.fn("Github.authorizeSourceRepository")(function* (input: SourceIdentity) {
+export type SourceIdentity = { organizationId: string; installationId: number | null; repositoryId: number };
+export const authorizeRepository = Effect.fn("Github.authorizeSourceRepository")(function* (input: SourceIdentity) {
   if (input.installationId !== null && !(yield* getCachedGithubRepositoryForOrganization({ ...input, installationId: input.installationId }))) {
     return yield* new GithubSourceError({ message: "Repository is not connected to this Organization." });
   }
@@ -215,22 +215,3 @@ export async function resolveSourcePaths(repositoryDirectory: string, rootDir: s
   if (!contained(repository, dockerfile) || !(await stat(dockerfile)).isFile()) throw new GithubSourceError({ message: "Dockerfile must be a file inside the repository." });
   return { repositoryDirectory: repository, rootDirectory, dockerfilePath: dockerfile };
 }
-
-export const materializeGithubSource = Effect.fn("Github.materializeSource")(function* (input: SourceIdentity & {
-  sha: string; rootDir: string; dockerfilePath?: string;
-}) {
-  const repository = yield* authorizeRepository(input);
-  const directory = yield* Effect.acquireRelease(
-    Effect.tryPromise({ try: () => mkdtemp(path.join(tmpdir(), "ployz-source-")), catch: () => new GithubSourceError({ message: "Could not create source workspace." }) }),
-    (directory) => Effect.tryPromise({
-      try: () => rm(directory, { recursive: true, force: true }),
-      catch: () => new GithubSourceError({ message: "Could not remove source workspace." }),
-    }).pipe(Effect.tapError((error) => Effect.logError("Source workspace cleanup failed.", error)), Effect.ignore),
-  );
-  const api = yield* GithubApi;
-  const response = yield* api.archive({ access: accessFor(input.organizationId, input.installationId), repository, sha: input.sha });
-  return yield* Effect.tryPromise({
-    try: async (signal) => resolveSourcePaths(await extractGithubSource(response, directory, signal), input.rootDir, input.dockerfilePath),
-    catch: (error) => error instanceof GithubSourceError ? error : new GithubSourceError({ message: "Could not acquire the pinned repository source." }),
-  });
-});

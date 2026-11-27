@@ -1,10 +1,11 @@
 import "@tanstack/react-start/server-only";
-import type { GithubBuild, GithubClaims } from "@ployz/sdk";
+import type { ConfigStore, GithubBuild, GithubClaims } from "@ployz/sdk";
 import { eq } from "drizzle-orm";
 import { Effect, Schema } from "effect";
 import { cloudStore, dialedStore, refusedWith, storeTry, withDeployDial } from "#/modules/config-store/store-sdk.server";
 import { runnerRefusal } from "#/modules/config-store/store-refusal";
-import { pinStoreSources } from "#/modules/config-store/store-sources.server";
+import { pinStoreSources, sourceIdentity } from "#/modules/config-store/store-sources.server";
+import { GithubSources } from "#/modules/github/github-sources.server";
 import { deploymentRun } from "#/modules/config-store/tables";
 import { installationAccess, organizationAccess } from "#/modules/github/github-access";
 import {
@@ -23,7 +24,7 @@ import { bearerToken } from "#/server/bearer";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { Conflict, Forbidden, NotFound, Unauthorized, Validation } from "#/server/public-error";
-import { serversLackingIn } from "#/modules/runtime/daemon-compat.server";
+import { serversLackingEnsure, serversLackingIn } from "#/modules/runtime/daemon-compat.server";
 
 /**
  * GitHub as a Builder for Store Deployments. Before the runner claims a Deployment, each Git Service whose walk
@@ -133,6 +134,29 @@ const serversBuild = (organizationId: string) => firstRuntimeFrame(organizationI
  */
 const serversLackingGrants = (organizationId: string) => serversLackingIn(organizationId, requirements.buildGrantInspect);
 
+/** Pin the Deployment's Git Services and start fetching each pin for the runner. */
+const pinAndPrefetch = Effect.fn("StoreGithub.pinAndPrefetch")(function* (store: ConfigStore, data: ConfigDeploymentAdmittedEventData) {
+  const sources = yield* pinStoreSources(store, data.organizationId, data.deploymentId).pipe(
+    Effect.catchTag("SourceUnreadable", () => Effect.succeed([])),
+    Effect.catchIf(refusedWith("conflict"), () => Effect.succeed([])),
+  );
+  const githubSources = yield* GithubSources;
+  for (const source of sources) {
+    if (source.commit !== null) yield* githubSources.prefetch({ ...sourceIdentity(data.organizationId, source), sha: source.commit });
+  }
+  return sources;
+});
+
+/**
+ * The Servers too old to run a Deployment, read while its sources are pinned and start fetching. A pin never moves,
+ * so planning reads the same pins after.
+ */
+export const serversLackingWhilePrefetching = Effect.fn("StoreGithub.serversLackingWhilePrefetching")(function* (data: ConfigDeploymentAdmittedEventData) {
+  const store = yield* cloudStore;
+  const [lacking] = yield* Effect.all([serversLackingEnsure(data.organizationId), pinAndPrefetch(store, data).pipe(Effect.ignore)], { concurrency: 2 });
+  return lacking;
+});
+
 /**
  * Pin the Deployment's Git Services and list those whose walk starts with GitHub and haven't started; a walk that
  * starts with the Servers starts with its next Builder when no Server takes builds. Anything else (an unreadable
@@ -140,10 +164,7 @@ const serversLackingGrants = (organizationId: string) => serversLackingIn(organi
  */
 export const planStoreGithubBuilds = Effect.fn("StoreGithub.plan")(function* (data: ConfigDeploymentAdmittedEventData) {
   const store = yield* cloudStore;
-  const sources = yield* pinStoreSources(store, data.organizationId, data.deploymentId).pipe(
-    Effect.catchTag("SourceUnreadable", () => Effect.succeed([])),
-    Effect.catchIf(refusedWith("conflict"), () => Effect.succeed([])),
-  );
+  const sources = yield* pinAndPrefetch(store, data);
   // A build GitHub skipped (with why) belongs to the next Builder.
   const pending = sources.filter((source) => source.status === "pending" && source.message === null);
   const servers = pending.some((source) => source.builders[0] === "servers" && source.builders.includes("github"))
@@ -164,6 +185,32 @@ export const planStoreGithubBuilds = Effect.fn("StoreGithub.plan")(function* (da
 });
 
 export type StoreGithubStart = { kind: "dispatched"; runId: number } | { kind: "done" };
+
+type WorkflowRead = ReturnType<typeof checkGithubBuildWorkflow>;
+/** What starting a build reads beyond the build itself, the same for every build in a Deployment. */
+type StartReads = {
+  readonly workflow: (access: Parameters<typeof checkGithubBuildWorkflow>[0], repositoryId: number) => WorkflowRead;
+  readonly lacking: ReturnType<typeof serversLackingGrants>;
+};
+const directReads = (organizationId: string): StartReads => ({ workflow: checkGithubBuildWorkflow, lacking: serversLackingGrants(organizationId) });
+
+/**
+ * Start every build the walk hands GitHub first, as {@link startStoreGithubBuild} does, together: each repository's
+ * workflow and the Servers' grants are read once for all of them.
+ */
+export const startStoreGithubBuilds = Effect.fn("StoreGithub.startAll")(function* (organizationId: string, targets: ReadonlyArray<StoreGithubTarget>) {
+  // A repository reaches the Organization through one installation.
+  const workflows = new Map<number, WorkflowRead>();
+  for (const { installationId, repositoryId } of targets) {
+    if (installationId === null || workflows.has(repositoryId)) continue;
+    workflows.set(repositoryId, yield* Effect.cached(checkGithubBuildWorkflow(organizationAccess(organizationId, installationId), repositoryId)));
+  }
+  const reads: StartReads = {
+    workflow: (access, repositoryId) => workflows.get(repositoryId) ?? checkGithubBuildWorkflow(access, repositoryId),
+    lacking: yield* Effect.cached(serversLackingGrants(organizationId)),
+  };
+  return yield* Effect.forEach(targets, (target) => startStoreGithubBuild(organizationId, target, reads), { concurrency: "unbounded" });
+});
 const done = { kind: "done" } as const;
 
 /**
@@ -174,7 +221,9 @@ const done = { kind: "done" } as const;
  * step's first try handed it off and lost the answer, is followed, not started again: no other Builder may take it
  * until that run lets it go.
  */
-export const startStoreGithubBuild = Effect.fn("StoreGithub.start")(function* (organizationId: string, target: StoreGithubTarget) {
+export const startStoreGithubBuild = Effect.fn("StoreGithub.start")(function* (
+  organizationId: string, target: StoreGithubTarget, reads: StartReads = directReads(organizationId),
+) {
   // The run that holds the build, to follow. A build no run has held yet is not found.
   const holder = heldGithubBuild(target.build).pipe(
     Effect.catchIf(refusedWith("not_found"), () => Effect.succeed(null)),
@@ -202,13 +251,13 @@ export const startStoreGithubBuild = Effect.fn("StoreGithub.start")(function* (o
   const installationId = target.installationId;
   const access = organizationAccess(organizationId, installationId);
   return yield* Effect.gen(function* () {
-    const workflow = yield* checkGithubBuildWorkflow(access, target.repositoryId);
+    const workflow = yield* reads.workflow(access, target.repositoryId);
     const repository = workflow.fullName ?? target.repository;
     if (workflow.readiness === "no_permission") return yield* skip(`the Ployz GitHub App can't run Actions in ${repository}`);
     if (workflow.readiness === "setup_needed" || !workflow.fullName || !workflow.defaultBranch) {
       return yield* skip(`${repository} has no .github/workflows/ployz-build.yml on its default branch`);
     }
-    const lacking = yield* serversLackingGrants(organizationId);
+    const lacking = yield* reads.lacking;
     if (lacking.length > 0) return yield* skip(`GitHub builds need a newer Ployz on ${lacking.join(", ")}`);
     const start = yield* withDeployDial(organizationId, ({ connections, expect }) => store.githubStart(target.build, connections, expect));
     const fullName = workflow.fullName;

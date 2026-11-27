@@ -9,6 +9,7 @@ import { cloudStore, CloudStoreLive } from "#/modules/config-store/store-sdk.ser
 import { GithubRepositories, GithubRepositoriesLive } from "#/modules/github/github-cli.server";
 import { GithubAuthority, type GithubAuthorityService } from "#/modules/github/github-authority.server";
 import { GithubApi, type GithubApiService } from "#/modules/github/github-observation.api";
+import { GithubSourcesLive } from "#/modules/github/github-sources.server";
 import { githubInstallation, organizationGithubInstallation } from "#/modules/github/tables";
 import { ANONYMOUS_ORGANIZATION_NAME } from "#/modules/sandbox/anonymous-signup.server";
 import { hashClaimSecret } from "#/modules/sandbox/claim-required.server";
@@ -58,6 +59,7 @@ const storeCloudLayer = Effect.fn(function* (options: StoreCloudOptions) {
     SecretEncryptionLive.pipe(Layer.provide(configLayer)),
     CloudStoreLive.pipe(Layer.provide(Layer.merge(configLayer, database))),
     Layer.succeed(GithubApi, github),
+    GithubSourcesLive,
     Layer.succeed(GithubAuthority, options.authority ?? fakeGithubAuthority().service),
     options.repositories === undefined
       ? GithubRepositoriesLive.pipe(Layer.provide(Layer.merge(database, Layer.succeed(GithubApi, github))))

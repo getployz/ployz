@@ -1,0 +1,109 @@
+import "@tanstack/react-start/server-only";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { Clock, Context, Deferred, Effect, Exit, Layer, Schedule, Scope } from "effect";
+import { accessFor } from "./github-access";
+import { GithubApi, type GithubReadError } from "./github-observation.api";
+import { authorizeRepository, extractGithubSource, GithubSourceError, type SourceIdentity } from "./github-source.server";
+
+/** How long a checkout no Deployment holds stays for the next one at the same commit. */
+const IDLE_MS = 10 * 60_000;
+/** Checkouts no Deployment holds, newest kept, past which the oldest goes at once. */
+const IDLE_KEPT = 2;
+
+type Pin = SourceIdentity & { sha: string };
+type Authorized = ReturnType<typeof authorizeRepository>;
+type Failure = GithubSourceError | GithubReadError;
+type Checkout = { readonly ready: Deferred.Deferred<string, Failure>; workspace: string | null; holders: number; idleSince: number | null };
+
+export interface GithubSourcesService {
+  /** Start checking out a pinned commit, if the Organization may still read it, for a later `checkout` to find. */
+  readonly prefetch: (pin: Pin) => Effect.Effect<void, never, GithubApi | Effect.Services<Authorized>>;
+  /**
+   * The repository's directory at the pinned commit, until the scope closes. Every Service at one commit shares it, and
+   * reads it only. The Organization's access is checked on each call; a failed checkout is forgotten.
+   */
+  readonly checkout: (pin: Pin) => Effect.Effect<string, Failure | Effect.Error<Authorized>, Scope.Scope | GithubApi | Effect.Services<Authorized>>;
+}
+
+export class GithubSources extends Context.Service<GithubSources, GithubSourcesService>()("ployz/GithubSources") {}
+
+const keyOf = (pin: Pin) => `${pin.organizationId}:${pin.repositoryId}@${pin.sha}`;
+
+export const makeGithubSources = Effect.gen(function* () {
+  const scope = yield* Effect.scope;
+  const checkouts = new Map<string, Checkout>();
+  const remove = (workspace: string | null) => workspace === null ? Effect.void : Effect.promise(() => rm(workspace, { recursive: true, force: true }));
+  const forget = (key: string, checkout: Checkout) => Effect.suspend(() => {
+    if (checkouts.get(key) === checkout) checkouts.delete(key);
+    return remove(checkout.workspace);
+  });
+  const evict = Effect.gen(function* () {
+    const now = yield* Clock.currentTimeMillis;
+    const idle = [...checkouts].filter(([, checkout]) => checkout.idleSince !== null)
+      .sort(([, a], [, b]) => (b.idleSince ?? 0) - (a.idleSince ?? 0));
+    for (const [index, [key, checkout]] of idle.entries()) {
+      if (index >= IDLE_KEPT || now - (checkout.idleSince ?? now) >= IDLE_MS) yield* forget(key, checkout);
+    }
+  });
+  yield* Scope.addFinalizer(scope, Effect.suspend(() => Effect.forEach([...checkouts], ([key, checkout]) => forget(key, checkout), { discard: true })));
+  yield* evict.pipe(Effect.repeat(Schedule.spaced("1 minute")), Effect.forkIn(scope));
+
+  const fetch = (pin: Pin, repository: Effect.Success<Authorized>, checkout: Checkout) => Effect.gen(function* () {
+    const workspace = yield* Effect.tryPromise({ try: () => mkdtemp(path.join(tmpdir(), "ployz-source-")), catch: () => new GithubSourceError({ message: "Could not create source workspace." }) });
+    checkout.workspace = workspace;
+    const api = yield* GithubApi;
+    const response = yield* api.archive({ access: accessFor(pin.organizationId, pin.installationId), repository, sha: pin.sha });
+    return yield* Effect.tryPromise({
+      try: (signal) => extractGithubSource(response, workspace, signal),
+      catch: (error) => error instanceof GithubSourceError ? error : new GithubSourceError({ message: "Could not acquire the pinned repository source." }),
+    });
+  });
+
+  /** The checkout of `pin`, started when there is none; held, it isn't evicted until released. */
+  const ensure = Effect.fn("GithubSources.ensure")(function* (pin: Pin, hold: boolean) {
+    const repository = yield* authorizeRepository(pin);
+    const key = keyOf(pin);
+    const now = yield* Clock.currentTimeMillis;
+    const ready = yield* Deferred.make<string, Failure>();
+    const found = checkouts.get(key);
+    const checkout: Checkout = found ?? { ready, workspace: null, holders: 0, idleSince: now };
+    if (hold) { checkout.holders += 1; checkout.idleSince = null; }
+    if (found !== undefined) return checkout;
+    checkouts.set(key, checkout);
+    const services = yield* Effect.context<GithubApi>();
+    yield* fetch(pin, repository, checkout).pipe(
+      Effect.provideContext(services),
+      // A checkout evicted while it was fetched is removed once the fetch stops writing to it.
+      Effect.onExit((exit) => Exit.isSuccess(exit) && checkouts.get(key) === checkout ? Effect.void : forget(key, checkout)),
+      Effect.exit,
+      Effect.flatMap((exit) => Deferred.done(checkout.ready, exit)),
+      Effect.forkIn(scope),
+    );
+    yield* evict;
+    return checkout;
+  });
+
+  const prefetch: GithubSourcesService["prefetch"] = (pin) => ensure(pin, false).pipe(
+    Effect.catchCause((cause) => Effect.logWarning("Could not start a source checkout early.", cause)),
+    Effect.forkIn(scope),
+    Effect.asVoid,
+  );
+
+  const checkout: GithubSourcesService["checkout"] = Effect.fn("GithubSources.checkout")(function* (pin: Pin) {
+    const held = yield* Effect.acquireRelease(
+      ensure(pin, true),
+      (checkout) => Clock.currentTimeMillis.pipe(
+        Effect.tap((now) => Effect.sync(() => { checkout.holders -= 1; if (checkout.holders === 0) checkout.idleSince = now; })),
+        Effect.andThen(evict),
+      ),
+    );
+    return yield* Deferred.await(held.ready);
+  });
+
+  return { prefetch, checkout } satisfies GithubSourcesService;
+});
+
+/** Pinned checkouts, one per repository and commit, shared by a Deployment's Services and kept a while for the next. */
+export const GithubSourcesLive = Layer.effect(GithubSources, makeGithubSources);

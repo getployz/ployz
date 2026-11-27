@@ -46,12 +46,18 @@ export const pinStoreSources = Effect.fn("StoreDeployment.pinSources")(function*
 ) {
   const sources = yield* storeTry(() => store.deploymentSources(deploymentId));
   const heads: Record<string, string> = {};
+  // Services on one branch pin one head, read once.
+  const resolved = new Map<string, string>();
   for (const source of sources) {
     if (source.commit !== null) continue;
     if (source.branch === null) {
       return yield* new SourceUnreadable({ message: `Reconnect ${source.service}'s branch before deploying.` });
     }
-    heads[source.service] = yield* fromGithub(resolveGithubSourceSha({ ...sourceIdentity(organizationId, source), branch: source.branch }));
+    const branch = { ...sourceIdentity(organizationId, source), branch: source.branch };
+    const key = `${branch.installationId}:${branch.repositoryId}:${branch.branch}`;
+    const head = resolved.get(key) ?? (yield* fromGithub(resolveGithubSourceSha(branch)));
+    resolved.set(key, head);
+    heads[source.service] = head;
   }
   if (Object.keys(heads).length === 0) return sources;
   const members = yield* githubMembers(organizationId);
