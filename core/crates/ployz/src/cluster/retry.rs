@@ -81,8 +81,7 @@ where
             }
         })
         .await;
-    client.session.entry = Some(machine());
-    client.session.confirmed = Some(machine());
+    client.enter_at(machine());
     (client, record, server)
 }
 
