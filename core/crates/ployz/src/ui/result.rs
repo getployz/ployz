@@ -453,12 +453,19 @@ impl Gaps {
         }
         (
             unanswered_that(&name, missing),
-            self.dead_link(&failure.machine_id).or_else(|| {
-                ployz_core::error_chain::causes(&failure.error)
-                    .last()
-                    .cloned()
-                    .map(Under::Cause)
-            }),
+            // Only a target that sent nothing is explained by the link; one that answered
+            // with an error says why itself.
+            failure
+                .error
+                .target_unanswered()
+                .then(|| self.dead_link(&failure.machine_id))
+                .flatten()
+                .or_else(|| {
+                    ployz_core::error_chain::causes(&failure.error)
+                        .last()
+                        .cloned()
+                        .map(Under::Cause)
+                }),
         )
     }
 
@@ -657,8 +664,25 @@ mod tests {
         let mut silent = server('3', "machine-3");
         let failure = MachineFailure {
             machine_id: silent.machine.id,
-            error: RpcError::unavailable("target Machine RPC timed out")
-                .with_causes(vec!["deadline has elapsed".into()]),
+            error: RpcError::unanswered_target(
+                ployz_core::RpcErrorCode::Unavailable,
+                "target Machine RPC timed out".into(),
+            )
+            .with_causes(vec!["deadline has elapsed".into()]),
+        };
+        let answered = MachineFailure {
+            machine_id: silent.machine.id,
+            error: RpcError::internal("storage is busy"),
+        };
+        let gaps = |silent: &ployz_core::MachineObservation| {
+            let listed = [entry.clone(), silent.clone()];
+            Gaps::default()
+                .named(
+                    listed
+                        .iter()
+                        .map(|observed| (observed.machine.id, &observed.machine.name)),
+                )
+                .explained(crate::deploy::dead_links(&listed, Some(entry.machine.id)))
         };
         let warning = |silent: &ployz_core::MachineObservation| {
             let listed = [entry.clone(), silent.clone()];
@@ -685,6 +709,13 @@ mod tests {
             "{link}"
         );
         assert!(remedy.contains("UDP 51820"), "{remedy}");
+        assert!(
+            !matches!(
+                gaps(&silent).warning(&answered, ROWS_MISSING).1,
+                Some(Under::DeadLink(..))
+            ),
+            "a Server that answered with an error isn't blamed on the link"
+        );
 
         for wireguard in [Some(ployz_core::WireGuardObservation::Up), None] {
             silent.wireguard = wireguard;
