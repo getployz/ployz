@@ -49,7 +49,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use super::{PeerStatus, WIREGUARD_INTERFACE_NAME};
+use super::{PEER_DOWN_INTERVAL, PeerStatus, WIREGUARD_INTERFACE_NAME};
 
 /// How often each peer's path is probed.
 pub(super) const PROBE_EVERY: Duration = Duration::from_secs(60);
@@ -88,12 +88,18 @@ struct PeerPath {
     wireguard: Option<Judged>,
 }
 
-/// The latest [`PeerStatus`] that wasn't Unknown, and the handshake it was judged by.
+/// The latest [`PeerStatus`] that wasn't Unknown, the handshake it was judged by, and when
+/// the network plane last confirmed it.
 #[derive(Clone, Copy, Debug)]
 struct Judged {
     down: bool,
     last_handshake: Option<SystemTime>,
+    at: SystemTime,
 }
+
+/// The network plane polls every second; a judgment it hasn't confirmed for this long, as
+/// when the device can't be read, says nothing.
+const JUDGMENT_FRESH: Duration = Duration::from_secs(10);
 
 impl PeerPath {
     fn rtt_at(&self, now: std::time::Instant) -> Option<RttStatistics> {
@@ -154,28 +160,32 @@ impl PathBook {
         }
     }
 
-    /// Record `status`, judged by `last_handshake`. An Unknown status, as while a new endpoint
-    /// is tried, keeps the previous judgment until another handshake arrives.
+    /// Record `status`, judged by `last_handshake` at `now`. An Unknown status, as while a new
+    /// endpoint is tried, keeps the previous judgment until another handshake arrives. A Down
+    /// that only says a newly chosen endpoint is unproven, while a handshake inside
+    /// [`PEER_DOWN_INTERVAL`] keeps the session carrying traffic, reads Up.
     pub(super) fn judge(
         &self,
         machine_id: MachineId,
         status: PeerStatus,
         last_handshake: Option<SystemTime>,
+        now: SystemTime,
     ) {
+        let recent = last_handshake.is_some_and(|handshake| {
+            now.duration_since(handshake).unwrap_or_default() < PEER_DOWN_INTERVAL
+        });
         let mut paths = self.paths();
         let peer = paths.entry(machine_id).or_default();
         peer.wireguard = match status {
-            PeerStatus::Up => Some(Judged {
-                down: false,
+            PeerStatus::Up | PeerStatus::Down => Some(Judged {
+                down: status == PeerStatus::Down && !recent,
                 last_handshake,
-            }),
-            PeerStatus::Down => Some(Judged {
-                down: true,
-                last_handshake,
+                at: now,
             }),
             PeerStatus::Unknown => peer
                 .wireguard
-                .filter(|judged| judged.last_handshake == last_handshake),
+                .filter(|judged| judged.last_handshake == last_handshake)
+                .map(|judged| Judged { at: now, ..judged }),
         };
     }
 
@@ -191,6 +201,9 @@ impl PathBook {
         now: SystemTime,
     ) -> Option<WireGuardObservation> {
         let judged = self.paths().get(machine_id)?.wireguard?;
+        if now.duration_since(judged.at).unwrap_or_default() > JUDGMENT_FRESH {
+            return None;
+        }
         Some(if judged.down {
             WireGuardObservation::Down {
                 since_handshake_secs: judged

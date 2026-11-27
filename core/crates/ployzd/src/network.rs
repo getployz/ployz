@@ -165,6 +165,7 @@ impl MeshPeer {
             self.machine_id,
             self.selection.status(now, last_handshake),
             last_handshake,
+            now,
         );
         self.selection.poll(now, last_handshake, device_endpoint)
     }
@@ -735,6 +736,58 @@ mod tests {
                     (PEER_DOWN_INTERVAL + Duration::from_secs(10)).as_secs()
                 ),
             })
+        );
+    }
+
+    /// Choosing an endpoint again doesn't make a working link read down, and a view the
+    /// network plane stopped confirming, as when the device can't be read, says nothing.
+    #[test]
+    fn a_live_session_reads_up_while_an_endpoint_is_rechosen_and_an_unconfirmed_view_lapses() {
+        use ployz_core::WireGuardObservation;
+
+        let start = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let observer = machine(1, vec![endpoint(1)]);
+        let peer_machine = machine(2, vec![endpoint(2)]);
+        let (mut peers, _) = attach_peer_selections(
+            peers_for(&observer.id, &[observer.clone(), peer_machine.clone()]),
+            Vec::new(),
+            &BTreeMap::new(),
+            start,
+        );
+        let paths = PathBook::default();
+        let handshake = start + Duration::from_secs(1);
+        peers
+            .first_mut()
+            .unwrap()
+            .poll(&paths, handshake, Some(handshake), None);
+        assert_eq!(
+            paths.wireguard_at(&peer_machine.id, handshake),
+            Some(WireGuardObservation::Up)
+        );
+
+        let rechosen = handshake + Duration::from_secs(30);
+        choose_endpoint(
+            &mut peers,
+            peer_machine.id,
+            SelectedEndpoint(endpoint(2).0),
+            rechosen,
+        )
+        .unwrap();
+        let unproven = rechosen + ENDPOINT_CONNECTION_TIMEOUT + Duration::from_secs(1);
+        peers
+            .first_mut()
+            .unwrap()
+            .poll(&paths, unproven, Some(handshake), None);
+        assert_eq!(
+            paths.wireguard_at(&peer_machine.id, unproven),
+            Some(WireGuardObservation::Up),
+            "a session from a recent handshake still carries traffic"
+        );
+
+        assert_eq!(
+            paths.wireguard_at(&peer_machine.id, unproven + Duration::from_secs(11)),
+            None,
+            "no poll has confirmed it since"
         );
     }
 
