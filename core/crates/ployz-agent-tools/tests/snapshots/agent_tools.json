@@ -732,7 +732,7 @@
                 "type": "integer"
               },
               "stopSignal": {
-                "description": "Auto: SIGTERM with a start command, otherwise the image's.",
+                "description": "Auto: SIGTERM with a start command, otherwise the image's. Any case, with or without SIG.",
                 "enum": [
                   "SIGTERM",
                   "SIGINT",

@@ -138,6 +138,7 @@ impl PolicySetting {
                 apply: Apply::Immediate,
                 needs: Needs::Git,
                 default: |_| json!(true),
+                unset: None,
                 expected: || json!({ "type": "boolean" }),
                 examples: || json!([false]),
             },
@@ -151,6 +152,7 @@ impl PolicySetting {
                 apply: Apply::Immediate,
                 needs: Needs::Git,
                 default: |_| json!(false),
+                unset: None,
                 expected: || json!({ "type": "boolean" }),
                 examples: || json!([true]),
             },
@@ -164,6 +166,7 @@ impl PolicySetting {
                 apply: Apply::Immediate,
                 needs: Needs::Git,
                 default: |_| json!([]),
+                unset: None,
                 expected: || {
                     json!({
                         "type": "array",
@@ -183,6 +186,7 @@ impl PolicySetting {
                 apply: Apply::Immediate,
                 needs: Needs::Git,
                 default: |_| Value::Null,
+                unset: None,
                 expected: Preferred::schema,
                 examples: || json!(["github"]),
             },
