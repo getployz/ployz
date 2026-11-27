@@ -814,10 +814,18 @@ web-1, the Server this command entered by, has had no WireGuard handshake with w
 
 or `has never had a WireGuard handshake with web-3` for a server that just joined. `ployz server
 set`, `ployz server show` and `ployz server add` say it in their error. `ployz server ls` says it
-under `! web-3 did not answer; its rows are missing.`, where `web-3` may still read `up`: the
-servers' shared state can travel through a third server, but commands from `web-1` to `web-3`
-can't. `ployz server show web-1` lists the peer as `peer = web-3 down, no WireGuard handshake for
-6m` instead of a round trip.
+as a warning of its own and still exits 0, so check its warnings, not only its exit code.
+
+A server that is powered off gets the same line and the same advice to allow UDP 51820, because
+its WireGuard stops answering too. If `web-3` is meant to be off, power it on again, or remove it for
+good with `ployz server forget web-3 --confirm dead`. A server whose `ployz` daemon alone has stopped
+keeps its WireGuard handshake, so it doesn't get this line.
+
+With a third server, `web-3` can still read `up`: the servers' shared state travels through the
+third server, but commands from `web-1` to `web-3` can't. Then `ployz server ls` says it under
+`! web-3 did not answer; its rows are missing.`, and `ployz server show web-1` lists the peer as
+`peer = web-3 down, no WireGuard handshake for 6m` instead of a round trip. With only two servers,
+`web-3` reads `down`, and `ployz server show web-1` has no line for it.
 
 1. Allow UDP 51820 between `web-1` and `web-3`, in both directions, in each server's own firewall
    and in any firewall your provider runs in front of them.

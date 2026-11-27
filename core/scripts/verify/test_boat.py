@@ -798,6 +798,20 @@ class Pool(unittest.TestCase):
         self.assertIn("ufw allow 80/tcp >/dev/null; ufw allow 443/tcp >/dev/null", script)
         self.assertIn("relay.ployz.dev", script, "a bare host stays off the production relay too")
 
+    def test_power_on_puts_the_relay_block_back_before_ployz_starts(self):
+        provider = self.provider("machine-1")
+        provider.wait_agent = lambda *args, **kwargs: None
+        scripts = []
+        provider.exec = lambda node, argv, **kwargs: scripts.append(argv[2])
+        provider.power_on(dict(name="machine-1"))
+        [script] = scripts
+        self.assertIn("relay.ployz.dev", script)
+        self.assertLess(script.index("relay.ployz.dev"), script.index("ployz.service"))
+        provider.run["cloud_relay"] = True
+        scripts.clear()
+        provider.power_on(dict(name="machine-1"))
+        self.assertNotIn(" -I ", scripts[0], "a run paired with Cloud keeps the relay open")
+
     def test_down_deletes_a_bare_sandbox_and_never_pools_it(self):
         provider = self.provider("machine-1")
         provider.run.update(bare=True, image=None)
@@ -1202,49 +1216,100 @@ class Reset(unittest.TestCase):
 
 
 class RelayBlock(unittest.TestCase):
-    """A test Machine never reaches the production relay: its name points at loopback and each address it
-    resolves to refuses new connections, IPv4 and IPv6 alike."""
+    """A test Machine never reaches the production relay: its name points at loopback, and new https connections to
+    its addresses, resolved or known, are refused, now and after every boot. The scripts run here against a fake root
+    with iptables and systemctl stand-ins that keep their state in files."""
 
-    def script(self, resolved, blocked=True):
-        with unittest.mock.patch.object(boat.socket, "getaddrinfo", side_effect=resolved):
-            return boat.relay_block(blocked)
+    IPTABLES = """#!/bin/sh
+state="$STATE/$(basename "$0")"; touch "$state"
+op=$1; shift; rule=$(echo "$*" | sed 's/^OUTPUT 1 /OUTPUT /')
+case $op in
+  -C) grep -qxF "$rule" "$state" ;;
+  -I) [ -z "$FAIL_INSERT" ] || exit 4; echo "$rule" >> "$state" ;;
+  -D) grep -vxF "$rule" "$state" > "$state.new" || true; mv "$state.new" "$state" ;;
+esac
+"""
 
-    def test_every_address_the_relay_resolves_to_is_refused(self):
-        script = self.script(lambda *_, **__: [(None, None, None, "", ("192.0.2.9", 443)),
-                                               (None, None, None, "", ("2001:db8::9", 443, 0, 0))])
-        self.assertIn("127.0.0.1 relay.ployz.dev", script)
-        for table, address in [("iptables", "192.0.2.9"), ("ip6tables", "2001:db8::9")]:
-            for protocol in ["tcp", "udp"]:
-                self.assertIn(f"{table} -I OUTPUT 1 -d {address} -p {protocol} --dport 443 -m conntrack --ctstate NEW"
-                              " -j REJECT", script)
+    def setUp(self):
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        (self.root / "bin").mkdir()
+        (self.root / "state").mkdir()
+        (self.root / "etc").mkdir()
+        self.hosts = self.root / "etc" / "hosts"
+        self.hosts.write_text("127.0.0.1 localhost\n")
+        for name, body in [("iptables", self.IPTABLES), ("ip6tables", self.IPTABLES),
+                           ("systemctl", '#!/bin/sh\necho "$*" >> "$STATE/systemctl"\n')]:
+            (self.root / "bin" / name).write_text(body)
+            (self.root / "bin" / name).chmod(0o755)
 
-    def test_other_ports_on_the_relay_host_stay_open(self):
-        script = self.script(lambda *_, **__: [(None, None, None, "", ("192.0.2.9", 443))])
-        for line in script.splitlines():
-            if "REJECT" in line:
-                self.assertEqual(line.count("--dport 443"), 2, line)
+    def script(self, resolved=(), blocked=True):
+        found = [(None, None, None, "", (address, 443)) for address in resolved]
+        side_effect = found if resolved else boat.socket.gaierror("temporary failure in name resolution")
+        with unittest.mock.patch.object(boat.socket, "getaddrinfo", side_effect=lambda *_, **__: (
+                side_effect if isinstance(side_effect, list) else (_ for _ in ()).throw(side_effect))):
+            return boat.relay_block(blocked, root=str(self.root))
 
-    def test_a_run_paired_with_cloud_takes_the_block_out(self):
-        relay = lambda *_, **__: [(None, None, None, "", ("192.0.2.9", 443))]
-        script, opened = self.script(relay), self.script(relay, blocked=False)
-        self.assertNotIn(" -I ", opened)
-        for line in script.splitlines()[1:]:
-            rule = line.split(" -C ", 1)[1].split(" 2>/dev/null", 1)[0]
-            self.assertIn(f"-D {rule}", opened)
-        with tempfile.TemporaryDirectory() as directory:
-            hosts = Path(directory) / "hosts"
-            hosts.write_text("127.0.0.1 localhost\n")
-            first = script.splitlines()[0].replace("/etc/hosts", str(hosts))
-            undo = opened.splitlines()[0].replace("/etc/hosts", str(hosts))
-            subprocess.run(["sh", "-ec", first], check=True)
-            self.assertIn("relay.ployz.dev", hosts.read_text())
-            subprocess.run(["sh", "-ec", undo], check=True)
-            self.assertEqual(hosts.read_text(), "127.0.0.1 localhost\n")
+    def run_(self, script, fail_insert=False, then="echo services started\n"):
+        env = {**os.environ, "PATH": f"{self.root / 'bin'}:{os.environ['PATH']}", "STATE": str(self.root / "state"),
+               "FAIL_INSERT": "1" if fail_insert else ""}
+        return subprocess.run(["sh", "-ec", script + then], capture_output=True, env=env)
 
-    def test_a_relay_that_does_not_resolve_still_has_its_name_pointed_away(self):
-        script = self.script(boat.socket.gaierror("no name"))
-        self.assertIn("::1 relay.ployz.dev", script)
-        self.assertNotIn("REJECT", script)
+    def rules(self):
+        return {table: sorted((self.root / "state" / table).read_text().splitlines())
+                for table in ["iptables", "ip6tables"] if (self.root / "state" / table).exists()}
+
+    def refused(self):
+        return {(line.split(" -d ")[1].split()[0], line.split(" -p ")[1].split()[0])
+                for lines in self.rules().values() for line in lines}
+
+    def known(self, *extra):
+        return {(address, protocol) for address in [*boat.RELAY_ADDRESSES, *extra] for protocol in ["tcp", "udp"]}
+
+    def test_every_address_the_relay_resolves_to_or_is_known_by_is_refused_on_443_only(self):
+        self.assertEqual(self.run_(self.script(["192.0.2.9", "2001:db8::9"])).returncode, 0)
+        self.assertEqual(self.refused(), self.known("192.0.2.9", "2001:db8::9"))
+        for lines in self.rules().values():
+            for line in lines:
+                self.assertIn("--dport 443", line, "the relay's host serves other things a test may need")
+        self.assertIn("::1 relay.ployz.dev", self.hosts.read_text())
+
+    def test_a_relay_that_does_not_resolve_is_still_refused_by_address(self):
+        self.assertEqual(self.run_(self.script()).returncode, 0)
+        self.assertEqual(self.refused(), self.known())
+
+    def test_a_rule_that_wont_install_stops_the_start_before_services(self):
+        started = self.run_(self.script(), fail_insert=True)
+        self.assertNotEqual(started.returncode, 0)
+        self.assertNotIn(b"services started", started.stdout)
+
+    def test_the_block_comes_back_on_every_boot_before_the_services_that_need_it(self):
+        self.run_(self.script())
+        unit = (self.root / "etc/systemd/system" / boat.BLOCK_UNIT).read_text()
+        program = re.search(r"^ExecStart=(.+)$", unit, re.M).group(1)
+        for name in boat.BLOCKED_UNITS:
+            drop_in = (self.root / "etc/systemd/system" / f"{name}.d" / "verify-relay-block.conf").read_text()
+            self.assertIn(f"Requires={boat.BLOCK_UNIT}", drop_in, name)
+            self.assertIn(f"After={boat.BLOCK_UNIT}", drop_in, name)
+        # A reboot drops every rule; the boot unit's program puts them back.
+        shutil.rmtree(self.root / "state")
+        (self.root / "state").mkdir()
+        self.assertEqual(self.run_(str(self.root) + program + "\n", then="").returncode, 0)
+        self.assertEqual(self.refused(), self.known())
+        shutil.rmtree(self.root / "state")
+        (self.root / "state").mkdir()
+        self.assertNotEqual(self.run_(str(self.root) + program + "\n", fail_insert=True, then="").returncode, 0,
+                            "a boot whose rules won't install fails the unit Docker and ployz require")
+
+    def test_a_run_paired_with_cloud_takes_the_whole_block_out(self):
+        self.run_(self.script(["192.0.2.9"]))
+        self.run_(self.script(["192.0.2.9"]))
+        for _ in range(2):
+            self.assertEqual(self.run_(self.script(["192.0.2.9"], blocked=False)).returncode, 0)
+        self.assertEqual(self.refused(), set())
+        self.assertEqual(self.hosts.read_text(), "127.0.0.1 localhost\n")
+        left = [path for path in (self.root / "etc/systemd/system").rglob("*") if path.is_file()]
+        self.assertEqual(left, [])
+        self.assertFalse((self.root / "usr/local/sbin/verify-relay-block").exists())
 
 
 if __name__ == "__main__":

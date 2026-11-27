@@ -66,11 +66,11 @@ class Underlay:
     def __init__(self, cut, without_ping=False, unreachable=()):
         self.cut = {frozenset(pair) for pair in cut}
         self.without_ping = without_ping
-        self.unreachable = set(unreachable)
+        self.unreachable = dict(unreachable)
 
     def exec(self, node, command, check=True, timeout=None):
         if node["name"] in self.unreachable:
-            return subprocess.CompletedProcess(command, 255)
+            return subprocess.CompletedProcess(command, self.unreachable[node["name"]])
         if self.without_ping:
             return subprocess.CompletedProcess(command, 127)
         silent = frozenset((node["address"], command[-1])) in self.cut
@@ -109,9 +109,14 @@ class Reachability(unittest.TestCase):
 
     def test_a_machine_ssh_cant_reach_is_not_reported_as_a_broken_pair(self):
         with self.assertRaises(cluster.Infrastructure) as raised:
-            self.require([], unreachable=["machine-1"])
+            self.require([], unreachable={"machine-1": 255})
         self.assertIn("couldn't run the pair check over SSH on machine-1", str(raised.exception))
         self.assertNotIn("can't reach each other", str(raised.exception))
+
+    def test_a_check_whose_ssh_hangs_is_not_reported_as_a_broken_pair(self):
+        with self.assertRaises(cluster.Infrastructure) as raised:
+            self.require([], unreachable={"machine-1": 124})
+        self.assertIn("couldn't run the pair check over SSH on machine-1", str(raised.exception))
 
     def test_hosts_other_than_boat_are_not_checked(self):
         self.require([("2001:db8:1::1", "2001:db8:3::1")], provider="local")
