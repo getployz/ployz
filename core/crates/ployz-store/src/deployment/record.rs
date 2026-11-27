@@ -4,6 +4,19 @@
 use super::*;
 use crate::storage::json_text;
 
+pub(crate) type Recorded = (DeploymentSummary, Option<i64>);
+
+fn receipt(stored: Stored) -> Recorded {
+    let lease = if stored.summary.status.claimed() {
+        Some(stored.recorded_runner_lease)
+    } else if stored.summary.cleanup == Some(CleanupStatus::Pending) {
+        stored.run.cleanup_until
+    } else {
+        None
+    };
+    (stored.summary, lease)
+}
+
 /// Record `runner`'s evidence. Only the runner that claimed the Deployment may, and
 /// recording the same evidence again changes nothing.
 pub(crate) fn record(
@@ -12,7 +25,7 @@ pub(crate) fn record(
     runner: &RunnerId,
     evidence: RunEvidence,
     pending_live_at: Option<i64>,
-) -> Result<DeploymentSummary, RpcError> {
+) -> Result<Recorded, RpcError> {
     // What it records may follow into its Branches.
     let environment = super::load(tx, id)?.summary.environment_id;
     scope::lock_project_of(tx, &environment)?;
@@ -25,7 +38,7 @@ pub(crate) fn record(
         && (stored.summary.status == DeploymentStatus::Unknown
             || stored.run.cleanup(stored.read_at) != Some(CleanupStatus::Pending))
     {
-        return Ok(stored.summary);
+        return Ok(receipt(stored));
     }
     if !matches!(
         evidence,
@@ -74,11 +87,11 @@ pub(crate) fn record(
                 running(&stored)?;
             }
             save(tx, &mut stored)?;
-            Ok(stored.summary)
+            Ok(receipt(stored))
         }
         RunEvidence::Finishing { live_at } => {
             if live_at.is_some() && !claimed {
-                return Ok(stored.summary);
+                return Ok(receipt(stored));
             }
             if stored.run.cleanup_until.is_none() {
                 running(&stored)?;
@@ -88,13 +101,13 @@ pub(crate) fn record(
             }
             stored.run.cleanup_until = Some(now() + LEASE);
             save(tx, &mut stored)?;
-            Ok(stored.summary)
+            Ok(receipt(stored))
         }
         RunEvidence::Finished => {
             if stored.run.cleanup_until.take().is_some() || stamped {
                 save(tx, &mut stored)?;
             }
-            Ok(stored.summary)
+            Ok(receipt(stored))
         }
         RunEvidence::Prepared(preview) => {
             let preview = serde_json::to_value(preview)
@@ -103,7 +116,7 @@ pub(crate) fn record(
                 .ok_or_else(|| invalid_evidence("Deploy Preview"))?;
             match &stored.run.preview {
                 Some(recorded) if redacted_runtime_preview(recorded.clone()) == preview => {
-                    return Ok(stored.summary);
+                    return Ok(receipt(stored));
                 }
                 Some(_) => {
                     return Err(error::conflict(
@@ -164,7 +177,7 @@ pub(crate) fn record(
             })?;
             stored.run.preview = Some(preview);
             save(tx, &mut stored)?;
-            Ok(stored.summary)
+            Ok(receipt(stored))
         }
         RunEvidence::Executed {
             outcome,
@@ -176,7 +189,7 @@ pub(crate) fn record(
             let executed = crate::digest::short_digest(&json_text(&(&outcome, &removed)));
             if stored.run.outcome.is_some() {
                 if stored.run.executed.as_ref() == Some(&executed) {
-                    return Ok(stored.summary);
+                    return Ok(receipt(stored));
                 }
                 return Err(error::conflict(
                     "This Deployment already recorded a different outcome",
@@ -362,7 +375,7 @@ pub(crate) fn record(
                 stored.summary.outcome = Some(outcome.clone());
                 stored.run.outcome = Some(outcome);
                 save(tx, &mut stored)?;
-                return Ok(stored.summary);
+                return Ok(receipt(stored));
             }
             finish(tx, stored, outcome, status)
         }
@@ -398,7 +411,7 @@ pub(crate) fn record(
             // The seal's walk below waits for the end, so it runs once (#3780).
             advance(tx, &stored, false, false)?;
             save(tx, &mut stored)?;
-            Ok(stored.summary)
+            Ok(receipt(stored))
         }
         RunEvidence::Progress(rows) => {
             running(&stored)?;
@@ -406,7 +419,7 @@ pub(crate) fn record(
             if stamped {
                 save(tx, &mut stored)?;
             }
-            Ok(stored.summary)
+            Ok(receipt(stored))
         }
         RunEvidence::Built(receipts) => {
             running(&stored)?;
@@ -419,12 +432,12 @@ pub(crate) fn record(
                 (organization.as_str(), stored.namespace()),
                 &receipts,
             )?;
-            Ok(stored.summary)
+            Ok(receipt(stored))
         }
         RunEvidence::Build(report) => {
             running(&stored)?;
             build::record(tx, &stored, &report)?;
-            Ok(stored.summary)
+            Ok(receipt(stored))
         }
         RunEvidence::NotExecuted(Failure {
             reason,
@@ -450,7 +463,7 @@ pub(crate) fn record(
             stored.summary.warnings = stored.run.summary_warnings();
             stored.summary.ingress.clone_from(&stored.run.ingress);
             save(tx, &mut stored)?;
-            Ok(stored.summary)
+            Ok(receipt(stored))
         }
         RunEvidence::IngressUnchecked(cause) => {
             warn(tx, stored, DeploymentWarning::IngressUnchecked { cause })
@@ -480,11 +493,11 @@ pub(crate) fn record(
         RunEvidence::RuntimeFailed => {
             stored.standing = stored.standing.runtime_failed(now());
             save(tx, &mut stored)?;
-            Ok(stored.summary)
+            Ok(receipt(stored))
         }
         RunEvidence::Abandoned => {
             if stored.run.outcome.is_some() || stored.summary.status == DeploymentStatus::Unknown {
-                return Ok(stored.summary);
+                return Ok(receipt(stored));
             }
             running(&stored)?;
             if stored.run.preview.is_none() {
@@ -503,7 +516,7 @@ pub(crate) fn record(
             }
             stored.standing = stored.standing.lose_runner(now());
             save(tx, &mut stored)?;
-            Ok(stored.summary)
+            Ok(receipt(stored))
         }
     }
 }
@@ -514,7 +527,7 @@ fn warn(
     tx: &mut dyn Tx,
     mut stored: Stored,
     warning: DeploymentWarning,
-) -> Result<DeploymentSummary, RpcError> {
+) -> Result<Recorded, RpcError> {
     let retiring = matches!(
         &warning,
         DeploymentWarning::Deploy {
@@ -532,7 +545,7 @@ fn warn(
     }
     stored.summary.warnings = stored.run.summary_warnings();
     save(tx, &mut stored)?;
-    Ok(stored.summary)
+    Ok(receipt(stored))
 }
 
 /// Why a Deploy failed, for users: the failed operation's Service, by its current
@@ -682,9 +695,9 @@ pub(super) fn finish(
     stored: Stored,
     outcome: Outcome,
     status: End,
-) -> Result<DeploymentSummary, RpcError> {
+) -> Result<Recorded, RpcError> {
     match &stored.run.outcome {
-        Some(recorded) if *recorded == outcome => return Ok(stored.summary),
+        Some(kept) if *kept == outcome => return Ok(receipt(stored)),
         Some(_) => {
             return Err(error::conflict(
                 "This Deployment already recorded a different outcome",
@@ -702,7 +715,7 @@ pub(super) fn end(
     mut stored: Stored,
     outcome: Outcome,
     status: End,
-) -> Result<DeploymentSummary, RpcError> {
+) -> Result<Recorded, RpcError> {
     advance(tx, &stored, status == End::Applied, true)?;
     let status = match (stored.summary.status, status) {
         (DeploymentStatus::Cancelling, End::Failed) => End::Cancelled,
@@ -716,7 +729,7 @@ pub(super) fn end(
     stored.summary.outcome = Some(outcome.clone());
     stored.run.outcome = Some(outcome);
     save(tx, &mut stored)?;
-    Ok(stored.summary)
+    Ok(receipt(stored))
 }
 
 /// Put each node `stored` confirmed into Applied State as its Saved revision has

@@ -543,12 +543,21 @@ pub(super) async fn execute_with_switch_commit<C: MachineOperations>(
     }
 
     progress.settle_unexecuted();
-    let outcome = outcome_from(operations, &completed, stop, schedule.services());
-    let live_at = if matches!(outcome, DeployOutcome::Success { .. }) {
-        switches.finished(!completed.is_empty(), progress).await
+    let live_at = if stop.is_none() && completed.len() == operations.len() {
+        match switches
+            .finished(completed.last().copied(), progress, cancellation)
+            .await
+        {
+            Ok(at) => at,
+            Err(cancelled) => {
+                stop = Some(cancelled);
+                None
+            }
+        }
     } else {
         None
     };
+    let outcome = outcome_from(operations, &completed, stop, schedule.services());
     if *switches.gate.borrow() == Some(false) {
         return outcome;
     }
@@ -638,20 +647,35 @@ impl Switches {
         committed
     }
 
-    async fn finished(&self, ran_steps: bool, progress: &Progress) -> Option<i64> {
-        let (requested, at) = {
-            let tally = self.tally.lock().expect("switch lock");
-            if tally.blocked || !tally.awaiting.is_empty() || !ran_steps {
-                return None;
-            }
-            (tally.requested, tally.last_at)
+    async fn finished(
+        &self,
+        last_step: Option<usize>,
+        progress: &Progress,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<i64>, Stop> {
+        let Some(index) = last_step else {
+            return Ok(None);
         };
-        if requested {
-            return at;
+        {
+            let tally = self.tally.lock().expect("switch lock");
+            if tally.blocked || !tally.awaiting.is_empty() {
+                return Ok(None);
+            }
+            if tally.requested {
+                return Ok(tally.last_at);
+            }
         }
         // A removal-only or in-place plan goes Live after its last successful step.
         let at = ployz_core::deploy_steps::now_ms() / 1000;
-        self.commit(at, progress).await.then_some(at)
+        tokio::select! {
+            biased;
+            () = cancellation.cancelled() => Err(Stop {
+                index,
+                error: ExecutionError::Cancelled,
+                compensation: None,
+            }),
+            committed = self.commit(at, progress) => Ok(committed.then_some(at)),
+        }
     }
 }
 

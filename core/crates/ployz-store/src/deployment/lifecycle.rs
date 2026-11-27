@@ -286,7 +286,7 @@ pub(crate) fn forget(
         .map(|node| (node.id().to_owned(), NodeStatus::Unknown))
         .collect();
     applied::forget(tx, &stored.summary.environment_id)?;
-    end(tx, stored, outcome, End::Applied)
+    end(tx, stored, outcome, End::Applied).map(|(summary, _)| summary)
 }
 
 /// Add to `nodes` the teardown of each Service `environment`'s queued Deployment

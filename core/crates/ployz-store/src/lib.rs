@@ -450,9 +450,11 @@ impl ConfigStore {
         evidence: RunEvidence,
     ) -> Result<DeploymentSummary, RpcError> {
         self.record_with_live_at(deployment, runner, evidence, None)
+            .map(|(summary, _)| summary)
     }
 
-    /// Record evidence and a switch timestamp the runner has not been able to record yet.
+    /// Record evidence and a pending switch. Also return the last saved runner or
+    /// cleanup lease deadline in Unix seconds.
     ///
     /// # Errors
     /// Returns the same errors as [Self::record].
@@ -462,7 +464,7 @@ impl ConfigStore {
         runner: &RunnerId,
         evidence: RunEvidence,
         pending_live_at: Option<i64>,
-    ) -> Result<DeploymentSummary, RpcError> {
+    ) -> Result<(DeploymentSummary, Option<i64>), RpcError> {
         self.storage
             .write(|tx| deployment::record(tx, deployment, runner, evidence, pending_live_at))
     }

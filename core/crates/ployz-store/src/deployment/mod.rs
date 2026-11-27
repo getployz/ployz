@@ -1204,6 +1204,8 @@ pub(crate) struct Stored {
     pub(crate) nodes: Vec<TargetNode>,
     run: Run,
     standing: Standing,
+    /// Last saved claim lease, even when an evidence write proposes a renewal.
+    recorded_runner_lease: i64,
     /// When `stored` read it, in Unix seconds: the moment its summary judges a
     /// runner lease by, so the status it shows holds for the whole transaction.
     read_at: i64,
@@ -2139,6 +2141,7 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
         namespace: row.parse::<Namespace>(7, "Namespace")?,
         run,
         cluster_domain: row.parse_optional(10, "identity")?,
+        recorded_runner_lease: standing.lease(),
         standing,
         read_at,
         listed: row.int(22)?,
@@ -2222,6 +2225,7 @@ impl Stored {
 ///   waiting for CI or a [`Raw`] row with no `ended`, leaves its builds as they are.
 fn save(tx: &mut dyn Tx, stored: &mut Stored) -> Result<(), RpcError> {
     stored.show();
+    stored.recorded_runner_lease = stored.standing.lease();
     let standing = &stored.standing;
     let number = standing
         .number()

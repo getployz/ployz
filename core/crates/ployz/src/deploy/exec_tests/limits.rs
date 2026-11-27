@@ -262,3 +262,67 @@ async fn a_failed_sibling_never_removes_the_updated_copy() {
     assert!(!touched(&client, &old_first), "{:?}", client.moves());
     client.assert_done();
 }
+
+#[tokio::test(start_paused = true)]
+async fn cancelling_an_in_place_deploy_does_not_wait_for_the_live_ack() {
+    let machine = machine('1');
+    let copy = container('a');
+    let plan = crate::deploy::DeployPlan::for_execution_test(
+        vec![DeployOperation::UpdateContainer(update(
+            &machine,
+            &copy,
+            UpdateOrder::StartFirst,
+        ))],
+        test_namespace(),
+    );
+    let client = Scripted::new(vec![ok(Call::UpdateLimits(machine, copy))]).with_copy(
+        &machine,
+        &copy,
+        CopyRotation::In,
+    );
+    let (tx, mut events) = tokio::sync::mpsc::unbounded_channel();
+    let (acknowledge, commit) = tokio::sync::oneshot::channel();
+    let cancel = CancellationToken::new();
+    let run = run_id();
+    let execution = super::super::execute_with_switch_commit(
+        &plan,
+        &run,
+        &client,
+        &cancel,
+        Some(tx),
+        Some(commit),
+    );
+    let cancel_at_live = async {
+        while let Some(event) = events.recv().await {
+            if matches!(
+                event,
+                DeployEvent::Progress {
+                    live_at: Some(_),
+                    ..
+                }
+            ) {
+                cancel.cancel();
+                return;
+            }
+        }
+        panic!("the executor never reported the switch");
+    };
+    let (outcome, ()) = tokio::time::timeout(Duration::from_secs(1), async {
+        tokio::join!(execution, cancel_at_live)
+    })
+    .await
+    .expect("cancelling released the acknowledgement wait");
+    assert!(matches!(
+        outcome,
+        DeployOutcome::Failed {
+            failed: FailedOperation::Operation {
+                error: ExecutionError::Cancelled,
+                ..
+            },
+            ..
+        }
+    ));
+    assert!(acknowledge.send(()).is_err());
+    assert_eq!(client.rotation(&copy), Some(CopyRotation::In));
+    client.assert_done();
+}

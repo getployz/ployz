@@ -90,6 +90,7 @@ fn admitted_in(
             over: Latch::new(),
             steps: std::sync::Mutex::default(),
             pending_live_at: std::sync::Mutex::default(),
+            lease_until: std::sync::Mutex::default(),
             reader: None,
         },
         actor,
@@ -170,6 +171,7 @@ async fn a_runner_plans_with_the_runs_its_claim_reports_ended() {
         over: Latch::new(),
         steps: std::sync::Mutex::default(),
         pending_live_at: std::sync::Mutex::default(),
+        lease_until: std::sync::Mutex::default(),
         reader: None,
     };
 
@@ -2074,6 +2076,7 @@ async fn a_deploy_with_a_reused_build_still_recreates_the_services_its_claim_lis
         over: Latch::new(),
         steps: std::sync::Mutex::default(),
         pending_live_at: std::sync::Mutex::default(),
+        lease_until: std::sync::Mutex::default(),
         reader: None,
     };
     let claimed = run.claim(Operator::Cloud).await.unwrap();
@@ -2211,6 +2214,7 @@ async fn redeploy(
         reader: None,
         steps: std::sync::Mutex::default(),
         pending_live_at: std::sync::Mutex::default(),
+        lease_until: std::sync::Mutex::default(),
     };
     let claimed = run.claim(Operator::Cloud).await.unwrap();
     (run, claimed)
@@ -2516,7 +2520,10 @@ async fn a_rejected_switch_write_is_retried_with_the_next_evidence() {
     assert!(run.record_switch(Some(at)).await.is_err());
     backend::execute(&url, "DROP TRIGGER reject_switch");
 
-    run.record(RunEvidence::Alive).await.unwrap();
+    assert_eq!(run.record(RunEvidence::Alive).await.unwrap().live_at, None);
+    run.record(RunEvidence::Finishing { live_at: None })
+        .await
+        .unwrap();
     let summary = run
         .store
         .read(
@@ -2685,6 +2692,80 @@ async fn a_join_error_during_a_store_outage(expire: bool) {
             Some(ployz_store::CleanupStatus::Pending)
         );
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_join_error_returns_when_the_store_is_unreadable_past_the_lease() {
+    use ployz_store::testing::backend;
+    let dir = tempfile::tempdir().unwrap();
+    let url = format!("sqlite:{}", dir.path().join("store.db").display());
+    let (run, actor) = admitted_in(
+        Arc::new(ConfigStore::open(&url, backend::key()).unwrap()),
+        None,
+    );
+    prepared(&run).await;
+    let at = now_ms() / 1000;
+    run.record_switch(Some(at)).await.unwrap();
+    let recorded = run
+        .executed(
+            DeployOutcome::Success {
+                completed: vec![],
+                services: vec![],
+            },
+            vec![],
+            vec![],
+        )
+        .await;
+    assert_eq!(recorded.as_ref().unwrap().status, DeploymentStatus::Applied);
+    let through = run.lease_until.lock().unwrap().unwrap();
+    backend::execute(
+        &url,
+        "ALTER TABLE config_deployment RENAME TO offline_deployment",
+    );
+    let task = tokio::spawn(std::future::pending());
+    task.abort();
+    let running = crate::sdk::RunningDeploy {
+        cancel: CancellationToken::new(),
+        events: tokio::sync::Mutex::new(None),
+        join: tokio::sync::Mutex::new(Some(task)),
+    };
+    let finishing = run.finish_retirement(&running, recorded);
+    tokio::pin!(finishing);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(250), &mut finishing)
+            .await
+            .is_err()
+    );
+    // Jump past the acknowledged lease with the deployment table still unavailable.
+    tokio::time::advance(through.saturating_duration_since(tokio::time::Instant::now())).await;
+    let reported = tokio::time::timeout(Duration::from_secs(1), finishing)
+        .await
+        .expect("the local lease bounds retries while the Store is unreadable");
+    assert_eq!(reported.unwrap_err().message, "Deploy task failed");
+
+    backend::execute(
+        &url,
+        "ALTER TABLE offline_deployment RENAME TO config_deployment",
+    );
+    backend::execute(
+        &url,
+        "UPDATE config_deployment SET run = json_set(run, '$.cleanup_until', 1)",
+    );
+    let view = run
+        .store
+        .read(
+            &actor,
+            &DeploymentQuery {
+                id: run.deployment.clone(),
+            },
+        )
+        .unwrap();
+    assert_eq!(view.deployment.status, DeploymentStatus::Applied);
+    assert_eq!(view.deployment.live_at, Some(at));
+    assert_eq!(
+        view.deployment.cleanup,
+        Some(ployz_store::CleanupStatus::Unconfirmed)
+    );
 }
 
 #[tokio::test]

@@ -151,15 +151,20 @@ impl Shop {
 
 #[tokio::test]
 async fn the_old_copy_stays_in_until_the_store_commits_live() {
-    held_live_write(false).await;
+    held_live_write(false, true).await;
 }
 
 #[tokio::test]
 async fn cancelling_while_the_live_write_is_held_leaves_the_old_copy_in() {
-    held_live_write(true).await;
+    held_live_write(true, true).await;
 }
 
-async fn held_live_write(cancel: bool) {
+#[tokio::test]
+async fn a_rejected_live_write_does_not_delay_cancellation() {
+    held_live_write(true, false).await;
+}
+
+async fn held_live_write(cancel: bool, release: bool) {
     use ployz_store::testing::backend;
     let service = DeployService::new(machine('a', "one")).lists_created();
     let rotations = service.rotations();
@@ -201,14 +206,16 @@ async fn held_live_write(cancel: bool) {
             .unwrap();
         assert_eq!(shop.status(2), DeploymentStatus::Cancelling);
     }
-    backend::execute(&url, "DROP TRIGGER hold_switch");
+    if release {
+        backend::execute(&url, "DROP TRIGGER hold_switch");
+    }
 
-    let ran = tokio::time::timeout(Duration::from_secs(10), running)
+    let ran = tokio::time::timeout(Duration::from_secs(5), running)
         .await
         .unwrap()
         .unwrap()
         .unwrap();
-    assert!(ran.live_at.is_some());
+    assert_eq!(ran.live_at.is_some(), release);
     if cancel {
         assert_eq!(ran.status, DeploymentStatus::Cancelled);
         assert!(!service.unrouted().lock().unwrap().contains(&old));

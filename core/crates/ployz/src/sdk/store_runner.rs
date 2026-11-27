@@ -186,6 +186,7 @@ pub async fn run_deployment_expecting(
         over: Latch::new(),
         steps: std::sync::Mutex::default(),
         pending_live_at: std::sync::Mutex::default(),
+        lease_until: std::sync::Mutex::default(),
         reader: checkouts
             .as_ref()
             .ok()
@@ -560,6 +561,7 @@ struct Run {
     /// Handed to each Server with a rule's proof.
     reader: Option<ployz_core::GithubToken>,
     pending_live_at: std::sync::Mutex<Option<i64>>,
+    lease_until: std::sync::Mutex<Option<tokio::time::Instant>>,
 }
 
 /// What `read`, the store's answer to one of this run's records, says about the Deployment.
@@ -789,21 +791,30 @@ impl Run {
     }
 
     async fn runtime_failed(&self, error: RpcError) -> Result<DeploymentSummary, RpcError> {
-        let mut poll = tokio::time::interval(CANCEL_POLL);
-        poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
-            poll.tick().await;
-            match self.record(RunEvidence::RuntimeFailed).await {
-                Ok(_) => break,
-                Err(record)
-                    if matches!(record.code, RpcErrorCode::Conflict | RpcErrorCode::NotFound) =>
-                {
-                    break;
+        let deadline = *self.lease_until.lock().expect("lease lock");
+        if let Some(deadline) = deadline.filter(|until| *until > tokio::time::Instant::now()) {
+            let _ = tokio::time::timeout_at(deadline, async {
+                let mut poll = tokio::time::interval(CANCEL_POLL);
+                poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                loop {
+                    poll.tick().await;
+                    match self.record(RunEvidence::RuntimeFailed).await {
+                        Ok(_) => break,
+                        Err(record)
+                            if matches!(
+                                record.code,
+                                RpcErrorCode::Conflict | RpcErrorCode::NotFound
+                            ) =>
+                        {
+                            break;
+                        }
+                        Err(record) => {
+                            tracing::warn!(%record, "couldn't record the interrupted Deployment")
+                        }
+                    }
                 }
-                Err(record) => {
-                    tracing::warn!(%record, "couldn't record the interrupted Deployment")
-                }
-            }
+            })
+            .await;
         }
         Err(error)
     }
@@ -821,7 +832,20 @@ impl Run {
         self.record(RunEvidence::Finishing { live_at }).await
     }
 
-    async fn commit_switch(&self, at: i64) -> Result<DeploymentStatus, RpcError> {
+    async fn commit_switch(
+        &self,
+        at: i64,
+        cancelled: &tokio_util::sync::CancellationToken,
+    ) -> Result<Option<DeploymentStatus>, RpcError> {
+        self.pending_live_at().get_or_insert(at);
+        tokio::select! {
+            biased;
+            result = self.retry_switch(at) => result.map(Some),
+            () = cancelled.cancelled() => Ok(None),
+        }
+    }
+
+    async fn retry_switch(&self, at: i64) -> Result<DeploymentStatus, RpcError> {
         loop {
             match self.record_switch(Some(at)).await {
                 Ok(summary) if summary.live_at.is_some() && summary.status.claimed() => {
@@ -1248,8 +1272,10 @@ impl Run {
         while let Some(event) = running.next().await {
             let mut rows = match event {
                 ployz_core::DeployEvent::Progress { rows, live_at, .. } => {
-                    if let Some(at) = live_at {
-                        if self.commit_switch(at).await? == DeploymentStatus::Cancelling {
+                    if let Some(at) = live_at
+                        && let Some(status) = self.commit_switch(at, &running.cancel).await?
+                    {
+                        if status == DeploymentStatus::Cancelling {
                             running.abort();
                         }
                         if let Some(acknowledge) = acknowledge.take() {
@@ -1494,13 +1520,23 @@ impl Run {
         let deleted = removed
             .iter()
             .any(|removal| !matches!(removal.outcome, ployz_core::VolumeRemovalOutcome::Omitted));
-        let recorded = self
-            .record(RunEvidence::Executed {
-                progress: progress.clone(),
-                outcome: Box::new(outcome.clone()),
-                removed,
-            })
-            .await;
+        let cancelled = matches!(
+            &outcome,
+            DeployOutcome::Failed {
+                failed: ployz_core::FailedOperation::Operation { error, .. }
+                    | ployz_core::FailedOperation::Replacement { error, .. },
+                ..
+            } if error.cancelled()
+        );
+        let evidence = RunEvidence::Executed {
+            progress: progress.clone(),
+            outcome: Box::new(outcome.clone()),
+            removed,
+        };
+        let mut recorded = self.record(evidence.clone()).await;
+        if recorded.is_err() && cancelled && self.pending_live_at().take().is_some() {
+            recorded = self.record(evidence).await;
+        }
         match recorded {
             Err(refused) if refused.code == RpcErrorCode::Conflict && !deleted => {
                 self.interrupted(outcome, progress).await.or(Err(refused))
@@ -1651,7 +1687,11 @@ impl Run {
         } else {
             self.steps().take_changed()
         };
-        let pending_live_at = *self.pending_live_at();
+        let pending_live_at = if matches!(evidence, RunEvidence::Alive) {
+            None
+        } else {
+            *self.pending_live_at()
+        };
         let recorded = super::store_call(&self.store, move |store| {
             if !steps.is_empty()
                 && let Err(error) = store.record_steps(&deployment, &steps)
@@ -1661,13 +1701,17 @@ impl Run {
             store.record_with_live_at(&deployment, &runner, evidence, pending_live_at)
         })
         .await;
-        if recorded
-            .as_ref()
-            .is_ok_and(|summary| summary.live_at.is_some())
-        {
-            *self.pending_live_at() = None;
-        }
-        recorded
+        recorded.map(|(summary, lease)| {
+            *self.lease_until.lock().expect("lease lock") = lease.map(|until| {
+                let remaining = until.saturating_mul(1000).saturating_sub(now_ms());
+                tokio::time::Instant::now()
+                    + Duration::from_millis(remaining.try_into().unwrap_or(0))
+            });
+            if summary.live_at.is_some() {
+                *self.pending_live_at() = None;
+            }
+            summary
+        })
     }
 
     /// Renew this runner's lease on the Deployment and read what the run may do. Once a
