@@ -583,10 +583,9 @@ fn partial_next_step<T>(
     let silent: Vec<_> = dead_links
         .iter()
         .filter(|link| {
-            unanswered
-                .iter()
-                .any(|failure| failure.machine_id == link.machine)
-                || result.omissions.contains(&link.machine)
+            unanswered.iter().any(|failure| {
+                failure.machine_id == link.machine && failure.error.target_unanswered()
+            }) || result.omissions.contains(&link.machine)
         })
         .map(ToString::to_string)
         .collect();

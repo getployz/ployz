@@ -133,6 +133,21 @@ async fn unreadable_answer_asks_to_update_ployz_not_connectivity() {
 /// The joiner as `server add` meets it: the entry it entered by, whose WireGuard sees the
 /// joiner as `wireguard`, never hears its listing. The error's message.
 async fn joiner_the_entry_sees(wireguard: Option<ployz_core::WireGuardObservation>) -> String {
+    joiner_failing(
+        wireguard,
+        RpcError::unanswered_target(
+            ployz_core::RpcErrorCode::Unavailable,
+            "target Machine RPC timed out".into(),
+        ),
+    )
+    .await
+}
+
+/// [`joiner_the_entry_sees`], with the joiner's listing failing with `error`.
+async fn joiner_failing(
+    wireguard: Option<ployz_core::WireGuardObservation>,
+    error: RpcError,
+) -> String {
     let entry = machine('f', "machine-1");
     let joiner = machine('1', "machine-4");
     let observed = |machine: &Machine| {
@@ -147,7 +162,7 @@ async fn joiner_the_entry_sees(wireguard: Option<ployz_core::WireGuardObservatio
     ]);
     client.failures = vec![ployz_core::MachineFailure {
         machine_id: joiner.id,
-        error: RpcError::unavailable("target Machine RPC timed out"),
+        error,
     }];
     client.dead_links = crate::deploy::dead_links(&[observed(&entry), seen], Some(entry.id));
     message(catch_up(&mut client, &joiner).await.unwrap_err(), &joiner)
@@ -180,6 +195,20 @@ async fn a_joiner_the_entry_sees_up_claims_no_link() {
         assert!(message.contains("restore peer connectivity"), "{message}");
         assert!(!message.contains("WireGuard"), "{message}");
     }
+}
+
+/// A joiner that answered with an error was heard, so a link the entry sees down
+/// doesn't explain it.
+#[tokio::test(start_paused = true)]
+async fn a_joiner_that_answered_with_an_error_is_not_blamed_on_the_link() {
+    let message = joiner_failing(
+        Some(ployz_core::WireGuardObservation::Down {
+            since_handshake_secs: None,
+        }),
+        RpcError::unavailable("Docker is not running"),
+    )
+    .await;
+    assert!(!message.contains("WireGuard"), "{message}");
 }
 
 #[tokio::test(start_paused = true)]
