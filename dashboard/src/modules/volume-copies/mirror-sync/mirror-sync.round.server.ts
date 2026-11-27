@@ -15,8 +15,8 @@ const sessionCopies: SessionCopies = (session) => session.observeCopies().pipe(E
 
 /**
  * The copies the Cluster's Servers hold and why the organization can't stage a placement now, both read over one
- * session. A Cluster with no copies to sync is never asked for a frame; one whose frame doesn't come within 5 seconds
- * of Cluster time refuses as unanswered.
+ * session. A Cluster with no copies to sync is never asked for a frame. The connect, the frame and the close share
+ * 5 seconds of Cluster time, as `firstRuntimeFrame` gives them; a frame that doesn't come within it refuses as unanswered.
  */
 const lookAtCluster = Effect.fn("MirrorSync.lookAtCluster")(function* (organizationId: string, observe: SessionCopies) {
   const session = yield* (yield* OrganizationRuntime).open(organizationId).pipe(
@@ -34,11 +34,10 @@ const lookAtCluster = Effect.fn("MirrorSync.lookAtCluster")(function* (organizat
   if (copies.length === 0) return { copies, refusal: null };
   const frame = yield* session.connected.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS).pipe(
     clusterRead,
-    withClusterBudget(5_000),
     Effect.catch(() => Effect.succeed(null)),
   );
   return { copies, refusal: placementRefusalIn(frame) };
-}, Effect.scoped);
+}, Effect.scoped, withClusterBudget(5_000));
 
 /** A Volume a sync has something to say about: one with a slot anywhere, or with two primaries to settle. */
 const syncs = (held: CopyObservation["copies"]) =>
