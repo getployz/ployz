@@ -360,7 +360,7 @@ fn builds_refuse_remote_routing_before_builder_mutation() {
 root=$(dirname "$0")
 if [ "$1 $2" = 'context show' ]; then echo "${PLOYZ_POLICY_CONTEXT:-default}"; exit 0; fi
 # Admission reads the local worker names; a read is not a mutation.
-if [ "$1" = inspect ]; then exit 0; fi
+case "$1" in inspect|ps) exit 0 ;; esac
 echo "$*" >> "$root/mutations"
 "#,
     );
@@ -420,6 +420,8 @@ fn cache_clearing_refuses_remote_routing_before_builder_mutation() {
         };
         let error = clear_cache(&policy).unwrap_err();
         assert!(error.to_string().contains("local Docker"), "{error}");
+        // The clear asked Docker nothing; admission then reads local names.
+        assert!(!root.join("reads").exists());
         assert!(Admission::try_acquire_with(&policy).is_ok());
         return;
     }
@@ -427,8 +429,7 @@ fn cache_clearing_refuses_remote_routing_before_builder_mutation() {
         r#"
 root=$(dirname "$0")
 if [ "$1 $2" = 'context show' ]; then echo "${PLOYZ_POLICY_CONTEXT:-default}"; exit 0; fi
-# Admission reads the local worker names; a read is not a mutation.
-if [ "$1" = inspect ]; then exit 0; fi
+case "$1" in inspect|ps) echo "$*" >> "$root/reads"; exit 0 ;; esac
 echo "$*" >> "$root/mutations"
 "#,
     );
@@ -438,6 +439,7 @@ echo "$*" >> "$root/mutations"
         ("DOCKER_CONTEXT", "remote"),
         ("PLOYZ_POLICY_CONTEXT", "remote"),
     ] {
+        let _ = fs::remove_file(host.file("reads"));
         let status = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",

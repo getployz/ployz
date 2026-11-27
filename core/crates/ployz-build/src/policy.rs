@@ -233,26 +233,28 @@ pub fn clear_cache(policy: &HostPolicy) -> Result<(), BuildError> {
     // Every build slot keeps a cache for each access; stop at the first refusal.
     let environment: BTreeMap<String, String> = std::env::vars().collect();
     let (slots, listed) = crate::builder::Lock::slots(policy, &environment, true);
-    let mut skipped = None;
+    let mut foreign = Vec::new();
     for slot in slots {
         for access in [crate::Access::Full, crate::Access::Free] {
-            if let Some(container) = clear_slot_cache(policy, slot, access)? {
-                skipped.get_or_insert(container);
-            }
+            foreign.extend(clear_slot_cache(policy, slot, access)?);
         }
     }
     // Slots only Docker knows were missed if it could not list them.
     listed?;
-    skipped.map_or(Ok(()), |container| Err(crate::builder::foreign(&container)))
+    if foreign.is_empty() {
+        Ok(())
+    } else {
+        Err(crate::builder::foreign_all(&foreign))
+    }
 }
 
-/// Clear one builder's cache, or name the container Ployz did not create
-/// that holds its worker's name, which it leaves with the cache.
+/// Clear one builder's cache, and name the containers Ployz did not create
+/// that hold its names. One holding its worker's name leaves the cache.
 fn clear_slot_cache(
     policy: &HostPolicy,
     slot: usize,
     access: crate::Access,
-) -> Result<Option<String>, BuildError> {
+) -> Result<Vec<String>, BuildError> {
     let admission = Admission::try_acquire_slot(policy, slot)?.with_access(access);
     let environment: BTreeMap<String, String> = std::env::vars().collect();
     // Private command output must not collide with a concurrent caller or a Build.
@@ -273,14 +275,20 @@ fn clear_slot_cache(
     };
     let result = (|| {
         docker.require_local()?;
+        let mut foreign = Vec::new();
+        for name in crate::builder::slot_names(access, slot) {
+            if crate::builder::holder(&docker, &name)? == crate::builder::Holder::Other {
+                foreign.push(name);
+            }
+        }
+        // The worker's name comes first: its holder would be started in.
+        if foreign.first() == Some(&crate::builder::container(&access.builder(slot))) {
+            return Ok(foreign);
+        }
         // A Free Build's builder is made only by a Free Build: a host that never ran one
         // has no cache to clear.
         if access == crate::Access::Free && !holds_cache(&docker, &access.builder(slot))? {
-            return Ok(None);
-        }
-        let worker = crate::builder::container(&access.builder(slot));
-        if crate::builder::holder(&docker, &worker)? == crate::builder::Holder::Other {
-            return Ok(Some(worker));
+            return Ok(foreign);
         }
         let builder = Builder::acquire(
             &docker,
@@ -312,7 +320,7 @@ fn clear_slot_cache(
                     )
                     .map(|_| ())
             });
-        builder.finish(result).map(|()| None)
+        builder.finish(result).map(|()| foreign)
     })();
     if !result.as_ref().is_err_and(BuildError::is_unknown) {
         let _ = fs::remove_dir_all(directory);

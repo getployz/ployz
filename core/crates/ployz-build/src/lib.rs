@@ -1187,10 +1187,15 @@ impl<'a> Docker<'a> {
         arguments: &[&str],
         work: impl FnOnce(&str) -> Result<T, BuildError>,
     ) -> Result<T, BuildError> {
+        // A container Ployz did not create under this name is never removed.
+        if crate::builder::holder(self, name)? == crate::builder::Holder::Other {
+            return Err(crate::builder::foreign(name).at(Stage::Preparation));
+        }
         self.remove_container(name)?;
         // A failed or interrupted create may still have reached Docker. Always
         // confirm absence, including when no successful create was observed.
-        let mut create = vec!["create", "--name", name];
+        let marker = format!("{}={}", crate::builder::OWNER, crate::builder::owner());
+        let mut create = vec!["create", "--name", name, "--env", &marker];
         create.extend_from_slice(arguments);
         let result = self
             .run("create build helper", &create, Streams::Captured)

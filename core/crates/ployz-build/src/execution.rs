@@ -334,7 +334,7 @@ impl Admission {
                 break;
             }
             match Self::try_acquire_slot(policy, slot) {
-                Ok(admission) => match admission.lock.foreign_worker(&policy.docker) {
+                Ok(admission) => match admission.lock.foreign_holder(&policy.docker) {
                     None => return Ok(admission),
                     Some(container) => {
                         foreign.get_or_insert(container);
