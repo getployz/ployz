@@ -215,3 +215,25 @@ export async function resolveSourcePaths(repositoryDirectory: string, rootDir: s
   if (!contained(repository, dockerfile) || !(await stat(dockerfile)).isFile()) throw new GithubSourceError({ message: "Dockerfile must be a file inside the repository." });
   return { repositoryDirectory: repository, rootDirectory, dockerfilePath: dockerfile };
 }
+
+/** A fresh directory for a repository's checkout. */
+export const makeSourceWorkspace = Effect.tryPromise({
+  try: () => mkdtemp(path.join(tmpdir(), "ployz-source-")),
+  catch: () => new GithubSourceError({ message: "Could not create source workspace." }),
+});
+
+/** Remove a checkout's directory; one already gone, or one that can't be removed now, is left alone. */
+export const removeSourceWorkspace = (directory: string) =>
+  Effect.tryPromise(() => rm(directory, { recursive: true, force: true })).pipe(Effect.ignore);
+
+/** `response`'s repository archive, extracted into `directory`: its root. */
+export const extractGithubArchive = (response: Response, directory: string) => Effect.tryPromise({
+  try: (signal) => extractGithubSource(response, directory, signal),
+  catch: (error) => error instanceof GithubSourceError ? error : new GithubSourceError({ message: "Could not acquire the pinned repository source." }),
+});
+
+/** {@link resolveSourcePaths} as an Effect. */
+export const sourcePaths = (repositoryDirectory: string, rootDir: string, dockerfilePath?: string) => Effect.tryPromise({
+  try: () => resolveSourcePaths(repositoryDirectory, rootDir, dockerfilePath),
+  catch: (error) => error instanceof GithubSourceError ? error : new GithubSourceError({ message: "Could not acquire the pinned repository source." }),
+});

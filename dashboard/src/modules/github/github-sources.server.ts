@@ -1,11 +1,10 @@
 import "@tanstack/react-start/server-only";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import path from "node:path";
 import { Clock, Context, Deferred, Effect, Exit, Layer, Schedule, Scope } from "effect";
 import { accessFor } from "./github-access";
 import { GithubApi, type GithubReadError } from "./github-observation.api";
-import { authorizeRepository, extractGithubSource, GithubSourceError, type SourceIdentity } from "./github-source.server";
+import {
+  authorizeRepository, extractGithubArchive, type GithubSourceError, makeSourceWorkspace, removeSourceWorkspace, type SourceIdentity,
+} from "./github-source.server";
 
 const IDLE_MS = 10 * 60_000;
 /** Checkouts no Deployment holds, newest kept, past which the oldest goes at once. */
@@ -33,9 +32,7 @@ const keyOf = (pin: Pin) => `${pin.organizationId}:${pin.repositoryId}@${pin.sha
 export const makeGithubSources = Effect.gen(function* () {
   const scope = yield* Effect.scope;
   const checkouts = new Map<string, Checkout>();
-  const remove = (workspace: string | null) => workspace === null
-    ? Effect.void
-    : Effect.tryPromise(() => rm(workspace, { recursive: true, force: true })).pipe(Effect.ignore);
+  const remove = (workspace: string | null) => workspace === null ? Effect.void : removeSourceWorkspace(workspace);
   const forget = (key: string, checkout: Checkout) => Effect.suspend(() => {
     if (checkouts.get(key) === checkout) checkouts.delete(key);
     return remove(checkout.workspace);
@@ -52,14 +49,11 @@ export const makeGithubSources = Effect.gen(function* () {
   yield* evict.pipe(Effect.repeat(Schedule.spaced("1 minute")), Effect.forkIn(scope));
 
   const fetch = (pin: Pin, repository: Effect.Success<Authorized>, checkout: Checkout) => Effect.gen(function* () {
-    const workspace = yield* Effect.tryPromise({ try: () => mkdtemp(path.join(tmpdir(), "ployz-source-")), catch: () => new GithubSourceError({ message: "Could not create source workspace." }) });
+    const workspace = yield* makeSourceWorkspace;
     checkout.workspace = workspace;
     const api = yield* GithubApi;
     const response = yield* api.archive({ access: accessFor(pin.organizationId, pin.installationId), repository, sha: pin.sha });
-    return yield* Effect.tryPromise({
-      try: (signal) => extractGithubSource(response, workspace, signal),
-      catch: (error) => error instanceof GithubSourceError ? error : new GithubSourceError({ message: "Could not acquire the pinned repository source." }),
-    });
+    return yield* extractGithubArchive(response, workspace);
   });
 
   const ensure = Effect.fn("GithubSources.ensure")(function* (pin: Pin, hold: boolean) {

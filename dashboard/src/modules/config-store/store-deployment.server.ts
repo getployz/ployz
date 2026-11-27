@@ -9,7 +9,7 @@ import { deploymentRun } from "#/modules/config-store/tables";
 import { discardFailedRestore, type FailedRestore, releasePlacementClaims } from "#/modules/volume-placement/volume-placement.deploy.server";
 import { extractUpload, releaseUploads, uploadOwner } from "#/modules/config-store/upload.server";
 import { eq } from "drizzle-orm";
-import { GithubSourceError, resolveSourcePaths } from "#/modules/github/github-source.server";
+import { sourcePaths } from "#/modules/github/github-source.server";
 import { GithubSources } from "#/modules/github/github-sources.server";
 import { GithubAuthority } from "#/modules/github/github-authority.server";
 import type { ConfigDeploymentAdmittedEventData } from "#/modules/config-store/config-store.events";
@@ -41,10 +41,8 @@ const checkoutSources = Effect.fn("StoreDeployment.checkoutSources")(function* (
     else commit.sources.push(source);
   }
   const checkouts = yield* Effect.forEach(commits.values(), ({ pin, sources }) => fromGithub(githubSources.checkout(pin)).pipe(
-    Effect.flatMap((repository) => Effect.forEach(sources, (source) => fromGithub(Effect.tryPromise({
-      try: () => resolveSourcePaths(repository, source.root_dir, source.dockerfile_path ?? undefined),
-      catch: (error) => error instanceof GithubSourceError ? error : new GithubSourceError({ message: "Could not acquire the pinned repository source." }),
-    })).pipe(Effect.as([source.service, repository] as const)))),
+    Effect.flatMap((repository) => Effect.forEach(sources, (source) =>
+      fromGithub(sourcePaths(repository, source.root_dir, source.dockerfile_path ?? undefined)).pipe(Effect.as([source.service, repository] as const)))),
   ), { concurrency: "unbounded" });
   return Object.fromEntries(checkouts.flat());
 });
