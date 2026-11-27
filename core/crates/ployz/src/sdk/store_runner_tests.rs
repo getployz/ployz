@@ -2419,7 +2419,7 @@ fn planning_ends_when_the_first_image_is_sent() {
 }
 
 #[tokio::test]
-async fn a_join_failure_after_live_keeps_cleanup_pending_and_returns_an_error() {
+async fn a_join_failure_after_live_keeps_the_applied_result_and_marks_cleanup_unconfirmed() {
     let (run, actor) = run();
     prepared(&run).await;
     let at = now_ms() / 1000;
@@ -2461,7 +2461,7 @@ async fn a_join_failure_after_live_keeps_cleanup_pending_and_returns_an_error() 
         .unwrap();
     assert_eq!(
         (result.is_err(), view.deployment.cleanup),
-        (true, Some(ployz_store::CleanupStatus::Pending)),
+        (true, Some(ployz_store::CleanupStatus::Unconfirmed)),
         "a failed task must leave its cleanup unconfirmed and surface the error",
     );
     let error = result.unwrap_err();
@@ -2470,7 +2470,7 @@ async fn a_join_failure_after_live_keeps_cleanup_pending_and_returns_an_error() 
         crate::ui::after_result(&crate::failure::Failure::from(error)),
         3
     );
-    assert_eq!(view.deployment.status, DeploymentStatus::Unknown);
+    assert_eq!(view.deployment.status, DeploymentStatus::Applied);
     assert_eq!(view.deployment.live_at, Some(at));
 }
 
