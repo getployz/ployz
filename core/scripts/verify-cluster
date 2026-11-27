@@ -380,11 +380,16 @@ def require_reachable(run, backend, nodes, others=None):
         return
     named = {node["name"]: node for node in [*nodes, *others]}
 
-    def answers(pair):
+    def ping(pair):
         source, target = named[pair[0]], named[pair[1]]
-        code = backend.exec(source, ["ping", "-c3", "-W2", target["address"]], check=False, timeout=30).returncode
-        return code in (0, 126, 127)  # A Machine without ping can't tell, so it doesn't fail the run.
-    silent = [pair for pair, ok in zip(pairs, parallel(answers, pairs)) if not ok]
+        return backend.exec(source, ["ping", "-c3", "-W2", target["address"]], check=False, timeout=30).returncode
+    # Boat guests run no firewall, so a pair that drops ping drops WireGuard too. A Machine without
+    # ping (126, 127) can't tell, so it doesn't fail the run.
+    codes = dict(zip(pairs, parallel(ping, pairs)))
+    unrun = sorted({pair[0] for pair, code in codes.items() if code == 255})
+    if unrun:
+        raise Infrastructure(f"couldn't run the pair check over SSH on {', '.join(unrun)}")
+    silent = [pair for pair, code in codes.items() if code not in (0, 126, 127)]
     if silent:
         hosts = {name: named[name]["ssh"].rsplit(":", 1)[0].rsplit("@", 1)[-1] for pair in silent for name in pair}
         raise Infrastructure(

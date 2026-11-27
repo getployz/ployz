@@ -63,11 +63,14 @@ class OverdueDrains(unittest.TestCase):
 class Underlay:
     """A host network where only `cut` pairs of addresses drop each other's packets."""
 
-    def __init__(self, cut, without_ping=False):
+    def __init__(self, cut, without_ping=False, unreachable=()):
         self.cut = {frozenset(pair) for pair in cut}
         self.without_ping = without_ping
+        self.unreachable = set(unreachable)
 
     def exec(self, node, command, check=True, timeout=None):
+        if node["name"] in self.unreachable:
+            return subprocess.CompletedProcess(command, 255)
         if self.without_ping:
             return subprocess.CompletedProcess(command, 127)
         silent = frozenset((node["address"], command[-1])) in self.cut
@@ -77,8 +80,8 @@ class Underlay:
 class Reachability(unittest.TestCase):
     machines = [{"name": f"machine-{n}", "address": f"2001:db8:{n}::1", "ssh": f"root@198.51.100.{n}:19032"} for n in (1, 2, 3)]
 
-    def require(self, cut, nodes=None, others=None, provider="boat", without_ping=False):
-        cluster.require_reachable({"provider": provider}, Underlay(cut, without_ping),
+    def require(self, cut, nodes=None, others=None, provider="boat", without_ping=False, unreachable=()):
+        cluster.require_reachable({"provider": provider}, Underlay(cut, without_ping, unreachable),
                                   self.machines if nodes is None else nodes, others)
 
     def test_a_pair_that_cant_reach_each_other_fails_before_enrollment_naming_both_hosts(self):
@@ -103,6 +106,12 @@ class Reachability(unittest.TestCase):
 
     def test_a_machine_without_ping_does_not_fail_the_run(self):
         self.require([], without_ping=True)
+
+    def test_a_machine_ssh_cant_reach_is_not_reported_as_a_broken_pair(self):
+        with self.assertRaises(cluster.Infrastructure) as raised:
+            self.require([], unreachable=["machine-1"])
+        self.assertIn("couldn't run the pair check over SSH on machine-1", str(raised.exception))
+        self.assertNotIn("can't reach each other", str(raised.exception))
 
     def test_hosts_other_than_boat_are_not_checked(self):
         self.require([("2001:db8:1::1", "2001:db8:3::1")], provider="local")
