@@ -278,8 +278,7 @@ pub(crate) fn retry(
     // A retry builds from what its source did, but sends nothing.
     let retried_uploads = stored.service_uploads.clone().map(|uploads| {
         json_text(&super::uploads::ServiceUploads {
-            sent: false,
-            provisional: false,
+            choice: super::uploads::UploadChoice::Fixed,
             ..uploads
         })
     });

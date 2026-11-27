@@ -10,7 +10,7 @@ use std::{
 use base64::Engine as _;
 use serde::Deserialize;
 
-use crate::{BuildError, BuildStep, Progress};
+use crate::{BuildError, BuildStep, Progress, StepPhase};
 
 /// Longest unterminated line held back before it is passed on as plain
 /// output. A first vertex report can list every step of a large graph.
@@ -254,12 +254,12 @@ pub struct PlainRenderer {
     steps: Mutex<HashMap<String, Seen>>,
 }
 
-/// Step number, first start, and last reported completion, so repeated
-/// reports of one step print each transition once.
+/// Step number, whether its name printed, and the end line it last printed, so
+/// repeated reports of one step print each line once.
 struct Seen {
     number: usize,
-    started: Option<String>,
-    completed: Option<String>,
+    opened: bool,
+    ended: Option<String>,
 }
 
 impl PlainRenderer {
@@ -275,32 +275,38 @@ impl PlainRenderer {
                 let count = steps.len() + 1;
                 let Seen {
                     number,
-                    started,
-                    completed,
+                    opened,
+                    ended,
                 } = steps.entry(step.id.clone()).or_insert_with(|| Seen {
                     number: count,
-                    started: None,
-                    completed: None,
+                    opened: false,
+                    ended: None,
                 });
+                let phase = step.phase();
                 let mut lines = String::new();
-                if started.is_none() && step.started.is_some() {
-                    *started = step.started.clone();
+                if !*opened && phase != StepPhase::Waiting {
+                    *opened = true;
                     lines.push_str(&format!("#{number} {}\n", step.name));
                 }
-                if step.completed.is_some() && *completed != step.completed {
-                    *completed = step.completed.clone();
-                    if let Some(error) = &step.error {
-                        lines.push_str(&format!("#{number} ERROR: {error}\n"));
-                    } else if step.cached {
-                        lines.push_str(&format!("#{number} CACHED\n"));
-                    } else if let (Some(started), Some(completed)) =
-                        (&step.started, &step.completed)
-                    {
-                        lines.push_str(&format!(
-                            "#{number} DONE {:.1}s\n",
-                            elapsed(started, completed).as_secs_f64()
-                        ));
-                    }
+                let end = match phase {
+                    StepPhase::Waiting | StepPhase::Running => None,
+                    StepPhase::Cached => Some("CACHED".to_owned()),
+                    StepPhase::Done => Some(match (&step.started, &step.completed) {
+                        (Some(started), Some(completed)) => {
+                            format!("DONE {:.1}s", elapsed(started, completed).as_secs_f64())
+                        }
+                        _ => "DONE".to_owned(),
+                    }),
+                    StepPhase::Failed => Some(format!(
+                        "ERROR: {}",
+                        step.error.as_deref().unwrap_or_default()
+                    )),
+                };
+                if let Some(end) = end
+                    && ended.as_ref() != Some(&end)
+                {
+                    lines.push_str(&format!("#{number} {end}\n"));
+                    *ended = Some(end);
                 }
                 (!lines.is_empty()).then_some(lines)
             }
@@ -655,6 +661,29 @@ mod tests {
         assert_eq!(
             rendered,
             "#1 [sdk 1/2] RUN cargo build\n#1 hello\nWARNING: not json\n#1 DONE 142.5s\n"
+        );
+    }
+
+    #[test]
+    fn a_step_shows_its_end_without_a_start_or_a_completion() {
+        let status = concat!(
+            r#"{"vertexes":[{"digest":"sha256:a","name":"COPY . .","completed":"2026-09-22T21:09:07Z"}]}"#,
+            "\n",
+            r#"{"vertexes":[{"digest":"sha256:b","name":"RUN x","started":"2026-09-22T21:09:06Z","error":"exit code: 1"}]}"#,
+            "\n",
+            // BuildKit then reports the failed step's completion; ERROR prints once.
+            r#"{"vertexes":[{"digest":"sha256:b","name":"RUN x","started":"2026-09-22T21:09:06Z","completed":"2026-09-22T21:09:07Z","error":"exit code: 1"}]}"#,
+            "\n",
+        );
+        let events = collect(|parser, progress| parser.feed(status.as_bytes(), progress));
+        let renderer = PlainRenderer::default();
+        let rendered: String = events
+            .iter()
+            .filter_map(|event| renderer.render(event))
+            .collect();
+        assert_eq!(
+            rendered,
+            "#1 COPY . .\n#1 DONE\n#2 RUN x\n#2 ERROR: exit code: 1\n"
         );
     }
 }

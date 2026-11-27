@@ -59,7 +59,7 @@ fn node(node: &NodeOutcome) -> Value {
             reason,
             step,
             log,
-            stopped_by: ployz_store::StoppedBy::NOTHING,
+            stopped_by: ployz_store::StoppedBy::Nothing,
             ..
         } => Some((row.server.as_str(), reason, step, log)),
         RowState::Pending
@@ -69,12 +69,7 @@ fn node(node: &NodeOutcome) -> Value {
         | RowState::NotAttempted
         | RowState::Unknown => None,
     });
-    let outcome = if node.cancelled {
-        json!("cancelled")
-    } else {
-        json!(node.outcome)
-    };
-    let mut shown = json!({ "name": node.node.name(), "outcome": outcome });
+    let mut shown = json!({ "name": node.node.name(), "outcome": node.label() });
     if let (Some((server, reason, step, log)), Value::Object(object)) = (failed, &mut shown) {
         object.insert("server".into(), server.into());
         object.insert("reason".into(), reason.as_str().into());
@@ -118,7 +113,7 @@ fn diagnose(view: &DeploymentView, cx: &Cx<'_>) -> Option<[Call; 2]> {
                 matches!(
                     row.state,
                     RowState::Failed {
-                        stopped_by: ployz_store::StoppedBy::NOTHING,
+                        stopped_by: ployz_store::StoppedBy::Nothing,
                         ..
                     }
                 )
