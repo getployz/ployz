@@ -31,6 +31,15 @@ pub const HEALTHCHECK_TIMEOUT_MAX: u16 = 300;
 pub const HEALTHCHECK_TIMEOUT_DEFAULT: u16 = 300;
 pub const RESTART_POLICIES: [&str; 4] = ["always", "no", "on-failure", "unless-stopped"];
 pub const UPDATE_ORDERS: [&str; 3] = ["start-first", "stop-first", "rolling"];
+pub const STOP_SIGNALS: [&str; 7] = [
+    "SIGTERM", "SIGINT", "SIGQUIT", "SIGHUP", "SIGUSR1", "SIGUSR2", "SIGWINCH",
+];
+/// Seconds a replica has to stop when `stopGracePeriod` is unset.
+pub const STOP_GRACE_PERIOD_DEFAULT: u16 = 30;
+/// The longest `stopGracePeriod`, in seconds. A Deploy waits out each stop on a Server
+/// one after another, so ten minutes lets a queue worker finish a long job without one
+/// stuck replica holding a Deploy for an hour.
+pub const STOP_GRACE_PERIOD_MAX: u16 = 600;
 
 /// Validation errors identify the setting, never echo credentials or authored values.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, thiserror::Error, TS)]
@@ -70,6 +79,8 @@ pub enum ServiceSettingInput {
     RestartPolicy(ServiceRestartPolicy),
     MaxRetries(u8),
     UpdateOrder(Option<ServiceUpdateOrder>),
+    StopSignal(Option<ServiceStopSignal>),
+    StopGracePeriod(Option<u16>),
     Replicas(Replicas),
     CpuLimit(Option<f64>),
     MemLimit(Option<f64>),
@@ -142,6 +153,8 @@ impl AuthoredServiceConfig {
             restart_policy,
             max_retries,
             update_order,
+            stop_signal,
+            stop_grace_period,
             replicas,
             cpu_limit,
             mem_limit,
@@ -215,6 +228,16 @@ impl AuthoredServiceConfig {
         else {
             variant_changed()
         };
+        let ServiceSettingInput::StopGracePeriod(stop_grace_period) =
+            ServiceSettingInput::StopGracePeriod(stop_grace_period).normalized()?
+        else {
+            variant_changed()
+        };
+        let ServiceSettingInput::StopSignal(stop_signal) =
+            ServiceSettingInput::StopSignal(stop_signal).normalized()?
+        else {
+            variant_changed()
+        };
         let ServiceSettingInput::Template(template) =
             ServiceSettingInput::Template(template).normalized()?
         else {
@@ -234,6 +257,8 @@ impl AuthoredServiceConfig {
             restart_policy,
             max_retries,
             update_order,
+            stop_signal,
+            stop_grace_period,
             replicas,
             cpu_limit,
             mem_limit,
@@ -282,7 +307,13 @@ impl ServiceSettingInput {
             Self::Healthcheck(ServiceHealthcheck::None)
             | Self::RestartPolicy(_)
             | Self::UpdateOrder(_)
+            | Self::StopSignal(_)
             | Self::PrivateDns(_) => Ok(()),
+            Self::StopGracePeriod(value) => range(
+                value.is_none_or(|seconds| (1..=STOP_GRACE_PERIOD_MAX).contains(&seconds)),
+                "stopGracePeriod",
+                expected("stopGracePeriod"),
+            ),
             Self::HealthcheckPath(value) => healthcheck_path(value),
             Self::HealthcheckTimeoutSeconds(value) => timeout(*value),
             Self::MaxRetries(value) => range(
@@ -505,6 +536,8 @@ fn expected(field: &str) -> &'static str {
         "memLimit" => "Expected GB above 0 and up to 1024, for example 0.5 or 2",
         "healthcheckTimeoutSeconds" => "Expected 1–300 seconds",
         "updateOrder" => "Expected start-first, stop-first or rolling",
+        "stopSignal" => "Use SIGTERM, SIGINT, SIGQUIT, SIGHUP, SIGUSR1, SIGUSR2 or SIGWINCH.",
+        "stopGracePeriod" => "Use 1 to 600 seconds.",
         _ => "Invalid setting value",
     }
 }

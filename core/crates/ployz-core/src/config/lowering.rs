@@ -412,6 +412,7 @@ fn lower_snapshot(
     let (entrypoint, command) =
         lower_start_command(config.start_command.as_deref(), snapshot.built_with)?;
     let (placement, regions) = lower_placement(&limits.replicas, sources.region);
+    let stop_signal = config.stop_signal;
     let mut spec = RequestedServiceSpec {
         name: config.private_dns,
         mode: ServiceMode::Replicated {
@@ -454,7 +455,12 @@ fn lower_snapshot(
             open_stdin: false,
             privileged: false,
             pid_mode: None,
-            stop_timeout_secs: None,
+            stop_timeout_secs: Some(i64::from(
+                config
+                    .stop_grace_period
+                    .unwrap_or(super::STOP_GRACE_PERIOD_DEFAULT),
+            )),
+            stop_signal: None,
             sysctls: BTreeMap::new(),
             network: None,
         },
@@ -468,6 +474,10 @@ fn lower_snapshot(
             monitor_millis: None,
         },
     };
+    spec.container.stop_signal = stop_signal
+        .map(super::ServiceStopSignal::name)
+        .or_else(|| spec.container.default_stop_signal())
+        .map(str::to_owned);
     spec.set_volume_graph(ServiceVolumeGraph::parse(volumes, mounts).map_err(lowering_error)?)
         .map_err(mount_error)?;
     spec.set_config_graph(

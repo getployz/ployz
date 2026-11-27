@@ -25,6 +25,8 @@ pub enum Setting {
     RestartPolicy,
     MaxRetries,
     UpdateOrder,
+    StopSignal,
+    StopGracePeriod,
     Replicas,
     CpuLimit,
     MemLimit,
@@ -55,7 +57,7 @@ struct Def {
     write: Option<Write>,
 }
 
-const TABLE: &[Def; 17] = &[
+const TABLE: &[Def; 19] = &[
     Def {
         setting: Setting::Source,
         path: "source",
@@ -202,6 +204,30 @@ const TABLE: &[Def; 17] = &[
         }),
     },
     Def {
+        setting: Setting::StopSignal,
+        path: "stopSignal",
+        carried: false,
+        owner: None,
+        default: || Value::Null,
+        read: |config, _| json!(config.stop_signal),
+        write: Some(|config, _, value| {
+            config.stop_signal = serde_json::from_value(value)?;
+            Ok(())
+        }),
+    },
+    Def {
+        setting: Setting::StopGracePeriod,
+        path: "stopGracePeriod",
+        carried: false,
+        owner: None,
+        default: || Value::Null,
+        read: |config, _| json!(config.stop_grace_period),
+        write: Some(|config, _, value| {
+            config.stop_grace_period = serde_json::from_value(value)?;
+            Ok(())
+        }),
+    },
+    Def {
         setting: Setting::Replicas,
         path: "replicas",
         carried: false,
@@ -282,8 +308,8 @@ impl Setting {
         clippy::indexing_slicing,
         reason = "A const loop bounded by the table's length; the assertion is the check."
     )]
-    pub const ALL: [Self; 17] = {
-        let mut all = [Self::Source; 17];
+    pub const ALL: [Self; 19] = {
+        let mut all = [Self::Source; 19];
         let mut row = 0;
         while row < all.len() {
             assert!(
@@ -424,7 +450,7 @@ mod tests {
     use crate::config::{At, RowId, parse_service_config};
 
     /// The paths a row id and a Never sync mark have stored; they never change.
-    const PATHS: [&str; 17] = [
+    const PATHS: [&str; 19] = [
         "source",
         "source.branch",
         "privateDns",
@@ -436,6 +462,8 @@ mod tests {
         "restartPolicy",
         "maxRetries",
         "updateOrder",
+        "stopSignal",
+        "stopGracePeriod",
         "replicas",
         "cpuLimit",
         "memLimit",

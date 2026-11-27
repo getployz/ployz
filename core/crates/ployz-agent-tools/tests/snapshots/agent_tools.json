@@ -720,6 +720,35 @@
                 "title": "Start command",
                 "type": "string"
               },
+              "stopGracePeriod": {
+                "default": 30,
+                "description": "Seconds a replica gets to stop before it's killed.",
+                "examples": [
+                  60
+                ],
+                "maximum": 600,
+                "minimum": 1,
+                "title": "Stop grace period",
+                "type": "integer"
+              },
+              "stopSignal": {
+                "description": "Auto: SIGTERM with a start command, otherwise the image's.",
+                "enum": [
+                  "SIGTERM",
+                  "SIGINT",
+                  "SIGQUIT",
+                  "SIGHUP",
+                  "SIGUSR1",
+                  "SIGUSR2",
+                  "SIGWINCH"
+                ],
+                "examples": [
+                  "SIGTERM",
+                  "SIGQUIT"
+                ],
+                "title": "Stop signal",
+                "type": "string"
+              },
               "template": {
                 "additionalProperties": false,
                 "description": "The Service Template it was created from, and its version. It changes nothing that runs. Unset forgets it.",
@@ -820,6 +849,8 @@
                     "restartPolicy",
                     "rootDir",
                     "startCommand",
+                    "stopGracePeriod",
+                    "stopSignal",
                     "template",
                     "updateOrder",
                     "waitForCi",

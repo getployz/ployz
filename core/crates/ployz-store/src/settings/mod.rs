@@ -22,9 +22,10 @@ pub(crate) mod size;
 use ployz_core::config::{
     AuthoredServiceConfig, COMMAND_MAX, CPU_LIMIT_MAX, HEALTHCHECK_PATH_MAX,
     HEALTHCHECK_TIMEOUT_DEFAULT, HEALTHCHECK_TIMEOUT_MAX, IMAGE_MAX, MAX_RETRIES_MAX,
-    MEM_LIMIT_MAX, REPLICAS_MAX, RESTART_POLICIES, Replicas, ServiceBuildConfig,
-    ServiceHealthcheck, ServiceImageCredentials, ServiceRestartPolicy, ServiceSource, Setting,
-    UPDATE_ORDERS, default_max_retries, default_replicas, parse_service_setting,
+    MEM_LIMIT_MAX, REPLICAS_MAX, RESTART_POLICIES, Replicas, STOP_GRACE_PERIOD_DEFAULT,
+    STOP_GRACE_PERIOD_MAX, STOP_SIGNALS, ServiceBuildConfig, ServiceHealthcheck,
+    ServiceImageCredentials, ServiceRestartPolicy, ServiceSource, Setting, UPDATE_ORDERS,
+    default_max_retries, default_replicas, parse_service_setting,
 };
 use ployz_core::{Hint, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
@@ -130,6 +131,8 @@ pub(crate) enum ServiceSetting {
     /// The Service Template it was created from.
     Template,
     UpdateOrder,
+    StopSignal,
+    StopGracePeriod,
     /// A Git-backed Service's source and build.
     Git(GitSetting),
     /// A Git-backed Service's Deployment Policy; see [`crate::policy`].
@@ -138,7 +141,7 @@ pub(crate) enum ServiceSetting {
 
 impl ServiceSetting {
     /// Every Setting, in the order `get` lists them.
-    pub(crate) const ALL: [Self; 23] = [
+    pub(crate) const ALL: [Self; 25] = [
         Self::CpuLimit,
         Self::Healthcheck,
         Self::Image,
@@ -150,6 +153,8 @@ impl ServiceSetting {
         Self::Replicas,
         Self::RestartPolicy,
         Self::StartCommand,
+        Self::StopGracePeriod,
+        Self::StopSignal,
         Self::Template,
         Self::UpdateOrder,
         Self::Git(GitSetting::Repository),
@@ -406,6 +411,47 @@ impl ServiceSetting {
                 expected: || json!({ "type": "string", "enum": UPDATE_ORDERS }),
                 examples: || json!(["rolling"]),
             },
+            Self::StopSignal => Spec {
+                name: "stopSignal",
+                label: "Stop signal",
+                description: "Auto: SIGTERM with a start command, otherwise the image's.",
+                field: "stopSignal",
+                access: Some(access!(stop_signal)),
+                core: Some(Setting::StopSignal),
+                apply: Apply::Staged,
+                needs: Needs::Any,
+                default: |_| Value::Null,
+                expected: || json!({ "type": "string", "enum": STOP_SIGNALS }),
+                examples: || json!(["SIGTERM", "SIGQUIT"]),
+            },
+            Self::StopGracePeriod => Spec {
+                name: "stopGracePeriod",
+                label: "Stop grace period",
+                description: "Seconds a replica gets to stop before it's killed.",
+                field: "stopGracePeriod",
+                // The default is stored as unset, so a document that names it reads as one that doesn't.
+                access: Some(Access {
+                    read: |config| {
+                        json!(
+                            config
+                                .stop_grace_period
+                                .unwrap_or(STOP_GRACE_PERIOD_DEFAULT)
+                        )
+                    },
+                    restore: |config, value| {
+                        let seconds: Option<u16> = serde_json::from_value(value)?;
+                        config.stop_grace_period =
+                            seconds.filter(|seconds| *seconds != STOP_GRACE_PERIOD_DEFAULT);
+                        Ok(())
+                    },
+                }),
+                core: Some(Setting::StopGracePeriod),
+                apply: Apply::Staged,
+                needs: Needs::Any,
+                default: |_| json!(STOP_GRACE_PERIOD_DEFAULT),
+                expected: || json!({ "type": "integer", "minimum": 1, "maximum": STOP_GRACE_PERIOD_MAX }),
+                examples: || json!([60]),
+            },
             Self::Git(git) => git.spec(),
             Self::Policy(policy) => policy.spec(),
         }
@@ -468,6 +514,8 @@ impl ServiceSetting {
             | Self::StartCommand
             | Self::Template
             | Self::UpdateOrder
+            | Self::StopSignal
+            | Self::StopGracePeriod
             | Self::Git(_) => None,
         }
     }
@@ -542,7 +590,9 @@ impl ServiceSetting {
                 | Self::RestartPolicy
                 | Self::StartCommand
                 | Self::Template
-                | Self::UpdateOrder,
+                | Self::UpdateOrder
+                | Self::StopSignal
+                | Self::StopGracePeriod,
                 _,
             ) => Value::Null,
         }
@@ -579,7 +629,9 @@ impl ServiceSetting {
             | Self::RestartPolicy
             | Self::StartCommand
             | Self::Template
-            | Self::UpdateOrder => value,
+            | Self::UpdateOrder
+            | Self::StopSignal
+            | Self::StopGracePeriod => value,
         }
     }
 
@@ -717,8 +769,11 @@ impl ServiceSetting {
     pub(crate) fn plain(self, value: Value) -> bool {
         let checked = match self {
             Self::MemLimit => self.mem_limit(value),
-            Self::CpuLimit | Self::MaxRetries => Ok(self.coerce_number(value)),
+            Self::CpuLimit | Self::MaxRetries | Self::StopGracePeriod => {
+                Ok(self.coerce_number(value))
+            }
             Self::Replicas => Ok(self.coerce(value)),
+            Self::StopSignal => Ok(self.coerce(value)),
             Self::PrivateDns | Self::RestartPolicy | Self::UpdateOrder | Self::Image => Ok(value),
             Self::Healthcheck
             | Self::PreDeployCommand
@@ -742,9 +797,16 @@ impl ServiceSetting {
             (Self::Replicas, Value::Object(counts)) => counts.iter().all(|(region, count)| {
                 crate::region::RegionName::parse(region.as_str()).is_ok() && count.is_number()
             }),
-            (Self::RestartPolicy | Self::UpdateOrder | Self::Image, Value::String(_))
+            (
+                Self::RestartPolicy | Self::UpdateOrder | Self::StopSignal | Self::Image,
+                Value::String(_),
+            )
             | (
-                Self::CpuLimit | Self::MaxRetries | Self::MemLimit | Self::Replicas,
+                Self::CpuLimit
+                | Self::MaxRetries
+                | Self::MemLimit
+                | Self::Replicas
+                | Self::StopGracePeriod,
                 Value::Number(_),
             ) => true,
             _ => false,
@@ -794,10 +856,22 @@ impl ServiceSetting {
         if self == Self::Replicas {
             return Self::coerce_object(self.coerce_number(value));
         }
+        if self == Self::StopSignal {
+            return Self::signal_name(value);
+        }
         match self.expected().get("type").and_then(Value::as_str) {
             Some("integer" | "number") => self.coerce_number(value),
             Some("object") => Self::coerce_object(value),
             _ => value,
+        }
+    }
+
+    /// A signal however it is spelled, `term` or `sigterm`, as its name, `SIGTERM`.
+    fn signal_name(value: Value) -> Value {
+        match value.as_str().map(|text| text.trim().to_ascii_uppercase()) {
+            Some(name) if name.starts_with("SIG") => Value::String(name),
+            Some(name) => Value::String(format!("SIG{name}")),
+            None => value,
         }
     }
 

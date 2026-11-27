@@ -275,6 +275,7 @@ fn requested_with_graphs(
             pid_mode: None,
             resources: Default::default(),
             stop_timeout_secs: None,
+            stop_signal: None,
             sysctls: BTreeMap::new(),
             network: None,
             restart: Default::default(),
