@@ -528,13 +528,44 @@ pub(crate) fn slot_names(access: Access, slot: usize) -> Vec<String> {
         .collect()
 }
 
-/// Images an earlier Ployz ran its build helpers from, before helpers
-/// carried the owner marker.
-const EARLIER_HELPER_IMAGES: [&str; 3] = [
-    "regclient/regctl",
-    "ghcr.io/railwayapp/railpack-frontend",
-    "buildpack-deps:",
+/// The exact image references an earlier Ployz ran each of its containers
+/// from, before they carried the owner marker: its BuildKit worker, then
+/// each helper under its own name.
+const EARLIER_WORKER_IMAGES: [&str; 2] = [
+    "moby/buildkit:v0.26.2",
+    "moby/buildkit:v0.26.2@sha256:de10faf919fc71ba4eb1dd7bd6449566d012b0c9436b1c61bfee21d621b009aa",
 ];
+const EARLIER_HELPER_IMAGES: [(&str, &str); 3] = [
+    (
+        "railpack",
+        "ghcr.io/railwayapp/railpack-frontend@sha256:db24dc37640b6887c3d455b40876ea30f75182964479670cba6e4cde7ffef103",
+    ),
+    (
+        "prepare",
+        "buildpack-deps:trixie-curl@sha256:3dd78c060b4d7c97b426d0160f7d8876c84fbf2fc36e651e9c75620ac9a7da24",
+    ),
+    (
+        "assemble",
+        "regclient/regctl@sha256:5fe7c6a6206e1d9d71af719674c9db03e74a4ae221a32089b691f5b55533d6ea",
+    ),
+];
+
+/// Whether the inspected `lines` show the container named `name` as one an
+/// earlier Ployz made: exactly the image it shipped for that name.
+fn earlier(name: &str, lines: &[&str]) -> bool {
+    if name.starts_with("buildx_buildkit_") {
+        // Buildx sets this on every worker it starts.
+        return EARLIER_WORKER_IMAGES
+            .iter()
+            .any(|image| lines.contains(image))
+            && lines
+                .iter()
+                .any(|line| line.starts_with("BUILDKIT_SETUP_CGROUPV2_ROOT="));
+    }
+    EARLIER_HELPER_IMAGES
+        .iter()
+        .any(|(helper, image)| name.ends_with(&format!("-{helper}")) && lines.contains(image))
+}
 
 /// Who holds a worker's container name.
 #[derive(Debug, PartialEq, Eq)]
@@ -566,23 +597,13 @@ pub(crate) fn holder(docker: &Docker<'_>, container: &str) -> Result<Holder, Bui
         Ok(inspected) => {
             let marker = format!("{OWNER}={}", owner());
             let lines = inspected.lines().map(str::trim).collect::<Vec<_>>();
-            // A worker an earlier Ployz made has no marker: it is the Buildx
-            // worker under this builder's name, running BuildKit's image. Its
-            // helpers ran Ployz's pinned helper images.
-            let earlier = (lines.iter().any(|line| line.starts_with("moby/buildkit"))
-                && lines
-                    .iter()
-                    .any(|line| line.starts_with("BUILDKIT_SETUP_CGROUPV2_ROOT=")))
-                || lines.iter().any(|line| {
-                    EARLIER_HELPER_IMAGES
-                        .iter()
-                        .any(|image| line.starts_with(image))
-                });
-            Ok(if earlier || lines.contains(&marker.as_str()) {
-                Holder::Ployz
-            } else {
-                Holder::Other
-            })
+            Ok(
+                if earlier(container, &lines) || lines.contains(&marker.as_str()) {
+                    Holder::Ployz
+                } else {
+                    Holder::Other
+                },
+            )
         }
         Err(BuildError::Docker { diagnostic, .. })
             if diagnostic.to_ascii_lowercase().contains("no such object") =>
@@ -1908,7 +1929,9 @@ case "$1 $2" in
         if grep -qx "$4" '{0}/owned' 2>/dev/null; then echo {OWNER}={1}
         elif grep -qx "$4" '{0}/foreign' 2>/dev/null; then echo PATH=/bin
         elif grep -qx "$4" '{0}/earlier' 2>/dev/null; then
-          printf 'c0ffee\nmoby/buildkit:v0.26.2\nPATH=/bin\nBUILDKIT_SETUP_CGROUPV2_ROOT=1\n' 
+          printf 'c0ffee\nmoby/buildkit:v0.26.2\nPATH=/bin\nBUILDKIT_SETUP_CGROUPV2_ROOT=1\n'
+        elif grep -qx "$4" '{0}/unpinned' 2>/dev/null; then
+          printf 'c0ffee\nbuildpack-deps:bookworm\nPATH=/bin\nBUILDKIT_SETUP_CGROUPV2_ROOT=1\n' 
         else echo "Error: no such object: $4" >&2; exit 1; fi ;;
       *) cat '{0}/worker' 2>/dev/null ;;
     esac ;;
@@ -2368,6 +2391,29 @@ exit 0
                 .any(|call| call.ends_with(&helper) && !call.starts_with("inspect")),
             "recovery touched {helper}: {calls:?}"
         );
+    }
+
+    /// A public image whose tag only resembles one Ployz pinned is not an
+    /// earlier Ployz's, under a worker's name or a helper's.
+    #[test]
+    fn recovery_leaves_containers_running_an_image_ployz_never_pinned() {
+        let directory = host_slot();
+        let directory = directory.path();
+        let worker = container(&Access::Full.builder(0));
+        let helper = format!("{}-prepare", Access::Full.builder(0));
+        fs::write(directory.join("unpinned"), format!("{worker}\n{helper}")).unwrap();
+        fs::write(directory.join("names"), format!("{worker}\n{helper}")).unwrap();
+        let policy = crashed_slot(directory);
+        Lock::cleanup_abandoned(&policy).unwrap();
+        let calls = calls_since(directory, &mut 0);
+        for held in [&worker, &helper] {
+            assert!(
+                !calls
+                    .iter()
+                    .any(|call| call.ends_with(held.as_str()) && !call.starts_with("inspect")),
+                "startup touched {held}: {calls:?}"
+            );
+        }
     }
 
     #[test]
