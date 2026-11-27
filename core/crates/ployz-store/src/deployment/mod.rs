@@ -728,6 +728,8 @@ pub enum RunEvidence {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Claimed {
     pub deployment: DeploymentSummary,
+    /// When the runner's acknowledged lease expires, in Unix seconds.
+    pub lease_until: i64,
     /// Services without a source of their own are left out; each builds from its
     /// upload in `uploads` through the SDK's preparation of `input`.
     pub intent: DeployIntent,

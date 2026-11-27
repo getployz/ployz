@@ -151,20 +151,32 @@ impl Shop {
 
 #[tokio::test]
 async fn the_old_copy_stays_in_until_the_store_commits_live() {
-    held_live_write(false, true).await;
+    held_live_write(LiveWrite::Commit).await;
 }
 
 #[tokio::test]
 async fn cancelling_while_the_live_write_is_held_leaves_the_old_copy_in() {
-    held_live_write(true, true).await;
+    held_live_write(LiveWrite::CancelAndCommit).await;
 }
 
 #[tokio::test]
 async fn a_rejected_live_write_does_not_delay_cancellation() {
-    held_live_write(true, false).await;
+    held_live_write(LiveWrite::Cancel).await;
 }
 
-async fn held_live_write(cancel: bool, release: bool) {
+#[tokio::test]
+async fn an_unreadable_store_ends_the_live_wait_at_the_lease_deadline() {
+    held_live_write(LiveWrite::LoseLease).await;
+}
+
+enum LiveWrite {
+    Commit,
+    CancelAndCommit,
+    Cancel,
+    LoseLease,
+}
+
+async fn held_live_write(write: LiveWrite) {
     use ployz_store::testing::backend;
     let service = DeployService::new(machine('a', "one")).lists_created();
     let rotations = service.rotations();
@@ -195,6 +207,24 @@ async fn held_live_write(cancel: bool, release: bool) {
         "the old copy went Out before the Store committed Live"
     );
     assert_eq!(shop.status(2), DeploymentStatus::Running);
+    if matches!(write, LiveWrite::LoseLease) {
+        backend::execute(
+            &url,
+            "ALTER TABLE config_deployment RENAME TO offline_deployment",
+        );
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(600)).await;
+        let error = tokio::time::timeout(Duration::from_secs(1), running)
+            .await
+            .expect("the Live wait ends at the last acknowledged lease")
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error.message, "The Deployment runner's lease expired");
+        assert!(!service.unrouted().lock().unwrap().contains(&old));
+        return;
+    }
+    let cancel = matches!(write, LiveWrite::Cancel | LiveWrite::CancelAndCommit);
+    let release = matches!(write, LiveWrite::Commit | LiveWrite::CancelAndCommit);
     if cancel {
         shop.store
             .write(
@@ -309,6 +339,111 @@ async fn stopping_old_runs_until_the_old_copy_retired_after_the_outcome_is_gone(
     running.await.unwrap().unwrap();
     let ended = stopping_old(&shop).expect("stopping_old");
     assert!(ended.ended_at.is_some(), "{ended:?}");
+}
+
+#[tokio::test]
+async fn a_failed_scale_down_after_the_switch_keeps_the_live_timestamp() {
+    let (one, two) = (machine('a', "one"), machine('b', "two"));
+    let service = DeployService::new(one.clone())
+        .with_machines(vec![one, two])
+        .lists_created()
+        .hold_removals()
+        .fail_removals(ployz_core::RpcError::internal("scale-down removal failed"));
+    let shop = Shop::deployed(service.clone()).await;
+    let add = |name, id| {
+        shop.store
+            .write(
+                &shop.who,
+                &CreateService {
+                    id: ServiceLineageId::parse(id).unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: ployz_core::ServiceName::parse(name).unwrap(),
+                    image: Some("nginx".into()),
+                    template: None,
+                },
+            )
+            .unwrap()
+    };
+    let replicas = |value| {
+        shop.store
+            .write(
+                &shop.who,
+                &ployz_store::Edit {
+                    environment: EnvironmentRef::default(),
+                    expect: None,
+                    changes: vec![ployz_store::Change::Set {
+                        path: ployz_store::SettingPath::parse("api.replicas").unwrap(),
+                        value: serde_json::json!(value),
+                    }],
+                },
+            )
+            .unwrap()
+    };
+
+    add("api", "00000000-0000-4000-8000-000000000004");
+    replicas(2);
+    assert_eq!(
+        shop.run(2, false).await.unwrap().status,
+        DeploymentStatus::Applied
+    );
+    add("worker", "00000000-0000-4000-8000-000000000005");
+    replicas(1);
+
+    let mut deploy = shop
+        .cli(&["deploy"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut lines = BufReader::new(deploy.stderr.take().unwrap()).lines();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        service.removal_waited().await;
+        while let Some(line) = lines.next_line().await.unwrap() {
+            if line == "Deployment #3 Live." {
+                return;
+            }
+        }
+        panic!("the CLI never printed Live");
+    })
+    .await
+    .expect("Live is printed while the scale-down removal is still held");
+    let show = async || {
+        let output = shop
+            .cli(&["--json", "deployment", "show", "3"])
+            .output()
+            .await
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        serde_json::from_slice::<ployz_store::DeploymentView>(&output.stdout)
+            .unwrap()
+            .deployment
+    };
+    let live_at = show().await.live_at.unwrap();
+    assert!(deploy.try_wait().unwrap().is_none());
+    service.release_removals();
+    let (output, messages) = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(deploy.wait_with_output(), async {
+            let mut messages = Vec::new();
+            while let Some(line) = lines.next_line().await.unwrap() {
+                messages.push(line);
+            }
+            messages
+        })
+    })
+    .await
+    .expect("deploy returns when the removal fails");
+    let output = output.unwrap();
+    assert!(!output.status.success(), "{messages:?}");
+    assert!(
+        messages
+            .iter()
+            .any(|line| line.contains("scale-down removal failed")),
+        "{messages:?}"
+    );
+    assert!(!messages.iter().any(|line| line == "Deployment #3 Live."));
+    let failed = show().await;
+    assert_eq!(failed.status, DeploymentStatus::Failed);
+    assert_eq!(failed.live_at, Some(live_at));
 }
 
 #[tokio::test]

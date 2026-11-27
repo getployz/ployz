@@ -741,7 +741,18 @@ pub(super) fn execute(
             id: admitted.id.clone(),
         });
         match final_view {
-            Ok(view) => followed.view = view,
+            Ok(mut view) => {
+                if view.deployment.cleanup == Some(ployz_store::CleanupStatus::Pending)
+                    && settled.as_ref().is_ok_and(|summary| {
+                        summary.as_ref().is_some_and(|summary| {
+                            summary.cleanup == Some(ployz_store::CleanupStatus::Unconfirmed)
+                        })
+                    })
+                {
+                    view.deployment.cleanup = Some(ployz_store::CleanupStatus::Unconfirmed);
+                }
+                followed.view = view;
+            }
             Err(_) => {
                 if let Ok(Some(summary)) = &settled {
                     followed.view.deployment = summary.clone();

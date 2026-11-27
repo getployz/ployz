@@ -186,7 +186,7 @@ pub async fn run_deployment_expecting(
         over: Latch::new(),
         steps: std::sync::Mutex::default(),
         pending_live_at: std::sync::Mutex::default(),
-        lease_until: std::sync::Mutex::default(),
+        lease_until: tokio::sync::watch::Sender::default(),
         reader: checkouts
             .as_ref()
             .ok()
@@ -561,7 +561,12 @@ struct Run {
     /// Handed to each Server with a rule's proof.
     reader: Option<ployz_core::GithubToken>,
     pending_live_at: std::sync::Mutex<Option<i64>>,
-    lease_until: std::sync::Mutex<Option<tokio::time::Instant>>,
+    lease_until: tokio::sync::watch::Sender<Option<Lease>>,
+}
+
+struct Lease {
+    until: i64,
+    deadline: tokio::time::Instant,
 }
 
 /// What `read`, the store's answer to one of this run's records, says about the Deployment.
@@ -607,10 +612,9 @@ impl Run {
             return;
         }
         let (deployment, runner) = (self.deployment.clone(), self.runner.clone());
-        let stored = super::store_call(&self.store, move |store| {
-            store.keep_verified(&deployment, &runner, &kept)
-        })
-        .await;
+        let stored = self
+            .store_call(move |store| store.keep_verified(&deployment, &runner, &kept))
+            .await;
         if let Err(error) = stored {
             tracing::warn!(%error, "could not keep the verified builds the Servers issued");
         }
@@ -620,8 +624,10 @@ impl Run {
     /// driving it as `operator`.
     async fn claim(&self, operator: Operator) -> Result<Claimed, RpcError> {
         let (deployment, runner) = (self.deployment.clone(), self.runner.clone());
-        let mut claimed =
-            super::store_call(&self.store, move |store| store.claim(&deployment, &runner)).await?;
+        let mut claimed = self
+            .store_call(move |store| store.claim(&deployment, &runner))
+            .await?;
+        self.acknowledge_lease(claimed.lease_until);
         // The Store lowers the Intent without knowing who will run it, so the runner
         // sets who does. Each ended run labels its copies with its Deployment's id,
         // as this run does.
@@ -791,31 +797,9 @@ impl Run {
     }
 
     async fn runtime_failed(&self, error: RpcError) -> Result<DeploymentSummary, RpcError> {
-        let deadline = *self.lease_until.lock().expect("lease lock");
-        if let Some(deadline) = deadline.filter(|until| *until > tokio::time::Instant::now()) {
-            let _ = tokio::time::timeout_at(deadline, async {
-                let mut poll = tokio::time::interval(CANCEL_POLL);
-                poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-                loop {
-                    poll.tick().await;
-                    match self.record(RunEvidence::RuntimeFailed).await {
-                        Ok(_) => break,
-                        Err(record)
-                            if matches!(
-                                record.code,
-                                RpcErrorCode::Conflict | RpcErrorCode::NotFound
-                            ) =>
-                        {
-                            break;
-                        }
-                        Err(record) => {
-                            tracing::warn!(%record, "couldn't record the interrupted Deployment")
-                        }
-                    }
-                }
-            })
+        let _ = self
+            .retry_store(|| self.record(RunEvidence::RuntimeFailed))
             .await;
-        }
         Err(error)
     }
 
@@ -838,34 +822,17 @@ impl Run {
         cancelled: &tokio_util::sync::CancellationToken,
     ) -> Result<Option<DeploymentStatus>, RpcError> {
         self.pending_live_at().get_or_insert(at);
-        tokio::select! {
+        let committed = tokio::select! {
             biased;
-            result = self.retry_switch(at) => result.map(Some),
-            () = cancelled.cancelled() => Ok(None),
-        }
-    }
-
-    async fn retry_switch(&self, at: i64) -> Result<DeploymentStatus, RpcError> {
-        loop {
-            match self.record_switch(Some(at)).await {
-                Ok(summary) if summary.live_at.is_some() && summary.status.claimed() => {
-                    return Ok(summary.status);
-                }
-                Ok(_) => {
-                    return Err(RpcError::unavailable(
-                        "The Deployment no longer holds the traffic switch",
-                    ));
-                }
-                Err(error)
-                    if matches!(error.code, RpcErrorCode::Conflict | RpcErrorCode::NotFound) =>
-                {
-                    return Err(error);
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "couldn't record the Deployment's traffic switch")
-                }
-            }
-            tokio::time::sleep(CANCEL_POLL).await;
+            result = self.retry_store(|| self.record_switch(Some(at))) => result,
+            () = cancelled.cancelled() => return Ok(None),
+        }?;
+        if committed.live_at.is_some() && committed.status.claimed() {
+            Ok(Some(committed.status))
+        } else {
+            Err(RpcError::unavailable(
+                "The Deployment no longer holds the traffic switch",
+            ))
         }
     }
 
@@ -879,18 +846,23 @@ impl Run {
             Err(error) => return self.runtime_failed(error).await,
         };
         let finished = self
-            .record(RunEvidence::Finished)
-            .await
-            .inspect_err(|error| tracing::warn!(%error, "couldn't record the end of cleanup"));
+            .retry_store(|| self.record(RunEvidence::Finished))
+            .await;
         if self.pending_live_at().is_some() {
             finished?;
             return Err(RpcError::internal(
                 "Couldn't record the Deployment's traffic switch",
             ));
         }
-        match (recorded, finished.ok().or(warned)) {
-            (Ok(_), Some(warned)) => Ok(warned),
-            (recorded, _) => recorded,
+        let recorded = recorded?;
+        match finished {
+            Ok(summary) => Ok(summary),
+            Err(error) => {
+                tracing::warn!(%error, "couldn't confirm the end of cleanup");
+                let mut summary = warned.unwrap_or(recorded);
+                summary.cleanup = Some(ployz_store::CleanupStatus::Unconfirmed);
+                Ok(summary)
+            }
         }
     }
 
@@ -944,10 +916,9 @@ impl Run {
             return;
         }
         let deployment = self.deployment.clone();
-        let recorded = super::store_call(&self.store, move |store| {
-            store.record_steps(&deployment, &steps)
-        })
-        .await;
+        let recorded = self
+            .store_call(move |store| store.record_steps(&deployment, &steps))
+            .await;
         if let Err(error) = recorded {
             tracing::warn!(%error, "couldn't record the Deployment's steps");
         }
@@ -1273,7 +1244,14 @@ impl Run {
             let mut rows = match event {
                 ployz_core::DeployEvent::Progress { rows, live_at, .. } => {
                     if let Some(at) = live_at
-                        && let Some(status) = self.commit_switch(at, &running.cancel).await?
+                        && let Some(status) = self
+                            .commit_switch(at, &running.cancel)
+                            .await
+                            .inspect_err(|_| {
+                                if self.over.latched() == Some(Over::Lost) {
+                                    running.abort();
+                                }
+                            })?
                     {
                         if status == DeploymentStatus::Cancelling {
                             running.abort();
@@ -1436,6 +1414,7 @@ impl Run {
         loop {
             tokio::select! {
                 biased;
+                _ = self.until_lease(std::future::pending::<()>()) => return Ok(None),
                 _ = poll.tick() => match self.standing().await {
                     Standing::Keep | Standing::Unread => {}
                     Standing::Cancel | Standing::Over(_) => return Ok(None),
@@ -1450,11 +1429,16 @@ impl Run {
     async fn renewing<T>(&self, work: impl std::future::Future<Output = T>, abort: impl Fn()) -> T {
         tokio::pin!(work);
         let mut poll = tokio::time::interval(CANCEL_POLL);
+        let mut expired = false;
         loop {
             tokio::select! {
+                biased;
+                _ = self.until_lease(std::future::pending::<()>()), if !expired => {
+                    expired = true;
+                    abort();
+                }
                 done = &mut work => return done,
-                _ = poll.tick() => match self.standing().await {
-                    // ponytail: a failed read skips one check; the next tick reads again.
+                _ = poll.tick(), if !expired => match self.standing().await {
                     Standing::Keep | Standing::Unread => {}
                     Standing::Cancel | Standing::Over(_) => abort(),
                 },
@@ -1670,13 +1654,103 @@ impl Run {
         environment: &EnvironmentId,
     ) -> Result<BTreeSet<String>, RpcError> {
         let environment = environment.clone();
-        super::store_call(&self.store, move |store| store.sealed_names(&environment)).await
+        self.store_call(move |store| store.sealed_names(&environment))
+            .await
     }
 
     fn steps(&self) -> std::sync::MutexGuard<'_, Steps> {
         self.steps
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn acknowledge_lease(&self, until: i64) {
+        self.lease_until.send_if_modified(|lease| {
+            if lease
+                .as_ref()
+                .is_some_and(|previous| previous.until == until)
+            {
+                return false;
+            }
+            let remaining = until.saturating_mul(1000).saturating_sub(now_ms());
+            *lease = Some(Lease {
+                until,
+                deadline: tokio::time::Instant::now()
+                    + Duration::from_millis(remaining.try_into().unwrap_or(0)),
+            });
+            true
+        });
+    }
+
+    #[cfg(test)]
+    fn lease_deadline(&self) -> Option<tokio::time::Instant> {
+        self.lease_until
+            .borrow()
+            .as_ref()
+            .map(|lease| lease.deadline)
+    }
+
+    async fn until_lease<T>(
+        &self,
+        work: impl std::future::Future<Output = T>,
+    ) -> Result<T, RpcError> {
+        tokio::pin!(work);
+        let mut lease = self.lease_until.subscribe();
+        loop {
+            let deadline = lease
+                .borrow_and_update()
+                .as_ref()
+                .map(|lease| lease.deadline);
+            let expired = async {
+                if let Some(deadline) = deadline {
+                    tokio::time::sleep_until(deadline).await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            };
+            tokio::select! {
+                biased;
+                _ = lease.changed() => {}
+                () = expired => {
+                    self.over.settle(Read::Unknown);
+                    return Err(RpcError::unavailable("The Deployment runner's lease expired"));
+                }
+                result = &mut work => return Ok(result),
+            }
+        }
+    }
+
+    async fn store_call<T: Send + 'static>(
+        &self,
+        work: impl FnOnce(&ConfigStore) -> Result<T, RpcError> + Send + 'static,
+    ) -> Result<T, RpcError> {
+        self.until_lease(super::store_call(&self.store, work))
+            .await?
+    }
+
+    async fn retry_store<T, F>(&self, mut write: impl FnMut() -> F) -> Result<T, RpcError>
+    where
+        F: std::future::Future<Output = Result<T, RpcError>>,
+    {
+        self.until_lease(async {
+            let mut poll = tokio::time::interval(CANCEL_POLL);
+            poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                poll.tick().await;
+                match write().await {
+                    Err(error)
+                        if !matches!(
+                            error.code,
+                            RpcErrorCode::Conflict | RpcErrorCode::NotFound
+                        ) =>
+                    {
+                        tracing::warn!(%error, "couldn't record Deployment evidence");
+                    }
+                    recorded => return recorded,
+                }
+            }
+        })
+        .await?
     }
 
     /// Record `evidence`, after the steps that changed since the last record.
@@ -1692,21 +1766,20 @@ impl Run {
         } else {
             *self.pending_live_at()
         };
-        let recorded = super::store_call(&self.store, move |store| {
-            if !steps.is_empty()
-                && let Err(error) = store.record_steps(&deployment, &steps)
-            {
-                tracing::warn!(%error, "couldn't record the Deployment's steps");
-            }
-            store.record_with_live_at(&deployment, &runner, evidence, pending_live_at)
-        })
-        .await;
+        let recorded = self
+            .store_call(move |store| {
+                if !steps.is_empty()
+                    && let Err(error) = store.record_steps(&deployment, &steps)
+                {
+                    tracing::warn!(%error, "couldn't record the Deployment's steps");
+                }
+                store.record_with_live_at(&deployment, &runner, evidence, pending_live_at)
+            })
+            .await;
         recorded.map(|(summary, lease)| {
-            *self.lease_until.lock().expect("lease lock") = lease.map(|until| {
-                let remaining = until.saturating_mul(1000).saturating_sub(now_ms());
-                tokio::time::Instant::now()
-                    + Duration::from_millis(remaining.try_into().unwrap_or(0))
-            });
+            if let Some(until) = lease {
+                self.acknowledge_lease(until);
+            }
             if summary.live_at.is_some() {
                 *self.pending_live_at() = None;
             }
@@ -1721,8 +1794,10 @@ impl Run {
         if let Some(over) = self.over.latched() {
             return Standing::Over(over);
         }
+        let recorded = self.record(RunEvidence::Alive).await;
         self.over
-            .settle(read_of(&self.record(RunEvidence::Alive).await))
+            .latched()
+            .map_or_else(|| self.over.settle(read_of(&recorded)), Standing::Over)
     }
 }
 
@@ -2006,10 +2081,9 @@ async fn rule_proofs(
             claimed.intent.namespace.clone(),
             service.clone(),
         );
-        match super::store_call(&run.store, move |store| {
-            store.verified_proof(&deployment, (&namespace, &name), image)
-        })
-        .await
+        match run
+            .store_call(move |store| store.verified_proof(&deployment, (&namespace, &name), image))
+            .await
         {
             Ok(Some(proof)) => proofs.insert(service.clone(), KeptRule::built(proof)),
             Ok(None) => {}
