@@ -508,6 +508,38 @@ pub struct NodeOutcome {
     pub rows: Vec<ServerRow>,
 }
 
+impl NodeOutcome {
+    /// Its outcome as users read it: a Failed one the Deployment's cancel stopped
+    /// reads Cancelled.
+    #[must_use]
+    pub const fn label(&self) -> NodeLabel {
+        match self.outcome {
+            NodeStatus::Pending => NodeLabel::Pending,
+            NodeStatus::Deployed => NodeLabel::Deployed,
+            NodeStatus::Removed => NodeLabel::Removed,
+            NodeStatus::Failed if self.cancelled => NodeLabel::Cancelled,
+            NodeStatus::Failed => NodeLabel::Failed,
+            NodeStatus::NotAttempted => NodeLabel::NotAttempted,
+            NodeStatus::Unchanged => NodeLabel::Unchanged,
+            NodeStatus::Unknown => NodeLabel::Unknown,
+        }
+    }
+}
+
+/// A [`NodeStatus`] with Failed split by whether the Deployment's cancel stopped it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeLabel {
+    Pending,
+    Deployed,
+    Removed,
+    Failed,
+    Cancelled,
+    NotAttempted,
+    Unchanged,
+    Unknown,
+}
+
 /// A Node Outcome, or why a node has none.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]

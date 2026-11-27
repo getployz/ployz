@@ -69,12 +69,7 @@ fn node(node: &NodeOutcome) -> Value {
         | RowState::NotAttempted
         | RowState::Unknown => None,
     });
-    let outcome = if node.cancelled {
-        json!("cancelled")
-    } else {
-        json!(node.outcome)
-    };
-    let mut shown = json!({ "name": node.node.name(), "outcome": outcome });
+    let mut shown = json!({ "name": node.node.name(), "outcome": node.label() });
     if let (Some((server, reason, step, log)), Value::Object(object)) = (failed, &mut shown) {
         object.insert("server".into(), server.into());
         object.insert("reason".into(), reason.as_str().into());
