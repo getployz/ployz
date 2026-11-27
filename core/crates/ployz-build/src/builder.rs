@@ -114,7 +114,9 @@ impl<'a> Builder<'a> {
         // A worker this process did not keep for this attempt, such as one a
         // restarted daemon finds, may run another policy, so it is never
         // adopted. A parked bridge stays claimed until its worker is gone.
-        if let Err(error) = discard(self.docker, self.slot()) {
+        if let Err(error) =
+            refuse_foreign(self.docker, &self.name).and_then(|()| discard(self.docker, self.slot()))
+        {
             if let Some(parked) = parked {
                 self.lock.as_ref().expect("owned lock").park(Parked {
                     kept: None,
@@ -517,26 +519,45 @@ fn owner() -> String {
     rustix::process::getuid().as_raw().to_string()
 }
 
+/// Who holds a worker's container name.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Holder {
+    Nobody,
+    Ployz,
+    /// A container this host user's Ployz did not make: never adopted or removed.
+    Other,
+}
+
 /// Whether `container` exists and this host user's Ployz made it.
 fn owned(docker: &Docker<'_>, container: &str) -> Result<bool, BuildError> {
+    Ok(holder(docker, container)? == Holder::Ployz)
+}
+
+pub(crate) fn holder(docker: &Docker<'_>, container: &str) -> Result<Holder, BuildError> {
     match docker.run(
         "inspect a build container",
         &[
             "inspect",
             "--format",
-            "{{range .Config.Env}}{{println .}}{{end}}",
+            "{{println .Id}}{{range .Config.Env}}{{println .}}{{end}}",
             container,
         ],
         Streams::Captured,
     ) {
+        // Docker prints an existing container's ID, so nothing names none.
+        Ok(environment) if environment.trim().is_empty() => Ok(Holder::Nobody),
         Ok(environment) => {
             let marker = format!("{OWNER}={}", owner());
-            Ok(environment.lines().any(|line| line.trim() == marker))
+            Ok(if environment.lines().any(|line| line.trim() == marker) {
+                Holder::Ployz
+            } else {
+                Holder::Other
+            })
         }
         Err(BuildError::Docker { diagnostic, .. })
             if diagnostic.to_ascii_lowercase().contains("no such object") =>
         {
-            Ok(false)
+            Ok(Holder::Nobody)
         }
         Err(error) => Err(error),
     }
@@ -578,14 +599,35 @@ fn discard(docker: &Docker<'_>, slot: usize) -> Result<(), BuildError> {
     })
 }
 
-/// Remove this attempt's builder, including a container it started in
-/// without registering, so an unmarked slot keeps none but a recorded one.
-fn release(docker: &Docker<'_>, name: &str) -> Result<(), BuildError> {
-    remove(docker, name)?;
-    docker.remove_container(&container(name))
+/// Refuse a builder whose worker name another container holds: Buildx would
+/// start in that container as if it were the worker.
+fn refuse_foreign(docker: &Docker<'_>, name: &str) -> Result<(), BuildError> {
+    let container = container(name);
+    if holder(docker, &container)? == Holder::Other {
+        return Err(foreign(&container));
+    }
+    Ok(())
 }
 
-fn container(builder: &str) -> String {
+pub(crate) fn foreign(container: &str) -> BuildError {
+    BuildError::Prerequisite(format!(
+        "a container Ployz did not create is named {container}, which this build slot's worker needs; remove or rename it"
+    ))
+}
+
+/// Remove this attempt's builder, including a container it started in
+/// without registering, so an unmarked slot keeps none but a recorded one.
+/// A container Ployz did not create is not this attempt's, so it stays.
+fn release(docker: &Docker<'_>, name: &str) -> Result<(), BuildError> {
+    let container = container(name);
+    if holder(docker, &container)? == Holder::Other {
+        return Ok(());
+    }
+    remove(docker, name)?;
+    docker.remove_container(&container)
+}
+
+pub(crate) fn container(builder: &str) -> String {
     format!("buildx_buildkit_{builder}0")
 }
 
@@ -971,11 +1013,15 @@ impl Lock {
             // Ask Docker itself, not a Buildx configuration the attempt may not have shared.
             builders
                 .iter()
-                .flat_map(|name| {
-                    std::iter::once(container(name))
-                        .chain(HELPERS.iter().map(move |helper| format!("{name}-{helper}")))
+                .try_for_each(|name| {
+                    let worker = container(name);
+                    if holder(&docker, &worker)? != Holder::Other {
+                        docker.remove_container(&worker)?;
+                    }
+                    HELPERS
+                        .iter()
+                        .try_for_each(|helper| docker.remove_container(&format!("{name}-{helper}")))
                 })
-                .try_for_each(|container| docker.remove_container(&container))
                 .map_err(|error| {
                     quarantined(format!(
                         "none of its processes is running, but removing its builder from {endpoint} failed: {error}"
@@ -1832,7 +1878,7 @@ exit 0
     /// none: it removes those of the slot's workers in `owned`.
     fn fresh_calls(directory: &std::path::Path, slot: usize, owned: &[String]) -> Vec<String> {
         let name = Access::Full.builder(slot);
-        let mut calls = Vec::new();
+        let mut calls = vec![inspect_owner(&container(&name))];
         for access in [Access::Full, Access::Free] {
             let worker = container(&access.builder(slot));
             calls.push(inspect_owner(&worker));
@@ -1854,7 +1900,7 @@ exit 0
     fn inspect_owner(worker: &str) -> String {
         [
             "inspect --format ",
-            "{{range .Config.Env}}{{println .}}{{end}} ",
+            "{{println .Id}}{{range .Config.Env}}{{println .}}{{end}} ",
             worker,
         ]
         .concat()
@@ -1934,6 +1980,7 @@ exit 0
         assert_eq!(
             calls_since(directory, &mut seen),
             [
+                inspect_owner(&container(&name)),
                 format!("buildx rm --keep-state {name}"),
                 format!("rm --force {}", container(&name)),
             ],
@@ -2004,6 +2051,85 @@ exit 0
             );
             drop(builder);
         }
+    }
+
+    #[test]
+    fn an_attempt_never_starts_in_or_removes_a_container_that_only_shares_its_worker_name() {
+        let directory = host_slot();
+        let directory = directory.path();
+        let program = directory.join("docker");
+        let foreign = container(&crate::builder_name());
+        fs::write(directory.join("foreign"), &foreign).unwrap();
+        fs::write(directory.join("worker"), "decaf true").unwrap();
+        let lock = Lock::try_acquire_in(directory).unwrap();
+        let environment = BTreeMap::new();
+        let docker = Docker {
+            program: &program,
+            environment: &environment,
+            working_dir: directory,
+            deadline: crate::Deadline::starting_now(crate::EXECUTION_TIMEOUT),
+            cancellation: None,
+            progress: None,
+            recorder: None,
+        };
+        let refused = Builder::acquire(
+            &docker,
+            lock,
+            Access::Full,
+            &crate::policy::Resources::default(),
+            None,
+            Reuse::WhenClean,
+        );
+        assert!(
+            matches!(&refused, Err(BuildError::Prerequisite(reason)) if reason.contains(&foreign)),
+            "{:?}",
+            refused.err()
+        );
+        let calls = calls_since(directory, &mut 0);
+        assert!(
+            calls.iter().all(|call| call.starts_with("inspect")),
+            "an attempt touched {foreign}: {calls:?}"
+        );
+    }
+
+    #[test]
+    fn a_cache_clear_skips_and_names_a_slot_whose_worker_name_another_container_holds() {
+        let directory = host_slot();
+        let directory = directory.path();
+        let foreign = container(&Access::Full.builder(0));
+        let worker = container(&Access::Full.builder(1));
+        fs::write(directory.join("names"), format!("{foreign}\n{worker}")).unwrap();
+        fs::write(directory.join("foreign"), &foreign).unwrap();
+        fs::write(directory.join("owned"), &worker).unwrap();
+        fs::write(directory.join("worker"), "c0ffee true").unwrap();
+        let policy = crate::HostPolicy {
+            state_directory: directory.join("state"),
+            configuration_file: directory.join("build.yaml"),
+            docker: directory.join("docker"),
+            ..Default::default()
+        };
+        let cleared = crate::clear_cache(&policy);
+        assert!(
+            matches!(&cleared, Err(BuildError::Prerequisite(reason)) if reason.contains(&foreign)),
+            "{cleared:?}"
+        );
+        let calls = calls_since(directory, &mut 0);
+        assert!(
+            !calls
+                .iter()
+                .any(|call| call.ends_with(&foreign) && !call.starts_with("inspect")),
+            "the clear touched {foreign}: {calls:?}"
+        );
+        assert!(
+            !calls.iter().any(|call| call.starts_with("buildx")
+                && call.split(' ').any(|word| word == Access::Full.builder(0))),
+            "the clear started a builder in {foreign}: {calls:?}"
+        );
+        assert!(
+            calls.iter().any(|call| call.starts_with("buildx prune")
+                && call.contains(&format!("--builder {} ", Access::Full.builder(1)))),
+            "the other slot was not cleared: {calls:?}"
+        );
     }
 
     #[test]

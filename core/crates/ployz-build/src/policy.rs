@@ -226,26 +226,33 @@ fn docker_root_total_bytes(docker: &Docker<'_>) -> Option<u64> {
 ///
 /// # Errors
 /// Refuses a running Build or a quarantined slot whose processes still run,
-/// invalid host configuration, and
+/// invalid host configuration, a builder whose worker name a container Ployz
+/// did not create holds (after clearing the rest), and
 /// reports upstream launch/prune errors or unconfirmed cleanup.
 pub fn clear_cache(policy: &HostPolicy) -> Result<(), BuildError> {
     // Every build slot keeps a cache for each access; stop at the first refusal.
     let environment: BTreeMap<String, String> = std::env::vars().collect();
     let (slots, listed) = crate::builder::Lock::slots(policy, &environment, true);
-    slots.into_iter().try_for_each(|slot| {
-        [crate::Access::Full, crate::Access::Free]
-            .into_iter()
-            .try_for_each(|access| clear_slot_cache(policy, slot, access))
-    })?;
+    let mut skipped = None;
+    for slot in slots {
+        for access in [crate::Access::Full, crate::Access::Free] {
+            if let Some(container) = clear_slot_cache(policy, slot, access)? {
+                skipped.get_or_insert(container);
+            }
+        }
+    }
     // Slots only Docker knows were missed if it could not list them.
-    listed
+    listed?;
+    skipped.map_or(Ok(()), |container| Err(crate::builder::foreign(&container)))
 }
 
+/// Clear one builder's cache, or name the container Ployz did not create
+/// that holds its worker's name, which it leaves with the cache.
 fn clear_slot_cache(
     policy: &HostPolicy,
     slot: usize,
     access: crate::Access,
-) -> Result<(), BuildError> {
+) -> Result<Option<String>, BuildError> {
     let admission = Admission::try_acquire_slot(policy, slot)?.with_access(access);
     let environment: BTreeMap<String, String> = std::env::vars().collect();
     // Private command output must not collide with a concurrent caller or a Build.
@@ -269,7 +276,11 @@ fn clear_slot_cache(
         // A Free Build's builder is made only by a Free Build: a host that never ran one
         // has no cache to clear.
         if access == crate::Access::Free && !holds_cache(&docker, &access.builder(slot))? {
-            return Ok(());
+            return Ok(None);
+        }
+        let worker = crate::builder::container(&access.builder(slot));
+        if crate::builder::holder(&docker, &worker)? == crate::builder::Holder::Other {
+            return Ok(Some(worker));
         }
         let builder = Builder::acquire(
             &docker,
@@ -301,7 +312,7 @@ fn clear_slot_cache(
                     )
                     .map(|_| ())
             });
-        builder.finish(result)
+        builder.finish(result).map(|()| None)
     })();
     if !result.as_ref().is_err_and(BuildError::is_unknown) {
         let _ = fs::remove_dir_all(directory);
