@@ -2,7 +2,7 @@
 import type { ProjectsView } from "@ployz/sdk";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, createRootRoute, createRouter, RouterProvider } from "@tanstack/react-router";
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import * as scopes from "#/collections/use-collection-scope";
 import { asTestDouble } from "#/lib/test-double";
@@ -10,6 +10,7 @@ import type { StoreResult } from "#/modules/config-store/store.contract";
 import { projectsQuery, storeViewOptions } from "#/modules/config-store/store-view.queries";
 import { organizationMembersQueryOptions } from "#/modules/organization/members.queries";
 import * as lens from "#/modules/runtime/use-runtime-lens";
+import * as removal from "#/modules/organization-teardown/organization-removal.functions";
 import * as runtime from "#/providers/runtime-provider";
 import { StoreOrganizationDanger } from "./store-organization-danger";
 
@@ -70,4 +71,23 @@ it("lets support forget servers but not delete the organization, as Cloud does",
 
   expect(await disabled("Forget servers")).toBe(false);
   expect(await disabled("Delete organization")).toBe(true);
+});
+
+it("keeps the unconfirmed servers listed when trying again fails, and says why apart from them", async () => {
+  vi.spyOn(removal, "removeOrganizationServerFn")
+    .mockResolvedValueOnce({ ok: true, value: { organization: "ada", removed: false, servers: { confirmed: [], unconfirmed: ["fra-1"] } } })
+    .mockRejectedValueOnce(new Error("Ployz Cloud didn't answer."));
+  await renderAs("owner");
+
+  fireEvent.click(await screen.findByRole("button", { name: "Delete organization" }));
+  fireEvent.change(await screen.findByRole("textbox", { name: "Type ada to confirm" }), { target: { value: "ada" } });
+  await waitFor(() => expect(screen.getByRole("button", { name: "Delete" }).hasAttribute("disabled")).toBe(false));
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Delete" })); });
+  expect(await screen.findByText(/Some servers didn't confirm they let go of it \(fra-1\)/)).toBeTruthy();
+
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Try again" })); });
+
+  expect(screen.getByText(/Some servers didn't confirm they let go of it \(fra-1\)/)).toBeTruthy();
+  expect(screen.getByRole("alert").textContent).toBe("Ployz Cloud didn't answer.");
+  expect(screen.getByRole("button", { name: "Try again" }).hasAttribute("disabled")).toBe(false);
 });
