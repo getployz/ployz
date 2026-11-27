@@ -67,14 +67,27 @@ ployz server build-cache-clear
 It keeps your images and everything else in Docker.
 
 Ployz names its build containers `buildx_buildkit_ployz-…` and `ployz-…-railpack`,
-`-prepare` or `-assemble`, and marks each one it creates. A container with one of those names
-but without the mark is left alone: Ployz never builds in it or removes it, builds use another
-build slot, and the cache clear names it so you can remove or rename it.
+`-prepare` or `-assemble`, and marks each one it creates. Ployz never builds in or removes a
+container that has one of those names but not the mark. The cache clear names it so you can
+remove or rename it. A Build that would need the name moves to another build slot,
+except when Ployz kept that slot's worker running after an earlier Build. Then the Build stops,
+with an error naming the container.
 
-One exception covers containers from Ployz versions before the mark. An unmarked container with
-one of those names that runs exactly the image those versions used for that name counts as
-Ployz's, and Ployz removes it after a crash or on restart. Ployz can't tell such a container
-from one you made the same way, so don't run that image under those names yourself.
+One exception covers containers from Ployz versions before the mark. Ployz treats an unmarked
+container as its own, and removes it after a crash or on restart, when one of these is true:
+
+- It's named `buildx_buildkit_ployz-…`, Docker Buildx started it, and its image is exactly
+  `moby/buildkit:v0.26.2` or
+  `moby/buildkit:v0.26.2@sha256:de10faf919fc71ba4eb1dd7bd6449566d012b0c9436b1c61bfee21d621b009aa`.
+- It's named `ployz-…-railpack` and its image is exactly
+  `ghcr.io/railwayapp/railpack-frontend@sha256:db24dc37640b6887c3d455b40876ea30f75182964479670cba6e4cde7ffef103`.
+- It's named `ployz-…-prepare` and its image is exactly
+  `buildpack-deps:trixie-curl@sha256:3dd78c060b4d7c97b426d0160f7d8876c84fbf2fc36e651e9c75620ac9a7da24`.
+- It's named `ployz-…-assemble` and its image is exactly
+  `regclient/regctl@sha256:5fe7c6a6206e1d9d71af719674c9db03e74a4ae221a32089b691f5b55533d6ea`.
+
+Ployz can't tell such a container from one you made the same way, so don't run those images
+under those names yourself.
 
 After each deploy, Ployz cleans up old images it built, but never images it pulled for
 [Docker image services](../deploy/docker-image.md). Remove those with `docker image prune`

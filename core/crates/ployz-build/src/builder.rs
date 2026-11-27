@@ -550,21 +550,20 @@ const EARLIER_HELPER_IMAGES: [(&str, &str); 3] = [
     ),
 ];
 
-/// Whether the inspected `lines` show the container named `name` as one an
-/// earlier Ployz made: exactly the image it shipped for that name.
-fn earlier(name: &str, lines: &[&str]) -> bool {
+/// Whether the container named `name`, made from `image` with `environment`,
+/// is one an earlier Ployz made: its image is exactly the one it shipped for
+/// that name, and a worker was started by Buildx.
+fn earlier(name: &str, image: &str, environment: &[&str]) -> bool {
     if name.starts_with("buildx_buildkit_") {
         // Buildx sets this on every worker it starts.
-        return EARLIER_WORKER_IMAGES
-            .iter()
-            .any(|image| lines.contains(image))
-            && lines
+        return EARLIER_WORKER_IMAGES.contains(&image)
+            && environment
                 .iter()
-                .any(|line| line.starts_with("BUILDKIT_SETUP_CGROUPV2_ROOT="));
+                .any(|variable| variable.starts_with("BUILDKIT_SETUP_CGROUPV2_ROOT="));
     }
     EARLIER_HELPER_IMAGES
         .iter()
-        .any(|(helper, image)| name.ends_with(&format!("-{helper}")) && lines.contains(image))
+        .any(|(helper, pinned)| name.ends_with(&format!("-{helper}")) && image == *pinned)
 }
 
 /// Who holds a worker's container name.
@@ -596,9 +595,13 @@ pub(crate) fn holder(docker: &Docker<'_>, container: &str) -> Result<Holder, Bui
         Ok(inspected) if inspected.trim().is_empty() => Ok(Holder::Nobody),
         Ok(inspected) => {
             let marker = format!("{OWNER}={}", owner());
-            let lines = inspected.lines().map(str::trim).collect::<Vec<_>>();
+            // The ID, then the image, then one environment variable a line.
+            let mut lines = inspected.lines().map(str::trim).skip(1);
+            let image = lines.next().unwrap_or_default();
+            let environment = lines.collect::<Vec<_>>();
             Ok(
-                if earlier(container, &lines) || lines.contains(&marker.as_str()) {
+                if earlier(container, image, &environment) || environment.contains(&marker.as_str())
+                {
                     Holder::Ployz
                 } else {
                     Holder::Other
@@ -1926,8 +1929,10 @@ case "$1 $2" in
   'inspect --format')
     case "$3" in
       *Env*)
-        if grep -qx "$4" '{0}/owned' 2>/dev/null; then echo {OWNER}={1}
-        elif grep -qx "$4" '{0}/foreign' 2>/dev/null; then echo PATH=/bin
+        if grep -qx "$4" '{0}/owned' 2>/dev/null; then printf 'c0ffee\nalpine\n{OWNER}={1}\n'
+        elif grep -qx "$4" '{0}/foreign' 2>/dev/null; then printf 'c0ffee\nalpine\nPATH=/bin\n'
+        elif grep -qx "$4" '{0}/borrowed' 2>/dev/null; then
+          printf 'c0ffee\nalpine:3\nNOTE=an earlier pin\nmoby/buildkit:v0.26.2\nghcr.io/railwayapp/railpack-frontend@sha256:db24dc37640b6887c3d455b40876ea30f75182964479670cba6e4cde7ffef103\nBUILDKIT_SETUP_CGROUPV2_ROOT=1\n' 
         elif grep -qx "$4" '{0}/earlier' 2>/dev/null; then
           printf 'c0ffee\nmoby/buildkit:v0.26.2\nPATH=/bin\nBUILDKIT_SETUP_CGROUPV2_ROOT=1\n'
         elif grep -qx "$4" '{0}/unpinned' 2>/dev/null; then
@@ -2402,6 +2407,29 @@ exit 0
         let worker = container(&Access::Full.builder(0));
         let helper = format!("{}-prepare", Access::Full.builder(0));
         fs::write(directory.join("unpinned"), format!("{worker}\n{helper}")).unwrap();
+        fs::write(directory.join("names"), format!("{worker}\n{helper}")).unwrap();
+        let policy = crashed_slot(directory);
+        Lock::cleanup_abandoned(&policy).unwrap();
+        let calls = calls_since(directory, &mut 0);
+        for held in [&worker, &helper] {
+            assert!(
+                !calls
+                    .iter()
+                    .any(|call| call.ends_with(held.as_str()) && !call.starts_with("inspect")),
+                "startup touched {held}: {calls:?}"
+            );
+        }
+    }
+
+    /// An earlier Ployz's image named anywhere but the container's own image,
+    /// here in an environment value spanning lines, does not make it Ployz's.
+    #[test]
+    fn recovery_leaves_a_container_whose_own_image_is_not_the_one_ployz_pinned() {
+        let directory = host_slot();
+        let directory = directory.path();
+        let worker = container(&Access::Full.builder(0));
+        let helper = format!("{}-railpack", Access::Full.builder(0));
+        fs::write(directory.join("borrowed"), format!("{worker}\n{helper}")).unwrap();
         fs::write(directory.join("names"), format!("{worker}\n{helper}")).unwrap();
         let policy = crashed_slot(directory);
         Lock::cleanup_abandoned(&policy).unwrap();
