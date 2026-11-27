@@ -478,10 +478,11 @@ it.live("a failed run whose stop gets no answer cancels nothing, and the stop it
     // Another writer holds the Environment past the Store's lock timeout, so the stop gets no answer.
     const release = yield* holdEnvironment(provided);
     const steps = failureSteps();
-    yield* Effect.promise(() => invokeOnFailure(worker, "worker-run", { name: configDeploymentAdmitted.name, data: failedData }, steps));
-    expect(cancelled).toEqual([]);
-    expect(steps.sent).toMatchObject([{ name: configDeploymentStopRequested.name, data: { runId: "worker-run", round: 0 } }]);
+    yield* Effect.exit(Effect.tryPromise(() => invokeOnFailure(worker, "worker-run", { name: configDeploymentAdmitted.name, data: failedData }, steps)));
+    const unanswered = [...cancelled];
     yield* release;
+    expect(unanswered).toEqual([]);
+    expect(steps.sent).toMatchObject([{ name: configDeploymentStopRequested.name, data: { runId: "worker-run", round: 0 } }]);
     const { data } = Schema.decodeUnknownSync(Schema.Struct({ data: configDeploymentStopRequested.schema }))(steps.sent[0]);
     const { result } = yield* Effect.promise(() => new InngestTestEngine({
       function: createStopStoreDeployment(new Inngest({ id: "stop-test" }), runEffect),
@@ -515,9 +516,11 @@ it.live("a stop whose build's end gets no answer leaves that run alone and cance
     yield* Deferred.await(stopped);
     const release = yield* holdEnvironment(provided);
     yield* Deferred.succeed(held, undefined);
-    expect(Exit.isFailure(yield* Fiber.join(first))).toBe(true);
-    expect(cancelled).toEqual([]);
+    const stop = yield* Fiber.join(first);
+    const unsettled = [...cancelled];
     yield* release;
+    expect(unsettled).toEqual([]);
+    expect(Exit.isFailure(stop)).toBe(true);
     yield* provided(stopStoreDeploymentRun(ORGANIZATION, DEPLOYMENT, "worker-run"));
     expect(cancelled).toEqual([RUN]);
   }),
