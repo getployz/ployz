@@ -4,7 +4,6 @@ import { eq, useLiveQuery } from "@tanstack/react-db";
 import { Option, Schema } from "effect";
 import {
   applyRuntimeSnapshot,
-  CLUSTER_UNREACHABLE_ERROR,
   getCachedRuntimeSnapshot,
   getRuntimeCollections,
   noConnectionRuntimeSnapshot,
@@ -40,11 +39,8 @@ export function RuntimeProvider({
 
     // Keep the last direct observation visible after an EventSource failure.
     // A later Runtime Watch event replaces it atomically.
-    const applyUnavailable = (error: string) => {
-      const snapshot = unavailableRuntimeSnapshot(
-        getCachedRuntimeSnapshot(collections),
-        error,
-      );
+    const applyUnavailable = () => {
+      const snapshot = unavailableRuntimeSnapshot(getCachedRuntimeSnapshot(collections));
       applyRuntimeSnapshot({ collections, snapshot });
     };
 
@@ -53,12 +49,12 @@ export function RuntimeProvider({
       try {
         raw = JSON.parse(event.data);
       } catch {
-        applyUnavailable("Runtime observation could not be read.");
+        applyUnavailable();
         return;
       }
       const parsed = Schema.decodeUnknownOption(runtimeWatchFrameSchema)(raw);
       if (Option.isNone(parsed)) {
-        applyUnavailable("Runtime observation could not be read.");
+        applyUnavailable();
         return;
       }
       const snapshot = runtimeSnapshotFromWatchFrame(parsed.value);
@@ -71,23 +67,21 @@ export function RuntimeProvider({
       try {
         raw = JSON.parse(event.data);
       } catch {
-        applyUnavailable("Runtime connection state could not be read.");
+        applyUnavailable();
         return;
       }
       const parsed = Schema.decodeUnknownOption(
         runtimeConnectionStatusEventSchema,
       )(raw);
       if (Option.isNone(parsed)) {
-        applyUnavailable("Runtime connection state could not be read.");
+        applyUnavailable();
         return;
       }
 
       const snapshot =
         parsed.value.status === "no_connection"
           ? noConnectionRuntimeSnapshot()
-          : unreachableRuntimeSnapshot(
-              parsed.value.error ?? CLUSTER_UNREACHABLE_ERROR,
-            );
+          : unreachableRuntimeSnapshot(parsed.value.reason);
       expectIntentionalClose = true;
       applyRuntimeSnapshot({ collections, snapshot });
     };
@@ -101,7 +95,7 @@ export function RuntimeProvider({
           expectIntentionalClose = false;
           return;
         }
-        applyUnavailable("Runtime connection lost.");
+        applyUnavailable();
       },
     });
   }, [organizationSlug, collections]);
@@ -123,11 +117,9 @@ export function useRuntimeStatus() {
   const { collections } = useRuntimeContext();
   const { data: rows = [] } = useLiveQuery(collections.status);
   const row = rows[0];
-  const lensStatus = row?.status ?? "connecting";
 
   return {
-    lensStatus,
-    error: row?.error ?? null,
+    lensStatus: row?.connection.status ?? "connecting",
     // These are direct Runtime Watch fields. They deliberately do not imply
     // DNS publication, route binding, certificate use, or service health.
     certificates: row?.certificates ?? [],
