@@ -280,8 +280,10 @@ it.live(
         command: "admit", admit: "deploy", id, environment: here, services: [], version: null, accept_volume_loss: [],
       }));
       const worker = createRunStoreDeployment(inngest, makeInngestEffectRunner((program) => Effect.runPromise(program.pipe(Effect.provide(services)))));
-      const run = (deploymentId: string, trigger?: DeploymentTrigger) =>
-        Effect.promise(() => new InngestTestEngine({ function: worker, events: [admitted(deploymentId, trigger)], steps: sentRetire() }).execute());
+      let runs = 0;
+      const run = (deploymentId: string, trigger?: DeploymentTrigger) => Effect.promise(() => new InngestTestEngine({
+        function: stableRunId(worker, `run-${(runs += 1)}`), events: [admitted(deploymentId, trigger)], steps: sentRetire(),
+      }).execute());
       const mails = () => send.mock.calls.flatMap(([payload]) => [payload].flat())
         .filter((event) => event.name === mailSendRequested.name)
         .map((event) => ({ id: event.id, ...(event.data as { to: string; subject: string; html: string; text: string }) }));
@@ -302,9 +304,9 @@ it.live(
         expect(mail?.text).toContain(line);
       }
 
-      // Inngest drops a sent event whose ID it has already seen.
+      // Inngest drops a sent event whose ID it has already seen. A later run of the ended Deployment runs nothing.
       send.mockClear();
-      expect((yield* run(DEPLOYED, "github")).result).toMatchObject({ nothingToRun: expect.any(String) });
+      expect((yield* run(DEPLOYED, "github")).result).toEqual({ outranked: DEPLOYED });
       expect(mails()).toEqual([]);
       yield* Effect.promise(() => invokeOnFailure(worker, "never-claimed", admitted(DEPLOYED, "github")));
       expect(new Set(mails().map((again) => again.id))).toEqual(new Set(told.map((first) => first.id)));

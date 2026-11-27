@@ -183,9 +183,13 @@ fn pinned() -> (Arc<ConfigStore>, Actor, GithubBuildId) {
             &Trusted::default(),
         )
         .unwrap();
+    store.github_begin(&deployment, ATTEMPT).unwrap();
     let id = GithubBuildId::parse(&format!("{deployment}.web")).unwrap();
     (store, who, id)
 }
+
+/// The worker attempt that runs the Deployment's GitHub builds.
+const ATTEMPT: &str = "cloud-worker";
 
 /// [`pinned`], handed to GitHub run [`RUN`].
 fn dispatched() -> (Arc<ConfigStore>, Actor, GithubBuildId) {
@@ -197,10 +201,14 @@ fn dispatched() -> (Arc<ConfigStore>, Actor, GithubBuildId) {
         repository: RepositoryName::parse("acme/web").unwrap(),
         installation_id: 7,
         push: Some(false),
-        attempt: None,
+        attempt: Some(ATTEMPT.into()),
     };
     store.github_dispatched(&id, &run).unwrap();
     (store, who, id)
+}
+
+fn ended(status: BuildStatus, owed: bool) -> GithubFinish {
+    GithubFinish::Ended(ployz_store::GithubSettled { status, owed })
 }
 
 fn claims() -> GithubClaims {
@@ -251,7 +259,7 @@ async fn a_github_build_starts_only_through_an_entry_of_the_expected_cluster() {
     let (own, _, _, own_server) = serving('b', "own", 7).await;
     let start = |connections, expect| {
         let (store, _, id) = pinned();
-        ployz::sdk::github_start(store, id, connections, expect, "cloud-worker".into())
+        ployz::sdk::github_start(store, id, connections, expect, ATTEMPT.into())
     };
     let dispatch = GithubStart::Dispatch {
         runner: "ubuntu-latest".into(),
@@ -340,6 +348,8 @@ async fn a_github_finish_fails_at_once_on_a_grant_machine_of_another_cluster() {
             GithubLook::Ended,
             connections,
             expect,
+            ATTEMPT.into(),
+            RUN,
         )
         .await
         .unwrap();
@@ -352,14 +362,14 @@ async fn a_github_finish_fails_at_once_on_a_grant_machine_of_another_cluster() {
     let connections = vec![other.clone(), own.clone(), silent.clone()];
 
     let (finished, message) = finish(other_id, connections.clone(), expecting(7)).await;
-    assert_eq!(finished, GithubFinish::Ended(BuildStatus::Failed));
+    assert_eq!(finished, ended(BuildStatus::Failed, false));
     let message = message.expect("the failed build says why");
     assert!(message.contains("belongs to another Cluster"), "{message}");
     for (machine, expect) in [(own_id, expecting(7)), (other_id, None)] {
         let (finished, _) = finish(machine, connections.clone(), expect).await;
         assert_eq!(
             finished,
-            GithubFinish::Ended(BuildStatus::Pending),
+            ended(BuildStatus::Pending, false),
             "the grant's Machine read the grant: nothing was pushed, so the next Builder takes it"
         );
     }
@@ -426,6 +436,8 @@ async fn the_start_limit_keeps_a_run_whose_check_in_committed_before_it_settled(
             GithubLook::StartLimit,
             connections.clone(),
             expecting(7),
+            ATTEMPT.into(),
+            RUN,
         )
         .await
         .unwrap();
@@ -453,10 +465,13 @@ async fn the_start_limit_keeps_a_run_whose_check_in_committed_before_it_settled(
         GithubLook::StartLimit,
         connections,
         expecting(7),
+        ATTEMPT.into(),
+        RUN,
     )
     .await
     .unwrap();
-    assert_eq!(finished, GithubFinish::Ended(BuildStatus::Pending));
+    // Passed on at the start limit, the run Cloud dispatched is owed its cancel.
+    assert_eq!(finished, ended(BuildStatus::Pending, true));
     assert_eq!(
         store.github_build(&id).unwrap(),
         GithubHandOff::PassedOn {
@@ -632,9 +647,16 @@ async fn a_rule_build_needs_the_services_platforms_even_when_a_server_holds_an_u
         "image": { "reference": image, "tags": [], "platforms": ["linux/arm64"], "location": "local" },
     });
     let earlier = GithubBuildId::parse(&format!("{first}.web")).unwrap();
+    store.github_begin(&first, ATTEMPT).unwrap();
     store
-        .github_end(&earlier, None, &ployz_store::GithubEnd::Built { receipt })
+        .github_pass_on(
+            &earlier,
+            &ployz_store::GithubEnd::Built { receipt },
+            None,
+            ATTEMPT,
+        )
         .unwrap();
+    store.github_begin(&then, ATTEMPT).unwrap();
     let mut service = DeployService::new(observed).sealed_with(key(7));
     let builds = BuildFixture::default();
     builds.stores.lock().unwrap().insert(
@@ -661,7 +683,7 @@ async fn a_rule_build_needs_the_services_platforms_even_when_a_server_holds_an_u
         id,
         vec![Connection::tcp(address).with_machine_id(holder)],
         None,
-        "cloud-worker".into(),
+        ATTEMPT.into(),
     )
     .await
     .unwrap();

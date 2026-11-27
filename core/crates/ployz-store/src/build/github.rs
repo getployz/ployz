@@ -122,11 +122,12 @@ pub enum GithubRecorded {
     Refused,
 }
 
-/// A build passed on before any run took it.
+/// A build ended by the worker attempt that owns its Deployment: passed on before any
+/// run took it, or settled for the run that holds it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct GithubPassedOn {
+pub struct GithubSettled {
     pub status: BuildStatus,
-    /// Whether the run it was given is owed a cancel, not yet confirmed.
+    /// Whether the run it names is owed a cancel, not yet confirmed.
     pub owed: bool,
 }
 
@@ -440,10 +441,10 @@ pub(crate) fn github_dispatched(
         && matches!(row.stage, Stage::Waiting)
         && row.github_skipped.is_none()
         && !reserved_by_another;
-    let owned = match (&run.attempt, wanted) {
-        (Some(attempt), true) => take_github(tx, &stored, attempt)?,
-        (None, wanted) => wanted,
-        (Some(_), false) => false,
+    // A run with no attempt names no owner, so it never takes a build.
+    let owned = match &run.attempt {
+        Some(attempt) => wanted && owns(tx, &stored, attempt)?,
+        None => false,
     };
     if !owned {
         let owed = run.cancellable() && owe(tx, id, run)?;
@@ -475,42 +476,28 @@ fn takes_github_runs(stored: &Stored) -> bool {
     )
 }
 
-/// Which worker attempt takes a Deployment's GitHub runs, and every attempt it took
-/// them from.
-struct GithubOwner {
-    attempt: Option<String>,
-    retired: Vec<String>,
-}
-
-fn github_owner(tx: &mut dyn Tx, deployment: &DeploymentId) -> Result<GithubOwner, RpcError> {
+/// The worker attempt that owns Deployment `deployment`'s GitHub runs: the one with the
+/// highest number of those that began, if any did.
+fn github_owner(tx: &mut dyn Tx, deployment: &DeploymentId) -> Result<Option<String>, RpcError> {
     let rows = tx.query(
-        "SELECT github_attempt, github_retired FROM config_deployment WHERE id = ?1",
+        "SELECT runner FROM config_github_attempt WHERE deployment_id = ?1 \
+         ORDER BY number DESC LIMIT 1",
         &[deployment.as_str().into()],
     )?;
-    let row = rows.first().ok_or_else(no_such_build)?;
-    Ok(GithubOwner {
-        attempt: row.optional_text(0)?.map(str::to_owned),
-        retired: row
-            .optional_json(1, "retired attempts")?
-            .unwrap_or_default(),
-    })
+    rows.first()
+        .map(|row| row.text(0).map(str::to_owned))
+        .transpose()
 }
 
-fn save_owner(
-    tx: &mut dyn Tx,
-    deployment: &DeploymentId,
-    owner: &GithubOwner,
-) -> Result<(), RpcError> {
-    let retired = json_text(&owner.retired);
-    tx.execute(
-        "UPDATE config_deployment SET github_attempt = ?2, github_retired = ?3 WHERE id = ?1",
-        &[
-            deployment.as_str().into(),
-            owner.attempt.as_deref().into(),
-            retired.as_str().into(),
-        ],
-    )
-    .map(drop)
+/// Whether worker attempt `attempt` owns Deployment `stored`'s GitHub runs: it began
+/// last, and no other runner claimed the Deployment.
+fn owns(tx: &mut dyn Tx, stored: &Stored, attempt: &str) -> Result<bool, RpcError> {
+    let claimed_by_another = stored
+        .summary
+        .runner
+        .as_ref()
+        .is_some_and(|runner| runner.as_str() != attempt);
+    Ok(!claimed_by_another && github_owner(tx, &stored.summary.id)?.as_deref() == Some(attempt))
 }
 
 fn newer_attempt(deployment: &DeploymentId) -> RpcError {
@@ -523,60 +510,76 @@ fn newer_attempt(deployment: &DeploymentId) -> RpcError {
 /// Why a build an older attempt held leaves GitHub once a newer attempt takes over.
 const TAKEN_OVER: &str = "A newer run of this Deployment took it over";
 
-/// Let worker attempt `attempt` take Deployment `stored`'s GitHub runs, in the caller's
-/// locked write. It already holds them, or takes them from the attempt that did, which
-/// is retired and never takes them again: each of that attempt's reservations is passed
-/// on, each build its runs hold is passed on to the next Builder, and each run it
-/// dispatched is owed a cancel. `false`, changing nothing, for a retired attempt, or
-/// while another runner claimed the Deployment.
-fn take_github(tx: &mut dyn Tx, stored: &Stored, attempt: &str) -> Result<bool, RpcError> {
-    let deployment = &stored.summary.id;
-    let mut owner = github_owner(tx, deployment)?;
-    if owner.attempt.as_deref() == Some(attempt) {
-        return Ok(true);
-    }
-    let claimed_by_another = stored
+/// Worker attempt `attempt` begins running Deployment `deployment`, before it prepares
+/// any build: the Store numbers it after every attempt that began before, and it owns
+/// the Deployment's GitHub runs from then on. Beginning again answers the same number.
+/// In the same write it takes the Deployment over from the attempts it outranks: each
+/// of their reservations is passed on, each build their runs hold is passed on to the
+/// next Builder, and each run Cloud dispatched is owed a cancel. An attempt that a later
+/// one outranks, or a Deployment another runner claimed, is `newer`.
+pub(crate) fn github_begin(
+    tx: &mut dyn Tx,
+    deployment: &DeploymentId,
+    attempt: &str,
+) -> Result<u64, RpcError> {
+    let stored = deployment::locked(tx, deployment)?;
+    if stored
         .summary
         .runner
         .as_ref()
-        .is_some_and(|runner| runner.as_str() != attempt);
-    if claimed_by_another || owner.retired.iter().any(|retired| retired == attempt) {
-        return Ok(false);
+        .is_some_and(|runner| runner.as_str() != attempt)
+    {
+        return Err(newer_attempt(deployment));
     }
-    if let Some(old) = owner.attempt.take() {
-        for build in rows(tx, deployment)? {
-            if build.attempt.as_deref() != Some(old.as_str()) {
-                continue;
+    let attempts = tx.query(
+        "SELECT runner, number FROM config_github_attempt WHERE deployment_id = ?1 \
+         ORDER BY number DESC",
+        &[deployment.as_str().into()],
+    )?;
+    let mut began = Vec::with_capacity(attempts.len());
+    for row in &attempts {
+        began.push((row.text(0)?.to_owned(), row.int(1)?));
+    }
+    if let Some((_, number)) = began.iter().find(|(runner, _)| runner == attempt) {
+        return match began.first() {
+            Some((owner, _)) if owner == attempt => {
+                u64::try_from(*number).map_err(|_| error::corrupt("attempt number"))
             }
-            let id = GithubBuildId {
-                deployment: deployment.clone(),
-                service: build.service.clone(),
-            };
-            match &build.stage {
-                Stage::Building(By::Github(hold)) => {
-                    let run = hold.run().clone();
-                    let end = GithubEnd::Skipped {
-                        message: TAKEN_OVER.to_owned(),
-                    };
-                    github_end(tx, &id, Some(run.run_id), &end)?;
-                    if run.cancellable() {
-                        owe(tx, &id, &run)?;
-                    }
+            _ => Err(newer_attempt(deployment)),
+        };
+    }
+    let number = began.first().map_or(1, |(_, number)| number + 1);
+    // Every GitHub build is an earlier attempt's: this one has written nothing yet.
+    for build in rows(tx, deployment)? {
+        let id = GithubBuildId {
+            deployment: deployment.clone(),
+            service: build.service.clone(),
+        };
+        match &build.stage {
+            Stage::Building(By::Github(hold)) => {
+                let run = hold.run().clone();
+                let end = GithubEnd::Skipped {
+                    message: TAKEN_OVER.to_owned(),
+                };
+                github_end(tx, &id, Some(run.run_id), &end)?;
+                if run.cancellable() {
+                    owe(tx, &id, &run)?;
                 }
-                Stage::Waiting if build.message.as_deref() == Some(ASKING_GITHUB) => {
-                    let end = GithubEnd::Skipped {
-                        message: STOPPED_ASKING.to_owned(),
-                    };
-                    github_end(tx, &id, None, &end)?;
-                }
-                Stage::Waiting | Stage::Building(By::Servers { .. }) | Stage::Ended { .. } => {}
             }
+            Stage::Waiting if build.message.as_deref() == Some(ASKING_GITHUB) => {
+                let end = GithubEnd::Skipped {
+                    message: STOPPED_ASKING.to_owned(),
+                };
+                github_end(tx, &id, None, &end)?;
+            }
+            Stage::Waiting | Stage::Building(By::Servers { .. }) | Stage::Ended { .. } => {}
         }
-        owner.retired.push(old);
     }
-    owner.attempt = Some(attempt.to_owned());
-    save_owner(tx, deployment, &owner)?;
-    Ok(true)
+    tx.execute(
+        "INSERT INTO config_github_attempt (deployment_id, runner, number) VALUES (?1, ?2, ?3)",
+        &[deployment.as_str().into(), attempt.into(), number.into()],
+    )?;
+    u64::try_from(number).map_err(|_| error::corrupt("attempt number"))
 }
 
 /// The message a waiting build shows once Cloud reserved it to ask GitHub for a run.
@@ -611,8 +614,8 @@ pub(crate) fn github_ask(
             json!({}),
         ));
     }
-    // One attempt asks for a Deployment's builds: an older one asks for nothing more.
-    if !take_github(tx, &stored, attempt)? {
+    // Only the attempt that owns the Deployment asks for its builds.
+    if !owns(tx, &stored, attempt)? {
         return Err(newer_attempt(&stored.summary.id));
     }
     let mut log = row.log;
@@ -634,22 +637,13 @@ pub(crate) fn github_ask(
     Ok(GithubAsked::Reserved)
 }
 
-/// Whether a worker attempt other than `runner` takes Deployment `id`'s GitHub runs,
-/// or took them from `runner`.
-pub(crate) fn github_attempted_by_another(
+/// Whether a worker attempt other than `runner` owns Deployment `id`'s GitHub runs.
+pub(crate) fn github_outranked(
     tx: &mut dyn Tx,
     id: &DeploymentId,
     runner: &crate::id::RunnerId,
 ) -> Result<bool, RpcError> {
-    let owner = github_owner(tx, id)?;
-    Ok(owner
-        .attempt
-        .as_deref()
-        .is_some_and(|attempt| attempt != runner.as_str())
-        || owner
-            .retired
-            .iter()
-            .any(|retired| retired == runner.as_str()))
+    Ok(github_owner(tx, id)?.is_some_and(|owner| owner != runner.as_str()))
 }
 
 fn save_attempt(tx: &mut dyn Tx, id: &GithubBuildId, attempt: &str) -> Result<(), RpcError> {
@@ -705,9 +699,8 @@ fn owed_by(tx: &mut dyn Tx, deployment: &DeploymentId) -> Result<Vec<GithubOwed>
 }
 
 /// End build `id` before any run took it, for worker attempt `attempt`: reused, or
-/// passed on with why. Only the attempt that owns the Deployment may, taking it over from
-/// an older one; a retired attempt is refused as newer, so its replay never discards the
-/// owner's reservation. With `owe`, a run Cloud dispatched whose record never landed,
+/// passed on with why. Only the attempt that owns the Deployment may: an outranked one
+/// is refused as newer, so its replay never discards the owner's reservation. With `owe`, a run Cloud dispatched whose record never landed,
 /// and after this one never can, is owed a cancel in the same write.
 pub(crate) fn github_pass_on(
     tx: &mut dyn Tx,
@@ -715,9 +708,9 @@ pub(crate) fn github_pass_on(
     end: &GithubEnd,
     owe: Option<&GithubRun>,
     attempt: &str,
-) -> Result<GithubPassedOn, RpcError> {
+) -> Result<GithubSettled, RpcError> {
     let stored = deployment::locked(tx, &id.deployment)?;
-    if !take_github(tx, &stored, attempt)? {
+    if !owns(tx, &stored, attempt)? {
         return Err(newer_attempt(&stored.summary.id));
     }
     let status = github_end(tx, id, None, end)?;
@@ -725,24 +718,88 @@ pub(crate) fn github_pass_on(
         Some(run) => self::owe(tx, id, run)?,
         None => false,
     };
-    Ok(GithubPassedOn { status, owed })
+    Ok(GithubSettled { status, owed })
+}
+
+/// End build `id` for the run `run_id` that holds it, for worker attempt `attempt`: the
+/// walk's look or the run's final report. Only the attempt that owns the Deployment may,
+/// and only for the build's current run: anything else is `conflict`, and a newer
+/// attempt's `newer`. With `owe`, a run Cloud dispatched is owed a cancel in the same
+/// write: a run past its budget or its start limit.
+pub(crate) fn github_settle(
+    tx: &mut dyn Tx,
+    id: &GithubBuildId,
+    run_id: u64,
+    end: &GithubEnd,
+    attempt: &str,
+    owe: bool,
+) -> Result<GithubSettled, RpcError> {
+    let stored = deployment::locked(tx, &id.deployment)?;
+    if !owns(tx, &stored, attempt)? {
+        return Err(newer_attempt(&stored.summary.id));
+    }
+    let row = github_row(tx, &stored, id)?;
+    let run = row.building_on(run_id).map(|hold| hold.run().clone());
+    let status = github_end(tx, id, Some(run_id), end)?;
+    let owed = match run.filter(|run| owe && run.cancellable()) {
+        Some(run) => self::owe(tx, id, &run)?,
+        None => false,
+    };
+    Ok(GithubSettled { status, owed })
+}
+
+/// End build `id` for its run `run_id`, from that run's own check-in: only while the run
+/// holds it and the run's attempt owns the Deployment.
+pub(crate) fn github_run_end(
+    tx: &mut dyn Tx,
+    id: &GithubBuildId,
+    run_id: u64,
+    end: &GithubEnd,
+) -> Result<BuildStatus, RpcError> {
+    let stored = deployment::locked(tx, &id.deployment)?;
+    held_by_owner(tx, &stored, id, run_id)?;
+    github_end(tx, id, Some(run_id), end)
+}
+
+/// Refuse a run's own write unless it holds build `id` and its attempt owns the
+/// Deployment. Beginning an attempt passes on every build the attempts it outranks
+/// held, so this holds for every run that holds a build; it is checked all the same.
+fn held_by_owner(
+    tx: &mut dyn Tx,
+    stored: &Stored,
+    id: &GithubBuildId,
+    run_id: u64,
+) -> Result<(), RpcError> {
+    let row = github_row(tx, stored, id)?;
+    let attempt = row
+        .building_on(run_id)
+        .and_then(|hold| hold.run().attempt.clone());
+    match attempt {
+        Some(attempt) if owns(tx, stored, &attempt)? => Ok(()),
+        Some(_) | None => Err(no_longer_wanted()),
+    }
 }
 
 /// Take up to `limit` runs Cloud owes a cancel, in any Organization, for the sweep:
-/// those it never tried first, then the longest since its last try, each stamped as
-/// tried now. Runs whose cancel keeps failing then never crowd out the rest.
+/// those it never tried first, then the longest since its last try, each stamped with
+/// this sweep's number. Runs whose cancel keeps failing then never crowd out the rest.
+/// The order is fairness only: nothing decides from it.
 pub(crate) fn github_owed(tx: &mut dyn Tx, limit: u32) -> Result<Vec<GithubOwed>, RpcError> {
     let rows = tx.query(
         "SELECT run_id, deployment_id, service, run FROM config_github_cancel \
          WHERE confirmed = 0 ORDER BY COALESCE(tried, -1), run_id LIMIT ?1",
         &[i64::from(limit).into()],
     )?;
-    let now = crate::storage::now();
+    let sweeps = tx.query(
+        "SELECT COALESCE(MAX(tried), 0) + 1 FROM config_github_cancel",
+        &[],
+    )?;
+    let sweep = sweeps.first().map_or(Ok(1), |row| row.int(0))?;
     let mut owed = Vec::with_capacity(rows.len());
     for row in &rows {
         tx.execute(
             "UPDATE config_github_cancel SET tried = ?2 WHERE run_id = ?1",
-            &[row.int(0)?.into(), now.into()],
+            &[row.int(0)?.into(), sweep.into()],
         )?;
         owed.push(GithubOwed {
             build: format!("{}.{}", row.text(1)?, row.text(2)?),
@@ -752,15 +809,14 @@ pub(crate) fn github_owed(tx: &mut dyn Tx, limit: u32) -> Result<Vec<GithubOwed>
     Ok(owed)
 }
 
-/// Stop Deployment `deployment`'s GitHub builds for worker attempt `attempt`, or, with
-/// none, for whoever runs it once it was cancelled or ended. In one write under the
-/// Environment's lock, so no record lands between the check and the ends:
+/// Stop Deployment `deployment`'s GitHub builds for worker attempt `attempt`. In one
+/// write under the Environment's lock, so no record lands between the check and the
+/// ends:
 ///
 /// - The attempt must still be the Deployment's: its runner, or, before any claim, the
-///   attempt every reservation and record names. A newer attempt's is `conflict`.
+///   attempt that began last. A newer attempt's is `conflict`.
 /// - The Deployment must keep, committed, a status that takes no more GitHub runs: a
 ///   lapsed lease only shows Unknown, so the attempt's own lapsed claim is ended first.
-///   With no attempt, it must be cancelling or ended.
 /// - Each build a GitHub run holds fails as cancelled, and a run Cloud dispatched is
 ///   owed a cancel. Each reservation GitHub never answered for is passed on, so a late
 ///   record of it is refused.
@@ -770,19 +826,16 @@ pub(crate) fn github_owed(tx: &mut dyn Tx, limit: u32) -> Result<Vec<GithubOwed>
 pub(crate) fn github_stop(
     tx: &mut dyn Tx,
     deployment: &DeploymentId,
-    attempt: Option<&crate::id::RunnerId>,
+    attempt: &crate::id::RunnerId,
 ) -> Result<Vec<GithubOwed>, RpcError> {
     let stored = deployment::locked(tx, deployment)?;
-    let builds = rows(tx, deployment)?;
-    let (kept, runner) = deployment::kept_for_stop(tx, stored, attempt)?;
-    if let Some(attempt) = attempt {
-        let theirs = match &runner {
-            Some(runner) => runner != attempt,
-            None => github_attempted_by_another(tx, deployment, attempt)?,
-        };
-        if theirs {
-            return Err(newer_attempt(deployment));
-        }
+    let (kept, runner) = deployment::kept_for_stop(tx, stored, Some(attempt))?;
+    let theirs = match &runner {
+        Some(runner) => runner != attempt,
+        None => github_outranked(tx, deployment, attempt)?,
+    };
+    if theirs {
+        return Err(newer_attempt(deployment));
     }
     use deployment::DeploymentStatus as Status;
     // A Deployment waiting for CI takes GitHub runs once CI passes; any other takes none once it is out of flight.
@@ -803,7 +856,18 @@ pub(crate) fn github_stop(
             json!({ "deployment": deployment }),
         ));
     }
-    for build in &builds {
+    end_github_builds(tx, deployment)?;
+    owed_by(tx, deployment)
+}
+
+/// End Deployment `deployment`'s GitHub builds for a stop or a cancel, in the caller's
+/// locked write: each build a GitHub run holds fails as cancelled, owing a run Cloud
+/// dispatched a cancel, and each reservation GitHub never answered for is passed on.
+pub(crate) fn end_github_builds(
+    tx: &mut dyn Tx,
+    deployment: &DeploymentId,
+) -> Result<(), RpcError> {
+    for build in &rows(tx, deployment)? {
         let id = GithubBuildId {
             deployment: deployment.clone(),
             service: build.service.clone(),
@@ -828,17 +892,26 @@ pub(crate) fn github_stop(
             Stage::Waiting | Stage::Building(By::Servers { .. }) | Stage::Ended { .. } => {}
         }
     }
+    Ok(())
+}
+
+/// Every run Deployment `deployment` still owes a cancel, for Cloud to cancel after a
+/// write that owed them.
+pub(crate) fn github_owed_by(
+    tx: &mut dyn Tx,
+    deployment: &DeploymentId,
+) -> Result<Vec<GithubOwed>, RpcError> {
     owed_by(tx, deployment)
 }
 
 /// GitHub confirmed it cancelled run `run_id` of build `id`, or that it ended: Cloud owes
-/// it nothing more. Confirming a run owed nothing changes nothing.
+/// it nothing more. Confirming a run owed nothing changes nothing. It needs no
+/// Deployment: the debt outlives it.
 pub(crate) fn github_cancel_confirmed(
     tx: &mut dyn Tx,
     id: &GithubBuildId,
     run_id: u64,
 ) -> Result<(), RpcError> {
-    deployment::locked(tx, &id.deployment)?;
     let run_id = i64::try_from(run_id).map_err(|_| error::corrupt("GitHub run id"))?;
     tx.execute(
         "UPDATE config_github_cancel SET confirmed = 1 \
@@ -1090,6 +1163,7 @@ pub(crate) fn github_check_in(
     grant: &GithubGrant,
 ) -> Result<(), RpcError> {
     let stored = deployment::locked(tx, &id.deployment)?;
+    held_by_owner(tx, &stored, id, run_id)?;
     let row = github_row(tx, &stored, id)?;
     let held = row.building_on(run_id);
     // A cancelling Deployment takes no more builds: its stop ends this one.
@@ -1127,6 +1201,7 @@ pub(crate) fn github_report(
     report: &GithubReport,
 ) -> Result<u64, RpcError> {
     let stored = deployment::locked(tx, &id.deployment)?;
+    held_by_owner(tx, &stored, id, run_id)?;
     let row = github_row(tx, &stored, id)?;
     let (run, started) = match row.building_on(run_id) {
         Some(GithubHold::CheckedIn { run, started }) => (run, started),

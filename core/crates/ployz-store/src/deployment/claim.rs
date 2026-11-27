@@ -138,8 +138,8 @@ fn take(tx: &mut dyn Tx, mut stored: Stored, runner: &RunnerId) -> Result<Taken,
         | DeploymentStatus::Cancelled => {
             return refuse(tx, stored, Refusal::Unclaimable(ended(&id)));
         }
-        // Another worker attempt reserved or recorded its GitHub builds: it runs this one.
-        DeploymentStatus::Queued if build::github_attempted_by_another(tx, &id, runner)? => {
+        // A later worker attempt began: it runs this one.
+        DeploymentStatus::Queued if build::github_outranked(tx, &id, runner)? => {
             return refuse(tx, stored, Refusal::Unclaimable(owned_elsewhere(&id)));
         }
         DeploymentStatus::Queued => {

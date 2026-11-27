@@ -158,7 +158,7 @@ fn typescript_declarations() -> String {
     declarations.add::<ployz_store::GithubOwed>();
     declarations.add::<ployz_store::GithubAsked>();
     declarations.add::<ployz_store::GithubRecorded>();
-    declarations.add::<ployz_store::GithubPassedOn>();
+    declarations.add::<ployz_store::GithubSettled>();
     declarations.add::<ployz_store::GithubTreeQuery>();
     declarations.add::<ployz_store::GithubTreeView>();
     declarations.add::<ployz_store::GithubFileQuery>();

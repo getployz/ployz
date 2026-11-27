@@ -218,6 +218,19 @@ export const stopStoreDeploymentRun = Effect.fn("StoreDeployment.stopRun")(funct
   return stopped;
 });
 
+/**
+ * Worker run `runId` begins running its Deployment, before it prepares any build: the Store numbers it after every run
+ * that began before, and from then on only this run writes the Deployment's builds, taking them over from earlier
+ * runs. `false` when a later run began, or another runner claimed the Deployment: this run then runs nothing.
+ */
+export const beginStoreDeploymentRun = Effect.fn("StoreDeployment.begin")(function* (deploymentId: string, runId: string) {
+  const store = yield* cloudStore;
+  return yield* storeTry(() => store.githubBegin(deploymentId, storeDeploymentRunner(runId))).pipe(
+    Effect.as(true),
+    Effect.catchIf(newerAttempt, () => Effect.succeed(false)),
+  );
+});
+
 /** The Deployment run `runId` of the worker runs, while it is recorded. */
 export const storeDeploymentRunOf = Effect.fn("StoreDeployment.runOf")(function* (runId: string) {
   const { drizzle } = yield* Database;

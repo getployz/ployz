@@ -2084,7 +2084,10 @@ async fn cloud_runner_builds_nothing_on_servers_the_build_order_leaves_out() {
         let skipped = GithubEnd::Skipped {
             message: skipped.into(),
         };
-        store.github_end(&build, None, &skipped).unwrap();
+        store.github_begin(&id, "cloud-run-1").unwrap();
+        store
+            .github_pass_on(&build, &skipped, None, "cloud-run-1")
+            .unwrap();
 
         let (address, server) = listening(DeployService::new(machine('a', "one"))).await;
         let summary = ployz::sdk::run_deployment(

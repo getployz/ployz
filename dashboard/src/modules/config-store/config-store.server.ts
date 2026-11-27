@@ -12,7 +12,7 @@ import { user } from "#/modules/identity/tables";
 import { guardProtected } from "#/modules/config-store/protected.server";
 import { resolvePreferredBuilders } from "#/modules/config-store/preferred-builder.server";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
-import { cancelStoreGithubBuilds } from "#/modules/config-store/store-github-builds.server";
+import { cancelDeploymentOwedRuns } from "#/modules/config-store/store-github-builds.server";
 import { githubMembers } from "#/modules/config-store/store-sources.server";
 import { commandEnvironments, isResealPending, MAX_SHOWN_VIEWS } from "#/modules/config-store/store.contract";
 import { StoreRefused } from "#/lib/refusal";
@@ -178,12 +178,13 @@ export const gatherTrusted = Effect.fn("ConfigStore.gatherTrusted")(function* (
   return trusted;
 });
 
-/** What a committed write leaves Cloud to do: stop a cancelled Deployment's GitHub builds, run an admitted one, recheck PRs. */
+/** What a committed write leaves Cloud to do: cancel the GitHub runs a cancelled Deployment owes, run an admitted one, recheck PRs. */
 const afterWrite = Effect.fn("ConfigStore.afterWrite")(function* (
   organizationId: string, command: ConfigCommand, written: ConfigCommitted,
 ) {
+  // The cancel ended its GitHub builds in its own write, owing each run Cloud dispatched a cancel.
   if (command.command === "cancel") {
-    yield* cancelStoreGithubBuilds(command.deployment, null).pipe(
+    yield* cancelDeploymentOwedRuns(command.deployment).pipe(
       Effect.catch((error) => Effect.logWarning("Could not stop a cancelled Deployment's GitHub builds.", error)),
     );
   }

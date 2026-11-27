@@ -3011,6 +3011,7 @@ fn built_on_github(
     token: &str,
     image: &str,
 ) {
+    store.github_begin(&id.deployment, ATTEMPT).unwrap();
     store
         .github_dispatched(
             id,
@@ -3021,7 +3022,7 @@ fn built_on_github(
                 repository: backend::repo_name("acme/web"),
                 installation_id: 7,
                 push: Some(false),
-                attempt: None,
+                attempt: Some(ATTEMPT.into()),
             },
         )
         .unwrap();
@@ -3048,15 +3049,30 @@ fn built_on_github(
         .unwrap();
     let receipt = json!({"fingerprint": "f".repeat(64), "image": {"reference": image}});
     store
-        .github_end(id, Some(run), &ployz_store::GithubEnd::Built { receipt })
+        .github_settle(
+            id,
+            run,
+            &ployz_store::GithubEnd::Built { receipt },
+            ATTEMPT,
+            false,
+        )
         .unwrap();
 }
+
+/// The worker attempt that runs a Deployment's GitHub builds in these tests.
+const ATTEMPT: &str = "runner";
 
 /// End GitHub build `id` without a run, on the image `image` a Machine still holds.
 fn reused(store: &ConfigStore, id: &ployz_store::GithubBuildId, image: &str) {
     let receipt = json!({"fingerprint": "f".repeat(64), "image": {"reference": image}});
+    store.github_begin(&id.deployment, ATTEMPT).unwrap();
     store
-        .github_end(id, None, &ployz_store::GithubEnd::Built { receipt })
+        .github_pass_on(
+            id,
+            &ployz_store::GithubEnd::Built { receipt },
+            None,
+            ATTEMPT,
+        )
         .unwrap();
 }
 

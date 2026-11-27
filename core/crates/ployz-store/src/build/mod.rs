@@ -9,14 +9,14 @@ mod sources;
 
 pub use github::{
     GithubAsked, GithubBuild, GithubBuildId, GithubClaims, GithubEnd, GithubGrant, GithubHandOff,
-    GithubInput, GithubOwed, GithubPassedOn, GithubRecorded, GithubReport, GithubRule, GithubRun,
+    GithubInput, GithubOwed, GithubRecorded, GithubReport, GithubRule, GithubRun, GithubSettled,
     RunEnd, UNRESERVED,
 };
 pub(crate) use github::{
-    github_ask, github_attempted_by_another, github_authorize, github_build, github_by_run,
-    github_cancel_confirmed, github_check_in, github_dispatched, github_end, github_input,
-    github_outstanding, github_owed, github_pass_on, github_proven, github_report, github_rule,
-    github_stop,
+    end_github_builds, github_ask, github_authorize, github_begin, github_build, github_by_run,
+    github_cancel_confirmed, github_check_in, github_dispatched, github_input, github_outranked,
+    github_outstanding, github_owed, github_owed_by, github_pass_on, github_proven, github_report,
+    github_rule, github_run_end, github_settle, github_stop,
 };
 pub use proof::{ImageToken, VerifiedClaim};
 pub(crate) use proof::{image_tokens, keep_verified, verified, verified_proof};

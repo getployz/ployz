@@ -45,20 +45,14 @@ export const GITHUB_CHECK_INTERVAL = "10m";
 /** How long GitHub has to start a build a later Builder could take. */
 export const START_WITHIN_MINUTES = 3;
 
-/** Ask GitHub to cancel a run, as Cloud itself through the installation that runs it. A run that already ended is fine. */
+/**
+ * Ask GitHub to cancel a run, as Cloud itself through the installation that runs it: the Organization's own token is
+ * refused once it disconnected. A run that already ended is fine. GitHub refuses every token of an installation it
+ * suspended or uninstalled, so those runs end at the runner's next refused call to Cloud instead. Only runs the Store
+ * owes a cancel come here.
+ */
 const cancelRun = (run: GithubBuild["run"]) =>
   cancelGithubRun({ access: installationAccess(run.installation_id), fullName: run.repository, runId: run.run_id });
-
-/**
- * Cancel a run Cloud dispatched, as Cloud itself through the installation that runs it: the Organization's own token
- * is refused once it disconnected. A run that already ended is fine. GitHub refuses every token of an installation it
- * suspended or uninstalled, so those runs end at the runner's next refused call to Cloud instead. Only a run the Store
- * marks as Cloud's own is cancelled: a push's own run, and one recorded before runs were marked, are left alone.
- */
-export const cancelDispatchedGithubRun = (run: GithubBuild["run"]) =>
-  run.push !== false ? Effect.void : cancelRun(run).pipe(
-    Effect.catch((error) => Effect.logWarning("Could not cancel a GitHub run Cloud dispatched.", { runId: run.run_id, error })),
-  );
 
 /**
  * The build GitHub holds, or held until it ended; `null` once GitHub passed it to the next Builder.
@@ -74,14 +68,13 @@ export const heldGithubBuild = Effect.fn("ConfigStore.heldGithubBuild")(function
 export class GithubCancelsOwed extends Data.TaggedError("GithubCancelsOwed")<{ deploymentId: string; owed: number }> {}
 
 /**
- * Stop a Deployment's builds on GitHub, for worker attempt `attempt` (its runner), or, with none, once it was cancelled
- * or ended. The Store decides, in one write that checks the attempt still holds the Deployment: it fails each build a
+ * Stop a Deployment's builds on GitHub, for worker attempt `attempt` (its runner). The Store decides, in one write that checks the attempt still holds the Deployment: it fails each build a
  * run holds, records a cancel owed for each run Cloud dispatched, and passes on each reservation GitHub never answered
  * for. Cloud cancels only the runs the Store owes a cancel, confirming each once GitHub took it, so a lost answer or a
  * failed cancel is owed again on the next call, and this fails until none is. Refused when a newer attempt runs the
  * Deployment, or it still takes GitHub runs: then nothing is cancelled. Their Build Grants expire by themselves.
  */
-export const cancelStoreGithubBuilds = Effect.fn("ConfigStore.cancelGithubBuilds")(function* (deploymentId: string, attempt: string | null) {
+export const cancelStoreGithubBuilds = Effect.fn("ConfigStore.cancelGithubBuilds")(function* (deploymentId: string, attempt: string) {
   const store = yield* cloudStore;
   const owed = yield* storeTry(() => store.githubStop(deploymentId, attempt));
   const left = yield* cancelOwed(owed);
@@ -101,6 +94,15 @@ const cancelOwed = (owed: ReadonlyArray<GithubOwed>) => Effect.gen(function* () 
     Effect.catch((error) => Effect.logWarning("Could not cancel a GitHub run Cloud owes a cancel.", { runId: run.run_id, error }).pipe(Effect.as(false))),
   ), { concurrency: 4 });
   return cancelled.filter((done) => !done).length;
+});
+
+/**
+ * Cancel what Deployment `deploymentId` owes, after a write that owed it: a user's cancel ends its GitHub builds in that
+ * write. A cancel that fails stays owed for the sweep.
+ */
+export const cancelDeploymentOwedRuns = Effect.fn("StoreGithub.cancelDeploymentOwed")(function* (deploymentId: string) {
+  const store = yield* cloudStore;
+  return yield* cancelOwed(yield* storeTry(() => store.githubOwedBy(deploymentId)));
 });
 
 /** How many owed runs one sweep cancels. */
@@ -123,9 +125,9 @@ const NewerAttempt = Schema.Struct({ newer: Schema.Literal(true) });
 
 /**
  * Stop the GitHub builds that `organizationIds` run through `installationId` once they can't use it: disconnected,
- * suspended or uninstalled. Call it after that change is recorded. Each run is cancelled and its walk woken, so the
- * walk looks now rather than at its next interval, finds the change, and fails the Deployment with it. Idempotent: an
- * ended run answers 409, and the walk ignores a wake for a build it already failed.
+ * suspended or uninstalled. Call it after that change is recorded. Each run's walk is woken, so it looks now rather
+ * than at its next interval, finds the change, and fails the Deployment with it: its stop owes each run Cloud
+ * dispatched a cancel, which Cloud then makes. Idempotent: the walk ignores a wake for a build it already failed.
  */
 export const stopGithubInstallationBuilds = Effect.fn("ConfigStore.stopGithubInstallationBuilds")(function* (
   installationId: number, organizationIds: ReadonlyArray<string>,
@@ -145,7 +147,6 @@ export const stopGithubInstallationBuilds = Effect.fn("ConfigStore.stopGithubIns
         const github = yield* heldGithubBuild(`${deploymentId}.${build.service}`).pipe(
           Effect.catchIf(refusedWith("not_found"), () => Effect.succeed(null)));
         if (github === null || github.status !== "building" || github.run.installation_id !== installationId) continue;
-        yield* cancelDispatchedGithubRun(github.run);
         yield* sendInngestEvent(createGithubBuildRunCompletedEvent({ id: `stopped-${github.id}`, runId: github.run.run_id }));
         stopped.push(github.id);
       }
@@ -540,15 +541,17 @@ const runEnded = (build: GithubBuild) => githubRunCompleted({
  * One look at a dispatched build, after its run completed (the webhook), its final report came, or a wait timed out.
  * A Deployment cancelled or replaced meanwhile stops it. An Organization that can't use the installation any more
  * (disconnected, or GitHub suspended or uninstalled it) can't read what GitHub built, so its builds stop and the
- * Deployment fails with why. A run past its budget is cancelled and ended. A run that hasn't checked in by the start
- * limit (`startLimit`: another Builder follows) is skipped and cancelled; GitHub keeps one whose check-in committed.
+ * Deployment fails with why. A run past its budget is ended. A run that hasn't checked in by the start limit
+ * (`startLimit`: another Builder follows) is skipped; GitHub keeps one whose check-in committed. Either end owes the
+ * run a cancel in its own write, which Cloud then makes. It looks only at run `runId`, the run this walk follows, for
+ * worker attempt `attempt`: the Store refuses any end from an attempt that no longer owns the Deployment.
  */
 export const checkStoreGithubBuild = Effect.fn("StoreGithub.check")(function* (
-  organizationId: string, target: StoreGithubTarget, seen: { ended: boolean; startLimit: boolean }, attempt: string,
+  organizationId: string, target: StoreGithubTarget, seen: { ended: boolean; startLimit: boolean }, attempt: string, runId: number,
 ) {
   const store = yield* cloudStore;
   const build = yield* heldGithubBuild(target.build);
-  if (build === null || build.status !== "building") return "done" as const;
+  if (build === null || build.status !== "building" || build.run.run_id !== runId) return "done" as const;
   const deploymentId = deploymentOfBuild(build.id);
   const view = yield* storeTry(() => store.read(organizationId, { query: "deployment", id: deploymentId }));
   if (view.status !== "queued" && view.status !== "running") {
@@ -560,19 +563,20 @@ export const checkStoreGithubBuild = Effect.fn("StoreGithub.check")(function* (
   const refusal = yield* installationRefusal(organizationId, build.run.installation_id);
   if (refusal !== null) return { failed: refusal.message };
   const finish = (look: "start_limit" | "budget" | "ended") => Effect.gen(function* () {
-    const finished = yield* dialedStore(organizationId, ({ connections, expect }) => store.githubFinish(target.build, look, connections, expect));
-    return finished === "waiting" ? "waiting" as const : "done" as const;
+    const finished = yield* dialedStore(organizationId, ({ connections, expect }) =>
+      store.githubFinish(target.build, look, connections, expect, attempt, runId)).pipe(
+      // A newer attempt owns the Deployment: it follows the build now.
+      Effect.catchIf(newerAttempt, () => Effect.succeed(null)),
+    );
+    if (finished === "waiting") return "waiting" as const;
+    if (finished?.ended.owed) yield* cancelOwed([{ build: target.build, run: build.run }]);
+    return "done" as const;
   });
-  if (build.checked_in_at !== null && Date.now() - build.checked_in_at * 1000 > GITHUB_RUN_BUDGET_MS) {
-    yield* cancelDispatchedGithubRun(build.run);
-    return yield* finish("budget");
-  }
+  if (build.checked_in_at !== null && Date.now() - build.checked_in_at * 1000 > GITHUB_RUN_BUDGET_MS) return yield* finish("budget");
   if (build.grant === null) {
     if (seen.ended || (yield* runEnded(build))) return yield* finish("ended");
     if (!seen.startLimit) return "waiting" as const;
-    const found = yield* finish("start_limit");
-    if (found === "done") yield* cancelDispatchedGithubRun(build.run);
-    return found;
+    return yield* finish("start_limit");
   }
   if (seen.ended || build.ended !== null || (yield* runEnded(build))) return yield* finish("ended");
   return "waiting" as const;
@@ -650,11 +654,15 @@ export const recordStoreGithubBuildSteps = Effect.fn("StoreGithub.steps")(functi
   return yield* Effect.gen(function* () {
     const build = yield* guardHeldBuild(yield* heldGithubBuild(buildId));
     const reported = yield* storeTry(() => store.githubReport(buildId, claims, report));
-    if (reported.ended) {
-      // The walk's next look ends it otherwise.
-      yield* dialedStore(build.organization, ({ connections, expect }) => store.githubFinish(buildId, "ended", connections, expect)).pipe(
+    const attempt = build.run.attempt;
+    if (reported.ended && attempt !== undefined) {
+      // The walk's next look ends it otherwise. It ends it as the attempt whose run holds it, for that run alone.
+      yield* dialedStore(build.organization, ({ connections, expect }) =>
+        store.githubFinish(buildId, "ended", connections, expect, attempt, build.run.run_id)).pipe(
         Effect.catch((error) => Effect.logWarning("Could not end a reported GitHub build.", error)),
       );
+    }
+    if (reported.ended) {
       yield* sendInngestEvent(createGithubBuildRunCompletedEvent({ id: `reported-${buildId}`, runId: build.run.run_id })).pipe(
         Effect.catch((error) => Effect.logWarning("Could not wake the walk for a reported GitHub build.", error)),
       );

@@ -39,9 +39,12 @@ mod tests {
     use crate::storage::Storage;
 
     /// Tables neither list names, and why they need no sweep.
-    const NO_SWEEP: [&str; 3] = [
+    const NO_SWEEP: [&str; 4] = [
         // Removing an Organization refuses while it has Projects, so none is left to delete.
         "config_project",
+        // GitHub runs Cloud owes a cancel, kept past their Deployment so the sweep still
+        // cancels them, and confirmed ones kept so a run is never owed twice.
+        "config_github_cancel",
         // The Store's own record of applied migrations, not an Organization's rows.
         "config_migration",
         // Keyed by an Environment no Organization removal can reach: none is left once

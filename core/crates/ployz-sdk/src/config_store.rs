@@ -720,7 +720,7 @@ impl ConfigStore {
     /// # Errors
     /// Returns `conflict` once the build started or ended, or, with `newer`, when another
     /// attempt owns the Deployment, owing nothing.
-    #[napi(ts_return_type = "Promise<GithubPassedOn>")]
+    #[napi(ts_return_type = "Promise<GithubSettled>")]
     pub async fn github_skip(
         &self,
         build: String,
@@ -887,11 +887,14 @@ impl ConfigStore {
 
     /// End a build at Cloud's `look`: the start limit, the run past its budget, or the
     /// run ended. `"waiting"` while its Machine can't read the grant, or when the start
-    /// limit finds the run checked in, else `{ended: status}`. A grant Machine of
-    /// another Cluster than `expect`'s fails it at once.
+    /// limit finds the run checked in, else `{ended: GithubSettled}`, whose `owed` says
+    /// the run is owed a cancel. A grant Machine of another Cluster than `expect`'s
+    /// fails it at once. Only for run `runId`, the run the caller follows, by worker run
+    /// `runner`, which must own the Deployment.
     ///
     /// # Errors
-    /// Returns a storage error, or `conflict` when it ended meanwhile.
+    /// Returns a storage error, `conflict` when it ended meanwhile or another run holds
+    /// it, or, with `newer`, when another attempt owns the Deployment.
     #[napi(ts_return_type = "Promise<GithubFinish>")]
     pub async fn github_finish(
         &self,
@@ -899,18 +902,30 @@ impl ConfigStore {
         #[napi(ts_arg_type = "\"start_limit\" | \"budget\" | \"ended\"")] look: serde_json::Value,
         #[napi(ts_arg_type = "Connections")] connections: serde_json::Value,
         #[napi(ts_arg_type = "ExpectedCluster | null")] expect: Option<serde_json::Value>,
+        runner: String,
+        run_id: i64,
     ) -> Result<serde_json::Value> {
         let (build, connections) = (github_id(&build)?, parse_connections(connections)?);
         let look = decode(look, "Expected a GitHub look")?;
         let expect = parse_expect(expect)?;
+        let run_id = u64::try_from(run_id)
+            .map_err(|_| napi::Error::from_reason("Expected a GitHub run id"))?;
         to_json(
-            ployz::sdk::github_finish(Arc::clone(&self.store), build, look, connections, expect)
-                .await,
+            ployz::sdk::github_finish(
+                Arc::clone(&self.store),
+                build,
+                look,
+                connections,
+                expect,
+                runner,
+                run_id,
+            )
+            .await,
         )
     }
 
-    /// Stop Deployment `deployment`'s GitHub builds for worker run `runner`, or, with
-    /// none, once it was cancelled or ended (`GithubOwed`). Each build a run holds fails as
+    /// Stop Deployment `deployment`'s GitHub builds for worker run `runner`
+    /// (`GithubOwed`). Each build a run holds fails as
     /// cancelled in the same write that checks the run's attempt still holds the
     /// Deployment, and the Store records a cancel owed for each run Cloud dispatched.
     /// Resolves to every run still owed one, which Cloud cancels and then confirms.
@@ -922,14 +937,42 @@ impl ConfigStore {
     pub async fn github_stop(
         &self,
         deployment: String,
-        runner: Option<String>,
+        runner: String,
     ) -> Result<serde_json::Value> {
         let deployment = DeploymentId::parse(deployment).map_err(rpc_to_napi)?;
-        let runner = runner
-            .map(RunnerId::parse)
-            .transpose()
-            .map_err(rpc_to_napi)?;
-        self.run(move |store| store.github_stop(&deployment, runner.as_ref()))
+        let runner = RunnerId::parse(runner).map_err(rpc_to_napi)?;
+        self.run(move |store| store.github_stop(&deployment, &runner))
+            .await
+    }
+
+    /// Worker run `runner` begins running Deployment `deployment`, before it prepares any
+    /// build: the Store numbers it after every run that began before, and it owns the
+    /// Deployment's GitHub runs, taking them over from those it outranks. Beginning
+    /// again resolves to the same number.
+    ///
+    /// # Errors
+    /// Returns `conflict`, with `newer`, when a later run began or another runner
+    /// claimed the Deployment: this run runs nothing.
+    #[napi(ts_return_type = "Promise<number>")]
+    pub async fn github_begin(
+        &self,
+        deployment: String,
+        runner: String,
+    ) -> Result<serde_json::Value> {
+        let deployment = DeploymentId::parse(deployment).map_err(rpc_to_napi)?;
+        self.run(move |store| store.github_begin(&deployment, &runner))
+            .await
+    }
+
+    /// Every run Deployment `deployment` still owes a cancel (`GithubOwed`): what Cloud
+    /// cancels after a cancel of the Deployment owed them.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    #[napi(ts_return_type = "Promise<GithubOwed[]>")]
+    pub async fn github_owed_by(&self, deployment: String) -> Result<serde_json::Value> {
+        let deployment = DeploymentId::parse(deployment).map_err(rpc_to_napi)?;
+        self.run(move |store| store.github_owed_by(&deployment))
             .await
     }
 

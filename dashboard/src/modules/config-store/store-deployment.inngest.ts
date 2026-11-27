@@ -1,6 +1,6 @@
 import { Effect } from "effect";
 import {
-  deployToFirstServer, failStoreDeploymentUnrun, forgetStoreDeploymentRun, publishedEnvironments, recordStoreDeploymentRun, runStoreDeployment, type StoreServices,
+  beginStoreDeploymentRun, deployToFirstServer, failStoreDeploymentUnrun, forgetStoreDeploymentRun, publishedEnvironments, recordStoreDeploymentRun, runStoreDeployment, type StoreServices,
   staleStoreDeploymentRuns, storeDeploymentRunner, storeDeploymentRunOf, unclaimedStoreDeployments,
 } from "#/modules/config-store/store-deployment.server";
 import { mailGithubDeployTrouble } from "#/modules/config-store/deploy-failed-mail.server";
@@ -56,6 +56,11 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Effec
     },
     async ({ event, step, runId, attempt, maxAttempts }) => {
       await step.run("record-run", () => runEffect(recordStoreDeploymentRun(runId, event.data)));
+      // Before it prepares anything: a later run of the same Deployment outranks this one, which then runs nothing.
+      if (!(await step.run("begin", () => runEffect(beginStoreDeploymentRun(event.data.deploymentId, runId))))) {
+        await step.run("forget-run", () => runEffect(forgetStoreDeploymentRun(runId)));
+        return { outranked: event.data.deploymentId };
+      }
       const lacking = await step.run("servers-lacking", () => runEffect(serversLackingWhilePrefetching(event.data)));
       if (lacking.length > 0) {
         const failure = `Deploys need a newer Ployz on ${lacking.join(", ")}`;
@@ -205,7 +210,8 @@ async function walkGithub(
       timeout: startLimit ? `${START_WITHIN_MINUTES}m` : GITHUB_CHECK_INTERVAL,
     });
     const seen = { ended: ended !== null, startLimit };
-    const found = await step.run(`github-check-${key}-${check}`, () => runEffect(checkStoreGithubBuild(organizationId, target, seen, attempt)));
+    const runId = started.runId;
+    const found = await step.run(`github-check-${key}-${check}`, () => runEffect(checkStoreGithubBuild(organizationId, target, seen, attempt, runId)));
     if (found === "done") return null;
     if (found !== "waiting") return found.failed;
   }
