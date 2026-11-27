@@ -62,15 +62,17 @@ function TailscaleSection({ organizationSlug, editable }: { organizationSlug: st
   const refused = rows.some((row) => row.state === "refused");
   const failures = last === null ? [] : last.changed.failures.filter((failure) => !putRight(last.to, rows.find((row) => row.id === failure.id)?.state));
   const settle = (answer: PrivateAccessAnswer) => landAnswer(queryClient, organizationSlug, answer);
+  /** A request's answer moves the section only if it still shows the flow that sent it. */
+  const settleFrom = (from: "connecting" | "turning_off", next: Tailscale) => setState((now) => now.at === from ? next : now);
   const connect = async (key: string) => {
     setState({ at: "connecting", key });
     try {
       const sealed = await sealAndApprove(queryClient, organizationSlug, key);
       const changed = await setPrivateAccessServerFn({ data: { organizationSlug, to: "on", on: sealed } });
       await settle({ to: "on", changed, at: Date.now() });
-      setState(changed.failures.length === 0 ? IDLE : { at: "form", key: "", refusal: null });
+      settleFrom("connecting", changed.failures.length === 0 ? IDLE : { at: "form", key: "", refusal: null });
     } catch (error) {
-      setState({ at: "form", key, refusal: error instanceof KeyNotApproved ? error.message : toErrorMessage(error, "Your servers didn't answer. Try again.") });
+      settleFrom("connecting", { at: "form", key, refusal: error instanceof KeyNotApproved ? error.message : toErrorMessage(error, "Your servers didn't answer. Try again.") });
     }
   };
 
@@ -129,9 +131,9 @@ function TailscaleSection({ organizationSlug, editable }: { organizationSlug: st
         onConfirm={async () => {
           try {
             await settle({ to: "off", changed: await setPrivateAccessServerFn({ data: { organizationSlug, to: "off" } }), at: Date.now() });
-            setState(IDLE);
+            settleFrom("turning_off", IDLE);
           } catch (error) {
-            setState({ at: "idle", offRefusal: toErrorMessage(error, "Your servers didn't answer. Try again.") });
+            settleFrom("turning_off", { at: "idle", offRefusal: toErrorMessage(error, "Your servers didn't answer. Try again.") });
           }
         }}
       />
@@ -210,7 +212,7 @@ function ConnectForm({ authKey, pending, refusal, onKey, onConnect, onCancel }: 
         if (!pending && authKey !== "" && problem === null) onConnect(authKey);
       }}
       onKeyDown={(event) => {
-        if (event.key === "Escape") onCancel();
+        if (event.key === "Escape" && !pending) onCancel();
       }}
     >
       <SettingsRow

@@ -62,6 +62,7 @@ const organizationOwnedWithoutChangeLog = {
   deployment_cleanup: "How a Cloud Deploy's cleanup ended, read by the Run page through its own polled query, never into the Org Store, so it needs no change log.",
   failed_restore: "A restored Volume whose copy failed, read only when a Deploy is admitted or advanced; no view reads it, so it needs no change log.",
   volume_mirror_status: "What the last mirror sync saw of each mirror, read as a Remote Read; no view reads it, so it needs no change log.",
+  config_deployment_step: "When each step of a Deployment ran, read by `deployment show` through the Store; no view reads it, so it needs no change log.",
   upload_chunk: "Source a Deployment's runner reads while it's in flight; no view reads it, so it needs no change log.",
   config_registry_credential: "Registry logins from before they were sealed. The Store emptied it, refuses every write to it, and keeps it only so an older Store deploys during a rollout. It cascades from its Environment, and no view reads it, so it needs no change log.",
   config_build_receipt: "Private build evidence only a Deployment's runner reads at claim; no view reads it, so it needs no change log.",

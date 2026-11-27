@@ -49,7 +49,9 @@ export function ConfirmDialog({
   }
 
   return (
-    <AlertDialog open={open} onOpenChange={onOpenChange}>
+    <AlertDialog open={open} onOpenChange={(next) => {
+      if (!pending) onOpenChange(next);
+    }}>
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>{title}</AlertDialogTitle>

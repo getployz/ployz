@@ -26,6 +26,7 @@ mod rows;
 mod status;
 #[cfg(test)]
 mod status_tests;
+pub(crate) mod steps;
 mod targeting;
 pub(crate) mod uploads;
 pub(crate) mod versions;
@@ -50,6 +51,7 @@ pub use ployz_core::deploy_progress::{
     FailedAt, Failure, RowPhase, RowState, RowTracker, RowTransition, ServerProgress, ServerRow,
     StoppedBy,
 };
+pub use ployz_core::deploy_steps::{DeploymentStep, StepName};
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -490,6 +492,9 @@ pub struct DeploymentView {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[ts(as = "Option<BTreeMap<ServiceName, Vec<ServerRow>>>", optional)]
     pub untargeted: BTreeMap<ServiceName, Vec<ServerRow>>,
+    /// When each step of its Deploy ran, in the order they started.
+    #[serde(default)]
+    pub steps: Vec<DeploymentStep>,
 }
 
 /// What a Deployment did to one of its target nodes.

@@ -3,6 +3,7 @@
 //! evidence, so the Deploy Intent with its unsealed secrets, the session and the raw
 //! SDK evidence never leave it: the caller gets only the Deployment's summary.
 
+use ployz_core::deploy_steps::{StepName, Steps, now_ms};
 use ployz_core::error_chain;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -183,6 +184,7 @@ pub async fn run_deployment_expecting(
         deployment,
         runner,
         over: Latch::new(),
+        steps: std::sync::Mutex::default(),
         reader: checkouts
             .as_ref()
             .ok()
@@ -552,6 +554,8 @@ struct Run {
     deployment: DeploymentId,
     runner: RunnerId,
     over: Latch,
+    /// When each step ran, until the next record takes the changed ones.
+    steps: std::sync::Mutex<Steps>,
     /// Handed to each Server with a rule's proof.
     reader: Option<ployz_core::GithubToken>,
 }
@@ -670,6 +674,7 @@ impl Run {
             .signed
             .extend(rules.services().cloned());
         let prepared = if targets.is_empty() && built.is_empty() {
+            self.steps().start(StepName::Planning, None, now_ms());
             self.renewing(session.plan(claimed.intent), || {
                 session.inner.cancel.cancel()
             })
@@ -677,6 +682,11 @@ impl Run {
         } else {
             match self.build(session, &claimed, &targets).await? {
                 Ok(mut receipts) => {
+                    {
+                        let mut steps = self.steps();
+                        let at = steps.last_ended(StepName::Building).unwrap_or_else(now_ms);
+                        steps.start(StepName::Planning, None, at);
+                    }
                     receipts.extend(built);
                     rules = rule_proofs(session, &claimed, &receipts, self).await;
                     registry_proofs(&claimed, &mut rules);
@@ -692,7 +702,10 @@ impl Run {
             }
         };
         let prepared = match prepared {
-            Ok(prepared) => prepared,
+            Ok(prepared) => {
+                self.steps().end(StepName::Planning, None, now_ms());
+                prepared
+            }
             Err(unprepared) => return self.unprepared(&earlier, &deletes, unprepared).await,
         };
         let recorded = self
@@ -774,7 +787,16 @@ impl Run {
         let mut warnings = Vec::new();
         let mut warned = None;
         while let Some(event) = running.next().await {
+            if let ployz_core::DeployEvent::Retired { service } = &event {
+                self.steps()
+                    .drained(StepName::StoppingOld, Some(service), now_ms());
+                self.record_steps().await;
+            }
             if let ployz_core::DeployEvent::Warning { warning } = event {
+                if let DeployWarning::LeftRunning { service, .. } = &warning {
+                    self.steps()
+                        .hold(StepName::StoppingOld, Some(&service.name));
+                }
                 warnings.push(warning);
                 warned = self.recorded_warnings(&mut warnings).await.or(warned);
             }
@@ -782,6 +804,23 @@ impl Run {
         // Its events ended, so the Deploy task ended: only a second wait errs.
         let _ = running.finished().await;
         self.recorded_warnings(&mut warnings).await.or(warned)
+    }
+
+    /// Record the steps that changed since the last record, after the Deployment ended
+    /// too. A step write that fails only warns.
+    async fn record_steps(&self) {
+        let steps = self.steps().take_changed();
+        if steps.is_empty() {
+            return;
+        }
+        let deployment = self.deployment.clone();
+        let recorded = super::store_call(&self.store, move |store| {
+            store.record_steps(&deployment, &steps)
+        })
+        .await;
+        if let Err(error) = recorded {
+            tracing::warn!(%error, "couldn't record the Deployment's steps");
+        }
     }
 
     async fn fill_ingress(
@@ -835,6 +874,7 @@ impl Run {
         targets: &[Target],
     ) -> Result<Result<BTreeMap<ServiceName, BuildReceipt>, Unbuilt>, RpcError> {
         let mut builds = Vec::new();
+        let mut starts = Vec::new();
         for (index, target) in targets.iter().enumerate() {
             let service = &target.service;
             let mut input = PreparationInput {
@@ -851,6 +891,7 @@ impl Run {
                 ..PreparationInput::default()
             };
             target.input(&mut input);
+            starts.push(now_ms());
             let running = match session.build(input, None) {
                 Ok(running) => running,
                 Err(error) => return Err(stop_builds(&builds, error).await),
@@ -866,7 +907,8 @@ impl Run {
         let all = futures_util::future::join_all(
             builds
                 .iter()
-                .map(|(target, running)| self.follow(target, running)),
+                .zip(&starts)
+                .map(|((target, running), started)| self.follow(target, running, *started)),
         );
         let ended = self
             .renewing(all, || {
@@ -909,6 +951,7 @@ impl Run {
         &self,
         target: &Target,
         running: &RunningBuild,
+        started: i64,
     ) -> Result<Result<BuildReceipt, RpcError>, RpcError> {
         let service = &target.service;
         // GitHub can't build uploaded source: the walk skips it, and says so when the
@@ -926,6 +969,7 @@ impl Run {
             String::new()
         };
         let mut server = None;
+        let mut queued = false;
         let mut flushed = tokio::time::Instant::now();
         loop {
             let next = if log.is_empty() {
@@ -948,6 +992,7 @@ impl Run {
                 }
             };
             let Some(event) = next else { break };
+            build_stage(&mut self.steps(), service, (started, &mut queued), &event);
             if let Some(name) = event
                 .pointer("/Selected/machine/name")
                 .and_then(Value::as_str)
@@ -979,6 +1024,7 @@ impl Run {
                 Err(error),
             ),
         };
+        build_ended(&mut self.steps(), service, started, ended.is_ok());
         self.report(service, status, message, log, server).await?;
         let receipt = match ended {
             Ok(receipt) => receipt,
@@ -1035,7 +1081,18 @@ impl Run {
             claimed.intent.registry_logins,
             claimed.intent.options.runner(),
         )?;
-        self.renewing(running.finished(), || running.abort()).await
+        let delivering = async {
+            while let Some(event) = running.next().await {
+                delivery(&mut self.steps(), &event);
+            }
+        };
+        let (prepared, ()) = self
+            .renewing(
+                futures_util::future::join(running.finished(), delivering),
+                || running.abort(),
+            )
+            .await;
+        prepared
     }
 
     /// Records a Deploy its preparation refused: the upload it needs, or nothing
@@ -1085,6 +1142,10 @@ impl Run {
             let mut rows = match event {
                 ployz_core::DeployEvent::Progress { rows, .. } => rows,
                 ployz_core::DeployEvent::Warning { warning } => {
+                    if let DeployWarning::LeftRunning { service, .. } = &warning {
+                        self.steps()
+                            .hold(StepName::StoppingOld, Some(&service.name));
+                    }
                     warnings.push(warning);
                     self.record_warnings(&mut warnings).await;
                     continue;
@@ -1094,7 +1155,8 @@ impl Run {
                     ended = Some(outcome);
                     break;
                 }
-                ployz_core::DeployEvent::ImagesPruned { .. } => continue,
+                ployz_core::DeployEvent::ImagesPruned { .. }
+                | ployz_core::DeployEvent::Retired { .. } => continue,
             };
             self.record_warnings(&mut warnings).await;
             if let Ok(client) = session.client() {
@@ -1105,7 +1167,24 @@ impl Run {
                     }
                 }
             }
-            for mut row in tracker.changes(&rows) {
+            let changes = tracker.changes(&rows);
+            {
+                let mut steps = self.steps();
+                steps.rows(&changes, now_ms());
+                // Its old copies retire after the Outcome, and the step waits for them.
+                for row in &rows {
+                    if let (
+                        Some(service),
+                        ployz_core::OperationStatus::Running {
+                            phase: ployz_core::OperationPhase::RetiringOld { .. },
+                        },
+                    ) = (&row.service_name, &row.status)
+                    {
+                        steps.drain(StepName::StoppingOld, Some(service));
+                    }
+                }
+            }
+            for mut row in changes {
                 let container = tracker.container(&row);
                 if let (RowState::Failed { log: Some(log), .. }, Some(container), Ok(client)) =
                     (&mut row.state, container, session.client())
@@ -1437,9 +1516,22 @@ impl Run {
         super::store_call(&self.store, move |store| store.sealed_names(&environment)).await
     }
 
+    fn steps(&self) -> std::sync::MutexGuard<'_, Steps> {
+        self.steps
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Record `evidence`, after the steps that changed since the last record.
     async fn record(&self, evidence: RunEvidence) -> Result<DeploymentSummary, RpcError> {
         let (deployment, runner) = (self.deployment.clone(), self.runner.clone());
+        let steps = self.steps().take_changed();
         super::store_call(&self.store, move |store| {
+            if !steps.is_empty()
+                && let Err(error) = store.record_steps(&deployment, &steps)
+            {
+                tracing::warn!(%error, "couldn't record the Deployment's steps");
+            }
             store.record(&deployment, &runner, evidence)
         })
         .await
@@ -1454,6 +1546,74 @@ impl Run {
         }
         self.over
             .settle(read_of(&self.record(RunEvidence::Alive).await))
+    }
+}
+
+/// Move one build's steps on with `event`, one of its progress frames. Its upload
+/// starts with the build, or once a Build Machine admits it after queueing.
+fn build_stage(
+    steps: &mut Steps,
+    service: &ServiceName,
+    (started, queued): (i64, &mut bool),
+    event: &Value,
+) {
+    let at = now_ms();
+    let service = Some(service);
+    match event.pointer("/Build/Stage").and_then(Value::as_str) {
+        Some("Queued") => *queued = true,
+        Some("Upload") => steps.start(
+            StepName::Uploading,
+            service,
+            if *queued { at } else { started },
+        ),
+        Some("Preparation") => {
+            steps.end(StepName::Uploading, service, at);
+            steps.start(StepName::StartingBuilder, service, at);
+        }
+        Some("Building") => {
+            steps.end(StepName::Uploading, service, at);
+            steps.end(StepName::StartingBuilder, service, at);
+            steps.start(StepName::Building, service, at);
+        }
+        _ => {}
+    }
+}
+
+/// End one build's steps. A build that reused an image builds from its start to its
+/// end; a failed one stays open in the step it failed in.
+fn build_ended(steps: &mut Steps, service: &ServiceName, started: i64, built: bool) {
+    let at = now_ms();
+    let service = Some(service);
+    let stages = [
+        StepName::Uploading,
+        StepName::StartingBuilder,
+        StepName::Building,
+    ];
+    if !stages.iter().any(|stage| steps.started(*stage, service)) {
+        steps.start(StepName::Building, service, started);
+    }
+    if built {
+        for stage in stages {
+            steps.end(stage, service, at);
+        }
+    }
+}
+
+/// Move a Service's image delivery on with `event`, one of preparation's progress
+/// frames: from sending it until its Machines have it. Planning ends at the first send.
+fn delivery(steps: &mut Steps, event: &Value) {
+    let at = now_ms();
+    let service = |pointer| {
+        event
+            .pointer(pointer)
+            .and_then(Value::as_str)
+            .and_then(|name| name.parse::<ServiceName>().ok())
+    };
+    if let Some(service) = service("/Sending/service") {
+        steps.end(StepName::Planning, None, at);
+        steps.start(StepName::DeliveringImage, Some(&service), at);
+    } else if let Some(service) = service("/Delivered/service") {
+        steps.end(StepName::DeliveringImage, Some(&service), at);
     }
 }
 

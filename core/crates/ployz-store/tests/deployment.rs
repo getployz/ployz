@@ -15,14 +15,14 @@ use ployz_core::{
 use ployz_store::{
     Actor, Admit, Approval, ApprovalDigest, Asks, AttachConfig, Cancel, Change, Command, ConfigId,
     ConfigMountAt, ConfigStore, ConfigsQuery, CreateConfig, CreateProject, CreateService,
-    DeleteConfig, Deploy, DeploymentId, DeploymentStatus, DeploymentSummary, DeploymentWarning,
-    DeploymentsQuery, DetachConfig, DiffQuery, DiffView, Discard, Edit, EnvironmentId,
-    EnvironmentRef, FailedAt, IngressAction, IngressFailure, IngressRepair, NamespaceQuery,
-    NodeStatus, OrganizationId, Permission, PlanQuery, Principal, ProjectId, ProjectName, Publish,
-    PutConfigFile, Query, RemoveService, RenameConfig, RenameService, Retry, Revision, RowPhase,
-    RowState, RowTracker, RunEvidence, RunnerId, RunningObservation, ServerRow, ServiceLineageId,
-    ServiceQuery, ServicesQuery, SettingPath, Start, StoppedBy, Trusted, UploadBase,
-    UploadedSource, View, Written,
+    DeleteConfig, Deploy, DeploymentId, DeploymentStatus, DeploymentStep, DeploymentSummary,
+    DeploymentWarning, DeploymentsQuery, DetachConfig, DiffQuery, DiffView, Discard, Edit,
+    EnvironmentId, EnvironmentRef, FailedAt, IngressAction, IngressFailure, IngressRepair,
+    NamespaceQuery, NodeStatus, OrganizationId, Permission, PlanQuery, Principal, ProjectId,
+    ProjectName, Publish, PutConfigFile, Query, RemoveService, RenameConfig, RenameService, Retry,
+    Revision, RowPhase, RowState, RowTracker, RunEvidence, RunnerId, RunningObservation, ServerRow,
+    ServiceLineageId, ServiceQuery, ServicesQuery, SettingPath, Start, StepName, StoppedBy,
+    Trusted, UploadBase, UploadedSource, View, Written,
 };
 use serde_json::{Value, json};
 
@@ -395,6 +395,58 @@ fn a_deploy_publishes_then_its_runner_records_it_into_applied_state() {
         [
             ("api".to_owned(), NodeStatus::Unchanged),
             ("web".to_owned(), NodeStatus::NotAttempted)
+        ]
+    );
+}
+
+fn step(
+    name: StepName,
+    service: Option<&str>,
+    started_at: i64,
+    ended_at: Option<i64>,
+) -> DeploymentStep {
+    DeploymentStep {
+        name,
+        service: service.map(|service| ServiceName::parse(service).unwrap()),
+        started_at,
+        ended_at,
+    }
+}
+
+#[test]
+fn a_deployment_keeps_its_steps_in_order_and_the_one_it_stopped_in_open() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    store
+        .record_steps(&id(1), &[step(StepName::Preparing, None, 1_000, None)])
+        .unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record_steps(
+            &id(1),
+            &[
+                step(StepName::Preparing, None, 1_000, Some(1_500)),
+                step(StepName::Building, Some("web"), 1_600, Some(2_400)),
+                step(StepName::Uploading, Some("web"), 1_500, Some(1_600)),
+                step(StepName::HealthCheck, Some("web"), 2_900, None),
+            ],
+        )
+        .unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::NotExecuted("unhealthy".into()))
+        .unwrap();
+    let view = store
+        .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
+        .unwrap();
+    assert_eq!(view.deployment.status, DeploymentStatus::Failed);
+    assert_eq!(
+        view.steps,
+        vec![
+            step(StepName::Preparing, None, 1_000, Some(1_500)),
+            step(StepName::Uploading, Some("web"), 1_500, Some(1_600)),
+            step(StepName::Building, Some("web"), 1_600, Some(2_400)),
+            step(StepName::HealthCheck, Some("web"), 2_900, None),
         ]
     );
 }
@@ -10902,4 +10954,67 @@ fn a_deploy_restoring_one_volume_twice_replays_its_birth_or_conflicts() {
         "the second birth conflicts with the first, not with the row: {conflict:?}"
     );
     admit_copies(&store, &who, 1, vec![copy.clone(), copy]).unwrap();
+}
+
+#[test]
+fn history_keeps_live_until_a_deployment_that_confirmed_every_service_applied() {
+    let (store, who) = shop();
+    let first = save(&store, &who);
+    apply_both(&store, &who, 1);
+    set_replicas(&store, &who, "web", 3);
+    admit(&store, &who, 2, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(2), &a).unwrap();
+    store
+        .record(&id(2), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(
+            &id(2),
+            &a,
+            RunEvidence::Confirmed(vec![
+                ServiceName::parse("web").unwrap(),
+                ServiceName::parse("api").unwrap(),
+            ]),
+        )
+        .unwrap();
+    assert_eq!(
+        marks(&store, &who).0,
+        Some(first),
+        "a step still to come, such as a Volume deletion, can fail it"
+    );
+    let failed = RunEvidence::Executed {
+        progress: Vec::new(),
+        outcome: Box::new(outcome(json!({
+            "type": "failed", "completed": [operation("web")],
+            "failed": {"type": "operation", "operation": operation("api"), "error": {"type": "cancelled"}},
+            "unexecuted": []
+        }))),
+        removed: Vec::new(),
+    };
+    store.record(&id(2), &a, failed).unwrap();
+    assert_eq!(
+        marks(&store, &who).0,
+        Some(first),
+        "Live never moved, so it never moves back"
+    );
+}
+
+#[test]
+fn history_keeps_live_while_a_deployment_that_changes_no_service_runs() {
+    let (store, who) = shop();
+    let first = save(&store, &who);
+    apply_both(&store, &who, 1);
+    set_replicas(&store, &who, "web", 3);
+    admit(&store, &who, 2, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(2), &a).unwrap();
+    store
+        .record(&id(2), &a, RunEvidence::Prepared(preview(&[])))
+        .unwrap();
+    store
+        .record(&id(2), &a, RunEvidence::Confirmed(Vec::new()))
+        .unwrap();
+    assert_eq!(status(&store, &who, 2), DeploymentStatus::Running);
+    assert_eq!(marks(&store, &who).0, Some(first));
 }

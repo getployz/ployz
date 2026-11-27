@@ -11,7 +11,7 @@ import {
 import type { PloyzInngest, PloyzStepTools } from "#/modules/inngest/client";
 import { githubCheckSuiteReceived, githubPullRequestReceived, githubPushReceived } from "#/modules/github/github.events";
 import { configDeploymentAdmitted, configPrCheckRequested, configSweepRequested } from "#/modules/config-store/config-store.events";
-import type { StoreServices } from "#/modules/config-store/store-deployment.server";
+import { recordReceiving, type StoreServices } from "#/modules/config-store/store-deployment.server";
 import { type EffectRunner, runInngestEffect } from "#/modules/inngest/run.server";
 
 /**
@@ -33,9 +33,16 @@ export const createStoreGithubPush = (inngest: PloyzInngest, runEffect: EffectRu
       triggers: [{ event: githubPushReceived.eventType }],
       concurrency: [{ key: "event.data.branchKey", limit: 1 }],
     },
-    async ({ event, step }) => followUp(step, {
-      deployments: await step.run("observe-branch", () => runEffect(observeStoreBranch(event.data))), closing: [],
-    }, runEffect),
+    async ({ event, step }) => {
+      const followed = await followUp(step, {
+        deployments: await step.run("observe-branch", () => runEffect(observeStoreBranch(event.data))), closing: [],
+      }, runEffect);
+      const receivedAt = event.ts;
+      if (followed.admitted.length > 0 && receivedAt !== undefined) {
+        await step.run("record-receiving", () => runEffect(recordReceiving(followed.admitted, receivedAt)));
+      }
+      return followed;
+    },
   );
 
 /** A check suite's result reaches the Config Store, which may let a deploy waiting for CI go. */
