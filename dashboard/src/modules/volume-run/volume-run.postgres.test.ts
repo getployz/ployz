@@ -5507,6 +5507,7 @@ describe("volume runs", () => {
         events: [{ name: "config/deployment.admitted", data: { organizationId, environmentId: "env-1", deploymentId: "d-1" } }],
         steps: [
           { id: "record-run", handler: () => undefined },
+          { id: "begin", handler: () => true },
           { id: "servers-lacking", handler: () => [] },
           { id: "plan-builds", handler: () => [] },
           { id: "placement-0", handler: () => ({ kind: "done" }) },
@@ -5737,6 +5738,7 @@ describe("volume runs", () => {
         events: [{ name: "config/deployment.admitted", data: { organizationId, environmentId: "env-1", deploymentId: "d-1" } }],
         steps: [
           { id: "record-run", handler: () => undefined },
+          { id: "begin", handler: () => true },
           { id: "servers-lacking", handler: () => [] },
           { id: "plan-builds", handler: () => [] },
           { id: "placement-0", handler: () => ({ kind: "done" }) },
@@ -5898,6 +5900,7 @@ describe("volume runs", () => {
       events: [{ name: "config/deployment.admitted", data: { organizationId, environmentId: "env-1", deploymentId: "d-1" } }],
       steps: [
         { id: "record-run", handler: () => undefined },
+        { id: "begin", handler: () => true },
         { id: "servers-lacking", handler: () => [] },
         { id: "plan-builds", handler: () => [] },
         { id: "run-deployment", handler: () => ({ ran: { id: "d-1", status, remove: false } }) },

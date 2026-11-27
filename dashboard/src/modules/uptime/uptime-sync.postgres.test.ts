@@ -79,7 +79,10 @@ const setup = Effect.fn(function* () {
   const deliver = (applied: boolean) => Effect.promise(() => new InngestTestEngine({
     function: worker,
     events: [{ name: configDeploymentAdmitted.name, data: { organizationId: ORGANIZATION, environmentId: ENVIRONMENT, deploymentId: DEPLOYED } }],
+    // The test engine gives each step its own runId where Inngest keeps one per run, so a real begin would outrank
+    // the runner that claims next.
     steps: [
+      { id: "begin", handler: () => true },
       ...applied
         ? [
           { id: "run-deployment", handler: () => ({ ran: { id: DEPLOYED, status: "applied", remove: false } }) },
