@@ -10955,3 +10955,46 @@ fn a_deploy_restoring_one_volume_twice_replays_its_birth_or_conflicts() {
     );
     admit_copies(&store, &who, 1, vec![copy.clone(), copy]).unwrap();
 }
+
+#[test]
+fn history_marks_a_running_deployment_live_once_it_confirmed_every_service() {
+    let (store, who) = shop();
+    let first = save(&store, &who);
+    apply_both(&store, &who, 1);
+    set_replicas(&store, &who, "web", 3);
+    let second = admit(&store, &who, 2, &[], None).unwrap().saved;
+    let a = runner("runner-a");
+    store.claim(&id(2), &a).unwrap();
+    store
+        .record(&id(2), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(
+            &id(2),
+            &a,
+            RunEvidence::Confirmed(vec![ServiceName::parse("web").unwrap()]),
+        )
+        .unwrap();
+    assert_eq!(
+        marks(&store, &who),
+        (Some(first), None),
+        "api still runs the version before"
+    );
+    store
+        .record(
+            &id(2),
+            &a,
+            RunEvidence::Confirmed(vec![ServiceName::parse("api").unwrap()]),
+        )
+        .unwrap();
+    assert_eq!(status(&store, &who, 2), DeploymentStatus::Running);
+    assert_eq!(
+        marks(&store, &who),
+        (Some(second), None),
+        "every Service it ships serves while its old copies drain"
+    );
+    store
+        .record(&id(2), &a, succeeded(&["web", "api"]))
+        .unwrap();
+    assert_eq!(marks(&store, &who), (Some(second), None));
+}
