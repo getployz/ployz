@@ -583,24 +583,30 @@ fn owned(docker: &Docker<'_>, container: &str) -> Result<bool, BuildError> {
 pub(crate) fn holder(docker: &Docker<'_>, container: &str) -> Result<Holder, BuildError> {
     match docker.run(
         "inspect a build container",
-        &[
-            "inspect",
-            "--format",
-            "{{println .Id}}{{println .Config.Image}}{{range .Config.Env}}{{println .}}{{end}}",
-            container,
-        ],
+        &["inspect", "--format", "{{json .Config}}", container],
         Streams::Captured,
     ) {
-        // Docker prints an existing container's ID, so nothing names none.
+        // Docker prints an existing container's configuration, so nothing names none.
         Ok(inspected) if inspected.trim().is_empty() => Ok(Holder::Nobody),
         Ok(inspected) => {
+            #[derive(serde::Deserialize)]
+            struct Config {
+                #[serde(rename = "Image", default)]
+                image: String,
+                #[serde(rename = "Env", default)]
+                environment: Option<Vec<String>>,
+            }
+            let config: Config = serde_json::from_str(inspected.trim()).map_err(|error| {
+                BuildError::Prerequisite(format!(
+                    "Docker reported an unreadable configuration for {container}: {error}"
+                ))
+            })?;
+            let environment = config.environment.unwrap_or_default();
+            let environment = environment.iter().map(String::as_str).collect::<Vec<_>>();
             let marker = format!("{OWNER}={}", owner());
-            // The ID, then the image, then one environment variable a line.
-            let mut lines = inspected.lines().map(str::trim).skip(1);
-            let image = lines.next().unwrap_or_default();
-            let environment = lines.collect::<Vec<_>>();
             Ok(
-                if earlier(container, image, &environment) || environment.contains(&marker.as_str())
+                if earlier(container, &config.image, &environment)
+                    || environment.contains(&marker.as_str())
                 {
                     Holder::Ployz
                 } else {
@@ -1928,15 +1934,19 @@ printf '%s\n' "$*" >> '{0}/calls'
 case "$1 $2" in
   'inspect --format')
     case "$3" in
-      *Env*)
-        if grep -qx "$4" '{0}/owned' 2>/dev/null; then printf 'c0ffee\nalpine\n{OWNER}={1}\n'
-        elif grep -qx "$4" '{0}/foreign' 2>/dev/null; then printf 'c0ffee\nalpine\nPATH=/bin\n'
+      *Config*)
+        if grep -qx "$4" '{0}/owned' 2>/dev/null; then
+          printf '%s\n' '{{"Image":"alpine","Env":["{OWNER}={1}"]}}'
+        elif grep -qx "$4" '{0}/foreign' 2>/dev/null; then
+          printf '%s\n' '{{"Image":"alpine","Env":["PATH=/bin"]}}'
         elif grep -qx "$4" '{0}/borrowed' 2>/dev/null; then
-          printf 'c0ffee\nalpine:3\nNOTE=an earlier pin\nmoby/buildkit:v0.26.2\nghcr.io/railwayapp/railpack-frontend@sha256:db24dc37640b6887c3d455b40876ea30f75182964479670cba6e4cde7ffef103\nBUILDKIT_SETUP_CGROUPV2_ROOT=1\n' 
+          printf '%s\n' '{{"Image":"alpine:3","Env":["NOTE=an earlier pin\nmoby/buildkit:v0.26.2\nghcr.io/railwayapp/railpack-frontend@sha256:db24dc37640b6887c3d455b40876ea30f75182964479670cba6e4cde7ffef103","BUILDKIT_SETUP_CGROUPV2_ROOT=1"]}}'
+        elif grep -qx "$4" '{0}/forged' 2>/dev/null; then
+          printf '%s\n' '{{"Image":"moby/buildkit:v0.26.2","Env":["NOTE=x\n{OWNER}={1}\nBUILDKIT_SETUP_CGROUPV2_ROOT=1"]}}'
         elif grep -qx "$4" '{0}/earlier' 2>/dev/null; then
-          printf 'c0ffee\nmoby/buildkit:v0.26.2\nPATH=/bin\nBUILDKIT_SETUP_CGROUPV2_ROOT=1\n'
+          printf '%s\n' '{{"Image":"moby/buildkit:v0.26.2","Env":["PATH=/bin","BUILDKIT_SETUP_CGROUPV2_ROOT=1"]}}'
         elif grep -qx "$4" '{0}/unpinned' 2>/dev/null; then
-          printf 'c0ffee\nbuildpack-deps:bookworm\nPATH=/bin\nBUILDKIT_SETUP_CGROUPV2_ROOT=1\n' 
+          printf '%s\n' '{{"Image":"buildpack-deps:bookworm","Env":["PATH=/bin","BUILDKIT_SETUP_CGROUPV2_ROOT=1"]}}'
         else echo "Error: no such object: $4" >&2; exit 1; fi ;;
       *) cat '{0}/worker' 2>/dev/null ;;
     esac ;;
@@ -2034,12 +2044,7 @@ exit 0
     }
 
     fn inspect_owner(worker: &str) -> String {
-        [
-            "inspect --format ",
-            "{{println .Id}}{{println .Config.Image}}{{range .Config.Env}}{{println .}}{{end}} ",
-            worker,
-        ]
-        .concat()
+        ["inspect --format ", "{{json .Config}} ", worker].concat()
     }
 
     fn create_call(directory: &std::path::Path, name: &str) -> String {
@@ -2430,6 +2435,29 @@ exit 0
         let worker = container(&Access::Full.builder(0));
         let helper = format!("{}-railpack", Access::Full.builder(0));
         fs::write(directory.join("borrowed"), format!("{worker}\n{helper}")).unwrap();
+        fs::write(directory.join("names"), format!("{worker}\n{helper}")).unwrap();
+        let policy = crashed_slot(directory);
+        Lock::cleanup_abandoned(&policy).unwrap();
+        let calls = calls_since(directory, &mut 0);
+        for held in [&worker, &helper] {
+            assert!(
+                !calls
+                    .iter()
+                    .any(|call| call.ends_with(held.as_str()) && !call.starts_with("inspect")),
+                "startup touched {held}: {calls:?}"
+            );
+        }
+    }
+
+    /// The owner marker and Buildx's variable, written inside another
+    /// variable's value, mark nothing.
+    #[test]
+    fn recovery_leaves_a_container_whose_markers_are_only_inside_another_variable() {
+        let directory = host_slot();
+        let directory = directory.path();
+        let worker = container(&Access::Full.builder(0));
+        let helper = format!("{}-railpack", Access::Full.builder(0));
+        fs::write(directory.join("forged"), format!("{worker}\n{helper}")).unwrap();
         fs::write(directory.join("names"), format!("{worker}\n{helper}")).unwrap();
         let policy = crashed_slot(directory);
         Lock::cleanup_abandoned(&policy).unwrap();
