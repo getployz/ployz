@@ -80,11 +80,15 @@ async fn join_reaches_participating() {
         })
         .await;
 
-        let registration = cluster.register_second().await.unwrap();
-        cluster
-            .join(1, join_request(&first, &registration))
+        let admission = cluster.register_second().await.unwrap();
+        let confirmation = cluster
+            .join(
+                1,
+                join_request(&first, &admission.registration, cluster.device()),
+            )
             .await
             .unwrap();
+        cluster.confirm(&admission, 1, confirmation).await.unwrap();
 
         poll_until(
             Duration::from_secs(60),
@@ -105,7 +109,7 @@ async fn join_reaches_participating() {
 
 #[tokio::test]
 #[ignore = "informing: requires the privileged Ployz testkit image"]
-async fn failed_join_leaves_the_registered_ghost_until_teardown() {
+async fn a_failed_join_leaves_no_ghost_row() {
     let plan = ClusterPlan::new(&format!("l3-ghost-{}", process::id()), 2).unwrap();
     let cluster = Cluster::create(plan).unwrap();
     cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
@@ -122,12 +126,12 @@ async fn failed_join_leaves_the_registered_ghost_until_teardown() {
     )
     .await
     .unwrap();
-    let mut registered = cluster.register_second().await.unwrap();
+    let mut registered = cluster.register_second().await.unwrap().registration;
     let ghost = registered.assigned_machine.id;
     registered.assigned_machine.public_key = WireGuardPublicKey([0; 32]);
     assert!(
         cluster
-            .join(1, join_request(&first, &registered))
+            .join(1, join_request(&first, &registered, cluster.device()))
             .await
             .is_err()
     );
@@ -139,8 +143,9 @@ async fn failed_join_leaves_the_registered_ghost_until_teardown() {
         .into_iter()
         .map(|observation| observation.machine.id)
         .collect::<BTreeSet<_>>();
+    // The entry publishes a joiner's row only once the joiner confirms its approval.
     assert!(ids.contains(&first.id));
-    assert!(ids.contains(&ghost));
+    assert!(!ids.contains(&ghost));
 }
 
 #[tokio::test]
@@ -413,6 +418,7 @@ async fn assert_partitioned_field_collisions_survive_convergence(
     conflicting.name = MachineName::parse("partition-field-conflict").unwrap();
     cluster
         .seed_machine_collision(0, first, &conflicting.id, &conflicting.name)
+        .await
         .unwrap();
     wait_for(cluster, 0, Duration::from_secs(10), |machines| {
         machines
