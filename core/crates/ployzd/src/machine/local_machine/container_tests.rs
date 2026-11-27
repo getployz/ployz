@@ -1194,6 +1194,7 @@ mod settled {
             &docker,
             &format!(
                 r#"#!/bin/sh
+if [ "$3" = --platform ]; then echo "No such image: $5" >&2; exit 1; fi
 case "$1 $2 $5" in
   'image inspect {{{{range'*) exec sleep 600 ;;
   'image inspect {{{{json'*)
@@ -1240,6 +1241,48 @@ esac
             .expect("a stalled cleanup holds the turn");
         std::fs::remove_dir_all(data_dir).unwrap();
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Before its tag a peer pull asks Docker which image store it runs. A caller that
+    /// leaves while Docker has not answered frees the turn for the next create at once.
+    #[tokio::test]
+    async fn a_peer_pull_whose_caller_left_during_docker_info_holds_back_no_create() {
+        let stalled = Arc::new(tokio::sync::Notify::new());
+        let Settling {
+            local, data_dir, ..
+        } = settling_with(
+            FakeDocker {
+                named_containers: Some(Arc::new(Mutex::new(BTreeMap::new()))),
+                containerd_store: true,
+                info_stall: Some(Arc::clone(&stalled)),
+                ..Default::default()
+            },
+            None,
+        )
+        .await;
+        let request = ployz_core::PullImageFromMachineRequest {
+            pull: ployz_core::PeerImagePull::Reference {
+                image: format!("app@sha256:{}", "1".repeat(64)),
+            },
+            source: ployz_core::ImageIngestDestination {
+                management_address: ployz_core::ManagementAddress("fdcc::7".parse().unwrap()),
+                port: ployz_core::UNREGISTRY_PORT,
+            },
+            platform: "linux/amd64".into(),
+        };
+        let caller = tokio::spawn({
+            let local = local.clone();
+            async move { local.pull_image_from_machine(request).await }
+        });
+        stalled.notified().await;
+
+        caller.abort();
+
+        // Shorter than the Docker client's own 5s bound, which would free the turn too.
+        tokio::time::timeout(Duration::from_secs(3), local.wait_for_admitted_work())
+            .await
+            .expect("a pull whose caller left still holds the turn");
+        std::fs::remove_dir_all(data_dir).unwrap();
     }
 
     #[tokio::test]

@@ -49,6 +49,8 @@ pub(crate) struct FakeDocker {
     pub(crate) containerd_store: bool,
     /// The Docker CLI a peer pull runs, in place of `docker`.
     pub(crate) docker_cli: Option<std::path::PathBuf>,
+    /// `/info` announces itself here, then never answers.
+    pub(crate) info_stall: Option<Arc<tokio::sync::Notify>>,
     pub(crate) volume_users: Arc<Mutex<BTreeMap<String, Vec<serde_json::Value>>>>,
     pub(crate) image_barrier: Option<Arc<tokio::sync::Barrier>>,
     pub(crate) create_barrier: Option<Arc<tokio::sync::Barrier>>,
@@ -231,6 +233,10 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
         drop(fake.stop_gate.read().await);
     }
     if method == Method::GET && path == "/info" {
+        if let Some(stall) = &fake.info_stall {
+            stall.notify_one();
+            std::future::pending::<()>().await;
+        }
         let driver = if fake.containerd_store {
             "io.containerd.snapshotter.v1"
         } else {

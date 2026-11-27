@@ -324,6 +324,9 @@ impl Daemon {
             config.containerd_socket.clone(),
             containers.as_ref().map(ContainerRuntime::local_docker),
         );
+        if let Some(docker) = containers.as_ref().map(ContainerRuntime::local_docker) {
+            tokio::spawn(async move { docker.sweep_earlier_staging().await });
+        }
         let records = local.watch();
         let participation = Participation::new(records.clone(), shutdown.clone());
         let dns_service = dns.clone();
