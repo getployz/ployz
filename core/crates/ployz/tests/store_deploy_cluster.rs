@@ -825,13 +825,18 @@ async fn redeploys_sharing_a_dockerfile(reaches_data: bool) {
     // labels it Reused.
     let sent = || rpcs.swap(0, std::sync::atomic::Ordering::SeqCst);
 
-    // The image each Service's container runs on the Machine.
-    // The image each Service's container runs on the Machine.
+    // The image each of the fixture's Services runs on the Machine, read from the containers
+    // Ployz manages in the Environment's Namespace and found by their Service label.
     let running = || {
+        use ployz_core::labels::{MANAGED, NAMESPACE, SERVICE_NAME};
         let listed = cluster
             .machine_shell(
                 0,
-                "set -e; ids=$(docker ps -q); [ -n \"$ids\" ]; docker inspect --format '{{.Name}} {{.Image}}' $ids",
+                &format!(
+                    "set -e; ids=$(docker ps -q --filter label={NAMESPACE}=shop-production --filter label={MANAGED}); \
+                     [ -n \"$ids\" ]; \
+                     docker inspect --format '{{{{index .Config.Labels \"{SERVICE_NAME}\"}}}} {{{{.Image}}}}' $ids"
+                ),
             )
             .unwrap();
         service_images(&listed, &names)
@@ -902,27 +907,21 @@ async fn redeploys_sharing_a_dockerfile(reaches_data: bool) {
     );
 }
 
-/// The one image each of `services` runs, from `docker inspect`'s `{{.Name}} {{.Image}}`
-/// lines for a Machine's running containers. Each Service runs exactly one container, and
-/// each container an image ID.
+/// The one image each of `services` runs, from `{service label} {image}` lines for the
+/// managed containers of one Namespace. Every container belongs to one of `services`, each
+/// Service runs exactly one, and each runs an image ID.
 fn service_images(listed: &str, services: &[&str]) -> std::collections::BTreeMap<String, String> {
     let mut running = std::collections::BTreeMap::<String, Vec<String>>::new();
     for line in listed.lines() {
-        let (container, image) = line.split_once(' ').unwrap_or((line, ""));
-        let container = container.trim_start_matches('/');
-        let Some((service, suffix)) = container.rsplit_once('-') else {
-            continue;
-        };
-        if !services.contains(&service)
-            || suffix.len() != 12
-            || !suffix.chars().all(|c| c.is_ascii_hexdigit())
-        {
-            continue;
-        }
+        let (service, image) = line.split_once(' ').unwrap_or((line, ""));
+        assert!(
+            services.contains(&service),
+            "a container in the Namespace runs no Service of the fixture: {listed}"
+        );
         let digest = image.strip_prefix("sha256:").unwrap_or_default();
         assert!(
             digest.len() == 64 && digest.chars().all(|c| c.is_ascii_hexdigit()),
-            "{container} runs no image ID: {listed}"
+            "{service} runs no image ID: {listed}"
         );
         running
             .entry(service.to_owned())
