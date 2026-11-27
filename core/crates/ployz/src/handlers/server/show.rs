@@ -331,15 +331,27 @@ async fn inspect(
     let details = match details {
         Ok(details) => details,
         Err(error) => {
-            if error.target_unanswered()
-                && !error.large_packets_dropped()
-                && let Some(name) = dropped_target(client, selector).await
-            {
-                ui::warn(dropped_path(&name));
-            }
             let message = if error.target_unanswered() {
-                let why = crate::deploy::dead_link_to(client, selector)
-                    .await
+                // One listing from the entry explains a silent target both ways.
+                let machines = client.machines().await.unwrap_or_default();
+                let target =
+                    match selector.resolve(machines.iter().map(|observed| &observed.machine)) {
+                        ployz_core::NameMatches::One(target) => Some(target.id),
+                        ployz_core::NameMatches::None
+                        | ployz_core::NameMatches::Ambiguous { .. } => None,
+                    };
+                let observed = machines
+                    .iter()
+                    .find(|observed| Some(observed.machine.id) == target);
+                if !error.large_packets_dropped()
+                    && let Some(observed) =
+                        observed.filter(|observed| drops_large_packets(observed))
+                {
+                    ui::warn(dropped_path(&observed.machine.name));
+                }
+                let why = crate::deploy::dead_links(&machines, client.entry_machine())
+                    .into_iter()
+                    .find(|link| Some(link.machine) == target)
                     .map(|link| format!(" {}", link.explained()))
                     .unwrap_or_default();
                 format!("Server {selector} didn't answer, so it can't be shown.{why}")
@@ -556,24 +568,6 @@ fn dropped_path(name: &MachineName) -> String {
     format!(
         "Large packets to {name} are dropped on its mesh path from the Server that answered, so calls with large replies to {name} fail."
     )
-}
-
-/// The Server `selector` names, when the entry lists its path as dropping large packets.
-/// A target that didn't answer may be silent for that reason alone.
-async fn dropped_target(
-    client: &mut crate::connect::Client,
-    selector: &MachineTarget,
-) -> Option<MachineName> {
-    let machines = client.machines().await.ok()?;
-    let ployz_core::NameMatches::One(target) =
-        selector.resolve(machines.iter().map(|observed| &observed.machine))
-    else {
-        return None;
-    };
-    machines
-        .iter()
-        .find(|observed| observed.machine.id == target.id && drops_large_packets(observed))
-        .map(|observed| observed.machine.name.clone())
 }
 
 /// The human `server show`: who the Server is, what it runs, how full it is, and
