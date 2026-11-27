@@ -1214,6 +1214,51 @@ fn admit_numbered(store: &ConfigStore, who: &Actor, n: u64) -> DeploymentId {
 }
 
 #[test]
+fn an_older_attempt_s_delayed_first_write_on_another_build_leaves_the_newer_one_owning() {
+    let (store, who) = shop();
+    store
+        .write_trusted(&who, &create("acme/web", None), &evidence())
+        .unwrap();
+    store
+        .write_trusted(
+            &who,
+            &CreateGitService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-0000000000a1").unwrap(),
+                name: ServiceName::parse("api").unwrap(),
+                ..create("acme/web", None)
+            },
+            &evidence(),
+        )
+        .unwrap();
+    let deployment = admit(&store, &who, 1, &[]);
+    let a = backend::sha(&"a".repeat(40));
+    let both = BTreeMap::from([
+        (ServiceName::parse("web").unwrap(), a.clone()),
+        (ServiceName::parse("api").unwrap(), a),
+    ]);
+    store.pin(&deployment, &both, &backend::members()).unwrap();
+    let web = GithubBuildId::parse(&format!("{deployment}.web")).unwrap();
+    let api = GithubBuildId::parse(&format!("{deployment}.api")).unwrap();
+    store.github_begin(&deployment, "cloud-a").unwrap();
+    store.github_begin(&deployment, "cloud-b").unwrap();
+    store.github_ask(&web, "cloud-b").unwrap();
+    // `cloud-a` never wrote a build before `cloud-b` began; its first write lands now.
+    let skip = GithubEnd::Skipped {
+        message: "GitHub may already be running this build".into(),
+    };
+    let refused = store
+        .github_pass_on(&api, &skip, None, "cloud-a")
+        .unwrap_err();
+    assert_eq!(refused.details.get("newer"), Some(&json!(true)));
+    assert_eq!(
+        store
+            .github_dispatched(&web, &attempt_run(RUN, "cloud-b"))
+            .unwrap(),
+        GithubRecorded::Held
+    );
+}
+
+#[test]
 fn only_the_attempt_that_began_last_writes_a_deployment_s_builds() {
     let (store, who) = shop();
     // `ATTEMPT` began first; `cloud-b` began after it, before either wrote a build.
