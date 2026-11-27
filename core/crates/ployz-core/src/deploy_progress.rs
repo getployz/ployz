@@ -100,8 +100,8 @@ impl TS for StoppedBy {
     type WithoutGenerics = Self;
     type OptionInnerType = Self;
 
-    fn name(cfg: &ts_rs::Config) -> String {
-        StoppedByMarks::name(cfg)
+    fn name(_: &ts_rs::Config) -> String {
+        "StoppedBy".to_owned()
     }
 
     fn inline(cfg: &ts_rs::Config) -> String {
@@ -110,6 +110,10 @@ impl TS for StoppedBy {
 
     fn inline_flattened(cfg: &ts_rs::Config) -> String {
         StoppedByMarks::inline_flattened(cfg)
+    }
+
+    fn visit_dependencies(visitor: &mut impl ts_rs::TypeVisitor) {
+        StoppedByMarks::visit_dependencies(visitor);
     }
 }
 
