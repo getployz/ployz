@@ -27,7 +27,8 @@ export interface GithubSourcesService {
 
 export class GithubSources extends Context.Service<GithubSources, GithubSourcesService>()("ployz/GithubSources") {}
 
-const keyOf = (pin: Pin) => `${pin.organizationId}:${pin.repositoryId}@${pin.sha}`;
+/** A checkout one installation fetched is shared only under that installation, whose access each call checks. */
+const keyOf = (pin: Pin) => `${pin.organizationId}:${pin.installationId}:${pin.repositoryId}@${pin.sha}`;
 
 export const makeGithubSources = Effect.gen(function* () {
   const scope = yield* Effect.scope;
@@ -91,10 +92,12 @@ export const makeGithubSources = Effect.gen(function* () {
   const checkout: GithubSourcesService["checkout"] = Effect.fn("GithubSources.checkout")(function* (pin: Pin) {
     const held = yield* Effect.acquireRelease(
       ensure(pin, true),
-      (checkout) => Clock.currentTimeMillis.pipe(
-        Effect.tap((now) => Effect.sync(() => { checkout.holders -= 1; if (checkout.holders === 0) checkout.idleSince = now; })),
-        Effect.andThen(evict),
-      ),
+      // A checkout still being fetched goes idle when its fetch settles, so eviction never removes it mid-extract.
+      (checkout) => Effect.gen(function* () {
+        checkout.holders -= 1;
+        if (checkout.holders === 0 && (yield* Deferred.isDone(checkout.ready))) checkout.idleSince = yield* Clock.currentTimeMillis;
+        yield* evict;
+      }),
     );
     return yield* Deferred.await(held.ready);
   });
