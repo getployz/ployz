@@ -4,7 +4,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
-    time::Duration,
 };
 
 use ployz_core::{
@@ -15,8 +14,6 @@ use ployz_core::{
 use crate::corrosion::{
     AdminClient, Error as CorrosionError, IngressRouteRow, MachineView, ReplicatedObservations,
 };
-
-const MEMBERSHIP_SAMPLE_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Ackers {
@@ -75,7 +72,7 @@ pub(crate) async fn sample_ackers(
     admin: &AdminClient,
 ) -> Membership {
     let states = admin
-        .membership(MEMBERSHIP_SAMPLE_TIMEOUT)
+        .sample_membership()
         .await
         .inspect_err(|error| {
             tracing::warn!(
@@ -100,7 +97,7 @@ pub(crate) async fn load_down(
             "the Machine view has not observed the store yet",
         ))
     })?;
-    let states = admin.membership(MEMBERSHIP_SAMPLE_TIMEOUT).await?;
+    let states = admin.sample_membership().await?;
     Ok(machines
         .observations
         .iter()

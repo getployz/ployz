@@ -386,7 +386,9 @@ def require_reachable(run, backend, nodes, others=None):
     # Boat guests run no firewall, so a pair that drops ping drops WireGuard too. A Machine without
     # ping (126, 127) can't tell, so it doesn't fail the run.
     codes = dict(zip(pairs, parallel(ping, pairs)))
-    unrun = sorted({pair[0] for pair, code in codes.items() if code == 255})
+    # ssh exits 255 when it can't connect, and Commands reports 124 when the call outlives its timeout; ping
+    # itself gives up within seconds, so neither says anything about the pair.
+    unrun = sorted({pair[0] for pair, code in codes.items() if code in (124, 255)})
     if unrun:
         raise Infrastructure(f"couldn't run the pair check over SSH on {', '.join(unrun)}")
     silent = [pair for pair, code in codes.items() if code not in (0, 126, 127)]

@@ -171,7 +171,10 @@ impl Fleet {
             });
             let mut service = MachineService::with_cluster(
                 owner,
-                Some((cluster.store(), AdminClient::new(admin.clone()))),
+                Some((
+                    cluster.store(),
+                    AdminClient::new(admin.clone()).with_sample_bound_for_test(SETTLE),
+                )),
             )
             .with_optional_containers(Some(runtime.clone()));
             service.local = service
@@ -311,7 +314,7 @@ impl Fleet {
     }
 
     fn admin(&self) -> AdminClient {
-        AdminClient::new(self.dir.join("admin.sock"))
+        AdminClient::new(self.dir.join("admin.sock")).with_sample_bound_for_test(SETTLE)
     }
 
     /// A watcher writes its ack rows before it announces the publish.
