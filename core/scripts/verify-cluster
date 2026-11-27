@@ -372,13 +372,18 @@ def endpoint(address):
 def require_reachable(run, backend, nodes, others=None):
     """Raise Infrastructure when two of `nodes`, or one of `nodes` and one of `others`, don't answer each other's
     ping: their WireGuard link would never come up, and every join and Global catch-up across it would time out."""
+    if run.get("provider") != "boat":
+        return  # Only Boat hands out pairs that can't reach each other; other hosts may block ICMP on purpose.
     others = nodes if others is None else others
     pairs = sorted({tuple(sorted((a["name"], b["name"]))) for a in nodes for b in others if a is not b})
+    if not pairs:
+        return
     named = {node["name"]: node for node in [*nodes, *others]}
 
     def answers(pair):
         source, target = named[pair[0]], named[pair[1]]
-        return backend.exec(source, ["ping", "-c3", "-W2", target["address"]], check=False, timeout=30).returncode == 0
+        code = backend.exec(source, ["ping", "-c3", "-W2", target["address"]], check=False, timeout=30).returncode
+        return code in (0, 126, 127)  # A Machine without ping can't tell, so it doesn't fail the run.
     silent = [pair for pair, ok in zip(pairs, parallel(answers, pairs)) if not ok]
     if silent:
         hosts = {name: named[name]["ssh"].rsplit(":", 1)[0].rsplit("@", 1)[-1] for pair in silent for name in pair}

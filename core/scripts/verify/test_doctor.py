@@ -63,10 +63,13 @@ class OverdueDrains(unittest.TestCase):
 class Underlay:
     """A host network where only `cut` pairs of addresses drop each other's packets."""
 
-    def __init__(self, cut):
+    def __init__(self, cut, without_ping=False):
         self.cut = {frozenset(pair) for pair in cut}
+        self.without_ping = without_ping
 
     def exec(self, node, command, check=True, timeout=None):
+        if self.without_ping:
+            return subprocess.CompletedProcess(command, 127)
         silent = frozenset((node["address"], command[-1])) in self.cut
         return subprocess.CompletedProcess(command, 1 if silent else 0)
 
@@ -74,8 +77,9 @@ class Underlay:
 class Reachability(unittest.TestCase):
     machines = [{"name": f"machine-{n}", "address": f"2001:db8:{n}::1", "ssh": f"root@198.51.100.{n}:19032"} for n in (1, 2, 3)]
 
-    def require(self, cut, nodes=None, others=None):
-        cluster.require_reachable({}, Underlay(cut), nodes or self.machines, others)
+    def require(self, cut, nodes=None, others=None, provider="boat", without_ping=False):
+        cluster.require_reachable({"provider": provider}, Underlay(cut, without_ping),
+                                  self.machines if nodes is None else nodes, others)
 
     def test_a_pair_that_cant_reach_each_other_fails_before_enrollment_naming_both_hosts(self):
         with self.assertRaises(cluster.Infrastructure) as raised:
@@ -92,6 +96,16 @@ class Reachability(unittest.TestCase):
         self.require([("2001:db8:2::1", "2001:db8:3::1")], [new], rest)
         with self.assertRaises(cluster.Infrastructure):
             self.require([("2001:db8:1::1", "2001:db8:2::1")], [new], rest)
+
+    def test_a_lone_machine_has_no_pair_to_check(self):
+        self.require([], self.machines[:1])
+        self.require([], self.machines[:1], [])
+
+    def test_a_machine_without_ping_does_not_fail_the_run(self):
+        self.require([], without_ping=True)
+
+    def test_hosts_other_than_boat_are_not_checked(self):
+        self.require([("2001:db8:1::1", "2001:db8:3::1")], provider="local")
 
 
 if __name__ == "__main__":
