@@ -570,6 +570,16 @@ impl ConfigStore {
             .write(|tx| build::github_dispatched(tx, id, github))
     }
 
+    /// Reserve a pinned Git build that hasn't started before asking GitHub for its run.
+    /// In-process only.
+    ///
+    /// # Errors
+    /// Returns `conflict` once it was reserved, handed off or passed on, or the
+    /// Deployment no longer wants it, `not_found` for an unknown build, or a storage error.
+    pub fn github_ask(&self, id: &GithubBuildId) -> Result<(), RpcError> {
+        self.storage.write(|tx| build::github_ask(tx, id))
+    }
+
     /// A Git build handed to GitHub. In-process only.
     ///
     /// # Errors

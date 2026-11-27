@@ -910,6 +910,7 @@ fn github_run(run_id: u64) -> GithubRun {
         workflow_ref: WORKFLOW.into(),
         repository: backend::repo_name("acme/web"),
         installation_id: 7,
+        push: false,
     }
 }
 
@@ -951,8 +952,8 @@ fn held(store: &ConfigStore, id: &GithubBuildId) -> GithubBuild {
     }
 }
 
-/// A pinned Git build of a fresh Deployment, handed to GitHub run `RUN`.
-fn dispatched(store: &ConfigStore, who: &Actor) -> GithubBuildId {
+/// A pinned Git build of a fresh Deployment, waiting for its first Builder.
+fn pinned(store: &ConfigStore, who: &Actor) -> GithubBuildId {
     store
         .write_trusted(who, &create("acme/web", None), &evidence())
         .unwrap();
@@ -964,7 +965,12 @@ fn dispatched(store: &ConfigStore, who: &Actor) -> GithubBuildId {
             &backend::members(),
         )
         .unwrap();
-    let id = GithubBuildId::parse(&format!("{deployment}.web")).unwrap();
+    GithubBuildId::parse(&format!("{deployment}.web")).unwrap()
+}
+
+/// A pinned Git build of a fresh Deployment, handed to GitHub run `RUN`.
+fn dispatched(store: &ConfigStore, who: &Actor) -> GithubBuildId {
+    let id = pinned(store, who);
     store.github_dispatched(&id, &github_run(RUN)).unwrap();
     // A retried dispatch step replays; another run can't take it.
     store.github_dispatched(&id, &github_run(RUN)).unwrap();
@@ -973,6 +979,46 @@ fn dispatched(store: &ConfigStore, who: &Actor) -> GithubBuildId {
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::Conflict);
     id
+}
+
+#[test]
+fn only_one_try_reserves_asking_github_and_its_run_or_a_pass_on_settles_the_build() {
+    let skip = || GithubEnd::Skipped {
+        message: "GitHub may already be running this build".into(),
+    };
+    for settle in ["run", "pass-on"] {
+        let (store, who) = shop();
+        let id = pinned(&store, &who);
+        store.github_ask(&id).unwrap();
+        // Another try finds it reserved, so it never asks GitHub.
+        assert_eq!(
+            store.github_ask(&id).unwrap_err().code,
+            RpcErrorCode::Conflict
+        );
+        if settle == "run" {
+            store.github_dispatched(&id, &github_run(RUN)).unwrap();
+            // A replay's pass-on behind the record is refused: it follows the run instead.
+            assert_eq!(
+                store.github_end(&id, None, &skip()).unwrap_err().code,
+                RpcErrorCode::Conflict
+            );
+            assert_eq!(held(&store, &id).run.run_id, RUN);
+        } else {
+            store.github_end(&id, None, &skip()).unwrap();
+            // The run the reserving try may have started lands too late to hold the build.
+            assert_eq!(
+                store
+                    .github_dispatched(&id, &github_run(RUN))
+                    .unwrap_err()
+                    .code,
+                RpcErrorCode::Conflict
+            );
+        }
+        assert_eq!(
+            store.github_ask(&id).unwrap_err().code,
+            RpcErrorCode::Conflict
+        );
+    }
 }
 
 #[test]

@@ -1,6 +1,6 @@
 import {
-  cancelStoreDeploymentRun, deployToFirstServer, failStoreDeploymentUnrun, forgetStoreDeploymentRun, publishedEnvironments, recordStoreDeploymentRun, runStoreDeployment, type StoreServices,
-  stopStoreDeploymentRun, storeDeploymentRunner, unclaimedStoreDeployments,
+  deployToFirstServer, failStoreDeploymentUnrun, forgetStoreDeploymentRun, publishedEnvironments, recordStoreDeploymentRun, runStoreDeployment, type StoreServices,
+  storeDeploymentRunner, storeDeploymentRunOf, unclaimedStoreDeployments,
 } from "#/modules/config-store/store-deployment.server";
 import { mailGithubDeployTrouble } from "#/modules/config-store/deploy-failed-mail.server";
 import { deploymentTrouble } from "#/modules/config-store/store-deployments";
@@ -9,6 +9,7 @@ import { decodeInngestEnvelope } from "#/modules/inngest/envelope";
 import { githubBuildRunCompleted } from "#/modules/github/github.events";
 import { inngestFunctionCancelledEnvelopeSchema, inngestFunctionCancelledEventType, inngestFunctionFinishedEventType } from "#/modules/inngest/events";
 import { type ConfigDeploymentAdmittedEventData, configDeploymentAdmitted, configDeploymentRetireRequested, configFirstServerJoined, createConfigDeploymentStartedEvent } from "#/modules/config-store/config-store.events";
+import { stopRun } from "#/modules/config-store/store-deployment-stop.inngest";
 import { clusterDomainSyncRequested } from "#/modules/cluster-domain/cluster-domain.events";
 import {
   checkStoreGithubBuild, GITHUB_CHECK_INTERVAL, planStoreGithubBuilds, START_WITHIN_MINUTES,
@@ -44,10 +45,10 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Effec
       retries: STORE_DEPLOYMENT_RETRIES,
       triggers: [{ event: configDeploymentAdmitted.eventType }],
       concurrency: [{ key: "event.data.environmentId", limit: 1 }],
-      onFailure: async ({ event }) => {
+      onFailure: async ({ event, step }) => {
         const { organizationId, deploymentId } = event.data.event.data;
         await runEffect(finishDeployVolumes(event.data.run_id, "failed"));
-        const stopped = await runEffect(stopStoreDeploymentRun(organizationId, deploymentId, event.data.run_id));
+        const stopped = await stopRun(step, runEffect, { organizationId, deploymentId, runId: event.data.run_id, round: 0 });
         await runEffect(mailGithubDeployTrouble(event.data.event.data));
         return stopped;
       },
@@ -140,7 +141,9 @@ export const createCancelStoreDeployment = (inngest: PloyzInngest, runEffect: Ef
       // Only the worker's runs are recorded, so any other function's cancellation finds nothing to stop.
       const cancelled = decodeInngestEnvelope(inngestFunctionCancelledEnvelopeSchema)(event);
       await step.run("finish-volumes", () => runEffect(finishDeployVolumes(cancelled.data.run_id, "cancelled")));
-      return step.run("stop-run", () => runEffect(cancelStoreDeploymentRun(cancelled.data.run_id)));
+      const run = await step.run("find-run", () => runEffect(storeDeploymentRunOf(cancelled.data.run_id)));
+      if (run === null) return { skipped: true };
+      return stopRun(step, runEffect, { ...run, runId: cancelled.data.run_id, round: 0 });
     },
   );
 

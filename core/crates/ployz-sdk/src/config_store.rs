@@ -665,6 +665,17 @@ impl ConfigStore {
             .await
     }
 
+    /// Reserve a pinned build before asking GitHub for its run, so GitHub is asked once.
+    ///
+    /// # Errors
+    /// Returns `conflict` once it was reserved, handed off or passed on, or the
+    /// Deployment no longer wants it: ask GitHub for nothing.
+    #[napi(ts_return_type = "Promise<null>")]
+    pub async fn github_ask(&self, build: String) -> Result<serde_json::Value> {
+        let build = github_id(&build)?;
+        self.run(move |store| store.github_ask(&build)).await
+    }
+
     /// Where a build handed to GitHub is (`GithubHandOff`).
     ///
     /// # Errors
@@ -859,12 +870,13 @@ impl ConfigStore {
         )
     }
 
-    /// Stop Deployment `deployment`'s builds still on GitHub: fail them. Returns them
-    /// (`GithubBuild[]`) so Cloud cancels their runs.
+    /// Stop Deployment `deployment`'s builds still on GitHub: fail them. Returns those
+    /// the Store answered for, whose runs Cloud cancels, and how many it got no answer
+    /// for, whose runs it must not cancel yet.
     ///
     /// # Errors
     /// Returns a storage error.
-    #[napi(ts_return_type = "Promise<GithubBuild[]>")]
+    #[napi(ts_return_type = "Promise<{ builds: GithubBuild[]; unsettled: number }>")]
     pub async fn github_cancel(&self, deployment: String) -> Result<serde_json::Value> {
         let deployment = DeploymentId::parse(deployment).map_err(rpc_to_napi)?;
         to_json(ployz::sdk::github_cancel(Arc::clone(&self.store), deployment).await)

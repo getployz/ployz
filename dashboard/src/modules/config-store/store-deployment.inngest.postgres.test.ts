@@ -123,14 +123,14 @@ it.live(
       // A run cancelled before it claimed its Deployment (waiting on GitHub builds) records it failed, not cancelled.
       yield* write({ command: "admit", admit: "deploy", id: UNCLAIMED, environment: here, services: [], version: null, accept_volume_loss: [] });
       yield* recordStoreDeploymentRun("early-run", admitted(UNCLAIMED).data).pipe(Effect.provide(services));
-      expect(yield* stop("early-run")).toEqual({ failed: UNCLAIMED });
+      expect(yield* stop("early-run")).toMatchObject({ failed: UNCLAIMED });
       expect(yield* Effect.promise(() => store.read(ORGANIZATION, { query: "deployment", id: UNCLAIMED }))).toMatchObject({ status: "failed" });
 
       // A run that gave up moving its Volumes fails the Deployment and returns them to staged.
       yield* write({ command: "admit", admit: "deploy", id: UNSTORED, environment: here, services: [], version: null, accept_volume_loss: [] });
       yield* claim(UNSTORED);
       expect(yield* failStoreDeploymentUnrun(ORGANIZATION, ENVIRONMENT, UNSTORED, "storage-run", "data: web-2 did not answer").pipe(Effect.provide(services)))
-        .toEqual({ failed: UNSTORED });
+        .toMatchObject({ failed: UNSTORED });
       expect(yield* claimOn(UNSTORED)).toBeNull();
 
       // An admission whose hand-off was lost is handed over again once it has waited a minute, unless a worker run

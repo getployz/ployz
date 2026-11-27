@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import type { ConfigStore, GithubBuild, GithubClaims } from "@ployz/sdk";
 import { eq } from "drizzle-orm";
-import { Cause, Effect, Exit, Schedule, Schema } from "effect";
+import { Cause, Data, Effect, Exit, Schedule, Schema } from "effect";
 import { cloudStore, dialedStore, refusedWith, storeTry, withDeployDial } from "#/modules/config-store/store-sdk.server";
 import { runnerRefusal } from "#/modules/config-store/store-refusal";
 import { pinStoreSources, sourceIdentity } from "#/modules/config-store/store-sources.server";
@@ -47,10 +47,11 @@ export const START_WITHIN_MINUTES = 3;
 /**
  * Cancel a run Cloud dispatched, as Cloud itself through the installation that runs it: the Organization's own token
  * is refused once it disconnected. A run that already ended is fine. GitHub refuses every token of an installation it
- * suspended or uninstalled, so those runs end at the runner's next refused call to Cloud instead.
+ * suspended or uninstalled, so those runs end at the runner's next refused call to Cloud instead. A push's own run,
+ * which the Store marks, is never cancelled: Cloud only followed it, and its check-in is refused once it holds nothing.
  */
 export const cancelDispatchedGithubRun = (run: GithubBuild["run"]) =>
-  cancelGithubRun({ access: installationAccess(run.installation_id), fullName: run.repository, runId: run.run_id }).pipe(
+  run.push === true ? Effect.void : cancelGithubRun({ access: installationAccess(run.installation_id), fullName: run.repository, runId: run.run_id }).pipe(
     Effect.catch((error) => Effect.logWarning("Could not cancel a GitHub run Cloud dispatched.", { runId: run.run_id, error })),
   );
 
@@ -64,14 +65,20 @@ export const heldGithubBuild = Effect.fn("ConfigStore.heldGithubBuild")(function
   return "held" in handOff ? handOff.held : null;
 });
 
+/** Some of a Deployment's GitHub builds got no answer when Cloud ended them, so their runs were left alone. */
+export class GithubBuildsUnsettled extends Data.TaggedError("GithubBuildsUnsettled")<{ deploymentId: string; unsettled: number }> {}
+
 /**
- * Stop a Deployment's builds still on GitHub: fail them and cancel their runs. Their Build Grants expire by
- * themselves. Idempotent. Its cancellation, and a worker that gave up on it, call it.
+ * Stop a Deployment's builds still on GitHub: fail them and cancel the runs of those whose end the Store answered. A
+ * build whose end got no answer may still be held by its run, so that run is left alone, and this fails, to be called
+ * again: the next call finds the build if its end didn't commit. Their Build Grants expire by themselves. Idempotent.
+ * Its cancellation, and a worker that gave up on it, call it.
  */
 export const cancelStoreGithubBuilds = Effect.fn("ConfigStore.cancelGithubBuilds")(function* (deploymentId: string) {
   const store = yield* cloudStore;
-  const builds = yield* storeTry(() => store.githubCancel(deploymentId));
+  const { builds, unsettled } = yield* storeTry(() => store.githubCancel(deploymentId));
   yield* Effect.forEach(builds, (build) => cancelDispatchedGithubRun(build.run), { concurrency: 4, discard: true });
+  if (unsettled > 0) return yield* new GithubBuildsUnsettled({ deploymentId, unsettled });
   return builds.length;
 });
 
@@ -186,15 +193,10 @@ export const planStoreGithubBuilds = Effect.fn("StoreGithub.plan")(function* (da
 export type StoreGithubStart = { kind: "dispatched"; runId: number } | { kind: "done" };
 type GithubRun = Parameters<ConfigStore["githubDispatched"]>[1];
 /**
- * What a build's start leaves to record: the run GitHub started, or a skip when GitHub gave no usable answer or can't
- * take the build. GitHub may have started a run either way, so a record the Store refused is retried on its own, and
- * GitHub is never asked again.
+ * How a build started, for the Store to record: the run that took it, or why it skipped GitHub. A push's own run is
+ * marked `push`: Cloud only follows it, and never cancels it.
  */
-/**
- * How a build started, for the Store to record: the run that took it, or why it skipped GitHub. `dispatched` marks a run
- * Cloud asked GitHub for, which is cancelled if its record is lost; a push's own run is only followed.
- */
-export type StoreGithubRecord = { kind: "run"; build: string; run: GithubRun; dispatched: boolean } | { kind: "skip"; build: string; message: string };
+export type StoreGithubRecord = { kind: "run"; build: string; run: GithubRun } | { kind: "skip"; build: string; message: string };
 type StoreGithubDispatch = StoreGithubStart | StoreGithubRecord;
 /**
  * How far a start got through its builds, in order: how each of the first builds started, then the record the Store
@@ -226,16 +228,19 @@ const settleAll = <A, E, R>(effects: ReadonlyArray<Effect.Effect<A, E, R>>) => E
 /**
  * Start a Deployment's GitHub builds, reading each repository's workflow once. Only a build still waiting for its first
  * Builder starts. One a run already took is followed, and one that ended or was skipped is left alone. Every read
- * settles first, so a failed read fails before GitHub is asked for anything. Then each build is asked for and recorded
- * before the next is asked for, so a retry, even one after the answer was lost, follows every run GitHub started. A
- * record the Store refuses ends the start there: GitHub may have taken that build, so it is never asked for again.
+ * settles first, so a failed read fails before GitHub is asked for anything. Then each build is reserved, asked for and
+ * recorded before the next: GitHub is asked only after the Store committed the reservation, so no other try asks
+ * again, and one that finds a reservation passes the build on. A record the Store refuses ends the start there: GitHub
+ * may have taken that build, so it is never asked for again.
  */
 export const startStoreGithubBuilds = Effect.fn("StoreGithub.startAll")(function* (
   organizationId: string, deploymentId: string, targets: ReadonlyArray<StoreGithubTarget>,
 ) {
   const store = yield* cloudStore;
   const sources = yield* storeTry(() => store.deploymentSources(deploymentId));
-  const waiting = new Set(sources.filter((source) => source.status === "pending" && source.message === null).map((source) => source.service));
+  const pending = sources.filter((source) => source.status === "pending");
+  const waiting = new Set(pending.filter((source) => source.message === null).map((source) => source.service));
+  const reserved = new Set(pending.filter((source) => source.message === ASKING_GITHUB).map((source) => source.service));
   // A repository reaches the Organization through one installation.
   const workflows = new Map<number, WorkflowRead>();
   for (const { installationId, repositoryId } of targets) {
@@ -246,10 +251,13 @@ export const startStoreGithubBuilds = Effect.fn("StoreGithub.startAll")(function
     workflow: (access, repositoryId) => workflows.get(repositoryId) ?? checkGithubBuildWorkflow(access, repositoryId),
     lacking: yield* Effect.cached(serversLackingGrants(organizationId)),
   };
-  const prepared = yield* settleAll(targets.map((target) => prepareStoreGithubBuild(organizationId, target, reads, waiting.has(target.service))));
+  const prepared = yield* settleAll(targets.map((target) =>
+    prepareStoreGithubBuild(organizationId, target, reads, waiting.has(target.service) ? "waiting" : reserved.has(target.service) ? "reserved" : "other")));
   const started: StoreGithubStart[] = [];
   for (const [index, next] of prepared.entries()) {
-    const dispatch = "installationId" in next ? yield* askGithub(organizationId, next) : next;
+    const dispatch = "installationId" in next
+      ? (yield* reserveGithubAsk(next.build)) ? yield* askGithub(organizationId, next) : skipped(next.build, MAYBE_ASKED)
+      : next;
     const recorded = yield* Effect.exit(recordStoreGithubBuild(dispatch));
     if (Exit.isFailure(recorded)) {
       if (dispatch.kind === "dispatched" || dispatch.kind === "done") return yield* Effect.failCause(recorded.cause);
@@ -260,6 +268,26 @@ export const startStoreGithubBuilds = Effect.fn("StoreGithub.startAll")(function
   return { started, unrecorded: null, rest: [] } satisfies StoreGithubStarts;
 });
 const done = { kind: "done" } as const;
+
+/** The Store's message on a build Cloud is asking GitHub for; the Store words it. */
+const ASKING_GITHUB = "Asking GitHub for a run";
+/** Why a build another try may have asked GitHub for goes to its next Builder. */
+const MAYBE_ASKED = "GitHub may already be running this build, but Ployz never learned its run";
+
+/**
+ * Reserve the build's one request to GitHub: a Store write, under the Environment's lock, that commits only while no
+ * run holds the build and no other try reserved it. Whether to ask GitHub is decided by that write, never by a read: a
+ * record still committing is waited for. False when the Store refused it; a failure leaves GitHub unasked, so the
+ * step may run again.
+ */
+const reserveGithubAsk = (build: string) => Effect.gen(function* () {
+  const store = yield* cloudStore;
+  return yield* storeTry(() => store.githubAsk(build)).pipe(
+    Effect.retry({ while: refusedWith("unavailable"), times: 5, schedule: Schedule.exponential("1 second") }),
+    Effect.as(true),
+    Effect.catchIf(refusedWith("conflict"), () => Effect.succeed(false)),
+  );
+});
 
 /** The run that holds the build, to follow. A build no run has held yet is not found. */
 const heldRun = (build: string) => heldGithubBuild(build).pipe(
@@ -277,10 +305,14 @@ const following = (runId: number | null): StoreGithubStart => runId === null ? d
  * lets it go.
  */
 const prepareStoreGithubBuild = Effect.fn("StoreGithub.prepare")(function* (
-  organizationId: string, target: StoreGithubTarget, reads: StartReads, waiting: boolean,
+  organizationId: string, target: StoreGithubTarget, reads: StartReads, read: "waiting" | "reserved" | "other",
 ) {
   const held = yield* heldRun(target.build);
-  if (held !== null || !waiting) return following(held);
+  if (held !== null) return following(held);
+  // Another try reserved GitHub's request and may have made it: pass the build on. The pass-on waits for that try's
+  // record if it is still committing, and is refused once a run holds the build, which is then followed.
+  if (read === "reserved") return skipped(target.build, MAYBE_ASKED);
+  if (read === "other") return done;
   // The build started or ended since the read above: follow whichever run holds it now.
   const refused = heldRun(target.build).pipe(Effect.map(following));
   const skip = (message: string) => skipped(target.build, message);
@@ -312,11 +344,11 @@ const prepareStoreGithubBuild = Effect.fn("StoreGithub.prepare")(function* (
       const run = yield* followPushRun({ access, repositoryId: target.repositoryId, workflow: start.workflow, commit: start.commit });
       if (run === null) return skip(`GitHub started no run of ${start.workflow} for this push`);
       const recorded: GithubRun = {
-        run_id: run.runId, run_url: run.runUrl, workflow_ref: start.workflow_ref, repository: workflow.fullName, installation_id: installationId,
+        run_id: run.runId, run_url: run.runUrl, workflow_ref: start.workflow_ref, repository: workflow.fullName, installation_id: installationId, push: true,
       };
       // A run that ended before Cloud followed it gave up waiting at its check-in: run it again.
       if (run.completed) return { ...ask, kind: "rerun", run: recorded } satisfies GithubAsk;
-      return { kind: "run", build: target.build, run: recorded, dispatched: false } satisfies StoreGithubRecord;
+      return { kind: "run", build: target.build, run: recorded } satisfies StoreGithubRecord;
     }
     if (start.kind === "approved") {
       // A person's Deploy under a rule builds on the rule's workflow, on its branch, at the commit it pinned; the grant
@@ -357,7 +389,7 @@ const askGithub = (organizationId: string, ask: GithubAsk) => Effect.gen(functio
   const run = yield* dispatchGithubBuildWorkflow({ access, repositoryId: ask.repositoryId, branch: ask.branch, inputs: { build: ask.build, runner: ask.runner } });
   return answer(run.runId, run.runUrl, run.workflowRef);
 }).pipe(
-  Effect.map((run): StoreGithubRecord => ({ kind: "run", build: ask.build, run, dispatched: ask.kind !== "rerun" })),
+  Effect.map((run): StoreGithubRecord => ({ kind: "run", build: ask.build, run })),
   Effect.catchTag("GithubObservationError", (error) => Effect.succeed(skipped(ask.build, `GitHub couldn't take the build: ${error.message}`))),
   Effect.catchTag("GithubDisconnected", (error) => Effect.succeed(skipped(ask.build, error.message))),
   Effect.catchCause(() => Effect.succeed(skipped(ask.build, "GitHub couldn't take the build"))),
@@ -376,7 +408,7 @@ export const recordStoreGithubBuild = Effect.fn("StoreGithub.record")(function* 
   const record = dispatch.kind === "skip"
     ? storeTry(() => store.githubSkip(dispatch.build, dispatch.message)).pipe(Effect.as<StoreGithubStart>(done))
     : storeTry(() => store.githubDispatched(dispatch.build, dispatch.run)).pipe(Effect.as<StoreGithubStart>({ kind: "dispatched", runId: dispatch.run.run_id }));
-  const ours = dispatch.kind === "run" && dispatch.dispatched ? dispatch.run : null;
+  const ours = dispatch.kind === "run" && dispatch.run.push !== true ? dispatch.run : null;
   return yield* record.pipe(
     Effect.retry({ while: refusedWith("unavailable"), times: 5, schedule: Schedule.exponential("1 second") }),
     Effect.catchIf(refusedWith("conflict"), () => Effect.gen(function* () {

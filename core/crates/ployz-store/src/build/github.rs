@@ -75,6 +75,11 @@ pub struct GithubRun {
     pub repository: RepositoryName,
     #[ts(type = "number")]
     pub installation_id: u64,
+    /// A push's own run, which Cloud follows and never cancels; absent on a run Cloud
+    /// dispatched, so a row written before this field reads as one.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(optional, as = "Option<bool>")]
+    pub push: bool,
 }
 
 /// The Build Grant a GitHub run pushes its image with.
@@ -378,6 +383,38 @@ pub(crate) fn github_dispatched(
     );
     let github = GithubHold::Dispatched { run: run.clone() };
     save_github(tx, id, BuildStatus::Building, None, &log, Some(&github))
+}
+
+/// The message a waiting build shows once Cloud reserved it to ask GitHub for a run.
+const ASKING_GITHUB: &str = "Asking GitHub for a run";
+
+/// Reserve a pinned, unstarted build before Cloud asks GitHub for its run, so GitHub is
+/// asked once: a build already reserved, or no longer waiting, is `conflict`, and Cloud
+/// asks for nothing. The reservation is the build's message, which the run's hand-off or
+/// a pass-on replaces.
+pub(crate) fn github_ask(tx: &mut dyn Tx, id: &GithubBuildId) -> Result<(), RpcError> {
+    let stored = deployment::locked(tx, &id.deployment)?;
+    let row = github_row(tx, &stored, id)?;
+    if !stored.summary.status.in_flight()
+        || !matches!(row.stage, Stage::Waiting)
+        || row.github_skipped.is_some()
+        || row.message.is_some()
+    {
+        return Err(error::conflict(
+            "This build was already asked for or is no longer waiting",
+            json!({}),
+        ));
+    }
+    let mut log = row.log;
+    append(&mut log, &format!("{ASKING_GITHUB}\n"));
+    save_github(
+        tx,
+        id,
+        BuildStatus::Pending,
+        Some(ASKING_GITHUB),
+        &log,
+        None,
+    )
 }
 
 pub(crate) fn github_build(tx: &mut dyn Tx, id: &GithubBuildId) -> Result<GithubHandOff, RpcError> {
