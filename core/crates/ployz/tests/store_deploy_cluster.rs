@@ -818,29 +818,59 @@ async fn redeploys_sharing_a_dockerfile(reaches_data: bool) {
             view
         }
     };
-    let built = |view: &ployz_store::DeploymentView, status| {
+    // A Build sent to a Server logs the Server it runs on and BuildKit's steps, CACHED ones
+    // included; a reused image sends nothing. So a rebuild whose digest matches the old one
+    // still counts here, though the Store labels it Reused.
+    let submitted = |view: &ployz_store::DeploymentView| {
         view.builds
             .iter()
-            .filter(|build| build.status == status)
-            .map(|build| build.service.to_string())
-            .collect::<Vec<_>>()
+            .map(|build| {
+                let log = store
+                    .read(
+                        &who,
+                        &ployz_store::BuildLogQuery {
+                            deployment: view.deployment.id.clone(),
+                            service: build.service.clone(),
+                        },
+                    )
+                    .unwrap()
+                    .log;
+                (build.service.to_string(), log)
+            })
+            .filter(|(_, log)| log.contains("Building on "))
+            .collect::<BTreeMap<_, _>>()
     };
 
     let first = deploy(1, "c".repeat(40)).await;
-    assert_eq!(built(&first, BuildStatus::Built).len(), 5, "{first:?}");
-    let again = deploy(2, "c".repeat(40)).await;
-    assert_eq!(
-        built(&again, BuildStatus::Reused).len(),
-        5,
-        "a same-commit redeploy must reuse every build: {again:?}"
-    );
-    let again = deploy(3, "c".repeat(40)).await;
-    assert_eq!(built(&again, BuildStatus::Reused).len(), 5, "{again:?}");
+    assert_eq!(submitted(&first).len(), 5, "{first:?}");
+    for n in [2, 3] {
+        let again = deploy(n, "c".repeat(40)).await;
+        assert_eq!(
+            submitted(&again).into_keys().collect::<Vec<_>>(),
+            Vec::<String>::new(),
+            "a same-commit redeploy must send no Build to a Server: {again:?}"
+        );
+        assert!(
+            again
+                .builds
+                .iter()
+                .all(|build| build.status == BuildStatus::Reused),
+            "{again:?}"
+        );
+    }
     edit(vec![("web.env.ROLE".into(), "changed".into())]);
     let changed = deploy(4, "c".repeat(40)).await;
-    assert_eq!(built(&changed, BuildStatus::Built), ["web"], "{changed:?}");
+    let sent = submitted(&changed);
+    assert_eq!(sent.keys().collect::<Vec<_>>(), ["web"], "{changed:?}");
+    assert!(
+        sent["web"]
+            .lines()
+            .any(|line| line.starts_with("DONE ") || line.starts_with("CACHED ")),
+        "a sent Build's log carries BuildKit's steps: {}",
+        sent["web"]
+    );
     let moved = deploy(5, "d".repeat(40)).await;
-    assert_eq!(built(&moved, BuildStatus::Built).len(), 5, "{moved:?}");
+    assert_eq!(submitted(&moved).len(), 5, "{moved:?}");
 }
 
 /// Cloud's runner builds an uploaded Service on a Server, never GitHub. Once Cloud no
