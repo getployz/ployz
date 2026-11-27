@@ -251,6 +251,7 @@ mod tests {
                 machine: None,
                 statistics: rtt.clone(),
                 path: None,
+                wireguard: None,
             }],
             mesh_rtts: BTreeMap::new(),
         }
@@ -284,6 +285,7 @@ mod tests {
                 population_stddev_ns: 0,
             },
             path: None,
+            wireguard: None,
         };
         let mesh = RttStatistics {
             median_ns: 1_200_000,

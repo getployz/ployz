@@ -732,6 +732,7 @@ impl NetworkPlane {
             let key = Key::new(peer.public_key.0);
             let device = host.peers.get(&key);
             let Some(endpoint) = peer.poll(
+                &self.paths,
                 now,
                 device.and_then(|peer| peer.last_handshake),
                 device.and_then(|peer| peer.endpoint),

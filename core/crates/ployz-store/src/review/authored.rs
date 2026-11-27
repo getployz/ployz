@@ -110,13 +110,15 @@ impl Compared {
 }
 /// In the order a Service's rows list them, but for managed hostnames, which list
 /// after its routes.
-const COMPARED: [Compared; 13] = [
+const COMPARED: [Compared; 15] = [
     Compared::of(ServiceSetting::PreDeployCommand),
     Compared::of(ServiceSetting::StartCommand),
     Compared::of(ServiceSetting::Healthcheck),
     Compared::of(ServiceSetting::RestartPolicy),
     Compared::of(ServiceSetting::MaxRetries),
     Compared::of(ServiceSetting::UpdateOrder),
+    Compared::of(ServiceSetting::StopSignal),
+    Compared::of(ServiceSetting::StopGracePeriod),
     Compared::of(ServiceSetting::Replicas),
     Compared::of(ServiceSetting::CpuLimit),
     Compared::of(ServiceSetting::MemLimit),
@@ -737,6 +739,8 @@ fn service_changes(
         restart_policy: _,
         max_retries: _,
         update_order: _,
+        stop_signal: _,
+        stop_grace_period: _,
         replicas: _,
         cpu_limit: _,
         mem_limit: _,
@@ -2734,6 +2738,8 @@ mod tests {
                 restart_policy: ServiceRestartPolicy(RestartPolicy::UnlessStopped),
                 max_retries: 10,
                 update_order: None,
+                stop_signal: None,
+                stop_grace_period: None,
                 replicas: Replicas::Count(1),
                 cpu_limit: None,
                 mem_limit: None,

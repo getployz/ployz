@@ -1119,6 +1119,8 @@
                     "whoami.replicas",
                     "whoami.restartPolicy",
                     "whoami.startCommand",
+                    "whoami.stopGracePeriod",
+                    "whoami.stopSignal",
                     "whoami.updateOrder"
                   ],
                   "written": "service"
@@ -1217,6 +1219,8 @@
                     "whoami.replicas",
                     "whoami.restartPolicy",
                     "whoami.startCommand",
+                    "whoami.stopGracePeriod",
+                    "whoami.stopSignal",
                     "whoami.updateOrder"
                   ],
                   "written": "service"

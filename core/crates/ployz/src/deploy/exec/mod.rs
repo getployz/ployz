@@ -41,7 +41,7 @@ use gens::Gens;
 use health::wait_healthy;
 use hooks::run_hook;
 use publish::{
-    Done, GappedPublishes, GroupCopies, Published, ack_tick, old_copies, publish_group,
+    Done, GappedPublishes, GroupCopies, Published, Retiring, ack_tick, old_copies, publish_group,
     rolling_step, route_new,
 };
 use report::Report;
@@ -517,6 +517,10 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
     progress.settle_unexecuted();
     let outcome = outcome_from(operations, &completed, stop, schedule.services());
     progress.outcome(outcome.clone());
+    shared
+        .retiring
+        .retire(client, progress, &shared.report)
+        .await;
     outcome
 }
 
@@ -747,6 +751,7 @@ struct Shared<'a> {
     report: Report<'a>,
     gens: Gens<'a>,
     gapped: GappedPublishes,
+    retiring: Retiring,
     stop_first: StopFirstSteps<'a>,
 }
 
@@ -758,6 +763,7 @@ impl<'a> Shared<'a> {
             report: Report::new(&facts.machine_names, &facts.dropped_large_packets),
             gens: Gens::new(&facts.unobserved_containers, &facts.retiring),
             gapped: GappedPublishes::default(),
+            retiring: Retiring::default(),
             stop_first: StopFirstSteps::new(plan.operations(), plan.groups()),
         }
     }

@@ -135,8 +135,10 @@ WEB_URL=http://${{ web.PLOYZ_PRIVATE_DOMAIN }}:${{ web.PORT }}
 
 A reference tells Ployz the two services are linked: `worker` starts after `web` on every
 deploy, and a [branch](../environments/environments.md) that uses its parent's `web` still
-reaches it. A typed `web.internal` reaches the same place, but Ployz can't see the link. The
-databases Ployz creates connect this way. See [Variables](variables.md).
+reaches it. The canvas draws the link as an arrow from `web` into `worker`. Hover or click it to
+see which of `web`'s variables `worker` reads. A typed `web.internal` reaches the same place, but
+Ployz can't see the link. The databases Ployz creates connect this way. See
+[Variables](variables.md).
 
 - Use `http://`, not `https://`. Traffic between your servers is already encrypted.
 - Any port works. You don't declare ports for private traffic.

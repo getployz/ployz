@@ -98,7 +98,7 @@ fn named<'a>(path: &'a str, name: Option<&crate::ConfigName>) -> Option<(String,
 
 /// The order a review lists a Service's setting rows in, which Cloud and the CLI show as
 /// they come; the Settings in landing order are not it. Routes are listed apart.
-const REVIEW_ORDER: [Setting; 17] = [
+const REVIEW_ORDER: [Setting; 19] = [
     Setting::Source,
     Setting::Healthcheck,
     Setting::Branch,
@@ -107,6 +107,8 @@ const REVIEW_ORDER: [Setting; 17] = [
     Setting::RestartPolicy,
     Setting::MaxRetries,
     Setting::UpdateOrder,
+    Setting::StopSignal,
+    Setting::StopGracePeriod,
     Setting::Replicas,
     Setting::CpuLimit,
     Setting::MemLimit,

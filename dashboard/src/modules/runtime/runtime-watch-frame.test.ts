@@ -128,8 +128,7 @@ describe("runtimeSnapshotFromWatchFrame", () => {
       { machine_id: "machine-a", name: "data" },
     ]);
     expect(snapshot).toEqual({
-      status: "observed",
-      error: null,
+      connection: { status: "observed", observedAt: OBSERVED_AT },
       machines: [
         {
           id: "machine-a",
@@ -205,7 +204,6 @@ describe("runtimeSnapshotFromWatchFrame", () => {
         certificates: ["api.example.test"],
       },
       published: [],
-      observedAt: OBSERVED_AT,
     });
   });
 
@@ -353,10 +351,7 @@ describe("runtimeSnapshotFromWatchFrame", () => {
     });
     expect(Option.isSome(additive)).toBe(true);
     if (Option.isNone(additive)) throw new Error("Expected Runtime Watch frame.");
-    expect(runtimeSnapshotFromWatchFrame(additive.value)).toMatchObject({
-      status: "observed",
-      observedAt: OBSERVED_AT,
-    });
+    expect(runtimeSnapshotFromWatchFrame(additive.value).connection).toEqual({ status: "observed", observedAt: OBSERVED_AT });
 
     expect(
       Option.isNone(

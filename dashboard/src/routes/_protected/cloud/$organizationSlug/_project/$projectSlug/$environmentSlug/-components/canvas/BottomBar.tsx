@@ -23,6 +23,7 @@ import { EnvironmentChangesReview } from "./EnvironmentChangesReview";
 import type { Busy } from "#/modules/config-store/store-pending";
 import { AddServersDialog } from "#/modules/machines/waiting/ui/add-servers-dialog";
 import type { DeployChoice } from "./useStoreChangeActions";
+import { CanvasKeepOut } from "#/modules/canvas/routed-edges";
 
 /**
  * Where the bottom bar renders while the agent is closed: the scene, outside the canvas that turns inert under a panel.
@@ -117,6 +118,7 @@ export function BottomBar({
 }: BottomBarProps) {
   const slot = useContext(BottomBarSlot);
   const dock = useContext(AgentDock);
+  const keepOut = useContext(CanvasKeepOut);
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const [open, setOpen] = useState(false);
   const [message, setMessage] = useState("");
@@ -259,7 +261,7 @@ export function BottomBar({
   ) : shown ? <AttemptState deployment={shown} storage={storage(shown.id)} /> : null;
   // A failed Deploy hands its unreached changes back: how it ended stays above them until dismissed.
   const bar = staged || outcome ? (
-    <div role="group" aria-label="Bottom bar" className="bottom-bar" data-docked={dock ? true : undefined}>
+    <div ref={keepOut} role="group" aria-label="Bottom bar" className="bottom-bar" data-docked={dock ? true : undefined}>
       {outcome ? <AttemptState deployment={outcome} storage={null} onDismiss={() => dismiss(outcome)} /> : null}
       {staged}
     </div>

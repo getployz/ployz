@@ -456,6 +456,16 @@ impl SettingPath {
         }
     }
 
+    /// The name of what an unset value does when Ployz picks it, `Auto` for
+    /// `web.stopSignal`; none when unset means nothing.
+    #[must_use]
+    pub const fn unset_name(&self) -> Option<&'static str> {
+        match self.target() {
+            Some(Target::Setting(setting)) => setting.spec().unset,
+            _ => None,
+        }
+    }
+
     /// Whether it addresses a Service's registry login, `SERVICE.registryCredential`.
     #[must_use]
     pub fn names_registry_login(&self) -> bool {

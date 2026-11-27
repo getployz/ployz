@@ -9,9 +9,9 @@ import type { environmentCanvasNodePosition } from "#/modules/canvas/tables";
 import { canvasPositionKey } from "#/modules/canvas/canvas-positions";
 import * as scopes from "#/collections/use-collection-scope";
 import * as collections from "#/collections/collections";
-import { persistCanvasPositionBatch, useCanvasPositionMutation, usePlaceNewNode } from "./useCanvasPositionMutation";
+import { persistCanvasPositionBatch, useCanvasPositionMutation, useKeepPlacements, usePlaceNewNode } from "./useCanvasPositionMutation";
 import type { CanvasStoreConfigNode } from "./types";
-import type { MouseEvent } from "react";
+import { useState, type MouseEvent } from "react";
 import { toast } from "sonner";
 import * as positionFunctions from "#/modules/canvas/canvas-positions.functions";
 import { asTestDouble } from "#/lib/test-double";
@@ -164,6 +164,39 @@ it("shows the server's sentence when a new node's place is refused", async () =>
     act(() => place({ environmentId: "env", resourceType: "service", resourceId: "web", x: 40, y: 40 }));
     await waitFor(() => expect(toastError).toHaveBeenCalledWith(refusal.message));
     expect(collection.get("service:web")).toBeUndefined();
+  } finally {
+    router.history.destroy();
+    await done();
+  }
+});
+
+it("keeps every place the canvas gave unplaced nodes in one write, once, and takes a place stored first", async () => {
+  const { collection, done } = await positions([]);
+  const stored = (resourceType: string, resourceId: string, x: number, y: number): PositionRow =>
+    ({ id: resourceId, organizationId: "org", environmentId: "env", resourceType, resourceId, x, y, createdAt: new Date(0), updatedAt: new Date(0) });
+  // Another tab placed api first; the server keeps that place and answers with it.
+  const placeNodes = vi.spyOn(positionFunctions, "placeCanvasNodesServerFn").mockResolvedValue(asTestDouble<never>()({
+    data: [stored("service", "web", 0, 0), stored("service", "api", 960, 480)] }));
+  const placements = [
+    { resourceType: "service" as const, resourceId: "web", x: 0, y: 0 },
+    { resourceType: "service" as const, resourceId: "api", x: 336, y: 0 },
+  ];
+  let rerender = () => {};
+  const router = organizationRouter(() => {
+    const [, setTick] = useState(0);
+    rerender = () => setTick((tick) => tick + 1);
+    useKeepPlacements("acme", "env", [...placements]);
+    return <div>Canvas</div>;
+  });
+  try {
+    await router.load();
+    render(<RouterProvider router={router} />);
+    await screen.findByText("Canvas");
+    await waitFor(() => expect(collection.get("service:api")).toMatchObject({ x: 960, y: 480 }));
+    expect(collection.get("service:web")).toMatchObject({ x: 0, y: 0 });
+    act(() => rerender());
+    expect(placeNodes).toHaveBeenCalledTimes(1);
+    expect(placeNodes.mock.calls[0]?.[0]).toMatchObject({ data: { organizationSlug: "acme", environmentId: "env", nodes: placements } });
   } finally {
     router.history.destroy();
     await done();

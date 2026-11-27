@@ -11,8 +11,8 @@ use crate::{RawVolumeSource, ServiceMount, ServiceName, ServiceVolume, VolumeSou
 /// Content identity of the Resolved Service Spec fields whose change requires a new Container.
 ///
 /// Equal shapes mean interchangeable Containers for traffic and Global occupancy.
-/// Service ID, replica count, resources, pull policy, pre-deploy hooks, and update
-/// timing are not part of the shape.
+/// Service ID, replica count, resources, pull policy, pre-deploy hooks, update
+/// timing, and how a Container stops are not part of the shape.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ServingShape(u64);
 
@@ -144,7 +144,8 @@ impl ServingShape {
             privileged,
             pid_mode,
             resources: _,
-            stop_timeout_secs,
+            stop_timeout_secs: _,
+            stop_signal: _,
             sysctls,
             restart,
             network,
@@ -170,7 +171,9 @@ impl ServingShape {
             "privileged": privileged,
             "pid_mode": pid_mode,
             "log_driver": null,
-            "stop_timeout_secs": stop_timeout_secs,
+            // How a Container stops is no part of what it serves; see `compare_specs`. The
+            // key stays so every shape keeps the token it had.
+            "stop_timeout_secs": null,
             "sysctls": sysctls,
             "restart": restart,
             "placement": placement,

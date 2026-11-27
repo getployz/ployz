@@ -408,8 +408,17 @@ pub(crate) async fn apply_update(
             }));
         }
         (Err((true, error)), _) => {
+            let next = crate::deploy::dead_link_to(client, &selector)
+                .await
+                .map_or_else(
+                    || {
+                        "Check it with ployz server ls once it's back, or run this on the Server."
+                            .to_owned()
+                    },
+                    |link| link.explained(),
+                );
             return Err(Error::from(error).context(format!(
-                "Server {selector} didn't answer, so the change may or may not have landed. Check it with ployz server ls once it's back, or run this on the Server."
+                "Server {selector} didn't answer, so the change may or may not have landed. {next}"
             )));
         }
         (Err((false, error)), _) if error.code == RpcErrorCode::Unavailable => {

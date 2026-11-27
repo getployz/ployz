@@ -2456,6 +2456,66 @@ mod stopped_on_request {
         fixture.finish();
     }
 
+    #[tokio::test]
+    async fn shutdown_waits_for_a_removal_in_its_stop_grace() {
+        let fixture = Fixture::start().await;
+        let grace = fixture.fake.stop_gate.clone().write_owned().await;
+        let removal = tokio::spawn({
+            let local = fixture.local.clone();
+            let id = fixture.id;
+            async move {
+                local
+                    .ensure_full_access(ContainerWant::Gone {
+                        container: ContainerLocator::Id(id),
+                        drain: Drain::NONE,
+                        anonymous_volumes: ployz_core::AnonymousVolumes::keep(),
+                    })
+                    .await
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !fixture
+                .fake
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(method, path)| {
+                    *method == axum::http::Method::POST && path.ends_with("/stop")
+                })
+            {
+                // real-wait: the stop reaches the fake Docker over its TCP socket, which
+                // emits no event.
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the stop is sent");
+
+        let mut closing = tokio::spawn({
+            let local = fixture.local.clone();
+            async move { local.close_when_idle(Duration::from_secs(10)).await }
+        });
+        // real-wait: a shutdown that skips the stop closes the record at once.
+        let early = tokio::time::timeout(Duration::from_millis(200), &mut closing).await;
+        assert!(early.is_err(), "shutdown closed the record mid-stop");
+
+        drop(grace);
+        let reply = removal.await.unwrap().unwrap();
+        assert!(
+            matches!(
+                reply,
+                EnsuredContainer::Ensured {
+                    now: ContainerNow::Absent { .. },
+                    ..
+                }
+            ),
+            "expected the container gone, got {reply:?}"
+        );
+        assert!(matches!(closing.await.unwrap(), Some(Ok(()))));
+        fixture.finish();
+    }
+
     mod removal_wait {
         use super::*;
         use crate::machine::local_machine::container::log_read_remaining;

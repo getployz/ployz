@@ -5,16 +5,30 @@ import { Schema } from "effect";
 import { strictParseOptions } from "#/lib/schema";
 import { parseLiveQueryRow, withoutVirtualProps } from "#/lib/tanstack-db";
 
-/** The connection state of Cloud's one entry-local Runtime Watch. */
-export const runtimeLensStatusSchema = Schema.Literals([
-  "no_connection",
-  "connecting",
-  "observed",
-  "unavailable",
-  "unreachable",
+/**
+ * Why Cloud can't watch the Cluster. A Server that answers says why it can't be used, so it isn't read as gone:
+ * `older_relay` speaks a management protocol the relay can't reach, `predates_sealing` runs a Ployz older than the
+ * Sealing Key, and `awaits_key` holds no Sealing Key yet.
+ */
+export const unreachableReasonSchema = Schema.Literals(["cluster_unreachable", "older_relay", "predates_sealing", "awaits_key"]);
+
+export type UnreachableReason = typeof unreachableReasonSchema.Type;
+
+/** The connection state of Cloud's one entry-local Runtime Watch. `unavailable` keeps the last observation's time. */
+const runtimeConnectionSchema = Schema.Union([
+  Schema.Struct({ status: Schema.Literals(["connecting", "no_connection"]) }),
+  Schema.Struct({ status: Schema.Literal("unreachable"), reason: unreachableReasonSchema }),
+  Schema.Struct({ status: Schema.Literal("observed"), observedAt: Schema.String }),
+  Schema.Struct({ status: Schema.Literal("unavailable"), observedAt: Schema.NullOr(Schema.String) }),
 ]);
 
-export type RuntimeLensStatus = typeof runtimeLensStatusSchema.Type;
+type RuntimeConnection = typeof runtimeConnectionSchema.Type;
+
+export type RuntimeLensStatus = RuntimeConnection["status"];
+
+/** When the evidence shown was current; null before any observation. */
+export const connectionObservedAt = (connection: RuntimeConnection) =>
+  "observedAt" in connection ? connection.observedAt : null;
 
 const NonnegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 
@@ -182,15 +196,12 @@ export const EMPTY_RUNTIME_INCOMPLETE_IDS: RuntimeIncompleteIds = {
 
 export const runtimeStatusRecordSchema = Schema.Struct({
   id: Schema.Literal("runtime"),
-  status: runtimeLensStatusSchema,
-  error: Schema.NullOr(Schema.String),
+  connection: runtimeConnectionSchema,
   volumeCopies: Schema.Array(runtimeVolumeCopySchema),
   certificates: Schema.Array(runtimeCertificateRecordSchema),
   /** The hostnames Service containers publish through ingress now. */
   published: Schema.Array(Schema.String),
   incompleteIds: runtimeIncompleteIdsSchema,
-  /** Null when Cloud has not received a Runtime Watch observation. */
-  observedAt: Schema.NullOr(Schema.String),
 });
 
 export type RuntimeStatusRecord = typeof runtimeStatusRecordSchema.Type;
@@ -198,8 +209,7 @@ export type RuntimeStatusRecord = typeof runtimeStatusRecordSchema.Type;
 /** The cached portion of one Runtime Watch observation plus Cloud's connection
  * state. It has no Cloud-generated deployment, DNS, gateway, or health state. */
 export const runtimeSnapshotSchema = Schema.Struct({
-  status: runtimeLensStatusSchema,
-  error: Schema.NullOr(Schema.String),
+  connection: runtimeConnectionSchema,
   machines: Schema.Array(runtimeMachineRecordSchema),
   services: Schema.Array(runtimeServiceRecordSchema),
   volumeCopies: Schema.Array(runtimeVolumeCopySchema),
@@ -207,72 +217,45 @@ export const runtimeSnapshotSchema = Schema.Struct({
   /** The hostnames Service containers publish through ingress now. */
   published: Schema.Array(Schema.String),
   incompleteIds: runtimeIncompleteIdsSchema,
-  observedAt: Schema.NullOr(Schema.String),
 });
 
 export type RuntimeSnapshot = typeof runtimeSnapshotSchema.Type;
 
-function emptyRuntimeSnapshot(input: {
-  status: Exclude<RuntimeLensStatus, "observed" | "unavailable">;
-  error: string | null;
-}): RuntimeSnapshot {
+function emptyRuntimeSnapshot(connection: RuntimeConnection): RuntimeSnapshot {
   return {
-    status: input.status,
-    error: input.error,
+    connection,
     machines: [],
     services: [],
     volumeCopies: [],
     certificates: [],
     published: [],
     incompleteIds: { ...EMPTY_RUNTIME_INCOMPLETE_IDS },
-    observedAt: null,
   };
 }
 
 function connectingSnapshot(): RuntimeSnapshot {
-  return emptyRuntimeSnapshot({ status: "connecting", error: null });
+  return emptyRuntimeSnapshot({ status: "connecting" });
 }
 
 export function noConnectionRuntimeSnapshot(): RuntimeSnapshot {
-  return emptyRuntimeSnapshot({ status: "no_connection", error: null });
+  return emptyRuntimeSnapshot({ status: "no_connection" });
 }
 
 /**
  * Keeps the last observation visible when the EventSource loses its connection.
  * The preserved timestamp makes the stale evidence explicit to consumers.
  */
-export function unavailableRuntimeSnapshot(
-  previous: RuntimeSnapshot | null,
-  error: string,
-): RuntimeSnapshot {
+export function unavailableRuntimeSnapshot(previous: RuntimeSnapshot | null): RuntimeSnapshot {
   if (previous) {
-    return { ...previous, status: "unavailable", error };
+    return { ...previous, connection: { status: "unavailable", observedAt: connectionObservedAt(previous.connection) } };
   }
-  return {
-    ...emptyRuntimeSnapshot({ status: "connecting", error }),
-    status: "unavailable",
-  };
+  return emptyRuntimeSnapshot({ status: "unavailable", observedAt: null });
 }
-
-export const CLUSTER_UNREACHABLE_ERROR =
-  "The cluster is expected but unreachable.";
-
-/** Cloud reached a Server that speaks an older management protocol: only an upgrade over SSH reaches it. */
-export const OLDER_SERVERS_ERROR =
-  "A Server runs an older Ployz that Ployz Cloud can't reach through the relay.";
-
-/** Cloud reached a Server whose Ployz predates the Sealing Key, so it can't show its Cluster: only its upgrade lets Cloud use it. */
-export const PREDATES_SEALING_ERROR =
-  "A Server runs a Ployz older than 0.3.3, which can't show Ployz Cloud that it belongs to your cluster.";
-
-/** Cloud reached a Server that holds no Sealing Key yet: a Server that holds the key shares it once it's back online. */
-export const AWAITS_KEY_ERROR =
-  "A Server answers but doesn't hold your cluster's key yet, so Ployz Cloud can't tell it belongs to your cluster.";
 
 /** Pairing is present but Cloud cannot dial an entry Machine. Clearing rows
  * prevents prior observations from being rendered as current membership. */
-export function unreachableRuntimeSnapshot(error: string): RuntimeSnapshot {
-  return emptyRuntimeSnapshot({ status: "unreachable", error });
+export function unreachableRuntimeSnapshot(reason: UnreachableReason): RuntimeSnapshot {
+  return emptyRuntimeSnapshot({ status: "unreachable", reason });
 }
 
 export function applyRuntimeSnapshot(input: {
@@ -285,13 +268,11 @@ export function applyRuntimeSnapshot(input: {
   replaceRuntimeRows(collections.status, [
     {
       id: "runtime",
-      status: input.snapshot.status,
-      error: input.snapshot.error,
+      connection: input.snapshot.connection,
       volumeCopies: input.snapshot.volumeCopies,
       certificates: input.snapshot.certificates,
       published: input.snapshot.published,
       incompleteIds: input.snapshot.incompleteIds,
-      observedAt: input.snapshot.observedAt,
     },
   ]);
 }
@@ -300,8 +281,7 @@ export function getCachedRuntimeSnapshot(collections: RuntimeCollections) {
   const status = collections.status.get("runtime");
   if (!status) return null;
   return Schema.decodeUnknownSync(runtimeSnapshotSchema)({
-    status: status.status,
-    error: status.error,
+    connection: status.connection,
     // SAFETY: local-only collection values carry TanStack's four virtual keys at runtime.
     machines: Array.from(collections.machines.values()).map((row) =>
       withoutVirtualProps(row as VirtualRowProps & RuntimeMachineRecord),
@@ -314,7 +294,6 @@ export function getCachedRuntimeSnapshot(collections: RuntimeCollections) {
     certificates: status.certificates,
     published: status.published,
     incompleteIds: status.incompleteIds,
-    observedAt: status.observedAt,
   });
 }
 
@@ -343,13 +322,11 @@ function createRuntimeCollections(organizationSlug: string, scope: CollectionSco
         initialData: [
           {
             id: "runtime",
-            status: snapshot.status,
-            error: snapshot.error,
+            connection: snapshot.connection,
             volumeCopies: snapshot.volumeCopies,
             certificates: snapshot.certificates,
             published: snapshot.published,
             incompleteIds: snapshot.incompleteIds,
-            observedAt: snapshot.observedAt,
           },
         ],
       }),

@@ -4,17 +4,17 @@ import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Button } from "#/components/ui/button";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "#/components/ui/empty";
 import { SSH_UPGRADE } from "#/modules/machines/installer";
-import type { OlderServers } from "#/modules/machines/use-servers";
 import { CopyBlock } from "#/modules/machines/waiting/ui/copy-block";
+import type { UnreachableReason } from "#/modules/runtime/runtime.collection";
 import { ForgetServersDialog, useForgetServersGate } from "../../../-components/forget-servers-dialog";
 
 /** Why Cloud can't use a Server that answers, by which older Ployz it runs, and what its upgrade brings. */
 const OLDER = {
-  relay: "A server runs an older Ployz that Ployz Cloud can’t reach through the relay. Upgrade it from your computer, "
+  older_relay: "A server runs an older Ployz that Ployz Cloud can’t reach through the relay. Upgrade it from your computer, "
     + "then upgrade the rest from the Servers page.",
-  sealing: "A server runs a Ployz older than 0.3.3, which can’t show Ployz Cloud that it belongs to your cluster. Upgrade "
+  predates_sealing: "A server runs a Ployz older than 0.3.3, which can’t show Ployz Cloud that it belongs to your cluster. Upgrade "
     + "it from your computer. Ployz Cloud uses it once a server that holds your cluster’s key is back online.",
-} satisfies Record<OlderServers, string>;
+} satisfies Record<Extract<UnreachableReason, "older_relay" | "predates_sealing">, string>;
 
 /**
  * There is nothing to show: Cloud can't reach the cluster, or the watch dropped or came back incomplete without the
@@ -22,12 +22,12 @@ const OLDER = {
  * it gets its upgrade over SSH rather than a Forget that would drop its data. A Server waiting for the cluster's key
  * is up too, and is used once a Server that holds the key is back.
  */
-export function ServersUnreachable({ organizationSlug, older = null, awaitingKey = false }: {
-  organizationSlug: string; older?: OlderServers | null; awaitingKey?: boolean;
+export function ServersUnreachable({ organizationSlug, reason = null }: {
+  organizationSlug: string; reason?: UnreachableReason | null;
 }) {
   const [forgetting, setForgetting] = useState(false);
-  const { allowed, reason } = useForgetServersGate(organizationSlug);
-  if (awaitingKey) {
+  const { allowed, reason: forgetRefused } = useForgetServersGate(organizationSlug);
+  if (reason === "awaits_key") {
     return (
       <Empty variant="first-run">
         <EmptyHeader>
@@ -42,14 +42,14 @@ export function ServersUnreachable({ organizationSlug, older = null, awaitingKey
       </Empty>
     );
   }
-  if (older !== null) {
+  if (reason === "older_relay" || reason === "predates_sealing") {
     return (
       <Empty variant="first-run">
         <EmptyHeader>
           <EmptyMedia variant="icon"><ArrowUpCircleIcon /></EmptyMedia>
           <EmptyTitle>Upgrade your server over SSH</EmptyTitle>
           <EmptyDescription>
-            {OLDER[older]} On your computer, run:
+            {OLDER[reason]} On your computer, run:
           </EmptyDescription>
         </EmptyHeader>
         <EmptyContent className="max-w-xl text-left">
@@ -63,7 +63,7 @@ export function ServersUnreachable({ organizationSlug, older = null, awaitingKey
       <EmptyHeader>
         <EmptyMedia variant="icon"><WifiOffIcon /></EmptyMedia>
         <EmptyTitle>Can’t reach your servers right now</EmptyTitle>
-        <EmptyDescription>Servers gone for good?{reason ? ` ${reason}` : ""}</EmptyDescription>
+        <EmptyDescription>Servers gone for good?{forgetRefused ? ` ${forgetRefused}` : ""}</EmptyDescription>
       </EmptyHeader>
       <EmptyContent>
         <Button variant="link" disabled={!allowed} onClick={() => setForgetting(true)}>Forget them and start over.</Button>

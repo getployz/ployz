@@ -282,6 +282,9 @@ pub(crate) struct Gaps {
     /// How a warning names each Machine; one missing here is named by id.
     #[serde(skip)]
     names: BTreeMap<MachineId, MachineName>,
+    /// Why a Machine that didn't answer couldn't, as the entry's WireGuard sees it.
+    #[serde(skip)]
+    dead_links: Vec<crate::deploy::DeadLink>,
 }
 
 impl Gaps {
@@ -297,7 +300,15 @@ impl Gaps {
             failures,
             omitted,
             names: BTreeMap::new(),
+            dead_links: Vec::new(),
         }
+    }
+
+    /// Say why a Machine didn't answer when the entry's WireGuard sees it down.
+    #[must_use]
+    pub(crate) fn explained(mut self, dead_links: Vec<crate::deploy::DeadLink>) -> Self {
+        self.dead_links = dead_links;
+        self
     }
 
     /// Name the Machines in warnings by these names.
@@ -364,19 +375,24 @@ impl Gaps {
         for failure in &self.failures {
             let (warning, under) = self.warning(failure, missing);
             flag(&warning);
-            match under {
-                Some(Under::Cause(cause)) => {
-                    note(format_args!("  {} {cause}", Tone::Bad.paint("cause:")));
-                }
-                Some(Under::Next(next)) => {
-                    note(format_args!("  {} {next}", Tone::Label.paint("next:")));
-                }
-                None => {}
+            if let Some(under) = under {
+                under.print();
             }
         }
         for machine_id in &self.omitted {
             flag(&unanswered_that(&self.name(machine_id), missing));
+            if let Some(under) = self.dead_link(machine_id) {
+                under.print();
+            }
         }
+    }
+
+    /// The lines under a warning about `machine_id` when the entry's WireGuard sees it down.
+    fn dead_link(&self, machine_id: &MachineId) -> Option<Under> {
+        self.dead_links
+            .iter()
+            .find(|link| link.machine == *machine_id)
+            .map(|link| Under::DeadLink(link.to_string(), link.remedy()))
     }
 
     /// The first line of each failure's warning, in order, as [`Gaps::warn`] prints them.
@@ -437,10 +453,19 @@ impl Gaps {
         }
         (
             unanswered_that(&name, missing),
-            ployz_core::error_chain::causes(&failure.error)
-                .last()
-                .cloned()
-                .map(Under::Cause),
+            // Only a target that sent nothing is explained by the link; one that answered
+            // with an error says why itself.
+            failure
+                .error
+                .target_unanswered()
+                .then(|| self.dead_link(&failure.machine_id))
+                .flatten()
+                .or_else(|| {
+                    ployz_core::error_chain::causes(&failure.error)
+                        .last()
+                        .cloned()
+                        .map(Under::Cause)
+                }),
         )
     }
 
@@ -454,11 +479,28 @@ impl Gaps {
     }
 }
 
-/// The line under a Machine's warning.
+/// The lines under a Machine's warning.
 #[derive(Debug, Eq, PartialEq)]
 enum Under {
     Cause(String),
     Next(String),
+    /// The link the entry's WireGuard sees down, and what fixes it.
+    DeadLink(String, String),
+}
+
+impl Under {
+    fn print(&self) {
+        let cause = |cause: &str| note(format_args!("  {} {cause}", Tone::Bad.paint("cause:")));
+        let next = |next: &str| note(format_args!("  {} {next}", Tone::Label.paint("next:")));
+        match self {
+            Self::Cause(text) => cause(text),
+            Self::Next(text) => next(text),
+            Self::DeadLink(link, remedy) => {
+                cause(link);
+                next(remedy);
+            }
+        }
+    }
 }
 
 const ROWS_MISSING: &str = "its rows are missing";
@@ -591,6 +633,98 @@ mod tests {
                 .stopped_answering(&a)
                 .starts_with("machine-a ")
         );
+    }
+
+    /// A Server that didn't answer, and that the entry's WireGuard sees down, is told apart
+    /// from one silent for no reason the entry saw: the link and its fix replace the raw
+    /// timeout under its warning.
+    #[test]
+    fn a_silent_server_the_entry_sees_down_names_the_link() {
+        let server = |hex: char, name: &str| {
+            ployz_core::MachineObservation::new(
+                ployz_core::Machine {
+                    labels: Default::default(),
+                    accepts_builds: true,
+                    accepts_services: true,
+                    accepts_ingress: false,
+                    id: MachineId::parse(hex.to_string().repeat(32)).unwrap(),
+                    name: MachineName::parse(name).unwrap(),
+                    subnet: "10.210.1.0/24".parse().unwrap(),
+                    public_key: ployz_core::WireGuardPublicKey([0; 32]),
+                    public_ip: None,
+                    advertised_endpoints: Vec::new(),
+                    runtime: Default::default(),
+                    join_approval: None,
+                    build_concurrency: None,
+                },
+                ployz_core::MembershipObservation::Up,
+            )
+        };
+        let entry = server('1', "machine-1");
+        let mut silent = server('3', "machine-3");
+        let failure = MachineFailure {
+            machine_id: silent.machine.id,
+            error: RpcError::unanswered_target(
+                ployz_core::RpcErrorCode::Unavailable,
+                "target Machine RPC timed out".into(),
+            )
+            .with_causes(vec!["deadline has elapsed".into()]),
+        };
+        let answered = MachineFailure {
+            machine_id: silent.machine.id,
+            error: RpcError::internal("storage is busy"),
+        };
+        let gaps = |silent: &ployz_core::MachineObservation| {
+            let listed = [entry.clone(), silent.clone()];
+            Gaps::default()
+                .named(
+                    listed
+                        .iter()
+                        .map(|observed| (observed.machine.id, &observed.machine.name)),
+                )
+                .explained(crate::deploy::dead_links(&listed, Some(entry.machine.id)))
+        };
+        let warning = |silent: &ployz_core::MachineObservation| {
+            let listed = [entry.clone(), silent.clone()];
+            Gaps::default()
+                .named(
+                    listed
+                        .iter()
+                        .map(|observed| (observed.machine.id, &observed.machine.name)),
+                )
+                .explained(crate::deploy::dead_links(&listed, Some(entry.machine.id)))
+                .warning(&failure, ROWS_MISSING)
+        };
+
+        silent.wireguard = Some(ployz_core::WireGuardObservation::Down {
+            since_handshake_secs: Some(387),
+        });
+        let (line, under) = warning(&silent);
+        assert_eq!(line, "machine-3 did not answer; its rows are missing.");
+        let Some(Under::DeadLink(link, remedy)) = under else {
+            panic!("expected the link under the warning: {under:?}");
+        };
+        assert!(
+            link.contains("machine-1, the Server this command entered by, has had no WireGuard handshake with machine-3 for 6m"),
+            "{link}"
+        );
+        assert!(remedy.contains("UDP 51820"), "{remedy}");
+        assert!(
+            !matches!(
+                gaps(&silent).warning(&answered, ROWS_MISSING).1,
+                Some(Under::DeadLink(..))
+            ),
+            "a Server that answered with an error isn't blamed on the link"
+        );
+
+        for wireguard in [Some(ployz_core::WireGuardObservation::Up), None] {
+            silent.wireguard = wireguard;
+            assert_eq!(
+                warning(&silent).1,
+                Some(Under::Cause("deadline has elapsed".to_owned())),
+                "no claim about a link the entry sees up or says nothing about"
+            );
+        }
     }
 
     /// A Server the entry Machine stopped listing between our membership read and the

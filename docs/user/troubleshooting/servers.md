@@ -803,6 +803,30 @@ the two servers, or move one of them. Once full-size packets cross again, the wa
 within a minute. A server on 0.3.6 or earlier doesn't check, so it can't name the cause; a call
 routed through it says `target Machine RPC timed out` instead.
 
+## The server a command entered by can't reach another
+
+You'll see a command through `web-1` fail or come back partial with a line like this, where
+`web-1` is the server the command entered by:
+
+```text
+web-1, the Server this command entered by, has had no WireGuard handshake with web-3 for 6m.
+```
+
+or `has never had a WireGuard handshake with web-3` for a server that just joined. `ployz server
+set`, `ployz server show` and `ployz server add` say it in their error. `ployz server ls` says it
+under `! web-3 did not answer; its rows are missing.`, where `web-3` may still read `up`: the
+servers' shared state can travel through a third server, but commands from `web-1` to `web-3`
+can't. `ployz server show web-1` lists the peer as `peer = web-3 down, no WireGuard handshake for
+6m` instead of a round trip.
+
+1. Allow UDP 51820 between `web-1` and `web-3`, in both directions, in each server's own firewall
+   and in any firewall your provider runs in front of them.
+2. Until then, run the command through another server with `--connect`.
+3. For a server that just joined, run `ployz deploy` once the two handshake, so its global
+   services start on it.
+
+Before 0.4.0 these commands said only that `web-3` didn't answer.
+
 ## Services on other servers stop answering after a firewall change
 
 Ployz keeps its own iptables rules first in `INPUT` and Docker's `DOCKER-USER` chain. A tool that

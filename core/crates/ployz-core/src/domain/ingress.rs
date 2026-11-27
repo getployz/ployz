@@ -281,6 +281,7 @@ pub(crate) fn caddy_container(image: String) -> ServiceContainerSpec {
         pid_mode: None,
         resources: ContainerResources::default(),
         stop_timeout_secs: None,
+        stop_signal: None,
         sysctls: BTreeMap::new(),
         restart: RestartPolicy::default(),
         network: None,
