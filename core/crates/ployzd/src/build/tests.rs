@@ -717,7 +717,7 @@ case "$1 $2" in
     if [ -f "$root/fail-cleanup" ] && {{ [ -f "$root/executed" ] || [ -f "$root/checking" ]; }}; then exit 1; fi ;;
   'buildx version'|'buildx create') exit 0 ;;
   'rm --force')
-    if [ -f "$root/fail-cleanup" ]; then exit 1; fi ;;
+    if [ -f "$root/fail-cleanup" ] && {{ [ -f "$root/executed" ] || [ -f "$root/checking" ]; }}; then exit 1; fi ;;
   'buildx inspect')
     if [ -f "$root/slow-check" ]; then : > "$root/checking"; exec sleep 30; fi ;;
   'buildx ls')

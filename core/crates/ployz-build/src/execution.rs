@@ -431,6 +431,8 @@ mod tests {
             !root.join("build-upload").exists(),
             "startup left abandoned inputs"
         );
+        // Startup removes a clean slot's workers; only the quarantined one below must stay.
+        std::fs::remove_file(root.join("cleaned")).unwrap();
         let admission = Admission::try_acquire_with(&policy).unwrap();
         let upload = admission.upload().unwrap();
         assert!(!root.join("build-upload/abandoned").exists());
