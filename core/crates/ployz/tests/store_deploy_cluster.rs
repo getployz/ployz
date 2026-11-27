@@ -864,6 +864,23 @@ async fn redeploys_sharing_a_dockerfile(reaches_data: bool) {
             && images["ai"] != images["queue"],
         "the four Services sharing a Dockerfile run one image, and ai its own: {images:?}"
     );
+    // A container named like a Service's, but not one Ployz runs for it, counts for none.
+    cluster
+        .machine_shell(
+            0,
+            &format!(
+                "docker run -d --network none --name queue-abcdefabcdef {SERVICE_CONTAINER_IMAGE} sleep 600"
+            ),
+        )
+        .unwrap();
+    assert_eq!(
+        running(),
+        images,
+        "a lookalike container counts for no Service"
+    );
+    cluster
+        .machine_shell(0, "docker rm -f queue-abcdefabcdef")
+        .unwrap();
     let rollout = sent();
     assert!(
         rollout >= 5,
