@@ -773,8 +773,13 @@ impl Run {
             // The session ended mid-execution: what ran is unknown.
             Err(_) => return self.record(RunEvidence::Abandoned).await,
         };
-        // The outcome is recorded once traffic moved; the old copies retire after it.
-        match (recorded, self.retired(&running).await) {
+        let warned = self.retired(&running).await;
+        let finished = self
+            .record(RunEvidence::Finished)
+            .await
+            .inspect_err(|error| tracing::warn!(%error, "couldn't record the end of cleanup"))
+            .ok();
+        match (recorded, finished.or(warned)) {
             (Ok(_), Some(warned)) => Ok(warned),
             (recorded, _) => recorded,
         }
@@ -786,7 +791,19 @@ impl Run {
     async fn retired(&self, running: &super::RunningDeploy) -> Option<DeploymentSummary> {
         let mut warnings = Vec::new();
         let mut warned = None;
-        while let Some(event) = running.next().await {
+        let mut renewed = tokio::time::interval_at(
+            tokio::time::Instant::now() + Duration::from_secs(60),
+            Duration::from_secs(60),
+        );
+        loop {
+            let event = tokio::select! {
+                event = running.next() => event,
+                _ = renewed.tick() => {
+                    let _ = self.record(RunEvidence::Finishing { live_at: None }).await;
+                    continue;
+                }
+            };
+            let Some(event) = event else { break };
             if let ployz_core::DeployEvent::Retired { service } = &event {
                 self.steps()
                     .drained(StepName::StoppingOld, Some(service), now_ms());
@@ -1151,7 +1168,10 @@ impl Run {
                     continue;
                 }
                 // Traffic moved: the old copies retiring after it hold up nothing.
-                ployz_core::DeployEvent::Outcome { outcome } => {
+                ployz_core::DeployEvent::Outcome { outcome, live_at } => {
+                    if let Err(error) = self.record(RunEvidence::Finishing { live_at }).await {
+                        tracing::warn!(%error, "couldn't record the Deployment's traffic switch or cleanup");
+                    }
                     ended = Some(outcome);
                     break;
                 }

@@ -705,6 +705,7 @@ pub(super) fn execute(
             .map(|view| Followed {
                 view,
                 progress: None,
+                reported_live: None,
                 successor: None,
             })
     } else {
@@ -783,7 +784,7 @@ pub(super) fn execute(
     let disposition = if interrupted {
         if runner.is_some() {
             Disposition::LocalInterrupted
-        } else if followed.view.deployment.status.in_flight() {
+        } else if still_following(&followed.view.deployment) {
             Disposition::CloudContinues
         } else {
             Disposition::Settled
@@ -977,11 +978,31 @@ impl Drop for OwnedRunner<'_, '_> {
 struct Followed {
     view: DeploymentView,
     progress: Option<Progress>,
+    reported_live: Option<DeploymentId>,
     /// The newer Deployment that superseded it without shipping all of its Services.
     successor: Option<DeploymentSummary>,
 }
 
+impl Followed {
+    fn report_live(&mut self) {
+        let deployment = &self.view.deployment;
+        if deployment.live_at.is_some()
+            && self.reported_live.as_ref() != Some(&deployment.id)
+            && !progress::noop(&self.view)
+        {
+            let line = format!("Deployment {} Live.", deployment.label());
+            if let Some(progress) = &self.progress {
+                progress.note(line);
+            } else {
+                ui::note(line);
+            }
+            self.reported_live = Some(deployment.id.clone());
+        }
+    }
+}
+
 fn finish_progress(followed: &mut Followed, disposition: Disposition) {
+    followed.report_live();
     let frame = progress::frame(&followed.view);
     let up_to_date = matches!(disposition, Disposition::UpToDate);
     if let Some(progress) = followed.progress.take() {
@@ -1058,6 +1079,7 @@ fn follow(
                     followed = Some(Followed {
                         view,
                         progress: None,
+                        reported_live: None,
                         successor: None,
                     });
                 }
@@ -1065,21 +1087,22 @@ fn follow(
             return followed.ok_or_else(Error::cancelled);
         }
         let view = read.map_err(|error| lost(error, &tracked))?;
-        let frame = progress::frame(&view);
-        if let Some(followed) = followed.as_mut() {
-            if let Some(progress) = followed.progress.as_mut() {
-                progress.update(frame);
-            } else if progress::visible(&view) {
-                followed.progress = Some(Progress::start(frame));
-            }
-            followed.view = view;
+        let current = if let Some(current) = followed.as_mut() {
+            current.view = view;
+            current
         } else {
-            let progress = progress::visible(&view).then(|| Progress::start(frame));
-            followed = Some(Followed {
+            followed.insert(Followed {
                 view,
-                progress,
+                progress: None,
+                reported_live: None,
                 successor: None,
-            });
+            })
+        };
+        current.report_live();
+        if let Some(progress) = current.progress.as_mut() {
+            progress.update(progress::frame(&current.view));
+        } else if progress::visible(&current.view) {
+            current.progress = Some(Progress::start(progress::frame(&current.view)));
         }
         let current = followed
             .as_ref()
@@ -1143,8 +1166,7 @@ fn follow(
                 ui::hint(&Hint::Inspect("ployz server ls".into()));
             }
         }
-        if !current.view.deployment.status.in_flight() || runner.is_some_and(OwnedRunner::finished)
-        {
+        if runner.is_some_and(OwnedRunner::finished) || !still_following(&current.view.deployment) {
             return followed.ok_or_else(Error::cancelled);
         }
         wait_runtime.block_on(async {
@@ -1159,6 +1181,10 @@ fn follow(
             ended = tokio_util::sync::CancellationToken::new();
         }
     }
+}
+
+fn still_following(deployment: &DeploymentSummary) -> bool {
+    deployment.status.in_flight() || deployment.cleanup == Some(ployz_store::CleanupStatus::Pending)
 }
 
 /// The read of `environment`'s newest Deployments, with its latest and those in flight, that
@@ -1881,6 +1907,14 @@ pub(super) fn say_view(view: &DeploymentView) {
         view.environment.name,
         status_word(&view.deployment)
     ));
+    if let Some(at) = view.deployment.live_at {
+        let at = chrono::DateTime::from_timestamp(at, 0)
+            .map_or_else(|| at.to_string(), |at| at.to_rfc3339());
+        ui::stream(format_args!("  Live at {at}"));
+    }
+    if view.deployment.cleanup == Some(ployz_store::CleanupStatus::Unconfirmed) {
+        ui::stream("  Could not confirm cleanup ended.");
+    }
     if let Some(provenance) = provenance(&view.deployment) {
         crate::ui::stream(format_args!("  {provenance}"));
     }
@@ -1970,7 +2004,14 @@ fn step_lines(view: &DeploymentView) -> Vec<String> {
         DeploymentStatus::Running | DeploymentStatus::Cancelling
     );
     let open = |step: &ployz_core::deploy_steps::DeploymentStep| {
-        if running {
+        if running
+            || (view.deployment.cleanup == Some(ployz_store::CleanupStatus::Pending)
+                && step.name == ployz_core::deploy_steps::StepName::StoppingOld
+                && !step
+                    .service
+                    .as_ref()
+                    .is_some_and(|service| left_running.contains(service)))
+        {
             "running"
         } else if view.deployment.status == DeploymentStatus::Applied
             && step.name == ployz_core::deploy_steps::StepName::StoppingOld

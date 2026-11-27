@@ -1579,9 +1579,14 @@ pub enum DeployEvent {
         total: u32,
         rows: Vec<OperationRow>,
     },
-    /// Terminal evidence for this Deploy.
+    /// Runtime outcome, before any remaining cleanup.
     Outcome {
         outcome: DeployOutcome<ExecutionError>,
+        /// When the last Service switched traffic, in Unix seconds. Absent when
+        /// no switch ran or a guard kept a switch from being confirmed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional, type = "number")]
+        live_at: Option<i64>,
     },
     /// Image Cleanup after the Outcome; only when the caller left cleanup automatic.
     ImagesPruned { report: super::ImageCleanupReport },

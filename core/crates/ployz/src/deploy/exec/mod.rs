@@ -264,6 +264,8 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
     let shared = Shared::new(plan, run);
     let mut records: BTreeMap<usize, GroupRecord> = BTreeMap::new();
     let mut stop = None;
+    let mut switch_at = None;
+    let mut switch_unconfirmed = false;
     let mut blocked_since: Option<Instant> = None;
     let mut blocked_before = Vec::new();
     let (progress, client, slots, shared) = (&progress, &client, &slots, &shared);
@@ -416,7 +418,12 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                 let record = records.entry(group).or_default();
                 let mut ledger = Ledger::new(progress, &mut stop, &mut schedule);
                 match published {
-                    Published::Listed => {
+                    Published::Listed { switched } => {
+                        if switched {
+                            switch_at = Some(ployz_core::deploy_steps::now_ms() / 1000);
+                        } else {
+                            switch_unconfirmed = true;
+                        }
                         for index in std::mem::take(&mut record.awaiting_flip) {
                             completed.insert(index);
                             progress.set_completed(index);
@@ -426,6 +433,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                     }
                     // Its old copies were left In beside the new ones and named.
                     Published::Gapped => {
+                        switch_unconfirmed = true;
                         for index in std::mem::take(&mut record.awaiting_flip) {
                             completed.insert(index);
                             progress.set_completed(index);
@@ -516,7 +524,12 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
 
     progress.settle_unexecuted();
     let outcome = outcome_from(operations, &completed, stop, schedule.services());
-    progress.outcome(outcome.clone());
+    let live_at = if matches!(outcome, DeployOutcome::Success { .. }) && !switch_unconfirmed {
+        switch_at
+    } else {
+        None
+    };
+    progress.outcome(outcome.clone(), live_at);
     shared
         .retiring
         .retire(client, progress, &shared.report)
@@ -618,7 +631,7 @@ fn untouched(
         }),
         schedule.services(),
     );
-    progress.outcome(outcome.clone());
+    progress.outcome(outcome.clone(), None);
     outcome
 }
 

@@ -19,7 +19,10 @@ pub(crate) fn record(
     if stored.summary.runner.as_ref() != Some(runner) {
         return Err(owned_elsewhere(id));
     }
-    if matches!(
+    if !matches!(
+        evidence,
+        RunEvidence::Finishing { .. } | RunEvidence::Finished
+    ) && matches!(
         stored.summary.status,
         DeploymentStatus::Running | DeploymentStatus::Cancelling
     ) {
@@ -35,6 +38,31 @@ pub(crate) fn record(
                 running(&stored)?;
             }
             save(tx, &mut stored)?;
+            Ok(stored.summary)
+        }
+        RunEvidence::Finishing { live_at } => {
+            if stored.run.cleanup_until.is_none() {
+                running(&stored)?;
+                let Some(preview) = &stored.run.preview else {
+                    return Err(invalid_evidence("Deploy Preview"));
+                };
+                if let Some(at) = live_at
+                    && !preview
+                        .blocked
+                        .iter()
+                        .any(|entry| entry.kind == BlockedKind::Refusal)
+                {
+                    stored.run.live_at = Some(at.min(stored.read_at));
+                }
+            }
+            stored.run.cleanup_until = Some(now() + LEASE);
+            save(tx, &mut stored)?;
+            Ok(stored.summary)
+        }
+        RunEvidence::Finished => {
+            if stored.run.cleanup_until.take().is_some() {
+                save(tx, &mut stored)?;
+            }
             Ok(stored.summary)
         }
         RunEvidence::Prepared(preview) => {
@@ -641,7 +669,14 @@ pub(super) fn end(
         (DeploymentStatus::Cancelling, End::Failed) => End::Cancelled,
         _ => status,
     };
-    stored.standing = stored.standing.end(status, now());
+    let ended_at = now();
+    if status == End::Applied && matches!(outcome, Outcome::Executed { .. }) {
+        stored.run.live_at.get_or_insert(ended_at);
+    }
+    if stored.run.cleanup_until.is_some() {
+        stored.run.cleanup_until = Some(ended_at + LEASE);
+    }
+    stored.standing = stored.standing.end(status, ended_at);
     stored.summary.outcome = Some(outcome.clone());
     stored.run.outcome = Some(outcome);
     save(tx, &mut stored)?;

@@ -414,6 +414,35 @@ fn step(
 }
 
 #[test]
+fn a_deployment_keeps_live_at_after_the_store_records_its_end_and_cleanup() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    let claimed = store.claim(&id(1), &a).unwrap();
+    let at = claimed.deployment.started_at.unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Finishing { live_at: Some(at) })
+        .unwrap();
+    let switching = summary(&store, &who, 1);
+    assert_eq!(switching.live_at, Some(at));
+    assert_eq!(switching.ended_at, None);
+
+    store
+        .record(&id(1), &a, succeeded(&["web", "api"]))
+        .unwrap();
+    store.record(&id(1), &a, RunEvidence::Finished).unwrap();
+
+    let deployment = summary(&store, &who, 1);
+    assert_eq!(deployment.live_at, Some(at));
+    assert!(at <= deployment.ended_at.unwrap());
+    assert_eq!(deployment.cleanup, None);
+    assert_eq!(serde_json::to_value(deployment).unwrap()["live_at"], at);
+}
+
+#[test]
 fn a_deployment_keeps_its_steps_in_order_and_the_one_it_stopped_in_open() {
     let (store, who) = shop();
     admit(&store, &who, 1, &[], None).unwrap();

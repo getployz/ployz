@@ -212,6 +212,14 @@ pub struct DeploymentSummary {
     /// When its runner claimed it, in Unix seconds.
     #[ts(type = "number | null")]
     pub started_at: Option<i64>,
+    /// When traffic switched, or the Deployment applied without a confirmed switch, in Unix seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub live_at: Option<i64>,
+    /// Cleanup can keep running after this Deployment releases its Environment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub cleanup: Option<CleanupStatus>,
     /// When it left flight, in Unix seconds; none while it waits for CI, is queued, or
     /// is claimed and its runner lease holds. Its runner recording an outcome, or a
     /// cancel, sets it then. A newer admission superseding it sets it then too, though
@@ -415,8 +423,8 @@ pub(crate) fn clipped(text: &str) -> String {
     text.chars().take(MESSAGE_MAX).collect()
 }
 
-/// How long a runner holds a claimed Deployment without recording anything. Every
-/// record renews it; once it lapses the runner is gone and the outcome is unknown.
+/// How long a runner holds a claimed Deployment without renewing its lease. Once
+/// it lapses the runner is gone and the outcome is unknown.
 pub(crate) const LEASE: i64 = 10 * 60;
 
 /// The frozen credentials a Store from before sealed logins reads: none, so it still
@@ -463,6 +471,14 @@ pub struct UploadBase {
     pub commit: CommitSha,
     /// Whether the directory held changes the commit doesn't.
     pub changed: bool,
+}
+
+/// The runner reported its runtime outcome and has yet to confirm cleanup ended.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum CleanupStatus {
+    Pending,
+    Unconfirmed,
 }
 
 /// A Deployment with its recorded Deploy Preview and every Node Outcome.
@@ -658,6 +674,11 @@ pub enum Outcome {
 pub enum RunEvidence {
     /// The Deploy Preview preparation produced, recorded before it is confirmed.
     Prepared(DeployPreview),
+    /// The runtime outcome is known. Renew the window in which followers wait for
+    /// cleanup while the runner is still present.
+    Finishing { live_at: Option<i64> },
+    /// The runner finished cleanup and recorded any warnings it could.
+    Finished,
     /// These runtime Services completed every planned operation while execution
     /// still runs: each reads Deployed (or Removed) and enters Applied State now,
     /// whatever happens to the runner later.
@@ -1111,6 +1132,10 @@ struct Run {
     /// Parsed and redacted once, when recorded.
     preview: Option<DeployPreview>,
     outcome: Option<Outcome>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    live_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cleanup_until: Option<i64>,
     /// A digest of the Executed evidence recorded: a replay must match it.
     #[serde(default)]
     executed: Option<String>,
@@ -1134,6 +1159,21 @@ struct Run {
 }
 
 impl Run {
+    fn live_at(&self, ended_at: Option<i64>) -> Option<i64> {
+        self.live_at
+            .map(|at| ended_at.map_or(at, |end| at.min(end)))
+    }
+
+    fn cleanup(&self, read_at: i64) -> Option<CleanupStatus> {
+        self.cleanup_until.map(|until| {
+            if lapsed(until, read_at) {
+                CleanupStatus::Unconfirmed
+            } else {
+                CleanupStatus::Pending
+            }
+        })
+    }
+
     /// The nodes its Deployment never attempted. On an Applied one, the Services
     /// the planner left waiting whole.
     fn unreached(&self) -> impl Iterator<Item = &String> {
@@ -2063,6 +2103,8 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
             admitted_by: row.parse_optional(13, "identity")?,
             admitted_at,
             started_at,
+            live_at: run.live_at(ended_at),
+            cleanup: run.cleanup(read_at),
             ended_at,
             message: row.optional_text(17)?.map(str::to_owned),
             push,
@@ -2137,6 +2179,8 @@ impl Stored {
         self.summary.runner = runner;
         self.summary.started_at = started_at;
         self.summary.ended_at = ended_at;
+        self.summary.live_at = self.run.live_at(ended_at);
+        self.summary.cleanup = self.run.cleanup(self.read_at);
         self.summary.in_flight = status.in_flight();
         self.summary.chooses_upload_at_start =
             chooses_upload_at_start(status, self.service_uploads.as_ref());

@@ -676,6 +676,10 @@ and saved revision. `ployz deploy` keeps following a queued deployment. If it is
 that one. If nothing is ahead of it, the CLI says no server has started it yet and points at
 `ployz server ls`.
 
+`ployz deploy` prints **Live** when traffic has switched to the new copies and the old
+copies are out of routing. You can keep watching `stopping_old` while Ployz cleans up.
+The command returns after cleanup and exits 3 if an old container was left running.
+
 To inspect per-server progress, run:
 
 ```sh
@@ -691,13 +695,19 @@ and secret-shaped values such as `password=…` replaced. Other values, such as 
 the image, show as the container printed them. These outcomes stay with that deployment
 when you deploy again. Unchanged services have no rows because no server work ran.
 
-`ployz deployment show` ends with the deployment's steps and how long each took, such as
+`ployz deployment show` shows when the deployment went live, including deployments that
+reported a cleanup failure. In JSON, `live_at` is in Unix seconds. A deployment that
+fails before switching traffic has no `live_at`. If a guard skips retirement, an applied
+deployment records when it applied.
+
+The command ends with the deployment's steps and how long each took, such as
 `building api  +2.1s  41.3s`. A step the deployment stopped in reads `stopped here`. Old
 replicas retire once traffic switched to the new ones. Usually that is after the deployment
 applied; a deployment that also deletes volumes retires them first and applies only once the
 deletion succeeds, so it can still fail after they are gone. On an applied deployment, a
-`stopping_old` still going reads `not seen gone` until that service's old replicas are gone,
-or `left running` when one was left. With
+`stopping_old` still going reads `running` while the runner is cleaning up. It reads
+`left running` when a replica was left running or `not seen gone` when removal could not
+be confirmed. With
 `--json`, `steps[]` has each step's `name`, its `service` when it belongs to one, and
 `started_at` and `ended_at` in Unix milliseconds. A step it stopped in has no `ended_at`.
 

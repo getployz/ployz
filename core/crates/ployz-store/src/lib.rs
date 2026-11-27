@@ -79,12 +79,13 @@ pub use client_sealed::SecretValue;
 pub use command::*;
 pub use deployment::loss::{VolumeLoss, docker_volume};
 pub use deployment::{
-    CiVerdict, Claimed, DeployedNode, DeploymentStatus, DeploymentStep, DeploymentSummary,
-    DeploymentView, DeploymentWarning, FailedAt, Failure, GitPush, IngressAction, IngressFailure,
-    IngressRepair, NodeLabel, NodeOutcome, NodeStatus, Outcome, Parent, ParentQuery, ParentView,
-    Pinned, PostedVersion, RowPhase, RowState, RowTracker, RowTransition, RunEvidence, Running,
-    RunningQuery, RunningView, ServerProgress, ServerRow, StepName, StoppedBy, TagPin, Unclaimed,
-    UploadBase, UploadedSource, VersionsFields, VersionsQuery, VersionsView, WaitingService,
+    CiVerdict, Claimed, CleanupStatus, DeployedNode, DeploymentStatus, DeploymentStep,
+    DeploymentSummary, DeploymentView, DeploymentWarning, FailedAt, Failure, GitPush,
+    IngressAction, IngressFailure, IngressRepair, NodeLabel, NodeOutcome, NodeStatus, Outcome,
+    Parent, ParentQuery, ParentView, Pinned, PostedVersion, RowPhase, RowState, RowTracker,
+    RowTransition, RunEvidence, Running, RunningQuery, RunningView, ServerProgress, ServerRow,
+    StepName, StoppedBy, TagPin, Unclaimed, UploadBase, UploadedSource, VersionsFields,
+    VersionsQuery, VersionsView, WaitingService,
 };
 pub use domain::{
     AddDomain, ClusterDomain, ClusterDomainStatus, DnsLookup, Domain, DomainAction, DomainAdded,

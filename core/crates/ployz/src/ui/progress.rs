@@ -380,6 +380,10 @@ impl Progress {
         }
     }
 
+    pub(crate) fn note(&self, line: String) {
+        let _ = self.sender.send(Message::Note(line));
+    }
+
     /// Retain final evidence and join the worker before the caller emits its result.
     pub(crate) fn finish(mut self, frame: Frame, disposition: Disposition) {
         let _ = self.sender.send(Message::Finish(frame, disposition));
@@ -404,6 +408,7 @@ impl Drop for Progress {
 
 enum Message {
     Update(Frame),
+    Note(String),
     Finish(Frame, Disposition),
     Abandon,
 }
@@ -537,6 +542,12 @@ fn drive(
                     deadline = inbox.now() + interval;
                     backend.draw(&frame, tick, color);
                 }
+            }
+            Ok(Message::Note(line)) => {
+                backend.clear();
+                let _ = writeln!(writer, "{line}");
+                let _ = writer.flush();
+                backend.draw(&frame, tick, color);
             }
             Ok(Message::Finish(final_frame, disposition)) => {
                 let terminal_width = match &backend {

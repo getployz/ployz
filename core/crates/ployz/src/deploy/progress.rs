@@ -157,9 +157,9 @@ impl Progress {
         }
     }
 
-    pub(super) fn outcome(&self, outcome: DeployOutcome<ExecutionError>) {
+    pub(super) fn outcome(&self, outcome: DeployOutcome<ExecutionError>, live_at: Option<i64>) {
         if let Some(tx) = &self.tx {
-            let _ = tx.send(DeployEvent::Outcome { outcome });
+            let _ = tx.send(DeployEvent::Outcome { outcome, live_at });
         }
     }
 }

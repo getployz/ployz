@@ -113,14 +113,29 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
             timing: Timing::Unavailable,
         });
     }
-    Frame {
-        run: Run::Stored(view.deployment.id.clone()),
-        title: format!(
-            "Deploying {} of {}/{}",
-            view.deployment.label(),
+    let deployment = &view.deployment;
+    let title = if deployment.cleanup == Some(ployz_store::CleanupStatus::Pending)
+        && deployment.live_at.is_some()
+        && view.steps.iter().any(|step| {
+            step.name == ployz_core::deploy_steps::StepName::StoppingOld && step.ended_at.is_none()
+        }) {
+        format!("Deployment {} stopping_old", deployment.label())
+    } else {
+        let action = if deployment.live_at.is_some() {
+            "Deployment"
+        } else {
+            "Deploying"
+        };
+        format!(
+            "{action} {} of {}/{}",
+            deployment.label(),
             view.environment.project,
             view.environment.name
-        ),
+        )
+    };
+    Frame {
+        run: Run::Stored(deployment.id.clone()),
+        title,
         rows,
         notices: notices(view),
         held_back,
@@ -574,6 +589,10 @@ pub(super) fn completion(
     }
     if view.deployment.status != DeploymentStatus::Applied {
         return Err(failure(view, again, command));
+    }
+    if view.deployment.cleanup == Some(ployz_store::CleanupStatus::Unconfirmed) {
+        crate::ui::warn("Could not confirm cleanup ended.");
+        return Err(Failure::partial());
     }
     if view
         .preview

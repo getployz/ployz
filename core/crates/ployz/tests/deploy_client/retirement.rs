@@ -7,9 +7,11 @@ use ployz_store::{
     DeploymentStatus, DeploymentSummary, DeploymentWarning, EnvironmentId, EnvironmentRef,
     OrganizationId, ProjectId, ProjectName, RunnerId, SealingKey, ServiceLineageId, Trusted,
 };
-use std::sync::Arc;
+use std::{process::Stdio, sync::Arc, time::Duration};
+use tokio::io::{AsyncBufReadExt, BufReader};
 
 struct Shop {
+    home: tempfile::TempDir,
     store: Arc<ConfigStore>,
     who: Actor,
     address: std::net::SocketAddr,
@@ -18,10 +20,11 @@ struct Shop {
 impl Shop {
     /// A shop whose web Service one Deployment already put on `service`'s Machine.
     async fn deployed(service: DeployService) -> Self {
-        let store = Arc::new(
-            ConfigStore::open("sqlite::memory:", SealingKey::new(b"cloud").unwrap()).unwrap(),
-        );
-        let who = Actor::system(OrganizationId::parse("org").unwrap());
+        let home = tempfile::tempdir().unwrap();
+        let db = home.path().join("store.db");
+        let key = SealingKey::from_file(&home.path().join("store.db.key")).unwrap();
+        let store = Arc::new(ConfigStore::open(&format!("sqlite:{}", db.display()), key).unwrap());
+        let who = Actor::system(OrganizationId::parse("local").unwrap());
         store
             .write(
                 &who,
@@ -50,6 +53,7 @@ impl Shop {
             .unwrap();
         let (address, _server) = listening(service).await;
         let shop = Self {
+            home,
             store,
             who,
             address,
@@ -103,6 +107,32 @@ impl Shop {
             vec![ployz::context::Connection::tcp(self.address)],
             Ok(Default::default()),
         )
+    }
+
+    fn cli(&self, args: &[&str]) -> tokio::process::Command {
+        let home = self.home.path();
+        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"));
+        command
+            .current_dir(home)
+            .env("HOME", home)
+            .env("PLOYZ_CONFIG", home.join("config.yaml"))
+            .env(
+                "PLOYZ_STORE",
+                format!("sqlite:{}", home.join("store.db").display()),
+            )
+            .env_remove("PLOYZ_TOKEN")
+            .env_remove("PLOYZ_PROJECT")
+            .env_remove("PLOYZ_ENV")
+            .env_remove("PLOYZ_CONTEXT")
+            .env_remove("PLOYZ_CONNECT")
+            .args([
+                "--why=test",
+                "--connect",
+                &format!("tcp://{}", self.address),
+            ])
+            .args(args)
+            .kill_on_drop(true);
+        command
     }
 
     fn status(&self, number: u8) -> DeploymentStatus {
@@ -203,4 +233,143 @@ async fn stopping_old_runs_until_the_old_copy_retired_after_the_outcome_is_gone(
     running.await.unwrap().unwrap();
     let ended = stopping_old(&shop).expect("stopping_old");
     assert!(ended.ended_at.is_some(), "{ended:?}");
+}
+
+#[tokio::test]
+async fn a_start_first_deploy_reports_live_before_failed_cleanup_and_exits_partial() {
+    let service = DeployService::new(machine('a', "one"))
+        .lists_created()
+        .hold_removals()
+        .fail_removals(ployz_core::RpcError::internal("docker is busy"));
+    let shop = Shop::deployed(service.clone()).await;
+
+    let mut deploy = shop
+        .cli(&["deploy", "--recreate"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut lines = BufReader::new(deploy.stderr.take().unwrap()).lines();
+    let seen = tokio::time::timeout(Duration::from_secs(10), async {
+        service.removal_waited().await;
+        let mut seen = Vec::new();
+        while let Some(line) = lines.next_line().await.unwrap() {
+            seen.push(line);
+            if seen
+                .last()
+                .is_some_and(|line| line.contains("stopping_old"))
+            {
+                break;
+            }
+        }
+        seen
+    })
+    .await
+    .expect("follow prints the traffic switch and stopping_old while removal is held");
+    assert!(
+        seen.iter().any(|line| line == "Deployment #2 Live."),
+        "{seen:?}"
+    );
+    assert!(
+        seen.last()
+            .is_some_and(|line| line.contains("stopping_old")),
+        "{seen:?}"
+    );
+    assert!(deploy.try_wait().unwrap().is_none());
+
+    service.release_removals();
+    let (output, warnings) = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(deploy.wait_with_output(), async {
+            let mut warnings = Vec::new();
+            while let Some(line) = lines.next_line().await.unwrap() {
+                warnings.push(line);
+            }
+            warnings
+        })
+    })
+    .await
+    .expect("deploy returns once cleanup answers");
+    assert_eq!(output.unwrap().status.code(), Some(3), "{warnings:?}");
+    assert!(
+        warnings
+            .iter()
+            .any(|line| line.contains("left running") && line.contains("docker is busy")),
+        "{warnings:?}"
+    );
+    assert!(!warnings.iter().any(|line| line == "Deployment #2 Live."));
+
+    let show = shop
+        .cli(&["--json", "deployment", "show", "2"])
+        .output()
+        .await
+        .unwrap();
+    assert!(show.status.success(), "{show:?}");
+    let shown: ployz_store::DeploymentView = serde_json::from_slice(&show.stdout).unwrap();
+    assert!(shown.deployment.live_at.unwrap() <= shown.deployment.ended_at.unwrap());
+
+    let show = shop
+        .cli(&["deployment", "show", "2"])
+        .output()
+        .await
+        .unwrap();
+    assert!(show.status.success(), "{show:?}");
+    assert!(String::from_utf8_lossy(&show.stdout).contains("Live at "));
+}
+
+#[tokio::test]
+async fn a_stop_first_deploy_records_when_the_new_copy_switched() {
+    let service = DeployService::new(machine('a', "one")).lists_created();
+    let shop = Shop::deployed(service).await;
+    shop.store
+        .write(
+            &shop.who,
+            &ployz_store::Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: vec![ployz_store::Change::Set {
+                    path: ployz_store::SettingPath::parse("web.updateOrder").unwrap(),
+                    value: serde_json::json!("stop-first"),
+                }],
+            },
+        )
+        .unwrap();
+
+    let output = tokio::time::timeout(
+        Duration::from_secs(10),
+        shop.cli(&["--json", "deploy", "--recreate"]).output(),
+    )
+    .await
+    .expect("stop-first deploy finishes")
+    .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let view: ployz_store::DeploymentView = serde_json::from_slice(&output.stdout).unwrap();
+    let end = |name| {
+        view.steps
+            .iter()
+            .find(|step| step.name == name)
+            .unwrap()
+            .ended_at
+            .unwrap()
+    };
+    use ployz_store::StepName;
+    assert!(end(StepName::StoppingOld) <= end(StepName::SwitchingTraffic));
+    assert!(view.deployment.live_at.unwrap() <= view.deployment.ended_at.unwrap());
+}
+
+#[tokio::test]
+async fn a_deploy_that_fails_before_switching_has_no_live_at() {
+    let machine = machine('a', "one");
+    let service = DeployService::new(machine.clone()).lists_created();
+    let mut shop = Shop::deployed(service.clone()).await;
+    let live = shop
+        .store
+        .read(&shop.who, &DeploymentQuery { id: Shop::id(1) })
+        .unwrap();
+    assert!(live.deployment.live_at.is_some());
+
+    let (address, _server) = listening(service.fail_pulls_on(machine.machine.id)).await;
+    shop.address = address;
+    let failed = shop.run(2, true).await.unwrap();
+    assert_eq!(failed.status, DeploymentStatus::Failed);
+    assert_eq!(failed.live_at, None);
 }
