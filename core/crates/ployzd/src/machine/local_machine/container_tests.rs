@@ -1181,6 +1181,67 @@ mod settled {
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 
+    /// A peer pull's cleanup that never returns must not hold the turn: the pull answers
+    /// once its tag is written, and the next Deployment's creates go ahead.
+    #[tokio::test]
+    async fn a_stalled_peer_pull_cleanup_holds_back_no_create() {
+        let root =
+            std::env::temp_dir().join(format!("ployz-stalled-cleanup-{}", MachineId::random()));
+        std::fs::create_dir(&root).unwrap();
+        let docker = root.join("docker");
+        let hex = "1".repeat(64);
+        crate::docker::test_support::write_script(
+            &docker,
+            &format!(
+                r#"#!/bin/sh
+case "$1 $2 $5" in
+  'image inspect {{{{range'*) exec sleep 600 ;;
+  'image inspect {{{{json'*)
+    case "$3" in
+      127.0.0.1:*) echo '{{"digest":"sha256:{hex}"}}' ;;
+      *) echo "No such image: $3" >&2; exit 1 ;;
+    esac ;;
+esac
+"#
+            ),
+        );
+        let Settling {
+            local, data_dir, ..
+        } = settling_with(
+            FakeDocker {
+                named_containers: Some(Arc::new(Mutex::new(BTreeMap::new()))),
+                containerd_store: true,
+                docker_cli: Some(docker),
+                ..Default::default()
+            },
+            None,
+        )
+        .await;
+        let request = ployz_core::PullImageFromMachineRequest {
+            pull: ployz_core::PeerImagePull::Reference {
+                image: format!("app@sha256:{hex}"),
+            },
+            source: ployz_core::ImageIngestDestination {
+                management_address: ployz_core::ManagementAddress("fdcc::7".parse().unwrap()),
+                port: ployz_core::UNREGISTRY_PORT,
+            },
+            platform: "linux/amd64".into(),
+        };
+
+        tokio::time::timeout(
+            Duration::from_secs(30),
+            local.pull_image_from_machine(request),
+        )
+        .await
+        .expect("the pull waits for its cleanup")
+        .unwrap();
+        tokio::time::timeout(Duration::from_secs(30), local.wait_for_admitted_work())
+            .await
+            .expect("a stalled cleanup holds the turn");
+        std::fs::remove_dir_all(data_dir).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[tokio::test]
     async fn removal_by_slot_waits_for_the_create_that_fills_it() {
         let Settling {

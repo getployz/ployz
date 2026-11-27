@@ -47,6 +47,8 @@ pub(crate) struct FakeDocker {
     pub(crate) existing_container: Arc<Mutex<Option<serde_json::Value>>>,
     /// Docker's `info` reports the containerd image store, which a digest pull needs.
     pub(crate) containerd_store: bool,
+    /// The Docker CLI a peer pull runs, in place of `docker`.
+    pub(crate) docker_cli: Option<std::path::PathBuf>,
     pub(crate) volume_users: Arc<Mutex<BTreeMap<String, Vec<serde_json::Value>>>>,
     pub(crate) image_barrier: Option<Arc<tokio::sync::Barrier>>,
     pub(crate) create_barrier: Option<Arc<tokio::sync::Barrier>>,
@@ -1074,6 +1076,25 @@ fn mounted_volumes(container: &serde_json::Value) -> impl Iterator<Item = String
         .map(str::to_owned)
 }
 
+/// Writes executable script `body` from a child process. A file this process held open
+/// for writing leaks into any child a concurrent test forks before that child execs, and
+/// exec'ing the script then fails with ETXTBSY.
+pub(crate) fn write_script(path: &std::path::Path, body: &str) {
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(r#"printf '%s' "$1" > "$2" && chmod 700 "$2""#)
+        .arg("sh")
+        .arg(body)
+        .arg(path)
+        .status()
+        .unwrap();
+    assert!(
+        status.success(),
+        "writing {} failed: {status}",
+        path.display()
+    );
+}
+
 pub(crate) async fn fake_runtime_with(fake: FakeDocker) -> (ContainerRuntime, FakeDocker) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -1098,10 +1119,12 @@ pub(crate) async fn fake_runtime_with(fake: FakeDocker) -> (ContainerRuntime, Fa
     )))
     .await
     .unwrap();
-    (
-        ContainerRuntime::new(LocalDocker::from_client(docker), specs),
-        fake,
-    )
+    let docker = LocalDocker::from_client(docker);
+    let docker = match fake.docker_cli.clone() {
+        Some(cli) => docker.with_docker_cli(cli),
+        None => docker,
+    };
+    (ContainerRuntime::new(docker, specs), fake)
 }
 
 /// A running managed Container made by the real create path, so it carries the

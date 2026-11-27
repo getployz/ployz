@@ -109,6 +109,8 @@ pub struct LocalDocker {
     /// Counts container creates, so a stranded ingress retry can tell a newer
     /// container may have appeared since its scan, or be appearing still.
     creates: Arc<Creates>,
+    /// The staging names peer pulls left behind, removed by the next one.
+    peer_pulls: Arc<peer_pull::PeerPulls>,
 }
 
 #[derive(Default)]
@@ -151,6 +153,16 @@ impl LocalDocker {
             client,
             endpoint_creates: Arc::default(),
             creates: Arc::default(),
+            peer_pulls: Arc::default(),
+        }
+    }
+
+    /// This Docker with peer pulls run through the Docker CLI at `cli`.
+    #[cfg(test)]
+    pub(crate) fn with_docker_cli(self, cli: PathBuf) -> Self {
+        Self {
+            peer_pulls: Arc::new(peer_pull::PeerPulls::new(cli)),
+            ..self
         }
     }
 

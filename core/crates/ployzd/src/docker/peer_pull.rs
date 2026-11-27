@@ -1,6 +1,10 @@
 //! Pull an image from another Machine's ingest TCP destination into local Docker.
 
-use std::net::{Ipv4Addr, SocketAddr};
+use std::{
+    net::{Ipv4Addr, SocketAddr},
+    path::PathBuf,
+    sync::{Arc, Mutex, PoisonError},
+};
 
 use ployz_core::{
     ImageDigestReference, ImageIngestDestination, PeerImagePull, image_server_reference,
@@ -10,10 +14,85 @@ use tokio::{
     io::copy_bidirectional,
     net::{TcpListener, TcpStream},
     process::Command,
+    task::JoinHandle,
 };
 use tokio_util::sync::CancellationToken;
 
 use super::{Error, LocalDocker};
+
+/// The Docker CLI peer pulls run, and the staging names whose removal failed, which
+/// the next delivery removes.
+pub(crate) struct PeerPulls {
+    cli: PathBuf,
+    leftover: Mutex<Vec<Staging>>,
+}
+
+impl Default for PeerPulls {
+    fn default() -> Self {
+        Self::new("docker".into())
+    }
+}
+
+impl PeerPulls {
+    pub(crate) fn new(cli: PathBuf) -> Self {
+        Self {
+            cli,
+            leftover: Mutex::default(),
+        }
+    }
+
+    /// Remove `staging`'s name, off the caller's turn. A failed removal is logged and
+    /// kept, with its port, for the next delivery to try again.
+    fn clean_up(self: &Arc<Self>, staging: Staging) -> JoinHandle<()> {
+        let pulls = Arc::clone(self);
+        tokio::spawn(async move {
+            if let Err(error) = remove_staging(&pulls.cli, &staging.name).await {
+                tracing::warn!(
+                    staging = %staging.name,
+                    error = %ployz_core::error_chain::inline(&error),
+                    "a peer pull's staging name is left until the next delivery removes it"
+                );
+                pulls
+                    .leftover
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push(staging);
+            }
+        })
+    }
+
+    /// Try again to remove each staging name an earlier delivery left, off the caller's
+    /// turn as well.
+    fn retry_leftovers(self: &Arc<Self>) -> Vec<JoinHandle<()>> {
+        let leftover =
+            std::mem::take(&mut *self.leftover.lock().unwrap_or_else(PoisonError::into_inner));
+        leftover
+            .into_iter()
+            .map(|staging| self.clean_up(staging))
+            .collect()
+    }
+}
+
+/// The loopback name a pull writes before verifying its content, and the proxy port the
+/// name holds. The port stays bound until the name is removed, so no other delivery
+/// writes, or removes, the same name meanwhile.
+struct Staging {
+    name: String,
+    _port: ImageProxy,
+}
+
+impl Staging {
+    async fn open(source: ImageIngestDestination, image: &str) -> Result<Self, Error> {
+        let port = ImageProxy::open(source).await?;
+        let name = image_server_reference(SocketAddr::from((Ipv4Addr::LOCALHOST, port.port)), image)
+            .ok_or_else(|| {
+                Error::PeerPull(format!(
+                    "{image} is a tag from a registry with a port, which a Machine can't serve by name; pin it by digest"
+                ))
+            })?;
+        Ok(Self { name, _port: port })
+    }
+}
 
 /// Pull an image from a peer Machine's ingest TCP destination into local Docker.
 ///
@@ -22,12 +101,14 @@ use super::{Error, LocalDocker};
 /// `platform` makes Docker fetch that variant's manifest, configuration and
 /// layers; a source holding only the index fails the pull. An optional `tag`
 /// is published only after the pulled digest has been verified. Once `gone`
-/// fires, the transfer stops and only its cleanup runs.
+/// fires, a transfer that has not begun its tag stops and publishes nothing; one
+/// that has completes it. The staging name is removed after this returns, so a
+/// stalled removal holds no admission turn.
 ///
 /// # Errors
 ///
 /// Returns when the localhost proxy cannot listen, Docker cannot pull or tag, or
-/// `gone` fired first.
+/// `gone` fired before the tag.
 pub(crate) async fn pull_from_ingest(
     docker: &LocalDocker,
     pull: &PeerImagePull,
@@ -35,6 +116,7 @@ pub(crate) async fn pull_from_ingest(
     platform: &str,
     gone: &CancellationToken,
 ) -> Result<(), Error> {
+    docker.peer_pulls.retry_leftovers();
     let image = pull.image();
     let retained = if image.contains('@') {
         ImageDigestReference::parse(image)
@@ -46,33 +128,32 @@ pub(crate) async fn pull_from_ingest(
     } else {
         None
     };
-    let proxy = ImageProxy::open(source).await?;
-    let pulled = image_server_reference(SocketAddr::from((Ipv4Addr::LOCALHOST, proxy.port)), image)
-        .ok_or_else(|| {
-            Error::PeerPull(format!(
-                "{image} is a tag from a registry with a port, which a Machine can't serve by name; pin it by digest"
-            ))
-        })?;
-    pull_and_tag(
+    let staging = Staging::open(source, image).await?;
+    let (result, _cleanup) = pull_and_tag(
+        &docker.peer_pulls,
         image,
-        &pulled,
+        staging,
         pull.tag().or(retained.as_deref()),
         platform,
-        std::path::Path::new("docker"),
         gone,
     )
-    .await
+    .await;
+    result
 }
 
+/// Pull `image` under `staging`'s name, verify it, and tag it, then hand the staging
+/// name to a cleanup this does not wait for, returned so a test can.
 async fn pull_and_tag(
+    pulls: &Arc<PeerPulls>,
     image: &str,
-    pulled: &str,
+    staging: Staging,
     tag: Option<&str>,
     platform: &str,
-    docker: &std::path::Path,
     gone: &CancellationToken,
-) -> Result<(), Error> {
-    let transfer = async {
+) -> (Result<(), Error>, JoinHandle<()>) {
+    let (docker, pulled) = (pulls.cli.as_path(), staging.name.as_str());
+    let tag = tag.unwrap_or(image);
+    let verified = async {
         docker_cli(docker, &["pull", "--platform", platform, pulled]).await?;
         if let Some(digest) = ployz_core::ImageRef::new(image).digest
             && descriptor_digest(docker, pulled).await?.as_deref() != Some(digest)
@@ -81,48 +162,62 @@ async fn pull_and_tag(
                 "the image store did not retain {image}"
             )));
         }
-        let tag = tag.unwrap_or(image);
         if let Some(digest) = ployz_core::retained_digest(tag) {
             retention_free(docker, pulled, tag, &digest).await?;
         }
-        // Verify before publishing the requested or retention tag: a failed
-        // attempt must not leave a tag or remove one from an earlier delivery.
-        docker_cli(docker, &["tag", "--", pulled, tag]).await?;
         Ok(())
     };
     // A caller gone stops the transfer here, killing the Docker CLI it runs, so Docker
     // drops the pull and the admission turn it holds frees for the next Deployment.
-    let result = gone
-        .run_until_cancelled(transfer)
-        .await
-        .unwrap_or_else(|| Err(Error::PeerPull("the caller stopped waiting".into())));
-    if holds_name(docker, pulled).await {
-        let _ = docker_cli(docker, &["image", "rm", pulled]).await;
-    }
-    result
+    // Verify before publishing the requested or retention tag: a failed attempt must
+    // not leave a tag or remove one from an earlier delivery.
+    let result = match gone.run_until_cancelled(verified).await {
+        // The publish point. Once begun it runs to its end, so a caller that stopped
+        // waiting finds the tag either unwritten or written, and told which.
+        Some(Ok(())) if !gone.is_cancelled() => docker_cli(docker, &["tag", "--", pulled, tag])
+            .await
+            .map(drop),
+        Some(Err(error)) => Err(error),
+        Some(Ok(())) | None => Err(Error::PeerPull("the caller stopped waiting".into())),
+    };
+    (result, pulls.clean_up(staging))
 }
 
-/// Whether Docker holds `pulled` under that very name, so removing it removes only it. A
-/// pull that failed or was stopped may never have written it, and Docker resolves a
-/// missing digest name to an unnamed image of that digest, such as the source's own
-/// copy that another Deployment is still pulling, which `image rm` would then delete. A
-/// tag name resolves only to itself.
-async fn holds_name(docker: &std::path::Path, pulled: &str) -> bool {
-    if !pulled.contains('@') {
-        return true;
+/// Remove staging name `pulled` if Docker holds it under that very name, so removing
+/// it removes only it. A pull that failed or was stopped may never have written it,
+/// and Docker resolves a missing digest name to an unnamed image of that digest, such
+/// as the source's own copy that another Deployment is still pulling, which `image rm`
+/// would then delete. A tag name resolves only to itself. Only Docker's "No such image"
+/// counts as absent: any other failure leaves the name for a later try.
+async fn remove_staging(docker: &std::path::Path, pulled: &str) -> Result<(), Error> {
+    if pulled.contains('@') {
+        let names = docker_cli(
+            docker,
+            &[
+                "image",
+                "inspect",
+                pulled,
+                "--format",
+                "{{range .RepoTags}}{{println .}}{{end}}{{range .RepoDigests}}{{println .}}{{end}}",
+            ],
+        )
+        .await;
+        match names {
+            Ok(names) if names.lines().any(|name| name == pulled) => {}
+            Ok(_) => return Ok(()),
+            Err(error) if no_such_image(&error) => return Ok(()),
+            Err(error) => return Err(error),
+        }
     }
-    docker_cli(
-        docker,
-        &[
-            "image",
-            "inspect",
-            pulled,
-            "--format",
-            "{{range .RepoTags}}{{println .}}{{end}}{{range .RepoDigests}}{{println .}}{{end}}",
-        ],
-    )
-    .await
-    .is_ok_and(|names| names.lines().any(|name| name == pulled))
+    match docker_cli(docker, &["image", "rm", pulled]).await {
+        Err(error) if !no_such_image(&error) => Err(error),
+        _ => Ok(()),
+    }
+}
+
+/// Whether Docker answered that the image it was asked about does not exist.
+fn no_such_image(error: &Error) -> bool {
+    matches!(error, Error::PeerPull(printed) if printed.contains("No such image"))
 }
 
 /// Refuse to write retention name `tag` unless `pulled` is the content it names, and
@@ -140,7 +235,7 @@ async fn retention_free(
     match descriptor_digest(docker, tag).await {
         Ok(held) if held.as_deref() == Some(digest.as_str()) => Ok(()),
         Ok(_) => Err(Error::RetentionNameTaken(tag.to_owned())),
-        Err(Error::PeerPull(printed)) if printed.contains("No such image") => Ok(()),
+        Err(error) if no_such_image(&error) => Ok(()),
         Err(error) => Err(error),
     }
 }
@@ -231,12 +326,22 @@ mod tests {
     use super::*;
     use ployz_core::UNREGISTRY_PORT;
 
-    #[tokio::test]
-    async fn invalid_digest_reference_is_rejected_before_any_docker_work() {
-        let source = ImageIngestDestination {
+    fn source() -> ImageIngestDestination {
+        ImageIngestDestination {
             management_address: ployz_core::ManagementAddress("fdcc::7".parse().unwrap()),
             port: UNREGISTRY_PORT,
-        };
+        }
+    }
+
+    /// A staging name for `image`, and that name.
+    async fn staging(image: &str) -> (Staging, String) {
+        let staging = Staging::open(source(), image).await.unwrap();
+        let name = staging.name.clone();
+        (staging, name)
+    }
+
+    #[tokio::test]
+    async fn invalid_digest_reference_is_rejected_before_any_docker_work() {
         for image in ["api@sha256:invalid", "api@sha512:invalid"] {
             let pull = PeerImagePull::Reference {
                 image: image.into(),
@@ -245,7 +350,7 @@ mod tests {
             let error = pull_from_ingest(
                 &runtime.local_docker(),
                 &pull,
-                source,
+                source(),
                 "linux/amd64",
                 &CancellationToken::new(),
             )
@@ -258,10 +363,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_digest_pull_is_refused_when_docker_has_no_containerd_image_store() {
-        let source = ImageIngestDestination {
-            management_address: ployz_core::ManagementAddress("fdcc::7".parse().unwrap()),
-            port: UNREGISTRY_PORT,
-        };
         let pull = PeerImagePull::Reference {
             image: format!("api@sha256:{}", "a".repeat(64)),
         };
@@ -270,7 +371,7 @@ mod tests {
         let error = pull_from_ingest(
             &runtime.local_docker(),
             &pull,
-            source,
+            source(),
             "linux/amd64",
             &CancellationToken::new(),
         )
@@ -283,7 +384,7 @@ mod tests {
 
     #[tokio::test]
     async fn failed_digest_delivery_cleans_up_without_publishing_unverified_content() {
-        use std::{fs, os::unix::fs::PermissionsExt as _};
+        use std::fs;
 
         let root = std::env::temp_dir().join(format!(
             "ployz-peer-pull-{}",
@@ -291,7 +392,7 @@ mod tests {
         ));
         fs::create_dir(&root).unwrap();
         let docker = root.join("docker");
-        fs::write(
+        crate::docker::test_support::write_script(
             &docker,
             r#"#!/bin/sh
 cd "$(dirname "$0")"
@@ -314,13 +415,11 @@ case "$1 $2" in
   *) if [ "$1" = "$mode" ]; then echo "$mode-failed" >&2; exit 1; fi ;;
 esac
 "#,
-        )
-        .unwrap();
-        fs::set_permissions(&docker, fs::Permissions::from_mode(0o700)).unwrap();
+        );
+        let pulls = Arc::new(PeerPulls::new(docker));
         let digest = format!("sha256:{}", "1".repeat(64));
         let image = format!("example.test/api@{digest}");
         let retained = image.replace("@sha256:", ":ployz-sha256-");
-        let pulled = format!("127.0.0.1:1234/{image}");
         fs::write(
             root.join("descriptor"),
             serde_json::json!({"digest": digest}).to_string(),
@@ -330,15 +429,17 @@ esac
             for mode in ["inspect", "json", "digest", "tag", "pull", "success"] {
                 fs::write(root.join("mode"), mode).unwrap();
                 fs::write(root.join("calls"), "").unwrap();
-                let result = pull_and_tag(
+                let (staging, pulled) = staging(&image).await;
+                let (result, cleanup) = pull_and_tag(
+                    &pulls,
                     &image,
-                    &pulled,
+                    staging,
                     Some(tag),
                     "linux/arm64",
-                    &docker,
                     &CancellationToken::new(),
                 )
                 .await;
+                cleanup.await.unwrap();
                 assert_eq!(result.is_ok(), mode == "success", "{mode}: {result:?}");
                 if let Err(error) = result {
                     assert!(!error.to_string().contains("cleanup-failed"), "{error}");
@@ -387,7 +488,7 @@ esac
     /// where it is free or already names the copied content, and only for that content.
     #[tokio::test]
     async fn a_retention_name_is_never_moved_onto_other_content() {
-        use std::{fs, os::unix::fs::PermissionsExt as _};
+        use std::fs;
 
         let root = std::env::temp_dir().join(format!(
             "ployz-retention-{}",
@@ -395,7 +496,7 @@ esac
         ));
         fs::create_dir(&root).unwrap();
         let docker = root.join("docker");
-        fs::write(
+        crate::docker::test_support::write_script(
             &docker,
             r#"#!/bin/sh
 cd "$(dirname "$0")"
@@ -414,15 +515,13 @@ case "$1 $2" in
     esac ;;
 esac
 "#,
-        )
-        .unwrap();
-        fs::set_permissions(&docker, fs::Permissions::from_mode(0o700)).unwrap();
+        );
+        let pulls = Arc::new(PeerPulls::new(docker));
         let descriptor = |hex: char| {
             serde_json::json!({"digest": format!("sha256:{}", hex.to_string().repeat(64))})
                 .to_string()
         };
         let image = format!("app@sha256:{}", "1".repeat(64));
-        let pulled = format!("127.0.0.1:1234/{image}");
         let name = format!("app:ployz-sha256-{}", "1".repeat(64));
         // What the pull delivered, what the name holds now, and whether it is written.
         for (delivered, held, written) in [
@@ -438,15 +537,17 @@ esac
             )
             .unwrap();
             fs::write(root.join("calls"), "").unwrap();
-            let result = pull_and_tag(
+            let (staging, pulled) = staging(&image).await;
+            let (result, cleanup) = pull_and_tag(
+                &pulls,
                 &image,
-                &pulled,
+                staging,
                 Some(&name),
                 "linux/amd64",
-                &docker,
                 &CancellationToken::new(),
             )
             .await;
+            cleanup.await.unwrap();
             let calls = fs::read_to_string(root.join("calls")).unwrap();
             assert_eq!(
                 calls.contains(&format!("tag -- {pulled} {name}")),
@@ -467,56 +568,105 @@ esac
         }
         // An ordinary tag that only starts like a retention name is no retention name.
         let ordinary = "app:ployz-sha256-staging";
-        let pulled = format!("127.0.0.1:1234/{ordinary}");
         fs::write(root.join("name"), "free").unwrap();
-        pull_and_tag(
+        let (staging, _) = staging(ordinary).await;
+        let (result, cleanup) = pull_and_tag(
+            &pulls,
             ordinary,
-            &pulled,
+            staging,
             None,
             "linux/amd64",
-            &docker,
             &CancellationToken::new(),
         )
-        .await
-        .unwrap();
+        .await;
+        cleanup.await.unwrap();
+        result.unwrap();
         fs::remove_dir_all(root).unwrap();
     }
 
     /// A Docker that answers a missing digest name with an unnamed image of that digest,
     /// as Docker does, so `image rm` of a staging name a pull never wrote deletes that image.
-    /// `pull` acts as `mode` says: it `fail`s, or it `hang`s after naming its pid in `started`.
-    fn docker_with_unnamed_copy(root: &std::path::Path) -> std::path::PathBuf {
-        use std::{fs, os::unix::fs::PermissionsExt as _};
+    /// It holds `sha256:1…1` under each name in `names`. `pull` acts as `mode` says: it
+    /// `fail`s, `hang`s, or writes the staging name and then stalls the content check
+    /// (`stall-verify`) or the tag until `release` exists (`stall-tag`). A stall or hang
+    /// names its pid in the `started` FIFO first. While `unsure` exists, the names query
+    /// fails as Docker does when it can't answer.
+    fn docker_with_unnamed_copy(root: &std::path::Path) -> PathBuf {
+        use std::fs;
 
         fs::create_dir(root).unwrap();
         fs::write(root.join("names"), "").unwrap();
         fs::write(root.join("unnamed"), "").unwrap();
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(root.join("started"))
+                .status()
+                .unwrap()
+                .success()
+        );
         let docker = root.join("docker");
-        fs::write(
+        crate::docker::test_support::write_script(
             &docker,
-            r#"#!/bin/sh
+            &format!(
+                r#"#!/bin/sh
 cd "$(dirname "$0")"
 printf '%s\n' "$*" >> calls
-case "$1 $2" in
-  'image inspect')
-    if grep -qxF "$3" names; then echo "$3"
+mode=$(cat mode)
+case "$1 $2 $5" in
+  'image inspect {{{{json'*)
+    if [ "$mode" = stall-verify ]; then echo $$ > started; exec sleep 600; fi
+    if grep -qxF "$3" names; then echo '{{"digest":"sha256:{hex}"}}'
+    else echo "No such image: $3" >&2; exit 1; fi ;;
+  'image inspect '*)
+    if [ -e unsure ]; then echo "Cannot connect to the Docker daemon" >&2; exit 1
+    elif grep -qxF "$3" names; then echo "$3"
     elif [ -e unnamed ]; then :
     else echo "No such image: $3" >&2; exit 1; fi ;;
-  'image rm')
+  'image rm '*)
     if grep -qxF "$3" names; then grep -vxF "$3" names > names.new; mv names.new names
     elif [ -e unnamed ]; then rm unnamed; echo Deleted
     else echo "No such image: $3" >&2; exit 1; fi ;;
-  pull*)
-    case "$(cat mode)" in
+  'pull '*)
+    case "$mode" in
       fail) echo pull-failed >&2; exit 1 ;;
       hang) echo $$ > started; exec sleep 600 ;;
+      *) echo "$4" >> names ;;
     esac ;;
+  'tag '*)
+    if [ "$mode" = stall-tag ]; then
+      echo $$ > started
+      while [ ! -e release ]; do sleep 0.01; done
+    fi
+    echo "$4" >> names ;;
 esac
 "#,
-        )
-        .unwrap();
-        fs::set_permissions(&docker, fs::Permissions::from_mode(0o700)).unwrap();
+                hex = "1".repeat(64)
+            ),
+        );
         docker
+    }
+
+    /// Wait for the fake Docker to stall in `root`, then cancel `gone`, answering the
+    /// stalled process's pid.
+    async fn cancel_once_started(root: &std::path::Path, gone: &CancellationToken) -> String {
+        use tokio::io::AsyncBufReadExt as _;
+
+        // Opened for writing too, so the FIFO shows no end before the stall writes it.
+        let started = tokio::net::unix::pipe::OpenOptions::new()
+            .read_write(true)
+            .open_receiver(root.join("started"))
+            .unwrap();
+        let mut pid = String::new();
+        tokio::io::BufReader::new(started)
+            .read_line(&mut pid)
+            .await
+            .unwrap();
+        gone.cancel();
+        pid.trim().to_owned()
+    }
+
+    fn names(root: &std::path::Path) -> String {
+        std::fs::read_to_string(root.join("names")).unwrap()
     }
 
     /// Two Deployments may pull one digest at once, from a source whose copy has no name.
@@ -528,20 +678,21 @@ esac
             "ployz-failed-pull-{}",
             ployz_core::MachineId::random()
         ));
-        let docker = docker_with_unnamed_copy(&root);
+        let pulls = Arc::new(PeerPulls::new(docker_with_unnamed_copy(&root)));
         std::fs::write(root.join("mode"), "fail").unwrap();
         let image = format!("app@sha256:{}", "1".repeat(64));
-        let pulled = format!("127.0.0.1:1234/{image}");
+        let (staging, _) = staging(&image).await;
 
-        let result = pull_and_tag(
+        let (result, cleanup) = pull_and_tag(
+            &pulls,
             &image,
-            &pulled,
+            staging,
             None,
             "linux/amd64",
-            &docker,
             &CancellationToken::new(),
         )
         .await;
+        cleanup.await.unwrap();
 
         assert!(result.is_err(), "{result:?}");
         let calls = std::fs::read_to_string(root.join("calls")).unwrap();
@@ -564,35 +715,20 @@ esac
             "ployz-gone-pull-{}",
             ployz_core::MachineId::random()
         ));
-        let docker = docker_with_unnamed_copy(&root);
+        let pulls = Arc::new(PeerPulls::new(docker_with_unnamed_copy(&root)));
         fs::write(root.join("mode"), "hang").unwrap();
-        let started = root.join("started");
-        assert!(
-            std::process::Command::new("mkfifo")
-                .arg(&started)
-                .status()
-                .unwrap()
-                .success()
-        );
         let image = format!("app@sha256:{}", "1".repeat(64));
-        let pulled = format!("127.0.0.1:1234/{image}");
+        let (staging, _) = staging(&image).await;
         let gone = CancellationToken::new();
 
-        let pull = pull_and_tag(&image, &pulled, None, "linux/amd64", &docker, &gone);
-        let pid = async {
-            let started = started.clone();
-            let pid = tokio::task::spawn_blocking(move || fs::read_to_string(started))
-                .await
-                .unwrap()
-                .unwrap();
-            gone.cancel();
-            pid.trim().to_owned()
-        };
-        let (result, pid) = tokio::time::timeout(std::time::Duration::from_secs(30), async {
-            tokio::join!(pull, pid)
-        })
-        .await
-        .expect("a pull whose caller is gone must end");
+        let pull = pull_and_tag(&pulls, &image, staging, None, "linux/amd64", &gone);
+        let ((result, cleanup), pid) =
+            tokio::time::timeout(std::time::Duration::from_secs(30), async {
+                tokio::join!(pull, cancel_once_started(&root, &gone))
+            })
+            .await
+            .expect("a pull whose caller is gone must end");
+        cleanup.await.unwrap();
 
         assert!(result.is_err(), "{result:?}");
         let calls = fs::read_to_string(root.join("calls")).unwrap();
@@ -620,5 +756,122 @@ esac
         }
         assert!(ended(), "the Docker pull still runs");
         fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A caller that stops waiting once the pull wrote its staging name leaves no name
+    /// behind: the cleanup removes the name it wrote, and only that name.
+    #[tokio::test]
+    async fn a_staging_name_written_before_the_caller_left_is_removed() {
+        let root = std::env::temp_dir().join(format!(
+            "ployz-written-pull-{}",
+            ployz_core::MachineId::random()
+        ));
+        let pulls = Arc::new(PeerPulls::new(docker_with_unnamed_copy(&root)));
+        std::fs::write(root.join("mode"), "stall-verify").unwrap();
+        let image = format!("app@sha256:{}", "1".repeat(64));
+        let (staging, pulled) = staging(&image).await;
+        let gone = CancellationToken::new();
+
+        let pull = pull_and_tag(&pulls, &image, staging, None, "linux/amd64", &gone);
+        let ((result, cleanup), _) =
+            tokio::time::timeout(std::time::Duration::from_secs(30), async {
+                tokio::join!(pull, async {
+                    let pid = cancel_once_started(&root, &gone).await;
+                    // The staging name exists when the caller leaves.
+                    assert!(names(&root).lines().any(|name| name == pulled));
+                    pid
+                })
+            })
+            .await
+            .expect("a pull whose caller is gone must end");
+        cleanup.await.unwrap();
+
+        assert!(result.is_err(), "{result:?}");
+        assert_eq!(names(&root), "", "the staging name is left");
+        assert!(root.join("unnamed").exists(), "deleted the other copy");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// The tag is where a delivery publishes. A caller that leaves once it began finds it
+    /// written and is told so, never a tag written under a reported failure.
+    #[tokio::test]
+    async fn a_tag_begun_before_the_caller_left_is_written_and_reported() {
+        let root = std::env::temp_dir().join(format!(
+            "ployz-tagging-pull-{}",
+            ployz_core::MachineId::random()
+        ));
+        let pulls = Arc::new(PeerPulls::new(docker_with_unnamed_copy(&root)));
+        std::fs::write(root.join("mode"), "stall-tag").unwrap();
+        let image = format!("app@sha256:{}", "1".repeat(64));
+        let retained = format!("app:ployz-sha256-{}", "1".repeat(64));
+        let (staging, pulled) = staging(&image).await;
+        let gone = CancellationToken::new();
+
+        let pull = pull_and_tag(
+            &pulls,
+            &image,
+            staging,
+            Some(&retained),
+            "linux/amd64",
+            &gone,
+        );
+        let ((result, cleanup), ()) =
+            tokio::time::timeout(std::time::Duration::from_secs(30), async {
+                tokio::join!(pull, async {
+                    cancel_once_started(&root, &gone).await;
+                    // Let the pull see its caller gone before the tag may finish.
+                    tokio::task::yield_now().await;
+                    std::fs::write(root.join("release"), "").unwrap();
+                })
+            })
+            .await
+            .expect("a tag must finish once released");
+        cleanup.await.unwrap();
+
+        result.unwrap();
+        let names = names(&root);
+        assert!(names.lines().any(|name| name == retained), "{names}");
+        assert!(!names.lines().any(|name| name == pulled), "{names}");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A staging name Docker could not say it holds is neither taken as gone nor removed
+    /// blind: it is kept, and the next delivery removes it.
+    #[tokio::test]
+    async fn a_staging_name_docker_could_not_check_is_removed_by_the_next_delivery() {
+        let root = std::env::temp_dir().join(format!(
+            "ployz-unsure-pull-{}",
+            ployz_core::MachineId::random()
+        ));
+        let pulls = Arc::new(PeerPulls::new(docker_with_unnamed_copy(&root)));
+        std::fs::write(root.join("mode"), "deliver").unwrap();
+        std::fs::write(root.join("unsure"), "").unwrap();
+        let image = format!("app@sha256:{}", "1".repeat(64));
+        let retained = format!("app:ployz-sha256-{}", "1".repeat(64));
+        let (staging, pulled) = staging(&image).await;
+
+        let (result, cleanup) = pull_and_tag(
+            &pulls,
+            &image,
+            staging,
+            Some(&retained),
+            "linux/amd64",
+            &CancellationToken::new(),
+        )
+        .await;
+        cleanup.await.unwrap();
+        result.unwrap();
+        assert!(names(&root).lines().any(|name| name == pulled));
+
+        std::fs::remove_file(root.join("unsure")).unwrap();
+        for retry in pulls.retry_leftovers() {
+            retry.await.unwrap();
+        }
+
+        let names = names(&root);
+        assert!(!names.lines().any(|name| name == pulled), "{names}");
+        assert!(names.lines().any(|name| name == retained), "{names}");
+        assert!(root.join("unnamed").exists(), "deleted the other copy");
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
