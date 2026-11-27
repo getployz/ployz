@@ -19,7 +19,7 @@ use ployzd::{
     diag,
     dns::{self, DnsExit},
     installer::{InstallMode, InstallRequest, Readiness},
-    management::ManagementConfig,
+    management::{ManagementConfig, Relay},
     runtime_unit::UnitSupervision,
 };
 use tokio::{
@@ -46,6 +46,9 @@ struct Args {
     /// UDP port of the management transport; tests pass 0 to avoid the fixed port.
     #[arg(long, hide = true, default_value_t = ployz_core::MANAGEMENT_PORT)]
     management_port: u16,
+    /// Relay of the management transport: its URL, or `none` for direct paths only.
+    #[arg(long, hide = true, value_name = "URL|none")]
+    relay: Option<Relay>,
     #[arg(long)]
     containerd_socket: Option<PathBuf>,
     #[arg(long, hide = true)]
@@ -328,9 +331,13 @@ async fn run(args: Args) -> Result<ExitCode, Error> {
         containerd_socket: args.containerd_socket,
         volume_plugin_socket: args.volume_plugin_socket,
         containers: ContainerMode::Auto,
-        management: ManagementConfig {
-            port: args.management_port,
-            ..ManagementConfig::default()
+        management: {
+            let defaults = ManagementConfig::default();
+            ManagementConfig {
+                relay: args.relay.unwrap_or(defaults.relay),
+                port: args.management_port,
+                ..defaults
+            }
         },
     })
     .await?;

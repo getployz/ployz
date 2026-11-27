@@ -61,13 +61,12 @@ const DELIVERY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Where the management endpoint binds and which relay it uses.
 ///
-/// Production uses the defaults; tests override the port (`0`) and point at an
-/// in-process relay, whose self-signed certificate needs a `relay_tls` of
-/// `CaTlsConfig::insecure_skip_verify()` (iroh `test-utils` feature).
+/// Production uses the defaults; tests override the port (`0`) and either disable the
+/// relay or point at an in-process one, whose self-signed certificate needs a `relay_tls`
+/// of `CaTlsConfig::insecure_skip_verify()` (iroh `test-utils` feature).
 #[derive(Clone, Debug)]
 pub struct ManagementConfig {
-    /// The only relay used for management traffic.
-    pub relay_url: RelayUrl,
+    pub relay: Relay,
     /// UDP listen port; zero asks the OS for an ephemeral port.
     pub port: u16,
     /// How the relay's HTTPS certificate is verified.
@@ -77,11 +76,56 @@ pub struct ManagementConfig {
 impl Default for ManagementConfig {
     fn default() -> Self {
         Self {
-            relay_url: DEFAULT_RELAY_URL
-                .parse()
-                .expect("DEFAULT_RELAY_URL is a valid relay URL"),
+            relay: Relay::Only(
+                DEFAULT_RELAY_URL
+                    .parse()
+                    .expect("DEFAULT_RELAY_URL is a valid relay URL"),
+            ),
             port: MANAGEMENT_PORT,
             relay_tls: CaTlsConfig::default(),
+        }
+    }
+}
+
+/// The relay management traffic may use.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Relay {
+    /// This relay and no other.
+    Only(RelayUrl),
+    /// No relay: the endpoint dials nothing, and a client reaches it only on a direct
+    /// path. The testkit runs this way so a test Cluster never dials the Ployz Relay.
+    Disabled,
+}
+
+impl Relay {
+    const DISABLED: &str = "none";
+
+    fn mode(&self) -> RelayMode {
+        match self {
+            Self::Only(url) => RelayMode::custom([url.clone()]),
+            Self::Disabled => RelayMode::Disabled,
+        }
+    }
+}
+
+impl std::fmt::Display for Relay {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Only(url) => write!(formatter, "{url}"),
+            Self::Disabled => formatter.write_str(Self::DISABLED),
+        }
+    }
+}
+
+impl std::str::FromStr for Relay {
+    type Err = <RelayUrl as std::str::FromStr>::Err;
+
+    /// `none`, or the relay's URL.
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if value == Self::DISABLED {
+            Ok(Self::Disabled)
+        } else {
+            value.parse().map(Self::Only)
         }
     }
 }
@@ -138,7 +182,7 @@ pub async fn bind(
             BUILD_GRANT_ALPN.to_vec(),
             FORGOTTEN_ALPN.to_vec(),
         ])
-        .relay_mode(RelayMode::custom([config.relay_url.clone()]))
+        .relay_mode(config.relay.mode())
         .ca_tls_config(config.relay_tls.clone())
         .transport_config(transport())
         .bind_addr(format!("0.0.0.0:{}", config.port))

@@ -1,6 +1,9 @@
 #!/bin/sh
 set -eu
 
+# Every ployzd here runs without the Ployz Relay, so a test Cluster never dials it.
+set -- --relay none "$@"
+
 # /var/run survives a container restart. A stale containerd pid that a new
 # process reuses makes dockerd wait on it instead of starting containerd.
 rm -f /var/run/docker.pid /var/run/docker.sock /var/run/docker/containerd/containerd.pid

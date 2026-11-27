@@ -29,7 +29,7 @@ use std::{
 };
 
 use futures_util::future::join_all;
-use iroh::{Endpoint, RelayUrl};
+use iroh::Endpoint;
 use ployz_core::{ForgottenAnswer, MachineId, MachineName, ManagementIdentity, MembershipEvidence};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -182,7 +182,7 @@ pub(crate) struct FenceDaemon {
     /// The daemon's own management endpoint, so the question travels under this
     /// Machine's Management Identity.
     pub(crate) endpoint: Endpoint,
-    pub(crate) relay: RelayUrl,
+    pub(crate) relay: crate::management::Relay,
 }
 
 impl FenceHost for FenceDaemon {
