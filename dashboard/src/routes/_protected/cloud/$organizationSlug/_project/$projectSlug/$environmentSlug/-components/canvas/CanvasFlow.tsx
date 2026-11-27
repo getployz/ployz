@@ -23,6 +23,8 @@ import { fitViewport, useCanvasNavigation } from "./useCanvasNavigation";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
 import { useBlankServiceCreator, useOpenCreatedService } from "../../../../-components/service-create/useServiceCreator";
 import { canvasNodeOf } from "./nodes";
+import { ServiceEdge } from "./ServiceEdge";
+import { CanvasKeepOut, RoutedStepEdge, useKeepOut, useRoutedEdges } from "#/modules/canvas/routed-edges";
 import { LitVolumeProvider } from "./VolumeTray";
 import { usePickingView } from "../new-branch/branch-picking";
 import { useVolumeCreator } from "./useVolumeCreator";
@@ -54,11 +56,13 @@ import { ENVIRONMENT_ROUTE_FROM } from "#/lib/environment-routes";
 import type { CanvasResourceNode, StoreCanvas } from "./types";
 import type { CanvasPlacement } from "#/modules/canvas/canvas-positions";
 
-// Every canvas edge is a Live Node's link, dashed by `buildStoreEdges`; each is a smooth step ending in an arrow.
+// A Live Node's link, dashed by `buildStoreEdges`, and a Service's, solid by `buildServiceEdges`; each is routed around
+// the cards and the floating bars, ending in an arrow.
 const DEFAULT_EDGE_OPTIONS = {
-  type: "smoothstep",
   markerEnd: { type: MarkerType.ArrowClosed, color: "var(--primary)" },
 } as const;
+
+const canvasEdgeTypes = { service: ServiceEdge, routed: RoutedStepEdge };
 
 export function CanvasFlow({
   organizationId,
@@ -77,6 +81,12 @@ export function CanvasFlow({
   store: StoreCanvas;
 }) {
   const [flowReady, setFlowReady] = useState(false);
+  // A Service link says why it exists while hovered, and stays saying it once clicked, until the pane is.
+  const [hoveredEdge, setHoveredEdge] = useState<string | null>(null);
+  const [pickedEdge, setPickedEdge] = useState<string | null>(null);
+  const { keepOut, keepOutRef } = useKeepOut();
+  const edges = useRoutedEdges(canvasEdges, keepOut).map((edge) => edge.type === "service" && (edge.id === hoveredEdge || edge.id === pickedEdge)
+    ? { ...edge, data: { ...edge.data, shown: true } } : edge);
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { onNodeDrag } = useCanvasPositionMutation({
     ...params,
@@ -109,6 +119,7 @@ export function CanvasFlow({
   const createConfig = useConfigCreator(params, environmentId);
 
   return (
+    <CanvasKeepOut value={keepOutRef}>
     <LitVolumeProvider>
       <div className="canvas-graph aria-busy:opacity-60" inert={selectedNodeId !== null || renaming} aria-busy={renaming}>
       <div className="hidden h-full min-[861px]:block">
@@ -121,8 +132,9 @@ export function CanvasFlow({
           <ReactFlow
             key={`${params.projectSlug}/${params.environmentSlug}`}
             nodes={canvasNodes}
-            edges={canvasEdges}
+            edges={edges}
             defaultEdgeOptions={DEFAULT_EDGE_OPTIONS}
+            edgeTypes={canvasEdgeTypes}
             nodeTypes={canvasNodeTypes}
             elementsSelectable={false}
             nodesFocusable={false}
@@ -138,13 +150,17 @@ export function CanvasFlow({
             onNodeDrag={onNodeDrag}
             onNodeDragStop={onNodeDrag}
             onPaneContextMenu={creator.onPaneContextMenu}
+            onEdgeMouseEnter={(_, edge) => setHoveredEdge(edge.id)}
+            onEdgeMouseLeave={() => setHoveredEdge(null)}
+            onEdgeClick={(_, edge) => setPickedEdge(edge.type === "service" && edge.id !== pickedEdge ? edge.id : null)}
+            onPaneClick={() => setPickedEdge(null)}
           >
             <Background variant={BackgroundVariant.Dots} gap={16} size={1} />
           </ReactFlow>
         </CanvasContextMenu>
       </div>
       <CanvasNodeList store={store} selectedNodeId={selectedNodeId} />
-      <div className="pointer-events-none absolute top-4 right-4 flex items-center gap-2">
+      <div ref={keepOutRef} className="pointer-events-none absolute top-4 right-4 flex items-center gap-2">
         <Suspense fallback={null}><OnMergeButton /></Suspense>
         <SyncButton />
         <CanvasFinder nodes={findableNodes} />
@@ -183,6 +199,7 @@ export function CanvasFlow({
       <ConfigCreatorDialog open={creator.open === "config"} onOpenChange={(open) => creator.setOpen("config", open)}
         onCreate={(name) => createConfig(name, creator.position)} />
     </LitVolumeProvider>
+    </CanvasKeepOut>
   );
 }
 

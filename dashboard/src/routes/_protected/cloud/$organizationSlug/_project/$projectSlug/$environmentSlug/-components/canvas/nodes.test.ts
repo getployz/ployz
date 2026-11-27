@@ -5,7 +5,7 @@ import { rowId } from "#/test/ids";
 import { configTrays } from "#/modules/config-store/store-configs";
 import type { CanvasPosition } from "#/modules/canvas/canvas-positions";
 import type { MirrorCopy, OldCopy, VolumeCopies } from "#/modules/volume-copies/volume-copies";
-import { arrivingNodes, buildStoreEdges, buildStoreNodes, canvasNodeOf, canvasPlacements, hangOverhang, volumeTrays } from "./nodes";
+import { arrivingNodes, buildServiceEdges, buildStoreEdges, buildStoreNodes, canvasNodeOf, canvasPlacements, hangOverhang, volumeTrays } from "./nodes";
 
 function createCanvasPosition(overrides?: Partial<CanvasPosition>): CanvasPosition {
   return {
@@ -154,6 +154,45 @@ describe("Config Store nodes", () => {
       .toMatchObject([{ ariaLabel: "api reads production's redis" }]);
     expect(buildStoreEdges({ services, live: [{ name: "redis", owner: null, data: false, usedBy: ["s2"] }] }))
       .toMatchObject([{ ariaLabel: "api reads redis" }]);
+  });
+
+  describe("Service links", () => {
+    const reading = (id: string, name: string, references: { service: string; keys: string[] }[]) =>
+      ({ service: { ...listing(id, name), references } });
+    const links = (services: ReturnType<typeof reading>[]) =>
+      buildServiceEdges(services).map(({ source, target, ariaLabel }) => ({ source, target, ariaLabel }));
+
+    it("links a chain from each Service into the one reading it, saying what it reads", () => {
+      expect(links([
+        reading("pg", "postgres", []),
+        reading("api", "api", [{ service: "pg", keys: ["DATABASE_URL"] }]),
+        reading("web", "web", [{ service: "api", keys: ["PLOYZ_PRIVATE_DOMAIN", "PORT"] }]),
+      ])).toEqual([
+        { source: "pg", target: "api", ariaLabel: "api references postgres.DATABASE_URL" },
+        { source: "api", target: "web", ariaLabel: "web references api.PLOYZ_PRIVATE_DOMAIN, api.PORT" },
+      ]);
+    });
+
+    it("links one Service into each of several that read it", () => {
+      expect(links([
+        reading("pg", "postgres", []),
+        reading("api", "api", [{ service: "pg", keys: ["DATABASE_URL"] }]),
+        reading("backup", "backup", [{ service: "pg", keys: ["PGPASSWORD"] }]),
+      ]).map(({ source, target }) => `${source}->${target}`)).toEqual(["pg->api", "pg->backup"]);
+    });
+
+    it("links nothing for a Service not drawn here, or one reading itself", () => {
+      expect(buildServiceEdges([
+        reading("api", "api", [{ service: "gone", keys: ["URL"] }, { service: "api", keys: ["PORT"] }]),
+      ])).toEqual([]);
+    });
+
+    it("links both ways when two Services read each other", () => {
+      expect(links([
+        reading("a", "a", [{ service: "b", keys: ["X"] }]),
+        reading("b", "b", [{ service: "a", keys: ["Y"] }]),
+      ]).map(({ source, target }) => `${source}->${target}`)).toEqual(["b->a", "a->b"]);
+    });
   });
 
   it("finds the node that shows a selection: a tray's first Service, else the node itself", () => {

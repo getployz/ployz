@@ -353,7 +353,8 @@ pub(super) fn live_producers(
     Ok(producers)
 }
 
-fn parts_read<'a>(
+/// Each value part `service` reads: its variables' and the files of each Config it mounts.
+pub(crate) fn parts_read<'a>(
     intent: &'a SavedEnvironmentIntent,
     service: &'a SavedServiceIntent,
 ) -> impl Iterator<Item = &'a ValuePart> {
