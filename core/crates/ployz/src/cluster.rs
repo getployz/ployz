@@ -1910,7 +1910,7 @@ async fn observe_machine_storage(
                 Call::once().to(&target),
             )
             .await
-            .map_err(crate::connect::rpc_error)?;
+            .map_err(unanswered_kept)?;
         if !description.supports(MACHINE_STORAGE_OBSERVATION_CAPABILITY) {
             return Ok(None);
         }
@@ -1923,7 +1923,7 @@ async fn observe_machine_storage(
                 Call::once().to(&target),
             )
             .await
-            .map_err(crate::connect::rpc_error)?
+            .map_err(unanswered_kept)?
             .storage)
     };
     match tokio::time::timeout(STORAGE_OBSERVATION_TIMEOUT, observation).await {

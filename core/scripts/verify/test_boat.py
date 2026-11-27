@@ -794,7 +794,9 @@ class Pool(unittest.TestCase):
         scripts = []
         provider.exec = lambda node, argv, **kwargs: scripts.append(" ".join(argv))
         provider.start(dict(name="machine-1"))
-        self.assertEqual(scripts, ["sh -ec ufw allow 80/tcp >/dev/null; ufw allow 443/tcp >/dev/null"])
+        [script] = scripts
+        self.assertIn("ufw allow 80/tcp >/dev/null; ufw allow 443/tcp >/dev/null", script)
+        self.assertIn("relay.ployz.dev", script, "a bare host stays off the production relay too")
 
     def test_down_deletes_a_bare_sandbox_and_never_pools_it(self):
         provider = self.provider("machine-1")
@@ -1197,6 +1199,52 @@ class Reset(unittest.TestCase):
         self.assertEqual(journal, {"var/log/journal": "/", "var/log/journal/abc": "/", "var/log/journal/abc/system.journal": ""})
         # Reset runs it after RESTORE, from /.
         self.assertGreater(boat.RESET.find(boat.JOURNAL_RESET), boat.RESET.find("cd /\n" + boat.RESTORE))
+
+
+class RelayBlock(unittest.TestCase):
+    """A test Machine never reaches the production relay: its name points at loopback and each address it
+    resolves to refuses new connections, IPv4 and IPv6 alike."""
+
+    def script(self, resolved, blocked=True):
+        with unittest.mock.patch.object(boat.socket, "getaddrinfo", side_effect=resolved):
+            return boat.relay_block(blocked)
+
+    def test_every_address_the_relay_resolves_to_is_refused(self):
+        script = self.script(lambda *_, **__: [(None, None, None, "", ("192.0.2.9", 443)),
+                                               (None, None, None, "", ("2001:db8::9", 443, 0, 0))])
+        self.assertIn("127.0.0.1 relay.ployz.dev", script)
+        for table, address in [("iptables", "192.0.2.9"), ("ip6tables", "2001:db8::9")]:
+            for protocol in ["tcp", "udp"]:
+                self.assertIn(f"{table} -I OUTPUT 1 -d {address} -p {protocol} --dport 443 -m conntrack --ctstate NEW"
+                              " -j REJECT", script)
+
+    def test_other_ports_on_the_relay_host_stay_open(self):
+        script = self.script(lambda *_, **__: [(None, None, None, "", ("192.0.2.9", 443))])
+        for line in script.splitlines():
+            if "REJECT" in line:
+                self.assertEqual(line.count("--dport 443"), 2, line)
+
+    def test_a_run_paired_with_cloud_takes_the_block_out(self):
+        relay = lambda *_, **__: [(None, None, None, "", ("192.0.2.9", 443))]
+        script, opened = self.script(relay), self.script(relay, blocked=False)
+        self.assertNotIn(" -I ", opened)
+        for line in script.splitlines()[1:]:
+            rule = line.split(" -C ", 1)[1].split(" 2>/dev/null", 1)[0]
+            self.assertIn(f"-D {rule}", opened)
+        with tempfile.TemporaryDirectory() as directory:
+            hosts = Path(directory) / "hosts"
+            hosts.write_text("127.0.0.1 localhost\n")
+            first = script.splitlines()[0].replace("/etc/hosts", str(hosts))
+            undo = opened.splitlines()[0].replace("/etc/hosts", str(hosts))
+            subprocess.run(["sh", "-ec", first], check=True)
+            self.assertIn("relay.ployz.dev", hosts.read_text())
+            subprocess.run(["sh", "-ec", undo], check=True)
+            self.assertEqual(hosts.read_text(), "127.0.0.1 localhost\n")
+
+    def test_a_relay_that_does_not_resolve_still_has_its_name_pointed_away(self):
+        script = self.script(boat.socket.gaierror("no name"))
+        self.assertIn("::1 relay.ployz.dev", script)
+        self.assertNotIn("REJECT", script)
 
 
 if __name__ == "__main__":

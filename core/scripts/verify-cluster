@@ -369,6 +369,36 @@ def endpoint(address):
     return f"[{address}]:51820" if ":" in address else address + ":51820"
 
 
+def require_reachable(run, backend, nodes, others=None):
+    """Raise Infrastructure when two of `nodes`, or one of `nodes` and one of `others`, don't answer each other's
+    ping: their WireGuard link would never come up, and every join and Global catch-up across it would time out."""
+    if run.get("provider") != "boat":
+        return  # Only Boat hands out pairs that can't reach each other; other hosts may block ICMP on purpose.
+    others = nodes if others is None else others
+    pairs = sorted({tuple(sorted((a["name"], b["name"]))) for a in nodes for b in others if a is not b})
+    if not pairs:
+        return
+    named = {node["name"]: node for node in [*nodes, *others]}
+
+    def ping(pair):
+        source, target = named[pair[0]], named[pair[1]]
+        return backend.exec(source, ["ping", "-c3", "-W2", target["address"]], check=False, timeout=30).returncode
+    # Boat guests run no firewall, so a pair that drops ping drops WireGuard too. A Machine without
+    # ping (126, 127) can't tell, so it doesn't fail the run.
+    codes = dict(zip(pairs, parallel(ping, pairs)))
+    unrun = sorted({pair[0] for pair, code in codes.items() if code == 255})
+    if unrun:
+        raise Infrastructure(f"couldn't run the pair check over SSH on {', '.join(unrun)}")
+    silent = [pair for pair, code in codes.items() if code not in (0, 126, 127)]
+    if silent:
+        hosts = {name: named[name]["ssh"].rsplit(":", 1)[0].rsplit("@", 1)[-1] for pair in silent for name in pair}
+        raise Infrastructure(
+            "these Machines can't reach each other on their underlay address, so WireGuard between them never "
+            "comes up; this is the host network, not ployz: " +
+            ", ".join(f"{a} ({hosts[a]}) and {b} ({hosts[b]})" for a, b in silent) +
+            ". On Boat, rerun with PLOYZ_VERIFY_BOAT_AVOID_NODES set to one host of each pair.")
+
+
 def partition(run, backend, node, cut):
     """Drop the Machine's traffic with each peer's underlay address, which carries WireGuard. The path SSH
     takes stays reachable, so SSH, the guest agent and Cloud still answer. The rules do not survive a reboot."""
@@ -815,6 +845,8 @@ def launch(args, run, private, total_started):
     backend = provider(run, commands)
     print(f"Preparing verification run: {run['manifest']}", file=sys.stderr)
     paired = args.cloud or args.cloud_attach
+    if paired:
+        run["cloud_relay"] = True  # Cloud reaches a new Server only through the relay, so Boat leaves it open.
     try:
         select_daemons(run, commands, args.daemon or [], default="checkout")
         # Cloud enrollment needs a daemon that speaks this CLI's protocol and reports its version; a release with
@@ -871,6 +903,7 @@ def launch(args, run, private, total_started):
             print(json.dumps(run["timings"]), file=sys.stderr)
             return
         started = time.monotonic()
+        require_reachable(run, backend, run["machines"])
         for node in run["machines"]:
             enroll(run, commands, node, private)
             save(run)
@@ -964,6 +997,7 @@ def add(run, commands, backend, roles, region=None):
     try:
         provision(run, backend, node, node["daemon"], lambda: None)
         save(run)
+        require_reachable(run, backend, [node], [peer for peer in unintended(run) if peer is not node])
         enroll(run, commands, node, Path(run["manifest"]).parent / "private", roles, region)
         save(run)
         if run.get("powered_off"):
@@ -1018,7 +1052,9 @@ def enroll(run, commands, node, private, roles=None, region=None):
                        "--public-ip", public, "--wg-endpoint", node["endpoint"], "--wg-mtu", "1420",
                        *(["--region", region] if region is not None else []),
                        *([f"--accepts-{role}={str(role in roles).lower()}" for role in ROLES] if roles is not None else [])],
-                 check=False, device=joiner)
+                 # Past the CLI's own 300s wait for the joiner to participate, which starts only after it enrolls,
+                 # so a stuck join ends with ployz's error rather than this deadline.
+                 check=False, device=joiner, timeout=600)
     response = enrolled(node, result, commands.evidence)
     follow_up = response.get("follow_up_error", {})
     node["machine_id"] = response["server"]["machine"]["id"]

@@ -28,7 +28,7 @@ pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(root);
     let context = leaf.get_one::<String>("context").map(String::as_str);
     runtime()?.block_on(async {
-        let (machines, storage, disks) = match connect_or_none(leaf, context).await? {
+        let (machines, storage, disks, entry) = match connect_or_none(leaf, context).await? {
             Some(mut client) => {
                 let mut machines = client.machines().await?;
                 let listed = machines.clone();
@@ -36,9 +36,9 @@ pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
                     client.observe_machine_storage(&mut machines),
                     client.observe_docker_disks(&listed),
                 );
-                (machines, storage, disks)
+                (machines, storage, disks, client.entry_machine())
             }
-            None => (Vec::new(), StorageGaps::default(), Vec::new()),
+            None => (Vec::new(), StorageGaps::default(), Vec::new(), None),
         };
         if let Some(warning) = daemon_skew_warning(&machines, env!("CARGO_PKG_VERSION")) {
             ui::warn(warning);
@@ -59,11 +59,13 @@ pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
             ui::warn(never_joined(observed));
         }
         let listed = machines.iter().map(observation_json).collect::<Vec<_>>();
-        let mut gaps = Gaps::default().named(
-            machines
-                .iter()
-                .map(|observed| (observed.machine.id, &observed.machine.name)),
-        );
+        let mut gaps = Gaps::default()
+            .named(
+                machines
+                    .iter()
+                    .map(|observed| (observed.machine.id, &observed.machine.name)),
+            )
+            .explained(crate::deploy::dead_links(&machines, entry));
         gaps.extend(&storage.failures, &storage.omissions);
         let mut table = Table::new(
             [
@@ -329,14 +331,39 @@ async fn inspect(
     let details = match details {
         Ok(details) => details,
         Err(error) => {
-            if error.target_unanswered()
-                && !error.large_packets_dropped()
-                && let Some(name) = dropped_target(client, selector).await
-            {
-                ui::warn(dropped_path(&name));
-            }
-            return Err(Error::from(crate::connect::rpc_error(error))
-                .context(format!("Could not show Server {}.", selector.as_str())));
+            let message = if error.target_unanswered() {
+                // One listing from the entry explains a silent target both ways.
+                let machines =
+                    tokio::time::timeout(crate::deploy::DIAGNOSIS_WAIT, client.machines())
+                        .await
+                        .ok()
+                        .and_then(Result::ok)
+                        .unwrap_or_default();
+                let target =
+                    match selector.resolve(machines.iter().map(|observed| &observed.machine)) {
+                        ployz_core::NameMatches::One(target) => Some(target.id),
+                        ployz_core::NameMatches::None
+                        | ployz_core::NameMatches::Ambiguous { .. } => None,
+                    };
+                let observed = machines
+                    .iter()
+                    .find(|observed| Some(observed.machine.id) == target);
+                if !error.large_packets_dropped()
+                    && let Some(observed) =
+                        observed.filter(|observed| drops_large_packets(observed))
+                {
+                    ui::warn(dropped_path(&observed.machine.name));
+                }
+                let why = crate::deploy::dead_links(&machines, client.entry_machine())
+                    .into_iter()
+                    .find(|link| Some(link.machine) == target)
+                    .map(|link| format!(" {}", link.explained()))
+                    .unwrap_or_default();
+                format!("Server {selector} didn't answer, so it can't be shown.{why}")
+            } else {
+                format!("Could not show Server {}.", selector.as_str())
+            };
+            return Err(Error::from(crate::connect::rpc_error(error)).context(message));
         }
     };
     let mut server = serde_json::to_value(&details)?;
@@ -548,24 +575,6 @@ fn dropped_path(name: &MachineName) -> String {
     )
 }
 
-/// The Server `selector` names, when the entry lists its path as dropping large packets.
-/// A target that didn't answer may be silent for that reason alone.
-async fn dropped_target(
-    client: &mut crate::connect::Client,
-    selector: &MachineTarget,
-) -> Option<MachineName> {
-    let machines = client.machines().await.ok()?;
-    let ployz_core::NameMatches::One(target) =
-        selector.resolve(machines.iter().map(|observed| &observed.machine))
-    else {
-        return None;
-    };
-    machines
-        .iter()
-        .find(|observed| observed.machine.id == target.id && drops_large_packets(observed))
-        .map(|observed| observed.machine.name.clone())
-}
-
 /// The human `server show`: who the Server is, what it runs, how full it is, and
 /// how far its peers are; `--json` keeps everything, capabilities included.
 fn record(details: &MachineDetails) -> Fields {
@@ -662,6 +671,20 @@ fn record(details: &MachineDetails) -> Fields {
             .machine
             .as_ref()
             .map_or_else(|| rtt.address.to_string(), |peer| peer.name.to_string());
+        // Corrosion can measure the round trip by way of another Server, so it says nothing here.
+        if let Some(ployz_core::WireGuardObservation::Down {
+            since_handshake_secs,
+        }) = rtt.wireguard
+        {
+            let since = since_handshake_secs.map_or_else(
+                || "ever".to_owned(),
+                |secs| format!("for {}", crate::deploy::span(Duration::from_secs(secs))),
+            );
+            return (
+                "peer",
+                format!("{peer} down, no WireGuard handshake {since}"),
+            );
+        }
         let tenths = rtt.statistics.median_ns / 100_000;
         let path = match rtt.path {
             Some(path) if path.large_packets == LargePackets::Dropped => {
@@ -877,6 +900,52 @@ mod tests {
              peer = machine-3 1.2 ms\n\
              management = cli-5ec2b97c41404ba093fc78cf6489, cloud\n\
              upgrade = to 0.3.0-beta.7 failed at activating: systemd refused the unit\n"
+        );
+    }
+
+    /// A peer the shown Server's WireGuard sees down shows as down, not with a round trip
+    /// that came another way.
+    #[test]
+    fn a_peer_whose_wireguard_is_down_shows_down_not_a_round_trip() {
+        let rtt = |name: &str, wireguard: Value| {
+            json!({
+                "peer_id": name,
+                "address": "[fdcc::1]:7570",
+                "machine": { "id": "8bd99128eeb24bfeb80ae7489cd46211", "name": name },
+                "statistics": { "median_ns": 400_000, "population_stddev_ns": 0 },
+                "wireguard": wireguard,
+            })
+        };
+        let details: MachineDetails = serde_json::from_value(json!({
+            "id": "8d996790baf04c20b81cdbf8c7897016",
+            "phase": "participating",
+            "public_key": ployz_core::WireGuardPublicKey([7; 32]),
+            "advertised_endpoints": [],
+            "rtts": [
+                rtt("machine-2", json!({ "state": "up" })),
+                rtt("machine-3", json!({ "state": "down", "since_handshake_secs": 387 })),
+                rtt("machine-4", json!({ "state": "down", "since_handshake_secs": null })),
+                rtt("machine-5", Value::Null),
+            ],
+            "management_clients": [],
+        }))
+        .unwrap();
+        let mut out = anstream::StripStream::new(Vec::new());
+        record(&details).write(&mut out, false).unwrap();
+        let peers: Vec<_> = String::from_utf8(out.into_inner())
+            .unwrap()
+            .lines()
+            .filter(|line| line.starts_with("peer = "))
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(
+            peers,
+            [
+                "peer = machine-2 0.4 ms",
+                "peer = machine-3 down, no WireGuard handshake for 6m",
+                "peer = machine-4 down, no WireGuard handshake ever",
+                "peer = machine-5 0.4 ms",
+            ]
         );
     }
 
