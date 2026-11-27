@@ -715,18 +715,45 @@ fn label_cache(docker: &Docker<'_>, name: &str) -> Result<(), BuildError> {
 fn discard(docker: &Docker<'_>, slot: usize) -> Result<(), BuildError> {
     [Access::Full, Access::Free].iter().try_for_each(|access| {
         match owned(docker, &container(&access.builder(slot)))? {
-            Some(id) => stop_and_remove(docker, &id),
+            Some(id) => tear_down(docker, &id),
             None => Ok(()),
         }
     })
 }
 
-/// Stop the worker with ID `id`, then remove it. A graceful stop lets
-/// BuildKit delete its bridge; a forced removal leaves it behind.
-fn stop_and_remove(docker: &Docker<'_>, id: &str) -> Result<(), BuildError> {
-    let _ = docker
-        .releasing()
-        .run("stop the build container", &["stop", id], Streams::Captured);
+/// Tear down the worker with ID `id`: stop it gracefully, so BuildKit deletes
+/// its bridge, then remove it. A worker that fails to stop and still runs is
+/// left running, since a forced removal would leave its bridge behind; the
+/// error keeps the slot marked for a later recovery to retry.
+fn tear_down(docker: &Docker<'_>, id: &str) -> Result<(), BuildError> {
+    let releasing = docker.releasing();
+    if let Err(error) = releasing.run("stop the build container", &["stop", id], Streams::Captured)
+    {
+        match releasing.run(
+            "inspect the build container",
+            &[
+                "inspect",
+                "--type",
+                "container",
+                "--format",
+                "{{.State.Running}}",
+                id,
+            ],
+            Streams::Captured,
+        ) {
+            Ok(running) if running.trim() == "false" => {}
+            Err(BuildError::Docker { diagnostic, .. })
+                if diagnostic.to_ascii_lowercase().contains("no such") =>
+            {
+                return Ok(());
+            }
+            _ => {
+                return Err(BuildError::UncertainTermination(format!(
+                    "the BuildKit worker {id} did not stop, so it is left running: {error}"
+                )));
+            }
+        }
+    }
     docker.remove_container(id)
 }
 
@@ -766,7 +793,7 @@ fn release(docker: &Docker<'_>, name: &str) -> Result<(), BuildError> {
     }
     remove(docker, name)?;
     match held {
-        Holder::Ployz(id) => stop_and_remove(docker, &id),
+        Holder::Ployz(id) => tear_down(docker, &id),
         Holder::Nobody | Holder::Other => Ok(()),
     }
 }
@@ -1228,6 +1255,10 @@ impl Lock {
                     std::iter::once(container(name))
                         .chain(HELPERS.iter().map(|helper| format!("{name}-{helper}")))
                         .try_for_each(|held| match holder(&docker, &held)? {
+                            // Only a worker has a bridge to delete.
+                            Holder::Ployz(id) if held.starts_with(WORKER_PREFIX) => {
+                                tear_down(&docker, &id)
+                            }
                             Holder::Ployz(id) => docker.remove_container(&id),
                             Holder::Nobody | Holder::Other => Ok(()),
                         })
@@ -2015,7 +2046,12 @@ esac
 [ "$1" = --ready ] && exit 0
 printf '%s\n' "$*" >> '{0}/calls'
 [ -f '{0}/docker-down' ] && {{ echo 'Cannot connect to the Docker daemon' >&2; exit 1; }}
-{2}case "$1 $2" in
+{2}if [ "$1 $2 $5" = 'inspect --type {{{{.State.Running}}}}' ]; then
+  cat '{0}/running' 2>/dev/null || {{ echo "Error: No such container: $6" >&2; exit 1; }}
+  exit 0
+fi
+case "$1 $2" in
+  'stop '*) [ -f '{0}/fail-stop' ] && {{ echo 'Error response from daemon: cannot stop container' >&2; exit 1; }} ;;
   'inspect --type')
     if grep -qx "$6" '{0}/owned' 2>/dev/null; then made_by_ployz "$6"
     elif grep -qx "$6" '{0}/foreign' 2>/dev/null; then
@@ -3132,6 +3168,96 @@ exit 0
         let mut removed = removed.into_iter().map(str::to_owned).collect::<Vec<_>>();
         removed.sort();
         assert_eq!(removed, expected, "{calls:?}");
+    }
+
+    /// Recovery stops a worker before removing it, and leaves one that
+    /// fails to stop and still runs, with the slot marked.
+    #[test]
+    fn recovery_stops_a_worker_before_removing_it_and_leaves_one_that_will_not_stop() {
+        let directory = host_slot();
+        let directory = directory.path();
+        let worker = container(&Access::Full.builder(0));
+        fs::write(directory.join("owned"), &worker).unwrap();
+        fs::write(directory.join("fail-stop"), "").unwrap();
+        fs::write(directory.join("running"), "true").unwrap();
+        let policy = crashed_slot(directory);
+        let refused = Lock::try_acquire_slot(&policy.state_directory, 0, &policy.docker);
+        assert!(
+            refused.as_ref().is_err_and(BuildError::is_unknown),
+            "{:?}",
+            refused.err()
+        );
+        let calls = calls_since(directory, &mut 0);
+        assert!(calls.contains(&format!("stop id-{worker}")), "{calls:?}");
+        assert!(
+            !calls.contains(&format!("rm --force id-{worker}")),
+            "a running worker was force-removed: {calls:?}"
+        );
+        assert!(
+            !fs::read_to_string(policy.state_directory.join(lock_file(0)))
+                .unwrap()
+                .is_empty(),
+            "the slot's mark cleared while its worker runs"
+        );
+
+        // The worker stops on the next try.
+        fs::remove_file(directory.join("fail-stop")).unwrap();
+        drop(Lock::try_acquire_slot(&policy.state_directory, 0, &policy.docker).unwrap());
+        let calls = calls_since(directory, &mut 0);
+        let stop = calls
+            .iter()
+            .position(|call| *call == format!("stop id-{worker}"));
+        let remove = calls
+            .iter()
+            .position(|call| *call == format!("rm --force id-{worker}"));
+        assert!(
+            stop.is_some() && remove.is_some() && stop < remove,
+            "{calls:?}"
+        );
+    }
+
+    /// A Build's teardown leaves a worker that fails to stop and still runs,
+    /// keeping the slot marked.
+    #[test]
+    fn a_released_worker_that_will_not_stop_is_not_force_removed() {
+        let directory = host_slot();
+        let directory = directory.path();
+        let program = directory.join("docker");
+        let environment = BTreeMap::new();
+        let docker = Docker {
+            program: &program,
+            environment: &environment,
+            working_dir: directory,
+            deadline: crate::Deadline::starting_now(crate::EXECUTION_TIMEOUT),
+            cancellation: None,
+            progress: None,
+            recorder: None,
+        };
+        let worker = container(&crate::builder_name());
+        let builder = Builder::acquire(
+            &docker,
+            Lock::try_acquire_in(directory).unwrap(),
+            Access::Full,
+            &crate::policy::Resources::default(),
+            None,
+            Reuse::WhenClean,
+        )
+        .unwrap();
+        fs::write(directory.join("owned"), &worker).unwrap();
+        fs::write(directory.join("fail-stop"), "").unwrap();
+        fs::write(directory.join("running"), "true").unwrap();
+        let mut seen = 0;
+        calls_since(directory, &mut seen);
+        let error = builder
+            .finish::<()>(Err(BuildError::Result("failed".into())))
+            .unwrap_err();
+        assert!(error.is_unknown(), "{error}");
+        let calls = calls_since(directory, &mut seen);
+        assert!(
+            !calls.contains(&format!("rm --force id-{worker}")),
+            "a running worker was force-removed: {calls:?}"
+        );
+        assert!(!fs::read(directory.join(lock_file(0))).unwrap().is_empty());
     }
 
     #[test]
