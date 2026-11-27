@@ -159,6 +159,8 @@ impl MeshPeer {
         last_handshake: Option<SystemTime>,
         device_endpoint: Option<SocketAddr>,
     ) -> Option<SelectedEndpoint> {
+        // The kernel reports a peer that never handshook at the Unix epoch.
+        let last_handshake = last_handshake.filter(|handshake| *handshake > SystemTime::UNIX_EPOCH);
         paths.judge(
             self.machine_id,
             self.selection.status(now, last_handshake),
@@ -707,7 +709,11 @@ mod tests {
         let never = Some(WireGuardObservation::Down {
             since_handshake_secs: None,
         });
-        assert_eq!(poll(timed_out, None), never);
+        assert_eq!(
+            poll(timed_out, Some(SystemTime::UNIX_EPOCH)),
+            never,
+            "the kernel's never-handshook time reads as never, not as decades ago"
+        );
         for later in 1..=3 {
             assert_eq!(
                 poll(timed_out + Duration::from_secs(later), None),
