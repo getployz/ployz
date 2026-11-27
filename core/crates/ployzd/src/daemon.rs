@@ -325,7 +325,7 @@ impl Daemon {
             containers.as_ref().map(ContainerRuntime::local_docker),
         );
         if let Some(docker) = containers.as_ref().map(ContainerRuntime::local_docker) {
-            tokio::spawn(async move { docker.sweep_earlier_staging().await });
+            docker.sweep_staging();
         }
         let records = local.watch();
         let participation = Participation::new(records.clone(), shutdown.clone());

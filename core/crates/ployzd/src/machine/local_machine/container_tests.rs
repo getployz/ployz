@@ -1181,10 +1181,10 @@ mod settled {
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 
-    /// A peer pull's cleanup that never returns must not hold the turn: the pull answers
-    /// once its tag is written, and the next Deployment's creates go ahead.
+    /// A sweep of staging names that never returns must not hold the turn: the pull
+    /// answers once its tag is written, and the next Deployment's creates go ahead.
     #[tokio::test]
-    async fn a_stalled_peer_pull_cleanup_holds_back_no_create() {
+    async fn a_stalled_staging_sweep_holds_back_no_create() {
         let root =
             std::env::temp_dir().join(format!("ployz-stalled-cleanup-{}", MachineId::random()));
         std::fs::create_dir(&root).unwrap();
@@ -1195,6 +1195,7 @@ mod settled {
             &format!(
                 r#"#!/bin/sh
 if [ "$3" = --platform ]; then echo "No such image: $5" >&2; exit 1; fi
+if [ "$1 $2" = 'image ls' ]; then echo sha256:{hex}; exit 0; fi
 case "$1 $2 $5" in
   'image inspect {{{{range'*) exec sleep 600 ;;
   'image inspect {{{{json'*)
@@ -1234,11 +1235,11 @@ esac
             local.pull_image_from_machine(request),
         )
         .await
-        .expect("the pull waits for its cleanup")
+        .expect("the pull waits for its sweep")
         .unwrap();
         tokio::time::timeout(Duration::from_secs(30), local.wait_for_admitted_work())
             .await
-            .expect("a stalled cleanup holds the turn");
+            .expect("a stalled sweep holds the turn");
         std::fs::remove_dir_all(data_dir).unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }

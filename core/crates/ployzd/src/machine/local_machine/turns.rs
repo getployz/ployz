@@ -7,8 +7,8 @@
 //! Admitted work is detached from its RPC: a caller that stops waiting does not abandon
 //! it halfway, and the task holds its guards until the work ends. Work run through
 //! [`LocalMachine::finish_shared_with_caller`] is the one exception: it learns when its
-//! caller stops waiting, and a peer image transfer not yet tagging then stops. Its
-//! cleanup runs after it frees its turn.
+//! caller stops waiting, and a peer image transfer not yet tagging then stops. The sweep
+//! of its staging names runs off the turn.
 //!
 //! Each turn admitted work acts under checks the caller's access once taken, against the
 //! keys as they stand, and the work acts at the scope that check found: removing a key

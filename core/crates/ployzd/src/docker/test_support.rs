@@ -1126,10 +1126,13 @@ pub(crate) async fn fake_runtime_with(fake: FakeDocker) -> (ContainerRuntime, Fa
     .await
     .unwrap();
     let docker = LocalDocker::from_client(docker);
-    let docker = match fake.docker_cli.clone() {
-        Some(cli) => docker.with_docker_cli(cli),
-        None => docker,
-    };
+    // A fake runtime never reaches the host's Docker through the CLI: without a fake CLI,
+    // every peer pull's Docker command fails to start.
+    let docker = docker.with_docker_cli(
+        fake.docker_cli
+            .clone()
+            .unwrap_or_else(|| "/nonexistent/ployz-test-docker".into()),
+    );
     (ContainerRuntime::new(docker, specs), fake)
 }
 

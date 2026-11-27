@@ -1126,9 +1126,9 @@ impl LocalMachine {
     /// checked again under it.
     ///
     /// Unlike other admitted work, a transfer stops once its caller stops waiting, unless
-    /// it has begun its tag, which it finishes. It frees its turn before removing its
-    /// staging name: a cancelled Deployment's pull, or a stalled removal, must not hold
-    /// up the creates of the next one.
+    /// it has begun its tag, which it finishes. Staging names are swept off its turn: a
+    /// cancelled Deployment's pull, or a stalled sweep, must not hold up the creates of
+    /// the next one.
     ///
     /// # Errors
     ///

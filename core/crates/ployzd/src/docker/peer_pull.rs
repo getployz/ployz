@@ -1,6 +1,7 @@
 //! Pull an image from another Machine's ingest TCP destination into local Docker.
 
 use std::{
+    collections::BTreeSet,
     net::{Ipv4Addr, SocketAddr},
     path::PathBuf,
     sync::{
@@ -17,7 +18,7 @@ use tokio::{
     io::copy_bidirectional,
     net::{TcpListener, TcpStream},
     process::Command,
-    task::JoinHandle,
+    sync::watch,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -27,8 +28,8 @@ use super::{Error, LocalDocker};
 /// else names an image this way, so a sweep can tell a staging name from a user's image.
 const STAGING: &str = "ployz-staging";
 
-/// This run of the daemon's part of each staging name, so a sweep at start removes only
-/// names an earlier run left, never one a delivery of this run still holds.
+/// This run of the daemon's part of each staging name: its pid and start time, as
+/// fixed-width lowercase hex, so a staging name has one exact shape.
 fn boot() -> &'static str {
     static BOOT: OnceLock<String> = OnceLock::new();
     BOOT.get_or_init(|| {
@@ -36,15 +37,24 @@ fn boot() -> &'static str {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        format!("{:x}{started:x}", std::process::id())
+        format!("{:08x}{started:032x}", std::process::id())
     })
 }
 
-/// The Docker CLI peer pulls run, and the staging names whose removal failed, which
-/// the next delivery removes.
+/// The Docker CLI peer pulls run, the staging names deliveries in flight hold, and the
+/// sweep that removes the rest.
 pub(crate) struct PeerPulls {
     cli: PathBuf,
-    leftover: Mutex<Vec<String>>,
+    in_flight: Mutex<BTreeSet<String>>,
+    sweep: watch::Sender<Sweep>,
+}
+
+/// Where the one sweep is: idle, running, or running and asked to go again.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Sweep {
+    Idle,
+    Running,
+    Again,
 }
 
 impl Default for PeerPulls {
@@ -57,49 +67,56 @@ impl PeerPulls {
     pub(crate) fn new(cli: PathBuf) -> Self {
         Self {
             cli,
-            leftover: Mutex::default(),
+            in_flight: Mutex::default(),
+            sweep: watch::Sender::new(Sweep::Idle),
         }
     }
 
-    /// Remove staging name `name`, off the caller's turn. Only the delivery that made the
-    /// name, or a sweep after the run that made it ended, removes it. A failed removal is
-    /// logged and kept for the next delivery to try again.
-    fn clean_up(self: &Arc<Self>, name: String) -> JoinHandle<()> {
+    /// Sweep staging names off the caller's turn. One sweep runs at a time: asked while
+    /// one runs, it goes again once done, so a name it missed, or a Docker that could not
+    /// answer, is caught by the next pass.
+    fn sweep(self: &Arc<Self>) {
+        let mut start = false;
+        self.sweep.send_modify(|sweep| {
+            start = *sweep == Sweep::Idle;
+            *sweep = if start { Sweep::Running } else { Sweep::Again };
+        });
+        if !start {
+            return;
+        }
         let pulls = Arc::clone(self);
         tokio::spawn(async move {
-            if let Err(error) = remove_staging(&pulls.cli, &name).await {
-                tracing::warn!(
-                    staging = %name,
-                    error = %ployz_core::error_chain::inline(&error),
-                    "a peer pull's staging name is left until the next delivery removes it"
-                );
-                pulls
-                    .leftover
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .push(name);
+            loop {
+                pulls.sweep_once().await;
+                let mut done = false;
+                pulls.sweep.send_modify(|sweep| {
+                    done = *sweep == Sweep::Running;
+                    *sweep = if done { Sweep::Idle } else { Sweep::Running };
+                });
+                if done {
+                    break;
+                }
             }
-        })
+        });
     }
 
-    /// Try again to remove each staging name an earlier delivery left, off the caller's
-    /// turn as well.
-    fn retry_leftovers(self: &Arc<Self>) -> Vec<JoinHandle<()>> {
-        let leftover =
-            std::mem::take(&mut *self.leftover.lock().unwrap_or_else(PoisonError::into_inner));
-        leftover
-            .into_iter()
-            .map(|name| self.clean_up(name))
-            .collect()
+    /// Wait until no sweep runs or is asked for.
+    #[cfg(test)]
+    async fn swept(&self) {
+        let mut sweep = self.sweep.subscribe();
+        sweep.wait_for(|sweep| *sweep == Sweep::Idle).await.unwrap();
     }
 
-    /// Remove the staging names an earlier run of the daemon left, which no delivery of
-    /// this run will. A name this run made, and every name outside [`STAGING`], is left.
-    async fn sweep(self: &Arc<Self>) -> Vec<JoinHandle<()>> {
+    /// Remove each staging name no delivery in flight holds, from every image that keeps
+    /// another name. Ployz never removes an image's last name: Docker hands content it
+    /// held unnamed to the pull that asks for it, so a staging name may be all that names
+    /// content Ployz never brought, and removing it would delete that content. Removing a
+    /// name its image has another of only untags.
+    async fn sweep_once(&self) {
         let failed = |error: &Error| {
             tracing::warn!(
                 error = %ployz_core::error_chain::inline(error),
-                "could not read images to remove staging names an earlier run left"
+                "could not read images to sweep peer pulls' staging names; the next delivery tries again"
             );
         };
         // `image ls` hides a digest-only name when its image has other names, so the
@@ -111,28 +128,47 @@ impl PeerPulls {
         .await
         {
             Ok(images) => images,
-            Err(error) => {
-                failed(&error);
-                return Vec::new();
-            }
+            Err(error) => return failed(&error),
         };
-        let mut earlier = std::collections::BTreeSet::new();
-        for image in images.lines().collect::<std::collections::BTreeSet<_>>() {
-            match docker_cli(&self.cli, &["image", "inspect", image, "--format", NAMES]).await {
-                Ok(names) => earlier.extend(
-                    names
-                        .lines()
-                        .filter(|name| earlier_staging(name))
-                        .map(str::to_owned),
-                ),
-                Err(error) if no_such_image(&error) => {}
-                Err(error) => failed(&error),
+        for image in images.lines().collect::<BTreeSet<_>>() {
+            let names = match docker_cli(&self.cli, &["image", "inspect", image, "--format", NAMES])
+                .await
+            {
+                Ok(names) => names,
+                Err(error) if no_such_image(&error) => continue,
+                Err(error) => {
+                    failed(&error);
+                    continue;
+                }
+            };
+            let names = names
+                .lines()
+                .filter(|name| !name.is_empty())
+                .collect::<BTreeSet<_>>();
+            let swept = {
+                let in_flight = self
+                    .in_flight
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                names
+                    .iter()
+                    .copied()
+                    .filter(|name| staging(name) && !in_flight.contains(*name))
+                    .collect::<Vec<_>>()
+            };
+            // With no other name, one staging name stays and keeps the content.
+            let kept = usize::from(swept.len() == names.len());
+            for name in swept.iter().skip(kept) {
+                match docker_cli(&self.cli, &["image", "rm", name]).await {
+                    Err(error) if !no_such_image(&error) => tracing::warn!(
+                        staging = %name,
+                        error = %ployz_core::error_chain::inline(&error),
+                        "a peer pull's staging name is left until the next sweep"
+                    ),
+                    _ => {}
+                }
             }
         }
-        earlier
-            .into_iter()
-            .map(|name| self.clean_up(name))
-            .collect()
     }
 }
 
@@ -140,51 +176,61 @@ impl PeerPulls {
 const NAMES: &str =
     "{{range .RepoTags}}{{println .}}{{end}}{{range .RepoDigests}}{{println .}}{{end}}";
 
-/// Whether `name` is a staging name an earlier run of the daemon made.
-fn earlier_staging(name: &str) -> bool {
+/// Whether `name` has the exact shape of a staging name a delivery writes:
+/// `127.0.0.1:<port>/ployz-staging/<boot>/<n>@sha256:<hex>`, the boot as [`boot`] writes
+/// it, from any run.
+fn staging(name: &str) -> bool {
+    let decimal = |part: &str, most: usize| {
+        (1..=most).contains(&part.len()) && part.bytes().all(|byte| byte.is_ascii_digit())
+    };
+    let hex = |part: &str, length: usize| {
+        part.len() == length
+            && part
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    };
     let Some((port, path)) = name
         .strip_prefix("127.0.0.1:")
         .and_then(|rest| rest.split_once('/'))
     else {
         return false;
     };
-    let Some(run) = path
-        .strip_prefix(STAGING)
-        .and_then(|path| path.strip_prefix('/'))
-    else {
+    let Some((path, digest)) = path.split_once("@sha256:") else {
         return false;
     };
-    !port.is_empty()
-        && port.bytes().all(|byte| byte.is_ascii_digit())
-        && name.contains("@sha256:")
-        && !run.starts_with(&format!("{}/", boot()))
+    let mut parts = path.split('/');
+    decimal(port, 5)
+        && parts.next() == Some(STAGING)
+        && parts.next().is_some_and(|run| hex(run, 40))
+        && parts.next().is_some_and(|n| decimal(n, 20))
+        && parts.next().is_none()
+        && hex(digest, 64)
 }
 
 impl LocalDocker {
-    /// Remove the staging names an earlier run of the daemon left behind, in the
-    /// background. Each failure is logged and kept for the next delivery.
-    pub(crate) async fn sweep_earlier_staging(&self) {
-        drop(self.peer_pulls.sweep().await);
+    /// Sweep the staging names peer pulls left, in the background, as the daemon starts.
+    pub(crate) fn sweep_staging(&self) {
+        self.peer_pulls.sweep();
     }
 }
 
 /// What a delivery publishes from: content Docker already held, by its ID, or a staging
-/// name it pulls to. Only a staging name is removed afterwards, and it holds only what
-/// that delivery brought: a pull over content Docker holds unnamed would take that copy
-/// over, and removing the name would then delete it.
+/// name it pulls to.
 enum Prepared {
     Held(String),
     Staged(Staging),
 }
 
-/// A staging name, unique to one delivery, and the loopback proxy it pulls through.
+/// A staging name, unique to one delivery and held from sweeps while it runs, and the
+/// loopback proxy it pulls through.
 struct Staging {
     name: String,
+    pulls: Arc<PeerPulls>,
     _proxy: ImageProxy,
 }
 
 impl Staging {
-    fn new(proxy: ImageProxy, digest: &str) -> Self {
+    fn new(pulls: &Arc<PeerPulls>, proxy: ImageProxy, digest: &str) -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let name = format!(
             "127.0.0.1:{}/{STAGING}/{}/{}@{digest}",
@@ -192,10 +238,26 @@ impl Staging {
             boot(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         );
+        pulls
+            .in_flight
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(name.clone());
         Self {
             name,
+            pulls: Arc::clone(pulls),
             _proxy: proxy,
         }
+    }
+}
+
+impl Drop for Staging {
+    fn drop(&mut self) {
+        self.pulls
+            .in_flight
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&self.name);
     }
 }
 
@@ -217,9 +279,8 @@ impl Prepared {
 /// layers; a source holding only the index fails the pull. Content Docker already
 /// holds for `platform` is not pulled again. An optional `tag` is published only
 /// after the content's digest has been verified. Once `gone` fires, a delivery that
-/// has not begun its tag stops and publishes nothing; one that has completes it. The
-/// staging name is removed after this returns, so a stalled removal holds no
-/// admission turn.
+/// has not begun its tag stops and publishes nothing; one that has completes it.
+/// Staging names are swept as a delivery starts and once it ends, off its turn.
 ///
 /// # Errors
 ///
@@ -232,41 +293,35 @@ pub(crate) async fn pull_from_ingest(
     platform: &str,
     gone: &CancellationToken,
 ) -> Result<(), Error> {
-    deliver(docker, pull, source, platform, gone).await.0
+    docker.peer_pulls.sweep();
+    let delivered = deliver(docker, pull, source, platform, gone).await;
+    docker.peer_pulls.sweep();
+    delivered
 }
 
-/// [`pull_from_ingest`], answering also the cleanup it does not wait for, so a test can.
 async fn deliver(
     docker: &LocalDocker,
     pull: &PeerImagePull,
     source: ImageIngestDestination,
     platform: &str,
     gone: &CancellationToken,
-) -> (Result<(), Error>, Option<JoinHandle<()>>) {
-    docker.peer_pulls.retry_leftovers();
+) -> Result<(), Error> {
     let image = pull.image();
     let requested = ployz_core::ImageRef::new(image).digest;
     if requested.is_some()
         && let Err(error) = ImageDigestReference::parse(image)
     {
-        return (
-            Err(Error::PeerPull(ployz_core::error_chain::inline(&error))),
-            None,
-        );
+        return Err(Error::PeerPull(ployz_core::error_chain::inline(&error)));
     }
     // Everything before the tag that waits on Docker or the source runs in the caller's
     // race, so a caller gone never leaves this work holding the turn.
-    let prepared = match gone
+    let prepared = gone
         .run_until_cancelled(prepare(docker, image, requested, source, platform))
         .await
-    {
-        Some(Ok(prepared)) => prepared,
-        Some(Err(error)) => return (Err(error), None),
-        None => return (Err(stopped()), None),
-    };
+        .ok_or_else(stopped)??;
     let retained = requested.and_then(|_| retention_tag(image));
     pull_and_tag(
-        &docker.peer_pulls,
+        &docker.peer_pulls.cli,
         image,
         prepared,
         pull.tag().or(retained.as_deref()),
@@ -303,7 +358,11 @@ async fn prepare(
     if containerd && holds(&docker.peer_pulls.cli, &digest, platform).await? {
         return Ok(Prepared::Held(digest));
     }
-    Ok(Prepared::Staged(Staging::new(proxy, &digest)))
+    Ok(Prepared::Staged(Staging::new(
+        &docker.peer_pulls,
+        proxy,
+        &digest,
+    )))
 }
 
 /// The digest the image server at `server` serves tag `image` as, asked as Docker would.
@@ -379,17 +438,17 @@ async fn holds(docker: &std::path::Path, digest: &str, platform: &str) -> Result
     }
 }
 
-/// Publish `prepared` as `tag`, pulling it first when staged, then hand the staging name,
-/// if any, to a cleanup this does not wait for, returned so a test can.
+/// Publish `prepared` as `tag`, pulling it first when staged. The staging name is left
+/// for the sweep, which removes it once its image has another name.
 async fn pull_and_tag(
-    pulls: &Arc<PeerPulls>,
+    docker: &std::path::Path,
     image: &str,
     prepared: Prepared,
     tag: Option<&str>,
     platform: &str,
     gone: &CancellationToken,
-) -> (Result<(), Error>, Option<JoinHandle<()>>) {
-    let (docker, from) = (pulls.cli.as_path(), prepared.reference());
+) -> Result<(), Error> {
+    let from = prepared.reference();
     let staged = matches!(prepared, Prepared::Staged(_));
     let tag = tag.unwrap_or(image);
     let verified = async {
@@ -412,7 +471,7 @@ async fn pull_and_tag(
     // drops the pull and the admission turn it holds frees for the next Deployment.
     // Verify before publishing the requested or retention tag: a failed attempt must
     // not leave a tag or remove one from an earlier delivery.
-    let result = match gone.run_until_cancelled(verified).await {
+    match gone.run_until_cancelled(verified).await {
         // The publish point. Once begun it runs to its end, so a caller that stopped
         // waiting finds the tag either unwritten or written, and told which.
         Some(Ok(())) if !gone.is_cancelled() => docker_cli(docker, &["tag", "--", from, tag])
@@ -420,33 +479,6 @@ async fn pull_and_tag(
             .map(drop),
         Some(Err(error)) => Err(error),
         Some(Ok(())) | None => Err(stopped()),
-    };
-    let cleanup = match prepared {
-        Prepared::Staged(staging) => Some(pulls.clean_up(staging.name)),
-        Prepared::Held(_) => None,
-    };
-    (result, cleanup)
-}
-
-/// Remove staging name `pulled` if Docker holds it under that very name, so removing
-/// it removes only it. A pull that failed or was stopped may never have written it,
-/// and Docker resolves a missing digest name to an unnamed image of that digest, such
-/// as the source's own copy that another Deployment is still pulling, which `image rm`
-/// would then delete. The name is unique to its delivery and only that delivery's
-/// cleanup removes it, so a name found here is still there for `image rm`. Only
-/// Docker's "No such image" counts as absent: any other failure leaves the name for a
-/// later try.
-async fn remove_staging(docker: &std::path::Path, pulled: &str) -> Result<(), Error> {
-    let names = docker_cli(docker, &["image", "inspect", pulled, "--format", NAMES]).await;
-    match names {
-        Ok(names) if names.lines().any(|name| name == pulled) => {}
-        Ok(_) => return Ok(()),
-        Err(error) if no_such_image(&error) => return Ok(()),
-        Err(error) => return Err(error),
-    }
-    match docker_cli(docker, &["image", "rm", pulled]).await {
-        Err(error) if !no_such_image(&error) => Err(error),
-        _ => Ok(()),
     }
 }
 
@@ -576,20 +608,19 @@ mod tests {
     const HEX: &str = "1111111111111111111111111111111111111111111111111111111111111111";
 
     /// A staging name to pull `image` to, by its digest or by `sha256:1…1`, and that name.
-    async fn staging(image: &str) -> (Prepared, String) {
+    async fn staging(pulls: &Arc<PeerPulls>, image: &str) -> (Prepared, String) {
         let digest = ployz_core::ImageRef::new(image)
             .digest
             .map_or_else(|| format!("sha256:{HEX}"), str::to_owned);
-        let staging = Staging::new(ImageProxy::open(source()).await.unwrap(), &digest);
+        let staging = Staging::new(pulls, ImageProxy::open(source()).await.unwrap(), &digest);
         let name = staging.name.clone();
         (Prepared::Staged(staging), name)
     }
 
-    /// Wait for `cleanup`, if the delivery left one.
-    async fn settle(cleanup: Option<JoinHandle<()>>) {
-        if let Some(cleanup) = cleanup {
-            cleanup.await.unwrap();
-        }
+    /// Sweep `pulls` once more and wait for it.
+    async fn sweep(pulls: &Arc<PeerPulls>) {
+        pulls.sweep();
+        pulls.swept().await;
     }
 
     #[tokio::test]
@@ -635,7 +666,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn failed_digest_delivery_cleans_up_without_publishing_unverified_content() {
+    async fn failed_digest_delivery_publishes_no_unverified_content() {
         use std::fs;
 
         let root = std::env::temp_dir().join(format!(
@@ -663,12 +694,11 @@ case "$1 $2" in
       digest) echo '{"digest":"sha256:wrong"}' ;;
       *) cat descriptor ;;
     esac ;;
-  'image rm') echo cleanup-failed >&2; exit 1 ;;
   *) if [ "$1" = "$mode" ]; then echo "$mode-failed" >&2; exit 1; fi ;;
 esac
 "#,
         );
-        let pulls = Arc::new(PeerPulls::new(docker));
+        let pulls = Arc::new(PeerPulls::new(docker.clone()));
         let digest = format!("sha256:{}", "1".repeat(64));
         let image = format!("example.test/api@{digest}");
         let retained = image.replace("@sha256:", ":ployz-sha256-");
@@ -681,9 +711,9 @@ esac
             for mode in ["inspect", "json", "digest", "tag", "pull", "success"] {
                 fs::write(root.join("mode"), mode).unwrap();
                 fs::write(root.join("calls"), "").unwrap();
-                let (staging, pulled) = staging(&image).await;
-                let (result, cleanup) = pull_and_tag(
-                    &pulls,
+                let (staging, pulled) = staging(&pulls, &image).await;
+                let result = pull_and_tag(
+                    &docker,
                     &image,
                     staging,
                     Some(tag),
@@ -691,29 +721,22 @@ esac
                     &CancellationToken::new(),
                 )
                 .await;
-                settle(cleanup).await;
                 assert_eq!(result.is_ok(), mode == "success", "{mode}: {result:?}");
-                if let Err(error) = result {
-                    assert!(!error.to_string().contains("cleanup-failed"), "{error}");
-                    if ["inspect", "tag", "pull"].contains(&mode) {
-                        assert!(
-                            error.to_string().contains(&format!("{mode}-failed")),
-                            "{error}"
-                        );
-                    }
+                if let Err(error) = result
+                    && ["inspect", "tag", "pull"].contains(&mode)
+                {
+                    assert!(
+                        error.to_string().contains(&format!("{mode}-failed")),
+                        "{error}"
+                    );
                 }
                 let calls = fs::read_to_string(root.join("calls")).unwrap();
                 if mode == "success" {
                     assert!(calls.contains(&format!("tag -- {pulled} {tag}")), "{calls}");
                 }
-                // A failed pull wrote no staging name, so there is none to remove.
-                let removed = (mode != "pull").then(|| format!("image rm {pulled}"));
-                assert_eq!(
-                    calls
-                        .lines()
-                        .last()
-                        .filter(|line| line.starts_with("image rm")),
-                    removed.as_deref(),
+                // A delivery removes no name itself: the sweep does, where another stays.
+                assert!(
+                    !calls.lines().any(|line| line.starts_with("image rm")),
                     "{mode}: {calls}"
                 );
                 assert_eq!(
@@ -768,7 +791,7 @@ case "$1 $2" in
 esac
 "#,
         );
-        let pulls = Arc::new(PeerPulls::new(docker));
+        let pulls = Arc::new(PeerPulls::new(docker.clone()));
         let descriptor = |hex: char| {
             serde_json::json!({"digest": format!("sha256:{}", hex.to_string().repeat(64))})
                 .to_string()
@@ -789,9 +812,9 @@ esac
             )
             .unwrap();
             fs::write(root.join("calls"), "").unwrap();
-            let (staging, pulled) = staging(&image).await;
-            let (result, cleanup) = pull_and_tag(
-                &pulls,
+            let (staging, pulled) = staging(&pulls, &image).await;
+            let result = pull_and_tag(
+                &docker,
                 &image,
                 staging,
                 Some(&name),
@@ -799,7 +822,6 @@ esac
                 &CancellationToken::new(),
             )
             .await;
-            settle(cleanup).await;
             let calls = fs::read_to_string(root.join("calls")).unwrap();
             assert_eq!(
                 calls.contains(&format!("tag -- {pulled} {name}")),
@@ -821,9 +843,9 @@ esac
         // An ordinary tag that only starts like a retention name is no retention name.
         let ordinary = "app:ployz-sha256-staging";
         fs::write(root.join("name"), "free").unwrap();
-        let (staging, _) = staging(ordinary).await;
-        let (result, cleanup) = pull_and_tag(
-            &pulls,
+        let (staging, _) = staging(&pulls, ordinary).await;
+        let result = pull_and_tag(
+            &docker,
             ordinary,
             staging,
             None,
@@ -831,19 +853,20 @@ esac
             &CancellationToken::new(),
         )
         .await;
-        settle(cleanup).await;
         result.unwrap();
         fs::remove_dir_all(root).unwrap();
     }
 
     /// A Docker holding content `sha256:1…1` under each name in `names`, and as an unnamed
     /// image while `unnamed` exists. As Docker does, it answers a missing digest name with
-    /// that unnamed image, so `image rm` of a staging name a pull never wrote deletes it,
-    /// and a pull or tag of that content takes the unnamed image over into its name.
-    /// `pull` acts as `mode` says: it `fail`s, `hang`s, or writes the staging name, and
-    /// then the content check stalls (`stall-verify`), or the tag until `release` exists
-    /// (`stall-tag`). A stall or hang names its pid in the `started` FIFO first. While
-    /// `unsure` exists, the names query fails as Docker does when it can't answer.
+    /// that unnamed image, so `image rm` of a name it does not hold deletes it, and a pull
+    /// or tag of that content takes the unnamed image over into its name. While `lands`
+    /// exists, a build loads the content unnamed just as the pull starts. While `partial`
+    /// exists, the unnamed copy lacks the asked-for platform. `pull` acts as `mode` says:
+    /// it `fail`s, `hang`s, or writes the staging name, and then the content check stalls
+    /// (`stall-verify`), or the tag until `release` exists (`stall-tag`). A stall or hang
+    /// names its pid in the `started` FIFO first. While `blind` or `unsure` exists, the
+    /// image listing or the names query fails as Docker does when it can't answer.
     fn docker_with_unnamed_copy(root: &std::path::Path) -> PathBuf {
         use std::fs;
 
@@ -867,6 +890,9 @@ printf '%s\n' "$*" >> calls
 mode=$(cat mode)
 held() {{ [ -e unnamed ] || grep -q "@sha256:{hex}$" names; }}
 if [ "$1 $2 $3" = 'image inspect --platform' ]; then
+  if [ "$5" = sha256:{hex} ] && [ -e partial ] && held; then
+    echo "image with reference $5 was found but does not provide the specified platform" >&2; exit 1
+  fi
   if [ "$5" = sha256:{hex} ] && held; then echo "$5"; exit 0; fi
   echo "No such image: $5" >&2; exit 1
 fi
@@ -887,12 +913,15 @@ case "$1 $2 $5" in
     elif [ -e unnamed ]; then rm unnamed; echo Deleted
     else echo "No such image: $3" >&2; exit 1; fi ;;
   'pull '*)
+    [ -e lands ] && : > unnamed
     case "$mode" in
       fail) echo pull-failed >&2; exit 1 ;;
       hang) echo $$ > started; exec sleep 600 ;;
       *) echo "$4" >> names; rm -f unnamed ;;
     esac ;;
-  'image ls'*) if [ -s names ] || [ -e unnamed ]; then echo sha256:{hex}; fi ;;
+  'image ls'*)
+    if [ -e blind ]; then echo "Cannot connect to the Docker daemon" >&2; exit 1; fi
+    if [ -s names ] || [ -e unnamed ]; then echo sha256:{hex}; fi ;;
   'tag '*)
     if [ "$mode" = stall-tag ]; then
       echo $$ > started
@@ -931,6 +960,11 @@ esac
         std::fs::read_to_string(root.join("names")).unwrap()
     }
 
+    /// Whether the fake Docker in `root` still holds content `sha256:1…1`, named or not.
+    fn content(root: &std::path::Path) -> bool {
+        root.join("unnamed").exists() || !names(root).is_empty()
+    }
+
     /// Two Deployments may pull one digest at once, from a source whose copy has no name.
     /// A pull that failed before writing its staging name must not delete that copy, which
     /// the other pull still reads.
@@ -942,11 +976,11 @@ esac
         ));
         let pulls = Arc::new(PeerPulls::new(docker_with_unnamed_copy(&root)));
         std::fs::write(root.join("mode"), "fail").unwrap();
-        let image = format!("app@sha256:{}", "1".repeat(64));
-        let (staging, _) = staging(&image).await;
+        let image = format!("app@sha256:{HEX}");
+        let (staging, _) = staging(&pulls, &image).await;
 
-        let (result, cleanup) = pull_and_tag(
-            &pulls,
+        let result = pull_and_tag(
+            &pulls.cli,
             &image,
             staging,
             None,
@@ -954,7 +988,7 @@ esac
             &CancellationToken::new(),
         )
         .await;
-        settle(cleanup).await;
+        sweep(&pulls).await;
 
         assert!(result.is_err(), "{result:?}");
         let calls = std::fs::read_to_string(root.join("calls")).unwrap();
@@ -967,10 +1001,10 @@ esac
 
     /// A cancelled Deployment's transfer must not run on: it holds the admission turn the
     /// next Deployment's creates wait for. Once the caller is gone, the pull ends, its
-    /// Docker CLI is killed, and no tag is written. The pull never wrote its staging name,
-    /// so the unnamed copy of its digest that another pull reads is left alone.
+    /// Docker CLI is killed, and no tag is written. The unnamed copy of its digest that
+    /// another pull reads is left alone.
     #[tokio::test]
-    async fn a_pull_whose_caller_is_gone_stops_and_cleans_up() {
+    async fn a_pull_whose_caller_is_gone_stops() {
         use std::fs;
 
         let root = std::env::temp_dir().join(format!(
@@ -979,18 +1013,17 @@ esac
         ));
         let pulls = Arc::new(PeerPulls::new(docker_with_unnamed_copy(&root)));
         fs::write(root.join("mode"), "hang").unwrap();
-        let image = format!("app@sha256:{}", "1".repeat(64));
-        let (staging, _) = staging(&image).await;
+        let image = format!("app@sha256:{HEX}");
+        let (staging, _) = staging(&pulls, &image).await;
         let gone = CancellationToken::new();
 
-        let pull = pull_and_tag(&pulls, &image, staging, None, "linux/amd64", &gone);
-        let ((result, cleanup), pid) =
-            tokio::time::timeout(std::time::Duration::from_secs(30), async {
-                tokio::join!(pull, cancel_once_started(&root, &gone))
-            })
-            .await
-            .expect("a pull whose caller is gone must end");
-        settle(cleanup).await;
+        let pull = pull_and_tag(&pulls.cli, &image, staging, None, "linux/amd64", &gone);
+        let (result, pid) = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            tokio::join!(pull, cancel_once_started(&root, &gone))
+        })
+        .await
+        .expect("a pull whose caller is gone must end");
+        sweep(&pulls).await;
 
         assert!(result.is_err(), "{result:?}");
         let calls = fs::read_to_string(root.join("calls")).unwrap();
@@ -1020,45 +1053,41 @@ esac
         fs::remove_dir_all(root).unwrap();
     }
 
-    /// A caller that stops waiting once the pull wrote its staging name leaves no name
-    /// behind: the cleanup removes the name it wrote, and only that name. A delivery
-    /// stages only content Docker did not hold, so here it holds none.
+    /// A staging name a cancelled pull wrote is untagged once its image has another name,
+    /// and kept while it is the only one, since then it is all that keeps the content.
     #[tokio::test]
-    async fn a_staging_name_written_before_the_caller_left_is_removed() {
-        let root = std::env::temp_dir().join(format!(
-            "ployz-written-pull-{}",
-            ployz_core::MachineId::random()
-        ));
-        let pulls = Arc::new(PeerPulls::new(docker_with_unnamed_copy(&root)));
-        std::fs::remove_file(root.join("unnamed")).unwrap();
-        std::fs::write(root.join("names"), "127.0.0.1:5000/app:v1\n").unwrap();
-        std::fs::write(root.join("mode"), "stall-verify").unwrap();
-        let image = format!("app@sha256:{}", "1".repeat(64));
-        let (staging, pulled) = staging(&image).await;
-        let gone = CancellationToken::new();
+    async fn a_cancelled_pulls_staging_name_is_removed_only_beside_another_name() {
+        for other in [Some("127.0.0.1:5000/app:v1"), None] {
+            let root = std::env::temp_dir().join(format!(
+                "ployz-written-pull-{}",
+                ployz_core::MachineId::random()
+            ));
+            let pulls = Arc::new(PeerPulls::new(docker_with_unnamed_copy(&root)));
+            std::fs::remove_file(root.join("unnamed")).unwrap();
+            let other = other.map(|name| format!("{name}\n")).unwrap_or_default();
+            std::fs::write(root.join("names"), &other).unwrap();
+            std::fs::write(root.join("mode"), "stall-verify").unwrap();
+            let image = format!("app@sha256:{HEX}");
+            let (staging, pulled) = staging(&pulls, &image).await;
+            let gone = CancellationToken::new();
 
-        let pull = pull_and_tag(&pulls, &image, staging, None, "linux/amd64", &gone);
-        let ((result, cleanup), _) =
-            tokio::time::timeout(std::time::Duration::from_secs(30), async {
-                tokio::join!(pull, async {
-                    let pid = cancel_once_started(&root, &gone).await;
-                    // The staging name exists when the caller leaves.
-                    assert!(names(&root).lines().any(|name| name == pulled));
-                    // The staging name exists when the caller leaves.
-                    pid
-                })
+            let pull = pull_and_tag(&pulls.cli, &image, staging, None, "linux/amd64", &gone);
+            let (result, _) = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+                tokio::join!(pull, cancel_once_started(&root, &gone))
             })
             .await
             .expect("a pull whose caller is gone must end");
-        settle(cleanup).await;
+            sweep(&pulls).await;
 
-        assert!(result.is_err(), "{result:?}");
-        assert_eq!(
-            names(&root),
-            "127.0.0.1:5000/app:v1\n",
-            "the staging name is left"
-        );
-        std::fs::remove_dir_all(root).unwrap();
+            assert!(result.is_err(), "{result:?}");
+            let expected = if other.is_empty() {
+                format!("{pulled}\n")
+            } else {
+                other
+            };
+            assert_eq!(names(&root), expected);
+            std::fs::remove_dir_all(root).unwrap();
+        }
     }
 
     /// The tag is where a delivery publishes. A caller that leaves once it began finds it
@@ -1071,31 +1100,30 @@ esac
         ));
         let pulls = Arc::new(PeerPulls::new(docker_with_unnamed_copy(&root)));
         std::fs::write(root.join("mode"), "stall-tag").unwrap();
-        let image = format!("app@sha256:{}", "1".repeat(64));
-        let retained = format!("app:ployz-sha256-{}", "1".repeat(64));
-        let (staging, pulled) = staging(&image).await;
+        let image = format!("app@sha256:{HEX}");
+        let retained = format!("app:ployz-sha256-{HEX}");
+        let (staging, pulled) = staging(&pulls, &image).await;
         let gone = CancellationToken::new();
 
         let pull = pull_and_tag(
-            &pulls,
+            &pulls.cli,
             &image,
             staging,
             Some(&retained),
             "linux/amd64",
             &gone,
         );
-        let ((result, cleanup), ()) =
-            tokio::time::timeout(std::time::Duration::from_secs(30), async {
-                tokio::join!(pull, async {
-                    cancel_once_started(&root, &gone).await;
-                    // Let the pull see its caller gone before the tag may finish.
-                    tokio::task::yield_now().await;
-                    std::fs::write(root.join("release"), "").unwrap();
-                })
+        let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            tokio::join!(pull, async {
+                cancel_once_started(&root, &gone).await;
+                // Let the pull see its caller gone before the tag may finish.
+                tokio::task::yield_now().await;
+                std::fs::write(root.join("release"), "").unwrap();
             })
-            .await
-            .expect("a tag must finish once released");
-        settle(cleanup).await;
+        })
+        .await
+        .expect("a tag must finish once released");
+        sweep(&pulls).await;
 
         result.unwrap();
         let names = names(&root);
@@ -1104,47 +1132,8 @@ esac
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    /// A staging name Docker could not say it holds is neither taken as gone nor removed
-    /// blind: it is kept, and the next delivery removes it.
-    #[tokio::test]
-    async fn a_staging_name_docker_could_not_check_is_removed_by_the_next_delivery() {
-        let root = std::env::temp_dir().join(format!(
-            "ployz-unsure-pull-{}",
-            ployz_core::MachineId::random()
-        ));
-        let pulls = Arc::new(PeerPulls::new(docker_with_unnamed_copy(&root)));
-        std::fs::remove_file(root.join("unnamed")).unwrap();
-        std::fs::write(root.join("mode"), "deliver").unwrap();
-        std::fs::write(root.join("unsure"), "").unwrap();
-        let image = format!("app@sha256:{}", "1".repeat(64));
-        let retained = format!("app:ployz-sha256-{}", "1".repeat(64));
-        let (staging, pulled) = staging(&image).await;
-
-        let (result, cleanup) = pull_and_tag(
-            &pulls,
-            &image,
-            staging,
-            Some(&retained),
-            "linux/amd64",
-            &CancellationToken::new(),
-        )
-        .await;
-        settle(cleanup).await;
-        result.unwrap();
-        assert!(names(&root).lines().any(|name| name == pulled));
-
-        std::fs::remove_file(root.join("unsure")).unwrap();
-        for retry in pulls.retry_leftovers() {
-            retry.await.unwrap();
-        }
-
-        let names = names(&root);
-        assert!(!names.lines().any(|name| name == pulled), "{names}");
-        assert!(names.lines().any(|name| name == retained), "{names}");
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    /// A delivery through `deliver` on a Docker run by `cli`, whose store is containerd's.
+    /// A delivery through `pull_from_ingest` on a Docker run by `cli`, whose store is
+    /// containerd's.
     async fn delivery_docker(cli: PathBuf) -> LocalDocker {
         let (runtime, _fake) = crate::docker::test_support::fake_runtime_with(
             crate::docker::test_support::FakeDocker {
@@ -1155,6 +1144,142 @@ esac
         )
         .await;
         runtime.local_docker()
+    }
+
+    /// Deliver `image` through `docker`, then wait for the sweeps it asked for.
+    async fn deliver_and_sweep(
+        docker: &LocalDocker,
+        image: &str,
+        gone: &CancellationToken,
+    ) -> Result<(), Error> {
+        let pull = PeerImagePull::Reference {
+            image: image.into(),
+        };
+        let result = pull_from_ingest(docker, &pull, source(), "linux/amd64", gone).await;
+        docker.peer_pulls.swept().await;
+        result
+    }
+
+    /// A sweep whose Docker could not list images, or could not name one, is tried again
+    /// by the next delivery's.
+    #[tokio::test]
+    async fn a_sweep_docker_could_not_answer_is_retried_by_the_next_delivery() {
+        let root = std::env::temp_dir().join(format!(
+            "ployz-unsure-sweep-{}",
+            ployz_core::MachineId::random()
+        ));
+        let docker = delivery_docker(docker_with_unnamed_copy(&root)).await;
+        std::fs::remove_file(root.join("unnamed")).unwrap();
+        std::fs::write(root.join("mode"), "deliver").unwrap();
+        let earlier = format!(
+            "127.0.0.1:41000/{STAGING}/{}/3@sha256:{HEX}",
+            "e".repeat(40)
+        );
+        std::fs::write(
+            root.join("names"),
+            format!("127.0.0.1:5000/app:v1\n{earlier}\n"),
+        )
+        .unwrap();
+        let invalid = "app@sha256:invalid";
+
+        for failing in ["blind", "unsure"] {
+            std::fs::write(root.join(failing), "").unwrap();
+            deliver_and_sweep(&docker, invalid, &CancellationToken::new())
+                .await
+                .unwrap_err();
+            std::fs::remove_file(root.join(failing)).unwrap();
+            assert!(names(&root).contains(&earlier), "{failing}");
+        }
+        deliver_and_sweep(&docker, invalid, &CancellationToken::new())
+            .await
+            .unwrap_err();
+
+        assert_eq!(names(&root), "127.0.0.1:5000/app:v1\n");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Docker may still commit a cancelled pull's staging name after its delivery ended and
+    /// swept. The next delivery's sweep catches it: untagged beside another name, kept
+    /// when it is the only one.
+    #[tokio::test]
+    async fn a_staging_name_committed_after_its_delivery_is_swept_by_the_next() {
+        for other in [Some("127.0.0.1:5000/app:v1"), None] {
+            let root = std::env::temp_dir().join(format!(
+                "ployz-late-staging-{}",
+                ployz_core::MachineId::random()
+            ));
+            let docker = delivery_docker(docker_with_unnamed_copy(&root)).await;
+            std::fs::remove_file(root.join("unnamed")).unwrap();
+            let other = other.map(|name| format!("{name}\n")).unwrap_or_default();
+            std::fs::write(root.join("names"), &other).unwrap();
+            std::fs::write(root.join("mode"), "hang").unwrap();
+            let gone = CancellationToken::new();
+            let image = format!("app@sha256:{HEX}");
+            let delivery = deliver_and_sweep(&docker, &image, &gone);
+            let (result, _) = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+                tokio::join!(delivery, cancel_once_started(&root, &gone))
+            })
+            .await
+            .expect("a delivery whose caller is gone must end");
+            result.unwrap_err();
+
+            let calls = std::fs::read_to_string(root.join("calls")).unwrap();
+            let pulled = calls
+                .lines()
+                .find_map(|line| line.strip_prefix("pull --platform linux/amd64 "))
+                .unwrap()
+                .to_owned();
+            std::fs::write(root.join("names"), format!("{other}{pulled}\n")).unwrap();
+            deliver_and_sweep(&docker, "app@sha256:invalid", &CancellationToken::new())
+                .await
+                .unwrap_err();
+
+            let expected = if other.is_empty() {
+                format!("{pulled}\n")
+            } else {
+                other
+            };
+            assert_eq!(names(&root), expected);
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    /// Docker hands content it holds unnamed to a pull that asks for its digest: a Free
+    /// Build's output that lands just as the pull starts, or an index that holds another
+    /// platform. A delivery cancelled after that leaves the content, under its staging
+    /// name.
+    #[tokio::test]
+    async fn content_a_cancelled_pull_took_over_survives() {
+        for took_over in ["lands", "partial"] {
+            let root = std::env::temp_dir().join(format!(
+                "ployz-taken-over-{}",
+                ployz_core::MachineId::random()
+            ));
+            let docker = delivery_docker(docker_with_unnamed_copy(&root)).await;
+            if took_over == "lands" {
+                std::fs::remove_file(root.join("unnamed")).unwrap();
+            }
+            std::fs::write(root.join(took_over), "").unwrap();
+            std::fs::write(root.join("mode"), "stall-verify").unwrap();
+            let gone = CancellationToken::new();
+            let image = format!("app@sha256:{HEX}");
+            let delivery = deliver_and_sweep(&docker, &image, &gone);
+            let (result, _) = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+                tokio::join!(delivery, cancel_once_started(&root, &gone))
+            })
+            .await
+            .expect("a delivery whose caller is gone must end");
+            result.unwrap_err();
+
+            let calls = std::fs::read_to_string(root.join("calls")).unwrap();
+            assert!(calls.contains("\npull "), "{took_over}: {calls}");
+            assert!(content(&root), "{took_over}: deleted the content: {calls}");
+            assert!(
+                names(&root).contains(&format!("/{STAGING}/")),
+                "{took_over}"
+            );
+            std::fs::remove_dir_all(root).unwrap();
+        }
     }
 
     /// A delivery stages content Docker did not hold under a name no one else writes. A
@@ -1217,7 +1342,7 @@ esac
             image: "app:v1".into(),
         };
 
-        let (result, cleanup) = deliver(
+        let result = pull_from_ingest(
             &docker,
             &pull,
             source,
@@ -1225,7 +1350,7 @@ esac
             &CancellationToken::new(),
         )
         .await;
-        settle(cleanup).await;
+        docker.peer_pulls.swept().await;
 
         assert!(result.is_err(), "{result:?}");
         let asked = asked.await.unwrap();
@@ -1252,21 +1377,15 @@ esac
         ));
         let docker = delivery_docker(docker_with_unnamed_copy(&root)).await;
         std::fs::write(root.join("mode"), "deliver").unwrap();
-        let pull = PeerImagePull::Reference {
-            image: format!("app@sha256:{HEX}"),
-        };
 
-        let (result, cleanup) = deliver(
+        deliver_and_sweep(
             &docker,
-            &pull,
-            source(),
-            "linux/amd64",
+            &format!("app@sha256:{HEX}"),
             &CancellationToken::new(),
         )
-        .await;
-        settle(cleanup).await;
+        .await
+        .unwrap();
 
-        result.unwrap();
         let calls = std::fs::read_to_string(root.join("calls")).unwrap();
         assert!(
             !calls.lines().any(|line| line.starts_with("pull ")),
@@ -1282,8 +1401,7 @@ esac
 
     /// A Machine may hold a digest unnamed, as a build's output or a source's copy that
     /// other Deployments pull. A delivery of that digest to it, cancelled before its tag,
-    /// leaves the copy: a pull would have taken it over into a staging name, and the
-    /// cleanup would have deleted it with that name.
+    /// leaves the copy unnamed and whole.
     #[tokio::test]
     async fn an_unnamed_copy_survives_a_cancelled_delivery_to_its_machine() {
         let root = std::env::temp_dir().join(format!(
@@ -1292,19 +1410,16 @@ esac
         ));
         let docker = delivery_docker(docker_with_unnamed_copy(&root)).await;
         std::fs::write(root.join("mode"), "stall-verify").unwrap();
-        let pull = PeerImagePull::Reference {
-            image: format!("app@sha256:{HEX}"),
-        };
         let gone = CancellationToken::new();
 
-        let delivery = deliver(&docker, &pull, source(), "linux/amd64", &gone);
-        let ((result, cleanup), _) =
-            tokio::time::timeout(std::time::Duration::from_secs(30), async {
-                tokio::join!(delivery, cancel_once_started(&root, &gone))
-            })
-            .await
-            .expect("a delivery whose caller is gone must end");
-        settle(cleanup).await;
+        let image = format!("app@sha256:{HEX}");
+
+        let delivery = deliver_and_sweep(&docker, &image, &gone);
+        let (result, _) = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            tokio::join!(delivery, cancel_once_started(&root, &gone))
+        })
+        .await
+        .expect("a delivery whose caller is gone must end");
 
         assert!(result.is_err(), "{result:?}");
         let calls = std::fs::read_to_string(root.join("calls")).unwrap();
@@ -1313,41 +1428,58 @@ esac
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    /// A restart removes the staging names an earlier run left, which no delivery will,
-    /// and nothing else: not this run's, not a user's loopback-registry image, and not a
-    /// `ployz-staging` path on another host.
+    /// A sweep removes only names of the exact shape a delivery writes, from any run, that
+    /// no delivery in flight holds. A user's loopback-registry image, a path that merely
+    /// starts like a staging name, and a staging path on another host are left. It never
+    /// removes an image's last name.
     #[tokio::test]
-    async fn a_restart_sweeps_only_the_staging_names_an_earlier_run_left() {
+    async fn a_sweep_removes_only_staging_names_beside_another_name() {
         let root = std::env::temp_dir().join(format!(
             "ployz-staging-sweep-{}",
             ployz_core::MachineId::random()
         ));
         let pulls = Arc::new(PeerPulls::new(docker_with_unnamed_copy(&root)));
         std::fs::remove_file(root.join("unnamed")).unwrap();
-        let earlier = format!(
-            "127.0.0.1:41000/ployz-staging/{}/3@sha256:{HEX}",
-            "e".repeat(32)
-        );
+        let run = "e".repeat(40);
+        let swept = [
+            format!("127.0.0.1:41000/{STAGING}/{run}/3@sha256:{HEX}"),
+            format!("127.0.0.1:41001/{STAGING}/{}/4@sha256:{HEX}", boot()),
+        ];
+        let (_flying, in_flight) = staging(&pulls, &format!("app@sha256:{HEX}")).await;
         let kept = [
-            format!("127.0.0.1:41001/ployz-staging/{}/4@sha256:{HEX}", boot()),
             "127.0.0.1:5000/app:v1".to_owned(),
             format!("127.0.0.1:5000/app@sha256:{HEX}"),
+            format!("127.0.0.1:5000/{STAGING}/cache/release@sha256:{HEX}"),
             format!(
-                "example.test/ployz-staging/{}/5@sha256:{HEX}",
-                "e".repeat(32)
+                "127.0.0.1:41002/{STAGING}/{}/6@sha256:{HEX}",
+                "E".repeat(40)
             ),
+            format!("127.0.0.1:41003/{STAGING}/{run}/x@sha256:{HEX}"),
+            format!("127.0.0.1:41004/{STAGING}/{run}/7/8@sha256:{HEX}"),
+            format!("example.test/{STAGING}/{run}/5@sha256:{HEX}"),
+            in_flight,
         ];
+        let listed = |names: &[String]| {
+            let mut names = names.to_vec();
+            names.sort();
+            names
+                .iter()
+                .map(|name| format!("{name}\n"))
+                .collect::<String>()
+        };
         std::fs::write(
             root.join("names"),
-            format!("{earlier}\n{}\n", kept.join("\n")),
+            listed(&[&swept[..], &kept[..]].concat()),
         )
         .unwrap();
 
-        for removal in pulls.sweep().await {
-            removal.await.unwrap();
-        }
+        sweep(&pulls).await;
+        assert_eq!(names(&root), listed(&kept));
 
-        assert_eq!(names(&root), format!("{}\n", kept.join("\n")));
+        // Staging names alone: one stays, and keeps the content.
+        std::fs::write(root.join("names"), listed(&swept)).unwrap();
+        sweep(&pulls).await;
+        assert_eq!(names(&root).lines().count(), 1, "{}", names(&root));
         std::fs::remove_dir_all(root).unwrap();
     }
 }

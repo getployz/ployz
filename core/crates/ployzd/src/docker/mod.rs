@@ -109,7 +109,7 @@ pub struct LocalDocker {
     /// Counts container creates, so a stranded ingress retry can tell a newer
     /// container may have appeared since its scan, or be appearing still.
     creates: Arc<Creates>,
-    /// The staging names peer pulls left behind, removed by the next one.
+    /// Peer pulls' staging names: those in flight, and the sweep of the rest.
     peer_pulls: Arc<peer_pull::PeerPulls>,
 }
 
