@@ -12,7 +12,7 @@ import { type ConfigDeploymentAdmittedEventData, configDeploymentAdmitted, confi
 import { clusterDomainSyncRequested } from "#/modules/cluster-domain/cluster-domain.events";
 import {
   checkStoreGithubBuild, GITHUB_CHECK_INTERVAL, planStoreGithubBuilds, START_WITHIN_MINUTES,
-  serversLackingWhilePrefetching, startStoreGithubBuilds, storeGithubBuildOpen, type StoreGithubStart, type StoreGithubTarget,
+  dispatchStoreGithubBuilds, recordStoreGithubBuilds, serversLackingWhilePrefetching, storeGithubBuildOpen, type StoreGithubStart, type StoreGithubTarget,
 } from "#/modules/config-store/store-github-builds.server";
 import { followUp } from "#/modules/config-store/store-github.inngest";
 import { sweepStore } from "#/modules/config-store/store-pull-request.server";
@@ -60,9 +60,7 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Effec
         return failed;
       }
       const github = await step.run("plan-builds", () => runEffect(planStoreGithubBuilds(event.data)));
-      const started = github.length === 0
-        ? []
-        : await step.run("github-start", () => runEffect(startStoreGithubBuilds(event.data.organizationId, event.data.deploymentId, github)));
+      const started = await startGithubBuilds(step, runEffect, event.data, github);
       const walked = await Promise.all(github.map((target, index) => walkGithub(event.data.organizationId, target, started[index], step, runEffect)));
       const disconnected = walked.find((failed) => failed !== null);
       if (disconnected !== undefined) {
@@ -145,6 +143,19 @@ export const createCancelStoreDeployment = (inngest: PloyzInngest, runEffect: Ef
   );
 
 type Step = Parameters<Parameters<PloyzInngest["createFunction"]>[1]>[0]["step"];
+
+/**
+ * Start a Deployment's GitHub builds in two steps: one asks GitHub for their runs, one records what GitHub answered.
+ * GitHub may have taken a request it never answered, so once it is asked only the record is retried, and a retry
+ * replays the asking step from its memo rather than asking again.
+ */
+export async function startGithubBuilds(
+  step: Pick<Step, "run">, runEffect: EffectRunner<StoreServices>, data: ConfigDeploymentAdmittedEventData, github: ReadonlyArray<StoreGithubTarget>,
+): Promise<ReadonlyArray<StoreGithubStart>> {
+  if (github.length === 0) return [];
+  const dispatched = await step.run("github-dispatch", () => runEffect(dispatchStoreGithubBuilds(data.organizationId, data.deploymentId, github)));
+  return step.run("github-record", () => runEffect(recordStoreGithubBuilds(data.organizationId, dispatched)));
+}
 
 /**
  * One build's go on GitHub, before the runner claims the Deployment: start it, then wait for its run while the runner

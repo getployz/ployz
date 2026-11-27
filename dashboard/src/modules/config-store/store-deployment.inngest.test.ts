@@ -118,29 +118,31 @@ describe("a Deployment with several Git Services", () => {
     return ran;
   }
 
-  it("starts every build in one step and runs the Deployment once", async () => {
+  it("starts every build in one dispatch step and one record step, and runs the Deployment once", async () => {
     const ran = await stepsRun([
-      ["github-start", [{ kind: "dispatched", runId: 9001 }, { kind: "dispatched", runId: 9002 }, { kind: "done" }]],
+      ["github-dispatch", [{ kind: "run", build: "dep.web", run: {} }, { kind: "run", build: "dep.api", run: {} }, { kind: "skip", build: "dep.docs", message: "no workflow" }]],
+      ["github-record", [{ kind: "dispatched", runId: 9001 }, { kind: "dispatched", runId: 9002 }, { kind: "done" }]],
       ["github-open-web-0", false],
       ["github-open-api-0", false],
     ]);
-    expect(ran.filter((id) => id.startsWith("github-start"))).toEqual(["github-start"]);
+    expect(ran.filter((id) => id.startsWith("github-"))).toEqual(["github-dispatch", "github-record", "github-open-web-0", "github-open-api-0"]);
     expect(ran.filter((id) => id === "run-deployment")).toHaveLength(1);
     expect(ran).not.toContain("github-failed");
   });
 
-  it("runs a run that started its builds under older step ids to the end, through the one start step", async () => {
-    // What the older per-build steps recorded; the start step follows the dispatched runs and leaves the skipped build.
+  it("runs a run that started its builds under older step ids to the end, through the dispatch and record steps", async () => {
+    // What the older per-build steps recorded; the dispatch step follows the dispatched runs and leaves the skipped build.
     const ran = await stepsRun([
       ["github-start-web", { kind: "dispatched", runId: 9001 }],
       ["github-start-api", { kind: "dispatched", runId: 9002 }],
       ["github-start-docs", { kind: "done" }],
-      ["github-start", [{ kind: "dispatched", runId: 9001 }, { kind: "dispatched", runId: 9002 }, { kind: "done" }]],
+      ["github-dispatch", [{ kind: "dispatched", runId: 9001 }, { kind: "dispatched", runId: 9002 }, { kind: "done" }]],
+      ["github-record", [{ kind: "dispatched", runId: 9001 }, { kind: "dispatched", runId: 9002 }, { kind: "done" }]],
       ["github-open-web-0", false],
       ["github-open-api-0", false],
     ]);
     expect(ran.filter((id) => id.startsWith("github-start-"))).toEqual([]);
-    expect(ran.filter((id) => id === "github-start")).toHaveLength(1);
+    expect(ran.filter((id) => id === "github-dispatch" || id === "github-record")).toEqual(["github-dispatch", "github-record"]);
     expect(ran.filter((id) => id === "run-deployment")).toHaveLength(1);
   });
 });

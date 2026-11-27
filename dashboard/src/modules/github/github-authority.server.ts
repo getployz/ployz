@@ -290,6 +290,7 @@ export const makeGithubAuthorityLocal = Effect.fn("GithubAuthority.makeLocal")(f
   /** GitHub's answer when it succeeded. */
   const respond = Effect.fn("GithubAuthority.respond")(function* (input: {
     operation: GithubObservationOperation; token: string | null; path: `/${string}`; method?: "POST" | "PATCH"; body?: unknown; origin?: string; accept?: string;
+    abort?: AbortSignal;
   }) {
     const headers = new Headers({ Accept: input.accept ?? "application/vnd.github+json", "X-GitHub-Api-Version": GITHUB_API_VERSION });
     if (input.token !== null) headers.set("Authorization", `Bearer ${input.token}`);
@@ -300,7 +301,7 @@ export const makeGithubAuthorityLocal = Effect.fn("GithubAuthority.makeLocal")(f
       init.body = JSON.stringify(input.body ?? {});
     }
     const response = yield* Effect.tryPromise({
-      try: (signal) => fetch(`${input.origin ?? origins.api}${input.path}`, { ...init, signal }),
+      try: (signal) => fetch(`${input.origin ?? origins.api}${input.path}`, { ...init, signal: input.abort ? AbortSignal.any([signal, input.abort]) : signal }),
       catch: () => failure({ code: "request_failed", operation: input.operation, retriable: true }),
     });
     if (!response.ok) {
@@ -310,10 +311,14 @@ export const makeGithubAuthorityLocal = Effect.fn("GithubAuthority.makeLocal")(f
     return response;
   });
 
-  const send = (input: Parameters<typeof respond>[0]) => respond(input).pipe(
-    Effect.flatMap((response) => Effect.tryPromise({ try: () => response.text(), catch: () => invalidResponse(input.operation) })),
-    withinAnswerTime(input.operation),
-  );
+  const send = (input: Parameters<typeof respond>[0]) => Effect.suspend(() => {
+    // A call cut off at its bound aborts its request, body included, so its connection closes.
+    const abort = new AbortController();
+    return respond({ ...input, abort: abort.signal }).pipe(
+      Effect.flatMap((response) => Effect.tryPromise({ try: () => response.text(), catch: () => invalidResponse(input.operation) })),
+      Effect.onInterrupt(() => Effect.sync(() => abort.abort())),
+    );
+  }).pipe(withinAnswerTime(input.operation));
 
   /** A file's bytes on the default branch, or null when it holds no such file. Bytes, not text, so the digest is the minter's. */
   const defaultBranchFile = (token: string, repositoryId: number, path: string) =>
