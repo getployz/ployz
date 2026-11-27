@@ -102,21 +102,8 @@ const CLEANUP_TIMEOUT: Duration = Duration::from_secs(60);
 /// removing each other's build container.
 #[must_use]
 pub fn builder_name() -> String {
-    format!("ployz-{}", builder_owner())
+    format!("ployz-{}", rustix::process::getuid().as_raw())
 }
-
-/// Who a builder's names say it belongs to. Root's build state moved to its
-/// own directory in layout 2, so root's builders carry the layout: an older
-/// root CLI's builders, under the names layout 1 gave them, stay its own.
-fn builder_owner() -> String {
-    match rustix::process::getuid().as_raw() {
-        0 => format!("{ROOT_LAYOUT}-0"),
-        uid => uid.to_string(),
-    }
-}
-
-/// The layout root's builder names carry.
-const ROOT_LAYOUT: &str = "v2";
 
 /// The label a Free Build's image carries, so its Server's cleanup removes only images
 /// Ployz built.
@@ -139,7 +126,7 @@ impl Access {
     pub(crate) fn builder(self, slot: usize) -> String {
         let name = match self {
             Self::Full => builder_name(),
-            Self::Free => format!("ployz-free-{}", builder_owner()),
+            Self::Free => format!("ployz-free-{}", rustix::process::getuid().as_raw()),
         };
         match slot {
             0 => name,
@@ -167,11 +154,6 @@ pub fn is_builder_cache(volume: &str) -> bool {
     volume
         .strip_prefix("buildx_buildkit_ployz-")
         .map(|rest| rest.strip_prefix("free-").unwrap_or(rest))
-        .map(|rest| {
-            rest.strip_prefix(ROOT_LAYOUT)
-                .and_then(|rest| rest.strip_prefix('-'))
-                .unwrap_or(rest)
-        })
         .and_then(|rest| rest.strip_suffix("_state"))
         .is_some_and(|node| match node.split_once('-') {
             // Buildx appends `0` to the builder name, so a slot's node is `<slot>0`.

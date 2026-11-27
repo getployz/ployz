@@ -1328,91 +1328,6 @@ impl Lock {
             .into_iter()
             .map(|slot| Self::cleanup_abandoned_slot(policy, slot))
             .fold(marked, Result::and)
-            .and(Self::cleanup_legacy(policy, &environment))
-    }
-
-    /// Remove the workers an older root Ployz named under layout 1, each only
-    /// while this process holds that slot's lock in the older state directory,
-    /// so a running older CLI keeps its worker. A worker whose old lock is
-    /// held, or can't be read, is left; that leftover is the upgrade's.
-    fn cleanup_legacy(
-        policy: &crate::HostPolicy,
-        environment: &std::collections::BTreeMap<String, String>,
-    ) -> Result<(), BuildError> {
-        use rustix::fs::{FlockOperation, flock};
-        let Some(legacy) = &policy.legacy_state_directory else {
-            return Ok(());
-        };
-        let working = policy
-            .state_directory
-            .join(format!("legacy-{}", uuid::Uuid::new_v4()));
-        fs::DirBuilder::new()
-            .mode(0o700)
-            .create(&working)
-            .map_err(lock_error)?;
-        let docker = Docker {
-            program: &policy.docker,
-            environment,
-            working_dir: &working,
-            deadline: crate::Deadline::starting_now(crate::CLEANUP_TIMEOUT),
-            cancellation: None,
-            progress: None,
-            recorder: None,
-        };
-        let result = (|| {
-            let listed = docker.run(
-                "list build containers",
-                &["ps", "--all", "--format", "{{.Names}}"],
-                Streams::Captured,
-            )?;
-            let listed = listed.lines().map(str::trim).collect::<Vec<_>>();
-            (0..=usize::from(u8::MAX))
-                .map(|slot| {
-                    let workers = legacy_workers(slot)
-                        .into_iter()
-                        .filter(|worker| listed.contains(&worker.as_str()))
-                        .collect::<Vec<_>>();
-                    if workers.is_empty() {
-                        return Ok(());
-                    }
-                    let lock = legacy.join(legacy_lock_file(slot));
-                    let held = fs::OpenOptions::new()
-                        .read(true)
-                        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
-                        .open(&lock)
-                        .map_err(|error| error.to_string())
-                        .and_then(|file| {
-                            match flock(&file, FlockOperation::NonBlockingLockExclusive) {
-                                Ok(()) => Ok(file),
-                                Err(rustix::io::Errno::WOULDBLOCK) => {
-                                    Err("an older Ployz holds its slot".to_owned())
-                                }
-                                Err(error) => Err(error.to_string()),
-                            }
-                        });
-                    let _held = match held {
-                        Ok(file) => file,
-                        Err(reason) => {
-                            tracing::warn!(
-                                workers = %workers.join(", "),
-                                lock = %lock.display(),
-                                %reason,
-                                "left an older Ployz's build workers running"
-                            );
-                            return Ok(());
-                        }
-                    };
-                    workers
-                        .iter()
-                        .try_for_each(|worker| match owned(&docker, worker)? {
-                            Some(id) => tear_down(&docker, &id),
-                            None => Ok(()),
-                        })
-                })
-                .fold(Ok(()), Result::and)
-        })();
-        let _ = fs::remove_dir_all(&working);
-        result
     }
 
     /// Leave `slot` marked for recovery to clean: a mark that names no owner,
@@ -1764,28 +1679,6 @@ fn lock_file(slot: usize) -> String {
 /// daemon shares their state.
 pub(crate) fn directory() -> PathBuf {
     directory_for(rustix::process::getuid().as_raw())
-}
-
-/// Root's state directory before layout 2, where an older root CLI still
-/// locks its slots. Other users' state never moved.
-pub(crate) fn legacy_directory() -> Option<PathBuf> {
-    (rustix::process::getuid().as_raw() == 0).then(|| PathBuf::from("/var/tmp/ployz-build-0"))
-}
-
-/// The worker names layout 1 gave root's builders in `slot`.
-fn legacy_workers(slot: usize) -> [String; 2] {
-    ["ployz-0", "ployz-free-0"].map(|name| match slot {
-        0 => container(name),
-        slot => container(&format!("{name}-{slot}")),
-    })
-}
-
-/// The lock file layout 1 gave root's `slot`.
-fn legacy_lock_file(slot: usize) -> String {
-    match slot {
-        0 => "ployz-0.lock".to_owned(),
-        slot => format!("ployz-0-{slot}.lock"),
-    }
 }
 
 fn directory_for(uid: u32) -> PathBuf {
@@ -3601,47 +3494,6 @@ exit 0
             directory_for(1000),
             root,
             "another user's state stays its own"
-        );
-    }
-
-    /// An older root CLI's worker, under the names layout 1 gave it, is
-    /// stopped by startup only while startup holds that slot's old lock.
-    #[test]
-    fn startup_leaves_an_older_clis_worker_while_it_holds_its_old_slot() {
-        let directory = host_slot();
-        let directory = directory.path();
-        let legacy = directory.join("legacy");
-        fs::DirBuilder::new().mode(0o700).create(&legacy).unwrap();
-        let old = legacy_workers(0)[0].clone();
-        fs::write(directory.join("names"), &old).unwrap();
-        fs::write(directory.join("owned"), &old).unwrap();
-        let policy = crate::HostPolicy {
-            state_directory: directory.join("state"),
-            legacy_state_directory: Some(legacy.clone()),
-            configuration_file: directory.join("build.yaml"),
-            docker: directory.join("docker"),
-            ..Default::default()
-        };
-        // The older CLI is building in its slot 0.
-        let held = fs::File::create(legacy.join(legacy_lock_file(0))).unwrap();
-        rustix::fs::flock(&held, rustix::fs::FlockOperation::LockExclusive).unwrap();
-        let mut seen = 0;
-        Lock::cleanup_abandoned(&policy).unwrap();
-        let calls = calls_since(directory, &mut seen);
-        assert!(
-            !calls
-                .iter()
-                .any(|call| call.contains(&old) && !call.starts_with("inspect")),
-            "startup touched the older CLI's worker: {calls:?}"
-        );
-        // Its Build ended: the next start removes the worker.
-        drop(held);
-        Lock::cleanup_abandoned(&policy).unwrap();
-        let calls = calls_since(directory, &mut seen);
-        assert!(
-            calls.contains(&format!("stop --time {WORKER_STOP_SECONDS} id-{old}"))
-                && calls.contains(&format!("rm --force id-{old}")),
-            "{calls:?}"
         );
     }
 

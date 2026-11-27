@@ -181,9 +181,6 @@ impl From<tokio_util::sync::CancellationToken> for Cancellation {
 pub struct HostPolicy {
     /// Machine-local retained builder ownership.
     pub state_directory: PathBuf,
-    /// Where an older Ployz of this user locked its slots, whose workers
-    /// startup removes only while it holds the old slot's lock.
-    pub legacy_state_directory: Option<PathBuf>,
     /// Host-owned settings file, read once at admission.
     pub configuration_file: PathBuf,
     /// Host-installed Docker executable.
@@ -203,7 +200,6 @@ impl Default for HostPolicy {
     fn default() -> Self {
         Self {
             state_directory: crate::builder::directory(),
-            legacy_state_directory: crate::builder::legacy_directory(),
             configuration_file: std::env::home_dir()
                 .unwrap_or_else(|| PathBuf::from("/"))
                 .join(".ployz/build.yaml"),
