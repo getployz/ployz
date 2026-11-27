@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::config::{
     ReviewLifecycleKind, RowId, SavedEnvironmentIntent, SavedServiceIntent, ServiceSettingChange,
-    ServiceSource, ServiceTemplate, ValuePart, ValuePartOwner,
+    ServiceSource, ServiceTemplate, ValuePart,
 };
 use ployz_core::{RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
@@ -219,14 +219,9 @@ fn references(
     node: &SavedServiceIntent,
 ) -> Result<Vec<ServiceReference>, RpcError> {
     let mut read: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
-    for part in crate::branch::parts_read(intent, node) {
-        if let ValuePart::Ref {
-            owner: ValuePartOwner::Service { lineage_id },
-            key,
-        } = part
-        {
-            read.entry(lineage_id).or_default().insert(key);
-        }
+    for (lineage, key) in crate::branch::parts_read(intent, node).filter_map(ValuePart::service_ref)
+    {
+        read.entry(lineage).or_default().insert(key);
     }
     intent
         .services
