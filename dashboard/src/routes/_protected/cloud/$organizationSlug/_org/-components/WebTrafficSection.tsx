@@ -153,42 +153,44 @@ function cloudflareControl({ setup, change, switching, editable, settingUp, onSe
   return <Button type="button" size="sm" disabled={switching} onClick={onSwitch}>Review and switch</Button>;
 }
 
+/** The setup form's steps. A step that waits on Cloudflare or Ployz Cloud can't be left until it answers. */
+type SetupStep =
+  | { readonly at: "token"; readonly refusal: string | null }
+  | { readonly at: "finding_zones" }
+  | { readonly at: "zone"; readonly zones: readonly string[]; readonly refusal: string | null }
+  | { readonly at: "setting_up"; readonly zones: readonly string[] };
+
 function CloudflareSetupForm({ organizationSlug, onCancel, onDone }: {
   organizationSlug: string;
   onCancel: () => void;
   onDone: () => void;
 }) {
   const [token, setToken] = useState("");
-  const [zones, setZones] = useState<readonly string[] | null>(null);
   const [zone, setZone] = useState("");
-  const [busy, setBusy] = useState<"zones" | "setup" | null>(null);
-  const [refusal, setRefusal] = useState<string | null>(null);
+  const [step, setStep] = useState<SetupStep>({ at: "token", refusal: null });
+  const pending = step.at === "finding_zones" || step.at === "setting_up";
+  const zones = step.at === "zone" || step.at === "setting_up" ? step.zones : null;
+  const refusal = step.at === "token" || step.at === "zone" ? step.refusal : null;
   const problem = zones === null ? null : zoneProblem(zone, zones);
 
   const findZones = async () => {
-    setBusy("zones");
-    setRefusal(null);
+    setStep({ at: "finding_zones" });
     try {
       const found = await listCloudflareZonesServerFn({ data: { organizationSlug, token: token.trim() } });
-      setZones(found.zones);
       if (zone === "" && found.zones.length === 1) setZone(found.zones[0] ?? "");
+      setStep({ at: "zone", zones: found.zones, refusal: null });
     } catch (error) {
-      setRefusal(toErrorMessage(error, "Cloudflare didn't answer. Try again."));
-    } finally {
-      setBusy(null);
+      setStep({ at: "token", refusal: toErrorMessage(error, "Cloudflare didn't answer. Try again.") });
     }
   };
-  const setUp = async () => {
-    setBusy("setup");
-    setRefusal(null);
+  const setUp = async (found: readonly string[]) => {
+    setStep({ at: "setting_up", zones: found });
     try {
       await setUpCloudflareServerFn({ data: { organizationSlug, token: token.trim(), zone: normalizeZone(zone) } });
       setToken("");
       onDone();
     } catch (error) {
-      setRefusal(toErrorMessage(error, "Ployz Cloud didn't answer, so setup may not have finished. Try again."));
-    } finally {
-      setBusy(null);
+      setStep({ at: "zone", zones: found, refusal: toErrorMessage(error, "Ployz Cloud didn't answer, so setup may not have finished. Try again.") });
     }
   };
 
@@ -196,10 +198,11 @@ function CloudflareSetupForm({ organizationSlug, onCancel, onDone }: {
     <form
       onSubmit={(event) => {
         event.preventDefault();
-        if (busy === null) void (zones === null ? findZones() : problem === null && zone !== "" ? setUp() : undefined);
+        if (step.at === "token" && token.trim() !== "") void findZones();
+        if (step.at === "zone" && problem === null && zone !== "") void setUp(step.zones);
       }}
       onKeyDown={(event) => {
-        if (event.key === "Escape") onCancel();
+        if (event.key === "Escape" && !pending) onCancel();
       }}
     >
       <SettingsRow
@@ -215,11 +218,11 @@ function CloudflareSetupForm({ organizationSlug, onCancel, onDone }: {
               autoFocus
               spellCheck={false}
               autoComplete="off"
-              disabled={zones !== null || busy !== null}
+              disabled={step.at !== "token"}
               className="font-mono"
               onChange={(event) => setToken(event.target.value)}
             />
-            {zones === null ? <Button type="submit" size="sm" disabled={token.trim() === "" || busy !== null}>{busy === "zones" ? <Spinner /> : null}Find zones</Button> : null}
+            {zones === null ? <Button type="submit" size="sm" disabled={token.trim() === "" || pending}>{pending ? <Spinner /> : null}Find zones</Button> : null}
           </div>
         )}
       />
@@ -242,14 +245,14 @@ function CloudflareSetupForm({ organizationSlug, onCancel, onDone }: {
                 onChange={(event) => setZone(event.target.value)}
               />
               <datalist id="cloudflare-zones">{zones.map((name) => <option key={name} value={name} />)}</datalist>
-              <Button type="submit" size="sm" disabled={problem !== null || zone === "" || busy !== null}>{busy === "setup" ? <Spinner /> : null}Set up</Button>
+              <Button type="submit" size="sm" disabled={problem !== null || zone === "" || pending}>{pending ? <Spinner /> : null}Set up</Button>
             </div>
           )}
         >
           {problem === null || zone === "" ? null : <p id="cloudflare-zone-problem" className="text-sm text-destructive">{problem}</p>}
         </SettingsRow>
       )}
-      <SettingsRow label="" commit="none" control={<Button type="button" variant="ghost" size="sm" disabled={busy !== null} onClick={onCancel}>Cancel</Button>}>
+      <SettingsRow label="" commit="none" control={<Button type="button" variant="ghost" size="sm" disabled={pending} onClick={onCancel}>Cancel</Button>}>
         {refusal === null ? null : <p role="alert" className="text-sm text-destructive">{refusal}</p>}
       </SettingsRow>
     </form>

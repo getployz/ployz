@@ -81,7 +81,7 @@ function Probe({ identity = "production/api" }: { identity?: string }) {
 
 function LensProbe({ organizationSlug }: { organizationSlug: string }) {
   const runtime = useRuntimeLens(organizationSlug);
-  return <output data-testid="lens">{runtime.status}:{runtime.machines.length}</output>;
+  return <output data-testid="lens" data-reason={runtime.unreachableReason ?? ""}>{runtime.status}:{runtime.machines.length}</output>;
 }
 
 async function renderRuntime(children: ReactNode) {
@@ -184,7 +184,7 @@ describe("RuntimeProvider", () => {
     act(() => {
       eventSource.emit(
         "runtime.status",
-        JSON.stringify({ status: "unreachable", error: "dial failed" }),
+        JSON.stringify({ status: "unreachable", reason: "cluster_unreachable" }),
       );
     });
 
@@ -232,13 +232,15 @@ describe("RuntimeProvider", () => {
     );
     const eventSource = latestEventSource();
     act(() => {
-      eventSource.emit("runtime.status", JSON.stringify({ status: "unreachable", error: null }));
+      eventSource.emit("runtime.status", JSON.stringify({ status: "unreachable", reason: "awaits_key" }));
     });
     await waitFor(() => expect(screen.getByTestId("lens").textContent).toBe("unreachable:0"));
+    expect(screen.getByTestId("lens").getAttribute("data-reason")).toBe("awaits_key");
 
     act(() => screen.getByRole("button", { name: "release" }).click());
 
     await waitFor(() => expect(screen.getByTestId("lens").textContent).toBe("no_connection:0"));
+    expect(screen.getByTestId("lens").getAttribute("data-reason")).toBe("");
   });
 
   it("retains each organization's cached observation across switches and connection errors", async () => {

@@ -179,11 +179,11 @@ it("says it is retrying, not that the servers are offline, while the Runtime Wat
     </RouterContextProvider></DbProvider></QueryClientProvider>);
     const source = sources.at(-1);
     if (!source) throw new Error("Viewer did not open its log stream");
-    await act(async () => { watch.update("runtime", draft => { draft.status = "observed"; }); });
+    await act(async () => { watch.update("runtime", draft => { draft.connection = { status: "observed", observedAt: "2026-07-01T00:00:00.000Z" }; }); });
     await act(async () => source.dispatchEvent(new Event("offline")));
     expect(screen.getByText("Couldn’t load logs")).toBeTruthy();
     expect(screen.queryByText("Your servers are offline")).toBeNull();
-    await act(async () => { watch.update("runtime", draft => { draft.status = "unreachable"; }); });
+    await act(async () => { watch.update("runtime", draft => { draft.connection = { status: "unreachable", reason: "cluster_unreachable" }; }); });
     expect(screen.getByText("Your servers are offline")).toBeTruthy();
   } finally {
     cleanup();

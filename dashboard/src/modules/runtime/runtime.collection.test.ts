@@ -4,7 +4,6 @@ import { getRuntimeCollections } from "./runtime.collection";
 import { describe, expect, it } from "vitest";
 import {
   applyRuntimeSnapshot,
-  CLUSTER_UNREACHABLE_ERROR,
   getCachedRuntimeSnapshot,
   projectRuntimeMachineRecord,
   unavailableRuntimeSnapshot,
@@ -14,8 +13,7 @@ import {
 
 function observedSnapshot(): RuntimeSnapshot {
   return {
-    status: "observed",
-    error: null,
+    connection: { status: "observed", observedAt: "2026-07-01T00:00:00.000Z" },
     machines: [
       {
         id: "m1",
@@ -72,7 +70,6 @@ function observedSnapshot(): RuntimeSnapshot {
       volumes: [],
       certificates: [],
     },
-    observedAt: "2026-07-01T00:00:00.000Z",
   };
 }
 
@@ -131,6 +128,20 @@ describe("applyRuntimeSnapshot", () => {
     ).toEqual(snapshot);
   });
 
+  it("moves between connection states that carry different fields", () => {
+    const collections = getRuntimeCollections("runtime-transitions", { queryClient: new QueryClient(), sessionId: "session", userId: "user" });
+    const steps = [
+      unreachableRuntimeSnapshot("cluster_unreachable"),
+      observedSnapshot(),
+      unavailableRuntimeSnapshot(observedSnapshot()),
+      unreachableRuntimeSnapshot("awaits_key"),
+    ];
+    for (const snapshot of steps) {
+      applyRuntimeSnapshot({ collections, snapshot });
+      expect(getCachedRuntimeSnapshot(collections)).toEqual(snapshot);
+    }
+  });
+
   it("isolates observations between requests and sessions in the same organization", async () => {
     const firstQuery = new QueryClient();
     const secondQuery = new QueryClient();
@@ -139,9 +150,9 @@ describe("applyRuntimeSnapshot", () => {
     const second = getRuntimeCollections("organization", { ...scope, queryClient: secondQuery });
     const nextSession = getRuntimeCollections("organization", { ...scope, sessionId: "second" });
     applyRuntimeSnapshot({ collections: first, snapshot: observedSnapshot() });
-    expect(getCachedRuntimeSnapshot(first)?.status).toBe("observed");
-    expect(getCachedRuntimeSnapshot(second)?.status).toBe("connecting");
-    expect(getCachedRuntimeSnapshot(nextSession)?.status).toBe("connecting");
+    expect(getCachedRuntimeSnapshot(first)?.connection.status).toBe("observed");
+    expect(getCachedRuntimeSnapshot(second)?.connection.status).toBe("connecting");
+    expect(getCachedRuntimeSnapshot(nextSession)?.connection.status).toBe("connecting");
     await Promise.all([getDbClient(firstQuery).cleanup(), getDbClient(secondQuery).cleanup()]);
     firstQuery.clear(); secondQuery.clear();
   });
@@ -152,20 +163,22 @@ describe("unavailableRuntimeSnapshot", () => {
     const previous = observedSnapshot();
 
     expect(
-      unavailableRuntimeSnapshot(previous, "Runtime connection lost."),
+      unavailableRuntimeSnapshot(previous),
     ).toEqual({
       ...previous,
-      status: "unavailable",
-      error: "Runtime connection lost.",
+      connection: { status: "unavailable", observedAt: "2026-07-01T00:00:00.000Z" },
     });
+  });
+
+  it("has no observation time before any observation", () => {
+    expect(unavailableRuntimeSnapshot(null).connection).toEqual({ status: "unavailable", observedAt: null });
   });
 });
 
 describe("unreachableRuntimeSnapshot", () => {
   it("clears observation rows so they are not rendered as membership", () => {
-    expect(unreachableRuntimeSnapshot(CLUSTER_UNREACHABLE_ERROR)).toEqual({
-      status: "unreachable",
-      error: CLUSTER_UNREACHABLE_ERROR,
+    expect(unreachableRuntimeSnapshot("cluster_unreachable")).toEqual({
+      connection: { status: "unreachable", reason: "cluster_unreachable" },
       machines: [],
       services: [],
       volumeCopies: [],
@@ -177,7 +190,6 @@ describe("unreachableRuntimeSnapshot", () => {
         volumes: [],
         certificates: [],
       },
-      observedAt: null,
     });
   });
 });

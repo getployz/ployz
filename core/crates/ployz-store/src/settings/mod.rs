@@ -68,6 +68,9 @@ pub(crate) struct Spec {
     pub(crate) needs: Needs,
     /// What `unset` restores for the Service named, if one is; `null` for none.
     pub(crate) default: fn(Option<&ServiceName>) -> Value,
+    /// The name of what an unset value does when Ployz picks it, `Auto`; none when
+    /// unset means nothing.
+    pub(crate) unset: Option<&'static str>,
     /// The JSON Schema of a value: its type and allowed values or bounds.
     pub(crate) expected: fn() -> Value,
     /// One to three values `set` accepts.
@@ -182,6 +185,7 @@ impl ServiceSetting {
                 apply: Apply::Staged,
                 needs: Needs::Any,
                 default: |_| Value::Null,
+                unset: Some("No limit"),
                 expected: || json!({ "type": "number", "exclusiveMinimum": 0, "maximum": CPU_LIMIT_MAX }),
                 examples: || json!([0.5, 2]),
             },
@@ -195,6 +199,7 @@ impl ServiceSetting {
                 apply: Apply::Staged,
                 needs: Needs::Any,
                 default: |_| Value::Null,
+                unset: None,
                 expected: || {
                     let path = json!({
                         "type": "string",
@@ -246,6 +251,7 @@ impl ServiceSetting {
                 apply: Apply::Staged,
                 needs: Needs::Image,
                 default: |_| Value::Null,
+                unset: None,
                 expected: || json!({ "type": "string", "pattern": "^[^\\u0000]*$", "minLength": 1, "maxLength": IMAGE_MAX }),
                 examples: || json!(["nginx:1.27", "ghcr.io/acme/web:1.4.0"]),
             },
@@ -259,6 +265,7 @@ impl ServiceSetting {
                 apply: Apply::Staged,
                 needs: Needs::Any,
                 default: |_| json!(default_max_retries()),
+                unset: None,
                 expected: || json!({ "type": "integer", "minimum": 0, "maximum": MAX_RETRIES_MAX }),
                 examples: || json!([3]),
             },
@@ -272,6 +279,7 @@ impl ServiceSetting {
                 apply: Apply::Staged,
                 needs: Needs::Any,
                 default: |_| Value::Null,
+                unset: Some("No limit"),
                 expected: || {
                     json!({
                         "anyOf": [
@@ -292,6 +300,7 @@ impl ServiceSetting {
                 apply: Apply::Staged,
                 needs: Needs::Any,
                 default: |_| Value::Null,
+                unset: None,
                 expected: command,
                 examples: || json!(["npm run migrate"]),
             },
@@ -306,6 +315,7 @@ impl ServiceSetting {
                 needs: Needs::Any,
                 // The Service's current name, so none until a Service is named.
                 default: |service| service.map_or(Value::Null, |name| json!(name)),
+                unset: None,
                 expected: || json!({ "type": "string", "pattern": crate::catalog::NODE_NAME, "maxLength": 63 }),
                 examples: || json!(["api", "api-v2"]),
             },
@@ -319,6 +329,7 @@ impl ServiceSetting {
                 apply: Apply::Immediate,
                 needs: Needs::Image,
                 default: |_| Value::Null,
+                unset: None,
                 expected: || {
                     json!({
                         "type": "object",
@@ -342,6 +353,7 @@ impl ServiceSetting {
                 apply: Apply::Staged,
                 needs: Needs::Any,
                 default: |_| json!(default_replicas()),
+                unset: None,
                 expected: || {
                     let count = json!({ "type": "integer", "minimum": 1, "maximum": REPLICAS_MAX });
                     json!({ "anyOf": [count, { "type": "object", "additionalProperties": count }] })
@@ -358,6 +370,7 @@ impl ServiceSetting {
                 apply: Apply::Staged,
                 needs: Needs::Any,
                 default: |_| json!(ServiceRestartPolicy::default()),
+                unset: None,
                 expected: || json!({ "type": "string", "enum": RESTART_POLICIES }),
                 examples: || json!(["on-failure"]),
             },
@@ -371,6 +384,7 @@ impl ServiceSetting {
                 apply: Apply::Staged,
                 needs: Needs::Any,
                 default: |_| Value::Null,
+                unset: None,
                 expected: command,
                 examples: || json!(["npm start"]),
             },
@@ -385,6 +399,7 @@ impl ServiceSetting {
                 apply: Apply::Immediate,
                 needs: Needs::Any,
                 default: |_| Value::Null,
+                unset: None,
                 expected: || {
                     json!({
                         "type": "object",
@@ -408,19 +423,21 @@ impl ServiceSetting {
                 apply: Apply::Staged,
                 needs: Needs::Any,
                 default: |_| Value::Null,
+                unset: Some("Automatic"),
                 expected: || json!({ "type": "string", "enum": UPDATE_ORDERS }),
                 examples: || json!(["rolling"]),
             },
             Self::StopSignal => Spec {
                 name: "stopSignal",
                 label: "Stop signal",
-                description: "Auto: SIGTERM with a start command, otherwise the image's.",
+                description: "Auto: SIGTERM with a start command, otherwise the image's. Any case, with or without SIG.",
                 field: "stopSignal",
                 access: Some(access!(stop_signal)),
                 core: Some(Setting::StopSignal),
                 apply: Apply::Staged,
                 needs: Needs::Any,
                 default: |_| Value::Null,
+                unset: Some("Auto"),
                 expected: || json!({ "type": "string", "enum": STOP_SIGNALS }),
                 examples: || json!(["SIGTERM", "SIGQUIT"]),
             },
@@ -449,6 +466,7 @@ impl ServiceSetting {
                 apply: Apply::Staged,
                 needs: Needs::Any,
                 default: |_| json!(STOP_GRACE_PERIOD_DEFAULT),
+                unset: None,
                 expected: || json!({ "type": "integer", "minimum": 1, "maximum": STOP_GRACE_PERIOD_MAX }),
                 examples: || json!([60]),
             },

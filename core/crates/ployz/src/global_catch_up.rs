@@ -69,6 +69,8 @@ pub(crate) struct Observed {
     unarrived: ServerNames,
     /// The Doors the Cluster declares, as the entry Machine's replica holds them.
     declared: Option<IngressDoors>,
+    /// The Servers the entry's WireGuard sees down.
+    dead_links: Vec<crate::deploy::DeadLink>,
 }
 
 /// What the policy of one Global slot needs from the joiner: its own listing, its own
@@ -318,6 +320,7 @@ impl CatchUpClient for Client {
             },
             unarrived: ServerNames::unarrived(&machines),
             declared,
+            dead_links: crate::deploy::dead_links(&machines, self.entry_machine()),
         })
     }
 
@@ -566,18 +569,37 @@ fn not_in_message(health: Option<HealthVerdict>) -> String {
 }
 
 /// What fixes a partial listing. An answer this ployz can't read comes from a newer
-/// release, so connectivity is named only for the Servers that didn't answer.
+/// release, so connectivity is named only for the Servers that didn't answer, and a link
+/// the entry sees down is named as the reason.
 fn partial_next_step<T>(
     result: &PartialResult<T, RpcError>,
     server: impl Fn(&MachineId) -> String,
+    dead_links: &[crate::deploy::DeadLink],
 ) -> String {
     let (unreadable, unanswered): (Vec<_>, Vec<_>) = result
         .failures
         .iter()
         .partition(|failure| unreadable_answer(&failure.error));
-    let reconnect = "restore peer connectivity and redeploy";
+    let silent: Vec<_> = dead_links
+        .iter()
+        .filter(|link| {
+            unanswered.iter().any(|failure| {
+                failure.machine_id == link.machine && failure.error.target_unanswered()
+            }) || result.omissions.contains(&link.machine)
+        })
+        .map(ToString::to_string)
+        .collect();
+    let reconnect = if silent.is_empty() {
+        "restore peer connectivity and redeploy".to_owned()
+    } else {
+        format!(
+            "{}; allow {}, then redeploy",
+            silent.join("; "),
+            crate::deploy::open_wireguard()
+        )
+    };
     if unreadable.is_empty() {
-        return reconnect.to_owned();
+        return reconnect;
     }
     let names: Vec<_> = unreadable
         .iter()
@@ -606,6 +628,7 @@ async fn observe_complete<C: CatchUpClient>(
             mut live,
             mut unarrived,
             declared,
+            dead_links,
         } = tokio::select! {
             biased;
             () = cancel.cancelled() => return Err(cancelled()),
@@ -625,7 +648,11 @@ async fn observe_complete<C: CatchUpClient>(
         };
         if attempt == OBSERVATION_ATTEMPTS {
             observe(CatchUpFact::NotArrived(unarrived));
-            let next = partial_next_step(&live.services.containers, |id| live.names.name(id));
+            let next = partial_next_step(
+                &live.services.containers,
+                |id| live.names.name(id),
+                &dead_links,
+            );
             return Err(CatchUpError::new(
                 Failure::unavailable(format!(
                     "Global catch-up cannot plan from partial Service observations: {details}; \

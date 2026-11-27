@@ -150,6 +150,7 @@ fn decode_member_rtt(value: Value) -> Result<Option<RttObservation>, Error> {
         machine: None,
         statistics,
         path: None,
+        wireguard: None,
     }))
 }
 

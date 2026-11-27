@@ -1,6 +1,6 @@
 import type { MachineRuntime, RuntimeWatchView, Sealing } from "@ployz/sdk";
 import { Effect, Schema } from "effect";
-import { runtimeContainerStateSchema, runtimeSealingSchema, type RuntimeSnapshot } from "#/modules/runtime/runtime.collection";
+import { runtimeContainerStateSchema, runtimeSealingSchema, type RuntimeSnapshot, unreachableReasonSchema } from "#/modules/runtime/runtime.collection";
 
 export const REGION_LABEL = "region";
 
@@ -119,10 +119,12 @@ export type RuntimeWatchFrame = typeof runtimeWatchFrameSchema.Type;
 /** Connection states carry no Runtime Watch observation. Keeping them separate
  * from `runtime.watch` prevents an empty list from being treated as an
  * authoritative cluster answer. */
-export const runtimeConnectionStatusEventSchema = Schema.Struct({
-  status: Schema.Literals(["no_connection", "unreachable"]),
-  error: Schema.NullOr(Schema.String),
-});
+export const runtimeConnectionStatusEventSchema = Schema.Union([
+  Schema.Struct({ status: Schema.Literal("no_connection") }),
+  Schema.Struct({ status: Schema.Literal("unreachable"), reason: unreachableReasonSchema }),
+]);
+
+export type RuntimeConnectionStatusEvent = typeof runtimeConnectionStatusEventSchema.Type;
 
 /**
  * Redact an SDK frame before it crosses the server/browser boundary. Runtime
@@ -236,8 +238,7 @@ export function runtimeSnapshotFromWatchFrame(
   }
 
   return {
-    status: "observed",
-    error: null,
+    connection: { status: "observed", observedAt },
     machines: frame.machines.map((machine) => ({
       id: machine.machine.id,
       name: machine.machine.name,
@@ -296,7 +297,6 @@ export function runtimeSnapshotFromWatchFrame(
       })),
       certificates: [...frame.incomplete_ids.certificates],
     },
-    observedAt,
   };
 }
 
