@@ -1,8 +1,9 @@
 //! Machine admission, taken only here: the in-process turn that orders admitted work,
 //! exclusive for changes and shared for image transfers, in-place updates, policy
-//! edits and the stop of a Container out of routing, then the installation guard that keeps an upgrade or `ployzd install` out. The
-//! turn always comes first, and the switch, when work takes it, before both, as
-//! [`super::switch`] sets out, so no two callers take them in different orders.
+//! edits and the stop of a Container out of routing, then the installation guard that
+//! keeps an upgrade or `ployzd install` out. The turn always comes first, and the switch,
+//! when work takes it, before both, as [`super::switch`] sets out, so no two callers take
+//! them in different orders.
 //!
 //! Admitted work is detached from its RPC: a caller that stops waiting does not abandon
 //! it halfway, and the task holds its guards until the work ends.
