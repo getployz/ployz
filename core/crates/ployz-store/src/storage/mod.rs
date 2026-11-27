@@ -371,16 +371,25 @@ const MIGRATIONS: &[(&str, Step)] = &[
     ),
     (
         "0059_deployment_cleanup",
-        Step::Rust(|tx, backend| {
+        Step::Rust(|tx, _| {
             tx.batch(include_str!("migrations/0059_deployment_cleanup.sql"))?;
-            let deadline = match backend {
-                Backend::Postgres => "CAST(run::jsonb ->> 'cleanup_until' AS BIGINT)",
-                Backend::Sqlite => "json_extract(run, '$.cleanup_until')",
-            };
-            tx.batch(&format!(
-                "UPDATE config_deployment SET cleanup_status = 'pending', cleanup_deadline = {deadline}
-                 WHERE {deadline} IS NOT NULL"
-            ))?;
+            #[derive(serde::Deserialize)]
+            struct LegacyCleanup {
+                cleanup_until: Option<i64>,
+            }
+            for row in tx.query(
+                "SELECT id, run FROM config_deployment WHERE run LIKE '%\"cleanup_until\"%'",
+                &[],
+            )? {
+                let legacy: LegacyCleanup = row.json(1, "Deployment cleanup deadline")?;
+                if let Some(deadline) = legacy.cleanup_until {
+                    tx.execute(
+                        "UPDATE config_deployment SET cleanup_status = 'pending', cleanup_deadline = ?2
+                         WHERE id = ?1 AND cleanup_status IS NULL",
+                        &[row.text(0)?.into(), deadline.into()],
+                    )?;
+                }
+            }
             Ok(None)
         }),
     ),

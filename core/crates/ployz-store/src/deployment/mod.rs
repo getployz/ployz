@@ -2231,6 +2231,15 @@ impl Stored {
 ///   report on it any more ([`running`]). One out of flight that shows no end,
 ///   waiting for CI or a [`Raw`] row with no `ended`, leaves its builds as they are.
 fn save(tx: &mut dyn Tx, stored: &mut Stored) -> Result<(), RpcError> {
+    save_when(tx, stored, SaveWhen::Always).map(drop)
+}
+
+enum SaveWhen {
+    Always,
+    ActiveCleanup,
+}
+
+fn save_when(tx: &mut dyn Tx, stored: &mut Stored, when: SaveWhen) -> Result<bool, RpcError> {
     stored.show();
     stored.recorded_runner_lease = stored.standing.lease();
     let standing = &stored.standing;
@@ -2239,9 +2248,15 @@ fn save(tx: &mut dyn Tx, stored: &mut Stored) -> Result<(), RpcError> {
         .map(i64::try_from)
         .transpose()
         .map_err(|_| error::corrupt("Deployment number"))?;
-    tx.execute(
-        "UPDATE config_deployment SET status = ?1, run = ?2, runner = ?4, lease = ?5, \
-         started = ?6, ended = ?7, number = ?8 WHERE id = ?3",
+    let guard = match when {
+        SaveWhen::Always => String::new(),
+        SaveWhen::ActiveCleanup => format!(" AND {}", cleanup::pending_in_time(tx)),
+    };
+    let changed = tx.execute(
+        &format!(
+            "UPDATE config_deployment SET status = ?1, run = ?2, runner = ?4, lease = ?5, \
+             started = ?6, ended = ?7, number = ?8 WHERE id = ?3{guard}"
+        ),
         &[
             name_of(standing.kept()).as_str().into(),
             json_text(&stored.run).as_str().into(),
@@ -2253,13 +2268,16 @@ fn save(tx: &mut dyn Tx, stored: &mut Stored) -> Result<(), RpcError> {
             number.into(),
         ],
     )?;
+    if changed == 0 {
+        return Ok(false);
+    }
     if !stored.summary.in_flight {
         crate::seal_scrub::history::scrub_sealed(tx, &stored.summary.environment_id)?;
         if let Some(ended) = stored.summary.ended_at {
             crate::build::settle(tx, &stored.summary.id, ended)?;
         }
     }
-    Ok(())
+    Ok(true)
 }
 
 fn running(stored: &Stored) -> Result<(), RpcError> {

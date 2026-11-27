@@ -33,12 +33,17 @@ impl Cleanup {
     }
 }
 
+pub(super) fn pending_in_time(tx: &dyn Tx) -> String {
+    let clock = tx.backend().wall_clock();
+    format!("cleanup_status = 'pending' AND cleanup_deadline >= {clock}")
+}
+
 pub(super) fn renewed(
     tx: &mut dyn Tx,
     id: &DeploymentId,
     start: bool,
 ) -> Result<Option<Cleanup>, RpcError> {
-    let clock = tx.backend().wall_clock();
+    let pending = pending_in_time(tx);
     let seconds = tx.backend().wall_seconds();
     let initial = if start {
         "cleanup_status IS NULL OR "
@@ -48,7 +53,7 @@ pub(super) fn renewed(
     tx.query(
         &format!(
             "UPDATE config_deployment SET cleanup_status = 'pending', cleanup_deadline = {seconds} + {LEASE}
-             WHERE id = ?1 AND ({initial}(cleanup_status = 'pending' AND cleanup_deadline >= {clock}))
+             WHERE id = ?1 AND ({initial}({pending}))
              RETURNING cleanup_status, cleanup_deadline"
         ),
         &[id.as_str().into()],
@@ -59,24 +64,27 @@ pub(super) fn renewed(
 }
 
 pub(super) fn finished(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Cleanup, RpcError> {
-    let clock = tx.backend().wall_clock();
-    let rows = tx.query(
+    let pending = pending_in_time(tx);
+    let changed = tx.execute(
         &format!(
-            "UPDATE config_deployment SET cleanup_status = CASE
-                 WHEN cleanup_deadline < {clock} THEN 'unconfirmed' ELSE 'done' END,
-                 cleanup_deadline = NULL
-             WHERE id = ?1 AND cleanup_status = 'pending'
-             RETURNING cleanup_status, cleanup_deadline"
+            "UPDATE config_deployment SET cleanup_status = 'done', cleanup_deadline = NULL
+             WHERE id = ?1 AND {pending}"
         ),
         &[id.as_str().into()],
     )?;
-    match rows.first() {
-        Some(row) => Cleanup::decode(row, 0, 1),
-        None => read_state(tx, id),
+    if changed != 0 {
+        return Ok(Cleanup::Done);
     }
+    let cleanup = expire_and_read(tx, id)?;
+    if matches!(cleanup, Cleanup::Pending(_)) {
+        return Err(RpcError::unavailable(
+            "The Store could not confirm that cleanup ended",
+        ));
+    }
+    Ok(cleanup)
 }
 
-fn expire(tx: &mut dyn Tx, id: &DeploymentId) -> Result<(), RpcError> {
+pub(super) fn expire(tx: &mut dyn Tx, id: &DeploymentId) -> Result<(), RpcError> {
     let clock = tx.backend().wall_clock();
     tx.execute(
         &format!(

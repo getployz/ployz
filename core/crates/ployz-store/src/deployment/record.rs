@@ -34,17 +34,6 @@ pub(crate) fn record(
     if stored.summary.runner.as_ref() != Some(runner) {
         return Err(owned_elsewhere(id));
     }
-    if matches!(evidence, RunEvidence::RuntimeFailed) && !stored.summary.status.claimed() {
-        if matches!(stored.cleanup, Cleanup::Pending(_)) {
-            stored.cleanup = cleanup::expire_and_read(tx, id)?;
-            stored.summary.cleanup = stored.cleanup.status();
-        }
-        if stored.summary.status == DeploymentStatus::Unknown
-            || !matches!(stored.cleanup, Cleanup::Pending(_))
-        {
-            return Ok(receipt(stored));
-        }
-    }
     if !matches!(
         evidence,
         RunEvidence::Finishing { .. } | RunEvidence::Finished { .. }
@@ -520,9 +509,21 @@ pub(crate) fn record(
             )
         }
         RunEvidence::RuntimeFailed => {
+            if stored.summary.status == DeploymentStatus::Unknown {
+                return Ok(receipt(stored));
+            }
             stored.standing = stored.standing.runtime_failed(now());
-            save(tx, &mut stored)?;
-            Ok(receipt(stored))
+            let when = if claimed {
+                SaveWhen::Always
+            } else {
+                SaveWhen::ActiveCleanup
+            };
+            if save_when(tx, &mut stored, when)? {
+                Ok(receipt(stored))
+            } else {
+                cleanup::expire(tx, id)?;
+                Ok(receipt(load(tx, id)?))
+            }
         }
         RunEvidence::Abandoned => {
             if stored.run.outcome.is_some() || stored.summary.status == DeploymentStatus::Unknown {

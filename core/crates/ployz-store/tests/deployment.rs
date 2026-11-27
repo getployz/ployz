@@ -515,46 +515,66 @@ fn deployment_with_pending_cleanup(store: &ConfigStore, who: &Actor) -> RunnerId
 
 #[test]
 fn a_held_postgres_renewal_cannot_overwrite_unconfirmed_cleanup() {
+    if let Some(result) =
+        expire_cleanup_while_postgres_write_is_held(RunEvidence::Finishing { live_at: None })
+    {
+        assert_eq!(code(result), RpcErrorCode::Conflict);
+    }
+}
+
+#[test]
+fn a_held_postgres_runtime_failure_keeps_the_applied_status_after_cleanup_expires() {
+    if let Some(result) = expire_cleanup_while_postgres_write_is_held(RunEvidence::RuntimeFailed) {
+        result.unwrap();
+    }
+}
+
+fn expire_cleanup_while_postgres_write_is_held(
+    evidence: RunEvidence,
+) -> Option<Result<DeploymentSummary, RpcError>> {
     use ployz_store::CleanupStatus;
     use std::time::{Duration, Instant};
 
     let dir = tempfile::tempdir().unwrap();
     let url = backend::fresh_url(&dir);
     if url.starts_with("sqlite:") {
-        return;
+        return None;
     }
     let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
     let runner = deployment_with_pending_cleanup(&store, &who);
     let writer = ConfigStore::open(
-        &format!("{url}?application_name=held_cleanup_renewal"),
+        &format!("{url}?application_name=held_cleanup_write"),
         backend::key(),
     )
     .unwrap();
     let mut database = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    let column = match evidence {
+        RunEvidence::Finishing { .. } => "cleanup_deadline",
+        RunEvidence::RuntimeFailed => "status",
+        _ => unreachable!("only cleanup-dependent writes use this fixture"),
+    };
     database
-        .batch_execute(
-            "CREATE FUNCTION hold_cleanup_renewal() RETURNS trigger LANGUAGE plpgsql AS $$
+        .batch_execute(&format!(
+            "CREATE FUNCTION hold_cleanup_write() RETURNS trigger LANGUAGE plpgsql AS $$
          BEGIN
-           IF current_setting('application_name') = 'held_cleanup_renewal' THEN
+           IF current_setting('application_name') = 'held_cleanup_write' THEN
              PERFORM pg_advisory_xact_lock(8111);
            END IF;
            RETURN NULL;
          END $$;
-         CREATE TRIGGER hold_cleanup_renewal
-           BEFORE UPDATE OF cleanup_deadline ON config_deployment
-           FOR EACH STATEMENT EXECUTE FUNCTION hold_cleanup_renewal();
+         CREATE TRIGGER hold_cleanup_write
+           BEFORE UPDATE OF {column} ON config_deployment
+           FOR EACH STATEMENT EXECUTE FUNCTION hold_cleanup_write();
          SELECT pg_advisory_lock(8111);",
-        )
+        ))
         .unwrap();
-    let renewal = std::thread::spawn(move || {
-        writer.record(&id(1), &runner, RunEvidence::Finishing { live_at: None })
-    });
+    let write = std::thread::spawn(move || writer.record(&id(1), &runner, evidence));
     let through = Instant::now() + Duration::from_secs(5);
     loop {
         let waiting: bool = database
             .query_one(
                 "SELECT EXISTS (SELECT 1 FROM pg_stat_activity
-              WHERE application_name = 'held_cleanup_renewal'
+              WHERE application_name = 'held_cleanup_write' AND datname = current_database()
                 AND wait_event_type = 'Lock' AND wait_event = 'advisory')",
                 &[],
             )
@@ -565,7 +585,7 @@ fn a_held_postgres_renewal_cannot_overwrite_unconfirmed_cleanup() {
         }
         assert!(
             Instant::now() < through,
-            "the renewal did not reach its held write"
+            "the runner did not reach its held write"
         );
         // real-wait: Postgres exposes the gate only once the independent writer is waiting.
         std::thread::sleep(Duration::from_millis(10));
@@ -583,13 +603,22 @@ fn a_held_postgres_renewal_cannot_overwrite_unconfirmed_cleanup() {
         .get(0);
     assert_eq!(stored, "unconfirmed");
     database
+        .execute(
+            "UPDATE config_deployment SET cleanup_deadline = 9223372036854775807",
+            &[],
+        )
+        .unwrap();
+    database
         .batch_execute("SELECT pg_advisory_unlock(8111)")
         .unwrap();
-    assert_eq!(code(renewal.join().unwrap()), RpcErrorCode::Conflict);
-    assert_eq!(
-        summary(&store, &who, 1).cleanup,
-        Some(CleanupStatus::Unconfirmed)
-    );
+    let result = write.join().unwrap();
+    let view = summary(&store, &who, 1);
+    assert_eq!(view.cleanup, Some(CleanupStatus::Unconfirmed));
+    assert_eq!(view.status, DeploymentStatus::Applied);
+    if let Ok(receipt) = &result {
+        assert_eq!(receipt, &view);
+    }
+    Some(result)
 }
 
 #[test]
@@ -641,12 +670,22 @@ fn finished_saves_warnings_without_clearing_unconfirmed_cleanup() {
 
 #[test]
 fn cleanup_migration_keeps_a_runner_deadline_from_the_legacy_document() {
+    use ployz_core::{ContainerId, DeployWarning};
     use ployz_store::CleanupStatus;
 
     let dir = tempfile::tempdir().unwrap();
     let url = backend::fresh_url(&dir);
     let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
-    let _ = deployment_with_pending_cleanup(&store, &who);
+    let runner = deployment_with_pending_cleanup(&store, &who);
+    let warning = DeployWarning::LeftRunning {
+        service: "shop-production/web".parse().unwrap(),
+        machine: "edge".into(),
+        container_id: ContainerId::parse("a".repeat(64)).unwrap(),
+        reason: "docker is busy\0still running".into(),
+    };
+    store
+        .record(&id(1), &runner, RunEvidence::Warned(warning.clone()))
+        .unwrap();
     rewrite_run(&url, 1, |run| run["cleanup_until"] = json!(1));
     drop(store);
     for sql in [
@@ -657,9 +696,12 @@ fn cleanup_migration_keeps_a_runner_deadline_from_the_legacy_document() {
         backend::execute(&url, sql);
     }
     let reopened = ConfigStore::open(&url, backend::key()).unwrap();
-    assert_eq!(
-        summary(&reopened, &who, 1).cleanup,
-        Some(CleanupStatus::Unconfirmed)
+    let migrated = summary(&reopened, &who, 1);
+    assert_eq!(migrated.cleanup, Some(CleanupStatus::Unconfirmed));
+    assert!(
+        migrated
+            .warnings
+            .contains(&DeploymentWarning::Deploy { warning })
     );
 }
 
