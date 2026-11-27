@@ -4,10 +4,11 @@ the spread across runs, and the time no step covered.
 
   deploy-bench --env shop/bench -n 3                 redeploy the newest ended Deployment
   deploy-bench --env shop/bench -n 3 --push ~/shop   push an empty commit from that checkout
+  deploy-bench --env shop/bench -n 3 --up ~/shop     `ployz up` that directory with a new file in it
   deploy-bench --from runs/*.json                    summarize saved `deployment show --json`
 
-It runs `ployz` from PATH, or PLOYZ_BIN, so `--context`, PLOYZ_CONTEXT and PLOYZ_STORE pick
-the Environment's Store the way they do for any ployz command.
+It runs `ployz` from PATH, or PLOYZ_BIN, so the Cloud it is signed in to, or PLOYZ_STORE and
+PLOYZ_CONTEXT, pick the Environment the way they do for any ployz command.
 """
 
 import argparse
@@ -105,14 +106,13 @@ def table(rows, runs):
 
 
 class Ployz:
-    def __init__(self, project, env, context):
+    def __init__(self, project, env):
         self.binary = os.environ.get("PLOYZ_BIN", "ployz")
         self.scope = ["--project", project, "--env", env]
-        self.context = ["--context", context] if context else []
 
-    def __call__(self, *words, check=True):
-        command = [self.binary, "--json", *self.context, *words, *self.scope]
-        ran = subprocess.run(command, capture_output=True, text=True)
+    def __call__(self, *words, check=True, cwd=None):
+        command = [self.binary, "--json", *words, *self.scope]
+        ran = subprocess.run(command, capture_output=True, text=True, cwd=cwd)
         if check and ran.returncode != 0:
             sys.exit(f"{' '.join(command)} failed:\n{ran.stderr.strip()}")
         self.stderr = ran.stderr.strip()
@@ -144,7 +144,7 @@ def wait_until_ended(ployz, number, timeout):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         view = ployz.show(number)
-        if view["deployment"]["status"] in ENDED:
+        if view["status"] in ENDED:
             return view
         time.sleep(1)
     sys.exit(f"Deployment #{number} didn't end within {timeout}s.")
@@ -155,9 +155,9 @@ def redeploy(ployz, timeout):
     if not source or source["status"] not in ENDED:
         sys.exit("Redeploying needs an ended Deployment to redeploy.")
     ran = ployz("deployment", "redeploy", str(source["number"]), "--yes", check=False)
-    if not isinstance(ran, dict) or "deployment" not in ran:
+    if not isinstance(ran, dict) or "number" not in ran:
         sys.exit(f"Redeploying #{source['number']} failed:\n{ployz.stderr}")
-    return wait_until_ended(ployz, ran["deployment"]["number"], timeout)
+    return wait_until_ended(ployz, ran["number"], timeout)
 
 
 def push(ployz, checkout, attempt, timeout):
@@ -168,12 +168,19 @@ def push(ployz, checkout, attempt, timeout):
     return wait_until_ended(ployz, wait_for_new(ployz, before, timeout)["number"], timeout)
 
 
+def upload(ployz, directory, timeout):
+    before = ployz.newest()
+    (directory / ".deploy-bench").write_text(f"{time.time_ns()}\n")
+    ployz("up", check=False, cwd=directory)
+    return wait_until_ended(ployz, wait_for_new(ployz, before, timeout)["number"], timeout)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--env", help="project/environment to deploy")
     parser.add_argument("-n", type=int, default=3, help="how many Deployments to run (default 3)")
-    parser.add_argument("--context", default=os.environ.get("PLOYZ_CONTEXT"), help="ployz context")
     parser.add_argument("--push", type=Path, metavar="CHECKOUT", help="push empty commits from this checkout instead of redeploying")
+    parser.add_argument("--up", type=Path, metavar="DIRECTORY", help="`ployz up` this directory, changed each time, instead of redeploying")
     parser.add_argument("--timeout", type=int, default=900, help="seconds to wait for each Deployment")
     parser.add_argument("--save", type=Path, metavar="DIR", help="write each run's `deployment show --json` here")
     parser.add_argument("--from", dest="saved", nargs="+", type=Path, metavar="FILE", help="summarize saved runs instead of deploying")
@@ -186,15 +193,20 @@ def main():
         if not args.env or "/" not in args.env:
             parser.error("--env project/environment is required")
         project, env = args.env.split("/", 1)
-        ployz = Ployz(project, env, args.context)
+        ployz = Ployz(project, env)
         views = []
         for attempt in range(1, args.n + 1):
-            view = push(ployz, args.push, attempt, args.timeout) if args.push else redeploy(ployz, args.timeout)
-            status = view["deployment"]["status"]
-            print(f"#{view['deployment']['number']} {status}", file=sys.stderr)
+            if args.push:
+                view = push(ployz, args.push, attempt, args.timeout)
+            elif args.up:
+                view = upload(ployz, args.up, args.timeout)
+            else:
+                view = redeploy(ployz, args.timeout)
+            status = view["status"]
+            print(f"#{view['number']} {status}", file=sys.stderr)
             if args.save:
                 args.save.mkdir(parents=True, exist_ok=True)
-                (args.save / f"{view['deployment']['number']}.json").write_text(json.dumps(view, indent=2))
+                (args.save / f"{view['number']}.json").write_text(json.dumps(view, indent=2))
             views.append(view)
 
     rows = summarize(views)

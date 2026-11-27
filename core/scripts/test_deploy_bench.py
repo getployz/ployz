@@ -19,7 +19,7 @@ loader.exec_module(bench)
 
 
 def view(number, status, *steps):
-    return {"deployment": {"number": number, "status": status}, "steps": list(steps)}
+    return {"number": number, "status": status, "steps": list(steps)}
 
 
 def step(name, started_at, ended_at=None, service=None):
@@ -93,7 +93,7 @@ class Summary(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             paths = []
             for run in RUNS:
-                path = Path(directory) / f"{run['deployment']['number']}.json"
+                path = Path(directory) / f"{run['number']}.json"
                 path.write_text(json.dumps(run))
                 paths.append(str(path))
             ran = subprocess.run(
