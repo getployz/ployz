@@ -23,8 +23,8 @@ can't start after Ployz stopped the old one, makes the row read `rolling back` w
 that Server's change, such as `rolling back (1 failed)`. It counts the Servers
 whose new Container already serves, as in `rolling back 1/2`, and shows no count when none does. A row whose new Containers already serve shows a `draining old` line
 while the deploy removes Containers it no longer needs, which waits until every Server routes to the new ones. Old copies that a
-replacement leaves behind drain on each Server after the switch, and the row reads
-`draining old` until they are gone. A Service the deploy removes reads `waiting to remove`,
+replacement leaves behind drain on each Server after the switch, and the Service shows a
+`draining old` line until they are gone. A Service the deploy removes reads `waiting to remove`,
 then `stopping` and `removing`, then `removed`, and the summary counts it as removed. A Service
 the deploy keeps but only clears an old copy of reads `removing old`, then `switched`. When the
 deploy leaves old replicas running, the row reads like `switched 3/3, 2 left running` and the

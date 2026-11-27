@@ -682,7 +682,11 @@ impl Run {
         } else {
             match self.build(session, &claimed, &targets).await? {
                 Ok(mut receipts) => {
-                    self.steps().start(StepName::Planning, None, now_ms());
+                    {
+                        let mut steps = self.steps();
+                        let at = steps.last_ended(StepName::Building).unwrap_or_else(now_ms);
+                        steps.start(StepName::Planning, None, at);
+                    }
                     receipts.extend(built);
                     rules = rule_proofs(session, &claimed, &receipts, self).await;
                     registry_proofs(&claimed, &mut rules);

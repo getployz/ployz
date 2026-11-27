@@ -186,6 +186,16 @@ impl Steps {
         }
     }
 
+    /// When the last of `name`'s Services ended it, if any did.
+    #[must_use]
+    pub fn last_ended(&self, name: StepName) -> Option<i64> {
+        self.steps
+            .values()
+            .filter(|step| step.name == name)
+            .filter_map(|step| step.ended_at)
+            .max()
+    }
+
     /// Whether `name` ever started.
     #[must_use]
     pub fn started(&self, name: StepName, service: Option<&ServiceName>) -> bool {

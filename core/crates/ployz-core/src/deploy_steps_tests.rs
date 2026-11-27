@@ -94,3 +94,15 @@ fn a_step_that_failed_while_the_deploy_went_on_stays_open() {
         ]
     );
 }
+
+#[test]
+fn the_last_end_of_a_step_is_its_latest_services() {
+    let mut steps = Steps::default();
+    let web: ServiceName = "web".parse().unwrap();
+    assert_eq!(steps.last_ended(StepName::Building), None);
+    steps.start(StepName::Building, Some(&service()), 100);
+    steps.start(StepName::Building, Some(&web), 100);
+    steps.end(StepName::Building, Some(&web), 300);
+    steps.end(StepName::Building, Some(&service()), 200);
+    assert_eq!(steps.last_ended(StepName::Building), Some(300));
+}
