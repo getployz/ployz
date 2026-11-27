@@ -15,8 +15,9 @@ const sessionCopies: SessionCopies = (session) => session.observeCopies().pipe(E
 
 /**
  * The copies the Cluster's Servers hold and why the organization can't stage a placement now, both read over one
- * session. A Cluster with no copies to sync is never asked for a frame. The connect, the frame and the close share
- * 5 seconds of Cluster time, as `firstRuntimeFrame` gives them; a frame that doesn't come within it refuses as unanswered.
+ * session. A Cluster with no copies to sync is never asked for a frame. The connect, the copies, the frame and the
+ * close share 5 seconds of Cluster time; copies that don't come within it refresh nothing, and a frame that doesn't
+ * refuses as unanswered.
  */
 const lookAtCluster = Effect.fn("MirrorSync.lookAtCluster")(function* (organizationId: string, observe: SessionCopies) {
   const session = yield* (yield* OrganizationRuntime).open(organizationId).pipe(
@@ -29,6 +30,7 @@ const lookAtCluster = Effect.fn("MirrorSync.lookAtCluster")(function* (organizat
     return { copies: NO_COPIES, refusal: null };
   }
   const copies = yield* observe(session.connected).pipe(
+    clusterRead,
     Effect.catch((error) => Effect.logWarning("Mirror refresh could not observe the copies.", { organizationId, error }).pipe(Effect.as(NO_COPIES))),
   );
   if (copies.length === 0) return { copies, refusal: null };
