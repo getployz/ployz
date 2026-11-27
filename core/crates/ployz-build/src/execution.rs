@@ -324,14 +324,50 @@ impl Admission {
         policy: &HostPolicy,
         concurrency: BuildConcurrency,
     ) -> Result<Self, BuildError> {
+        let limit = usize::from(concurrency);
         let mut quarantined = None;
         let mut foreign = None;
+        // Slots that count against the limit: running a Build, or quarantined.
+        let mut counted = Vec::new();
+        // A marked slot runs a Build or waits for recovery, whatever its number,
+        // so every one counts before a free slot is taken, and is recovered
+        // first if it can be. One that recovers stops counting.
+        let mut recovered = None;
+        for slot in 0..=usize::from(u8::MAX) {
+            if !Lock::marked_in(&policy.state_directory, slot) {
+                continue;
+            }
+            match Self::try_acquire_slot(policy, slot) {
+                Ok(admission) => match admission.lock.foreign_holder(&policy.docker) {
+                    None => {
+                        recovered.get_or_insert(admission);
+                    }
+                    Some(container) => {
+                        foreign.get_or_insert(container);
+                    }
+                },
+                Err(BuildError::Busy) => counted.push(slot),
+                Err(error) if error.is_unknown() => {
+                    counted.push(slot);
+                    quarantined.get_or_insert(error);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        let mut held = counted.len();
+        if held < limit
+            && let Some(admission) = recovered
+        {
+            return Ok(admission);
+        }
         // A slot whose worker name a container Ployz did not create holds is
         // passed over without counting against the limit.
-        let mut counted = 0;
         for slot in 0..=usize::from(u8::MAX) {
-            if counted == usize::from(concurrency) {
+            if held >= limit {
                 break;
+            }
+            if counted.contains(&slot) {
+                continue;
             }
             match Self::try_acquire_slot(policy, slot) {
                 Ok(admission) => match admission.lock.foreign_holder(&policy.docker) {
@@ -340,9 +376,9 @@ impl Admission {
                         foreign.get_or_insert(container);
                     }
                 },
-                Err(BuildError::Busy) => counted += 1,
+                Err(BuildError::Busy) => held += 1,
                 Err(error) if error.is_unknown() => {
-                    counted += 1;
+                    held += 1;
                     quarantined.get_or_insert(error);
                 }
                 Err(error) => return Err(error),

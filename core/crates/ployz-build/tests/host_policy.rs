@@ -63,19 +63,21 @@ impl Drop for Host {
 
 #[test]
 fn cache_clearing_and_builds_share_exclusive_ownership_and_quarantine() {
-    let host = Host::new(
-        r#"
+    // Once removals are refused, a retry of the teardown fails too.
+    let host = Host::new(&format!(
+        r#"{}
 root=$(dirname "$0")
 if [ "$1 $2" = 'context show' ]; then echo default; exit 0; fi
 if [ "$1 $2" = 'buildx prune' ]; then
     touch "$root/clearing"
     while [ ! -f "$root/release" ]; do sleep 0.02; done
 fi
-if [ "$1 $2" = 'buildx rm' ] && [ -f "$root/refuse-cleanup" ]; then
+if {{ [ "$1 $2" = 'buildx rm' ] || [ "$1 $2" = 'rm --force' ]; }} && [ -f "$root/refuse-cleanup" ]; then
     echo 'injected removal failure' >&2; exit 1
 fi
 "#,
-    );
+        worker_started()
+    ));
     let admission = Admission::try_acquire_with(&host.policy).unwrap();
     assert!(matches!(clear_cache(&host.policy), Err(BuildError::Busy)));
     assert!(!host.file("clearing").exists());
@@ -565,7 +567,7 @@ fn opened_values_vanish_from_a_retained_unknown_root() {
         .replace("$BUILDER", &ployz_build::builder_name())
         .replace(
             " 'buildx bake')",
-            " 'buildx rm') [ -f \"$root/seen-secret\" ] && { echo 'injected removal failure' >&2; exit 1; } ;;\n 'buildx bake')",
+            " 'buildx rm'|'rm --force') [ -f \"$root/seen-secret\" ] && { echo 'injected removal failure' >&2; exit 1; } ;;\n 'buildx bake')",
         );
     let host = Host::new(&format!("{}{docker}", worker_started()));
     let capture = sealed_capture(&host);

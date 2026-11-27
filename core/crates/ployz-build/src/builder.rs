@@ -440,6 +440,13 @@ impl<'a> Builder<'a> {
         if cleanup.is_err() {
             self.hold_bridge();
         }
+        // The Build returned, so only Docker can still hold the slot: the
+        // next admission retries the teardown, in this process too.
+        let disowned = if cleanup.is_err() {
+            self.lock.as_mut().expect("owned lock").disown()
+        } else {
+            Ok(())
+        };
         let stage = result
             .as_ref()
             .err()
@@ -448,7 +455,7 @@ impl<'a> Builder<'a> {
         {
             self.lock.as_mut().expect("owned lock").clear()
         } else {
-            Ok(())
+            disowned
         };
         self.lock.take();
         if let Err(error) = cleared {
@@ -487,6 +494,7 @@ impl Drop for Builder<'_> {
             let _ = self.lock.as_mut().expect("owned lock").clear();
         } else {
             self.hold_bridge();
+            let _ = self.lock.as_mut().expect("owned lock").disown();
         }
     }
 }
@@ -721,14 +729,21 @@ fn discard(docker: &Docker<'_>, slot: usize) -> Result<(), BuildError> {
     })
 }
 
+/// How long BuildKit gets to shut down, deleting its bridge, before Docker
+/// kills it. Within the cleanup budget.
+const WORKER_STOP_SECONDS: &str = "20";
+
 /// Tear down the worker with ID `id`: stop it gracefully, so BuildKit deletes
 /// its bridge, then remove it. A worker that fails to stop and still runs is
 /// left running, since a forced removal would leave its bridge behind; the
 /// error keeps the slot marked for a later recovery to retry.
 fn tear_down(docker: &Docker<'_>, id: &str) -> Result<(), BuildError> {
     let releasing = docker.releasing();
-    if let Err(error) = releasing.run("stop the build container", &["stop", id], Streams::Captured)
-    {
+    if let Err(error) = releasing.run(
+        "stop the build container",
+        &["stop", "--time", WORKER_STOP_SECONDS, id],
+        Streams::Captured,
+    ) {
         match releasing.run(
             "inspect the build container",
             &[
@@ -1354,6 +1369,42 @@ impl Lock {
             directory: directory.to_owned(),
             slot,
         })
+    }
+
+    /// Whether `slot` in `directory` carries a mark: a Build runs there, or
+    /// it waits for recovery.
+    pub(crate) fn marked_in(directory: &std::path::Path, slot: usize) -> bool {
+        fs::metadata(directory.join(lock_file(slot))).is_ok_and(|mark| mark.len() != 0)
+    }
+
+    /// Drop the owner from the mark, keeping the Docker CLIs it records: once
+    /// a Build returns, only those and its builder can still hold the slot.
+    pub(crate) fn disown(&mut self) -> Result<(), BuildError> {
+        use std::os::unix::fs::FileExt as _;
+        let _writes = self.file.writes.lock().expect("mark writes never panic");
+        let mark = {
+            let length = self.file.file.metadata().map_err(lock_error)?.len();
+            let mut mark = vec![0; usize::try_from(length).unwrap_or(usize::MAX)];
+            self.file
+                .file
+                .read_exact_at(&mut mark, 0)
+                .map_err(lock_error)?;
+            String::from_utf8_lossy(&mark).into_owned()
+        };
+        let kept = mark
+            .lines()
+            .filter(|line| !line.starts_with("owner "))
+            .map(|line| format!("{line}\n"))
+            .collect::<String>();
+        self.file
+            .file
+            .write_all_at(kept.as_bytes(), 0)
+            .map_err(lock_error)?;
+        self.file
+            .file
+            .set_len(kept.len() as u64)
+            .map_err(lock_error)?;
+        self.file.file.sync_all().map_err(lock_error)
     }
 
     pub(crate) fn clear(&mut self) -> Result<(), BuildError> {
@@ -2151,7 +2202,7 @@ exit 0
             let worker = container(&access.builder(slot));
             calls.push(inspect_owner(&worker));
             if owned.contains(&worker) {
-                calls.push(format!("stop id-{worker}"));
+                calls.push(format!("stop --time {WORKER_STOP_SECONDS} id-{worker}"));
                 calls.push(format!("rm --force id-{worker}"));
             }
         }
@@ -2256,7 +2307,7 @@ exit 0
             [
                 inspect_owner(&container(&name)),
                 format!("buildx rm --keep-state --keep-daemon {name}"),
-                format!("stop id-{}", container(&name)),
+                format!("stop --time {WORKER_STOP_SECONDS} id-{}", container(&name)),
                 format!("rm --force id-{}", container(&name)),
             ],
             "teardown keeps the cache volume"
@@ -3170,6 +3221,66 @@ exit 0
         assert_eq!(removed, expected, "{calls:?}");
     }
 
+    /// A quarantined slot counts against the limit even when a lower slot is
+    /// free, and the next admission retries it first.
+    #[test]
+    fn a_free_lower_slot_never_hides_a_quarantined_one() {
+        let directory = host_slot();
+        let directory = directory.path();
+        let foreign = container(&Access::Full.builder(0));
+        let worker = container(&Access::Full.builder(1));
+        fs::write(directory.join("names"), &foreign).unwrap();
+        fs::write(directory.join("foreign"), &foreign).unwrap();
+        let policy = crate::HostPolicy {
+            state_directory: directory.join("state"),
+            configuration_file: directory.join("build.yaml"),
+            docker: directory.join("docker"),
+            ..Default::default()
+        };
+        let one = ployz_core::BuildConcurrency::ONE;
+        let admission = crate::Admission::try_acquire_within(&policy, one).unwrap();
+        assert_eq!(admission.slot(), 1);
+        drop(admission);
+        // Slot 1's Build died, leaving its worker running, and it won't stop.
+        let mut gone = sleeper(&[]);
+        let docker_process = crate::owner::Process::observe(gone.id()).unwrap().unwrap();
+        gone.kill().unwrap();
+        gone.wait().unwrap();
+        fs::write(
+            policy.state_directory.join(lock_file(1)),
+            format!(
+                "{}{}",
+                crate::owner::named(&[]),
+                crate::owner::Mark::docker_line(docker_process, crate::owner::DEFAULT_ENDPOINT)
+            ),
+        )
+        .unwrap();
+        fs::write(directory.join("owned"), &worker).unwrap();
+        fs::write(directory.join("fail-stop"), "").unwrap();
+        fs::write(directory.join("running"), "true").unwrap();
+        // The other container is renamed away, freeing slot 0.
+        fs::remove_file(directory.join("foreign")).unwrap();
+        fs::remove_file(directory.join("names")).unwrap();
+        let mut seen = 0;
+        calls_since(directory, &mut seen);
+
+        let refused = crate::Admission::try_acquire_within(&policy, one);
+        assert!(
+            refused.as_ref().is_err_and(BuildError::is_unknown),
+            "a Build started while slot 1's worker runs: slot {:?}",
+            refused.map(|admission| admission.slot())
+        );
+        assert!(
+            calls_since(directory, &mut seen)
+                .contains(&format!("stop --time {WORKER_STOP_SECONDS} id-{worker}")),
+            "slot 1 was not retried"
+        );
+
+        fs::remove_file(directory.join("fail-stop")).unwrap();
+        let admission = crate::Admission::try_acquire_within(&policy, one).unwrap();
+        assert_eq!(admission.slot(), 1);
+    }
+
     /// Recovery stops a worker before removing it, and leaves one that
     /// fails to stop and still runs, with the slot marked.
     #[test]
@@ -3188,7 +3299,10 @@ exit 0
             refused.err()
         );
         let calls = calls_since(directory, &mut 0);
-        assert!(calls.contains(&format!("stop id-{worker}")), "{calls:?}");
+        assert!(
+            calls.contains(&format!("stop --time {WORKER_STOP_SECONDS} id-{worker}")),
+            "{calls:?}"
+        );
         assert!(
             !calls.contains(&format!("rm --force id-{worker}")),
             "a running worker was force-removed: {calls:?}"
@@ -3206,7 +3320,7 @@ exit 0
         let calls = calls_since(directory, &mut 0);
         let stop = calls
             .iter()
-            .position(|call| *call == format!("stop id-{worker}"));
+            .position(|call| *call == format!("stop --time {WORKER_STOP_SECONDS} id-{worker}"));
         let remove = calls
             .iter()
             .position(|call| *call == format!("rm --force id-{worker}"));
@@ -3214,6 +3328,30 @@ exit 0
             stop.is_some() && remove.is_some() && stop < remove,
             "{calls:?}"
         );
+    }
+
+    /// A worker that fails to stop but has stopped is removed; one already
+    /// gone needs nothing, and either way the slot recovers.
+    #[test]
+    fn recovery_removes_a_worker_that_stopped_anyway_and_skips_one_already_gone() {
+        for (state, removed) in [(Some("false"), true), (None, false)] {
+            let directory = host_slot();
+            let directory = directory.path();
+            let worker = container(&Access::Full.builder(0));
+            fs::write(directory.join("owned"), &worker).unwrap();
+            fs::write(directory.join("fail-stop"), "").unwrap();
+            if let Some(state) = state {
+                fs::write(directory.join("running"), state).unwrap();
+            }
+            let policy = crashed_slot(directory);
+            let recovered = Lock::try_acquire_slot(&policy.state_directory, 0, &policy.docker);
+            assert!(recovered.is_ok(), "{state:?}: {:?}", recovered.err());
+            assert_eq!(
+                calls_since(directory, &mut 0).contains(&format!("rm --force id-{worker}")),
+                removed,
+                "{state:?}"
+            );
+        }
     }
 
     /// A Build's teardown leaves a worker that fails to stop and still runs,
@@ -3258,6 +3396,16 @@ exit 0
             "a running worker was force-removed: {calls:?}"
         );
         assert!(!fs::read(directory.join(lock_file(0))).unwrap().is_empty());
+
+        // The worker stops now: the next admission in this process retries.
+        fs::remove_file(directory.join("fail-stop")).unwrap();
+        let retried = Lock::try_acquire_slot(directory, 0, &program);
+        assert!(retried.is_ok(), "{:?}", retried.err());
+        assert!(
+            calls_since(directory, &mut seen).contains(&format!("rm --force id-{worker}")),
+            "the retry did not remove the worker"
+        );
+        assert!(fs::read(directory.join(lock_file(0))).unwrap().is_empty());
     }
 
     #[test]

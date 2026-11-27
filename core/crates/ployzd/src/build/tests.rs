@@ -717,10 +717,18 @@ case "$1 $2" in
     if [ -f "$root/fail-cleanup" ] && {{ [ -f "$root/executed" ] || [ -f "$root/checking" ]; }}; then exit 1; fi ;;
   'buildx version'|'buildx create'|'volume create') exit 0 ;;
   'inspect --format') printf 'Error: no such object: %s\n' "$4" >&2; exit 1 ;;
-  'stop worker')
+  'stop --time')
     if [ -f "$root/fail-cleanup" ] && {{ [ -f "$root/executed" ] || [ -f "$root/checking" ]; }}; then exit 1; fi ;;
   'inspect --type')
-    [ "$6" = worker ] && {{ echo true; exit 0; }}
+    # The worker's state by its ID, for a failed stop: running, stopped, or gone.
+    if [ "$6" = worker ]; then
+      case "$(cat "$root/worker-state" 2>/dev/null || echo running)" in
+        running) echo true ;;
+        stopped) echo false ;;
+        *) printf 'Error: No such container: %s\n' "$6" >&2; exit 1 ;;
+      esac
+      exit 0
+    fi
     case "$6" in
       buildx_buildkit_*) printf '%s\n' '{{"Id":"worker","Config":{{"Image":"{}","Env":["PLOYZ_BUILD_OWNER={}"]}}}}' ;;
       *) printf 'Error: No such container: %s\n' "$6" >&2; exit 1 ;;
