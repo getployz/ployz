@@ -2262,10 +2262,13 @@ async fn a_same_commit_redeploy_of_services_sharing_a_dockerfile_builds_nothing(
             .collect(),
         ..Sources::default()
     };
-    let built = |commit: String, id: u128| {
-        let (store, actor, services, session, checkouts) =
-            (&store, &actor, &services, &session, &checkouts);
+    // Every Build and BuildFree call the Server gets while the Deployment builds and then
+    // prepares: a rebuild that lands on the same digest still counts.
+    let sent = |commit: String, id: u128| {
+        let (store, actor, services, session, checkouts, builds) =
+            (&store, &actor, &services, &session, &checkouts, &builds);
         async move {
+            let before = builds.calls.load(Ordering::SeqCst);
             let (run, claimed) = redeploy(store, actor, id, services, &commit).await;
             let Ok((targets, _)) = targets(&claimed, checkouts()) else {
                 panic!("every Service has its checkout at the pinned commit");
@@ -2273,26 +2276,37 @@ async fn a_same_commit_redeploy_of_services_sharing_a_dockerfile_builds_nothing(
             let Ok(Ok(receipts)) = run.build(session, &claimed, &targets).await else {
                 panic!("every Service builds");
             };
-            receipts
+            assert_eq!(receipts.len(), 5);
+            let ran = pins(&claimed.ran);
+            run.prepare(session, claimed, targets, (receipts, ran))
+                .await
+                .unwrap_or_else(|unprepared| panic!("{}", unprepared.error))
+                .close();
+            builds.calls.load(Ordering::SeqCst) - before
         }
     };
     let started = || builds.definitions.lock().unwrap().len();
     let first = || "a".repeat(40);
 
-    assert_eq!(built(first(), 20).await.len(), 5);
+    let rollout = sent(first(), 20).await;
     assert_eq!(started(), 5, "the first Deployment builds every Service");
-    assert_eq!(built(first(), 21).await.len(), 5);
-    assert_eq!(started(), 5, "a same-commit redeploy builds nothing");
+    assert_eq!(
+        sent(first(), 21).await,
+        0,
+        "a same-commit redeploy sends no Build"
+    );
+    assert_eq!(started(), 5);
 
     edit(vec![("worker.env.ROLE".into(), "changed")]);
-    built(first(), 22).await;
+    let changed = sent(first(), 22).await;
+    assert!(0 < changed && changed < rollout, "{changed} of {rollout}");
     assert_eq!(
         started(),
         6,
         "a changed build argument builds its Service again"
     );
 
-    built("b".repeat(40), 23).await;
+    sent("b".repeat(40), 23).await;
     assert_eq!(started(), 11, "a new commit builds every Service again");
 
     session.close().await;

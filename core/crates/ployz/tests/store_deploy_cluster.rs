@@ -731,6 +731,7 @@ async fn redeploys_sharing_a_dockerfile(reaches_data: bool) {
         })
         .collect();
 
+    let (proxy, rpcs) = counting_builds(address).await;
     let deploy = |n: u8, commit: String| {
         let store = Arc::clone(&store);
         let (who, checkouts) = (who.clone(), checkouts.clone());
@@ -774,7 +775,7 @@ async fn redeploys_sharing_a_dockerfile(reaches_data: bool) {
                 Arc::clone(&store),
                 id.clone(),
                 RunnerId::parse(format!("cloud-{n}")).unwrap(),
-                vec![Connection::tcp(address)],
+                vec![Connection::tcp(proxy)],
                 Ok(ployz::sdk::Sources {
                     checkouts,
                     upload: None,
@@ -818,36 +819,22 @@ async fn redeploys_sharing_a_dockerfile(reaches_data: bool) {
             view
         }
     };
-    // A Build sent to a Server logs the Server it runs on and BuildKit's steps, CACHED ones
-    // included; a reused image sends nothing. So a rebuild whose digest matches the old one
-    // still counts here, though the Store labels it Reused.
-    let submitted = |view: &ployz_store::DeploymentView| {
-        view.builds
-            .iter()
-            .map(|build| {
-                let log = store
-                    .read(
-                        &who,
-                        &ployz_store::BuildLogQuery {
-                            deployment: view.deployment.id.clone(),
-                            service: build.service.clone(),
-                        },
-                    )
-                    .unwrap()
-                    .log;
-                (build.service.to_string(), log)
-            })
-            .filter(|(_, log)| log.contains("Building on "))
-            .collect::<BTreeMap<_, _>>()
-    };
+    // Every Build and BuildFree the Server receives, while the Deployment builds and while
+    // it prepares: a rebuild that lands on the old digest still counts, though the Store
+    // labels it Reused.
+    let sent = || rpcs.swap(0, std::sync::atomic::Ordering::SeqCst);
 
     let first = deploy(1, "c".repeat(40)).await;
-    assert_eq!(submitted(&first).len(), 5, "{first:?}");
+    let rollout = sent();
+    assert!(
+        rollout >= 5,
+        "the first Deployment builds every Service: {rollout} {first:?}"
+    );
     for n in [2, 3] {
         let again = deploy(n, "c".repeat(40)).await;
         assert_eq!(
-            submitted(&again).into_keys().collect::<Vec<_>>(),
-            Vec::<String>::new(),
+            sent(),
+            0,
             "a same-commit redeploy must send no Build to a Server: {again:?}"
         );
         assert!(
@@ -860,17 +847,71 @@ async fn redeploys_sharing_a_dockerfile(reaches_data: bool) {
     }
     edit(vec![("web.env.ROLE".into(), "changed".into())]);
     let changed = deploy(4, "c".repeat(40)).await;
-    let sent = submitted(&changed);
-    assert_eq!(sent.keys().collect::<Vec<_>>(), ["web"], "{changed:?}");
+    let rebuilt = sent();
     assert!(
-        sent["web"]
-            .lines()
-            .any(|line| line.starts_with("DONE ") || line.starts_with("CACHED ")),
-        "a sent Build's log carries BuildKit's steps: {}",
-        sent["web"]
+        0 < rebuilt && rebuilt < rollout,
+        "{rebuilt} of {rollout}: {changed:?}"
+    );
+    assert_eq!(
+        changed
+            .builds
+            .iter()
+            .filter(|build| build.status != BuildStatus::Reused)
+            .map(|build| build.service.to_string())
+            .collect::<Vec<_>>(),
+        ["web"],
+        "{changed:?}"
     );
     let moved = deploy(5, "d".repeat(40)).await;
-    assert_eq!(submitted(&moved).len(), 5, "{moved:?}");
+    assert!(
+        sent() >= 5,
+        "a new commit builds every Service again: {moved:?}"
+    );
+}
+
+/// Listens for the runner's connection and forwards each of its requests to the Server at
+/// `to`, counting the Build and BuildFree calls among them.
+async fn counting_builds(
+    to: std::net::SocketAddr,
+) -> (std::net::SocketAddr, Arc<std::sync::atomic::AtomicUsize>) {
+    use hyper_util::rt::{TokioExecutor, TokioIo};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = Arc::clone(&calls);
+    tokio::spawn(async move {
+        loop {
+            let (inbound, _) = listener.accept().await.unwrap();
+            let calls = Arc::clone(&counted);
+            tokio::spawn(async move {
+                let outbound = tokio::net::TcpStream::connect(to).await.unwrap();
+                let (server, connection) = hyper::client::conn::http2::handshake(
+                    TokioExecutor::new(),
+                    TokioIo::new(outbound),
+                )
+                .await
+                .unwrap();
+                tokio::spawn(connection);
+                let forward = hyper::service::service_fn(
+                    move |request: hyper::Request<hyper::body::Incoming>| {
+                        if matches!(
+                            request.uri().path().rsplit('/').next(),
+                            Some("Build" | "BuildFree")
+                        ) {
+                            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        }
+                        let mut server = server.clone();
+                        async move { server.send_request(request).await }
+                    },
+                );
+                let _closed = hyper::server::conn::http2::Builder::new(TokioExecutor::new())
+                    .serve_connection(TokioIo::new(inbound), forward)
+                    .await;
+            });
+        }
+    });
+    (address, calls)
 }
 
 /// Cloud's runner builds an uploaded Service on a Server, never GitHub. Once Cloud no

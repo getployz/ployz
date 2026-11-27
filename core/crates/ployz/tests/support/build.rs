@@ -22,6 +22,8 @@ pub struct BuildFixture {
     /// What a Machine's capability check fails with, as raw worker output.
     pub check_failures: Mutex<BTreeMap<MachineId, String>>,
     pub definitions: Mutex<Vec<remote::Definition>>,
+    /// Every Build and BuildFree call the Machine received, capability checks included.
+    pub calls: std::sync::atomic::AtomicUsize,
     pub stores: Mutex<BTreeMap<MachineId, MachineImages>>,
     pub opened: Mutex<Vec<MachineId>>,
     pub pulls: Mutex<Vec<(MachineId, PullImageFromMachineRequest)>>,
@@ -136,6 +138,7 @@ impl BuildFixture {
         request: Request<tonic::Streaming<OpaquePayload>>,
         free: bool,
     ) -> Result<Response<ReceiverStream<Result<OpaquePayload, Status>>>, Status> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let machine_id =
             MachineId::parse(request.metadata().get("machine").unwrap().to_str().unwrap())
                 .map_err(|error| Status::invalid_argument(error.to_string()))?;
