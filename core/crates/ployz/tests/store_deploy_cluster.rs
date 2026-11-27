@@ -572,12 +572,26 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
     );
 }
 
-/// Five Services built from one repository and one Dockerfile, as a monorepo's web,
-/// workers and cron are: Cloud's runner builds each once, a redeploy of the same commit
-/// reuses every image, and only a changed build argument or commit builds again.
+/// Five Services of one repository, as a monorepo's web, workers and cron are: four build
+/// one Dockerfile that reads no argument, so their images are one content under four
+/// repositories, and the fifth builds a Dockerfile of its own. Cloud's runner builds each
+/// once, a redeploy of the same commit reuses every image, and only a changed build
+/// variable or commit builds again.
 #[tokio::test]
 #[ignore = "informing: requires the privileged Ployz testkit image with Buildx"]
 async fn a_same_commit_redeploy_of_services_sharing_a_dockerfile_reuses_every_build() {
+    redeploys_sharing_a_dockerfile(false).await;
+}
+
+/// The same, each Service reaching a Volume, so each builds a Full Build: its image loads
+/// under its own name, not under no name as a free Build's does.
+#[tokio::test]
+#[ignore = "informing: requires the privileged Ployz testkit image with Buildx"]
+async fn a_same_commit_redeploy_of_data_services_sharing_a_dockerfile_reuses_every_build() {
+    redeploys_sharing_a_dockerfile(true).await;
+}
+
+async fn redeploys_sharing_a_dockerfile(reaches_data: bool) {
     use std::collections::BTreeMap;
 
     use ployz_core::ServiceName;
@@ -589,7 +603,11 @@ async fn a_same_commit_redeploy_of_services_sharing_a_dockerfile_reuses_every_bu
         SettingPath, Trusted,
     };
 
-    let plan = ClusterPlan::new(&format!("l3-store-reuse-{}", std::process::id()), 1).unwrap();
+    let plan = ClusterPlan::new(
+        &format!("l3-store-reuse-{}-{reaches_data}", std::process::id()),
+        1,
+    )
+    .unwrap();
     let cluster = Cluster::create(plan).unwrap();
     cluster.initialize_entry().await.unwrap();
     let address = cluster.api_socket_address(0).unwrap();
@@ -609,7 +627,7 @@ async fn a_same_commit_redeploy_of_services_sharing_a_dockerfile_reuses_every_bu
             },
         )
         .unwrap();
-    let names = ["web", "api", "worker", "cron", "jobs"];
+    let names = ["queue", "web", "reverb", "scheduler", "ai"];
     let repository = ployz_store::RepositoryName::parse("acme/shop").unwrap();
     let evidence = Trusted {
         repositories: vec![AuthorizedRepository {
@@ -624,7 +642,12 @@ async fn a_same_commit_redeploy_of_services_sharing_a_dockerfile_reuses_every_bu
     let checkout = tempfile::tempdir().unwrap();
     std::fs::write(
         checkout.path().join("Dockerfile"),
-        "FROM alpine:3.23.3\nARG ROLE\nRUN sleep 5 && echo \"built $ROLE\" > /role\nCMD [\"sleep\", \"600\"]\n",
+        "FROM alpine:3.23.3\nRUN sleep 5 && echo shared > /role\nCMD [\"sleep\", \"600\"]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        checkout.path().join("ai.Dockerfile"),
+        "FROM alpine:3.23.3\nRUN sleep 2 && echo ai > /role\nCMD [\"sleep\", \"600\"]\n",
     )
     .unwrap();
     for (n, name) in names.iter().enumerate() {
@@ -642,6 +665,31 @@ async fn a_same_commit_redeploy_of_services_sharing_a_dockerfile_reuses_every_bu
                 &evidence,
             )
             .unwrap();
+    }
+    if reaches_data {
+        for (n, name) in names.iter().enumerate() {
+            store
+                .write(
+                    &who,
+                    &ployz_store::CreateVolume {
+                        restored_from: None,
+                        shared_writes: false,
+                        storage_locked: false,
+                        storage: ployz_core::config::VolumeKind::Docker {},
+                        id: ployz_store::VolumeId::parse(format!(
+                            "00000000-0000-4000-8000-00000000003{n}"
+                        ))
+                        .unwrap(),
+                        environment: EnvironmentRef::default(),
+                        name: ployz_store::VolumeName::parse(format!("{name}-data")).unwrap(),
+                        mounts: vec![ployz_store::Mount {
+                            service: ServiceName::parse(*name).unwrap(),
+                            path: "/data".into(),
+                        }],
+                    },
+                )
+                .unwrap();
+        }
     }
     let edit = |changes: Vec<(String, String)>| {
         store
@@ -670,6 +718,7 @@ async fn a_same_commit_redeploy_of_services_sharing_a_dockerfile_reuses_every_bu
                     (format!("{name}.env.ROLE"), (*name).to_owned()),
                 ]
             })
+            .chain([("ai.dockerfilePath".to_owned(), "ai.Dockerfile".to_owned())])
             .collect(),
     );
     let checkouts: BTreeMap<_, _> = names
@@ -787,13 +836,9 @@ async fn a_same_commit_redeploy_of_services_sharing_a_dockerfile_reuses_every_bu
     );
     let again = deploy(3, "c".repeat(40)).await;
     assert_eq!(built(&again, BuildStatus::Reused).len(), 5, "{again:?}");
-    edit(vec![("worker.env.ROLE".into(), "changed".into())]);
+    edit(vec![("web.env.ROLE".into(), "changed".into())]);
     let changed = deploy(4, "c".repeat(40)).await;
-    assert_eq!(
-        built(&changed, BuildStatus::Built),
-        ["worker"],
-        "{changed:?}"
-    );
+    assert_eq!(built(&changed, BuildStatus::Built), ["web"], "{changed:?}");
     let moved = deploy(5, "d".repeat(40)).await;
     assert_eq!(built(&moved, BuildStatus::Built).len(), 5, "{moved:?}");
 }
