@@ -106,3 +106,28 @@ fn the_last_end_of_a_step_is_its_latest_services() {
     steps.end(StepName::Building, Some(&service()), 200);
     assert_eq!(steps.last_ended(StepName::Building), Some(300));
 }
+
+#[test]
+fn stopping_old_runs_until_the_copies_retired_after_the_outcome_are_gone() {
+    let mut steps = Steps::default();
+    let web: ServiceName = "web".parse().unwrap();
+    steps.rows(&[row(1, running(RowPhase::StoppingContainer))], 100);
+    steps.drain(StepName::StoppingOld, Some(&service()));
+    steps.start(StepName::StoppingOld, Some(&web), 100);
+    steps.drain(StepName::StoppingOld, Some(&web));
+    steps.rows(&[row(1, RowState::Completed)], 110);
+    steps.hold(StepName::StoppingOld, Some(&web));
+    steps.drained(400);
+    let mut changed = steps.take_changed();
+    changed.sort_by(|a, b| a.service.cmp(&b.service));
+    assert_eq!(
+        changed,
+        vec![
+            step(StepName::StoppingOld, 100, Some(400)),
+            DeploymentStep {
+                service: Some(web),
+                ..step(StepName::StoppingOld, 100, None)
+            },
+        ]
+    );
+}

@@ -135,6 +135,8 @@ pub struct Steps {
     occupied: BTreeMap<(StepName, ServiceName), BTreeSet<MachineId>>,
     /// Steps that failed while running, so they stay open whatever comes next.
     held: BTreeSet<Key>,
+    /// Steps that outlast their rows until [`Steps::drained`] ends them.
+    draining: BTreeSet<Key>,
 }
 
 impl Steps {
@@ -162,7 +164,7 @@ impl Steps {
     /// End `name` at `at`, if it is running and didn't fail.
     pub fn end(&mut self, name: StepName, service: Option<&ServiceName>, at: i64) {
         let key = (name, service.cloned());
-        if self.held.contains(&key) {
+        if self.held.contains(&key) || self.draining.contains(&key) {
             return;
         }
         if let Some(step) = self.steps.get_mut(&key)
@@ -183,6 +185,26 @@ impl Steps {
             .is_some_and(|step| step.ended_at.is_none())
         {
             self.held.insert(key);
+        }
+    }
+
+    /// Keep `name` open past its rows if it is running, until [`Self::drained`]: the
+    /// copies a replacement retires go after the Deploy's Outcome, once its rows are done.
+    pub fn drain(&mut self, name: StepName, service: Option<&ServiceName>) {
+        let key = (name, service.cloned());
+        if self
+            .steps
+            .get(&key)
+            .is_some_and(|step| step.ended_at.is_none())
+        {
+            self.draining.insert(key);
+        }
+    }
+
+    /// End each step [`Self::drain`] kept open at `at`, but one that failed.
+    pub fn drained(&mut self, at: i64) {
+        for (name, service) in std::mem::take(&mut self.draining) {
+            self.end(name, service.as_ref(), at);
         }
     }
 

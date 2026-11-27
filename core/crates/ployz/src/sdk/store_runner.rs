@@ -788,13 +788,37 @@ impl Run {
         let mut warned = None;
         while let Some(event) = running.next().await {
             if let ployz_core::DeployEvent::Warning { warning } = event {
+                if let DeployWarning::LeftRunning { service, .. } = &warning {
+                    self.steps()
+                        .hold(StepName::StoppingOld, Some(&service.name));
+                }
                 warnings.push(warning);
                 warned = self.recorded_warnings(&mut warnings).await.or(warned);
             }
         }
         // Its events ended, so the Deploy task ended: only a second wait errs.
         let _ = running.finished().await;
-        self.recorded_warnings(&mut warnings).await.or(warned)
+        let warned = self.recorded_warnings(&mut warnings).await.or(warned);
+        self.steps().drained(now_ms());
+        self.record_steps().await;
+        warned
+    }
+
+    /// Record the steps that changed since the last record, after the Deployment ended
+    /// too. A step write that fails only warns.
+    async fn record_steps(&self) {
+        let steps = self.steps().take_changed();
+        if steps.is_empty() {
+            return;
+        }
+        let deployment = self.deployment.clone();
+        let recorded = super::store_call(&self.store, move |store| {
+            store.record_steps(&deployment, &steps)
+        })
+        .await;
+        if let Err(error) = recorded {
+            tracing::warn!(%error, "couldn't record the Deployment's steps");
+        }
     }
 
     async fn fill_ingress(
@@ -1141,7 +1165,22 @@ impl Run {
                 }
             }
             let changes = tracker.changes(&rows);
-            self.steps().rows(&changes, now_ms());
+            {
+                let mut steps = self.steps();
+                steps.rows(&changes, now_ms());
+                // Its old copies retire after the Outcome, and the step waits for them.
+                for row in &rows {
+                    if let (
+                        Some(service),
+                        ployz_core::OperationStatus::Running {
+                            phase: ployz_core::OperationPhase::RetiringOld { .. },
+                        },
+                    ) = (&row.service_name, &row.status)
+                    {
+                        steps.drain(StepName::StoppingOld, Some(service));
+                    }
+                }
+            }
             for mut row in changes {
                 let container = tracker.container(&row);
                 if let (RowState::Failed { log: Some(log), .. }, Some(container), Ok(client)) =
@@ -1166,9 +1205,17 @@ impl Run {
             {
                 pending.clear();
             }
-            let new: Vec<ServiceName> = replaced(&rows)
+            let mut done: BTreeMap<&ServiceName, bool> = BTreeMap::new();
+            for row in &rows {
+                if let Some(service) = &row.service_name {
+                    *done.entry(service).or_insert(true) &=
+                        matches!(row.status, ployz_core::OperationStatus::Completed);
+                }
+            }
+            let new: Vec<ServiceName> = done
                 .into_iter()
-                .filter(|service| !confirmed.contains(service))
+                .filter(|(service, done)| *done && !confirmed.contains(*service))
+                .map(|(service, _)| service.clone())
                 .collect();
             if new.is_empty() {
                 continue;
@@ -1501,28 +1548,6 @@ impl Run {
 
 /// Move one build's steps on with `event`, one of its progress frames. Its upload
 /// starts with the build, or once a Build Machine admits it after queueing.
-/// Each Service whose every row completed or serves while it retires the copies it
-/// replaced. No proxy routes those copies, and their removal leaves at most a
-/// warning, so the Service reads Deployed without waiting for them to go.
-fn replaced(rows: &[ployz_core::OperationRow]) -> Vec<ServiceName> {
-    let mut done: BTreeMap<&ServiceName, bool> = BTreeMap::new();
-    for row in rows {
-        if let Some(service) = &row.service_name {
-            *done.entry(service).or_insert(true) &= matches!(
-                row.status,
-                ployz_core::OperationStatus::Completed
-                    | ployz_core::OperationStatus::Running {
-                        phase: ployz_core::OperationPhase::RetiringOld { .. },
-                    }
-            );
-        }
-    }
-    done.into_iter()
-        .filter(|(_, done)| *done)
-        .map(|(service, _)| service.clone())
-        .collect()
-}
-
 fn build_stage(
     steps: &mut Steps,
     service: &ServiceName,
