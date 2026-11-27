@@ -65,9 +65,6 @@ struct Shared {
     data_dir: std::path::PathBuf,
     run_dir: std::path::PathBuf,
     admission_lock: Arc<tokio::sync::RwLock<()>>,
-    /// Read by work that holds the installation guard and takes turns itself, for its
-    /// whole run, so a shutdown can wait for a stop waiting out its grace between turns.
-    installed_work: Arc<tokio::sync::RwLock<()>>,
     mutation_gate: MutationGate,
     thread: Mutex<Option<thread::JoinHandle<()>>>,
     /// Live handles. Counted explicitly so exactly one drop observes being last.
@@ -129,7 +126,6 @@ impl RecordOwner {
                 data_dir,
                 run_dir,
                 admission_lock,
-                installed_work: Arc::default(),
                 mutation_gate,
                 thread: Mutex::new(Some(thread)),
                 handles: AtomicUsize::new(1),
@@ -264,11 +260,6 @@ impl RecordOwner {
     #[must_use]
     pub(crate) fn admission_lock(&self) -> Arc<tokio::sync::RwLock<()>> {
         Arc::clone(&self.shared.admission_lock)
-    }
-
-    #[must_use]
-    pub(crate) fn installed_work(&self) -> Arc<tokio::sync::RwLock<()>> {
-        Arc::clone(&self.shared.installed_work)
     }
 
     #[must_use]

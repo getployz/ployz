@@ -5965,10 +5965,10 @@ mod ensure_container {
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 
-    /// A stop that is not a Volume cut holds the turn only to send the stop, so a start
-    /// runs while the stopped copy waits out its grace.
+    /// A stop that is not a Volume cut still keeps a start out until its Container has
+    /// exited, so nothing new runs beside a copy that may still write.
     #[tokio::test]
-    async fn a_start_runs_while_a_stop_waits_out_its_grace() {
+    async fn a_start_waits_for_a_stop_in_flight_to_end() {
         let (data_dir, _store, service, fake) =
             fake_docker_service("ployzd-ensure-start-after").await;
         let kept = present(&ensure(&service, run_new("k2", spec("example.test/api:1"))).await)
@@ -5999,12 +5999,19 @@ mod ensure_container {
                     &format!("/containers/{leaving}/stop"),
                 )
                 .await;
-                let started = tokio::time::timeout(Duration::from_secs(3), ensure(&service, start))
-                    .await
-                    .expect("the start waited for the stop's grace");
-                assert_eq!(starts(), before + 1);
+                let mut starting = std::pin::pin!(ensure(&service, start));
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(300), starting.as_mut())
+                        .await
+                        .is_err()
+                );
+                assert_eq!(
+                    starts(),
+                    before,
+                    "the start reached Docker while the stop was in flight"
+                );
                 drop(held);
-                started
+                starting.await
             }
         );
         assert!(matches!(

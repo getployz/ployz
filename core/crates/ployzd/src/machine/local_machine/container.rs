@@ -585,8 +585,7 @@ impl Installed {
     /// The rotation is read before the withdrawal, so a copy In is never taken out of
     /// routing, and again under a shared turn: an In write that won the exclusive turn
     /// since the stop was planned keeps the copy running. Stops of other copies run beside
-    /// this one, while an In write or a start waits for the exclusive turn until the stop
-    /// is sent, then reads the copy signalled.
+    /// this one, while an In write or a start waits for the exclusive turn until it ends.
     async fn stop_out_of_rotation(
         &self,
         container: &ContainerId,
@@ -602,22 +601,17 @@ impl Installed {
         self.stop_checked(container, drain, stop, guard).await
     }
 
-    /// Drains before the guard's turn, then sends the stop under it once the guard's
-    /// `check` passes. The guard's `drained` may refuse once the drain ends, so a
-    /// refusal it can already see returns the copy to ingress before the turn, which
-    /// other work may hold long. A refusal from `withdraw`, `drained` or `check` stops
-    /// nothing.
-    ///
-    /// A guard that [`StopGuard::WAITS_UNDER_TURN`] keeps the turn and what `check`
-    /// returned until Docker reports the copy stopped. Any other marks the copy
-    /// signalled under the turn and lets both go, so other stops and admitted work run
-    /// while this one waits out its grace, and no rotation write brings it In.
+    /// Drains before the guard's turn, then stops under it while holding what the
+    /// guard's `check` returned. The guard's `drained` may refuse once the drain ends,
+    /// so a refusal it can already see returns the copy to ingress before the turn,
+    /// which other work may hold long. A refusal from `withdraw`, `drained` or `check`
+    /// stops nothing.
     ///
     /// With a guard that `records`, a stop that ended a run records it, so its exit
-    /// reads as a stop. The run is read once the stop returns and recorded by its
-    /// identity, so it is the one the stop ended even when the Container restarted
-    /// during the drain or right after. A run that exited before the stop was issued
-    /// ended on its own, so its exit stays a crash.
+    /// reads as a stop. The run is read after the stop, under the turn, so it is the
+    /// one the stop ended even when the Container restarted during the drain. A run
+    /// that exited before the stop was issued ended on its own, so its exit stays a
+    /// crash.
     async fn stop_checked<G: StopGuard>(
         &self,
         container: &ContainerId,
@@ -653,9 +647,6 @@ impl Installed {
             Err(refused) => return Ok(Err(refused)),
         };
         let issued = chrono::Utc::now();
-        // Marked before the turn goes, so a write waiting on it reads the copy stopping.
-        let signalled = (!G::WAITS_UNDER_TURN).then(|| containers.lifecycle().signal(*container));
-        let under_turn = G::WAITS_UNDER_TURN.then_some((turn, held));
         containers
             .lifecycle()
             .stop(
@@ -672,11 +663,11 @@ impl Installed {
         } else {
             None
         };
-        drop(under_turn);
+        drop(held);
         if let Some(run) = ended {
             containers.lifecycle().record_stop(container, &run).await?;
         }
-        drop(signalled);
+        drop(turn);
         Ok(Ok(containers
             .observation()
             .inspect_managed(container, &machine_id)
@@ -2195,10 +2186,6 @@ trait StopGuard {
     /// What `check` holds through the stop.
     type Held;
 
-    /// Whether the stop holds its turn and what `check` returned until Docker
-    /// reports the copy stopped, rather than only while it is sent.
-    const WAITS_UNDER_TURN: bool;
-
     /// Whether a stop that ended a run records it.
     fn records(&self) -> bool;
     /// Takes the copy out of ingress, held until the stop ends.
@@ -2223,10 +2210,6 @@ impl<'a> StopGuard for Fence<'a> {
     type Refusal = VolumeGen;
     type Turn = ExclusiveTurn;
     type Held = Option<crate::docker::FloorTurn<'a>>;
-
-    /// A cut reads the holder stopped once its floor lock is free, and a start ordered
-    /// after the check waits for the turn, so both last through the stop.
-    const WAITS_UNDER_TURN: bool = true;
 
     fn records(&self) -> bool {
         false
@@ -2278,9 +2261,6 @@ impl<'a> StopGuard for Leaving<'a> {
     type Refusal = ContainerRefusal;
     type Turn = SharedTurn;
     type Held = ();
-
-    /// The copy is out of rotation, and its signalled mark keeps it out.
-    const WAITS_UNDER_TURN: bool = false;
 
     fn records(&self) -> bool {
         *self.target == RotationTarget::Stopped

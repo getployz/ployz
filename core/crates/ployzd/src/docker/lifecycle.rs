@@ -25,7 +25,7 @@ use crate::{
 
 use super::{
     Doors, Error, FloorTurn, Images, Leaving, LocalDocker, MachineSpecStore, Observation,
-    RotationTurn, Signalled, Volumes, Withdrawal, create,
+    RotationTurn, Volumes, Withdrawal, create,
     create::CreationNetwork,
     doors::Door,
     error::{Status, classify, docker_error},
@@ -405,19 +405,6 @@ impl Lifecycle {
     #[must_use]
     pub fn leave(&self, container_id: ContainerId) -> Leaving {
         self.standing.leave(container_id)
-    }
-
-    /// Mark this Container signalled until the returned guard drops: a stop sent
-    /// under the Machine's exclusive turn waits out its grace after it, and no rotation
-    /// write brings the copy In meanwhile.
-    pub fn signal(&self, container_id: ContainerId) -> Signalled {
-        self.standing.signal(container_id)
-    }
-
-    /// Whether a stop sent under the turn is still waiting out its grace.
-    #[must_use]
-    pub fn is_signalled(&self, container_id: &ContainerId) -> bool {
-        self.standing.is_signalled(container_id)
     }
 
     /// Drop what the daemon remembers about a container Docker no longer has.

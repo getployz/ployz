@@ -295,14 +295,6 @@ impl LocalMachine {
                         Checked::Allowed(to) => to,
                     };
                     if let RotationWant::In { .. } = want {
-                        // A stop sent under an earlier turn ends this run once its grace
-                        // runs out, so the copy is not In for long.
-                        if containers.lifecycle().is_signalled(&id) {
-                            return Ok(Written::Refused(refuse(
-                                ContainerRefusalReason::RotationMismatch,
-                                "the copy is stopping",
-                            )));
-                        }
                         let runtime = containers.observation().inspect_runtime(&id).await?;
                         if !super::is_running(&runtime) {
                             return Ok(Written::NotRunning(runtime));

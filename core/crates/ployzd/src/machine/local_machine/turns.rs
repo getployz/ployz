@@ -152,10 +152,9 @@ impl LocalMachine {
         Fut: std::future::Future<Output = Result<T, Error>> + Send + 'static,
     {
         let installation = self.admit_installation()?;
-        let running = self.owner.installed_work().read_owned().await;
         let installed = Installed(self.clone());
         tokio::spawn(async move {
-            let _held = (installation, running);
+            let _installation = installation;
             work(installed).await
         })
         .await?
@@ -174,22 +173,16 @@ impl LocalMachine {
         drop(self.unchecked_exclusive_turn().await);
     }
 
-    /// Release the data directory once no admitted work runs, waiting at most `within`:
-    /// none holds a turn, and none run by [`Self::finish_installed`] is between turns,
-    /// such as a stop waiting out its grace before its remove. `None` when work still
-    /// runs then: the record stays claimed until exit rather than failing that work
-    /// halfway through.
-    ///
-    /// Installed work ends before the turn is asked for, since it may still need one.
+    /// Release the data directory once no admitted work holds a turn, waiting at most
+    /// `within`. `None` when work still runs then: the record stays claimed until exit
+    /// rather than failing that work halfway through.
     pub(crate) async fn close_when_idle(
         &self,
         within: std::time::Duration,
     ) -> Option<Result<(), crate::machine::RecordOwnerStopped>> {
-        let idle = async {
-            let installed = self.owner.installed_work().write_owned().await;
-            (installed, self.unchecked_exclusive_turn().await)
-        };
-        let _idle = tokio::time::timeout(within, idle).await.ok()?;
+        let _turn = tokio::time::timeout(within, self.unchecked_exclusive_turn())
+            .await
+            .ok()?;
         Some(self.owner.close().await)
     }
 

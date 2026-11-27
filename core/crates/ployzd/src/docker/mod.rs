@@ -32,7 +32,7 @@ mod processes;
 mod spec_store;
 mod standing;
 use standing::Standing;
-pub use standing::{Leaving, Signalled, Withdrawal};
+pub use standing::{Leaving, Withdrawal};
 mod stream;
 mod telemetry;
 mod unregistry;

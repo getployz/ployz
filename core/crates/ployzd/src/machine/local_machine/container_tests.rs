@@ -2208,25 +2208,6 @@ mod stopped_on_request {
             }
         }
 
-        /// Start another copy of the Service beside the fixture's.
-        async fn another_copy(&self) -> ContainerId {
-            let new: NewContainer = serde_json::from_value(json!({
-                "slot": {"namespace":"app", "service":"api", "kind":"service_container", "creation_key":"s2"},
-                "resolved_spec": spec_with_sources(vec![]),
-                "gen": 1,
-            }))
-            .unwrap();
-            ensure(
-                &self.local,
-                ContainerWant::Running {
-                    container: RunTarget::New(new),
-                    rotation: RunRotation::Pending,
-                },
-            )
-            .await
-            .container_id
-        }
-
         fn start_want(&self) -> ContainerWant {
             ContainerWant::Running {
                 container: RunTarget::Existing(ContainerLocator::Id(self.id)),
@@ -2472,57 +2453,6 @@ mod stopped_on_request {
             0,
             "no row outlives its Container's spec"
         );
-        fixture.finish();
-    }
-
-    #[tokio::test]
-    async fn two_stops_on_one_machine_wait_out_their_grace_together() {
-        let fixture = Fixture::start().await;
-        let other = fixture.another_copy().await;
-        // Docker answers no stop while this is held, as a process takes its grace.
-        let grace = fixture.fake.stop_gate.clone().write_owned().await;
-        let stop = |id| {
-            let local = fixture.local.clone();
-            tokio::spawn(async move {
-                ensure(
-                    &local,
-                    ContainerWant::Stopped {
-                        container: ContainerLocator::Id(id),
-                        drain: Drain::NONE,
-                        stop: StopOptions::default(),
-                    },
-                )
-                .await
-            })
-        };
-        let stops = [stop(fixture.id), stop(other)];
-
-        let sent = || {
-            fixture
-                .fake
-                .requests
-                .lock()
-                .unwrap()
-                .iter()
-                .filter(|(method, path)| {
-                    *method == axum::http::Method::POST && path.ends_with("/stop")
-                })
-                .count()
-        };
-        tokio::time::timeout(Duration::from_secs(10), async {
-            while sent() < 2 {
-                // real-wait: each stop reaches the fake Docker over its TCP socket, which
-                // emits no event.
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("the second stop waits for the first one's grace");
-
-        drop(grace);
-        for stopping in stops {
-            assert!(stopping.await.unwrap().stopped);
-        }
         fixture.finish();
     }
 
