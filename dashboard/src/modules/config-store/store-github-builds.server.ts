@@ -185,6 +185,38 @@ export const planStoreGithubBuilds = Effect.fn("StoreGithub.plan")(function* (da
 
 export type StoreGithubStart = { kind: "dispatched"; runId: number } | { kind: "done" };
 
+type WorkflowRead = ReturnType<typeof checkGithubBuildWorkflow>;
+/** What starting a build reads beyond the build itself, the same for every build in a Deployment. */
+type StartReads = {
+  readonly workflow: (access: Parameters<typeof checkGithubBuildWorkflow>[0], repositoryId: number) => WorkflowRead;
+  readonly lacking: ReturnType<typeof serversLackingGrants>;
+};
+const directReads = (organizationId: string): StartReads => ({ workflow: checkGithubBuildWorkflow, lacking: serversLackingGrants(organizationId) });
+
+/**
+ * Start a Deployment's GitHub builds together, reading each repository's workflow once. Only a build still waiting
+ * for its first Builder starts. One a run already took is followed, and one that ended or was skipped is left alone.
+ * So a run that started its builds under older step ids, and runs this step after a Cloud deploy, dispatches nothing
+ * twice.
+ */
+export const startStoreGithubBuilds = Effect.fn("StoreGithub.startAll")(function* (
+  organizationId: string, deploymentId: string, targets: ReadonlyArray<StoreGithubTarget>,
+) {
+  const store = yield* cloudStore;
+  const sources = yield* storeTry(() => store.deploymentSources(deploymentId));
+  const waiting = new Set(sources.filter((source) => source.status === "pending" && source.message === null).map((source) => source.service));
+  // A repository reaches the Organization through one installation.
+  const workflows = new Map<number, WorkflowRead>();
+  for (const { installationId, repositoryId } of targets) {
+    if (installationId === null || workflows.has(repositoryId)) continue;
+    workflows.set(repositoryId, yield* Effect.cached(checkGithubBuildWorkflow(organizationAccess(organizationId, installationId), repositoryId)));
+  }
+  const reads: StartReads = {
+    workflow: (access, repositoryId) => workflows.get(repositoryId) ?? checkGithubBuildWorkflow(access, repositoryId),
+    lacking: yield* Effect.cached(serversLackingGrants(organizationId)),
+  };
+  return yield* Effect.forEach(targets, (target) => startStoreGithubBuild(organizationId, target, reads, waiting.has(target.service)), { concurrency: "unbounded" });
+});
 const done = { kind: "done" } as const;
 
 /**
@@ -195,7 +227,9 @@ const done = { kind: "done" } as const;
  * step's first try handed it off and lost the answer, is followed, not started again: no other Builder may take it
  * until that run lets it go.
  */
-export const startStoreGithubBuild = Effect.fn("StoreGithub.start")(function* (organizationId: string, target: StoreGithubTarget) {
+export const startStoreGithubBuild = Effect.fn("StoreGithub.start")(function* (
+  organizationId: string, target: StoreGithubTarget, reads: StartReads = directReads(organizationId), waiting = true,
+) {
   // The run that holds the build, to follow. A build no run has held yet is not found.
   const holder = heldGithubBuild(target.build).pipe(
     Effect.catchIf(refusedWith("not_found"), () => Effect.succeed(null)),
@@ -203,6 +237,7 @@ export const startStoreGithubBuild = Effect.fn("StoreGithub.start")(function* (o
   );
   const following = yield* holder;
   if (following !== null) return following;
+  if (!waiting) return done;
   // A write refused since the read above: the build started or ended meanwhile, maybe by the first try's hand-off
   // committing late. Follow whichever run holds it now.
   const refused = holder.pipe(Effect.map((held) => held ?? done));
@@ -223,13 +258,13 @@ export const startStoreGithubBuild = Effect.fn("StoreGithub.start")(function* (o
   const installationId = target.installationId;
   const access = organizationAccess(organizationId, installationId);
   return yield* Effect.gen(function* () {
-    const workflow = yield* checkGithubBuildWorkflow(access, target.repositoryId);
+    const workflow = yield* reads.workflow(access, target.repositoryId);
     const repository = workflow.fullName ?? target.repository;
     if (workflow.readiness === "no_permission") return yield* skip(`the Ployz GitHub App can't run Actions in ${repository}`);
     if (workflow.readiness === "setup_needed" || !workflow.fullName || !workflow.defaultBranch) {
       return yield* skip(`${repository} has no .github/workflows/ployz-build.yml on its default branch`);
     }
-    const lacking = yield* serversLackingGrants(organizationId);
+    const lacking = yield* reads.lacking;
     if (lacking.length > 0) return yield* skip(`GitHub builds need a newer Ployz on ${lacking.join(", ")}`);
     const start = yield* withDeployDial(organizationId, ({ connections, expect }) => store.githubStart(target.build, connections, expect));
     const fullName = workflow.fullName;

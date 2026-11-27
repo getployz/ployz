@@ -92,31 +92,55 @@ describe("a Deploy's storage steps", () => {
   });
 });
 
-describe("a run in flight across a Cloud deploy", () => {
-  it("replays the GitHub starts its old steps recorded, and starts no build again", async () => {
-    const web = { build: "dep.web", service: "web", repository: "acme/web", repositoryId: 42, installationId: 7, hasNext: false };
-    const memo = new Map<string, unknown>([
-      ["record-run", null],
+describe("a Deployment with several Git Services", () => {
+  const target = (service: string) => ({ build: `dep.${service}`, service, repository: "acme/web", repositoryId: 42, installationId: 7, hasNext: false });
+  const builds = [target("web"), target("api"), target("docs")];
+  const fresh = () => { throw new Error("a step ran its real effect"); };
+
+  async function stepsRun(memo: ReadonlyArray<readonly [string, unknown]>) {
+    const results = new Map<string, unknown>([
       ["servers-lacking", []],
-      ["plan-builds", [web]],
-      ["github-start-web", { kind: "dispatched", runId: 9001 }],
-      ["github-open-web-0", false],
-      ["approval-0", false],
+      ["plan-builds", builds],
       ["placement-0", { kind: "stopped" }],
       ["place-volumes", []],
       ["run-deployment", { ran: { id: "dep", status: "applied", remove: false } }],
       ["finish-volumes", null],
       ["delete-orphan-mirrors", []],
+      ...memo,
     ]);
     const ran: string[] = [];
     await new InngestTestEngine({
-      function: createRunStoreDeployment(new Inngest({ id: "store-deployment-replay-test" })),
+      function: createRunStoreDeployment(new Inngest({ id: "store-deployment-builds-test" }), fresh),
       events: [admitted],
-      steps: [...memo.keys(), "github-start", "github-failed", "retire-old", "sync-uptime", "forget-run"]
-        .map((id) => ({ id, handler: () => { ran.push(id); return memo.get(id) ?? null; } })),
+      steps: [...results.keys(), "record-run", "github-failed", "retire-old", "sync-uptime", "forget-run"]
+        .map((id) => ({ id, handler: () => { ran.push(id); return results.get(id) ?? null; } })),
     }).execute();
-    expect(ran).not.toContain("github-start");
+    return ran;
+  }
+
+  it("starts every build in one step and runs the Deployment once", async () => {
+    const ran = await stepsRun([
+      ["github-start", [{ kind: "dispatched", runId: 9001 }, { kind: "dispatched", runId: 9002 }, { kind: "done" }]],
+      ["github-open-web-0", false],
+      ["github-open-api-0", false],
+    ]);
+    expect(ran.filter((id) => id.startsWith("github-start"))).toEqual(["github-start"]);
+    expect(ran.filter((id) => id === "run-deployment")).toHaveLength(1);
     expect(ran).not.toContain("github-failed");
-    expect(ran).toContain("run-deployment");
+  });
+
+  it("runs a run that started its builds under older step ids to the end, through the one start step", async () => {
+    // What the older per-build steps recorded; the start step follows the dispatched runs and leaves the skipped build.
+    const ran = await stepsRun([
+      ["github-start-web", { kind: "dispatched", runId: 9001 }],
+      ["github-start-api", { kind: "dispatched", runId: 9002 }],
+      ["github-start-docs", { kind: "done" }],
+      ["github-start", [{ kind: "dispatched", runId: 9001 }, { kind: "dispatched", runId: 9002 }, { kind: "done" }]],
+      ["github-open-web-0", false],
+      ["github-open-api-0", false],
+    ]);
+    expect(ran.filter((id) => id.startsWith("github-start-"))).toEqual([]);
+    expect(ran.filter((id) => id === "github-start")).toHaveLength(1);
+    expect(ran.filter((id) => id === "run-deployment")).toHaveLength(1);
   });
 });

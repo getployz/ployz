@@ -12,7 +12,7 @@ import { type ConfigDeploymentAdmittedEventData, configDeploymentAdmitted, confi
 import { clusterDomainSyncRequested } from "#/modules/cluster-domain/cluster-domain.events";
 import {
   checkStoreGithubBuild, GITHUB_CHECK_INTERVAL, planStoreGithubBuilds, START_WITHIN_MINUTES,
-  serversLackingWhilePrefetching, startStoreGithubBuild, storeGithubBuildOpen, type StoreGithubTarget,
+  serversLackingWhilePrefetching, startStoreGithubBuilds, storeGithubBuildOpen, type StoreGithubStart, type StoreGithubTarget,
 } from "#/modules/config-store/store-github-builds.server";
 import { followUp } from "#/modules/config-store/store-github.inngest";
 import { sweepStore } from "#/modules/config-store/store-pull-request.server";
@@ -60,7 +60,10 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Effec
         return failed;
       }
       const github = await step.run("plan-builds", () => runEffect(planStoreGithubBuilds(event.data)));
-      const walked = await Promise.all(github.map((target) => walkGithub(event.data.organizationId, target, step, runEffect)));
+      const started = github.length === 0
+        ? []
+        : await step.run("github-start", () => runEffect(startStoreGithubBuilds(event.data.organizationId, event.data.deploymentId, github)));
+      const walked = await Promise.all(github.map((target, index) => walkGithub(event.data.organizationId, target, started[index], step, runEffect)));
       const disconnected = walked.find((failed) => failed !== null);
       if (disconnected !== undefined) {
         return step.run("github-failed", () => runEffect(failStoreDeploymentUnrun(event.data.organizationId, event.data.environmentId, event.data.deploymentId, runId, disconnected)));
@@ -149,10 +152,11 @@ type Step = Parameters<Parameters<PloyzInngest["createFunction"]>[1]>[0]["step"]
  * which catches a completion that landed between waits. With a Builder after GitHub, the first wait is the start limit.
  * Whatever GitHub doesn't build, the runner builds on the servers when the walk has them next, or fails with why.
  */
-async function walkGithub(organizationId: string, target: StoreGithubTarget, step: Step, runEffect: EffectRunner<StoreServices>): Promise<string | null> {
+async function walkGithub(
+  organizationId: string, target: StoreGithubTarget, started: StoreGithubStart | undefined, step: Step, runEffect: EffectRunner<StoreServices>,
+): Promise<string | null> {
   const key = target.service;
-  const started = await step.run(`github-start-${key}`, () => runEffect(startStoreGithubBuild(organizationId, target)));
-  if (started.kind !== "dispatched") return null;
+  if (started?.kind !== "dispatched") return null;
   for (let check = 0; ; check += 1) {
     if (!(await step.run(`github-open-${key}-${check}`, () => runEffect(storeGithubBuildOpen(target))))) return null;
     const startLimit = check === 0 && target.hasNext;
