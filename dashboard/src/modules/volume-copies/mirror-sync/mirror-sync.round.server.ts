@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import type { CopyObservation } from "@ployz/sdk";
-import { Effect } from "effect";
+import { Effect, Option } from "effect";
 import { owners as allOwners, ownerOf } from "#/modules/config-store/store-lookup.server";
 import { type MirrorSyncAnswer, syncMirrors } from "#/modules/volume-copies/mirror-sync/mirror-sync.server";
 import { placementRefusal } from "#/modules/volume-placement/volume-placement.gates.server";
@@ -20,6 +20,13 @@ const syncs = (held: CopyObservation["copies"]) =>
 export const refreshMirrors = Effect.fn("MirrorSync.refreshMirrors")(function* (
   organizationId: string, onlyEnvironmentId: string | null, observe: CopyObserver = observeOrganizationCopies,
 ) {
+  // A Deploy whose Environment holds no Volume has no mirror to refresh, so it doesn't wait for the Cluster's copies.
+  if (onlyEnvironmentId !== null) {
+    const owned = yield* ownerOf(organizationId, onlyEnvironmentId);
+    if (owned === null) return [];
+    const volumes = yield* ownedVolumes(organizationId, owned).pipe(Effect.option);
+    if (Option.isSome(volumes) && volumes.value.length === 0) return [];
+  }
   const copies = yield* observe(organizationId).pipe(
     Effect.catch((error) => Effect.logWarning("Mirror refresh could not observe the copies.", { organizationId, error }).pipe(Effect.as(NO_COPIES))),
   );
