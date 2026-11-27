@@ -48,13 +48,11 @@ export const refreshMirrors = Effect.fn("MirrorSync.refreshMirrors")(function* (
         { organizationId, project: owned.project, environment: owned.environment, reason: refused.message },
       ).pipe(Effect.as([]))),
     );
-    for (const volume of volumes) {
-      if (!syncs(copies.filter((copy) => copy.name === volume.dockerVolume))) continue;
-      const answer = yield* syncMirrors(organizationId, volume).pipe(
+    const answers = yield* Effect.forEach(volumes.filter((volume) => syncs(copies.filter((copy) => copy.name === volume.dockerVolume))), (volume) =>
+      syncMirrors(organizationId, volume).pipe(
         Effect.catch((error) => Effect.logWarning(`could not sync ${volume.name}`, { organizationId, volumeId: volume.volumeId, error }).pipe(Effect.as(null))),
-      );
-      if (answer !== null) synced.push(answer);
-    }
+      ), { concurrency: "unbounded" });
+    synced.push(...answers.filter((answer) => answer !== null));
   }
   return synced;
 });
