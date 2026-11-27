@@ -687,6 +687,26 @@ mod tests {
         );
     }
 
+    /// Tag pulls and Publish deliveries write retention names too, so they count toward a
+    /// repository's keep-3 and push older pinned images out of it. An image a Container
+    /// uses still stays, however far out of the newest three it falls.
+    #[test]
+    fn an_image_a_container_uses_stays_when_newer_retention_names_push_it_out() {
+        let images = [
+            image("pinned", Some(60), 1),
+            image("tag-a", Some(10), 0),
+            image("tag-b", Some(11), 0),
+            image("tag-c", Some(12), 0),
+            image("tag-d", Some(13), 0),
+        ];
+
+        for pressure in [false, true] {
+            let removed = removed(&images, pressure);
+            assert!(!removed.contains(&"pinned".to_owned()), "{removed:?}");
+            assert!(removed.contains(&"tag-d".to_owned()), "{removed:?}");
+        }
+    }
+
     #[test]
     fn keeps_three_unused_and_removes_older_idle_ones() {
         let images = [

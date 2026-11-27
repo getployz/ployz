@@ -346,6 +346,7 @@ impl LocalDocker {
 /// while it runs, and the loopback proxy it pulls through.
 struct Staging {
     name: String,
+    digest: String,
     pulls: Arc<PeerPulls>,
     _proxy: ImageProxy,
 }
@@ -363,6 +364,7 @@ impl Staging {
         lock(&pulls.in_flight).insert(name.clone());
         let staging = Self {
             name,
+            digest: digest.to_owned(),
             pulls: Arc::clone(pulls),
             _proxy: proxy,
         };
@@ -425,16 +427,25 @@ async fn deliver(
         .run_until_cancelled(prepare(docker, image, requested, source))
         .await
         .ok_or_else(stopped)??;
-    let retained = requested.and_then(|_| retention_tag(image));
-    pull_and_tag(
-        &docker.peer_pulls,
-        image,
-        staging,
-        pull.tag().or(retained.as_deref()),
-        platform,
-        gone,
-    )
-    .await
+    // Every delivery names its content by the retention name of the digest it pulled,
+    // the one name a sweep removes a staging name beside. A tag pull also writes its tag
+    // and a Publish its own name, for the same digest, resolved once.
+    let retained = retention_tag(&format!(
+        "{}@{}",
+        ployz_core::image_repository(image),
+        staging.digest
+    ));
+    let published = match (pull.tag(), requested) {
+        (Some(tag), _) => Some(tag),
+        (None, None) => Some(image),
+        (None, Some(_)) => None,
+    };
+    let names = retained
+        .as_deref()
+        .into_iter()
+        .chain(published.filter(|name| Some(*name) != retained.as_deref()))
+        .collect::<Vec<_>>();
+    pull_and_tag(&docker.peer_pulls, image, staging, &names, platform, gone).await
 }
 
 fn stopped() -> Error {
@@ -505,17 +516,17 @@ async fn resolve(server: SocketAddr, image: &str) -> Result<String, Error> {
         .ok_or_else(|| Error::PeerPull(format!("the source Machine named no digest for {image}")))
 }
 
-/// Pull `staging` and publish it as `tag`. The staging name is left for the sweep.
+/// Pull `staging` and publish it under `names`, in order. The staging name is left for
+/// the sweep.
 async fn pull_and_tag(
     pulls: &PeerPulls,
     image: &str,
     staging: Staging,
-    tag: Option<&str>,
+    names: &[&str],
     platform: &str,
     gone: &CancellationToken,
 ) -> Result<(), Error> {
     let (docker, from) = (&pulls.cli, staging.name.as_str());
-    let tag = tag.unwrap_or(image);
     let verified = async {
         docker.run(&["pull", "--platform", platform, from]).await?;
         if let Some(digest) = ployz_core::ImageRef::new(image).digest
@@ -525,8 +536,10 @@ async fn pull_and_tag(
                 "the image store did not retain {image}"
             )));
         }
-        if let Some(digest) = retained_digest(tag) {
-            retention_free(docker, from, tag, &digest).await?;
+        for name in names {
+            if let Some(digest) = retained_digest(name) {
+                retention_free(docker, from, name, &digest).await?;
+            }
         }
         Ok(pulls.retention.lock().await)
     };
@@ -536,10 +549,13 @@ async fn pull_and_tag(
     // not leave a tag or remove one from an earlier delivery.
     match gone.run_until_cancelled(verified).await {
         // The publish point, under the retention lock taken in the caller's race. Once
-        // begun it runs to its end, so a caller that stopped waiting finds the tag
-        // either unwritten or written, and told which.
+        // begun it runs to its end, so a caller that stopped waiting finds the names
+        // either unwritten or written, and told which. The retention name goes first.
         Some(Ok(_retention)) if !gone.is_cancelled() => {
-            docker.run(&["tag", "--", from, tag]).await.map(drop)
+            for name in names {
+                docker.run(&["tag", "--", from, name]).await?;
+            }
+            Ok(())
         }
         Some(Err(error)) => Err(error),
         Some(Ok(_)) | None => Err(stopped()),
@@ -756,7 +772,7 @@ esac
                     &pulls,
                     &image,
                     staging,
-                    Some(tag),
+                    &[tag],
                     "linux/arm64",
                     &CancellationToken::new(),
                 )
@@ -858,7 +874,7 @@ esac
                 &pulls,
                 &image,
                 staging,
-                Some(&name),
+                &[&name],
                 "linux/amd64",
                 &CancellationToken::new(),
             )
@@ -889,7 +905,7 @@ esac
             &pulls,
             ordinary,
             staging,
-            None,
+            &[ordinary],
             "linux/amd64",
             &CancellationToken::new(),
         )
@@ -1049,7 +1065,7 @@ esac
             &pulls,
             &image,
             staging,
-            None,
+            &[],
             "linux/amd64",
             &CancellationToken::new(),
         )
@@ -1083,7 +1099,7 @@ esac
         let (staging, _) = staging(&pulls, &image).await;
         let gone = CancellationToken::new();
 
-        let pull = pull_and_tag(&pulls, &image, staging, None, "linux/amd64", &gone);
+        let pull = pull_and_tag(&pulls, &image, staging, &[], "linux/amd64", &gone);
         let (result, pid) = tokio::time::timeout(std::time::Duration::from_secs(30), async {
             tokio::join!(pull, cancel_once_started(&root, &gone))
         })
@@ -1143,7 +1159,7 @@ esac
             let (staging, pulled) = staging(&pulls, &image).await;
             let gone = CancellationToken::new();
 
-            let pull = pull_and_tag(&pulls, &image, staging, None, "linux/amd64", &gone);
+            let pull = pull_and_tag(&pulls, &image, staging, &[], "linux/amd64", &gone);
             let (result, _) = tokio::time::timeout(std::time::Duration::from_secs(30), async {
                 tokio::join!(pull, cancel_once_started(&root, &gone))
             })
@@ -1184,14 +1200,8 @@ esac
         let (staging, pulled) = staging(&pulls, &image).await;
         let gone = CancellationToken::new();
 
-        let pull = pull_and_tag(
-            &pulls,
-            &image,
-            staging,
-            Some(&retained),
-            "linux/amd64",
-            &gone,
-        );
+        let written = [retained.as_str()];
+        let pull = pull_and_tag(&pulls, &image, staging, &written, "linux/amd64", &gone);
         let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(30), async {
             tokio::join!(pull, async {
                 cancel_once_started(&root, &gone).await;
@@ -1496,6 +1506,112 @@ esac
             root.join("user").exists(),
             "removed the user's image: {calls}"
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A source that answers one `HEAD` for a tag with digest `sha256:1…1`, as the Machine
+    /// image server does, and the request it got.
+    async fn serving_one_digest() -> (ImageIngestDestination, tokio::task::JoinHandle<String>) {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let registry = tokio::net::TcpListener::bind((std::net::Ipv6Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let source = ImageIngestDestination {
+            management_address: ployz_core::ManagementAddress(std::net::Ipv6Addr::LOCALHOST),
+            port: registry.local_addr().unwrap().port(),
+        };
+        let asked = tokio::spawn(async move {
+            let (mut connection, _) = registry.accept().await.unwrap();
+            let mut request = vec![0; 4096];
+            let read = connection.read(&mut request).await.unwrap();
+            connection
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nDocker-Content-Digest: sha256:{HEX}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+            request.truncate(read);
+            String::from_utf8_lossy(&request).into_owned()
+        });
+        (source, asked)
+    }
+
+    /// A tag pull resolves its tag once, pulls that digest, and names it by the digest's
+    /// retention name and by the tag. Beside the retention name, the sweep removes the
+    /// staging name.
+    #[tokio::test]
+    async fn a_tag_pull_leaves_the_retention_name_of_its_digest_and_no_staging_name() {
+        let root = std::env::temp_dir().join(format!(
+            "ployz-tag-pull-{}",
+            ployz_core::MachineId::random()
+        ));
+        let docker = delivery_docker(docker_with_unnamed_copy(&root)).await;
+        std::fs::remove_file(root.join("unnamed")).unwrap();
+        std::fs::write(root.join("mode"), "deliver").unwrap();
+        let (source, asked) = serving_one_digest().await;
+        let pull = PeerImagePull::Reference {
+            image: "app:v1".into(),
+        };
+
+        pull_from_ingest(
+            &docker,
+            &pull,
+            source,
+            "linux/amd64",
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        docker.peer_pulls.swept().await;
+
+        assert!(
+            asked
+                .await
+                .unwrap()
+                .starts_with("HEAD /v2/app/manifests/v1 ")
+        );
+        let calls = std::fs::read_to_string(root.join("calls")).unwrap();
+        assert!(
+            calls.contains("pull --platform linux/amd64 127.0.0.1:")
+                && calls.contains(&format!("@sha256:{HEX}\n")),
+            "{calls}"
+        );
+        assert_eq!(names(&root), format!("{}\napp:v1\n", retained()));
+        assert_eq!(ledger(&root), "");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A Publish names the pinned digest by its retention name and by its own name. Beside
+    /// the retention name, the sweep removes the staging name.
+    #[tokio::test]
+    async fn a_publish_leaves_the_retention_name_of_its_digest_and_no_staging_name() {
+        let root =
+            std::env::temp_dir().join(format!("ployz-publish-{}", ployz_core::MachineId::random()));
+        let docker = delivery_docker(docker_with_unnamed_copy(&root)).await;
+        std::fs::remove_file(root.join("unnamed")).unwrap();
+        std::fs::write(root.join("mode"), "deliver").unwrap();
+        let pull = PeerImagePull::Publish {
+            image: ImageDigestReference::parse(format!("app@sha256:{HEX}")).unwrap(),
+            tag: "app:live".into(),
+        };
+
+        pull_from_ingest(
+            &docker,
+            &pull,
+            source(),
+            "linux/amd64",
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        docker.peer_pulls.swept().await;
+
+        assert_eq!(names(&root), format!("{}\napp:live\n", retained()));
+        assert_eq!(ledger(&root), "");
         std::fs::remove_dir_all(root).unwrap();
     }
 
