@@ -89,8 +89,9 @@ const pinnedWeb = Effect.fn(function* (
   yield* Effect.promise(() => store.write(ORGANIZATION, {
     command: "admit", admit: "deploy", id: DEPLOYMENT, environment: here, services: [], version: null, accept_volume_loss: [],
   }, acmeWeb()));
-  yield* Effect.promise(() => store.pinSources(DEPLOYMENT, withApi ? { web: HEAD, api: HEAD } : { web: HEAD }));
   for (const attempt of begun) yield* Effect.promise(() => store.githubBegin(DEPLOYMENT, attempt));
+  // Only the attempt that began last pins.
+  yield* Effect.promise(() => store.pinSources(DEPLOYMENT, withApi ? { web: HEAD, api: HEAD } : { web: HEAD }, begun.at(-1) ?? ATTEMPT));
   const cloud = yield* provided(cloudStore);
   cloud.githubStart = async () => ({ kind: "dispatch", runner: "ubuntu-latest", foreign: [] });
   const web = () => Effect.promise(() => store.deploymentSources(DEPLOYMENT)).pipe(Effect.map((sources) => sources.find(({ service }) => service === "web")));
@@ -105,7 +106,7 @@ const owedNow = (provided: (program: Effect.Effect<boolean, unknown, Database>) 
   provided(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     const rows = yield* drizzle.execute<{ owed: number }>(
-      sql`select count(*)::int as owed from config_github_cancel where run_id = ${runId} and confirmed = 0`, "objects");
+      sql`select count(*)::int as owed from config_github_cancel where run_id = ${runId}`, "objects");
     return (rows[0]?.owed ?? 0) > 0;
   }));
 
@@ -240,7 +241,7 @@ it.effect.each(["answered", "stalled"] as const)(
     const started = yield* run;
     expect(started).toEqual(Exit.succeed(answer === "answered" ? [{ kind: "dispatched", runId: RUN }] : [{ kind: "done" }]));
     expect(yield* web()).toMatchObject(answer === "answered" ? { status: "building" } : { status: "pending", message: expect.stringContaining("GitHub couldn't take the build") });
-    expect(yield* provided(planStoreGithubBuilds(data))).toEqual([]);
+    expect(yield* provided(planStoreGithubBuilds(data, ATTEMPT))).toEqual([]);
     expect(dispatched).toEqual([RUN]);
   }),
   60_000,
@@ -650,7 +651,7 @@ it.effect.each([false, true])(
     expect(yield* Fiber.join(starting)).toEqual({ kind: "done" });
     expect(yield* web()).toMatchObject({ status: "pending", message: expect.stringContaining("GitHub couldn't take the build") });
     // The build is no longer GitHub's to start, so nothing dispatches it again.
-    expect(yield* provided(planStoreGithubBuilds({ organizationId: ORGANIZATION, environmentId: ENVIRONMENT, deploymentId: DEPLOYMENT, trigger: "user" }))).toEqual([]);
+    expect(yield* provided(planStoreGithubBuilds({ organizationId: ORGANIZATION, environmentId: ENVIRONMENT, deploymentId: DEPLOYMENT, trigger: "user" }, ATTEMPT))).toEqual([]);
     expect(dispatched).toHaveLength(1);
     // Cloud gave up on the answer, so it closes the connection rather than holding it open.
     yield* Deferred.await(closed);
@@ -944,25 +945,26 @@ it.live("an outranked run's replay that passes on a build the newer run reserved
   60_000,
 );
 
-it.live("a run whose cancel GitHub confirmed is never owed again when its record is replayed", () =>
+it.live("a confirmed cancel leaves no debt, and a replayed record owes the run again until its next cancel confirms", () =>
   Effect.gen(function* () {
     const cancelled: number[] = [];
     const { provided, web } = yield* pinnedWeb(dispatchingAuthority(cancelled));
     const cloud = yield* provided(cloudStore);
+    const owed = owedNow(provided);
     yield* provided(recordStoreDeploymentRun("worker-run", failedData));
     expect(yield* Effect.promise(() => cloud.githubAsk(target.build, ATTEMPT))).toBe("reserved");
     yield* provided(stopStoreDeploymentRun(ORGANIZATION, DEPLOYMENT, "worker-run"));
-    // GitHub's answer lands after the stop: owed, cancelled, and confirmed.
+    // GitHub's answer lands after the stop: owed, cancelled, and confirmed, which deletes the debt.
     const record = { kind: "run" as const, build: target.build, run: runOf(RUN, ATTEMPT) };
     expect(yield* provided(recordStoreGithubBuild(record))).toEqual({ kind: "done" });
     expect(cancelled).toEqual([RUN]);
-    expect(yield* Effect.promise(() => cloud.githubOwed(10))).toEqual([]);
-    // Inngest replays the same record: refused, with no new debt and no second cancel.
+    expect(yield* owed(RUN)).toBe(false);
+    // Inngest replays the same record: refused and owed again. GitHub's answer to that cancel (the run completed)
+    // confirms it, and the debt is gone again.
     expect(yield* provided(recordStoreGithubBuild(record))).toEqual({ kind: "done" });
-    expect(cancelled).toEqual([RUN]);
-    expect(yield* Effect.promise(() => cloud.githubOwed(10))).toEqual([]);
+    expect(cancelled).toEqual([RUN, RUN]);
+    expect(yield* owed(RUN)).toBe(false);
     expect(yield* provided(cancelOwedGithubRuns())).toEqual({ owed: 0, left: 0 });
-    expect(cancelled).toEqual([RUN]);
     expect(yield* web()).toMatchObject({ status: "pending" });
   }),
   60_000,

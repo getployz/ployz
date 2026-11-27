@@ -51,14 +51,16 @@ pub(crate) fn sources(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<GitSourc
     sources_of(tx, &stored)
 }
 
-/// Pin the commits of `commits` (by runtime Service name) that aren't pinned yet. A
-/// pinned commit never changes, and one its PR Environment's pull request doesn't
-/// admit by `trusted`'s members never pins.
+/// Pin the commits of `commits` (by runtime Service name) that aren't pinned yet, for
+/// worker attempt `attempt`. A pinned commit never changes, and one its PR
+/// Environment's pull request doesn't admit by `trusted`'s members never pins. Only the
+/// attempt that owns the Deployment chooses its commits: an outranked one is `newer`.
 pub(crate) fn pin(
     tx: &mut dyn Tx,
     id: &DeploymentId,
     commits: &BTreeMap<ServiceName, CommitSha>,
     trusted: &crate::Trusted,
+    attempt: &str,
 ) -> Result<(), RpcError> {
     let stored = deployment::locked(tx, id)?;
     if !stored.summary.status.in_flight() {
@@ -67,7 +69,32 @@ pub(crate) fn pin(
             json!({ "deployment": id, "status": stored.summary.status }),
         ));
     }
-    let sources = unrouted(tx, &stored)?;
+    if !super::github::owns(tx, &stored, attempt)? {
+        return Err(super::github::newer_attempt(id));
+    }
+    pin_stored(tx, &stored, commits, trusted)
+}
+
+/// Pin the commits of `commits` for Deployment `id` in the write that admits it, before
+/// any worker attempt began: the Store chose them, so no attempt is checked.
+pub(crate) fn pin_admitted(
+    tx: &mut dyn Tx,
+    id: &DeploymentId,
+    commits: &BTreeMap<ServiceName, CommitSha>,
+    trusted: &crate::Trusted,
+) -> Result<(), RpcError> {
+    let stored = deployment::locked(tx, id)?;
+    pin_stored(tx, &stored, commits, trusted)
+}
+
+fn pin_stored(
+    tx: &mut dyn Tx,
+    stored: &Stored,
+    commits: &BTreeMap<ServiceName, CommitSha>,
+    trusted: &crate::Trusted,
+) -> Result<(), RpcError> {
+    let id = &stored.summary.id;
+    let sources = unrouted(tx, stored)?;
     for (service, commit) in commits {
         let Some(source) = sources.iter().find(|source| source.service == *service) else {
             return Err(error::invalid(

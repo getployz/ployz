@@ -228,22 +228,25 @@ impl ConfigStore {
     /// Cloud read them: without them, a Trusted pull request a person wrote pins
     /// nothing, while a bot's from the repository itself still does. An approved head,
     /// and a commit for any Environment but a PR Environment, pin without them. Only
-    /// Cloud's worker calls this.
+    /// Cloud's worker calls this, as worker attempt `runner`, which must own the
+    /// Deployment.
     ///
     /// # Errors
-    /// Returns `conflict` once the Deployment was replaced, cancelled or ended,
-    /// `invalid_argument` for a bad pin, or a storage error.
+    /// Returns `conflict` once the Deployment was replaced, cancelled or ended, or
+    /// (`newer`) once a later attempt began, `invalid_argument` for a bad pin, or a
+    /// storage error.
     #[napi(ts_return_type = "Promise<GitSource[]>")]
     pub async fn pin_sources(
         &self,
         deployment: String,
         #[napi(ts_arg_type = "Record<string, string>")] commits: serde_json::Value,
+        runner: String,
         #[napi(ts_arg_type = "Pick<ConfigTrusted, 'members'>")] trusted: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
         let deployment = DeploymentId::parse(deployment).map_err(rpc_to_napi)?;
         let commits = decode(commits, "Expected commits by Service name")?;
         let trusted = evidence(trusted)?;
-        self.run(move |store| store.pin(&deployment, &commits, &trusted))
+        self.run(move |store| store.pin(&deployment, &commits, &trusted, &runner))
             .await
     }
 

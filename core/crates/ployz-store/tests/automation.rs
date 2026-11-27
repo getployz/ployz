@@ -6,6 +6,7 @@
 //! and check suites admit auto-deploys of Saved State, idempotently.
 
 use ployz_core::{RpcErrorCode, ServiceName};
+use ployz_store::testing::backend::PinAs;
 use ployz_store::{
     Actor, Automated, BranchHead, Change, Command, ConfigStore, Edit, EnvironmentRef, Publish,
     SettingPath, SystemEvent, Trusted, Written,
@@ -1333,13 +1334,14 @@ fn pin_web(
     head: &str,
     trusted: &Trusted,
 ) -> Result<Vec<ployz_store::GitSource>, ployz_core::RpcError> {
-    store.pin(
+    store.pin_as(
         id,
         &std::collections::BTreeMap::from([(
             ServiceName::parse("web").unwrap(),
             backend::sha(head),
         )]),
         trusted,
+        "runner",
     )
 }
 
@@ -1472,13 +1474,14 @@ fn a_manual_deploy_never_pins_a_head_the_pull_request_has_not_approved() {
         )
         .unwrap();
     let refused = store
-        .pin(
+        .pin_as(
             &id,
             &std::collections::BTreeMap::from([(
                 ServiceName::parse("web").unwrap(),
                 backend::sha(H3),
             )]),
             &backend::members(),
+            "runner",
         )
         .unwrap_err();
     assert_eq!(refused.code, RpcErrorCode::InvalidArgument);

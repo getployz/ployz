@@ -60,8 +60,8 @@ for (const { stop, failed } of cases) {
       }));
       const write = (command: ConfigCommand) => Effect.promise(() => store.write(ORGANIZATION, command, acmeWeb()));
       yield* write({ command: "admit", admit: "deploy", id: DEPLOYMENT, environment: here, services: [], version: null, accept_volume_loss: [] });
-      yield* Effect.promise(() => store.pinSources(DEPLOYMENT, { web: "c".repeat(40) }));
       yield* Effect.promise(() => store.githubBegin(DEPLOYMENT, "cloud-walk-1"));
+      yield* Effect.promise(() => store.pinSources(DEPLOYMENT, { web: "c".repeat(40) }, "cloud-walk-1"));
       yield* Effect.promise(() => store.githubDispatched(BUILD, {
         run_id: RUN, run_url: `https://github.com/acme/web/actions/runs/${RUN}`, workflow_ref: "acme/web/.github/workflows/ployz-build.yml@refs/heads/main",
         repository: "acme/web", installation_id: 7, push: false, attempt: "cloud-walk-1",

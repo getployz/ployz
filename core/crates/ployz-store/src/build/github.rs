@@ -1,7 +1,7 @@
 //! Builds handed to a GitHub Actions run, from its dispatch through its check-in and reports to its end.
 
 use ployz_core::authority::{AutoDeployRule, BuiltImageDigest, CommitAuthority, Signed};
-use ployz_core::{MachineId, RpcError, ServiceName};
+use ployz_core::{MachineId, RpcError, RpcErrorCode, ServiceName};
 use ployz_decide::github_build::{
     CANCELLED, EndKind, Hold, Target, github_check_in_holds, github_end_holds,
 };
@@ -428,8 +428,21 @@ pub(crate) fn github_dispatched(
     id: &GithubBuildId,
     run: &GithubRun,
 ) -> Result<GithubRecorded, RpcError> {
-    let stored = deployment::locked(tx, &id.deployment)?;
-    let row = github_row(tx, &stored, id)?;
+    // A run of a Deployment, Environment or build the Store no longer has can't hold
+    // anything, but it may still run: it is owed its cancel all the same.
+    let found = deployment::locked(tx, &id.deployment)
+        .and_then(|stored| github_row(tx, &stored, id).map(|row| (stored, row)));
+    let (stored, row) = match found {
+        Ok(found) => found,
+        Err(error) if error.code == RpcErrorCode::NotFound => {
+            if !run.cancellable() {
+                return Ok(GithubRecorded::Refused);
+            }
+            owe(tx, id, run)?;
+            return Ok(GithubRecorded::Owed);
+        }
+        Err(error) => return Err(error),
+    };
     if row.building_on(run.run_id).is_some() {
         return Ok(GithubRecorded::Held);
     }
@@ -447,7 +460,10 @@ pub(crate) fn github_dispatched(
         None => false,
     };
     if !owned {
-        let owed = run.cancellable() && owe(tx, id, run)?;
+        let owed = run.cancellable();
+        if owed {
+            owe(tx, id, run)?;
+        }
         return Ok(if owed {
             GithubRecorded::Owed
         } else {
@@ -491,7 +507,7 @@ fn github_owner(tx: &mut dyn Tx, deployment: &DeploymentId) -> Result<Option<Str
 
 /// Whether worker attempt `attempt` owns Deployment `stored`'s GitHub runs: it began
 /// last, and no other runner claimed the Deployment.
-fn owns(tx: &mut dyn Tx, stored: &Stored, attempt: &str) -> Result<bool, RpcError> {
+pub(super) fn owns(tx: &mut dyn Tx, stored: &Stored, attempt: &str) -> Result<bool, RpcError> {
     let claimed_by_another = stored
         .summary
         .runner
@@ -500,12 +516,16 @@ fn owns(tx: &mut dyn Tx, stored: &Stored, attempt: &str) -> Result<bool, RpcErro
     Ok(!claimed_by_another && github_owner(tx, &stored.summary.id)?.as_deref() == Some(attempt))
 }
 
-fn newer_attempt(deployment: &DeploymentId) -> RpcError {
+pub(super) fn newer_attempt(deployment: &DeploymentId) -> RpcError {
     error::conflict(
         "A newer attempt runs this Deployment",
         json!({ "deployment": deployment, "newer": true }),
     )
 }
+
+/// The attempt migration `0059_github_stop` gave each build a GitHub run held when the
+/// Store upgraded. It is no runner ID, so no worker names it.
+const UPGRADED_ATTEMPT: &str = "(held at upgrade)";
 
 /// Why a build an older attempt held leaves GitHub once a newer attempt takes over.
 const TAKEN_OVER: &str = "A newer run of this Deployment took it over";
@@ -539,6 +559,31 @@ pub(crate) fn github_begin(
     let mut began = Vec::with_capacity(attempts.len());
     for row in &attempts {
         began.push((row.text(0)?.to_owned(), row.int(1)?));
+    }
+    // A Deployment whose GitHub run held a build when the Store upgraded has the
+    // attempt the migration gave it, which names no runner: the first attempt to begin
+    // continues it, keeping its builds and its number, so a worker that upgraded while
+    // its build ran keeps that build.
+    if let [(owner, number)] = began.as_slice()
+        && owner == UPGRADED_ATTEMPT
+    {
+        tx.execute(
+            "UPDATE config_github_attempt SET runner = ?2 WHERE deployment_id = ?1 AND runner = ?3",
+            &[
+                deployment.as_str().into(),
+                attempt.into(),
+                UPGRADED_ATTEMPT.into(),
+            ],
+        )?;
+        tx.execute(
+            "UPDATE config_build SET attempt = ?2 WHERE deployment_id = ?1 AND attempt = ?3",
+            &[
+                deployment.as_str().into(),
+                attempt.into(),
+                UPGRADED_ATTEMPT.into(),
+            ],
+        )?;
+        return u64::try_from(*number).map_err(|_| error::corrupt("attempt number"));
     }
     if let Some((_, number)) = began.iter().find(|(runner, _)| runner == attempt) {
         return match began.first() {
@@ -643,7 +688,9 @@ pub(crate) fn github_outranked(
     id: &DeploymentId,
     runner: &crate::id::RunnerId,
 ) -> Result<bool, RpcError> {
-    Ok(github_owner(tx, id)?.is_some_and(|owner| owner != runner.as_str()))
+    // The attempt an upgrade gave a Deployment names no runner, so it outranks none.
+    Ok(github_owner(tx, id)?
+        .is_some_and(|owner| owner != runner.as_str() && owner != UPGRADED_ATTEMPT))
 }
 
 fn save_attempt(tx: &mut dyn Tx, id: &GithubBuildId, attempt: &str) -> Result<(), RpcError> {
@@ -658,34 +705,31 @@ fn save_attempt(tx: &mut dyn Tx, id: &GithubBuildId, attempt: &str) -> Result<()
     .map(drop)
 }
 
-/// Owe run `run` of build `id` a cancel. A run is owed at most once, ever: once owed,
-/// and once GitHub confirmed its cancel, owing it again changes nothing. Returns whether
-/// the run is still owed, its cancel not yet confirmed.
-fn owe(tx: &mut dyn Tx, id: &GithubBuildId, run: &GithubRun) -> Result<bool, RpcError> {
+/// Owe run `run` of build `id` a cancel, until GitHub confirms it. Owing a run already
+/// owed changes nothing. A new debt takes the current sweep turn, so it waits behind
+/// debts from earlier turns and beside the ones the last sweep retried.
+fn owe(tx: &mut dyn Tx, id: &GithubBuildId, run: &GithubRun) -> Result<(), RpcError> {
     let run_id = i64::try_from(run.run_id).map_err(|_| error::corrupt("GitHub run id"))?;
     let stored = json_text(run);
     tx.execute(
-        "INSERT INTO config_github_cancel (run_id, deployment_id, service, run) \
-         VALUES (?1, ?2, ?3, ?4) ON CONFLICT (run_id) DO NOTHING",
+        "INSERT INTO config_github_cancel (run_id, deployment_id, service, run, turn) \
+         SELECT ?1, ?2, ?3, ?4, COALESCE(MAX(turn), 0) FROM config_github_cancel WHERE true \
+         ON CONFLICT (run_id) DO NOTHING",
         &[
             run_id.into(),
             id.deployment.as_str().into(),
             id.service.as_str().into(),
             stored.as_str().into(),
         ],
-    )?;
-    let rows = tx.query(
-        "SELECT confirmed FROM config_github_cancel WHERE run_id = ?1",
-        &[run_id.into()],
-    )?;
-    Ok(rows.first().map(|row| row.int(0)).transpose()? == Some(0))
+    )
+    .map(drop)
 }
 
 /// Every run Deployment `deployment` still owes a cancel.
 fn owed_by(tx: &mut dyn Tx, deployment: &DeploymentId) -> Result<Vec<GithubOwed>, RpcError> {
     let rows = tx.query(
         "SELECT service, run FROM config_github_cancel \
-         WHERE deployment_id = ?1 AND confirmed = 0 ORDER BY run_id",
+         WHERE deployment_id = ?1 ORDER BY run_id",
         &[deployment.as_str().into()],
     )?;
     rows.iter()
@@ -715,7 +759,7 @@ pub(crate) fn github_pass_on(
     }
     let status = github_end(tx, id, None, end)?;
     let owed = match owe.filter(|run| run.cancellable()) {
-        Some(run) => self::owe(tx, id, run)?,
+        Some(run) => self::owe(tx, id, run).map(|()| true)?,
         None => false,
     };
     Ok(GithubSettled { status, owed })
@@ -742,7 +786,7 @@ pub(crate) fn github_settle(
     let run = row.building_on(run_id).map(|hold| hold.run().clone());
     let status = github_end(tx, id, Some(run_id), end)?;
     let owed = match run.filter(|run| owe && run.cancellable()) {
-        Some(run) => self::owe(tx, id, &run)?,
+        Some(run) => self::owe(tx, id, &run).map(|()| true)?,
         None => false,
     };
     Ok(GithubSettled { status, owed })
@@ -771,35 +815,35 @@ fn held_by_owner(
     run_id: u64,
 ) -> Result<(), RpcError> {
     let row = github_row(tx, stored, id)?;
-    let attempt = row
-        .building_on(run_id)
-        .and_then(|hold| hold.run().attempt.clone());
+    // The build's own attempt, which a run held at upgrade got from the migration.
+    let attempt = row.building_on(run_id).and(row.attempt.clone());
     match attempt {
         Some(attempt) if owns(tx, stored, &attempt)? => Ok(()),
         Some(_) | None => Err(no_longer_wanted()),
     }
 }
 
-/// Take up to `limit` runs Cloud owes a cancel, in any Organization, for the sweep:
-/// those it never tried first, then the longest since its last try, each stamped with
-/// this sweep's number. Runs whose cancel keeps failing then never crowd out the rest.
-/// The order is fairness only: nothing decides from it.
+/// Take up to `limit` runs Cloud owes a cancel, in any Organization, for the sweep: the
+/// lowest turn first, each then stamped with the next turn. A debt waits only behind
+/// those of lower turns, and each sweep raises the turn, so a cancel GitHub keeps
+/// refusing never starves new debts, nor new debts a retried one. The order is fairness
+/// only: nothing decides from it.
 pub(crate) fn github_owed(tx: &mut dyn Tx, limit: u32) -> Result<Vec<GithubOwed>, RpcError> {
     let rows = tx.query(
         "SELECT run_id, deployment_id, service, run FROM config_github_cancel \
-         WHERE confirmed = 0 ORDER BY COALESCE(tried, -1), run_id LIMIT ?1",
+         ORDER BY turn, run_id LIMIT ?1",
         &[i64::from(limit).into()],
     )?;
-    let sweeps = tx.query(
-        "SELECT COALESCE(MAX(tried), 0) + 1 FROM config_github_cancel",
+    let turns = tx.query(
+        "SELECT COALESCE(MAX(turn), 0) + 1 FROM config_github_cancel",
         &[],
     )?;
-    let sweep = sweeps.first().map_or(Ok(1), |row| row.int(0))?;
+    let turn = turns.first().map_or(Ok(1), |row| row.int(0))?;
     let mut owed = Vec::with_capacity(rows.len());
     for row in &rows {
         tx.execute(
-            "UPDATE config_github_cancel SET tried = ?2 WHERE run_id = ?1",
-            &[row.int(0)?.into(), sweep.into()],
+            "UPDATE config_github_cancel SET turn = ?2 WHERE run_id = ?1",
+            &[row.int(0)?.into(), turn.into()],
         )?;
         owed.push(GithubOwed {
             build: format!("{}.{}", row.text(1)?, row.text(2)?),
@@ -904,9 +948,9 @@ pub(crate) fn github_owed_by(
     owed_by(tx, deployment)
 }
 
-/// GitHub confirmed it cancelled run `run_id` of build `id`, or that it ended: Cloud owes
-/// it nothing more. Confirming a run owed nothing changes nothing. It needs no
-/// Deployment: the debt outlives it.
+/// GitHub confirmed it cancelled run `run_id` of build `id`, or a read showed the run
+/// completed: Cloud owes it nothing more, and the debt is deleted. Confirming a run owed
+/// nothing changes nothing. It needs no Deployment: the debt outlives it.
 pub(crate) fn github_cancel_confirmed(
     tx: &mut dyn Tx,
     id: &GithubBuildId,
@@ -914,7 +958,7 @@ pub(crate) fn github_cancel_confirmed(
 ) -> Result<(), RpcError> {
     let run_id = i64::try_from(run_id).map_err(|_| error::corrupt("GitHub run id"))?;
     tx.execute(
-        "UPDATE config_github_cancel SET confirmed = 1 \
+        "DELETE FROM config_github_cancel \
          WHERE run_id = ?1 AND deployment_id = ?2 AND service = ?3",
         &[
             run_id.into(),

@@ -201,6 +201,12 @@ export const ROUTES: Readonly<Record<string, AnyRoute>> = {
       const cancelled = await github.send("cancel_run", token, "POST", `/repositories/${body.repository_id}/actions/runs/${body.run_id}/cancel`, { allow: [409] });
       await cancelled.body?.cancel();
       facts.github_status = cancelled.status;
+      // A 409 says only that GitHub didn't cancel it now. The run counts as stopped once a read shows it completed, and
+      // a run still queued or in progress fails the cancel, so Cloud keeps owing it.
+      if (cancelled.status === 409) {
+        const status = nullable(await buildRun(github, token, body.repository_id, body.run_id), "status", "string", "fetch_run");
+        if (status !== "completed") throw new GithubError("cancel_run", { kind: "status", status: 409, retryAfter: null });
+      }
       return {};
     },
   }),

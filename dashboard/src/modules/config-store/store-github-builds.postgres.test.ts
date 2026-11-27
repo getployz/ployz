@@ -110,10 +110,10 @@ it.live(
       const view = () => Effect.promise(() => store.read(ORGANIZATION, { query: "deployment", id: DEPLOYMENT }));
 
       // Auto tries GitHub first: GitHub gets the pinned build.
-      yield* Effect.promise(() => store.pinSources(DEPLOYMENT, { web: HEAD }));
       yield* Effect.promise(() => store.githubBegin(DEPLOYMENT, ATTEMPT));
+      yield* Effect.promise(() => store.pinSources(DEPLOYMENT, { web: HEAD }, ATTEMPT));
       const data = { organizationId: ORGANIZATION, environmentId: ENVIRONMENT, deploymentId: DEPLOYMENT, trigger: "user" as const };
-      const [target] = yield* provided(planStoreGithubBuilds(data));
+      const [target] = yield* provided(planStoreGithubBuilds(data, ATTEMPT));
       if (target === undefined) return expect.unreachable("GitHub gets the build");
       expect(target).toEqual({
         build: BUILD, service: "web", repository: "acme/web", repositoryId: 42, installationId: 7, hasNext: true,
@@ -125,14 +125,14 @@ it.live(
         builds: [{ service: "web", commit: HEAD, status: "pending", message: "acme/web has no .github/workflows/ployz-build.yml on its default branch" }],
       });
       // A skipped build is no longer GitHub's to plan.
-      expect(yield* provided(planStoreGithubBuilds(data))).toEqual([]);
+      expect(yield* provided(planStoreGithubBuilds(data, ATTEMPT))).toEqual([]);
 
 
       // A build GitHub holds: only its dispatched run's token checks in.
       yield* write({ command: "admit", admit: "deploy", id: "00000000-0000-4000-8000-00000000b102", environment: here, services: [], version: null, accept_volume_loss: [] });
       const next = `00000000-0000-4000-8000-00000000b102.web`;
-      yield* Effect.promise(() => store.pinSources("00000000-0000-4000-8000-00000000b102", { web: HEAD }));
       yield* Effect.promise(() => store.githubBegin("00000000-0000-4000-8000-00000000b102", ATTEMPT));
+      yield* Effect.promise(() => store.pinSources("00000000-0000-4000-8000-00000000b102", { web: HEAD }, ATTEMPT));
       yield* Effect.promise(() => store.githubDispatched(next, {
         run_id: RUN, run_url: "https://github.com/acme/web/actions/runs/9001", workflow_ref: WORKFLOW, repository: "acme/web", installation_id: 7, push: false, attempt: ATTEMPT,
       }));
@@ -181,25 +181,25 @@ it.live(
       yield* write({ command: "set_build_order", build_order: "servers-then-github" });
       const serversFirst = "00000000-0000-4000-8000-00000000b103";
       yield* write({ command: "admit", admit: "deploy", id: serversFirst, environment: here, services: [], version: null, accept_volume_loss: [] });
-      yield* Effect.promise(() => store.pinSources(serversFirst, { web: HEAD }));
       yield* Effect.promise(() => store.githubBegin(serversFirst, ATTEMPT));
+      yield* Effect.promise(() => store.pinSources(serversFirst, { web: HEAD }, ATTEMPT));
       const plan = { ...data, deploymentId: serversFirst };
-      expect(yield* provided(planStoreGithubBuilds(plan))).toEqual([]);
+      expect(yield* provided(planStoreGithubBuilds(plan, ATTEMPT))).toEqual([]);
       const noBuilders = asTestDouble<OrganizationRuntimeService>()({
         cancel: () => Effect.void,
         open: () => Effect.succeed({ status: "connected" as const, connected: asTestDouble<ConnectedRuntimeClient>()({
           watchFirstFrame: () => Effect.succeed({ machines: [{ machine: { accepts_builds: false } }] }),
         }) }),
       });
-      expect(yield* provided(planStoreGithubBuilds(plan).pipe(Effect.provideService(OrganizationRuntime, noBuilders))))
+      expect(yield* provided(planStoreGithubBuilds(plan, ATTEMPT).pipe(Effect.provideService(OrganizationRuntime, noBuilders))))
         .toMatchObject([{ build: `${serversFirst}.web`, hasNext: false }]);
 
       // Cloud dispatches no workflow file but the one Ployz offers: GitHub would run what the file says.
       workflowNow = "edited";
       const edited = "00000000-0000-4000-8000-00000000b1e0";
       yield* write({ command: "admit", admit: "deploy", id: edited, environment: here, services: [], version: null, accept_volume_loss: [] });
-      yield* Effect.promise(() => store.pinSources(edited, { web: HEAD }));
       yield* Effect.promise(() => store.githubBegin(edited, ATTEMPT));
+      yield* Effect.promise(() => store.pinSources(edited, { web: HEAD }, ATTEMPT));
       // The Store would hand GitHub the build to dispatch; Cloud refuses to dispatch that file.
       vi.spyOn(yield* provided(cloudStore), "githubStart").mockResolvedValueOnce({ kind: "dispatch", runner: "ubuntu-latest", foreign: [] });
       expect(yield* provided(startStoreGithubBuild(ORGANIZATION, { ...target, build: `${edited}.web` }))).toEqual({ kind: "done" });
@@ -211,8 +211,8 @@ it.live(
       workflowNow = "rule";
       const ruled = "00000000-0000-4000-8000-00000000b1e2";
       yield* write({ command: "admit", admit: "deploy", id: ruled, environment: here, services: [], version: null, accept_volume_loss: [] });
-      yield* Effect.promise(() => store.pinSources(ruled, { web: HEAD }));
       yield* Effect.promise(() => store.githubBegin(ruled, ATTEMPT));
+      yield* Effect.promise(() => store.pinSources(ruled, { web: HEAD }, ATTEMPT));
       vi.spyOn(yield* provided(cloudStore), "githubStart").mockResolvedValueOnce({ kind: "dispatch", runner: "ubuntu-latest", foreign: [] });
       expect(yield* provided(startStoreGithubBuild(ORGANIZATION, { ...target, build: `${ruled}.web` }))).toEqual({ kind: "done" });
       expect(yield* Effect.promise(() => store.read(ORGANIZATION, { query: "deployment", id: ruled }))).toMatchObject({
@@ -223,8 +223,8 @@ it.live(
       workflowNow = "ready";
       const oldServer = "00000000-0000-4000-8000-00000000b104";
       yield* write({ command: "admit", admit: "deploy", id: oldServer, environment: here, services: [], version: null, accept_volume_loss: [] });
-      yield* Effect.promise(() => store.pinSources(oldServer, { web: HEAD }));
       yield* Effect.promise(() => store.githubBegin(oldServer, ATTEMPT));
+      yield* Effect.promise(() => store.pinSources(oldServer, { web: HEAD }, ATTEMPT));
       const lacking = asTestDouble<OrganizationRuntimeService>()({
         cancel: () => Effect.void,
         open: () => Effect.succeed({ status: "connected" as const, connected: asTestDouble<ConnectedRuntimeClient>()({
@@ -252,8 +252,8 @@ it.live(
       const disconnected = "00000000-0000-4000-8000-00000000b105";
       yield* write({ command: "admit", admit: "deploy", id: disconnected, environment: here, services: [], version: null, accept_volume_loss: [] });
       const held = `${disconnected}.web`;
-      yield* Effect.promise(() => store.pinSources(disconnected, { web: HEAD }));
       yield* Effect.promise(() => store.githubBegin(disconnected, ATTEMPT));
+      yield* Effect.promise(() => store.pinSources(disconnected, { web: HEAD }, ATTEMPT));
       yield* Effect.promise(() => store.githubDispatched(held, {
         run_id: 9105, run_url: "https://github.com/acme/web/actions/runs/9105", workflow_ref: WORKFLOW, repository: "acme/web", installation_id: 7, push: false, attempt: ATTEMPT,
       }));
@@ -287,8 +287,8 @@ it.live("a build that checked in reports its steps until its Organization discon
     yield* Effect.promise(() => store.write(ORGANIZATION, {
       command: "admit", admit: "deploy", id: DEPLOYMENT, environment: here, services: [], version: null, accept_volume_loss: [],
     }, acmeWeb()));
-    yield* Effect.promise(() => store.pinSources(DEPLOYMENT, { web: HEAD }));
     yield* Effect.promise(() => store.githubBegin(DEPLOYMENT, ATTEMPT));
+    yield* Effect.promise(() => store.pinSources(DEPLOYMENT, { web: HEAD }, ATTEMPT));
     yield* Effect.promise(() => store.githubDispatched(BUILD, {
       run_id: RUN, run_url: `https://github.com/acme/web/actions/runs/${RUN}`, workflow_ref: WORKFLOW, repository: "acme/web", installation_id: 7, push: false, attempt: ATTEMPT,
     }));
@@ -317,14 +317,14 @@ it.live("a Store build's start, check-in and finish reach a Server of the pairin
     };
     const githubCheckIn = vi.spyOn(cloud, "githubCheckIn").mockResolvedValue({ ...checkIn, foreign: [machineId("9")] });
     vi.spyOn(cloud, "githubReport").mockResolvedValue({ received: 1, ended: true });
-    const githubFinish = vi.spyOn(cloud, "githubFinish").mockResolvedValue({ ended: "built" });
+    const githubFinish = vi.spyOn(cloud, "githubFinish").mockResolvedValue({ ended: { status: "built", owed: false } });
     yield* provided(Effect.all([seedStoreOrganization(ORGANIZATION), enrollStoreServer(ORGANIZATION)]));
     const store = yield* provided(seedStoreGitService(ORGANIZATION, { project: PROJECT, environment: ENVIRONMENT, service: SERVICE }));
     yield* Effect.promise(() => store.write(ORGANIZATION, {
       command: "admit", admit: "deploy", id: DEPLOYMENT, environment: here, services: [], version: null, accept_volume_loss: [],
     }, acmeWeb()));
-    yield* Effect.promise(() => store.pinSources(DEPLOYMENT, { web: HEAD }));
     yield* Effect.promise(() => store.githubBegin(DEPLOYMENT, ATTEMPT));
+    yield* Effect.promise(() => store.pinSources(DEPLOYMENT, { web: HEAD }, ATTEMPT));
     const servers = [{ machine_id: machineId("0"), management: `ployz1:cloud:${machineId("0")}` }];
     const target = { build: BUILD, service: "web", repository: "acme/web", repositoryId: 42, installationId: null, hasNext: true };
     const runner = (step: string) => new Request(`http://localhost:3000/api/builds/${BUILD}/${step}`, {
@@ -372,8 +372,8 @@ it.live("a build GitHub passed on before its run checked in is no longer GitHub'
     yield* Effect.promise(() => store.write(ORGANIZATION, {
       command: "admit", admit: "deploy", id: DEPLOYMENT, environment: here, services: [], version: null, accept_volume_loss: [],
     }, acmeWeb()));
-    yield* Effect.promise(() => store.pinSources(DEPLOYMENT, { web: HEAD }));
     yield* Effect.promise(() => store.githubBegin(DEPLOYMENT, ATTEMPT));
+    yield* Effect.promise(() => store.pinSources(DEPLOYMENT, { web: HEAD }, ATTEMPT));
     yield* Effect.promise(() => store.githubDispatched(BUILD, {
       run_id: RUN, run_url: `https://github.com/acme/web/actions/runs/${RUN}`, workflow_ref: WORKFLOW, repository: "acme/web", installation_id: 7, push: false, attempt: ATTEMPT,
     }));
@@ -418,8 +418,8 @@ it.live("the start limit keeps a run whose check-in commits while it looks, and 
     yield* Effect.promise(() => store.write(ORGANIZATION, {
       command: "admit", admit: "deploy", id: DEPLOYMENT, environment: here, services: [], version: null, accept_volume_loss: [],
     }, acmeWeb()));
-    yield* Effect.promise(() => store.pinSources(DEPLOYMENT, { web: HEAD }));
     yield* Effect.promise(() => store.githubBegin(DEPLOYMENT, ATTEMPT));
+    yield* Effect.promise(() => store.pinSources(DEPLOYMENT, { web: HEAD }, ATTEMPT));
     yield* Effect.promise(() => store.githubDispatched(BUILD, {
       run_id: RUN, run_url: `https://github.com/acme/web/actions/runs/${RUN}`, workflow_ref: WORKFLOW, repository: "acme/web", installation_id: 7, push: false, attempt: ATTEMPT,
     }));
@@ -460,8 +460,8 @@ it.live("a record whose first try handed the build to the run and lost its answe
     yield* Effect.promise(() => store.write(ORGANIZATION, {
       command: "admit", admit: "deploy", id: DEPLOYMENT, environment: here, services: [], version: null, accept_volume_loss: [],
     }, acmeWeb()));
-    yield* Effect.promise(() => store.pinSources(DEPLOYMENT, { web: HEAD }));
     yield* Effect.promise(() => store.githubBegin(DEPLOYMENT, ATTEMPT));
+    yield* Effect.promise(() => store.pinSources(DEPLOYMENT, { web: HEAD }, ATTEMPT));
     const cloud = yield* provided(cloudStore);
     vi.spyOn(cloud, "githubStart").mockResolvedValue({ kind: "dispatch", runner: "ubuntu-latest", foreign: [] });
     // The hand-off to run 9001 commits, and its answer is lost.
@@ -499,8 +499,8 @@ it.live("a record whose first try commits under its retry follows that one run, 
     yield* Effect.promise(() => store.write(ORGANIZATION, {
       command: "admit", admit: "deploy", id: DEPLOYMENT, environment: here, services: [], version: null, accept_volume_loss: [],
     }, acmeWeb()));
-    yield* Effect.promise(() => store.pinSources(DEPLOYMENT, { web: HEAD }));
     yield* Effect.promise(() => store.githubBegin(DEPLOYMENT, ATTEMPT));
+    yield* Effect.promise(() => store.pinSources(DEPLOYMENT, { web: HEAD }, ATTEMPT));
     const cloud = yield* provided(cloudStore);
     vi.spyOn(cloud, "githubStart").mockResolvedValue({ kind: "dispatch", runner: "ubuntu-latest", foreign: [] });
     // The hand-off to run 9001 times out before it commits, and its work goes on: it commits just before the record's
@@ -548,8 +548,8 @@ it.live("a rule build follows its push, and an approved build dispatches, under 
       yield* Effect.promise(() => store.write(ORGANIZATION, {
         command: "admit", admit: "deploy", id: deployment, environment: here, services: [], version: null, accept_volume_loss: [],
       }, acmeWeb()));
-      yield* Effect.promise(() => store.pinSources(deployment, { web: HEAD }));
       yield* Effect.promise(() => store.githubBegin(deployment, ATTEMPT));
+      yield* Effect.promise(() => store.pinSources(deployment, { web: HEAD }, ATTEMPT));
     });
 
     yield* admitted(DEPLOYMENT);
@@ -582,8 +582,8 @@ it.live("a Deployment's builds start in one step, read the workflow once per rep
     yield* Effect.promise(() => store.write(ORGANIZATION, {
       command: "admit", admit: "deploy", id: DEPLOYMENT, environment: here, services: [], version: null, accept_volume_loss: [],
     }, acmeWeb()));
-    yield* Effect.promise(() => store.pinSources(DEPLOYMENT, { web: HEAD, api: HEAD, docs: HEAD }));
     yield* Effect.promise(() => store.githubBegin(DEPLOYMENT, ATTEMPT));
+    yield* Effect.promise(() => store.pinSources(DEPLOYMENT, { web: HEAD, api: HEAD, docs: HEAD }, ATTEMPT));
     // An older run's own step skipped docs before Cloud deployed this one.
     yield* Effect.promise(() => store.githubSkip(`${DEPLOYMENT}.docs`, "acme/web has no .github/workflows/ployz-build.yml on its default branch", ATTEMPT));
     const cloud = yield* provided(cloudStore);
@@ -627,8 +627,8 @@ it.live("a build whose start fails before GitHub is asked fails the start step b
     yield* Effect.promise(() => store.write(ORGANIZATION, {
       command: "admit", admit: "deploy", id: DEPLOYMENT, environment: here, services: [], version: null, accept_volume_loss: [],
     }, acmeWeb()));
-    yield* Effect.promise(() => store.pinSources(DEPLOYMENT, { web: HEAD, api: HEAD, docs: HEAD }));
     yield* Effect.promise(() => store.githubBegin(DEPLOYMENT, ATTEMPT));
+    yield* Effect.promise(() => store.pinSources(DEPLOYMENT, { web: HEAD, api: HEAD, docs: HEAD }, ATTEMPT));
     const cloud = yield* provided(cloudStore);
     vi.spyOn(cloud, "githubStart").mockImplementation(async (id) => {
       if (failing && id.endsWith(".docs")) {

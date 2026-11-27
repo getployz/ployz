@@ -9,6 +9,7 @@ use ployz::context::Connection;
 use ployz::sdk::{GithubFinish, GithubKey, GithubLook, GithubStart};
 use ployz_core::config::ServiceGitAccess;
 use ployz_core::{MachineId, MachineObservation, RpcError, SealingPublicKey, ServiceName};
+use ployz_store::testing::backend::PinAs;
 use ployz_store::{
     Actor, Admit, AuthorizedRepository, BranchName, BuildLogQuery, BuildStatus, CommitSha,
     ConfigStore, CreateGitService, CreateProject, Deploy, DeploymentId, EnvironmentId,
@@ -177,10 +178,11 @@ fn pinned() -> (Arc<ConfigStore>, Actor, GithubBuildId) {
         .unwrap();
     let commit = CommitSha::parse("a".repeat(40)).unwrap();
     store
-        .pin(
+        .pin_as(
             &deployment,
             &BTreeMap::from([(web, commit)]),
             &Trusted::default(),
+            ATTEMPT,
         )
         .unwrap();
     store.github_begin(&deployment, ATTEMPT).unwrap();
@@ -612,10 +614,11 @@ fn ruled(first: &DeploymentId, then: &DeploymentId) -> (Arc<ConfigStore>, Github
         });
         store.write_trusted(&person, &deploy, &permitted).unwrap();
         store
-            .pin(
+            .pin_as(
                 id,
                 &BTreeMap::from([(web.clone(), commit.clone())]),
                 &Trusted::default(),
+                ATTEMPT,
             )
             .unwrap();
     }

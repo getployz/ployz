@@ -466,8 +466,12 @@ export const makeGithubAuthorityLocal = Effect.fn("GithubAuthority.makeLocal")(f
   const cancelBuild: GithubAuthorityService["cancelBuild"] = Effect.fn("GithubAuthority.local.cancelBuild")(function* (input) {
     const token = yield* own(input, "act");
     yield* buildRunOf(token, input, "cancel_run");
+    // A 409 says only that GitHub didn't cancel it now: the run counts as stopped once a read shows it completed. One
+    // still queued or in progress fails the cancel, so Cloud keeps owing it.
     yield* send({ operation: "cancel_run", token, method: "POST", path: `/repositories/${input.repositoryId}/actions/runs/${input.runId}/cancel` }).pipe(
-      Effect.catchIf((error) => error.status === 409, () => Effect.void),
+      Effect.catchIf((error) => error.status === 409, (error) => buildRunOf(token, input, "cancel_run").pipe(
+        Effect.flatMap((run) => run.status === "completed" ? Effect.void : Effect.fail(error)),
+      )),
     );
   });
 

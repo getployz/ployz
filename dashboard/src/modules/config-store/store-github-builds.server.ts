@@ -181,8 +181,8 @@ const serversBuild = (organizationId: string) => firstRuntimeFrame(organizationI
  */
 const serversLackingGrants = (organizationId: string) => serversLackingIn(organizationId, requirements.buildGrantInspect);
 
-const pinAndPrefetch = Effect.fn("StoreGithub.pinAndPrefetch")(function* (store: ConfigStore, data: ConfigDeploymentAdmittedEventData) {
-  const sources = yield* pinStoreSources(store, data.organizationId, data.deploymentId).pipe(
+const pinAndPrefetch = Effect.fn("StoreGithub.pinAndPrefetch")(function* (store: ConfigStore, data: ConfigDeploymentAdmittedEventData, runner: string) {
+  const sources = yield* pinStoreSources(store, data.organizationId, data.deploymentId, runner).pipe(
     Effect.catchTag("SourceUnreadable", () => Effect.succeed([])),
     Effect.catchIf(refusedWith("conflict"), () => Effect.succeed([])),
   );
@@ -197,9 +197,9 @@ const pinAndPrefetch = Effect.fn("StoreGithub.pinAndPrefetch")(function* (store:
  * The Servers too old to run a Deployment, read while its sources are pinned and start fetching. A pin never moves,
  * so planning reads the same pins after.
  */
-export const serversLackingWhilePrefetching = Effect.fn("StoreGithub.serversLackingWhilePrefetching")(function* (data: ConfigDeploymentAdmittedEventData) {
+export const serversLackingWhilePrefetching = Effect.fn("StoreGithub.serversLackingWhilePrefetching")(function* (data: ConfigDeploymentAdmittedEventData, runner: string) {
   const store = yield* cloudStore;
-  const [lacking] = yield* Effect.all([serversLackingEnsure(data.organizationId), pinAndPrefetch(store, data).pipe(Effect.ignore)], { concurrency: 2 });
+  const [lacking] = yield* Effect.all([serversLackingEnsure(data.organizationId), pinAndPrefetch(store, data, runner).pipe(Effect.ignore)], { concurrency: 2 });
   return lacking;
 });
 
@@ -208,9 +208,9 @@ export const serversLackingWhilePrefetching = Effect.fn("StoreGithub.serversLack
  * starts with the Servers starts with its next Builder when no Server takes builds. Anything else (an unreadable
  * source, a Deployment no longer wanted) is left to the runner, which records it.
  */
-export const planStoreGithubBuilds = Effect.fn("StoreGithub.plan")(function* (data: ConfigDeploymentAdmittedEventData) {
+export const planStoreGithubBuilds = Effect.fn("StoreGithub.plan")(function* (data: ConfigDeploymentAdmittedEventData, runner: string) {
   const store = yield* cloudStore;
-  const sources = yield* pinAndPrefetch(store, data);
+  const sources = yield* pinAndPrefetch(store, data, runner);
   // A build GitHub skipped (with why) belongs to the next Builder.
   const pending = sources.filter((source) => source.status === "pending" && source.message === null);
   const servers = pending.some((source) => source.builders[0] === "servers" && source.builders.includes("github"))

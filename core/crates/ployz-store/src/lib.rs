@@ -477,17 +477,19 @@ impl ConfigStore {
     /// changes: a pin for a Service already pinned is ignored. Returns every source
     /// with its pin. `trusted` carries the Organization's members as Cloud read them:
     /// a Trusted pull request's commit pins only while its author is one, or when a bot
-    /// opened it from the repository itself. In-process only.
+    /// opened it from the repository itself. Only worker attempt `attempt` that owns the
+    /// Deployment pins. In-process only.
     ///
     /// # Errors
-    /// Returns `conflict` once the Deployment was replaced, cancelled or ended,
-    /// `invalid_argument` for a Service it doesn't build, a malformed commit or one
+    /// Returns `conflict` once the Deployment was replaced, cancelled or ended, or
+    /// (`newer`) once a later attempt began, `invalid_argument` for a Service it doesn't build, a malformed commit or one
     /// its pull request doesn't admit, or a storage error.
     pub fn pin(
         &self,
         deployment: &DeploymentId,
         commits: &std::collections::BTreeMap<ployz_core::ServiceName, CommitSha>,
         trusted: &Trusted,
+        attempt: &str,
     ) -> Result<Vec<GitSource>, RpcError> {
         // A transaction of its own, before the pin's: a refused pin undoes its writes.
         self.storage.write(|tx| {
@@ -496,7 +498,7 @@ impl ConfigStore {
             pull_request::withdraw_trust(tx, &who, trusted)
         })?;
         self.storage.write(|tx| {
-            build::pin(tx, deployment, commits, trusted)?;
+            build::pin(tx, deployment, commits, trusted, attempt)?;
             build::sources(tx, deployment)
         })
     }

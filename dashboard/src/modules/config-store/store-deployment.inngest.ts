@@ -61,15 +61,15 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Effec
         await step.run("forget-run", () => runEffect(forgetStoreDeploymentRun(runId)));
         return { outranked: event.data.deploymentId };
       }
-      const lacking = await step.run("servers-lacking", () => runEffect(serversLackingWhilePrefetching(event.data)));
+      const runner = storeDeploymentRunner(runId);
+      const lacking = await step.run("servers-lacking", () => runEffect(serversLackingWhilePrefetching(event.data, runner)));
       if (lacking.length > 0) {
         const failure = `Deploys need a newer Ployz on ${lacking.join(", ")}`;
         const failed = await step.run("servers-failed", () => runEffect(failStoreDeploymentUnrun(event.data.organizationId, event.data.environmentId, event.data.deploymentId, runId, failure)));
         await step.run("mail-failure", () => runEffect(mailGithubDeployTrouble(event.data)));
         return failed;
       }
-      const github = await step.run("plan-builds", () => runEffect(planStoreGithubBuilds(event.data)));
-      const runner = storeDeploymentRunner(runId);
+      const github = await step.run("plan-builds", () => runEffect(planStoreGithubBuilds(event.data, runner)));
       const started = await startGithubBuilds(step, runEffect, event.data, github, runner, attempt + 1 >= (maxAttempts ?? STORE_DEPLOYMENT_RETRIES + 1));
       const walked = await Promise.all(github.map((target, index) => walkGithub(event.data.organizationId, target, started[index], runner, step, runEffect)));
       const disconnected = walked.find((failed) => failed !== null);

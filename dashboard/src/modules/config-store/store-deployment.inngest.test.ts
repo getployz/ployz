@@ -19,6 +19,7 @@ type Ran = { ran: { id: string; status: "applied" | "failed" | "unknown"; remove
 async function runOf(ran: Ran) {
   const order: string[] = [];
   const results = new Map<string, unknown>([
+    ["begin", true],
     ["servers-lacking", []],
     ["plan-builds", []],
     ["approval-0", false],
@@ -99,6 +100,7 @@ describe("a Deployment with several Git Services", () => {
 
   async function stepsRun(memo: ReadonlyArray<readonly [string, unknown]>) {
     const results = new Map<string, unknown>([
+      ["begin", true],
       ["servers-lacking", []],
       ["plan-builds", builds],
       ["placement-0", { kind: "stopped" }],

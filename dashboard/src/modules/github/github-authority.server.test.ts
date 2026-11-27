@@ -177,6 +177,21 @@ describe("the App's authority held in Cloud", () => {
     expect(minted(sent)).toEqual([{ permissions: { actions: "write" }, repository_ids: [42] }]);
   });
 
+  it("keeps a run owed when GitHub answers 409 to its cancel and a read shows it still in progress, and takes a completed one as done", async () => {
+    const cancelOn409 = (status: string) => serve(({ url }) => {
+      if (url.pathname.endsWith("/access_tokens")) return token({ actions: "write" });
+      if (url.pathname === "/repositories/42/actions/runs/9001") {
+        return Response.json({ id: 9001, html_url: "https://github.com/acme/web/actions/runs/9001", head_sha: HEAD, event: "workflow_dispatch", path: ".github/workflows/ployz-build.yml", status, conclusion: null });
+      }
+      if (url.pathname === "/repositories/42/actions/runs/9001/cancel") return Response.json({ message: "Conflict" }, { status: 409 });
+      return undefined;
+    });
+    cancelOn409("in_progress");
+    await expect(local((authority) => authority.cancelBuild({ installationId: 7, repositoryId: 42, runId: 9001 }))).rejects.toMatchObject({ operation: "cancel_run" });
+    cancelOn409("completed");
+    await expect(local((authority) => authority.cancelBuild({ installationId: 7, repositoryId: 42, runId: 9001 }))).resolves.toBeUndefined();
+  });
+
   it("reads every page of a person's installations and whether they own each account", async () => {
     const reached = Array.from({ length: 130 }, (_, index) => ({
       id: index + 1, account: { login: index === 0 ? "ada" : `org-${index}`, type: index === 0 ? "User" : "Organization", avatar_url: null }, suspended_at: null,

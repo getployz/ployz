@@ -1,5 +1,6 @@
 use ployz_core::config::ServiceGitAccess;
 use ployz_core::{RpcErrorCode, ServiceName};
+use ployz_store::testing::backend::PinAs;
 use ployz_store::{
     Actor, AuthorizedRepository, Automated, BranchHead, Change, ConfigStore, CreateGitService,
     Edit, EnvironmentRef, OnMergeConclusion, PullRequest, PullRequestQuery, Ride, ServiceLineageId,
@@ -836,10 +837,11 @@ fn a_merge_that_renames_a_git_service_keeps_it_on_the_commit_it_last_built() {
         .unwrap();
     let web = ServiceName::parse("web").unwrap();
     store
-        .pin(
+        .pin_as(
             &built,
             &std::collections::BTreeMap::from([(web.clone(), backend::sha(HEAD))]),
             &backend::members(),
+            "runner",
         )
         .unwrap();
     let runner = ployz_store::RunnerId::parse("runner").unwrap();
@@ -910,10 +912,11 @@ fn a_merge_that_moves_a_git_service_to_another_repository_never_pins_the_old_bui
         .unwrap();
     let web = ServiceName::parse("web").unwrap();
     store
-        .pin(
+        .pin_as(
             &built,
             &std::collections::BTreeMap::from([(web.clone(), backend::sha(HEAD))]),
             &backend::members(),
+            "runner",
         )
         .unwrap();
     let runner = ployz_store::RunnerId::parse("runner").unwrap();

@@ -27,9 +27,9 @@ import { admitDeploy } from "./admit-deploy";
 export type StoreServices = AppConfig | Database | SecretEncryption | GithubApi | GithubSources | GithubAuthority | CloudStore | InngestClient | OrganizationRuntime | Polar;
 
 const checkoutSources = Effect.fn("StoreDeployment.checkoutSources")(function* (
-  store: ConfigStore, organizationId: string, deploymentId: string,
+  store: ConfigStore, organizationId: string, deploymentId: string, runner: string,
 ) {
-  const sources = yield* pinStoreSources(store, organizationId, deploymentId);
+  const sources = yield* pinStoreSources(store, organizationId, deploymentId, runner);
   const githubSources = yield* GithubSources;
   const commits = new Map<string, { pin: Parameters<typeof githubSources.checkout>[0]; sources: typeof sources }>();
   for (const source of sources) {
@@ -82,7 +82,7 @@ export const runStoreDeployment = Effect.fn("StoreDeployment.run")(function* (
     const fetching: DeploymentStep = { name: "fetching_source", started_at: Date.now() };
     const preparing: DeploymentStep = { name: "preparing", started_at: admittedAt ?? fetching.started_at };
     const sources = yield* Effect.all({
-      checkouts: checkoutSources(store, data.organizationId, data.deploymentId).pipe(ended(fetching)),
+      checkouts: checkoutSources(store, data.organizationId, data.deploymentId, runner).pipe(ended(fetching)),
       upload: storeTry(() => store.claimDeployment(data.organizationId, data.deploymentId, runner)).pipe(
         ended(preparing),
         Effect.flatMap(() => uploadOwner(store, data.organizationId, data.deploymentId)),
