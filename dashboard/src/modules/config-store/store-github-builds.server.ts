@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import type { ConfigStore, GithubBuild, GithubClaims } from "@ployz/sdk";
+import type { ConfigStore, GithubBuild, GithubClaims, GithubOwed } from "@ployz/sdk";
 import { eq } from "drizzle-orm";
 import { Cause, Data, Effect, Exit, Schedule, Schema } from "effect";
 import { cloudStore, dialedStore, refusedWith, storeTry, withDeployDial } from "#/modules/config-store/store-sdk.server";
@@ -84,14 +84,36 @@ export class GithubCancelsOwed extends Data.TaggedError("GithubCancelsOwed")<{ d
 export const cancelStoreGithubBuilds = Effect.fn("ConfigStore.cancelGithubBuilds")(function* (deploymentId: string, attempt: string | null) {
   const store = yield* cloudStore;
   const owed = yield* storeTry(() => store.githubStop(deploymentId, attempt));
+  const left = yield* cancelOwed(owed);
+  if (left > 0) return yield* new GithubCancelsOwed({ deploymentId, owed: left });
+  return owed.length;
+});
+
+/**
+ * Cancel each run the Store owes a cancel, and confirm each GitHub took, so the Store owes it no more. A cancel that
+ * fails stays owed for the next try or the sweep. Returns how many are still owed.
+ */
+const cancelOwed = (owed: ReadonlyArray<GithubOwed>) => Effect.gen(function* () {
+  const store = yield* cloudStore;
   const cancelled = yield* Effect.forEach(owed, ({ build, run }) => cancelRun(run).pipe(
     Effect.andThen(storeTry(() => store.githubCancelConfirmed(build, run.run_id))),
     Effect.as(true),
     Effect.catch((error) => Effect.logWarning("Could not cancel a GitHub run Cloud owes a cancel.", { runId: run.run_id, error }).pipe(Effect.as(false))),
   ), { concurrency: 4 });
-  const left = cancelled.filter((done) => !done).length;
-  if (left > 0) return yield* new GithubCancelsOwed({ deploymentId, owed: left });
-  return owed.length;
+  return cancelled.filter((done) => !done).length;
+});
+
+/** How many owed runs one sweep cancels. */
+const OWED_PER_SWEEP = 200;
+
+/**
+ * Cancel every run the Store still owes a cancel, in any Organization: a stop, a takeover or a refused record owed it,
+ * and its cancel failed or was never tried. Returns how many are still owed.
+ */
+export const cancelOwedGithubRuns = Effect.fn("StoreGithub.cancelOwed")(function* () {
+  const store = yield* cloudStore;
+  const owed = yield* storeTry(() => store.githubOwed(OWED_PER_SWEEP));
+  return { owed: owed.length, left: yield* cancelOwed(owed) };
 });
 
 /** The Store refused a stop because a newer worker attempt runs the Deployment: that attempt stops its own builds. */
@@ -278,6 +300,11 @@ export const startStoreGithubBuilds = Effect.fn("StoreGithub.startAll")(function
     let dispatch: StoreGithubDispatch;
     if ("installationId" in next) {
       const reserved = yield* reserveGithubAsk(next.build, attempt);
+      // A newer attempt took the Deployment: this one asks GitHub for nothing more, and that one starts the rest.
+      if (reserved === "newer") {
+        for (let left = index; left < prepared.length; left += 1) started.push(done);
+        return { started, unrecorded: null, rest: [] } satisfies StoreGithubStarts;
+      }
       // A build pinned before reservations failed with why: GitHub is asked for nothing.
       if (reserved === "failed") {
         started.push(done);
@@ -314,6 +341,7 @@ const reserveGithubAsk = (build: string, attempt: string) => Effect.gen(function
   const store = yield* cloudStore;
   return yield* storeTry(() => store.githubAsk(build, attempt)).pipe(
     Effect.retry({ while: refusedWith("unavailable"), times: 5, schedule: Schedule.exponential("1 second") }),
+    Effect.catchIf(newerAttempt, () => Effect.succeed("newer" as const)),
     Effect.catchIf(refusedWith("conflict"), () => Effect.succeed("refused" as const)),
   );
 });
@@ -439,34 +467,45 @@ export const recordStoreGithubBuild = Effect.fn("StoreGithub.record")(function* 
   const store = yield* cloudStore;
   const record = dispatch.kind === "skip"
     ? storeTry(() => store.githubSkip(dispatch.build, dispatch.message)).pipe(Effect.as<StoreGithubStart>(done))
-    : storeTry(() => store.githubDispatched(dispatch.build, dispatch.run)).pipe(Effect.as<StoreGithubStart>({ kind: "dispatched", runId: dispatch.run.run_id }));
+    : recordRun(dispatch.build, dispatch.run).pipe(Effect.flatMap((recorded) => recorded === "held"
+      ? Effect.succeed<StoreGithubStart>({ kind: "dispatched", runId: dispatch.run.run_id })
+      : heldRun(dispatch.build).pipe(Effect.map(following))));
   const ours = dispatch.kind === "run" && dispatch.run.push === false ? dispatch.run : null;
   return yield* record.pipe(
     Effect.retry({ while: refusedWith("unavailable"), times: 5, schedule: Schedule.exponential("1 second") }),
-    Effect.catchIf(refusedWith("conflict"), () => Effect.gen(function* () {
-      const runId = yield* heldRun(dispatch.build);
-      if (ours !== null && runId !== ours.run_id) yield* cancelDispatchedGithubRun(ours);
-      return following(runId);
-    })),
+    Effect.catchIf(refusedWith("conflict"), () => heldRun(dispatch.build).pipe(Effect.map(following))),
     Effect.onError(() => last && ours !== null ? giveUpRun(dispatch.build, ours) : Effect.void),
   );
 });
 
 /**
- * Cancel a dispatched run whose record failed on the last try, once the Store proves it can never hold the build:
- * failure cleanup stops only runs the Store recorded. A record whose caller gave up may still commit at any later
- * point, so the build is first passed on: that write waits for any record still committing, and once it commits the
- * Store refuses every later record of a run. If the pass-on is refused, the run is cancelled only when it isn't the
- * holder. If the Store doesn't answer, the run is left alone; should its record commit later, it holds the build only
- * until failure cleanup, which stops the Deployment before it reads the builds to cancel.
+ * Record run `run` of `build`. The Store refuses it once the build no longer takes it (the Deployment stopped, another
+ * run holds it, or a newer attempt took the Deployment) and, in that same write, owes a run Cloud dispatched its
+ * cancel: Cloud then cancels it and confirms. A cancel that fails stays owed for the sweep.
+ */
+const recordRun = (build: string, run: GithubRun) => Effect.gen(function* () {
+  const store = yield* cloudStore;
+  const recorded = yield* storeTry(() => store.githubDispatched(build, run));
+  if (recorded === "refused" && run.push === false) yield* cancelOwed([{ build, run }]);
+  return recorded;
+});
+
+/**
+ * Give up a dispatched run whose record failed on the last try. A record whose caller gave up may still commit at any
+ * later point, so the build is passed on: that write waits for any record still committing, owes the run its cancel
+ * when it commits, and from then on the Store refuses every later record of a run. If the pass-on is refused, a run
+ * holds the build or it ended: unless that is this run, it is recorded once more, which the Store refuses and owes.
+ * If the Store doesn't answer, the run is left alone; should its record commit later, it holds the build only until
+ * failure cleanup, whose stop owes it a cancel.
  */
 const giveUpRun = (build: string, run: GithubRun) => Effect.gen(function* () {
   const store = yield* cloudStore;
-  const passedOn = yield* storeTry(() => store.githubSkip(build, "GitHub's run couldn't be recorded")).pipe(
+  const passedOn = yield* storeTry(() => store.githubSkip(build, "GitHub's run couldn't be recorded", run)).pipe(
     Effect.as(true),
-    Effect.catchIf(refusedWith("conflict"), () => heldRun(build).pipe(Effect.map((held) => held !== run.run_id))),
+    Effect.catchIf(refusedWith("conflict"), () => Effect.succeed(false)),
   );
-  if (passedOn) yield* cancelDispatchedGithubRun(run);
+  if (passedOn) return yield* cancelOwed([{ build, run }]);
+  if ((yield* heldRun(build)) !== run.run_id) yield* recordRun(build, run);
 }).pipe(Effect.ignore);
 
 /** How long Cloud waits for GitHub to list the run a push started, and how often it looks. */

@@ -155,11 +155,13 @@ const failUnclaimed = Effect.fn("StoreDeployment.failUnclaimed")(function* (
 });
 
 /**
- * Run `runId` stopped before it claimed its Deployment, because its Volumes could not move or a Server can't run it:
- * the Store records it failed with `failure`. A `restore` whose copy failed is then discarded.
+ * Run `runId` stopped before it claimed its Deployment, because its Volumes could not move, a Server can't run it, or
+ * GitHub can't take its builds: the Store records it failed with `failure`. A `restore` whose copy failed is then
+ * discarded. The run is forgotten unless `keepRun`: one that still has GitHub builds to stop forgets itself after.
  */
 export const failStoreDeploymentUnrun = Effect.fn("StoreDeployment.failUnrun")(function* (
   organizationId: string, environmentId: string, deploymentId: string, runId: string, failure: string, restore?: FailedRestore,
+  keepRun = false,
 ) {
   const store = yield* cloudStore;
   const failed = yield* failUnclaimed(store, organizationId, deploymentId, runId, failure, failure).pipe(
@@ -168,7 +170,7 @@ export const failStoreDeploymentUnrun = Effect.fn("StoreDeployment.failUnrun")(f
   yield* recheck(store, organizationId, environmentId);
   if (restore !== undefined) yield* discardFailedRestore(organizationId, restore);
   yield* releasePlacementClaims(organizationId, deploymentId);
-  yield* forgetStoreDeploymentRun(runId);
+  if (!keepRun) yield* forgetStoreDeploymentRun(runId);
   return failed;
 });
 

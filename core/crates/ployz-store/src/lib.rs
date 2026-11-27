@@ -72,7 +72,8 @@ pub use branch::{
 pub use build::{
     BuildLogQuery, BuildLogView, BuildReport, BuildStatus, BuildView, GitSource, GithubAsked,
     GithubBuild, GithubBuildId, GithubClaims, GithubEnd, GithubGrant, GithubHandOff, GithubInput,
-    GithubOwed, GithubReport, GithubRule, GithubRun, ImageToken, RunEnd, UNRESERVED, VerifiedClaim,
+    GithubOwed, GithubRecorded, GithubReport, GithubRule, GithubRun, ImageToken, RunEnd,
+    UNRESERVED, VerifiedClaim,
 };
 pub use builders::{BuildOrder, BuildOrderQuery, BuildOrderView, Builder, SetBuildOrder};
 pub use client_sealed::SecretValue;
@@ -571,18 +572,28 @@ impl ConfigStore {
         self.storage.read(|tx| teardown::applied_volumes(tx, who))
     }
 
-    /// Hand a pinned Git build that hasn't started to GitHub run `run`. In-process only.
+    /// Hand a pinned Git build that hasn't started to GitHub run `run`: [`GithubRecorded::Refused`],
+    /// with a cancel owed for a run Cloud dispatched, once the Deployment no longer takes
+    /// it, it went to another run or Builder, or another attempt took the Deployment.
+    /// In-process only.
     ///
     /// # Errors
-    /// Returns `conflict` once the Deployment no longer wants it or it went to
-    /// another run or Builder, `not_found` for an unknown build, or a storage error.
+    /// Returns `not_found` for an unknown build, or a storage error.
     pub fn github_dispatched(
         &self,
         id: &GithubBuildId,
         github: &GithubRun,
-    ) -> Result<(), RpcError> {
+    ) -> Result<GithubRecorded, RpcError> {
         self.storage
             .write(|tx| build::github_dispatched(tx, id, github))
+    }
+
+    /// Every run Cloud owes a cancel, in any Organization, up to `limit`. In-process only.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub fn github_owed(&self, limit: u32) -> Result<Vec<GithubOwed>, RpcError> {
+        self.storage.read(|tx| build::github_owed(tx, limit))
     }
 
     /// Reserve a pinned Git build that hasn't started for worker attempt `attempt`, before
@@ -727,6 +738,22 @@ impl ConfigStore {
     ) -> Result<BuildStatus, RpcError> {
         self.storage
             .write(|tx| build::github_end(tx, id, run_id, end))
+    }
+
+    /// Pass build `id` on before any run took it, as `github_end` with a skip, owing run
+    /// `owe` a cancel in the same write: a run Cloud dispatched whose record never landed,
+    /// which can then never hold the build. In-process only.
+    ///
+    /// # Errors
+    /// Returns `conflict` once the build started or ended, owing nothing.
+    pub fn github_pass_on(
+        &self,
+        id: &GithubBuildId,
+        message: &str,
+        owe: Option<&GithubRun>,
+    ) -> Result<BuildStatus, RpcError> {
+        self.storage
+            .write(|tx| build::github_pass_on(tx, id, message, owe))
     }
 
     /// Deployment `deployment`'s builds still on GitHub. In-process only.

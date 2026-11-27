@@ -666,11 +666,13 @@ impl ConfigStore {
         to_json(ployz::sdk::github_start(Arc::clone(&self.store), build, connections, expect).await)
     }
 
-    /// Hand a pinned build to GitHub run `run` (`GithubRun`).
+    /// Hand a pinned build to GitHub run `run` (`GithubRun`): `refused` once the
+    /// Deployment no longer takes it, with the run owed a cancel when Cloud dispatched it
+    /// (`GithubRecorded`).
     ///
     /// # Errors
-    /// Returns `conflict` once the Deployment no longer wants it: cancel the run.
-    #[napi(ts_return_type = "Promise<null>")]
+    /// Returns `not_found` for an unknown build.
+    #[napi(ts_return_type = "Promise<GithubRecorded>")]
     pub async fn github_dispatched(
         &self,
         build: String,
@@ -707,16 +709,25 @@ impl ConfigStore {
     }
 
     /// Skip GitHub for a build it can't take, before any run: the next Builder takes it.
+    /// With `owe`, a run Cloud dispatched whose record never landed (`GithubRun`) is owed
+    /// a cancel in the same write.
     ///
     /// # Errors
-    /// Returns `conflict` once the build started or ended.
+    /// Returns `conflict` once the build started or ended, owing nothing.
     #[napi(ts_return_type = "Promise<BuildStatus>")]
-    pub async fn github_skip(&self, build: String, message: String) -> Result<serde_json::Value> {
+    pub async fn github_skip(
+        &self,
+        build: String,
+        message: String,
+        #[napi(ts_arg_type = "GithubRun | undefined | null")] owe: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value> {
         let build = github_id(&build)?;
-        self.run(move |store| {
-            store.github_end(&build, None, &ployz_store::GithubEnd::Skipped { message })
-        })
-        .await
+        let owe: Option<ployz_store::GithubRun> = owe
+            .filter(|owe| !owe.is_null())
+            .map(|owe| decode(owe, "Expected a GitHub run"))
+            .transpose()?;
+        self.run(move |store| store.github_pass_on(&build, &message, owe.as_ref()))
+            .await
     }
 
     /// A runner's check-in with its verified OIDC `claims` (`GithubClaims`) and the
@@ -930,6 +941,16 @@ impl ConfigStore {
             .map_err(|_| napi::Error::from_reason("Expected a GitHub run id"))?;
         self.run(move |store| store.github_cancel_confirmed(&build, run_id))
             .await
+    }
+
+    /// Every run Cloud owes a cancel, in any Organization, up to `limit`
+    /// (`GithubOwed`): what the sweep cancels.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    #[napi(ts_return_type = "Promise<GithubOwed[]>")]
+    pub async fn github_owed(&self, limit: u32) -> Result<serde_json::Value> {
+        self.run(move |store| store.github_owed(limit)).await
     }
 }
 

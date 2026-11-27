@@ -1,5 +1,4 @@
 import { Effect } from "effect";
-import { refusedWith } from "#/modules/config-store/store-sdk.server";
 import {
   deployToFirstServer, failStoreDeploymentUnrun, forgetStoreDeploymentRun, publishedEnvironments, recordStoreDeploymentRun, runStoreDeployment, type StoreServices,
   staleStoreDeploymentRuns, storeDeploymentRunner, storeDeploymentRunOf, unclaimedStoreDeployments,
@@ -14,7 +13,7 @@ import { type ConfigDeploymentAdmittedEventData, configDeploymentAdmitted, confi
 import { stopRun } from "#/modules/config-store/store-deployment-stop.inngest";
 import { clusterDomainSyncRequested } from "#/modules/cluster-domain/cluster-domain.events";
 import {
-  cancelStoreGithubBuilds, checkStoreGithubBuild, GITHUB_CHECK_INTERVAL, planStoreGithubBuilds, START_WITHIN_MINUTES,
+  cancelOwedGithubRuns, cancelStoreGithubBuilds, checkStoreGithubBuild, newerAttempt, GITHUB_CHECK_INTERVAL, planStoreGithubBuilds, START_WITHIN_MINUTES,
   recordStoreGithubBuild, serversLackingWhilePrefetching, startStoreGithubBuilds, storeGithubBuildOpen, type StoreGithubStart, type StoreGithubTarget,
 } from "#/modules/config-store/store-github-builds.server";
 import { followUp } from "#/modules/config-store/store-github.inngest";
@@ -70,10 +69,12 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Effec
       const walked = await Promise.all(github.map((target, index) => walkGithub(event.data.organizationId, target, started[index], runner, step, runEffect)));
       const disconnected = walked.find((failed) => failed !== null);
       if (disconnected !== undefined) {
-        const failed = await step.run("github-failed", () => runEffect(failStoreDeploymentUnrun(event.data.organizationId, event.data.environmentId, event.data.deploymentId, runId, disconnected)));
-        // Failed, the Deployment takes no more runs, so the Store ends what GitHub still holds and owes each run a cancel.
+        const failed = await step.run("github-failed", () => runEffect(failStoreDeploymentUnrun(event.data.organizationId, event.data.environmentId, event.data.deploymentId, runId, disconnected, undefined, true)));
+        // Failed, the Deployment takes no more runs, so the Store ends what GitHub still holds and owes each run a
+        // cancel. The run is forgotten only once that settled, or once the Store says a newer attempt holds it.
         await step.run("github-stop", () => runEffect(cancelStoreGithubBuilds(event.data.deploymentId, runner).pipe(
-          Effect.catchIf(refusedWith("conflict"), () => Effect.succeed(0)))));
+          Effect.catchIf(newerAttempt, () => Effect.succeed(0)))));
+        await step.run("forget-run", () => runEffect(forgetStoreDeploymentRun(runId)));
         return failed;
       }
       const storage = await walkPlacement(event.data, step, runEffect);
@@ -124,7 +125,7 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Effec
 /**
  * Every minute: a queued Deployment whose hand-off to the worker was lost goes to it again, unkeyed like "Deploy now",
  * since its admission's own event is deduplicated. A duplicate run finds it claimed and runs nothing. A worker run that
- * ended with its stop lost is stopped again.
+ * ended with its stop lost is stopped again, and each GitHub run the Store still owes a cancel is cancelled.
  */
 export const createRedispatchStoreDeployments = (inngest: PloyzInngest, runStatus = inngestRunStatus) =>
   inngest.createFunction(
@@ -134,7 +135,8 @@ export const createRedispatchStoreDeployments = (inngest: PloyzInngest, runStatu
       if (unclaimed.length > 0) await step.sendEvent("dispatch", unclaimed.map(createConfigDeploymentStartedEvent));
       const stale = await step.run("stale-runs", () => runInngestEffect(staleStoreDeploymentRuns(runStatus, new Date())));
       if (stale.length > 0) await step.sendEvent("stop-stale", stale.map((run) => configDeploymentStopRequested.create(run)));
-      return { redispatched: unclaimed.map((deployment) => deployment.deploymentId), stopped: stale.map((run) => run.runId) };
+      const owed = await step.run("owed-cancels", () => runInngestEffect(cancelOwedGithubRuns()));
+      return { redispatched: unclaimed.map((deployment) => deployment.deploymentId), stopped: stale.map((run) => run.runId), owed };
     },
   );
 

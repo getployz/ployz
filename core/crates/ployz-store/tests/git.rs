@@ -16,7 +16,7 @@ use ployz_store::{
 };
 use ployz_store::{
     BuildOrder, BuildOrderQuery, Builder, GithubBuild, GithubBuildId, GithubClaims, GithubEnd,
-    GithubGrant, GithubHandOff, GithubReport, GithubRun, SetBuildOrder,
+    GithubGrant, GithubHandOff, GithubRecorded, GithubReport, GithubRun, SetBuildOrder,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -976,10 +976,10 @@ fn dispatched(store: &ConfigStore, who: &Actor) -> GithubBuildId {
     store.github_dispatched(&id, &github_run(RUN)).unwrap();
     // A retried dispatch step replays; another run can't take it.
     store.github_dispatched(&id, &github_run(RUN)).unwrap();
-    let error = store
-        .github_dispatched(&id, &github_run(RUN + 1))
-        .unwrap_err();
-    assert_eq!(error.code, RpcErrorCode::Conflict);
+    assert_eq!(
+        store.github_dispatched(&id, &github_run(RUN + 1)).unwrap(),
+        GithubRecorded::Refused
+    );
     id
 }
 
@@ -1002,9 +1002,8 @@ fn only_one_try_reserves_asking_github_and_its_run_or_a_pass_on_settles_the_buil
             assert_eq!(
                 store
                     .github_dispatched(&id, &attempt_run(RUN, "cloud-b"))
-                    .unwrap_err()
-                    .code,
-                RpcErrorCode::Conflict
+                    .unwrap(),
+                GithubRecorded::Refused
             );
             store
                 .github_dispatched(&id, &attempt_run(RUN, "cloud-a"))
@@ -1021,9 +1020,8 @@ fn only_one_try_reserves_asking_github_and_its_run_or_a_pass_on_settles_the_buil
             assert_eq!(
                 store
                     .github_dispatched(&id, &attempt_run(RUN, "cloud-a"))
-                    .unwrap_err()
-                    .code,
-                RpcErrorCode::Conflict
+                    .unwrap(),
+                GithubRecorded::Refused
             );
         }
         assert_eq!(
@@ -1356,11 +1354,8 @@ fn a_skipped_github_build_goes_back_to_the_next_builder_and_cancellation_lists_o
         )
         .unwrap();
     assert_eq!(
-        store
-            .github_dispatched(&id, &github_run(RUN + 1))
-            .unwrap_err()
-            .code,
-        RpcErrorCode::Conflict
+        store.github_dispatched(&id, &github_run(RUN + 1)).unwrap(),
+        GithubRecorded::Refused
     );
 }
 
@@ -1818,14 +1813,16 @@ fn a_build_github_passed_on_stays_passed_on_for_its_deployment() {
                 "{what} ({why})"
             );
         };
-        refused(
-            store.github_dispatched(&id, &github_run(RUN + 1)),
-            "a retried start's new run",
-        );
-        refused(
-            store.github_dispatched(&id, &github_run(RUN)),
-            "the run it passed on",
-        );
+        for (run, what) in [
+            (RUN + 1, "a retried start's new run"),
+            (RUN, "the run it passed on"),
+        ] {
+            assert_eq!(
+                store.github_dispatched(&id, &github_run(run)).unwrap(),
+                GithubRecorded::Refused,
+                "{what} ({why})"
+            );
+        }
         refused(
             store
                 .github_end(
@@ -3165,4 +3162,65 @@ fn a_build_marked_interrupted_that_did_not_fail_is_unreadable() {
     backend::execute(&url, "UPDATE config_build SET status = 'failed'");
     let (build, ..) = shown_build((&store, &who, &url), &first);
     assert!(build.is_interrupted());
+}
+
+#[test]
+fn a_run_recorded_after_its_deployment_stopped_holds_nothing_and_is_owed_a_cancel() {
+    let (store, who) = shop();
+    let id = pinned(&store, &who);
+    store.github_ask(&id, "cloud-a").unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::Cancel {
+                deployment: id.deployment.clone(),
+            },
+        )
+        .unwrap();
+    // The stop passed the reservation on and owes nothing yet: GitHub never answered.
+    assert!(store.github_stop(&id.deployment, None).unwrap().is_empty());
+    // GitHub's answer lands after the stop: refused, and owed its cancel in the same write.
+    assert_eq!(
+        store
+            .github_dispatched(&id, &attempt_run(RUN, "cloud-a"))
+            .unwrap(),
+        GithubRecorded::Refused
+    );
+    assert_eq!(owed_runs(&store.github_owed(100).unwrap()), [RUN]);
+    assert_eq!(
+        owed_runs(&store.github_stop(&id.deployment, None).unwrap()),
+        [RUN]
+    );
+    // A push's own run is never owed.
+    let push = GithubRun {
+        push: Some(true),
+        ..attempt_run(RUN + 1, "cloud-a")
+    };
+    assert_eq!(
+        store.github_dispatched(&id, &push).unwrap(),
+        GithubRecorded::Refused
+    );
+    assert_eq!(owed_runs(&store.github_owed(100).unwrap()), [RUN]);
+    store.github_cancel_confirmed(&id, RUN).unwrap();
+    assert!(store.github_owed(100).unwrap().is_empty());
+}
+
+#[test]
+fn a_run_of_a_cancelling_deployment_cannot_check_in() {
+    let (store, who) = shop();
+    let id = dispatched_by(&store, &who, "cloud-a");
+    let attempt = RunnerId::parse("cloud-a").unwrap();
+    store.claim(&id.deployment, &attempt).unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::Cancel {
+                deployment: id.deployment.clone(),
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        store.github_check_in(&id, RUN, &grant()).unwrap_err().code,
+        RpcErrorCode::Conflict
+    );
 }
