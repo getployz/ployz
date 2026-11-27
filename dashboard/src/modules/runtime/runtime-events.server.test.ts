@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { PloyzProviderError } from "#/modules/runtime/ployz.server";
-import { AWAITS_KEY_ERROR, CLUSTER_UNREACHABLE_ERROR, OLDER_SERVERS_ERROR, PREDATES_SEALING_ERROR } from "#/modules/runtime/runtime.collection";
+import { Schema } from "effect";
 import { createRuntimeEventsResponse } from "#/modules/runtime/runtime-events.server";
+import { runtimeConnectionStatusEventSchema } from "#/modules/runtime/runtime-watch-frame";
 import {
   runtimeWatchCertificateFixture,
   runtimeWatchContainerFixture,
@@ -11,6 +12,20 @@ import {
 } from "#/modules/runtime/runtime-watch-frame.test-fixture";
 
 const OBSERVED_AT = "2026-08-18T00:00:00.000Z";
+
+/** The reason the browser reads from the status event Cloud sends when the Cluster is unreachable. */
+async function unreachableReason(error: PloyzProviderError | null) {
+  const reader = createRuntimeEventsResponse({
+    request: new Request("http://localhost/api/runtime/events"),
+    status: "unreachable",
+    error,
+  }).body?.getReader();
+  await reader?.read();
+  const text = new TextDecoder().decode((await reader?.read())?.value);
+  const data = /^data: (.*)$/m.exec(text)?.[1] ?? "null";
+  const event = Schema.decodeUnknownSync(runtimeConnectionStatusEventSchema)(JSON.parse(data));
+  return event.status === "unreachable" ? event.reason : null;
+}
 
 describe("createRuntimeEventsResponse", () => {
   it("streams a redacted Runtime Watch observation without inventing a lens", async () => {
@@ -241,17 +256,7 @@ describe("createRuntimeEventsResponse", () => {
       details: null,
     },
   ])("says a Server needs its upgrade over SSH when it speaks the older protocol", async (cause) => {
-    const response = createRuntimeEventsResponse({
-      request: new Request("http://localhost/api/runtime/events"),
-      status: "unreachable",
-      error: new PloyzProviderError({ operation: "connect", cause }),
-    });
-    const reader = response.body?.getReader();
-
-    await reader?.read();
-    const statusText = new TextDecoder().decode((await reader?.read())?.value);
-
-    expect(statusText).toContain(`"error":${JSON.stringify(OLDER_SERVERS_ERROR)}`);
+    expect(await unreachableReason(new PloyzProviderError({ operation: "connect", cause }))).toBe("older_relay");
   });
 
   it.each([
@@ -266,55 +271,20 @@ describe("createRuntimeEventsResponse", () => {
       details: null,
     },
   ])("says a Server needs its upgrade when its Ployz predates the Sealing Key", async (cause) => {
-    const response = createRuntimeEventsResponse({
-      request: new Request("http://localhost/api/runtime/events"),
-      status: "unreachable",
-      error: new PloyzProviderError({ operation: "connect", cause }),
-    });
-    const reader = response.body?.getReader();
-
-    await reader?.read();
-    const statusText = new TextDecoder().decode((await reader?.read())?.value);
-
-    expect(statusText).toContain(`"error":${JSON.stringify(PREDATES_SEALING_ERROR)}`);
+    expect(await unreachableReason(new PloyzProviderError({ operation: "connect", cause }))).toBe("predates_sealing");
   });
 
   it("says a Server that answers without the cluster's key waits for a key holder", async () => {
-    const response = createRuntimeEventsResponse({
-      request: new Request("http://localhost/api/runtime/events"),
-      status: "unreachable",
-      error: new PloyzProviderError({
-        operation: "connect",
-        cause: { code: "internal", message: "Server machine-3's daemon answered, but the connection was refused: Machine 0123 can't show which Cluster it belongs to", details: null },
-      }),
-    });
-    const reader = response.body?.getReader();
-
-    await reader?.read();
-    const statusText = new TextDecoder().decode((await reader?.read())?.value);
-
-    expect(statusText).toContain(`"error":${JSON.stringify(AWAITS_KEY_ERROR)}`);
+    const cause = { code: "internal", message: "Server machine-3's daemon answered, but the connection was refused: Machine 0123 can't show which Cluster it belongs to", details: null };
+    expect(await unreachableReason(new PloyzProviderError({ operation: "connect", cause }))).toBe("awaits_key");
   });
 
-  it("falls back to the cluster unreachable copy when the provider error has no message", async () => {
-    const providerError = new PloyzProviderError({
-      operation: "connect",
-      cause: new Error("dial refused"),
-    });
-    expect(providerError.message).toBe("");
-    const response = createRuntimeEventsResponse({
-      request: new Request("http://localhost/api/runtime/events"),
-      status: "unreachable",
-      error: providerError,
-    });
-    const reader = response.body?.getReader();
-
-    await reader?.read();
-    const statusChunk = await reader?.read();
-    const statusText = new TextDecoder().decode(statusChunk?.value);
-
-    expect(statusText).toContain(
-      `"error":${JSON.stringify(CLUSTER_UNREACHABLE_ERROR)}`,
-    );
+  it.each([
+    null,
+    new PloyzProviderError({ operation: "connect", cause: new Error("dial refused") }),
+    new PloyzProviderError({ operation: "connect", cause: { code: "internal", message: "certificate expired", details: null } }),
+  ])("says the cluster is unreachable when no Server says why (%#)", async (error) => {
+    expect(await unreachableReason(error)).toBe("cluster_unreachable");
   });
+
 });

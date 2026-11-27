@@ -3,6 +3,7 @@ import { useLiveQuery } from "@tanstack/react-db";
 import { useHydrated } from "@tanstack/react-router";
 import { offlineServers } from "#/modules/machines/server-status";
 import {
+  connectionObservedAt,
   getRuntimeCollections,
   isIncompleteObservation,
   projectRuntimeMachineRecord,
@@ -15,8 +16,8 @@ export function useRuntimeLens(organizationSlug: string) {
   const hydrated = useHydrated();
   const machines = hydrated ? (liveMachines.data ?? []) : [];
   const statusRows = hydrated ? (liveStatus.data ?? []) : [];
-  const status = statusRows[0]?.status ?? "connecting";
-  const error = statusRows[0]?.error ?? null;
+  const connection = statusRows[0]?.connection ?? { status: "connecting" };
+  const status = connection.status;
   const isLoading = hydrated && (liveMachines.isLoading || liveStatus.isLoading);
   const projected = machines.map(projectRuntimeMachineRecord);
 
@@ -27,12 +28,13 @@ export function useRuntimeLens(organizationSlug: string) {
     /** Cloud knows the Organization has no Server to run anything: none connected, or none observed. */
     noServers: status === "no_connection" || (status === "observed" && machines.length === 0),
     status,
-    error,
+    /** Why Cloud can't watch the Cluster, while it can't. */
+    unreachableReason: connection.status === "unreachable" ? connection.reason : null,
     incomplete: statusRows[0] ? isIncompleteObservation(statusRows[0].incompleteIds) : false,
     /** How many Machines the observation named and couldn't read. */
     unreadMachines: statusRows[0]?.incompleteIds.machines.length ?? 0,
     /** When the evidence shown was current; kept when the connection drops, null before any. */
-    observedAt: statusRows[0]?.observedAt ?? null,
+    observedAt: connectionObservedAt(connection),
     /** Each managed Volume copy the Servers reported, with its role. */
     volumeCopies: statusRows[0]?.volumeCopies ?? [],
     isLoading,

@@ -13,8 +13,7 @@ const queryClient = new QueryClient();
 const scope = { queryClient, sessionId: "session", userId: "user" };
 
 const observed: RuntimeSnapshot = {
-  status: "observed",
-  error: null,
+  connection: { status: "observed", observedAt: "2026-07-01T00:00:00.000Z" },
   machines: [
     {
       id: "m1",
@@ -43,7 +42,6 @@ const observed: RuntimeSnapshot = {
   certificates: [],
   published: [],
   incompleteIds: { machines: [], containers: [], volumes: [], certificates: [] },
-  observedAt: "2026-07-01T00:00:00.000Z",
 };
 
 async function serverPage() {
