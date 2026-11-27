@@ -416,6 +416,9 @@ impl Images {
             .collect::<HashSet<_>>();
         let mut results = Vec::with_capacity(references.len());
         for reference in references {
+            // Held while a removal may take a retention name, so a sweep of peer pulls'
+            // staging names never sees one that is about to go.
+            let _retention = self.docker.peer_pulls.retention().lock().await;
             let outcome = match self.docker.client.inspect_image(reference).await {
                 Ok(image) if image.id.as_ref().is_some_and(|id| in_use.contains(id)) => {
                     ImageRemovalOutcome::InUse
@@ -1076,7 +1079,7 @@ mod tests {
             bollard::API_DEFAULT_VERSION,
         )
         .unwrap();
-        Images::new(LocalDocker::from_client(docker))
+        Images::new(LocalDocker::from_client(docker, format!("tcp://{address}")))
     }
 
     const MANIFEST_UNKNOWN: &str =

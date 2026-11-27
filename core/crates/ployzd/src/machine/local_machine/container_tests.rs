@@ -1194,8 +1194,7 @@ mod settled {
             &docker,
             &format!(
                 r#"#!/bin/sh
-if [ "$3" = --platform ]; then echo "No such image: $5" >&2; exit 1; fi
-if [ "$1 $2" = 'image ls' ]; then echo sha256:{hex}; exit 0; fi
+[ "$1" = --host ] && shift 2
 case "$1 $2 $5" in
   'image inspect {{{{range'*) exec sleep 600 ;;
   'image inspect {{{{json'*)

@@ -1125,14 +1125,18 @@ pub(crate) async fn fake_runtime_with(fake: FakeDocker) -> (ContainerRuntime, Fa
     )))
     .await
     .unwrap();
-    let docker = LocalDocker::from_client(docker);
+    let docker = LocalDocker::from_client(docker, format!("tcp://{address}"));
     // A fake runtime never reaches the host's Docker through the CLI: without a fake CLI,
-    // every peer pull's Docker command fails to start.
-    let docker = docker.with_docker_cli(
-        fake.docker_cli
-            .clone()
-            .unwrap_or_else(|| "/nonexistent/ployz-test-docker".into()),
-    );
+    // every peer pull's Docker command fails to start. Its ledger sits beside its CLI.
+    let cli = fake
+        .docker_cli
+        .clone()
+        .unwrap_or_else(|| "/nonexistent/ployz-test-docker".into());
+    let ledger = match fake.docker_cli.as_deref().and_then(std::path::Path::parent) {
+        Some(root) => root.join("staging-ledger"),
+        None => std::env::temp_dir().join(format!("ployz-staging-ledger-{}", MachineId::random())),
+    };
+    let docker = docker.with_docker_cli(cli, ledger);
     (ContainerRuntime::new(docker, specs), fake)
 }
 

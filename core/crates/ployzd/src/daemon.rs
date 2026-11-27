@@ -282,10 +282,13 @@ impl Daemon {
             None => None,
             Some(specs) => match LocalDocker::connect() {
                 Ok(docker) => Some(
-                    ContainerRuntime::new(docker, specs)
-                        .with_sealing_key(config.data_dir.clone())
-                        .with_collector(config.data_dir.clone())
-                        .with_log_store(LogStore::of(config.units)),
+                    ContainerRuntime::new(
+                        docker.with_staging_ledger(config.data_dir.join("peer-pull-staging")),
+                        specs,
+                    )
+                    .with_sealing_key(config.data_dir.clone())
+                    .with_collector(config.data_dir.clone())
+                    .with_log_store(LogStore::of(config.units)),
                 ),
                 Err(error) => {
                     eprintln!(
