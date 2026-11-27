@@ -1933,6 +1933,52 @@ pub(super) fn say_view(view: &DeploymentView) {
             crate::ui::stream(format_args!("    GitHub skipped it: {why}"));
         }
     }
+    for line in step_lines(view) {
+        crate::ui::stream(format_args!("{line}"));
+    }
+}
+
+/// Each step the Deployment ran, when it started after the first and how long it took.
+fn step_lines(view: &DeploymentView) -> Vec<String> {
+    let Some(first) = view.steps.iter().map(|step| step.started_at).min() else {
+        return Vec::new();
+    };
+    let open = if matches!(
+        view.deployment.status,
+        DeploymentStatus::Running | DeploymentStatus::Cancelling
+    ) {
+        "running"
+    } else {
+        "stopped here"
+    };
+    let named: Vec<String> = view
+        .steps
+        .iter()
+        .map(|step| match &step.service {
+            Some(service) => format!("{} {service}", step.name),
+            None => step.name.to_string(),
+        })
+        .collect();
+    let width = named.iter().map(String::len).max().unwrap_or(0);
+    let mut lines = vec!["  Steps:".to_owned()];
+    for (step, name) in view.steps.iter().zip(named) {
+        let took = step
+            .ended_at
+            .map_or_else(|| open.to_owned(), |ended| millis(ended - step.started_at));
+        lines.push(format!(
+            "    {name:<width$}  +{:<7}  {took}",
+            millis(step.started_at - first)
+        ));
+    }
+    lines
+}
+
+fn millis(ms: i64) -> String {
+    if ms.abs() < 1000 {
+        format!("{ms}ms")
+    } else {
+        format!("{:.1}s", ms as f64 / 1000.0)
+    }
 }
 
 /// One node's outcome, with the replicas of a Service the Deploy left waiting.

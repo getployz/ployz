@@ -718,7 +718,12 @@ pub(crate) fn view(
     let builds = build::views(tx, &stored)?;
     let rolls_back = undone(tx, &stored.summary)?;
     let untargeted = super::rows::untargeted(&stored, &by_service);
-    let steps = super::steps::of(tx, &stored.summary.id)?;
+    let mut steps = super::steps::of(tx, &stored.summary.id)?;
+    for step in &mut steps {
+        if let Some(runtime) = &step.service {
+            step.service = Some(super::record::current_service(&stored.nodes, runtime).clone());
+        }
+    }
     Ok(DeploymentView {
         steps,
         builds,

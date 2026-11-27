@@ -581,7 +581,7 @@ fn undeleted(
 }
 
 /// The current name of the target Service that lowers to runtime Service `runtime`.
-fn current_service<'nodes>(
+pub(super) fn current_service<'nodes>(
     nodes: &'nodes [TargetNode],
     runtime: &'nodes ServiceName,
 ) -> &'nodes ServiceName {

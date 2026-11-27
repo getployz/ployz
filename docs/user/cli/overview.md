@@ -691,6 +691,11 @@ and secret-shaped values such as `password=…` replaced. Other values, such as 
 the image, show as the container printed them. These outcomes stay with that deployment
 when you deploy again. Unchanged services have no rows because no server work ran.
 
+`ployz deployment show` ends with the deployment's steps and how long each took, such as
+`building api  +2.1s  41.3s`. A step the deployment stopped in reads `stopped here`. With
+`--json`, `steps[]` has each step's `name`, its `service` when it belongs to one, and
+`started_at` and `ended_at` in Unix milliseconds. A step it stopped in has no `ended_at`.
+
 Work your cancel stopped reads `cancelled`. In `--json`, its row keeps `"state": "failed"` with
 `"cancelled": true`, and so does its service: `"outcome": "failed"` with `"cancelled": true`. Work
 Ployz stopped because the deployment lost its runner reads `interrupted`, and its row keeps

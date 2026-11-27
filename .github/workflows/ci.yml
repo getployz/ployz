@@ -96,6 +96,7 @@ jobs:
       - run: python3 core/scripts/verify/test_doctor.py
       - run: python3 core/scripts/verify/test_releases.py
       - run: python3 core/scripts/test_artifacts.py
+      - run: python3 core/scripts/test_deploy_bench.py
       - uses: dtolnay/rust-toolchain@1.97.1
         if: contains(fromJSON(needs.changes.outputs.jobs), 'rust-lint')
         with:
