@@ -118,31 +118,42 @@ describe("a Deployment with several Git Services", () => {
     return ran;
   }
 
-  it("starts every build in one dispatch step and one record step, and runs the Deployment once", async () => {
+  it("starts every build in one step when the Store records each, and runs the Deployment once", async () => {
     const ran = await stepsRun([
-      ["github-dispatch", [{ kind: "run", build: "dep.web", run: {} }, { kind: "run", build: "dep.api", run: {} }, { kind: "skip", build: "dep.docs", message: "no workflow" }]],
-      ["github-record", [{ kind: "dispatched", runId: 9001 }, { kind: "dispatched", runId: 9002 }, { kind: "done" }]],
+      ["github-start-round-0", { started: [{ kind: "dispatched", runId: 9001 }, { kind: "dispatched", runId: 9002 }, { kind: "done" }], unrecorded: null, rest: [] }],
       ["github-open-web-0", false],
       ["github-open-api-0", false],
     ]);
-    expect(ran.filter((id) => id.startsWith("github-"))).toEqual(["github-dispatch", "github-record", "github-open-web-0", "github-open-api-0"]);
+    expect(ran.filter((id) => id.startsWith("github-"))).toEqual(["github-start-round-0", "github-open-web-0", "github-open-api-0"]);
     expect(ran.filter((id) => id === "run-deployment")).toHaveLength(1);
     expect(ran).not.toContain("github-failed");
   });
 
-  it("runs a run that started its builds under older step ids to the end, through the dispatch and record steps", async () => {
-    // What the older per-build steps recorded; the dispatch step follows the dispatched runs and leaves the skipped build.
+  it("gives a record the Store refused a step of its own, and starts the builds after it in the next round", async () => {
+    const ran = await stepsRun([
+      ["github-start-round-0", { started: [{ kind: "dispatched", runId: 9001 }], unrecorded: { kind: "run", build: "dep.api", run: {} }, rest: [target("docs")] }],
+      ["github-record-round-0", { kind: "dispatched", runId: 9002 }],
+      ["github-start-round-1", { started: [{ kind: "done" }], unrecorded: null, rest: [] }],
+      ["github-open-web-0", false],
+      ["github-open-api-0", false],
+    ]);
+    expect(ran.filter((id) => /^github-(start|record)-round/.test(id))).toEqual(["github-start-round-0", "github-record-round-0", "github-start-round-1"]);
+    expect(ran.filter((id) => id.startsWith("github-open"))).toEqual(["github-open-web-0", "github-open-api-0"]);
+    expect(ran.filter((id) => id === "run-deployment")).toHaveLength(1);
+  });
+
+  it("runs a run that started its builds under older step ids to the end, through the one start step", async () => {
+    // What the older per-build steps recorded; the start step follows the dispatched runs and leaves the skipped build.
     const ran = await stepsRun([
       ["github-start-web", { kind: "dispatched", runId: 9001 }],
       ["github-start-api", { kind: "dispatched", runId: 9002 }],
       ["github-start-docs", { kind: "done" }],
-      ["github-dispatch", [{ kind: "dispatched", runId: 9001 }, { kind: "dispatched", runId: 9002 }, { kind: "done" }]],
-      ["github-record", [{ kind: "dispatched", runId: 9001 }, { kind: "dispatched", runId: 9002 }, { kind: "done" }]],
+      ["github-start-round-0", { started: [{ kind: "dispatched", runId: 9001 }, { kind: "dispatched", runId: 9002 }, { kind: "done" }], unrecorded: null, rest: [] }],
       ["github-open-web-0", false],
       ["github-open-api-0", false],
     ]);
-    expect(ran.filter((id) => id.startsWith("github-start-"))).toEqual([]);
-    expect(ran.filter((id) => id === "github-dispatch" || id === "github-record")).toEqual(["github-dispatch", "github-record"]);
+    expect(ran.filter((id) => ["github-start-web", "github-start-api", "github-start-docs"].includes(id))).toEqual([]);
+    expect(ran.filter((id) => id.startsWith("github-start-round") || id.startsWith("github-record"))).toEqual(["github-start-round-0"]);
     expect(ran.filter((id) => id === "run-deployment")).toHaveLength(1);
   });
 });

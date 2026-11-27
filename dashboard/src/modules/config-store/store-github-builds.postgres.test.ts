@@ -9,7 +9,7 @@ import { asTestDouble } from "#/lib/test-double";
 import { callStore, gatherTrusted } from "#/modules/config-store/config-store.server";
 import { permissionsOf } from "#/modules/organization/permissions";
 import {
-  checkInRuleBuild, checkInStoreGithubBuild, checkStoreGithubBuild, grantRuleBuild, planStoreGithubBuilds, dispatchStoreGithubBuilds, recordStoreGithubBuilds, recordStoreGithubBuildSteps, type StoreGithubTarget,
+  checkInRuleBuild, checkInStoreGithubBuild, checkStoreGithubBuild, grantRuleBuild, planStoreGithubBuilds, recordStoreGithubBuildSteps, startStoreGithubBuilds, type StoreGithubTarget,
   storeGithubBuildOpen,
 } from "#/modules/config-store/store-github-builds.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
@@ -83,11 +83,11 @@ const github = acmeGithub({
 });
 
 
-/** A Deployment's two start steps, dispatch then record, as a run whose steps each succeed. */
-const startStoreGithubBuilds = (organizationId: string, deploymentId: string, targets: ReadonlyArray<StoreGithubTarget>) =>
-  dispatchStoreGithubBuilds(organizationId, deploymentId, targets).pipe(Effect.flatMap((dispatched) => recordStoreGithubBuilds(organizationId, dispatched)));
+/** How each of a Deployment's builds started, when the Store records each. */
+const startAll = (organizationId: string, deploymentId: string, targets: ReadonlyArray<StoreGithubTarget>) =>
+  startStoreGithubBuilds(organizationId, deploymentId, targets).pipe(Effect.map(({ started }) => started));
 const startStoreGithubBuild = (organizationId: string, target: StoreGithubTarget) =>
-  startStoreGithubBuilds(organizationId, target.build.slice(0, target.build.lastIndexOf(".")), [target]).pipe(Effect.map(([started]) => started));
+  startAll(organizationId, target.build.slice(0, target.build.lastIndexOf(".")), [target]).pipe(Effect.map(([started]) => started));
 
 it.live(
   "a Store build goes to GitHub first; its check-in must come from the dispatched repository, workflow and run; a cancel ends it",
@@ -545,7 +545,7 @@ it.live("a rule build follows its push, and an approved build dispatches, under 
     expect(authority.calls.some((call) => call.operation === "dispatchBuild")).toBe(false);
   }), 60_000);
 
-it.live("a Deployment's builds start in one dispatch step and one record step, read the workflow once per repository, and a run resumed after a Cloud deploy dispatches nothing twice", () =>
+it.live("a Deployment's builds start in one step, read the workflow once per repository, and a run resumed after a Cloud deploy dispatches nothing twice", () =>
   Effect.gen(function* () {
     let dispatches = 0;
     let workflowChecks = 0;
@@ -570,18 +570,18 @@ it.live("a Deployment's builds start in one dispatch step and one record step, r
     const targets = ["web", "api", "docs"].map((service) =>
       ({ build: `${DEPLOYMENT}.${service}`, service, repository: "acme/web", repositoryId: 42, installationId: 7, hasNext: true }));
 
-    const started = yield* provided(startStoreGithubBuilds(ORGANIZATION, DEPLOYMENT, targets));
+    const started = yield* provided(startAll(ORGANIZATION, DEPLOYMENT, targets));
     expect(started.map((answer) => answer.kind)).toEqual(["dispatched", "dispatched", "done"]);
     expect(new Set(started.map((answer) => answer.kind === "dispatched" ? answer.runId : null))).toEqual(new Set([RUN, RUN + 1, null]));
     expect([dispatches, workflowChecks]).toEqual([2, 1]);
 
     // Run again, as a retried step or a run that started its builds under older step ids: it follows each run it
     // started, leaves the skipped build alone, and dispatches no other.
-    expect(yield* provided(startStoreGithubBuilds(ORGANIZATION, DEPLOYMENT, targets))).toEqual(started);
+    expect(yield* provided(startAll(ORGANIZATION, DEPLOYMENT, targets))).toEqual(started);
     expect(dispatches).toBe(2);
   }), 60_000);
 
-it.live("a build whose start fails before GitHub is asked fails the dispatch step before any build is dispatched, so its retry dispatches each once", () =>
+it.live("a build whose start fails before GitHub is asked fails the start step before any build is dispatched, so its retry dispatches each once", () =>
   Effect.gen(function* () {
     const dispatched: string[] = [];
     let failing = true;
@@ -617,9 +617,9 @@ it.live("a build whose start fails before GitHub is asked fails the dispatch ste
     const targets = ["web", "api", "docs"].map((service) =>
       ({ build: `${DEPLOYMENT}.${service}`, service, repository: "acme/web", repositoryId: 42, installationId: 7, hasNext: true }));
 
-    expect(yield* Effect.flip(provided(dispatchStoreGithubBuilds(ORGANIZATION, DEPLOYMENT, targets)))).toMatchObject({ code: "unavailable" });
+    expect(yield* Effect.flip(provided(startAll(ORGANIZATION, DEPLOYMENT, targets)))).toMatchObject({ code: "unavailable" });
     expect(dispatched).toEqual([]);
     failing = false;
-    expect((yield* provided(startStoreGithubBuilds(ORGANIZATION, DEPLOYMENT, targets))).map((answer) => answer.kind)).toEqual(["dispatched", "dispatched", "dispatched"]);
+    expect((yield* provided(startAll(ORGANIZATION, DEPLOYMENT, targets))).map((answer) => answer.kind)).toEqual(["dispatched", "dispatched", "dispatched"]);
     expect([...dispatched].sort()).toEqual(targets.map(({ build }) => build).sort());
   }), 60_000);

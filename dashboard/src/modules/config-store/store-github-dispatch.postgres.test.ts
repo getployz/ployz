@@ -7,9 +7,7 @@ import { Clock, Deferred, Effect, Exit, Fiber, Redacted } from "effect";
 import { TestClock } from "effect/testing";
 import { expect } from "vitest";
 import { startGithubBuilds } from "#/modules/config-store/store-deployment.inngest";
-import {
-  dispatchStoreGithubBuilds, planStoreGithubBuilds, recordStoreGithubBuilds, type StoreGithubTarget,
-} from "#/modules/config-store/store-github-builds.server";
+import { planStoreGithubBuilds, startStoreGithubBuilds, type StoreGithubTarget } from "#/modules/config-store/store-github-builds.server";
 import { asTestDouble } from "#/lib/test-double";
 import { GithubObservationError } from "#/modules/github/github-observation.api";
 import { RpcError } from "#/modules/runtime/ployz.server";
@@ -25,6 +23,7 @@ const ORGANIZATION = "00000000-0000-4000-8000-00000000b001";
 const PROJECT = "00000000-0000-4000-8000-00000000b002";
 const ENVIRONMENT = "00000000-0000-4000-8000-00000000b003";
 const SERVICE = "00000000-0000-4000-8000-00000000b004";
+const API_SERVICE = "00000000-0000-4000-8000-00000000b005";
 const DEPLOYMENT = "00000000-0000-4000-8000-00000000b101";
 const HEAD = "c".repeat(40);
 const RUN = 9001;
@@ -35,20 +34,25 @@ const activeWorkflow: GithubBuildWorkflowFile = { fullName: "acme/web", defaultB
 const runUrl = (runId: number) => `https://github.com/acme/web/actions/runs/${runId}`;
 const unavailable = () => new RpcError({ code: "unavailable", message: "The Config Store is unavailable; retry the command", details: null });
 
-/** A Deployment's two start steps, dispatch then record, as a run whose steps each succeed. */
+/** How one build started, when the Store records it. */
 const startStoreGithubBuild = (organizationId: string, start: StoreGithubTarget) =>
-  dispatchStoreGithubBuilds(organizationId, DEPLOYMENT, [start]).pipe(
-    Effect.flatMap((dispatched) => recordStoreGithubBuilds(organizationId, dispatched)),
-    Effect.map(([started]) => started),
-  );
+  startStoreGithubBuilds(organizationId, DEPLOYMENT, [start]).pipe(Effect.map(({ started: [started] }) => started));
 
-/** Inngest's steps: one that succeeded answers from its memo on every replay, and one that failed runs again. */
-const memoSteps = () => {
+/**
+ * Inngest's steps: one that succeeded answers from its memo on every replay, and one that failed runs again. With
+ * `loseFirst`, the first step runs to its end and Inngest never gets its answer, as when the worker's response is lost.
+ */
+const memoSteps = ({ loseFirst = false } = {}) => {
   const memo = new Map<string, unknown>();
+  let losing = loseFirst;
   return asTestDouble<Parameters<typeof startGithubBuilds>[0]>()({
     run: async <T>(id: string, fn: () => Promise<T>): Promise<T> => {
       if (memo.has(id)) return memo.get(id) as T;
       const value = await fn();
+      if (losing) {
+        losing = false;
+        throw new Error(`Inngest lost the answer of ${id}`);
+      }
       memo.set(id, value);
       return value;
     },
@@ -56,16 +60,21 @@ const memoSteps = () => {
 };
 
 /** Cloud with `acme/web`'s web Service admitted and pinned, whose GitHub dispatches through `authority`. */
-const pinnedWeb = Effect.fn(function* (authority: ReturnType<typeof fakeGithubAuthority>, env?: Record<string, string>) {
+const pinnedWeb = Effect.fn(function* (authority: ReturnType<typeof fakeGithubAuthority>, env?: Record<string, string>, withApi = false) {
   const api = fakeGithubApi({ "/repos/acme/web": { id: 42, full_name: "acme/web" } });
   const services = yield* storeTestCloud({ github: api.service, authority: authority.service, ...(env && { env }) });
   const provided = <A, E, R>(program: Effect.Effect<A, E, R>) => program.pipe(Effect.provide(services));
   yield* provided(seedStoreOrganization(ORGANIZATION));
   const store = yield* provided(seedStoreGitService(ORGANIZATION, { project: PROJECT, environment: ENVIRONMENT, service: SERVICE }));
+  if (withApi) {
+    yield* Effect.promise(() => store.write(ORGANIZATION, {
+      command: "create_git_service", id: API_SERVICE, environment: here, name: "api", repository: "acme/web", branch: null,
+    }, acmeWeb()));
+  }
   yield* Effect.promise(() => store.write(ORGANIZATION, {
     command: "admit", admit: "deploy", id: DEPLOYMENT, environment: here, services: [], version: null, accept_volume_loss: [],
   }, acmeWeb()));
-  yield* Effect.promise(() => store.pinSources(DEPLOYMENT, { web: HEAD }));
+  yield* Effect.promise(() => store.pinSources(DEPLOYMENT, withApi ? { web: HEAD, api: HEAD } : { web: HEAD }));
   const cloud = yield* provided(cloudStore);
   cloud.githubStart = async () => ({ kind: "dispatch", runner: "ubuntu-latest", foreign: [] });
   const web = () => Effect.promise(() => store.deploymentSources(DEPLOYMENT)).pipe(Effect.map((sources) => sources.find(({ service }) => service === "web")));
@@ -124,6 +133,31 @@ it.live("a run GitHub took while the Store can't record it is recorded once the 
     expect(authority.calls.filter(({ operation }) => operation === "cancelBuild")).toEqual([]);
   }), 60_000);
 
+it.live("a start whose answer Inngest lost after GitHub took each build runs again without asking GitHub for any of them", () =>
+  Effect.gen(function* () {
+    const dispatched: string[] = [];
+    const authority = fakeGithubAuthority({
+      buildWorkflow: () => Effect.succeed(activeWorkflow),
+      dispatchBuild: ({ inputs: { build } }) => Effect.sync(() => {
+        const runId = RUN + dispatched.length;
+        dispatched.push(build);
+        return { runId, runUrl: runUrl(runId), headSha: HEAD, workflowRef: WORKFLOW };
+      }),
+      cancelBuild: () => Effect.void,
+    });
+    const { provided } = yield* pinnedWeb(authority, undefined, true);
+    const api = { ...target, service: "api", build: `${DEPLOYMENT}.api` };
+    const data = { organizationId: ORGANIZATION, environmentId: ENVIRONMENT, deploymentId: DEPLOYMENT, trigger: "user" as const };
+    const runEffect: EffectRunner<StoreServices> = (program) => Effect.runPromise(provided(program));
+    const steps = memoSteps({ loseFirst: true });
+    const start = Effect.tryPromise(() => startGithubBuilds(steps, runEffect, data, [target, api]));
+
+    // GitHub took both builds, and Inngest never got the step's answer, so it runs the function again.
+    expect(Exit.isFailure(yield* Effect.exit(start))).toBe(true);
+    expect(yield* start).toEqual([{ kind: "dispatched", runId: RUN }, { kind: "dispatched", runId: RUN + 1 }]);
+    expect(dispatched).toEqual([target.build, api.build]);
+  }), 60_000);
+
 it.effect.each(["answered", "stalled"] as const)(
   "a build GitHub was asked for is never asked for again, however long the Store refuses its record (GitHub %s)",
   (answer) => Effect.gen(function* () {
@@ -166,7 +200,8 @@ it.effect.each(["answered", "stalled"] as const)(
     });
 
     for (let attempt = 0; attempt < 4; attempt += 1) expect(Exit.isFailure(yield* run)).toBe(true);
-    expect(refusals).toBe(24);
+    // Each record is refused six times: in the start step on the first try, then in its own step on every try.
+    expect(refusals).toBe(30);
     expect(dispatched).toEqual([RUN]);
     locked = false;
     const started = yield* run;
@@ -251,3 +286,42 @@ it.effect.each([false, true])(
   }),
   60_000,
 );
+
+it.effect("a workflow file whose body stalls fails inside its bound and closes its connection", () =>
+  Effect.gen(function* () {
+    const taken = yield* Deferred.make<void>();
+    const closed = yield* Deferred.make<void>();
+    // GitHub starts sending the workflow file and never finishes it.
+    const github = createServer((request, response) => {
+      const path = request.url ?? "";
+      response.setHeader("content-type", "application/json");
+      if (path.endsWith("/access_tokens")) return response.end(JSON.stringify({ token: "local", expires_at: "2099-01-01T00:00:00Z" }));
+      if (path === "/repositories/42") return response.end(JSON.stringify({ full_name: "acme/web", default_branch: "main" }));
+      if (path.includes("/actions/workflows/")) return response.end(JSON.stringify({ path: ".github/workflows/ployz-build.yml", state: "active" }));
+      if (path.includes("/contents/")) {
+        response.on("close", () => Effect.runSync(Deferred.succeed(closed, undefined)));
+        response.write("name: Ployz build");
+        Effect.runSync(Deferred.succeed(taken, undefined));
+        return;
+      }
+      response.statusCode = 404;
+      response.end();
+    });
+    yield* Effect.acquireRelease(
+      Effect.promise(() => new Promise<void>((resolve) => github.listen(0, "127.0.0.1", resolve))),
+      () => Effect.sync(() => { github.closeAllConnections(); github.close(); }),
+    );
+    const address = github.address() as AddressInfo;
+    const { services } = yield* pinnedWeb(fakeGithubAuthority({}), { PLOYZ_VERIFY_GITHUB_ORIGIN: `http://127.0.0.1:${address.port}` });
+    const { privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const local = yield* makeGithubAuthorityLocal({
+      appPrivateKey: Redacted.make(privateKey.export({ type: "pkcs8", format: "pem" })),
+      appClientSecret: Redacted.make("local"),
+    }).pipe(Effect.provide(services));
+    const reading = yield* local.buildWorkflow({ installationId: 7, repositoryId: 42 }).pipe(Effect.flip, Effect.forkChild);
+    yield* Deferred.await(taken);
+    yield* TestClock.adjust("30 seconds");
+    expect(yield* Fiber.join(reading)).toMatchObject({ operation: "fetch_contents", code: "request_failed" });
+    // Cloud gave up on the file, so it closes the connection rather than holding it open.
+    yield* Deferred.await(closed);
+  }), 15_000);

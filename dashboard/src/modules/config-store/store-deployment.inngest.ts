@@ -12,7 +12,7 @@ import { type ConfigDeploymentAdmittedEventData, configDeploymentAdmitted, confi
 import { clusterDomainSyncRequested } from "#/modules/cluster-domain/cluster-domain.events";
 import {
   checkStoreGithubBuild, GITHUB_CHECK_INTERVAL, planStoreGithubBuilds, START_WITHIN_MINUTES,
-  dispatchStoreGithubBuilds, recordStoreGithubBuilds, serversLackingWhilePrefetching, storeGithubBuildOpen, type StoreGithubStart, type StoreGithubTarget,
+  recordStoreGithubBuild, serversLackingWhilePrefetching, startStoreGithubBuilds, storeGithubBuildOpen, type StoreGithubStart, type StoreGithubTarget,
 } from "#/modules/config-store/store-github-builds.server";
 import { followUp } from "#/modules/config-store/store-github.inngest";
 import { sweepStore } from "#/modules/config-store/store-pull-request.server";
@@ -145,16 +145,25 @@ export const createCancelStoreDeployment = (inngest: PloyzInngest, runEffect: Ef
 type Step = Parameters<Parameters<PloyzInngest["createFunction"]>[1]>[0]["step"];
 
 /**
- * Start a Deployment's GitHub builds in two steps: one asks GitHub for their runs, one records what GitHub answered.
- * GitHub may have taken a request it never answered, so once it is asked only the record is retried, and a retry
- * replays the asking step from its memo rather than asking again.
+ * Start a Deployment's GitHub builds, in one step when the Store records each. GitHub may have taken a request it
+ * never answered, so a build it was asked for is never asked for again: the step records each build before asking for
+ * the next, and a record the Store refused gets a step of its own, retried from the first step's memo. The builds after
+ * it start in the next round.
  */
 export async function startGithubBuilds(
   step: Pick<Step, "run">, runEffect: EffectRunner<StoreServices>, data: ConfigDeploymentAdmittedEventData, github: ReadonlyArray<StoreGithubTarget>,
 ): Promise<ReadonlyArray<StoreGithubStart>> {
-  if (github.length === 0) return [];
-  const dispatched = await step.run("github-dispatch", () => runEffect(dispatchStoreGithubBuilds(data.organizationId, data.deploymentId, github)));
-  return step.run("github-record", () => runEffect(recordStoreGithubBuilds(data.organizationId, dispatched)));
+  const started: StoreGithubStart[] = [];
+  let rest = github;
+  for (let round = 0; rest.length > 0; round += 1) {
+    const targets = rest;
+    const starts = await step.run(`github-start-round-${round}`, () => runEffect(startStoreGithubBuilds(data.organizationId, data.deploymentId, targets)));
+    started.push(...starts.started);
+    const { unrecorded } = starts;
+    if (unrecorded !== null) started.push(await step.run(`github-record-round-${round}`, () => runEffect(recordStoreGithubBuild(data.organizationId, unrecorded))));
+    rest = starts.rest;
+  }
+  return started;
 }
 
 /**

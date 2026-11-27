@@ -277,6 +277,12 @@ const runOf = (run: typeof runSchema.Type): GithubBuildRun =>
 const ANSWER_TIMEOUT = "30 seconds";
 const withinAnswerTime = (operation: GithubObservationOperation) => <A, E, R>(call: Effect.Effect<A, E, R>) =>
   call.pipe(Effect.timeoutOrElse({ duration: ANSWER_TIMEOUT, orElse: () => Effect.fail(failure({ code: "request_failed", operation, retriable: true })) }));
+/** A request and the read of its answer within the bound. A call cut off there aborts its request, body included, so its connection closes. */
+const abortedPastAnswerTime = <A, E, R>(operation: GithubObservationOperation, call: (abort: AbortSignal) => Effect.Effect<A, E, R>) =>
+  Effect.suspend(() => {
+    const abort = new AbortController();
+    return call(abort.signal).pipe(Effect.onInterrupt(() => Effect.sync(() => abort.abort())));
+  }).pipe(withinAnswerTime(operation));
 
 /** The App's authority held in this Cloud, from `GITHUB_APP_PRIVATE_KEY` and `GITHUB_APP_CLIENT_SECRET`. */
 export const makeGithubAuthorityLocal = Effect.fn("GithubAuthority.makeLocal")(function* (secrets: {
@@ -311,23 +317,20 @@ export const makeGithubAuthorityLocal = Effect.fn("GithubAuthority.makeLocal")(f
     return response;
   });
 
-  const send = (input: Parameters<typeof respond>[0]) => Effect.suspend(() => {
-    // A call cut off at its bound aborts its request, body included, so its connection closes.
-    const abort = new AbortController();
-    return respond({ ...input, abort: abort.signal }).pipe(
-      Effect.flatMap((response) => Effect.tryPromise({ try: () => response.text(), catch: () => invalidResponse(input.operation) })),
-      Effect.onInterrupt(() => Effect.sync(() => abort.abort())),
-    );
-  }).pipe(withinAnswerTime(input.operation));
+  const send = (input: Parameters<typeof respond>[0]) => abortedPastAnswerTime(input.operation, (abort) => respond({ ...input, abort }).pipe(
+    Effect.flatMap((response) => Effect.tryPromise({ try: () => response.text(), catch: () => invalidResponse(input.operation) })),
+  ));
 
   /** A file's bytes on the default branch, or null when it holds no such file. Bytes, not text, so the digest is the minter's. */
   const defaultBranchFile = (token: string, repositoryId: number, path: string) =>
-    respond({ operation: "fetch_contents", token, path: `/repositories/${repositoryId}/contents/${path}`, accept: "application/vnd.github.raw" }).pipe(
+    abortedPastAnswerTime("fetch_contents", (abort) => respond({
+      operation: "fetch_contents", token, path: `/repositories/${repositoryId}/contents/${path}`, accept: "application/vnd.github.raw", abort,
+    }).pipe(
       Effect.flatMap((response) => Effect.tryPromise({
         try: async () => new Uint8Array(await response.arrayBuffer()),
         catch: () => failure({ code: "request_failed", operation: "fetch_contents", retriable: true }),
       })),
-      withinAnswerTime("fetch_contents"),
+    )).pipe(
       Effect.catchIf((error) => error.code === "not_found", () => Effect.succeed(null)),
     );
 
@@ -343,14 +346,14 @@ export const makeGithubAuthorityLocal = Effect.fn("GithubAuthority.makeLocal")(f
    * GitHub answers a token mint under a secondary limit with a bare 403, and can cut its body short: both pass, so
    * the mint is tried again rather than failed.
    */
-  const mint = Effect.fn("GithubAuthority.mint")(function* (installationId: number, body: {
+  const mint = (installationId: number, body: {
     permissions: Readonly<Record<string, "read" | "write">>; repository_ids?: ReadonlyArray<number>;
-  }) {
+  }) => abortedPastAnswerTime("installation_token", (abort) => Effect.gen(function* () {
     const operation = "installation_token";
     const jwt = yield* appJwt;
     const response = yield* Effect.tryPromise({
       try: (signal) => fetch(`${origins.api}/app/installations/${installationId}/access_tokens`, {
-        signal,
+        signal: AbortSignal.any([signal, abort]),
         method: "POST",
         headers: { Authorization: `Bearer ${jwt}`, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": GITHUB_API_VERSION, "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -369,7 +372,7 @@ export const makeGithubAuthorityLocal = Effect.fn("GithubAuthority.makeLocal")(f
     const text = yield* Effect.tryPromise({ try: () => response.text(), catch: cutShort });
     const parsed = yield* Effect.try({ try: () => JSON.parse(text), catch: cutShort });
     return yield* Schema.decodeUnknownEffect(tokenSchema)(parsed).pipe(Effect.mapError(() => invalidResponse(operation)));
-  }, withinAnswerTime("installation_token"));
+  }).pipe(Effect.withSpan("GithubAuthority.mint")));
 
   /** A token for one repository with what the operation needs, kept until shortly before it expires. Cloud never hands it on. */
   const owned = yield* Cache.makeWith(
