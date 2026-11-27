@@ -270,6 +270,14 @@ const INSTALLATION_PAGES = 10;
 const runOf = (run: typeof runSchema.Type): GithubBuildRun =>
   ({ id: run.id, url: run.html_url, headSha: run.head_sha, event: run.event, status: run.status, conclusion: run.conclusion });
 
+/**
+ * How long one call to GitHub or the minter may take, its body included; past this, Cloud reads it as down. A start
+ * that stalls after GitHub took its dispatch ends inside its step, as a call that failed.
+ */
+const ANSWER_TIMEOUT = "30 seconds";
+const withinAnswerTime = (operation: GithubObservationOperation) => <A, E, R>(call: Effect.Effect<A, E, R>) =>
+  call.pipe(Effect.timeoutOrElse({ duration: ANSWER_TIMEOUT, orElse: () => Effect.fail(failure({ code: "request_failed", operation, retriable: true })) }));
+
 /** The App's authority held in this Cloud, from `GITHUB_APP_PRIVATE_KEY` and `GITHUB_APP_CLIENT_SECRET`. */
 export const makeGithubAuthorityLocal = Effect.fn("GithubAuthority.makeLocal")(function* (secrets: {
   readonly appPrivateKey: Redacted.Redacted<string>; readonly appClientSecret: Redacted.Redacted<string>;
@@ -304,6 +312,7 @@ export const makeGithubAuthorityLocal = Effect.fn("GithubAuthority.makeLocal")(f
 
   const send = (input: Parameters<typeof respond>[0]) => respond(input).pipe(
     Effect.flatMap((response) => Effect.tryPromise({ try: () => response.text(), catch: () => invalidResponse(input.operation) })),
+    withinAnswerTime(input.operation),
   );
 
   /** A file's bytes on the default branch, or null when it holds no such file. Bytes, not text, so the digest is the minter's. */
@@ -313,6 +322,7 @@ export const makeGithubAuthorityLocal = Effect.fn("GithubAuthority.makeLocal")(f
         try: async () => new Uint8Array(await response.arrayBuffer()),
         catch: () => failure({ code: "request_failed", operation: "fetch_contents", retriable: true }),
       })),
+      withinAnswerTime("fetch_contents"),
       Effect.catchIf((error) => error.code === "not_found", () => Effect.succeed(null)),
     );
 
@@ -354,7 +364,7 @@ export const makeGithubAuthorityLocal = Effect.fn("GithubAuthority.makeLocal")(f
     const text = yield* Effect.tryPromise({ try: () => response.text(), catch: cutShort });
     const parsed = yield* Effect.try({ try: () => JSON.parse(text), catch: cutShort });
     return yield* Schema.decodeUnknownEffect(tokenSchema)(parsed).pipe(Effect.mapError(() => invalidResponse(operation)));
-  });
+  }, withinAnswerTime("installation_token"));
 
   /** A token for one repository with what the operation needs, kept until shortly before it expires. Cloud never hands it on. */
   const owned = yield* Cache.makeWith(
@@ -550,8 +560,6 @@ const minterConnectSchema = Schema.Struct({
 /** A minter route's JSON body: ids, names and inputs Cloud chose. JSON drops a field left undefined. */
 type MinterBody = Readonly<Record<string, string | number | ReadonlyArray<number> | GithubReadPermissions | Readonly<Record<string, string | undefined>> | undefined>>;
 
-/** The minter answers a route within GitHub's own calls; past this, Cloud reads it as down. */
-const MINTER_TIMEOUT = "30 seconds";
 
 /** The minter's answer when it refused or GitHub failed, as the error a direct GitHub call would have given. */
 function minterError(operation: GithubObservationOperation, status: number, text: string): GithubObservationError {
@@ -613,9 +621,7 @@ export function makeGithubAuthorityMinter(minter: { readonly url: URL; readonly 
           return { status: response.status, text: await response.text() };
         },
         catch: () => failure({ code: "request_failed", operation, retriable: true }),
-      }).pipe(
-        Effect.timeoutOrElse({ duration: MINTER_TIMEOUT, orElse: () => Effect.fail(failure({ code: "request_failed", operation, retriable: true })) }),
-      );
+      }).pipe(withinAnswerTime(operation));
       if (answered.status !== 200) return yield* minterError(operation, answered.status, answered.text);
       return yield* decodeAs(schema, answered.text, operation);
     });
