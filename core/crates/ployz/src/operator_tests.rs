@@ -1166,6 +1166,7 @@ fn container_on(
                 pid_mode: None,
                 resources: Default::default(),
                 stop_timeout_secs: None,
+                stop_signal: None,
                 sysctls: Default::default(),
                 network: None,
                 restart: RestartPolicy::default(),

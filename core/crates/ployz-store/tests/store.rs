@@ -134,6 +134,8 @@ fn an_image_service_shows_every_setting_with_its_default() {
             "web.replicas",
             "web.restartPolicy",
             "web.startCommand",
+            "web.stopGracePeriod",
+            "web.stopSignal",
             "web.updateOrder",
         ]
     );
@@ -153,13 +155,15 @@ fn an_image_service_shows_every_setting_with_its_default() {
             { "path": "web.replicas", "value": 1, "default": 1, "apply": "staged" },
             { "path": "web.restartPolicy", "value": "unless-stopped", "default": "unless-stopped", "apply": "staged" },
             { "path": "web.startCommand", "value": null, "default": null, "apply": "staged" },
+            { "path": "web.stopGracePeriod", "value": 30, "default": 30, "apply": "staged" },
+            { "path": "web.stopSignal", "value": null, "default": null, "apply": "staged" },
             { "path": "web.template", "value": null, "default": null, "apply": "immediate" },
             { "path": "web.updateOrder", "value": null, "default": null, "apply": "staged" },
         ])
     );
     assert_eq!(
         json!(view.values),
-        json!({ "image": "nginx:1", "maxRetries": 10, "privateDns": "web", "replicas": 1, "restartPolicy": "unless-stopped" })
+        json!({ "image": "nginx:1", "maxRetries": 10, "privateDns": "web", "replicas": 1, "restartPolicy": "unless-stopped", "stopGracePeriod": 30 })
     );
 }
 
@@ -182,7 +186,7 @@ fn the_whole_environment_shows_only_what_is_set_unless_all() {
         ..EnvironmentQuery::default()
     };
     let all = store.read(&who, &query).unwrap();
-    assert_eq!(all.settings.len(), 13);
+    assert_eq!(all.settings.len(), 15);
     assert_eq!(get(&store, &who, Some("web.cpuLimit")).settings.len(), 1);
 }
 
@@ -676,6 +680,8 @@ fn wrong_paths_and_values_name_the_fix() {
             "replicas",
             "restartPolicy",
             "startCommand",
+            "stopGracePeriod",
+            "stopSignal",
             "template",
             "updateOrder",
             "repository",

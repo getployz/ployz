@@ -289,6 +289,28 @@ time, so a failure leaves the later servers on the old version. A service with a
 **Start first** while shared writes are paused. See
 [Choose how a deploy replaces replicas](../deploy/zero-downtime.md#choose-how-a-deploy-replaces-replicas).
 
+### Stop signal
+
+**Auto** by default: SIGTERM with a start command, otherwise the image's own, such as SIGQUIT for
+`php:fpm`. Pick SIGTERM for a queue worker like Laravel Horizon, so it finishes its job and exits.
+
+```sh
+ployz set worker.stopSignal=SIGTERM
+```
+
+### Stop grace period
+
+Seconds a replica gets to stop before it's killed. 30 by default, from 1 to 600. Raise it for
+workers with long jobs.
+
+```sh
+ployz set worker.stopGracePeriod=120
+```
+
+Both apply from the next deploy. Replicas started before these settings existed keep the image's
+signal and 10 seconds until a deploy replaces them for another reason, or you change either one
+from its default.
+
 ## Storage
 
 Shown for a database without a volume. **No volume** warns that data is lost on redeploy.
