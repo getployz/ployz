@@ -2059,7 +2059,8 @@ fn chooses_upload_at_start(
     status: DeploymentStatus,
     uploads: Option<&uploads::ServiceUploads>,
 ) -> bool {
-    status == DeploymentStatus::Queued && uploads.is_some_and(|uploads| uploads.provisional)
+    status == DeploymentStatus::Queued
+        && uploads.is_some_and(|uploads| uploads.choice == uploads::UploadChoice::AtStart)
 }
 
 /// Whether a Deployment in `status` that recorded `run` prepares: it runs, without
