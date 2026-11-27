@@ -58,8 +58,7 @@ pub(crate) async fn push_from_machine_using_machines(
     if selection.targets.is_empty() {
         return Ok(result);
     }
-    let mut cancellation = Cancellation::new(cancellation);
-    let source = Source::open(client, source, &mut cancellation).await?;
+    let source = Source::open(client, source, &mut Cancellation::new(cancellation)).await?;
     source.require_complete(image)?;
     let reference =
         image
@@ -68,33 +67,28 @@ pub(crate) async fn push_from_machine_using_machines(
                 reference: image.reference.clone(),
                 message: error.to_string(),
             })?;
-    let mut remaining = selection.targets.into_iter();
-    while let Some(machine) = remaining.next() {
-        let delivery = source
-            .deliver(
-                client,
-                &reference,
-                &image.reference,
-                &machine,
-                &mut cancellation,
-            )
-            .await;
+    let deliveries = selection.targets.iter().map(|machine| {
+        let (mut client, source, reference) = (client.clone(), &source, &reference);
+        async move {
+            let delivery = source
+                .deliver(
+                    &mut client,
+                    reference,
+                    &image.reference,
+                    machine,
+                    &mut Cancellation::new(cancellation),
+                )
+                .await;
+            (machine.id, delivery)
+        }
+    });
+    for (machine_id, delivery) in futures_util::future::join_all(deliveries).await {
         match delivery {
             Ok(()) => result.successes.push(MachineSuccess {
-                machine_id: machine.id,
+                machine_id,
                 value: (),
             }),
-            Err(error) => {
-                let cancelled = error.is_cancellation();
-                result.failures.push(MachineFailure {
-                    machine_id: machine.id,
-                    error,
-                });
-                if cancelled {
-                    result.omissions.extend(remaining.map(|machine| machine.id));
-                    break;
-                }
-            }
+            Err(error) => result.failures.push(MachineFailure { machine_id, error }),
         }
     }
     Ok(result)

@@ -417,6 +417,28 @@ async fn preparation_derives_railpack_platforms_from_the_machines_a_service_may_
 }
 
 #[tokio::test]
+async fn two_services_images_deliver_at_once() {
+    let (root, service, builds) = fixture();
+    // Each pull answers only once the other has started, so one after the other never ends.
+    *builds.pull_gate.lock().unwrap() = Some(Arc::new(tokio::sync::Barrier::new(2)));
+    tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        deploy(
+            service,
+            input(
+                &root,
+                vec![git("one", "dockerfile"), git("two", "dockerfile")],
+            ),
+        ),
+    )
+    .await
+    .expect("one Service's delivery waited on the other's")
+    .unwrap();
+    assert_eq!(builds.pulls.lock().unwrap().len(), 2);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn remote_transfer_keeps_exact_source_successes_failures_and_omissions() {
     let (root, service, builds) = fixture();
     let native = |hex, name| {

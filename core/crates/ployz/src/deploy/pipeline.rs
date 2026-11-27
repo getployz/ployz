@@ -337,7 +337,6 @@ pub(crate) async fn push_namespace_images(
     cancellation: &CancellationToken,
     progress: &impl Fn(ImageDelivery),
 ) -> Result<Vec<String>, DeliveryError> {
-    let mut failures = Vec::new();
     // Check every actual destination before any image or application changes.
     let deliveries = builds.iter().map(|service| {
         let targets = preview.operations.iter()
@@ -354,10 +353,11 @@ pub(crate) async fn push_namespace_images(
         }
         Ok((service, targets.into_iter().map(|target| target.to_string()).collect::<Vec<_>>()))
     }).collect::<Result<Vec<_>, DeliveryError>>()?;
-    for (service, targets) in deliveries {
-        if targets.is_empty() {
-            continue;
-        }
+    let deliveries: Vec<_> = deliveries
+        .into_iter()
+        .filter(|(_, targets)| !targets.is_empty())
+        .collect();
+    for (service, targets) in &deliveries {
         let receivers = machines
             .iter()
             .filter(|machine| machine.machine.id != service.machine_id)
@@ -370,7 +370,22 @@ pub(crate) async fn push_namespace_images(
                 machines: receivers,
             });
         }
-        match push_image(client, service, machines, &targets, cancellation).await {
+    }
+    let mut pushing: futures_util::stream::FuturesUnordered<_> = deliveries
+        .iter()
+        .enumerate()
+        .map(|(index, (service, targets))| {
+            let mut client = client.clone();
+            async move {
+                let pushed =
+                    push_image(&mut client, service, machines, targets, cancellation).await;
+                (index, service, pushed)
+            }
+        })
+        .collect();
+    let mut failed = std::collections::BTreeMap::new();
+    while let Some((index, service, pushed)) = futures_util::StreamExt::next(&mut pushing).await {
+        let service_failures = match pushed {
             Ok((images, service_failures)) => {
                 for image in images {
                     progress(ImageDelivery::Delivered {
@@ -379,12 +394,13 @@ pub(crate) async fn push_namespace_images(
                         machine_id: image.machine_id,
                     });
                 }
-                failures.extend(service_failures);
+                service_failures
             }
-            Err(error) => failures.push(format!("{}: {}", service.image, error_chain::row(&error))),
-        }
+            Err(error) => vec![format!("{}: {}", service.image, error_chain::row(&error))],
+        };
+        failed.insert(index, service_failures);
     }
-    Ok(failures)
+    Ok(failed.into_values().flatten().collect())
 }
 
 pub(crate) async fn plan_namespace(

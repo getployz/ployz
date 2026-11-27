@@ -26,6 +26,8 @@ pub struct BuildFixture {
     pub opened: Mutex<Vec<MachineId>>,
     pub pulls: Mutex<Vec<(MachineId, PullImageFromMachineRequest)>>,
     pub pull_failures: Mutex<BTreeMap<MachineId, ployz_core::RpcError>>,
+    /// Every peer pull waits here before it answers.
+    pub pull_gate: Mutex<Option<Arc<tokio::sync::Barrier>>>,
     /// Keep every Build waiting in the daemon queue until its client leaves.
     pub hold_in_queue: std::sync::atomic::AtomicBool,
 }

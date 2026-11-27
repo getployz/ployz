@@ -1640,6 +1640,10 @@ impl FakeMachine for DeployService {
             if self.rolls_back_on_delivery == Some(machine) {
                 self.rolled_back.store(true, Ordering::SeqCst);
             }
+            let gate = builds.pull_gate.lock().unwrap().clone();
+            if let Some(gate) = gate {
+                gate.wait().await;
+            }
             return reply(builds.pull(machine, pull));
         }
         self.record_mutation();
