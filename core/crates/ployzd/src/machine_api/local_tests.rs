@@ -5927,13 +5927,12 @@ mod ensure_container {
             .container_id;
         let second = present(&ensure(&service, run_new("k2", spec("example.test/api:1"))).await)
             .container_id;
-        let gone =
-            |key: &str| json!({"want":{"state":"gone", "container":{"key":slot(key)}, "drain":0}});
+        let gone = |id| json!({"want":{"state":"gone", "container":{"id":id}, "drain":0}});
         let held = fake.stop_gate.write().await;
 
         let (one, two, overlapped) = tokio::join!(
-            ensure(&service, gone("k1")),
-            ensure(&service, gone("k2")),
+            ensure(&service, gone(first)),
+            ensure(&service, gone(second)),
             async {
                 let both = tokio::time::timeout(Duration::from_secs(3), async {
                     for id in [first, second] {
