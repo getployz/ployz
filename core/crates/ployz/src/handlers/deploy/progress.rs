@@ -2271,7 +2271,14 @@ mod tests {
         });
         assert_eq!(early, complete(&view));
         assert_eq!(early.0, 3);
-        let warning = early.1["warnings"][0].as_str().unwrap();
+        let warning = early
+            .1
+            .get("warnings")
+            .unwrap()
+            .get(0)
+            .unwrap()
+            .as_str()
+            .unwrap();
         assert!(
             warning.contains("requested removals may still complete"),
             "{warning}"
