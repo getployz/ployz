@@ -365,6 +365,10 @@ const MIGRATIONS: &[(&str, Step)] = &[
         "0057_preview_rule_gone",
         Step::Sql(include_str!("migrations/0057_preview_rule_gone.sql")),
     ),
+    (
+        "0058_deployment_step",
+        Step::Sql(include_str!("migrations/0058_deployment_step.sql")),
+    ),
 ];
 
 enum Step {

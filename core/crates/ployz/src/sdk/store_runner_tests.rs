@@ -80,6 +80,7 @@ fn admitted(upload: Option<ployz_store::UploadedSource>) -> (Run, ployz_store::A
             deployment,
             runner,
             over: Latch::new(),
+            steps: std::sync::Mutex::default(),
             reader: None,
         },
         actor,
@@ -158,6 +159,7 @@ async fn a_runner_plans_with_the_runs_its_claim_reports_ended() {
         deployment: DeploymentId::parse("00000000-0000-4000-8000-000000000004").unwrap(),
         runner: RunnerId::parse("other").unwrap(),
         over: Latch::new(),
+        steps: std::sync::Mutex::default(),
         reader: None,
     };
 
@@ -656,13 +658,65 @@ async fn a_queued_build_says_so_in_its_log_while_it_waits() {
         release.send(()).unwrap();
         shown
     };
-    let (followed, shown) = tokio::join!(run.follow(&target, &running), watch);
+    let (followed, shown) = tokio::join!(run.follow(&target, &running, 0), watch);
     assert!(followed.unwrap().is_err());
     assert!(
         shown.is_ok(),
         "the log said nothing while queued: {:?}",
         log()
     );
+}
+
+#[tokio::test]
+async fn a_failed_build_leaves_the_deployment_in_the_step_it_failed_in() {
+    let (run, actor) = uploaded();
+    let target = Target {
+        service: ServiceName::parse("app").unwrap(),
+        build: Build::Upload {
+            digest: UploadDigest::parse("d".repeat(64)).unwrap(),
+            source: None,
+            earlier: false,
+            github_skipped: false,
+        },
+    };
+    let running =
+        super::super::running::Running::spawn(CancellationToken::new(), |reporter| async move {
+            for stage in [
+                ployz_build::Stage::Upload,
+                ployz_build::Stage::Preparation,
+                ployz_build::Stage::Building,
+            ] {
+                reporter.report(super::super::prepare::Progress::Build(
+                    ployz_build::Progress::Stage(stage),
+                ));
+            }
+            Err(RpcError::internal("the build failed"))
+        });
+    assert!(run.follow(&target, &running, 1).await.unwrap().is_err());
+    let view = run
+        .store
+        .read(
+            &actor,
+            &DeploymentQuery {
+                id: run.deployment.clone(),
+            },
+        )
+        .unwrap();
+    let steps: Vec<_> = view
+        .steps
+        .iter()
+        .map(|step| (step.name, step.service.clone(), step.ended_at.is_some()))
+        .collect();
+    let app = Some(target.service.clone());
+    assert_eq!(
+        steps,
+        [
+            (StepName::Uploading, app.clone(), true),
+            (StepName::StartingBuilder, app.clone(), true),
+            (StepName::Building, app, false),
+        ]
+    );
+    assert_eq!(view.steps.first().map(|step| step.started_at), Some(1));
 }
 
 #[tokio::test]
@@ -711,7 +765,7 @@ async fn a_build_reports_the_server_it_runs_on_by_name() {
             )));
             Err(RpcError::internal("the build failed"))
         });
-    assert!(run.follow(&target, &running).await.unwrap().is_err());
+    assert!(run.follow(&target, &running, 0).await.unwrap().is_err());
     let build = run
         .store
         .read(
@@ -2008,6 +2062,7 @@ async fn a_deploy_with_a_reused_build_still_recreates_the_services_its_claim_lis
         deployment,
         runner: RunnerId::parse("owner").unwrap(),
         over: Latch::new(),
+        steps: std::sync::Mutex::default(),
         reader: None,
     };
     let claimed = run.claim(Operator::Cloud).await.unwrap();
@@ -2094,4 +2149,36 @@ async fn a_deploy_with_a_reused_build_still_recreates_the_services_its_claim_lis
     std::fs::remove_dir_all(root).unwrap();
 
     assert_eq!(replaced, vec![web]);
+}
+
+#[test]
+fn planning_ends_when_the_first_image_is_sent() {
+    let mut steps = Steps::default();
+    steps.start(StepName::Planning, None, 100);
+    for event in [
+        serde_json::json!({ "Sending": { "service": "api" } }),
+        serde_json::json!({ "Sending": { "service": "web" } }),
+        serde_json::json!({ "Delivered": { "service": "api", "machine": "m1" } }),
+    ] {
+        delivery(&mut steps, &event);
+    }
+    let steps: Vec<_> = steps
+        .take_changed()
+        .into_iter()
+        .map(|step| {
+            (
+                step.name,
+                step.service.map(|s| s.to_string()),
+                step.ended_at.is_some(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        steps,
+        [
+            (StepName::Planning, None, true),
+            (StepName::DeliveringImage, Some("api".to_owned()), true),
+            (StepName::DeliveringImage, Some("web".to_owned()), false),
+        ]
+    );
 }

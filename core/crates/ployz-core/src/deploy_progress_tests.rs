@@ -386,6 +386,32 @@ fn a_container_updated_in_place_serves_throughout() {
 }
 
 #[test]
+fn a_new_copy_retiring_the_one_it_replaced_already_serves() {
+    let machine_id = "a".repeat(32);
+    let rows: Vec<OperationRow> = serde_json::from_value(serde_json::json!([{
+        "index": 0, "machine_id": machine_id, "service_name": "web",
+        "operation": {
+            "type": "replace_container", "machine_id": machine_id, "old_container_id": "c".repeat(64),
+            "skip_health_monitor": true,
+            "spec": {
+                "service_id": "b".repeat(32), "name": "web",
+                "mode": {"mode": "replicated", "replicas": 1},
+                "container": {"image": "web:1", "pull_policy": "missing", "resources": {"memory_bytes": 64}}
+            }
+        },
+        "status": {"type": "running", "phase": {"type": "retiring_old", "container_id": "d".repeat(64)}}
+    }]))
+    .unwrap();
+    assert_eq!(
+        super::RowTracker::default().changes(&rows).remove(0).state,
+        RowState::Running {
+            phase: RowPhase::StoppingContainer,
+            serving: true,
+        }
+    );
+}
+
+#[test]
 fn a_failed_limits_update_names_the_server_and_keeps_dockers_words() {
     let machine_id = "a".repeat(32);
     let operations: Vec<OperationRow> = serde_json::from_value(serde_json::json!([{

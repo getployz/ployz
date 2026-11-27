@@ -170,3 +170,37 @@ async fn an_old_copy_that_will_not_go_is_a_warning_on_an_applied_deployment() {
         .collect();
     assert_eq!(left.len(), 1, "{:?}", ran.warnings);
 }
+
+#[tokio::test]
+async fn stopping_old_runs_until_the_old_copy_retired_after_the_outcome_is_gone() {
+    let service = DeployService::new(machine('a', "one"))
+        .lists_created()
+        .hold_removals();
+    let shop = Shop::deployed(service.clone()).await;
+    let stopping_old = |shop: &Shop| {
+        shop.store
+            .read(&shop.who, &DeploymentQuery { id: Shop::id(2) })
+            .unwrap()
+            .steps
+            .into_iter()
+            .find(|step| step.name == ployz_core::deploy_steps::StepName::StoppingOld)
+    };
+
+    let running = tokio::spawn(shop.run(2, true));
+    service.removal_waited().await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while shop.status(2) != DeploymentStatus::Applied {
+            // real-wait: the runner records in a blocking store call this test can't await.
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("applied while its old copy is still being removed");
+    let open = stopping_old(&shop).expect("stopping_old started at the switch");
+    assert_eq!(open.ended_at, None, "the old copy is still being removed");
+
+    service.release_removals();
+    running.await.unwrap().unwrap();
+    let ended = stopping_old(&shop).expect("stopping_old");
+    assert!(ended.ended_at.is_some(), "{ended:?}");
+}
