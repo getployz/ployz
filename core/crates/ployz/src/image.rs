@@ -86,12 +86,6 @@ impl Coded for PushError {
     }
 }
 
-impl PushError {
-    pub(crate) fn is_cancellation(&self) -> bool {
-        matches!(self, Self::Cancelled)
-    }
-}
-
 struct Cancellation<'token> {
     token: &'token tokio_util::sync::CancellationToken,
 }

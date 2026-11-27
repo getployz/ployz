@@ -109,6 +109,9 @@ pub struct LocalDocker {
     /// Counts container creates, so a stranded ingress retry can tell a newer
     /// container may have appeared since its scan, or be appearing still.
     creates: Arc<Creates>,
+    /// Peer pulls: their Docker CLI and its host, their ledger of staging names, the
+    /// retention lock, and the sweep.
+    peer_pulls: Arc<peer_pull::PeerPulls>,
 }
 
 #[derive(Default)]
@@ -138,30 +141,60 @@ impl Drop for Creating<'_> {
 }
 
 impl LocalDocker {
+    /// Connect as Bollard's `connect_with_defaults` does: `DOCKER_HOST`, or Docker's
+    /// default socket. Peer pulls' Docker CLI is aimed at the same host.
     pub fn connect() -> Result<Self, Error> {
-        Ok(Self::from_client(Docker::connect_with_defaults()?))
+        let host = std::env::var("DOCKER_HOST")
+            .unwrap_or_else(|_| "unix:///var/run/docker.sock".to_owned());
+        Ok(Self::from_client(Docker::connect_with_host(&host)?, host))
+    }
+
+    /// This Docker with peer pulls' staging names recorded in `ledger`, without which
+    /// it takes no peer pull.
+    pub(crate) fn with_staging_ledger(self, ledger: PathBuf) -> Self {
+        let pulls = peer_pull::PeerPulls::new(
+            self.peer_pulls.cli().to_owned(),
+            self.peer_pulls.host().to_owned(),
+            Some(ledger),
+        );
+        Self {
+            peer_pulls: Arc::new(pulls),
+            ..self
+        }
     }
 
     pub(crate) fn client(&self) -> &Docker {
         &self.client
     }
 
-    fn from_client(client: Docker) -> Self {
+    /// A Docker reached through `client`, whose Engine the Docker CLI reaches at `host`.
+    fn from_client(client: Docker, host: String) -> Self {
         Self {
             client,
             endpoint_creates: Arc::default(),
             creates: Arc::default(),
+            peer_pulls: Arc::new(peer_pull::PeerPulls::new("docker".into(), host, None)),
+        }
+    }
+
+    /// This Docker with peer pulls run through the Docker CLI at `cli`, recording their
+    /// staging names in `ledger`.
+    #[cfg(test)]
+    pub(crate) fn with_docker_cli(self, cli: PathBuf, ledger: PathBuf) -> Self {
+        let host = self.peer_pulls.host().to_owned();
+        Self {
+            peer_pulls: Arc::new(peer_pull::PeerPulls::new(cli, host, Some(ledger))),
+            ..self
         }
     }
 
     #[cfg(test)]
     fn connect_socket(socket: &str) -> Result<Self, Error> {
         let socket = socket.trim_start_matches("unix://");
-        Ok(Self::from_client(Docker::connect_with_socket(
-            socket,
-            120,
-            bollard::API_DEFAULT_VERSION,
-        )?))
+        Ok(Self::from_client(
+            Docker::connect_with_socket(socket, 120, bollard::API_DEFAULT_VERSION)?,
+            format!("unix://{socket}"),
+        ))
     }
 
     async fn inspect(&self, container_id: &ContainerId) -> Result<Inspected, Error> {

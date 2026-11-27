@@ -47,6 +47,10 @@ pub(crate) struct FakeDocker {
     pub(crate) existing_container: Arc<Mutex<Option<serde_json::Value>>>,
     /// Docker's `info` reports the containerd image store, which a digest pull needs.
     pub(crate) containerd_store: bool,
+    /// The Docker CLI a peer pull runs, in place of `docker`.
+    pub(crate) docker_cli: Option<std::path::PathBuf>,
+    /// `/info` announces itself here, then never answers.
+    pub(crate) info_stall: Option<Arc<tokio::sync::Notify>>,
     pub(crate) volume_users: Arc<Mutex<BTreeMap<String, Vec<serde_json::Value>>>>,
     pub(crate) image_barrier: Option<Arc<tokio::sync::Barrier>>,
     pub(crate) create_barrier: Option<Arc<tokio::sync::Barrier>>,
@@ -229,6 +233,10 @@ async fn answer(fake: FakeDocker, method: Method, uri: Uri, body: Bytes) -> Resp
         drop(fake.stop_gate.read().await);
     }
     if method == Method::GET && path == "/info" {
+        if let Some(stall) = &fake.info_stall {
+            stall.notify_one();
+            std::future::pending::<()>().await;
+        }
         let driver = if fake.containerd_store {
             "io.containerd.snapshotter.v1"
         } else {
@@ -1074,6 +1082,25 @@ fn mounted_volumes(container: &serde_json::Value) -> impl Iterator<Item = String
         .map(str::to_owned)
 }
 
+/// Writes executable script `body` from a child process. A file this process held open
+/// for writing leaks into any child a concurrent test forks before that child execs, and
+/// exec'ing the script then fails with ETXTBSY.
+pub(crate) fn write_script(path: &std::path::Path, body: &str) {
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(r#"printf '%s' "$1" > "$2" && chmod 700 "$2""#)
+        .arg("sh")
+        .arg(body)
+        .arg(path)
+        .status()
+        .unwrap();
+    assert!(
+        status.success(),
+        "writing {} failed: {status}",
+        path.display()
+    );
+}
+
 pub(crate) async fn fake_runtime_with(fake: FakeDocker) -> (ContainerRuntime, FakeDocker) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -1098,10 +1125,19 @@ pub(crate) async fn fake_runtime_with(fake: FakeDocker) -> (ContainerRuntime, Fa
     )))
     .await
     .unwrap();
-    (
-        ContainerRuntime::new(LocalDocker::from_client(docker), specs),
-        fake,
-    )
+    let docker = LocalDocker::from_client(docker, format!("tcp://{address}"));
+    // A fake runtime never reaches the host's Docker through the CLI: without a fake CLI,
+    // every peer pull's Docker command fails to start. Its ledger sits beside its CLI.
+    let cli = fake
+        .docker_cli
+        .clone()
+        .unwrap_or_else(|| "/nonexistent/ployz-test-docker".into());
+    let ledger = match fake.docker_cli.as_deref().and_then(std::path::Path::parent) {
+        Some(root) => root.join("staging-ledger"),
+        None => std::env::temp_dir().join(format!("ployz-staging-ledger-{}", MachineId::random())),
+    };
+    let docker = docker.with_docker_cli(cli, ledger);
+    (ContainerRuntime::new(docker, specs), fake)
 }
 
 /// A running managed Container made by the real create path, so it carries the

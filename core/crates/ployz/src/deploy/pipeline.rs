@@ -303,12 +303,6 @@ impl From<DeployError> for RpcError {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct PushedImage {
-    pub image: String,
-    pub machine_id: MachineId,
-}
-
 impl From<IngressDnsWarning> for DeployWarning {
     fn from(warning: IngressDnsWarning) -> Self {
         Self::IngressHostname {
@@ -345,7 +339,6 @@ pub(crate) async fn push_namespace_images(
     cancellation: &CancellationToken,
     progress: &impl Fn(ImageDelivery),
 ) -> Result<Vec<String>, DeliveryError> {
-    let mut failures = Vec::new();
     // Check every actual destination before any image or application changes.
     let deliveries = builds.iter().map(|service| {
         let targets = preview.operations.iter()
@@ -362,10 +355,11 @@ pub(crate) async fn push_namespace_images(
         }
         Ok((service, targets.into_iter().map(|target| target.to_string()).collect::<Vec<_>>()))
     }).collect::<Result<Vec<_>, DeliveryError>>()?;
-    for (service, targets) in deliveries {
-        if targets.is_empty() {
-            continue;
-        }
+    let deliveries: Vec<_> = deliveries
+        .into_iter()
+        .filter(|(_, targets)| !targets.is_empty())
+        .collect();
+    for (service, targets) in &deliveries {
         let receivers = machines
             .iter()
             .filter(|machine| machine.machine.id != service.machine_id)
@@ -378,21 +372,41 @@ pub(crate) async fn push_namespace_images(
                 machines: receivers,
             });
         }
-        match push_image(client, service, machines, &targets, cancellation).await {
-            Ok((images, service_failures)) => {
-                for image in images {
-                    progress(ImageDelivery::Delivered {
-                        image: image.image,
-                        service: service.name.clone(),
-                        machine_id: image.machine_id,
-                    });
-                }
-                failures.extend(service_failures);
-            }
-            Err(error) => failures.push(format!("{}: {}", service.image, error_chain::row(&error))),
-        }
     }
-    Ok(failures)
+    let mut pushing: futures_util::stream::FuturesUnordered<_> = deliveries
+        .iter()
+        .enumerate()
+        .map(|(index, (service, targets))| {
+            let mut client = client.clone();
+            let delivered = move |machine_id| {
+                progress(ImageDelivery::Delivered {
+                    image: service.image.clone(),
+                    service: service.name.clone(),
+                    machine_id,
+                });
+            };
+            async move {
+                let pushed = push_image(
+                    &mut client,
+                    service,
+                    machines,
+                    targets,
+                    cancellation,
+                    &delivered,
+                )
+                .await;
+                (index, service, pushed)
+            }
+        })
+        .collect();
+    let mut failed = std::collections::BTreeMap::new();
+    while let Some((index, service, pushed)) = futures_util::StreamExt::next(&mut pushing).await {
+        let service_failures = pushed.unwrap_or_else(|error| {
+            vec![format!("{}: {}", service.image, error_chain::row(&error))]
+        });
+        failed.insert(index, service_failures);
+    }
+    Ok(failed.into_values().flatten().collect())
 }
 
 pub(crate) async fn plan_namespace(
@@ -489,13 +503,16 @@ fn machine_public_addresses(machines: &[MachineObservation]) -> Vec<IpAddr> {
         .collect()
 }
 
+/// Deliver one Service's image, calling `delivered` as each destination lands.
+/// Returns a row for every destination that failed or never answered.
 async fn push_image(
     client: &mut Client,
     service: &BuiltService,
     machines: &[MachineObservation],
     targets: &[String],
     cancellation: &CancellationToken,
-) -> Result<(Vec<PushedImage>, Vec<String>), PushError> {
+    delivered: &impl Fn(MachineId),
+) -> Result<Vec<String>, PushError> {
     let result = crate::image::push_from_machine_using_machines(
         client,
         &service.built,
@@ -504,16 +521,9 @@ async fn push_image(
         targets,
         machines,
         cancellation,
+        delivered,
     )
     .await?;
-    let pushed = result
-        .successes
-        .iter()
-        .map(|success| PushedImage {
-            image: service.image.clone(),
-            machine_id: success.machine_id,
-        })
-        .collect();
     let failures = result
         .failures
         .into_iter()
@@ -532,7 +542,7 @@ async fn push_image(
                 .map(|machine| format!("{} on {machine}: no terminal response", service.image)),
         )
         .collect();
-    Ok((pushed, failures))
+    Ok(failures)
 }
 
 #[cfg(test)]

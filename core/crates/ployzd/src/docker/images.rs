@@ -416,6 +416,9 @@ impl Images {
             .collect::<HashSet<_>>();
         let mut results = Vec::with_capacity(references.len());
         for reference in references {
+            // Held while a removal may take a retention name, so a sweep of peer pulls'
+            // staging names never sees one that is about to go.
+            let _retention = self.docker.peer_pulls.retention().lock().await;
             let outcome = match self.docker.client.inspect_image(reference).await {
                 Ok(image) if image.id.as_ref().is_some_and(|id| in_use.contains(id)) => {
                     ImageRemovalOutcome::InUse
@@ -441,8 +444,15 @@ impl Images {
 }
 
 /// Retention tags in `repository` to remove, newest kept. Images a Container uses,
-/// or whose use Docker did not count, are neither kept nor removed.
-fn superseded(images: &[ImageSummary], repository: &str, pressure: bool, now: i64) -> Vec<String> {
+/// or whose use Docker did not count, are neither kept nor removed. Only an exact
+/// retention name counts: an ordinary tag such as `repo:ployz-sha256-staging` is a
+/// user's, whatever it starts with.
+pub(super) fn superseded(
+    images: &[ImageSummary],
+    repository: &str,
+    pressure: bool,
+    now: i64,
+) -> Vec<String> {
     let prefix = format!("{repository}{RETENTION_TAG}");
     let mut unused = images
         .iter()
@@ -451,7 +461,9 @@ fn superseded(images: &[ImageSummary], repository: &str, pressure: bool, now: i6
             image
                 .repo_tags
                 .iter()
-                .filter(|tag| tag.starts_with(&prefix))
+                .filter(|tag| {
+                    tag.starts_with(&prefix) && ployz_core::retained_digest(tag).is_some()
+                })
                 .map(|tag| (image.last_tagged, tag))
         })
         .collect::<Vec<_>>();
@@ -638,10 +650,20 @@ mod tests {
     const NOW: i64 = 100 * 24 * 60 * 60;
     const DAY: i64 = 24 * 60 * 60;
 
-    fn image(tag: &str, days_ago: Option<i64>, containers: i64) -> ImageSummary {
+    /// The 64 lowercase hex characters that stand for `label` in a retention name.
+    fn hex(label: &str) -> String {
+        let hex = label
+            .bytes()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        format!("{hex:0<64}")
+    }
+
+    /// An image `label` keeps under its retention name in `ployz-build/web`.
+    fn image(label: &str, days_ago: Option<i64>, containers: i64) -> ImageSummary {
         ImageSummary {
-            id: format!("sha256:{tag}"),
-            repo_tags: vec![format!("ployz-build/web:ployz-sha256-{tag}")],
+            id: format!("sha256:{label}"),
+            repo_tags: vec![format!("ployz-build/web:ployz-sha256-{}", hex(label))],
             created: 0,
             size: 1,
             containers,
@@ -650,12 +672,16 @@ mod tests {
         }
     }
 
+    /// The labels of the images whose retention names Image Cleanup removes.
     fn removed(images: &[ImageSummary], pressure: bool) -> Vec<String> {
         superseded(images, "ployz-build/web", pressure, NOW)
             .into_iter()
             .map(|tag| {
-                tag.trim_start_matches("ployz-build/web:ployz-sha256-")
-                    .to_owned()
+                let image = images
+                    .iter()
+                    .find(|image| image.repo_tags.contains(&tag))
+                    .unwrap();
+                image.id.trim_start_matches("sha256:").to_owned()
             })
             .collect()
     }
@@ -682,6 +708,26 @@ mod tests {
                 (8080, ployz_core::TransportProtocol::Tcp),
             ]
         );
+    }
+
+    /// Tag pulls and Publish deliveries write retention names too, so they count toward a
+    /// repository's keep-3 and push older pinned images out of it. An image a Container
+    /// uses still stays, however far out of the newest three it falls.
+    #[test]
+    fn an_image_a_container_uses_stays_when_newer_retention_names_push_it_out() {
+        let images = [
+            image("pinned", Some(60), 1),
+            image("tag-a", Some(10), 0),
+            image("tag-b", Some(11), 0),
+            image("tag-c", Some(12), 0),
+            image("tag-d", Some(13), 0),
+        ];
+
+        for pressure in [false, true] {
+            let removed = removed(&images, pressure);
+            assert!(!removed.contains(&"pinned".to_owned()), "{removed:?}");
+            assert!(removed.contains(&"tag-d".to_owned()), "{removed:?}");
+        }
     }
 
     #[test]
@@ -740,10 +786,31 @@ mod tests {
     fn ignores_other_repositories_and_tags() {
         let mut other = image("x", Some(90), 0);
         other.repo_tags = vec![
-            "ployz-build/web-api:ployz-sha256-x".into(),
+            format!("ployz-build/web-api:ployz-sha256-{}", hex("x")),
             "ployz-build/web:latest".into(),
         ];
         assert!(removed(&[other.clone(), other.clone(), other.clone(), other], true).is_empty());
+    }
+
+    /// Image Cleanup removes only an exact retention name, `ployz-sha256-` and 64
+    /// lowercase hex characters. A user's tag that only starts like one stays, however
+    /// old and unused.
+    #[test]
+    fn only_an_exact_retention_name_is_selected() {
+        let tagged = |label: &str, tag: String| ImageSummary {
+            repo_tags: vec![format!("ployz-build/web:ployz-sha256-{tag}")],
+            ..image(label, Some(90), 0)
+        };
+        let images = [
+            tagged("staging", "staging".into()),
+            tagged("short", "a".repeat(63)),
+            tagged("upper", "A".repeat(64)),
+            tagged("long", "a".repeat(65)),
+            tagged("newest", "b".repeat(64)),
+        ];
+        for pressure in [false, true] {
+            assert!(removed(&images, pressure).is_empty(), "{pressure}");
+        }
     }
 
     #[test]
@@ -1076,7 +1143,7 @@ mod tests {
             bollard::API_DEFAULT_VERSION,
         )
         .unwrap();
-        Images::new(LocalDocker::from_client(docker))
+        Images::new(LocalDocker::from_client(docker, format!("tcp://{address}")))
     }
 
     const MANIFEST_UNKNOWN: &str =

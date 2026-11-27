@@ -97,7 +97,10 @@ async fn exec_forwards_output_while_docker_inspection_is_pending() {
         .put(&container_id, None, &spec, None)
         .await
         .unwrap();
-    let runtime = ContainerRuntime::new(LocalDocker::from_client(docker), specs);
+    let runtime = ContainerRuntime::new(
+        LocalDocker::from_client(docker, format!("tcp://{docker_address}")),
+        specs,
+    );
     let owner = crate::machine::RecordOwner::spawn(machine_store).unwrap();
     let api = MachineApi::builder(owner.clone())
         .with_local(crate::machine::LocalMachine::new(owner).with_containers(Some(runtime)))
@@ -1289,7 +1292,10 @@ async fn stalling_exec_runtime(
         .await
         .unwrap();
     (
-        ContainerRuntime::new(LocalDocker::from_client(docker), specs),
+        ContainerRuntime::new(
+            LocalDocker::from_client(docker, format!("tcp://{docker_address}")),
+            specs,
+        ),
         container_id,
         docker_server,
     )

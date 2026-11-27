@@ -1126,6 +1126,11 @@ impl LocalMachine {
     /// creation could run: refused before the turn at the scope the caller holds now, and
     /// checked again under it.
     ///
+    /// Unlike other admitted work, a transfer stops once its caller stops waiting, unless
+    /// it has begun its tag, which it finishes. Staging names are swept off its turn: a
+    /// cancelled Deployment's pull, or a stalled sweep, must not hold up the creates of
+    /// the next one.
+    ///
     /// # Errors
     ///
     /// Returns when Docker is unavailable, admission is busy, an Operator names a tag, or
@@ -1135,7 +1140,7 @@ impl LocalMachine {
         request: PullImageFromMachineRequest,
     ) -> Result<ImagePulled, Error> {
         self.peer_pull_as(self.scope_now()?, &request)?;
-        self.finish_shared(move |local| async move {
+        self.finish_shared_with_caller(move |local, gone| async move {
             local.peer_pull_as(local.scope(), &request)?;
             let containers = local.docker()?;
             if let Err(error) = crate::docker::pull_from_ingest(
@@ -1143,6 +1148,7 @@ impl LocalMachine {
                 &request.pull,
                 request.source,
                 &request.platform,
+                &gone,
             )
             .await
             {

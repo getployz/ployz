@@ -417,6 +417,103 @@ async fn preparation_derives_railpack_platforms_from_the_machines_a_service_may_
 }
 
 #[tokio::test]
+async fn two_services_images_deliver_at_once() {
+    let (root, service, builds) = fixture();
+    // Each pull answers only once the other has started, so one after the other never ends.
+    *builds.pull_gate.lock().unwrap() = Some(Arc::new(tokio::sync::Barrier::new(2)));
+    tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        deploy(
+            service,
+            input(
+                &root,
+                vec![git("one", "dockerfile"), git("two", "dockerfile")],
+            ),
+        ),
+    )
+    .await
+    .expect("one Service's delivery waited on the other's")
+    .unwrap();
+    assert_eq!(builds.pulls.lock().unwrap().len(), 2);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn a_slow_destination_does_not_hold_back_a_fast_ones_delivery() {
+    let (root, service, builds) = fixture();
+    let native = |hex, name| {
+        let mut machine = machine(hex, name);
+        machine.machine.runtime.architecture = "x86_64".into();
+        machine
+    };
+    let (source, fast, slow) = (
+        native('a', "builder"),
+        native('b', "fast"),
+        native('c', "slow"),
+    );
+    let image = ployz_build::BuiltImage {
+        reference: format!("sha256:{}", "4".repeat(64)),
+        tags: vec!["registry.invalid/shared:latest".into()],
+        platforms: vec!["linux/amd64".into()],
+        location: "unix:///var/run/docker.sock".into(),
+    };
+    builds.stores.lock().unwrap().insert(
+        source.machine.id,
+        MachineImages {
+            containerd_store: true,
+            images: vec![ployz_core::ImageSummary {
+                id: image.reference.clone(),
+                repo_tags: Vec::new(),
+                created: 0,
+                size: 1,
+                containers: 0,
+                platforms: vec!["linux/amd64".into()],
+                last_tagged: None,
+            }],
+            docker_root: None,
+        },
+    );
+    // The slow Machine's pull answers only after the fast one is reported delivered.
+    let release = Arc::new(tokio::sync::Notify::new());
+    builds
+        .pull_holds
+        .lock()
+        .unwrap()
+        .insert(slow.machine.id, release.clone());
+    let machines = vec![source.clone(), fast.clone(), slow.clone()];
+    let (mut client, server) = connected(service.with_machines(machines.clone())).await;
+    let delivered = std::sync::Mutex::new(Vec::new());
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        crate::image::push_from_machine_using_machines(
+            &mut client,
+            &image,
+            "registry.invalid/shared:latest",
+            source.machine.id,
+            &[slow.machine.id.to_string(), fast.machine.id.to_string()],
+            &machines,
+            &tokio_util::sync::CancellationToken::new(),
+            &|machine_id| {
+                delivered.lock().unwrap().push(machine_id);
+                if machine_id == fast.machine.id {
+                    release.notify_one();
+                }
+            },
+        ),
+    )
+    .await
+    .expect("the fast destination's delivery waited on the slow one")
+    .unwrap();
+    assert_eq!(
+        *delivered.lock().unwrap(),
+        [fast.machine.id, slow.machine.id]
+    );
+    assert_eq!(result.successes.len(), 2);
+    server.abort();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn remote_transfer_keeps_exact_source_successes_failures_and_omissions() {
     let (root, service, builds) = fixture();
     let native = |hex, name| {

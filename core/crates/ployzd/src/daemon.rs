@@ -282,10 +282,13 @@ impl Daemon {
             None => None,
             Some(specs) => match LocalDocker::connect() {
                 Ok(docker) => Some(
-                    ContainerRuntime::new(docker, specs)
-                        .with_sealing_key(config.data_dir.clone())
-                        .with_collector(config.data_dir.clone())
-                        .with_log_store(LogStore::of(config.units)),
+                    ContainerRuntime::new(
+                        docker.with_staging_ledger(config.data_dir.join("peer-pull-staging")),
+                        specs,
+                    )
+                    .with_sealing_key(config.data_dir.clone())
+                    .with_collector(config.data_dir.clone())
+                    .with_log_store(LogStore::of(config.units)),
                 ),
                 Err(error) => {
                     eprintln!(
@@ -324,6 +327,9 @@ impl Daemon {
             config.containerd_socket.clone(),
             containers.as_ref().map(ContainerRuntime::local_docker),
         );
+        if let Some(docker) = containers.as_ref().map(ContainerRuntime::local_docker) {
+            docker.sweep_staging();
+        }
         let records = local.watch();
         let participation = Participation::new(records.clone(), shutdown.clone());
         let dns_service = dns.clone();
