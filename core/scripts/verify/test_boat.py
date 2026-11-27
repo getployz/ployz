@@ -1213,8 +1213,16 @@ class RelayBlock(unittest.TestCase):
         script = self.script(lambda *_, **__: [(None, None, None, "", ("192.0.2.9", 443)),
                                                (None, None, None, "", ("2001:db8::9", 443, 0, 0))])
         self.assertIn("127.0.0.1 relay.ployz.dev", script)
-        self.assertIn("iptables -I OUTPUT 1 -d 192.0.2.9 -m conntrack --ctstate NEW -j REJECT", script)
-        self.assertIn("ip6tables -I OUTPUT 1 -d 2001:db8::9 -m conntrack --ctstate NEW -j REJECT", script)
+        for table, address in [("iptables", "192.0.2.9"), ("ip6tables", "2001:db8::9")]:
+            for protocol in ["tcp", "udp"]:
+                self.assertIn(f"{table} -I OUTPUT 1 -d {address} -p {protocol} --dport 443 -m conntrack --ctstate NEW"
+                              " -j REJECT", script)
+
+    def test_other_ports_on_the_relay_host_stay_open(self):
+        script = self.script(lambda *_, **__: [(None, None, None, "", ("192.0.2.9", 443))])
+        for line in script.splitlines():
+            if "REJECT" in line:
+                self.assertEqual(line.count("--dport 443"), 2, line)
 
     def test_a_relay_that_does_not_resolve_still_has_its_name_pointed_away(self):
         script = self.script(boat.socket.gaierror("no name"))

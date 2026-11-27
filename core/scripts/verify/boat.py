@@ -295,16 +295,18 @@ RELAY = "relay.ployz.dev"
 
 def relay_block():
     """A guest script that keeps a test Machine off the production relay: the name points at loopback, and new
-    connections to its addresses, resolved here at run time, are refused. Replies to connections the relay's host
+    https connections to its addresses, resolved here at run time, are refused. Replies to connections the relay's host
     opens, such as this host's SSH when it is the same box, are not new, so they pass."""
     try:
         addresses = sorted({info[4][0] for info in socket.getaddrinfo(RELAY, 443, proto=socket.IPPROTO_TCP)})
     except socket.gaierror:
         addresses = []
+    # The relay speaks only https, and its host serves other things a test may need, so only port 443 is refused.
     rules = "".join(
-        f"{table} -C OUTPUT -d {address} -m conntrack --ctstate NEW -j REJECT 2>/dev/null"
-        f" || {table} -I OUTPUT 1 -d {address} -m conntrack --ctstate NEW -j REJECT\n"
-        for address in addresses for table in ["ip6tables" if ":" in address else "iptables"])
+        f"{table} -C OUTPUT -d {address} -p {protocol} --dport 443 -m conntrack --ctstate NEW -j REJECT 2>/dev/null"
+        f" || {table} -I OUTPUT 1 -d {address} -p {protocol} --dport 443 -m conntrack --ctstate NEW -j REJECT\n"
+        for address in addresses for table in ["ip6tables" if ":" in address else "iptables"]
+        for protocol in ["tcp", "udp"])
     return (f"grep -q ' {RELAY}$' /etc/hosts || printf '127.0.0.1 {RELAY}\\n::1 {RELAY}\\n' >> /etc/hosts\n" + rules)
 
 
