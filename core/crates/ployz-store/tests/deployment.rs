@@ -443,6 +443,96 @@ fn a_deployment_keeps_live_at_after_the_store_records_its_end_and_cleanup() {
 }
 
 #[test]
+fn a_waiting_service_keeps_a_partial_switch_from_being_live() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    let at = store
+        .claim(&id(1), &a)
+        .unwrap()
+        .deployment
+        .started_at
+        .unwrap();
+    store
+        .record(
+            &id(1),
+            &a,
+            RunEvidence::Prepared(preview_with_waiting(&["web"], "api")),
+        )
+        .unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Finishing { live_at: Some(at) })
+        .unwrap();
+    let view = store
+        .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
+        .unwrap();
+    assert_eq!(
+        view.deployment.live_at, None,
+        "api had no Volume writer and was never executed"
+    );
+}
+
+#[test]
+fn an_applied_deploy_without_a_switch_has_no_live_at() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    let mut plan = preview_with_waiting(&[], "api");
+    plan.blocked
+        .extend(preview_with_waiting(&[], "web").blocked);
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(plan))
+        .unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Finishing { live_at: None })
+        .unwrap();
+    assert_eq!(summary(&store, &who, 1).live_at, None);
+    store.record(&id(1), &a, succeeded(&[])).unwrap();
+    let applied = summary(&store, &who, 1);
+    assert_eq!(applied.status, DeploymentStatus::Applied);
+    assert_eq!(
+        applied.live_at, None,
+        "zero operations ran and no Service switched"
+    );
+}
+
+#[test]
+fn live_at_stays_at_the_switch_when_the_end_clock_is_earlier() {
+    let (store, who, url, _dir) = own_shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    let at = store
+        .claim(&id(1), &a)
+        .unwrap()
+        .deployment
+        .started_at
+        .unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Finishing { live_at: Some(at) })
+        .unwrap();
+    assert_eq!(summary(&store, &who, 1).live_at, Some(at));
+    store
+        .record(&id(1), &a, succeeded(&["web", "api"]))
+        .unwrap();
+
+    // Simulate the end written after the wall clock stepped back.
+    let ended = at - 120;
+    backend::execute(
+        &url,
+        &format!("UPDATE config_deployment SET ended = {ended}"),
+    );
+    let view = store
+        .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
+        .unwrap();
+    assert_eq!(view.deployment.ended_at, Some(ended));
+    assert_eq!(view.deployment.live_at, Some(at));
+}
+
+#[test]
 fn a_deployment_keeps_its_steps_in_order_and_the_one_it_stopped_in_open() {
     let (store, who) = shop();
     admit(&store, &who, 1, &[], None).unwrap();

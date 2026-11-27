@@ -47,12 +47,9 @@ pub(crate) fn record(
                     return Err(invalid_evidence("Deploy Preview"));
                 };
                 if let Some(at) = live_at
-                    && !preview
-                        .blocked
-                        .iter()
-                        .any(|entry| entry.kind == BlockedKind::Refusal)
+                    && preview.waits().next().is_none()
                 {
-                    stored.run.live_at = Some(at.min(stored.read_at));
+                    stored.run.live_at.get_or_insert(at);
                 }
             }
             stored.run.cleanup_until = Some(now() + LEASE);
@@ -670,9 +667,6 @@ pub(super) fn end(
         _ => status,
     };
     let ended_at = now();
-    if status == End::Applied && matches!(outcome, Outcome::Executed { .. }) {
-        stored.run.live_at.get_or_insert(ended_at);
-    }
     if stored.run.cleanup_until.is_some() {
         stored.run.cleanup_until = Some(ended_at + LEASE);
     }

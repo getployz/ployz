@@ -696,9 +696,9 @@ the image, show as the container printed them. These outcomes stay with that dep
 when you deploy again. Unchanged services have no rows because no server work ran.
 
 `ployz deployment show` shows when the deployment went live, including deployments that
-reported a cleanup failure. In JSON, `live_at` is in Unix seconds. A deployment that
-fails before switching traffic has no `live_at`. If a guard skips retirement, an applied
-deployment records when it applied.
+reported a cleanup failure. In JSON, `live_at` is in Unix seconds. A deployment has
+no `live_at` until it confirms the switch for every Service that needs one. A waiting
+Service prevents that confirmation.
 
 The command ends with the deployment's steps and how long each took, such as
 `building api  +2.1s  41.3s`. A step the deployment stopped in reads `stopped here`. Old

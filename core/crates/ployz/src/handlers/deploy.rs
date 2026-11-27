@@ -15,7 +15,7 @@ mod silent;
 mod stage_tests;
 
 use crate::ui::Next;
-use crate::ui::progress::{Disposition, Progress, State};
+use crate::ui::progress::{Disposition, Frame, Progress, State};
 use crate::ui::{self, Cell, Table, Tone};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write as _;
@@ -984,15 +984,15 @@ struct Followed {
 }
 
 impl Followed {
-    fn report_live(&mut self) {
+    fn report_live(&mut self, frame: &Frame) {
         let deployment = &self.view.deployment;
         if deployment.live_at.is_some()
             && self.reported_live.as_ref() != Some(&deployment.id)
             && !progress::noop(&self.view)
         {
             let line = format!("Deployment {} Live.", deployment.label());
-            if let Some(progress) = &self.progress {
-                progress.note(line);
+            if let Some(progress) = &mut self.progress {
+                progress.announce(line, frame.clone());
             } else {
                 ui::note(line);
             }
@@ -1002,8 +1002,8 @@ impl Followed {
 }
 
 fn finish_progress(followed: &mut Followed, disposition: Disposition) {
-    followed.report_live();
     let frame = progress::frame(&followed.view);
+    followed.report_live(&frame);
     let up_to_date = matches!(disposition, Disposition::UpToDate);
     if let Some(progress) = followed.progress.take() {
         progress.finish(frame, disposition);
@@ -1098,11 +1098,12 @@ fn follow(
                 successor: None,
             })
         };
-        current.report_live();
+        let frame = progress::frame(&current.view);
+        current.report_live(&frame);
         if let Some(progress) = current.progress.as_mut() {
-            progress.update(progress::frame(&current.view));
+            progress.update(frame);
         } else if progress::visible(&current.view) {
-            current.progress = Some(Progress::start(progress::frame(&current.view)));
+            current.progress = Some(Progress::start(frame));
         }
         let current = followed
             .as_ref()

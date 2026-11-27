@@ -380,8 +380,9 @@ impl Progress {
         }
     }
 
-    pub(crate) fn note(&self, line: String) {
-        let _ = self.sender.send(Message::Note(line));
+    pub(crate) fn announce(&mut self, line: String, frame: Frame) {
+        let _ = self.sender.send(Message::Announce(line, frame.clone()));
+        self.previous = frame;
     }
 
     /// Retain final evidence and join the worker before the caller emits its result.
@@ -408,7 +409,7 @@ impl Drop for Progress {
 
 enum Message {
     Update(Frame),
-    Note(String),
+    Announce(String, Frame),
     Finish(Frame, Disposition),
     Abandon,
 }
@@ -543,11 +544,12 @@ fn drive(
                     backend.draw(&frame, tick, color);
                 }
             }
-            Ok(Message::Note(line)) => {
+            Ok(Message::Announce(line, next)) => {
                 backend.clear();
                 let _ = writeln!(writer, "{line}");
                 let _ = writer.flush();
-                backend.draw(&frame, tick, color);
+                pending = Some(Message::Update(next));
+                continue;
             }
             Ok(Message::Finish(final_frame, disposition)) => {
                 let terminal_width = match &backend {

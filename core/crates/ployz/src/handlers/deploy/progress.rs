@@ -116,10 +116,15 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
     let deployment = &view.deployment;
     let title = if deployment.cleanup == Some(ployz_store::CleanupStatus::Pending)
         && deployment.live_at.is_some()
-        && view.steps.iter().any(|step| {
+    {
+        let cleanup = if view.steps.iter().any(|step| {
             step.name == ployz_core::deploy_steps::StepName::StoppingOld && step.ended_at.is_none()
         }) {
-        format!("Deployment {} stopping_old", deployment.label())
+            "stopping_old"
+        } else {
+            "cleaning up"
+        };
+        format!("Deployment {} {cleanup}", deployment.label())
     } else {
         let action = if deployment.live_at.is_some() {
             "Deployment"

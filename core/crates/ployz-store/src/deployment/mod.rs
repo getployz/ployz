@@ -212,7 +212,7 @@ pub struct DeploymentSummary {
     /// When its runner claimed it, in Unix seconds.
     #[ts(type = "number | null")]
     pub started_at: Option<i64>,
-    /// When traffic switched, or the Deployment applied without a confirmed switch, in Unix seconds.
+    /// When the Deploy confirmed its traffic switch, in Unix seconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "number")]
     pub live_at: Option<i64>,
@@ -1159,11 +1159,6 @@ struct Run {
 }
 
 impl Run {
-    fn live_at(&self, ended_at: Option<i64>) -> Option<i64> {
-        self.live_at
-            .map(|at| ended_at.map_or(at, |end| at.min(end)))
-    }
-
     fn cleanup(&self, read_at: i64) -> Option<CleanupStatus> {
         self.cleanup_until.map(|until| {
             if lapsed(until, read_at) {
@@ -2103,7 +2098,7 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
             admitted_by: row.parse_optional(13, "identity")?,
             admitted_at,
             started_at,
-            live_at: run.live_at(ended_at),
+            live_at: run.live_at,
             cleanup: run.cleanup(read_at),
             ended_at,
             message: row.optional_text(17)?.map(str::to_owned),
@@ -2179,7 +2174,7 @@ impl Stored {
         self.summary.runner = runner;
         self.summary.started_at = started_at;
         self.summary.ended_at = ended_at;
-        self.summary.live_at = self.run.live_at(ended_at);
+        self.summary.live_at = self.run.live_at;
         self.summary.cleanup = self.run.cleanup(self.read_at);
         self.summary.in_flight = status.in_flight();
         self.summary.chooses_upload_at_start =
