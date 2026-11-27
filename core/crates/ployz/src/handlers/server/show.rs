@@ -333,7 +333,12 @@ async fn inspect(
         Err(error) => {
             let message = if error.target_unanswered() {
                 // One listing from the entry explains a silent target both ways.
-                let machines = client.machines().await.unwrap_or_default();
+                let machines =
+                    tokio::time::timeout(crate::deploy::DIAGNOSIS_WAIT, client.machines())
+                        .await
+                        .ok()
+                        .and_then(Result::ok)
+                        .unwrap_or_default();
                 let target =
                     match selector.resolve(machines.iter().map(|observed| &observed.machine)) {
                         ployz_core::NameMatches::One(target) => Some(target.id),

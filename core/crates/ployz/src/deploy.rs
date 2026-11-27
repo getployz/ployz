@@ -443,7 +443,10 @@ pub(crate) async fn dead_link_to(
     client: &mut crate::connect::Client,
     selector: &ployz_core::MachineTarget,
 ) -> Option<DeadLink> {
-    let machines = client.machines().await.ok()?;
+    let machines = tokio::time::timeout(DIAGNOSIS_WAIT, client.machines())
+        .await
+        .ok()?
+        .ok()?;
     let ployz_core::NameMatches::One(target) =
         selector.resolve(machines.iter().map(|observed| &observed.machine))
     else {
@@ -454,6 +457,10 @@ pub(crate) async fn dead_link_to(
         .into_iter()
         .find(|link| link.machine == target)
 }
+
+/// How long a command that already failed waits for the entry's listing that explains
+/// why, before it reports the failure without it.
+pub(crate) const DIAGNOSIS_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// What a firewall must let through so two Servers handshake.
 pub(crate) fn open_wireguard() -> String {
