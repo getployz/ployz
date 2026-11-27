@@ -771,6 +771,20 @@ impl Client {
         switched.map_err(call_to_napi)
     }
 
+    /// Every copy of every Volume on the session's Servers, by role (`CopyObservation`),
+    /// read over this session rather than a dial of its own. Servers that don't answer
+    /// are named, never assumed empty.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] JSON payload when the session is closed or
+    /// listing Machines fails.
+    #[napi(ts_return_type = "Promise<CopyObservation>")]
+    pub async fn observe_copies(&self) -> Result<serde_json::Value> {
+        let observed = self.inner.observe_copies().await.map_err(rpc_to_napi)?;
+        to_json(&observed)
+    }
+
     /// Container `container` on `machine` with its spec's real environment values.
     ///
     /// # Errors

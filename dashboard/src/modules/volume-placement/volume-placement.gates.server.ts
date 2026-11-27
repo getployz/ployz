@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import type { EnvironmentRef } from "@ployz/sdk";
+import type { EnvironmentRef, RuntimeWatchView } from "@ployz/sdk";
 import { Effect } from "effect";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { type StoreRefusal, serversUnanswered } from "#/lib/refusal";
@@ -12,20 +12,30 @@ import { originRefusal } from "#/modules/volume-run/volume-run.rows.server";
 /** Staging refuses while a Server is silent or its report hasn't arrived, the frame gate's way and with its code. */
 export const UNANSWERED = serversUnanswered("unanswered");
 
+/** The names of the Servers with storage in `frame` that lack the volume verbs, or null unless every Server answered. */
+const blockersIn = (frame: RuntimeWatchView | null) => frame === null || frame.incomplete_ids.machines.length > 0 ? null : placementBlockers(frame.machines.map((entry) => ({
+  name: entry.machine.name, storage: entry.storage?.state ?? null, capabilities: entry.machine.runtime.capabilities ?? [],
+})));
+
 /** The names of the Servers with storage that lack the volume verbs. Fails unless every Server answers, since a silent one may run anything. */
 export const readPlacementBlockers = (organizationId: string) => firstRuntimeFrame(organizationId).pipe(
-  Effect.flatMap((frame) => frame === null || frame.incomplete_ids.machines.length > 0 ? Effect.fail("not every Server answered") : Effect.succeed(placementBlockers(frame.machines.map((entry) => ({
-    name: entry.machine.name, storage: entry.storage?.state ?? null, capabilities: entry.machine.runtime.capabilities ?? [],
-  }))))),
+  Effect.flatMap((frame) => {
+    const blockers = blockersIn(frame);
+    return blockers === null ? Effect.fail("not every Server answered") : Effect.succeed(blockers);
+  }),
 );
+
+/** Why the organization `frame` shows can't stage a placement or restore yet, or null when it can. */
+export const placementRefusalIn = (frame: RuntimeWatchView | null): StoreRefusal | null => {
+  const blockers = blockersIn(frame);
+  if (blockers === null) return UNANSWERED;
+  if (blockers.length === 0) return null;
+  return { code: "upgrade_required", message: placementUpgradeMessage(blockers), details: { servers: [...blockers] } };
+};
 
 /** Why the organization can't stage a placement or restore yet, or null when it can. */
 export const placementRefusal = Effect.fn("VolumePlacement.refusal")(function* (organizationId: string) {
-  const blockers = yield* readPlacementBlockers(organizationId).pipe(Effect.catch(() => Effect.succeed(null)));
-  if (blockers === null) return UNANSWERED;
-  if (blockers.length === 0) return null;
-  const refusal: StoreRefusal = { code: "upgrade_required", message: placementUpgradeMessage(blockers), details: { servers: [...blockers] } };
-  return refusal;
+  return placementRefusalIn(yield* firstRuntimeFrame(organizationId).pipe(Effect.catch(() => Effect.succeed(null))));
 });
 
 /** `write` runs only once the organization can stage; otherwise the refusal answers in its place. */
