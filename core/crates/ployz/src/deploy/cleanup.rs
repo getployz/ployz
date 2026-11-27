@@ -610,7 +610,6 @@ pub(crate) async fn user_stop<C: CopyLifecycle>(
     machine_id: &MachineId,
     container_id: &ContainerId,
     stop: StopOptions,
-    queued: u32,
     cancellation: &CancellationToken,
 ) -> Result<(), RpcError> {
     let observed = observe(client, machine_id, container_id).await?;
@@ -646,7 +645,7 @@ pub(crate) async fn user_stop<C: CopyLifecycle>(
         };
         left_running(&copy, "Held", step)?;
     }
-    stopped(client, &copy, &observed.resolved_spec, stop, queued).await
+    stopped(client, &copy, &observed.resolved_spec, stop).await
 }
 
 pub(crate) async fn user_start<C: CopyLifecycle>(
@@ -679,14 +678,13 @@ pub(crate) async fn user_restart<C: CopyLifecycle>(
     machine_id: &MachineId,
     container_id: &ContainerId,
     stop: StopOptions,
-    queued: u32,
     cancellation: &CancellationToken,
 ) -> Result<UserStarted, RpcError> {
     let observed = observe(client, machine_id, container_id).await?;
     let copy = Copy::observed(&observed);
     let spec = &observed.resolved_spec;
     if routable(&observed) && never_in(&observed) {
-        restart_pending(client, &copy, spec, stop, queued).await?;
+        restart_pending(client, &copy, spec, stop).await?;
         return Err(not_admitted(&copy));
     }
     let run = match (routable(&observed), &copy.rotation) {
@@ -699,7 +697,7 @@ pub(crate) async fn user_restart<C: CopyLifecycle>(
         }
         (true, CopyRotation::In) => fresh_run(),
         (false, _) | (true, CopyRotation::Pending) => {
-            return restart_pending(client, &copy, spec, stop, queued).await;
+            return restart_pending(client, &copy, spec, stop).await;
         }
     };
     let held = Copy {
@@ -708,7 +706,7 @@ pub(crate) async fn user_restart<C: CopyLifecycle>(
     };
     let stopped = match hold(client, &copy, run.clone(), cancellation).await {
         Ok(rotated) => match rotated.failure() {
-            Ok(()) => stopped(client, &held, spec, stop, queued).await,
+            Ok(()) => stopped(client, &held, spec, stop).await,
             // Answered before the Machine acted, so there is nothing to put back.
             Err(RotationFailure::Refused(refusal)) => return Err(refusal.into_error()),
             Err(failure) => Err(left_unrouted(
@@ -829,7 +827,6 @@ async fn stopped<C: CopyLifecycle>(
     copy: &Copy,
     spec: &ResolvedServiceSpec,
     stop: StopOptions,
-    queued: u32,
 ) -> Result<(), RpcError> {
     let grace = stop
         .grace_period_seconds
@@ -845,11 +842,7 @@ async fn stopped<C: CopyLifecycle>(
         stop,
     };
     client
-        .ensure_unsettled(
-            &copy.machine_id,
-            want,
-            stop_rpc_timeout(Some(grace), queued),
-        )
+        .ensure_unsettled(&copy.machine_id, want, stop_rpc_timeout(Some(grace)))
         .await?
         .into_settled()
         .map(|_| ())
@@ -860,9 +853,8 @@ async fn restart_pending<C: CopyLifecycle>(
     copy: &Copy,
     spec: &ResolvedServiceSpec,
     stop: StopOptions,
-    queued: u32,
 ) -> Result<UserStarted, RpcError> {
-    let stopped = stopped(client, copy, spec, stop, queued).await;
+    let stopped = stopped(client, copy, spec, stop).await;
     let started = run_pending(client, copy).await;
     stopped?;
     started

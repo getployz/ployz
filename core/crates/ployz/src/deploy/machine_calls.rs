@@ -731,7 +731,7 @@ impl Client {
             ContainerWant::Running { .. }
             | ContainerWant::Out { .. }
             | ContainerWant::Held { .. } => Some(TARGET_RPC_TIMEOUT),
-            ContainerWant::Stopped { stop, .. } => stop_rpc_timeout(stop.grace_period_seconds, 1),
+            ContainerWant::Stopped { stop, .. } => stop_rpc_timeout(stop.grace_period_seconds),
             ContainerWant::Gone { .. } => None,
         };
         self.ensure_approved::<op::EnsureContainer>(machine_id, want, approvals, timeout)

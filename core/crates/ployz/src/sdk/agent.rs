@@ -549,7 +549,6 @@ pub async fn stop_one(
                 signal: None,
                 grace_period_seconds: None,
             },
-            1,
             &CancellationToken::new(),
         ))
         .await

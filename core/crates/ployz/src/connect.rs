@@ -87,11 +87,10 @@ const MANAGEMENT_DIAL_TIMEOUT: Duration = Duration::from_secs(15);
 /// The SSH setup budget when the caller sets none, and `--ssh-timeout`'s default.
 pub(crate) const DEFAULT_SSH_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// The deadline of a stop RPC that waits behind `queued - 1` other stops on its
-/// Machine: a Machine stops its containers one at a time, each taking up to its grace.
-pub(crate) fn stop_rpc_timeout(grace_period_seconds: Option<u16>, queued: u32) -> Option<Duration> {
-    grace_period_seconds
-        .map(|seconds| TARGET_RPC_TIMEOUT + Duration::from_secs(u64::from(seconds)) * queued.max(1))
+/// The deadline of a stop RPC: a Machine waits out each stop's grace beside its other
+/// stops, so one grace bounds it however many the Machine stops at once.
+pub(crate) fn stop_rpc_timeout(grace_period_seconds: Option<u16>) -> Option<Duration> {
+    grace_period_seconds.map(|seconds| TARGET_RPC_TIMEOUT + Duration::from_secs(u64::from(seconds)))
 }
 
 /// The deadline of an In RPC: the owner settles the copy's health before it
