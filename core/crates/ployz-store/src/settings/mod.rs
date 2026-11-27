@@ -185,7 +185,7 @@ impl ServiceSetting {
                 apply: Apply::Staged,
                 needs: Needs::Any,
                 default: |_| Value::Null,
-                unset: None,
+                unset: Some("No limit"),
                 expected: || json!({ "type": "number", "exclusiveMinimum": 0, "maximum": CPU_LIMIT_MAX }),
                 examples: || json!([0.5, 2]),
             },
@@ -279,7 +279,7 @@ impl ServiceSetting {
                 apply: Apply::Staged,
                 needs: Needs::Any,
                 default: |_| Value::Null,
-                unset: None,
+                unset: Some("No limit"),
                 expected: || {
                     json!({
                         "anyOf": [
@@ -423,7 +423,7 @@ impl ServiceSetting {
                 apply: Apply::Staged,
                 needs: Needs::Any,
                 default: |_| Value::Null,
-                unset: None,
+                unset: Some("Automatic"),
                 expected: || json!({ "type": "string", "enum": UPDATE_ORDERS }),
                 examples: || json!(["rolling"]),
             },

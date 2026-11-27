@@ -431,6 +431,23 @@ mod tests {
             valued(&row("web.stopSignal", json!("SIGINT"))),
             "\"SIGINT\" (default Auto)"
         );
+        for (path, set, unset) in [
+            ("web.cpuLimit", json!(2), "No limit"),
+            ("web.memLimit", json!("512m"), "No limit"),
+            ("web.updateOrder", json!("rolling"), "Automatic"),
+            ("web.preferredBuilder", json!("github"), "Auto"),
+            ("web.rootDir", json!("/apps/web"), "/"),
+            ("web.dockerfilePath", json!("web.Dockerfile"), "Dockerfile"),
+        ] {
+            assert_eq!(
+                valued(&row(path, json!(null))),
+                format!("{unset} (default)")
+            );
+            assert_eq!(
+                valued(&row(path, set.clone())),
+                format!("{} (default {unset})", plain(&set))
+            );
+        }
         assert_eq!(valued(&row("web.env.PORT", json!("3000"))), "\"3000\"");
         assert_eq!(valued(&row("web.mounts.data", json!("/data"))), "\"/data\"");
         assert_eq!(

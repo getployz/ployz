@@ -186,7 +186,7 @@ impl PolicySetting {
                 apply: Apply::Immediate,
                 needs: Needs::Git,
                 default: |_| Value::Null,
-                unset: None,
+                unset: Some("Auto"),
                 expected: Preferred::schema,
                 examples: || json!(["github"]),
             },
