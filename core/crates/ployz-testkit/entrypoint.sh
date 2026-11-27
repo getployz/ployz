@@ -23,7 +23,9 @@ if [ -f /opt/ployz/docker-graph.tar ] && [ -z "$(ls -A /var/lib/docker)" ]; then
   tar -C /var/lib/docker -xf /opt/ployz/docker-graph.tar
 fi
 # ponytail: Corrosion uses host networking; enable a bridge when workload tests need one.
-dockerd --bridge=none --iptables=false --ip6tables=false >/var/log/dockerd.log 2>&1 &
+# ployzd refuses a dockerd that leaves iptables or ip6tables off: its fence hangs off
+# Docker's DOCKER-USER chains.
+dockerd --bridge=none >/var/log/dockerd.log 2>&1 &
 deadline=60
 until docker info >/dev/null 2>&1; do
   deadline=$((deadline - 1))
