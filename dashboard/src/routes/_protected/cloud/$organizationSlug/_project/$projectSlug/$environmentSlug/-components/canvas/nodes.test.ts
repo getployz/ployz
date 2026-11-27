@@ -5,7 +5,7 @@ import { rowId } from "#/test/ids";
 import { configTrays } from "#/modules/config-store/store-configs";
 import type { CanvasPosition } from "#/modules/canvas/canvas-positions";
 import type { MirrorCopy, OldCopy, VolumeCopies } from "#/modules/volume-copies/volume-copies";
-import { arrivingNodes, buildServiceEdges, buildStoreEdges, buildStoreNodes, canvasNodeOf, hangOverhang, volumeTrays } from "./nodes";
+import { arrivingNodes, buildServiceEdges, buildStoreEdges, buildStoreNodes, canvasNodeOf, canvasPlacements, hangOverhang, volumeTrays } from "./nodes";
 
 function createCanvasPosition(overrides?: Partial<CanvasPosition>): CanvasPosition {
   return {
@@ -98,6 +98,34 @@ describe("Config Store nodes", () => {
     const arriving = createCanvasPosition({ id: "p4", resourceType: "volume", resourceId: "new-vol", x: 0, y: 0 });
     const beside = buildStoreNodes({ ...store, arriving: [{ node: "volume", id: "new-vol", name: "cache" }] }, [...left, arriving], "e");
     expect(beside.find((node) => node.id === "s1")?.position).not.toEqual({ x: 0, y: 0 });
+  });
+
+  it("places only the nodes without a place, and draws each where it placed it", () => {
+    const stored = [createCanvasPosition({ resourceId: "s1", x: 480, y: 96 })];
+    const placements = canvasPlacements(store, stored, "e");
+    expect(placements.map((place) => `${place.resourceType}:${place.resourceId}`)).toEqual(["service:s2", "volume:loose", "volume:orphan", "config:spare"]);
+    const nodes = buildStoreNodes(store, stored, "e");
+    for (const place of placements) expect(nodes.find((node) => node.id === place.resourceId)?.position).toEqual({ x: place.x, y: place.y });
+  });
+
+  it("moves no other node when a person drags one of a canvas the CLI made", () => {
+    // Nothing has a place, as after `ployz service add`; the canvas keeps the places it gives them, then one is dragged.
+    const kept = canvasPlacements(store, [], "e").map((place, index) => createCanvasPosition({ id: `p${index}`, ...place }));
+    const before = buildStoreNodes(store, kept, "e");
+    const dragged = kept.map((position) => position.resourceId === "s2" ? { ...position, x: 2000, y: -900 } : position);
+    const after = buildStoreNodes(store, dragged, "e");
+    expect(canvasPlacements(store, dragged, "e")).toEqual([]);
+    expect(after.find((node) => node.id === "s2")?.position).toEqual({ x: 2000, y: -900 });
+    for (const node of after.filter((node) => node.id !== "s2")) {
+      expect(node.position).toEqual(before.find((other) => other.id === node.id)?.position);
+    }
+  });
+
+  it("keeps a Live Node's place per Branch, since its name repeats across Branches", () => {
+    const live = { ...store, live: [{ name: "redis", owner: "production", data: false, usedBy: [] }] };
+    expect(canvasPlacements(live, [], "branch-a").find((place) => place.resourceType === "live")?.resourceId).toBe("branch-a/redis");
+    const kept = createCanvasPosition({ resourceType: "live", resourceId: "branch-a/redis", x: 1200, y: 24 });
+    expect(buildStoreNodes(live, [kept], "branch-a").find((node) => node.id === "live:redis")?.position).toEqual({ x: 1200, y: 24 });
   });
 
   it("draws an arriving node where its creator saved it, so the Store's answer lands in the same spot", () => {

@@ -1,0 +1,1 @@
+ALTER TABLE "environment_canvas_node_position" ALTER COLUMN "resource_id" SET DATA TYPE text USING "resource_id"::text;

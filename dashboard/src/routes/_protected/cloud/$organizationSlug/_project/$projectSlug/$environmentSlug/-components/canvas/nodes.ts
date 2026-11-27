@@ -2,14 +2,13 @@ import { volumeWriters } from "#/modules/config-store/volume-sharing";
 import { Position, type Edge } from "@xyflow/react";
 import type { DiffView, ServiceListing, VolumeListing } from "@ployz/sdk";
 import { serviceChanges } from "#/modules/config-store/store-services";
-import { canvasPositionKey, type CanvasPosition } from "#/modules/canvas/canvas-positions";
+import { canvasPositionKey, type CanvasPlacement, type CanvasPosition } from "#/modules/canvas/canvas-positions";
 import { COPY_CARD_GAP, COPY_CARD_WIDTH, HANG_HEIGHT, SERVICE_NODE_WIDTH, SERVICE_NODE_HEIGHT, SERVICE_NODE_SIZE, VOLUME_TRAY_HEIGHT } from "./constants";
-import { findPlacement } from "../../-utils/node-placement";
+import { placeNewNodes } from "../../-utils/node-placement";
 import { parseMirrorResourceId } from "#/modules/volume-placement/volume-placement";
 import { hangingCopies, type VolumeCopies } from "#/modules/volume-copies/volume-copies";
 import type {
   CanvasResourceNode,
-  CanvasResourceType,
   CanvasStoreServiceNode,
   CanvasStoreVolumeNode,
   CanvasStoreConfigNode,
@@ -32,26 +31,6 @@ const handles = (height: number) => [
   { type: "target", position: Position.Bottom, x: SERVICE_NODE_WIDTH / 2, y: height },
 ] satisfies NonNullable<CanvasStoreServiceNode["handles"]>;
 
-function getCanvasPosition(
-  position: CanvasPosition | null | undefined,
-) {
-  return {
-    x: position?.x ?? 0,
-    y: position?.y ?? 0,
-  };
-}
-
-function getPositionByCanvasResource(
-  positions: CanvasPosition[],
-) {
-  return new Map(
-    positions.map((position) => [
-      canvasPositionKey(position),
-      position,
-    ]),
-  );
-}
-
 /**
  * Each Volume as a tray under every Service here that mounts it, in the Store's order, keyed by Service id, marked where
  * `diff` stages that Service's mount of it; `unmounted`, the Volumes no Service here mounts, which stay nodes of their own.
@@ -72,43 +51,77 @@ export function volumeTrays(services: readonly Pick<ServiceListing, "id" | "name
   };
 }
 
+type CanvasStore = Pick<StoreCanvas, "services" | "unmountedVolumes" | "unmountedConfigs"> & Partial<Pick<StoreCanvas, "live" | "copies" | "arriving">>;
+
+/** A node grows by its trays and the row of copies under them; placing one keeps clear of each node's whole height. */
+function nodeSizes(store: CanvasStore) {
+  const trayCount = new Map(store.services.map(({ service, trays, configTrays }) => [service.id, trays.length + configTrays.length]));
+  const hangOf = hangByNode(store);
+  return {
+    hangOf,
+    sizeOf: (id: string) => ({
+      ...SERVICE_NODE_SIZE,
+      height: SERVICE_NODE_HEIGHT + (trayCount.get(id) ?? 0) * VOLUME_TRAY_HEIGHT + (hangOf.has(id) ? HANG_HEIGHT : 0),
+    }),
+  };
+}
+
 /**
- * Config Store Services, Volumes and Configs where the canvas last put them; positions stay Cloud's, keyed by the node's id.
- * One made elsewhere (the CLI) has no place yet: the first free one near the origin, until someone drags it. A Volume
- * or Config a Service here mounts is a tray under it, not a node. Which node is selected is the route's to say, not React Flow's.
+ * What a Live Node's place is kept under. Places sync per Organization by type and id, and a Live Node's name repeats
+ * across Branches, so its Branch is part of it.
+ */
+const livePlaceId = (environmentId: string, name: string) => `${environmentId}/${name}`;
+
+/** Every node the canvas draws, by what its place is kept under, in drawing order. */
+function drawnPlaces(store: CanvasStore, environmentId: string): Pick<CanvasPlacement, "resourceType" | "resourceId">[] {
+  return [
+    ...store.services.map(({ service }) => ({ resourceType: "service" as const, resourceId: service.id })),
+    ...store.unmountedVolumes.map(({ id }) => ({ resourceType: "volume" as const, resourceId: id })),
+    ...store.unmountedConfigs.map(({ id }) => ({ resourceType: "config" as const, resourceId: id })),
+    ...(store.live ?? []).map(({ name }) => ({ resourceType: "live" as const, resourceId: livePlaceId(environmentId, name) })),
+    ...(store.arriving ?? []).map(({ node, id }) => ({ resourceType: node, resourceId: id })),
+  ];
+}
+
+/**
+ * A place for each node the canvas draws that has none: one made by the CLI, an agent, a Sync, a restore, or a Branch's
+ * Live Node. New places go below the nodes already placed, which never move; the canvas keeps them, so each node is
+ * placed once. Only the nodes drawn here take space: a position outlives what it placed (a refused create, a deleted
+ * node, a Volume or Config now in a tray), and nothing deletes it.
+ */
+export function canvasPlacements(store: CanvasStore, canvasPositions: readonly CanvasPosition[], environmentId: string): CanvasPlacement[] {
+  const { sizeOf } = nodeSizes(store);
+  const stored = new Map(canvasPositions.map((position) => [canvasPositionKey(position), position]));
+  const drawn = drawnPlaces(store, environmentId);
+  const placed = drawn.flatMap((node) => {
+    const position = stored.get(canvasPositionKey(node));
+    return position ? [{ x: position.x, y: position.y, ...sizeOf(node.resourceId) }] : [];
+  });
+  const unplaced = drawn.filter((node) => !stored.has(canvasPositionKey(node)));
+  const places = placeNewNodes(placed, unplaced.map((node) => sizeOf(node.resourceId)));
+  return unplaced.flatMap((node, index) => {
+    const place = places[index];
+    return place ? [{ ...node, ...place }] : [];
+  });
+}
+
+/**
+ * Config Store Services, Volumes and Configs where the canvas last put them, and a Branch's Live Nodes; positions stay
+ * Cloud's, keyed by the node's id. A node without one is drawn where `canvasPlacements` puts it, which the canvas then
+ * keeps. A Volume or Config a Service here mounts is a tray under it, not a node. Which node is selected is the route's
+ * to say, not React Flow's.
  */
 export function buildStoreNodes(
-  store: Pick<StoreCanvas, "services" | "unmountedVolumes" | "unmountedConfigs"> & Partial<Pick<StoreCanvas, "live" | "copies" | "arriving">>,
+  store: CanvasStore,
   canvasPositions: CanvasPosition[],
   environmentId: string,
 ): CanvasResourceNode[] {
-  const trayCount = new Map(store.services.map(({ service, trays, configTrays }) => [service.id, trays.length + configTrays.length]));
-  const hangOf = hangByNode(store);
-  // A node grows by its trays and the row of copies under them; placing one keeps clear of each node's whole height.
-  const sizeOf = (id: string) => ({
-    ...SERVICE_NODE_SIZE,
-    height: SERVICE_NODE_HEIGHT + (trayCount.get(id) ?? 0) * VOLUME_TRAY_HEIGHT + (hangOf.has(id) ? HANG_HEIGHT : 0),
-  });
-  const positionByResource = getPositionByCanvasResource(canvasPositions);
-  // Only the nodes drawn here take space. A position outlives what it placed (a refused create, a deleted node, a Volume
-  // or Config now in a tray), and nothing deletes it.
-  const drawn = new Set([
-    ...store.services.map(({ service }) => canvasPositionKey({ resourceType: "service", resourceId: service.id })),
-    ...store.unmountedVolumes.map(({ id }) => canvasPositionKey({ resourceType: "volume", resourceId: id })),
-    ...store.unmountedConfigs.map(({ id }) => canvasPositionKey({ resourceType: "config", resourceId: id })),
-    ...(store.live ?? []).map(({ name }) => canvasPositionKey({ resourceType: "service", resourceId: liveNodeId(name) })),
-    ...(store.arriving ?? []).map(({ node, id }) => canvasPositionKey({ resourceType: node, resourceId: id })),
-  ]);
-  const occupied = canvasPositions.filter((position) => drawn.has(canvasPositionKey(position)))
-    .map((position) => ({ x: position.x, y: position.y, ...sizeOf(position.resourceId) }));
-  const place = (resourceType: CanvasResourceType, resourceId: string) => {
-    const stored = positionByResource.get(canvasPositionKey({ resourceType, resourceId }));
-    if (stored) return getCanvasPosition(stored);
-    const size = sizeOf(resourceId);
-    const position = findPlacement({ x: 0, y: 0 }, size, occupied);
-    occupied.push({ ...position, ...size });
-    return position;
-  };
+  const { sizeOf, hangOf } = nodeSizes(store);
+  const positions = new Map([...canvasPositions, ...canvasPlacements(store, canvasPositions, environmentId)]
+    .map((position) => [canvasPositionKey(position), { x: position.x, y: position.y }]));
+  // Every node drawn is placed, stored or new, so a missing place is a node this function forgot to list.
+  const place = (resourceType: CanvasPlacement["resourceType"], resourceId: string) =>
+    positions.get(canvasPositionKey({ resourceType, resourceId })) ?? { x: 0, y: 0 };
   // React Flow draws a node at its width and height, so that is its measured size too. A drag needs it, and a new node
   // object from this rebuild would otherwise drop the size React Flow measured, since an unchanged size isn't measured again.
   const sized = (height: number) => ({ width: SERVICE_NODE_WIDTH, height, measured: { width: SERVICE_NODE_WIDTH, height }, handles: handles(height) });
@@ -143,12 +156,12 @@ export function buildStoreNodes(
       position: place("config", config.id),
       data: { config, resourceType: "config", resourceId: config.id, environmentId },
     } satisfies CanvasStoreConfigNode)),
-    // A Branch's Live Nodes take free spots; they are their owner's to move.
+    // A Branch's Live Nodes keep their first place; they are their owner's to move.
     ...(store.live ?? []).map((live) => ({
       ...node,
       id: liveNodeId(live.name),
       type: "storeLive",
-      position: place("service", liveNodeId(live.name)),
+      position: place("live", livePlaceId(environmentId, live.name)),
       draggable: false,
       data: { live },
     } satisfies CanvasStoreLiveNode)),

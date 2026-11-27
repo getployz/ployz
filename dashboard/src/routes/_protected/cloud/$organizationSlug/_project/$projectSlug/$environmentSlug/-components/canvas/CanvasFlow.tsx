@@ -18,7 +18,7 @@ import { storeHintNotes } from "./store-hints";
 import { CANVAS_MAX_ZOOM, CANVAS_MIN_ZOOM, SNAP_GRID } from "./constants";
 import { canvasNodeTypes } from "./canvas-node-types";
 import { CanvasNodeList } from "./CanvasServiceList";
-import { useCanvasPositionMutation } from "./useCanvasPositionMutation";
+import { useCanvasPositionMutation, useKeepPlacements } from "./useCanvasPositionMutation";
 import { fitViewport, useCanvasNavigation } from "./useCanvasNavigation";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
 import { useBlankServiceCreator, useOpenCreatedService } from "../../../../-components/service-create/useServiceCreator";
@@ -54,6 +54,7 @@ import { useKeyboardFocusModality } from "../keyboard-focus-modality";
 import { RuntimeLensContext } from "./RuntimeLensProvider";
 import { ENVIRONMENT_ROUTE_FROM } from "#/lib/environment-routes";
 import type { CanvasResourceNode, StoreCanvas } from "./types";
+import type { CanvasPlacement } from "#/modules/canvas/canvas-positions";
 
 // A Live Node's link, dashed by `buildStoreEdges`, and a Service's, solid by `buildServiceEdges`; each is routed around
 // the cards and the floating bars, ending in an arrow.
@@ -68,12 +69,15 @@ export function CanvasFlow({
   environmentId,
   canvasNodes,
   canvasEdges,
+  placements,
   store,
 }: {
   organizationId: string;
   environmentId: string;
   canvasNodes: CanvasResourceNode[];
   canvasEdges: Edge[];
+  /** The nodes drawn without a stored place, where they are drawn; the canvas keeps those places. */
+  placements: readonly CanvasPlacement[];
   store: StoreCanvas;
 }) {
   const [flowReady, setFlowReady] = useState(false);
@@ -88,6 +92,7 @@ export function CanvasFlow({
     ...params,
     organizationId,
   });
+  useKeepPlacements(params.organizationSlug, environmentId, placements);
   const { selectedNodeId } = useCanvasInspectorSelection();
   const renaming = useEnvironmentRenaming();
   const findableNodes = [...store.services.map(({ service }) => ({ id: service.id, name: service.name, type: "service" as const })),
