@@ -1,18 +1,20 @@
+import { Effect } from "effect";
+import { refusedWith } from "#/modules/config-store/store-sdk.server";
 import {
   deployToFirstServer, failStoreDeploymentUnrun, forgetStoreDeploymentRun, publishedEnvironments, recordStoreDeploymentRun, runStoreDeployment, type StoreServices,
-  storeDeploymentRunner, storeDeploymentRunOf, unclaimedStoreDeployments,
+  staleStoreDeploymentRuns, storeDeploymentRunner, storeDeploymentRunOf, unclaimedStoreDeployments,
 } from "#/modules/config-store/store-deployment.server";
 import { mailGithubDeployTrouble } from "#/modules/config-store/deploy-failed-mail.server";
 import { deploymentTrouble } from "#/modules/config-store/store-deployments";
-import type { PloyzInngest } from "#/modules/inngest/client";
+import { inngestRunStatus, type PloyzInngest } from "#/modules/inngest/client";
 import { decodeInngestEnvelope } from "#/modules/inngest/envelope";
 import { githubBuildRunCompleted } from "#/modules/github/github.events";
 import { inngestFunctionCancelledEnvelopeSchema, inngestFunctionCancelledEventType, inngestFunctionFinishedEventType } from "#/modules/inngest/events";
-import { type ConfigDeploymentAdmittedEventData, configDeploymentAdmitted, configDeploymentRetireRequested, configFirstServerJoined, createConfigDeploymentStartedEvent } from "#/modules/config-store/config-store.events";
+import { type ConfigDeploymentAdmittedEventData, configDeploymentAdmitted, configDeploymentRetireRequested, configDeploymentStopRequested, configFirstServerJoined, createConfigDeploymentStartedEvent } from "#/modules/config-store/config-store.events";
 import { stopRun } from "#/modules/config-store/store-deployment-stop.inngest";
 import { clusterDomainSyncRequested } from "#/modules/cluster-domain/cluster-domain.events";
 import {
-  checkStoreGithubBuild, GITHUB_CHECK_INTERVAL, planStoreGithubBuilds, START_WITHIN_MINUTES,
+  cancelStoreGithubBuilds, checkStoreGithubBuild, GITHUB_CHECK_INTERVAL, planStoreGithubBuilds, START_WITHIN_MINUTES,
   recordStoreGithubBuild, serversLackingWhilePrefetching, startStoreGithubBuilds, storeGithubBuildOpen, type StoreGithubStart, type StoreGithubTarget,
 } from "#/modules/config-store/store-github-builds.server";
 import { followUp } from "#/modules/config-store/store-github.inngest";
@@ -63,11 +65,16 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Effec
         return failed;
       }
       const github = await step.run("plan-builds", () => runEffect(planStoreGithubBuilds(event.data)));
-      const started = await startGithubBuilds(step, runEffect, event.data, github, attempt + 1 >= (maxAttempts ?? STORE_DEPLOYMENT_RETRIES + 1));
-      const walked = await Promise.all(github.map((target, index) => walkGithub(event.data.organizationId, target, started[index], step, runEffect)));
+      const runner = storeDeploymentRunner(runId);
+      const started = await startGithubBuilds(step, runEffect, event.data, github, runner, attempt + 1 >= (maxAttempts ?? STORE_DEPLOYMENT_RETRIES + 1));
+      const walked = await Promise.all(github.map((target, index) => walkGithub(event.data.organizationId, target, started[index], runner, step, runEffect)));
       const disconnected = walked.find((failed) => failed !== null);
       if (disconnected !== undefined) {
-        return step.run("github-failed", () => runEffect(failStoreDeploymentUnrun(event.data.organizationId, event.data.environmentId, event.data.deploymentId, runId, disconnected)));
+        const failed = await step.run("github-failed", () => runEffect(failStoreDeploymentUnrun(event.data.organizationId, event.data.environmentId, event.data.deploymentId, runId, disconnected)));
+        // Failed, the Deployment takes no more runs, so the Store ends what GitHub still holds and owes each run a cancel.
+        await step.run("github-stop", () => runEffect(cancelStoreGithubBuilds(event.data.deploymentId, runner).pipe(
+          Effect.catchIf(refusedWith("conflict"), () => Effect.succeed(0)))));
+        return failed;
       }
       const storage = await walkPlacement(event.data, step, runEffect);
       if (storage.kind === "failed") {
@@ -116,15 +123,18 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Effec
 
 /**
  * Every minute: a queued Deployment whose hand-off to the worker was lost goes to it again, unkeyed like "Deploy now",
- * since its admission's own event is deduplicated. A duplicate run finds it claimed and runs nothing.
+ * since its admission's own event is deduplicated. A duplicate run finds it claimed and runs nothing. A worker run that
+ * ended with its stop lost is stopped again.
  */
-export const createRedispatchStoreDeployments = (inngest: PloyzInngest) =>
+export const createRedispatchStoreDeployments = (inngest: PloyzInngest, runStatus = inngestRunStatus) =>
   inngest.createFunction(
     { id: "redispatch-store-deployments", retries: 1, triggers: [{ cron: "* * * * *" }], concurrency: [{ limit: 1 }] },
     async ({ step }) => {
       const unclaimed = await step.run("unclaimed", () => runInngestEffect(unclaimedStoreDeployments(new Date())));
       if (unclaimed.length > 0) await step.sendEvent("dispatch", unclaimed.map(createConfigDeploymentStartedEvent));
-      return { redispatched: unclaimed.map((deployment) => deployment.deploymentId) };
+      const stale = await step.run("stale-runs", () => runInngestEffect(staleStoreDeploymentRuns(runStatus, new Date())));
+      if (stale.length > 0) await step.sendEvent("stop-stale", stale.map((run) => configDeploymentStopRequested.create(run)));
+      return { redispatched: unclaimed.map((deployment) => deployment.deploymentId), stopped: stale.map((run) => run.runId) };
     },
   );
 
@@ -158,13 +168,13 @@ type Step = Parameters<Parameters<PloyzInngest["createFunction"]>[1]>[0]["step"]
  */
 export async function startGithubBuilds(
   step: Pick<Step, "run">, runEffect: EffectRunner<StoreServices>, data: ConfigDeploymentAdmittedEventData, github: ReadonlyArray<StoreGithubTarget>,
-  last = false,
+  attempt: string, last = false,
 ): Promise<ReadonlyArray<StoreGithubStart>> {
   const started: StoreGithubStart[] = [];
   let rest = github;
   for (let round = 0; rest.length > 0; round += 1) {
     const targets = rest;
-    const starts = await step.run(`github-start-round-${round}`, () => runEffect(startStoreGithubBuilds(data.organizationId, data.deploymentId, targets)));
+    const starts = await step.run(`github-start-round-${round}`, () => runEffect(startStoreGithubBuilds(data.organizationId, data.deploymentId, targets, attempt)));
     started.push(...starts.started);
     const { unrecorded } = starts;
     if (unrecorded !== null) started.push(await step.run(`github-record-round-${round}`, () => runEffect(recordStoreGithubBuild(unrecorded, last))));
@@ -180,7 +190,8 @@ export async function startGithubBuilds(
  * Whatever GitHub doesn't build, the runner builds on the servers when the walk has them next, or fails with why.
  */
 async function walkGithub(
-  organizationId: string, target: StoreGithubTarget, started: StoreGithubStart | undefined, step: Step, runEffect: EffectRunner<StoreServices>,
+  organizationId: string, target: StoreGithubTarget, started: StoreGithubStart | undefined, attempt: string, step: Step,
+  runEffect: EffectRunner<StoreServices>,
 ): Promise<string | null> {
   const key = target.service;
   if (started?.kind !== "dispatched") return null;
@@ -192,7 +203,7 @@ async function walkGithub(
       timeout: startLimit ? `${START_WITHIN_MINUTES}m` : GITHUB_CHECK_INTERVAL,
     });
     const seen = { ended: ended !== null, startLimit };
-    const found = await step.run(`github-check-${key}-${check}`, () => runEffect(checkStoreGithubBuild(organizationId, target, seen)));
+    const found = await step.run(`github-check-${key}-${check}`, () => runEffect(checkStoreGithubBuild(organizationId, target, seen, attempt)));
     if (found === "done") return null;
     if (found !== "waiting") return found.failed;
   }

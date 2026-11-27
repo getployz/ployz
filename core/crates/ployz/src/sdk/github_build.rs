@@ -950,53 +950,6 @@ fn grant_read(
     }
 }
 
-/// What [`github_cancel`] settled: the builds whose end the Store answered, whose
-/// runs Cloud may cancel, and how many it couldn't get an answer for.
-#[derive(Debug, serde::Serialize)]
-pub struct GithubCancelled {
-    pub builds: Vec<ployz_store::GithubBuild>,
-    pub unsettled: usize,
-}
-
-/// Stop Deployment `id`'s builds still on GitHub: fail each build. Returns those whose
-/// end the Store committed or refused as already ended, for Cloud to cancel their runs,
-/// and counts those it got no answer for: an end that timed out may still commit or
-/// not, so its run is never one to cancel, and a later call finds it again if it didn't.
-/// Their grants expire by themselves. Idempotent.
-///
-/// # Errors
-/// Returns a storage error.
-pub async fn github_cancel(
-    store: Arc<ConfigStore>,
-    deployment: ployz_store::DeploymentId,
-) -> Result<GithubCancelled, RpcError> {
-    let outstanding =
-        store_call(&store, move |store| store.github_outstanding(&deployment)).await?;
-    let mut cancelled = GithubCancelled {
-        builds: Vec::with_capacity(outstanding.len()),
-        unsettled: 0,
-    };
-    for build in outstanding {
-        let (id, run_id) = (build.id.clone(), build.run.run_id);
-        let end = GithubEnd::Failed {
-            message: github_build::CANCELLED.to_owned(),
-        };
-        match store_call(&store, move |store| {
-            store.github_end(&id, Some(run_id), &end)
-        })
-        .await
-        {
-            // Another step may have ended it meanwhile: the run holds it no more either way.
-            Ok(_) => cancelled.builds.push(build),
-            Err(error) if error.code == ployz_core::RpcErrorCode::Conflict => {
-                cancelled.builds.push(build);
-            }
-            Err(_) => cancelled.unsettled += 1,
-        }
-    }
-    Ok(cancelled)
-}
-
 /// A session through one of `connections`, of `expect`'s Cluster when given.
 async fn session(
     connections: Vec<Connection>,

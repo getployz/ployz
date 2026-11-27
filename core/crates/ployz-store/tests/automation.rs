@@ -3020,7 +3020,8 @@ fn built_on_github(
                 workflow_ref: "acme/build/.github/workflows/build.yml@refs/heads/main".into(),
                 repository: backend::repo_name("acme/web"),
                 installation_id: 7,
-                push: false,
+                push: Some(false),
+                attempt: None,
             },
         )
         .unwrap();

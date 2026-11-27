@@ -1,20 +1,20 @@
 import "@tanstack/react-start/server-only";
-import type { ConfigStore, DeploymentStatus, DeploymentStep } from "@ployz/sdk";
-import { Data, Effect, Option } from "effect";
+import type { ConfigStore, DeploymentStep } from "@ployz/sdk";
+import { Effect, Option } from "effect";
 import { cloudStore, deployDialOf, refusedWith, storeTry } from "#/modules/config-store/store-sdk.server";
 import { callStore, readStore, requestChecks } from "#/modules/config-store/config-store.server";
-import { cancelStoreGithubBuilds } from "#/modules/config-store/store-github-builds.server";
+import { cancelStoreGithubBuilds, newerAttempt } from "#/modules/config-store/store-github-builds.server";
 import { fromGithub, pinStoreSources, sourceIdentity, SourceUnreadable } from "#/modules/config-store/store-sources.server";
 import { deploymentRun } from "#/modules/config-store/tables";
 import { discardFailedRestore, type FailedRestore, releasePlacementClaims } from "#/modules/volume-placement/volume-placement.deploy.server";
 import { extractUpload, releaseUploads, uploadOwner } from "#/modules/config-store/upload.server";
-import { eq } from "drizzle-orm";
+import { eq, lt } from "drizzle-orm";
 import { sourcePaths } from "#/modules/github/github-source.server";
 import { GithubSources } from "#/modules/github/github-sources.server";
 import { GithubAuthority } from "#/modules/github/github-authority.server";
 import type { ConfigDeploymentAdmittedEventData } from "#/modules/config-store/config-store.events";
 import { Database } from "#/server/database.server";
-import type { InngestClient } from "#/modules/inngest/client";
+import type { InngestClient, InngestRunStatus } from "#/modules/inngest/client";
 import type { Polar } from "#/modules/billing/polar-provider.server";
 import type { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import type { GithubApi } from "#/modules/github/github-observation.api";
@@ -146,9 +146,12 @@ const failUnclaimed = Effect.fn("StoreDeployment.failUnclaimed")(function* (
   failure = "Cloud's worker stopped before it started this Deployment. Deploy again.",
 ) {
   const view = yield* storeTry(() => store.read(organizationId, { query: "deployment", id: deploymentId }));
-  if (view.status !== "queued" || view.runner !== null) return { nothingToRun: why, ended: !inFlight(view.status) };
-  yield* storeTry(() => store.runDeployment(organizationId, deploymentId, storeDeploymentRunner(runId), [], { failure }));
-  return { failed: deploymentId, ended: true };
+  if (view.status !== "queued" || view.runner !== null) return { nothingToRun: why };
+  // The Store refuses the claim once another attempt took its GitHub builds: that attempt runs it.
+  return yield* storeTry(() => store.runDeployment(organizationId, deploymentId, storeDeploymentRunner(runId), [], { failure })).pipe(
+    Effect.as<{ failed: string } | { nothingToRun: string }>({ failed: deploymentId }),
+    Effect.catchIf(refusedWith("conflict"), (refused) => Effect.succeed({ nothingToRun: refused.message })),
+  );
 });
 
 /**
@@ -187,35 +190,27 @@ export const forgetStoreDeploymentRun = Effect.fn("StoreDeployment.forgetRun")(f
   yield* drizzle.delete(deploymentRun).where(eq(deploymentRun.runId, runId));
 });
 
-/** Statuses in which the Store still takes a GitHub run's record. A Deployment never comes back to one once it left. */
-const inFlight = (status: DeploymentStatus) => status === "queued" || status === "running" || status === "cancelling" || status === "waiting_for_ci";
-
-/** The Store answered the stop, but the Deployment it answered for is still in flight. */
-export class DeploymentStillInFlight extends Data.TaggedError("DeploymentStillInFlight")<{ deploymentId: string }> {}
-
 /**
  * Run `runId` stopped without finishing: the Store records that it stopped (or, never claimed, that it failed), so the
  * Deployment never reads running or waits queued for nobody, then its GitHub builds stop. Fails, to be retried, until
  * both are settled.
  *
- * Cloud cancels a run only once a committed write shows it can't hold the build. A run's record whose caller gave up
- * may still be committing, holding the Environment, so the Deployment stops first: that write waits for the record,
- * and once it commits the Store refuses every later one. Only then are the builds read and ended, so they name every
- * run that will ever hold one. A stop with no answer cancels nothing, since a record may still land behind it. One
- * another runner owns is left to that runner.
+ * Whether any run is cancelled is the Store's decision, in the write that ends the builds: it checks this run's
+ * attempt still holds the Deployment and that the Deployment, as committed, takes no more GitHub runs, and records a
+ * cancel owed for each run Cloud dispatched. Cloud cancels only those, so a stop with no answer cancels nothing, and a
+ * later try still finds what is owed. A Deployment a newer attempt runs is left to it.
  */
 export const stopStoreDeploymentRun = Effect.fn("StoreDeployment.stopRun")(function* (
   organizationId: string, deploymentId: string, runId: string,
 ) {
   const store = yield* cloudStore;
-  const stopped = yield* storeTry(() => store.abandonDeployment(deploymentId, storeDeploymentRunner(runId))).pipe(
-    Effect.map((abandoned) => ({ abandoned, ended: !inFlight(abandoned.status) })),
+  const runner = storeDeploymentRunner(runId);
+  const stopped = yield* storeTry(async () => ({ abandoned: await store.abandonDeployment(deploymentId, runner) })).pipe(
     // It never claimed it, or another runner owns it now.
     Effect.catchIf(refusedWith("conflict"), (refused) => failUnclaimed(store, organizationId, deploymentId, runId, refused.message)),
     Effect.ensuring(released(store, organizationId)),
   );
-  if (stopped.ended) yield* cancelStoreGithubBuilds(deploymentId);
-  else if (!("nothingToRun" in stopped)) return yield* new DeploymentStillInFlight({ deploymentId });
+  yield* cancelStoreGithubBuilds(deploymentId, runner).pipe(Effect.catchIf(newerAttempt, () => Effect.succeed(0)));
   yield* releasePlacementClaims(organizationId, deploymentId);
   yield* forgetStoreDeploymentRun(runId);
   return stopped;
@@ -226,6 +221,30 @@ export const storeDeploymentRunOf = Effect.fn("StoreDeployment.runOf")(function*
   const { drizzle } = yield* Database;
   const [run] = yield* drizzle.select().from(deploymentRun).where(eq(deploymentRun.runId, runId)).limit(1);
   return run === undefined ? null : { organizationId: run.organizationId, deploymentId: run.deploymentId };
+});
+
+/** How long a recorded run may sit before the sweep asks Inngest whether it still runs. */
+const STALE_RUN_MS = 15 * 60_000;
+
+/**
+ * Recorded worker runs that ended without forgetting themselves: the run failed or was cancelled and its stop was
+ * lost, or never handed on. Each is stopped again, once per sweep window, so a Deployment never waits on a worker
+ * that is gone (queued at "Asking GitHub for a run", or owing a run its cancel). A run Inngest still reports running,
+ * or can't answer for, is left.
+ */
+export const staleStoreDeploymentRuns = Effect.fn("StoreDeployment.staleRuns")(function* <R>(
+  runStatus: (runId: string) => Effect.Effect<InngestRunStatus, unknown, R>, now: Date,
+) {
+  const { drizzle } = yield* Database;
+  const quiet = yield* drizzle.select().from(deploymentRun).where(lt(deploymentRun.createdAt, new Date(now.getTime() - STALE_RUN_MS)));
+  const sweep = Math.floor(now.getTime() / STALE_RUN_MS);
+  const stale: { organizationId: string; deploymentId: string; runId: string; round: number; sweep: number }[] = [];
+  for (const run of quiet) {
+    const status = yield* runStatus(run.runId).pipe(Effect.option);
+    if (Option.isNone(status) || status.value === "running") continue;
+    stale.push({ organizationId: run.organizationId, deploymentId: run.deploymentId, runId: run.runId, round: 0, sweep });
+  }
+  return stale;
 });
 
 /** How long an admission has to reach its worker before Cloud hands it over again. */

@@ -48,9 +48,9 @@ mod volume_start;
 pub use build::{BuildOutcome, OutsideBuild};
 pub use deploy::ImageCleanup;
 pub use github_build::{
-    GithubCancelled, GithubCheckIn, GithubFinish, GithubKey, GithubLook, GithubReported,
-    GithubStart, RuleAsk, RuleCheckIn, RuleGranted, github_cancel, github_check_in, github_finish,
-    github_report, github_rule_check_in, github_rule_grant, github_start,
+    GithubCheckIn, GithubFinish, GithubKey, GithubLook, GithubReported, GithubStart, RuleAsk,
+    RuleCheckIn, RuleGranted, github_check_in, github_finish, github_report, github_rule_check_in,
+    github_rule_grant, github_start,
 };
 pub use observe::{observe_copies, observe_running, observe_volumes};
 pub use preview::{

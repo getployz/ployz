@@ -31,15 +31,18 @@ const stopOnce = ({ organizationId, deploymentId, runId }: StopRequest) => stopS
 
 /**
  * A stop the Store didn't answer: try it again, waiting longer each time up to ten minutes, and after a round of
- * tries hand it to the next round. It ends only once the Store answered it.
+ * tries hand it to the next round. It ends only once the Store answered it. A hand-off that never lands leaves the
+ * run recorded, and the sweep (`staleStoreDeploymentRuns`) hands it on again.
  */
 export const createStopStoreDeployment = (inngest: PloyzInngest, runEffect: EffectRunner<StoreServices> = runInngestEffect) =>
   inngest.createFunction(
     {
       id: "stop-store-deployment",
-      retries: 0,
+      // A failed hand-off to the next round runs again; each try's answer is kept.
+      retries: 3,
       triggers: [{ event: configDeploymentStopRequested.eventType }],
-      concurrency: [{ key: "event.data.runId", limit: 1 }],
+      // One stop at a time per Deployment: an older run's stop never races a newer one's.
+      concurrency: [{ key: "event.data.deploymentId", limit: 1 }],
     },
     async ({ event, step }) => {
       const request = event.data;

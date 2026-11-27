@@ -183,7 +183,7 @@ const afterWrite = Effect.fn("ConfigStore.afterWrite")(function* (
   organizationId: string, command: ConfigCommand, written: ConfigCommitted,
 ) {
   if (command.command === "cancel") {
-    yield* cancelStoreGithubBuilds(command.deployment).pipe(
+    yield* cancelStoreGithubBuilds(command.deployment, null).pipe(
       Effect.catch((error) => Effect.logWarning("Could not stop a cancelled Deployment's GitHub builds.", error)),
     );
   }

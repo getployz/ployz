@@ -97,8 +97,8 @@ pub(super) fn pending(
 ) -> Result<(), RpcError> {
     tx.execute(
         "INSERT INTO config_build \
-         (deployment_id, service, organization_id, commit_sha, status, message, log) \
-         SELECT id, ?2, organization_id, ?3, 'pending', NULL, '' \
+         (deployment_id, service, organization_id, commit_sha, status, message, log, reservable) \
+         SELECT id, ?2, organization_id, ?3, 'pending', NULL, '', 1 \
          FROM config_deployment WHERE id = ?1 \
          ON CONFLICT (deployment_id, service) DO NOTHING",
         &[
@@ -120,9 +120,9 @@ pub(crate) fn retried(
     tx.execute(
         "INSERT INTO config_build \
          (deployment_id, service, organization_id, commit_sha, status, message, log, \
-          receipt, image_token, verified) \
+          receipt, image_token, verified, reservable) \
          SELECT ?1, service, organization_id, commit_sha, 'pending', NULL, '', receipt, \
-          image_token, verified \
+          image_token, verified, 1 \
          FROM config_build WHERE deployment_id = ?2",
         &[id.as_str().into(), source.as_str().into()],
     )

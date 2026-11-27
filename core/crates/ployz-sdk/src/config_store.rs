@@ -682,15 +682,18 @@ impl ConfigStore {
             .await
     }
 
-    /// Reserve a pinned build before asking GitHub for its run, so GitHub is asked once.
+    /// Reserve a pinned build for worker run `runner` before asking GitHub for its run,
+    /// so GitHub is asked once (`GithubAsked`). A build pinned before reservations fails
+    /// instead, with why, and GitHub is asked for nothing.
     ///
     /// # Errors
     /// Returns `conflict` once it was reserved, handed off or passed on, or the
-    /// Deployment no longer wants it: ask GitHub for nothing.
-    #[napi(ts_return_type = "Promise<null>")]
-    pub async fn github_ask(&self, build: String) -> Result<serde_json::Value> {
+    /// Deployment no longer takes GitHub runs: ask GitHub for nothing.
+    #[napi(ts_return_type = "Promise<GithubAsked>")]
+    pub async fn github_ask(&self, build: String, runner: String) -> Result<serde_json::Value> {
         let build = github_id(&build)?;
-        self.run(move |store| store.github_ask(&build)).await
+        self.run(move |store| store.github_ask(&build, &runner))
+            .await
     }
 
     /// Where a build handed to GitHub is (`GithubHandOff`).
@@ -887,16 +890,46 @@ impl ConfigStore {
         )
     }
 
-    /// Stop Deployment `deployment`'s builds still on GitHub: fail them. Returns those
-    /// the Store answered for, whose runs Cloud cancels, and how many it got no answer
-    /// for, whose runs it must not cancel yet.
+    /// Stop Deployment `deployment`'s GitHub builds for worker run `runner`, or, with
+    /// none, once it was cancelled or ended (`GithubOwed`). Each build a run holds fails as
+    /// cancelled in the same write that checks the run's attempt still holds the
+    /// Deployment, and the Store records a cancel owed for each run Cloud dispatched.
+    /// Resolves to every run still owed one, which Cloud cancels and then confirms.
     ///
     /// # Errors
-    /// Returns a storage error.
-    #[napi(ts_return_type = "Promise<{ builds: GithubBuild[]; unsettled: number }>")]
-    pub async fn github_cancel(&self, deployment: String) -> Result<serde_json::Value> {
+    /// Returns `conflict` when a newer attempt runs it or it still takes GitHub runs:
+    /// cancel nothing.
+    #[napi(ts_return_type = "Promise<GithubOwed[]>")]
+    pub async fn github_stop(
+        &self,
+        deployment: String,
+        runner: Option<String>,
+    ) -> Result<serde_json::Value> {
         let deployment = DeploymentId::parse(deployment).map_err(rpc_to_napi)?;
-        to_json(ployz::sdk::github_cancel(Arc::clone(&self.store), deployment).await)
+        let runner = runner
+            .map(RunnerId::parse)
+            .transpose()
+            .map_err(rpc_to_napi)?;
+        self.run(move |store| store.github_stop(&deployment, runner.as_ref()))
+            .await
+    }
+
+    /// GitHub confirmed run `run_id` of `build` cancelled or ended: the Store owes it no
+    /// cancel any more.
+    ///
+    /// # Errors
+    /// Returns `not_found` for an unknown build.
+    #[napi(ts_return_type = "Promise<null>")]
+    pub async fn github_cancel_confirmed(
+        &self,
+        build: String,
+        run_id: i64,
+    ) -> Result<serde_json::Value> {
+        let build = github_id(&build)?;
+        let run_id = u64::try_from(run_id)
+            .map_err(|_| napi::Error::from_reason("Expected a GitHub run id"))?;
+        self.run(move |store| store.github_cancel_confirmed(&build, run_id))
+            .await
     }
 }
 

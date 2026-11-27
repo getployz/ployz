@@ -8,12 +8,13 @@ mod proof;
 mod sources;
 
 pub use github::{
-    GithubBuild, GithubBuildId, GithubClaims, GithubEnd, GithubGrant, GithubHandOff, GithubInput,
-    GithubReport, GithubRule, GithubRun, RunEnd,
+    GithubAsked, GithubBuild, GithubBuildId, GithubClaims, GithubEnd, GithubGrant, GithubHandOff,
+    GithubInput, GithubOwed, GithubReport, GithubRule, GithubRun, RunEnd, UNRESERVED,
 };
 pub(crate) use github::{
-    github_ask, github_authorize, github_build, github_by_run, github_check_in, github_dispatched,
-    github_end, github_input, github_outstanding, github_proven, github_report, github_rule,
+    github_ask, github_attempted_by_another, github_authorize, github_build, github_by_run,
+    github_cancel_confirmed, github_check_in, github_dispatched, github_end, github_input,
+    github_outstanding, github_proven, github_report, github_rule, github_stop,
 };
 pub use proof::{ImageToken, VerifiedClaim};
 pub(crate) use proof::{image_tokens, keep_verified, verified, verified_proof};
@@ -317,6 +318,12 @@ struct BuildRow {
     /// What a Server issued for that image once it checked it online, or its source's
     /// for a redeploy.
     verified: Option<VerifiedClaim>,
+    /// The worker attempt that reserved or recorded its GitHub run.
+    attempt: Option<String>,
+    /// The GitHub run Cloud owes a cancel, until GitHub confirms it.
+    cancel_owed: Option<github::GithubRun>,
+    /// Pinned since Cloud reserves a build before asking GitHub for it.
+    reservable: bool,
 }
 
 /// Where a build is, with who holds it while it builds: a GitHub run or the Servers,
@@ -446,7 +453,8 @@ impl BuildRow {
 fn rows(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<BuildRow>, RpcError> {
     tx.query(
         "SELECT service, commit_sha, status, message, log, github, organization_id, \
-         started, finished, server, github_skipped, interrupted, receipt, image_token, verified \
+         started, finished, server, github_skipped, interrupted, receipt, image_token, verified, \
+         attempt, cancel_owed, reservable \
          FROM config_build \
          WHERE deployment_id = ?1 ORDER BY service",
         &[id.as_str().into()],
@@ -471,6 +479,9 @@ fn rows(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<BuildRow>, RpcError> {
             receipt: row.optional_json(12, "build receipt")?,
             image_token: row.optional_json(13, "image token")?,
             verified: row.optional_json(14, "verified build")?,
+            attempt: row.optional_text(15)?.map(str::to_owned),
+            cancel_owed: row.optional_json(16, "owed cancel")?,
+            reservable: row.int(17)? != 0,
         })
     })
     .collect()

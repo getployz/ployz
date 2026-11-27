@@ -12,8 +12,8 @@ import { createRunStoreDeployment, startGithubBuilds } from "#/modules/config-st
 import { createStopStoreDeployment } from "#/modules/config-store/store-deployment-stop.inngest";
 import { configDeploymentAdmitted, configDeploymentStopRequested } from "#/modules/config-store/config-store.events";
 import { failureSteps, invokeOnFailure } from "#/test/inngest-failure";
-import { recordStoreDeploymentRun, stopStoreDeploymentRun } from "#/modules/config-store/store-deployment.server";
-import { planStoreGithubBuilds, recordStoreGithubBuild, startStoreGithubBuilds, type StoreGithubTarget } from "#/modules/config-store/store-github-builds.server";
+import { recordStoreDeploymentRun, staleStoreDeploymentRuns, stopStoreDeploymentRun } from "#/modules/config-store/store-deployment.server";
+import { cancelStoreGithubBuilds, planStoreGithubBuilds, recordStoreGithubBuild, startStoreGithubBuilds, type StoreGithubTarget } from "#/modules/config-store/store-github-builds.server";
 import { asTestDouble } from "#/lib/test-double";
 import { GithubObservationError } from "#/modules/github/github-observation.api";
 import type { ConfigStore } from "@ployz/sdk";
@@ -41,9 +41,12 @@ const activeWorkflow: GithubBuildWorkflowFile = { fullName: "acme/web", defaultB
 const runUrl = (runId: number) => `https://github.com/acme/web/actions/runs/${runId}`;
 const unavailable = () => new RpcError({ code: "unavailable", message: "The Config Store is unavailable; retry the command", details: null });
 
+/** The worker run that starts the builds. */
+const ATTEMPT = "cloud-worker-run";
+
 /** How one build started, when the Store records it. */
 const startStoreGithubBuild = (organizationId: string, start: StoreGithubTarget) =>
-  startStoreGithubBuilds(organizationId, DEPLOYMENT, [start]).pipe(Effect.map(({ started: [started] }) => started));
+  startStoreGithubBuilds(organizationId, DEPLOYMENT, [start], ATTEMPT).pipe(Effect.map(({ started: [started] }) => started));
 
 /**
  * Inngest's steps: one that succeeded answers from its memo on every replay, and one that failed runs again. With
@@ -162,7 +165,7 @@ it.live("a start whose answer Inngest lost after GitHub took each build runs aga
     const data = { organizationId: ORGANIZATION, environmentId: ENVIRONMENT, deploymentId: DEPLOYMENT, trigger: "user" as const };
     const runEffect: EffectRunner<StoreServices> = (program) => Effect.runPromise(provided(program));
     const steps = memoSteps({ loseFirst: true });
-    const start = Effect.tryPromise(() => startGithubBuilds(steps, runEffect, data, [target, api]));
+    const start = Effect.tryPromise(() => startGithubBuilds(steps, runEffect, data, [target, api], ATTEMPT));
 
     // GitHub took both builds, and Inngest never got the step's answer, so it runs the function again.
     expect(Exit.isFailure(yield* Effect.exit(start))).toBe(true);
@@ -206,7 +209,7 @@ it.effect.each(["answered", "stalled"] as const)(
       Effect.runPromise(provided(program).pipe(Effect.provideService(Clock.Clock, clock)));
     // Inngest runs the function again after each failed try; the record's own retries wait on the test's clock.
     const run = Effect.gen(function* () {
-      const trying = yield* Effect.promise(() => startGithubBuilds(steps, runEffect, data, [target])).pipe(Effect.exit, Effect.forkChild);
+      const trying = yield* Effect.promise(() => startGithubBuilds(steps, runEffect, data, [target], ATTEMPT)).pipe(Effect.exit, Effect.forkChild);
       while (trying.pollUnsafe() === undefined) yield* TestClock.adjust("1 second");
       return yield* Fiber.join(trying);
     });
@@ -249,7 +252,7 @@ it.effect("a run whose record the Store refuses on every try is cancelled before
     const runEffect: EffectRunner<StoreServices> = (program) =>
       Effect.runPromise(provided(program).pipe(Effect.provideService(Clock.Clock, clock)));
     const run = (last: boolean) => Effect.gen(function* () {
-      const trying = yield* Effect.promise(() => startGithubBuilds(steps, runEffect, data, [target], last)).pipe(Effect.exit, Effect.forkChild);
+      const trying = yield* Effect.promise(() => startGithubBuilds(steps, runEffect, data, [target], ATTEMPT, last)).pipe(Effect.exit, Effect.forkChild);
       while (trying.pollUnsafe() === undefined) yield* TestClock.adjust("1 second");
       return yield* Fiber.join(trying);
     });
@@ -289,7 +292,7 @@ it.live("a push's own run is left alone when the Store refuses its record", () =
     };
     const data = { organizationId: ORGANIZATION, environmentId: ENVIRONMENT, deploymentId: DEPLOYMENT, trigger: "user" as const };
     const runEffect: EffectRunner<StoreServices> = (program) => Effect.runPromise(provided(program));
-    expect(yield* Effect.promise(() => startGithubBuilds(memoSteps(), runEffect, data, [target]))).toEqual([{ kind: "done" }]);
+    expect(yield* Effect.promise(() => startGithubBuilds(memoSteps(), runEffect, data, [target], ATTEMPT))).toEqual([{ kind: "done" }]);
     expect(cancelled).toEqual([]);
   }),
   60_000,
@@ -327,7 +330,7 @@ it.effect.each(["committed", "late", "unanswered"] as const)(
     const runEffect: EffectRunner<StoreServices> = (program) =>
       Effect.runPromise(provided(program).pipe(Effect.provideService(Clock.Clock, clock)));
     const run = (last: boolean) => Effect.gen(function* () {
-      const trying = yield* Effect.promise(() => startGithubBuilds(steps, runEffect, data, [target], last)).pipe(Effect.exit, Effect.forkChild);
+      const trying = yield* Effect.promise(() => startGithubBuilds(steps, runEffect, data, [target], ATTEMPT, last)).pipe(Effect.exit, Effect.forkChild);
       while (trying.pollUnsafe() === undefined) yield* TestClock.adjust("1 second");
       return yield* Fiber.join(trying);
     });
@@ -384,7 +387,7 @@ it.live("a record that commits after its caller gave up is cancelled once the De
     // writer lets go, however late.
     const release = yield* holdEnvironment(provided);
     const landed = cloud.githubDispatched(target.build, {
-      run_id: RUN, run_url: runUrl(RUN), workflow_ref: WORKFLOW, repository: "acme/web", installation_id: 7,
+      run_id: RUN, run_url: runUrl(RUN), workflow_ref: WORKFLOW, repository: "acme/web", installation_id: 7, push: false, attempt: ATTEMPT,
     }).then(() => "committed" as const, () => "refused" as const);
     yield* waitingOnLocks(provided, 1);
     // The function failed, and its cleanup starts while the record still waits. Then the writer lets go.
@@ -406,7 +409,7 @@ it.live("a replay's record that waits on a late record follows the run that took
     const authority = fakeGithubAuthority({ cancelBuild: ({ runId }) => Effect.sync(() => void cancelled.push(runId)) });
     const { provided } = yield* pinnedWeb(authority);
     const cloud = yield* provided(cloudStore);
-    const run = (runId: number) => ({ run_id: runId, run_url: runUrl(runId), workflow_ref: WORKFLOW, repository: "acme/web", installation_id: 7 });
+    const run = (runId: number) => ({ run_id: runId, run_url: runUrl(runId), workflow_ref: WORKFLOW, repository: "acme/web", installation_id: 7, push: false, attempt: ATTEMPT });
     // The lost start's record of 9001 still waits on the Environment when the replay, which asked GitHub again, records
     // 9002.
     const release = yield* holdEnvironment(provided);
@@ -462,7 +465,7 @@ it.live("a replay that starts while the first try's record still commits asks Gi
   60_000,
 );
 
-const dispatchedRun = (runId: number) => ({ run_id: runId, run_url: runUrl(runId), workflow_ref: WORKFLOW, repository: "acme/web", installation_id: 7 });
+const dispatchedRun = (runId: number) => ({ run_id: runId, run_url: runUrl(runId), workflow_ref: WORKFLOW, repository: "acme/web", installation_id: 7, push: false, attempt: ATTEMPT });
 const failedData = { organizationId: ORGANIZATION, environmentId: ENVIRONMENT, deploymentId: DEPLOYMENT, trigger: "user" as const };
 
 it.live("a failed run whose stop gets no answer cancels nothing, and the stop it hands on cancels the run once the Store answers", () =>
@@ -489,7 +492,7 @@ it.live("a failed run whose stop gets no answer cancels nothing, and the stop it
       events: [{ name: configDeploymentStopRequested.name, data }],
       steps: [{ id: "wait-0", handler: () => null }],
     }).execute());
-    expect(result).toMatchObject({ ended: true });
+    expect(result).toEqual({ failed: DEPLOYMENT });
     expect(cancelled).toEqual([RUN]);
   }),
   60_000,
@@ -659,3 +662,140 @@ it.effect("a workflow file whose body stalls fails inside its bound and closes i
     // Cloud gave up on the file, so it closes the connection rather than holding it open.
     yield* Deferred.await(closed);
   }), 15_000);
+
+/** GitHub as Cloud's dispatches see it: each dispatch starts run 9001, and each cancel is kept. */
+const dispatchingAuthority = (cancelled: number[]) => fakeGithubAuthority({
+  buildWorkflow: () => Effect.succeed(activeWorkflow),
+  dispatchBuild: () => Effect.succeed({ runId: RUN, runUrl: runUrl(RUN), headSha: HEAD, workflowRef: WORKFLOW }),
+  cancelBuild: ({ runId }) => Effect.sync(() => void cancelled.push(runId)),
+});
+
+const deploymentStatus = (cloud: ConfigStore) =>
+  Effect.promise(() => cloud.read(ORGANIZATION, { query: "deployment", id: DEPLOYMENT })).pipe(Effect.map((view) => view.status));
+
+it.live("an older run's stop leaves the run a newer run of the same Deployment dispatched, and the Deployment to it", () =>
+  Effect.gen(function* () {
+    const cancelled: number[] = [];
+    const { provided, web } = yield* pinnedWeb(dispatchingAuthority(cancelled));
+    // Run A was handed the Deployment and stopped before it claimed it; run B, handed it again, dispatched 9001.
+    yield* provided(recordStoreDeploymentRun("worker-old", failedData));
+    yield* provided(recordStoreDeploymentRun("worker-run", failedData));
+    expect(yield* provided(startStoreGithubBuild(ORGANIZATION, target))).toEqual({ kind: "dispatched", runId: RUN });
+    yield* provided(stopStoreDeploymentRun(ORGANIZATION, DEPLOYMENT, "worker-old"));
+    expect(cancelled).toEqual([]);
+    expect(yield* web()).toMatchObject({ status: "building" });
+    expect(yield* deploymentStatus(yield* provided(cloudStore))).toBe("queued");
+    // B's own stop still ends its build and cancels its run.
+    yield* provided(stopStoreDeploymentRun(ORGANIZATION, DEPLOYMENT, "worker-run"));
+    expect(cancelled).toEqual([RUN]);
+  }),
+  60_000,
+);
+
+it.live("a Deployment whose runner's lease lapsed keeps its run while that runner may still renew it", () =>
+  Effect.gen(function* () {
+    const cancelled: number[] = [];
+    const { provided, web } = yield* pinnedWeb(dispatchingAuthority(cancelled));
+    const cloud = yield* provided(cloudStore);
+    expect(yield* provided(startStoreGithubBuild(ORGANIZATION, target))).toEqual({ kind: "dispatched", runId: RUN });
+    yield* Effect.promise(() => cloud.claimDeployment(ORGANIZATION, DEPLOYMENT, ATTEMPT));
+    // The lease reads lapsed, so the Deployment shows unknown, while its runner's renewal may still commit.
+    const { drizzle } = yield* provided(Database);
+    yield* provided(drizzle.execute(sql`update config_deployment set lease = 1 where id = ${DEPLOYMENT}`));
+    expect(yield* deploymentStatus(cloud)).toBe("unknown");
+    // A user's cancel of another Deployment, or any stop that is not its runner's, decides nothing from that view.
+    const stop = yield* provided(cancelStoreGithubBuilds(DEPLOYMENT, null)).pipe(Effect.exit);
+    expect(Exit.isFailure(stop)).toBe(true);
+    expect(cancelled).toEqual([]);
+    expect(yield* web()).toMatchObject({ status: "building" });
+  }),
+  60_000,
+);
+
+it.live("a stop whose build's end commits and whose answer is lost still cancels the run on its next try", () =>
+  Effect.gen(function* () {
+    const cancelled: number[] = [];
+    const { provided } = yield* pinnedWeb(dispatchingAuthority(cancelled));
+    const cloud = yield* provided(cloudStore);
+    yield* provided(recordStoreDeploymentRun("worker-run", failedData));
+    expect(yield* provided(startStoreGithubBuild(ORGANIZATION, target))).toEqual({ kind: "dispatched", runId: RUN });
+    // The write that ends the build commits; its answer never reaches Cloud.
+    const stopBuilds = cloud.githubStop.bind(cloud);
+    cloud.githubStop = async (...args) => {
+      await stopBuilds(...args);
+      cloud.githubStop = stopBuilds;
+      throw unavailable();
+    };
+    const first = yield* provided(stopStoreDeploymentRun(ORGANIZATION, DEPLOYMENT, "worker-run")).pipe(Effect.exit);
+    expect(Exit.isFailure(first)).toBe(true);
+    expect(cancelled).toEqual([]);
+    yield* provided(stopStoreDeploymentRun(ORGANIZATION, DEPLOYMENT, "worker-run"));
+    expect(cancelled).toEqual([RUN]);
+  }),
+  60_000,
+);
+
+it.live("a run recorded before Cloud marked its own is never cancelled: it may be a push's", () =>
+  Effect.gen(function* () {
+    const cancelled: number[] = [];
+    const { provided, web } = yield* pinnedWeb(dispatchingAuthority(cancelled));
+    const cloud = yield* provided(cloudStore);
+    yield* provided(recordStoreDeploymentRun("worker-run", failedData));
+    yield* Effect.promise(() => cloud.githubDispatched(target.build, {
+      run_id: RUN, run_url: runUrl(RUN), workflow_ref: WORKFLOW, repository: "acme/web", installation_id: 7,
+    }));
+    yield* provided(stopStoreDeploymentRun(ORGANIZATION, DEPLOYMENT, "worker-run"));
+    expect(yield* web()).toMatchObject({ status: "failed" });
+    expect(cancelled).toEqual([]);
+  }),
+  60_000,
+);
+
+it.live("a waiting build pinned before Cloud reserved its asks fails with why instead of being asked for again", () =>
+  Effect.gen(function* () {
+    const cancelled: number[] = [];
+    const authority = dispatchingAuthority(cancelled);
+    const { provided, web } = yield* pinnedWeb(authority);
+    const { drizzle } = yield* provided(Database);
+    yield* provided(drizzle.execute(sql`update config_build set reservable = 0 where deployment_id = ${DEPLOYMENT}`));
+    expect(yield* provided(startStoreGithubBuild(ORGANIZATION, target))).toEqual({ kind: "done" });
+    expect(authority.calls.filter((call) => call.operation === "dispatchBuild")).toEqual([]);
+    expect(yield* web()).toMatchObject({ status: "failed", message: "Cloud restarted while it may have been starting this build on GitHub. Push again to build it." });
+  }),
+  60_000,
+);
+
+it.live("a run that ended with its stop's hand-off lost is stopped by the sweep, and its build never waits on GitHub", () =>
+  Effect.gen(function* () {
+    const cancelled: number[] = [];
+    const { provided, web } = yield* pinnedWeb(dispatchingAuthority(cancelled));
+    const cloud = yield* provided(cloudStore);
+    const runEffect: EffectRunner<StoreServices> = (program) => Effect.runPromise(provided(program));
+    yield* provided(recordStoreDeploymentRun("worker-run", failedData));
+    // The run reserved its build and ended before GitHub answered; its stop got no answer, and handing it on failed.
+    expect(yield* Effect.promise(() => cloud.githubAsk(target.build, ATTEMPT))).toBe("reserved");
+    const release = yield* holdEnvironment(provided);
+    const steps = failureSteps();
+    steps.step.sendEvent = async () => { throw new Error("Inngest is unavailable"); };
+    const worker = createRunStoreDeployment(new Inngest({ id: "sweep-test" }), runEffect);
+    yield* Effect.exit(Effect.tryPromise(() => invokeOnFailure(worker, "worker-run", { name: configDeploymentAdmitted.name, data: failedData }, steps)));
+    yield* release;
+    expect(yield* web()).toMatchObject({ status: "pending", message: "Asking GitHub for a run" });
+    // Later, Inngest reports the run failed: the sweep hands its stop on again, and the stop settles it.
+    const later = new Date(Date.now() + 16 * 60_000);
+    const stale = yield* provided(staleStoreDeploymentRuns(() => Effect.succeed("failed" as const), later));
+    expect(stale).toMatchObject([{ runId: "worker-run", deploymentId: DEPLOYMENT }]);
+    const [found] = stale;
+    if (found === undefined) return;
+    const { result } = yield* Effect.promise(() => new InngestTestEngine({
+      function: createStopStoreDeployment(new Inngest({ id: "sweep-test" }), runEffect),
+      events: [configDeploymentStopRequested.create(found)],
+      steps: [{ id: "wait-0", handler: () => null }],
+    }).execute());
+    expect(result).toEqual({ failed: DEPLOYMENT });
+    expect(yield* web()).toMatchObject({ status: "pending", message: "Cloud stopped before GitHub answered" });
+    expect(yield* provided(staleStoreDeploymentRuns(() => Effect.succeed("failed" as const), later))).toEqual([]);
+    expect(cancelled).toEqual([]);
+  }),
+  60_000,
+);

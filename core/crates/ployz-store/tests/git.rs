@@ -911,7 +911,8 @@ fn github_run(run_id: u64) -> GithubRun {
         workflow_ref: WORKFLOW.into(),
         repository: backend::repo_name("acme/web"),
         installation_id: 7,
-        push: false,
+        push: Some(false),
+        attempt: None,
     }
 }
 
@@ -990,14 +991,24 @@ fn only_one_try_reserves_asking_github_and_its_run_or_a_pass_on_settles_the_buil
     for settle in ["run", "pass-on"] {
         let (store, who) = shop();
         let id = pinned(&store, &who);
-        store.github_ask(&id).unwrap();
+        store.github_ask(&id, "cloud-a").unwrap();
         // Another try finds it reserved, so it never asks GitHub.
         assert_eq!(
-            store.github_ask(&id).unwrap_err().code,
+            store.github_ask(&id, "cloud-a").unwrap_err().code,
             RpcErrorCode::Conflict
         );
         if settle == "run" {
-            store.github_dispatched(&id, &github_run(RUN)).unwrap();
+            // Only the reserving attempt's run takes it.
+            assert_eq!(
+                store
+                    .github_dispatched(&id, &attempt_run(RUN, "cloud-b"))
+                    .unwrap_err()
+                    .code,
+                RpcErrorCode::Conflict
+            );
+            store
+                .github_dispatched(&id, &attempt_run(RUN, "cloud-a"))
+                .unwrap();
             // A replay's pass-on behind the record is refused: it follows the run instead.
             assert_eq!(
                 store.github_end(&id, None, &skip()).unwrap_err().code,
@@ -1009,16 +1020,129 @@ fn only_one_try_reserves_asking_github_and_its_run_or_a_pass_on_settles_the_buil
             // The run the reserving try may have started lands too late to hold the build.
             assert_eq!(
                 store
-                    .github_dispatched(&id, &github_run(RUN))
+                    .github_dispatched(&id, &attempt_run(RUN, "cloud-a"))
                     .unwrap_err()
                     .code,
                 RpcErrorCode::Conflict
             );
         }
         assert_eq!(
-            store.github_ask(&id).unwrap_err().code,
+            store.github_ask(&id, "cloud-a").unwrap_err().code,
             RpcErrorCode::Conflict
         );
+    }
+}
+
+fn attempt_run(run_id: u64, attempt: &str) -> GithubRun {
+    GithubRun {
+        attempt: Some(attempt.into()),
+        ..github_run(run_id)
+    }
+}
+
+/// A pinned build reserved and dispatched by worker attempt `attempt`.
+fn dispatched_by(store: &ConfigStore, who: &Actor, attempt: &str) -> GithubBuildId {
+    let id = pinned(store, who);
+    store.github_ask(&id, attempt).unwrap();
+    store
+        .github_dispatched(&id, &attempt_run(RUN, attempt))
+        .unwrap();
+    id
+}
+
+fn owed_runs(owed: &[ployz_store::GithubOwed]) -> Vec<u64> {
+    owed.iter().map(|owed| owed.run.run_id).collect()
+}
+
+#[test]
+fn a_stop_owes_its_attempt_s_run_a_cancel_until_github_confirms_it() {
+    let (store, who) = shop();
+    let id = dispatched_by(&store, &who, "cloud-a");
+    let attempt = RunnerId::parse("cloud-a").unwrap();
+    // While the Deployment still takes GitHub runs, a stop ends nothing.
+    assert_eq!(
+        store
+            .github_stop(&id.deployment, Some(&attempt))
+            .unwrap_err()
+            .code,
+        RpcErrorCode::Conflict
+    );
+    store.claim(&id.deployment, &attempt).unwrap();
+    store
+        .record(&id.deployment, &attempt, RunEvidence::Abandoned)
+        .unwrap();
+    let owed = store.github_stop(&id.deployment, Some(&attempt)).unwrap();
+    assert_eq!(owed_runs(&owed), [RUN]);
+    assert_eq!(owed[0].build, id.to_string());
+    // The stop's answer was lost: the next one still owes the run its cancel.
+    let again = store.github_stop(&id.deployment, Some(&attempt)).unwrap();
+    assert_eq!(owed_runs(&again), [RUN]);
+    store.github_cancel_confirmed(&id, RUN + 1).unwrap();
+    assert_eq!(
+        owed_runs(&store.github_stop(&id.deployment, Some(&attempt)).unwrap()),
+        [RUN]
+    );
+    store.github_cancel_confirmed(&id, RUN).unwrap();
+    assert!(
+        store
+            .github_stop(&id.deployment, Some(&attempt))
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_stop_of_an_older_attempt_leaves_a_newer_attempt_s_run_alone() {
+    let (store, who) = shop();
+    let id = dispatched_by(&store, &who, "cloud-b");
+    let older = RunnerId::parse("cloud-a").unwrap();
+    // The older attempt can't claim it to fail it either.
+    assert_eq!(
+        store.claim(&id.deployment, &older).unwrap_err().code,
+        RpcErrorCode::Conflict
+    );
+    store
+        .write(
+            &who,
+            &ployz_store::Cancel {
+                deployment: id.deployment.clone(),
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        store
+            .github_stop(&id.deployment, Some(&older))
+            .unwrap_err()
+            .code,
+        RpcErrorCode::Conflict
+    );
+    assert_eq!(held(&store, &id).run.run_id, RUN);
+    let newer = RunnerId::parse("cloud-b").unwrap();
+    assert_eq!(
+        owed_runs(&store.github_stop(&id.deployment, Some(&newer)).unwrap()),
+        [RUN]
+    );
+}
+
+#[test]
+fn a_push_s_run_and_one_recorded_before_runs_were_marked_are_never_owed_a_cancel() {
+    for push in [Some(true), None] {
+        let (store, who) = shop();
+        let id = pinned(&store, &who);
+        let run = GithubRun {
+            push,
+            ..github_run(RUN)
+        };
+        store.github_dispatched(&id, &run).unwrap();
+        store
+            .write(
+                &who,
+                &ployz_store::Cancel {
+                    deployment: id.deployment.clone(),
+                },
+            )
+            .unwrap();
+        assert!(store.github_stop(&id.deployment, None).unwrap().is_empty());
     }
 }
 

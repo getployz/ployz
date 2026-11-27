@@ -70,9 +70,9 @@ pub use branch::{
     ProposalSource, RemoveProposal, Removed, RowRef, SecretRow, SyncChange, carries_plan_version,
 };
 pub use build::{
-    BuildLogQuery, BuildLogView, BuildReport, BuildStatus, BuildView, GitSource, GithubBuild,
-    GithubBuildId, GithubClaims, GithubEnd, GithubGrant, GithubHandOff, GithubInput, GithubReport,
-    GithubRule, GithubRun, ImageToken, RunEnd, VerifiedClaim,
+    BuildLogQuery, BuildLogView, BuildReport, BuildStatus, BuildView, GitSource, GithubAsked,
+    GithubBuild, GithubBuildId, GithubClaims, GithubEnd, GithubGrant, GithubHandOff, GithubInput,
+    GithubOwed, GithubReport, GithubRule, GithubRun, ImageToken, RunEnd, UNRESERVED, VerifiedClaim,
 };
 pub use builders::{BuildOrder, BuildOrderQuery, BuildOrderView, Builder, SetBuildOrder};
 pub use client_sealed::SecretValue;
@@ -585,14 +585,43 @@ impl ConfigStore {
             .write(|tx| build::github_dispatched(tx, id, github))
     }
 
-    /// Reserve a pinned Git build that hasn't started before asking GitHub for its run.
-    /// In-process only.
+    /// Reserve a pinned Git build that hasn't started for worker attempt `attempt`, before
+    /// asking GitHub for its run. A build pinned before reservations fails instead
+    /// ([`GithubAsked::Failed`]). In-process only.
     ///
     /// # Errors
     /// Returns `conflict` once it was reserved, handed off or passed on, or the
-    /// Deployment no longer wants it, `not_found` for an unknown build, or a storage error.
-    pub fn github_ask(&self, id: &GithubBuildId) -> Result<(), RpcError> {
-        self.storage.write(|tx| build::github_ask(tx, id))
+    /// Deployment no longer takes GitHub runs, `not_found` for an unknown build, or a
+    /// storage error.
+    pub fn github_ask(&self, id: &GithubBuildId, attempt: &str) -> Result<GithubAsked, RpcError> {
+        self.storage.write(|tx| build::github_ask(tx, id, attempt))
+    }
+
+    /// Stop Deployment `deployment`'s GitHub builds for worker attempt `attempt`, or, with
+    /// none, once it was cancelled or ended: fail each a run holds, owing a cancel for each
+    /// run Cloud dispatched, and pass on each reservation. Returns every run still owed a
+    /// cancel. In-process only.
+    ///
+    /// # Errors
+    /// Returns `conflict` when a newer attempt runs it or it still takes GitHub runs,
+    /// `not_found` for an unknown Deployment, or a storage error.
+    pub fn github_stop(
+        &self,
+        deployment: &DeploymentId,
+        attempt: Option<&RunnerId>,
+    ) -> Result<Vec<GithubOwed>, RpcError> {
+        self.storage
+            .write(|tx| build::github_stop(tx, deployment, attempt))
+    }
+
+    /// GitHub confirmed run `run_id` of build `id` is cancelled or ended: Cloud owes it
+    /// no cancel. In-process only.
+    ///
+    /// # Errors
+    /// Returns `not_found` for an unknown build, or a storage error.
+    pub fn github_cancel_confirmed(&self, id: &GithubBuildId, run_id: u64) -> Result<(), RpcError> {
+        self.storage
+            .write(|tx| build::github_cancel_confirmed(tx, id, run_id))
     }
 
     /// A Git build handed to GitHub. In-process only.

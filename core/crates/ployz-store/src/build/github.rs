@@ -2,7 +2,9 @@
 
 use ployz_core::authority::{AutoDeployRule, BuiltImageDigest, CommitAuthority, Signed};
 use ployz_core::{MachineId, RpcError, ServiceName};
-use ployz_decide::github_build::{EndKind, Hold, Target, github_check_in_holds, github_end_holds};
+use ployz_decide::github_build::{
+    CANCELLED, EndKind, Hold, Target, github_check_in_holds, github_end_holds,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
@@ -75,11 +77,45 @@ pub struct GithubRun {
     pub repository: RepositoryName,
     #[ts(type = "number")]
     pub installation_id: u64,
-    /// A push's own run, which Cloud follows and never cancels; absent on a run Cloud
-    /// dispatched, so a row written before this field reads as one.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    #[ts(optional, as = "Option<bool>")]
-    pub push: bool,
+    /// Whose run it is: `true` for a push's own run, which Cloud follows and never
+    /// cancels, `false` for one Cloud dispatched. Absent on a run recorded before this was
+    /// kept, which Cloud can't tell apart and so never cancels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub push: Option<bool>,
+    /// The worker attempt that recorded it, as its runner. Absent on a run recorded
+    /// before attempts were kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub attempt: Option<String>,
+}
+
+impl GithubRun {
+    /// Whether Cloud may cancel it: only a run Cloud itself dispatched.
+    #[must_use]
+    pub fn cancellable(&self) -> bool {
+        self.push == Some(false)
+    }
+}
+
+/// A GitHub run Cloud owes a cancel: the Store ended its build for a stop, and the run
+/// may still be running until GitHub confirms the cancel.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct GithubOwed {
+    /// The build, as `deployment.service`.
+    pub build: String,
+    pub run: GithubRun,
+}
+
+/// What reserving a build before asking GitHub did.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum GithubAsked {
+    /// Reserved: Cloud may ask GitHub for its run.
+    Reserved,
+    /// Pinned before reservations, so a worker may have asked GitHub for it with no
+    /// record: it failed, with why, and GitHub is asked for nothing.
+    Failed,
 }
 
 /// The Build Grant a GitHub run pushes its image with.
@@ -370,11 +406,19 @@ pub(crate) fn github_dispatched(
     if row.building_on(run.run_id).is_some() {
         return Ok(());
     }
+    let reserved_by_another = row
+        .attempt
+        .as_ref()
+        .is_some_and(|attempt| run.attempt.as_ref() != Some(attempt));
     if !stored.summary.status.in_flight()
         || !matches!(row.stage, Stage::Waiting)
         || row.github_skipped.is_some()
+        || reserved_by_another
     {
         return Err(no_longer_wanted());
+    }
+    if let Some(attempt) = &run.attempt {
+        save_attempt(tx, id, attempt)?;
     }
     let mut log = row.log;
     append(
@@ -387,15 +431,31 @@ pub(crate) fn github_dispatched(
 
 /// The message a waiting build shows once Cloud reserved it to ask GitHub for a run.
 const ASKING_GITHUB: &str = "Asking GitHub for a run";
+/// Why a build pinned before reservations fails rather than go to GitHub.
+pub const UNRESERVED: &str =
+    "Cloud restarted while it may have been starting this build on GitHub. Push again to build it.";
+/// Why a reserved build GitHub never answered for leaves GitHub when its attempt stops.
+const STOPPED_ASKING: &str = "Cloud stopped before GitHub answered";
 
-/// Reserve a pinned, unstarted build before Cloud asks GitHub for its run, so GitHub is
-/// asked once: a build already reserved, or no longer waiting, is `conflict`, and Cloud
-/// asks for nothing. The reservation is the build's message, which the run's hand-off or
-/// a pass-on replaces.
-pub(crate) fn github_ask(tx: &mut dyn Tx, id: &GithubBuildId) -> Result<(), RpcError> {
+/// Reserve a pinned, unstarted build for worker attempt `attempt` before Cloud asks
+/// GitHub for its run, so GitHub is asked once: a build already reserved, or no longer
+/// waiting, is `conflict`, and Cloud asks for nothing. The reservation is the build's
+/// message, which the run's hand-off or a pass-on replaces, and its attempt, which a stop
+/// of another attempt leaves alone. A build pinned before reservations may have been
+/// asked for already with no record of it, so it fails with why instead.
+pub(crate) fn github_ask(
+    tx: &mut dyn Tx,
+    id: &GithubBuildId,
+    attempt: &str,
+) -> Result<GithubAsked, RpcError> {
     let stored = deployment::locked(tx, &id.deployment)?;
     let row = github_row(tx, &stored, id)?;
-    if !stored.summary.status.in_flight()
+    // A stop ended what Cloud had asked for, so nothing more is asked once it started.
+    let taking = matches!(
+        stored.summary.status,
+        deployment::DeploymentStatus::Queued | deployment::DeploymentStatus::Running
+    );
+    if !taking
         || !matches!(row.stage, Stage::Waiting)
         || row.github_skipped.is_some()
         || row.message.is_some()
@@ -406,6 +466,11 @@ pub(crate) fn github_ask(tx: &mut dyn Tx, id: &GithubBuildId) -> Result<(), RpcE
         ));
     }
     let mut log = row.log;
+    if !row.reservable {
+        append(&mut log, &format!("{UNRESERVED}\n"));
+        save_github(tx, id, BuildStatus::Failed, Some(UNRESERVED), &log, None)?;
+        return Ok(GithubAsked::Failed);
+    }
     append(&mut log, &format!("{ASKING_GITHUB}\n"));
     save_github(
         tx,
@@ -414,7 +479,151 @@ pub(crate) fn github_ask(tx: &mut dyn Tx, id: &GithubBuildId) -> Result<(), RpcE
         Some(ASKING_GITHUB),
         &log,
         None,
+    )?;
+    save_attempt(tx, id, attempt)?;
+    Ok(GithubAsked::Reserved)
+}
+
+/// Whether a worker attempt other than `runner` reserved or recorded any of Deployment
+/// `id`'s GitHub builds.
+pub(crate) fn github_attempted_by_another(
+    tx: &mut dyn Tx,
+    id: &DeploymentId,
+    runner: &crate::id::RunnerId,
+) -> Result<bool, RpcError> {
+    Ok(rows(tx, id)?.iter().any(|build| {
+        build
+            .attempt
+            .as_ref()
+            .is_some_and(|attempt| attempt.as_str() != runner.as_str())
+    }))
+}
+
+fn save_attempt(tx: &mut dyn Tx, id: &GithubBuildId, attempt: &str) -> Result<(), RpcError> {
+    tx.execute(
+        "UPDATE config_build SET attempt = ?3 WHERE deployment_id = ?1 AND service = ?2",
+        &[
+            id.deployment.as_str().into(),
+            id.service.as_str().into(),
+            attempt.into(),
+        ],
     )
+    .map(drop)
+}
+
+fn save_owed(tx: &mut dyn Tx, id: &GithubBuildId, run: Option<&GithubRun>) -> Result<(), RpcError> {
+    let owed = run.map(json_text);
+    tx.execute(
+        "UPDATE config_build SET cancel_owed = ?3 WHERE deployment_id = ?1 AND service = ?2",
+        &[
+            id.deployment.as_str().into(),
+            id.service.as_str().into(),
+            owed.as_deref().into(),
+        ],
+    )
+    .map(drop)
+}
+
+/// Stop Deployment `deployment`'s GitHub builds for worker attempt `attempt`, or, with
+/// none, for whoever runs it once it was cancelled or ended. In one write under the
+/// Environment's lock, so no record lands between the check and the ends:
+///
+/// - The attempt must still be the Deployment's: its runner, or, before any claim, the
+///   attempt every reservation and record names. A newer attempt's is `conflict`.
+/// - The Deployment must keep, committed, a status that takes no more GitHub runs: a
+///   lapsed lease only shows Unknown, so the attempt's own lapsed claim is ended first.
+///   With no attempt, it must be cancelling or ended.
+/// - Each build a GitHub run holds fails as cancelled, and a run Cloud dispatched is
+///   owed a cancel. Each reservation GitHub never answered for is passed on, so a late
+///   record of it is refused.
+///
+/// Returns every run the Deployment still owes a cancel, this stop's and earlier ones'
+/// whose cancel GitHub hasn't confirmed.
+pub(crate) fn github_stop(
+    tx: &mut dyn Tx,
+    deployment: &DeploymentId,
+    attempt: Option<&crate::id::RunnerId>,
+) -> Result<Vec<GithubOwed>, RpcError> {
+    let stored = deployment::locked(tx, deployment)?;
+    let builds = rows(tx, deployment)?;
+    let (kept, runner) = deployment::kept_for_stop(tx, stored, attempt)?;
+    if let Some(attempt) = attempt {
+        let theirs = match &runner {
+            Some(runner) => runner != attempt,
+            None => builds.iter().any(|build| {
+                build
+                    .attempt
+                    .as_ref()
+                    .is_some_and(|other| other.as_str() != attempt.as_str())
+            }),
+        };
+        if theirs {
+            return Err(error::conflict(
+                "A newer attempt runs this Deployment",
+                json!({ "deployment": deployment, "newer": true }),
+            ));
+        }
+    }
+    let stopped = match kept {
+        deployment::DeploymentStatus::Cancelling => true,
+        status => !status.in_flight() && status != deployment::DeploymentStatus::WaitingForCi,
+    };
+    if !stopped {
+        return Err(error::conflict(
+            "This Deployment still takes GitHub runs",
+            json!({ "deployment": deployment }),
+        ));
+    }
+    for build in &builds {
+        let id = GithubBuildId {
+            deployment: deployment.clone(),
+            service: build.service.clone(),
+        };
+        match &build.stage {
+            Stage::Building(By::Github(hold)) => {
+                let run = hold.run().clone();
+                let end = GithubEnd::Failed {
+                    message: CANCELLED.to_owned(),
+                };
+                github_end(tx, &id, Some(run.run_id), &end)?;
+                if run.cancellable() {
+                    save_owed(tx, &id, Some(&run))?;
+                }
+            }
+            Stage::Waiting if build.message.as_deref() == Some(ASKING_GITHUB) => {
+                let end = GithubEnd::Skipped {
+                    message: STOPPED_ASKING.to_owned(),
+                };
+                github_end(tx, &id, None, &end)?;
+            }
+            Stage::Waiting | Stage::Building(By::Servers { .. }) | Stage::Ended { .. } => {}
+        }
+    }
+    Ok(rows(tx, deployment)?
+        .into_iter()
+        .filter_map(|build| {
+            let run = build.cancel_owed?;
+            Some(GithubOwed {
+                build: format!("{deployment}.{}", build.service),
+                run,
+            })
+        })
+        .collect())
+}
+
+/// GitHub confirmed it cancelled run `run_id` of build `id`, or that it ended: Cloud owes
+/// it nothing more. Confirming a run owed nothing changes nothing.
+pub(crate) fn github_cancel_confirmed(
+    tx: &mut dyn Tx,
+    id: &GithubBuildId,
+    run_id: u64,
+) -> Result<(), RpcError> {
+    let stored = deployment::locked(tx, &id.deployment)?;
+    let row = github_row(tx, &stored, id)?;
+    if row.cancel_owed.is_some_and(|run| run.run_id == run_id) {
+        save_owed(tx, id, None)?;
+    }
+    Ok(())
 }
 
 pub(crate) fn github_build(tx: &mut dyn Tx, id: &GithubBuildId) -> Result<GithubHandOff, RpcError> {

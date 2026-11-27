@@ -196,7 +196,8 @@ fn dispatched() -> (Arc<ConfigStore>, Actor, GithubBuildId) {
         workflow_ref: WORKFLOW.into(),
         repository: RepositoryName::parse("acme/web").unwrap(),
         installation_id: 7,
-        push: false,
+        push: Some(false),
+        attempt: None,
     };
     store.github_dispatched(&id, &run).unwrap();
     (store, who, id)
