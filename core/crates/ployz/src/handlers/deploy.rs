@@ -888,23 +888,30 @@ fn run_here(
     };
     let (local, id) = (std::sync::Arc::clone(local), admitted.id.clone());
     let runtime = runtime()?;
-    Ok(std::thread::spawn(move || {
-        // Locals drop last to first, on a panic too. Dropping the runtime waits out its
-        // blocking tasks, so it goes before `ended` wakes following.
-        let _ended = ended.drop_guard();
-        let runtime = runtime;
-        runtime
-            .block_on(crate::sdk::run_deployment(
-                ployz_core::Operator::Cli,
-                local,
-                id,
-                runner,
-                connections,
-                Ok(sources),
-            ))
-            .map_err(Error::from)
-    }))
+    let handle = std::thread::Builder::new()
+        .name("ployz-runner".into())
+        .stack_size(RUNNER_STACK)
+        .spawn(move || {
+            // Locals drop last to first, on a panic too. Dropping the runtime waits out its
+            // blocking tasks, so it goes before `ended` wakes following.
+            let _ended = ended.drop_guard();
+            let runtime = runtime;
+            runtime
+                .block_on(crate::sdk::run_deployment(
+                    ployz_core::Operator::Cli,
+                    local,
+                    id,
+                    runner,
+                    connections,
+                    Ok(sources),
+                ))
+                .map_err(Error::from)
+        })?;
+    Ok(handle)
 }
+
+/// A debug build's Deploy outgrows a spawned thread's default 2 MiB once it executes.
+const RUNNER_STACK: usize = 16 * 1024 * 1024;
 
 /// `ployz up` in this Environment, which uploads the directory it runs in. It names
 /// the scope, so an unlinked directory never founds a new Project.
