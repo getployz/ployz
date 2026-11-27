@@ -399,10 +399,11 @@ async fn updates_removes_and_inspects_machine_network_state() {
         cluster.inspect(1).await.unwrap().phase,
         ployz_core::LocalMachinePhase::Participating
     );
+    // A forgotten Server can't bring its row back (63ef89f967): its own view drops it too.
     wait_for(&cluster, 1, Duration::from_secs(75), |machines| {
         machines
             .iter()
-            .any(|machine| machine.machine.id == second.id)
+            .all(|machine| machine.machine.id != second.id)
     })
     .await;
 }

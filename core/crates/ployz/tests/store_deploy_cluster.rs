@@ -31,22 +31,14 @@ async fn an_image_service_deploys_through_the_hidden_store() {
     ployz(&["project", "new", "shop"]);
     ployz(&["service", "add", "web", "--image", SERVICE_CONTAINER_IMAGE]);
     ployz(&["set", "web.startCommand=sh -c 'echo started; sleep 600'"]);
-    // A secret is sealed in the Store and unsealed only for its runner.
-    let secrets = dir.path().join("secrets.env");
-    std::fs::write(&secrets, "TOKEN=s3cr3t\n").unwrap();
-    ployz(&[
-        "set",
-        "web",
-        "--from-env-file",
-        secrets.to_str().unwrap(),
-        "--secret",
-    ]);
-    ployz(&["set", "web.env.GREETING=hi-${{ TOKEN }}"]);
+    // A local Store holds no Cluster key on this computer, so it takes no secret
+    // (config_cli's a_local_store_refuses_a_plain_text_secret); a plain variable
+    // still reaches the containers.
+    ployz(&["set", "web.env.GREETING=hi"]);
     let deployed = ployz(&["deploy", "--events", events.to_str().unwrap()]);
     assert_eq!(deployed["status"], json!("applied"), "{deployed}");
     assert_eq!(deployed["nodes"][0]["outcome"], json!("deployed"));
     assert!(deployed["preview"].is_object());
-    assert!(!deployed.to_string().contains("s3cr3t"));
     let progress = std::fs::read_to_string(&events).unwrap();
     assert!(progress.lines().count() > 0);
     for line in progress.lines() {
@@ -109,11 +101,12 @@ async fn an_image_service_deploys_through_the_hidden_store() {
             .container
             .environment
             .get("GREETING")
-            == Some(&"hi-s3cr3t".into())
+            == Some(&"hi".into())
     }));
 
     // A Volume mounted into web is created by its Deploy; removing it deletes its
-    // Docker Volume only once the loss is accepted by name.
+    // Docker Volume only once the loss is accepted by name. A Volume takes one writer.
+    ployz(&["set", "web.replicas=1"]);
     let added = ployz(&["volume", "add", "data", "--mount", "web:/data", "--docker"]);
     let docker = format!(
         "shop-production_vol-{}",
@@ -126,16 +119,16 @@ async fn an_image_service_deploys_through_the_hidden_store() {
     );
     ployz(&["volume", "rm", "data"]);
     let (code, refused) = attempt(address, &store, &["deploy", "--message", "drop data"]);
-    assert_eq!(code, Some(1), "{refused}");
+    assert_eq!(code, Some(2), "{refused}");
     let refused = &refused["error"];
     assert_eq!(refused["code"], json!("confirmation_required"), "{refused}");
     assert_eq!(refused["details"]["accept"], json!(["data"]));
     let version = refused["details"]["version"].as_str().unwrap();
-    // The retry keeps what was typed besides the acceptance.
+    // The retry keeps what was typed besides the acceptance, with free text left to fill in.
     assert_eq!(
-        refused["details"]["next"],
+        refused["details"]["retry"],
         json!(format!(
-            "ployz deploy --message 'drop data' --accept-volume-loss data --expect-version {version}"
+            "ployz --connect tcp://{address} --json --why '<REASON>' deploy --message '<TEXT>' --accept-volume-loss data --expect-version {version}"
         ))
     );
     assert!(
@@ -162,7 +155,7 @@ async fn an_image_service_deploys_through_the_hidden_store() {
         .live_services(ployz_core::EnvironmentValues::Redacted)
         .await
         .unwrap();
-    assert_eq!(web_containers(&live), 2);
+    assert_eq!(web_containers(&live), 1);
     let removed = ployz(&["deploy"]);
     assert_eq!(removed["status"], json!("applied"), "{removed}");
     wait_for_web(&mut client, &web_containers, 0).await;
@@ -205,11 +198,13 @@ async fn an_image_service_deploys_through_the_hidden_store() {
         &store,
         &["env", "rm", "staging", "--confirm", "shop/staging"],
     );
-    assert_eq!(code, Some(1), "{refused}");
+    assert_eq!(code, Some(2), "{refused}");
     // The typed name confirms it: the retry accepts the lost Volume, no version.
     assert_eq!(
-        refused["error"]["details"]["next"],
-        json!("ployz env rm staging --confirm shop/staging --accept-volume-loss cache")
+        refused["error"]["details"]["retry"],
+        json!(format!(
+            "ployz --connect tcp://{address} --json --why '<REASON>' env rm staging --confirm shop/staging --accept-volume-loss cache"
+        ))
     );
     let removed = ployz(&[
         "env",
