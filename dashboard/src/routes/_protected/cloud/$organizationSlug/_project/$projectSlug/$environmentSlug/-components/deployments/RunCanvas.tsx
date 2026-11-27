@@ -1,7 +1,7 @@
 import { useEffect, type ReactNode } from "react";
 import {
-  BaseEdge, Background, BackgroundVariant, getViewportForBounds, Handle, Panel, Position, ReactFlow, useReactFlow, useStore,
-  type Edge, type EdgeProps, type Node, type NodeProps, type Rect,
+  Background, BackgroundVariant, getViewportForBounds, Handle, Panel, Position, ReactFlow, ReactFlowProvider, useReactFlow,
+  useStore, type Edge, type Node, type NodeProps, type Rect,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { Link } from "@tanstack/react-router";
@@ -10,8 +10,9 @@ import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
 import { RunningTime } from "#/components/relative-time";
 import { Card, CardHeader, CardTitle, CardDescription } from "#/components/ui/card";
 import { formatDuration } from "#/utils/relative-time";
-import { cleanupLabel, type RunEdge, type RunGraph, type RunNode, type RunTiming } from "#/modules/config-store/deployments/run-graph";
+import { cleanupLabel, type RunGraph, type RunNode, type RunTiming } from "#/modules/config-store/deployments/run-graph";
 import { DEPLOYMENT_ROUTE_TO } from "#/lib/environment-routes";
+import { RoutedStepEdge, useKeepOut, useRoutedEdges } from "#/modules/canvas/routed-edges";
 
 const NODE_WIDTH = 224;
 const NODE_HEIGHT = 72;
@@ -37,64 +38,10 @@ function placed(graph: RunGraph, selectedId: string | undefined): RunFlowNode[] 
 }
 
 const EDGE_STYLE = { stroke: "var(--border)", strokeWidth: 1.5 };
-const COLUMN_GUTTER = (COLUMN_STEP - NODE_WIDTH) / 2;
-const ROW_GUTTER = (ROW_STEP - NODE_HEIGHT) / 2;
-const CORNER_RADIUS = 8;
-
-type DetourEdge = Edge<{ lane: number }, "detour">;
-
-/**
- * The y of the gap an edge that skips columns runs along: just above or below every card in the columns it skips,
- * whichever is nearer its ends, so it never passes under a card it doesn't link. None when nothing sits between.
- */
-export function detourLane(graph: RunGraph, edge: Pick<RunEdge, "source" | "target">): number | undefined {
-  const source = graph.nodes.find((node) => node.id === edge.source);
-  const target = graph.nodes.find((node) => node.id === edge.target);
-  if (!source || !target) return undefined;
-  const between = graph.nodes.filter((node) => node.column > source.column && node.column < target.column);
-  if (!between.length) return undefined;
-  const rows = between.map((node) => node.row);
-  const above = Math.min(...rows) * ROW_STEP - ROW_GUTTER;
-  const below = Math.max(...rows) * ROW_STEP + NODE_HEIGHT + ROW_GUTTER;
-  const ends = [source.row, target.row].map((row) => row * ROW_STEP + NODE_HEIGHT / 2);
-  const distance = (lane: number) => ends.reduce((sum, end) => sum + Math.abs(lane - end), 0);
-  return distance(above) <= distance(below) ? above : below;
-}
 
 function linked(graph: RunGraph): Edge[] {
-  return graph.edges.map((edge) => {
-    const lane = detourLane(graph, edge);
-    const shown = { ...edge, style: EDGE_STYLE, focusable: false, selectable: false };
-    return lane === undefined ? shown : { ...shown, type: "detour", data: { lane } } satisfies DetourEdge;
-  });
+  return graph.edges.map((edge) => ({ ...edge, style: EDGE_STYLE, focusable: false, selectable: false }));
 }
-
-type Point = { x: number; y: number };
-
-/** A rounded turn at `at`, coming from `from` and leaving for `to`, as SVG path commands. */
-function corner(from: Point, at: Point, to: Point): string {
-  const radius = Math.min(CORNER_RADIUS, Math.hypot(at.x - from.x, at.y - from.y) / 2, Math.hypot(to.x - at.x, to.y - at.y) / 2);
-  const toward = (point: Point) => {
-    const length = Math.hypot(point.x - at.x, point.y - at.y) || 1;
-    return `${at.x + ((point.x - at.x) / length) * radius},${at.y + ((point.y - at.y) / length) * radius}`;
-  };
-  return `L${toward(from)} Q${at.x},${at.y} ${toward(to)}`;
-}
-
-/** Out into the gutter after its source, along its lane, down the gutter before its target. */
-function DetourEdgePath({ sourceX, sourceY, targetX, targetY, data, style }: EdgeProps<DetourEdge>) {
-  const lane = data?.lane ?? sourceY;
-  const source = { x: sourceX, y: sourceY };
-  const target = { x: targetX, y: targetY };
-  const out = { x: sourceX + COLUMN_GUTTER, y: sourceY };
-  const up = { x: out.x, y: lane };
-  const across = { x: targetX - COLUMN_GUTTER, y: lane };
-  const down = { x: across.x, y: targetY };
-  const turns = [corner(source, out, up), corner(out, up, across), corner(up, across, down), corner(across, down, target)];
-  return <BaseEdge path={`M${sourceX},${sourceY} ${turns.join(" ")} L${targetX},${targetY}`} style={style} />;
-}
-
-const edgeTypes = { detour: DetourEdgePath };
 
 export function RunTime({ timing }: { timing: RunTiming | undefined }) {
   if (!timing) return null;
@@ -137,6 +84,7 @@ function RunNodeCard({ data: { node, selected } }: NodeProps<RunFlowNode>) {
 }
 
 const nodeTypes = { run: RunNodeCard };
+const edgeTypes = { routed: RoutedStepEdge };
 
 function bounds(nodes: RunFlowNode[]): Rect {
   const xs = nodes.map((node) => node.position.x);
@@ -162,12 +110,19 @@ function FitRun({ x, y, width, height }: Rect) {
 }
 
 /** A Deployment's builds and nodes on a canvas, the header floating top left; a click picks the node the panel shows. */
-export function RunCanvas({ graph, selectedId, header }: { graph: RunGraph; selectedId: string | undefined; header: ReactNode }) {
+export function RunCanvas(props: { graph: RunGraph; selectedId: string | undefined; header: ReactNode }) {
+  return <ReactFlowProvider><RunFlow {...props} /></ReactFlowProvider>;
+}
+
+function RunFlow({ graph, selectedId, header }: { graph: RunGraph; selectedId: string | undefined; header: ReactNode }) {
   const nodes = placed(graph, selectedId);
+  const { keepOut, keepOutRef } = useKeepOut();
+  // Each link is routed around the cards it skips and the header, never under them.
+  const edges = useRoutedEdges(linked(graph), keepOut);
   return (
     <ReactFlow
       nodes={nodes}
-      edges={linked(graph)}
+      edges={edges}
       nodeTypes={nodeTypes}
       edgeTypes={edgeTypes}
       minZoom={MIN_ZOOM}
@@ -182,7 +137,7 @@ export function RunCanvas({ graph, selectedId, header }: { graph: RunGraph; sele
     >
       <Background variant={BackgroundVariant.Dots} gap={16} size={1} />
       {nodes.length ? <FitRun {...bounds(nodes)} /> : null}
-      <Panel position="top-left" className="max-w-[calc(100%-2rem)]">{header}</Panel>
+      <Panel ref={keepOutRef} position="top-left" className="max-w-[calc(100%-2rem)]">{header}</Panel>
     </ReactFlow>
   );
 }
