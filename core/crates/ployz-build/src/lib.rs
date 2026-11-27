@@ -52,7 +52,7 @@ pub use solve::PlainRenderer;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::{Path, PathBuf},
+    path::Path,
     process::{Child, Command, ExitStatus, Stdio},
     time::{Duration, Instant},
 };
@@ -1278,17 +1278,21 @@ impl<'a> Docker<'a> {
         }
         // Captured output goes to files rather than pipes: nothing reads a
         // pipe until the child exits, so a chatty command would fill one and
-        // block until its deadline.
-        let output = self.working_dir.join("docker-output");
-        let diagnosis = self.working_dir.join("docker-diagnosis");
+        // block until its deadline. Each call's files are its own and unlinked,
+        // so concurrent calls sharing a working directory never read each other's.
+        let mut output = None;
+        let mut diagnosis = None;
         if streams != Streams::Inherited {
-            command
-                .stdout(match streams {
-                    Streams::Captured => Stdio::from(self.create(action, &output)?),
-                    Streams::Discarded => Stdio::null(),
-                    Streams::Inherited => unreachable!(),
-                })
-                .stderr(self.create(action, &diagnosis)?);
+            if streams == Streams::Captured {
+                let file = self.private_file(action)?;
+                command.stdout(self.duplicate(action, &file)?);
+                output = Some(file);
+            } else {
+                command.stdout(Stdio::null());
+            }
+            let file = self.private_file(action)?;
+            command.stderr(self.duplicate(action, &file)?);
+            diagnosis = Some(file);
         }
         let mut progress_reader = if streams == Streams::Inherited && self.progress.is_some() {
             // The pipe applies backpressure instead of retaining an unbounded
@@ -1357,14 +1361,12 @@ impl<'a> Docker<'a> {
         let status = status?;
         if !status.success() {
             // Only a captured command has a diagnosis this side can read back.
-            // Inherited output already reached the operator, and the file
-            // still holds whatever the previous captured command wrote.
-            let diagnostic = match streams {
-                Streams::Captured | Streams::Discarded => {
-                    std::fs::read_to_string(&diagnosis).unwrap_or_default()
-                }
-                Streams::Inherited => String::new(),
-            };
+            // Inherited output already reached the operator.
+            let diagnostic = diagnosis
+                .map(read_back)
+                .transpose()
+                .unwrap_or_default()
+                .unwrap_or_default();
             let diagnostic = diagnostic.trim();
             return Err(BuildError::Docker {
                 action,
@@ -1375,23 +1377,56 @@ impl<'a> Docker<'a> {
                 },
             });
         }
-        match streams {
-            Streams::Captured => {
-                std::fs::read_to_string(&output).map_err(|error| BuildError::Docker {
-                    action,
-                    diagnostic: error.to_string(),
-                })
-            }
-            Streams::Inherited | Streams::Discarded => Ok(String::new()),
-        }
+        // An unreadable output is an error, never an empty answer.
+        output
+            .map(read_back)
+            .transpose()
+            .map(Option::unwrap_or_default)
+            .map_err(|error| BuildError::Docker {
+                action,
+                diagnostic: error.to_string(),
+            })
     }
 
-    fn create(&self, action: &'static str, path: &PathBuf) -> Result<std::fs::File, BuildError> {
-        std::fs::File::create(path).map_err(|error| BuildError::Docker {
+    /// A new file only this call holds: created under a unique name, then
+    /// unlinked, so no other call can open it.
+    fn private_file(&self, action: &'static str) -> Result<std::fs::File, BuildError> {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let failed = |error: std::io::Error| BuildError::Docker {
             action,
             diagnostic: error.to_string(),
-        })
+        };
+        let path = self
+            .working_dir
+            .join(format!("docker-{}", uuid::Uuid::new_v4().simple()));
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+            .map_err(failed)?;
+        std::fs::remove_file(&path).map_err(failed)?;
+        Ok(file)
     }
+
+    fn duplicate(&self, action: &'static str, file: &std::fs::File) -> Result<Stdio, BuildError> {
+        file.try_clone()
+            .map(Stdio::from)
+            .map_err(|error| BuildError::Docker {
+                action,
+                diagnostic: error.to_string(),
+            })
+    }
+}
+
+/// What a command wrote to its private file.
+fn read_back(mut file: std::fs::File) -> std::io::Result<String> {
+    use std::io::{Read as _, Seek as _};
+    let mut text = String::new();
+    file.rewind()?;
+    file.read_to_string(&mut text)?;
+    Ok(text)
 }
 
 /// Polling is bounded even after kill: inability to observe termination must

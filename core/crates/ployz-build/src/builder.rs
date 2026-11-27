@@ -714,17 +714,20 @@ fn label_cache(docker: &Docker<'_>, name: &str) -> Result<(), BuildError> {
 /// access each ran with. Another container with a worker's name is left.
 fn discard(docker: &Docker<'_>, slot: usize) -> Result<(), BuildError> {
     [Access::Full, Access::Free].iter().try_for_each(|access| {
-        let Some(id) = owned(docker, &container(&access.builder(slot)))? else {
-            return Ok(());
-        };
-        // A graceful stop lets BuildKit delete its bridge; a forced removal leaves it behind.
-        let _ = docker.releasing().run(
-            "stop the build container",
-            &["stop", &id],
-            Streams::Captured,
-        );
-        docker.remove_container(&id)
+        match owned(docker, &container(&access.builder(slot)))? {
+            Some(id) => stop_and_remove(docker, &id),
+            None => Ok(()),
+        }
     })
+}
+
+/// Stop the worker with ID `id`, then remove it. A graceful stop lets
+/// BuildKit delete its bridge; a forced removal leaves it behind.
+fn stop_and_remove(docker: &Docker<'_>, id: &str) -> Result<(), BuildError> {
+    let _ = docker
+        .releasing()
+        .run("stop the build container", &["stop", id], Streams::Captured);
+    docker.remove_container(id)
 }
 
 /// Refuse a builder whose worker name another container holds: Buildx would
@@ -763,7 +766,7 @@ fn release(docker: &Docker<'_>, name: &str) -> Result<(), BuildError> {
     }
     remove(docker, name)?;
     match held {
-        Holder::Ployz(id) => docker.remove_container(&id),
+        Holder::Ployz(id) => stop_and_remove(docker, &id),
         Holder::Nobody | Holder::Other => Ok(()),
     }
 }
@@ -1258,7 +1261,10 @@ impl Lock {
             BuildError::Prerequisite(format!("remove abandoned Build upload: {error}"))
         })?;
         // A worker the last daemon kept outlives it, so startup removes it.
-        lock.quarantine()?;
+        // The mark names no owner, only the Docker CLIs recorded below: a
+        // removal that fails leaves the slot for the next admission to
+        // recover, not held by this process.
+        lock.take_over(&[])?;
         let environment = crate::upload::environment(&lock.upload_directory());
         let recorder = lock.recorder();
         let directory = lock.directory.clone();
@@ -2008,6 +2014,7 @@ esac
                 r#"#!/bin/sh
 [ "$1" = --ready ] && exit 0
 printf '%s\n' "$*" >> '{0}/calls'
+[ -f '{0}/docker-down' ] && {{ echo 'Cannot connect to the Docker daemon' >&2; exit 1; }}
 {2}case "$1 $2" in
   'inspect --type')
     if grep -qx "$6" '{0}/owned' 2>/dev/null; then made_by_ployz "$6"
@@ -2213,6 +2220,7 @@ exit 0
             [
                 inspect_owner(&container(&name)),
                 format!("buildx rm --keep-state --keep-daemon {name}"),
+                format!("stop id-{}", container(&name)),
                 format!("rm --force id-{}", container(&name)),
             ],
             "teardown keeps the cache volume"
@@ -3034,6 +3042,96 @@ exit 0
         ] {
             assert_eq!(made_by_ployz(name, &made, "1000"), ployzs, "{case}");
         }
+    }
+
+    /// Docker fails once while the daemon starts: the slot is left for the
+    /// next admission to recover, not held by the running daemon.
+    #[test]
+    fn a_failed_startup_look_leaves_the_slot_for_the_next_admission_to_recover() {
+        let directory = host_slot();
+        let directory = directory.path();
+        let policy = crate::HostPolicy {
+            state_directory: directory.join("state"),
+            configuration_file: directory.join("build.yaml"),
+            docker: directory.join("docker"),
+            ..Default::default()
+        };
+        fs::write(directory.join("docker-down"), "").unwrap();
+        assert!(Lock::cleanup_abandoned(&policy).is_err());
+        fs::remove_file(directory.join("docker-down")).unwrap();
+        let admission = crate::Admission::try_acquire_with(&policy);
+        assert!(admission.is_ok(), "{:?}", admission.err());
+    }
+
+    /// Two slots recover at once in one state directory, each reading only
+    /// what its own Docker calls printed.
+    #[test]
+    fn concurrent_recoveries_read_only_their_own_docker_output() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        fs::set_permissions(
+            root,
+            <fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
+        )
+        .unwrap();
+        let [first, second] = [20, 21].map(|slot| container(&Access::Full.builder(slot)));
+        // The first slot's worker look prints, then waits until the second
+        // slot's look has printed too.
+        crate::tests::executable(
+            &root.join("docker"),
+            &format!(
+                r#"#!/bin/sh
+[ "$1" = --ready ] && exit 0
+printf '%s\n' "$*" >> '{root}/calls'
+{made}if [ "$1 $2" = 'inspect --type' ]; then
+  case "$6" in
+    {first}) made_by_ployz "$6"; : > '{root}/first-printed'
+      for _ in $(seq 500); do [ -f '{root}/second-printed' ] && break; sleep 0.01; done ;;
+    {second}) for _ in $(seq 500); do [ -f '{root}/first-printed' ] && break; sleep 0.01; done
+      made_by_ployz "$6"; : > '{root}/second-printed' ;;
+    *) echo "Error: No such container: $6" >&2; exit 1 ;;
+  esac
+fi
+exit 0
+"#,
+                root = root.display(),
+                made = crate::tests::made_by_ployz_sh(),
+            ),
+        );
+        let state = root.join("state");
+        fs::DirBuilder::new().mode(0o700).create(&state).unwrap();
+        for slot in [20, 21] {
+            let mut gone = sleeper(&[]);
+            let docker_process = crate::owner::Process::observe(gone.id()).unwrap().unwrap();
+            gone.kill().unwrap();
+            gone.wait().unwrap();
+            fs::write(
+                state.join(lock_file(slot)),
+                format!(
+                    "{}{}",
+                    crate::owner::named(&[]),
+                    crate::owner::Mark::docker_line(docker_process, crate::owner::DEFAULT_ENDPOINT)
+                ),
+            )
+            .unwrap();
+        }
+        let docker = root.join("docker");
+        std::thread::scope(|scope| {
+            for slot in [20, 21] {
+                let (state, docker) = (&state, &docker);
+                scope.spawn(move || drop(Lock::try_acquire_slot(state, slot, docker).unwrap()));
+            }
+        });
+        let calls = calls_since(root, &mut 0);
+        let removed = calls
+            .iter()
+            .filter_map(|call| call.strip_prefix("rm --force "))
+            .collect::<Vec<_>>();
+        let mut expected = vec![format!("id-{first}"), format!("id-{second}")];
+        expected.sort();
+        let mut removed = removed.into_iter().map(str::to_owned).collect::<Vec<_>>();
+        removed.sort();
+        assert_eq!(removed, expected, "{calls:?}");
     }
 
     #[test]
