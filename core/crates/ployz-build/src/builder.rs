@@ -836,7 +836,11 @@ impl Lock {
         let mut found = Self::known_slots(&policy.state_directory);
         // A cache clear runs in the caller's environment, and another
         // Docker's containers are not this host's workers.
-        if let Err(error) = caches.then(|| docker.require_local()).unwrap_or(Ok(())) {
+        if let Err(error) = if caches {
+            docker.require_local()
+        } else {
+            Ok(())
+        } {
             let _ = fs::remove_dir_all(&working);
             return (found, Err(error));
         }
