@@ -1,4 +1,4 @@
-use std::{io, sync::Arc};
+use std::{io, sync::Arc, time::Duration};
 
 use ployz_core::MachineId;
 use tokio::net::UnixListener;
@@ -21,11 +21,17 @@ async fn membership_sample_times_out() {
         incomplete_ids: Vec::new(),
     })));
 
+    let started = tokio::time::Instant::now();
     let error = load_down(&machines, &AdminClient::new(path), &MachineId::random())
         .await
         .unwrap_err();
 
     assert!(matches!(error, CorrosionError::Io(error) if error.kind() == io::ErrorKind::TimedOut));
+    assert_eq!(
+        started.elapsed(),
+        Duration::from_secs(1),
+        "a route decision waits the production bound on a sample, then fails open"
+    );
     admin_server.abort();
     std::fs::remove_dir_all(root).unwrap();
 }

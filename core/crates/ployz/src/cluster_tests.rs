@@ -604,9 +604,7 @@ async fn a_redial_that_reaches_another_machine_is_refused_and_keeps_the_old_chan
 
     // A client whose last redial failed has forgotten its entry, and still refuses.
     let mut forgot = client.clone();
-    forgot.session.entry = session::Entry::Lost {
-        last: machine_id('a'),
-    };
+    forgot.session.lose_entry();
     for redialing in [client.clone(), forgot] {
         let refused = redialing.redial_shared().await;
         assert!(
@@ -683,9 +681,7 @@ async fn a_retry_redial_that_reaches_another_machine_moves_only_that_client() {
     // Machine; the retry follows it. A clone whose last redial failed has forgotten
     // its entry, and still moves only itself.
     let mut forgot = client.clone();
-    forgot.session.entry = session::Entry::Lost {
-        last: machine_id('a'),
-    };
+    forgot.session.lose_entry();
     for mut retrying in [client.clone(), forgot] {
         retrying.session.redial().await.unwrap();
         assert_eq!(retrying.entry_machine(), Some(machine_id('b')));

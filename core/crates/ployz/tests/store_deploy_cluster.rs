@@ -572,6 +572,440 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
     );
 }
 
+/// Five Services of one repository, as a monorepo's web, workers and cron are: four build
+/// one Dockerfile into one image, one digest under four repositories, and the fifth builds
+/// a Dockerfile of its own. Cloud's runner builds each once, a redeploy of the same commit
+/// reuses every image, and only a changed build variable or commit builds again.
+#[tokio::test]
+#[ignore = "informing: requires the privileged Ployz testkit image with Buildx"]
+async fn a_same_commit_redeploy_of_services_sharing_a_dockerfile_reuses_every_build() {
+    redeploys_sharing_a_dockerfile(false).await;
+}
+
+/// The same, each Service reaching a Volume, so each builds a Full Build: its image loads
+/// under its own name, not under no name as a free Build's does.
+#[tokio::test]
+#[ignore = "informing: requires the privileged Ployz testkit image with Buildx"]
+async fn a_same_commit_redeploy_of_data_services_sharing_a_dockerfile_reuses_every_build() {
+    redeploys_sharing_a_dockerfile(true).await;
+}
+
+async fn redeploys_sharing_a_dockerfile(reaches_data: bool) {
+    use std::collections::BTreeMap;
+
+    use ployz_core::ServiceName;
+    use ployz_core::config::ServiceGitAccess;
+    use ployz_store::{
+        Actor, Admit, AuthorizedRepository, BuildStatus, Change, ConfigStore, CreateGitService,
+        CreateProject, Deploy, DeploymentId, DeploymentStatus, Edit, EnvironmentId, EnvironmentRef,
+        OrganizationId, ProjectId, ProjectName, RunnerId, SealingKey, ServiceLineageId,
+        SettingPath, Trusted,
+    };
+
+    let plan = ClusterPlan::new(
+        &format!("l3-store-reuse-{}-{reaches_data}", std::process::id()),
+        1,
+    )
+    .unwrap();
+    let cluster = Cluster::create(plan).unwrap();
+    cluster.initialize_entry().await.unwrap();
+    let address = cluster.api_socket_address(0).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let url = format!("sqlite:{}", dir.path().join("store.db").display());
+    let store = Arc::new(ConfigStore::open(&url, SealingKey::new(b"rung4").unwrap()).unwrap());
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
+    store
+        .write(
+            &who,
+            &CreateProject {
+                id: ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
+                name: ProjectName::parse("shop").unwrap(),
+                default_environment: EnvironmentId::parse("00000000-0000-4000-8000-000000000002")
+                    .unwrap(),
+                region: None,
+            },
+        )
+        .unwrap();
+    let names = ["queue", "web", "reverb", "scheduler", "ai"];
+    let repository = ployz_store::RepositoryName::parse("acme/shop").unwrap();
+    let evidence = Trusted {
+        repositories: vec![AuthorizedRepository {
+            repository: repository.clone(),
+            repository_id: ployz_store::RepositoryId::parse(11).unwrap(),
+            access: ServiceGitAccess::Public,
+            default_branch: ployz_store::BranchName::parse("main").unwrap(),
+            branches: Vec::new(),
+        }],
+        ..Trusted::default()
+    };
+    let checkout = tempfile::tempdir().unwrap();
+    // No step writes a layer, so the four builds give one image whatever their timing, as
+    // the Services sharing a Dockerfile in production ran one.
+    std::fs::write(
+        checkout.path().join("Dockerfile"),
+        "FROM alpine:3.23.3\nCMD [\"sleep\", \"600\"]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        checkout.path().join("ai.Dockerfile"),
+        "FROM alpine:3.23.3\nRUN sleep 2 && echo ai > /role\nCMD [\"sleep\", \"600\"]\n",
+    )
+    .unwrap();
+    for (n, name) in names.iter().enumerate() {
+        store
+            .write_trusted(
+                &who,
+                &CreateGitService {
+                    id: ServiceLineageId::parse(format!("00000000-0000-4000-8000-00000000001{n}"))
+                        .unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: ServiceName::parse(*name).unwrap(),
+                    repository: repository.clone(),
+                    branch: None,
+                },
+                &evidence,
+            )
+            .unwrap();
+    }
+    if reaches_data {
+        for (n, name) in names.iter().enumerate() {
+            store
+                .write(
+                    &who,
+                    &ployz_store::CreateVolume {
+                        restored_from: None,
+                        shared_writes: false,
+                        storage_locked: false,
+                        storage: ployz_core::config::VolumeKind::Docker {},
+                        id: ployz_store::VolumeId::parse(format!(
+                            "00000000-0000-4000-8000-00000000003{n}"
+                        ))
+                        .unwrap(),
+                        environment: EnvironmentRef::default(),
+                        name: ployz_store::VolumeName::parse(format!("{name}-data")).unwrap(),
+                        mounts: vec![ployz_store::Mount {
+                            service: ServiceName::parse(*name).unwrap(),
+                            path: "/data".into(),
+                        }],
+                    },
+                )
+                .unwrap();
+        }
+    }
+    let edit = |changes: Vec<(String, String)>| {
+        store
+            .write(
+                &who,
+                &Edit {
+                    environment: EnvironmentRef::default(),
+                    expect: None,
+                    changes: changes
+                        .into_iter()
+                        .map(|(path, value)| Change::Set {
+                            path: SettingPath::parse(&path).unwrap(),
+                            value: json!(value),
+                        })
+                        .collect(),
+                },
+            )
+            .unwrap();
+    };
+    edit(
+        names
+            .iter()
+            .flat_map(|name| {
+                [
+                    (format!("{name}.buildMethod"), "dockerfile".to_owned()),
+                    (format!("{name}.env.ROLE"), (*name).to_owned()),
+                ]
+            })
+            .chain([("ai.dockerfilePath".to_owned(), "ai.Dockerfile".to_owned())])
+            .collect(),
+    );
+    let checkouts: BTreeMap<_, _> = names
+        .iter()
+        .map(|name| {
+            (
+                ServiceName::parse(*name).unwrap(),
+                checkout.path().to_owned(),
+            )
+        })
+        .collect();
+
+    let (proxy, rpcs) = counting_builds(address).await;
+    let deploy = |n: u8, commit: String| {
+        let store = Arc::clone(&store);
+        let (who, checkouts) = (who.clone(), checkouts.clone());
+        async move {
+            let id =
+                DeploymentId::parse(format!("00000000-0000-4000-8000-0000000002{n:02}")).unwrap();
+            store
+                .write_trusted(
+                    &who,
+                    &Admit::Deploy(Deploy {
+                        id: id.clone(),
+                        environment: EnvironmentRef::default(),
+                        services: Vec::new(),
+                        version: None,
+                        upload: None,
+                        accept_volume_loss: Vec::new(),
+                        message: None,
+                        prune: false,
+                        no_prune: false,
+                        versions: Vec::new(),
+                        copies: Vec::new(),
+                        recreate: Vec::new(),
+                        rule: None,
+                    }),
+                    &Trusted::default(),
+                )
+                .unwrap();
+            let pins = names
+                .iter()
+                .map(|name| {
+                    (
+                        ServiceName::parse(*name).unwrap(),
+                        ployz_store::CommitSha::parse(commit.as_str()).unwrap(),
+                    )
+                })
+                .collect();
+            store.pin(&id, &pins, &Trusted::default()).unwrap();
+            let started = std::time::Instant::now();
+            ployz::sdk::run_deployment(
+                ployz_core::Operator::Cloud,
+                Arc::clone(&store),
+                id.clone(),
+                RunnerId::parse(format!("cloud-{n}")).unwrap(),
+                vec![Connection::tcp(proxy)],
+                Ok(ployz::sdk::Sources {
+                    checkouts,
+                    upload: None,
+                    reader: None,
+                }),
+            )
+            .await
+            .unwrap();
+            let view = store
+                .read(&who, &ployz_store::DeploymentQuery { id: id.clone() })
+                .unwrap();
+            let build_phase = view
+                .builds
+                .iter()
+                .filter_map(|build| build.finished_at)
+                .max()
+                .zip(
+                    view.builds
+                        .iter()
+                        .filter_map(|build| build.started_at)
+                        .min(),
+                )
+                .map(|(finished, started)| finished - started);
+            eprintln!(
+                "deployment {n}: build phase {build_phase:?}s, run {:.1}s\n  builds {:?}\n  nodes {:?}",
+                started.elapsed().as_secs_f64(),
+                view.builds
+                    .iter()
+                    .map(|build| (build.service.to_string(), build.status))
+                    .collect::<Vec<_>>(),
+                view.nodes
+                    .iter()
+                    .map(|node| (&node.node, node.outcome))
+                    .collect::<Vec<_>>(),
+            );
+            assert_eq!(
+                view.deployment.status,
+                DeploymentStatus::Applied,
+                "{view:?}"
+            );
+            view
+        }
+    };
+    // Every Build and BuildFree the Server receives, while the Deployment builds and while
+    // it prepares: a rebuild that lands on the old digest still counts, though the Store
+    // labels it Reused.
+    let sent = || rpcs.swap(0, std::sync::atomic::Ordering::SeqCst);
+
+    // The image each of the fixture's Services runs on the Machine, read from the containers
+    // Ployz manages in the Environment's Namespace and found by their Service label.
+    let running = || {
+        use ployz_core::labels::{MANAGED, NAMESPACE, SERVICE_NAME};
+        let listed = cluster
+            .machine_shell(
+                0,
+                &format!(
+                    "set -e; ids=$(docker ps -q --filter label={NAMESPACE}=shop-production --filter label={MANAGED}); \
+                     [ -n \"$ids\" ]; \
+                     docker inspect --format '{{{{index .Config.Labels \"{SERVICE_NAME}\"}}}} {{{{.Image}}}}' $ids"
+                ),
+            )
+            .unwrap();
+        service_images(&listed, &names)
+    };
+    let reused = || {
+        names
+            .iter()
+            .map(|name| ((*name).to_owned(), BuildStatus::Reused))
+            .collect::<BTreeMap<_, _>>()
+    };
+    let statuses = |view: &ployz_store::DeploymentView| {
+        view.builds
+            .iter()
+            .map(|build| (build.service.to_string(), build.status))
+            .collect::<BTreeMap<_, _>>()
+    };
+
+    let first = deploy(1, "c".repeat(40)).await;
+    let images = running();
+    eprintln!("images after the rollout: {images:?}");
+    assert!(
+        ["web", "reverb", "scheduler"]
+            .iter()
+            .all(|name| images[*name] == images["queue"])
+            && images["ai"] != images["queue"],
+        "the four Services sharing a Dockerfile run one image, and ai its own: {images:?}"
+    );
+    // A container named like a Service's, but not one Ployz runs for it, counts for none.
+    cluster
+        .machine_shell(
+            0,
+            &format!(
+                "docker run -d --network none --name queue-abcdefabcdef {SERVICE_CONTAINER_IMAGE} sleep 600"
+            ),
+        )
+        .unwrap();
+    assert_eq!(
+        running(),
+        images,
+        "a lookalike container counts for no Service"
+    );
+    cluster
+        .machine_shell(0, "docker rm -f queue-abcdefabcdef")
+        .unwrap();
+    let rollout = sent();
+    assert!(
+        rollout >= 5,
+        "the first Deployment builds every Service: {rollout} {first:?}"
+    );
+    for n in [2, 3] {
+        let again = deploy(n, "c".repeat(40)).await;
+        assert_eq!(
+            sent(),
+            0,
+            "a same-commit redeploy must send no Build to a Server: {again:?}"
+        );
+        assert_eq!(statuses(&again), reused(), "{again:?}");
+        assert_eq!(
+            running(),
+            images,
+            "a same-commit redeploy runs the same images"
+        );
+    }
+    edit(vec![("web.env.ROLE".into(), "changed".into())]);
+    let changed = deploy(4, "c".repeat(40)).await;
+    let rebuilt = sent();
+    assert!(
+        0 < rebuilt && rebuilt < rollout,
+        "{rebuilt} of {rollout}: {changed:?}"
+    );
+    assert_eq!(
+        changed
+            .builds
+            .iter()
+            .filter(|build| build.status != BuildStatus::Reused)
+            .map(|build| build.service.to_string())
+            .collect::<Vec<_>>(),
+        ["web"],
+        "{changed:?}"
+    );
+    let moved = deploy(5, "d".repeat(40)).await;
+    assert!(
+        sent() >= 5,
+        "a new commit builds every Service again: {moved:?}"
+    );
+}
+
+/// The one image each of `services` runs, from `{service label} {image}` lines for the
+/// managed containers of one Namespace. Every container belongs to one of `services`, each
+/// Service runs exactly one, and each runs an image ID.
+fn service_images(listed: &str, services: &[&str]) -> std::collections::BTreeMap<String, String> {
+    let mut running = std::collections::BTreeMap::<String, Vec<String>>::new();
+    for line in listed.lines() {
+        let (service, image) = line.split_once(' ').unwrap_or((line, ""));
+        assert!(
+            services.contains(&service),
+            "a container in the Namespace runs no Service of the fixture: {listed}"
+        );
+        let digest = image.strip_prefix("sha256:").unwrap_or_default();
+        assert!(
+            digest.len() == 64 && digest.chars().all(|c| c.is_ascii_hexdigit()),
+            "{service} runs no image ID: {listed}"
+        );
+        running
+            .entry(service.to_owned())
+            .or_default()
+            .push(image.to_owned());
+    }
+    let mut expected = services.to_vec();
+    expected.sort_unstable();
+    assert_eq!(
+        running.keys().map(String::as_str).collect::<Vec<_>>(),
+        expected,
+        "{listed}"
+    );
+    running
+        .into_iter()
+        .map(|(service, images)| match images.as_slice() {
+            [image] => (service, image.clone()),
+            _ => panic!("{service} runs one container, not {images:?}"),
+        })
+        .collect()
+}
+
+/// Listens for the runner's connection and forwards each of its requests to the Server at
+/// `to`, counting the Build and BuildFree calls among them.
+async fn counting_builds(
+    to: std::net::SocketAddr,
+) -> (std::net::SocketAddr, Arc<std::sync::atomic::AtomicUsize>) {
+    use hyper_util::rt::{TokioExecutor, TokioIo};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = Arc::clone(&calls);
+    tokio::spawn(async move {
+        loop {
+            let (inbound, _) = listener.accept().await.unwrap();
+            let calls = Arc::clone(&counted);
+            tokio::spawn(async move {
+                let outbound = tokio::net::TcpStream::connect(to).await.unwrap();
+                let (server, connection) = hyper::client::conn::http2::handshake(
+                    TokioExecutor::new(),
+                    TokioIo::new(outbound),
+                )
+                .await
+                .unwrap();
+                tokio::spawn(connection);
+                let forward = hyper::service::service_fn(
+                    move |request: hyper::Request<hyper::body::Incoming>| {
+                        if matches!(
+                            request.uri().path().rsplit('/').next(),
+                            Some("Build" | "BuildFree")
+                        ) {
+                            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        }
+                        let mut server = server.clone();
+                        async move { server.send_request(request).await }
+                    },
+                );
+                let _closed = hyper::server::conn::http2::Builder::new(TokioExecutor::new())
+                    .serve_connection(TokioIo::new(inbound), forward)
+                    .await;
+            });
+        }
+    });
+    (address, calls)
+}
+
 /// Cloud's runner builds an uploaded Service on a Server, never GitHub. Once Cloud no
 /// longer holds the upload, a later Deployment reuses the image while its build inputs
 /// hold, and otherwise records that it needs a new upload.

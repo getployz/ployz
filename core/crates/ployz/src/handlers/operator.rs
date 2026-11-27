@@ -516,12 +516,12 @@ impl ExecWriter {
 
     /// Release a held frame once the exec ends, with its exit code when it sent one.
     fn end(
-        &mut self,
+        self,
         code: Option<i32>,
         stdout: &mut dyn Write,
         stderr: &mut dyn Write,
     ) -> std::io::Result<()> {
-        match std::mem::replace(self, Self::Streaming) {
+        match self {
             Self::Holding(held) if matches!(code, Some(126 | 127)) => stderr.write_all(&held),
             Self::Holding(held) => write_stdout_frame(stdout, &held),
             Self::Fresh | Self::Streaming => Ok(()),
