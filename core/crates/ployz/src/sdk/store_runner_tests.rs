@@ -2150,3 +2150,35 @@ async fn a_deploy_with_a_reused_build_still_recreates_the_services_its_claim_lis
 
     assert_eq!(replaced, vec![web]);
 }
+
+#[test]
+fn planning_ends_when_the_first_image_is_sent() {
+    let mut steps = Steps::default();
+    steps.start(StepName::Planning, None, 100);
+    for event in [
+        serde_json::json!({ "Sending": { "service": "api" } }),
+        serde_json::json!({ "Sending": { "service": "web" } }),
+        serde_json::json!({ "Delivered": { "service": "api", "machine": "m1" } }),
+    ] {
+        delivery(&mut steps, &event);
+    }
+    let steps: Vec<_> = steps
+        .take_changed()
+        .into_iter()
+        .map(|step| {
+            (
+                step.name,
+                step.service.map(|s| s.to_string()),
+                step.ended_at.is_some(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        steps,
+        [
+            (StepName::Planning, None, true),
+            (StepName::DeliveringImage, Some("api".to_owned()), true),
+            (StepName::DeliveringImage, Some("web".to_owned()), false),
+        ]
+    );
+}

@@ -1709,3 +1709,107 @@ async fn a_replacement_copy_found_unhealthy_while_its_server_left_is_removed() {
     assert!(client.brought_in().is_empty());
     client.assert_done();
 }
+
+/// The steps a runner records from the Deploy's progress, each frame one millisecond.
+async fn steps_of(
+    plan: Vec<DeployOperation>,
+    client: &Scripted,
+) -> Vec<ployz_core::deploy_steps::DeploymentStep> {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let outcome = super::super::execute_operation_sequence(
+        &crate::deploy::DeployPlan::for_execution_test(plan, test_namespace()),
+        &run_id(),
+        client,
+        &CancellationToken::new(),
+        Some(tx),
+    )
+    .await;
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    let (mut tracker, mut steps) = (
+        ployz_core::deploy_progress::RowTracker::default(),
+        ployz_core::deploy_steps::Steps::default(),
+    );
+    let mut at = 0;
+    while let Ok(event) = rx.try_recv() {
+        if let DeployEvent::Progress { rows, .. } = event {
+            at += 1;
+            steps.rows(&tracker.changes(&rows), at);
+        }
+    }
+    steps.take_changed()
+}
+
+fn spans(steps: &[ployz_core::deploy_steps::DeploymentStep]) -> Vec<(StepName, i64, Option<i64>)> {
+    let mut spans: Vec<_> = steps
+        .iter()
+        .map(|step| (step.name, step.started_at, step.ended_at))
+        .collect();
+    spans.sort_by_key(|(_, started, _)| *started);
+    spans
+}
+
+use ployz_core::deploy_steps::StepName;
+
+#[tokio::test]
+async fn a_start_first_replace_stops_its_old_copy_once_traffic_switched() {
+    let machine = machine('1');
+    let (old, new) = (container('a'), container('b'));
+    let client = Scripted::new(vec![
+        created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
+        observed(Call::Inspect(machine, old), running()),
+        ok(Call::Remove(machine, old)),
+    ]);
+
+    let steps =
+        spans(&steps_of(vec![swap(&machine, &old, UpdateOrder::StartFirst)], &client).await);
+
+    let names: Vec<_> = steps.iter().map(|(name, _, _)| *name).collect();
+    assert_eq!(
+        names,
+        [
+            StepName::Starting,
+            StepName::SwitchingTraffic,
+            StepName::StoppingOld
+        ]
+    );
+    for (before, after) in steps.iter().zip(steps.iter().skip(1)) {
+        assert_eq!(before.2, Some(after.1), "no gap between steps: {steps:?}");
+    }
+    assert!(
+        steps.iter().all(|(_, _, ended)| ended.is_some()),
+        "{steps:?}"
+    );
+    client.assert_done();
+}
+
+#[tokio::test]
+async fn a_stop_first_replace_stops_its_old_copy_before_it_starts_the_new_one() {
+    let machine = machine('1');
+    let (old, new) = (container('a'), container('b'));
+    let client = Scripted::new(vec![
+        observed(Call::Inspect(machine, old), running()),
+        ok(Call::Stop(machine, old)),
+        created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
+        observed(Call::Inspect(machine, old), running()),
+        ok(Call::Remove(machine, old)),
+    ]);
+
+    let steps = spans(&steps_of(vec![swap(&machine, &old, UpdateOrder::StopFirst)], &client).await);
+
+    let span = |name| steps.iter().find(|(step, _, _)| *step == name).unwrap();
+    let (_, stop_started, stopped) = span(StepName::StoppingOld);
+    let (_, switch_started, _) = span(StepName::SwitchingTraffic);
+    assert!(
+        stopped.is_some_and(|stopped| stopped <= *switch_started),
+        "{steps:?}"
+    );
+    assert!(*stop_started < *switch_started, "{steps:?}");
+    assert!(
+        steps.iter().all(|(_, _, ended)| ended.is_some()),
+        "{steps:?}"
+    );
+    client.assert_done();
+}

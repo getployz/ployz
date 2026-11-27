@@ -246,6 +246,9 @@ pub(super) async fn publish_group<C: MachineOperations>(
             unconfirmed.get_or_insert(error);
         }
     }
+    if unconfirmed.is_none() && !gone.is_empty() {
+        retiring(operations, progress, &new);
+    }
     // Each Gone drains on its own Machine; they overlap and are all reported.
     let removed = join_all(gone.iter().map(|copy| {
         let ask = asks
@@ -264,6 +267,27 @@ pub(super) async fn publish_group<C: MachineOperations>(
         (Some(error), _) => Published::OutUnconfirmed(error),
         (None, Some(_)) => Published::Gapped,
         (None, None) => Published::Listed,
+    }
+}
+
+/// Move each new copy that started beside the copy it replaces on to retiring it. A
+/// stop-first copy's old one already stopped, so its row stays where it is.
+fn retiring(
+    operations: &[DeployOperation],
+    progress: &Progress,
+    new: &[(usize, MachineId, ContainerId)],
+) {
+    for (index, _, container_id) in new {
+        if let DeployOperation::ReplaceContainer(replacement) = operation_at(operations, *index)
+            && replacement.spec.update.order != UpdateOrder::StopFirst
+        {
+            progress.set_running(
+                *index,
+                ployz_core::OperationPhase::RetiringOld {
+                    container_id: *container_id,
+                },
+            );
+        }
     }
 }
 

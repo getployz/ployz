@@ -215,7 +215,9 @@ impl From<&OperationPhase> for RowPhase {
             OperationPhase::WaitingForHealth { .. } => Self::WaitingForHealth,
             OperationPhase::WaitingForHook { .. } => Self::WaitingForHook,
             OperationPhase::WaitingForSwitch { .. } => Self::WaitingForSwitch,
-            OperationPhase::StoppingContainer => Self::StoppingContainer,
+            OperationPhase::StoppingContainer | OperationPhase::RetiringOld { .. } => {
+                Self::StoppingContainer
+            }
             OperationPhase::RemovingContainer => Self::RemovingContainer,
             OperationPhase::RemovingVolume => Self::RemovingVolume,
             OperationPhase::UpdatingContainer => Self::UpdatingContainer,
@@ -742,7 +744,13 @@ impl RowTracker {
             statuses.push((&row.status, row.operation.serves_new_spec()));
             if row.operation.serves_new_spec() {
                 let serves = matches!(row.operation, DeployOperation::UpdateContainer(_))
-                    || matches!(row.status, OperationStatus::Completed);
+                    || matches!(
+                        row.status,
+                        OperationStatus::Completed
+                            | OperationStatus::Running {
+                                phase: OperationPhase::RetiringOld { .. }
+                            }
+                    );
                 *serving = Some(serving.unwrap_or(true) && serves);
             }
         }
@@ -791,7 +799,8 @@ fn container(row: &OperationRow, last: Option<ContainerId>) -> Option<ContainerI
         OperationStatus::Running { phase } => match phase {
             OperationPhase::WaitingForHealth { container_id, .. }
             | OperationPhase::WaitingForHook { container_id, .. }
-            | OperationPhase::WaitingForSwitch { container_id } => Some(*container_id),
+            | OperationPhase::WaitingForSwitch { container_id }
+            | OperationPhase::RetiringOld { container_id } => Some(*container_id),
             OperationPhase::StoppingContainer
             | OperationPhase::RemovingContainer
             | OperationPhase::UpdatingContainer => row.operation.container_id(),

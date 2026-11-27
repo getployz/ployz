@@ -1643,6 +1643,10 @@ pub enum OperationPhase {
     WaitingForSwitch {
         container_id: ContainerId,
     },
+    /// The new Container serves, and the old copies it replaced drain and go.
+    RetiringOld {
+        container_id: ContainerId,
+    },
     StoppingContainer,
     RemovingContainer,
     RemovingVolume,

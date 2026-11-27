@@ -322,7 +322,7 @@ One Environment Node's result within a Deployment: Deployed, Removed, Failed, No
 _Avoid_: Applied, Skipped, Succeeded, Live (the Environment as it is now is not an outcome)
 
 **Deployment Step**:
-One phase of a Deploy with when it started and ended, in milliseconds: `receiving`, `fetching_source`, `preparing`, `uploading`, `starting_builder`, `building`, `delivering_image`, `starting`, `health_check`, `switching_traffic` or `stopping_old`. A step from `uploading` on belongs to one Service and runs from its first Server entering it to its last leaving it. A step the Deploy stopped in has no end. Steps only time a Deploy: one Cloud or a runner failed to record never changes its outcome.
+One phase of a Deploy with when it started and ended, in milliseconds: `receiving`, `fetching_source`, `preparing`, `uploading`, `starting_builder`, `building`, `planning`, `delivering_image`, `starting`, `health_check`, `switching_traffic` or `stopping_old`. A step from `uploading` on belongs to one Service and runs from its first Server entering it to its last leaving it. A step the Deploy stopped in has no end. Steps only time a Deploy: one Cloud or a runner failed to record never changes its outcome.
 _Avoid_: Stage (a build's own word), phase (a row's)
 
 **Waiting**:

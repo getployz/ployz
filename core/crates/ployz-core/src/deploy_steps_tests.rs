@@ -77,3 +77,20 @@ fn a_failed_row_leaves_its_step_open() {
         ]
     );
 }
+
+#[test]
+fn a_step_that_failed_while_the_deploy_went_on_stays_open() {
+    let mut steps = Steps::default();
+    steps.hold(StepName::StoppingOld, Some(&service()));
+    steps.rows(&[row(1, running(RowPhase::WaitingForSwitch))], 100);
+    steps.rows(&[row(1, running(RowPhase::StoppingContainer))], 200);
+    steps.hold(StepName::StoppingOld, Some(&service()));
+    steps.rows(&[row(1, RowState::Completed)], 300);
+    assert_eq!(
+        steps.take_changed(),
+        vec![
+            step(StepName::SwitchingTraffic, 100, Some(200)),
+            step(StepName::StoppingOld, 200, None),
+        ]
+    );
+}

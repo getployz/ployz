@@ -19,6 +19,7 @@ pub enum StepName {
     Uploading,
     StartingBuilder,
     Building,
+    Planning,
     DeliveringImage,
     Starting,
     HealthCheck,
@@ -27,13 +28,14 @@ pub enum StepName {
 }
 
 impl StepName {
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::Receiving,
         Self::FetchingSource,
         Self::Preparing,
         Self::Uploading,
         Self::StartingBuilder,
         Self::Building,
+        Self::Planning,
         Self::DeliveringImage,
         Self::Starting,
         Self::HealthCheck,
@@ -50,6 +52,7 @@ impl StepName {
             Self::Uploading => "uploading",
             Self::StartingBuilder => "starting_builder",
             Self::Building => "building",
+            Self::Planning => "planning",
             Self::DeliveringImage => "delivering_image",
             Self::Starting => "starting",
             Self::HealthCheck => "health_check",
@@ -130,6 +133,8 @@ pub struct Steps {
     rows: BTreeMap<(ServiceName, MachineId), StepName>,
     /// The Machines each Service's step is running on.
     occupied: BTreeMap<(StepName, ServiceName), BTreeSet<MachineId>>,
+    /// Steps that failed while running, so they stay open whatever comes next.
+    held: BTreeSet<Key>,
 }
 
 impl Steps {
@@ -154,14 +159,30 @@ impl Steps {
         self.changed.insert(key);
     }
 
-    /// End `name` at `at`, if it is running.
+    /// End `name` at `at`, if it is running and didn't fail.
     pub fn end(&mut self, name: StepName, service: Option<&ServiceName>, at: i64) {
         let key = (name, service.cloned());
+        if self.held.contains(&key) {
+            return;
+        }
         if let Some(step) = self.steps.get_mut(&key)
             && step.ended_at.is_none()
         {
             step.ended_at = Some(at);
             self.changed.insert(key);
+        }
+    }
+
+    /// Keep `name` open from now on if it is running: it failed, though the Deploy goes
+    /// on, as when an old copy's removal fails and the copy is left running.
+    pub fn hold(&mut self, name: StepName, service: Option<&ServiceName>) {
+        let key = (name, service.cloned());
+        if self
+            .steps
+            .get(&key)
+            .is_some_and(|step| step.ended_at.is_none())
+        {
+            self.held.insert(key);
         }
     }
 

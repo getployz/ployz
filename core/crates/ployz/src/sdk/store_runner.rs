@@ -674,6 +674,7 @@ impl Run {
             .signed
             .extend(rules.services().cloned());
         let prepared = if targets.is_empty() && built.is_empty() {
+            self.steps().start(StepName::Planning, None, now_ms());
             self.renewing(session.plan(claimed.intent), || {
                 session.inner.cancel.cancel()
             })
@@ -681,6 +682,7 @@ impl Run {
         } else {
             match self.build(session, &claimed, &targets).await? {
                 Ok(mut receipts) => {
+                    self.steps().start(StepName::Planning, None, now_ms());
                     receipts.extend(built);
                     rules = rule_proofs(session, &claimed, &receipts, self).await;
                     registry_proofs(&claimed, &mut rules);
@@ -696,7 +698,10 @@ impl Run {
             }
         };
         let prepared = match prepared {
-            Ok(prepared) => prepared,
+            Ok(prepared) => {
+                self.steps().end(StepName::Planning, None, now_ms());
+                prepared
+            }
             Err(unprepared) => return self.unprepared(&earlier, &deletes, unprepared).await,
         };
         let recorded = self
@@ -1083,6 +1088,10 @@ impl Run {
             let mut rows = match event {
                 ployz_core::DeployEvent::Progress { rows, .. } => rows,
                 ployz_core::DeployEvent::Warning { warning } => {
+                    if let DeployWarning::LeftRunning { service, .. } = &warning {
+                        self.steps()
+                            .hold(StepName::StoppingOld, Some(&service.name));
+                    }
                     warnings.push(warning);
                     self.record_warnings(&mut warnings).await;
                     continue;
@@ -1501,7 +1510,7 @@ fn build_ended(steps: &mut Steps, service: &ServiceName, started: i64, built: bo
 }
 
 /// Move a Service's image delivery on with `event`, one of preparation's progress
-/// frames: from sending it until its Machines have it.
+/// frames: from sending it until its Machines have it. Planning ends at the first send.
 fn delivery(steps: &mut Steps, event: &Value) {
     let at = now_ms();
     let service = |pointer| {
@@ -1511,6 +1520,7 @@ fn delivery(steps: &mut Steps, event: &Value) {
             .and_then(|name| name.parse::<ServiceName>().ok())
     };
     if let Some(service) = service("/Sending/service") {
+        steps.end(StepName::Planning, None, at);
         steps.start(StepName::DeliveringImage, Some(&service), at);
     } else if let Some(service) = service("/Delivered/service") {
         steps.end(StepName::DeliveringImage, Some(&service), at);
