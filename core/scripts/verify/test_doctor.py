@@ -60,5 +60,39 @@ class OverdueDrains(unittest.TestCase):
     def test_a_retirement_forced_again_after_a_fresh_start_fails(self):
         self.assertEqual(len(self.overdue(STARTED, FORCED, STARTED, FORCED)), 1)
 
+class Underlay:
+    """A host network where only `cut` pairs of addresses drop each other's packets."""
+
+    def __init__(self, cut):
+        self.cut = {frozenset(pair) for pair in cut}
+
+    def exec(self, node, command, check=True, timeout=None):
+        silent = frozenset((node["address"], command[-1])) in self.cut
+        return subprocess.CompletedProcess(command, 1 if silent else 0)
+
+
+class Reachability(unittest.TestCase):
+    machines = [{"name": f"machine-{n}", "address": f"2001:db8:{n}::1", "ssh": f"198.51.100.{n}:22"} for n in (1, 2, 3)]
+
+    def require(self, cut, nodes=None, others=None):
+        cluster.require_reachable({}, Underlay(cut), nodes or self.machines, others)
+
+    def test_a_pair_that_cant_reach_each_other_fails_before_enrollment_naming_both_hosts(self):
+        with self.assertRaises(cluster.Infrastructure) as raised:
+            self.require([("2001:db8:1::1", "2001:db8:3::1")])
+        message = str(raised.exception)
+        self.assertIn("machine-1 (198.51.100.1) and machine-3 (198.51.100.3)", message)
+        self.assertNotIn("machine-2 (", message)
+
+    def test_a_cluster_whose_every_pair_answers_passes(self):
+        self.require([])
+
+    def test_an_added_machine_is_checked_only_against_the_others(self):
+        new, *rest = self.machines
+        self.require([("2001:db8:2::1", "2001:db8:3::1")], [new], rest)
+        with self.assertRaises(cluster.Infrastructure):
+            self.require([("2001:db8:1::1", "2001:db8:2::1")], [new], rest)
+
+
 if __name__ == "__main__":
     unittest.main()
