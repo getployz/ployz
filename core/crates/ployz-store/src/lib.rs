@@ -470,6 +470,16 @@ impl ConfigStore {
             .write(|tx| deployment::record(tx, deployment, runner, evidence, pending_live_at))
     }
 
+    /// Whether the Store stopped this runner's cleanup after the traffic switch.
+    /// # Errors
+    /// Returns a storage error, or not found for a missing Deployment.
+    pub fn cleanup_unconfirmed(&self, deployment: &DeploymentId) -> Result<bool, RpcError> {
+        self.storage.read(|tx| {
+            Ok(deployment::load(tx, deployment)?.summary.cleanup
+                == Some(CleanupStatus::Unconfirmed))
+        })
+    }
+
     /// Every queued Deployment no runner claimed, admitted before `before` (Unix
     /// seconds), oldest first, across Organizations: Cloud's sweep dispatches each
     /// again, as its first dispatch may have been lost. In-process only.

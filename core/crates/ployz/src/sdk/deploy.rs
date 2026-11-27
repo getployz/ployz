@@ -120,7 +120,7 @@ impl PreparedDeploy {
         cleanup: ImageCleanup,
         rules: crate::deploy::RuleProofs,
         versions: Vec<ployz_core::authority::Signed<ployz_core::authority::ServiceVersion>>,
-        switch_commit: Option<tokio::sync::oneshot::Receiver<()>>,
+        switch_commit: Option<tokio::sync::oneshot::Receiver<crate::deploy::SwitchDecision>>,
     ) -> Result<RunningDeploy, RpcError> {
         let session = Session {
             inner: self.session.upgrade().ok_or_else(closed)?,
@@ -156,7 +156,7 @@ impl PreparedDeploy {
                 outcome = client.confirm(&preview, deployment_id, &token, Some(tx), switch_commit) => outcome,
             };
             if !token.is_cancelled() {
-                session_cancel
+                token
                     .run_until_cancelled(clean_up(&client.client, &prune_targets, &events))
                     .await;
             }
@@ -208,7 +208,7 @@ impl Deref for PreparedDeploy {
 }
 
 impl RunningDeploy {
-    /// Cancel this Deploy. The outcome is a failed Deploy with `cancelled`.
+    /// Cancel this Deploy. If its traffic switch committed, only cleanup is interrupted.
     pub fn abort(&self) {
         self.cancel.cancel();
     }

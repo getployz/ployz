@@ -41,8 +41,8 @@ use gens::Gens;
 use health::wait_healthy;
 use hooks::run_hook;
 use publish::{
-    Done, GappedPublishes, GroupCopies, Published, Retiring, Switch, ack_tick, old_copies,
-    publish_group, rolling_step, route_new,
+    Done, GappedPublishes, GroupCopies, Permission, Published, Retiring, Switch, ack_tick,
+    old_copies, publish_group, rolling_step, route_new,
 };
 use report::Report;
 use start::{
@@ -248,7 +248,7 @@ pub(super) async fn execute_with_switch_commit<C: MachineOperations>(
     client: &C,
     cancellation: &CancellationToken,
     tx: Option<UnboundedSender<DeployEvent>>,
-    switch_commit: Option<tokio::sync::oneshot::Receiver<()>>,
+    switch_commit: Option<tokio::sync::oneshot::Receiver<crate::deploy::SwitchDecision>>,
 ) -> DeployOutcome<ExecutionError> {
     // TODO: there is deliberately no persisted "already run" guard at this boundary.
     let operations = plan.operations();
@@ -332,7 +332,14 @@ pub(super) async fn execute_with_switch_commit<C: MachineOperations>(
                             cancellation,
                             async |switch| {
                                 switches
-                                    .listed(group, switch, &service.name, listed, progress)
+                                    .listed(
+                                        group,
+                                        switch,
+                                        &service.name,
+                                        listed,
+                                        progress,
+                                        cancellation,
+                                    )
                                     .await
                             },
                         )
@@ -558,26 +565,29 @@ pub(super) async fn execute_with_switch_commit<C: MachineOperations>(
         None
     };
     let outcome = outcome_from(operations, &completed, stop, schedule.services());
-    if *switches.gate.borrow() == Some(false) {
+    if *switches.gate.borrow() == Some(Permission::Unavailable) {
         return outcome;
     }
     progress.outcome(outcome.clone(), live_at);
     shared
         .retiring
-        .retire(client, progress, &shared.report)
+        .retire(client, progress, &shared.report, cancellation)
         .await;
     outcome
 }
 
 struct Switches {
     tally: std::sync::Mutex<SwitchTally>,
-    commit: std::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
-    gate: tokio::sync::watch::Sender<Option<bool>>,
+    commit: std::sync::Mutex<Option<tokio::sync::oneshot::Receiver<crate::deploy::SwitchDecision>>>,
+    gate: tokio::sync::watch::Sender<Option<Permission>>,
     recorded: bool,
 }
 
 impl Switches {
-    fn new(plan: &super::DeployPlan, commit: Option<tokio::sync::oneshot::Receiver<()>>) -> Self {
+    fn new(
+        plan: &super::DeployPlan,
+        commit: Option<tokio::sync::oneshot::Receiver<crate::deploy::SwitchDecision>>,
+    ) -> Self {
         let tally = SwitchTally::new(plan);
         let recorded = commit.is_some();
         let (gate, _) = tokio::sync::watch::channel(None);
@@ -596,10 +606,15 @@ impl Switches {
         service: &ServiceName,
         listed: &UnboundedSender<ServiceName>,
         progress: &Progress,
-    ) -> bool {
+        cancellation: &CancellationToken,
+    ) -> Permission {
         let confirmed = matches!(switch, Switch::Confirmed);
         let (at, blocked) = {
             let mut tally = self.tally.lock().expect("switch lock");
+            if cancellation.is_cancelled() && !tally.requested {
+                tally.blocked = true;
+                return Permission::Refused;
+            }
             let at = tally.observe(group, switch);
             (at, tally.blocked)
         };
@@ -608,18 +623,32 @@ impl Switches {
         }
         if blocked {
             self.release_without_switch();
-            return true;
+            return Permission::WithoutCommit;
         }
         if !self.recorded || !confirmed {
-            return true;
+            return Permission::WithoutCommit;
         }
         let _ = listed.send(service.clone());
         let mut gate = self.gate.subscribe();
+        tokio::select! {
+            biased;
+            ready = gate.wait_for(Option::is_some) => {
+                return ready.ok().and_then(|value| *value).unwrap_or(Permission::Unavailable);
+            }
+            () = cancellation.cancelled() => {}
+        }
+        {
+            let mut tally = self.tally.lock().expect("switch lock");
+            if !tally.requested {
+                tally.blocked = true;
+                return Permission::Refused;
+            }
+        }
         gate.wait_for(Option::is_some)
             .await
             .ok()
             .and_then(|value| *value)
-            == Some(true)
+            .unwrap_or(Permission::Unavailable)
     }
 
     fn block(&self) {
@@ -632,19 +661,24 @@ impl Switches {
         // Once the last group has asked for the commit, only its acknowledgement
         // can permit withdrawal.
         if !tally.requested {
-            self.gate.send_replace(Some(true));
+            self.gate.send_replace(Some(Permission::WithoutCommit));
         }
     }
 
-    async fn commit(&self, at: i64, progress: &Progress) -> bool {
+    async fn commit(&self, at: i64, progress: &Progress) -> Permission {
+        use crate::deploy::SwitchDecision;
         progress.emit_switch(Some(at));
         let commit = self.commit.lock().expect("commit lock").take();
-        let committed = match commit {
-            Some(commit) => commit.await.is_ok(),
-            None => true,
+        let permission = match commit {
+            Some(commit) => match commit.await {
+                Ok(SwitchDecision::Committed) => Permission::Committed,
+                Ok(SwitchDecision::Refused) => Permission::Refused,
+                Err(_) => Permission::Unavailable,
+            },
+            None => Permission::WithoutCommit,
         };
-        self.gate.send_replace(Some(committed));
-        committed
+        self.gate.send_replace(Some(permission));
+        permission
     }
 
     async fn finished(
@@ -662,19 +696,29 @@ impl Switches {
                 return Ok(None);
             }
             if tally.requested {
-                return Ok(tally.last_at);
+                return Ok(tally.last_at.filter(|_| {
+                    matches!(
+                        *self.gate.borrow(),
+                        Some(Permission::Committed | Permission::WithoutCommit)
+                    )
+                }));
             }
         }
         // A removal-only or in-place plan goes Live after its last successful step.
         let at = ployz_core::deploy_steps::now_ms() / 1000;
-        tokio::select! {
-            biased;
-            () = cancellation.cancelled() => Err(Stop {
+        let permission = if cancellation.is_cancelled() {
+            Permission::Refused
+        } else {
+            self.commit(at, progress).await
+        };
+        match permission {
+            Permission::Refused => Err(Stop {
                 index,
                 error: ExecutionError::Cancelled,
                 compensation: None,
             }),
-            committed = self.commit(at, progress) => Ok(committed.then_some(at)),
+            Permission::Committed | Permission::WithoutCommit => Ok(Some(at)),
+            Permission::Unavailable => Ok(None),
         }
     }
 }

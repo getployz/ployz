@@ -596,6 +596,12 @@ pub(super) fn completion(
     if view.deployment.status == DeploymentStatus::Superseded {
         return Err(superseded(view, successor, command));
     }
+    if view.deployment.status == DeploymentStatus::Failed
+        && view.deployment.live_at.is_some()
+        && left_a_copy_running(view)
+    {
+        return Err(failure(view, again, command).partial_outcome());
+    }
     if view.deployment.status != DeploymentStatus::Applied {
         return Err(failure(view, again, command));
     }
@@ -2235,6 +2241,23 @@ mod tests {
                 },
             },
         ];
+        let failure = completion(&view, None, Again::Services(&[]), command).unwrap_err();
+        assert_eq!(crate::ui::after_result(&failure), 3);
+    }
+
+    #[test]
+    fn a_live_failed_deploy_that_left_a_copy_running_exits_partial() {
+        let mut view = view();
+        view.deployment.status = DeploymentStatus::Failed;
+        view.deployment.live_at = Some(1);
+        view.deployment.warnings.push(DeploymentWarning::Deploy {
+            warning: ployz_core::DeployWarning::LeftRunning {
+                service: "shop-production/web".parse().unwrap(),
+                container_id: ployz_core::ContainerId::parse("c".repeat(64)).unwrap(),
+                machine: "one".into(),
+                reason: "scale-down removal failed".into(),
+            },
+        });
         let failure = completion(&view, None, Again::Services(&[]), command).unwrap_err();
         assert_eq!(crate::ui::after_result(&failure), 3);
     }

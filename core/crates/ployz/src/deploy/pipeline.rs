@@ -226,7 +226,7 @@ impl Approved {
         run: Option<DeploymentLogId>,
         cancellation: &CancellationToken,
         progress: Option<tokio::sync::mpsc::UnboundedSender<DeployEvent>>,
-        switch_commit: Option<tokio::sync::oneshot::Receiver<()>>,
+        switch_commit: Option<tokio::sync::oneshot::Receiver<crate::deploy::SwitchDecision>>,
     ) -> DeployOutcome<ExecutionError> {
         let run = run.unwrap_or_else(super::cleanup::fresh_run);
         super::exec::execute_with_switch_commit(

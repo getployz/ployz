@@ -860,7 +860,11 @@ impl Run {
             Ok(outcome) => outcome,
             Err(error) => return self.runtime_failed(error).await,
         };
-        let recorded = match self.standing().await {
+        let standing = self.standing().await;
+        if matches!(standing, Standing::Cancel) {
+            running.abort();
+        }
+        let recorded = match standing {
             Standing::Over(Over::Lost) => self.interrupted(outcome, progress).await,
             // The store refuses the outcome, and nothing more is deleted.
             Standing::Over(Over::Ended) => self.executed(outcome, progress, Vec::new()).await,
@@ -868,7 +872,9 @@ impl Run {
                 // The last chance: the store takes most warnings only while the
                 // Deployment runs.
                 self.record_warnings(&mut warnings).await;
-                let removed = if matches!(outcome, DeployOutcome::Success { .. }) {
+                let removed = if matches!(outcome, DeployOutcome::Success { .. })
+                    && !running.cancel.is_cancelled()
+                {
                     if !deletes.is_empty() || closes.is_some() {
                         // An old copy may still mount a Volume this deletes.
                         if let Err(error) = self.retired(&running, &mut warnings).await {
@@ -882,7 +888,7 @@ impl Run {
                             None => remove_volumes(session, deletes).await,
                         }
                     };
-                    self.renewing(removal, || ()).await
+                    self.renewing(removal, || running.abort()).await
                 } else {
                     Vec::new()
                 };
@@ -932,21 +938,59 @@ impl Run {
     async fn commit_switch(
         &self,
         at: i64,
-        cancelled: &tokio_util::sync::CancellationToken,
-    ) -> Result<Option<DeploymentStatus>, RpcError> {
-        self.pending_live_at().get_or_insert(at);
-        let committed = tokio::select! {
-            biased;
-            result = self.retry_store(|| self.record_switch(Some(at))) => result,
-            () = cancelled.cancelled() => return Ok(None),
-        }?;
-        if committed.live_at.is_some() && committed.status.claimed() {
-            Ok(Some(committed.status))
-        } else {
-            Err(RpcError::unavailable(
-                "The Deployment no longer holds the traffic switch",
-            ))
-        }
+        cancelled: &CancellationToken,
+    ) -> Result<(crate::deploy::SwitchDecision, bool), RpcError> {
+        use crate::deploy::SwitchDecision;
+
+        self.until_lease(async {
+            let mut poll = tokio::time::interval(CANCEL_POLL);
+            poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tokio::select! {
+                    biased;
+                    () = cancelled.cancelled() => {}
+                    _ = poll.tick() => {}
+                }
+                // A cancellation can arrive while the blocking write is committing.
+                // Always resolve that write before telling the executor whether to undo.
+                match self.record_switch(Some(at)).await {
+                    Ok(summary) if summary.live_at.is_some() && summary.status.claimed() => {
+                        return Ok((
+                            SwitchDecision::Committed,
+                            summary.status == DeploymentStatus::Cancelling
+                                || summary.cleanup == Some(ployz_store::CleanupStatus::Unconfirmed),
+                        ));
+                    }
+                    Err(error)
+                        if error
+                            .details
+                            .get("switch_cancelled")
+                            .and_then(serde_json::Value::as_bool)
+                            == Some(true) =>
+                    {
+                        *self.pending_live_at() = None;
+                        return Ok((SwitchDecision::Refused, true));
+                    }
+                    Err(error)
+                        if !cancelled.is_cancelled()
+                            && !matches!(
+                                error.code,
+                                RpcErrorCode::Conflict | RpcErrorCode::NotFound
+                            )
+                            && self.over.latched() != Some(Over::Lost) =>
+                    {
+                        tracing::warn!(%error, "couldn't record Deployment evidence");
+                    }
+                    Err(error) => return Err(error),
+                    Ok(_) => {
+                        return Err(RpcError::unavailable(
+                            "The Deployment no longer holds the traffic switch",
+                        ));
+                    }
+                }
+            }
+        })
+        .await?
     }
 
     async fn finish_retirement(
@@ -1001,9 +1045,19 @@ impl Run {
             tokio::time::Instant::now() + Duration::from_secs(60),
             Duration::from_secs(60),
         );
+        let mut poll =
+            tokio::time::interval_at(tokio::time::Instant::now() + CANCEL_POLL, CANCEL_POLL);
         loop {
             let event = tokio::select! {
+                biased;
                 event = running.next() => event,
+                _ = poll.tick(), if !running.cancel.is_cancelled() => {
+                    let deployment = self.deployment.clone();
+                    if self.store_call(move |store| store.cleanup_unconfirmed(&deployment)).await == Ok(true) {
+                        running.abort();
+                    }
+                    continue;
+                }
                 _ = renewed.tick() => {
                     let _ = self.record(RunEvidence::Finishing { live_at: None }).await;
                     continue;
@@ -1344,7 +1398,7 @@ impl Run {
         session: &Session,
         running: &super::RunningDeploy,
         scrub: &Scrub,
-        mut acknowledge: Option<tokio::sync::oneshot::Sender<()>>,
+        mut acknowledge: Option<tokio::sync::oneshot::Sender<crate::deploy::SwitchDecision>>,
     ) -> Result<
         (
             DeployOutcome<ExecutionError>,
@@ -1362,21 +1416,20 @@ impl Run {
         while let Some(event) = running.next().await {
             let mut rows = match event {
                 ployz_core::DeployEvent::Progress { rows, live_at, .. } => {
-                    if let Some(at) = live_at
-                        && let Some(status) = self
+                    if let Some(at) = live_at {
+                        let (decision, cancel) = self
                             .commit_switch(at, &running.cancel)
                             .await
                             .inspect_err(|_| {
                                 if self.over.latched() == Some(Over::Lost) {
                                     running.abort();
                                 }
-                            })?
-                    {
-                        if status == DeploymentStatus::Cancelling {
+                            })?;
+                        if cancel {
                             running.abort();
                         }
                         if let Some(acknowledge) = acknowledge.take() {
-                            let _ = acknowledge.send(());
+                            let _ = acknowledge.send(decision);
                         }
                     }
                     rows

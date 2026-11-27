@@ -245,7 +245,7 @@ async fn held_live_write(write: LiveWrite) {
         .unwrap()
         .unwrap()
         .unwrap();
-    assert_eq!(ran.live_at.is_some(), release);
+    assert_eq!(ran.live_at.is_some(), release && !cancel);
     if cancel {
         assert_eq!(ran.status, DeploymentStatus::Cancelled);
         assert!(!service.unrouted().lock().unwrap().contains(&old));
@@ -280,6 +280,59 @@ async fn a_deployment_is_applied_before_its_old_copy_is_removed() {
     let ran = running.await.unwrap().unwrap();
     assert_eq!(ran.status, DeploymentStatus::Applied);
     assert_eq!(removed.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_cancel_after_apply_stops_waiting_for_cleanup_without_undoing_live() {
+    let service = DeployService::new(machine('a', "one"))
+        .lists_created()
+        .hold_removals();
+    let shop = Shop::deployed(service.clone()).await;
+    let running = tokio::spawn(shop.run(2, true));
+    service.removal_waited().await;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while shop.status(2) != DeploymentStatus::Applied {
+            // real-wait: the runner records the outcome in a blocking Store call.
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    let cancelled = shop
+        .store
+        .write(
+            &shop.who,
+            &ployz_store::Cancel {
+                deployment: Shop::id(2),
+            },
+        )
+        .unwrap();
+    let at = cancelled.live_at.unwrap();
+    assert_eq!(cancelled.status, DeploymentStatus::Applied);
+    assert_eq!(
+        cancelled.cleanup,
+        Some(ployz_store::CleanupStatus::Unconfirmed)
+    );
+    let ran = tokio::time::timeout(Duration::from_secs(8), running)
+        .await
+        .expect("cancel releases the removal wait without its reply")
+        .unwrap()
+        .unwrap();
+    assert_eq!(ran.status, DeploymentStatus::Applied);
+    assert_eq!(ran.live_at, Some(at));
+    assert_eq!(ran.cleanup, Some(ployz_store::CleanupStatus::Unconfirmed));
+    assert_eq!(
+        service
+            .rotations()
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|rotation| rotation.rotation == ployz_core::CopyRotation::In)
+            .count(),
+        1
+    );
+    service.release_removals();
 }
 
 #[tokio::test]
@@ -433,7 +486,7 @@ async fn a_failed_scale_down_after_the_switch_keeps_the_live_timestamp() {
     .await
     .expect("deploy returns when the removal fails");
     let output = output.unwrap();
-    assert!(!output.status.success(), "{messages:?}");
+    assert_eq!(output.status.code(), Some(3), "{messages:?}");
     assert!(
         messages
             .iter()

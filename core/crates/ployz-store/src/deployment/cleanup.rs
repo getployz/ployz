@@ -84,6 +84,18 @@ pub(super) fn finished(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Cleanup, Rp
     Ok(cleanup)
 }
 
+pub(super) fn interrupt(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Cleanup, RpcError> {
+    let pending = pending_in_time(tx);
+    tx.execute(
+        &format!(
+            "UPDATE config_deployment SET cleanup_status = 'unconfirmed'
+             WHERE id = ?1 AND {pending}"
+        ),
+        &[id.as_str().into()],
+    )?;
+    expire_and_read(tx, id)
+}
+
 pub(super) fn expire(tx: &mut dyn Tx, id: &DeploymentId) -> Result<(), RpcError> {
     let clock = tx.backend().wall_clock();
     tx.execute(

@@ -701,11 +701,21 @@ pub(crate) fn cancel(
         DeploymentStatus::WaitingForCi | DeploymentStatus::Queued => stored.standing.cancel(now()),
         DeploymentStatus::Running => stored.standing.cancelling(),
         DeploymentStatus::Cancelling | DeploymentStatus::Cancelled => return Ok(stored.summary),
+        DeploymentStatus::Applied | DeploymentStatus::Failed
+            if stored.summary.live_at.is_some()
+                && matches!(stored.cleanup, super::cleanup::Cleanup::Pending(_)) =>
+        {
+            stored.summary.cleanup = super::cleanup::interrupt(tx, id)?.status();
+            return Ok(stored.summary);
+        }
         DeploymentStatus::Superseded
         | DeploymentStatus::Applied
         | DeploymentStatus::Failed
         | DeploymentStatus::Unknown => return Err(ended(id)),
     };
+    if stored.summary.live_at.is_some() {
+        stored.cleanup = super::cleanup::interrupt(tx, id)?;
+    }
     save(tx, &mut stored)?;
     Ok(stored.summary)
 }

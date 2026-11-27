@@ -59,17 +59,44 @@ pub(crate) fn record(
             .preview
             .as_ref()
             .is_some_and(|preview| preview.waits().next().is_none());
-    if stamped {
+    let switch_request = matches!(evidence, RunEvidence::Finishing { live_at: Some(_) });
+    if switch_request && claimed && stored.run.live_at.is_some() {
+        return Ok(receipt(stored));
+    }
+    let stamped = if stamped {
         stored.run.live_at = live_at;
-        if stored.cleanup == Cleanup::NotStarted
-            && !matches!(
-                evidence,
-                RunEvidence::Finishing { .. } | RunEvidence::Finished { .. }
-            )
-            && let Some(cleanup) = cleanup::renewed(tx, id, true)?
-        {
-            stored.cleanup = cleanup;
+        let saved = tx.execute(
+            "UPDATE config_deployment SET run = ?2 WHERE id = ?1 AND status = 'running'",
+            &[id.as_str().into(), json_text(&stored.run).as_str().into()],
+        )? != 0;
+        if !saved {
+            stored.run.live_at = None;
         }
+        saved
+    } else {
+        false
+    };
+    if switch_request
+        && matches!(
+            stored.summary.status,
+            DeploymentStatus::Cancelling | DeploymentStatus::Cancelled
+        )
+        && !stamped
+    {
+        return Err(error::conflict(
+            "Cancellation won the Deployment's traffic switch",
+            json!({ "deployment": id, "switch_cancelled": true }),
+        ));
+    }
+    if stamped
+        && stored.cleanup == Cleanup::NotStarted
+        && !matches!(
+            evidence,
+            RunEvidence::Finishing { .. } | RunEvidence::Finished { .. }
+        )
+        && let Some(cleanup) = cleanup::renewed(tx, id, true)?
+    {
+        stored.cleanup = cleanup;
     }
     match evidence {
         RunEvidence::Alive => {

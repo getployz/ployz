@@ -302,6 +302,9 @@ async fn cancelling_an_in_place_deploy_does_not_wait_for_the_live_ack() {
                 }
             ) {
                 cancel.cancel();
+                acknowledge
+                    .send(crate::deploy::SwitchDecision::Refused)
+                    .unwrap();
                 return;
             }
         }
@@ -322,7 +325,6 @@ async fn cancelling_an_in_place_deploy_does_not_wait_for_the_live_ack() {
             ..
         }
     ));
-    assert!(acknowledge.send(()).is_err());
     assert_eq!(client.rotation(&copy), Some(CopyRotation::In));
     client.assert_done();
 }

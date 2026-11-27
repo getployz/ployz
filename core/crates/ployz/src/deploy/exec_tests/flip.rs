@@ -1226,6 +1226,130 @@ async fn a_stop_first_replacement_publishes_its_new_container() {
 }
 
 #[tokio::test]
+async fn an_acknowledged_stop_first_switch_wins_over_ready_cancellation() {
+    stop_first_switch_and_cancel(false).await;
+}
+
+#[tokio::test]
+async fn a_store_cancel_before_the_stop_first_switch_refuses_live_and_rolls_back() {
+    stop_first_switch_and_cancel(true).await;
+}
+
+async fn stop_first_switch_and_cancel(cancel_first: bool) {
+    use crate::deploy::SwitchDecision;
+    use ployz_store::{
+        Admit, Cancel, CleanupStatus, DeploymentId, DeploymentQuery, RunEvidence, RunnerId,
+    };
+
+    let machine = machine('1');
+    let (old, new) = (container('a'), container('b'));
+    let plan = crate::deploy::DeployPlan::for_execution_test(
+        vec![global_replacement(&machine, &old, UpdateOrder::StopFirst)],
+        test_namespace(),
+    );
+    let mut calls = vec![
+        observed(Call::Inspect(machine, old), running()),
+        ok(Call::Stop(machine, old)),
+        created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
+    ];
+    if cancel_first {
+        calls.extend([
+            ok(Call::Stop(machine, new)),
+            ok(Call::Restart(machine, old)),
+            ok(Call::Remove(machine, new)),
+        ]);
+    } else {
+        calls.push(observed(Call::Inspect(machine, old), exited(0)));
+    }
+    let client = Scripted::new(calls).with_copy(&machine, &old, CopyRotation::In);
+    let cancel = CancellationToken::new();
+    let (events, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let (ack, commit) = tokio::sync::oneshot::channel();
+    let run = run_id();
+    let execute = super::super::execute_with_switch_commit(
+        &plan,
+        &run,
+        &client,
+        &cancel,
+        Some(events),
+        Some(commit),
+    );
+    let decide = async {
+        while let Some(event) = rx.recv().await {
+            if let DeployEvent::Progress {
+                live_at: Some(at), ..
+            } = event
+            {
+                let (decision, view) = tokio::task::spawn_blocking(move || {
+                    let (store, actor) = ployz_store::testing::shop::shop();
+                    let id = DeploymentId::parse("00000000-0000-4000-8000-000000000100").unwrap();
+                    let runner = RunnerId::parse("switch-runner").unwrap();
+                    let request = serde_json::from_value(
+                        serde_json::json!({ "id": id, "services": ["web"] }),
+                    )
+                    .unwrap();
+                    store.write(&actor, &Admit::Deploy(request)).unwrap();
+                    let claimed = store.claim(&id, &runner).unwrap();
+                    let preview = serde_json::from_value(serde_json::json!({
+                        "namespace": claimed.intent.namespace, "operations": [], "warnings": [],
+                        "would_remove": [], "preserved_volumes": [],
+                    }))
+                    .unwrap();
+                    store
+                        .record(&id, &runner, RunEvidence::Prepared(preview))
+                        .unwrap();
+                    let cancel_in_store = || {
+                        store
+                            .write(
+                                &actor,
+                                &Cancel {
+                                    deployment: id.clone(),
+                                },
+                            )
+                            .unwrap()
+                    };
+                    let commit_in_store =
+                        || store.record(&id, &runner, RunEvidence::Finishing { live_at: Some(at) });
+                    let decision = if cancel_first {
+                        cancel_in_store();
+                        let error = commit_in_store().unwrap_err();
+                        assert_eq!(error.code, RpcErrorCode::Conflict);
+                        SwitchDecision::Refused
+                    } else {
+                        assert_eq!(commit_in_store().unwrap().live_at, Some(at));
+                        assert_eq!(cancel_in_store().cleanup, Some(CleanupStatus::Unconfirmed));
+                        SwitchDecision::Committed
+                    };
+                    let view = store.read(&actor, &DeploymentQuery { id }).unwrap();
+                    (decision, view)
+                })
+                .await
+                .unwrap();
+                cancel.cancel();
+                ack.send(decision)
+                    .expect("the executor waits for the Store's decision");
+                return (at, view);
+            }
+        }
+        panic!("the executor never requested the traffic switch");
+    };
+    let (outcome, (at, view)) = tokio::join!(execute, decide);
+    if cancel_first {
+        assert_eq!(view.deployment.live_at, None);
+        assert_eq!(client.rotation(&new), None);
+        assert_eq!(client.rotation(&old), Some(CopyRotation::In));
+        assert_eq!(outcome.services(), ended(&[("api", ServiceResult::Old)]));
+    } else {
+        assert_eq!(view.deployment.live_at, Some(at));
+        assert_eq!(view.deployment.cleanup, Some(CleanupStatus::Unconfirmed));
+        assert_eq!(client.rotation(&new), Some(CopyRotation::In));
+        assert_ne!(client.rotation(&old), Some(CopyRotation::In));
+        assert_eq!(outcome.services(), ended(&[("api", ServiceResult::New)]));
+    }
+    client.assert_done();
+}
+
+#[tokio::test]
 async fn a_stop_first_replacement_that_cannot_inspect_its_old_copy_leaves_it_in() {
     let machine = machine('1');
     let old = container('a');
@@ -3239,7 +3363,11 @@ async fn an_unconfirmed_unlisting_leaves_every_old_copy_of_the_group_running() {
             assert_eq!(client.rotation(&new_two), Some(CopyRotation::In));
             assert_eq!(client.rotation(&one), Some(CopyRotation::In));
             assert_eq!(client.rotation(&two), Some(CopyRotation::In));
-            acknowledge.take().unwrap().send(()).unwrap();
+            acknowledge
+                .take()
+                .unwrap()
+                .send(crate::deploy::SwitchDecision::Committed)
+                .unwrap();
             switched = true;
         }
         DeployEvent::Warning { warning } => warnings.push(warning.to_string()),
@@ -4260,7 +4388,9 @@ async fn a_listed_dependency_keeps_its_old_copy_until_the_whole_switch_is_acknow
                     ..
                 }
             ) {
-                acknowledge.send(()).unwrap();
+                acknowledge
+                    .send(crate::deploy::SwitchDecision::Committed)
+                    .unwrap();
                 return;
             }
             assert!(!matches!(event, DeployEvent::Outcome { .. }));

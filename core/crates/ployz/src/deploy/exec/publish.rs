@@ -49,11 +49,17 @@ impl GappedPublishes {
 
 /// The old copies publishes took out of rotation, or that never went In. No proxy
 /// routes them, so they retire once the Deploy's Outcome is out.
+struct Retirement {
+    copy: cleanup::Copy,
+    ask: AnonymousVolumes,
+    running: bool,
+}
+
 #[derive(Default)]
-pub(super) struct Retiring(std::sync::Mutex<Vec<(cleanup::Copy, AnonymousVolumes)>>);
+pub(super) struct Retiring(std::sync::Mutex<Vec<Retirement>>);
 
 impl Retiring {
-    fn add(&self, copies: impl IntoIterator<Item = (cleanup::Copy, AnonymousVolumes)>) {
+    fn add(&self, copies: impl IntoIterator<Item = Retirement>) {
         self.0.lock().expect("retiring lock").extend(copies);
     }
 
@@ -65,28 +71,40 @@ impl Retiring {
         client: &C,
         progress: &Progress,
         report: &super::report::Report<'_>,
+        cancellation: &CancellationToken,
     ) {
-        let mut services: BTreeMap<ServiceName, Vec<(cleanup::Copy, AnonymousVolumes)>> =
-            BTreeMap::new();
-        for (copy, ask) in std::mem::take(&mut *self.0.lock().expect("retiring lock")) {
+        let mut services: BTreeMap<ServiceName, Vec<Retirement>> = BTreeMap::new();
+        for retirement in std::mem::take(&mut *self.0.lock().expect("retiring lock")) {
             services
-                .entry(copy.service.name.clone())
+                .entry(retirement.copy.service.name.clone())
                 .or_default()
-                .push((copy, ask));
+                .push(retirement);
         }
         join_all(services.into_iter().map(|(service, copies)| async move {
-            let removed = join_all(
+            join_all(
                 copies
                     .iter()
-                    .map(|(copy, ask)| cleanup::remove(client, copy, *ask)),
+                    .map(|Retirement { copy, ask, running }| async {
+                        let left = if cancellation.is_cancelled() {
+                            running.then_some(Left::Interrupted)
+                        } else {
+                            tokio::select! {
+                                biased;
+                                removed = cleanup::remove(client, copy, *ask) => {
+                                    left_unless_done(removed.map(cleanup::Rotated::from))
+                                }
+                                () = cancellation.cancelled() => None,
+                            }
+                        };
+                        if let Some(left) = left {
+                            report.leave_running(progress, copy, left);
+                        }
+                    }),
             )
             .await;
-            for ((copy, _), removed) in copies.iter().zip(removed) {
-                if let Some(left) = left_unless_done(removed.map(cleanup::Rotated::from)) {
-                    report.leave_running(progress, copy, left);
-                }
+            if !cancellation.is_cancelled() {
+                progress.retired(service);
             }
-            progress.retired(service);
         }))
         .await;
     }
@@ -104,6 +122,14 @@ pub(super) enum Switch {
     NotNeeded,
     Confirmed,
     Unconfirmed,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Permission {
+    WithoutCommit,
+    Committed,
+    Refused,
+    Unavailable,
 }
 
 pub(super) enum Published {
@@ -137,7 +163,7 @@ pub(super) async fn publish_group<C: MachineOperations>(
     shared: &Shared<'_>,
     copies: GroupCopies<'_>,
     cancellation: &CancellationToken,
-    switched: impl AsyncFnOnce(Switch) -> bool,
+    switched: impl AsyncFnOnce(Switch) -> Permission,
 ) -> Published {
     let GroupCopies { service, new, old } = copies;
     let routed = shared.plan.routed(service);
@@ -156,16 +182,17 @@ pub(super) async fn publish_group<C: MachineOperations>(
     } else {
         Switch::Confirmed
     };
-    let acknowledged = tokio::select! {
-        biased;
-        () = cancellation.cancelled() => return Published::Cancelled,
-        acknowledged = switched(switch) => acknowledged,
-    };
-    if !acknowledged {
-        return Published::OutUnconfirmed(machine_error(
-            MachineAction::ReadRoutes,
-            RpcError::unavailable("The Deployment's switch could not be recorded"),
-        ));
+    let permission = switched(switch).await;
+    match permission {
+        Permission::Committed => {}
+        Permission::WithoutCommit if !cancellation.is_cancelled() => {}
+        Permission::WithoutCommit | Permission::Refused => return Published::Cancelled,
+        Permission::Unavailable => {
+            return Published::OutUnconfirmed(machine_error(
+                MachineAction::ReadRoutes,
+                RpcError::unavailable("The Deployment's switch could not be recorded"),
+            ));
+        }
     }
     if new.is_empty() {
         return Published::Listed;
@@ -183,6 +210,7 @@ pub(super) async fn publish_group<C: MachineOperations>(
     let mut missing = 0;
     // What each old copy's removal asks for its anonymous Volumes: they go only with a
     // copy its Machine made to take its place that this Deploy keeps.
+    let mut running_old = BTreeSet::new();
     let mut asks = BTreeMap::new();
     let inspected = join_all(
         old.iter()
@@ -192,6 +220,9 @@ pub(super) async fn publish_group<C: MachineOperations>(
     for ((machine_id, container_id), inspected) in old.iter().zip(inspected) {
         let copy = match inspected {
             Ok(details) => {
+                if crate::deploy::is_active_runtime(&details.container.runtime) {
+                    running_old.insert(*container_id);
+                }
                 asks.insert(
                     *container_id,
                     AnonymousVolumes::of(&details.container, |id| ids.contains(id)),
@@ -266,7 +297,15 @@ pub(super) async fn publish_group<C: MachineOperations>(
     // Every Out goes together and one wait covers the set, so a group's
     // retirement costs one unlisting, not one per copy.
     if cancellation.is_cancelled() {
-        return Published::Cancelled;
+        if permission != Permission::Committed {
+            return Published::Cancelled;
+        }
+        for copy in outs.iter().chain(&gone) {
+            shared
+                .report
+                .leave_running(progress, copy, Left::Interrupted);
+        }
+        return Published::Listed;
     }
     let sent = join_all(
         outs.iter()
@@ -334,7 +373,11 @@ pub(super) async fn publish_group<C: MachineOperations>(
             .get(&copy.container_id)
             .copied()
             .unwrap_or(AnonymousVolumes::keep());
-        (copy, ask)
+        Retirement {
+            running: running_old.contains(&copy.container_id),
+            copy,
+            ask,
+        }
     }));
     match (unconfirmed, gapped) {
         (Some(error), _) => Published::OutUnconfirmed(error),
