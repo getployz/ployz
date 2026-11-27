@@ -1138,17 +1138,9 @@ impl Run {
             {
                 pending.clear();
             }
-            let mut done: BTreeMap<&ServiceName, bool> = BTreeMap::new();
-            for row in &rows {
-                if let Some(service) = &row.service_name {
-                    *done.entry(service).or_insert(true) &=
-                        matches!(row.status, ployz_core::OperationStatus::Completed);
-                }
-            }
-            let new: Vec<ServiceName> = done
+            let new: Vec<ServiceName> = replaced(&rows)
                 .into_iter()
-                .filter(|(service, done)| *done && !confirmed.contains(*service))
-                .map(|(service, _)| service.clone())
+                .filter(|service| !confirmed.contains(service))
                 .collect();
             if new.is_empty() {
                 continue;
@@ -1465,6 +1457,28 @@ impl Run {
 
 /// Move one build's steps on with `event`, one of its progress frames. Its upload
 /// starts with the build, or once a Build Machine admits it after queueing.
+/// Each Service whose every row completed or serves while it retires the copies it
+/// replaced. No proxy routes those copies, and their removal leaves at most a
+/// warning, so the Service reads Deployed without waiting for them to go.
+fn replaced(rows: &[ployz_core::OperationRow]) -> Vec<ServiceName> {
+    let mut done: BTreeMap<&ServiceName, bool> = BTreeMap::new();
+    for row in rows {
+        if let Some(service) = &row.service_name {
+            *done.entry(service).or_insert(true) &= matches!(
+                row.status,
+                ployz_core::OperationStatus::Completed
+                    | ployz_core::OperationStatus::Running {
+                        phase: ployz_core::OperationPhase::RetiringOld { .. },
+                    }
+            );
+        }
+    }
+    done.into_iter()
+        .filter(|(_, done)| *done)
+        .map(|(service, _)| service.clone())
+        .collect()
+}
+
 fn build_stage(
     steps: &mut Steps,
     service: &ServiceName,
