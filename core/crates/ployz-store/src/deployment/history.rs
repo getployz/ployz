@@ -465,27 +465,38 @@ pub(crate) fn latest_removal(
         .filter(|latest| latest.remove))
 }
 
-/// The Saved revision `environment`'s latest applied Deployment that deployed or
-/// removed a Service shipped: what its Servers run. One that left all it had to
-/// do waiting changed nothing they run. None before one applied, or once a
-/// removal applied.
+/// The Saved revision with the most recent recorded switch. A removal can be
+/// the last switch, in which case there is no Live revision.
 pub(crate) fn live(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
 ) -> Result<Option<Revision>, RpcError> {
-    let mut condition = format!("status = '{APPLIED}'");
-    loop {
-        let Some(deployment) = latest_where(tx, environment, &condition)? else {
-            return Ok(None);
-        };
-        if !deployment.all_waiting {
-            return Ok(Some(deployment.saved).filter(|saved| *saved != NOTHING));
-        }
-        condition = format!(
-            "status = '{APPLIED}' AND number < {}",
-            deployment.numbered()?
-        );
+    #[derive(Deserialize)]
+    struct Switch {
+        live_at: Option<i64>,
     }
+
+    let mut latest = None;
+    for row in tx.query(
+        &format!(
+            "SELECT saved_revision, run FROM config_deployment
+             WHERE environment_id = ?1 AND {NUMBERED} AND run LIKE '%\"live_at\"%'
+             ORDER BY number DESC"
+        ),
+        &[environment.as_str().into()],
+    )? {
+        let switch: Switch = row.json(1, "Deployment switch")?;
+        if let Some(at) = switch.live_at
+            && latest.is_none_or(|(newest, _)| at > newest)
+        {
+            let saved =
+                Revision(u64::try_from(row.int(0)?).map_err(|_| error::corrupt("Saved revision"))?);
+            latest = Some((at, saved));
+        }
+    }
+    Ok(latest
+        .map(|(_, saved)| saved)
+        .filter(|saved| *saved != NOTHING))
 }
 
 /// Whether the latest Deployment of Saved `revision` failed. Any later attempt

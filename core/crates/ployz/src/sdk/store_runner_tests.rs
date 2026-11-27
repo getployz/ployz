@@ -2605,7 +2605,7 @@ async fn a_switch_event_survives_abort_before_the_outcome() {
 }
 
 #[tokio::test]
-async fn a_join_error_waits_for_the_store_to_record_unknown() {
+async fn a_join_error_waits_for_the_store_to_record_unconfirmed_cleanup() {
     a_join_error_during_a_store_outage(false).await;
 }
 
@@ -2639,7 +2639,6 @@ async fn a_join_error_during_a_store_outage(expire: bool) {
     backend::execute(
         &url,
         "CREATE TRIGGER reject_writes BEFORE UPDATE ON config_deployment
-         WHEN NEW.cleanup_deadline = OLD.cleanup_deadline AND NEW.cleanup_status = OLD.cleanup_status
          BEGIN SELECT RAISE(ABORT, 'temporary outage'); END",
     );
     let task = tokio::spawn(std::future::pending());
@@ -2656,12 +2655,11 @@ async fn a_join_error_during_a_store_outage(expire: bool) {
         tokio::time::timeout(Duration::from_millis(250), &mut finishing)
             .await
             .is_err(),
-        "the SDK returned the join error before the Store accepted Unknown"
+        "the SDK returned the join error before the Store accepted unconfirmed cleanup"
     );
+    backend::execute(&url, "DROP TRIGGER reject_writes");
     if expire {
         backend::execute(&url, "UPDATE config_deployment SET cleanup_deadline = 1");
-    } else {
-        backend::execute(&url, "DROP TRIGGER reject_writes");
     }
     // real-wait: the retry checks the durable lease through a blocking Store call.
     let reported = tokio::time::timeout(Duration::from_secs(5), finishing)
@@ -2678,19 +2676,11 @@ async fn a_join_error_during_a_store_outage(expire: bool) {
         )
         .unwrap();
     assert_eq!(view.deployment.live_at, Some(at));
-    if expire {
-        assert_eq!(view.deployment.status, DeploymentStatus::Applied);
-        assert_eq!(
-            view.deployment.cleanup,
-            Some(ployz_store::CleanupStatus::Unconfirmed)
-        );
-    } else {
-        assert_eq!(view.deployment.status, DeploymentStatus::Unknown);
-        assert_eq!(
-            view.deployment.cleanup,
-            Some(ployz_store::CleanupStatus::Pending)
-        );
-    }
+    assert_eq!(view.deployment.status, DeploymentStatus::Applied);
+    assert_eq!(
+        view.deployment.cleanup,
+        Some(ployz_store::CleanupStatus::Unconfirmed)
+    );
 }
 
 #[tokio::test(start_paused = true)]

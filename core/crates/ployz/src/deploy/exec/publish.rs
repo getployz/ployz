@@ -63,6 +63,17 @@ impl Retiring {
         self.0.lock().expect("retiring lock").extend(copies);
     }
 
+    pub(super) fn abandon(&self, progress: &Progress, report: &super::report::Report<'_>) {
+        for retirement in std::mem::take(&mut *self.0.lock().expect("retiring lock")) {
+            report.unfinished_removal(
+                progress,
+                &retirement.copy,
+                retirement.running,
+                Left::Interrupted,
+            );
+        }
+    }
+
     /// Stop and remove every copy, each Machine's at once, and say when each
     /// Service's are done. A copy that stays is a warning, never a failure: the
     /// Outcome is already out.
@@ -86,18 +97,18 @@ impl Retiring {
                     .iter()
                     .map(|Retirement { copy, ask, running }| async {
                         let left = if cancellation.is_cancelled() {
-                            running.then_some(Left::Interrupted)
+                            Some(Left::Interrupted)
                         } else {
                             tokio::select! {
                                 biased;
                                 removed = cleanup::remove(client, copy, *ask) => {
                                     left_unless_done(removed.map(cleanup::Rotated::from))
                                 }
-                                () = cancellation.cancelled() => None,
+                                () = cancellation.cancelled() => Some(Left::Interrupted),
                             }
                         };
                         if let Some(left) = left {
-                            report.leave_running(progress, copy, left);
+                            report.unfinished_removal(progress, copy, *running, left);
                         }
                     }),
             )
@@ -301,9 +312,12 @@ pub(super) async fn publish_group<C: MachineOperations>(
             return Published::Cancelled;
         }
         for copy in outs.iter().chain(&gone) {
-            shared
-                .report
-                .leave_running(progress, copy, Left::Interrupted);
+            shared.report.unfinished_removal(
+                progress,
+                copy,
+                running_old.contains(&copy.container_id),
+                Left::Interrupted,
+            );
         }
         return Published::Listed;
     }
@@ -320,17 +334,23 @@ pub(super) async fn publish_group<C: MachineOperations>(
         match sent {
             Ok(None) => unlisting.push(copy),
             Ok(Some(refusal)) => {
-                shared
-                    .report
-                    .leave_running(progress, &copy, Left::Refused(refusal));
+                shared.report.unfinished_removal(
+                    progress,
+                    &copy,
+                    running_old.contains(&copy.container_id),
+                    Left::Refused(refusal),
+                );
             }
             Err(error) => {
                 unconfirmed.get_or_insert_with(|| {
                     machine_error(MachineAction::StopContainer, error.clone())
                 });
-                shared
-                    .report
-                    .leave_running(progress, &copy, Left::Failed(error));
+                shared.report.unfinished_removal(
+                    progress,
+                    &copy,
+                    running_old.contains(&copy.container_id),
+                    Left::Failed(error),
+                );
             }
         }
     }
@@ -354,7 +374,12 @@ pub(super) async fn publish_group<C: MachineOperations>(
             None => gone.append(&mut unlisting),
             Some(left) => {
                 for copy in &unlisting {
-                    shared.report.leave_running(progress, copy, left.clone());
+                    shared.report.unfinished_removal(
+                        progress,
+                        copy,
+                        running_old.contains(&copy.container_id),
+                        left.clone(),
+                    );
                 }
             }
         }

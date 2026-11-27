@@ -780,6 +780,7 @@ fn unchecked(row: &Row, frame: &Frame, left: &BTreeMap<&ContainerId, &str>) -> B
             | DeployWarning::ObserverRelativeHostnameConflict
             | DeployWarning::SkippedDependencyHealth { .. }
             | DeployWarning::ImagePortMismatch { .. }
+            | DeployWarning::CleanupUnconfirmed { .. }
             | DeployWarning::MixedAfterReturn { .. }
             | DeployWarning::NotInStore { .. } => None,
         })
@@ -1234,6 +1235,7 @@ fn notices(frame: &Frame, settled: bool, printed: &NoticeHistory) -> Vec<String>
                     | DeployWarning::SkippedDependencyHealth { .. }
                     | DeployWarning::ImagePortMismatch { .. }
                     | DeployWarning::LeftRunning { .. }
+                    | DeployWarning::CleanupUnconfirmed { .. }
                     | DeployWarning::MixedAfterReturn { .. }
                     | DeployWarning::NotInStore { .. } => None,
                 })

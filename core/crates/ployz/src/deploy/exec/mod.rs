@@ -566,6 +566,7 @@ pub(super) async fn execute_with_switch_commit<C: MachineOperations>(
     };
     let outcome = outcome_from(operations, &completed, stop, schedule.services());
     if *switches.gate.borrow() == Some(Permission::Unavailable) {
+        shared.retiring.abandon(progress, &shared.report);
         return outcome;
     }
     progress.outcome(outcome.clone(), live_at);

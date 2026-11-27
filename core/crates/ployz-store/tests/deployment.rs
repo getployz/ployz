@@ -487,6 +487,49 @@ fn a_late_finishing_write_cannot_reopen_expired_cleanup() {
     }
 }
 
+#[test]
+fn history_keeps_the_newest_switch_after_its_cleanup_task_fails() {
+    let (store, who) = shop();
+    deployment_with_pending_cleanup(&store, &who);
+    set_replicas(&store, &who, "web", 3);
+    let second = admit(&store, &who, 2, &[], None).unwrap().saved;
+    let runner = runner("runner-a");
+    store.claim(&id(2), &runner).unwrap();
+    store
+        .record(
+            &id(2),
+            &runner,
+            RunEvidence::Prepared(preview(&["web", "api"])),
+        )
+        .unwrap();
+    let at = summary(&store, &who, 1).live_at.unwrap() + 1;
+    store
+        .record(
+            &id(2),
+            &runner,
+            RunEvidence::Finishing { live_at: Some(at) },
+        )
+        .unwrap();
+    assert_eq!(
+        marks(&store, &who).0,
+        Some(second),
+        "the switch is live before Apply"
+    );
+    store
+        .record(&id(2), &runner, succeeded(&["web", "api"]))
+        .unwrap();
+    let failed = store
+        .record(&id(2), &runner, RunEvidence::RuntimeFailed)
+        .unwrap();
+    assert_eq!(failed.status, DeploymentStatus::Applied);
+    assert_eq!(
+        failed.cleanup,
+        Some(ployz_store::CleanupStatus::Unconfirmed)
+    );
+    assert_eq!(failed.live_at, Some(at));
+    assert_eq!(marks(&store, &who).0, Some(second));
+}
+
 fn deployment_with_pending_cleanup(store: &ConfigStore, who: &Actor) -> RunnerId {
     admit(store, who, 1, &[], None).unwrap();
     let runner = runner("runner-a");
@@ -555,7 +598,7 @@ fn expire_cleanup_while_postgres_write_is_held(
     let mut database = postgres::Client::connect(&url, postgres::NoTls).unwrap();
     let (column, evidence) = match write {
         HeldCleanupWrite::Renewal => ("cleanup_deadline", RunEvidence::Finishing { live_at: None }),
-        HeldCleanupWrite::RuntimeFailure => ("status", RunEvidence::RuntimeFailed),
+        HeldCleanupWrite::RuntimeFailure => ("cleanup_status", RunEvidence::RuntimeFailed),
     };
     database
         .batch_execute(&format!(
@@ -6349,12 +6392,21 @@ fn an_approval_given_while_every_server_answered_doesnt_admit_an_unseen_prune() 
 }
 
 fn apply_both(store: &ConfigStore, who: &Actor, n: u8) {
+    apply_both_with_switch(store, who, n, None);
+}
+
+fn apply_both_with_switch(store: &ConfigStore, who: &Actor, n: u8, at: Option<i64>) {
     admit(store, who, n, &[], None).unwrap();
     let a = runner("runner-a");
     store.claim(&id(n), &a).unwrap();
     store
         .record(&id(n), &a, RunEvidence::Prepared(preview(&["web", "api"])))
         .unwrap();
+    if at.is_some() {
+        store
+            .record(&id(n), &a, RunEvidence::Finishing { live_at: at })
+            .unwrap();
+    }
     store
         .record(&id(n), &a, succeeded(&["web", "api"]))
         .unwrap();
@@ -7513,12 +7565,12 @@ fn save(store: &ConfigStore, who: &Actor) -> Revision {
 }
 
 #[test]
-fn history_marks_the_last_applied_revision_live_and_a_newest_one_that_failed() {
+fn history_marks_the_routed_revision_live_and_a_newest_one_that_failed() {
     let (store, who) = shop();
     let first = save(&store, &who);
     assert_eq!(marks(&store, &who), (None, None), "saved, never deployed");
 
-    apply_both(&store, &who, 1);
+    apply_both_with_switch(&store, &who, 1, Some(1));
     assert_eq!(marks(&store, &who), (Some(first), None));
 
     set_replicas(&store, &who, "web", 3);
@@ -7540,6 +7592,9 @@ fn history_marks_the_last_applied_revision_live_and_a_newest_one_that_failed() {
     store.claim(&id(3), &a).unwrap();
     store
         .record(&id(3), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(&id(3), &a, RunEvidence::Finishing { live_at: Some(2) })
         .unwrap();
     store
         .record(&id(3), &a, succeeded(&["web", "api"]))
@@ -11470,7 +11525,7 @@ fn a_deploy_restoring_one_volume_twice_replays_its_birth_or_conflicts() {
 fn history_keeps_live_until_a_deployment_that_confirmed_every_service_applied() {
     let (store, who) = shop();
     let first = save(&store, &who);
-    apply_both(&store, &who, 1);
+    apply_both_with_switch(&store, &who, 1, Some(1));
     set_replicas(&store, &who, "web", 3);
     admit(&store, &who, 2, &[], None).unwrap();
     let a = runner("runner-a");
@@ -11514,7 +11569,7 @@ fn history_keeps_live_until_a_deployment_that_confirmed_every_service_applied() 
 fn history_keeps_live_while_a_deployment_that_changes_no_service_runs() {
     let (store, who) = shop();
     let first = save(&store, &who);
-    apply_both(&store, &who, 1);
+    apply_both_with_switch(&store, &who, 1, Some(1));
     set_replicas(&store, &who, "web", 3);
     admit(&store, &who, 2, &[], None).unwrap();
     let a = runner("runner-a");

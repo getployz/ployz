@@ -15,50 +15,74 @@ struct Shop {
     store: Arc<ConfigStore>,
     who: Actor,
     address: std::net::SocketAddr,
+    url: String,
 }
 
 impl Shop {
     /// A shop whose web Service one Deployment already put on `service`'s Machine.
     async fn deployed(service: DeployService) -> Self {
-        let home = tempfile::tempdir().unwrap();
-        let db = home.path().join("store.db");
-        let key = SealingKey::from_file(&home.path().join("store.db.key")).unwrap();
-        let store = Arc::new(ConfigStore::open(&format!("sqlite:{}", db.display()), key).unwrap());
-        let who = Actor::system(OrganizationId::parse("local").unwrap());
-        store
-            .write(
-                &who,
-                &CreateProject {
-                    id: ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
-                    name: ProjectName::parse("shop").unwrap(),
-                    default_environment: EnvironmentId::parse(
-                        "00000000-0000-4000-8000-000000000002",
-                    )
-                    .unwrap(),
-                    region: None,
-                },
-            )
-            .unwrap();
-        store
-            .write(
-                &who,
-                &CreateService {
-                    id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000003").unwrap(),
-                    environment: EnvironmentRef::default(),
-                    name: ployz_core::ServiceName::parse("web").unwrap(),
-                    image: Some("nginx".into()),
-                    template: None,
-                },
-            )
-            .unwrap();
+        Self::deployed_on(service, |home| {
+            format!("sqlite:{}", home.path().join("store.db").display())
+        })
+        .await
+    }
+
+    async fn deployed_on(
+        service: DeployService,
+        database: impl FnOnce(&tempfile::TempDir) -> String + Send + 'static,
+    ) -> Self {
+        let (home, store, who, url) = tokio::task::spawn_blocking(move || {
+            let home = tempfile::tempdir().unwrap();
+            let url = database(&home);
+            let key = SealingKey::from_file(&home.path().join("store.db.key")).unwrap();
+            let store = Arc::new(ConfigStore::open(&url, key).unwrap());
+            let who = Actor::system(OrganizationId::parse("local").unwrap());
+            store
+                .write(
+                    &who,
+                    &CreateProject {
+                        id: ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
+                        name: ProjectName::parse("shop").unwrap(),
+                        default_environment: EnvironmentId::parse(
+                            "00000000-0000-4000-8000-000000000002",
+                        )
+                        .unwrap(),
+                        region: None,
+                    },
+                )
+                .unwrap();
+            store
+                .write(
+                    &who,
+                    &CreateService {
+                        id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000003")
+                            .unwrap(),
+                        environment: EnvironmentRef::default(),
+                        name: ployz_core::ServiceName::parse("web").unwrap(),
+                        image: Some("nginx".into()),
+                        template: None,
+                    },
+                )
+                .unwrap();
+            (home, store, who, url)
+        })
+        .await
+        .unwrap();
         let (address, _server) = listening(service).await;
         let shop = Self {
             home,
             store,
             who,
             address,
+            url,
         };
-        let first = shop.run(1, false).await.unwrap();
+        let first = if shop.url.starts_with("sqlite:") {
+            shop.run(1, false)
+        } else {
+            tokio::task::block_in_place(|| shop.run(1, false))
+        }
+        .await
+        .unwrap();
         assert_eq!(first.status, DeploymentStatus::Applied);
         shop
     }
@@ -116,10 +140,7 @@ impl Shop {
             .current_dir(home)
             .env("HOME", home)
             .env("PLOYZ_CONFIG", home.join("config.yaml"))
-            .env(
-                "PLOYZ_STORE",
-                format!("sqlite:{}", home.join("store.db").display()),
-            )
+            .env("PLOYZ_STORE", &self.url)
             .env_remove("PLOYZ_TOKEN")
             .env_remove("PLOYZ_PROJECT")
             .env_remove("PLOYZ_ENV")
@@ -133,6 +154,18 @@ impl Shop {
             .args(args)
             .kill_on_drop(true);
         command
+    }
+
+    async fn show(&self, number: &str) -> DeploymentSummary {
+        let output = self
+            .cli(&["--json", "deployment", "show", number])
+            .output()
+            .await
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        serde_json::from_slice::<ployz_store::DeploymentView>(&output.stdout)
+            .unwrap()
+            .deployment
     }
 
     fn status(&self, number: u8) -> DeploymentStatus {
@@ -288,23 +321,27 @@ async fn a_cancel_after_apply_stops_waiting_for_cleanup_without_undoing_live() {
         .lists_created()
         .hold_removals();
     let shop = Shop::deployed(service.clone()).await;
-    let running = tokio::spawn(shop.run(2, true));
+    let mut running = shop.cli(&["deploy", "--recreate"]);
+    let running = tokio::spawn(async move { running.output().await.unwrap() });
     service.removal_waited().await;
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while shop.status(2) != DeploymentStatus::Applied {
-            // real-wait: the runner records the outcome in a blocking Store call.
-            tokio::time::sleep(Duration::from_millis(10)).await;
+    let applied = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let shown = shop.show("2").await;
+            if shown.status == DeploymentStatus::Applied {
+                break shown;
+            }
         }
     })
     .await
     .unwrap();
+    let old = *service.unrouted().lock().unwrap().iter().next().unwrap();
 
     let cancelled = shop
         .store
         .write(
             &shop.who,
             &ployz_store::Cancel {
-                deployment: Shop::id(2),
+                deployment: applied.id,
             },
         )
         .unwrap();
@@ -314,11 +351,22 @@ async fn a_cancel_after_apply_stops_waiting_for_cleanup_without_undoing_live() {
         cancelled.cleanup,
         Some(ployz_store::CleanupStatus::Unconfirmed)
     );
-    let ran = tokio::time::timeout(Duration::from_secs(8), running)
+    let output = tokio::time::timeout(Duration::from_secs(8), running)
         .await
         .expect("cancel releases the removal wait without its reply")
-        .unwrap()
         .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(3), "{stderr}");
+    let ran = shop.show("2").await;
+    assert!(
+        ran.warnings.iter().any(|warning| matches!(
+            warning,
+            DeploymentWarning::Deploy { warning: DeployWarning::LeftRunning { container_id, .. } }
+                if *container_id == old
+        )),
+        "{:?}",
+        ran.warnings
+    );
     assert_eq!(ran.status, DeploymentStatus::Applied);
     assert_eq!(ran.live_at, Some(at));
     assert_eq!(ran.cleanup, Some(ployz_store::CleanupStatus::Unconfirmed));
@@ -394,15 +442,26 @@ async fn stopping_old_runs_until_the_old_copy_retired_after_the_outcome_is_gone(
     assert!(ended.ended_at.is_some(), "{ended:?}");
 }
 
-#[tokio::test]
-async fn a_failed_scale_down_after_the_switch_keeps_the_live_timestamp() {
+#[test]
+fn a_failed_scale_down_after_the_switch_keeps_the_live_timestamp() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     let (one, two) = (machine('a', "one"), machine('b', "two"));
     let service = DeployService::new(one.clone())
         .with_machines(vec![one, two])
         .lists_created()
         .hold_removals()
         .fail_removals(ployz_core::RpcError::internal("scale-down removal failed"));
-    let shop = Shop::deployed(service.clone()).await;
+    let shop = runtime.block_on(Shop::deployed_on(
+        service.clone(),
+        ployz_store::testing::backend::fresh_url,
+    ));
+    runtime.block_on(cancel_before_the_removal_failure(&shop, &service));
+}
+
+async fn cancel_before_the_removal_failure(shop: &Shop, service: &DeployService) {
     let add = |name, id| {
         shop.store
             .write(
@@ -433,14 +492,16 @@ async fn a_failed_scale_down_after_the_switch_keeps_the_live_timestamp() {
             .unwrap()
     };
 
-    add("api", "00000000-0000-4000-8000-000000000004");
-    replicas(2);
-    assert_eq!(
-        shop.run(2, false).await.unwrap().status,
-        DeploymentStatus::Applied
-    );
-    add("worker", "00000000-0000-4000-8000-000000000005");
-    replicas(1);
+    let initial = tokio::task::block_in_place(|| {
+        add("api", "00000000-0000-4000-8000-000000000004");
+        replicas(2);
+        shop.run(2, false)
+    });
+    assert_eq!(initial.await.unwrap().status, DeploymentStatus::Applied);
+    tokio::task::block_in_place(|| {
+        add("worker", "00000000-0000-4000-8000-000000000005");
+        replicas(1);
+    });
 
     let mut deploy = shop
         .cli(&["deploy"])
@@ -460,19 +521,19 @@ async fn a_failed_scale_down_after_the_switch_keeps_the_live_timestamp() {
     })
     .await
     .expect("Live is printed while the scale-down removal is still held");
-    let show = async || {
-        let output = shop
-            .cli(&["--json", "deployment", "show", "3"])
-            .output()
-            .await
-            .unwrap();
-        assert!(output.status.success(), "{output:?}");
-        serde_json::from_slice::<ployz_store::DeploymentView>(&output.stdout)
-            .unwrap()
-            .deployment
-    };
-    let live_at = show().await.live_at.unwrap();
+    let live = shop.show("3").await;
+    let live_at = live.live_at.unwrap();
     assert!(deploy.try_wait().unwrap().is_none());
+    tokio::task::block_in_place(|| {
+        shop.store
+            .write(
+                &shop.who,
+                &ployz_store::Cancel {
+                    deployment: live.id,
+                },
+            )
+            .unwrap();
+    });
     service.release_removals();
     let (output, messages) = tokio::time::timeout(Duration::from_secs(10), async {
         tokio::join!(deploy.wait_with_output(), async {
@@ -494,9 +555,19 @@ async fn a_failed_scale_down_after_the_switch_keeps_the_live_timestamp() {
         "{messages:?}"
     );
     assert!(!messages.iter().any(|line| line == "Deployment #3 Live."));
-    let failed = show().await;
+    let failed = shop.show("3").await;
     assert_eq!(failed.status, DeploymentStatus::Failed);
     assert_eq!(failed.live_at, Some(live_at));
+    assert!(
+        failed.warnings.iter().any(|warning| matches!(
+            warning,
+            DeploymentWarning::Deploy {
+                warning: DeployWarning::LeftRunning { .. }
+            }
+        )),
+        "{:?}",
+        failed.warnings
+    );
 }
 
 #[tokio::test]

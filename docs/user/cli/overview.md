@@ -681,8 +681,9 @@ proxies and the Store has recorded the switch. A start-first replacement keeps i
 old copies in rotation until that record commits. You can keep watching `stopping_old`
 while Ployz retires the old copies. A cancellation that reaches the Store before the
 switch rolls the replacement back. After Live, cancellation stops cleanup and leaves
-the new copies serving. The command returns after cleanup and exits 3 if an old
-container was left running, including when a later scale-down step failed.
+the new copies serving. Cleanup names each old copy whose removal could not be
+confirmed. The command returns after cleanup and exits 3 if an old container was
+left running, including when a later scale-down step failed.
 
 To inspect per-server progress, run:
 
@@ -703,7 +704,8 @@ when you deploy again. Unchanged services have no rows because no server work ra
 reported a later failure. In JSON, `live_at` is in Unix seconds. Every Service with new
 copies must confirm its switch before the timestamp is recorded. A waiting Service
 prevents that confirmation. A plan that only removes copies or updates them in place
-goes Live when its last step succeeds.
+goes Live when its last step succeeds. History marks the revision with the most
+recent recorded switch as Live, even if cleanup failed.
 
 The command ends with the deployment's steps and how long each took, such as
 `building api  +2.1s  41.3s`. A step the deployment stopped in reads `stopped here`. Old

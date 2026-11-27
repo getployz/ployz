@@ -740,7 +740,12 @@ pub(crate) fn cancel_in_flight(
     for row in rows {
         let id = row.parse::<DeploymentId>(0, "Deployment")?;
         let mut stored = load(tx, &id)?;
-        stored.standing = stored.standing.cancel(now());
+        if stored.run.live_at.is_some() {
+            stored.cleanup = super::cleanup::interrupt(tx, &id)?;
+            stored.standing = stored.standing.end(End::Applied, now());
+        } else {
+            stored.standing = stored.standing.cancel(now());
+        }
         save(tx, &mut stored)?;
         cancelled.push(id);
     }

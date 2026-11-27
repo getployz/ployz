@@ -109,6 +109,7 @@ pub(super) fn warnings(
             | DeployWarning::SkippedDependencyHealth { .. }
             | DeployWarning::ImagePortMismatch { .. }
             | DeployWarning::LeftRunning { .. }
+            | DeployWarning::CleanupUnconfirmed { .. }
             | DeployWarning::MixedAfterReturn { .. }
             | DeployWarning::NotInStore { .. } => continue,
         };

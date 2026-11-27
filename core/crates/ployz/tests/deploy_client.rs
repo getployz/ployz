@@ -597,6 +597,7 @@ async fn preview_includes_dns_warnings() {
             | DeployWarning::UnbudgetedDiskUsage
             | DeployWarning::StorageObservationUnknown { .. }
             | DeployWarning::LeftRunning { .. }
+            | DeployWarning::CleanupUnconfirmed { .. }
             | DeployWarning::MixedAfterReturn { .. }
             | DeployWarning::ObserverRelativeHostnameConflict
             | DeployWarning::SkippedDependencyHealth { .. }

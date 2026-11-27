@@ -2231,7 +2231,14 @@ impl Stored {
 ///   report on it any more ([`running`]). One out of flight that shows no end,
 ///   waiting for CI or a [`Raw`] row with no `ended`, leaves its builds as they are.
 fn save(tx: &mut dyn Tx, stored: &mut Stored) -> Result<(), RpcError> {
-    save_when(tx, stored, SaveWhen::Always).map(drop)
+    if save_when(tx, stored, SaveWhen::Always)? {
+        Ok(())
+    } else {
+        Err(error::conflict(
+            "A Deployment that went Live cannot end Cancelled",
+            json!({ "deployment": stored.summary.id }),
+        ))
+    }
 }
 
 enum SaveWhen {
@@ -2252,10 +2259,12 @@ fn save_when(tx: &mut dyn Tx, stored: &mut Stored, when: SaveWhen) -> Result<boo
         SaveWhen::Always => String::new(),
         SaveWhen::ActiveCleanup => format!(" AND {}", cleanup::pending_in_time(tx)),
     };
+    // The Environment lock keeps the loaded switch evidence stable through this write.
     let changed = tx.execute(
         &format!(
             "UPDATE config_deployment SET status = ?1, run = ?2, runner = ?4, lease = ?5, \
-             started = ?6, ended = ?7, number = ?8 WHERE id = ?3{guard}"
+             started = ?6, ended = ?7, number = ?8 WHERE id = ?3{guard} \
+             AND (?1 <> 'cancelled' OR CAST(?9 AS BIGINT) IS NULL)"
         ),
         &[
             name_of(standing.kept()).as_str().into(),
@@ -2266,6 +2275,7 @@ fn save_when(tx: &mut dyn Tx, stored: &mut Stored, when: SaveWhen) -> Result<boo
             standing.started().into(),
             standing.ended().into(),
             number.into(),
+            stored.run.live_at.into(),
         ],
     )?;
     if changed == 0 {

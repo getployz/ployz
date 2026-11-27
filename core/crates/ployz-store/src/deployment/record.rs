@@ -142,7 +142,22 @@ pub(crate) fn record(
             if stored.cleanup == Cleanup::Done {
                 return Ok(receipt(stored));
             }
-            stored.cleanup = cleanup::finished(tx, id)?;
+            let unconfirmed = warnings
+                .iter()
+                .any(|warning| matches!(warning, DeployWarning::CleanupUnconfirmed { .. }))
+                || stored.run.warnings.iter().any(|warning| {
+                    matches!(
+                        warning,
+                        DeploymentWarning::Deploy {
+                            warning: DeployWarning::CleanupUnconfirmed { .. }
+                        }
+                    )
+                });
+            stored.cleanup = if unconfirmed {
+                cleanup::interrupt(tx, id)?
+            } else {
+                cleanup::finished(tx, id)?
+            };
             let mut changed = stamped;
             for warning in warnings {
                 changed |= add_warning(&mut stored, DeploymentWarning::Deploy { warning });
@@ -372,11 +387,14 @@ pub(crate) fn record(
                 .blocked
                 .iter()
                 .any(|entry| entry.kind == BlockedKind::Refusal);
-            let status = if success && !refused && !nodes.iter().any(unfinished) {
-                End::Applied
-            } else {
-                End::Failed
-            };
+            let post_live_cancel =
+                stored.run.live_at.is_some() && stopped_by_cancel && failed.is_empty() && !refused;
+            let status =
+                if post_live_cancel || (success && !refused && !nodes.iter().any(unfinished)) {
+                    End::Applied
+                } else {
+                    End::Failed
+                };
             let mut waiting: Vec<WaitingService> = preview
                 .waits()
                 .filter(|wait| wait.kind == BlockedKind::Wait)
@@ -404,7 +422,7 @@ pub(crate) fn record(
                     | DeployOutcome::Success { .. }
                     | DeployOutcome::Interrupted { .. } => Vec::new(),
                 },
-                cancelled: stopped_by_cancel && failed.is_empty(),
+                cancelled: stored.run.live_at.is_none() && stopped_by_cancel && failed.is_empty(),
                 waiting,
             };
             super::rows::settle(tx, &stored)?;
@@ -536,6 +554,16 @@ pub(crate) fn record(
             )
         }
         RunEvidence::RuntimeFailed => {
+            if stored.run.live_at.is_some()
+                && matches!(
+                    stored.summary.status,
+                    DeploymentStatus::Applied | DeploymentStatus::Failed
+                )
+            {
+                stored.cleanup = cleanup::interrupt(tx, id)?;
+                stored.show();
+                return Ok(receipt(stored));
+            }
             if stored.summary.status == DeploymentStatus::Unknown {
                 return Ok(receipt(stored));
             }
@@ -588,7 +616,9 @@ fn warn(
     let retiring = matches!(
         &warning,
         DeploymentWarning::Deploy {
-            warning: DeployWarning::LeftRunning { .. } | DeployWarning::MixedAfterReturn { .. }
+            warning: DeployWarning::LeftRunning { .. }
+                | DeployWarning::MixedAfterReturn { .. }
+                | DeployWarning::CleanupUnconfirmed { .. }
         }
     ) && matches!(
         stored.summary.status,
@@ -780,8 +810,8 @@ pub(super) fn end(
     status: End,
 ) -> Result<Recorded, RpcError> {
     advance(tx, &stored, status == End::Applied, true)?;
-    let status = match (stored.summary.status, status) {
-        (DeploymentStatus::Cancelling, End::Failed) => End::Cancelled,
+    let status = match (stored.summary.status, status, stored.run.live_at) {
+        (DeploymentStatus::Cancelling, End::Failed, None) => End::Cancelled,
         _ => status,
     };
     let ended_at = now();
