@@ -137,11 +137,11 @@ pub(super) async fn publish_group<C: MachineOperations>(
     shared: &Shared<'_>,
     copies: GroupCopies<'_>,
     cancellation: &CancellationToken,
-    switched: impl FnOnce(Switch),
+    switched: impl AsyncFnOnce(Switch) -> bool,
 ) -> Published {
     let GroupCopies { service, new, old } = copies;
     if new.is_empty() {
-        switched(Switch::NotNeeded);
+        switched(Switch::NotNeeded).await;
         return Published::Listed;
     }
     let routed = shared.plan.routed(service);
@@ -154,10 +154,13 @@ pub(super) async fn publish_group<C: MachineOperations>(
         None
     };
     if let Some(gapped) = &gapped {
-        switched(Switch::Unconfirmed);
+        switched(Switch::Unconfirmed).await;
         shared.gapped.record(service, gapped);
-    } else {
-        switched(Switch::Confirmed);
+    } else if !switched(Switch::Confirmed).await {
+        return Published::OutUnconfirmed(machine_error(
+            MachineAction::ReadRoutes,
+            RpcError::unavailable("The Deployment's switch could not be recorded"),
+        ));
     }
     let ids: BTreeSet<ContainerId> = new.iter().map(|(_, _, id)| *id).collect();
     let mut listed_on: BTreeSet<MachineId> = new

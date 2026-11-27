@@ -2578,7 +2578,7 @@ async fn a_switch_event_survives_abort_before_the_outcome() {
         .expect("the switch is durable before Outcome");
         abort.abort();
     };
-    let (outcome, ()) = tokio::join!(run.executing(&session, &running, &scrub, true), observed);
+    let (outcome, ()) = tokio::join!(run.executing(&session, &running, &scrub, None), observed);
     let error = outcome.unwrap_err();
     assert!(run.runtime_failed(error).await.is_err());
     let view = run
@@ -2593,6 +2593,68 @@ async fn a_switch_event_survives_abort_before_the_outcome() {
     assert_eq!(view.deployment.status, DeploymentStatus::Unknown);
     assert_eq!(view.deployment.live_at, Some(at));
     server.abort();
+}
+
+#[tokio::test]
+async fn a_join_error_waits_for_the_store_to_record_unknown() {
+    use ployz_store::testing::backend;
+    let dir = tempfile::tempdir().unwrap();
+    let url = format!("sqlite:{}", dir.path().join("store.db").display());
+    let (run, actor) = admitted_in(
+        Arc::new(ConfigStore::open(&url, backend::key()).unwrap()),
+        None,
+    );
+    prepared(&run).await;
+    let at = now_ms() / 1000;
+    run.record_switch(Some(at)).await.unwrap();
+    let recorded = run
+        .executed(
+            DeployOutcome::Success {
+                completed: vec![],
+                services: vec![],
+            },
+            vec![],
+            vec![],
+        )
+        .await;
+    assert_eq!(recorded.as_ref().unwrap().status, DeploymentStatus::Applied);
+    backend::execute(
+        &url,
+        "CREATE TRIGGER reject_writes BEFORE UPDATE ON config_deployment BEGIN SELECT RAISE(ABORT, 'temporary outage'); END",
+    );
+    let task = tokio::spawn(std::future::pending());
+    task.abort();
+    let running = crate::sdk::RunningDeploy {
+        cancel: CancellationToken::new(),
+        events: tokio::sync::Mutex::new(None),
+        join: tokio::sync::Mutex::new(Some(task)),
+    };
+    let finishing = run.finish_retirement(&running, recorded);
+    tokio::pin!(finishing);
+    assert!(
+        // real-wait: let the blocking Store reject an actual evidence write.
+        tokio::time::timeout(Duration::from_millis(250), &mut finishing)
+            .await
+            .is_err(),
+        "the SDK returned the join error before the Store accepted Unknown"
+    );
+    backend::execute(&url, "DROP TRIGGER reject_writes");
+    assert_eq!(finishing.await.unwrap_err().message, "Deploy task failed");
+    let view = run
+        .store
+        .read(
+            &actor,
+            &DeploymentQuery {
+                id: run.deployment.clone(),
+            },
+        )
+        .unwrap();
+    assert_eq!(view.deployment.status, DeploymentStatus::Unknown);
+    assert_eq!(view.deployment.live_at, Some(at));
+    assert_eq!(
+        view.deployment.cleanup,
+        Some(ployz_store::CleanupStatus::Pending)
+    );
 }
 
 #[tokio::test]

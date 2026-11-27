@@ -3216,7 +3216,16 @@ async fn an_unconfirmed_unlisting_leaves_every_old_copy_of_the_group_running() {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let cancel = CancellationToken::new();
     let id = run_id();
-    let work = super::super::execute_operation_sequence(&plan, &id, &client, &cancel, Some(tx));
+    let (acknowledge, commit) = tokio::sync::oneshot::channel();
+    let mut acknowledge = Some(acknowledge);
+    let work = super::super::execute_with_switch_commit(
+        &plan,
+        &id,
+        &client,
+        &cancel,
+        Some(tx),
+        Some(commit),
+    );
     tokio::pin!(work);
     let unlisting_deadline = tokio::time::Instant::now() + crate::deploy::cleanup::ACK_WAIT;
     let mut switched = false;
@@ -3228,6 +3237,9 @@ async fn an_unconfirmed_unlisting_leaves_every_old_copy_of_the_group_running() {
             assert!(tokio::time::Instant::now() < unlisting_deadline);
             assert_eq!(client.rotation(&new_one), Some(CopyRotation::In));
             assert_eq!(client.rotation(&new_two), Some(CopyRotation::In));
+            assert_eq!(client.rotation(&one), Some(CopyRotation::In));
+            assert_eq!(client.rotation(&two), Some(CopyRotation::In));
+            acknowledge.take().unwrap().send(()).unwrap();
             switched = true;
         }
         DeployEvent::Warning { warning } => warnings.push(warning.to_string()),
@@ -4173,4 +4185,95 @@ async fn a_scale_down_does_not_hide_a_siblings_live_switch() {
         recorded.is_some(),
         "web entered rotation and the api scale-down completed, but Outcome live_at was {recorded:?}"
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_listed_dependency_keeps_its_old_copy_until_the_whole_switch_is_acknowledged() {
+    use crate::deploy::{GroupRole, ServiceGroup, Stage};
+
+    let first = machine('1');
+    let second = machine('2');
+    let old = container('a');
+    let new = container('b');
+    let web_copy = container('c');
+    let groups = [("api", vec![]), ("web", vec![api().name])]
+        .into_iter()
+        .enumerate()
+        .map(|(task, (service, dependencies))| ServiceGroup {
+            role: GroupRole::Service {
+                service: ServiceName::parse(service).unwrap(),
+                dependencies,
+                drained: vec![],
+                publish: true,
+            },
+            steps: vec![Stage::Parallel(vec![task])],
+        })
+        .collect();
+    let plan = crate::deploy::DeployPlan::for_execution_test_with_groups(
+        vec![
+            global_replacement(&first, &old, UpdateOrder::StartFirst),
+            web_run(&second),
+        ],
+        test_namespace(),
+        groups,
+    )
+    .with_machine_names(&[first, second]);
+    let client = Scripted {
+        withheld: BTreeMap::from([(api(), usize::MAX)]),
+        ..Scripted::new(vec![
+            created(Call::Run(first, ContainerKind::ServiceContainer), &new),
+            created(
+                Call::Run(second, ContainerKind::ServiceContainer),
+                &web_copy,
+            ),
+            observed(Call::Inspect(first, old), running()),
+        ])
+    }
+    .with_copy(&first, &old, CopyRotation::In);
+    let (tx, mut events) = tokio::sync::mpsc::unbounded_channel();
+    let (acknowledge, commit) = tokio::sync::oneshot::channel();
+    let cancel = CancellationToken::new();
+    let run = run_id();
+    let work = super::super::execute_with_switch_commit(
+        &plan,
+        &run,
+        &client,
+        &cancel,
+        Some(tx),
+        Some(commit),
+    );
+    let store = async {
+        assert!(matches!(
+            events.recv().await,
+            Some(DeployEvent::Progress { live_at: None, .. })
+        ));
+        // The runner holds the earlier frame while the Machines finish listing.
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        assert_eq!(client.rotation(&new), Some(CopyRotation::In));
+        assert_eq!(client.rotation(&web_copy), Some(CopyRotation::In));
+        assert_eq!(client.rotation(&old), Some(CopyRotation::In));
+        while let Some(event) = events.recv().await {
+            if matches!(
+                event,
+                DeployEvent::Progress {
+                    live_at: Some(_),
+                    ..
+                }
+            ) {
+                acknowledge.send(()).unwrap();
+                return;
+            }
+            assert!(!matches!(event, DeployEvent::Outcome { .. }));
+        }
+        panic!("the executor never reported the switch");
+    };
+
+    let (outcome, ()) = tokio::time::timeout(crate::deploy::cleanup::ACK_WAIT * 2, async {
+        tokio::join!(work, store)
+    })
+    .await
+    .expect("the Store acknowledgement and retirement both completed");
+    assert!(matches!(outcome, DeployOutcome::Failed { .. }));
+    assert_eq!(client.rotation(&old), Some(CopyRotation::Out));
+    client.assert_done();
 }

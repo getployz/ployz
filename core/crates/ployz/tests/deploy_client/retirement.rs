@@ -150,6 +150,50 @@ impl Shop {
 }
 
 #[tokio::test]
+async fn the_old_copy_stays_in_until_the_store_commits_live() {
+    use ployz_store::testing::backend;
+    let service = DeployService::new(machine('a', "one")).lists_created();
+    let rotations = service.rotations();
+    let shop = Shop::deployed(service.clone()).await;
+    let old = *rotations.lock().unwrap().keys().next().unwrap();
+    let url = format!("sqlite:{}", shop.home.path().join("store.db").display());
+    backend::execute(
+        &url,
+        r#"CREATE TRIGGER hold_switch BEFORE UPDATE ON config_deployment
+           WHEN NEW.run LIKE '%"live_at":%' AND OLD.run NOT LIKE '%"live_at":%'
+           BEGIN SELECT RAISE(ABORT, 'switch storage unavailable'); END"#,
+    );
+
+    let running = tokio::spawn(shop.run(2, true));
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while rotations.lock().unwrap().len() < 2 {
+            // real-wait: the fake Machine receives the new copy's rotation from an SDK task.
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the new copy entered rotation");
+    assert!(
+        // real-wait: independently observe whether the SDK withdrew the old copy.
+        tokio::time::timeout(Duration::from_millis(250), service.unrouted_copy(&old))
+            .await
+            .is_err(),
+        "the old copy went Out before the Store committed Live"
+    );
+    assert_eq!(shop.status(2), DeploymentStatus::Running);
+    backend::execute(&url, "DROP TRIGGER hold_switch");
+
+    let ran = tokio::time::timeout(Duration::from_secs(10), running)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(ran.status, DeploymentStatus::Applied);
+    assert!(ran.live_at.is_some());
+    assert!(service.unrouted().lock().unwrap().contains(&old));
+}
+
+#[tokio::test]
 async fn a_deployment_is_applied_before_its_old_copy_is_removed() {
     let service = DeployService::new(machine('a', "one"))
         .lists_created()

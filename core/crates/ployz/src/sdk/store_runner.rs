@@ -727,18 +727,20 @@ impl Run {
         }
         let log_id = self.deployment.as_str().parse().ok();
         let issued = rules.clone();
-        let running = match prepared.confirm_approved(log_id, ImageCleanup::Auto, rules, versions) {
+        let (acknowledge, switch_commit) = tokio::sync::oneshot::channel();
+        let running = match prepared.confirm_approved(
+            log_id,
+            ImageCleanup::Auto,
+            rules,
+            versions,
+            Some(switch_commit),
+        ) {
             Ok(running) => running,
             Err(error) => return self.not_executed(Failure::from(&error)).await,
         };
         let outcome = self
             .renewing(
-                self.executing(
-                    session,
-                    &running,
-                    &scrub,
-                    prepared.preview().waits().next().is_none(),
-                ),
+                self.executing(session, &running, &scrub, Some(acknowledge)),
                 || running.abort(),
             )
             .await;
@@ -787,8 +789,19 @@ impl Run {
     }
 
     async fn runtime_failed(&self, error: RpcError) -> Result<DeploymentSummary, RpcError> {
-        if let Err(record) = self.record(RunEvidence::RuntimeFailed).await {
-            tracing::warn!(%record, "couldn't record the interrupted Deployment");
+        loop {
+            match self.record(RunEvidence::RuntimeFailed).await {
+                Ok(_) => break,
+                Err(record)
+                    if matches!(record.code, RpcErrorCode::Conflict | RpcErrorCode::NotFound) =>
+                {
+                    break;
+                }
+                Err(record) => {
+                    tracing::warn!(%record, "couldn't record the interrupted Deployment")
+                }
+            }
+            tokio::time::sleep(CANCEL_POLL).await;
         }
         Err(error)
     }
@@ -804,6 +817,30 @@ impl Run {
             self.pending_live_at().get_or_insert(at);
         }
         self.record(RunEvidence::Finishing { live_at }).await
+    }
+
+    async fn commit_switch(&self, at: i64) -> Result<(), RpcError> {
+        loop {
+            match self.record_switch(Some(at)).await {
+                Ok(summary) if summary.live_at.is_some() && summary.status.claimed() => {
+                    return Ok(());
+                }
+                Ok(_) => {
+                    return Err(RpcError::unavailable(
+                        "The Deployment no longer holds the traffic switch",
+                    ));
+                }
+                Err(error)
+                    if matches!(error.code, RpcErrorCode::Conflict | RpcErrorCode::NotFound) =>
+                {
+                    return Err(error);
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "couldn't record the Deployment's traffic switch")
+                }
+            }
+            tokio::time::sleep(CANCEL_POLL).await;
+        }
     }
 
     async fn finish_retirement(
@@ -1191,7 +1228,7 @@ impl Run {
         session: &Session,
         running: &super::RunningDeploy,
         scrub: &Scrub,
-        all_services_ready: bool,
+        mut acknowledge: Option<tokio::sync::oneshot::Sender<()>>,
     ) -> Result<
         (
             DeployOutcome<ExecutionError>,
@@ -1209,11 +1246,11 @@ impl Run {
         while let Some(event) = running.next().await {
             let mut rows = match event {
                 ployz_core::DeployEvent::Progress { rows, live_at, .. } => {
-                    if all_services_ready
-                        && let Some(at) = live_at
-                        && let Err(error) = self.record_switch(Some(at)).await
-                    {
-                        tracing::warn!(%error, "couldn't record the Deployment's traffic switch");
+                    if let Some(at) = live_at {
+                        self.commit_switch(at).await?;
+                        if let Some(acknowledge) = acknowledge.take() {
+                            let _ = acknowledge.send(());
+                        }
                     }
                     rows
                 }
@@ -1620,11 +1657,11 @@ impl Run {
             store.record_with_live_at(&deployment, &runner, evidence, pending_live_at)
         })
         .await;
-        if let Ok(summary) = &recorded {
-            let mut pending = self.pending_live_at();
-            if *pending == summary.live_at {
-                *pending = None;
-            }
+        if recorded
+            .as_ref()
+            .is_ok_and(|summary| summary.live_at.is_some())
+        {
+            *self.pending_live_at() = None;
         }
         recorded
     }

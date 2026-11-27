@@ -677,8 +677,10 @@ that one. If nothing is ahead of it, the CLI says no server has started it yet a
 `ployz server ls`.
 
 `ployz deploy` prints **Live** when the last new copy is in rotation and listed by the
-proxies. You can keep watching `stopping_old` while Ployz retires the old copies. The
-command returns after cleanup and exits 3 if an old container was left running.
+proxies and the Store has recorded the switch. A start-first replacement keeps its
+old copies in rotation until that record commits. You can keep watching `stopping_old`
+while Ployz retires the old copies. The command returns after cleanup and exits 3 if
+an old container was left running.
 
 To inspect per-server progress, run:
 

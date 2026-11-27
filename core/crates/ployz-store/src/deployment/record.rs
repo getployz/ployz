@@ -36,7 +36,9 @@ pub(crate) fn record(
             None
         }
     });
-    let stamped = live_at.is_some()
+    let claimed = stored.summary.status.claimed();
+    let stamped = claimed
+        && live_at.is_some()
         && stored.run.live_at.is_none()
         && stored
             .run
@@ -67,7 +69,10 @@ pub(crate) fn record(
             save(tx, &mut stored)?;
             Ok(stored.summary)
         }
-        RunEvidence::Finishing { .. } => {
+        RunEvidence::Finishing { live_at } => {
+            if live_at.is_some() && !claimed {
+                return Ok(stored.summary);
+            }
             if stored.run.cleanup_until.is_none() {
                 running(&stored)?;
                 if stored.run.preview.is_none() {

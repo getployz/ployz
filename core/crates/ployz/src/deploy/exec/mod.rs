@@ -231,12 +231,24 @@ impl<'a> Slots<'a> {
     }
 }
 
+#[cfg(test)]
 pub(super) async fn execute_operation_sequence<C: MachineOperations>(
     plan: &super::DeployPlan,
     run: &DeploymentLogId,
     client: &C,
     cancellation: &CancellationToken,
     tx: Option<UnboundedSender<DeployEvent>>,
+) -> DeployOutcome<ExecutionError> {
+    execute_with_switch_commit(plan, run, client, cancellation, tx, None).await
+}
+
+pub(super) async fn execute_with_switch_commit<C: MachineOperations>(
+    plan: &super::DeployPlan,
+    run: &DeploymentLogId,
+    client: &C,
+    cancellation: &CancellationToken,
+    tx: Option<UnboundedSender<DeployEvent>>,
+    switch_commit: Option<tokio::sync::oneshot::Receiver<()>>,
 ) -> DeployOutcome<ExecutionError> {
     // TODO: there is deliberately no persisted "already run" guard at this boundary.
     let operations = plan.operations();
@@ -264,8 +276,10 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
     let shared = Shared::new(plan, run);
     let mut records: BTreeMap<usize, GroupRecord> = BTreeMap::new();
     let mut stop = None;
-    let switches = std::sync::Mutex::new(Switches::new(plan));
+    let switches = Switches::new(plan, switch_commit);
     let switches = &switches;
+    let (listed, mut listings) = tokio::sync::mpsc::unbounded_channel();
+    let listed = &listed;
     let mut blocked_since: Option<Instant> = None;
     let mut blocked_before = Vec::new();
     let (progress, client, slots, shared) = (&progress, &client, &slots, &shared);
@@ -316,12 +330,10 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                             shared,
                             copies,
                             cancellation,
-                            |switch| {
-                                if let Some(at) =
-                                    switches.lock().expect("switch lock").observe(group, switch)
-                                {
-                                    progress.emit_switch(Some(at));
-                                }
+                            async |switch| {
+                                switches
+                                    .listed(group, switch, &service.name, listed, progress)
+                                    .await
                             },
                         )
                         .await;
@@ -341,6 +353,10 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
         }
         let done = tokio::select! {
             biased;
+            Some(service) = listings.recv() => {
+                schedule.listed(service);
+                continue;
+            },
             done = inflight.next(), if !inflight.is_empty() => done,
             () = ack_tick(cancellation, blocked_since), if !blocked.is_empty() => None,
         };
@@ -508,7 +524,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
             }
         }
         if stop.is_some() {
-            switches.lock().expect("switch lock").blocked = true;
+            switches.block();
         }
         for group in schedule.failed_groups() {
             shared
@@ -529,13 +545,13 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
     progress.settle_unexecuted();
     let outcome = outcome_from(operations, &completed, stop, schedule.services());
     let live_at = if matches!(outcome, DeployOutcome::Success { .. }) {
-        switches
-            .lock()
-            .expect("switch lock")
-            .finished(!completed.is_empty(), progress)
+        switches.finished(!completed.is_empty(), progress).await
     } else {
         None
     };
+    if *switches.gate.borrow() == Some(false) {
+        return outcome;
+    }
     progress.outcome(outcome.clone(), live_at);
     shared
         .retiring
@@ -545,12 +561,108 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
 }
 
 struct Switches {
-    awaiting: BTreeSet<usize>,
-    last_at: Option<i64>,
-    blocked: bool,
+    tally: std::sync::Mutex<SwitchTally>,
+    commit: std::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+    gate: tokio::sync::watch::Sender<Option<bool>>,
+    recorded: bool,
 }
 
 impl Switches {
+    fn new(plan: &super::DeployPlan, commit: Option<tokio::sync::oneshot::Receiver<()>>) -> Self {
+        let tally = SwitchTally::new(plan);
+        let recorded = commit.is_some();
+        let (gate, _) = tokio::sync::watch::channel(None);
+        Self {
+            tally: std::sync::Mutex::new(tally),
+            commit: std::sync::Mutex::new(commit),
+            gate,
+            recorded,
+        }
+    }
+
+    async fn listed(
+        &self,
+        group: usize,
+        switch: Switch,
+        service: &ServiceName,
+        listed: &UnboundedSender<ServiceName>,
+        progress: &Progress,
+    ) -> bool {
+        let confirmed = matches!(switch, Switch::Confirmed);
+        let (at, blocked) = {
+            let mut tally = self.tally.lock().expect("switch lock");
+            let at = tally.observe(group, switch);
+            (at, tally.blocked)
+        };
+        if let Some(at) = at {
+            return self.commit(at, progress).await;
+        }
+        if blocked {
+            self.release_without_switch();
+            return true;
+        }
+        if !self.recorded || !confirmed {
+            return true;
+        }
+        let _ = listed.send(service.clone());
+        let mut gate = self.gate.subscribe();
+        gate.wait_for(Option::is_some)
+            .await
+            .ok()
+            .and_then(|value| *value)
+            == Some(true)
+    }
+
+    fn block(&self) {
+        self.tally.lock().expect("switch lock").blocked = true;
+        self.release_without_switch();
+    }
+
+    fn release_without_switch(&self) {
+        let tally = self.tally.lock().expect("switch lock");
+        // Once the last group has asked for the commit, only its acknowledgement
+        // can permit withdrawal.
+        if !tally.requested {
+            self.gate.send_replace(Some(true));
+        }
+    }
+
+    async fn commit(&self, at: i64, progress: &Progress) -> bool {
+        progress.emit_switch(Some(at));
+        let commit = self.commit.lock().expect("commit lock").take();
+        let committed = match commit {
+            Some(commit) => commit.await.is_ok(),
+            None => true,
+        };
+        self.gate.send_replace(Some(committed));
+        committed
+    }
+
+    async fn finished(&self, ran_steps: bool, progress: &Progress) -> Option<i64> {
+        let (requested, at) = {
+            let tally = self.tally.lock().expect("switch lock");
+            if tally.blocked || !tally.awaiting.is_empty() || !ran_steps {
+                return None;
+            }
+            (tally.requested, tally.last_at)
+        };
+        if requested {
+            return at;
+        }
+        // A removal-only or in-place plan goes Live after its last successful step.
+        let at = ployz_core::deploy_steps::now_ms() / 1000;
+        self.commit(at, progress).await.then_some(at)
+    }
+}
+
+struct SwitchTally {
+    awaiting: BTreeSet<usize>,
+    last_at: Option<i64>,
+    blocked: bool,
+    requested: bool,
+}
+
+impl SwitchTally {
     fn new(plan: &super::DeployPlan) -> Self {
         let awaiting = plan
             .groups()
@@ -568,6 +680,7 @@ impl Switches {
             awaiting,
             last_at: None,
             blocked: plan.preview().waits().next().is_some(),
+            requested: false,
         }
     }
 
@@ -581,22 +694,9 @@ impl Switches {
         if matches!(switch, Switch::Confirmed) {
             self.last_at = Some(ployz_core::deploy_steps::now_ms() / 1000);
         }
-        self.awaiting.is_empty().then_some(self.last_at).flatten()
-    }
-
-    fn finished(&self, ran_steps: bool, progress: &Progress) -> Option<i64> {
-        if self.blocked || !self.awaiting.is_empty() {
-            return None;
-        }
-        self.last_at.or_else(|| {
-            // A removal-only or in-place plan takes its time from its last successful step.
-            if !ran_steps {
-                return None;
-            }
-            let at = ployz_core::deploy_steps::now_ms() / 1000;
-            progress.emit_switch(Some(at));
-            Some(at)
-        })
+        let at = self.awaiting.is_empty().then_some(self.last_at).flatten();
+        self.requested |= at.is_some();
+        at
     }
 }
 

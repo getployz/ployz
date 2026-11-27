@@ -256,24 +256,7 @@ fn runtime_row(
         preview.and_then(|preview| preview.placed_on.get(runtime)),
         rows.iter().map(|row| Replica {
             machine: row.machine_id,
-            state: if view.deployment.live_at.is_some()
-                && matches!(
-                    &row.state,
-                    RowState::Running {
-                        phase: ployz_store::RowPhase::Starting
-                            | ployz_store::RowPhase::CreatingContainer
-                            | ployz_store::RowPhase::StartingContainer
-                            | ployz_store::RowPhase::WaitingForHealth
-                            | ployz_store::RowPhase::WaitingForHook
-                            | ployz_store::RowPhase::WaitingForSwitch
-                            | ployz_store::RowPhase::UpdatingContainer,
-                        ..
-                    }
-                ) {
-                &RowState::Completed
-            } else {
-                &row.state
-            },
+            state: &row.state,
             starts: preview
                 .is_none_or(|preview| starts(&preview.operations, runtime, row.machine_id)),
             updates: preview
@@ -1080,7 +1063,7 @@ mod tests {
             service: runtime,
             machine: ployz_core::MachineId::parse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap(),
             server: "edge".into(),
-            state: waiting.clone(),
+            state: waiting,
             stopped: false,
         };
         store
@@ -1106,7 +1089,11 @@ mod tests {
         store
             .record(&id, &runner, RunEvidence::Finishing { live_at: Some(2) })
             .unwrap();
+        store
+            .record(&id, &runner, RunEvidence::RuntimeFailed)
+            .unwrap();
         let view = store.read(&actor, &query).unwrap();
+        assert_eq!(view.deployment.status, DeploymentStatus::Unknown);
         assert_eq!(view.deployment.live_at, Some(2));
         let index = view
             .nodes
@@ -1116,7 +1103,7 @@ mod tests {
             )
             .unwrap();
         let node = view.nodes.get(index).unwrap();
-        assert_eq!(node.rows.first().unwrap().state, waiting);
+        assert_eq!(node.rows.first().unwrap().state, RowState::Completed);
         assert_eq!(
             frame(&view).rows.get(index).unwrap().state,
             State::Completed

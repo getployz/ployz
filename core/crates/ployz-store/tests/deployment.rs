@@ -498,6 +498,46 @@ fn an_applied_deploy_without_a_switch_has_no_live_at() {
 }
 
 #[test]
+fn a_late_switch_changes_neither_an_applied_deployment_nor_its_cleanup() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    let at = store
+        .claim(&id(1), &a)
+        .unwrap()
+        .deployment
+        .started_at
+        .unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Finishing { live_at: None })
+        .unwrap();
+    store
+        .record(&id(1), &a, succeeded(&["web", "api"]))
+        .unwrap();
+    let before = summary(&store, &who, 1);
+    assert_eq!(before.status, DeploymentStatus::Applied);
+    assert_eq!(before.live_at, None);
+
+    store
+        .record(&id(1), &a, RunEvidence::Finishing { live_at: Some(at) })
+        .unwrap();
+    assert_eq!(summary(&store, &who, 1), before);
+
+    store.record(&id(1), &a, RunEvidence::Finished).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Finishing { live_at: Some(at) })
+        .unwrap();
+    let after = summary(&store, &who, 1);
+    assert_eq!(
+        (after.status, after.live_at, after.cleanup),
+        (DeploymentStatus::Applied, None, None)
+    );
+}
+
+#[test]
 fn live_at_stays_at_the_switch_when_the_end_clock_is_earlier() {
     let (store, who, url, _dir) = own_shop();
     admit(&store, &who, 1, &[], None).unwrap();

@@ -105,6 +105,7 @@ impl PreparedDeploy {
             cleanup,
             crate::deploy::RuleProofs::default(),
             Vec::new(),
+            None,
         )
     }
 
@@ -119,6 +120,7 @@ impl PreparedDeploy {
         cleanup: ImageCleanup,
         rules: crate::deploy::RuleProofs,
         versions: Vec<ployz_core::authority::Signed<ployz_core::authority::ServiceVersion>>,
+        switch_commit: Option<tokio::sync::oneshot::Receiver<()>>,
     ) -> Result<RunningDeploy, RpcError> {
         let session = Session {
             inner: self.session.upgrade().ok_or_else(closed)?,
@@ -151,7 +153,7 @@ impl PreparedDeploy {
             let outcome = tokio::select! {
                 biased;
                 () = session_cancel.cancelled() => return Err(RpcError::unavailable("session closed; in-flight Deploy outcome may be uncertain")),
-                outcome = client.confirm(&preview, deployment_id, &token, Some(tx)) => outcome,
+                outcome = client.confirm(&preview, deployment_id, &token, Some(tx), switch_commit) => outcome,
             };
             if !token.is_cancelled() {
                 session_cancel
