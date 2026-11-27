@@ -291,17 +291,21 @@ def endpoint(text):
 
 
 RELAY = "relay.ployz.dev"
+# The relay's addresses, refused even when its name doesn't resolve here, so a DNS failure never opens the way.
+RELAY_ADDRESSES = ("5.9.85.203", "2a01:4f8:162:4cb::2")
 
 
 def relay_block(blocked=True):
     """A guest script that keeps a test Machine off the production relay: the name points at loopback, and new
     https connections to its addresses, resolved here at run time, are refused. Replies to connections the relay's host
     opens, such as this host's SSH when it is the same box, are not new, so they pass. A run paired with Cloud needs
-    the relay to enroll, so `blocked=False` takes the block back out of a sandbox an earlier run or a bake left it in."""
+    the relay to enroll, so `blocked=False` takes the block back out of a sandbox an earlier run or a bake left it in.
+    Run under `-e`, a rule that won't install stops the script before anything after it starts."""
     try:
-        addresses = sorted({info[4][0] for info in socket.getaddrinfo(RELAY, 443, proto=socket.IPPROTO_TCP)})
+        resolved = {info[4][0] for info in socket.getaddrinfo(RELAY, 443, proto=socket.IPPROTO_TCP)}
     except socket.gaierror:
-        addresses = []
+        resolved = set()
+    addresses = sorted(resolved | set(RELAY_ADDRESSES))
     # The relay speaks only https, and its host serves other things a test may need, so only port 443 is refused.
     rules = [(table, f"OUTPUT -d {address} -p {protocol} --dport 443 -m conntrack --ctstate NEW -j REJECT")
              for address in addresses for table in ["ip6tables" if ":" in address else "iptables"]

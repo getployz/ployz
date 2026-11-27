@@ -1255,10 +1255,28 @@ class RelayBlock(unittest.TestCase):
             subprocess.run(["sh", "-ec", undo], check=True)
             self.assertEqual(hosts.read_text(), "127.0.0.1 localhost\n")
 
-    def test_a_relay_that_does_not_resolve_still_has_its_name_pointed_away(self):
-        script = self.script(boat.socket.gaierror("no name"))
+    def test_a_relay_that_does_not_resolve_is_still_refused_by_address(self):
+        script = self.script(boat.socket.gaierror("temporary failure in name resolution"))
         self.assertIn("::1 relay.ployz.dev", script)
-        self.assertNotIn("REJECT", script)
+        for address in boat.RELAY_ADDRESSES:
+            table = "ip6tables" if ":" in address else "iptables"
+            for protocol in ["tcp", "udp"]:
+                self.assertIn(f"{table} -I OUTPUT 1 -d {address} -p {protocol} --dport 443", script)
+
+    def test_a_rule_that_wont_install_stops_the_start_before_services(self):
+        script = self.script(boat.socket.gaierror("no name"))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for table in ["iptables", "ip6tables"]:
+                (root / table).write_text("#!/bin/sh\nexit 1\n")
+                (root / table).chmod(0o755)
+            hosts = root / "hosts"
+            hosts.write_text("")
+            started = subprocess.run(
+                ["bash", "-ec", script.replace("/etc/hosts", str(hosts)) + "echo services started\n"],
+                capture_output=True, env={**os.environ, "PATH": f"{root}:{os.environ['PATH']}"})
+        self.assertNotEqual(started.returncode, 0)
+        self.assertNotIn(b"services started", started.stdout)
 
 
 if __name__ == "__main__":

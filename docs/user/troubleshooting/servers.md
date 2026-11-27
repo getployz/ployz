@@ -814,7 +814,10 @@ web-1, the Server this command entered by, has had no WireGuard handshake with w
 
 or `has never had a WireGuard handshake with web-3` for a server that just joined. `ployz server
 set`, `ployz server show` and `ployz server add` say it in their error. `ployz server ls` says it
-as a warning of its own.
+as a warning of its own and still exits 0, so check its warnings, not only its exit code.
+
+A server that is powered off or has stopped its daemon gets the same line and the same advice to
+allow UDP 51820. If `web-3` is meant to be off, start it again or remove it with `ployz server rm`.
 
 With a third server, `web-3` can still read `up`: the servers' shared state travels through the
 third server, but commands from `web-1` to `web-3` can't. Then `ployz server ls` says it under
