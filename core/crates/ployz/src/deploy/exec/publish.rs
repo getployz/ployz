@@ -129,7 +129,9 @@ pub(super) async fn publish_group<C: MachineOperations>(
                 cleanup::Copy::observed(&details.container)
             }
             Err(ExecutionError::Machine { error, .. }) if error.code == RpcErrorCode::NotFound => {
-                missing += 1;
+                if unrouted(client, machine_id, service, container_id).await {
+                    missing += 1;
+                }
                 continue;
             }
             Err(error) => {
@@ -272,6 +274,25 @@ pub(super) async fn publish_group<C: MachineOperations>(
         (None, Some(_)) => Published::Gapped,
         (None, None) => Published::Listed,
     }
+}
+
+/// Whether the owner's route read shows no proxy routing a copy the owner no longer
+/// knows. A Machine can lose a copy's record while a stale proxy still routes it.
+async fn unrouted<C: MachineOperations>(
+    client: &C,
+    machine_id: &MachineId,
+    service: &QualifiedService,
+    container_id: &ContainerId,
+) -> bool {
+    client
+        .read_routes(machine_id, service)
+        .await
+        .is_ok_and(|read| {
+            read.complete
+                && cleanup::still_waiting(&read, &|routed| !routed.contains(container_id))
+                    .machines
+                    .is_empty()
+        })
 }
 
 /// Move each new copy that started beside the copy it replaces on to retiring it. A
