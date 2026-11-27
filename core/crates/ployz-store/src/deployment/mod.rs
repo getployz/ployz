@@ -2088,36 +2088,6 @@ fn all_waiting(status: DeploymentStatus, nodes: &[TargetNode], run: &Run) -> boo
 }
 
 impl Stored {
-    /// Whether its Servers run what it ships: it applied without leaving all it had
-    /// to do waiting, or it still runs and confirmed every Service it ships with work
-    /// to do, at least one. A Service is Deployed the moment its container is
-    /// replaced, so this holds while the copies it replaced still drain.
-    pub(crate) fn serves(&self) -> bool {
-        match self.summary.status {
-            DeploymentStatus::Applied => !self.summary.all_waiting,
-            DeploymentStatus::Running | DeploymentStatus::Cancelling => {
-                let services: Vec<Option<NodeStatus>> = self
-                    .nodes
-                    .iter()
-                    .filter(|node| node.service().is_some())
-                    .map(|node| self.run.nodes.get(node.id()).copied())
-                    .collect();
-                services.iter().flatten().any(|status| status.advances())
-                    && services.iter().all(|status| {
-                        status.is_some_and(|status| {
-                            status.advances() || status == NodeStatus::Unchanged
-                        })
-                    })
-            }
-            DeploymentStatus::WaitingForCi
-            | DeploymentStatus::Queued
-            | DeploymentStatus::Superseded
-            | DeploymentStatus::Failed
-            | DeploymentStatus::Unknown
-            | DeploymentStatus::Cancelled => false,
-        }
-    }
-
     /// Show its standing on its summary: the status, number, runner, start and end
     /// [`Standing::shown`] gives at `read_at`, and the fields that follow from that
     /// status.

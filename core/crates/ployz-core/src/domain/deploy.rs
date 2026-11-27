@@ -1585,6 +1585,9 @@ pub enum DeployEvent {
     },
     /// Image Cleanup after the Outcome; only when the caller left cleanup automatic.
     ImagesPruned { report: super::ImageCleanupReport },
+    /// After the Outcome, each old copy of `service` the Deploy took out of rotation
+    /// is gone, or was left running with a warning before this.
+    Retired { service: ServiceName },
     /// Something the Deploy found while executing that it does not stop for.
     Warning { warning: DeployWarning },
 }

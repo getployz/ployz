@@ -12,8 +12,7 @@ deployment again.
 Open **Deployments** in the sidebar, then **Versions**, to see this environment's saved versions.
 Each version is titled from what it changed unless it was saved with a message, and lists its
 changes one per row, folding past three. The first version lists what it created. **Live** marks the version the latest fully applied
-deployment shipped, or the one a running deployment ships once every service it changes
-switched to its new replicas, while the old ones still drain. **Failed** marks the newest version when its
+deployment shipped. **Failed** marks the newest version when its
 latest deployment failed; a later deployment of it clears it. A version saved but
 not deployed yet has no badge. The version's **⋮** menu:
 

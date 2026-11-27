@@ -692,7 +692,9 @@ the image, show as the container printed them. These outcomes stay with that dep
 when you deploy again. Unchanged services have no rows because no server work ran.
 
 `ployz deployment show` ends with the deployment's steps and how long each took, such as
-`building api  +2.1s  41.3s`. A step the deployment stopped in reads `stopped here`. With
+`building api  +2.1s  41.3s`. A step the deployment stopped in reads `stopped here`. Old
+replicas retire after the deployment applied, so their `stopping_old` reads `not seen gone`
+until each service's old replicas are gone, or `left running` when one was left. With
 `--json`, `steps[]` has each step's `name`, its `service` when it belongs to one, and
 `started_at` and `ended_at` in Unix milliseconds. A step it stopped in has no `ended_at`.
 

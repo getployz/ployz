@@ -57,26 +57,38 @@ impl Retiring {
         self.0.lock().expect("retiring lock").extend(copies);
     }
 
-    /// Stop and remove every copy, each Machine's at once. A copy that stays is a
-    /// warning, never a failure: the Outcome is already out.
+    /// Stop and remove every copy, each Machine's at once, and say when each
+    /// Service's are done. A copy that stays is a warning, never a failure: the
+    /// Outcome is already out.
     pub(super) async fn retire<C: MachineOperations>(
         &self,
         client: &C,
         progress: &Progress,
         report: &super::report::Report<'_>,
     ) {
-        let copies = std::mem::take(&mut *self.0.lock().expect("retiring lock"));
-        let removed = join_all(
-            copies
-                .iter()
-                .map(|(copy, ask)| cleanup::remove(client, copy, *ask)),
-        )
-        .await;
-        for ((copy, _), removed) in copies.iter().zip(removed) {
-            if let Some(left) = left_unless_done(removed.map(cleanup::Rotated::from)) {
-                report.leave_running(progress, copy, left);
-            }
+        let mut services: BTreeMap<ServiceName, Vec<(cleanup::Copy, AnonymousVolumes)>> =
+            BTreeMap::new();
+        for (copy, ask) in std::mem::take(&mut *self.0.lock().expect("retiring lock")) {
+            services
+                .entry(copy.service.name.clone())
+                .or_default()
+                .push((copy, ask));
         }
+        join_all(services.into_iter().map(|(service, copies)| async move {
+            let removed = join_all(
+                copies
+                    .iter()
+                    .map(|(copy, ask)| cleanup::remove(client, copy, *ask)),
+            )
+            .await;
+            for ((copy, _), removed) in copies.iter().zip(removed) {
+                if let Some(left) = left_unless_done(removed.map(cleanup::Rotated::from)) {
+                    report.leave_running(progress, copy, left);
+                }
+            }
+            progress.retired(service);
+        }))
+        .await;
     }
 }
 

@@ -108,26 +108,29 @@ fn the_last_end_of_a_step_is_its_latest_services() {
 }
 
 #[test]
-fn stopping_old_runs_until_the_copies_retired_after_the_outcome_are_gone() {
+fn each_services_stopping_old_runs_until_its_own_retired_copies_are_gone() {
     let mut steps = Steps::default();
     let web: ServiceName = "web".parse().unwrap();
+    let db: ServiceName = "db".parse().unwrap();
     steps.rows(&[row(1, running(RowPhase::StoppingContainer))], 100);
+    for service in [&web, &db] {
+        steps.start(StepName::StoppingOld, Some(service), 100);
+        steps.drain(StepName::StoppingOld, Some(service));
+    }
     steps.drain(StepName::StoppingOld, Some(&service()));
-    steps.start(StepName::StoppingOld, Some(&web), 100);
-    steps.drain(StepName::StoppingOld, Some(&web));
     steps.rows(&[row(1, RowState::Completed)], 110);
+    steps.drained(StepName::StoppingOld, Some(&service()), 200);
     steps.hold(StepName::StoppingOld, Some(&web));
-    steps.drained(400);
+    steps.drained(StepName::StoppingOld, Some(&web), 300);
     let mut changed = steps.take_changed();
     changed.sort_by(|a, b| a.service.cmp(&b.service));
+    let of = |service: &ServiceName, ended_at| DeploymentStep {
+        service: Some(service.clone()),
+        ..step(StepName::StoppingOld, 100, ended_at)
+    };
     assert_eq!(
         changed,
-        vec![
-            step(StepName::StoppingOld, 100, Some(400)),
-            DeploymentStep {
-                service: Some(web),
-                ..step(StepName::StoppingOld, 100, None)
-            },
-        ]
+        vec![of(&service(), Some(200)), of(&db, None), of(&web, None)],
+        "api ends when its copies went; db's are still going; web left one running"
     );
 }

@@ -201,10 +201,10 @@ impl Steps {
         }
     }
 
-    /// End each step [`Self::drain`] kept open at `at`, but one that failed.
-    pub fn drained(&mut self, at: i64) {
-        for (name, service) in std::mem::take(&mut self.draining) {
-            self.end(name, service.as_ref(), at);
+    /// End `name` at `at` if [`Self::drain`] kept it open and it didn't fail.
+    pub fn drained(&mut self, name: StepName, service: Option<&ServiceName>, at: i64) {
+        if self.draining.remove(&(name, service.cloned())) {
+            self.end(name, service, at);
         }
     }
 

@@ -465,24 +465,26 @@ pub(crate) fn latest_removal(
         .filter(|latest| latest.remove))
 }
 
-/// The Saved revision `environment`'s Servers run: that of its latest Deployment
-/// that applied, or that still runs with every Service it ships confirmed, once it
-/// deployed or removed one. One that left all it had to do waiting changed nothing
-/// they run. None before one did, or once a removal did.
+/// The Saved revision `environment`'s latest applied Deployment that deployed or
+/// removed a Service shipped: what its Servers run. One that left all it had to
+/// do waiting changed nothing they run. None before one applied, or once a
+/// removal applied.
 pub(crate) fn live(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
 ) -> Result<Option<Revision>, RpcError> {
-    let shown = format!("status IN ('{APPLIED}', '{RUNNING}', '{CANCELLING}')");
-    let mut condition = shown.clone();
+    let mut condition = format!("status = '{APPLIED}'");
     loop {
-        let Some(deployment) = latest_stored_where(tx, environment, &condition)? else {
+        let Some(deployment) = latest_where(tx, environment, &condition)? else {
             return Ok(None);
         };
-        if deployment.serves() {
-            return Ok(Some(deployment.summary.saved).filter(|saved| *saved != NOTHING));
+        if !deployment.all_waiting {
+            return Ok(Some(deployment.saved).filter(|saved| *saved != NOTHING));
         }
-        condition = format!("{shown} AND number < {}", deployment.summary.numbered()?);
+        condition = format!(
+            "status = '{APPLIED}' AND number < {}",
+            deployment.numbered()?
+        );
     }
 }
 
@@ -545,14 +547,6 @@ pub(super) fn latest_where(
     environment: &EnvironmentId,
     condition: &str,
 ) -> Result<Option<DeploymentSummary>, RpcError> {
-    Ok(latest_stored_where(tx, environment, condition)?.map(|stored| stored.summary))
-}
-
-fn latest_stored_where(
-    tx: &mut dyn Tx,
-    environment: &EnvironmentId,
-    condition: &str,
-) -> Result<Option<Stored>, RpcError> {
     let columns = COLUMNS.as_str();
     tx.query(
         &format!(
@@ -563,7 +557,7 @@ fn latest_stored_where(
         &[environment.as_str().into()],
     )?
     .first()
-    .map(stored)
+    .map(|row| stored(row).map(|stored| stored.summary))
     .transpose()
 }
 

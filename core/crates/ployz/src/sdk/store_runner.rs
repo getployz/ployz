@@ -787,6 +787,11 @@ impl Run {
         let mut warnings = Vec::new();
         let mut warned = None;
         while let Some(event) = running.next().await {
+            if let ployz_core::DeployEvent::Retired { service } = &event {
+                self.steps()
+                    .drained(StepName::StoppingOld, Some(service), now_ms());
+                self.record_steps().await;
+            }
             if let ployz_core::DeployEvent::Warning { warning } = event {
                 if let DeployWarning::LeftRunning { service, .. } = &warning {
                     self.steps()
@@ -798,10 +803,7 @@ impl Run {
         }
         // Its events ended, so the Deploy task ended: only a second wait errs.
         let _ = running.finished().await;
-        let warned = self.recorded_warnings(&mut warnings).await.or(warned);
-        self.steps().drained(now_ms());
-        self.record_steps().await;
-        warned
+        self.recorded_warnings(&mut warnings).await.or(warned)
     }
 
     /// Record the steps that changed since the last record, after the Deployment ended
@@ -1153,7 +1155,8 @@ impl Run {
                     ended = Some(outcome);
                     break;
                 }
-                ployz_core::DeployEvent::ImagesPruned { .. } => continue,
+                ployz_core::DeployEvent::ImagesPruned { .. }
+                | ployz_core::DeployEvent::Retired { .. } => continue,
             };
             self.record_warnings(&mut warnings).await;
             if let Ok(client) = session.client() {

@@ -10957,12 +10957,12 @@ fn a_deploy_restoring_one_volume_twice_replays_its_birth_or_conflicts() {
 }
 
 #[test]
-fn history_marks_a_running_deployment_live_once_it_confirmed_every_service() {
+fn history_keeps_live_until_a_deployment_that_confirmed_every_service_applied() {
     let (store, who) = shop();
     let first = save(&store, &who);
     apply_both(&store, &who, 1);
     set_replicas(&store, &who, "web", 3);
-    let second = admit(&store, &who, 2, &[], None).unwrap().saved;
+    admit(&store, &who, 2, &[], None).unwrap();
     let a = runner("runner-a");
     store.claim(&id(2), &a).unwrap();
     store
@@ -10972,29 +10972,49 @@ fn history_marks_a_running_deployment_live_once_it_confirmed_every_service() {
         .record(
             &id(2),
             &a,
-            RunEvidence::Confirmed(vec![ServiceName::parse("web").unwrap()]),
+            RunEvidence::Confirmed(vec![
+                ServiceName::parse("web").unwrap(),
+                ServiceName::parse("api").unwrap(),
+            ]),
         )
         .unwrap();
     assert_eq!(
-        marks(&store, &who),
-        (Some(first), None),
-        "api still runs the version before"
+        marks(&store, &who).0,
+        Some(first),
+        "a step still to come, such as a Volume deletion, can fail it"
     );
+    let failed = RunEvidence::Executed {
+        progress: Vec::new(),
+        outcome: Box::new(outcome(json!({
+            "type": "failed", "completed": [operation("web")],
+            "failed": {"type": "operation", "operation": operation("api"), "error": {"type": "cancelled"}},
+            "unexecuted": []
+        }))),
+        removed: Vec::new(),
+    };
+    store.record(&id(2), &a, failed).unwrap();
+    assert_eq!(
+        marks(&store, &who).0,
+        Some(first),
+        "Live never moved, so it never moves back"
+    );
+}
+
+#[test]
+fn history_keeps_live_while_a_deployment_that_changes_no_service_runs() {
+    let (store, who) = shop();
+    let first = save(&store, &who);
+    apply_both(&store, &who, 1);
+    set_replicas(&store, &who, "web", 3);
+    admit(&store, &who, 2, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(2), &a).unwrap();
     store
-        .record(
-            &id(2),
-            &a,
-            RunEvidence::Confirmed(vec![ServiceName::parse("api").unwrap()]),
-        )
+        .record(&id(2), &a, RunEvidence::Prepared(preview(&[])))
+        .unwrap();
+    store
+        .record(&id(2), &a, RunEvidence::Confirmed(Vec::new()))
         .unwrap();
     assert_eq!(status(&store, &who, 2), DeploymentStatus::Running);
-    assert_eq!(
-        marks(&store, &who),
-        (Some(second), None),
-        "every Service it ships serves while its old copies drain"
-    );
-    store
-        .record(&id(2), &a, succeeded(&["web", "api"]))
-        .unwrap();
-    assert_eq!(marks(&store, &who), (Some(second), None));
+    assert_eq!(marks(&store, &who).0, Some(first));
 }

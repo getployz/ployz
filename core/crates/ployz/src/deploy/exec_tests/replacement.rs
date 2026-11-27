@@ -1813,3 +1813,63 @@ async fn a_stop_first_replace_stops_its_old_copy_before_it_starts_the_new_one() 
     );
     client.assert_done();
 }
+
+/// Each Service's old copies retire on their own: a Service whose removal is quick
+/// says it retired while another's removal is still going.
+#[tokio::test(start_paused = true)]
+async fn each_service_says_it_retired_once_its_own_old_copies_are_gone() {
+    let (first, second) = (machine('1'), machine('2'));
+    let (old_api, old_web) = (container('a'), container('b'));
+    let (new_api, new_web) = (container('c'), container('d'));
+    let mut web = swap(&second, &old_web, UpdateOrder::StartFirst);
+    if let DeployOperation::ReplaceContainer(replacement) = &mut web {
+        replacement.spec.name = ServiceName::parse("web").unwrap();
+        replacement.spec.service_id = ployz_core::ServiceId::parse("e".repeat(32)).unwrap();
+    }
+    let plan = vec![swap(&first, &old_api, UpdateOrder::StartFirst), web];
+    let client = Scripted::new(vec![
+        created(Call::Run(first, ContainerKind::ServiceContainer), &new_api),
+        observed(Call::Inspect(first, old_api), running()),
+        created(Call::Run(second, ContainerKind::ServiceContainer), &new_web),
+        // web's old copy, as its Machine reports it.
+        Step(
+            Call::Inspect(second, old_web),
+            Reply::ObservedDoor(
+                QualifiedService::new(test_namespace(), ServiceName::parse("web").unwrap()),
+                running(),
+            ),
+        ),
+        Step(
+            Call::Remove(first, old_api),
+            Reply::OkAfter(|| tokio::time::sleep(std::time::Duration::from_secs(5))),
+        ),
+        ok(Call::Remove(second, old_web)),
+    ]);
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+    let outcome = super::super::execute_operation_sequence(
+        &crate::deploy::DeployPlan::for_execution_test(plan, test_namespace()),
+        &run_id(),
+        &client,
+        &CancellationToken::new(),
+        Some(tx),
+    )
+    .await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    let mut retired = Vec::new();
+    while let Ok(event) = rx.try_recv() {
+        if let DeployEvent::Retired { service } = event {
+            retired.push(service.to_string());
+        }
+    }
+    assert_eq!(
+        retired,
+        ["web", "api"],
+        "web's copy went while api's was still going"
+    );
+    client.assert_done();
+}
