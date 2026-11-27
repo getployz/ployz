@@ -95,9 +95,9 @@ export const cancelStoreGithubBuilds = Effect.fn("ConfigStore.cancelGithubBuilds
 });
 
 /** The Store refused a stop because a newer worker attempt runs the Deployment: that attempt stops its own builds. */
-export const newerAttempt = (error: unknown) =>
-  error instanceof StoreRefused && error.code === "conflict" && typeof error.details === "object" && error.details !== null
-  && !Array.isArray(error.details) && error.details["newer"] === true;
+export const newerAttempt = <E>(error: E) =>
+  error instanceof StoreRefused && error.code === "conflict" && Schema.is(NewerAttempt)(error.details);
+const NewerAttempt = Schema.Struct({ newer: Schema.Literal(true) });
 
 /**
  * Stop the GitHub builds that `organizationIds` run through `installationId` once they can't use it: disconnected,

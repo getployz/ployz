@@ -564,9 +564,18 @@ pub(crate) fn github_stop(
             ));
         }
     }
+    use deployment::DeploymentStatus as Status;
+    // A Deployment waiting for CI takes GitHub runs once CI passes; any other takes none once it is out of flight.
     let stopped = match kept {
-        deployment::DeploymentStatus::Cancelling => true,
-        status => !status.in_flight() && status != deployment::DeploymentStatus::WaitingForCi,
+        Status::Cancelling => true,
+        Status::WaitingForCi => false,
+        Status::Queued
+        | Status::Superseded
+        | Status::Running
+        | Status::Applied
+        | Status::Failed
+        | Status::Unknown
+        | Status::Cancelled => !kept.in_flight(),
     };
     if !stopped {
         return Err(error::conflict(
