@@ -617,6 +617,7 @@ fn execute_produce(
         admission.access,
         &admission.resources,
         fence,
+        admission.reuse,
     )
     .map_err(|error| error.at(Stage::Preparation))?;
     let mut preparation = None;

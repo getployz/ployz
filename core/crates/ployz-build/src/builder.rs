@@ -1,5 +1,6 @@
-//! The pinned BuildKit builder: replaced for each attempt, removed afterwards,
-//! and leaving its dedicated cache volume behind for the next one.
+//! The pinned BuildKit builder and the dedicated cache volume it leaves behind.
+//! A daemon keeps the builder running after an attempt that confirmed a clean
+//! end, and the next attempt in its slot starts in it.
 //!
 //! A Machine running several Builds at once gives each its own build slot:
 //! a lock, builder container, cache volume, and upload staging directory.
@@ -25,14 +26,33 @@ pub(crate) struct Builder<'a> {
     // Released only after Drop removes the container that uses the bridge.
     bridge: Option<Bridge>,
     fence: Option<(crate::FenceInstaller, Vec<u16>)>,
+    reuse: Reuse,
+    spec: String,
+}
+
+/// Whether an attempt may start in the builder its slot's last attempt kept.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Reuse {
+    Never,
+    WhenClean,
+}
+
+/// The builder a clean attempt left running, recorded beside its slot's lock.
+#[derive(Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct Kept {
+    builder: String,
+    container: String,
+    bridge: u8,
+    spec: String,
 }
 
 impl<'a> Builder<'a> {
     /// Provision a container for this attempt, keeping the retained cache.
     ///
-    /// The container is always replaced rather than reused: an earlier
-    /// attempt that never confirmed its end may have left work running in it,
-    /// and its cache volume survives the replacement either way.
+    /// An attempt that never confirmed its end may have left work running in
+    /// its container, so it leaves its mark set and recovery removes the
+    /// container. Only a container kept after a confirmed clean end, still
+    /// running as recorded with the same configuration, is started in again.
     ///
     /// # Errors
     /// Fails when Buildx is unavailable or the container cannot be created.
@@ -42,6 +62,7 @@ impl<'a> Builder<'a> {
         access: Access,
         resources: &crate::policy::Resources,
         fence: Option<(crate::FenceInstaller, Vec<u16>)>,
+        reuse: Reuse,
     ) -> Result<Self, BuildError> {
         let name = access.builder(lock.slot);
         let mut builder = Self {
@@ -51,25 +72,92 @@ impl<'a> Builder<'a> {
             lock: Some(lock),
             bridge: None,
             fence,
+            reuse,
+            spec: String::new(),
         };
         // Mark before any Docker mutation so a killed daemon cannot silently
         // reuse state whose termination was never observed.
         builder.lock.as_mut().expect("owned lock").quarantine()?;
-        let result = remove(&docker.releasing(), &builder.name)
-            .and_then(|()| Bridge::claim(&bridge_directory(), NETWORK_INTERFACES))
-            .and_then(|bridge| {
-                let index = bridge.index;
-                builder.bridge = Some(bridge);
-                create(docker, &builder.name, index, resources)
-            });
-        if let Err(error) = result {
+        if let Err(error) = builder.provision(resources) {
             return builder.finish(Err(error));
         }
         Ok(builder)
     }
 
+    fn provision(&mut self, resources: &crate::policy::Resources) -> Result<(), BuildError> {
+        if let Some(kept) = self.lock.as_ref().expect("owned lock").take_kept()? {
+            if let Some(bridge) = self.reusable(&kept, resources)? {
+                self.bridge = Some(bridge);
+                self.spec = kept.spec;
+                return create(self.docker, &self.name, kept.bridge, resources);
+            }
+            discard(self.docker, self.slot())?;
+        }
+        remove(&self.docker.releasing(), &self.name)?;
+        let bridge = Bridge::claim(&bridge_directory(), NETWORK_INTERFACES)?;
+        let index = bridge.index;
+        self.bridge = Some(bridge);
+        self.spec = spec(resources, index);
+        create(self.docker, &self.name, index, resources)
+    }
+
+    fn reusable(
+        &self,
+        kept: &Kept,
+        resources: &crate::policy::Resources,
+    ) -> Result<Option<Bridge>, BuildError> {
+        if self.reuse == Reuse::Never
+            || kept.builder != self.name
+            || kept.spec != spec(resources, kept.bridge)
+            || self.running().as_ref() != Some(&kept.container)
+        {
+            return Ok(None);
+        }
+        Bridge::claim_index(&bridge_directory(), kept.bridge)
+    }
+
+    /// The running worker container's ID.
+    fn running(&self) -> Option<String> {
+        let state = self
+            .docker
+            .run(
+                "inspect the BuildKit worker",
+                &[
+                    "inspect",
+                    "--format",
+                    "{{.Id}} {{.State.Running}}",
+                    &container(&self.name),
+                ],
+                Streams::Captured,
+            )
+            .ok()?;
+        state
+            .trim()
+            .strip_suffix(" true")
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned)
+    }
+
+    /// Leave the worker running for the slot's next attempt.
+    fn keep(&self) -> Result<(), BuildError> {
+        let container = self.running().ok_or_else(|| {
+            BuildError::Prerequisite("the BuildKit worker stopped before it could be kept".into())
+        })?;
+        let bridge = self.bridge.as_ref().expect("a provisioned builder holds its bridge");
+        self.lock.as_ref().expect("owned lock").keep(&Kept {
+            builder: self.name.clone(),
+            container,
+            bridge: bridge.index,
+            spec: self.spec.clone(),
+        })
+    }
+
     pub(crate) fn name(&self) -> &str {
         &self.name
+    }
+
+    fn slot(&self) -> usize {
+        self.lock.as_ref().expect("owned lock").slot
     }
 
     /// Read the running worker, not the Machine's advertised architecture.
@@ -234,7 +322,7 @@ impl<'a> Builder<'a> {
         let refuse = |reason: String| {
             BuildError::Prerequisite(format!("fence the BuildKit worker: {reason}"))
         };
-        let container = format!("buildx_buildkit_{}0", self.name);
+        let container = container(&self.name);
         let state = self.docker.run(
             "inspect the BuildKit worker",
             &["inspect", "--format", "{{.Id}} {{.State.Pid}}", &container],
@@ -250,7 +338,7 @@ impl<'a> Builder<'a> {
         let cgroup = crate::fence::container_cgroup(&cgroups, id)
             .ok_or_else(|| refuse(format!("no cgroup names container {id}")))?;
         install(&crate::Fence {
-            slot: self.lock.as_ref().expect("owned lock").slot,
+            slot: self.slot(),
             cgroup,
             image_ports: image_ports.clone(),
             mesh_images: self.access == Access::Full,
@@ -261,7 +349,17 @@ impl<'a> Builder<'a> {
     /// Confirm teardown before releasing retained state; failure preserves its
     /// quarantine across daemon restart as well as competing direct calls.
     pub(crate) fn finish<T>(mut self, result: Result<T, BuildError>) -> Result<T, BuildError> {
-        let cleanup = remove(&self.docker.releasing(), &self.name);
+        let cancelled = || {
+            self.docker
+                .cancellation
+                .is_some_and(crate::Cancellation::is_cancelled)
+        };
+        let cleanup = if self.reuse == Reuse::WhenClean && result.is_ok() && !cancelled() {
+            self.keep()
+                .or_else(|_| release(&self.docker.releasing(), &self.name))
+        } else {
+            release(&self.docker.releasing(), &self.name)
+        };
         let stage = result
             .as_ref()
             .err()
@@ -283,11 +381,7 @@ impl<'a> Builder<'a> {
         }
         match cleanup {
             Ok(()) => result.and_then(|output| {
-                if self
-                    .docker
-                    .cancellation
-                    .is_some_and(crate::Cancellation::is_cancelled)
-                {
+                if cancelled() {
                     Err(BuildError::Cancelled)
                 } else {
                     Ok(output)
@@ -307,7 +401,7 @@ impl Drop for Builder<'_> {
         // Panic/unwind still attempts cleanup. The marker was persisted before
         // execution, so a failed cleanup cannot unlock unsafe retained state.
         if let Some(lock) = self.lock.as_mut()
-            && remove(&self.docker.releasing(), &self.name).is_ok()
+            && release(&self.docker.releasing(), &self.name).is_ok()
         {
             let _ = lock.clear();
         }
@@ -354,6 +448,39 @@ fn create(
             Streams::Captured,
         )
         .map(|_| ())
+}
+
+fn spec(resources: &crate::policy::Resources, bridge: u8) -> String {
+    format!(
+        "{BUILDKIT_IMAGE}\n{}\n{}",
+        resources.worker_arguments().join(" "),
+        resources.buildkit_config(bridge)
+    )
+}
+
+/// Remove the builder a slot's last attempt kept, whichever access it ran with.
+fn discard(docker: &Docker<'_>, slot: usize) -> Result<(), BuildError> {
+    [Access::Full, Access::Free].iter().try_for_each(|access| {
+        let container = container(&access.builder(slot));
+        // A graceful stop lets BuildKit delete its bridge; a forced removal leaves it behind.
+        let _ = docker.releasing().run(
+            "stop the kept build container",
+            &["stop", &container],
+            Streams::Captured,
+        );
+        docker.remove_container(&container)
+    })
+}
+
+/// Remove this attempt's builder, including a container it started in
+/// without registering, so an unmarked slot keeps none but a recorded one.
+fn release(docker: &Docker<'_>, name: &str) -> Result<(), BuildError> {
+    remove(docker, name)?;
+    docker.remove_container(&container(name))
+}
+
+fn container(builder: &str) -> String {
+    format!("buildx_buildkit_{builder}0")
 }
 
 fn remove(docker: &Docker<'_>, name: &str) -> Result<(), BuildError> {
@@ -533,6 +660,44 @@ impl Lock {
         })
     }
 
+    fn kept_file(&self) -> PathBuf {
+        self.directory.join(format!("{}.kept", slot_name(self.slot)))
+    }
+
+    /// Remove the slot's record of a kept builder. Only a marked slot may
+    /// take it: until the builder it names is started in or removed, that
+    /// builder is unaccounted for.
+    fn take_kept(&self) -> Result<Option<Kept>, BuildError> {
+        let path = self.kept_file();
+        let record = match fs::read(&path) {
+            Ok(record) => record,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(lock_error(error)),
+        };
+        fs::remove_file(&path).map_err(lock_error)?;
+        // An unreadable record still means a builder may be running.
+        Ok(Some(serde_json::from_slice(&record).unwrap_or_default()))
+    }
+
+    fn keep(&self, kept: &Kept) -> Result<(), BuildError> {
+        use std::io::Write as _;
+        let path = self.kept_file();
+        let partial = path.with_extension("kept.partial");
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+            .open(&partial)
+            .map_err(lock_error)?;
+        file.write_all(&serde_json::to_vec(kept).expect("a record serializes"))
+            .and_then(|()| file.sync_all())
+            .and_then(|()| fs::rename(&partial, &path))
+            .and_then(|()| fs::File::open(&self.directory)?.sync_all())
+            .map_err(lock_error)
+    }
+
     fn marked(&self) -> Result<bool, BuildError> {
         Ok(self.file.file.metadata().map_err(lock_error)?.len() != 0)
     }
@@ -621,7 +786,7 @@ impl Lock {
             builders
                 .iter()
                 .flat_map(|name| {
-                    std::iter::once(format!("buildx_buildkit_{name}0"))
+                    std::iter::once(container(name))
                         .chain(HELPERS.iter().map(move |helper| format!("{name}-{helper}")))
                 })
                 .try_for_each(|container| docker.remove_container(&container))
@@ -631,6 +796,7 @@ impl Lock {
                     ))
                 })?;
         }
+        self.take_kept()?;
         self.clear()
     }
 
@@ -644,10 +810,29 @@ impl Lock {
     }
 
     fn cleanup_abandoned_slot(policy: &crate::HostPolicy, slot: usize) -> Result<(), BuildError> {
-        let lock = Self::try_acquire_slot(&policy.state_directory, slot, &policy.docker)?;
+        let mut lock = Self::try_acquire_slot(&policy.state_directory, slot, &policy.docker)?;
         crate::upload::remove_abandoned(&lock.upload_directory()).map_err(|error| {
             BuildError::Prerequisite(format!("remove abandoned Build upload: {error}"))
-        })
+        })?;
+        if !lock.kept_file().exists() {
+            return Ok(());
+        }
+        lock.quarantine()?;
+        lock.take_kept()?;
+        let environment = crate::upload::environment(&lock.upload_directory());
+        let recorder = lock.recorder();
+        let directory = lock.directory.clone();
+        let docker = Docker {
+            program: &policy.docker,
+            environment: &environment,
+            working_dir: &directory,
+            deadline: crate::Deadline::starting_now(crate::CLEANUP_TIMEOUT),
+            cancellation: None,
+            progress: None,
+            recorder: Some(&recorder),
+        };
+        discard(&docker, slot)?;
+        lock.clear()
     }
 
     fn open_locked(directory: &std::path::Path, slot: usize) -> Result<Self, BuildError> {
@@ -759,34 +944,10 @@ struct Bridge {
 
 impl Bridge {
     fn claim(directory: &std::path::Path, interfaces: &str) -> Result<Self, BuildError> {
-        use rustix::fs::{FlockOperation, flock};
-        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
-        let shared = fs::Permissions::from_mode(0o1777);
-        match fs::DirBuilder::new().mode(0o1777).create(directory) {
-            Ok(()) => fs::set_permissions(directory, shared).map_err(bridge_error)?,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(bridge_error(error)),
-        }
-        if !fs::symlink_metadata(directory)
-            .map_err(bridge_error)?
-            .is_dir()
-        {
-            return Err(BuildError::Prerequisite(format!(
-                "{} must be a directory",
-                directory.display()
-            )));
-        }
+        prepare_claims(directory)?;
         let mut unusable = None;
         for index in 0..=u8::MAX {
-            let file = match fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(false)
-                .mode(0o666)
-                .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
-                .open(directory.join(format!("{index}.lock")))
-            {
+            let file = match claim_file(directory, index) {
                 Ok(file) => file,
                 // Another user's private claim file, or anything else at the
                 // path, takes that index out of use rather than every build.
@@ -795,17 +956,8 @@ impl Bridge {
                     continue;
                 }
             };
-            let metadata = file.metadata().map_err(bridge_error)?;
-            if metadata.uid() == rustix::process::getuid().as_raw()
-                && metadata.mode() & 0o666 != 0o666
-            {
-                file.set_permissions(fs::Permissions::from_mode(0o666))
-                    .map_err(bridge_error)?;
-            }
-            match flock(&file, FlockOperation::NonBlockingLockExclusive) {
-                Ok(()) => {}
-                Err(rustix::io::Errno::WOULDBLOCK) => continue,
-                Err(error) => return Err(bridge_error(error.into())),
+            if !hold_claim(&file)? {
+                continue;
             }
             if std::path::Path::new(interfaces)
                 .join(bridge_name(index))
@@ -819,6 +971,61 @@ impl Bridge {
             Some(error) => bridge_error(error),
             None => BuildError::Prerequisite("every build bridge on this host is in use".into()),
         })
+    }
+
+    /// Claim the bridge a kept builder still runs on, or nothing when another
+    /// builder holds it.
+    fn claim_index(directory: &std::path::Path, index: u8) -> Result<Option<Self>, BuildError> {
+        prepare_claims(directory)?;
+        let file = claim_file(directory, index).map_err(bridge_error)?;
+        Ok(hold_claim(&file)?.then_some(Self { _file: file, index }))
+    }
+}
+
+fn prepare_claims(directory: &std::path::Path) -> Result<(), BuildError> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let shared = fs::Permissions::from_mode(0o1777);
+    match fs::DirBuilder::new().mode(0o1777).create(directory) {
+        Ok(()) => fs::set_permissions(directory, shared).map_err(bridge_error)?,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(bridge_error(error)),
+    }
+    if !fs::symlink_metadata(directory)
+        .map_err(bridge_error)?
+        .is_dir()
+    {
+        return Err(BuildError::Prerequisite(format!(
+            "{} must be a directory",
+            directory.display()
+        )));
+    }
+    Ok(())
+}
+
+fn claim_file(directory: &std::path::Path, index: u8) -> std::io::Result<fs::File> {
+    fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o666)
+        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+        .open(directory.join(format!("{index}.lock")))
+}
+
+/// Whether this process now holds the claim.
+fn hold_claim(file: &fs::File) -> Result<bool, BuildError> {
+    use rustix::fs::{FlockOperation, flock};
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+    let metadata = file.metadata().map_err(bridge_error)?;
+    if metadata.uid() == rustix::process::getuid().as_raw() && metadata.mode() & 0o666 != 0o666 {
+        file.set_permissions(fs::Permissions::from_mode(0o666))
+            .map_err(bridge_error)?;
+    }
+    match flock(file, FlockOperation::NonBlockingLockExclusive) {
+        Ok(()) => Ok(true),
+        Err(rustix::io::Errno::WOULDBLOCK) => Ok(false),
+        Err(error) => Err(bridge_error(error.into())),
     }
 }
 
@@ -941,6 +1148,7 @@ esac
             Access::Full,
             &resources,
             None,
+            Reuse::Never,
         )
         .unwrap();
         for platform in ["linux/386", "linux/arm/v7", "linux/ppc64le", "linux/s390x"] {
@@ -991,6 +1199,7 @@ esac
                 Access::Full,
                 &crate::policy::Resources::default(),
                 None,
+                Reuse::Never,
             )
             .unwrap();
             // A read-only descriptor deterministically makes marker truncation fail.
@@ -1309,71 +1518,216 @@ esac
         fs::remove_dir_all(directory).unwrap();
     }
 
-    #[test]
-    fn every_attempt_replaces_the_container_and_leaves_its_cache() {
-        let directory = std::env::temp_dir().join(format!("ployz-builder-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&directory);
-        fs::create_dir_all(&directory).unwrap();
+    /// A slot directory whose fake Docker logs each call and reports the
+    /// worker container as `<directory>/worker` says.
+    fn host_slot() -> tempfile::TempDir {
+        let directory = tempfile::tempdir().unwrap();
         fs::set_permissions(
-            &directory,
+            directory.path(),
             <fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
         )
         .unwrap();
-        let program = directory.join("docker");
         crate::tests::executable(
-            &program,
+            &directory.path().join("docker"),
             &format!(
-                "#!/bin/sh\ncase \"$1\" in --ready) exit 0 ;; esac\nprintf '%s\\n' \"$*\" >> '{}/calls'\nexit 0\n",
-                directory.display()
+                "#!/bin/sh\n[ \"$1\" = --ready ] && exit 0\nprintf '%s\\n' \"$*\" >> '{0}/calls'\n[ \"$1\" = inspect ] && cat '{0}/worker' 2>/dev/null\nexit 0\n",
+                directory.path().display()
             ),
         );
+        directory
+    }
+
+    fn calls_since(directory: &std::path::Path, seen: &mut usize) -> Vec<String> {
+        let calls = fs::read_to_string(directory.join("calls")).unwrap_or_default();
+        let lines = calls.lines().skip(*seen).map(str::to_owned).collect::<Vec<_>>();
+        *seen += lines.len();
+        lines
+    }
+
+    fn create_call(directory: &std::path::Path, name: &str) -> String {
+        format!(
+            "buildx create --name {name} --driver docker-container --driver-opt image={BUILDKIT_IMAGE} --driver-opt network=host --driver-opt restart-policy=no --buildkitd-config {}",
+            directory.join(format!("{name}.buildkitd.toml")).display()
+        )
+    }
+
+    #[test]
+    fn a_clean_attempt_keeps_its_builder_for_the_next_and_a_failed_one_removes_it() {
+        let directory = host_slot();
+        let directory = directory.path();
+        let program = directory.join("docker");
         let environment = BTreeMap::new();
         let docker = Docker {
             program: &program,
             environment: &environment,
-            working_dir: &directory,
+            working_dir: directory,
             deadline: crate::Deadline::starting_now(crate::EXECUTION_TIMEOUT),
             cancellation: None,
             progress: None,
             recorder: None,
         };
+        let resources = crate::policy::Resources::default();
+        let name = crate::builder_name();
+        let worker = format!("inspect --format {{{{.Id}}}} {{{{.State.Running}}}} {}", container(&name));
+        let mut seen = 0;
+        let attempt = || {
+            Builder::acquire(
+                &docker,
+                Lock::try_acquire_in(directory).unwrap(),
+                Access::Full,
+                &resources,
+                None,
+                Reuse::WhenClean,
+            )
+            .unwrap()
+        };
 
-        let lock = Lock::acquire_in(
-            &directory,
-            std::path::Path::new("docker"),
-            &crate::Cancellation::default(),
+        let first = attempt();
+        let bridge = first.bridge.as_ref().unwrap().index;
+        assert_eq!(
+            calls_since(directory, &mut seen),
+            [format!("buildx rm --keep-state {name}"), create_call(directory, &name)]
+        );
+        fs::write(directory.join("worker"), "c0ffee true\n").unwrap();
+        first.finish(Ok(())).unwrap();
+        assert_eq!(calls_since(directory, &mut seen), [worker.clone()]);
+        assert!(fs::read(directory.join(lock_file(0))).unwrap().is_empty());
+
+        let second = attempt();
+        assert_eq!(
+            calls_since(directory, &mut seen),
+            [worker.clone(), create_call(directory, &name)],
+            "the kept worker is started in, not replaced"
+        );
+        assert_eq!(second.bridge.as_ref().unwrap().index, bridge);
+        let error = second
+            .finish::<()>(Err(BuildError::Result("failed".into())))
+            .unwrap_err();
+        assert!(!error.is_unknown());
+        assert_eq!(
+            calls_since(directory, &mut seen),
+            [
+                format!("buildx rm --keep-state {name}"),
+                format!("rm --force {}", container(&name)),
+            ],
+            "teardown keeps the cache volume"
+        );
+        assert!(!directory.join(format!("{name}.kept")).exists());
+        assert!(fs::read(directory.join(lock_file(0))).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_kept_builder_that_differs_from_this_attempt_is_removed_before_it_starts() {
+        let resources = crate::policy::Resources::default();
+        let name = crate::builder_name();
+        let free = Access::Free.builder(0);
+        let current = spec(&resources, 9);
+        for (case, kept_spec, worker, reuse) in [
+            ("policy changed", "an older policy", "c0ffee true", Reuse::WhenClean),
+            ("worker replaced", current.as_str(), "decaf true", Reuse::WhenClean),
+            ("worker stopped", current.as_str(), "c0ffee false", Reuse::WhenClean),
+            ("never reused", current.as_str(), "c0ffee true", Reuse::Never),
+        ] {
+            let directory = host_slot();
+            let directory = directory.path();
+            let program = directory.join("docker");
+            fs::write(directory.join("worker"), worker).unwrap();
+            fs::write(
+                directory.join(format!("{name}.kept")),
+                serde_json::to_vec(&Kept {
+                    builder: name.clone(),
+                    container: "c0ffee".into(),
+                    bridge: 9,
+                    spec: kept_spec.into(),
+                })
+                .unwrap(),
+            )
+            .unwrap();
+            let environment = BTreeMap::new();
+            let docker = Docker {
+                program: &program,
+                environment: &environment,
+                working_dir: directory,
+                deadline: crate::Deadline::starting_now(crate::EXECUTION_TIMEOUT),
+                cancellation: None,
+                progress: None,
+                recorder: None,
+            };
+            let builder = Builder::acquire(
+                &docker,
+                Lock::try_acquire_in(directory).unwrap(),
+                Access::Full,
+                &resources,
+                None,
+                reuse,
+            )
+            .unwrap();
+            let calls = calls_since(directory, &mut 0);
+            let removed = [
+                format!("stop {}", container(&name)),
+                format!("rm --force {}", container(&name)),
+                format!("stop {}", container(&free)),
+                format!("rm --force {}", container(&free)),
+                format!("buildx rm --keep-state {name}"),
+                create_call(directory, &name),
+            ];
+            assert_eq!(calls[calls.len() - removed.len()..], removed, "{case}");
+            assert!(!directory.join(format!("{name}.kept")).exists(), "{case}");
+            drop(builder);
+        }
+    }
+
+    #[test]
+    fn an_attempt_that_never_confirmed_its_end_leaves_its_kept_builder_to_recovery() {
+        let slot = 0;
+        let (directory, docker) = quarantined_slot(slot, &crate::owner::named(&[]));
+        let name = Access::Full.builder(slot);
+        fs::write(
+            directory.path().join(format!("{name}.kept")),
+            serde_json::to_vec(&Kept {
+                builder: name.clone(),
+                container: "c0ffee".into(),
+                bridge: 9,
+                spec: spec(&crate::policy::Resources::default(), 9),
+            })
+            .unwrap(),
         )
         .unwrap();
+        let lock = Lock::try_acquire_slot(directory.path(), slot, &docker).unwrap();
+        assert!(!directory.path().join(format!("{name}.kept")).exists());
+        let calls = fs::read_to_string(directory.path().join("calls")).unwrap();
+        assert!(
+            calls.contains(&format!("rm --force {}", container(&name))),
+            "{calls}"
+        );
+        fs::remove_file(directory.path().join("calls")).unwrap();
+        let environment = BTreeMap::new();
+        let docker = Docker {
+            program: &docker,
+            environment: &environment,
+            working_dir: directory.path(),
+            deadline: crate::Deadline::starting_now(crate::EXECUTION_TIMEOUT),
+            cancellation: None,
+            progress: None,
+            recorder: None,
+        };
         let builder = Builder::acquire(
             &docker,
             lock,
             Access::Full,
             &crate::policy::Resources::default(),
             None,
+            Reuse::WhenClean,
         )
         .unwrap();
-        let name = crate::builder_name();
-        let acquired = fs::read_to_string(directory.join("calls")).unwrap();
-        // A container left by an earlier attempt is stale, so it is replaced.
         assert_eq!(
-            acquired.lines().collect::<Vec<_>>(),
+            calls_since(directory.path(), &mut 0),
             [
                 format!("buildx rm --keep-state {name}"),
-                format!(
-                    "buildx create --name {name} --driver docker-container --driver-opt image={BUILDKIT_IMAGE} --driver-opt network=host --driver-opt restart-policy=no --buildkitd-config {}",
-                    directory.join(format!("{name}.buildkitd.toml")).display()
-                ),
+                create_call(directory.path(), &name),
             ]
         );
-
         drop(builder);
-        let released = fs::read_to_string(directory.join("calls")).unwrap();
-        // Teardown keeps the cache volume the container was built with.
-        assert_eq!(
-            released.lines().last(),
-            Some(format!("buildx rm --keep-state {name}").as_str())
-        );
-        fs::remove_dir_all(&directory).unwrap();
     }
 
     #[test]
@@ -1409,6 +1763,8 @@ exit 1
             lock: None,
             bridge: None,
             fence: None,
+            reuse: Reuse::Never,
+            spec: String::new(),
         };
         let error = builder.run(&[], false, || {}).unwrap_err();
         assert_eq!(

@@ -96,6 +96,7 @@ impl Admission {
                 self.access,
                 &self.resources,
                 None,
+                self.reuse,
             )?;
             let result = builder
                 .native_platform(targets, &self.resources)
