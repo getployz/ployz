@@ -9,7 +9,7 @@ import { asTestDouble } from "#/lib/test-double";
 import { callStore, gatherTrusted } from "#/modules/config-store/config-store.server";
 import { permissionsOf } from "#/modules/organization/permissions";
 import {
-  checkInRuleBuild, checkInStoreGithubBuild, checkStoreGithubBuild, grantRuleBuild, planStoreGithubBuilds, recordStoreGithubBuildSteps, startStoreGithubBuild, startStoreGithubBuilds,
+  checkInRuleBuild, checkInStoreGithubBuild, checkStoreGithubBuild, grantRuleBuild, planStoreGithubBuilds, recordStoreGithubBuildSteps, startStoreGithubBuild,
   storeGithubBuildOpen,
 } from "#/modules/config-store/store-github-builds.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
@@ -109,7 +109,7 @@ it.live(
       });
 
       // Without the build workflow GitHub is skipped at once, with why, and the servers take it.
-      expect(yield* provided(startStoreGithubBuilds(ORGANIZATION, [target]))).toEqual([{ kind: "done" }]);
+      expect(yield* provided(startStoreGithubBuild(ORGANIZATION, target))).toEqual({ kind: "done" });
       expect(yield* view()).toMatchObject({
         builds: [{ service: "web", commit: HEAD, status: "pending", message: "acme/web has no .github/workflows/ployz-build.yml on its default branch" }],
       });
@@ -583,36 +583,4 @@ it.live("a rule build follows its push, and an approved build dispatches, under 
     expect(authority.calls.filter((call) => call.operation === "dispatchApprovedBuild").map((call) => call.input))
       .toEqual([{ installationId: 7, repositoryId: 42, branch: "main", commit: HEAD }]);
     expect(authority.calls.some((call) => call.operation === "dispatchBuild")).toBe(false);
-  }), 60_000);
-
-it.live("a Deployment's builds start together, read the workflow once per repository, and a step run again follows each run", () =>
-  Effect.gen(function* () {
-    let dispatches = 0;
-    let workflowChecks = 0;
-    const batchGithub = acmeGithub({ workflow: () => { workflowChecks += 1; return activeWorkflow; }, dispatch: () => RUN + dispatches++ });
-    const services = yield* storeTestCloud(batchGithub.services);
-    const provided = <A, E, R>(program: Effect.Effect<A, E, R>) => program.pipe(Effect.provide(services));
-    yield* provided(seedStoreOrganization(ORGANIZATION));
-    const store = yield* provided(seedStoreGitService(ORGANIZATION, { project: PROJECT, environment: ENVIRONMENT, service: SERVICE }));
-    yield* Effect.promise(() => store.write(ORGANIZATION, {
-      command: "create_git_service", id: "00000000-0000-4000-8000-00000000b005", environment: here, name: "api", repository: "acme/web", branch: null,
-    }, acmeWeb()));
-    yield* Effect.promise(() => store.write(ORGANIZATION, {
-      command: "admit", admit: "deploy", id: DEPLOYMENT, environment: here, services: [], version: null, accept_volume_loss: [],
-    }, acmeWeb()));
-    yield* Effect.promise(() => store.pinSources(DEPLOYMENT, { web: HEAD, api: HEAD }));
-    const cloud = yield* provided(cloudStore);
-    vi.spyOn(cloud, "githubStart").mockResolvedValue({ kind: "dispatch", runner: "ubuntu-latest", foreign: [] });
-    const targets = ["web", "api"].map((service) =>
-      ({ build: `${DEPLOYMENT}.${service}`, service, repository: "acme/web", repositoryId: 42, installationId: 7, hasNext: true }));
-
-    const started = yield* provided(startStoreGithubBuilds(ORGANIZATION, targets));
-    expect(started.map((answer) => answer.kind)).toEqual(["dispatched", "dispatched"]);
-    expect(new Set(started.map((answer) => answer.kind === "dispatched" ? answer.runId : null))).toEqual(new Set([RUN, RUN + 1]));
-    expect([dispatches, workflowChecks]).toEqual([2, 1]);
-
-    // A run that started its builds under an older step id runs the step again after a Cloud deploy: it follows each
-    // build's run and dispatches no other.
-    expect(yield* provided(startStoreGithubBuilds(ORGANIZATION, targets))).toEqual(started);
-    expect(dispatches).toBe(2);
   }), 60_000);
