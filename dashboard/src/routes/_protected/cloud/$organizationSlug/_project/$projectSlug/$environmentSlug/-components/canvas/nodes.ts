@@ -20,6 +20,8 @@ import type {
   CanvasStoreLiveNode,
   PendingNode,
   ArrivingNode,
+  ServiceEdge,
+  ServiceEdgeData,
 } from "./types";
 import type { Arriving } from "#/modules/config-store/store-pending";
 import { mountSetting } from "#/modules/config-store/setting-paths";
@@ -203,6 +205,31 @@ export function buildStoreEdges(store: { live?: StoreLiveNode[]; services?: Pick
     id: `${liveNodeId(live.name)}:${serviceId}`, source: liveNodeId(live.name), target: serviceId, style: LIVE_EDGE_STYLE,
     ariaLabel: `${names.get(serviceId) ?? serviceId} reads ${liveName(live)}`,
   })));
+}
+
+/** Links between Services are solid, apart from the dashed links into Live Nodes. */
+const SERVICE_EDGE_STYLE = { stroke: "var(--muted-foreground)", strokeWidth: 1.5 };
+
+/** Why `reader` links to `read`: "api references postgres.DATABASE_URL", each key it reads. */
+export const serviceEdgeReason = ({ reader, read, keys }: ServiceEdgeData) =>
+  `${reader} references ${keys.map((key) => `${read}.${key}`).join(", ")}`;
+
+/**
+ * Links from each Service into the Services here that read it, from a variable or a file of a Config they mount: the
+ * references that order a Deploy. Each carries the keys read, to say why it exists. A Service reading itself, or one
+ * not drawn here, links nothing; two Services reading each other link both ways.
+ */
+export function buildServiceEdges(services: readonly Pick<StoreCanvasService, "service">[]): ServiceEdge[] {
+  const names = new Map(services.map(({ service }) => [service.id, service.name]));
+  return services.flatMap(({ service: reader }) => (reader.references ?? []).flatMap(({ service: id, keys }) => {
+    const read = names.get(id);
+    if (read === undefined || id === reader.id) return [];
+    const data = { reader: reader.name, read, keys };
+    return [{
+      id: `service:${id}:${reader.id}`, source: id, target: reader.id, type: "service", style: SERVICE_EDGE_STYLE,
+      ariaLabel: serviceEdgeReason(data), data,
+    } satisfies ServiceEdge];
+  }));
 }
 
 /** The node that shows `id` on the canvas: the node itself, else the first Service with it as a tray; null when none does. */

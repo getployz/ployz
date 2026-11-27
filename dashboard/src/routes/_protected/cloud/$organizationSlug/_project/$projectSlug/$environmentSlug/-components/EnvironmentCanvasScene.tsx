@@ -22,7 +22,7 @@ import { useStorePendingNodes } from "#/modules/config-store/store-pending";
 import { BottomBarSlot } from "./canvas/BottomBar";
 import { CanvasFlow } from "./canvas/CanvasFlow";
 import { useCanvasCopies } from "./canvas/useCanvasCopies";
-import { arrivingNodes, buildStoreEdges, buildStoreNodes, volumeTrays } from "./canvas/nodes";
+import { arrivingNodes, buildServiceEdges, buildStoreEdges, buildStoreNodes, volumeTrays } from "./canvas/nodes";
 import type { StoreCanvas } from "./canvas/types";
 import { configTrays } from "#/modules/config-store/store-configs";
 import { branchQuery, configsQuery, diffQuery, environmentSettingsQuery, namespaceQuery, requireView, servicesQuery, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
@@ -126,7 +126,7 @@ function CanvasWithData() {
     arriving: arrivingNodes(pending.arriving, [...services.services, ...volumes.volumes, ...configListings]),
   };
   const initialNodes = buildStoreNodes(store, canvasPositions, environmentId);
-  const initialEdges = buildStoreEdges(store);
+  const initialEdges = [...buildServiceEdges(store.services), ...buildStoreEdges(store)];
 
   return (
     <ReactFlowProvider

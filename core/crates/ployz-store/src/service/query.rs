@@ -2,9 +2,11 @@
 //! State, and every deployed one a staged removal dropped from it, each with what the
 //! next Deploy does to it.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use ployz_core::config::{
-    ReviewLifecycleKind, RowId, SavedServiceIntent, ServiceSettingChange, ServiceSource,
-    ServiceTemplate,
+    ReviewLifecycleKind, RowId, SavedEnvironmentIntent, SavedServiceIntent, ServiceSettingChange,
+    ServiceSource, ServiceTemplate, ValuePart, ValuePartOwner,
 };
 use ployz_core::{RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
@@ -49,6 +51,19 @@ pub struct ServiceListing {
     pub change: Option<ReviewLifecycleKind>,
     /// The Service Template it was created from, if any.
     pub template: Option<ServiceTemplate>,
+    /// The Services of its Environment it reads, from a variable or a file of a
+    /// Config it mounts: the references that order a Deploy.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(as = "Option<Vec<ServiceReference>>", optional)]
+    pub references: Vec<ServiceReference>,
+}
+
+/// A Service another reads, and the keys it reads of it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct ServiceReference {
+    pub service: ServiceLineageId,
+    /// Sorted.
+    pub keys: Vec<String>,
 }
 
 /// Where a Service's image comes from.
@@ -150,18 +165,19 @@ struct Listed {
 fn listed(tx: &mut dyn Tx, environment: &scope::Environment) -> Result<Vec<Listed>, RpcError> {
     let review = review::review(tx, environment)?;
     let built = crate::deployment::receipts(tx, &environment.summary.id)?;
-    let working = &environment.working.services;
-    let removed = review
-        .head
-        .intent
+    let working = &environment.working;
+    let head = &review.head.intent;
+    let removed = head
         .services
-        .into_iter()
-        .filter(|node| working.iter().all(|kept| kept.id != node.id));
-    let mut listed = working
         .iter()
-        .cloned()
+        .filter(|node| working.services.iter().all(|kept| kept.id != node.id))
+        .map(|node| (head, node));
+    let mut listed = working
+        .services
+        .iter()
+        .map(|node| (working, node))
         .chain(removed)
-        .map(|node| {
+        .map(|(intent, node)| {
             let change = review
                 .view
                 .changes
@@ -169,7 +185,7 @@ fn listed(tx: &mut dyn Tx, environment: &scope::Environment) -> Result<Vec<Liste
                 .find(|change| change.node.id == node.id);
             Ok(Listed {
                 listing: ServiceListing {
-                    service: summary(&node)?,
+                    service: summary(node)?,
                     row: RowId::node(&node.lineage_id),
                     source: match node.config.source {
                         ServiceSource::Empty { .. }
@@ -183,14 +199,44 @@ fn listed(tx: &mut dyn Tx, environment: &scope::Environment) -> Result<Vec<Liste
                     },
                     change: change.map(|change| change.lifecycle),
                     template: node.config.template.clone(),
+                    references: references(intent, node)?,
                 },
                 changes: change
                     .map(|change| change.settings.clone())
                     .unwrap_or_default(),
-                node,
+                node: node.clone(),
             })
         })
         .collect::<Result<Vec<_>, RpcError>>()?;
     listed.sort_by(|a, b| a.listing.service.name.cmp(&b.listing.service.name));
     Ok(listed)
+}
+
+/// The Services of `intent` that `node` reads, in `intent`'s order, itself included when it
+/// names itself; a lineage `intent` doesn't hold, a node a Branch uses live, is left out.
+fn references(
+    intent: &SavedEnvironmentIntent,
+    node: &SavedServiceIntent,
+) -> Result<Vec<ServiceReference>, RpcError> {
+    let mut read: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for part in crate::branch::parts_read(intent, node) {
+        if let ValuePart::Ref {
+            owner: ValuePartOwner::Service { lineage_id },
+            key,
+        } = part
+        {
+            read.entry(lineage_id).or_default().insert(key);
+        }
+    }
+    intent
+        .services
+        .iter()
+        .filter_map(|service| Some((service, read.remove(service.lineage_id.as_str())?)))
+        .map(|(service, keys)| {
+            Ok(ServiceReference {
+                service: summary(service)?.id,
+                keys: keys.into_iter().map(str::to_owned).collect(),
+            })
+        })
+        .collect()
 }
