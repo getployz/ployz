@@ -766,6 +766,19 @@ impl LocalMachineRecord {
         }
     }
 
+    /// Whether this record is one a Machine's first write makes: Uninitialized, with only
+    /// its own ID and keys, and every other field as a new record leaves it.
+    pub(crate) fn is_new(&self) -> bool {
+        matches!(self.body, LocalMachineBody::Uninitialized { .. })
+            && *self
+                == Self {
+                    management_secret: self.management_secret.clone(),
+                    // Releases before Devices were Full-only wrote it unset.
+                    device_slots_vetted: self.device_slots_vetted,
+                    ..Self::fresh(self.body.clone(), self.wireguard_private_key.clone())
+                }
+    }
+
     #[must_use]
     pub fn pinned_addresses(&self) -> PinnedAddresses {
         self.pinned_addresses

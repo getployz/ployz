@@ -32,7 +32,6 @@ use fs2::FileExt;
 use layout::StoreRoot;
 
 const LEGACY_LOG_STORE: &str = "ployz-observe";
-const LOCK_FILE: &str = "harvester.lock";
 
 /// Runs the metric emitter, the shippers and the Docker events loop until
 /// SIGTERM. `data_dir` holds the observe store and the
@@ -90,7 +89,13 @@ fn remove_legacy_log_store(docker_root: &Path) {
 
 fn lock_store(store: &StoreRoot) -> io::Result<File> {
     layout::create_store_dir(store.base())?;
-    let lock = File::create(store.base().join(LOCK_FILE))?;
+    // Never truncated: the claim on the data dir takes an empty lock for observe's, and a
+    // file of someone else's under its name must reach the claim as it was.
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(store.base().join(layout::LOCK_FILE))?;
     lock.try_lock_exclusive().map_err(|error| {
         io::Error::new(
             error.kind(),

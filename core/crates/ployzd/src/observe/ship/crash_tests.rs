@@ -16,7 +16,7 @@ fn seqs_strictly_increase_across_a_restart_even_when_clocks_repeat() {
     outbox.push(crash(50)).unwrap();
     drop(outbox);
     let reopened = Outbox::open(&store).unwrap();
-    reopened.ack(&held(&reopened)).unwrap();
+    reopened.ack_seqs(&held(&reopened)).unwrap();
     reopened.push(crash(90)).unwrap();
     assert_eq!(
         reopened.oldest(CAP).unwrap(),
@@ -35,7 +35,7 @@ fn queuing_a_crash_cloud_took_again_drops_no_newer_crash() {
         outbox.push(crash(ts)).unwrap();
     }
     let acked = held(&outbox).first().copied().unwrap();
-    outbox.ack(&[acked]).unwrap();
+    outbox.ack_seqs(&[acked]).unwrap();
     outbox.push(crash(i64::try_from(CAP).unwrap() + 1)).unwrap();
     assert!(!outbox.push_at(acked, crash(1)).unwrap());
     let held = held(&outbox);
@@ -56,6 +56,30 @@ fn a_full_outbox_drops_its_oldest_entry_and_counts_it_across_a_restart() {
     assert_eq!(outbox.dropped(), 2);
     drop(outbox);
     assert_eq!(Outbox::open(&store).unwrap().dropped(), 2);
+}
+
+#[test]
+fn an_ack_keeps_an_entry_rewritten_since_it_was_selected() {
+    let (_root, store) = store();
+    let outbox = Outbox::open(&store).unwrap();
+    let seq = outbox.reserve(1).unwrap();
+    assert!(outbox.push_at(seq, crash(1)).unwrap());
+    let selected = outbox.select(CAP).unwrap();
+    let rewritten = MetricMarker {
+        replica: "web-2".into(),
+        ..crash(1)
+    };
+
+    assert!(outbox.push_at(seq, rewritten.clone()).unwrap());
+    outbox.ack(&selected).unwrap();
+
+    assert_eq!(
+        outbox.oldest(CAP).unwrap(),
+        [Entry {
+            seq,
+            marker: rewritten,
+        }]
+    );
 }
 
 #[test]

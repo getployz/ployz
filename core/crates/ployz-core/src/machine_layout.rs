@@ -7,6 +7,9 @@ use std::path::{Path, PathBuf};
 /// The directory under the Machine's data directory where host preparation keeps its state.
 pub const PREPARE_DIR_NAME: &str = "prepare";
 
+/// The directory under the Machine's data directory where `ployzd observe` keeps its store.
+pub const OBSERVE_DIR_NAME: &str = "observe";
+
 const SOCKET_NAME: &str = "ployz.sock";
 const FAULT_FILE_NAME: &str = "fault";
 const MACHINE_POOL_FILE_NAME: &str = "ployz-machine-pool";
