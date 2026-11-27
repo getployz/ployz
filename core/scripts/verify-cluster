@@ -845,6 +845,8 @@ def launch(args, run, private, total_started):
     backend = provider(run, commands)
     print(f"Preparing verification run: {run['manifest']}", file=sys.stderr)
     paired = args.cloud or args.cloud_attach
+    if paired:
+        run["cloud_relay"] = True  # Cloud reaches a new Server only through the relay, so Boat leaves it open.
     try:
         select_daemons(run, commands, args.daemon or [], default="checkout")
         # Cloud enrollment needs a daemon that speaks this CLI's protocol and reports its version; a release with

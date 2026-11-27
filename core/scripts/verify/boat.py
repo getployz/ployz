@@ -293,21 +293,26 @@ def endpoint(text):
 RELAY = "relay.ployz.dev"
 
 
-def relay_block():
+def relay_block(blocked=True):
     """A guest script that keeps a test Machine off the production relay: the name points at loopback, and new
     https connections to its addresses, resolved here at run time, are refused. Replies to connections the relay's host
-    opens, such as this host's SSH when it is the same box, are not new, so they pass."""
+    opens, such as this host's SSH when it is the same box, are not new, so they pass. A run paired with Cloud needs
+    the relay to enroll, so `blocked=False` takes the block back out of a sandbox an earlier run or a bake left it in."""
     try:
         addresses = sorted({info[4][0] for info in socket.getaddrinfo(RELAY, 443, proto=socket.IPPROTO_TCP)})
     except socket.gaierror:
         addresses = []
     # The relay speaks only https, and its host serves other things a test may need, so only port 443 is refused.
-    rules = "".join(
-        f"{table} -C OUTPUT -d {address} -p {protocol} --dport 443 -m conntrack --ctstate NEW -j REJECT 2>/dev/null"
-        f" || {table} -I OUTPUT 1 -d {address} -p {protocol} --dport 443 -m conntrack --ctstate NEW -j REJECT\n"
-        for address in addresses for table in ["ip6tables" if ":" in address else "iptables"]
-        for protocol in ["tcp", "udp"])
-    return (f"grep -q ' {RELAY}$' /etc/hosts || printf '127.0.0.1 {RELAY}\\n::1 {RELAY}\\n' >> /etc/hosts\n" + rules)
+    rules = [(table, f"OUTPUT -d {address} -p {protocol} --dport 443 -m conntrack --ctstate NEW -j REJECT")
+             for address in addresses for table in ["ip6tables" if ":" in address else "iptables"]
+             for protocol in ["tcp", "udp"]]
+    if not blocked:
+        # /etc/hosts can be a bind mount, which a rename like sed -i's can't replace, so it is rewritten in place.
+        return (f"hosts=$(grep -v ' {RELAY}$' /etc/hosts || true); printf '%s\\n' \"$hosts\" > /etc/hosts\n" +
+                "".join(f"while {table} -C {rule} 2>/dev/null; do {table} -D {rule}; done\n" for table, rule in rules))
+    return (f"grep -q ' {RELAY}$' /etc/hosts || printf '127.0.0.1 {RELAY}\\n::1 {RELAY}\\n' >> /etc/hosts\n" +
+            "".join(f"{table} -C {rule} 2>/dev/null || {table} -I {rule.replace('OUTPUT', 'OUTPUT 1', 1)}\n"
+                    for table, rule in rules))
 
 
 def boat_node(address):
@@ -842,7 +847,7 @@ class Provider:
             self.install_key(node, sandbox)
         self.wait_agent(node)
         if self.run.get("bare"):
-            self.exec(node, ["sh", "-ec", relay_block() + OPEN_WEB])
+            self.exec(node, ["sh", "-ec", relay_block(not self.run.get("cloud_relay")) + OPEN_WEB])
             if self.run.get("distro") == "debian-12":
                 key = (self.private / "id_ed25519.pub").read_text().strip()
                 self.exec(node, ["bash", "-ec", GUEST, "guest", key], timeout=900)
@@ -861,7 +866,7 @@ for pid in $(pgrep -f {LISTENER}); do [ "$pid" = "$main" ] || kill "$pid"; done
 if [ -n "$(ss -Hlun 'sport = :51820')" ]; then echo "UDP port 51820 is taken" >&2; exit 1; fi
 # Boat turns UFW back on in every clone, so the bake cannot keep it off.
 ufw disable >/dev/null
-{relay_block()}{REOPEN_DOCKER}
+{relay_block(not self.run.get("cloud_relay"))}{REOPEN_DOCKER}
 {bake}""", "boot", self.run["corrosion"], *IMAGES], timeout=600)
         if POOL_SIZE and not reused and self.run["image"] != SNAPSHOT and not fingerprints(self.run["image"]).exists():
             # The first fresh clone of a bake records what reset must return every later sandbox to.

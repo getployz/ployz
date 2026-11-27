@@ -1205,9 +1205,9 @@ class RelayBlock(unittest.TestCase):
     """A test Machine never reaches the production relay: its name points at loopback and each address it
     resolves to refuses new connections, IPv4 and IPv6 alike."""
 
-    def script(self, resolved):
+    def script(self, resolved, blocked=True):
         with unittest.mock.patch.object(boat.socket, "getaddrinfo", side_effect=resolved):
-            return boat.relay_block()
+            return boat.relay_block(blocked)
 
     def test_every_address_the_relay_resolves_to_is_refused(self):
         script = self.script(lambda *_, **__: [(None, None, None, "", ("192.0.2.9", 443)),
@@ -1223,6 +1223,23 @@ class RelayBlock(unittest.TestCase):
         for line in script.splitlines():
             if "REJECT" in line:
                 self.assertEqual(line.count("--dport 443"), 2, line)
+
+    def test_a_run_paired_with_cloud_takes_the_block_out(self):
+        relay = lambda *_, **__: [(None, None, None, "", ("192.0.2.9", 443))]
+        script, opened = self.script(relay), self.script(relay, blocked=False)
+        self.assertNotIn(" -I ", opened)
+        for line in script.splitlines()[1:]:
+            rule = line.split(" -C ", 1)[1].split(" 2>/dev/null", 1)[0]
+            self.assertIn(f"-D {rule}", opened)
+        with tempfile.TemporaryDirectory() as directory:
+            hosts = Path(directory) / "hosts"
+            hosts.write_text("127.0.0.1 localhost\n")
+            first = script.splitlines()[0].replace("/etc/hosts", str(hosts))
+            undo = opened.splitlines()[0].replace("/etc/hosts", str(hosts))
+            subprocess.run(["sh", "-ec", first], check=True)
+            self.assertIn("relay.ployz.dev", hosts.read_text())
+            subprocess.run(["sh", "-ec", undo], check=True)
+            self.assertEqual(hosts.read_text(), "127.0.0.1 localhost\n")
 
     def test_a_relay_that_does_not_resolve_still_has_its_name_pointed_away(self):
         script = self.script(boat.socket.gaierror("no name"))
