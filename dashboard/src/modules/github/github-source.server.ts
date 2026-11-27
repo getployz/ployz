@@ -224,7 +224,9 @@ export const makeSourceWorkspace = Effect.tryPromise({
 
 /** Remove a checkout's directory; one already gone, or one that can't be removed now, is left alone. */
 export const removeSourceWorkspace = (directory: string) =>
-  Effect.tryPromise(() => rm(directory, { recursive: true, force: true })).pipe(Effect.ignore);
+  Effect.tryPromise(() => rm(directory, { recursive: true, force: true })).pipe(
+    Effect.catchCause((cause) => Effect.logWarning("Could not remove a source checkout.", cause)),
+  );
 
 /** `response`'s repository archive, extracted into `directory`: its root. */
 export const extractGithubArchive = (response: Response, directory: string) => Effect.tryPromise({

@@ -91,3 +91,32 @@ describe("a Deploy's storage steps", () => {
     expect(read("../volume-placement/volume-placement.deploy.server.ts")).not.toContain("listActiveVolumeRuns");
   });
 });
+
+describe("a run in flight across a Cloud deploy", () => {
+  it("replays the GitHub starts its old steps recorded, and starts no build again", async () => {
+    const web = { build: "dep.web", service: "web", repository: "acme/web", repositoryId: 42, installationId: 7, hasNext: false };
+    const memo = new Map<string, unknown>([
+      ["record-run", null],
+      ["servers-lacking", []],
+      ["plan-builds", [web]],
+      ["github-start-web", { kind: "dispatched", runId: 9001 }],
+      ["github-open-web-0", false],
+      ["approval-0", false],
+      ["placement-0", { kind: "stopped" }],
+      ["place-volumes", []],
+      ["run-deployment", { ran: { id: "dep", status: "applied", remove: false } }],
+      ["finish-volumes", null],
+      ["delete-orphan-mirrors", []],
+    ]);
+    const ran: string[] = [];
+    await new InngestTestEngine({
+      function: createRunStoreDeployment(new Inngest({ id: "store-deployment-replay-test" })),
+      events: [admitted],
+      steps: [...memo.keys(), "github-start", "github-failed", "retire-old", "sync-uptime", "forget-run"]
+        .map((id) => ({ id, handler: () => { ran.push(id); return memo.get(id) ?? null; } })),
+    }).execute();
+    expect(ran).not.toContain("github-start");
+    expect(ran).not.toContain("github-failed");
+    expect(ran).toContain("run-deployment");
+  });
+});
