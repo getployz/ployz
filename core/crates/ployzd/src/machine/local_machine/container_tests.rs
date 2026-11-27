@@ -1149,6 +1149,38 @@ mod settled {
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 
+    /// A cancelled Deployment's peer pull held this Machine's shared turn, so the next
+    /// Deployment's creates waited for it. Work told its caller is gone ends, and frees the
+    /// turn for the exclusive work behind it.
+    #[tokio::test]
+    async fn a_caller_that_stops_waiting_frees_the_turn_its_work_held() {
+        let Settling {
+            local, data_dir, ..
+        } = settling().await;
+        let started = Arc::new(tokio::sync::Notify::new());
+        let caller = tokio::spawn({
+            let local = local.clone();
+            let started = Arc::clone(&started);
+            async move {
+                local
+                    .finish_shared_with_caller(move |_, gone| async move {
+                        started.notify_one();
+                        gone.cancelled().await;
+                        Ok(())
+                    })
+                    .await
+            }
+        });
+        started.notified().await;
+
+        caller.abort();
+
+        tokio::time::timeout(Duration::from_secs(30), local.wait_for_admitted_work())
+            .await
+            .expect("work whose caller stopped waiting still holds the turn");
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
     #[tokio::test]
     async fn removal_by_slot_waits_for_the_create_that_fills_it() {
         let Settling {

@@ -5,9 +5,10 @@
 //! [`super::switch`] sets out, so no two callers take them in different orders.
 //!
 //! Admitted work is detached from its RPC: a caller that stops waiting does not abandon
-//! it halfway, and the task holds its guards until the work ends. A peer image transfer
-//! is the one exception: it stops when its caller does, and cleans up before it frees
-//! its turn.
+//! it halfway, and the task holds its guards until the work ends. Work run through
+//! [`LocalMachine::finish_shared_with_caller`] is the one exception: it learns when its
+//! caller stops waiting, and a peer image transfer then stops and cleans up before it
+//! frees its turn.
 //!
 //! Each turn admitted work acts under checks the caller's access once taken, against the
 //! keys as they stand, and the work acts at the scope that check found: removing a key
@@ -106,6 +107,19 @@ impl LocalMachine {
     {
         let shared = self.owner.admission_lock().read_owned().await;
         self.finish_admitted(shared, work).await
+    }
+
+    /// [`Self::finish_shared`], handing `work` a token cancelled once this call's caller
+    /// stops waiting, so work that stops on it frees its turn for the next caller.
+    pub(super) async fn finish_shared_with_caller<T, F, Fut>(&self, work: F) -> Result<T, Error>
+    where
+        T: Send + 'static,
+        F: FnOnce(Admission, tokio_util::sync::CancellationToken) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<T, Error>> + Send + 'static,
+    {
+        let gone = tokio_util::sync::CancellationToken::new();
+        let _caller = gone.clone().drop_guard();
+        self.finish_shared(move |local| work(local, gone)).await
     }
 
     async fn finish_admitted<T, F, Fut, G>(&self, turn: G, work: F) -> Result<T, Error>

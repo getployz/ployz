@@ -96,8 +96,33 @@ async fn pull_and_tag(
         .run_until_cancelled(transfer)
         .await
         .unwrap_or_else(|| Err(Error::PeerPull("the caller stopped waiting".into())));
-    let _ = docker_cli(docker, &["image", "rm", pulled]).await;
+    if holds_name(docker, pulled).await {
+        let _ = docker_cli(docker, &["image", "rm", pulled]).await;
+    }
     result
+}
+
+/// Whether Docker holds `pulled` under that very name, so removing it removes only it. A
+/// pull that failed or was stopped may never have written it, and Docker resolves a
+/// missing digest name to an unnamed image of that digest, such as the source's own
+/// copy that another Deployment is still pulling, which `image rm` would then delete. A
+/// tag name resolves only to itself.
+async fn holds_name(docker: &std::path::Path, pulled: &str) -> bool {
+    if !pulled.contains('@') {
+        return true;
+    }
+    docker_cli(
+        docker,
+        &[
+            "image",
+            "inspect",
+            pulled,
+            "--format",
+            "{{range .RepoTags}}{{println .}}{{end}}{{range .RepoDigests}}{{println .}}{{end}}",
+        ],
+    )
+    .await
+    .is_ok_and(|names| names.lines().any(|name| name == pulled))
 }
 
 /// Refuse to write retention name `tag` unless `pulled` is the content it names, and
@@ -272,6 +297,11 @@ mod tests {
 cd "$(dirname "$0")"
 printf '%s\n' "$*" >> calls
 mode=$(cat mode)
+case "$1 $2 $5" in
+  'image inspect {{range'*)
+    if [ "$mode" = pull ]; then echo "No such image: $3" >&2; exit 1; fi
+    echo "$3"; exit 0 ;;
+esac
 case "$1 $2" in
   'image inspect')
     case "$mode" in
@@ -323,9 +353,14 @@ esac
                 if mode == "success" {
                     assert!(calls.contains(&format!("tag -- {pulled} {tag}")), "{calls}");
                 }
+                // A failed pull wrote no staging name, so there is none to remove.
+                let removed = (mode != "pull").then(|| format!("image rm {pulled}"));
                 assert_eq!(
-                    calls.lines().last(),
-                    Some(format!("image rm {pulled}").as_str()),
+                    calls
+                        .lines()
+                        .last()
+                        .filter(|line| line.starts_with("image rm")),
+                    removed.as_deref(),
                     "{mode}: {calls}"
                 );
                 assert_eq!(
@@ -365,6 +400,9 @@ esac
             r#"#!/bin/sh
 cd "$(dirname "$0")"
 printf '%s\n' "$*" >> calls
+case "$1 $2 $5" in
+  'image inspect {{range'*) echo "$3"; exit 0 ;;
+esac
 case "$1 $2" in
   'image inspect')
     case "$3" in
@@ -444,18 +482,90 @@ esac
         fs::remove_dir_all(root).unwrap();
     }
 
+    /// A Docker that answers a missing digest name with an unnamed image of that digest,
+    /// as Docker does, so `image rm` of a staging name a pull never wrote deletes that image.
+    /// `pull` acts as `mode` says: it `fail`s, or it `hang`s after naming its pid in `started`.
+    fn docker_with_unnamed_copy(root: &std::path::Path) -> std::path::PathBuf {
+        use std::{fs, os::unix::fs::PermissionsExt as _};
+
+        fs::create_dir(root).unwrap();
+        fs::write(root.join("names"), "").unwrap();
+        fs::write(root.join("unnamed"), "").unwrap();
+        let docker = root.join("docker");
+        fs::write(
+            &docker,
+            r#"#!/bin/sh
+cd "$(dirname "$0")"
+printf '%s\n' "$*" >> calls
+case "$1 $2" in
+  'image inspect')
+    if grep -qxF "$3" names; then echo "$3"
+    elif [ -e unnamed ]; then :
+    else echo "No such image: $3" >&2; exit 1; fi ;;
+  'image rm')
+    if grep -qxF "$3" names; then grep -vxF "$3" names > names.new; mv names.new names
+    elif [ -e unnamed ]; then rm unnamed; echo Deleted
+    else echo "No such image: $3" >&2; exit 1; fi ;;
+  pull*)
+    case "$(cat mode)" in
+      fail) echo pull-failed >&2; exit 1 ;;
+      hang) echo $$ > started; exec sleep 600 ;;
+    esac ;;
+esac
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&docker, fs::Permissions::from_mode(0o700)).unwrap();
+        docker
+    }
+
+    /// Two Deployments may pull one digest at once, from a source whose copy has no name.
+    /// A pull that failed before writing its staging name must not delete that copy, which
+    /// the other pull still reads.
+    #[tokio::test]
+    async fn a_failed_pull_removes_no_other_image_of_its_digest() {
+        let root = std::env::temp_dir().join(format!(
+            "ployz-failed-pull-{}",
+            ployz_core::MachineId::random()
+        ));
+        let docker = docker_with_unnamed_copy(&root);
+        std::fs::write(root.join("mode"), "fail").unwrap();
+        let image = format!("app@sha256:{}", "1".repeat(64));
+        let pulled = format!("127.0.0.1:1234/{image}");
+
+        let result = pull_and_tag(
+            &image,
+            &pulled,
+            None,
+            "linux/amd64",
+            &docker,
+            &CancellationToken::new(),
+        )
+        .await;
+
+        assert!(result.is_err(), "{result:?}");
+        let calls = std::fs::read_to_string(root.join("calls")).unwrap();
+        assert!(
+            root.join("unnamed").exists(),
+            "deleted the other copy: {calls}"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     /// A cancelled Deployment's transfer must not run on: it holds the admission turn the
     /// next Deployment's creates wait for. Once the caller is gone, the pull ends, its
-    /// Docker CLI is killed, and the staging name is removed, with no tag written.
+    /// Docker CLI is killed, and no tag is written. The pull never wrote its staging name,
+    /// so the unnamed copy of its digest that another pull reads is left alone.
     #[tokio::test]
     async fn a_pull_whose_caller_is_gone_stops_and_cleans_up() {
-        use std::{fs, os::unix::fs::PermissionsExt as _};
+        use std::fs;
 
         let root = std::env::temp_dir().join(format!(
             "ployz-gone-pull-{}",
             ployz_core::MachineId::random()
         ));
-        fs::create_dir(&root).unwrap();
+        let docker = docker_with_unnamed_copy(&root);
+        fs::write(root.join("mode"), "hang").unwrap();
         let started = root.join("started");
         assert!(
             std::process::Command::new("mkfifo")
@@ -464,19 +574,6 @@ esac
                 .unwrap()
                 .success()
         );
-        let docker = root.join("docker");
-        fs::write(
-            &docker,
-            r#"#!/bin/sh
-cd "$(dirname "$0")"
-printf '%s\n' "$*" >> calls
-case "$1" in
-  pull) echo $$ > started; exec sleep 600 ;;
-esac
-"#,
-        )
-        .unwrap();
-        fs::set_permissions(&docker, fs::Permissions::from_mode(0o700)).unwrap();
         let image = format!("app@sha256:{}", "1".repeat(64));
         let pulled = format!("127.0.0.1:1234/{image}");
         let gone = CancellationToken::new();
@@ -499,10 +596,9 @@ esac
 
         assert!(result.is_err(), "{result:?}");
         let calls = fs::read_to_string(root.join("calls")).unwrap();
-        assert_eq!(
-            calls.lines().last(),
-            Some(format!("image rm {pulled}").as_str()),
-            "{calls}"
+        assert!(
+            root.join("unnamed").exists(),
+            "deleted the other copy: {calls}"
         );
         assert!(
             !calls.lines().any(|line| line.starts_with("tag ")),

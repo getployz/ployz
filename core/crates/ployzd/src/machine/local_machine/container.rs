@@ -1138,9 +1138,7 @@ impl LocalMachine {
         request: PullImageFromMachineRequest,
     ) -> Result<ImagePulled, Error> {
         self.peer_pull_as(self.scope_now()?, &request)?;
-        let gone = tokio_util::sync::CancellationToken::new();
-        let _caller = gone.clone().drop_guard();
-        self.finish_shared(move |local| async move {
+        self.finish_shared_with_caller(move |local, gone| async move {
             local.peer_pull_as(local.scope(), &request)?;
             let containers = local.docker()?;
             if let Err(error) = crate::docker::pull_from_ingest(
