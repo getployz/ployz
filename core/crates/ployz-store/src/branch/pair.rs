@@ -720,7 +720,7 @@ pub(super) fn hint(
                 value: value.clone(),
                 arrival: Arrival::Hint,
             };
-            let kept = ledger::Kept::NEITHER;
+            let kept = ledger::Kept::Neither;
             ledger::write(tx, who, receiver, &arrived, (stored.as_ref(), kept))
         }
     }
@@ -912,12 +912,12 @@ pub(super) mod ledger {
                     sync: sync.clone(),
                     was: was.clone(),
                 },
-                Kept::BOTH,
+                Kept::Both,
             ),
             (Owner::None, Some((prior, Claim::Nobody))) => {
-                (prior.clone(), Claim::Nobody, Kept::PRIOR)
+                (prior.clone(), Claim::Nobody, Kept::Prior)
             }
-            (Owner::None, None) => (prior, Claim::Nobody, Kept::NEITHER),
+            (Owner::None, None) => (prior, Claim::Nobody, Kept::Neither),
             (
                 Owner::Proposal { id, sync },
                 Some((
@@ -935,7 +935,7 @@ pub(super) mod ledger {
                     proposal: id.clone(),
                     was: kept.clone(),
                 },
-                Kept::BOTH,
+                Kept::Both,
             ),
             (Owner::Proposal { id, sync }, _) => (
                 prior,
@@ -944,7 +944,7 @@ pub(super) mod ledger {
                     proposal: id.clone(),
                     was,
                 },
-                Kept::NEITHER,
+                Kept::Neither,
             ),
         };
         (Arrival::Pending { prior, claim }, kept)
@@ -952,25 +952,11 @@ pub(super) mod ledger {
 
     /// Which of a stored pending row's `prior` and `was` a landing keeps.
     #[derive(Clone, Copy, Debug, PartialEq)]
-    pub(super) struct Kept {
-        pub(super) prior: bool,
-        pub(super) was: bool,
-    }
-
-    impl Kept {
-        pub(super) const BOTH: Self = Self {
-            prior: true,
-            was: true,
-        };
+    pub(super) enum Kept {
+        Both,
         /// A row no Sync claims keeps no `was` ([`UNKEPT`]).
-        pub(super) const PRIOR: Self = Self {
-            prior: true,
-            was: false,
-        };
-        pub(super) const NEITHER: Self = Self {
-            prior: false,
-            was: false,
-        };
+        Prior,
+        Neither,
     }
 
     /// What a Use hint writes over `stored`, the row that arrived there from that side
@@ -1053,12 +1039,16 @@ pub(super) mod ledger {
             return Ok(());
         };
         let from = Columns::of(stored);
-        let keep = |kept: bool| if kept { "kept" } else { "landed" };
+        let (prior, was) = match kept {
+            Kept::Both => ("kept", "kept"),
+            Kept::Prior => ("kept", "landed"),
+            Kept::Neither => ("landed", "landed"),
+        };
         params.push(from.state.into());
         params.push(from.sync.into());
         params.push(from.proposal.into());
-        params.push(keep(kept.prior).into());
-        params.push(keep(kept.was).into());
+        params.push(prior.into());
+        params.push(was.into());
         let changed = tx.execute(
             "UPDATE config_sync_arrival SET how = ?5, state = ?6, value = ?7, \
              prior = CASE WHEN ?16 = 'kept' THEN prior ELSE ?8 END, \
@@ -1803,7 +1793,7 @@ mod tests {
     fn a_landing_nobody_owns_over_a_released_row_keeps_its_sync_was_and_prior() {
         assert_eq!(
             landed(Some(&pending(released())), Owner::None),
-            (released_kept(), Kept::BOTH)
+            (released_kept(), Kept::Both)
         );
     }
 
@@ -1811,7 +1801,7 @@ mod tests {
     fn a_landing_nobody_owns_over_an_owned_row_releases_it_with_its_sync_was_and_prior() {
         assert_eq!(
             landed(Some(&pending(owned(1))), Owner::None),
-            (released_kept(), Kept::BOTH)
+            (released_kept(), Kept::Both)
         );
     }
 
@@ -1824,7 +1814,7 @@ mod tests {
                     prior: cell("stored prior"),
                     claim: Claim::Nobody,
                 },
-                Kept::PRIOR
+                Kept::Prior
             )
         );
     }
@@ -1845,7 +1835,7 @@ mod tests {
         ] {
             assert_eq!(
                 landed(stored.as_ref(), Owner::None),
-                (fresh.clone(), Kept::NEITHER),
+                (fresh.clone(), Kept::Neither),
                 "{stored:?}"
             );
         }
@@ -1869,7 +1859,7 @@ mod tests {
                         was: sealed("stored was"),
                     },
                 },
-                Kept::BOTH
+                Kept::Both
             )
         );
     }
@@ -1901,7 +1891,7 @@ mod tests {
         ] {
             assert_eq!(
                 landed(stored.as_ref(), owner),
-                (fresh.clone(), Kept::NEITHER),
+                (fresh.clone(), Kept::Neither),
                 "{stored:?}"
             );
         }
@@ -2063,7 +2053,7 @@ mod tests {
                 value: cell("3"),
                 arrival: read.clone(),
             };
-            let landed = ledger::write(tx, &who, &receiver, &arrived, (Some(&read), Kept::PRIOR));
+            let landed = ledger::write(tx, &who, &receiver, &arrived, (Some(&read), Kept::Prior));
             let gone = row_id(&uuid(3), "variables.GONE").unwrap();
             let key = ledger::Key {
                 receiver: receiver.as_str(),
