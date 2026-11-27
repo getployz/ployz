@@ -677,8 +677,8 @@ pub enum RunEvidence {
     /// Record the traffic switch when present. Renew the window in which followers
     /// wait for cleanup while the runner is still present.
     Finishing { live_at: Option<i64> },
-    /// The runner finished cleanup and recorded any warnings it could.
-    Finished,
+    /// The runner finished cleanup. Record its warnings before clearing the cleanup lease.
+    Finished { warnings: Vec<DeployWarning> },
     /// These runtime Services completed every planned operation while execution
     /// still runs: each reads Deployed (or Removed) and enters Applied State now,
     /// whatever happens to the runner later.

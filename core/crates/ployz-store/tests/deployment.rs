@@ -433,13 +433,58 @@ fn a_deployment_keeps_live_at_after_the_store_records_its_end_and_cleanup() {
     store
         .record(&id(1), &a, succeeded(&["web", "api"]))
         .unwrap();
-    store.record(&id(1), &a, RunEvidence::Finished).unwrap();
+    store
+        .record(
+            &id(1),
+            &a,
+            RunEvidence::Finished {
+                warnings: Vec::new(),
+            },
+        )
+        .unwrap();
 
     let deployment = summary(&store, &who, 1);
     assert_eq!(deployment.live_at, Some(at));
     assert!(at <= deployment.ended_at.unwrap());
     assert_eq!(deployment.cleanup, None);
     assert_eq!(serde_json::to_value(deployment).unwrap()["live_at"], at);
+}
+
+#[test]
+fn a_late_finishing_write_cannot_reopen_expired_cleanup() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    let at = store.claim(&id(1), &a).unwrap().deployment.started_at;
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Finishing { live_at: at })
+        .unwrap();
+    assert_eq!(
+        summary(&store, &who, 1).cleanup,
+        Some(ployz_store::CleanupStatus::Pending)
+    );
+    rewrite_run(&url, 1, |run| run["cleanup_until"] = json!(1));
+    store
+        .record(&id(1), &a, succeeded(&["web", "api"]))
+        .unwrap();
+    let expired = summary(&store, &who, 1);
+    assert_eq!(
+        expired.cleanup,
+        Some(ployz_store::CleanupStatus::Unconfirmed)
+    );
+
+    for live_at in [None, at] {
+        assert_eq!(
+            code(store.record(&id(1), &a, RunEvidence::Finishing { live_at })),
+            RpcErrorCode::Conflict
+        );
+        assert_eq!(summary(&store, &who, 1), expired);
+    }
 }
 
 #[test]
@@ -602,7 +647,15 @@ fn a_late_switch_changes_neither_an_applied_deployment_nor_its_cleanup() {
         .unwrap();
     assert_eq!(summary(&store, &who, 1), before);
 
-    store.record(&id(1), &a, RunEvidence::Finished).unwrap();
+    store
+        .record(
+            &id(1),
+            &a,
+            RunEvidence::Finished {
+                warnings: Vec::new(),
+            },
+        )
+        .unwrap();
     store
         .record(&id(1), &a, RunEvidence::Finishing { live_at: Some(at) })
         .unwrap();

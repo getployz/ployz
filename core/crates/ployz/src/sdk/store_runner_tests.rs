@@ -90,7 +90,7 @@ fn admitted_in(
             over: Latch::new(),
             steps: std::sync::Mutex::default(),
             pending_live_at: std::sync::Mutex::default(),
-            lease_until: tokio::sync::watch::Sender::default(),
+            lease: RunLease::default(),
             reader: None,
         },
         actor,
@@ -171,7 +171,7 @@ async fn a_runner_plans_with_the_runs_its_claim_reports_ended() {
         over: Latch::new(),
         steps: std::sync::Mutex::default(),
         pending_live_at: std::sync::Mutex::default(),
-        lease_until: tokio::sync::watch::Sender::default(),
+        lease: RunLease::default(),
         reader: None,
     };
 
@@ -2076,7 +2076,7 @@ async fn a_deploy_with_a_reused_build_still_recreates_the_services_its_claim_lis
         over: Latch::new(),
         steps: std::sync::Mutex::default(),
         pending_live_at: std::sync::Mutex::default(),
-        lease_until: tokio::sync::watch::Sender::default(),
+        lease: RunLease::default(),
         reader: None,
     };
     let claimed = run.claim(Operator::Cloud).await.unwrap();
@@ -2214,7 +2214,7 @@ async fn redeploy(
         reader: None,
         steps: std::sync::Mutex::default(),
         pending_live_at: std::sync::Mutex::default(),
-        lease_until: tokio::sync::watch::Sender::default(),
+        lease: RunLease::default(),
     };
     let claimed = run.claim(Operator::Cloud).await.unwrap();
     (run, claimed)
@@ -2447,7 +2447,9 @@ async fn a_join_failure_after_live_keeps_cleanup_pending_and_returns_an_error() 
         join: tokio::sync::Mutex::new(Some(task)),
     };
 
-    let result = run.finish_retirement(&running, Ok(applied)).await;
+    let result = run
+        .finish_retirement(&running, Ok(applied), Vec::new())
+        .await;
     let view = run
         .store
         .read(
@@ -2647,7 +2649,7 @@ async fn a_join_error_during_a_store_outage(expire: bool) {
         events: tokio::sync::Mutex::new(None),
         join: tokio::sync::Mutex::new(Some(task)),
     };
-    let finishing = run.finish_retirement(&running, recorded);
+    let finishing = run.finish_retirement(&running, recorded, Vec::new());
     tokio::pin!(finishing);
     assert!(
         // real-wait: let the blocking Store reject an actual evidence write.
@@ -2718,12 +2720,24 @@ async fn an_unacknowledged_finished_write_returns_applied_with_cleanup_unconfirm
            WHEN OLD.run LIKE '%"cleanup_until":%' AND NEW.run NOT LIKE '%"cleanup_until":%'
            BEGIN SELECT RAISE(ABORT, 'could not record Finished'); END"#,
     );
+    let warning = DeployWarning::LeftRunning {
+        service: "shop-production/web".parse().unwrap(),
+        machine: "edge".into(),
+        container_id: ployz_core::ContainerId::parse("a".repeat(64)).unwrap(),
+        reason: "docker is busy".into(),
+    };
+    let (send, events) = tokio::sync::mpsc::unbounded_channel();
+    send.send(ployz_core::DeployEvent::Warning {
+        warning: warning.clone(),
+    })
+    .unwrap();
+    drop(send);
     let running = crate::sdk::RunningDeploy {
         cancel: CancellationToken::new(),
-        events: tokio::sync::Mutex::new(None),
+        events: tokio::sync::Mutex::new(Some(events)),
         join: tokio::sync::Mutex::new(Some(tokio::spawn(async move { Ok(outcome) }))),
     };
-    let finishing = run.finish_retirement(&running, recorded);
+    let finishing = run.finish_retirement(&running, recorded, Vec::new());
     tokio::pin!(finishing);
     assert!(
         tokio::time::timeout(Duration::from_millis(250), &mut finishing)
@@ -2737,6 +2751,11 @@ async fn an_unacknowledged_finished_write_returns_applied_with_cleanup_unconfirm
         .unwrap();
     assert_eq!(summary.status, DeploymentStatus::Applied);
     assert_eq!(summary.live_at, Some(at));
+    assert!(
+        summary
+            .warnings
+            .contains(&DeploymentWarning::Deploy { warning })
+    );
     assert_eq!(
         summary.cleanup,
         Some(ployz_store::CleanupStatus::Unconfirmed)
@@ -2750,6 +2769,7 @@ async fn an_unacknowledged_finished_write_returns_applied_with_cleanup_unconfirm
             },
         )
         .unwrap();
+    assert!(view.deployment.warnings.is_empty());
     assert_eq!(
         view.deployment.cleanup,
         Some(ployz_store::CleanupStatus::Pending)
@@ -2791,7 +2811,7 @@ async fn the_join_error_returns_when_the_store_is_unreadable_past_the_lease() {
         events: tokio::sync::Mutex::new(None),
         join: tokio::sync::Mutex::new(Some(task)),
     };
-    let finishing = run.finish_retirement(&running, recorded);
+    let finishing = run.finish_retirement(&running, recorded, Vec::new());
     tokio::pin!(finishing);
     assert!(
         tokio::time::timeout(Duration::from_millis(250), &mut finishing)
@@ -2866,7 +2886,11 @@ async fn a_join_failure_records_pending_live_at_after_the_store_recovers() {
         join: tokio::sync::Mutex::new(Some(task)),
     };
 
-    assert!(run.finish_retirement(&running, recorded).await.is_err());
+    assert!(
+        run.finish_retirement(&running, recorded, Vec::new())
+            .await
+            .is_err()
+    );
     let view = run
         .store
         .read(

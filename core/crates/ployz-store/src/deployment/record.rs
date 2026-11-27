@@ -42,7 +42,7 @@ pub(crate) fn record(
     }
     if !matches!(
         evidence,
-        RunEvidence::Finishing { .. } | RunEvidence::Finished
+        RunEvidence::Finishing { .. } | RunEvidence::Finished { .. }
     ) && matches!(
         stored.summary.status,
         DeploymentStatus::Running | DeploymentStatus::Cancelling
@@ -69,7 +69,7 @@ pub(crate) fn record(
         stored.run.live_at = live_at;
         if !matches!(
             evidence,
-            RunEvidence::Finishing { .. } | RunEvidence::Finished
+            RunEvidence::Finishing { .. } | RunEvidence::Finished { .. }
         ) {
             stored
                 .run
@@ -90,6 +90,12 @@ pub(crate) fn record(
             Ok(receipt(stored))
         }
         RunEvidence::Finishing { live_at } => {
+            if stored.summary.cleanup == Some(CleanupStatus::Unconfirmed) {
+                return Err(error::conflict(
+                    "The Deployment's cleanup lease expired",
+                    json!({ "deployment": id }),
+                ));
+            }
             if live_at.is_some() && !claimed {
                 return Ok(receipt(stored));
             }
@@ -103,8 +109,12 @@ pub(crate) fn record(
             save(tx, &mut stored)?;
             Ok(receipt(stored))
         }
-        RunEvidence::Finished => {
-            if stored.run.cleanup_until.take().is_some() || stamped {
+        RunEvidence::Finished { warnings } => {
+            let mut changed = stored.run.cleanup_until.take().is_some() || stamped;
+            for warning in warnings {
+                changed |= add_warning(&mut stored, DeploymentWarning::Deploy { warning });
+            }
+            if changed {
                 save(tx, &mut stored)?;
             }
             Ok(receipt(stored))
@@ -540,12 +550,18 @@ fn warn(
     if !retiring {
         running(&stored)?;
     }
-    if !stored.run.warnings.contains(&warning) {
-        stored.run.warnings.push(warning);
-    }
-    stored.summary.warnings = stored.run.summary_warnings();
+    add_warning(&mut stored, warning);
     save(tx, &mut stored)?;
     Ok(receipt(stored))
+}
+
+fn add_warning(stored: &mut Stored, warning: DeploymentWarning) -> bool {
+    if stored.run.warnings.contains(&warning) {
+        return false;
+    }
+    stored.run.warnings.push(warning);
+    stored.summary.warnings = stored.run.summary_warnings();
+    true
 }
 
 /// Why a Deploy failed, for users: the failed operation's Service, by its current
@@ -722,7 +738,7 @@ pub(super) fn end(
         _ => status,
     };
     let ended_at = now();
-    if stored.run.cleanup_until.is_some() {
+    if stored.run.cleanup(stored.read_at.max(ended_at)) == Some(CleanupStatus::Pending) {
         stored.run.cleanup_until = Some(ended_at + LEASE);
     }
     stored.standing = stored.standing.end(status, ended_at);

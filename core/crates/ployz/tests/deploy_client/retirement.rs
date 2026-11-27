@@ -447,6 +447,44 @@ async fn a_failed_scale_down_after_the_switch_keeps_the_live_timestamp() {
 }
 
 #[tokio::test]
+async fn finished_records_the_retirement_warning_even_when_a_separate_warning_write_is_refused() {
+    let service = DeployService::new(machine('a', "one"))
+        .lists_created()
+        .fail_removals(ployz_core::RpcError::internal("docker is busy"));
+    let shop = Shop::deployed(service).await;
+    let url = format!("sqlite:{}", shop.home.path().join("store.db").display());
+    ployz_store::testing::backend::execute(
+        &url,
+        "CREATE TRIGGER reject_warning_alone BEFORE UPDATE ON config_deployment
+         WHEN json_extract(NEW.run, '$.warnings') IS NOT NULL
+          AND json_extract(NEW.run, '$.cleanup_until') IS NOT NULL
+         BEGIN SELECT RAISE(ABORT, 'warning must accompany Finished'); END",
+    );
+
+    let output = shop.cli(&["deploy", "--recreate"]).output().await.unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(3), "{stderr}");
+    assert!(
+        stderr.contains("left running") && stderr.contains("docker is busy"),
+        "{stderr}"
+    );
+    let shown = shop
+        .cli(&["--json", "deployment", "show", "2"])
+        .output()
+        .await
+        .unwrap();
+    assert!(shown.status.success(), "{shown:?}");
+    let view: ployz_store::DeploymentView = serde_json::from_slice(&shown.stdout).unwrap();
+    assert_eq!(view.deployment.status, DeploymentStatus::Applied);
+    assert_eq!(view.deployment.cleanup, None);
+    assert!(view.deployment.warnings.iter().any(|warning| {
+        matches!(warning, DeploymentWarning::Deploy {
+            warning: DeployWarning::LeftRunning { reason, .. }
+        } if reason.contains("docker is busy"))
+    }));
+}
+
+#[tokio::test]
 async fn a_start_first_deploy_reports_live_before_failed_cleanup_and_exits_partial() {
     let service = DeployService::new(machine('a', "one"))
         .lists_created()

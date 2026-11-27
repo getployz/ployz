@@ -686,13 +686,7 @@ pub(super) fn execute(
     let mut runner = match store.local() {
         // Admission can end it at once, with nothing to run.
         Some(local) if admitted.status.in_flight() => {
-            let ended = tokio_util::sync::CancellationToken::new();
-            Some(OwnedRunner {
-                store,
-                id: admitted.id.clone(),
-                handle: Some(run_here(matches, local, admitted, source, ended.clone())?),
-                ended,
-            })
+            Some(run_here(matches, store, local, admitted, source)?)
         }
         Some(_) | None => None,
     };
@@ -737,35 +731,17 @@ pub(super) fn execute(
     };
     if let Some(runner) = runner.as_mut() {
         let settled = runner.settle(signal.is_cancelled());
-        let final_view = store.read(&ployz_store::DeploymentQuery {
-            id: admitted.id.clone(),
-        });
-        match final_view {
-            Ok(mut view) => {
-                if view.deployment.cleanup == Some(ployz_store::CleanupStatus::Pending)
-                    && settled.as_ref().is_ok_and(|summary| {
-                        summary.as_ref().is_some_and(|summary| {
-                            summary.cleanup == Some(ployz_store::CleanupStatus::Unconfirmed)
-                        })
-                    })
-                {
-                    view.deployment.cleanup = Some(ployz_store::CleanupStatus::Unconfirmed);
-                }
-                followed.view = view;
-            }
-            Err(_) => {
-                if let Ok(Some(summary)) = &settled {
-                    followed.view.deployment = summary.clone();
-                }
-            }
-        }
+        runner.refresh(
+            &mut followed,
+            settled.as_ref().ok().and_then(Option::as_ref),
+        );
         if let Err(error) = settled {
             let interrupted = signal.is_cancelled();
             // A newer Deployment that took over the Environment left this one unknown:
             // name it rather than the store's refusal to record.
             let newer = (!interrupted
                 && followed.view.deployment.status == DeploymentStatus::Unknown)
-                .then(|| taken_over_by(store, &followed.view))
+                .then(|| taken_over_by(runner, &followed.view))
                 .flatten();
             let error = match newer {
                 Some(newer) => {
@@ -872,13 +848,13 @@ pub(super) fn execute(
 
 /// Run the Deployment in this process, as Cloud's runner does, on the Cluster the
 /// command line or context names; `source` is its upload.
-fn run_here(
+fn run_here<'store, 'matches>(
     matches: &ArgMatches,
+    store: &'store Store<'matches>,
     local: &std::sync::Arc<ConfigStore>,
     admitted: &DeploymentSummary,
     source: Option<&Path>,
-    ended: tokio_util::sync::CancellationToken,
-) -> Result<std::thread::JoinHandle<Result<DeploymentSummary, Error>>, Error> {
+) -> Result<OwnedRunner<'store, 'matches>, Error> {
     let direct = crate::cli::connection(matches);
     let context = matches.get_one::<String>("context").map(String::as_str);
     let connections = match crate::connect::resolve_connections(
@@ -899,27 +875,11 @@ fn run_here(
         reader: None,
     };
     let (local, id) = (std::sync::Arc::clone(local), admitted.id.clone());
-    let runtime = runtime()?;
-    let handle = std::thread::Builder::new()
-        .name("ployz-runner".into())
-        .stack_size(RUNNER_STACK)
-        .spawn(move || {
-            // Locals drop last to first, on a panic too. Dropping the runtime waits out its
-            // blocking tasks, so it goes before `ended` wakes following.
-            let _ended = ended.drop_guard();
-            let runtime = runtime;
-            runtime
-                .block_on(crate::sdk::run_deployment(
-                    ployz_core::Operator::Cli,
-                    local,
-                    id,
-                    runner,
-                    connections,
-                    Ok(sources),
-                ))
-                .map_err(Error::from)
-        })?;
-    Ok(handle)
+    let lease = crate::sdk::RunLease::default();
+    let work = lease
+        .clone()
+        .run_local(local, id, runner, connections, Ok(sources));
+    OwnedRunner::start(store, admitted.id.clone(), lease, work)
 }
 
 /// A debug build's Deploy outgrows a spawned thread's default 2 MiB once it executes.
@@ -931,15 +891,106 @@ fn upload_again(environment: &ployz_store::EnvironmentSummary) -> String {
     super::store::next_in(&environment.project, &environment.name, &["up"])
 }
 
+/// Store work may still be blocked after the lease expires.
+struct LeaseRuntime(Option<tokio::runtime::Runtime>);
+
+impl LeaseRuntime {
+    fn new() -> Result<Self, Error> {
+        Ok(Self(Some(runtime()?)))
+    }
+
+    fn block_on<F: std::future::Future>(&self, work: F) -> F::Output {
+        self.0
+            .as_ref()
+            .expect("runtime is still owned")
+            .block_on(work)
+    }
+}
+
+impl Drop for LeaseRuntime {
+    fn drop(&mut self) {
+        if let Some(runtime) = self.0.take() {
+            runtime.shutdown_background();
+        }
+    }
+}
+
 struct OwnedRunner<'store, 'matches> {
     store: &'store Store<'matches>,
     id: DeploymentId,
+    lease: crate::sdk::RunLease,
+    runtime: LeaseRuntime,
     handle: Option<std::thread::JoinHandle<Result<DeploymentSummary, Error>>>,
     /// Cancelled when the runner thread returns, so following wakes at once.
     ended: tokio_util::sync::CancellationToken,
 }
 
-impl OwnedRunner<'_, '_> {
+impl<'store, 'matches> OwnedRunner<'store, 'matches> {
+    fn start(
+        store: &'store Store<'matches>,
+        id: DeploymentId,
+        lease: crate::sdk::RunLease,
+        work: impl std::future::Future<Output = Result<DeploymentSummary, ployz_core::RpcError>>
+        + Send
+        + 'static,
+    ) -> Result<Self, Error> {
+        let runtime = LeaseRuntime::new()?;
+        let worker = LeaseRuntime::new()?;
+        let ended = tokio_util::sync::CancellationToken::new();
+        let done = ended.clone();
+        let handle = std::thread::Builder::new()
+            .name("ployz-runner".into())
+            .stack_size(RUNNER_STACK)
+            .spawn(move || {
+                let _ended = done.drop_guard();
+                let worker = worker;
+                worker.block_on(work).map_err(Error::from)
+            })?;
+        Ok(Self {
+            store,
+            id,
+            lease,
+            runtime,
+            handle: Some(handle),
+            ended,
+        })
+    }
+
+    fn call<T: Send + 'static>(
+        &self,
+        work: impl FnOnce(&ConfigStore, &ployz_store::Actor) -> Result<T, ployz_core::RpcError>
+        + Send
+        + 'static,
+    ) -> Result<T, Error> {
+        let super::store::Backend::Local(local, actor) = self.store.backend() else {
+            unreachable!("an owned runner uses the local Store");
+        };
+        let actor = actor.clone();
+        self.runtime
+            .block_on(self.lease.wait(crate::sdk::store_call(local, move |store| {
+                work(store, &actor)
+            })))?
+            .map_err(Error::from)
+    }
+
+    fn read(&self, id: DeploymentId) -> Result<DeploymentView, Error> {
+        self.call(move |store, actor| store.read(actor, &ployz_store::DeploymentQuery { id }))
+    }
+
+    fn refresh(&self, followed: &mut Followed, summary: Option<&DeploymentSummary>) {
+        if let Ok(view) = self.read(self.id.clone()) {
+            followed.view = view;
+        }
+        if let Some(summary) = summary {
+            followed.view.deployment = summary.clone();
+        }
+        if self.lease.expired()
+            && followed.view.deployment.cleanup == Some(ployz_store::CleanupStatus::Pending)
+        {
+            followed.view.deployment.cleanup = Some(ployz_store::CleanupStatus::Unconfirmed);
+        }
+    }
+
     fn finished(&self) -> bool {
         self.handle
             .as_ref()
@@ -948,11 +999,8 @@ impl OwnedRunner<'_, '_> {
 
     fn settle(&mut self, cancel: bool) -> Result<Option<DeploymentSummary>, Error> {
         let cancellation = if cancel && !self.finished() {
-            self.store
-                .write(&Cancel {
-                    deployment: self.id.clone(),
-                })
-                .map(|_| ())
+            let deployment = self.id.clone();
+            self.call(move |store, actor| store.write(actor, &Cancel { deployment }).map(|_| ()))
         } else {
             Ok(())
         };
@@ -966,10 +1014,12 @@ impl OwnedRunner<'_, '_> {
             })
             .transpose()?;
         let summary = ended.transpose()?;
-        if let Err(error) = cancellation {
-            let view = self.store.read(&ployz_store::DeploymentQuery {
-                id: self.id.clone(),
-            });
+        if let Err(error) = cancellation
+            && !summary
+                .as_ref()
+                .is_some_and(|summary| !summary.status.in_flight())
+        {
+            let view = self.read(self.id.clone());
             if !view.is_ok_and(|view| !view.deployment.status.in_flight()) {
                 return Err(error.context("Could not confirm that local Deployment work stopped."));
             }
@@ -1080,7 +1130,10 @@ fn follow(
         if signal.is_cancelled() {
             return followed.ok_or_else(Error::cancelled);
         }
-        let read = store.read(&ployz_store::DeploymentQuery { id: id.clone() });
+        let read = match runner {
+            Some(runner) => runner.read(id.clone()),
+            None => store.read(&ployz_store::DeploymentQuery { id: id.clone() }),
+        };
         if signal.is_cancelled() {
             if let Ok(view) = read {
                 tap(&view, &mut events, &mut last);
@@ -1097,7 +1150,23 @@ fn follow(
             }
             return followed.ok_or_else(Error::cancelled);
         }
-        let view = read.map_err(|error| lost(error, &tracked))?;
+        let view = match read {
+            Ok(view) => view,
+            Err(error) => {
+                if let Some(runner) = runner
+                    && followed.is_some()
+                {
+                    if runner.lease.expired() || runner.finished() {
+                        return followed.ok_or(error);
+                    }
+                    if error.report().code == RpcErrorCode::Unavailable {
+                        wait_for_follow(&wait_runtime, signal, &ended);
+                        continue;
+                    }
+                }
+                return Err(lost(error, &tracked));
+            }
+        };
         let current = if let Some(current) = followed.as_mut() {
             current.view = view;
             current
@@ -1181,18 +1250,26 @@ fn follow(
         if runner.is_some_and(OwnedRunner::finished) || !still_following(&current.view.deployment) {
             return followed.ok_or_else(Error::cancelled);
         }
-        wait_runtime.block_on(async {
-            tokio::select! {
-                () = signal.cancelled() => {},
-                () = ended.cancelled() => {},
-                () = tokio::time::sleep(FOLLOW_POLL) => {},
-            }
-        });
+        wait_for_follow(&wait_runtime, signal, &ended);
         // The thread may still be exiting; later reads fall back to the poll.
         if ended.is_cancelled() {
             ended = tokio_util::sync::CancellationToken::new();
         }
     }
+}
+
+fn wait_for_follow(
+    runtime: &tokio::runtime::Runtime,
+    signal: &tokio_util::sync::CancellationToken,
+    ended: &tokio_util::sync::CancellationToken,
+) {
+    runtime.block_on(async {
+        tokio::select! {
+            () = signal.cancelled() => {},
+            () = ended.cancelled() => {},
+            () = tokio::time::sleep(FOLLOW_POLL) => {},
+        }
+    });
 }
 
 fn still_following(deployment: &DeploymentSummary) -> bool {
@@ -1222,8 +1299,11 @@ fn ahead(store: &Store, view: &DeploymentView) -> Option<DeploymentSummary> {
 
 /// The newer Deployment that took `view`'s Environment over, among its newest page,
 /// the latest and those in flight. None when none did or the read fails.
-fn taken_over_by(store: &Store, view: &DeploymentView) -> Option<DeploymentSummary> {
-    let page = store.read(&deployments_of(&view.environment)).ok()?;
+fn taken_over_by(runner: &OwnedRunner<'_, '_>, view: &DeploymentView) -> Option<DeploymentSummary> {
+    let query = deployments_of(&view.environment);
+    let page = runner
+        .call(move |store, actor| store.read(actor, &query))
+        .ok()?;
     let candidates: Vec<DeploymentSummary> = page
         .deployments
         .into_iter()
