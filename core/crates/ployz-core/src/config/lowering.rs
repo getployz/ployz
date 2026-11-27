@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use super::{
     BuildMethod, ConfigError, FileMode, ServiceConfig, ServiceEnvValue, ServiceHealthcheck,
-    ServiceSource, ValuePart, ValuePartOwner, VolumeKind, parse_service_config,
+    ServiceSource, ValuePart, VolumeKind, parse_service_config,
 };
 use crate::{
     ByteQuantity, ConfigFileName, ConfigMount, ConfigName, ConfigSpec, ConfiguredHealthcheck,
@@ -412,6 +412,7 @@ fn lower_snapshot(
     let (entrypoint, command) =
         lower_start_command(config.start_command.as_deref(), snapshot.built_with)?;
     let (placement, regions) = lower_placement(&limits.replicas, sources.region);
+    let stop_signal = config.stop_signal;
     let mut spec = RequestedServiceSpec {
         name: config.private_dns,
         mode: ServiceMode::Replicated {
@@ -454,7 +455,12 @@ fn lower_snapshot(
             open_stdin: false,
             privileged: false,
             pid_mode: None,
-            stop_timeout_secs: None,
+            stop_timeout_secs: Some(i64::from(
+                config
+                    .stop_grace_period
+                    .unwrap_or(super::STOP_GRACE_PERIOD_DEFAULT),
+            )),
+            stop_signal: None,
             sysctls: BTreeMap::new(),
             network: None,
         },
@@ -468,6 +474,10 @@ fn lower_snapshot(
             monitor_millis: None,
         },
     };
+    spec.container.stop_signal = stop_signal
+        .map(super::ServiceStopSignal::name)
+        .or_else(|| spec.container.default_stop_signal())
+        .map(str::to_owned);
     spec.set_volume_graph(ServiceVolumeGraph::parse(volumes, mounts).map_err(lowering_error)?)
         .map_err(mount_error)?;
     spec.set_config_graph(
@@ -840,22 +850,13 @@ fn deployment_dependencies(
                 ServiceEnvValue::Secret { .. } => None,
             })
             .flatten()
-            .filter_map(|part| match part {
-                ValuePart::Ref {
-                    owner: ValuePartOwner::Service { lineage_id },
-                    ..
-                } => Some(lineage_id),
-                ValuePart::Ref {
-                    owner: ValuePartOwner::Self_,
-                    ..
-                }
-                | ValuePart::Text { .. } => None,
-            });
+            .filter_map(ValuePart::service_lineage);
         let from_configs = config
             .configs
             .iter()
             .filter_map(|mount| configs.get(mount.config_resource_id.as_str()))
-            .flat_map(|mounted| &mounted.references);
+            .flat_map(|mounted| &mounted.references)
+            .map(String::as_str);
         let references = from_env
             .chain(from_configs)
             .filter_map(|lineage_id| by_id.get(lineages.get(lineage_id)?.as_str()))

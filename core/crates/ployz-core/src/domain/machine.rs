@@ -860,6 +860,27 @@ pub struct MachineObservation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional = nullable)]
     pub path: Option<PathObservation>,
+    /// The entry's WireGuard view of this Machine. Absent from the entry's own row, while
+    /// the entry can't yet tell, and from daemons before 0.4.0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub wireguard: Option<WireGuardObservation>,
+}
+
+/// One Machine's WireGuard view of a peer, judged by the peer's latest handshake.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum WireGuardObservation {
+    Up,
+    /// No handshake for long enough that nothing this Machine sends the peer arrives.
+    Down {
+        /// Seconds since the latest handshake, as of the observation; `None` when there
+        /// never was one.
+        since_handshake_secs: Option<u64>,
+    },
+    /// A value introduced after this build.
+    #[serde(other)]
+    Unrecognized,
 }
 
 impl MachineObservation {
@@ -907,6 +928,7 @@ impl MachineObservation {
             selected_endpoint: None,
             rtt: None,
             path: None,
+            wireguard: None,
         }
     }
 }
@@ -1043,6 +1065,11 @@ pub struct RttObservation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional = nullable)]
     pub path: Option<PathObservation>,
+    /// The observing Machine's WireGuard view of this peer. Absent while it can't yet
+    /// tell, for a peer it can't name, and from daemons before 0.4.0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional = nullable)]
+    pub wireguard: Option<WireGuardObservation>,
 }
 
 /// One Machine's observation of its WireGuard path to a peer, from the full-size probes

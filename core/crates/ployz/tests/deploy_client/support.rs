@@ -119,6 +119,8 @@ pub(super) struct DeployService {
     ingress_roles: Arc<Mutex<BTreeMap<MachineId, bool>>>,
     /// What an `UpdateMachine` turning the ingress role off answers instead.
     role_off_refusal: Option<RpcError>,
+    /// Machines an `UpdateMachine` never comes back from, as one the entry can't reach.
+    silent_updates: BTreeSet<MachineId>,
     /// `ListMachines` answers this many more times, on any route, with every replicated
     /// row lacking the ingress role, as before a role just set on a Server's own record
     /// reached the rows. `Inspect` answers the record.
@@ -127,6 +129,9 @@ pub(super) struct DeployService {
     start_error_on: Option<MachineId>,
     /// What removing a Container answers instead, so it stays where it was.
     removal_refusal: Option<RpcError>,
+    /// Once set, a removal waits until it is released, as a copy's stop grace runs.
+    removal_release: Option<Arc<tokio::sync::watch::Sender<bool>>>,
+    removal_waits: Arc<tokio::sync::Notify>,
     /// Each Machine's listing also shows the Containers created there and not yet removed.
     lists_created: bool,
     /// Another operator's Ingress Proxy starts on the Server once a start there fails or a
@@ -221,9 +226,12 @@ impl DeployService {
             pull_failure: RpcError::internal("registry refused the pull"),
             ingress_roles: Arc::default(),
             role_off_refusal: None,
+            silent_updates: BTreeSet::new(),
             row_lag: Arc::default(),
             start_error_on: None,
             removal_refusal: None,
+            removal_release: None,
+            removal_waits: Arc::new(tokio::sync::Notify::new()),
             lists_created: false,
             rival_proxy: false,
             sealing: None,
@@ -264,6 +272,30 @@ impl DeployService {
     pub(super) fn refuse_removals(mut self, message: &str) -> Self {
         self.removal_refusal = Some(RpcError::unavailable(message));
         self
+    }
+
+    /// Every Container removal answers `error`, so the Container stays.
+    pub(super) fn fail_removals(mut self, error: RpcError) -> Self {
+        self.removal_refusal = Some(error);
+        self
+    }
+
+    /// Every Container removal waits until [`Self::release_removals`].
+    pub(super) fn hold_removals(mut self) -> Self {
+        self.removal_release = Some(Arc::new(tokio::sync::watch::Sender::new(false)));
+        self
+    }
+
+    pub(super) fn release_removals(&self) {
+        self.removal_release
+            .as_ref()
+            .expect("hold_removals")
+            .send_replace(true);
+    }
+
+    /// Returns once a removal has begun, even one that began before this call.
+    pub(super) async fn removal_waited(&self) {
+        self.removal_waits.notified().await;
     }
 
     /// The next `reads` `ListMachines` answers show no Server with the ingress role, while
@@ -512,6 +544,12 @@ impl DeployService {
 
     pub(super) fn refuse_role_off(mut self, message: &str) -> Self {
         self.role_off_refusal = Some(RpcError::unavailable(message));
+        self
+    }
+
+    /// An `UpdateMachine` for `machine` never comes back.
+    pub(super) fn silent_updates_on(mut self, machine: MachineId) -> Self {
+        self.silent_updates.insert(machine);
         self
     }
 
@@ -1343,6 +1381,10 @@ impl FakeMachine for DeployService {
                 )
             }
             ployz_core::ContainerWant::Gone { container, .. } => {
+                self.removal_waits.notify_one();
+                if let Some(released) = &self.removal_release {
+                    let _ = released.subscribe().wait_for(|released| *released).await;
+                }
                 if let Some(refusal) = &self.removal_refusal {
                     return reply(refusal.clone());
                 }
@@ -1658,6 +1700,9 @@ impl FakeMachine for DeployService {
     ) -> Result<Response<OpaquePayload>, Status> {
         self.record_mutation();
         let machine_id = target(&request)?;
+        if self.silent_updates.contains(&machine_id) {
+            std::future::pending::<()>().await;
+        }
         let RpcRequestBody::UpdateMachine(update) =
             request.into_inner().decode_request().unwrap().body
         else {

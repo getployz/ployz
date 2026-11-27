@@ -472,6 +472,23 @@ impl ConfigStore {
             .await
     }
 
+    /// Record when the steps Cloud times itself of Deployment `deployment` ran. A step
+    /// recorded again takes its new times.
+    ///
+    /// # Errors
+    /// Returns `not_found` for a Deployment that doesn't exist, or a storage error.
+    #[napi(ts_return_type = "Promise<null>")]
+    pub async fn record_steps(
+        &self,
+        deployment: String,
+        #[napi(ts_arg_type = "DeploymentStep[]")] steps: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let deployment = DeploymentId::parse(deployment).map_err(rpc_to_napi)?;
+        let steps: Vec<ployz_store::DeploymentStep> = decode(steps, "Expected Deployment steps")?;
+        self.run(move |store| store.record_steps(&deployment, &steps))
+            .await
+    }
+
     /// Apply a `SystemEvent` Cloud observed of GitHub for the given Organization;
     /// resolves to what it did (`ConfigWritten`, `automated`). `trusted` carries how
     /// many Servers the Organization has (`ConfigTrusted.servers`) and, for an event

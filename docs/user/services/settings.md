@@ -8,7 +8,8 @@ Open a service on the canvas, then click **Settings**. Your changes are staged u
 
 From the CLI, `ployz get web` prints each setting with its value and default, then the
 service's domains. Text prints in quotes, like `"nginx:1"`, and `-` means unset. A setting
-with no default, such as `image`, says `(no default)` beside its value. An invisible
+whose unset value has a name prints it, like `No limit (default)` or `"rolling" (default
+Automatic)`. A setting with no default, such as `image`, says `(no default)` beside its value. An invisible
 character, such as a right-to-left override, prints as its code, like `\u{202e}`, so text
 reads as stored. A deploy message in `ployz history`, a Config file name in the `ployz config`
 commands, and a name an error message or deploy warning repeats print the same way. `ployz get
@@ -288,6 +289,28 @@ service with a volume, **Start first** for the rest. Choose **Start first** for 
 time, so a failure leaves the later servers on the old version. A service with a volume can't take
 **Start first** while shared writes are paused. See
 [Choose how a deploy replaces replicas](../deploy/zero-downtime.md#choose-how-a-deploy-replaces-replicas).
+
+### Stop signal
+
+**Auto** by default: SIGTERM with a start command, otherwise the image's own, such as SIGQUIT for
+`php:fpm`. Pick SIGTERM for a queue worker like Laravel Horizon, so it finishes its job and exits.
+
+```sh
+ployz set worker.stopSignal=SIGTERM
+```
+
+### Stop grace period
+
+Seconds a replica gets to stop before it's killed. 30 by default, from 1 to 600. Raise it for
+workers with long jobs.
+
+```sh
+ployz set worker.stopGracePeriod=120
+```
+
+Both apply from the next deploy. Replicas started before these settings existed keep the image's
+signal and 10 seconds until a deploy replaces them for another reason, or you change either one
+from its default.
 
 ## Storage
 

@@ -67,8 +67,17 @@ async fn exec_forwards_output_while_docker_inspection_is_pending() {
             .await
             .unwrap();
         inspection_released.await.unwrap();
+        // Docker names the exited process. Without a PID the watch would judge the end by
+        // the test runner's cgroup, which other tests start processes in.
+        let exited = format!(r#"{{"Running":false,"ExitCode":7,"Pid":{UNUSABLE_PID}}}"#);
         inspect
-            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 30\r\nConnection: close\r\n\r\n{\"Running\":false,\"ExitCode\":7}")
+            .write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{exited}",
+                    exited.len()
+                )
+                .as_bytes(),
+            )
             .await
             .unwrap();
     });

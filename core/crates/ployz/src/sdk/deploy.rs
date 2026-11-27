@@ -1,8 +1,8 @@
 //! Prepared deployment execution and its owned progress stream.
-use super::{PreparedDeploy, RunningDeploy, Session, closed};
+use super::{Prep, PreparedDeploy, RunningDeploy, Session, closed};
 use crate::deploy::DeployPreview;
 use ployz_core::{DeployEvent, DeployOutcome, ExecutionError, RpcError};
-use std::{ops::Deref, sync::atomic::Ordering};
+use std::ops::Deref;
 use tokio::sync::{Mutex, mpsc};
 
 /// Who runs Image Cleanup for a confirmed Deploy.
@@ -75,16 +75,17 @@ impl PreparedDeploy {
 
     /// Release an unconfirmed preparation and its retained images.
     pub fn close(&self) {
-        let mut retained = self.retained.lock().expect("retained build lock");
-        self.confirmed.store(true, Ordering::SeqCst);
-        retained.take();
+        let mut prep = self.prep.lock().expect("prepared deploy lock");
+        if matches!(*prep, Prep::Open(_)) {
+            *prep = Prep::Closed;
+        }
     }
 
-    /// Execute these operations. Illegal after a previous confirm.
+    /// Execute these operations. Illegal once this preview confirmed or closed.
     ///
     /// # Errors
     ///
-    /// Returns when this preview already confirmed, or when the session is closed.
+    /// Returns when this preview already confirmed or closed, or when the session is closed.
     pub fn confirm(&self) -> Result<RunningDeploy, RpcError> {
         self.confirm_with_log_id(None, ImageCleanup::Auto)
     }
@@ -125,27 +126,21 @@ impl PreparedDeploy {
         if session.inner.cancel.is_cancelled() {
             return Err(closed());
         }
-        let mut retained = self.retained.lock().expect("retained build lock");
-        if self.confirmed.swap(true, Ordering::SeqCst) {
-            return Err(RpcError::invalid_argument(
-                "this Deploy Preview already confirmed",
-            ));
-        }
+        let client = session.client()?;
+        let retained = self.prep.lock().expect("prepared deploy lock").confirm()?;
         let cancel = session.inner.cancel.child_token();
         let (tx, rx) = mpsc::unbounded_channel();
         let free = retained
             .iter()
-            .flatten()
             .filter_map(|built| Some((built.name.clone(), built.free.clone()?)))
             .collect();
         let client = crate::deploy::Approved::new(
-            session.client()?,
+            client,
             crate::deploy::Approvals::signed(versions, rules).with_free(free),
         );
         let preview = self.preview.clone();
         let token = cancel.clone();
         let session_cancel = session.inner.cancel.clone();
-        let retained = retained.take();
         let prune_targets = match cleanup {
             ImageCleanup::Auto => self.prune_targets.clone(),
             ImageCleanup::Manual => Vec::new(),
@@ -170,6 +165,22 @@ impl PreparedDeploy {
             events: Mutex::new(Some(rx)),
             join: Mutex::new(Some(join)),
         })
+    }
+}
+
+impl Prep {
+    /// Confirm an open preparation, handing over the images it holds.
+    fn confirm(&mut self) -> Result<Vec<crate::build::BuiltService>, RpcError> {
+        match std::mem::replace(self, Self::Confirmed) {
+            Self::Open(retained) => Ok(retained),
+            Self::Confirmed => Err(RpcError::invalid_argument(
+                "this Deploy Preview already confirmed",
+            )),
+            Self::Closed => {
+                *self = Self::Closed;
+                Err(RpcError::invalid_argument("this Deploy Preview was closed"))
+            }
+        }
     }
 }
 

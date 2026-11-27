@@ -279,9 +279,18 @@ pub struct PreparedDeploy {
     preview: DeployPlan,
     build_receipts: std::collections::BTreeMap<ployz_core::ServiceName, preparation::BuildReceipt>,
     session: std::sync::Weak<SessionInner>,
-    confirmed: AtomicBool,
-    retained: std::sync::Mutex<Option<Vec<crate::build::BuiltService>>>,
+    prep: std::sync::Mutex<Prep>,
     prune_targets: Vec<ployz_core::PruneTarget>,
+}
+
+/// Where a [`PreparedDeploy`] is in its life. Only an open one confirms.
+enum Prep {
+    /// Not yet confirmed or closed, holding the images it built on their Build Machines.
+    Open(Vec<crate::build::BuiltService>),
+    /// Confirmed: its images went to the Deploy that runs it.
+    Confirmed,
+    /// Closed unconfirmed, its images released.
+    Closed,
 }
 
 impl PreparedDeploy {
@@ -291,8 +300,7 @@ impl PreparedDeploy {
             preview,
             build_receipts: Default::default(),
             session,
-            confirmed: AtomicBool::new(false),
-            retained: std::sync::Mutex::new(None),
+            prep: std::sync::Mutex::new(Prep::Open(Vec::new())),
             prune_targets: Vec::new(),
         }
     }
@@ -313,8 +321,7 @@ impl PreparedDeploy {
             preview,
             build_receipts,
             session,
-            confirmed: AtomicBool::new(false),
-            retained: std::sync::Mutex::new(Some(retained)),
+            prep: std::sync::Mutex::new(Prep::Open(retained)),
             prune_targets,
         }
     }

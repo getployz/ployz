@@ -118,7 +118,7 @@ impl Client {
     }
 
     pub(crate) fn full_machines(&self) -> BTreeSet<MachineId> {
-        self.routes.machines(self.session.entry)
+        self.routes.machines(self.session.entry())
     }
 
     /// Whether this client reaches `machine` with Full scope: over SSH or the local
@@ -127,7 +127,7 @@ impl Client {
     pub(crate) fn reaches_full(&self, machine: &MachineId, device: bool) -> bool {
         self.routes.reach(
             machine,
-            self.session.entry.as_ref(),
+            self.session.entry().as_ref(),
             self.session.connection(),
             |transport| {
                 transport.says_who_answers()
@@ -143,7 +143,7 @@ impl Client {
         let source = self.connection_source();
         self.routes.answers_for_itself(
             machine,
-            self.session.entry.as_ref(),
+            self.session.entry().as_ref(),
             self.session.connection(),
             |transport| source.own_full_access(transport),
         )
@@ -154,7 +154,7 @@ impl Client {
     /// on the entry itself. A call forwarded to any other Machine arrives there as Operator,
     /// and a Management connection may be an Operator slot, so both get retention names only.
     pub(crate) fn image_naming(&self, dest: &MachineId) -> crate::image::Naming {
-        let full = self.session.entry == Some(*dest)
+        let full = self.session.entry() == Some(*dest)
             && self
                 .connection_source()
                 .own_full_access(self.session.connection().transport());
@@ -168,7 +168,7 @@ impl Client {
     /// This client as one whose entry is `entry`, as a connection confirms it.
     #[cfg(test)]
     pub(crate) fn enter_at(&mut self, entry: MachineId) {
-        self.session.entry = Some(entry);
+        self.session.confirm_at(entry);
     }
 
     async fn full_client(&self, target: &MachineTarget) -> Result<Option<Self>, ConnectError> {
@@ -176,7 +176,7 @@ impl Client {
         if self.routes.is_empty()
             || self
                 .session
-                .entry
+                .entry()
                 .is_some_and(|id| id.as_str() == target.as_str())
         {
             return Ok(None);
@@ -229,7 +229,7 @@ impl Client {
         // A confirmation that carried the held key answers without Inspect.
         let (sealing, machine_id, predates) =
             if let (Some(held @ ployz_core::Sealing::Held { .. }), Some(id)) =
-                (confirmed, self.session.entry)
+                (confirmed, self.session.entry())
             {
                 (Some(held), id, None)
             } else {
@@ -244,7 +244,7 @@ impl Client {
                 let predates = crate::connect::predates_sealing(&details);
                 (
                     details.sealing,
-                    self.session.entry.unwrap_or(details.id),
+                    self.session.entry().unwrap_or(details.id),
                     predates,
                 )
             };
@@ -264,7 +264,7 @@ impl Client {
     /// The entry Machine this client reaches, as the daemon on its current channel
     /// described itself when confirmed. None when it didn't.
     pub(crate) fn entry_machine(&self) -> Option<MachineId> {
-        self.session.entry
+        self.session.entry()
     }
 
     /// The Server this client enters, as people read it: its connection's name, else its
@@ -273,7 +273,7 @@ impl Client {
         self.session
             .connection()
             .server()
-            .or_else(|| self.session.entry.map(|machine| machine.to_string()))
+            .or_else(|| self.session.entry().map(|machine| machine.to_string()))
     }
 
     /// The transition a Deploy's shared client makes: see [`Session::redial_shared`].
@@ -1910,7 +1910,7 @@ async fn observe_machine_storage(
                 Call::once().to(&target),
             )
             .await
-            .map_err(crate::connect::rpc_error)?;
+            .map_err(unanswered_kept)?;
         if !description.supports(MACHINE_STORAGE_OBSERVATION_CAPABILITY) {
             return Ok(None);
         }
@@ -1923,7 +1923,7 @@ async fn observe_machine_storage(
                 Call::once().to(&target),
             )
             .await
-            .map_err(crate::connect::rpc_error)?
+            .map_err(unanswered_kept)?
             .storage)
     };
     match tokio::time::timeout(STORAGE_OBSERVATION_TIMEOUT, observation).await {

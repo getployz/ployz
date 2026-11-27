@@ -83,16 +83,63 @@ pub(crate) fn own<'a>(deployment: &'a Stored, service: &str) -> Option<&'a Uploa
 }
 
 /// The digest of the upload each target Service without a source builds from, by
-/// lineage, and whether its Deployment sent that upload.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+/// lineage, and how its Deployment chose them.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ServiceUploads {
-    /// A retry, or a Deploy without a new upload, sent none.
-    pub(crate) sent: bool,
-    /// Chosen by lineage at admission, so chosen again as it starts. A retry builds
-    /// from what its source did, so it never is.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub(crate) provisional: bool,
+    pub(crate) choice: UploadChoice,
     pub(crate) services: BTreeMap<String, UploadDigest>,
+}
+
+/// How a Deployment chose the uploads its Services without a source build from.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum UploadChoice {
+    /// It sent the upload every one builds from.
+    Sent,
+    /// Chosen by lineage at admission, so chosen again as it starts.
+    AtStart,
+    /// Chosen for good: a retry, which builds from what its source did, or one
+    /// chosen again as it started.
+    Fixed,
+}
+
+/// [`ServiceUploads`] as stored. `sent` and `provisional` are never both set.
+#[derive(Serialize, Deserialize)]
+struct StoredUploads<S> {
+    sent: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    provisional: bool,
+    services: S,
+}
+
+impl Serialize for ServiceUploads {
+    fn serialize<Z: serde::Serializer>(&self, serializer: Z) -> Result<Z::Ok, Z::Error> {
+        StoredUploads {
+            sent: self.choice == UploadChoice::Sent,
+            provisional: self.choice == UploadChoice::AtStart,
+            services: &self.services,
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for ServiceUploads {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let stored = StoredUploads::deserialize(deserializer)?;
+        let choice = match (stored.sent, stored.provisional) {
+            (true, false) => UploadChoice::Sent,
+            (false, true) => UploadChoice::AtStart,
+            (false, false) => UploadChoice::Fixed,
+            (true, true) => {
+                return Err(serde::de::Error::custom(
+                    "uploads both sent and chosen at start",
+                ));
+            }
+        };
+        Ok(Self {
+            choice,
+            services: stored.services,
+        })
+    }
 }
 
 /// Whether `deployment` applied `service`: it runs the upload it built it from.
@@ -110,7 +157,7 @@ fn moved(deployment: &Stored, service: &str) -> bool {
     deployment
         .service_uploads
         .as_ref()
-        .is_some_and(|uploads| uploads.sent)
+        .is_some_and(|uploads| uploads.choice == UploadChoice::Sent)
         || applied(deployment, service)
 }
 
@@ -167,8 +214,7 @@ pub(crate) fn admitted(
         return Ok((
             Some(upload),
             Some(ServiceUploads {
-                sent: true,
-                provisional: false,
+                choice: UploadChoice::Sent,
                 services,
             }),
         ));
@@ -184,9 +230,8 @@ pub(crate) fn admitted(
 /// The Deployment then carries, and shows, the upload it runs.
 pub(crate) fn claimed(tx: &mut dyn Tx, stored: &mut Stored) -> Result<(), RpcError> {
     let Some(ServiceUploads {
-        provisional: true,
+        choice: UploadChoice::AtStart,
         services: frozen,
-        ..
     }) = &stored.service_uploads
     else {
         return Ok(());
@@ -202,8 +247,7 @@ pub(crate) fn claimed(tx: &mut dyn Tx, stored: &mut Stored) -> Result<(), RpcErr
         services = chosen.services;
     }
     let uploads = ServiceUploads {
-        sent: false,
-        provisional: false,
+        choice: UploadChoice::Fixed,
         services,
     };
     tx.execute(
@@ -279,8 +323,7 @@ fn chosen(
     Ok(Some((
         carried,
         ServiceUploads {
-            sent: false,
-            provisional: true,
+            choice: UploadChoice::AtStart,
             services,
         },
     )))
@@ -329,7 +372,7 @@ fn kept(
             .iter()
             .filter(|deployment| deployment.summary.in_flight)
             .filter_map(|deployment| deployment.service_uploads.as_ref())
-            .filter(|uploads| uploads.provisional)
+            .filter(|uploads| uploads.choice == UploadChoice::AtStart)
             .flat_map(|uploads| uploads.services.keys().map(String::as_str)),
     );
     for service in services {
@@ -404,3 +447,7 @@ pub(crate) fn uploads(
     }
     Ok(UploadsView { uploads })
 }
+
+#[cfg(test)]
+#[path = "uploads_tests.rs"]
+mod tests;

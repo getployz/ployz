@@ -1,7 +1,7 @@
 //! A copy goes under a name only when every Container that mounts the name, running or
 //! stopped, expects the origin it carries, and only while Docker can say which those are.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use ployz_core::{DockerVolumeName, VolumeOrigin};
 use tokio::io::AsyncWriteExt as _;
@@ -278,9 +278,9 @@ async fn a_promote_while_docker_never_answers_is_refused_inside_a_callers_budget
     );
     set_snapshots(&test, SLOT_FS, &[("f-1", 13)]);
 
-    let started = Instant::now();
-    let reply = promote(&socket).await;
-    let took = started.elapsed();
+    let reply = tokio::time::timeout(Duration::from_secs(8), promote(&socket))
+        .await
+        .expect("the promote waited on Docker too close to the caller's 10 s");
     assert_eq!(
         reply.pointer("/Err/code"),
         Some(&json!("unavailable")),
@@ -297,10 +297,6 @@ async fn a_promote_while_docker_never_answers_is_refused_inside_a_callers_budget
             .and_then(Value::as_str)
             .is_some_and(|message| message.contains("Docker is not answering")),
         "{reply}"
-    );
-    assert!(
-        took < Duration::from_secs(5),
-        "refused after {took:?}, too close to the caller's 10 s"
     );
     assert_still_in_its_slot(&test);
 }

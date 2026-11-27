@@ -888,23 +888,30 @@ fn run_here(
     };
     let (local, id) = (std::sync::Arc::clone(local), admitted.id.clone());
     let runtime = runtime()?;
-    Ok(std::thread::spawn(move || {
-        // Locals drop last to first, on a panic too. Dropping the runtime waits out its
-        // blocking tasks, so it goes before `ended` wakes following.
-        let _ended = ended.drop_guard();
-        let runtime = runtime;
-        runtime
-            .block_on(crate::sdk::run_deployment(
-                ployz_core::Operator::Cli,
-                local,
-                id,
-                runner,
-                connections,
-                Ok(sources),
-            ))
-            .map_err(Error::from)
-    }))
+    let handle = std::thread::Builder::new()
+        .name("ployz-runner".into())
+        .stack_size(RUNNER_STACK)
+        .spawn(move || {
+            // Locals drop last to first, on a panic too. Dropping the runtime waits out its
+            // blocking tasks, so it goes before `ended` wakes following.
+            let _ended = ended.drop_guard();
+            let runtime = runtime;
+            runtime
+                .block_on(crate::sdk::run_deployment(
+                    ployz_core::Operator::Cli,
+                    local,
+                    id,
+                    runner,
+                    connections,
+                    Ok(sources),
+                ))
+                .map_err(Error::from)
+        })?;
+    Ok(handle)
 }
+
+/// A debug build's Deploy outgrows a spawned thread's default 2 MiB once it executes.
+const RUNNER_STACK: usize = 16 * 1024 * 1024;
 
 /// `ployz up` in this Environment, which uploads the directory it runs in. It names
 /// the scope, so an unlinked directory never founds a new Project.
@@ -1933,6 +1940,83 @@ pub(super) fn say_view(view: &DeploymentView) {
             crate::ui::stream(format_args!("    GitHub skipped it: {why}"));
         }
     }
+    for line in step_lines(view) {
+        crate::ui::stream(format_args!("{line}"));
+    }
+}
+
+/// Each step the Deployment ran, when it started after the first and how long it took.
+fn step_lines(view: &DeploymentView) -> Vec<String> {
+    let Some(first) = view.steps.iter().map(|step| step.started_at).min() else {
+        return Vec::new();
+    };
+    let left_running: BTreeSet<&ServiceName> = view
+        .deployment
+        .warnings
+        .iter()
+        .filter_map(|warning| {
+            let ployz_store::DeploymentWarning::Deploy {
+                warning: ployz_core::DeployWarning::LeftRunning { service, .. },
+            } = warning
+            else {
+                return None;
+            };
+            Some(&service.name)
+        })
+        .collect();
+    // Old copies retire after the Deploy applied, so their step may still run.
+    let running = matches!(
+        view.deployment.status,
+        DeploymentStatus::Running | DeploymentStatus::Cancelling
+    );
+    let open = |step: &ployz_core::deploy_steps::DeploymentStep| {
+        if running {
+            "running"
+        } else if view.deployment.status == DeploymentStatus::Applied
+            && step.name == ployz_core::deploy_steps::StepName::StoppingOld
+        {
+            if step
+                .service
+                .as_ref()
+                .is_some_and(|service| left_running.contains(service))
+            {
+                "left running"
+            } else {
+                "not seen gone"
+            }
+        } else {
+            "stopped here"
+        }
+    };
+    let named: Vec<String> = view
+        .steps
+        .iter()
+        .map(|step| match &step.service {
+            Some(service) => format!("{} {service}", step.name),
+            None => step.name.to_string(),
+        })
+        .collect();
+    let width = named.iter().map(String::len).max().unwrap_or(0);
+    let mut lines = vec!["  Steps:".to_owned()];
+    for (step, name) in view.steps.iter().zip(named) {
+        let took = step.ended_at.map_or_else(
+            || open(step).to_owned(),
+            |ended| millis(ended - step.started_at),
+        );
+        lines.push(format!(
+            "    {name:<width$}  +{:<7}  {took}",
+            millis(step.started_at - first)
+        ));
+    }
+    lines
+}
+
+fn millis(ms: i64) -> String {
+    if ms.abs() < 1000 {
+        format!("{ms}ms")
+    } else {
+        format!("{:.1}s", ms as f64 / 1000.0)
+    }
 }
 
 /// One node's outcome, with the replicas of a Service the Deploy left waiting.
@@ -2032,7 +2116,7 @@ fn service_outcome_lines(services: &[ployz_core::ServiceOutcome]) -> Vec<String>
 mod tests {
     use super::{
         Tone, open_events, provenance, prune_line, prune_skipped, service_outcome_lines, ships_all,
-        status_tone, status_word, undecided, unserved_outcome_lines, untargeted_lines,
+        status_tone, status_word, step_lines, undecided, unserved_outcome_lines, untargeted_lines,
     };
     use ployz_core::{RpcErrorCode, ServiceName};
 
@@ -2380,5 +2464,52 @@ mod tests {
             ("preparing".to_owned(), Tone::Change)
         );
         assert_eq!(read("running", false), ("running".to_owned(), Tone::Change));
+    }
+
+    /// Old copies retire after the Deploy applied: their step reads as still going, or
+    /// as a copy left running, never as where the Deploy stopped.
+    #[test]
+    fn an_applied_deployments_open_stopping_old_reads_as_retiring_not_stopped() {
+        use ployz_core::deploy_steps::{DeploymentStep, StepName};
+        let mut view: ployz_store::DeploymentView = serde_json::from_value(serde_json::json!({
+            "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "environment_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "number": 7,
+            "status": "applied", "saved": 1, "services": [], "remove": false, "admitted_at": 1, "in_flight": false,
+            "environment": {"id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "project": "shop", "name": "production", "revision": 1},
+            "namespace": "shop-production", "preview": null, "builds": [], "runtime_names": {}, "nodes": []
+        }))
+        .unwrap();
+        let step = |name, service: &str, ended_at| DeploymentStep {
+            name,
+            service: Some(ServiceName::parse(service).unwrap()),
+            started_at: 1_000,
+            ended_at,
+        };
+        view.steps = vec![
+            step(StepName::Starting, "web", Some(2_000)),
+            step(StepName::StoppingOld, "web", None),
+            step(StepName::StoppingOld, "api", None),
+        ];
+        view.deployment.warnings = vec![ployz_store::DeploymentWarning::Deploy {
+            warning: ployz_core::DeployWarning::LeftRunning {
+                service: ployz_core::QualifiedService::new(
+                    "shop-production".parse().unwrap(),
+                    ServiceName::parse("api").unwrap(),
+                ),
+                container_id: ployz_core::ContainerId::parse("c".repeat(64)).unwrap(),
+                machine: "edge".to_owned(),
+                reason: "edge did not answer".to_owned(),
+            },
+        }];
+        let lines = step_lines(&view);
+        let reads = |name: &str| {
+            lines.iter().find(|line| line.contains(name)).map(|line| {
+                line.split_whitespace()
+                    .skip(3)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+        };
+        assert_eq!(reads("stopping_old web").as_deref(), Some("not seen gone"));
+        assert_eq!(reads("stopping_old api").as_deref(), Some("left running"));
     }
 }

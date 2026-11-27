@@ -1585,6 +1585,9 @@ pub enum DeployEvent {
     },
     /// Image Cleanup after the Outcome; only when the caller left cleanup automatic.
     ImagesPruned { report: super::ImageCleanupReport },
+    /// After the Outcome, each old copy of `service` the Deploy took out of rotation
+    /// is gone, or was left running with a warning before this.
+    Retired { service: ServiceName },
     /// Something the Deploy found while executing that it does not stop for.
     Warning { warning: DeployWarning },
 }
@@ -1641,6 +1644,10 @@ pub enum OperationPhase {
     },
     /// The new Container is ready and serves once its Service's pointer is published.
     WaitingForSwitch {
+        container_id: ContainerId,
+    },
+    /// The new Container serves, and the old copies it replaced drain and go.
+    RetiringOld {
         container_id: ContainerId,
     },
     StoppingContainer,

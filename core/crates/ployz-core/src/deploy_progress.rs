@@ -71,8 +71,22 @@ impl RowState {
 /// What stopped a Failed row's work that didn't fail on its own, so it reads
 /// other than Failed. Stored and sent as a marker beside `failed` rather than a
 /// state of its own, so a reader from before it reads Failed.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct StoppedBy {
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "StoppedByMarks", into = "StoppedByMarks")]
+pub enum StoppedBy {
+    /// It failed on its own.
+    #[default]
+    Nothing,
+    /// The Deployment's cancel stopped it.
+    Cancel,
+    /// The Deployment lost its runner, to another Deployment taking the
+    /// Environment over or to a lease that lapsed, so the runner stopped it.
+    LostRunner,
+}
+
+/// [`StoppedBy`] as stored: at most one marker set.
+#[derive(Clone, Copy, Serialize, Deserialize, TS)]
+struct StoppedByMarks {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     #[ts(as = "Option<bool>", optional)]
     cancelled: bool,
@@ -81,23 +95,48 @@ pub struct StoppedBy {
     interrupted: bool,
 }
 
-impl StoppedBy {
-    /// It failed on its own.
-    pub const NOTHING: Self = Self {
-        cancelled: false,
-        interrupted: false,
-    };
-    /// The Deployment's cancel stopped it.
-    pub const CANCEL: Self = Self {
-        cancelled: true,
-        interrupted: false,
-    };
-    /// The Deployment lost its runner, to another Deployment taking the
-    /// Environment over or to a lease that lapsed, so the runner stopped it.
-    pub const LOST_RUNNER: Self = Self {
-        cancelled: false,
-        interrupted: true,
-    };
+// ts-rs can't flatten a type declared `as` another, so this forwards by hand.
+impl TS for StoppedBy {
+    type WithoutGenerics = Self;
+    type OptionInnerType = Self;
+
+    fn name(_: &ts_rs::Config) -> String {
+        "StoppedBy".to_owned()
+    }
+
+    fn inline(cfg: &ts_rs::Config) -> String {
+        StoppedByMarks::inline(cfg)
+    }
+
+    fn inline_flattened(cfg: &ts_rs::Config) -> String {
+        StoppedByMarks::inline_flattened(cfg)
+    }
+
+    fn visit_dependencies(visitor: &mut impl ts_rs::TypeVisitor) {
+        StoppedByMarks::visit_dependencies(visitor);
+    }
+}
+
+impl TryFrom<StoppedByMarks> for StoppedBy {
+    type Error = &'static str;
+
+    fn try_from(marks: StoppedByMarks) -> Result<Self, Self::Error> {
+        match (marks.cancelled, marks.interrupted) {
+            (false, false) => Ok(Self::Nothing),
+            (true, false) => Ok(Self::Cancel),
+            (false, true) => Ok(Self::LostRunner),
+            (true, true) => Err("a failed row is marked both cancelled and interrupted"),
+        }
+    }
+}
+
+impl From<StoppedBy> for StoppedByMarks {
+    fn from(by: StoppedBy) -> Self {
+        Self {
+            cancelled: by == StoppedBy::Cancel,
+            interrupted: by == StoppedBy::LostRunner,
+        }
+    }
 }
 
 /// The step a failed row's work was on.
@@ -215,7 +254,9 @@ impl From<&OperationPhase> for RowPhase {
             OperationPhase::WaitingForHealth { .. } => Self::WaitingForHealth,
             OperationPhase::WaitingForHook { .. } => Self::WaitingForHook,
             OperationPhase::WaitingForSwitch { .. } => Self::WaitingForSwitch,
-            OperationPhase::StoppingContainer => Self::StoppingContainer,
+            OperationPhase::StoppingContainer | OperationPhase::RetiringOld { .. } => {
+                Self::StoppingContainer
+            }
             OperationPhase::RemovingContainer => Self::RemovingContainer,
             OperationPhase::RemovingVolume => Self::RemovingVolume,
             OperationPhase::UpdatingContainer => Self::UpdatingContainer,
@@ -742,7 +783,13 @@ impl RowTracker {
             statuses.push((&row.status, row.operation.serves_new_spec()));
             if row.operation.serves_new_spec() {
                 let serves = matches!(row.operation, DeployOperation::UpdateContainer(_))
-                    || matches!(row.status, OperationStatus::Completed);
+                    || matches!(
+                        row.status,
+                        OperationStatus::Completed
+                            | OperationStatus::Running {
+                                phase: OperationPhase::RetiringOld { .. }
+                            }
+                    );
                 *serving = Some(serving.unwrap_or(true) && serves);
             }
         }
@@ -791,7 +838,8 @@ fn container(row: &OperationRow, last: Option<ContainerId>) -> Option<ContainerI
         OperationStatus::Running { phase } => match phase {
             OperationPhase::WaitingForHealth { container_id, .. }
             | OperationPhase::WaitingForHook { container_id, .. }
-            | OperationPhase::WaitingForSwitch { container_id } => Some(*container_id),
+            | OperationPhase::WaitingForSwitch { container_id }
+            | OperationPhase::RetiringOld { container_id } => Some(*container_id),
             OperationPhase::StoppingContainer
             | OperationPhase::RemovingContainer
             | OperationPhase::UpdatingContainer => row.operation.container_id(),
@@ -876,7 +924,7 @@ fn state(
                 | ExecutionError::NewerServing { .. }
                 | ExecutionError::Cancelled => None,
             },
-            stopped_by: StoppedBy::NOTHING,
+            stopped_by: StoppedBy::Nothing,
         };
     }
     if let Some(phase) = running {

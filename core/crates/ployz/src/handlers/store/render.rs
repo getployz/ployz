@@ -196,6 +196,7 @@ pub(crate) fn domain_changes<'a>(
 
 /// A Setting's value as `get` and `inspect` show it, marked when it is the default
 /// and followed by the default when it is not: `3 (default 1)`, or `(no default)`.
+/// Unset reads as what Ployz picks when the Setting names it, `Auto`.
 pub(crate) fn valued(row: &ployz_store::SettingRow) -> String {
     // An Environment's region has no default to compare: unset, its Services run in any region, so a set one
     // reads as itself, never as a region named "default" with no default.
@@ -206,18 +207,23 @@ pub(crate) fn valued(row: &ployz_store::SettingRow) -> String {
             plain(&row.value)
         };
     }
-    let value = plain(&row.value);
+    let unset = row.path.unset_name();
+    let named = |value: &serde_json::Value| match unset {
+        Some(name) if value.is_null() => name.to_owned(),
+        _ => plain(value),
+    };
+    let value = named(&row.value);
     // A variable or mount (`SERVICE.env.KEY`, `SERVICE.mounts.VOLUME`) has no
     // default: unset removes it.
     let removable = row.path.to_string().split('.').count() > 2;
     if row.value == row.default {
         format!("{value} (default)")
-    } else if removable && row.default.is_null() {
+    } else if unset.is_some() || !row.default.is_null() {
+        format!("{value} (default {})", named(&row.default))
+    } else if removable {
         value
-    } else if row.default.is_null() {
-        format!("{value} (no default)")
     } else {
-        format!("{value} (default {})", plain(&row.default))
+        format!("{value} (no default)")
     }
 }
 
@@ -417,6 +423,31 @@ mod tests {
             "\"npm start\" (no default)"
         );
         assert_eq!(valued(&row("web.startCommand", json!(null))), "- (default)");
+        assert_eq!(
+            valued(&row("web.stopSignal", json!(null))),
+            "Auto (default)"
+        );
+        assert_eq!(
+            valued(&row("web.stopSignal", json!("SIGINT"))),
+            "\"SIGINT\" (default Auto)"
+        );
+        for (path, set, unset) in [
+            ("web.cpuLimit", json!(2), "No limit"),
+            ("web.memLimit", json!("512m"), "No limit"),
+            ("web.updateOrder", json!("rolling"), "Automatic"),
+            ("web.preferredBuilder", json!("github"), "Auto"),
+            ("web.rootDir", json!("/apps/web"), "/"),
+            ("web.dockerfilePath", json!("web.Dockerfile"), "Dockerfile"),
+        ] {
+            assert_eq!(
+                valued(&row(path, json!(null))),
+                format!("{unset} (default)")
+            );
+            assert_eq!(
+                valued(&row(path, set.clone())),
+                format!("{} (default {unset})", plain(&set))
+            );
+        }
         assert_eq!(valued(&row("web.env.PORT", json!("3000"))), "\"3000\"");
         assert_eq!(valued(&row("web.mounts.data", json!("/data"))), "\"/data\"");
         assert_eq!(

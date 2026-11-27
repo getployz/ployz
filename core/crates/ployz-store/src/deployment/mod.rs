@@ -26,6 +26,7 @@ mod rows;
 mod status;
 #[cfg(test)]
 mod status_tests;
+pub(crate) mod steps;
 mod targeting;
 pub(crate) mod uploads;
 pub(crate) mod versions;
@@ -50,6 +51,7 @@ pub use ployz_core::deploy_progress::{
     FailedAt, Failure, RowPhase, RowState, RowTracker, RowTransition, ServerProgress, ServerRow,
     StoppedBy,
 };
+pub use ployz_core::deploy_steps::{DeploymentStep, StepName};
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -490,6 +492,9 @@ pub struct DeploymentView {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     #[ts(as = "Option<BTreeMap<ServiceName, Vec<ServerRow>>>", optional)]
     pub untargeted: BTreeMap<ServiceName, Vec<ServerRow>>,
+    /// When each step of its Deploy ran, in the order they started.
+    #[serde(default)]
+    pub steps: Vec<DeploymentStep>,
 }
 
 /// What a Deployment did to one of its target nodes.
@@ -506,6 +511,38 @@ pub struct NodeOutcome {
     /// Its work on each Server, once its runner started executing.
     #[serde(default)]
     pub rows: Vec<ServerRow>,
+}
+
+impl NodeOutcome {
+    /// Its outcome as users read it: a Failed one the Deployment's cancel stopped
+    /// reads Cancelled.
+    #[must_use]
+    pub const fn label(&self) -> NodeLabel {
+        match self.outcome {
+            NodeStatus::Pending => NodeLabel::Pending,
+            NodeStatus::Deployed => NodeLabel::Deployed,
+            NodeStatus::Removed => NodeLabel::Removed,
+            NodeStatus::Failed if self.cancelled => NodeLabel::Cancelled,
+            NodeStatus::Failed => NodeLabel::Failed,
+            NodeStatus::NotAttempted => NodeLabel::NotAttempted,
+            NodeStatus::Unchanged => NodeLabel::Unchanged,
+            NodeStatus::Unknown => NodeLabel::Unknown,
+        }
+    }
+}
+
+/// A [`NodeStatus`] with Failed split by whether the Deployment's cancel stopped it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeLabel {
+    Pending,
+    Deployed,
+    Removed,
+    Failed,
+    Cancelled,
+    NotAttempted,
+    Unchanged,
+    Unknown,
 }
 
 /// A Node Outcome, or why a node has none.
@@ -2059,7 +2096,8 @@ fn chooses_upload_at_start(
     status: DeploymentStatus,
     uploads: Option<&uploads::ServiceUploads>,
 ) -> bool {
-    status == DeploymentStatus::Queued && uploads.is_some_and(|uploads| uploads.provisional)
+    status == DeploymentStatus::Queued
+        && uploads.is_some_and(|uploads| uploads.choice == uploads::UploadChoice::AtStart)
 }
 
 /// Whether a Deployment in `status` that recorded `run` prepares: it runs, without

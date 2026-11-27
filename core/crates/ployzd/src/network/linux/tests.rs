@@ -286,6 +286,7 @@ fn first_snapshot_preserves_kernel_endpoint_and_updates_allowed_ips() {
             );
             assert_eq!(
                 peer.poll(
+                    &crate::network::PathBook::default(),
                     now + PEER_DOWN_INTERVAL + Duration::from_secs(1),
                     Some(now),
                     live.endpoint

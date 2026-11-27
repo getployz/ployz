@@ -77,7 +77,7 @@ fn row_state(state: &str) -> RowState {
             log: None,
             unanswered: false,
             out_of_memory: None,
-            stopped_by: ployz_store::StoppedBy::NOTHING,
+            stopped_by: ployz_store::StoppedBy::Nothing,
         },
         "cancelled" => RowState::Failed {
             reason: "Cancelled".into(),
@@ -86,7 +86,7 @@ fn row_state(state: &str) -> RowState {
             log: None,
             unanswered: false,
             out_of_memory: None,
-            stopped_by: ployz_store::StoppedBy::CANCEL,
+            stopped_by: ployz_store::StoppedBy::Cancel,
         },
         "interrupted" => RowState::Failed {
             reason: "Cancelled".into(),
@@ -95,7 +95,7 @@ fn row_state(state: &str) -> RowState {
             log: None,
             unanswered: false,
             out_of_memory: None,
-            stopped_by: ployz_store::StoppedBy::LOST_RUNNER,
+            stopped_by: ployz_store::StoppedBy::LostRunner,
         },
         "not_attempted" => RowState::NotAttempted,
         other => panic!("unknown row state {other}"),

@@ -285,7 +285,7 @@ pub struct ServiceCopy {
 }
 
 /// One existing copy's rotation, read under the lock `remove` takes and held until
-/// the rotation is written or the Container stopped or removed.
+/// the rotation is written, the Container removed, or the caller drops it.
 pub struct RotationTurn<'a> {
     runtime: &'a Lifecycle,
     operation: spec_store::ConfigOperation<'a>,

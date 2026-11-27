@@ -54,9 +54,13 @@ fn liveness(evidence: &MembershipEvidence) -> u8 {
     }
 }
 
+/// How long a route decision waits on a membership sample before it fails open.
+const MEMBERSHIP_SAMPLE_BOUND: Duration = Duration::from_secs(1);
+
 #[derive(Clone, Debug)]
 pub struct AdminClient {
     socket_path: PathBuf,
+    sample_bound: Duration,
 }
 
 impl AdminClient {
@@ -64,6 +68,18 @@ impl AdminClient {
     pub(crate) fn new(socket_path: impl Into<PathBuf>) -> Self {
         Self {
             socket_path: socket_path.into(),
+            sample_bound: MEMBERSHIP_SAMPLE_BOUND,
+        }
+    }
+
+    /// A test whose single-threaded runtime runs whole Machines can't answer a sample
+    /// within the production bound when CI is busy.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_sample_bound_for_test(self, sample_bound: Duration) -> Self {
+        Self {
+            sample_bound,
+            ..self
         }
     }
 
@@ -99,6 +115,11 @@ impl AdminClient {
             ))
         })
         .await
+    }
+
+    /// Corrosion's membership by address, read within the bound route decisions use.
+    pub(crate) async fn sample_membership(&self) -> Result<MembershipStates, Error> {
+        self.membership(self.sample_bound).await
     }
 
     /// Corrosion's membership by address, read within `bound`. Each caller decides what
@@ -150,6 +171,7 @@ fn decode_member_rtt(value: Value) -> Result<Option<RttObservation>, Error> {
         machine: None,
         statistics,
         path: None,
+        wireguard: None,
     }))
 }
 

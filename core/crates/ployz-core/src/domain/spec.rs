@@ -517,8 +517,13 @@ pub struct ServiceContainerSpec {
     pub pid_mode: Option<PidMode>,
     #[serde(default)]
     pub resources: ContainerResources,
+    /// Docker's StopTimeout; None is Docker's own, 10 seconds.
     #[serde(default)]
     pub stop_timeout_secs: Option<i64>,
+    /// Docker's StopSignal, a signal name; None is the image's STOPSIGNAL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub stop_signal: Option<String>,
     #[serde(default)]
     pub sysctls: BTreeMap<String, String>,
     #[serde(default)]
@@ -528,6 +533,17 @@ pub struct ServiceContainerSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub network: Option<ServiceNetwork>,
+}
+
+impl ServiceContainerSpec {
+    /// The stop signal a Service gets when it names none: SIGTERM when its start command
+    /// replaces the image's, since a shell or framework the image's STOPSIGNAL was chosen
+    /// for may not be what runs. None leaves the image's own.
+    #[must_use]
+    pub fn default_stop_signal(&self) -> Option<&'static str> {
+        (!(self.command.is_empty() && self.entrypoint.is_empty()))
+            .then(|| crate::config::ServiceStopSignal::Sigterm.name())
+    }
 }
 
 /// A network namespace a Container joins instead of the ployz bridge.

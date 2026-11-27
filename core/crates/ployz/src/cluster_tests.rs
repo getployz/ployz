@@ -530,7 +530,7 @@ async fn redialed_into_a_refusal(bounded: bool) -> Option<MachineId> {
             }
         })
         .await;
-    client.session.entry = Some(machine_id('a'));
+    client.enter_at(machine_id('a'));
     let refused = if bounded {
         client
             .call::<op::ListMachines>(
@@ -595,8 +595,7 @@ async fn a_redial_that_reaches_another_machine_is_refused_and_keeps_the_old_chan
         Ok(tonic::Response::new(described.encode().unwrap()))
     })
     .await;
-    client.session.entry = Some(machine_id('a'));
-    client.session.confirmed = Some(machine_id('a'));
+    client.enter_at(machine_id('a'));
     client
         .session
         .use_connector(crate::connect::test_support::connector(
@@ -605,7 +604,7 @@ async fn a_redial_that_reaches_another_machine_is_refused_and_keeps_the_old_chan
 
     // A client whose last redial failed has forgotten its entry, and still refuses.
     let mut forgot = client.clone();
-    forgot.session.entry = None;
+    forgot.session.lose_entry();
     for redialing in [client.clone(), forgot] {
         let refused = redialing.redial_shared().await;
         assert!(
@@ -629,8 +628,7 @@ async fn a_shared_redial_whose_daemon_will_not_say_which_machine_it_is_keeps_the
         Ok(tonic::Response::new(refused.encode().unwrap()))
     })
     .await;
-    client.session.entry = Some(machine_id('a'));
-    client.session.confirmed = Some(machine_id('a'));
+    client.enter_at(machine_id('a'));
     client
         .session
         .use_connector(crate::connect::test_support::connector(
@@ -672,8 +670,7 @@ async fn a_retry_redial_that_reaches_another_machine_moves_only_that_client() {
         Ok(tonic::Response::new(described.encode().unwrap()))
     })
     .await;
-    client.session.entry = Some(machine_id('a'));
-    client.session.confirmed = Some(machine_id('a'));
+    client.enter_at(machine_id('a'));
     client
         .session
         .use_connector(crate::connect::test_support::connector(
@@ -684,7 +681,7 @@ async fn a_retry_redial_that_reaches_another_machine_moves_only_that_client() {
     // Machine; the retry follows it. A clone whose last redial failed has forgotten
     // its entry, and still moves only itself.
     let mut forgot = client.clone();
-    forgot.session.entry = None;
+    forgot.session.lose_entry();
     for mut retrying in [client.clone(), forgot] {
         retrying.session.redial().await.unwrap();
         assert_eq!(retrying.entry_machine(), Some(machine_id('b')));
@@ -1246,7 +1243,7 @@ async fn a_forget_whose_entry_reconnect_fails_says_to_run_it_again() {
             Err(tonic::Status::unavailable("restarting"))
         })
         .await;
-    client.session.entry = Some(machine_id('a'));
+    client.enter_at(machine_id('a'));
 
     let error = client.held_copies(&machine('b')).await.unwrap_err();
 
@@ -1311,7 +1308,7 @@ async fn a_server_the_entry_reports_silent_reads_dead_without_reconnecting_to_th
             }
         })
         .await;
-    client.session.entry = Some(machine_id('a'));
+    client.enter_at(machine_id('a'));
 
     let held = client.held_copies(&machine('b')).await;
 
@@ -1458,8 +1455,7 @@ async fn removing(
     described: char,
 ) -> (Result<LocalMachineRemoved, RpcError>, Vec<&'static str>) {
     let (mut client, log, server) = lists_a_and_b_describing_itself_as(described).await;
-    client.session.entry = Some(machine_id(confirmed));
-    client.session.confirmed = Some(machine_id(confirmed));
+    client.enter_at(machine_id(confirmed));
     let nothing_lost = ployz_core::ObservedDataLoss {
         data_loss: Vec::new(),
     }
@@ -1618,7 +1614,7 @@ async fn a_copy_names_the_user_tag_only_on_an_entry_that_lacks_it() {
             },
         )
         .await;
-        client.session.entry = Some(entry.id);
+        client.enter_at(entry.id);
 
         let naming = client.image_naming(&dest.id);
         crate::image::copy_running_image(&client, source, dest, "app:v1", &image_id, naming)

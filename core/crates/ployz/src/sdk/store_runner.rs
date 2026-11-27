@@ -3,6 +3,7 @@
 //! evidence, so the Deploy Intent with its unsealed secrets, the session and the raw
 //! SDK evidence never leave it: the caller gets only the Deployment's summary.
 
+use ployz_core::deploy_steps::{StepName, Steps, now_ms};
 use ployz_core::error_chain;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -183,6 +184,7 @@ pub async fn run_deployment_expecting(
         deployment,
         runner,
         over: Latch::new(),
+        steps: std::sync::Mutex::default(),
         reader: checkouts
             .as_ref()
             .ok()
@@ -552,6 +554,8 @@ struct Run {
     deployment: DeploymentId,
     runner: RunnerId,
     over: Latch,
+    /// When each step ran, until the next record takes the changed ones.
+    steps: std::sync::Mutex<Steps>,
     /// Handed to each Server with a rule's proof.
     reader: Option<ployz_core::GithubToken>,
 }
@@ -670,6 +674,7 @@ impl Run {
             .signed
             .extend(rules.services().cloned());
         let prepared = if targets.is_empty() && built.is_empty() {
+            self.steps().start(StepName::Planning, None, now_ms());
             self.renewing(session.plan(claimed.intent), || {
                 session.inner.cancel.cancel()
             })
@@ -677,6 +682,11 @@ impl Run {
         } else {
             match self.build(session, &claimed, &targets).await? {
                 Ok(mut receipts) => {
+                    {
+                        let mut steps = self.steps();
+                        let at = steps.last_ended(StepName::Building).unwrap_or_else(now_ms);
+                        steps.start(StepName::Planning, None, at);
+                    }
                     receipts.extend(built);
                     rules = rule_proofs(session, &claimed, &receipts, self).await;
                     registry_proofs(&claimed, &mut rules);
@@ -692,7 +702,10 @@ impl Run {
             }
         };
         let prepared = match prepared {
-            Ok(prepared) => prepared,
+            Ok(prepared) => {
+                self.steps().end(StepName::Planning, None, now_ms());
+                prepared
+            }
             Err(unprepared) => return self.unprepared(&earlier, &deletes, unprepared).await,
         };
         let recorded = self
@@ -722,43 +735,91 @@ impl Run {
             })
             .await;
         self.keep_verified(&issued).await;
-        match outcome {
-            Ok((outcome, progress, mut warnings)) => {
-                match self.standing().await {
-                    Standing::Over(Over::Lost) => {
-                        return self.interrupted(outcome, progress).await;
-                    }
-                    // The store refuses the outcome, and nothing more is deleted.
-                    Standing::Over(Over::Ended) => {
-                        return self.executed(outcome, progress, Vec::new()).await;
-                    }
-                    Standing::Keep | Standing::Cancel | Standing::Unread => {}
-                }
-                // The last chance: the store takes warnings only while the Deployment runs.
-                self.record_warnings(&mut warnings).await;
-                let removed = if matches!(outcome, DeployOutcome::Success { .. }) {
-                    // Deleting is never interrupted: a half-deleted set stays accepted.
-                    let removal = async {
-                        match &closes {
-                            Some(namespace) => session.close_preview(namespace, deletes).await,
-                            None => remove_volumes(session, deletes).await,
+        let recorded = match outcome {
+            Ok((outcome, progress, mut warnings)) => match self.standing().await {
+                Standing::Over(Over::Lost) => self.interrupted(outcome, progress).await,
+                // The store refuses the outcome, and nothing more is deleted.
+                Standing::Over(Over::Ended) => self.executed(outcome, progress, Vec::new()).await,
+                Standing::Keep | Standing::Cancel | Standing::Unread => {
+                    // The last chance: the store takes most warnings only while the
+                    // Deployment runs.
+                    self.record_warnings(&mut warnings).await;
+                    let removed = if matches!(outcome, DeployOutcome::Success { .. }) {
+                        if !deletes.is_empty() || closes.is_some() {
+                            // An old copy may still mount a Volume this deletes.
+                            self.retired(&running).await;
                         }
+                        // Deleting is never interrupted: a half-deleted set stays accepted.
+                        let removal = async {
+                            match &closes {
+                                Some(namespace) => session.close_preview(namespace, deletes).await,
+                                None => remove_volumes(session, deletes).await,
+                            }
+                        };
+                        self.renewing(removal, || ()).await
+                    } else {
+                        Vec::new()
                     };
-                    self.renewing(removal, || ()).await
-                } else {
-                    Vec::new()
-                };
-                match self.standing().await {
-                    Standing::Keep | Standing::Unread => {
-                        self.fill_ingress(session, prepared.preview.machine_names())
-                            .await;
+                    match self.standing().await {
+                        Standing::Keep | Standing::Unread => {
+                            self.fill_ingress(session, prepared.preview.machine_names())
+                                .await;
+                        }
+                        Standing::Cancel | Standing::Over(_) => {}
                     }
-                    Standing::Cancel | Standing::Over(_) => {}
+                    self.executed(outcome, progress, removed).await
                 }
-                self.executed(outcome, progress, removed).await
-            }
+            },
             // The session ended mid-execution: what ran is unknown.
-            Err(_) => self.record(RunEvidence::Abandoned).await,
+            Err(_) => return self.record(RunEvidence::Abandoned).await,
+        };
+        // The outcome is recorded once traffic moved; the old copies retire after it.
+        match (recorded, self.retired(&running).await) {
+            (Ok(_), Some(warned)) => Ok(warned),
+            (recorded, _) => recorded,
+        }
+    }
+
+    /// Wait out what the Deploy does after its Outcome, retiring the old copies and
+    /// cleaning up images, recording each copy it leaves running. The summary the last
+    /// recorded warning left, if any. Waiting again returns at once.
+    async fn retired(&self, running: &super::RunningDeploy) -> Option<DeploymentSummary> {
+        let mut warnings = Vec::new();
+        let mut warned = None;
+        while let Some(event) = running.next().await {
+            if let ployz_core::DeployEvent::Retired { service } = &event {
+                self.steps()
+                    .drained(StepName::StoppingOld, Some(service), now_ms());
+                self.record_steps().await;
+            }
+            if let ployz_core::DeployEvent::Warning { warning } = event {
+                if let DeployWarning::LeftRunning { service, .. } = &warning {
+                    self.steps()
+                        .hold(StepName::StoppingOld, Some(&service.name));
+                }
+                warnings.push(warning);
+                warned = self.recorded_warnings(&mut warnings).await.or(warned);
+            }
+        }
+        // Its events ended, so the Deploy task ended: only a second wait errs.
+        let _ = running.finished().await;
+        self.recorded_warnings(&mut warnings).await.or(warned)
+    }
+
+    /// Record the steps that changed since the last record, after the Deployment ended
+    /// too. A step write that fails only warns.
+    async fn record_steps(&self) {
+        let steps = self.steps().take_changed();
+        if steps.is_empty() {
+            return;
+        }
+        let deployment = self.deployment.clone();
+        let recorded = super::store_call(&self.store, move |store| {
+            store.record_steps(&deployment, &steps)
+        })
+        .await;
+        if let Err(error) = recorded {
+            tracing::warn!(%error, "couldn't record the Deployment's steps");
         }
     }
 
@@ -813,6 +874,7 @@ impl Run {
         targets: &[Target],
     ) -> Result<Result<BTreeMap<ServiceName, BuildReceipt>, Unbuilt>, RpcError> {
         let mut builds = Vec::new();
+        let mut starts = Vec::new();
         for (index, target) in targets.iter().enumerate() {
             let service = &target.service;
             let mut input = PreparationInput {
@@ -829,6 +891,7 @@ impl Run {
                 ..PreparationInput::default()
             };
             target.input(&mut input);
+            starts.push(now_ms());
             let running = match session.build(input, None) {
                 Ok(running) => running,
                 Err(error) => return Err(stop_builds(&builds, error).await),
@@ -844,7 +907,8 @@ impl Run {
         let all = futures_util::future::join_all(
             builds
                 .iter()
-                .map(|(target, running)| self.follow(target, running)),
+                .zip(&starts)
+                .map(|((target, running), started)| self.follow(target, running, *started)),
         );
         let ended = self
             .renewing(all, || {
@@ -887,6 +951,7 @@ impl Run {
         &self,
         target: &Target,
         running: &RunningBuild,
+        started: i64,
     ) -> Result<Result<BuildReceipt, RpcError>, RpcError> {
         let service = &target.service;
         // GitHub can't build uploaded source: the walk skips it, and says so when the
@@ -904,6 +969,7 @@ impl Run {
             String::new()
         };
         let mut server = None;
+        let mut queued = false;
         let mut flushed = tokio::time::Instant::now();
         loop {
             let next = if log.is_empty() {
@@ -926,6 +992,7 @@ impl Run {
                 }
             };
             let Some(event) = next else { break };
+            build_stage(&mut self.steps(), service, (started, &mut queued), &event);
             if let Some(name) = event
                 .pointer("/Selected/machine/name")
                 .and_then(Value::as_str)
@@ -957,6 +1024,7 @@ impl Run {
                 Err(error),
             ),
         };
+        build_ended(&mut self.steps(), service, started, ended.is_ok());
         self.report(service, status, message, log, server).await?;
         let receipt = match ended {
             Ok(receipt) => receipt,
@@ -1013,7 +1081,18 @@ impl Run {
             claimed.intent.registry_logins,
             claimed.intent.options.runner(),
         )?;
-        self.renewing(running.finished(), || running.abort()).await
+        let delivering = async {
+            while let Some(event) = running.next().await {
+                delivery(&mut self.steps(), &event);
+            }
+        };
+        let (prepared, ()) = self
+            .renewing(
+                futures_util::future::join(running.finished(), delivering),
+                || running.abort(),
+            )
+            .await;
+        prepared
     }
 
     /// Records a Deploy its preparation refused: the upload it needs, or nothing
@@ -1038,7 +1117,8 @@ impl Run {
 
     /// Wait for `running`'s outcome, recording each Service once every one of its
     /// planned operations completed: a replaced Service reads Deployed at once, and
-    /// stays so if this runner is lost before the outcome.
+    /// stays so if this runner is lost before the outcome. It returns at the Outcome,
+    /// before the old copies retire; [`Self::retired`] waits for those.
     async fn executing(
         &self,
         session: &Session,
@@ -1057,16 +1137,26 @@ impl Run {
         let mut pending = BTreeMap::new();
         let mut warnings = Vec::new();
         let mut stopped = BTreeMap::new();
+        let mut ended = None;
         while let Some(event) = running.next().await {
             let mut rows = match event {
                 ployz_core::DeployEvent::Progress { rows, .. } => rows,
                 ployz_core::DeployEvent::Warning { warning } => {
+                    if let DeployWarning::LeftRunning { service, .. } = &warning {
+                        self.steps()
+                            .hold(StepName::StoppingOld, Some(&service.name));
+                    }
                     warnings.push(warning);
                     self.record_warnings(&mut warnings).await;
                     continue;
                 }
-                ployz_core::DeployEvent::Outcome { .. }
-                | ployz_core::DeployEvent::ImagesPruned { .. } => continue,
+                // Traffic moved: the old copies retiring after it hold up nothing.
+                ployz_core::DeployEvent::Outcome { outcome } => {
+                    ended = Some(outcome);
+                    break;
+                }
+                ployz_core::DeployEvent::ImagesPruned { .. }
+                | ployz_core::DeployEvent::Retired { .. } => continue,
             };
             self.record_warnings(&mut warnings).await;
             if let Ok(client) = session.client() {
@@ -1077,7 +1167,24 @@ impl Run {
                     }
                 }
             }
-            for mut row in tracker.changes(&rows) {
+            let changes = tracker.changes(&rows);
+            {
+                let mut steps = self.steps();
+                steps.rows(&changes, now_ms());
+                // Its old copies retire after the Outcome, and the step waits for them.
+                for row in &rows {
+                    if let (
+                        Some(service),
+                        ployz_core::OperationStatus::Running {
+                            phase: ployz_core::OperationPhase::RetiringOld { .. },
+                        },
+                    ) = (&row.service_name, &row.status)
+                    {
+                        steps.drain(StepName::StoppingOld, Some(service));
+                    }
+                }
+            }
+            for mut row in changes {
                 let container = tracker.container(&row);
                 if let (RowState::Failed { log: Some(log), .. }, Some(container), Ok(client)) =
                     (&mut row.state, container, session.client())
@@ -1125,7 +1232,10 @@ impl Run {
                 confirmed.extend(new);
             }
         }
-        let mut outcome = running.finished().await?;
+        let mut outcome = match ended {
+            Some(outcome) => outcome,
+            None => running.finished().await?,
+        };
         if let (DeployOutcome::Failed { failed, .. }, Ok(client)) = (&mut outcome, session.client())
         {
             let (machine, error) = match failed {
@@ -1143,18 +1253,31 @@ impl Run {
     /// Record each held warning, keeping the ones the store refused for the next try.
     /// The store keeps a warning once, so a retry after a lost reply changes nothing.
     async fn record_warnings(&self, warnings: &mut Vec<DeployWarning>) {
+        self.recorded_warnings(warnings).await;
+    }
+
+    /// [`Self::record_warnings`], returning the summary the last recorded one left.
+    async fn recorded_warnings(
+        &self,
+        warnings: &mut Vec<DeployWarning>,
+    ) -> Option<DeploymentSummary> {
         let mut unrecorded = Vec::new();
+        let mut recorded = None;
         for warning in warnings.drain(..) {
-            if let Err(error) = self.record(RunEvidence::Warned(warning.clone())).await {
-                tracing::warn!(
-                    code = error.code.as_str(),
-                    error = error.message.as_str(),
-                    "couldn't record a Deploy warning; retrying later"
-                );
-                unrecorded.push(warning);
+            match self.record(RunEvidence::Warned(warning.clone())).await {
+                Ok(summary) => recorded = Some(summary),
+                Err(error) => {
+                    tracing::warn!(
+                        code = error.code.as_str(),
+                        error = error.message.as_str(),
+                        "couldn't record a Deploy warning; retrying later"
+                    );
+                    unrecorded.push(warning);
+                }
             }
         }
         *warnings = unrecorded;
+        recorded
     }
 
     async fn connecting<T, E>(
@@ -1393,9 +1516,22 @@ impl Run {
         super::store_call(&self.store, move |store| store.sealed_names(&environment)).await
     }
 
+    fn steps(&self) -> std::sync::MutexGuard<'_, Steps> {
+        self.steps
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Record `evidence`, after the steps that changed since the last record.
     async fn record(&self, evidence: RunEvidence) -> Result<DeploymentSummary, RpcError> {
         let (deployment, runner) = (self.deployment.clone(), self.runner.clone());
+        let steps = self.steps().take_changed();
         super::store_call(&self.store, move |store| {
+            if !steps.is_empty()
+                && let Err(error) = store.record_steps(&deployment, &steps)
+            {
+                tracing::warn!(%error, "couldn't record the Deployment's steps");
+            }
             store.record(&deployment, &runner, evidence)
         })
         .await
@@ -1410,6 +1546,74 @@ impl Run {
         }
         self.over
             .settle(read_of(&self.record(RunEvidence::Alive).await))
+    }
+}
+
+/// Move one build's steps on with `event`, one of its progress frames. Its upload
+/// starts with the build, or once a Build Machine admits it after queueing.
+fn build_stage(
+    steps: &mut Steps,
+    service: &ServiceName,
+    (started, queued): (i64, &mut bool),
+    event: &Value,
+) {
+    let at = now_ms();
+    let service = Some(service);
+    match event.pointer("/Build/Stage").and_then(Value::as_str) {
+        Some("Queued") => *queued = true,
+        Some("Upload") => steps.start(
+            StepName::Uploading,
+            service,
+            if *queued { at } else { started },
+        ),
+        Some("Preparation") => {
+            steps.end(StepName::Uploading, service, at);
+            steps.start(StepName::StartingBuilder, service, at);
+        }
+        Some("Building") => {
+            steps.end(StepName::Uploading, service, at);
+            steps.end(StepName::StartingBuilder, service, at);
+            steps.start(StepName::Building, service, at);
+        }
+        _ => {}
+    }
+}
+
+/// End one build's steps. A build that reused an image builds from its start to its
+/// end; a failed one stays open in the step it failed in.
+fn build_ended(steps: &mut Steps, service: &ServiceName, started: i64, built: bool) {
+    let at = now_ms();
+    let service = Some(service);
+    let stages = [
+        StepName::Uploading,
+        StepName::StartingBuilder,
+        StepName::Building,
+    ];
+    if !stages.iter().any(|stage| steps.started(*stage, service)) {
+        steps.start(StepName::Building, service, started);
+    }
+    if built {
+        for stage in stages {
+            steps.end(stage, service, at);
+        }
+    }
+}
+
+/// Move a Service's image delivery on with `event`, one of preparation's progress
+/// frames: from sending it until its Machines have it. Planning ends at the first send.
+fn delivery(steps: &mut Steps, event: &Value) {
+    let at = now_ms();
+    let service = |pointer| {
+        event
+            .pointer(pointer)
+            .and_then(Value::as_str)
+            .and_then(|name| name.parse::<ServiceName>().ok())
+    };
+    if let Some(service) = service("/Sending/service") {
+        steps.end(StepName::Planning, None, at);
+        steps.start(StepName::DeliveringImage, Some(&service), at);
+    } else if let Some(service) = service("/Delivered/service") {
+        steps.end(StepName::DeliveringImage, Some(&service), at);
     }
 }
 

@@ -151,6 +151,12 @@ impl Progress {
         }
     }
 
+    pub(super) fn retired(&self, service: ServiceName) {
+        if let Some(tx) = &self.tx {
+            let _ = tx.send(DeployEvent::Retired { service });
+        }
+    }
+
     pub(super) fn outcome(&self, outcome: DeployOutcome<ExecutionError>) {
         if let Some(tx) = &self.tx {
             let _ = tx.send(DeployEvent::Outcome { outcome });

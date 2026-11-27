@@ -479,9 +479,14 @@ enum Stream {
 /// or 127. So a first stdout frame that reads like that waits for the next frame: the exit
 /// it expects sends it to stderr, and anything else to stdout, as the command's own output.
 #[derive(Default)]
-struct ExecWriter {
-    started: bool,
-    held: Option<Vec<u8>>,
+enum ExecWriter {
+    /// No output yet.
+    #[default]
+    Fresh,
+    /// The first frame, which read like Docker's own failure, waiting for what follows.
+    Holding(Vec<u8>),
+    /// Every later frame goes straight where it came from.
+    Streaming,
 }
 
 impl ExecWriter {
@@ -492,15 +497,18 @@ impl ExecWriter {
         stdout: &mut dyn Write,
         stderr: &mut dyn Write,
     ) -> std::io::Result<()> {
-        if let Some(held) = self.held.take() {
-            write_stdout_frame(stdout, &held)?;
-        }
-        let first = !std::mem::replace(&mut self.started, true);
-        match stream {
-            Stream::Stdout if first && bytes.starts_with(b"OCI runtime exec failed: ") => {
-                self.held = Some(bytes.to_vec());
-                Ok(())
+        match std::mem::replace(self, Self::Streaming) {
+            Self::Fresh
+                if matches!(stream, Stream::Stdout)
+                    && bytes.starts_with(b"OCI runtime exec failed: ") =>
+            {
+                *self = Self::Holding(bytes.to_vec());
+                return Ok(());
             }
+            Self::Holding(held) => write_stdout_frame(stdout, &held)?,
+            Self::Fresh | Self::Streaming => {}
+        }
+        match stream {
             Stream::Stdout => write_stdout_frame(stdout, bytes),
             Stream::Stderr => stderr.write_all(bytes),
         }
@@ -508,15 +516,15 @@ impl ExecWriter {
 
     /// Release a held frame once the exec ends, with its exit code when it sent one.
     fn end(
-        &mut self,
+        self,
         code: Option<i32>,
         stdout: &mut dyn Write,
         stderr: &mut dyn Write,
     ) -> std::io::Result<()> {
-        match self.held.take() {
-            Some(held) if matches!(code, Some(126 | 127)) => stderr.write_all(&held),
-            Some(held) => write_stdout_frame(stdout, &held),
-            None => Ok(()),
+        match self {
+            Self::Holding(held) if matches!(code, Some(126 | 127)) => stderr.write_all(&held),
+            Self::Holding(held) => write_stdout_frame(stdout, &held),
+            Self::Fresh | Self::Streaming => Ok(()),
         }
     }
 }

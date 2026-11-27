@@ -1,7 +1,8 @@
 import type { ConfigListing, DiffView, JsonValue, ServiceListing, VolumeListing } from "@ployz/sdk";
 import type { MountedConfig } from "#/modules/config-store/store-configs";
 import type { VolumeCopies } from "#/modules/volume-copies/volume-copies";
-import type { Node } from "@xyflow/react";
+import type { Edge, Node } from "@xyflow/react";
+import type { RoutedData } from "#/modules/canvas/routed-edges";
 
 export type CanvasResourceType = "service" | "volume" | "config";
 
@@ -99,5 +100,11 @@ export type CanvasResourceNode =
   | CanvasStoreConfigNode
   | CanvasStoreLiveNode
   | PendingNode;
+
+/** `reader` reads `keys` of `read`, by their names; `shown` while it is hovered or picked. */
+export type ServiceEdgeData = RoutedData & { reader: string; read: string; keys: string[]; shown?: boolean };
+
+/** A link from a Service into one that reads it. */
+export type ServiceEdge = Edge<ServiceEdgeData, "service">;
 
 export type FlowPosition = { x: number; y: number };

@@ -5,6 +5,8 @@ mod cleanup_report;
 mod expected_cluster;
 #[path = "deploy_client/operate.rs"]
 mod operate;
+#[path = "deploy_client/retirement.rs"]
+mod retirement;
 #[path = "deploy_client/runner_cancellation.rs"]
 mod runner_cancellation;
 #[path = "deploy_client/support.rs"]

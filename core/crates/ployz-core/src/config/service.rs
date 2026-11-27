@@ -27,6 +27,16 @@ pub struct AuthoredServiceConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub update_order: Option<ServiceUpdateOrder>,
+    /// None sends SIGTERM when `start_command` replaces the image's command, else the
+    /// image's own STOPSIGNAL. Skipped when unset, so documents without it hash the same.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub stop_signal: Option<ServiceStopSignal>,
+    /// Seconds a replica has to stop before it is killed. None is
+    /// [`STOP_GRACE_PERIOD_DEFAULT`](super::STOP_GRACE_PERIOD_DEFAULT). Skipped when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub stop_grace_period: Option<u16>,
     #[serde(default = "default_replicas")]
     pub replicas: Replicas,
     #[serde(default)]
@@ -377,6 +387,34 @@ impl From<ServiceUpdateOrder> for UpdateOrder {
     }
 }
 
+/// The signal that asks a replica to stop.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum ServiceStopSignal {
+    Sigterm,
+    Sigint,
+    Sigquit,
+    Sighup,
+    Sigusr1,
+    Sigusr2,
+    Sigwinch,
+}
+
+impl ServiceStopSignal {
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Sigterm => "SIGTERM",
+            Self::Sigint => "SIGINT",
+            Self::Sigquit => "SIGQUIT",
+            Self::Sighup => "SIGHUP",
+            Self::Sigusr1 => "SIGUSR1",
+            Self::Sigusr2 => "SIGUSR2",
+            Self::Sigwinch => "SIGWINCH",
+        }
+    }
+}
+
 /// A stable public route identity and hostname. A null target follows container PORT.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -460,16 +498,23 @@ pub enum ValuePart {
 }
 
 impl ValuePart {
-    /// The Service lineage this part reads, if it is a reference to one.
+    /// The Service lineage this part reads and the key it reads of it, if it is a
+    /// reference to another Service: what orders a Deploy and links Services on the canvas.
     #[must_use]
-    pub fn service_lineage(&self) -> Option<&str> {
+    pub fn service_ref(&self) -> Option<(&str, &str)> {
         match self {
             Self::Ref {
                 owner: ValuePartOwner::Service { lineage_id },
-                ..
-            } => Some(lineage_id.as_str()),
+                key,
+            } => Some((lineage_id.as_str(), key.as_str())),
             Self::Ref { .. } | Self::Text { .. } => None,
         }
+    }
+
+    /// The Service lineage this part reads, if it is a reference to one.
+    #[must_use]
+    pub fn service_lineage(&self) -> Option<&str> {
+        self.service_ref().map(|(lineage, _)| lineage)
     }
 }
 

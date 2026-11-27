@@ -441,13 +441,25 @@ pub(crate) fn record(
     }
 }
 
-/// Add `warning` to a running Deployment once.
+/// Add `warning` to a running Deployment once. What retiring its old copies left may
+/// follow its end: they retire after the outcome, once traffic left them.
 fn warn(
     tx: &mut dyn Tx,
     mut stored: Stored,
     warning: DeploymentWarning,
 ) -> Result<DeploymentSummary, RpcError> {
-    running(&stored)?;
+    let retiring = matches!(
+        &warning,
+        DeploymentWarning::Deploy {
+            warning: DeployWarning::LeftRunning { .. } | DeployWarning::MixedAfterReturn { .. }
+        }
+    ) && matches!(
+        stored.summary.status,
+        DeploymentStatus::Applied | DeploymentStatus::Failed | DeploymentStatus::Cancelled
+    );
+    if !retiring {
+        running(&stored)?;
+    }
     if !stored.run.warnings.contains(&warning) {
         stored.run.warnings.push(warning);
     }
@@ -581,7 +593,7 @@ fn undeleted(
 }
 
 /// The current name of the target Service that lowers to runtime Service `runtime`.
-fn current_service<'nodes>(
+pub(super) fn current_service<'nodes>(
     nodes: &'nodes [TargetNode],
     runtime: &'nodes ServiceName,
 ) -> &'nodes ServiceName {

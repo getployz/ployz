@@ -81,7 +81,7 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Effec
       const { organizationId, environmentId, deploymentId } = event.data;
       const lanes = await step.run("place-volumes", () => runEffect(placeDeployVolumes(organizationId, environmentId, deploymentId, runId)));
       for (const lane of lanes) await step.run(`fence-${lane.run.volumeId}`, () => runEffect(fenceDeployVolume(lane, runId)));
-      const ran = await step.run("run-deployment", () => runEffect(runStoreDeployment(event.data, storeDeploymentRunner(runId))));
+      const ran = await step.run("run-deployment", () => runEffect(runStoreDeployment(event.data, storeDeploymentRunner(runId), event.ts)));
       if (lanes.some((lane) => lane.kind === "follow" && lane.ended)) {
         await step.run("release-followed", () => runEffect(releaseFollowed(environmentId, runId, lanes)));
       }

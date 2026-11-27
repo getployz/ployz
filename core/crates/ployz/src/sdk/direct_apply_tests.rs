@@ -363,3 +363,66 @@ async fn web_traffic_whose_proxy_starts_stays_on() {
     result.expect("the Ingress Proxy starts");
     assert!(on, "web traffic stays on");
 }
+
+/// `ployz server set two --accepts-ingress=true` through Server one, whose WireGuard sees two
+/// as `wireguard`, while two never answers the update. The error's message.
+async fn set_on_a_silent_server(wireguard: Option<ployz_core::WireGuardObservation>) -> String {
+    let entry = support::machine('a', "one");
+    let mut silent = support::machine('b', "two");
+    silent.wireguard = wireguard;
+    let id = silent.machine.id;
+    let service = support::DeployService::empty()
+        .with_machines(vec![entry, silent])
+        .silent_updates_on(id);
+    let (mut client, server, _) = support::connected_in_memory(service).await;
+    let root = crate::cli::command()
+        .try_get_matches_from(["ployz", "server", "set", "two", "--accepts-ingress=true"])
+        .unwrap();
+    let recovery = root
+        .subcommand_matches("server")
+        .and_then(|server| server.subcommand_matches("set"))
+        .unwrap()
+        .clone();
+    let result = crate::handlers::server::apply_update(
+        &mut client,
+        ployz_core::MachineTarget::from(&id),
+        ployz_core::MachineUpdate {
+            accepts_ingress: Some(true),
+            ..Default::default()
+        },
+        None,
+        "ployz server set two --accepts-ingress=true".to_owned(),
+        recovery,
+    )
+    .await;
+    server.abort();
+    result.unwrap_err().report().message
+}
+
+/// A Server that didn't answer the change, and that the entry's WireGuard hasn't handshaken
+/// with for minutes, is named with that link and what opens it.
+#[tokio::test(start_paused = true)]
+async fn a_silent_server_the_entry_sees_down_names_the_link() {
+    let message = set_on_a_silent_server(Some(ployz_core::WireGuardObservation::Down {
+        since_handshake_secs: Some(387),
+    }))
+    .await;
+    assert!(message.contains("didn't answer"), "{message}");
+    assert!(
+        message.contains("one, the Server this command entered by, has had no WireGuard handshake with two for 6m"),
+        "{message}"
+    );
+    assert!(message.contains("UDP 51820"), "{message}");
+    assert!(message.contains("--connect"), "{message}");
+}
+
+/// A silent Server the entry's WireGuard sees up, or that an older entry says nothing
+/// about, makes no claim about the link.
+#[tokio::test(start_paused = true)]
+async fn a_silent_server_the_entry_sees_up_claims_no_link() {
+    for wireguard in [Some(ployz_core::WireGuardObservation::Up), None] {
+        let message = set_on_a_silent_server(wireguard).await;
+        assert!(message.contains("didn't answer"), "{message}");
+        assert!(!message.contains("WireGuard"), "{message}");
+    }
+}

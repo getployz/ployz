@@ -13,7 +13,6 @@ import { toErrorMessage } from "#/lib/error-message";
 import {
   authKeyProblem,
   type ObservedServer,
-  type PrivateAccessChanged,
   type PrivateAccessWant,
   TAILSCALE_MACHINES_URL,
 } from "#/modules/private-access/private-access";
@@ -39,23 +38,43 @@ export function Integrations({ organizationSlug, editable }: { organizationSlug:
   );
 }
 
+/** The Tailscale section's one flow at a time: the Connect form, a Connect in flight on it, or the Turn off dialog. */
+type Tailscale =
+  | { readonly at: "idle"; readonly offRefusal: string | null }
+  | { readonly at: "form"; readonly key: string; readonly refusal: string | null }
+  | { readonly at: "connecting"; readonly key: string }
+  | { readonly at: "turning_off" };
+
+const IDLE: Tailscale = { at: "idle", offRefusal: null };
+
 function TailscaleSection({ organizationSlug, editable }: { organizationSlug: string; editable: boolean }) {
   const queryClient = useQueryClient();
   const query = useQuery(privateAccessQueryOptions(organizationSlug));
   const observed = query.data ?? null;
-  const [connecting, setConnecting] = useState(false);
-  const [starting, setStarting] = useState(false);
-  const [turningOff, setTurningOff] = useState(false);
+  const [state, setState] = useState<Tailscale>(IDLE);
   const last = useQuery(lastAnswerOptions(organizationSlug)).data ?? null;
-  const [offRefusal, setOffRefusal] = useState<string | null>(null);
   const rows = observed?.servers.map((server) => ({ ...server, state: stateOf(server, last) })) ?? [];
   const placed = rows.filter((row) => row.state !== "none").length;
   const serving = rows.filter((row) => row.state === "running").length;
   // Until Connect answers, a running router from a daemon that predates the probe may still be refused.
-  const on = placed > 0 && !starting;
+  const on = placed > 0 && state.at !== "connecting";
+  const formOpen = state.at === "form" || state.at === "connecting";
   const refused = rows.some((row) => row.state === "refused");
   const failures = last === null ? [] : last.changed.failures.filter((failure) => !putRight(last.to, rows.find((row) => row.id === failure.id)?.state));
   const settle = (answer: PrivateAccessAnswer) => landAnswer(queryClient, organizationSlug, answer);
+  /** A request's answer moves the section only if it still shows the flow that sent it. */
+  const settleFrom = (from: "connecting" | "turning_off", next: Tailscale) => setState((now) => now.at === from ? next : now);
+  const connect = async (key: string) => {
+    setState({ at: "connecting", key });
+    try {
+      const sealed = await sealAndApprove(queryClient, organizationSlug, key);
+      const changed = await setPrivateAccessServerFn({ data: { organizationSlug, to: "on", on: sealed } });
+      await settle({ to: "on", changed, at: Date.now() });
+      settleFrom("connecting", changed.failures.length === 0 ? IDLE : { at: "form", key: "", refusal: null });
+    } catch (error) {
+      settleFrom("connecting", { at: "form", key, refusal: error instanceof KeyNotApproved ? error.message : toErrorMessage(error, "Your servers didn't answer. Try again.") });
+    }
+  };
 
   return (
     <SettingsSection id="tailscale" title="Tailscale">
@@ -66,29 +85,28 @@ function TailscaleSection({ organizationSlug, editable }: { organizationSlug: st
         control={(
           <>
             {on ? <StatusBadge serving={serving} servers={rows.length} /> : null}
-            {editable && on ? <Button type="button" variant="outline" size="sm" onClick={() => setTurningOff(true)}>Turn off</Button> : null}
-            {editable && observed !== null && !connecting && (!on || serving < rows.length)
-              ? <Button type="button" size="sm" onClick={() => setConnecting(true)}>{refused ? "Try another key" : "Connect"}</Button>
+            {editable && on ? <Button type="button" variant="outline" size="sm" onClick={() => setState({ at: "turning_off" })}>Turn off</Button> : null}
+            {editable && observed !== null && !formOpen && (!on || serving < rows.length)
+              ? <Button type="button" size="sm" onClick={() => setState({ at: "form", key: "", refusal: null })}>{refused ? "Try another key" : "Connect"}</Button>
               : null}
           </>
         )}
       >
-        {offRefusal === null ? null : <p role="alert" className="text-sm text-destructive">{offRefusal}</p>}
+        {state.at === "idle" && state.offRefusal !== null ? <p role="alert" className="text-sm text-destructive">{state.offRefusal}</p> : null}
         {failures.length === 0 ? null : (
           <ul role="alert" aria-label="Failures" className="flex flex-col gap-1 text-sm text-destructive">
             {failures.map((failure) => <li key={failure.id}>{failure.message}</li>)}
           </ul>
         )}
       </SettingsRow>
-      {connecting ? (
+      {formOpen ? (
         <ConnectForm
-          organizationSlug={organizationSlug}
-          onCancel={() => setConnecting(false)}
-          onPending={setStarting}
-          onDone={async (changed) => {
-            if (changed.failures.length === 0) setConnecting(false);
-            await settle({ to: "on", changed, at: Date.now() });
-          }}
+          authKey={state.key}
+          pending={state.at === "connecting"}
+          refusal={state.at === "form" ? state.refusal : null}
+          onKey={(key) => setState({ at: "form", key, refusal: state.at === "form" ? state.refusal : null })}
+          onConnect={(key) => void connect(key)}
+          onCancel={() => setState(IDLE)}
         />
       ) : null}
       {on ? <Routers rows={rows} /> : null}
@@ -101,21 +119,22 @@ function TailscaleSection({ organizationSlug, editable }: { organizationSlug: st
         </>
       ) : null}
       <ConfirmDialog
-        open={turningOff}
-        onOpenChange={setTurningOff}
+        open={state.at === "turning_off"}
+        onOpenChange={(open) => {
+          if (!open) setState(IDLE);
+        }}
         title="Turn off private access?"
         description="Turning it on again needs a key and new route approvals."
         actionLabel="Turn off"
         pendingLabel="Turning off…"
         variant="destructive"
         onConfirm={async () => {
-          setOffRefusal(null);
           try {
             await settle({ to: "off", changed: await setPrivateAccessServerFn({ data: { organizationSlug, to: "off" } }), at: Date.now() });
+            settleFrom("turning_off", IDLE);
           } catch (error) {
-            setOffRefusal(toErrorMessage(error, "Your servers didn't answer. Try again."));
+            settleFrom("turning_off", { at: "idle", offRefusal: toErrorMessage(error, "Your servers didn't answer. Try again.") });
           }
-          setTurningOff(false);
         }}
       />
     </SettingsSection>
@@ -177,41 +196,23 @@ function Routers({ rows }: { rows: readonly (ObservedServer & { state: RowState 
   );
 }
 
-function ConnectForm({ organizationSlug, onCancel, onPending, onDone }: {
-  organizationSlug: string;
+function ConnectForm({ authKey, pending, refusal, onKey, onConnect, onCancel }: {
+  authKey: string;
+  pending: boolean;
+  refusal: string | null;
+  onKey: (key: string) => void;
+  onConnect: (key: string) => void;
   onCancel: () => void;
-  onPending: (pending: boolean) => void;
-  onDone: (changed: PrivateAccessChanged) => Promise<void>;
 }) {
-  const queryClient = useQueryClient();
-  const [key, setKey] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [refusal, setRefusal] = useState<string | null>(null);
-  const problem = key === "" ? null : authKeyProblem(key);
-  const connect = async () => {
-    setBusy(true);
-    onPending(true);
-    setRefusal(null);
-    try {
-      const on = await sealAndApprove(queryClient, organizationSlug, key);
-      const changed = await setPrivateAccessServerFn({ data: { organizationSlug, to: "on", on } });
-      setKey("");
-      await onDone(changed);
-    } catch (error) {
-      setRefusal(error instanceof KeyNotApproved ? error.message : toErrorMessage(error, "Your servers didn't answer. Try again."));
-    } finally {
-      setBusy(false);
-      onPending(false);
-    }
-  };
+  const problem = authKey === "" ? null : authKeyProblem(authKey);
   return (
     <form
       onSubmit={(event) => {
         event.preventDefault();
-        if (!busy && key !== "" && problem === null) void connect();
+        if (!pending && authKey !== "" && problem === null) onConnect(authKey);
       }}
       onKeyDown={(event) => {
-        if (event.key === "Escape") onCancel();
+        if (event.key === "Escape" && !pending) onCancel();
       }}
     >
       <SettingsRow
@@ -220,16 +221,16 @@ function ConnectForm({ organizationSlug, onCancel, onPending, onDone }: {
         commit="form"
         control={(
           <div className="flex w-full gap-2">
-            <Input aria-label="Auth key" type="password" value={key} autoFocus spellCheck={false} autoComplete="off" disabled={busy}
+            <Input aria-label="Auth key" type="password" value={authKey} autoFocus spellCheck={false} autoComplete="off" disabled={pending}
               aria-invalid={problem !== null} aria-describedby={problem === null ? undefined : "auth-key-problem"} className="font-mono"
-              onChange={(event) => setKey(event.target.value)} />
-            <Button type="submit" size="sm" disabled={busy || key === "" || problem !== null}>{busy ? <Spinner /> : null}Connect</Button>
-            <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={onCancel}>Cancel</Button>
+              onChange={(event) => onKey(event.target.value)} />
+            <Button type="submit" size="sm" disabled={pending || authKey === "" || problem !== null}>{pending ? <Spinner /> : null}Connect</Button>
+            <Button type="button" size="sm" variant="ghost" disabled={pending} onClick={onCancel}>Cancel</Button>
           </div>
         )}
       >
         {problem === null ? null : <p id="auth-key-problem" className="text-sm text-destructive">{problem}</p>}
-        {busy ? <p role="status" className="text-sm text-muted-foreground">Connecting servers…</p> : null}
+        {pending ? <p role="status" className="text-sm text-muted-foreground">Connecting servers…</p> : null}
         {refusal === null ? null : <p role="alert" className="text-sm text-destructive">{refusal}</p>}
       </SettingsRow>
     </form>

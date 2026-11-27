@@ -1,7 +1,7 @@
 import { useEffect, type ReactNode } from "react";
 import {
-  Background, BackgroundVariant, getViewportForBounds, Handle, Panel, Position, ReactFlow, useReactFlow, useStore,
-  type Edge, type Node, type NodeProps, type Rect,
+  Background, BackgroundVariant, getViewportForBounds, Handle, Panel, Position, ReactFlow, ReactFlowProvider, useReactFlow,
+  useStore, type Edge, type Node, type NodeProps, type Rect,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { Link } from "@tanstack/react-router";
@@ -12,6 +12,7 @@ import { Card, CardHeader, CardTitle, CardDescription } from "#/components/ui/ca
 import { formatDuration } from "#/utils/relative-time";
 import { cleanupLabel, type RunGraph, type RunNode, type RunTiming } from "#/modules/config-store/deployments/run-graph";
 import { DEPLOYMENT_ROUTE_TO } from "#/lib/environment-routes";
+import { RoutedStepEdge, useKeepOut, useRoutedEdges } from "#/modules/canvas/routed-edges";
 
 const NODE_WIDTH = 224;
 const NODE_HEIGHT = 72;
@@ -83,6 +84,7 @@ function RunNodeCard({ data: { node, selected } }: NodeProps<RunFlowNode>) {
 }
 
 const nodeTypes = { run: RunNodeCard };
+const edgeTypes = { routed: RoutedStepEdge };
 
 function bounds(nodes: RunFlowNode[]): Rect {
   const xs = nodes.map((node) => node.position.x);
@@ -108,13 +110,21 @@ function FitRun({ x, y, width, height }: Rect) {
 }
 
 /** A Deployment's builds and nodes on a canvas, the header floating top left; a click picks the node the panel shows. */
-export function RunCanvas({ graph, selectedId, header }: { graph: RunGraph; selectedId: string | undefined; header: ReactNode }) {
+export function RunCanvas(props: { graph: RunGraph; selectedId: string | undefined; header: ReactNode }) {
+  return <ReactFlowProvider><RunFlow {...props} /></ReactFlowProvider>;
+}
+
+function RunFlow({ graph, selectedId, header }: { graph: RunGraph; selectedId: string | undefined; header: ReactNode }) {
   const nodes = placed(graph, selectedId);
+  const { keepOut, keepOutRef } = useKeepOut();
+  // Each link is routed around the cards it skips and the header, never under them.
+  const edges = useRoutedEdges(linked(graph), keepOut);
   return (
     <ReactFlow
       nodes={nodes}
-      edges={linked(graph)}
+      edges={edges}
       nodeTypes={nodeTypes}
+      edgeTypes={edgeTypes}
       minZoom={MIN_ZOOM}
       nodesDraggable={false}
       nodesConnectable={false}
@@ -127,7 +137,7 @@ export function RunCanvas({ graph, selectedId, header }: { graph: RunGraph; sele
     >
       <Background variant={BackgroundVariant.Dots} gap={16} size={1} />
       {nodes.length ? <FitRun {...bounds(nodes)} /> : null}
-      <Panel position="top-left" className="max-w-[calc(100%-2rem)]">{header}</Panel>
+      <Panel ref={keepOutRef} position="top-left" className="max-w-[calc(100%-2rem)]">{header}</Panel>
     </ReactFlow>
   );
 }

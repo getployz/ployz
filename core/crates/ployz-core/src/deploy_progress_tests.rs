@@ -4,7 +4,7 @@ use crate::{
     OperationStatus, RpcError, RpcErrorCode,
 };
 
-use super::{Failure, RowPhase, RowState};
+use super::{Failure, RowPhase, RowState, StoppedBy};
 
 fn server(statuses: &[OperationStatus]) -> RowState {
     let statuses: Vec<_> = statuses.iter().map(|status| (status, true)).collect();
@@ -386,6 +386,32 @@ fn a_container_updated_in_place_serves_throughout() {
 }
 
 #[test]
+fn a_new_copy_retiring_the_one_it_replaced_already_serves() {
+    let machine_id = "a".repeat(32);
+    let rows: Vec<OperationRow> = serde_json::from_value(serde_json::json!([{
+        "index": 0, "machine_id": machine_id, "service_name": "web",
+        "operation": {
+            "type": "replace_container", "machine_id": machine_id, "old_container_id": "c".repeat(64),
+            "skip_health_monitor": true,
+            "spec": {
+                "service_id": "b".repeat(32), "name": "web",
+                "mode": {"mode": "replicated", "replicas": 1},
+                "container": {"image": "web:1", "pull_policy": "missing", "resources": {"memory_bytes": 64}}
+            }
+        },
+        "status": {"type": "running", "phase": {"type": "retiring_old", "container_id": "d".repeat(64)}}
+    }]))
+    .unwrap();
+    assert_eq!(
+        super::RowTracker::default().changes(&rows).remove(0).state,
+        RowState::Running {
+            phase: RowPhase::StoppingContainer,
+            serving: true,
+        }
+    );
+}
+
+#[test]
 fn a_failed_limits_update_names_the_server_and_keeps_dockers_words() {
     let machine_id = "a".repeat(32);
     let operations: Vec<OperationRow> = serde_json::from_value(serde_json::json!([{
@@ -656,4 +682,29 @@ fn a_local_permission_error_is_not_a_registry_refusal() {
     let cause =
         "Docker responded with status code 500: open /var/lib/docker/tmp/x: permission denied";
     assert_eq!(pull_failed(cause).reason, "pull image failed");
+}
+
+#[test]
+fn a_stored_failed_row_reads_back_and_writes_the_same_bytes() {
+    let stored = [
+        (
+            r#"{"state":"failed","reason":"boom","cause":[],"step":"start","log":null}"#,
+            StoppedBy::Nothing,
+        ),
+        (
+            r#"{"state":"failed","reason":"boom","cause":["x"],"step":null,"log":null,"unanswered":true,"cancelled":true}"#,
+            StoppedBy::Cancel,
+        ),
+        (
+            r#"{"state":"failed","reason":"boom","cause":[],"step":"health","log":null,"interrupted":true}"#,
+            StoppedBy::LostRunner,
+        ),
+    ];
+    for (row, by) in stored {
+        let state: RowState = serde_json::from_str(row).unwrap();
+        assert!(matches!(state, RowState::Failed { stopped_by, .. } if stopped_by == by));
+        assert_eq!(serde_json::to_string(&state).unwrap(), row);
+    }
+    let both = r#"{"state":"failed","reason":"boom","cause":[],"step":null,"log":null,"cancelled":true,"interrupted":true}"#;
+    assert!(serde_json::from_str::<RowState>(both).is_err());
 }

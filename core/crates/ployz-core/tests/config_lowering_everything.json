@@ -85,7 +85,8 @@
           "maximum_retry_count": 4,
           "name": "on-failure"
         },
-        "stop_timeout_secs": null,
+        "stop_signal": "SIGTERM",
+        "stop_timeout_secs": 30,
         "sysctls": {},
         "tty": false,
         "user": null,

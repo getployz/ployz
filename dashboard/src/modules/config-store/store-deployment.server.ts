@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import type { ConfigStore, DeploymentStatus } from "@ployz/sdk";
+import type { ConfigStore, DeploymentStatus, DeploymentStep } from "@ployz/sdk";
 import { Data, Effect, Option } from "effect";
 import { cloudStore, deployDialOf, refusedWith, storeTry } from "#/modules/config-store/store-sdk.server";
 import { callStore, readStore, requestChecks } from "#/modules/config-store/config-store.server";
@@ -74,17 +74,24 @@ const headReader = Effect.fn("StoreDeployment.headReader")(function* (store: Con
 export const runStoreDeployment = Effect.fn("StoreDeployment.run")(function* (
   data: ConfigDeploymentAdmittedEventData,
   runner: string,
+  admittedAt?: number,
 ) {
   const store = yield* cloudStore;
   const { connections, expect } = yield* deployDialOf(data.organizationId);
   return yield* Effect.gen(function* () {
+    const fetching: DeploymentStep = { name: "fetching_source", started_at: Date.now() };
+    const preparing: DeploymentStep = { name: "preparing", started_at: admittedAt ?? fetching.started_at };
     const sources = yield* Effect.all({
-      checkouts: checkoutSources(store, data.organizationId, data.deploymentId),
+      checkouts: checkoutSources(store, data.organizationId, data.deploymentId).pipe(ended(fetching)),
       upload: storeTry(() => store.claimDeployment(data.organizationId, data.deploymentId, runner)).pipe(
+        ended(preparing),
         Effect.flatMap(() => uploadOwner(store, data.organizationId, data.deploymentId)),
         Effect.flatMap((owner) => owner === undefined ? Effect.succeed(undefined) : fromGithub(extractUpload(data.organizationId, owner))),
       ),
-    }).pipe(Effect.catchTag("SourceUnreadable", (error) => Effect.succeed({ failure: error.message })));
+    }).pipe(
+      Effect.catchTag("SourceUnreadable", (error) => Effect.succeed({ failure: error.message })),
+      Effect.ensuring(recordSteps(store, data.deploymentId, [preparing, fetching])),
+    );
     const reader = yield* headReader(store, data.deploymentId);
     const withReader = "failure" in sources || reader === null ? sources : { ...sources, reader };
     return yield* storeTry(async () => ({
@@ -97,6 +104,23 @@ export const runStoreDeployment = Effect.fn("StoreDeployment.run")(function* (
     Effect.ensuring(released(store, data.organizationId)),
     Effect.tap(() => recheck(store, data.organizationId, data.environmentId)),
   );
+});
+
+/** `effect`, ending `step` when it succeeds: a failed one stays open, as where its Deployment stopped. */
+const ended = (step: DeploymentStep) => <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  Effect.tap(effect, () => Effect.sync(() => { step.ended_at = Date.now(); }));
+
+/** Steps only time a Deploy, so one Cloud couldn't record changes nothing about it. */
+const recordSteps = (store: ConfigStore, deploymentId: string, steps: DeploymentStep[]) =>
+  storeTry(() => store.recordSteps(deploymentId, steps)).pipe(
+    Effect.catch((error) => Effect.logWarning("Could not record a Deployment's steps.", { deploymentId, error })),
+  );
+
+/** Each Deployment a push admitted was received at `receivedAt` and reached the worker now. */
+export const recordReceiving = Effect.fn("StoreDeployment.recordReceiving")(function* (deploymentIds: readonly string[], receivedAt: number) {
+  const store = yield* cloudStore;
+  const receiving: DeploymentStep = { name: "receiving", started_at: receivedAt, ended_at: Date.now() };
+  yield* Effect.forEach(deploymentIds, (deploymentId) => recordSteps(store, deploymentId, [receiving]), { discard: true });
 });
 
 /** A Deployment's outcome may move a PR check. */
