@@ -41,8 +41,8 @@ use gens::Gens;
 use health::wait_healthy;
 use hooks::run_hook;
 use publish::{
-    Done, GappedPublishes, GroupCopies, Published, Retiring, ack_tick, old_copies, publish_group,
-    rolling_step, route_new,
+    Done, GappedPublishes, GroupCopies, Published, Retiring, Switch, ack_tick, old_copies,
+    publish_group, rolling_step, route_new,
 };
 use report::Report;
 use start::{
@@ -418,11 +418,13 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                 let record = records.entry(group).or_default();
                 let mut ledger = Ledger::new(progress, &mut stop, &mut schedule);
                 match published {
-                    Published::Listed { switched } => {
-                        if switched {
-                            switch_at = Some(ployz_core::deploy_steps::now_ms() / 1000);
-                        } else {
-                            switch_unconfirmed = true;
+                    Published::Listed(switch) => {
+                        match switch {
+                            Switch::NotNeeded => {}
+                            Switch::Confirmed => {
+                                switch_at = Some(ployz_core::deploy_steps::now_ms() / 1000);
+                            }
+                            Switch::Unconfirmed => switch_unconfirmed = true,
                         }
                         for index in std::mem::take(&mut record.awaiting_flip) {
                             completed.insert(index);

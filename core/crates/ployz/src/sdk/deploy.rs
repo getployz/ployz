@@ -228,17 +228,23 @@ impl RunningDeploy {
     /// Returns unavailable when session closure interrupts execution; mutations may have completed.
     /// Rejects a second await.
     pub async fn finished(&self) -> Result<DeployOutcome<ExecutionError>, RpcError> {
-        let handle = self
-            .join
-            .lock()
-            .await
-            .take()
-            .ok_or_else(|| RpcError::invalid_argument("Deploy outcome already awaited"))?;
+        self.join_if_pending()
+            .await?
+            .ok_or_else(|| RpcError::invalid_argument("Deploy outcome already awaited"))
+    }
+
+    /// Join the task if the caller still owns its handle.
+    pub(super) async fn join_if_pending(
+        &self,
+    ) -> Result<Option<DeployOutcome<ExecutionError>>, RpcError> {
+        let Some(handle) = self.join.lock().await.take() else {
+            return Ok(None);
+        };
         let outcome = handle
             .await
             .map_err(|_| RpcError::internal("Deploy task failed"))?;
         while self.next().await.is_some() {}
-        outcome
+        outcome.map(Some)
     }
 }
 

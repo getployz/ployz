@@ -3987,3 +3987,86 @@ async fn a_copy_its_owner_lost_that_no_proxy_routes_lets_its_group_retire() {
         "no proxy routes {old_first:?}, yet the group never moved on to stopping_old: {names:?}"
     );
 }
+
+#[tokio::test]
+async fn a_scale_down_does_not_hide_a_siblings_live_switch() {
+    use crate::deploy::{GroupRole, ServiceGroup, Stage};
+
+    let machine = machine('1');
+    let kept = container('a');
+    let removed = container('b');
+    let started = container('c');
+    let web = ServiceName::parse("web").unwrap();
+    let mut groups = scale_down_groups();
+    let GroupRole::Service { dependencies, .. } = &mut groups.first_mut().unwrap().role else {
+        panic!("expected the scaled Service group");
+    };
+    dependencies.push(web.clone());
+    groups.insert(
+        0,
+        ServiceGroup {
+            role: GroupRole::Service {
+                service: web,
+                dependencies: Vec::new(),
+                drained: Vec::new(),
+                publish: true,
+            },
+            steps: vec![Stage::Parallel(vec![1])],
+        },
+    );
+    let plan = crate::deploy::DeployPlan::for_execution_test_with_groups(
+        vec![
+            DeployOperation::RemoveContainer {
+                machine_id: machine,
+                container_id: removed,
+                purpose: ployz_core::RemoveContainerPurpose::Rollout,
+                anonymous_volumes: ployz_core::AnonymousVolumes::keep(),
+            },
+            web_run(&machine),
+        ],
+        test_namespace(),
+        groups,
+    );
+    let client = Scripted::new(vec![
+        created(
+            Call::Run(machine, ContainerKind::ServiceContainer),
+            &started,
+        ),
+        observed(Call::Inspect(machine, removed), running()),
+        ok(Call::Remove(machine, removed)),
+    ])
+    .with_copy(&machine, &kept, CopyRotation::In)
+    .with_copy(&machine, &removed, CopyRotation::In);
+    let (tx, mut events) = tokio::sync::mpsc::unbounded_channel();
+
+    let outcome = super::super::execute_operation_sequence(
+        &plan,
+        &run_id(),
+        &client,
+        &CancellationToken::new(),
+        Some(tx),
+    )
+    .await;
+
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(client.rotation(&kept), Some(CopyRotation::In));
+    assert_eq!(client.rotation(&started), Some(CopyRotation::In));
+    assert_eq!(client.rotation(&removed), None);
+    client.assert_done();
+    let recorded = std::iter::from_fn(|| events.try_recv().ok())
+        .find_map(|event| {
+            if let DeployEvent::Outcome { live_at, .. } = event {
+                Some(live_at)
+            } else {
+                None
+            }
+        })
+        .unwrap();
+    assert!(
+        recorded.is_some(),
+        "web entered rotation and the api scale-down completed, but Outcome live_at was {recorded:?}"
+    );
+}

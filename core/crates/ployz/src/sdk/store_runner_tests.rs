@@ -2182,3 +2182,56 @@ fn planning_ends_when_the_first_image_is_sent() {
         ]
     );
 }
+
+#[tokio::test]
+async fn a_join_failure_after_live_keeps_cleanup_pending_and_returns_an_error() {
+    let (run, actor) = run();
+    prepared(&run).await;
+    let at = now_ms() / 1000;
+    run.record(RunEvidence::Finishing { live_at: Some(at) })
+        .await
+        .unwrap();
+    let applied = run
+        .executed(
+            DeployOutcome::Success {
+                completed: Vec::new(),
+                services: Vec::new(),
+            },
+            Vec::new(),
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(applied.status, DeploymentStatus::Applied);
+
+    let task = tokio::spawn(std::future::pending());
+    task.abort();
+    let running = crate::sdk::RunningDeploy {
+        cancel: CancellationToken::new(),
+        events: tokio::sync::Mutex::new(None),
+        join: tokio::sync::Mutex::new(Some(task)),
+    };
+
+    let result = run.finish_retirement(&running, Ok(applied)).await;
+    let view = run
+        .store
+        .read(
+            &actor,
+            &DeploymentQuery {
+                id: run.deployment.clone(),
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        (result.is_err(), view.deployment.cleanup),
+        (true, Some(ployz_store::CleanupStatus::Pending)),
+        "a failed task must leave its cleanup unconfirmed and surface the error",
+    );
+    let error = result.unwrap_err();
+    assert_eq!(error.message, "Deploy task failed");
+    assert_eq!(
+        crate::ui::after_result(&crate::failure::Failure::from(error)),
+        3
+    );
+    assert_eq!(view.deployment.live_at, Some(at));
+}

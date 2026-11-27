@@ -747,7 +747,12 @@ impl Run {
                     let removed = if matches!(outcome, DeployOutcome::Success { .. }) {
                         if !deletes.is_empty() || closes.is_some() {
                             // An old copy may still mount a Volume this deletes.
-                            self.retired(&running).await;
+                            if let Err(error) = self.retired(&running).await {
+                                if let Err(record) = self.record(RunEvidence::Abandoned).await {
+                                    tracing::warn!(%record, "couldn't record the interrupted Deployment");
+                                }
+                                return Err(error);
+                            }
                         }
                         // Deleting is never interrupted: a half-deleted set stays accepted.
                         let removal = async {
@@ -773,7 +778,15 @@ impl Run {
             // The session ended mid-execution: what ran is unknown.
             Err(_) => return self.record(RunEvidence::Abandoned).await,
         };
-        let warned = self.retired(&running).await;
+        self.finish_retirement(&running, recorded).await
+    }
+
+    async fn finish_retirement(
+        &self,
+        running: &super::RunningDeploy,
+        recorded: Result<DeploymentSummary, RpcError>,
+    ) -> Result<DeploymentSummary, RpcError> {
+        let warned = self.retired(running).await?;
         let finished = self
             .record(RunEvidence::Finished)
             .await
@@ -787,8 +800,11 @@ impl Run {
 
     /// Wait out what the Deploy does after its Outcome, retiring the old copies and
     /// cleaning up images, recording each copy it leaves running. The summary the last
-    /// recorded warning left, if any. Waiting again returns at once.
-    async fn retired(&self, running: &super::RunningDeploy) -> Option<DeploymentSummary> {
+    /// recorded warning left, if any. After a successful join, a second wait returns at once.
+    async fn retired(
+        &self,
+        running: &super::RunningDeploy,
+    ) -> Result<Option<DeploymentSummary>, RpcError> {
         let mut warnings = Vec::new();
         let mut warned = None;
         let mut renewed = tokio::time::interval_at(
@@ -818,9 +834,10 @@ impl Run {
                 warned = self.recorded_warnings(&mut warnings).await.or(warned);
             }
         }
-        // Its events ended, so the Deploy task ended: only a second wait errs.
-        let _ = running.finished().await;
-        self.recorded_warnings(&mut warnings).await.or(warned)
+        let joined = running.join_if_pending().await;
+        let warned = self.recorded_warnings(&mut warnings).await.or(warned);
+        let _ = joined?;
+        Ok(warned)
     }
 
     /// Record the steps that changed since the last record, after the Deployment ended

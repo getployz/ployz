@@ -100,10 +100,14 @@ pub(super) enum Done {
     Publish(usize, ServiceName, Published),
 }
 
+pub(super) enum Switch {
+    NotNeeded,
+    Confirmed,
+    Unconfirmed,
+}
+
 pub(super) enum Published {
-    Listed {
-        switched: bool,
-    },
+    Listed(Switch),
     /// Listed by every proxy but those on gap Servers, which may still route the
     /// old copies, so those stay where they are.
     Gapped,
@@ -136,7 +140,7 @@ pub(super) async fn publish_group<C: MachineOperations>(
 ) -> Published {
     let GroupCopies { service, new, old } = copies;
     if new.is_empty() {
-        return Published::Listed { switched: false };
+        return Published::Listed(Switch::NotNeeded);
     }
     let routed = shared.plan.routed(service);
     let gapped = if routed {
@@ -313,7 +317,11 @@ pub(super) async fn publish_group<C: MachineOperations>(
     match (unconfirmed, gapped) {
         (Some(error), _) => Published::OutUnconfirmed(error),
         (None, Some(_)) => Published::Gapped,
-        (None, None) => Published::Listed { switched },
+        (None, None) => Published::Listed(if switched {
+            Switch::Confirmed
+        } else {
+            Switch::Unconfirmed
+        }),
     }
 }
 
