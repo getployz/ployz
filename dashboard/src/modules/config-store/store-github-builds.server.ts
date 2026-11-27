@@ -365,10 +365,10 @@ const askGithub = (organizationId: string, ask: GithubAsk) => Effect.gen(functio
 const skipped = (build: string, message: string): StoreGithubRecord => ({ kind: "skip", build, message });
 
 /**
- * Record how a build started, retrying while the Store is unavailable. A run refused because the build started or
- * ended meanwhile is cancelled, unless it is the run that holds the build, as when an earlier try's record committed
- * late. On the `last` try, a run Cloud dispatched whose record still fails is cancelled first: nothing records it, so
- * nothing else would stop it once the Deployment fails.
+ * Record how a build started, retrying while the Store is unavailable. A run Cloud dispatched that the Store refused
+ * because the build started or ended meanwhile is cancelled, unless it is the run that holds the build, as when an
+ * earlier try's record committed late. A push's own run is only followed, and never cancelled. On the `last` try, a
+ * dispatched run whose record still fails is given up: see `giveUpRun`.
  */
 export const recordStoreGithubBuild = Effect.fn("StoreGithub.record")(function* (dispatch: StoreGithubDispatch, last = false) {
   if (dispatch.kind === "dispatched" || dispatch.kind === "done") return dispatch;
@@ -376,16 +376,32 @@ export const recordStoreGithubBuild = Effect.fn("StoreGithub.record")(function* 
   const record = dispatch.kind === "skip"
     ? storeTry(() => store.githubSkip(dispatch.build, dispatch.message)).pipe(Effect.as<StoreGithubStart>(done))
     : storeTry(() => store.githubDispatched(dispatch.build, dispatch.run)).pipe(Effect.as<StoreGithubStart>({ kind: "dispatched", runId: dispatch.run.run_id }));
+  const ours = dispatch.kind === "run" && dispatch.dispatched ? dispatch.run : null;
   return yield* record.pipe(
     Effect.retry({ while: refusedWith("unavailable"), times: 5, schedule: Schedule.exponential("1 second") }),
     Effect.catchIf(refusedWith("conflict"), () => Effect.gen(function* () {
       const runId = yield* heldRun(dispatch.build);
-      if (dispatch.kind === "run" && runId !== dispatch.run.run_id) yield* cancelDispatchedGithubRun(dispatch.run);
+      if (ours !== null && runId !== ours.run_id) yield* cancelDispatchedGithubRun(ours);
       return following(runId);
     })),
-    Effect.onError(() => last && dispatch.kind === "run" && dispatch.dispatched ? cancelDispatchedGithubRun(dispatch.run) : Effect.void),
+    Effect.onError(() => last && ours !== null ? giveUpRun(dispatch.build, ours) : Effect.void),
   );
 });
+
+/**
+ * Cancel a dispatched run whose record failed on the last try, once the Store proves it can never hold the build:
+ * failure cleanup stops only runs the Store recorded. A timed-out record may still commit, so the build is first
+ * passed on, which refuses any later record of a run. If that pass-on is refused, the run is cancelled only when it
+ * isn't the holder; if the Store doesn't answer, the run is left alone.
+ */
+const giveUpRun = (build: string, run: GithubRun) => Effect.gen(function* () {
+  const store = yield* cloudStore;
+  const passedOn = yield* storeTry(() => store.githubSkip(build, "GitHub's run couldn't be recorded")).pipe(
+    Effect.as(true),
+    Effect.catchIf(refusedWith("conflict"), () => heldRun(build).pipe(Effect.map((held) => held !== run.run_id))),
+  );
+  if (passedOn) yield* cancelDispatchedGithubRun(run);
+}).pipe(Effect.ignore);
 
 /** How long Cloud waits for GitHub to list the run a push started, and how often it looks. */
 const PUSH_RUN_WAIT_MS = 90_000;

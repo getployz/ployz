@@ -259,6 +259,91 @@ it.effect("a run whose record the Store refuses on every try is cancelled before
   60_000,
 );
 
+it.live("a push's own run is left alone when the Store refuses its record", () =>
+  Effect.gen(function* () {
+    const cancelled: number[] = [];
+    const authority = fakeGithubAuthority({
+      buildWorkflow: () => Effect.succeed({ ...activeWorkflow, template: "rule" }),
+      buildRuns: () => Effect.succeed([{ id: RUN, url: runUrl(RUN), headSha: HEAD, event: "push", status: "in_progress", conclusion: null }]),
+      cancelBuild: ({ runId }) => Effect.sync(() => void cancelled.push(runId)),
+    });
+    const { provided } = yield* pinnedWeb(authority);
+    const cloud = yield* provided(cloudStore);
+    cloud.githubStart = async () => ({ kind: "follow", workflow: ".github/workflows/ployz-build.yml", workflow_ref: WORKFLOW, commit: HEAD, foreign: [] });
+    // The build is passed on just before the push's run is recorded, so the Store refuses the record.
+    const recordRun = cloud.githubDispatched.bind(cloud);
+    cloud.githubDispatched = async (build, run) => {
+      await cloud.githubSkip(build, "passed on meanwhile");
+      return recordRun(build, run);
+    };
+    const data = { organizationId: ORGANIZATION, environmentId: ENVIRONMENT, deploymentId: DEPLOYMENT, trigger: "user" as const };
+    const runEffect: EffectRunner<StoreServices> = (program) => Effect.runPromise(provided(program));
+    expect(yield* Effect.promise(() => startGithubBuilds(memoSteps(), runEffect, data, [target]))).toEqual([{ kind: "done" }]);
+    expect(cancelled).toEqual([]);
+  }),
+  60_000,
+);
+
+it.effect.each(["committed", "late", "unanswered"] as const)(
+  "a last try whose record the Store may still have taken never cancels the run that holds the build (record %s)",
+  (write) => Effect.gen(function* () {
+    const dispatched: number[] = [];
+    const cancelled: number[] = [];
+    const authority = fakeGithubAuthority({
+      buildWorkflow: () => Effect.succeed(activeWorkflow),
+      dispatchBuild: () => Effect.sync(() => {
+        const runId = RUN + dispatched.length;
+        dispatched.push(runId);
+        return { runId, runUrl: runUrl(runId), headSha: HEAD, workflowRef: WORKFLOW };
+      }),
+      cancelBuild: ({ runId }) => Effect.sync(() => void cancelled.push(runId)),
+    });
+    const { provided, web } = yield* pinnedWeb(authority);
+    const clock = yield* Clock.Clock;
+    const cloud = yield* provided(cloudStore);
+    const recordRun = cloud.githubDispatched.bind(cloud);
+    // Every record answers unavailable. The last one either committed anyway or is still running when its step ends,
+    // as a timed-out Store call can.
+    let writes = 0;
+    cloud.githubDispatched = async (build, run) => {
+      writes += 1;
+      if (writes === 24 && write === "committed") await recordRun(build, run);
+      throw unavailable();
+    };
+    // With "unanswered", the Store doesn't answer the pass-on either, so nothing proves the record absent.
+    if (write === "unanswered") cloud.githubSkip = () => Promise.reject(unavailable());
+    const steps = memoSteps();
+    const data = { organizationId: ORGANIZATION, environmentId: ENVIRONMENT, deploymentId: DEPLOYMENT, trigger: "user" as const };
+    const runEffect: EffectRunner<StoreServices> = (program) =>
+      Effect.runPromise(provided(program).pipe(Effect.provideService(Clock.Clock, clock)));
+    const run = (last: boolean) => Effect.gen(function* () {
+      const trying = yield* Effect.promise(() => startGithubBuilds(steps, runEffect, data, [target], last)).pipe(Effect.exit, Effect.forkChild);
+      while (trying.pollUnsafe() === undefined) yield* TestClock.adjust("1 second");
+      return yield* Fiber.join(trying);
+    });
+    for (const last of [false, false, true]) expect(Exit.isFailure(yield* run(last))).toBe(true);
+    expect(writes).toBe(24);
+    if (write === "committed") {
+      // The record landed: the run holds the build and keeps running.
+      expect(yield* web()).toMatchObject({ status: "building" });
+      expect(cancelled).toEqual([]);
+    } else if (write === "unanswered") {
+      expect(cancelled).toEqual([]);
+    } else {
+      // The last write, still running, reaches the Store only after the step gave up. The build was passed on first,
+      // so it is refused.
+      const late = yield* Effect.exit(Effect.tryPromise(() => recordRun(target.build, {
+        run_id: RUN, run_url: runUrl(RUN), workflow_ref: WORKFLOW, repository: "acme/web", installation_id: 7,
+      })));
+      expect(Exit.isFailure(late)).toBe(true);
+      expect(yield* web()).toMatchObject({ status: "pending", message: "GitHub's run couldn't be recorded" });
+      expect(cancelled).toEqual([RUN]);
+    }
+    expect(dispatched).toEqual([RUN]);
+  }),
+  60_000,
+);
+
 it.effect.each([false, true])(
   "a dispatch whose answer stalls ends inside its bound, and the build goes to the next Builder (Environment locked: %s)",
   (locked) => Effect.gen(function* () {
