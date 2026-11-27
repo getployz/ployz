@@ -64,7 +64,7 @@ fn a_failed_row_leaves_its_step_open() {
                 log: None,
                 unanswered: false,
                 out_of_memory: None,
-                stopped_by: StoppedBy::NOTHING,
+                stopped_by: StoppedBy::Nothing,
             },
         )],
         300,

@@ -15,8 +15,8 @@ use ployz_core::{
 };
 use ployz_store::{
     BuildStatus, DeployedNode, DeploymentStatus, DeploymentSummary, DeploymentView,
-    DeploymentWarning, FailedAt, IngressAction, IngressFailure, NodeOutcome, NodeStatus, RowState,
-    ServerRow,
+    DeploymentWarning, FailedAt, IngressAction, IngressFailure, NodeLabel, NodeOutcome, NodeStatus,
+    RowState, ServerRow,
 };
 use rows::{Replica, service_row, starts, updates};
 use serde::Deserialize;
@@ -284,20 +284,20 @@ fn replicas(count: u32) -> String {
 /// stopped it: Failed, or Interrupted when the Deployment ended before the build
 /// reported how it ended.
 pub(super) fn node_state(node: &NodeOutcome, build: Option<&ployz_store::BuildView>) -> State {
-    match node.outcome {
-        NodeStatus::Pending if build.is_some_and(ployz_store::BuildView::is_interrupted) => {
+    match node.label() {
+        NodeLabel::Pending if build.is_some_and(ployz_store::BuildView::is_interrupted) => {
             State::Interrupted
         }
-        NodeStatus::Pending if build.is_some_and(|build| build.status == BuildStatus::Failed) => {
+        NodeLabel::Pending if build.is_some_and(|build| build.status == BuildStatus::Failed) => {
             State::Failed
         }
-        NodeStatus::Pending => State::Pending,
-        NodeStatus::Deployed | NodeStatus::Removed => State::Completed,
-        NodeStatus::Failed if node.cancelled => State::Cancelled,
-        NodeStatus::Failed => State::Failed,
-        NodeStatus::NotAttempted => State::NotAttempted,
-        NodeStatus::Unchanged => State::Unchanged,
-        NodeStatus::Unknown => State::Unknown,
+        NodeLabel::Pending => State::Pending,
+        NodeLabel::Deployed | NodeLabel::Removed => State::Completed,
+        NodeLabel::Cancelled => State::Cancelled,
+        NodeLabel::Failed => State::Failed,
+        NodeLabel::NotAttempted => State::NotAttempted,
+        NodeLabel::Unchanged => State::Unchanged,
+        NodeLabel::Unknown => State::Unknown,
     }
 }
 

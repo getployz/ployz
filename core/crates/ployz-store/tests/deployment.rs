@@ -1951,7 +1951,7 @@ fn a_failed_row_keeps_its_cause_chain_and_unfinished_rows_end_not_attempted() {
                     }),
                     unanswered: false,
                     out_of_memory: None,
-                    stopped_by: StoppedBy::NOTHING,
+                    stopped_by: StoppedBy::Nothing,
                 }
             ),
         ]
@@ -2581,7 +2581,7 @@ fn a_copy_restored_after_another_service_failed_is_not_cancelled() {
             matches!(
                 web.1[0].state,
                 RowState::Failed {
-                    stopped_by: StoppedBy::NOTHING,
+                    stopped_by: StoppedBy::Nothing,
                     ..
                 }
             ),
@@ -2628,7 +2628,7 @@ fn a_real_failure_after_a_cancel_on_the_same_service_reads_failed_on_its_row_and
         matches!(
             state,
             RowState::Failed {
-                stopped_by: StoppedBy::CANCEL,
+                stopped_by: StoppedBy::Cancel,
                 ..
             }
         ),
@@ -2656,7 +2656,7 @@ fn a_real_failure_after_a_cancel_on_the_same_service_reads_failed_on_its_row_and
         matches!(
             state,
             RowState::Failed {
-                stopped_by: StoppedBy::NOTHING,
+                stopped_by: StoppedBy::Nothing,
                 ..
             }
         ),
@@ -2714,7 +2714,7 @@ fn a_service_the_cancel_stopped_reads_cancelled_at_its_node_beside_a_real_failur
         matches!(
             state,
             RowState::Failed {
-                stopped_by: StoppedBy::CANCEL,
+                stopped_by: StoppedBy::Cancel,
                 ..
             }
         ),
@@ -2777,7 +2777,7 @@ fn a_real_failure_beside_the_cancelled_work_the_outcome_names_wins_the_reason_an
         matches!(
             web_row(&store, &who).state,
             RowState::Failed {
-                stopped_by: StoppedBy::CANCEL,
+                stopped_by: StoppedBy::Cancel,
                 ..
             }
         ),
@@ -2883,7 +2883,7 @@ fn the_first_real_failure_names_the_reason_though_a_cancel_finished_another_row_
         matches!(
             web.state,
             RowState::Failed {
-                stopped_by: StoppedBy::NOTHING,
+                stopped_by: StoppedBy::Nothing,
                 ..
             }
         ),
@@ -3036,7 +3036,7 @@ fn a_store_from_before_cancelled_reads_the_work_a_cancel_stopped_as_failed() {
         matches!(
             api.1[0].state,
             RowState::Failed {
-                stopped_by: StoppedBy::CANCEL,
+                stopped_by: StoppedBy::Cancel,
                 ..
             }
         ),
@@ -6515,7 +6515,7 @@ fn a_raw_tail_stored_before_scrubbing_is_never_shown() {
             }),
             unanswered: false,
             out_of_memory: None,
-            stopped_by: StoppedBy::NOTHING,
+            stopped_by: StoppedBy::Nothing,
         }
     );
     let reserialized = serde_json::to_string(&state).unwrap();

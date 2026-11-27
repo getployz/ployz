@@ -267,11 +267,11 @@ impl From<&ployz_store::RowState> for State {
             ployz_store::RowState::Running { phase, .. } => Self::Running(*phase),
             ployz_store::RowState::Completed => Self::Completed,
             ployz_store::RowState::Failed {
-                stopped_by: ployz_store::StoppedBy::CANCEL,
+                stopped_by: ployz_store::StoppedBy::Cancel,
                 ..
             } => Self::Cancelled,
             ployz_store::RowState::Failed {
-                stopped_by: ployz_store::StoppedBy::LOST_RUNNER,
+                stopped_by: ployz_store::StoppedBy::LostRunner,
                 ..
             } => Self::Interrupted,
             ployz_store::RowState::Failed { .. } => Self::Failed,
