@@ -2244,6 +2244,7 @@ async fn a_join_failure_after_live_keeps_cleanup_pending_and_returns_an_error() 
         crate::ui::after_result(&crate::failure::Failure::from(error)),
         3
     );
+    assert_eq!(view.deployment.status, DeploymentStatus::Unknown);
     assert_eq!(view.deployment.live_at, Some(at));
 }
 
@@ -2307,4 +2308,123 @@ async fn a_rejected_switch_write_is_retried_with_the_next_evidence() {
         .unwrap()
         .deployment;
     assert_eq!(summary.live_at, Some(at));
+}
+
+#[tokio::test]
+async fn a_switch_event_survives_abort_before_the_outcome() {
+    let (run, actor) = run();
+    prepared(&run).await;
+    let (session, server, _) = mock_machine().await;
+    let at = now_ms() / 1000;
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    tx.send(ployz_core::DeployEvent::Progress {
+        completed: 0,
+        total: 0,
+        rows: vec![],
+        live_at: Some(at),
+    })
+    .unwrap();
+    let task = tokio::spawn(async move {
+        let _events = tx;
+        std::future::pending().await
+    });
+    let abort = task.abort_handle();
+    let running = crate::sdk::RunningDeploy {
+        cancel: CancellationToken::new(),
+        events: tokio::sync::Mutex::new(Some(rx)),
+        join: tokio::sync::Mutex::new(Some(task)),
+    };
+    let scrub = Scrub {
+        environment: environment(),
+        sealed_at_claim: BTreeSet::new(),
+        claim: BTreeSet::new(),
+    };
+    let query = DeploymentQuery {
+        id: run.deployment.clone(),
+    };
+    let observed = async {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let view = run.store.read(&actor, &query).unwrap();
+                if view.deployment.live_at == Some(at) {
+                    assert_eq!(view.deployment.status, DeploymentStatus::Running);
+                    break;
+                }
+                // real-wait: wait for the blocking Store write while the runtime task is held.
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the switch is durable before Outcome");
+        abort.abort();
+    };
+    let (outcome, ()) = tokio::join!(run.executing(&session, &running, &scrub, true), observed);
+    let error = outcome.unwrap_err();
+    assert!(run.runtime_failed(error).await.is_err());
+    let view = run
+        .store
+        .read(
+            &actor,
+            &DeploymentQuery {
+                id: run.deployment.clone(),
+            },
+        )
+        .unwrap();
+    assert_eq!(view.deployment.status, DeploymentStatus::Unknown);
+    assert_eq!(view.deployment.live_at, Some(at));
+    server.abort();
+}
+
+#[tokio::test]
+async fn a_join_failure_records_pending_live_at_after_the_store_recovers() {
+    use ployz_store::testing::backend;
+    let dir = tempfile::tempdir().unwrap();
+    let url = format!("sqlite:{}", dir.path().join("store.db").display());
+    let (run, actor) = admitted_in(
+        Arc::new(ConfigStore::open(&url, backend::key()).unwrap()),
+        None,
+    );
+    prepared(&run).await;
+    backend::execute(
+        &url,
+        "CREATE TRIGGER reject_writes BEFORE UPDATE ON config_deployment BEGIN SELECT RAISE(ABORT, 'temporary outage'); END",
+    );
+    let at = now_ms() / 1000;
+    assert!(run.record_switch(Some(at)).await.is_err());
+    let recorded = run
+        .executed(
+            DeployOutcome::Success {
+                completed: vec![],
+                services: vec![],
+            },
+            vec![],
+            vec![],
+        )
+        .await;
+    assert!(recorded.is_err());
+    backend::execute(&url, "DROP TRIGGER reject_writes");
+    let task = tokio::spawn(std::future::pending());
+    task.abort();
+    let running = crate::sdk::RunningDeploy {
+        cancel: CancellationToken::new(),
+        events: tokio::sync::Mutex::new(None),
+        join: tokio::sync::Mutex::new(Some(task)),
+    };
+
+    assert!(run.finish_retirement(&running, recorded).await.is_err());
+    let view = run
+        .store
+        .read(
+            &actor,
+            &DeploymentQuery {
+                id: run.deployment.clone(),
+            },
+        )
+        .unwrap();
+    assert_eq!(view.deployment.status, DeploymentStatus::Unknown);
+    assert_eq!(view.deployment.live_at, Some(at));
+    assert_eq!(
+        view.deployment.cleanup,
+        Some(ployz_store::CleanupStatus::Pending)
+    );
 }

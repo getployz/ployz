@@ -787,7 +787,7 @@ impl Run {
     }
 
     async fn runtime_failed(&self, error: RpcError) -> Result<DeploymentSummary, RpcError> {
-        if let Err(record) = self.record(RunEvidence::Abandoned).await {
+        if let Err(record) = self.record(RunEvidence::RuntimeFailed).await {
             tracing::warn!(%record, "couldn't record the interrupted Deployment");
         }
         Err(error)
@@ -811,7 +811,10 @@ impl Run {
         running: &super::RunningDeploy,
         recorded: Result<DeploymentSummary, RpcError>,
     ) -> Result<DeploymentSummary, RpcError> {
-        let warned = self.retired(running).await?;
+        let warned = match self.retired(running).await {
+            Ok(warned) => warned,
+            Err(error) => return self.runtime_failed(error).await,
+        };
         let finished = self
             .record(RunEvidence::Finished)
             .await
@@ -1205,7 +1208,15 @@ impl Run {
         let mut ended = None;
         while let Some(event) = running.next().await {
             let mut rows = match event {
-                ployz_core::DeployEvent::Progress { rows, .. } => rows,
+                ployz_core::DeployEvent::Progress { rows, live_at, .. } => {
+                    if all_services_ready
+                        && let Some(at) = live_at
+                        && let Err(error) = self.record_switch(Some(at)).await
+                    {
+                        tracing::warn!(%error, "couldn't record the Deployment's traffic switch");
+                    }
+                    rows
+                }
                 ployz_core::DeployEvent::Warning { warning } => {
                     if let DeployWarning::LeftRunning { service, .. } = &warning {
                         self.steps()
@@ -1216,10 +1227,10 @@ impl Run {
                     continue;
                 }
                 // Traffic moved: the old copies retiring after it hold up nothing.
-                ployz_core::DeployEvent::Outcome { outcome, live_at } => {
-                    let live_at = if all_services_ready { live_at } else { None };
-                    if let Err(error) = self.record_switch(live_at).await {
-                        tracing::warn!(%error, "couldn't record the Deployment's traffic switch or cleanup");
+                ployz_core::DeployEvent::Outcome { outcome, .. } => {
+                    if let Err(error) = self.record(RunEvidence::Finishing { live_at: None }).await
+                    {
+                        tracing::warn!(%error, "couldn't record the start of cleanup");
                     }
                     ended = Some(outcome);
                     break;
@@ -1594,7 +1605,11 @@ impl Run {
     /// Record `evidence`, after the steps that changed since the last record.
     async fn record(&self, evidence: RunEvidence) -> Result<DeploymentSummary, RpcError> {
         let (deployment, runner) = (self.deployment.clone(), self.runner.clone());
-        let steps = self.steps().take_changed();
+        let steps = if matches!(evidence, RunEvidence::Finishing { live_at: Some(_) }) {
+            Vec::new()
+        } else {
+            self.steps().take_changed()
+        };
         let pending_live_at = *self.pending_live_at();
         let recorded = super::store_call(&self.store, move |store| {
             if !steps.is_empty()

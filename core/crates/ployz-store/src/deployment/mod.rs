@@ -674,8 +674,8 @@ pub enum Outcome {
 pub enum RunEvidence {
     /// The Deploy Preview preparation produced, recorded before it is confirmed.
     Prepared(DeployPreview),
-    /// The runtime outcome is known. Renew the window in which followers wait for
-    /// cleanup while the runner is still present.
+    /// Record the traffic switch when present. Renew the window in which followers
+    /// wait for cleanup while the runner is still present.
     Finishing { live_at: Option<i64> },
     /// The runner finished cleanup and recorded any warnings it could.
     Finished,
@@ -700,6 +700,8 @@ pub enum RunEvidence {
     /// The runner stopped without knowing whether it executed: the outcome is unknown
     /// once it recorded a Deploy Preview, and nothing executed before that.
     Abandoned,
+    /// The runtime task failed. Preserve known evidence and make the Deployment Unknown.
+    RuntimeFailed,
     /// The build receipts preparation produced, by runtime Service name. Each replaces
     /// that Service's latest receipt in the Environment.
     Built(BTreeMap<ServiceName, Value>),
@@ -1848,6 +1850,23 @@ impl Standing {
             | Self::Superseded { .. }
             | Self::Ended(_)) => standing,
         }
+    }
+
+    fn runtime_failed(self, now: i64) -> Self {
+        let mut standing = self.lose_runner(now);
+        match &mut standing {
+            Self::Ended(ended) => ended.end = End::Unknown,
+            Self::Raw(raw) if raw.runner.is_some() => {
+                raw.status = DeploymentStatus::Unknown;
+                raw.ended.get_or_insert(now);
+            }
+            Self::Waiting(_)
+            | Self::Queued(_)
+            | Self::Claimed(_)
+            | Self::Superseded { .. }
+            | Self::Raw(_) => {}
+        }
+        standing
     }
 
     /// Its runner said at `now` that it stopped, when it ended Unknown. Any other

@@ -1578,7 +1578,8 @@ pub enum DeployEvent {
         completed: u32,
         total: u32,
         rows: Vec<OperationRow>,
-        /// The executor's switch timestamp. A successful Outcome confirms it.
+        /// When the new copies were confirmed In and listed, or the last step of a
+        /// plan with no switch succeeded. The runner records this independently of Outcome.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional, type = "number")]
         live_at: Option<i64>,

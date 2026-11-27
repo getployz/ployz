@@ -3211,8 +3211,42 @@ async fn an_unconfirmed_unlisting_leaves_every_old_copy_of_the_group_running() {
     .with_copy(&first, &one, CopyRotation::In)
     .with_copy(&second, &two, CopyRotation::In);
 
-    let (outcome, warnings) =
-        execute_reported(&plan, &[first, second], &client, &CancellationToken::new()).await;
+    let plan = crate::deploy::DeployPlan::for_execution_test(plan, test_namespace())
+        .with_machine_names(&[first, second]);
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let cancel = CancellationToken::new();
+    let id = run_id();
+    let work = super::super::execute_operation_sequence(&plan, &id, &client, &cancel, Some(tx));
+    tokio::pin!(work);
+    let mut switched = false;
+    let mut warnings = Vec::new();
+    let outcome = loop {
+        tokio::select! {
+            biased;
+            event = rx.recv() => match event {
+                Some(DeployEvent::Progress { live_at: Some(_), .. }) => {
+                    switched = true;
+                    assert_eq!(client.rotation(&new_one), Some(CopyRotation::In));
+                    assert_eq!(client.rotation(&new_two), Some(CopyRotation::In));
+                }
+                Some(DeployEvent::Warning { warning }) => warnings.push(warning.to_string()),
+                Some(DeployEvent::Outcome { .. }) => assert!(switched, "unlisting must not gate the switch event"),
+                Some(_) => {}
+                None => break work.await,
+            },
+            outcome = &mut work => {
+                while let Ok(event) = rx.try_recv() {
+                    match event {
+                        DeployEvent::Progress { live_at: Some(_), .. } => switched = true,
+                        DeployEvent::Warning { warning } => warnings.push(warning.to_string()),
+                        _ => {}
+                    }
+                }
+                break outcome;
+            }
+        }
+    };
+    assert!(switched, "unlisting must not gate the switch event");
 
     assert!(
         !matches!(outcome, DeployOutcome::Success { .. }),

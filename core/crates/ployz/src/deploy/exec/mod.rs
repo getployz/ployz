@@ -264,20 +264,8 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
     let shared = Shared::new(plan, run);
     let mut records: BTreeMap<usize, GroupRecord> = BTreeMap::new();
     let mut stop = None;
-    let mut switches: BTreeSet<_> = plan
-        .groups()
-        .iter()
-        .enumerate()
-        .filter(|(_, group)| {
-            group.publishing_service().is_some()
-                && group.steps.iter().flat_map(Stage::tasks).any(|&index| {
-                    super::schedule::creates_container(operation_at(operations, index))
-                })
-        })
-        .map(|(index, _)| index)
-        .collect();
-    let mut switch_at = None;
-    let mut switch_unconfirmed = false;
+    let switches = std::sync::Mutex::new(Switches::new(plan));
+    let switches = &switches;
     let mut blocked_since: Option<Instant> = None;
     let mut blocked_before = Vec::new();
     let (progress, client, slots, shared) = (&progress, &client, &slots, &shared);
@@ -328,6 +316,13 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                             shared,
                             copies,
                             cancellation,
+                            |switch| {
+                                if let Some(at) =
+                                    switches.lock().expect("switch lock").observe(group, switch)
+                                {
+                                    progress.emit_switch(Some(at));
+                                }
+                            },
                         )
                         .await;
                         Done::Publish(group, service.name, published)
@@ -430,32 +425,16 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                 let record = records.entry(group).or_default();
                 let mut ledger = Ledger::new(progress, &mut stop, &mut schedule);
                 match published {
-                    Published::Listed(switch) => {
-                        match switch {
-                            Switch::NotNeeded => {}
-                            Switch::Confirmed => {
-                                switch_at = Some(ployz_core::deploy_steps::now_ms() / 1000);
-                            }
-                            Switch::Unconfirmed => switch_unconfirmed = true,
-                        }
+                    Published::Listed => {
                         for index in std::mem::take(&mut record.awaiting_flip) {
                             completed.insert(index);
                             progress.set_completed(index);
                         }
                         ledger.schedule.apply(Event::Routed(service));
                         ledger.schedule.apply(Event::Published(group));
-                        if switches.remove(&group)
-                            && switches.is_empty()
-                            && !switch_unconfirmed
-                            && ledger.stop.is_none()
-                            && let Some(at) = switch_at
-                        {
-                            progress.emit_switch(Some(at));
-                        }
                     }
                     // Its old copies were left In beside the new ones and named.
                     Published::Gapped => {
-                        switch_unconfirmed = true;
                         for index in std::mem::take(&mut record.awaiting_flip) {
                             completed.insert(index);
                             progress.set_completed(index);
@@ -528,6 +507,9 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                 }
             }
         }
+        if stop.is_some() {
+            switches.lock().expect("switch lock").blocked = true;
+        }
         for group in schedule.failed_groups() {
             shared
                 .stop_first
@@ -546,15 +528,11 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
 
     progress.settle_unexecuted();
     let outcome = outcome_from(operations, &completed, stop, schedule.services());
-    let live_at = if matches!(outcome, DeployOutcome::Success { .. }) && !switch_unconfirmed {
-        switch_at.or_else(|| {
-            if completed.is_empty() {
-                return None;
-            }
-            let at = ployz_core::deploy_steps::now_ms() / 1000;
-            progress.emit_switch(Some(at));
-            Some(at)
-        })
+    let live_at = if matches!(outcome, DeployOutcome::Success { .. }) {
+        switches
+            .lock()
+            .expect("switch lock")
+            .finished(!completed.is_empty(), progress)
     } else {
         None
     };
@@ -564,6 +542,62 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
         .retire(client, progress, &shared.report)
         .await;
     outcome
+}
+
+struct Switches {
+    awaiting: BTreeSet<usize>,
+    last_at: Option<i64>,
+    blocked: bool,
+}
+
+impl Switches {
+    fn new(plan: &super::DeployPlan) -> Self {
+        let awaiting = plan
+            .groups()
+            .iter()
+            .enumerate()
+            .filter(|(_, group)| {
+                group.publishing_service().is_some()
+                    && group.steps.iter().flat_map(Stage::tasks).any(|&index| {
+                        super::schedule::creates_container(operation_at(plan.operations(), index))
+                    })
+            })
+            .map(|(index, _)| index)
+            .collect();
+        Self {
+            awaiting,
+            last_at: None,
+            blocked: plan.preview().waits().next().is_some(),
+        }
+    }
+
+    fn observe(&mut self, group: usize, switch: Switch) -> Option<i64> {
+        if matches!(switch, Switch::Unconfirmed) {
+            self.blocked = true;
+        }
+        if self.blocked || !self.awaiting.remove(&group) {
+            return None;
+        }
+        if matches!(switch, Switch::Confirmed) {
+            self.last_at = Some(ployz_core::deploy_steps::now_ms() / 1000);
+        }
+        self.awaiting.is_empty().then_some(self.last_at).flatten()
+    }
+
+    fn finished(&self, ran_steps: bool, progress: &Progress) -> Option<i64> {
+        if self.blocked || !self.awaiting.is_empty() {
+            return None;
+        }
+        self.last_at.or_else(|| {
+            // A removal-only or in-place plan takes its time from its last successful step.
+            if !ran_steps {
+                return None;
+            }
+            let at = ployz_core::deploy_steps::now_ms() / 1000;
+            progress.emit_switch(Some(at));
+            Some(at)
+        })
+    }
 }
 
 /// Where the loop records that a task or a publish of a group failed: the row,

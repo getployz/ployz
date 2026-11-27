@@ -391,6 +391,9 @@ pub(crate) fn record(
         RunEvidence::Progress(rows) => {
             running(&stored)?;
             super::rows::record(tx, &stored, &rows)?;
+            if stamped {
+                save(tx, &mut stored)?;
+            }
             Ok(stored.summary)
         }
         RunEvidence::Built(receipts) => {
@@ -461,6 +464,11 @@ pub(crate) fn record(
                 },
                 End::Failed,
             )
+        }
+        RunEvidence::RuntimeFailed => {
+            stored.standing = stored.standing.runtime_failed(now());
+            save(tx, &mut stored)?;
+            Ok(stored.summary)
         }
         RunEvidence::Abandoned => {
             if stored.run.outcome.is_some() || stored.summary.status == DeploymentStatus::Unknown {

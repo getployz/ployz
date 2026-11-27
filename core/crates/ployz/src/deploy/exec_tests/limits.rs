@@ -119,11 +119,17 @@ async fn an_update_row_is_updating_from_its_first_frame() {
         "{outcome:?}"
     );
     let mut statuses = Vec::new();
+    let mut live = Vec::new();
     while let Ok(event) = rx.try_recv() {
-        if let DeployEvent::Progress { rows, .. } = event {
+        if let DeployEvent::Progress { rows, live_at, .. } = event {
             statuses.extend(rows.into_iter().map(|row| row.status));
+            if let Some(at) = live_at {
+                assert_eq!(statuses.last(), Some(&OperationStatus::Completed));
+                live.push(at);
+            }
         }
     }
+    assert_eq!(live.len(), 1);
     statuses.dedup();
     assert_eq!(
         statuses,

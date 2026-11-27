@@ -25,7 +25,11 @@ use std::time::{Duration, UNIX_EPOCH};
 pub(super) fn frame(view: &DeploymentView) -> Frame {
     let mut rows = Vec::new();
     let mut held_back = ployz_core::RegionWait::default();
-    let pulling = pulling(view);
+    let pulling = if view.deployment.live_at.is_some() {
+        None
+    } else {
+        pulling(view)
+    };
     for (index, node) in view.nodes.iter().enumerate() {
         let DeployedNode::Service { name, .. } = &node.node else {
             rows.push(Row {
@@ -252,7 +256,20 @@ fn runtime_row(
         preview.and_then(|preview| preview.placed_on.get(runtime)),
         rows.iter().map(|row| Replica {
             machine: row.machine_id,
-            state: &row.state,
+            state: match &row.state {
+                RowState::Running {
+                    phase:
+                        ployz_store::RowPhase::Starting
+                        | ployz_store::RowPhase::CreatingContainer
+                        | ployz_store::RowPhase::StartingContainer
+                        | ployz_store::RowPhase::WaitingForHealth
+                        | ployz_store::RowPhase::WaitingForHook
+                        | ployz_store::RowPhase::WaitingForSwitch
+                        | ployz_store::RowPhase::UpdatingContainer,
+                    ..
+                } if view.deployment.live_at.is_some() => &RowState::Completed,
+                state => state,
+            },
             starts: preview
                 .is_none_or(|preview| starts(&preview.operations, runtime, row.machine_id)),
             updates: preview
@@ -1009,6 +1026,93 @@ mod tests {
                 {"type": "volume", "id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", "name": "data", "outcome": "not_attempted", "rows": []}
             ]
         })).unwrap()
+    }
+
+    #[test]
+    fn a_live_deployment_renders_a_saved_switching_row_as_switched() {
+        use ployz_store::testing::{backend, shop};
+        use ployz_store::{
+            Admit, ConfigStore, DeploymentId, DeploymentQuery, RunEvidence, RunnerId,
+            ServerProgress,
+        };
+
+        let directory = tempfile::tempdir().unwrap();
+        let url = format!("sqlite:{}", directory.path().join("store.db").display());
+        let store = ConfigStore::open(&url, backend::key()).unwrap();
+        let (store, actor) = shop::shop_on(store);
+        let id = DeploymentId::parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
+        let runner = RunnerId::parse("owner").unwrap();
+        let web = ServiceName::parse("web").unwrap();
+        let request = serde_json::from_value(json!({ "id": id, "services": [web] })).unwrap();
+        store
+            .write_trusted(
+                &actor,
+                &Admit::Deploy(request),
+                &ployz_store::Trusted::default(),
+            )
+            .unwrap();
+        let claimed = store.claim(&id, &runner).unwrap();
+        let query = DeploymentQuery { id: id.clone() };
+        let runtime = store
+            .read(&actor, &query)
+            .unwrap()
+            .runtime_names
+            .get(&web)
+            .cloned()
+            .unwrap_or_else(|| web.clone());
+        let preview = serde_json::from_value(json!({
+            "namespace": claimed.intent.namespace,
+            "operations": [], "warnings": [], "would_remove": [], "preserved_volumes": [],
+        }))
+        .unwrap();
+        store
+            .record(&id, &runner, RunEvidence::Prepared(preview))
+            .unwrap();
+        let waiting = RowState::Running {
+            phase: ployz_store::RowPhase::WaitingForSwitch,
+            serving: false,
+        };
+        let row = ServerProgress {
+            service: runtime,
+            machine: ployz_core::MachineId::parse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap(),
+            server: "edge".into(),
+            state: waiting.clone(),
+            stopped: false,
+        };
+        store
+            .record(&id, &runner, RunEvidence::Progress(vec![row.clone()]))
+            .unwrap();
+        backend::execute(
+            &url,
+            "CREATE TRIGGER reject_completed_row BEFORE UPDATE ON config_deployment_row \
+             WHEN NEW.finished IS NOT NULL BEGIN SELECT RAISE(ABORT, 'reject completed row'); END",
+        );
+        assert!(
+            store
+                .record(
+                    &id,
+                    &runner,
+                    RunEvidence::Progress(vec![ServerProgress {
+                        state: RowState::Completed,
+                        ..row
+                    }]),
+                )
+                .is_err()
+        );
+        store
+            .record(&id, &runner, RunEvidence::Finishing { live_at: Some(2) })
+            .unwrap();
+        let view = store.read(&actor, &query).unwrap();
+        assert_eq!(view.deployment.live_at, Some(2));
+        let index = view
+            .nodes
+            .iter()
+            .position(
+                |node| matches!(&node.node, DeployedNode::Service { name, .. } if *name == web),
+            )
+            .unwrap();
+        assert_eq!(view.nodes[index].rows[0].state, waiting);
+        assert_eq!(frame(&view).rows[index].state, State::Completed);
     }
 
     #[test]
