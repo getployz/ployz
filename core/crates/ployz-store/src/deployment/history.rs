@@ -718,7 +718,9 @@ pub(crate) fn view(
     let builds = build::views(tx, &stored)?;
     let rolls_back = undone(tx, &stored.summary)?;
     let untargeted = super::rows::untargeted(&stored, &by_service);
+    let steps = super::steps::of(tx, &stored.summary.id)?;
     Ok(DeploymentView {
+        steps,
         builds,
         runtime_names,
         rolls_back,
