@@ -273,6 +273,7 @@ fn clear_slot_cache(
             admission.access,
             &admission.resources,
             None,
+            crate::builder::Reuse::Never,
         )?;
         let result = docker
             .run(

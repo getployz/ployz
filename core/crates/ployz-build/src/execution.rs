@@ -252,6 +252,7 @@ pub struct Admission {
     pub(crate) resources: crate::policy::Resources,
     pub(crate) fence: Option<crate::FenceInstaller>,
     pub(crate) access: crate::Access,
+    pub(crate) reuse: crate::builder::Reuse,
     /// This attempt's own directory in its slot's upload staging, never another's.
     attempt: String,
     pub(crate) staging: crate::SealedStaging,
@@ -317,6 +318,7 @@ impl Admission {
             Deadline::starting_now(policy.active_timeout),
             Cancellation::default(),
             policy.fence,
+            crate::builder::Reuse::WhenClean,
         ))
     }
     pub(crate) fn wait(docker: &Path, cancellation: &Cancellation) -> Result<Self, BuildError> {
@@ -328,6 +330,7 @@ impl Admission {
             Deadline::starting_now(EXECUTION_TIMEOUT),
             cancellation.clone(),
             None,
+            crate::builder::Reuse::Never,
         ))
     }
     fn owning(
@@ -336,6 +339,7 @@ impl Admission {
         deadline: Deadline,
         cancellation: Cancellation,
         fence: Option<crate::FenceInstaller>,
+        reuse: crate::builder::Reuse,
     ) -> Self {
         let attempt = uuid::Uuid::new_v4().to_string();
         let staging = crate::SealedStaging::under(&lock.upload_directory().join(&attempt));
@@ -346,6 +350,7 @@ impl Admission {
             resources,
             fence,
             access: crate::Access::Full,
+            reuse,
             attempt,
             staging,
         }
