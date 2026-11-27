@@ -324,7 +324,7 @@ it.live("a Store build's start, check-in and finish reach a Server of the pairin
 
     // No Sealing Key recorded yet: any of the pairing's Servers, as before.
     expect(yield* provided(startStoreGithubBuild(ORGANIZATION, target))).toEqual({ kind: "done" });
-    expect(githubStart).toHaveBeenLastCalledWith(BUILD, servers, null);
+    expect(githubStart).toHaveBeenLastCalledWith(BUILD, servers, null, ATTEMPT);
 
     const pairingKey = `${"P".repeat(43)}=`;
     const expectation = { sealingPublicKey: pairingKey };
@@ -332,7 +332,7 @@ it.live("a Store build's start, check-in and finish reach a Server of the pairin
     githubStart.mockResolvedValueOnce({ kind: "reused", foreign: [machineId("9")] });
     using errors = logged("ERROR", "in another Cluster", machineId("9"));
     yield* provided(startStoreGithubBuild(ORGANIZATION, target));
-    expect(githubStart).toHaveBeenLastCalledWith(BUILD, servers, expectation);
+    expect(githubStart).toHaveBeenLastCalledWith(BUILD, servers, expectation, ATTEMPT);
     expect(errors.count()).toBe(1);
     // GitHub holds the build from here: its runner checks in, reports and is finished.
     yield* Effect.promise(() => store.githubDispatched(BUILD, {
@@ -570,7 +570,7 @@ it.live("a Deployment's builds start in one step, read the workflow once per rep
     }, acmeWeb()));
     yield* Effect.promise(() => store.pinSources(DEPLOYMENT, { web: HEAD, api: HEAD, docs: HEAD }));
     // An older run's own step skipped docs before Cloud deployed this one.
-    yield* Effect.promise(() => store.githubSkip(`${DEPLOYMENT}.docs`, "acme/web has no .github/workflows/ployz-build.yml on its default branch"));
+    yield* Effect.promise(() => store.githubSkip(`${DEPLOYMENT}.docs`, "acme/web has no .github/workflows/ployz-build.yml on its default branch", ATTEMPT));
     const cloud = yield* provided(cloudStore);
     vi.spyOn(cloud, "githubStart").mockResolvedValue({ kind: "dispatch", runner: "ubuntu-latest", foreign: [] });
     const targets = ["web", "api", "docs"].map((service) =>

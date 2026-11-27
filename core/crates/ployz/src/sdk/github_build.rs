@@ -74,12 +74,14 @@ pub enum GithubStart {
 /// Machines it left.
 ///
 /// # Errors
-/// Returns the Store's `conflict` when the build already started or ended.
+/// Returns the Store's `conflict` when the build already started or ended, or when
+/// another attempt than `attempt` owns the Deployment's GitHub runs.
 pub async fn github_start(
     store: Arc<ConfigStore>,
     id: GithubBuildId,
     connections: Vec<Connection>,
     expect: Option<ClusterExpectation>,
+    attempt: String,
 ) -> Result<Dialed<GithubStart>, RpcError> {
     // A push under a rule already started its own run; an older image has no image
     // token, so it isn't reused.
@@ -209,7 +211,11 @@ pub async fn github_start(
             GithubStart::Reused
         }
     };
-    store_call(&store, move |store| store.github_end(&id, None, &end)).await?;
+    // Only the attempt that owns the Deployment's GitHub runs ends a build before GitHub.
+    store_call(&store, move |store| {
+        store.github_pass_on(&id, &end, None, &attempt)
+    })
+    .await?;
     Ok(Dialed {
         outcome: start,
         foreign,

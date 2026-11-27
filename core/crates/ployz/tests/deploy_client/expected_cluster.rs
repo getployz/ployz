@@ -251,7 +251,7 @@ async fn a_github_build_starts_only_through_an_entry_of_the_expected_cluster() {
     let (own, _, _, own_server) = serving('b', "own", 7).await;
     let start = |connections, expect| {
         let (store, _, id) = pinned();
-        ployz::sdk::github_start(store, id, connections, expect)
+        ployz::sdk::github_start(store, id, connections, expect, "cloud-worker".into())
     };
     let dispatch = GithubStart::Dispatch {
         runner: "ubuntu-latest".into(),
@@ -661,6 +661,7 @@ async fn a_rule_build_needs_the_services_platforms_even_when_a_server_holds_an_u
         id,
         vec![Connection::tcp(address).with_machine_id(holder)],
         None,
+        "cloud-worker".into(),
     )
     .await
     .unwrap();

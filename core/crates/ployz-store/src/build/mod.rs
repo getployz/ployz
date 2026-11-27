@@ -9,8 +9,8 @@ mod sources;
 
 pub use github::{
     GithubAsked, GithubBuild, GithubBuildId, GithubClaims, GithubEnd, GithubGrant, GithubHandOff,
-    GithubInput, GithubOwed, GithubRecorded, GithubReport, GithubRule, GithubRun, RunEnd,
-    UNRESERVED,
+    GithubInput, GithubOwed, GithubPassedOn, GithubRecorded, GithubReport, GithubRule, GithubRun,
+    RunEnd, UNRESERVED,
 };
 pub(crate) use github::{
     github_ask, github_attempted_by_another, github_authorize, github_build, github_by_run,
@@ -322,8 +322,6 @@ struct BuildRow {
     verified: Option<VerifiedClaim>,
     /// The worker attempt that reserved or recorded its GitHub run.
     attempt: Option<String>,
-    /// The GitHub runs Cloud owes a cancel, each until GitHub confirms it.
-    cancel_owed: Vec<github::GithubRun>,
     /// Pinned since Cloud reserves a build before asking GitHub for it.
     reservable: bool,
 }
@@ -456,7 +454,7 @@ fn rows(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<BuildRow>, RpcError> {
     tx.query(
         "SELECT service, commit_sha, status, message, log, github, organization_id, \
          started, finished, server, github_skipped, interrupted, receipt, image_token, verified, \
-         attempt, cancel_owed, reservable \
+         attempt, reservable \
          FROM config_build \
          WHERE deployment_id = ?1 ORDER BY service",
         &[id.as_str().into()],
@@ -482,8 +480,7 @@ fn rows(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<BuildRow>, RpcError> {
             image_token: row.optional_json(13, "image token")?,
             verified: row.optional_json(14, "verified build")?,
             attempt: row.optional_text(15)?.map(str::to_owned),
-            cancel_owed: row.optional_json(16, "owed cancels")?.unwrap_or_default(),
-            reservable: row.int(17)? != 0,
+            reservable: row.int(16)? != 0,
         })
     })
     .collect()

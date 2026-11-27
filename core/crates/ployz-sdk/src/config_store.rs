@@ -660,10 +660,14 @@ impl ConfigStore {
         build: String,
         #[napi(ts_arg_type = "Connections")] connections: serde_json::Value,
         #[napi(ts_arg_type = "ExpectedCluster | null")] expect: Option<serde_json::Value>,
+        runner: String,
     ) -> Result<serde_json::Value> {
         let (build, connections) = (github_id(&build)?, parse_connections(connections)?);
         let expect = parse_expect(expect)?;
-        to_json(ployz::sdk::github_start(Arc::clone(&self.store), build, connections, expect).await)
+        to_json(
+            ployz::sdk::github_start(Arc::clone(&self.store), build, connections, expect, runner)
+                .await,
+        )
     }
 
     /// Hand a pinned build to GitHub run `run` (`GithubRun`): `refused` once the
@@ -708,17 +712,20 @@ impl ConfigStore {
         self.run(move |store| store.github_build(&build)).await
     }
 
-    /// Skip GitHub for a build it can't take, before any run: the next Builder takes it.
-    /// With `owe`, a run Cloud dispatched whose record never landed (`GithubRun`) is owed
-    /// a cancel in the same write.
+    /// Skip GitHub for a build it can't take, before any run, for worker run `runner`,
+    /// which must own the Deployment's GitHub runs: the next Builder takes it. With `owe`,
+    /// a run Cloud dispatched whose record never landed (`GithubRun`) is owed a cancel in
+    /// the same write.
     ///
     /// # Errors
-    /// Returns `conflict` once the build started or ended, owing nothing.
-    #[napi(ts_return_type = "Promise<BuildStatus>")]
+    /// Returns `conflict` once the build started or ended, or, with `newer`, when another
+    /// attempt owns the Deployment, owing nothing.
+    #[napi(ts_return_type = "Promise<GithubPassedOn>")]
     pub async fn github_skip(
         &self,
         build: String,
         message: String,
+        runner: String,
         #[napi(ts_arg_type = "GithubRun | undefined | null")] owe: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
         let build = github_id(&build)?;
@@ -726,7 +733,8 @@ impl ConfigStore {
             .filter(|owe| !owe.is_null())
             .map(|owe| decode(owe, "Expected a GitHub run"))
             .transpose()?;
-        self.run(move |store| store.github_pass_on(&build, &message, owe.as_ref()))
+        let end = ployz_store::GithubEnd::Skipped { message };
+        self.run(move |store| store.github_pass_on(&build, &end, owe.as_ref(), &runner))
             .await
     }
 

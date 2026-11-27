@@ -91,6 +91,18 @@ const pinnedWeb = Effect.fn(function* (authority: ReturnType<typeof fakeGithubAu
   return { services, provided, web };
 });
 
+/**
+ * Whether the Store owes run `runId` a cancel right now, read from its own table: a cancel Cloud sends must find its
+ * debt already committed.
+ */
+const owedNow = (provided: (program: Effect.Effect<boolean, unknown, Database>) => Effect.Effect<boolean, unknown>) => (runId: number) =>
+  provided(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    const rows = yield* drizzle.execute<{ owed: number }>(
+      sql`select count(*)::int as owed from config_github_cancel where run_id = ${runId} and confirmed = 0`, "objects");
+    return (rows[0]?.owed ?? 0) > 0;
+  }));
+
 /** Another writer holding the Environment's row, so the Store's writes to it wait and then give up, until `release`. */
 const holdEnvironment = Effect.fn(function* (provided: (program: Effect.Effect<void, unknown, Database>) => Effect.Effect<void, unknown>) {
   const locked = yield* Deferred.make<void>();
@@ -202,7 +214,7 @@ it.effect.each(["answered", "stalled"] as const)(
       return Promise.reject(unavailable());
     };
     cloud.githubDispatched = (build, run) => locked ? refuse() : recordRun(build, run);
-    cloud.githubSkip = (build, message) => locked ? refuse() : recordSkip(build, message);
+    cloud.githubSkip = (build, message, runner, owe) => locked ? refuse() : recordSkip(build, message, runner, owe);
     const steps = memoSteps();
     const data = { organizationId: ORGANIZATION, environmentId: ENVIRONMENT, deploymentId: DEPLOYMENT, trigger: "user" as const };
     const runEffect: EffectRunner<StoreServices> = (program) =>
@@ -232,6 +244,8 @@ it.effect("a run whose record the Store refuses on every try is cancelled before
   Effect.gen(function* () {
     const dispatched: number[] = [];
     const cancelled: number[] = [];
+    const owedAtCancel: boolean[] = [];
+    let owed: (runId: number) => Effect.Effect<boolean, unknown> = () => Effect.succeed(false);
     const authority = fakeGithubAuthority({
       buildWorkflow: () => Effect.succeed(activeWorkflow),
       dispatchBuild: () => Effect.sync(() => {
@@ -239,9 +253,13 @@ it.effect("a run whose record the Store refuses on every try is cancelled before
         dispatched.push(runId);
         return { runId, runUrl: runUrl(runId), headSha: HEAD, workflowRef: WORKFLOW };
       }),
-      cancelBuild: ({ runId }) => Effect.sync(() => void cancelled.push(runId)),
+      cancelBuild: ({ runId }) => owed(runId).pipe(Effect.orDie, Effect.map((debt) => {
+        owedAtCancel.push(debt);
+        cancelled.push(runId);
+      })),
     });
     const { provided, web } = yield* pinnedWeb(authority);
+    owed = owedNow(provided);
     const clock = yield* Clock.Clock;
     let locked = true;
     const cloud = yield* provided(cloudStore);
@@ -268,6 +286,8 @@ it.effect("a run whose record the Store refuses on every try is cancelled before
     yield* provided(stopStoreDeploymentRun(ORGANIZATION, DEPLOYMENT, "worker-run"));
     expect(dispatched).toEqual([RUN]);
     expect(cancelled).toEqual([RUN]);
+    // The pass-on committed the run's debt before Cloud asked GitHub to cancel it.
+    expect(owedAtCancel).toEqual([true]);
     expect(yield* web()).toMatchObject({ status: "pending" });
   }),
   60_000,
@@ -287,7 +307,7 @@ it.live("a push's own run is left alone when the Store refuses its record", () =
     // The build is passed on just before the push's run is recorded, so the Store refuses the record.
     const recordRun = cloud.githubDispatched.bind(cloud);
     cloud.githubDispatched = async (build, run) => {
-      await cloud.githubSkip(build, "passed on meanwhile");
+      await cloud.githubSkip(build, "passed on meanwhile", ATTEMPT);
       return recordRun(build, run);
     };
     const data = { organizationId: ORGANIZATION, environmentId: ENVIRONMENT, deploymentId: DEPLOYMENT, trigger: "user" as const };
@@ -303,6 +323,8 @@ it.effect.each(["committed", "late", "unanswered"] as const)(
   (write) => Effect.gen(function* () {
     const dispatched: number[] = [];
     const cancelled: number[] = [];
+    const owedAtCancel: boolean[] = [];
+    let owed: (runId: number) => Effect.Effect<boolean, unknown> = () => Effect.succeed(false);
     const authority = fakeGithubAuthority({
       buildWorkflow: () => Effect.succeed(activeWorkflow),
       dispatchBuild: () => Effect.sync(() => {
@@ -310,9 +332,13 @@ it.effect.each(["committed", "late", "unanswered"] as const)(
         dispatched.push(runId);
         return { runId, runUrl: runUrl(runId), headSha: HEAD, workflowRef: WORKFLOW };
       }),
-      cancelBuild: ({ runId }) => Effect.sync(() => void cancelled.push(runId)),
+      cancelBuild: ({ runId }) => owed(runId).pipe(Effect.orDie, Effect.map((debt) => {
+        owedAtCancel.push(debt);
+        cancelled.push(runId);
+      })),
     });
     const { provided, web } = yield* pinnedWeb(authority);
+    owed = owedNow(provided);
     const clock = yield* Clock.Clock;
     const cloud = yield* provided(cloudStore);
     const recordRun = cloud.githubDispatched.bind(cloud);
@@ -350,6 +376,8 @@ it.effect.each(["committed", "late", "unanswered"] as const)(
       expect(late).toBe("refused");
       expect(yield* web()).toMatchObject({ status: "pending", message: "GitHub's run couldn't be recorded" });
       expect(cancelled).toEqual([RUN]);
+      // The pass-on committed the run's debt before Cloud asked GitHub to cancel it.
+      expect(owedAtCancel).toEqual([true]);
     }
     expect(dispatched).toEqual([RUN]);
   }),
@@ -591,9 +619,9 @@ it.effect.each([false, true])(
     const cloud = yield* provided(cloudStore);
     const skipRefused = yield* Deferred.make<void>();
     const recordSkip = cloud.githubSkip.bind(cloud);
-    cloud.githubSkip = async (build, message) => {
+    cloud.githubSkip = async (build, message, runner, owe) => {
       try {
-        return await recordSkip(build, message);
+        return await recordSkip(build, message, runner, owe);
       } catch (refusal) {
         Effect.runSync(Deferred.succeed(skipRefused, undefined));
         throw refusal;
@@ -879,6 +907,55 @@ it.live.each([false, true])("a run recorded after its Deployment was cancelled n
     expect(yield* Effect.promise(() => cloud.githubBuild(target.build)).pipe(Effect.exit)).toSatisfy(Exit.isFailure);
     // A run Cloud dispatched is owed and cancelled; a push's own run is never cancelled.
     expect(cancelled).toEqual(push ? [] : [RUN]);
+  }),
+  60_000,
+);
+
+it.live("a retired run's replay that passes on a build the newer run reserved is refused, and the newer run's answer holds it", () =>
+  Effect.gen(function* () {
+    const cancelled: number[] = [];
+    const { provided } = yield* pinnedWeb(dispatchingAuthority(cancelled), undefined, true);
+    const cloud = yield* provided(cloudStore);
+    yield* provided(recordStoreDeploymentRun("worker-old", failedData));
+    yield* provided(recordStoreDeploymentRun("worker-run", failedData));
+    // Run A reserves web; run B, handed the Deployment again, takes it over and reserves api.
+    expect(yield* Effect.promise(() => cloud.githubAsk(target.build, "cloud-worker-old"))).toBe("reserved");
+    expect(yield* Effect.promise(() => cloud.githubAsk(apiTarget.build, ATTEMPT))).toBe("reserved");
+    // A's replay finds api reserved and would pass it on as maybe asked: A no longer owns the Deployment, so nothing changes.
+    expect(yield* provided(recordStoreGithubBuild({
+      kind: "skip", build: apiTarget.build, message: "GitHub may already be running this build, but Ployz never learned its run", attempt: "cloud-worker-old",
+    }))).toEqual({ kind: "done" });
+    expect(yield* sourceOf(cloud, "api")).toMatchObject({ status: "pending", message: "Asking GitHub for a run" });
+    // B's answer from GitHub holds api, and no run is owed a cancel.
+    expect(yield* provided(recordStoreGithubBuild({ kind: "run", build: apiTarget.build, run: runOf(RUN + 1, ATTEMPT) })))
+      .toEqual({ kind: "dispatched", runId: RUN + 1 });
+    expect(yield* sourceOf(cloud, "api")).toMatchObject({ status: "building" });
+    expect(yield* Effect.promise(() => cloud.githubOwed(10))).toEqual([]);
+    expect(cancelled).toEqual([]);
+  }),
+  60_000,
+);
+
+it.live("a run whose cancel GitHub confirmed is never owed again when its record is replayed", () =>
+  Effect.gen(function* () {
+    const cancelled: number[] = [];
+    const { provided, web } = yield* pinnedWeb(dispatchingAuthority(cancelled));
+    const cloud = yield* provided(cloudStore);
+    yield* provided(recordStoreDeploymentRun("worker-run", failedData));
+    expect(yield* Effect.promise(() => cloud.githubAsk(target.build, ATTEMPT))).toBe("reserved");
+    yield* provided(stopStoreDeploymentRun(ORGANIZATION, DEPLOYMENT, "worker-run"));
+    // GitHub's answer lands after the stop: owed, cancelled, and confirmed.
+    const record = { kind: "run" as const, build: target.build, run: runOf(RUN, ATTEMPT) };
+    expect(yield* provided(recordStoreGithubBuild(record))).toEqual({ kind: "done" });
+    expect(cancelled).toEqual([RUN]);
+    expect(yield* Effect.promise(() => cloud.githubOwed(10))).toEqual([]);
+    // Inngest replays the same record: refused, with no new debt and no second cancel.
+    expect(yield* provided(recordStoreGithubBuild(record))).toEqual({ kind: "done" });
+    expect(cancelled).toEqual([RUN]);
+    expect(yield* Effect.promise(() => cloud.githubOwed(10))).toEqual([]);
+    expect(yield* provided(cancelOwedGithubRuns())).toEqual({ owed: 0, left: 0 });
+    expect(cancelled).toEqual([RUN]);
+    expect(yield* web()).toMatchObject({ status: "pending" });
   }),
   60_000,
 );

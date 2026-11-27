@@ -1,4 +1,5 @@
 import { gzipSync } from "node:zlib";
+import { stableRunId } from "#/test/inngest-stable-run";
 import { it } from "@effect/vitest";
 import { InngestTestEngine } from "@inngest/test";
 import type { ConfigCommand, ConfigTrusted, Outcome } from "@ployz/sdk";
@@ -69,7 +70,7 @@ it.live(
       const inngest = new Inngest({ id: "store-deployment-test" });
       const worker = createRunStoreDeployment(inngest, runner);
       const run = (deploymentId: string) =>
-        Effect.promise(() => new InngestTestEngine({ function: worker, events: [admitted(deploymentId)], steps: sentRetire() }).execute());
+        Effect.promise(() => new InngestTestEngine({ function: stableRunId(worker, `run-${deploymentId}`), events: [admitted(deploymentId)], steps: sentRetire() }).execute());
       const claim = (deploymentId: string) => Effect.gen(function* () {
         const { drizzle } = yield* Database;
         yield* drizzle.insert(volumePlacement).values({ volumeId: `vol-${deploymentId}`, organizationId: ORGANIZATION, environmentId: ENVIRONMENT, deploymentId });
@@ -225,7 +226,7 @@ it.live(
         makeInngestEffectRunner((program) => Effect.runPromise(program.pipe(Effect.provide(services)))),
       );
       const run = (deploymentId: string) =>
-        Effect.promise(() => new InngestTestEngine({ function: worker, events: [admitted(deploymentId)], steps: sentRetire() }).execute());
+        Effect.promise(() => new InngestTestEngine({ function: stableRunId(worker, `run-${deploymentId}`), events: [admitted(deploymentId)], steps: sentRetire() }).execute());
       const view = (deploymentId: string) =>
         Effect.promise(() => store.read(ORGANIZATION, { query: "deployment", id: deploymentId }));
 
