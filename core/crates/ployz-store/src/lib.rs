@@ -213,8 +213,9 @@ impl ConfigStore {
         query: &Q,
         trusted: &Trusted,
     ) -> Result<Q::View, RpcError> {
-        self.storage
-            .read(|tx| query.answer(&mut Call { tx, who, trusted }))
+        deployment::cleanup::read(&self.storage, |tx| {
+            query.answer(&mut Call { tx, who, trusted })
+        })
     }
 
     /// Apply `command` — a [`Command`], or one of its payloads for its own result —

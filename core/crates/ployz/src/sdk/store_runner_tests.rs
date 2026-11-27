@@ -2639,7 +2639,7 @@ async fn a_join_error_during_a_store_outage(expire: bool) {
     backend::execute(
         &url,
         "CREATE TRIGGER reject_writes BEFORE UPDATE ON config_deployment
-         WHEN json_extract(NEW.run, '$.cleanup_until') = json_extract(OLD.run, '$.cleanup_until')
+         WHEN NEW.cleanup_deadline = OLD.cleanup_deadline AND NEW.cleanup_status = OLD.cleanup_status
          BEGIN SELECT RAISE(ABORT, 'temporary outage'); END",
     );
     let task = tokio::spawn(std::future::pending());
@@ -2659,10 +2659,7 @@ async fn a_join_error_during_a_store_outage(expire: bool) {
         "the SDK returned the join error before the Store accepted Unknown"
     );
     if expire {
-        backend::execute(
-            &url,
-            "UPDATE config_deployment SET run = json_set(run, '$.cleanup_until', 1)",
-        );
+        backend::execute(&url, "UPDATE config_deployment SET cleanup_deadline = 1");
     } else {
         backend::execute(&url, "DROP TRIGGER reject_writes");
     }
@@ -2717,7 +2714,7 @@ async fn an_unacknowledged_finished_write_returns_applied_with_cleanup_unconfirm
     backend::execute(
         &url,
         r#"CREATE TRIGGER reject_finished BEFORE UPDATE ON config_deployment
-           WHEN OLD.run LIKE '%"cleanup_until":%' AND NEW.run NOT LIKE '%"cleanup_until":%'
+           WHEN OLD.cleanup_status = 'pending' AND NEW.cleanup_status = 'done'
            BEGIN SELECT RAISE(ABORT, 'could not record Finished'); END"#,
     );
     let warning = DeployWarning::LeftRunning {
@@ -2829,10 +2826,7 @@ async fn the_join_error_returns_when_the_store_is_unreadable_past_the_lease() {
         &url,
         "ALTER TABLE offline_deployment RENAME TO config_deployment",
     );
-    backend::execute(
-        &url,
-        "UPDATE config_deployment SET run = json_set(run, '$.cleanup_until', 1)",
-    );
+    backend::execute(&url, "UPDATE config_deployment SET cleanup_deadline = 1");
     let view = run
         .store
         .read(

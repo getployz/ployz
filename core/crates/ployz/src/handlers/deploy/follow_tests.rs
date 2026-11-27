@@ -355,10 +355,7 @@ fn a_follower_returns_after_a_late_renewal_of_expired_cleanup() {
     let url = format!("sqlite:{}", home.path().join("store.db").display());
     let (local, actor) = shop::shop_on(ConfigStore::open(&url, backend::key()).unwrap());
     let (applied, runner) = applied_with_cleanup(&local, &actor);
-    backend::execute(
-        &url,
-        "UPDATE config_deployment SET run = json_set(run, '$.cleanup_until', 1)",
-    );
+    backend::execute(&url, "UPDATE config_deployment SET cleanup_deadline = 1");
     let _ = local.record(
         &applied.id,
         &runner,

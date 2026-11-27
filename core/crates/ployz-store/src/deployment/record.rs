@@ -1,6 +1,7 @@
 //! Recording what a runner did with a Deployment it claimed, and ending it: each confirmed
 //! Node Outcome advances Applied State.
 
+use super::cleanup::{self, Cleanup};
 use super::*;
 use crate::storage::json_text;
 
@@ -9,8 +10,8 @@ pub(crate) type Recorded = (DeploymentSummary, Option<i64>);
 fn receipt(stored: Stored) -> Recorded {
     let lease = if stored.summary.status.claimed() {
         Some(stored.recorded_runner_lease)
-    } else if stored.summary.cleanup == Some(CleanupStatus::Pending) {
-        stored.run.cleanup_until
+    } else if let Cleanup::Pending(deadline) = stored.cleanup {
+        Some(deadline)
     } else {
         None
     };
@@ -33,12 +34,16 @@ pub(crate) fn record(
     if stored.summary.runner.as_ref() != Some(runner) {
         return Err(owned_elsewhere(id));
     }
-    if matches!(evidence, RunEvidence::RuntimeFailed)
-        && !stored.summary.status.claimed()
-        && (stored.summary.status == DeploymentStatus::Unknown
-            || stored.run.cleanup(stored.read_at) != Some(CleanupStatus::Pending))
-    {
-        return Ok(receipt(stored));
+    if matches!(evidence, RunEvidence::RuntimeFailed) && !stored.summary.status.claimed() {
+        if matches!(stored.cleanup, Cleanup::Pending(_)) {
+            stored.cleanup = cleanup::expire_and_read(tx, id)?;
+            stored.summary.cleanup = stored.cleanup.status();
+        }
+        if stored.summary.status == DeploymentStatus::Unknown
+            || !matches!(stored.cleanup, Cleanup::Pending(_))
+        {
+            return Ok(receipt(stored));
+        }
     }
     if !matches!(
         evidence,
@@ -67,14 +72,14 @@ pub(crate) fn record(
             .is_some_and(|preview| preview.waits().next().is_none());
     if stamped {
         stored.run.live_at = live_at;
-        if !matches!(
-            evidence,
-            RunEvidence::Finishing { .. } | RunEvidence::Finished { .. }
-        ) {
-            stored
-                .run
-                .cleanup_until
-                .get_or_insert_with(|| now() + LEASE);
+        if stored.cleanup == Cleanup::NotStarted
+            && !matches!(
+                evidence,
+                RunEvidence::Finishing { .. } | RunEvidence::Finished { .. }
+            )
+            && let Some(cleanup) = cleanup::renewed(tx, id, true)?
+        {
+            stored.cleanup = cleanup;
         }
     }
     match evidence {
@@ -90,32 +95,46 @@ pub(crate) fn record(
             Ok(receipt(stored))
         }
         RunEvidence::Finishing { live_at } => {
-            if stored.summary.cleanup == Some(CleanupStatus::Unconfirmed) {
-                return Err(error::conflict(
-                    "The Deployment's cleanup lease expired",
-                    json!({ "deployment": id }),
-                ));
-            }
-            if live_at.is_some() && !claimed {
+            if stored.cleanup == Cleanup::Done {
                 return Ok(receipt(stored));
             }
-            if stored.run.cleanup_until.is_none() {
+            if live_at.is_some() && !claimed && stored.cleanup != Cleanup::Unconfirmed {
+                return Ok(receipt(stored));
+            }
+            let start = stored.cleanup == Cleanup::NotStarted;
+            if start {
                 running(&stored)?;
                 if stored.run.preview.is_none() {
                     return Err(invalid_evidence("Deploy Preview"));
                 }
             }
-            stored.run.cleanup_until = Some(now() + LEASE);
-            save(tx, &mut stored)?;
+            let Some(cleanup) = cleanup::renewed(tx, id, start)? else {
+                return Err(error::conflict(
+                    "The Deployment's cleanup lease expired",
+                    json!({ "deployment": id }),
+                ));
+            };
+            stored.cleanup = cleanup;
+            if stamped {
+                save(tx, &mut stored)?;
+            } else {
+                stored.summary.cleanup = cleanup.status();
+            }
             Ok(receipt(stored))
         }
         RunEvidence::Finished { warnings } => {
-            let mut changed = stored.run.cleanup_until.take().is_some() || stamped;
+            if stored.cleanup == Cleanup::Done {
+                return Ok(receipt(stored));
+            }
+            stored.cleanup = cleanup::finished(tx, id)?;
+            let mut changed = stamped;
             for warning in warnings {
                 changed |= add_warning(&mut stored, DeploymentWarning::Deploy { warning });
             }
             if changed {
                 save(tx, &mut stored)?;
+            } else {
+                stored.summary.cleanup = stored.cleanup.status();
             }
             Ok(receipt(stored))
         }
@@ -738,8 +757,12 @@ pub(super) fn end(
         _ => status,
     };
     let ended_at = now();
-    if stored.run.cleanup(stored.read_at.max(ended_at)) == Some(CleanupStatus::Pending) {
-        stored.run.cleanup_until = Some(ended_at + LEASE);
+    if matches!(stored.cleanup, Cleanup::Pending(_)) {
+        let id = &stored.summary.id;
+        stored.cleanup = match cleanup::renewed(tx, id, false)? {
+            Some(cleanup) => cleanup,
+            None => cleanup::expire_and_read(tx, id)?,
+        };
     }
     stored.standing = stored.standing.end(status, ended_at);
     stored.summary.outcome = Some(outcome.clone());

@@ -15,7 +15,7 @@ use ployz_core::{RpcError, UploadDigest};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use super::{COLUMNS, Frozen, Stored, UploadedSource, stored};
+use super::{Frozen, Stored, UploadedSource, columns, stored};
 use crate::Actor;
 use crate::error;
 use crate::id::{DeploymentId, EnvironmentId};
@@ -49,7 +49,7 @@ pub struct HeldUpload {
 
 /// Every Deployment of `environment` that carried an upload, oldest first.
 fn uploaded(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<Vec<Stored>, RpcError> {
-    let columns = COLUMNS.as_str();
+    let columns = columns(tx);
     tx.query(
         &format!(
             "SELECT {columns} FROM config_deployment \
@@ -58,7 +58,7 @@ fn uploaded(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<Vec<Stored>,
         &[environment.as_str().into()],
     )?
     .iter()
-    .map(stored)
+    .map(|row| stored(tx, row))
     .collect()
 }
 

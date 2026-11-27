@@ -468,7 +468,7 @@ fn a_late_finishing_write_cannot_reopen_expired_cleanup() {
         summary(&store, &who, 1).cleanup,
         Some(ployz_store::CleanupStatus::Pending)
     );
-    rewrite_run(&url, 1, |run| run["cleanup_until"] = json!(1));
+    backend::execute(&url, "UPDATE config_deployment SET cleanup_deadline = 1");
     store
         .record(&id(1), &a, succeeded(&["web", "api"]))
         .unwrap();
@@ -485,6 +485,182 @@ fn a_late_finishing_write_cannot_reopen_expired_cleanup() {
         );
         assert_eq!(summary(&store, &who, 1), expired);
     }
+}
+
+fn deployment_with_pending_cleanup(store: &ConfigStore, who: &Actor) -> RunnerId {
+    admit(store, who, 1, &[], None).unwrap();
+    let runner = runner("runner-a");
+    let at = store.claim(&id(1), &runner).unwrap().deployment.started_at;
+    store
+        .record(
+            &id(1),
+            &runner,
+            RunEvidence::Prepared(preview(&["web", "api"])),
+        )
+        .unwrap();
+    store
+        .record(&id(1), &runner, RunEvidence::Finishing { live_at: at })
+        .unwrap();
+    store
+        .record(&id(1), &runner, succeeded(&["web", "api"]))
+        .unwrap();
+    let deployment = summary(store, who, 1);
+    assert_eq!(deployment.status, DeploymentStatus::Applied);
+    assert_eq!(
+        deployment.cleanup,
+        Some(ployz_store::CleanupStatus::Pending)
+    );
+    runner
+}
+
+#[test]
+fn a_held_postgres_renewal_cannot_overwrite_unconfirmed_cleanup() {
+    use ployz_store::CleanupStatus;
+    use std::time::{Duration, Instant};
+
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    if url.starts_with("sqlite:") {
+        return;
+    }
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
+    let runner = deployment_with_pending_cleanup(&store, &who);
+    let writer = ConfigStore::open(
+        &format!("{url}?application_name=held_cleanup_renewal"),
+        backend::key(),
+    )
+    .unwrap();
+    let mut database = postgres::Client::connect(&url, postgres::NoTls).unwrap();
+    database
+        .batch_execute(
+            "CREATE FUNCTION hold_cleanup_renewal() RETURNS trigger LANGUAGE plpgsql AS $$
+         BEGIN
+           IF current_setting('application_name') = 'held_cleanup_renewal' THEN
+             PERFORM pg_advisory_xact_lock(8111);
+           END IF;
+           RETURN NULL;
+         END $$;
+         CREATE TRIGGER hold_cleanup_renewal
+           BEFORE UPDATE OF cleanup_deadline ON config_deployment
+           FOR EACH STATEMENT EXECUTE FUNCTION hold_cleanup_renewal();
+         SELECT pg_advisory_lock(8111);",
+        )
+        .unwrap();
+    let renewal = std::thread::spawn(move || {
+        writer.record(&id(1), &runner, RunEvidence::Finishing { live_at: None })
+    });
+    let through = Instant::now() + Duration::from_secs(5);
+    loop {
+        let waiting: bool = database
+            .query_one(
+                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+              WHERE application_name = 'held_cleanup_renewal'
+                AND wait_event_type = 'Lock' AND wait_event = 'advisory')",
+                &[],
+            )
+            .unwrap()
+            .get(0);
+        if waiting {
+            break;
+        }
+        assert!(
+            Instant::now() < through,
+            "the renewal did not reach its held write"
+        );
+        // real-wait: Postgres exposes the gate only once the independent writer is waiting.
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    database
+        .execute("UPDATE config_deployment SET cleanup_deadline = 1", &[])
+        .unwrap();
+    assert_eq!(
+        summary(&store, &who, 1).cleanup,
+        Some(CleanupStatus::Unconfirmed)
+    );
+    let stored: String = database
+        .query_one("SELECT cleanup_status FROM config_deployment", &[])
+        .unwrap()
+        .get(0);
+    assert_eq!(stored, "unconfirmed");
+    database
+        .batch_execute("SELECT pg_advisory_unlock(8111)")
+        .unwrap();
+    assert_eq!(code(renewal.join().unwrap()), RpcErrorCode::Conflict);
+    assert_eq!(
+        summary(&store, &who, 1).cleanup,
+        Some(CleanupStatus::Unconfirmed)
+    );
+}
+
+#[test]
+fn finished_saves_warnings_without_clearing_unconfirmed_cleanup() {
+    use ployz_core::{ContainerId, DeployWarning};
+    use ployz_store::CleanupStatus;
+
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
+    let runner = deployment_with_pending_cleanup(&store, &who);
+    backend::execute(&url, "UPDATE config_deployment SET cleanup_deadline = 1");
+    assert_eq!(
+        summary(&store, &who, 1).cleanup,
+        Some(CleanupStatus::Unconfirmed)
+    );
+
+    // Even a deadline that would now be in the future cannot undo the observed state.
+    backend::execute(
+        &url,
+        "UPDATE config_deployment SET cleanup_deadline = 9223372036854775807",
+    );
+    let warning = DeployWarning::LeftRunning {
+        service: "shop-production/web".parse().unwrap(),
+        machine: "edge".into(),
+        container_id: ContainerId::parse("a".repeat(64)).unwrap(),
+        reason: "docker is busy".into(),
+    };
+    let finished = store
+        .record(
+            &id(1),
+            &runner,
+            RunEvidence::Finished {
+                warnings: vec![warning.clone()],
+            },
+        )
+        .unwrap();
+    assert_eq!(finished.status, DeploymentStatus::Applied);
+    assert_eq!(finished.cleanup, Some(CleanupStatus::Unconfirmed));
+    assert!(
+        finished
+            .warnings
+            .contains(&DeploymentWarning::Deploy { warning })
+    );
+    drop(store);
+    let reopened = ConfigStore::open(&url, backend::key()).unwrap();
+    assert_eq!(summary(&reopened, &who, 1), finished);
+}
+
+#[test]
+fn cleanup_migration_keeps_a_runner_deadline_from_the_legacy_document() {
+    use ployz_store::CleanupStatus;
+
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
+    let _ = deployment_with_pending_cleanup(&store, &who);
+    rewrite_run(&url, 1, |run| run["cleanup_until"] = json!(1));
+    drop(store);
+    for sql in [
+        "ALTER TABLE config_deployment DROP COLUMN cleanup_status",
+        "ALTER TABLE config_deployment DROP COLUMN cleanup_deadline",
+        "DELETE FROM config_migration WHERE name = '0059_deployment_cleanup'",
+    ] {
+        backend::execute(&url, sql);
+    }
+    let reopened = ConfigStore::open(&url, backend::key()).unwrap();
+    assert_eq!(
+        summary(&reopened, &who, 1).cleanup,
+        Some(CleanupStatus::Unconfirmed)
+    );
 }
 
 #[test]

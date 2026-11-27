@@ -457,7 +457,7 @@ async fn finished_records_the_retirement_warning_even_when_a_separate_warning_wr
         &url,
         "CREATE TRIGGER reject_warning_alone BEFORE UPDATE ON config_deployment
          WHEN json_extract(NEW.run, '$.warnings') IS NOT NULL
-          AND json_extract(NEW.run, '$.cleanup_until') IS NOT NULL
+          AND NEW.cleanup_status = 'pending'
          BEGIN SELECT RAISE(ABORT, 'warning must accompany Finished'); END",
     );
 

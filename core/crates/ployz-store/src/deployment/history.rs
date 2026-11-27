@@ -9,7 +9,7 @@ pub(crate) fn history(
     environment: &EnvironmentId,
     limit: i64,
 ) -> Result<Vec<DeploymentSummary>, RpcError> {
-    let columns = COLUMNS.as_str();
+    let columns = columns(tx);
     tx.query(
         &format!(
             "SELECT {columns} FROM config_deployment \
@@ -20,7 +20,7 @@ pub(crate) fn history(
         &[environment.as_str().into(), limit.into()],
     )?
     .iter()
-    .map(|row| stored(row).map(|stored| stored.summary))
+    .map(|row| stored(tx, row).map(|stored| stored.summary))
     .collect()
 }
 
@@ -547,7 +547,7 @@ pub(super) fn latest_where(
     environment: &EnvironmentId,
     condition: &str,
 ) -> Result<Option<DeploymentSummary>, RpcError> {
-    let columns = COLUMNS.as_str();
+    let columns = columns(tx);
     tx.query(
         &format!(
             "SELECT {columns} FROM config_deployment \
@@ -557,7 +557,7 @@ pub(super) fn latest_where(
         &[environment.as_str().into()],
     )?
     .first()
-    .map(|row| stored(row).map(|stored| stored.summary))
+    .map(|row| stored(tx, row).map(|stored| stored.summary))
     .transpose()
 }
 
@@ -783,7 +783,7 @@ pub(crate) fn page(
     limit: usize,
     after: Option<&Cursor>,
 ) -> Result<(Vec<DeploymentSummary>, Option<Cursor>), RpcError> {
-    let columns = COLUMNS.as_str();
+    let columns = columns(tx);
     let mut params: Vec<crate::storage::Param<'_>> = vec![
         environment.as_str().into(),
         i64::try_from(limit + 1).unwrap_or(i64::MAX).into(),
@@ -804,7 +804,7 @@ pub(crate) fn page(
     )?;
     let mut page = rows
         .iter()
-        .map(|row| stored(row).map(|stored| (stored.summary, Cursor(stored.listed))))
+        .map(|row| stored(tx, row).map(|stored| (stored.summary, Cursor(stored.listed))))
         .collect::<Result<Vec<_>, _>>()?;
     let next = (page.len() > limit).then(|| {
         page.truncate(limit);
@@ -820,7 +820,7 @@ pub(crate) fn latest_numbered(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
 ) -> Result<Option<DeploymentSummary>, RpcError> {
-    let columns = COLUMNS.as_str();
+    let columns = columns(tx);
     let rows = tx.query(
         &format!(
             "SELECT {columns} FROM config_deployment \
@@ -829,7 +829,7 @@ pub(crate) fn latest_numbered(
         &[environment.as_str().into()],
     )?;
     rows.first()
-        .map(|row| stored(row).map(|stored| stored.summary))
+        .map(|row| stored(tx, row).map(|stored| stored.summary))
         .transpose()
 }
 
@@ -839,7 +839,7 @@ pub(crate) fn all_in_flight(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
 ) -> Result<Vec<DeploymentSummary>, RpcError> {
-    let columns = COLUMNS.as_str();
+    let columns = columns(tx);
     let in_flight = in_flight_sql();
     let rows = tx.query(
         &format!(
@@ -849,7 +849,7 @@ pub(crate) fn all_in_flight(
         &[environment.as_str().into()],
     )?;
     rows.iter()
-        .map(|row| stored(row).map(|stored| stored.summary))
+        .map(|row| stored(tx, row).map(|stored| stored.summary))
         .collect()
 }
 

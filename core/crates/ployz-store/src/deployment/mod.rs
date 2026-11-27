@@ -7,6 +7,7 @@
 pub(crate) mod admit;
 pub(crate) mod applied;
 mod claim;
+pub(crate) mod cleanup;
 mod history;
 mod landing;
 mod lifecycle;
@@ -1138,8 +1139,6 @@ struct Run {
     outcome: Option<Outcome>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     live_at: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    cleanup_until: Option<i64>,
     /// A digest of the Executed evidence recorded: a replay must match it.
     #[serde(default)]
     executed: Option<String>,
@@ -1163,16 +1162,6 @@ struct Run {
 }
 
 impl Run {
-    fn cleanup(&self, read_at: i64) -> Option<CleanupStatus> {
-        self.cleanup_until.map(|until| {
-            if lapsed(until, read_at) {
-                CleanupStatus::Unconfirmed
-            } else {
-                CleanupStatus::Pending
-            }
-        })
-    }
-
     /// The nodes its Deployment never attempted. On an Applied one, the Services
     /// the planner left waiting whole.
     fn unreached(&self) -> impl Iterator<Item = &String> {
@@ -1205,6 +1194,7 @@ pub(crate) struct Stored {
     cluster_domain: Option<Hostname>,
     pub(crate) nodes: Vec<TargetNode>,
     run: Run,
+    cleanup: cleanup::Cleanup,
     standing: Standing,
     /// Last saved claim lease, even when an evidence write proposes a renewal.
     recorded_runner_lease: i64,
@@ -1327,6 +1317,15 @@ static COLUMNS: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
          END, listed, service_uploads"
     )
 });
+
+fn columns(tx: &dyn Tx) -> String {
+    let clock = tx.backend().wall_clock();
+    format!(
+        "{}, cleanup_status, cleanup_deadline, CAST(CASE
+         WHEN cleanup_status = 'pending' AND cleanup_deadline < {clock} THEN 1 ELSE 0 END AS BIGINT)",
+        COLUMNS.as_str()
+    )
+}
 
 /// Whether a claimed Deployment's runner is gone at `now`: its runner lease lapsed,
 /// so what ran is unknown. Every read shows a lapsed one as `unknown`
@@ -2014,12 +2013,12 @@ fn free_namespace(
 
 /// Deployment `id` of `who`'s Organization.
 pub(crate) fn owned(tx: &mut dyn Tx, who: &Actor, id: &DeploymentId) -> Result<Stored, RpcError> {
-    let columns = COLUMNS.as_str();
+    let columns = columns(tx);
     let rows = tx.query(
         &format!("SELECT {columns} FROM config_deployment WHERE id = ?1 AND organization_id = ?2"),
         &[id.as_str().into(), who.organization.as_str().into()],
     )?;
-    stored(rows.first().ok_or_else(|| missing(id))?)
+    stored(tx, rows.first().ok_or_else(|| missing(id))?)
 }
 
 /// Load a Deployment with its Environment locked, so admissions, claims and records
@@ -2032,12 +2031,12 @@ pub(crate) fn locked(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Stored, RpcEr
 
 /// Load a Deployment of any Organization: in-process runner calls only.
 pub(crate) fn load(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Stored, RpcError> {
-    let columns = COLUMNS.as_str();
+    let columns = columns(tx);
     let rows = tx.query(
         &format!("SELECT {columns} FROM config_deployment WHERE id = ?1"),
         &[id.as_str().into()],
     )?;
-    stored(rows.first().ok_or_else(|| missing(id))?)
+    stored(tx, rows.first().ok_or_else(|| missing(id))?)
 }
 
 /// Every Deployment `condition` selects from `config_deployment`, as [`load`] reads
@@ -2047,17 +2046,17 @@ fn load_where(
     condition: &str,
     params: &[crate::storage::Param<'_>],
 ) -> Result<Vec<Stored>, RpcError> {
-    let columns = COLUMNS.as_str();
+    let columns = columns(tx);
     tx.query(
         &format!("SELECT {columns} FROM config_deployment WHERE {condition}"),
         params,
     )?
     .iter()
-    .map(stored)
+    .map(|row| stored(tx, row))
     .collect()
 }
 
-fn stored(row: &Row) -> Result<Stored, RpcError> {
+fn stored(tx: &mut dyn Tx, row: &Row) -> Result<Stored, RpcError> {
     let read_at = now();
     let number = row
         .optional_int(2)?
@@ -2102,9 +2101,14 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
     let held = push.is_some() && nodes.is_empty();
     let service_uploads: Option<uploads::ServiceUploads> =
         row.optional_json(23, "Deployment uploads")?;
+    let id = row.parse(0, "identity")?;
+    let cleanup = cleanup::Cleanup::decode(row, 24, 25)?;
+    if row.int(26)? != 0 {
+        tx.observe_expired_cleanup(&id);
+    }
     Ok(Stored {
         summary: DeploymentSummary {
-            id: row.parse(0, "identity")?,
+            id,
             environment_id: row.parse(1, "identity")?,
             number,
             status,
@@ -2122,7 +2126,7 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
             admitted_at,
             started_at,
             live_at: run.live_at,
-            cleanup: run.cleanup(read_at),
+            cleanup: cleanup.status(),
             ended_at,
             message: row.optional_text(17)?.map(str::to_owned),
             push,
@@ -2142,6 +2146,7 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
         nodes,
         namespace: row.parse::<Namespace>(7, "Namespace")?,
         run,
+        cleanup,
         cluster_domain: row.parse_optional(10, "identity")?,
         recorded_runner_lease: standing.lease(),
         standing,
@@ -2199,7 +2204,7 @@ impl Stored {
         self.summary.started_at = started_at;
         self.summary.ended_at = ended_at;
         self.summary.live_at = self.run.live_at;
-        self.summary.cleanup = self.run.cleanup(self.read_at);
+        self.summary.cleanup = self.cleanup.status();
         self.summary.in_flight = status.in_flight();
         self.summary.chooses_upload_at_start =
             chooses_upload_at_start(status, self.service_uploads.as_ref());

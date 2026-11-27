@@ -313,6 +313,10 @@ mod checked {
     pub(super) struct Checked<'a>(pub(super) &'a mut dyn Tx);
 
     impl Tx for Checked<'_> {
+        fn backend(&self) -> crate::storage::Backend {
+            self.0.backend()
+        }
+
         fn execute(&mut self, sql: &str, params: &[Param<'_>]) -> Result<usize, RpcError> {
             written(sql, params);
             self.0.execute(sql, params)
