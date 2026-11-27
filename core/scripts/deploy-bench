@@ -50,11 +50,11 @@ def durations(view):
     covered, their whole span, and the Deployment's own start to end, which a build without steps
     has too."""
     spans = sorted(
-        (step["started_at"], step["ended_at"]) for step in view["steps"] if "ended_at" in step
+        (step["started_at"], step["ended_at"]) for step in view.get("steps", []) if "ended_at" in step
     )
     out = {
         label(step): step["ended_at"] - step["started_at"]
-        for step in view["steps"]
+        for step in view.get("steps", [])
         if "ended_at" in step
     }
     if view.get("started_at") and view.get("ended_at"):
