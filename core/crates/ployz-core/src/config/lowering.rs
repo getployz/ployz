@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use super::{
     BuildMethod, ConfigError, FileMode, ServiceConfig, ServiceEnvValue, ServiceHealthcheck,
-    ServiceSource, ValuePart, ValuePartOwner, VolumeKind, parse_service_config,
+    ServiceSource, ValuePart, VolumeKind, parse_service_config,
 };
 use crate::{
     ByteQuantity, ConfigFileName, ConfigMount, ConfigName, ConfigSpec, ConfiguredHealthcheck,
@@ -840,22 +840,13 @@ fn deployment_dependencies(
                 ServiceEnvValue::Secret { .. } => None,
             })
             .flatten()
-            .filter_map(|part| match part {
-                ValuePart::Ref {
-                    owner: ValuePartOwner::Service { lineage_id },
-                    ..
-                } => Some(lineage_id),
-                ValuePart::Ref {
-                    owner: ValuePartOwner::Self_,
-                    ..
-                }
-                | ValuePart::Text { .. } => None,
-            });
+            .filter_map(ValuePart::service_lineage);
         let from_configs = config
             .configs
             .iter()
             .filter_map(|mount| configs.get(mount.config_resource_id.as_str()))
-            .flat_map(|mounted| &mounted.references);
+            .flat_map(|mounted| &mounted.references)
+            .map(String::as_str);
         let references = from_env
             .chain(from_configs)
             .filter_map(|lineage_id| by_id.get(lineages.get(lineage_id)?.as_str()))

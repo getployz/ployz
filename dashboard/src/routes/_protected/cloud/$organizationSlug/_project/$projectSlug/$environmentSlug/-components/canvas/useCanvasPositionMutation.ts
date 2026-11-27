@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { useLoaderData } from "@tanstack/react-router";
 import { createOptimisticAction, usePacedMutations, throttleStrategy } from "@tanstack/react-db";
@@ -6,8 +7,8 @@ import { toErrorMessage } from "#/lib/error-message";
 import { type OnNodeDrag } from "@xyflow/react";
 import { getCanvasPositionsCollection } from "#/collections/collections";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { canvasPositionKey, type CanvasPosition, type UpdateCanvasPositionInput } from "#/modules/canvas/canvas-positions";
-import { updateCanvasPositionServerFn } from "#/modules/canvas/canvas-positions.functions";
+import { canvasPositionKey, type CanvasPlacement, type CanvasPosition, type UpdateCanvasPositionInput } from "#/modules/canvas/canvas-positions";
+import { placeCanvasNodesServerFn, updateCanvasPositionServerFn } from "#/modules/canvas/canvas-positions.functions";
 import type { CanvasResourceNode, CanvasResourceType } from "./types";
 
 export function useCanvasPositionMutation(params: {
@@ -156,4 +157,42 @@ export function usePlaceNewNode(organizationSlug: string) {
     place(input).when("settled").catch((error: Error) =>
       toast.error(toErrorMessage(error, "The new node's place couldn't be saved.")));
   };
+}
+
+const PLACEMENTS_NOT_SAVED = "The canvas couldn't save where it put new nodes.";
+
+/**
+ * Keeps the places the canvas gave nodes it drew without one (`canvasPlacements`), all in one write, the first time it
+ * draws them. From then on they are stored like a dragged node's, so a drag of one node never moves another. A place
+ * another tab or a person stored first wins; a failed save leaves the nodes where they are drawn and says so once.
+ */
+export function useKeepPlacements(organizationSlug: string, environmentId: string, placements: readonly CanvasPlacement[]) {
+  const collection = getCanvasPositionsCollection(organizationSlug, useCollectionScope());
+  const placeNodes = useServerFn(placeCanvasNodesServerFn);
+  const { organizationId } = useLoaderData({ from: "/_protected/cloud/$organizationSlug" });
+  const keep = createOptimisticAction<readonly CanvasPlacement[]>({
+    onMutate: (nodes) => {
+      const now = new Date();
+      for (const node of nodes) {
+        collection.insert({ ...node, id: crypto.randomUUID(), organizationId, environmentId, x: Math.round(node.x), y: Math.round(node.y),
+          createdAt: now, updatedAt: now });
+      }
+    },
+    mutationFn: async (nodes) => {
+      const [answer] = await Promise.allSettled([placeNodes({ data: { organizationSlug, environmentId, nodes: [...nodes] } })]);
+      if (answer.status === "fulfilled") return collection.utils.writeUpsert(answer.value.data);
+      // A server function rejects with an encoded PublicError, which TanStack DB would show as "[object Object]".
+      if (answer.reason instanceof Error) throw answer.reason;
+      throw new Error(toErrorMessage(answer.reason, PLACEMENTS_NOT_SAVED), { cause: answer.reason });
+    },
+  });
+  const asked = placements.map((node) => `${canvasPositionKey(node)}@${node.x},${node.y}`).join(" ");
+  useEffect(() => {
+    // The collection may hold a place this list was computed without, such as one this effect inserted a render ago.
+    const unplaced = placements.filter((node) => !collection.has(canvasPositionKey(node)));
+    if (unplaced.length === 0) return;
+    keep(unplaced).when("settled").catch((error: Error) =>
+      toast.error(toErrorMessage(error, PLACEMENTS_NOT_SAVED), { id: "canvas-placements-save" }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `asked` is `placements` by value; a new array of the same places asks nothing new.
+  }, [asked]);
 }

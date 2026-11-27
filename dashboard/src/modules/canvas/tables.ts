@@ -2,7 +2,10 @@ import { index, integer, pgTable, text, unique, uuid } from "drizzle-orm/pg-core
 import { createdAt, updatedAt } from "#/db/tables";
 import { organization } from "#/modules/organization/tables";
 
-/** Where the canvas draws a Config Store Service or Volume: presentation Cloud keeps, keyed by the node's id. */
+/**
+ * Where the canvas draws a Config Store Service, Volume or Config, keyed by the node's id, or a Branch's Live Node, keyed by
+ * its name: presentation Cloud keeps.
+ */
 export const environmentCanvasNodePosition = pgTable(
   "environment_canvas_node_position",
   {
@@ -13,7 +16,7 @@ export const environmentCanvasNodePosition = pgTable(
     // No foreign key: an Environment lives only in the Config Store's tables.
     environmentId: uuid("environment_id").notNull(),
     resourceType: text("resource_type").notNull(),
-    resourceId: uuid("resource_id").notNull(),
+    resourceId: text("resource_id").notNull(),
     x: integer("x").notNull(),
     y: integer("y").notNull(),
     createdAt,
