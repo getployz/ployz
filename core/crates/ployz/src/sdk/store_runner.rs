@@ -972,7 +972,9 @@ impl Run {
     }
 
     /// Prepare the Deployment with its built Services' fresh receipts, so preparation
-    /// reuses their images and only delivers them.
+    /// reuses their images and only delivers them. It reads no checkout: only a receipt
+    /// whose image no longer runs everywhere its Service may be placed needs one, to
+    /// rebuild from, and then preparation runs again with them.
     async fn prepare(
         &self,
         session: &Session,
@@ -983,34 +985,54 @@ impl Run {
             BTreeMap<ServiceName, String>,
         ),
     ) -> Result<PreparedDeploy, Unprepared> {
-        let mut input = PreparationInput {
-            deployment: claimed.input,
-            build_receipts: receipts
-                .into_iter()
-                .map(|(service, receipt)| (service, vec![receipt]))
-                .collect(),
-            pins,
-            free: claimed.free.clone(),
-            ..PreparationInput::default()
-        };
-        for target in &targets {
-            target.input(&mut input);
-        }
-        // A Service GitHub built keeps its pin, so its receipt's fingerprint matches.
-        for source in &claimed.sources {
-            if let Some(commit) = &source.commit
-                && input.build_receipts.contains_key(&source.service)
-            {
-                input
-                    .source_commits
-                    .entry(source.service.clone())
-                    .or_insert_with(|| commit.to_string());
+        let input = |checkouts: bool| {
+            let mut input = PreparationInput {
+                deployment: claimed.input.clone(),
+                build_receipts: receipts
+                    .iter()
+                    .map(|(service, receipt)| (service.clone(), vec![receipt.clone()]))
+                    .collect(),
+                pins: pins.clone(),
+                free: claimed.free.clone(),
+                ..PreparationInput::default()
+            };
+            for target in &targets {
+                target.input(&mut input);
             }
+            if !checkouts {
+                input.sources.clear();
+            }
+            // A Service GitHub built keeps its pin, so its receipt's fingerprint matches.
+            for source in &claimed.sources {
+                if let Some(commit) = &source.commit
+                    && input.build_receipts.contains_key(&source.service)
+                {
+                    input
+                        .source_commits
+                        .entry(source.service.clone())
+                        .or_insert_with(|| commit.to_string());
+                }
+            }
+            input
+        };
+        match self.prepare_from(session, &claimed, input(false)).await {
+            Err(unprepared) if needs_upload(&unprepared.error).is_some() => {
+                self.prepare_from(session, &claimed, input(true)).await
+            }
+            prepared => prepared,
         }
+    }
+
+    async fn prepare_from(
+        &self,
+        session: &Session,
+        claimed: &Claimed,
+        input: PreparationInput,
+    ) -> Result<PreparedDeploy, Unprepared> {
         // Delivering images can outlast the lease: keep renewing it.
         let running: Running<PreparedDeploy, Unprepared> = session.prepare_with(
             input,
-            claimed.intent.registry_logins,
+            claimed.intent.registry_logins.clone(),
             claimed.intent.options.runner(),
         )?;
         self.renewing(running.finished(), || running.abort()).await
