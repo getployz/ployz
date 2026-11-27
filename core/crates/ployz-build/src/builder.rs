@@ -125,6 +125,7 @@ impl<'a> Builder<'a> {
         }
         drop(parked);
         remove(&self.docker.releasing(), &self.name)?;
+        label_cache(self.docker, &self.name)?;
         let bridge = Bridge::claim(&bridge_directory(), NETWORK_INTERFACES)?;
         let index = bridge.index;
         self.bridge = Some(bridge);
@@ -483,6 +484,8 @@ fn create(
         // A worker that dies stays dead, so its Build fails instead.
         "--driver-opt".into(),
         "restart-policy=no".into(),
+        "--driver-opt".into(),
+        format!("env.{OWNER}={}", rustix::process::getuid().as_raw()),
         "--buildkitd-config".into(),
         config.to_string_lossy().into_owned(),
     ];
@@ -504,10 +507,67 @@ fn spec(resources: &crate::policy::Resources, bridge: u8) -> String {
     )
 }
 
-/// Remove a slot's workers, whichever access each ran with.
+/// Marks a worker, by its environment, and a cache volume, by its label, as
+/// this host user's Ployz builder: Buildx puts no labels on a worker it
+/// creates, and a name alone could be anyone's container.
+const OWNER: &str = "PLOYZ_BUILD_OWNER";
+const OWNER_LABEL: &str = "ployz.build.owner";
+
+fn owner() -> String {
+    rustix::process::getuid().as_raw().to_string()
+}
+
+/// Whether `container` exists and this host user's Ployz made it.
+fn owned(docker: &Docker<'_>, container: &str) -> Result<bool, BuildError> {
+    match docker.run(
+        "inspect a build container",
+        &[
+            "inspect",
+            "--format",
+            "{{range .Config.Env}}{{println .}}{{end}}",
+            container,
+        ],
+        Streams::Captured,
+    ) {
+        Ok(environment) => {
+            let marker = format!("{OWNER}={}", owner());
+            Ok(environment.lines().any(|line| line.trim() == marker))
+        }
+        Err(BuildError::Docker { diagnostic, .. })
+            if diagnostic.to_ascii_lowercase().contains("no such object") =>
+        {
+            Ok(false)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Create the slot's cache volume with this user's label before Buildx would
+/// create it without one. An existing volume keeps what it has.
+fn label_cache(docker: &Docker<'_>, name: &str) -> Result<(), BuildError> {
+    docker
+        .run(
+            "create the build cache",
+            &[
+                "volume",
+                "create",
+                "--label",
+                &format!("{OWNER_LABEL}={}", owner()),
+                &format!("{}_state", container(name)),
+            ],
+            Streams::Captured,
+        )
+        .map(drop)
+}
+
+/// Remove a slot's workers that this host user's Ployz made, whichever
+/// access each ran with. Another container with a worker's name is left.
 fn discard(docker: &Docker<'_>, slot: usize) -> Result<(), BuildError> {
     [Access::Full, Access::Free].iter().try_for_each(|access| {
         let container = container(&access.builder(slot));
+        if !owned(docker, &container)? {
+            return Ok(());
+        }
         // A graceful stop lets BuildKit delete its bridge; a forced removal leaves it behind.
         let _ = docker.releasing().run(
             "stop the build container",
@@ -555,6 +615,8 @@ pub(crate) struct Lock {
 
 struct LockedFile {
     file: fs::File,
+    // The slot's claim in shared memory, which every mount namespace sees.
+    claim: fs::File,
     // Serializes writes to the mark between threads of one attempt.
     writes: std::sync::Mutex<()>,
 }
@@ -719,42 +781,64 @@ impl Lock {
             progress: None,
             recorder: None,
         };
-        let listed = docker
+        let names = |listed: &str| {
+            listed
+                .lines()
+                .map(|name| name.trim().to_owned())
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        let named = |slot: usize, suffix: &str| {
+            [Access::Full, Access::Free]
+                .map(|access| format!("{}{suffix}", container(&access.builder(slot))))
+        };
+        let mut found = Self::known_slots(&policy.state_directory);
+        // Act on whichever listing Docker answered, and report the other.
+        let workers = docker
             .run(
                 "list build containers",
                 &["ps", "--all", "--format", "{{.Names}}"],
                 Streams::Captured,
             )
-            .and_then(|workers| {
-                if !caches {
-                    return Ok(workers);
+            .and_then(|listed| {
+                let listed = names(&listed);
+                for slot in 0..=usize::from(u8::MAX) {
+                    for worker in named(slot, "") {
+                        if listed.contains(&worker) && owned(&docker, &worker)? {
+                            found.push(slot);
+                        }
+                    }
                 }
-                docker
-                    .run(
-                        "list build caches",
-                        &["volume", "ls", "--format", "{{.Name}}"],
-                        Streams::Captured,
-                    )
-                    .map(|volumes| workers + &volumes)
+                Ok(())
             });
+        let caches = if caches {
+            docker
+                .run(
+                    "list build caches",
+                    &[
+                        "volume",
+                        "ls",
+                        "--filter",
+                        &format!("label={OWNER_LABEL}={}", owner()),
+                        "--format",
+                        "{{.Name}}",
+                    ],
+                    Streams::Captured,
+                )
+                .map(|listed| {
+                    let listed = names(&listed);
+                    found.extend((0..=usize::from(u8::MAX)).filter(|&slot| {
+                        named(slot, "_state")
+                            .iter()
+                            .any(|cache| listed.contains(cache))
+                    }));
+                })
+        } else {
+            Ok(())
+        };
         let _ = fs::remove_dir_all(&working);
-        let names = listed.as_deref().unwrap_or_default();
-        let names = names
-            .lines()
-            .map(str::trim)
-            .collect::<std::collections::BTreeSet<_>>();
-        let known = Self::known_slots(&policy.state_directory);
-        let slots = (0..=usize::from(u8::MAX))
-            .filter(|slot| {
-                known.contains(slot)
-                    || [Access::Full, Access::Free].iter().any(|access| {
-                        let worker = container(&access.builder(*slot));
-                        names.contains(worker.as_str())
-                            || names.contains(format!("{worker}_state").as_str())
-                    })
-            })
-            .collect();
-        (slots, listed.map(drop))
+        found.sort_unstable();
+        found.dedup();
+        (found, workers.and(caches))
     }
 
     pub(crate) fn name(&self) -> String {
@@ -970,9 +1054,11 @@ impl Lock {
             Err(rustix::io::Errno::WOULDBLOCK) => return Err(BuildError::Busy),
             Err(error) => return Err(lock_error(error.into())),
         }
+        let claim = claim_slot(directory, slot)?;
         Ok(Self {
             file: std::sync::Arc::new(LockedFile {
                 file,
+                claim,
                 writes: std::sync::Mutex::default(),
             }),
             directory: directory.to_owned(),
@@ -1029,6 +1115,7 @@ impl Drop for LockedFile {
         // Another thread may have forked a child that briefly inherited this
         // CLOEXEC descriptor. Release ownership now, without waiting for exec.
         let _ = rustix::fs::flock(&self.file, rustix::fs::FlockOperation::Unlock);
+        let _ = rustix::fs::flock(&self.claim, rustix::fs::FlockOperation::Unlock);
     }
 }
 
@@ -1112,6 +1199,49 @@ impl Bridge {
 
 pub(crate) fn bridge_name(index: u8) -> String {
     format!("{}{index}", crate::BUILD_BRIDGE_PREFIX)
+}
+
+/// Claim a slot where every process sees it. `ployz.service` runs with
+/// `PrivateTmp`, so a CLI's lock file for the same slot is another file, and
+/// only this claim keeps a cache clear out of the daemon's running Build.
+/// Directories name the claim by their path, which the daemon and its host's
+/// CLI share, so unrelated state directories never contend.
+fn claim_slot(directory: &std::path::Path, slot: usize) -> Result<fs::File, BuildError> {
+    use rustix::fs::{FlockOperation, flock};
+    use sha2::Digest as _;
+    use std::os::unix::{ffi::OsStrExt as _, fs::PermissionsExt as _};
+    let claims = slot_claim_directory();
+    match fs::DirBuilder::new().mode(0o1777).create(&claims) {
+        Ok(()) => {
+            fs::set_permissions(&claims, fs::Permissions::from_mode(0o1777)).map_err(lock_error)?
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(lock_error(error)),
+    }
+    let digest = sha2::Sha256::digest(directory.as_os_str().as_bytes());
+    let name = digest
+        .iter()
+        .take(16)
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+        .open(claims.join(format!("{name}-{slot}.lock")))
+        .map_err(lock_error)?;
+    match flock(&file, FlockOperation::NonBlockingLockExclusive) {
+        Ok(()) => Ok(file),
+        Err(rustix::io::Errno::WOULDBLOCK) => Err(BuildError::Busy),
+        Err(error) => Err(lock_error(error.into())),
+    }
+}
+
+fn slot_claim_directory() -> PathBuf {
+    PathBuf::from("/dev/shm/ployz-build-slots")
 }
 
 /// `ployz.service` runs with `PrivateTmp`, so `/var/tmp` would hide its claims
@@ -1287,6 +1417,7 @@ esac
             builder.lock.as_mut().unwrap().file = std::sync::Arc::new(LockedFile {
                 file: fs::File::open(directory.join(format!("{}.lock", crate::builder_name())))
                     .unwrap(),
+                claim: fs::File::open("/dev/null").unwrap(),
                 writes: std::sync::Mutex::default(),
             });
             let result = if prior_failure {
@@ -1601,7 +1732,10 @@ esac
 
     /// A slot directory whose fake Docker logs each call, reports the worker
     /// container as `<directory>/worker` says, lists `<directory>/names` as
-    /// its containers, and fails removals while `<directory>/fail-rm` exists.
+    /// its containers, of which those in `owned` carry this user's marker and
+    /// those in `foreign` none, lists `labelled` as the volumes carrying this
+    /// user's label (unless `fail-volumes` exists) and `volumes` as all, and
+    /// fails removals while `fail-rm` exists.
     fn host_slot() -> tempfile::TempDir {
         let directory = tempfile::tempdir().unwrap();
         fs::set_permissions(
@@ -1616,14 +1750,28 @@ esac
 [ "$1" = --ready ] && exit 0
 printf '%s\n' "$*" >> '{0}/calls'
 case "$1 $2" in
-  'inspect --format') cat '{0}/worker' 2>/dev/null ;;
+  'inspect --format')
+    case "$3" in
+      *Env*)
+        if grep -qx "$4" '{0}/owned' 2>/dev/null; then echo {OWNER}={1}
+        elif grep -qx "$4" '{0}/foreign' 2>/dev/null; then echo PATH=/bin
+        else echo "Error: no such object: $4" >&2; exit 1; fi ;;
+      *) cat '{0}/worker' 2>/dev/null ;;
+    esac ;;
   'ps --all') cat '{0}/names' 2>/dev/null ;;
+  'volume ls')
+    case "$*" in
+      *label=*) [ -f '{0}/fail-volumes' ] && exit 1; cat '{0}/labelled' 2>/dev/null ;;
+      *--quiet*) ;;
+      *) cat '{0}/volumes' 2>/dev/null ;;
+    esac ;;
   'context show') echo default ;;
   'rm --force'|'buildx rm') [ -f '{0}/fail-rm' ] && exit 1 ;;
 esac
 exit 0
 "#,
-                directory.path().display()
+                directory.path().display(),
+                owner(),
             ),
         );
         directory
@@ -1680,23 +1828,42 @@ exit 0
         lines
     }
 
-    /// What an attempt runs before creating its worker, when it starts in none.
-    fn fresh_calls(directory: &std::path::Path, slot: usize) -> Vec<String> {
-        let full = container(&Access::Full.builder(slot));
-        let free = container(&Access::Free.builder(slot));
-        vec![
-            format!("stop {full}"),
-            format!("rm --force {full}"),
-            format!("stop {free}"),
-            format!("rm --force {free}"),
-            format!("buildx rm --keep-state {}", Access::Full.builder(slot)),
-            create_call(directory, &Access::Full.builder(slot)),
+    /// What an attempt runs before creating its worker, when it starts in
+    /// none: it removes those of the slot's workers in `owned`.
+    fn fresh_calls(directory: &std::path::Path, slot: usize, owned: &[String]) -> Vec<String> {
+        let name = Access::Full.builder(slot);
+        let mut calls = Vec::new();
+        for access in [Access::Full, Access::Free] {
+            let worker = container(&access.builder(slot));
+            calls.push(inspect_owner(&worker));
+            if owned.contains(&worker) {
+                calls.push(format!("stop {worker}"));
+                calls.push(format!("rm --force {worker}"));
+            }
+        }
+        calls.push(format!("buildx rm --keep-state {name}"));
+        calls.push(format!(
+            "volume create --label {OWNER_LABEL}={} {}_state",
+            owner(),
+            container(&name)
+        ));
+        calls.push(create_call(directory, &name));
+        calls
+    }
+
+    fn inspect_owner(worker: &str) -> String {
+        [
+            "inspect --format ",
+            "{{range .Config.Env}}{{println .}}{{end}} ",
+            worker,
         ]
+        .concat()
     }
 
     fn create_call(directory: &std::path::Path, name: &str) -> String {
         format!(
-            "buildx create --name {name} --driver docker-container --driver-opt image={BUILDKIT_IMAGE} --driver-opt network=host --driver-opt restart-policy=no --buildkitd-config {}",
+            "buildx create --name {name} --driver docker-container --driver-opt image={BUILDKIT_IMAGE} --driver-opt network=host --driver-opt restart-policy=no --driver-opt env.{OWNER}={} --buildkitd-config {}",
+            owner(),
             directory.join(format!("{name}.buildkitd.toml")).display()
         )
     }
@@ -1737,7 +1904,10 @@ exit 0
 
         let first = attempt();
         let bridge = first.bridge.as_ref().unwrap().index;
-        assert_eq!(calls_since(directory, &mut seen), fresh_calls(directory, 0));
+        assert_eq!(
+            calls_since(directory, &mut seen),
+            fresh_calls(directory, 0, &[])
+        );
         fs::write(directory.join("worker"), "c0ffee true\n").unwrap();
         first.finish(Ok(())).unwrap();
         assert_eq!(
@@ -1806,6 +1976,9 @@ exit 0
             let directory = directory.path();
             let program = directory.join("docker");
             fs::write(directory.join("worker"), worker).unwrap();
+            let worker = container(&crate::builder_name());
+            fs::write(directory.join("owned"), &worker).unwrap();
+            let owned = vec![worker];
             let lock = Lock::try_acquire_in(directory).unwrap();
             let parked = kept.map(|older| park_kept(&lock, older));
             let environment = BTreeMap::new();
@@ -1822,7 +1995,7 @@ exit 0
                 Builder::acquire(&docker, lock, Access::Full, &resources, None, reuse).unwrap();
             let calls = calls_since(directory, &mut 0);
             assert!(
-                calls.ends_with(&fresh_calls(directory, 0)),
+                calls.ends_with(&fresh_calls(directory, 0, &owned)),
                 "{case}: {calls:?}"
             );
             assert!(
@@ -1843,6 +2016,7 @@ exit 0
             container(&Access::Free.builder(3)),
         ];
         fs::write(directory.join("names"), workers.join("\n")).unwrap();
+        fs::write(directory.join("owned"), workers.join("\n")).unwrap();
         fs::write(directory.join("worker"), "c0ffee true").unwrap();
         let policy = crate::HostPolicy {
             state_directory: directory.to_owned(),
@@ -1872,6 +2046,7 @@ exit 0
         let directory = directory.path();
         let worker = container(&Access::Full.builder(2));
         fs::write(directory.join("names"), &worker).unwrap();
+        fs::write(directory.join("owned"), &worker).unwrap();
         let policy = crate::HostPolicy {
             state_directory: directory.join("private-tmp-elsewhere"),
             configuration_file: directory.join("build.yaml"),
@@ -1881,6 +2056,92 @@ exit 0
         crate::clear_cache(&policy).unwrap();
         let calls = calls_since(directory, &mut 0);
         assert!(calls.contains(&format!("rm --force {worker}")), "{calls:?}");
+    }
+
+    #[test]
+    fn a_container_that_only_shares_a_worker_name_is_left_alone() {
+        let directory = host_slot();
+        let directory = directory.path();
+        let foreign = container(&Access::Full.builder(77));
+        fs::write(directory.join("names"), &foreign).unwrap();
+        fs::write(directory.join("foreign"), &foreign).unwrap();
+        fs::write(
+            directory.join("volumes"),
+            format!("{}_state", container(&Access::Full.builder(78))),
+        )
+        .unwrap();
+        let policy = crate::HostPolicy {
+            state_directory: directory.join("state"),
+            configuration_file: directory.join("build.yaml"),
+            docker: directory.join("docker"),
+            ..Default::default()
+        };
+        Lock::cleanup_abandoned(&policy).unwrap();
+        crate::clear_cache(&policy).unwrap();
+        let calls = calls_since(directory, &mut 0);
+        assert!(
+            !calls
+                .iter()
+                .any(|call| call.ends_with(&foreign) && !call.starts_with("inspect")),
+            "{calls:?}"
+        );
+        assert!(
+            !calls.iter().any(|call| call.contains("-78")),
+            "a volume without this user's label named a slot: {calls:?}"
+        );
+    }
+
+    #[test]
+    fn a_cache_clear_acts_on_the_workers_docker_listed_when_volumes_cannot_be_listed() {
+        let directory = host_slot();
+        let directory = directory.path();
+        let worker = container(&Access::Full.builder(2));
+        fs::write(directory.join("names"), &worker).unwrap();
+        fs::write(directory.join("owned"), &worker).unwrap();
+        fs::write(directory.join("fail-volumes"), "").unwrap();
+        let policy = crate::HostPolicy {
+            state_directory: directory.join("state"),
+            configuration_file: directory.join("build.yaml"),
+            docker: directory.join("docker"),
+            ..Default::default()
+        };
+        let error = crate::clear_cache(&policy).unwrap_err();
+        assert!(error.to_string().contains("list build caches"), "{error}");
+        let calls = calls_since(directory, &mut 0);
+        assert!(calls.contains(&format!("rm --force {worker}")), "{calls:?}");
+    }
+
+    #[test]
+    fn a_cache_clear_from_another_mount_namespace_leaves_a_running_builds_slot() {
+        let directory = host_slot();
+        let directory = directory.path();
+        let state = directory.join("state");
+        let worker = container(&Access::Full.builder(1));
+        fs::write(directory.join("names"), &worker).unwrap();
+        fs::write(directory.join("owned"), &worker).unwrap();
+        let program = directory.join("docker");
+        let building = Lock::try_acquire_slot(&state, 1, &program).unwrap();
+        // The daemon's PrivateTmp hides its lock file: the CLI opens another.
+        fs::rename(
+            state.join(lock_file(1)),
+            directory.join("daemon-private.lock"),
+        )
+        .unwrap();
+        let policy = crate::HostPolicy {
+            state_directory: state,
+            configuration_file: directory.join("build.yaml"),
+            docker: program,
+            ..Default::default()
+        };
+        assert!(matches!(crate::clear_cache(&policy), Err(BuildError::Busy)));
+        let calls = calls_since(directory, &mut 0);
+        assert!(
+            !calls
+                .iter()
+                .any(|call| call.ends_with(&worker) && !call.starts_with("inspect")),
+            "{calls:?}"
+        );
+        drop(building);
     }
 
     #[test]
@@ -1964,7 +2225,7 @@ exit 0
         .unwrap();
         assert_eq!(
             calls_since(directory.path(), &mut 0),
-            fresh_calls(directory.path(), slot)
+            fresh_calls(directory.path(), slot, &[])
         );
         drop(builder);
     }

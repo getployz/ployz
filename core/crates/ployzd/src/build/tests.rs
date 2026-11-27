@@ -715,7 +715,8 @@ case "$1 $2" in
   'info --format') printf '%s\n' '{{"OSType":"linux","CgroupVersion":"2","Architecture":"x86_64","DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]]}}' ;;
   'buildx rm')
     if [ -f "$root/fail-cleanup" ] && {{ [ -f "$root/executed" ] || [ -f "$root/checking" ]; }}; then exit 1; fi ;;
-  'buildx version'|'buildx create') exit 0 ;;
+  'buildx version'|'buildx create'|'volume create') exit 0 ;;
+  'inspect --format') printf 'Error: no such object: %s\n' "$4" >&2; exit 1 ;;
   'rm --force')
     if [ -f "$root/fail-cleanup" ] && {{ [ -f "$root/executed" ] || [ -f "$root/checking" ]; }}; then exit 1; fi ;;
   'buildx inspect')
