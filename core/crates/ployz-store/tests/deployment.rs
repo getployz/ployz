@@ -498,6 +498,82 @@ fn an_applied_deploy_without_a_switch_has_no_live_at() {
 }
 
 #[test]
+fn a_live_switch_does_not_complete_a_siblings_in_place_update() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let runner = runner("runner-a");
+    let at = store
+        .claim(&id(1), &runner)
+        .unwrap()
+        .deployment
+        .started_at
+        .unwrap();
+    let mut plan = preview(&["web", "api"]);
+    let spec = |name, service_id: &str| {
+        json!({
+            "service_id": service_id.repeat(32), "name": name,
+            "mode": {"mode": "replicated", "replicas": 1},
+            "container": {"image": "nginx:1", "pull_policy": "missing"},
+        })
+    };
+    plan.operations[0].operation = serde_json::from_value(json!({
+        "type": "run_container", "machine_id": "a".repeat(32),
+        "skip_health_monitor": false, "spec": spec("web", "c"),
+    }))
+    .unwrap();
+    plan.operations[1].operation = serde_json::from_value(json!({
+        "type": "update_container", "machine_id": "a".repeat(32),
+        "container_id": "b".repeat(64), "spec": spec("api", "d"),
+    }))
+    .unwrap();
+    let rows_at_switch = [
+        ("web", RowPhase::WaitingForSwitch),
+        ("api", RowPhase::UpdatingContainer),
+    ]
+    .into_iter()
+    .map(
+        |(service, phase)| ployz_core::deploy_progress::ServerProgress {
+            service: ServiceName::parse(service).unwrap(),
+            machine: MachineId::parse("a".repeat(32)).unwrap(),
+            server: "a".into(),
+            state: RowState::Running {
+                phase,
+                serving: service == "api",
+            },
+            stopped: false,
+        },
+    )
+    .collect();
+    store
+        .record(&id(1), &runner, RunEvidence::Prepared(plan))
+        .unwrap();
+    store
+        .record(&id(1), &runner, RunEvidence::Progress(rows_at_switch))
+        .unwrap();
+
+    store
+        .record(
+            &id(1),
+            &runner,
+            RunEvidence::Finishing { live_at: Some(at) },
+        )
+        .unwrap();
+    assert_eq!(summary(&store, &who, 1).live_at, Some(at));
+    let states: std::collections::BTreeMap<_, _> = rows(&store, &who, 1)
+        .into_iter()
+        .map(|(name, rows)| (name, rows.into_iter().next().unwrap().state))
+        .collect();
+    assert_eq!(states["web"], RowState::Completed);
+    assert_eq!(
+        states["api"],
+        RowState::Running {
+            phase: RowPhase::UpdatingContainer,
+            serving: true,
+        }
+    );
+}
+
+#[test]
 fn a_late_switch_changes_neither_an_applied_deployment_nor_its_cleanup() {
     let (store, who) = shop();
     admit(&store, &who, 1, &[], None).unwrap();

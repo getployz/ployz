@@ -2597,6 +2597,15 @@ async fn a_switch_event_survives_abort_before_the_outcome() {
 
 #[tokio::test]
 async fn a_join_error_waits_for_the_store_to_record_unknown() {
+    a_join_error_during_a_store_outage(false).await;
+}
+
+#[tokio::test]
+async fn a_join_error_stops_retrying_after_the_cleanup_lease_expires() {
+    a_join_error_during_a_store_outage(true).await;
+}
+
+async fn a_join_error_during_a_store_outage(expire: bool) {
     use ployz_store::testing::backend;
     let dir = tempfile::tempdir().unwrap();
     let url = format!("sqlite:{}", dir.path().join("store.db").display());
@@ -2620,7 +2629,9 @@ async fn a_join_error_waits_for_the_store_to_record_unknown() {
     assert_eq!(recorded.as_ref().unwrap().status, DeploymentStatus::Applied);
     backend::execute(
         &url,
-        "CREATE TRIGGER reject_writes BEFORE UPDATE ON config_deployment BEGIN SELECT RAISE(ABORT, 'temporary outage'); END",
+        "CREATE TRIGGER reject_writes BEFORE UPDATE ON config_deployment
+         WHEN json_extract(NEW.run, '$.cleanup_until') = json_extract(OLD.run, '$.cleanup_until')
+         BEGIN SELECT RAISE(ABORT, 'temporary outage'); END",
     );
     let task = tokio::spawn(std::future::pending());
     task.abort();
@@ -2638,8 +2649,19 @@ async fn a_join_error_waits_for_the_store_to_record_unknown() {
             .is_err(),
         "the SDK returned the join error before the Store accepted Unknown"
     );
-    backend::execute(&url, "DROP TRIGGER reject_writes");
-    assert_eq!(finishing.await.unwrap_err().message, "Deploy task failed");
+    if expire {
+        backend::execute(
+            &url,
+            "UPDATE config_deployment SET run = json_set(run, '$.cleanup_until', 1)",
+        );
+    } else {
+        backend::execute(&url, "DROP TRIGGER reject_writes");
+    }
+    // real-wait: the retry checks the durable lease through a blocking Store call.
+    let reported = tokio::time::timeout(Duration::from_secs(5), finishing)
+        .await
+        .expect("the join error is returned after resolution of the retry");
+    assert_eq!(reported.unwrap_err().message, "Deploy task failed");
     let view = run
         .store
         .read(
@@ -2649,12 +2671,20 @@ async fn a_join_error_waits_for_the_store_to_record_unknown() {
             },
         )
         .unwrap();
-    assert_eq!(view.deployment.status, DeploymentStatus::Unknown);
     assert_eq!(view.deployment.live_at, Some(at));
-    assert_eq!(
-        view.deployment.cleanup,
-        Some(ployz_store::CleanupStatus::Pending)
-    );
+    if expire {
+        assert_eq!(view.deployment.status, DeploymentStatus::Applied);
+        assert_eq!(
+            view.deployment.cleanup,
+            Some(ployz_store::CleanupStatus::Unconfirmed)
+        );
+    } else {
+        assert_eq!(view.deployment.status, DeploymentStatus::Unknown);
+        assert_eq!(
+            view.deployment.cleanup,
+            Some(ployz_store::CleanupStatus::Pending)
+        );
+    }
 }
 
 #[tokio::test]

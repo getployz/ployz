@@ -151,6 +151,15 @@ impl Shop {
 
 #[tokio::test]
 async fn the_old_copy_stays_in_until_the_store_commits_live() {
+    held_live_write(false).await;
+}
+
+#[tokio::test]
+async fn cancelling_while_the_live_write_is_held_leaves_the_old_copy_in() {
+    held_live_write(true).await;
+}
+
+async fn held_live_write(cancel: bool) {
     use ployz_store::testing::backend;
     let service = DeployService::new(machine('a', "one")).lists_created();
     let rotations = service.rotations();
@@ -181,6 +190,17 @@ async fn the_old_copy_stays_in_until_the_store_commits_live() {
         "the old copy went Out before the Store committed Live"
     );
     assert_eq!(shop.status(2), DeploymentStatus::Running);
+    if cancel {
+        shop.store
+            .write(
+                &shop.who,
+                &ployz_store::Cancel {
+                    deployment: Shop::id(2),
+                },
+            )
+            .unwrap();
+        assert_eq!(shop.status(2), DeploymentStatus::Cancelling);
+    }
     backend::execute(&url, "DROP TRIGGER hold_switch");
 
     let ran = tokio::time::timeout(Duration::from_secs(10), running)
@@ -188,9 +208,14 @@ async fn the_old_copy_stays_in_until_the_store_commits_live() {
         .unwrap()
         .unwrap()
         .unwrap();
-    assert_eq!(ran.status, DeploymentStatus::Applied);
     assert!(ran.live_at.is_some());
-    assert!(service.unrouted().lock().unwrap().contains(&old));
+    if cancel {
+        assert_eq!(ran.status, DeploymentStatus::Cancelled);
+        assert!(!service.unrouted().lock().unwrap().contains(&old));
+    } else {
+        assert_eq!(ran.status, DeploymentStatus::Applied);
+        assert!(service.unrouted().lock().unwrap().contains(&old));
+    }
 }
 
 #[tokio::test]

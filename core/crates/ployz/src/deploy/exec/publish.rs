@@ -140,12 +140,8 @@ pub(super) async fn publish_group<C: MachineOperations>(
     switched: impl AsyncFnOnce(Switch) -> bool,
 ) -> Published {
     let GroupCopies { service, new, old } = copies;
-    if new.is_empty() {
-        switched(Switch::NotNeeded).await;
-        return Published::Listed;
-    }
     let routed = shared.plan.routed(service);
-    let gapped = if routed {
+    let gapped = if routed && !new.is_empty() {
         match route_new(client, operations, shared, service, &new, cancellation).await {
             Ok(gapped) => gapped,
             Err(published) => return published,
@@ -153,14 +149,29 @@ pub(super) async fn publish_group<C: MachineOperations>(
     } else {
         None
     };
-    if let Some(gapped) = &gapped {
-        switched(Switch::Unconfirmed).await;
-        shared.gapped.record(service, gapped);
-    } else if !switched(Switch::Confirmed).await {
+    let switch = if new.is_empty() {
+        Switch::NotNeeded
+    } else if gapped.is_some() {
+        Switch::Unconfirmed
+    } else {
+        Switch::Confirmed
+    };
+    let acknowledged = tokio::select! {
+        biased;
+        () = cancellation.cancelled() => return Published::Cancelled,
+        acknowledged = switched(switch) => acknowledged,
+    };
+    if !acknowledged {
         return Published::OutUnconfirmed(machine_error(
             MachineAction::ReadRoutes,
             RpcError::unavailable("The Deployment's switch could not be recorded"),
         ));
+    }
+    if new.is_empty() {
+        return Published::Listed;
+    }
+    if let Some(gapped) = &gapped {
+        shared.gapped.record(service, gapped);
     }
     let ids: BTreeSet<ContainerId> = new.iter().map(|(_, _, id)| *id).collect();
     let mut listed_on: BTreeSet<MachineId> = new
@@ -254,6 +265,9 @@ pub(super) async fn publish_group<C: MachineOperations>(
     }
     // Every Out goes together and one wait covers the set, so a group's
     // retirement costs one unlisting, not one per copy.
+    if cancellation.is_cancelled() {
+        return Published::Cancelled;
+    }
     let sent = join_all(
         outs.iter()
             .map(|copy| cleanup::send_out(client, copy, EmptyPolicy::RequireOtherIn)),

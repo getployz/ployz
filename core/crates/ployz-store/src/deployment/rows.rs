@@ -253,13 +253,7 @@ pub(super) fn by_service(
             && matches!(
                 state,
                 RowState::Running {
-                    phase: RowPhase::Starting
-                        | RowPhase::CreatingContainer
-                        | RowPhase::StartingContainer
-                        | RowPhase::WaitingForHealth
-                        | RowPhase::WaitingForHook
-                        | RowPhase::WaitingForSwitch
-                        | RowPhase::UpdatingContainer,
+                    phase: RowPhase::WaitingForSwitch,
                     ..
                 }
             )

@@ -789,7 +789,10 @@ impl Run {
     }
 
     async fn runtime_failed(&self, error: RpcError) -> Result<DeploymentSummary, RpcError> {
+        let mut poll = tokio::time::interval(CANCEL_POLL);
+        poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
+            poll.tick().await;
             match self.record(RunEvidence::RuntimeFailed).await {
                 Ok(_) => break,
                 Err(record)
@@ -801,7 +804,6 @@ impl Run {
                     tracing::warn!(%record, "couldn't record the interrupted Deployment")
                 }
             }
-            tokio::time::sleep(CANCEL_POLL).await;
         }
         Err(error)
     }
@@ -819,11 +821,11 @@ impl Run {
         self.record(RunEvidence::Finishing { live_at }).await
     }
 
-    async fn commit_switch(&self, at: i64) -> Result<(), RpcError> {
+    async fn commit_switch(&self, at: i64) -> Result<DeploymentStatus, RpcError> {
         loop {
             match self.record_switch(Some(at)).await {
                 Ok(summary) if summary.live_at.is_some() && summary.status.claimed() => {
-                    return Ok(());
+                    return Ok(summary.status);
                 }
                 Ok(_) => {
                     return Err(RpcError::unavailable(
@@ -1247,7 +1249,9 @@ impl Run {
             let mut rows = match event {
                 ployz_core::DeployEvent::Progress { rows, live_at, .. } => {
                     if let Some(at) = live_at {
-                        self.commit_switch(at).await?;
+                        if self.commit_switch(at).await? == DeploymentStatus::Cancelling {
+                            running.abort();
+                        }
                         if let Some(acknowledge) = acknowledge.take() {
                             let _ = acknowledge.send(());
                         }

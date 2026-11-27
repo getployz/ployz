@@ -20,6 +20,13 @@ pub(crate) fn record(
     if stored.summary.runner.as_ref() != Some(runner) {
         return Err(owned_elsewhere(id));
     }
+    if matches!(evidence, RunEvidence::RuntimeFailed)
+        && !stored.summary.status.claimed()
+        && (stored.summary.status == DeploymentStatus::Unknown
+            || stored.run.cleanup(stored.read_at) != Some(CleanupStatus::Pending))
+    {
+        return Ok(stored.summary);
+    }
     if !matches!(
         evidence,
         RunEvidence::Finishing { .. } | RunEvidence::Finished
