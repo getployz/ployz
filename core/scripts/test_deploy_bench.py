@@ -89,6 +89,13 @@ class Summary(unittest.TestCase):
             ["receiving", "fetching_source", "preparing", "building api", "starting api", "(no step)", "(total)"],
         )
 
+    def test_a_deployment_without_steps_still_has_its_own_span(self):
+        older = [{**view(n, "applied"), "started_at": 10, "ended_at": 10 + n} for n in (1, 2, 3)]
+        self.assertEqual(
+            bench.summarize(older),
+            [{"step": "(deployment)", "runs": 3, "median_ms": 2000, "min_ms": 1000, "max_ms": 3000}],
+        )
+
     def test_it_summarizes_saved_runs(self):
         with tempfile.TemporaryDirectory() as directory:
             paths = []

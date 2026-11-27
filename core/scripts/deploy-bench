@@ -27,6 +27,7 @@ ORDER = [
     "uploading",
     "starting_builder",
     "building",
+    "planning",
     "delivering_image",
     "starting",
     "health_check",
@@ -34,6 +35,7 @@ ORDER = [
     "stopping_old",
 ]
 ENDED = {"applied", "failed", "unknown", "cancelled"}
+DEPLOYMENT = "(deployment)"
 GAP = "(no step)"
 TOTAL = "(total)"
 
@@ -45,7 +47,8 @@ def label(step):
 
 def durations(view):
     """Each ended step's milliseconds, the time inside the Deployment's steps that none of them
-    covered, and their whole span."""
+    covered, their whole span, and the Deployment's own start to end, which a build without steps
+    has too."""
     spans = sorted(
         (step["started_at"], step["ended_at"]) for step in view["steps"] if "ended_at" in step
     )
@@ -54,6 +57,8 @@ def durations(view):
         for step in view["steps"]
         if "ended_at" in step
     }
+    if view.get("started_at") and view.get("ended_at"):
+        out[DEPLOYMENT] = (view["ended_at"] - view["started_at"]) * 1000
     if not spans:
         return out
     covered, reach = 0, spans[0][0]
