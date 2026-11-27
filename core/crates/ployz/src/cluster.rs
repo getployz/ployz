@@ -1163,6 +1163,12 @@ impl Client {
     ) -> PartialResult<ContainerId, ContainerOperationFailure> {
         let mut tasks = JoinSet::new();
         let mut task_targets = HashMap::new();
+        let mut queued = HashMap::<MachineId, u32>::new();
+        for container in service.containers_for(action) {
+            *queued
+                .entry(container.as_observation().machine_id)
+                .or_default() += 1;
+        }
         for container in service.containers_for(action) {
             let observation = container.as_observation();
             let machine_id = observation.machine_id;
@@ -1176,6 +1182,7 @@ impl Client {
                     signal: signal.clone(),
                     grace_period_seconds,
                 },
+                queued.get(&machine_id).copied().unwrap_or(1),
                 cancellation.clone(),
             ));
             task_targets.insert(handle.id(), (machine_id, container_id));
@@ -2009,6 +2016,7 @@ async fn change_on_machine(
     container_id: ContainerId,
     action: ContainerAction,
     stop: StopOptions,
+    queued: u32,
     cancellation: CancellationToken,
 ) -> Result<MachineSuccess<ContainerId>, MachineFailure<ContainerOperationFailure>> {
     match change_container_rpc(
@@ -2017,6 +2025,7 @@ async fn change_on_machine(
         &container_id,
         action,
         stop,
+        queued,
         &cancellation,
     )
     .await
@@ -2041,6 +2050,7 @@ async fn change_container_rpc(
     container_id: &ContainerId,
     action: ContainerAction,
     stop: StopOptions,
+    queued: u32,
     cancellation: &CancellationToken,
 ) -> Result<(), RpcError> {
     match action {
@@ -2048,12 +2058,12 @@ async fn change_container_rpc(
             .await
             .and_then(admitted),
         ContainerAction::Restart => {
-            cleanup::user_restart(client, machine_id, container_id, stop, cancellation)
+            cleanup::user_restart(client, machine_id, container_id, stop, queued, cancellation)
                 .await
                 .and_then(admitted)
         }
         ContainerAction::Stop => {
-            cleanup::user_stop(client, machine_id, container_id, stop, cancellation).await
+            cleanup::user_stop(client, machine_id, container_id, stop, queued, cancellation).await
         }
         ContainerAction::Remove => {
             cleanup::user_remove(client, machine_id, container_id, cancellation).await
