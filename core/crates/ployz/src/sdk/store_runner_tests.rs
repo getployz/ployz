@@ -79,6 +79,7 @@ fn admitted(upload: Option<ployz_store::UploadedSource>) -> (Run, ployz_store::A
             store,
             deployment,
             runner,
+            operator: Operator::Cloud,
             over: Latch::new(),
             reader: None,
         },
@@ -157,6 +158,7 @@ async fn a_runner_plans_with_the_runs_its_claim_reports_ended() {
         store: superseded.store.clone(),
         deployment: DeploymentId::parse("00000000-0000-4000-8000-000000000004").unwrap(),
         runner: RunnerId::parse("other").unwrap(),
+        operator: Operator::Cloud,
         over: Latch::new(),
         reader: None,
     };
@@ -2007,6 +2009,7 @@ async fn a_deploy_with_a_reused_build_still_recreates_the_services_its_claim_lis
         store,
         deployment,
         runner: RunnerId::parse("owner").unwrap(),
+        operator: Operator::Cloud,
         over: Latch::new(),
         reader: None,
     };

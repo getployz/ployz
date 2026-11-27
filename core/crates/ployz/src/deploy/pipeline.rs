@@ -197,7 +197,7 @@ impl Client {
         progress: Option<tokio::sync::mpsc::UnboundedSender<DeployEvent>>,
     ) -> DeployOutcome<ExecutionError> {
         Approved::new(self.clone(), Approvals::default())
-            .confirm(preview, None, cancellation, progress)
+            .confirm(preview, None, cancellation, progress, super::Retire::Wait)
             .await
     }
 
@@ -219,17 +219,18 @@ impl Client {
 }
 
 impl Approved {
-    /// [`Client::confirm`], logged under `run` when it names one, and handing every
-    /// Server these approvals with each Container change.
+    /// [`Client::confirm`], logged under `run` when it names one, handing every Server
+    /// these approvals with each Container change, and retiring old copies as `retire` says.
     pub(crate) async fn confirm(
         &self,
         preview: &DeployPlan,
         run: Option<DeploymentLogId>,
         cancellation: &CancellationToken,
         progress: Option<tokio::sync::mpsc::UnboundedSender<DeployEvent>>,
+        retire: super::Retire,
     ) -> DeployOutcome<ExecutionError> {
         let run = run.unwrap_or_else(super::cleanup::fresh_run);
-        execute_operation_sequence(preview, &run, self, cancellation, progress).await
+        execute_operation_sequence(preview, &run, self, cancellation, progress, retire).await
     }
 }
 

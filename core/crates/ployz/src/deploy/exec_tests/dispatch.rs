@@ -296,6 +296,7 @@ async fn failed_start_on(machine_id: MachineId, answer: RpcError) -> ployz_store
         &client,
         &CancellationToken::new(),
         None,
+        crate::deploy::Retire::Wait,
     )
     .await;
 
@@ -362,6 +363,7 @@ async fn a_server_removed_before_its_copy_goes_in_is_named() {
         &client,
         &CancellationToken::new(),
         None,
+        crate::deploy::Retire::Wait,
     )
     .await;
 
@@ -399,6 +401,7 @@ async fn another_servers_not_found_is_kept_on_a_removed_servers_turn() {
         &client,
         &CancellationToken::new(),
         None,
+        crate::deploy::Retire::Wait,
     )
     .await;
 
@@ -1057,8 +1060,15 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
     );
     let first = plan_deploy(&intent, &snapshot(1)).unwrap();
     assert!(matches!(
-        execute_operation_sequence(&first, &run_id(), &client, &CancellationToken::new(), None)
-            .await,
+        execute_operation_sequence(
+            &first,
+            &run_id(),
+            &client,
+            &CancellationToken::new(),
+            None,
+            crate::deploy::Retire::Wait
+        )
+        .await,
         DeployOutcome::Failed { .. }
     ));
     assert_eq!(
@@ -1149,6 +1159,7 @@ async fn proxy_copies_never_routed_always_removable() {
         &client,
         &CancellationToken::new(),
         None,
+        crate::deploy::Retire::Wait,
     )
     .await;
 
@@ -1393,6 +1404,7 @@ async fn stop_and_remove_rows_never_read_as_starting() {
         &client,
         &CancellationToken::new(),
         Some(tx),
+        crate::deploy::Retire::Wait,
     )
     .await;
 

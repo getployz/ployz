@@ -1717,6 +1717,13 @@ impl LocalMachine {
     ) -> Result<EnsuredContainer, Error> {
         let locator = want_locator(&want);
         let fence = start_fence(&want);
+        let answer = match &want {
+            ContainerWant::Gone { answer, .. } => *answer,
+            ContainerWant::Running { .. }
+            | ContainerWant::Stopped { .. }
+            | ContainerWant::Out { .. }
+            | ContainerWant::Held { .. } => ployz_core::GoneAnswer::Removed,
+        };
         let replan = (!self.in_switch.held()).then(|| want.clone());
         let mut now = self.container_now(&locator).await?;
         // The one image this request may run, settled before any Container serves it:
@@ -1827,7 +1834,7 @@ impl LocalMachine {
                 anonymous_volumes,
                 logs_to_read,
             } => {
-                self.finish_installed(move |local| async move {
+                let removal = move |local: Installed| async move {
                     match local
                         .stop_out_of_rotation(
                             &id,
@@ -1848,15 +1855,20 @@ impl LocalMachine {
                         remove_out_of_rotation(&turn, containers, &id, anonymous_volumes.into())
                             .await,
                     )
-                })
-                .await?
+                };
+                match answer {
+                    ployz_core::GoneAnswer::Removed => self.finish_installed(removal).await?,
+                    ployz_core::GoneAnswer::Admitted => {
+                        return self.removal_admitted(id, now, removal);
+                    }
+                }
             }
             ContainerStep::Remove {
                 id,
                 anonymous_volumes,
                 logs_to_read,
             } => {
-                self.finish_installed(move |local| async move {
+                let removal = move |local: Installed| async move {
                     local.await_log_read(&id, logs_to_read).await;
                     let turn = local.exclusive_turn().await?;
                     let containers = local.docker()?;
@@ -1864,8 +1876,13 @@ impl LocalMachine {
                         remove_out_of_rotation(&turn, containers, &id, anonymous_volumes.into())
                             .await,
                     )
-                })
-                .await?
+                };
+                match answer {
+                    ployz_core::GoneAnswer::Removed => self.finish_installed(removal).await?,
+                    ployz_core::GoneAnswer::Admitted => {
+                        return self.removal_admitted(id, now, removal);
+                    }
+                }
             }
         };
         // Read back the Container acted on, never whatever holds the slot by now: another
@@ -1879,6 +1896,48 @@ impl LocalMachine {
                 verified: None,
             },
             Some(refusal) => EnsuredContainer::Refused { now, refusal },
+        })
+    }
+
+    /// Leave the admitted `removal` of `id` to run alone and answer with the Container
+    /// as it was. The removal ends when Docker answers its stop and remove, bounded by
+    /// the drain and the Container's stop grace; a failure then is only logged here, and
+    /// the Container stays listed.
+    fn removal_admitted<F, Fut>(
+        &self,
+        id: ContainerId,
+        now: ContainerNow,
+        removal: F,
+    ) -> Result<EnsuredContainer, Error>
+    where
+        F: FnOnce(Installed) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<Option<ContainerRefusal>, Error>> + Send + 'static,
+    {
+        let removal = self.begin_installed(removal)?;
+        tokio::spawn(async move {
+            match removal.await {
+                Ok(Ok(None)) => {}
+                Ok(Ok(Some(refusal))) => tracing::warn!(
+                    container = %id,
+                    reason = refusal.message,
+                    "refused to remove an old copy after admitting it"
+                ),
+                Ok(Err(error)) => tracing::warn!(
+                    container = %id,
+                    %error,
+                    "couldn't remove an old copy after admitting it"
+                ),
+                Err(error) => tracing::warn!(
+                    container = %id,
+                    %error,
+                    "an old copy's removal stopped after it was admitted"
+                ),
+            }
+        });
+        Ok(EnsuredContainer::Ensured {
+            now: redacted(now),
+            health: None,
+            verified: None,
         })
     }
 
@@ -2492,6 +2551,7 @@ fn plan_docker(
             container,
             drain,
             anonymous_volumes,
+            ..
         } => match present {
             // The remove helper deletes a spec Docker no longer has a Container for. A slot
             // names no spec row without Docker, so an absent Key is already gone.

@@ -40,6 +40,7 @@ use super::machine_calls::{MachineOperations, RestartTolerant, SlotPolicy, namin
 use gens::Gens;
 use health::wait_healthy;
 use hooks::run_hook;
+pub(crate) use publish::Retire;
 use publish::{
     Done, GappedPublishes, GroupCopies, Published, Retiring, ack_tick, old_copies, publish_group,
     rolling_step, route_new,
@@ -237,6 +238,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
     client: &C,
     cancellation: &CancellationToken,
     tx: Option<UnboundedSender<DeployEvent>>,
+    retire: Retire,
 ) -> DeployOutcome<ExecutionError> {
     // TODO: there is deliberately no persisted "already run" guard at this boundary.
     let operations = plan.operations();
@@ -261,7 +263,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
         Err((index, error)) => return untouched(&progress, &schedule, operations, index, error),
     }
 
-    let shared = Shared::new(plan, run);
+    let shared = Shared::new(plan, run, retire);
     let mut records: BTreeMap<usize, GroupRecord> = BTreeMap::new();
     let mut stop = None;
     let mut blocked_since: Option<Instant> = None;
@@ -756,14 +758,14 @@ struct Shared<'a> {
 }
 
 impl<'a> Shared<'a> {
-    fn new(plan: &'a super::DeployPlan, run: &'a DeploymentLogId) -> Self {
+    fn new(plan: &'a super::DeployPlan, run: &'a DeploymentLogId, retire: Retire) -> Self {
         let facts = plan.facts();
         Self {
             plan: PlanFacts::new(plan, run),
             report: Report::new(&facts.machine_names, &facts.dropped_large_packets),
             gens: Gens::new(&facts.unobserved_containers, &facts.retiring),
             gapped: GappedPublishes::default(),
-            retiring: Retiring::default(),
+            retiring: Retiring::new(retire),
             stop_first: StopFirstSteps::new(plan.operations(), plan.groups()),
         }
     }
@@ -1134,6 +1136,7 @@ async fn remove_by_id<C: MachineOperations>(
                 container: ContainerLocator::Id(*container_id),
                 drain,
                 anonymous_volumes: AnonymousVolumes::keep(),
+                answer: ployz_core::GoneAnswer::Removed,
             },
         )
         .await

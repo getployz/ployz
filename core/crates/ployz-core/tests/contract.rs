@@ -1660,10 +1660,23 @@ fn ensure_container_names_the_want_the_observation_and_the_refusal_on_the_wire()
             container: ContainerLocator::Id(id),
             drain: Drain::NONE,
             anonymous_volumes: ployz_core::AnonymousVolumes::keep(),
+            answer: ployz_core::GoneAnswer::Removed,
         })
         .unwrap(),
         json!({ "state": "gone", "container": { "id": id }, "drain": 0,
                 "anonymous_volumes": "keep" })
+    );
+    // An older Machine ignores the answer it doesn't know and answers once removed.
+    assert_eq!(
+        serde_json::to_value(ContainerWant::Gone {
+            container: ContainerLocator::Id(id),
+            drain: Drain::NONE,
+            anonymous_volumes: ployz_core::AnonymousVolumes::keep(),
+            answer: ployz_core::GoneAnswer::Admitted,
+        })
+        .unwrap(),
+        json!({ "state": "gone", "container": { "id": id }, "drain": 0,
+                "anonymous_volumes": "keep", "answer": "admitted" })
     );
     assert!(
         serde_json::from_value::<EnsureContainerRequest>(json!({

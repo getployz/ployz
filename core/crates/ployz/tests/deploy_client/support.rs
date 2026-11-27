@@ -544,6 +544,23 @@ impl DeployService {
         self
     }
 
+    async fn held_removal(&self) {
+        if let Some(released) = &self.removal_release {
+            let _ = released.subscribe().wait_for(|released| *released).await;
+        }
+    }
+
+    fn remove(&self, machine_id: MachineId, container_id: ContainerId) {
+        self.removed.lock().unwrap().insert(container_id);
+        if self.lists_created {
+            self.listed_containers
+                .lock()
+                .unwrap()
+                .retain(|listed| listed.container_id != container_id);
+        }
+        self.rival_starts(machine_id);
+    }
+
     /// With [`Self::rival_proxy`], another operator's Ingress Proxy now runs on `machine_id`.
     fn rival_starts(&self, machine_id: MachineId) {
         if !self.rival_proxy {
@@ -1371,11 +1388,33 @@ impl FakeMachine for DeployService {
                     None,
                 )
             }
-            ployz_core::ContainerWant::Gone { container, .. } => {
+            ployz_core::ContainerWant::Gone {
+                container, answer, ..
+            } => {
                 self.removal_waits.notify_one();
-                if let Some(released) = &self.removal_release {
-                    let _ = released.subscribe().wait_for(|released| *released).await;
+                if answer == ployz_core::GoneAnswer::Admitted
+                    && let Ok(container_id) = self.located(&container)
+                {
+                    // An admitted removal is answered with the copy as it was, and goes
+                    // on alone.
+                    let removing = self.clone();
+                    tokio::spawn(async move {
+                        removing.held_removal().await;
+                        if removing.removal_refusal.is_none() {
+                            removing.remove(machine_id, container_id);
+                        }
+                    });
+                    return reply(EnsuredContainer::Ensured {
+                        now: ContainerNow::Present(self.observed(
+                            machine_id,
+                            container_id,
+                            resolved(spec("web")),
+                        )),
+                        health: None,
+                        verified: None,
+                    });
                 }
+                self.held_removal().await;
                 if let Some(refusal) = &self.removal_refusal {
                     return reply(refusal.clone());
                 }
@@ -1383,14 +1422,7 @@ impl FakeMachine for DeployService {
                     if let Err(answer) = turned(container_id).await {
                         return reply(answer);
                     }
-                    self.removed.lock().unwrap().insert(container_id);
-                    if self.lists_created {
-                        self.listed_containers
-                            .lock()
-                            .unwrap()
-                            .retain(|listed| listed.container_id != container_id);
-                    }
-                    self.rival_starts(machine_id);
+                    self.remove(machine_id, container_id);
                 }
                 (ContainerNow::Absent { of: container }, None)
             }

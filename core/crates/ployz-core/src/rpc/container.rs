@@ -99,6 +99,9 @@ pub enum ContainerWant {
         #[serde(flatten)]
         #[ts(flatten)]
         anonymous_volumes: AnonymousVolumes,
+        /// An older Machine ignores it and answers once the Container is gone.
+        #[serde(default, skip_serializing_if = "GoneAnswer::is_removed")]
+        answer: GoneAnswer,
     },
     /// Take the copy out of routing for good. The Container keeps running.
     Out {
@@ -276,6 +279,25 @@ pub enum AnswerWhen {
 impl AnswerWhen {
     fn is_started(&self) -> bool {
         *self == Self::Started
+    }
+}
+
+/// When the Machine answers a `Gone`: once the Container is gone, or once it admitted
+/// the removal and goes on with it alone.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum GoneAnswer {
+    #[default]
+    Removed,
+    /// Answered before the stop, with the Container as it then was. The Machine stops
+    /// and removes it whether or not its caller stays; a Docker failure after this
+    /// answer leaves the Container listed.
+    Admitted,
+}
+
+impl GoneAnswer {
+    fn is_removed(&self) -> bool {
+        *self == Self::Removed
     }
 }
 

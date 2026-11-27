@@ -66,6 +66,7 @@ async fn deploy_with(
         &client,
         &CancellationToken::new(),
         Some(tx),
+        crate::deploy::Retire::Wait,
     )
     .await;
     client.assert_done();

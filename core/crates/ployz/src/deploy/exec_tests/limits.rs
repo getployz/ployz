@@ -111,6 +111,7 @@ async fn an_update_row_is_updating_from_its_first_frame() {
         &client,
         &CancellationToken::new(),
         Some(tx),
+        crate::deploy::Retire::Wait,
     )
     .await;
 

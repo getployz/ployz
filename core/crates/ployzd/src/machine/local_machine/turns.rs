@@ -151,13 +151,26 @@ impl LocalMachine {
         F: FnOnce(Installed) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Result<T, Error>> + Send + 'static,
     {
+        self.begin_installed(work)?.await?
+    }
+
+    /// [`Self::finish_installed`], returning once the work is admitted. It ends when its
+    /// own Docker calls do, whoever waits on the handle.
+    pub(super) fn begin_installed<T, F, Fut>(
+        &self,
+        work: F,
+    ) -> Result<tokio::task::JoinHandle<Result<T, Error>>, Error>
+    where
+        T: Send + 'static,
+        F: FnOnce(Installed) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<T, Error>> + Send + 'static,
+    {
         let installation = self.admit_installation()?;
         let installed = Installed(self.clone());
-        tokio::spawn(async move {
+        Ok(tokio::spawn(async move {
             let _installation = installation;
             work(installed).await
-        })
-        .await?
+        }))
     }
 
     /// The exclusive admission turn, checking nothing: [`Self::finish_admitted`],

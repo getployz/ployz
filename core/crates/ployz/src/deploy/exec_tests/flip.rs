@@ -115,6 +115,7 @@ async fn each_ready_start_waits_for_the_switch_before_it_completes() {
         &client,
         &CancellationToken::new(),
         Some(tx),
+        crate::deploy::Retire::Wait,
     )
     .await;
 
@@ -420,6 +421,7 @@ async fn a_flip_retires_the_replaced_copy_and_removes_a_draining_one_after_the_s
         &client,
         &CancellationToken::new(),
         None,
+        crate::deploy::Retire::Wait,
     )
     .await;
 
@@ -897,6 +899,7 @@ async fn a_failed_deploy_keeps_the_services_it_removes() {
         &client,
         &CancellationToken::new(),
         None,
+        crate::deploy::Retire::Wait,
     )
     .await;
 
@@ -923,6 +926,7 @@ async fn remove_everything(client: &Scripted) -> DeployOutcome<ExecutionError> {
         client,
         &CancellationToken::new(),
         None,
+        crate::deploy::Retire::Wait,
     )
     .await
 }
@@ -954,6 +958,7 @@ async fn deploy_planned(
         client,
         &CancellationToken::new(),
         None,
+        crate::deploy::Retire::Wait,
     )
     .await
 }
@@ -1037,6 +1042,7 @@ fn execute_groups<C: MachineOperations>(
             client,
             &CancellationToken::new(),
             None,
+            crate::deploy::Retire::Wait,
         )
         .await
     }
@@ -1107,9 +1113,15 @@ async fn a_cancel_before_the_stop_ends_the_service_old() {
     let plan =
         crate::deploy::DeployPlan::for_execution_test_with_groups(plan, test_namespace(), groups);
 
-    let outcome =
-        super::super::execute_operation_sequence(&plan, &run_id(), &client, &cancellation, None)
-            .await;
+    let outcome = super::super::execute_operation_sequence(
+        &plan,
+        &run_id(),
+        &client,
+        &cancellation,
+        None,
+        crate::deploy::Retire::Wait,
+    )
+    .await;
 
     assert!(
         matches!(outcome, DeployOutcome::Failed { .. }),
@@ -1595,6 +1607,7 @@ async fn a_deploy_with_an_unchanged_service_records_its_outcome() {
         &client,
         &CancellationToken::new(),
         None,
+        crate::deploy::Retire::Wait,
     )
     .await;
 
@@ -1653,9 +1666,15 @@ pub(super) async fn reported_warnings<C: MachineOperations>(
     cancellation: &CancellationToken,
 ) -> (DeployOutcome<ExecutionError>, Vec<DeployWarning>) {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let outcome =
-        super::super::execute_operation_sequence(plan, &run_id(), client, cancellation, Some(tx))
-            .await;
+    let outcome = super::super::execute_operation_sequence(
+        plan,
+        &run_id(),
+        client,
+        cancellation,
+        Some(tx),
+        crate::deploy::Retire::Wait,
+    )
+    .await;
     let mut warnings = Vec::new();
     while let Ok(event) = rx.try_recv() {
         if let DeployEvent::Warning { warning } = event {
@@ -3725,6 +3744,7 @@ async fn a_service_that_switched_before_a_sibling_failed_reads_switched() {
         &client,
         &CancellationToken::new(),
         Some(tx),
+        crate::deploy::Retire::Wait,
     )
     .await;
 

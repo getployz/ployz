@@ -53,6 +53,7 @@ async fn execute_with<C: MachineOperations>(
         client,
         cancellation,
         None,
+        crate::deploy::Retire::Wait,
     )
     .await
 }

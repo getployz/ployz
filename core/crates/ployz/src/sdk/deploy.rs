@@ -104,12 +104,13 @@ impl PreparedDeploy {
             cleanup,
             crate::deploy::RuleProofs::default(),
             Vec::new(),
+            crate::deploy::Retire::Wait,
         )
     }
 
     /// As [`Self::confirm_with_log_id`], handing every Server the signed versions of each
-    /// Service, or each Service's proof under an automatic deploy rule. A Server creates
-    /// no Container that reaches data without one.
+    /// Service, or each Service's proof under an automatic deploy rule, and retiring old
+    /// copies as `retire` says. A Server creates no Container that reaches data without one.
     /// # Errors
     /// Returns the same admission and session errors as confirm.
     pub(crate) fn confirm_approved(
@@ -118,6 +119,7 @@ impl PreparedDeploy {
         cleanup: ImageCleanup,
         rules: crate::deploy::RuleProofs,
         versions: Vec<ployz_core::authority::Signed<ployz_core::authority::ServiceVersion>>,
+        retire: crate::deploy::Retire,
     ) -> Result<RunningDeploy, RpcError> {
         let session = Session {
             inner: self.session.upgrade().ok_or_else(closed)?,
@@ -156,7 +158,7 @@ impl PreparedDeploy {
             let outcome = tokio::select! {
                 biased;
                 () = session_cancel.cancelled() => return Err(RpcError::unavailable("session closed; in-flight Deploy outcome may be uncertain")),
-                outcome = client.confirm(&preview, deployment_id, &token, Some(tx)) => outcome,
+                outcome = client.confirm(&preview, deployment_id, &token, Some(tx), retire) => outcome,
             };
             if !token.is_cancelled() {
                 session_cancel

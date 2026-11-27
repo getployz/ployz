@@ -551,6 +551,7 @@ mod plan {
             container: ContainerLocator::Key(slot()),
             drain: Drain::DEFAULT,
             anonymous_volumes: named(),
+            answer: ployz_core::GoneAnswer::Removed,
         }
     }
 
@@ -590,6 +591,7 @@ mod plan {
                     container: ContainerLocator::Id(id('a')),
                     drain: Drain::DEFAULT,
                     anonymous_volumes: AnonymousVolumes::keep(),
+                    answer: ployz_core::GoneAnswer::Removed,
                 },
                 ContainerNow::Absent {
                     of: ContainerLocator::Id(id('a')),
@@ -651,6 +653,7 @@ mod plan {
             container: ContainerLocator::Key(slot()),
             drain,
             anonymous_volumes: named(),
+            answer: ployz_core::GoneAnswer::Removed,
         };
         let logs_to_read = |want, now: ContainerNow| {
             let step = plan_container(want, &now, participating, Admission::Free);
@@ -1182,6 +1185,7 @@ mod settled {
                         container: ployz_core::ContainerLocator::Key(new.slot),
                         drain: ployz_core::Drain::NONE,
                         anonymous_volumes: ployz_core::AnonymousVolumes::keep(),
+                        answer: ployz_core::GoneAnswer::Removed,
                     })
                     .await
             }
@@ -1251,6 +1255,7 @@ mod settled {
                         container: ployz_core::ContainerLocator::Key(new.slot),
                         drain: ployz_core::Drain::NONE,
                         anonymous_volumes: ployz_core::AnonymousVolumes::keep(),
+                        answer: ployz_core::GoneAnswer::Removed,
                     })
                     .await
             }
@@ -2457,6 +2462,55 @@ mod stopped_on_request {
     }
 
     #[tokio::test]
+    async fn a_removal_answered_at_admission_finishes_after_its_caller_left() {
+        let fixture = Fixture::start().await;
+        let grace = fixture.fake.stop_gate.clone().write_owned().await;
+        let reply = tokio::time::timeout(
+            Duration::from_secs(10),
+            fixture.local.ensure_full_access(ContainerWant::Gone {
+                container: ContainerLocator::Id(fixture.id),
+                drain: Drain::NONE,
+                anonymous_volumes: ployz_core::AnonymousVolumes::keep(),
+                answer: ployz_core::GoneAnswer::Admitted,
+            }),
+        )
+        .await
+        .expect("answered while Docker still stops the Container")
+        .unwrap();
+        assert!(
+            matches!(
+                reply,
+                EnsuredContainer::Ensured {
+                    now: ContainerNow::Present(_),
+                    ..
+                }
+            ),
+            "expected the container still there, got {reply:?}"
+        );
+
+        drop(grace);
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !fixture
+                .fake
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(method, path)| {
+                    *method == axum::http::Method::DELETE && path.contains("/containers/")
+                })
+            {
+                // real-wait: the removal reaches the fake Docker over its TCP socket, which
+                // emits no event.
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the Container is removed with no caller waiting");
+        fixture.finish();
+    }
+
+    #[tokio::test]
     async fn shutdown_waits_for_a_removal_in_its_stop_grace() {
         let fixture = Fixture::start().await;
         let grace = fixture.fake.stop_gate.clone().write_owned().await;
@@ -2469,6 +2523,7 @@ mod stopped_on_request {
                         container: ContainerLocator::Id(id),
                         drain: Drain::NONE,
                         anonymous_volumes: ployz_core::AnonymousVolumes::keep(),
+                        answer: ployz_core::GoneAnswer::Removed,
                     })
                     .await
             }
@@ -2527,6 +2582,7 @@ mod stopped_on_request {
                 container: ContainerLocator::Id(fixture.id),
                 drain,
                 anonymous_volumes: ployz_core::AnonymousVolumes::keep(),
+                answer: ployz_core::GoneAnswer::Removed,
             }
         }
 
@@ -3035,6 +3091,7 @@ mod reserved_lifecycle {
             container: ContainerLocator::Id(id),
             drain: Drain::NONE,
             anonymous_volumes: ployz_core::AnonymousVolumes::keep(),
+            answer: ployz_core::GoneAnswer::Removed,
         }
     }
 
@@ -3296,6 +3353,7 @@ mod anonymous_volumes {
                     container: ContainerLocator::Id(id),
                     drain: Drain::NONE,
                     anonymous_volumes,
+                    answer: ployz_core::GoneAnswer::Removed,
                 })
                 .await
                 .unwrap();

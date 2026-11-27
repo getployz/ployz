@@ -651,6 +651,7 @@ async fn remove_container(client: &mut Client, machine_id: MachineId, container_
             container: ContainerLocator::Id(container_id),
             drain: Drain::NONE,
             anonymous_volumes: ployz_core::AnonymousVolumes::keep(),
+            answer: ployz_core::GoneAnswer::Removed,
         },
     )
     .await;

@@ -278,6 +278,7 @@ fn gone() -> ContainerWant {
         container: id(),
         drain: Drain::DEFAULT,
         anonymous_volumes: AnonymousVolumes::keep(),
+        answer: ployz_core::GoneAnswer::Removed,
     }
 }
 

@@ -94,6 +94,7 @@ pub async fn remove(
             container: ContainerLocator::Id(container_id),
             drain: Drain::NONE,
             anonymous_volumes: ployz_core::AnonymousVolumes::keep(),
+            answer: ployz_core::GoneAnswer::Removed,
         },
     )
     .await

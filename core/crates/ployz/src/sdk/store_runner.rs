@@ -182,6 +182,7 @@ pub async fn run_deployment_expecting(
         store,
         deployment,
         runner,
+        operator,
         over: Latch::new(),
         reader: checkouts
             .as_ref()
@@ -551,6 +552,7 @@ struct Run {
     store: Arc<ConfigStore>,
     deployment: DeploymentId,
     runner: RunnerId,
+    operator: Operator,
     over: Latch,
     /// Handed to each Server with a rule's proof.
     reader: Option<ployz_core::GithubToken>,
@@ -712,10 +714,18 @@ impl Run {
         }
         let log_id = self.deployment.as_str().parse().ok();
         let issued = rules.clone();
-        let running = match prepared.confirm_approved(log_id, ImageCleanup::Auto, rules, versions) {
-            Ok(running) => running,
-            Err(error) => return self.not_executed(Failure::from(&error)).await,
+        // A CLI that runs the Deployment exits once it returns, so each Machine finishes
+        // retiring its old copies alone, unless one may still mount a Volume this deletes.
+        let retire = if self.operator == Operator::Cli && deletes.is_empty() && closes.is_none() {
+            crate::deploy::Retire::HandOff
+        } else {
+            crate::deploy::Retire::Wait
         };
+        let running =
+            match prepared.confirm_approved(log_id, ImageCleanup::Auto, rules, versions, retire) {
+                Ok(running) => running,
+                Err(error) => return self.not_executed(Failure::from(&error)).await,
+            };
         let outcome = self
             .renewing(self.executing(session, &running, &scrub), || {
                 running.abort()

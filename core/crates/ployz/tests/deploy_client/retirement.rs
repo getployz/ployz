@@ -63,9 +63,18 @@ impl Shop {
         DeploymentId::parse(format!("00000000-0000-4000-8000-0000000001{number:02}")).unwrap()
     }
 
-    /// Admit and run Deployment `number`; `recreate` replaces web's copy.
+    /// Admit and run Deployment `number` as Cloud does; `recreate` replaces web's copy.
     fn run(
         &self,
+        number: u8,
+        recreate: bool,
+    ) -> impl Future<Output = Result<DeploymentSummary, ployz_core::RpcError>> + 'static {
+        self.run_as(ployz_core::Operator::Cloud, number, recreate)
+    }
+
+    fn run_as(
+        &self,
+        operator: ployz_core::Operator,
         number: u8,
         recreate: bool,
     ) -> impl Future<Output = Result<DeploymentSummary, ployz_core::RpcError>> + 'static {
@@ -96,7 +105,7 @@ impl Shop {
             )
             .unwrap();
         ployz::sdk::run_deployment(
-            ployz_core::Operator::Cloud,
+            operator,
             Arc::clone(&self.store),
             id,
             RunnerId::parse(format!("cloud-run-{number}")).unwrap(),
@@ -169,4 +178,33 @@ async fn an_old_copy_that_will_not_go_is_a_warning_on_an_applied_deployment() {
         })
         .collect();
     assert_eq!(left.len(), 1, "{:?}", ran.warnings);
+}
+
+#[tokio::test]
+async fn a_deployment_the_cli_runs_returns_while_its_old_copy_still_stops() {
+    let service = DeployService::new(machine('a', "one"))
+        .lists_created()
+        .hold_removals();
+    let removed = service.removed_containers();
+    let shop = Shop::deployed(service.clone()).await;
+
+    let ran = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        shop.run_as(ployz_core::Operator::Cli, 2, true),
+    )
+    .await
+    .expect("returned before its old copy was removed")
+    .unwrap();
+    assert_eq!(ran.status, DeploymentStatus::Applied);
+    assert!(removed.lock().unwrap().is_empty());
+
+    service.release_removals();
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while removed.lock().unwrap().is_empty() {
+            // real-wait: the Machine removes the copy in a task this test can't await.
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the Machine removes the old copy with no runner waiting");
 }

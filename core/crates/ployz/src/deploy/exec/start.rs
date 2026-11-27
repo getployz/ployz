@@ -341,6 +341,7 @@ async fn emptied<C: CopyLifecycle>(
         container: ContainerLocator::Key(slot),
         drain: Drain::NONE,
         anonymous_volumes: AnonymousVolumes::keep(),
+        answer: ployz_core::GoneAnswer::Removed,
     };
     let gone = client.ensure_unsettled(machine_id, want, Some(RESTART_WAIT));
     match tokio::time::timeout(RESTART_WAIT, gone).await {
@@ -520,6 +521,7 @@ pub(super) async fn discard_attempt<C: MachineOperations>(
             container: ContainerLocator::Key(slot),
             drain: Drain::NONE,
             anonymous_volumes: AnonymousVolumes::keep(),
+            answer: ployz_core::GoneAnswer::Removed,
         },
     );
     within_restart(machine_id, discarded).await.map(|_| ())

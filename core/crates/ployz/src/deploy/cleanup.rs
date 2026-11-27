@@ -4,7 +4,7 @@ use std::time::Duration;
 use ployz_core::{
     AnonymousVolumes, ContainerId, ContainerKind, ContainerLocator, ContainerNotFoundReason,
     ContainerNow, ContainerObservation, ContainerRefusal, ContainerRefusalReason, ContainerWant,
-    CopyRotation, DeploymentLogId, Drain, EnsuredContainer, HealthVerdict, MachineId,
+    CopyRotation, DeploymentLogId, Drain, EnsuredContainer, GoneAnswer, HealthVerdict, MachineId,
     QualifiedService, ResolvedServiceSpec, RoutesRead, RpcError, RpcErrorCode, RunRotation,
     RunTarget, StopOptions, Unacked,
 };
@@ -551,6 +551,59 @@ pub(crate) async fn remove<C: CopyLifecycle>(
     }
 }
 
+/// What handing a copy's removal to its owner came to.
+#[derive(Debug)]
+pub(crate) enum HandOff {
+    Removed,
+    /// The owner admitted the removal and finishes it alone.
+    Admitted,
+    Refused(ContainerRefusal),
+}
+
+impl From<HandOff> for Rotated {
+    fn from(handed: HandOff) -> Self {
+        match handed {
+            HandOff::Removed | HandOff::Admitted => Rotated::Done,
+            HandOff::Refused(refusal) => Rotated::Refused(refusal),
+        }
+    }
+}
+
+/// Ask the owner to stop and remove `copy`, answered once it admitted that: it goes on
+/// alone, so a caller that exits leaves the copy stopping. A Docker failure after the
+/// answer reaches no caller; the copy stays listed in `ployz ps`. An owner that
+/// predates the early answer removes the copy first, as [`remove`] does.
+pub(crate) async fn hand_off<C: CopyLifecycle>(
+    client: &C,
+    copy: &Copy,
+    anonymous_volumes: AnonymousVolumes,
+) -> Result<HandOff, RpcError> {
+    let want = ContainerWant::Gone {
+        container: copy.locator(),
+        drain: Drain::DEFAULT,
+        anonymous_volumes,
+        answer: GoneAnswer::Admitted,
+    };
+    Ok(
+        match client
+            .ensure_unsettled(&copy.machine_id, want, None)
+            .await?
+        {
+            EnsuredContainer::Ensured {
+                now: ContainerNow::Present(_),
+                ..
+            } => HandOff::Admitted,
+            EnsuredContainer::Ensured { .. } => HandOff::Removed,
+            EnsuredContainer::Refused { refusal, .. }
+                if refusal.reason == ContainerRefusalReason::NotFound =>
+            {
+                HandOff::Removed
+            }
+            EnsuredContainer::Refused { refusal, .. } => HandOff::Refused(refusal),
+        },
+    )
+}
+
 /// What asking a copy Gone came to. A copy that is not there is removed.
 #[derive(Debug)]
 pub(crate) enum Gone {
@@ -575,6 +628,7 @@ pub(crate) async fn gone<C: CopyLifecycle>(
         container,
         drain,
         anonymous_volumes,
+        answer: GoneAnswer::Removed,
     };
     Ok(
         match client.ensure_unsettled(machine_id, want, budget).await? {

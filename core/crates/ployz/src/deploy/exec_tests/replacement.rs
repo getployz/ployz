@@ -1436,6 +1436,7 @@ async fn a_removal_finishes_when_the_copy_on_an_unobserved_server_is_out() {
         &client,
         &CancellationToken::new(),
         None,
+        crate::deploy::Retire::Wait,
     )
     .await;
 

@@ -301,6 +301,7 @@ fn gone(hex: char) -> ContainerWant {
         container: ContainerLocator::Id(container(hex)),
         drain: ployz_core::Drain::DEFAULT,
         anonymous_volumes: ployz_core::AnonymousVolumes::keep(),
+        answer: ployz_core::GoneAnswer::Removed,
     }
 }
 

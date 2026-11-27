@@ -515,6 +515,7 @@ async fn execute_named(
         client,
         &CancellationToken::new(),
         Some(tx),
+        crate::deploy::Retire::Wait,
     )
     .await;
     let mut warnings = Vec::new();

@@ -180,6 +180,7 @@ async fn a_dependency_wait_reports_its_elapsed_and_deadline_clocks() {
         &client,
         &CancellationToken::new(),
         Some(tx),
+        crate::deploy::Retire::Wait,
     )
     .await;
 
@@ -922,6 +923,7 @@ async fn deploy_as(client: &Scripted, run: &str, ended: &[&str]) -> DeployOutcom
         client,
         &CancellationToken::new(),
         None,
+        crate::deploy::Retire::Wait,
     )
     .await
 }

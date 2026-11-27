@@ -47,33 +47,58 @@ impl GappedPublishes {
     }
 }
 
+/// How a Deploy retires its old copies once its Outcome is out.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum Retire {
+    /// Remove each one, reporting every copy that stays.
+    #[default]
+    Wait,
+    /// Wait only until each Machine admitted removing its copies, which it then finishes
+    /// alone. A refusal is still reported; a Docker failure after it is not.
+    HandOff,
+}
+
 /// The old copies publishes took out of rotation, or that never went In. No proxy
 /// routes them, so they retire once the Deploy's Outcome is out.
-#[derive(Default)]
-pub(super) struct Retiring(std::sync::Mutex<Vec<(cleanup::Copy, AnonymousVolumes)>>);
+pub(super) struct Retiring {
+    retire: Retire,
+    copies: std::sync::Mutex<Vec<(cleanup::Copy, AnonymousVolumes)>>,
+}
 
 impl Retiring {
-    fn add(&self, copies: impl IntoIterator<Item = (cleanup::Copy, AnonymousVolumes)>) {
-        self.0.lock().expect("retiring lock").extend(copies);
+    pub(super) fn new(retire: Retire) -> Self {
+        Self {
+            retire,
+            copies: std::sync::Mutex::default(),
+        }
     }
 
-    /// Stop and remove every copy, each Machine's at once. A copy that stays is a
-    /// warning, never a failure: the Outcome is already out.
+    fn add(&self, copies: impl IntoIterator<Item = (cleanup::Copy, AnonymousVolumes)>) {
+        self.copies.lock().expect("retiring lock").extend(copies);
+    }
+
+    /// Retire every copy, each Machine's at once. A copy that stays is a warning, never
+    /// a failure: the Outcome is already out.
     pub(super) async fn retire<C: MachineOperations>(
         &self,
         client: &C,
         progress: &Progress,
         report: &super::report::Report<'_>,
     ) {
-        let copies = std::mem::take(&mut *self.0.lock().expect("retiring lock"));
-        let removed = join_all(
-            copies
-                .iter()
-                .map(|(copy, ask)| cleanup::remove(client, copy, *ask)),
-        )
+        let copies = std::mem::take(&mut *self.copies.lock().expect("retiring lock"));
+        let retired = join_all(copies.iter().map(|(copy, ask)| async move {
+            match self.retire {
+                Retire::Wait => cleanup::remove(client, copy, *ask)
+                    .await
+                    .map(cleanup::Rotated::from),
+                Retire::HandOff => cleanup::hand_off(client, copy, *ask)
+                    .await
+                    .map(cleanup::Rotated::from),
+            }
+        }))
         .await;
-        for ((copy, _), removed) in copies.iter().zip(removed) {
-            if let Some(left) = left_unless_done(removed.map(cleanup::Rotated::from)) {
+        for ((copy, _), retired) in copies.iter().zip(retired) {
+            if let Some(left) = left_unless_done(retired) {
                 report.leave_running(progress, copy, left);
             }
         }
