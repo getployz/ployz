@@ -3218,29 +3218,36 @@ async fn an_unconfirmed_unlisting_leaves_every_old_copy_of_the_group_running() {
     let id = run_id();
     let work = super::super::execute_operation_sequence(&plan, &id, &client, &cancel, Some(tx));
     tokio::pin!(work);
+    let unlisting_deadline = tokio::time::Instant::now() + crate::deploy::cleanup::ACK_WAIT;
     let mut switched = false;
     let mut warnings = Vec::new();
+    let mut observe = |event| match event {
+        DeployEvent::Progress {
+            live_at: Some(_), ..
+        } => {
+            assert!(tokio::time::Instant::now() < unlisting_deadline);
+            assert_eq!(client.rotation(&new_one), Some(CopyRotation::In));
+            assert_eq!(client.rotation(&new_two), Some(CopyRotation::In));
+            switched = true;
+        }
+        DeployEvent::Warning { warning } => warnings.push(warning.to_string()),
+        DeployEvent::Outcome { .. } => {
+            assert!(switched, "unlisting must not gate the switch event");
+        }
+        DeployEvent::Progress { live_at: None, .. }
+        | DeployEvent::Retired { .. }
+        | DeployEvent::ImagesPruned { .. } => {}
+    };
     let outcome = loop {
         tokio::select! {
             biased;
             event = rx.recv() => match event {
-                Some(DeployEvent::Progress { live_at: Some(_), .. }) => {
-                    switched = true;
-                    assert_eq!(client.rotation(&new_one), Some(CopyRotation::In));
-                    assert_eq!(client.rotation(&new_two), Some(CopyRotation::In));
-                }
-                Some(DeployEvent::Warning { warning }) => warnings.push(warning.to_string()),
-                Some(DeployEvent::Outcome { .. }) => assert!(switched, "unlisting must not gate the switch event"),
-                Some(_) => {}
+                Some(event) => observe(event),
                 None => break work.await,
             },
             outcome = &mut work => {
                 while let Ok(event) = rx.try_recv() {
-                    match event {
-                        DeployEvent::Progress { live_at: Some(_), .. } => switched = true,
-                        DeployEvent::Warning { warning } => warnings.push(warning.to_string()),
-                        _ => {}
-                    }
+                    observe(event);
                 }
                 break outcome;
             }
