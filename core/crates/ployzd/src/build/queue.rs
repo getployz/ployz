@@ -181,8 +181,27 @@ impl Runner {
         slots.size = limit;
     }
 
+    /// When a request arriving now must be admitted by: one deadline for its
+    /// whole wait, the permit, the gate and any recovery.
+    pub(super) fn deadline(&self) -> Option<Instant> {
+        self.policy
+            .queue_timeout
+            .map(|timeout| Instant::now() + timeout)
+    }
+
+    #[cfg(test)]
     pub(super) fn enter(
         &self,
+    ) -> Result<
+        Entry<impl Future<Output = Result<OwnedSemaphorePermit, AcquireError>> + Send>,
+        QueueError,
+    > {
+        self.enter_by(self.deadline())
+    }
+
+    pub(super) fn enter_by(
+        &self,
+        deadline: Option<Instant>,
     ) -> Result<
         Entry<impl Future<Output = Result<OwnedSemaphorePermit, AcquireError>> + Send>,
         QueueError,
@@ -209,10 +228,7 @@ impl Runner {
                 Ok(Entry::Waiting(Waiting {
                     _capacity: capacity,
                     admission,
-                    expires: self
-                        .policy
-                        .queue_timeout
-                        .map(|timeout| Instant::now() + timeout),
+                    expires: deadline,
                 }))
             }
         }

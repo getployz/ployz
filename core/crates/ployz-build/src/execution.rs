@@ -181,6 +181,9 @@ impl From<tokio_util::sync::CancellationToken> for Cancellation {
 pub struct HostPolicy {
     /// Machine-local retained builder ownership.
     pub state_directory: PathBuf,
+    /// Where an older Ployz of this user locked its slots, whose workers
+    /// startup removes only while it holds the old slot's lock.
+    pub legacy_state_directory: Option<PathBuf>,
     /// Host-owned settings file, read once at admission.
     pub configuration_file: PathBuf,
     /// Host-installed Docker executable.
@@ -200,6 +203,7 @@ impl Default for HostPolicy {
     fn default() -> Self {
         Self {
             state_directory: crate::builder::directory(),
+            legacy_state_directory: crate::builder::legacy_directory(),
             configuration_file: std::env::home_dir()
                 .unwrap_or_else(|| PathBuf::from("/"))
                 .join(".ployz/build.yaml"),
@@ -327,17 +331,20 @@ impl Admission {
         policy: &HostPolicy,
         concurrency: BuildConcurrency,
     ) -> Result<Self, BuildError> {
-        Self::try_acquire_waiting(policy, concurrency, || {})
+        Self::try_acquire_waiting(policy, concurrency, &Cancellation::default(), || {})
     }
 
     /// [`Self::try_acquire_within`], calling `waiting` once before the first
-    /// wait: for another admission to leave the gate, or for Docker to clean a
-    /// slot this admission recovers.
+    /// wait: for another admission to leave the gate, for Docker to clean a
+    /// slot this admission recovers, or for one another admission recovers.
+    /// A slot being recovered is about to be free, so admission waits for it
+    /// rather than refusing, until `cancellation`.
     /// # Errors
-    /// As [`Self::try_acquire_within`].
+    /// As [`Self::try_acquire_within`], and [`BuildError::Cancelled`].
     pub fn try_acquire_waiting(
         policy: &HostPolicy,
         concurrency: BuildConcurrency,
+        cancellation: &Cancellation,
         waiting: impl FnOnce(),
     ) -> Result<Self, BuildError> {
         let limit = usize::from(concurrency);
@@ -358,6 +365,9 @@ impl Admission {
         let mut passed = Vec::new();
         let mut foreign: Option<String> = None;
         loop {
+            if cancellation.is_cancelled() {
+                return Err(BuildError::Cancelled);
+            }
             // Counting the slots and taking one is one critical section, of
             // file work only: no other admission takes a slot between the
             // count and the take, and none waits on Docker for it.
@@ -367,13 +377,18 @@ impl Admission {
             // marked. The first free one stays held while the rest are looked
             // at, so two admissions cannot each miss the other.
             let mut held = 0;
+            // Whether a slot that counts is another admission's recovery.
+            let mut recovering = false;
             let mut recover = Vec::new();
             let mut candidate = None;
             let known = Lock::known_slots(directory);
             for &slot in &known {
                 match Lock::open_locked(&gate, directory, slot) {
                     // A slot passed over counts once another admission holds it.
-                    Err(BuildError::Busy) => held += 1,
+                    Err(BuildError::Busy) => {
+                        held += 1;
+                        recovering |= Lock::recovering_in(directory, slot);
+                    }
                     Err(error) => return Err(error),
                     Ok(lock) if lock.marked()? => {
                         held += 1;
@@ -393,8 +408,14 @@ impl Admission {
                 drop((gate, candidate));
                 wait();
                 for mut lock in recover {
-                    match lock.recover(&policy.docker, false) {
-                        Ok(()) => {}
+                    match lock.recover_leaving_mark(&policy.docker, false) {
+                        // The slot goes clean under the gate: an admission
+                        // looking at it sees it recovering or free.
+                        Ok(()) => {
+                            let _gate = Gate::enter(directory)?;
+                            lock.clear()?;
+                            drop(lock);
+                        }
                         Err(error) if error.is_unknown() => {
                             failed.push(lock.slot());
                             quarantined.get_or_insert(error);
@@ -426,6 +447,12 @@ impl Admission {
             inside_gate(directory);
             drop(gate);
             let Some(lock) = candidate.filter(|_| held < limit) else {
+                if recovering {
+                    // A slot frees once its recovery ends; look again soon.
+                    wait();
+                    std::thread::sleep(RECOVERY_POLL);
+                    continue;
+                }
                 return Err(quarantined
                     .or_else(|| foreign.map(|container| crate::builder::foreign(&container)))
                     .unwrap_or(BuildError::Busy));
@@ -536,6 +563,9 @@ impl Admission {
         Ok(())
     }
 }
+
+/// How often an admission waiting on another's recovery looks again.
+const RECOVERY_POLL: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// Runs once inside the next admission's critical section in a directory.
 #[cfg(test)]

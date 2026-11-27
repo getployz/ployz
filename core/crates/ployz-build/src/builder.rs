@@ -986,6 +986,11 @@ impl Lock {
         environment: &std::collections::BTreeMap<String, String>,
         caches: bool,
     ) -> (Vec<usize>, Result<(), BuildError>) {
+        // Nothing in the state directory is used before it is shown to be
+        // this user's alone: no scratch, no discovery, no Docker.
+        if let Err(error) = prepare_state(&policy.state_directory) {
+            return (Vec::new(), Err(error));
+        }
         // Command output lands in a directory of its own, private to this listing.
         let working = policy
             .state_directory
@@ -1196,6 +1201,18 @@ impl Lock {
         docker: &std::path::Path,
         owned_here: bool,
     ) -> Result<(), BuildError> {
+        self.recover_leaving_mark(docker, owned_here)?;
+        self.clear()
+    }
+
+    /// [`Self::recover`], leaving the mark for the caller to clear: one that
+    /// lets the slot go clears it under the gate, so no admission sees the
+    /// slot held with no mark, as if a Build were uploading.
+    pub(crate) fn recover_leaving_mark(
+        &mut self,
+        docker: &std::path::Path,
+        owned_here: bool,
+    ) -> Result<(), BuildError> {
         let path = self.directory.join(lock_file(self.slot));
         let name = self.name();
         // Either access's builder may have run in this slot last.
@@ -1287,13 +1304,16 @@ impl Lock {
                 })?;
         }
         drop(self.take_parked());
-        self.clear()
+        Ok(())
     }
 
     /// One bounded recovery of every abandoned builder slot on daemon startup.
     /// A slot whose last attempt may still run stays quarantined. Every slot is
     /// attempted; the first failure is reported.
     pub(crate) fn cleanup_abandoned(policy: &crate::HostPolicy) -> Result<(), BuildError> {
+        // A state directory that isn't this user's alone stops startup before
+        // it uses the directory or calls Docker.
+        prepare_state(&policy.state_directory)?;
         let environment = crate::upload::environment(&policy.state_directory);
         // Docker failing to list its workers still leaves the known slots to clean.
         let (slots, listed) = Self::slots(policy, &environment, false);
@@ -1308,6 +1328,91 @@ impl Lock {
             .into_iter()
             .map(|slot| Self::cleanup_abandoned_slot(policy, slot))
             .fold(marked, Result::and)
+            .and(Self::cleanup_legacy(policy, &environment))
+    }
+
+    /// Remove the workers an older root Ployz named under layout 1, each only
+    /// while this process holds that slot's lock in the older state directory,
+    /// so a running older CLI keeps its worker. A worker whose old lock is
+    /// held, or can't be read, is left; that leftover is the upgrade's.
+    fn cleanup_legacy(
+        policy: &crate::HostPolicy,
+        environment: &std::collections::BTreeMap<String, String>,
+    ) -> Result<(), BuildError> {
+        use rustix::fs::{FlockOperation, flock};
+        let Some(legacy) = &policy.legacy_state_directory else {
+            return Ok(());
+        };
+        let working = policy
+            .state_directory
+            .join(format!("legacy-{}", uuid::Uuid::new_v4()));
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&working)
+            .map_err(lock_error)?;
+        let docker = Docker {
+            program: &policy.docker,
+            environment,
+            working_dir: &working,
+            deadline: crate::Deadline::starting_now(crate::CLEANUP_TIMEOUT),
+            cancellation: None,
+            progress: None,
+            recorder: None,
+        };
+        let result = (|| {
+            let listed = docker.run(
+                "list build containers",
+                &["ps", "--all", "--format", "{{.Names}}"],
+                Streams::Captured,
+            )?;
+            let listed = listed.lines().map(str::trim).collect::<Vec<_>>();
+            (0..=usize::from(u8::MAX))
+                .map(|slot| {
+                    let workers = legacy_workers(slot)
+                        .into_iter()
+                        .filter(|worker| listed.contains(&worker.as_str()))
+                        .collect::<Vec<_>>();
+                    if workers.is_empty() {
+                        return Ok(());
+                    }
+                    let lock = legacy.join(legacy_lock_file(slot));
+                    let held = fs::OpenOptions::new()
+                        .read(true)
+                        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+                        .open(&lock)
+                        .map_err(|error| error.to_string())
+                        .and_then(|file| {
+                            match flock(&file, FlockOperation::NonBlockingLockExclusive) {
+                                Ok(()) => Ok(file),
+                                Err(rustix::io::Errno::WOULDBLOCK) => {
+                                    Err("an older Ployz holds its slot".to_owned())
+                                }
+                                Err(error) => Err(error.to_string()),
+                            }
+                        });
+                    let _held = match held {
+                        Ok(file) => file,
+                        Err(reason) => {
+                            tracing::warn!(
+                                workers = %workers.join(", "),
+                                lock = %lock.display(),
+                                %reason,
+                                "left an older Ployz's build workers running"
+                            );
+                            return Ok(());
+                        }
+                    };
+                    workers
+                        .iter()
+                        .try_for_each(|worker| match owned(&docker, worker)? {
+                            Some(id) => tear_down(&docker, &id),
+                            None => Ok(()),
+                        })
+                })
+                .fold(Ok(()), Result::and)
+        })();
+        let _ = fs::remove_dir_all(&working);
+        result
     }
 
     /// Leave `slot` marked for recovery to clean: a mark that names no owner,
@@ -1354,6 +1459,28 @@ impl Lock {
             directory: directory.to_owned(),
             slot,
         })
+    }
+
+    /// Whether a busy `slot` is being recovered: it carries a mark that names
+    /// no live owner, so whoever holds the slot is cleaning it and it frees
+    /// once that ends. A Build's mark names its live process.
+    pub(crate) fn recovering_in(directory: &std::path::Path, slot: usize) -> bool {
+        let Ok(text) = fs::read_to_string(directory.join(lock_file(slot))) else {
+            return false;
+        };
+        let mark = crate::owner::Mark::parse(&text);
+        !text.is_empty()
+            && [Access::Full, Access::Free].iter().all(|access| {
+                mark.survivors(&access.builder(slot))
+                    .is_ok_and(|survivors| {
+                        !survivors.iter().any(|survivor| {
+                            matches!(
+                                survivor,
+                                crate::owner::Survivor::Recorded(crate::owner::Role::Owner, _)
+                            )
+                        })
+                    })
+            })
     }
 
     /// Whether `slot` in `directory` carries a mark: a Build runs there, or
@@ -1547,6 +1674,21 @@ fn slot_name(slot: usize) -> String {
 /// Open `name` in the state directory, creating both, once the directory is
 /// shown to be this user's alone.
 fn open_state(directory: &std::path::Path, name: &str) -> Result<fs::File, BuildError> {
+    prepare_state(directory)?;
+    fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+        .open(directory.join(name))
+        .map_err(lock_error)
+}
+
+/// Create the state directory if it is missing, then show it is this user's
+/// alone before anything in it is used.
+pub(crate) fn prepare_state(directory: &std::path::Path) -> Result<(), BuildError> {
     use std::os::unix::fs::MetadataExt as _;
     match fs::DirBuilder::new().mode(0o700).create(directory) {
         Ok(()) => {}
@@ -1562,15 +1704,7 @@ fn open_state(directory: &std::path::Path, name: &str) -> Result<fs::File, Build
             "builder state must be an owned directory without group/other write access".into(),
         ));
     }
-    fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
-        .open(directory.join(name))
-        .map_err(lock_error)
+    Ok(())
 }
 
 /// Admission's critical section, shared by every process using the state
@@ -1630,6 +1764,28 @@ fn lock_file(slot: usize) -> String {
 /// daemon shares their state.
 pub(crate) fn directory() -> PathBuf {
     directory_for(rustix::process::getuid().as_raw())
+}
+
+/// Root's state directory before layout 2, where an older root CLI still
+/// locks its slots. Other users' state never moved.
+pub(crate) fn legacy_directory() -> Option<PathBuf> {
+    (rustix::process::getuid().as_raw() == 0).then(|| PathBuf::from("/var/tmp/ployz-build-0"))
+}
+
+/// The worker names layout 1 gave root's builders in `slot`.
+fn legacy_workers(slot: usize) -> [String; 2] {
+    ["ployz-0", "ployz-free-0"].map(|name| match slot {
+        0 => container(name),
+        slot => container(&format!("{name}-{slot}")),
+    })
+}
+
+/// The lock file layout 1 gave root's `slot`.
+fn legacy_lock_file(slot: usize) -> String {
+    match slot {
+        0 => "ployz-0.lock".to_owned(),
+        slot => format!("ployz-0-{slot}.lock"),
+    }
 }
 
 fn directory_for(uid: u32) -> PathBuf {
@@ -3446,6 +3602,89 @@ exit 0
             root,
             "another user's state stays its own"
         );
+    }
+
+    /// An older root CLI's worker, under the names layout 1 gave it, is
+    /// stopped by startup only while startup holds that slot's old lock.
+    #[test]
+    fn startup_leaves_an_older_clis_worker_while_it_holds_its_old_slot() {
+        let directory = host_slot();
+        let directory = directory.path();
+        let legacy = directory.join("legacy");
+        fs::DirBuilder::new().mode(0o700).create(&legacy).unwrap();
+        let old = legacy_workers(0)[0].clone();
+        fs::write(directory.join("names"), &old).unwrap();
+        fs::write(directory.join("owned"), &old).unwrap();
+        let policy = crate::HostPolicy {
+            state_directory: directory.join("state"),
+            legacy_state_directory: Some(legacy.clone()),
+            configuration_file: directory.join("build.yaml"),
+            docker: directory.join("docker"),
+            ..Default::default()
+        };
+        // The older CLI is building in its slot 0.
+        let held = fs::File::create(legacy.join(legacy_lock_file(0))).unwrap();
+        rustix::fs::flock(&held, rustix::fs::FlockOperation::LockExclusive).unwrap();
+        let mut seen = 0;
+        Lock::cleanup_abandoned(&policy).unwrap();
+        let calls = calls_since(directory, &mut seen);
+        assert!(
+            !calls
+                .iter()
+                .any(|call| call.contains(&old) && !call.starts_with("inspect")),
+            "startup touched the older CLI's worker: {calls:?}"
+        );
+        // Its Build ended: the next start removes the worker.
+        drop(held);
+        Lock::cleanup_abandoned(&policy).unwrap();
+        let calls = calls_since(directory, &mut seen);
+        assert!(
+            calls.contains(&format!("stop --time {WORKER_STOP_SECONDS} id-{old}"))
+                && calls.contains(&format!("rm --force id-{old}")),
+            "{calls:?}"
+        );
+    }
+
+    /// Startup uses a state directory only once it is shown to be this
+    /// user's alone: otherwise it touches nothing and calls no Docker.
+    #[test]
+    fn startup_touches_no_state_directory_it_cannot_trust() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let directory = host_slot();
+        let directory = directory.path();
+        let target = directory.join("target");
+        fs::DirBuilder::new().mode(0o700).create(&target).unwrap();
+        let linked = directory.join("linked");
+        std::os::unix::fs::symlink(&target, &linked).unwrap();
+        let shared = directory.join("shared");
+        fs::DirBuilder::new().mode(0o700).create(&shared).unwrap();
+        fs::set_permissions(&shared, fs::Permissions::from_mode(0o770)).unwrap();
+        for state in [&linked, &shared] {
+            let policy = crate::HostPolicy {
+                state_directory: state.clone(),
+                configuration_file: directory.join("build.yaml"),
+                docker: directory.join("docker"),
+                ..Default::default()
+            };
+            assert!(
+                Lock::cleanup_abandoned(&policy).is_err(),
+                "{}",
+                state.display()
+            );
+        }
+        assert!(
+            !directory.join("calls").exists(),
+            "{}",
+            fs::read_to_string(directory.join("calls")).unwrap()
+        );
+        for untouched in [&target, &shared] {
+            assert_eq!(
+                fs::read_dir(untouched).unwrap().count(),
+                0,
+                "{}",
+                untouched.display()
+            );
+        }
     }
 
     /// Startup marks every slot it will clean before any Docker teardown, so a

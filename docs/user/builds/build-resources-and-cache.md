@@ -107,7 +107,16 @@ has no record of stays until you remove it.
 
 Ployz reports itself started before this cleanup finishes, since stopping a worker can take up
 to 20 seconds. A build that arrives meanwhile shows as queued, then starts once the cleanup
-ends. A slot the cleanup couldn't clean stays out of use until a later build cleans it.
+ends. A slot the cleanup couldn't clean stays out of use until a later build cleans it. A build
+that finds a slot being cleaned up also shows as queued, then starts once that slot is free.
+
+After you upgrade a server that builds as root to this version, its first builds start from an
+empty cache. Ployz removes a worker that an older version started only when that version is no
+longer using it. If Ployz can't tell, it leaves the worker running. The older version's workers
+are named `buildx_buildkit_ployz-0…` and `buildx_buildkit_ployz-free-0…`, and their caches are
+volumes whose names start the same way and end in `_state`. When the server isn't building, you
+can remove them with `docker rm --force` and `docker volume rm`. `ployz server build-cache-clear`
+doesn't remove them.
 
 Ployz can't tell such a container from one you made the same way, so don't run those images
 under those names yourself.

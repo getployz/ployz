@@ -720,8 +720,14 @@ case "$1 $2" in
   'stop --time')
     # A listed worker that won't stop while `fail-stop` exists.
     case "$4" in id-*) if [ -f "$root/fail-stop" ]; then echo 'Error response from daemon: cannot stop container' >&2; exit 1; fi ;; esac
-    # A listed worker takes up to 11s to stop while `slow-stop` exists.
-    case "$4" in id-*) waited=0; while [ -f "$root/slow-stop" ] && [ $waited -lt 110 ]; do sleep 0.1; waited=$((waited + 1)); done ;; esac
+    # A listed worker takes up to 11s to stop while `slow-stop` exists, and
+    # stops only once the test removes `hold-stop`.
+    case "$4" in id-*)
+      : > "$root/stop-started"
+      waited=0; while [ -f "$root/slow-stop" ] && [ $waited -lt 110 ]; do sleep 0.1; waited=$((waited + 1)); done
+      waited=0; while [ -f "$root/hold-stop" ] && [ $waited -lt 600 ]; do sleep 0.05; waited=$((waited + 1)); done
+      : > "$root/stop-ended" ;;
+    esac
     if [ -f "$root/fail-cleanup" ] && {{ [ -f "$root/executed" ] || [ -f "$root/checking" ]; }}; then exit 1; fi
     if [ "$4" = worker ]; then echo stopped > "$root/worker-state"; fi ;;
   'inspect --type')
@@ -1801,66 +1807,85 @@ async fn builds_go_on_after_startup_cleanup_fails_or_panics() {
     }
 }
 
-/// An admission that recovers a slot waits for Docker, never holding the
-/// others back: it is queued, a Build beside it is admitted within its
-/// deadline, and its client leaving frees the Machine at once.
-#[tokio::test]
-async fn an_admission_recovering_a_slot_queues_and_holds_no_one_else_back() {
-    let fixture = Fixture::new().await;
+/// Slot 0's Build died and left its worker, which stops only once the test
+/// removes `hold-stop`: the next admission recovers the slot.
+fn abandon_slot_zero(root: &Path) {
+    let builder = ployz_build::builder_name();
+    fs::write(root.join("workers"), format!("buildx_buildkit_{builder}0")).unwrap();
+    let boot = fs::read_to_string("/proc/sys/kernel/random/boot_id").unwrap();
+    fs::write(
+        root.join(format!("{builder}.lock")),
+        format!("termination unconfirmed\nboot {}\n", boot.trim()),
+    )
+    .unwrap();
+    fs::write(root.join("hold-stop"), "").unwrap();
+}
+
+async fn set_concurrency(fixture: &Fixture, value: u8) {
     fixture
         .local
         .update_machine(
             serde_json::from_value(serde_json::json!({
-                "update": {"build_concurrency": {"action": "set", "value": 2}}
+                "update": {"build_concurrency": {"action": "set", "value": value}}
             }))
             .unwrap(),
         )
         .await
         .unwrap();
-    // Slot 0's Build died and left its worker, which takes 11s to stop.
-    let builder = ployz_build::builder_name();
-    fs::write(
-        fixture.root.join("workers"),
-        format!("buildx_buildkit_{builder}0"),
-    )
-    .unwrap();
-    let boot = fs::read_to_string("/proc/sys/kernel/random/boot_id").unwrap();
-    fs::write(
-        fixture.root.join(format!("{builder}.lock")),
-        format!("termination unconfirmed\nboot {}\n", boot.trim()),
-    )
-    .unwrap();
-    fs::write(fixture.root.join("slow-stop"), "").unwrap();
+}
 
-    // The first Build's admission recovers slot 0, so it is queued.
-    let (recovering, mut recovering_response) = fixture.request(Output::Load).await;
-    assert!(matches!(
-        event(&mut recovering_response).await,
-        Event::Progress(Progress::Stage(Stage::Queued))
-    ));
-    // Another Build is admitted to a free slot within its deadline and runs.
-    let capture = fixture.capture();
-    let client = ployz::connect::connect(
+async fn client(fixture: &Fixture) -> ployz::connect::Client {
+    ployz::connect::connect(
         Path::new("/missing-test-config"),
         Some(fixture.address.as_str()),
         None,
     )
     .await
-    .unwrap();
-    let result = capture
-        .execute_remote_images(
+    .unwrap()
+}
+
+/// An admission that recovers a slot waits for Docker outside the gate: a
+/// Build beside it is admitted and finishes while the worker still stops, and
+/// the recovering Build's client leaving frees the Machine.
+#[tokio::test]
+async fn an_admission_recovering_a_slot_queues_and_holds_no_one_else_back() {
+    let fixture = Fixture::new().await;
+    set_concurrency(&fixture, 2).await;
+    abandon_slot_zero(&fixture.root);
+
+    let (recovering, mut recovering_response) = fixture.request(Output::Load).await;
+    assert!(matches!(
+        event(&mut recovering_response).await,
+        Event::Progress(Progress::Stage(Stage::Queued))
+    ));
+    let started = until_fake_docker(Duration::from_secs(10), || {
+        fixture.root.join("stop-started").exists()
+    })
+    .await;
+    assert!(started.is_ok(), "the recovery never stopped the worker");
+    // The worker stops only after this Build ends: held across the stop, the
+    // gate would leave it waiting here until the timeout.
+    let capture = fixture.capture();
+    let client = client(&fixture).await;
+    let result = tokio::time::timeout(
+        Duration::from_secs(20),
+        capture.execute_remote_images(
             &client,
             fixture.machine.id,
             None,
             Default::default(),
             |_| {},
-        )
-        .await;
+        ),
+    )
+    .await
+    .expect("the Build beside the recovery never finished");
     assert!(result.is_ok(), "{:?}", result.err());
-    assert!(fixture.root.join("slow-stop").exists());
+    assert!(
+        !fixture.root.join("stop-ended").exists(),
+        "the Build finished only after the worker stopped"
+    );
     drop(result);
 
-    // The first client leaves while its worker still stops: the Machine is free.
     drop((recovering, recovering_response));
     let freed = until_fake_docker(Duration::from_secs(5), || {
         fixture
@@ -1872,5 +1897,71 @@ async fn an_admission_recovering_a_slot_queues_and_holds_no_one_else_back() {
     })
     .await;
     assert!(freed.is_ok(), "the left Build still holds the Machine");
-    fs::remove_file(fixture.root.join("slow-stop")).unwrap();
+    fs::remove_file(fixture.root.join("hold-stop")).unwrap();
+}
+
+/// A slot whose recovery outlives the request that started it is about to be
+/// free, not busy: the next Build is queued, then runs once the worker stops.
+#[tokio::test]
+async fn a_build_waits_for_a_recovery_its_requester_left() {
+    let fixture = Fixture::new().await;
+    abandon_slot_zero(&fixture.root);
+    let (left, mut left_response) = fixture.request(Output::Load).await;
+    assert!(matches!(
+        event(&mut left_response).await,
+        Event::Progress(Progress::Stage(Stage::Queued))
+    ));
+    let started = until_fake_docker(Duration::from_secs(10), || {
+        fixture.root.join("stop-started").exists()
+    })
+    .await;
+    assert!(started.is_ok(), "the recovery never stopped the worker");
+    drop((left, left_response));
+
+    let capture = fixture.capture();
+    let client = client(&fixture).await;
+    let (queued, mut heard) = mpsc::channel(1);
+    let selected = fixture.machine.id;
+    let execution = tokio::spawn(async move {
+        capture
+            .execute_remote_images(&client, selected, None, Default::default(), |event| {
+                if matches!(event, Progress::Stage(Stage::Queued)) {
+                    queued.try_send(()).unwrap();
+                }
+            })
+            .await
+    });
+    assert!(
+        heard.recv().await.is_some(),
+        "the next Build was not queued: {:?}",
+        execution.await.unwrap().err()
+    );
+    fs::remove_file(fixture.root.join("hold-stop")).unwrap();
+    let result = execution.await.unwrap();
+    assert!(result.is_ok(), "{:?}", result.err());
+}
+
+/// One queue deadline covers a request's whole wait for admission, a slot's
+/// recovery included.
+#[tokio::test]
+async fn the_queue_timeout_covers_a_recovery_wait() {
+    let fixture = Fixture::with_policy(|policy| {
+        policy.queue_timeout = Some(Duration::from_millis(250));
+    })
+    .await;
+    abandon_slot_zero(&fixture.root);
+    let sent = tokio::time::Instant::now();
+    let (_sender, mut response) = fixture.request(Output::Load).await;
+    assert!(matches!(
+        event(&mut response).await,
+        Event::Progress(Progress::Stage(Stage::Queued))
+    ));
+    let outcome = terminal(&mut response).await;
+    let waited = sent.elapsed();
+    assert!(
+        matches!(&outcome, Outcome::Failed { stage: Stage::Queued, message, .. } if message.contains("queue timeout expired")),
+        "{outcome:?}"
+    );
+    assert!(waited < Duration::from_secs(2), "{waited:?}");
+    fs::remove_file(fixture.root.join("hold-stop")).unwrap();
 }

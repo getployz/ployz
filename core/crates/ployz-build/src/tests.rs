@@ -1248,6 +1248,15 @@ fn the_builder_cache_is_not_user_data() {
     assert!(super::is_builder_cache(
         "buildx_buildkit_ployz-0-2550_state"
     ));
+    // Root's builders since layout 2, and their Free and numbered slots.
+    for cache in [
+        "buildx_buildkit_ployz-v2-00_state",
+        "buildx_buildkit_ployz-v2-0-20_state",
+        "buildx_buildkit_ployz-free-v2-00_state",
+        "buildx_buildkit_ployz-free-v2-0-30_state",
+    ] {
+        assert!(super::is_builder_cache(cache), "{cache}");
+    }
     // A Free Build's builder keeps its own cache, also Ployz's.
     for slot in [0, 3] {
         let free = format!(
@@ -1275,6 +1284,9 @@ fn the_builder_cache_is_not_user_data() {
         "buildx_buildkit_ployz-01000-10_state",
         "buildx_buildkit_ployz-99999999999-10_state",
         "buildx_buildkit_ployz-4294967295-10_state",
+        "buildx_buildkit_ployz-v2-_state",
+        "buildx_buildkit_ployz-v3-00_state",
+        "buildx_buildkit_ployz-v2-v2-00_state",
     ] {
         assert!(!super::is_builder_cache(data), "{data}");
     }

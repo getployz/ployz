@@ -212,10 +212,14 @@ async fn attempt(
             crate::machine::Bound::unbound()
         }
     };
+    // One deadline from arrival to admission: the permit, startup cleanup, the
+    // gate and any slot's recovery all wait within it.
+    let deadline = runner.deadline();
+    let expired = || tokio::time::sleep_until(deadline.unwrap_or_else(tokio::time::Instant::now));
     let admitted = async {
         // The client takes one Queued, whichever wait comes first.
         let mut queued = false;
-        let mut permit = match runner.enter() {
+        let mut permit = match runner.enter_by(deadline) {
             Ok(queue::Entry::Active(permit)) => permit,
             Ok(queue::Entry::Waiting(waiting)) => {
                 if !std::mem::replace(&mut queued, true) && events.send(Ok(queued_frame())).await.is_err() {
@@ -248,6 +252,7 @@ async fn attempt(
                 () = events.closed() => return Err(failed(Stage::Queued, "Build client disconnected").with_work(work.clone())),
                 () = bound.ended() => return Err(failed(Stage::Queued, format!("{BUILD_ENDED} Execution was not attempted.")).with_work(work.clone())),
                 frame = requests.next() => return Err(failed(Stage::Queued, left_queue(frame)).with_work(work.clone())),
+                () = expired(), if deadline.is_some() => return Err(failed(Stage::Queued, queue::QueueError::Expired.to_string()).with_work(work.clone())),
                 _ = cleaned.wait_for(|cleaned| *cleaned) => {}
             }
         }
@@ -264,10 +269,13 @@ async fn attempt(
         // Queued, and a cancel or disconnect ends it, freeing the installation
         // exclusion. A slot the abandoned admission takes later goes with it.
         let (waiting, mut waited) = tokio::sync::oneshot::channel();
+        // Admission stops waiting once this request stops, however it stops.
+        let abandoned = Abandoned(ployz_build::Cancellation::new());
         let mut acquiring = tokio::task::spawn_blocking({
             let policy = runner.policy.clone();
+            let cancellation = abandoned.0.clone();
             move || {
-                Admission::try_acquire_waiting(&policy, concurrency, move || {
+                Admission::try_acquire_waiting(&policy, concurrency, &cancellation, move || {
                     let _ = waiting.send(());
                 })
                 .map(|admission| admission.with_access(access))
@@ -281,6 +289,7 @@ async fn attempt(
                 () = events.closed() => return Err(failed(Stage::Queued, "Build client disconnected").with_work(work.clone())),
                 () = bound.ended() => return Err(failed(Stage::Queued, format!("{BUILD_ENDED} Execution was not attempted.")).with_work(work.clone())),
                 frame = requests.next(), if queued => return Err(failed(Stage::Queued, left_queue(frame)).with_work(work.clone())),
+                () = expired(), if deadline.is_some() => return Err(failed(Stage::Queued, queue::QueueError::Expired.to_string()).with_work(work.clone())),
                 notice = &mut waited, if !heard => {
                     heard = true;
                     if notice.is_ok() && !std::mem::replace(&mut queued, true) && events.send(Ok(queued_frame())).await.is_err() {
@@ -677,6 +686,15 @@ fn open_sealed(record: &[u8], sealing: &SealingKeyStore) -> Result<OpenedSealed,
     sealing
         .open_for_build(&record)
         .map_err(|error| error.to_string())
+}
+
+/// Cancels an admission whose request no longer waits for it.
+struct Abandoned(ployz_build::Cancellation);
+
+impl Drop for Abandoned {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
 }
 
 fn queued_frame() -> OpaquePayload {
