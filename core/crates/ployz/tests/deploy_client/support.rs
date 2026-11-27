@@ -119,6 +119,8 @@ pub(super) struct DeployService {
     ingress_roles: Arc<Mutex<BTreeMap<MachineId, bool>>>,
     /// What an `UpdateMachine` turning the ingress role off answers instead.
     role_off_refusal: Option<RpcError>,
+    /// Machines an `UpdateMachine` never comes back from, as one the entry can't reach.
+    silent_updates: BTreeSet<MachineId>,
     /// `ListMachines` answers this many more times, on any route, with every replicated
     /// row lacking the ingress role, as before a role just set on a Server's own record
     /// reached the rows. `Inspect` answers the record.
@@ -221,6 +223,7 @@ impl DeployService {
             pull_failure: RpcError::internal("registry refused the pull"),
             ingress_roles: Arc::default(),
             role_off_refusal: None,
+            silent_updates: BTreeSet::new(),
             row_lag: Arc::default(),
             start_error_on: None,
             removal_refusal: None,
@@ -512,6 +515,12 @@ impl DeployService {
 
     pub(super) fn refuse_role_off(mut self, message: &str) -> Self {
         self.role_off_refusal = Some(RpcError::unavailable(message));
+        self
+    }
+
+    /// An `UpdateMachine` for `machine` never comes back.
+    pub(super) fn silent_updates_on(mut self, machine: MachineId) -> Self {
+        self.silent_updates.insert(machine);
         self
     }
 
@@ -1658,6 +1667,9 @@ impl FakeMachine for DeployService {
     ) -> Result<Response<OpaquePayload>, Status> {
         self.record_mutation();
         let machine_id = target(&request)?;
+        if self.silent_updates.contains(&machine_id) {
+            std::future::pending::<()>().await;
+        }
         let RpcRequestBody::UpdateMachine(update) =
             request.into_inner().decode_request().unwrap().body
         else {

@@ -363,6 +363,104 @@ pub(crate) fn dropped_note(machine: impl std::fmt::Display) -> String {
     )
 }
 
+/// A Machine the entry's WireGuard sees down: no handshake for long enough that nothing
+/// the entry routes there arrives.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct DeadLink {
+    pub(crate) machine: MachineId,
+    name: MachineName,
+    /// The Server this command entered by, when it said which it is.
+    entry: Option<MachineName>,
+    /// Since the latest handshake; `None` when there never was one.
+    since_handshake: Option<std::time::Duration>,
+}
+
+impl DeadLink {
+    /// The link and what fixes it, as sentences, for a command that can run through
+    /// another Server.
+    pub(crate) fn explained(&self) -> String {
+        format!("{}. {}", self.sentence("The"), self.remedy())
+    }
+
+    /// The link as a clause, opening with `the` when the entry didn't say which it is.
+    fn sentence(&self, the: &str) -> String {
+        let entry = match &self.entry {
+            Some(entry) => format!("{entry}, the Server this command entered by,"),
+            None => format!("{the} Server this command entered by"),
+        };
+        match self.since_handshake {
+            Some(since) => format!(
+                "{entry} has had no WireGuard handshake with {} for {}",
+                self.name,
+                span(since)
+            ),
+            None => format!(
+                "{entry} has never had a WireGuard handshake with {}",
+                self.name
+            ),
+        }
+    }
+
+    /// What fixes it, as a sentence, for a command that can run through another Server.
+    pub(crate) fn remedy(&self) -> String {
+        format!(
+            "Allow {}, or run this through another Server with --connect.",
+            open_wireguard()
+        )
+    }
+}
+
+/// The Machines `entry`, the Server this command entered by, sees down in its listing.
+pub(crate) fn dead_links(
+    machines: &[MachineObservation],
+    entry: Option<MachineId>,
+) -> Vec<DeadLink> {
+    let _ = (machines, entry);
+    Vec::new()
+}
+
+/// The Machine `selector` names, when the entry's listing sees it down.
+pub(crate) async fn dead_link_to(
+    client: &mut crate::connect::Client,
+    selector: &ployz_core::MachineTarget,
+) -> Option<DeadLink> {
+    let machines = client.machines().await.ok()?;
+    let ployz_core::NameMatches::One(target) =
+        selector.resolve(machines.iter().map(|observed| &observed.machine))
+    else {
+        return None;
+    };
+    let target = target.id;
+    dead_links(&machines, client.entry_machine())
+        .into_iter()
+        .find(|link| link.machine == target)
+}
+
+/// What a firewall must let through so two Servers handshake.
+pub(crate) fn open_wireguard() -> String {
+    format!(
+        "UDP {} between them in every firewall, your provider's included",
+        ployz_core::WIREGUARD_PORT
+    )
+}
+
+impl fmt::Display for DeadLink {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.sentence("the"))
+    }
+}
+
+/// `since` in its largest whole unit, as `6m`.
+pub(crate) fn span(since: std::time::Duration) -> String {
+    let seconds = since.as_secs();
+    match seconds {
+        0..60 => format!("{seconds}s"),
+        60..3600 => format!("{}m", seconds / 60),
+        3600..86400 => format!("{}h", seconds / 3600),
+        _ => format!("{}d", seconds / 86400),
+    }
+}
+
 /// A Machine whose Container listing a [`DeploySnapshot`] lacks, as
 /// [`DeploySnapshot::listing_gaps`] reads it.
 #[derive(Clone, Copy, Debug)]

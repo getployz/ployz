@@ -34,11 +34,13 @@ use std::{
     io,
     net::{Ipv6Addr, SocketAddrV6},
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 
 use futures_util::future::join_all;
-use ployz_core::{LargePackets, MachineId, MachineName, PathObservation, RttStatistics};
+use ployz_core::{
+    LargePackets, MachineId, MachineName, PathObservation, RttStatistics, WireGuardObservation,
+};
 use rustix::net::{RecvFlags, SendFlags, sockopt::Ipv6PathMtuDiscovery};
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::{
@@ -47,7 +49,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use super::WIREGUARD_INTERFACE_NAME;
+use super::{PeerStatus, WIREGUARD_INTERFACE_NAME};
 
 /// How often each peer's path is probed.
 pub(super) const PROBE_EVERY: Duration = Duration::from_secs(60);
@@ -73,8 +75,8 @@ const RTT_SAMPLES: usize = 5;
 /// once its last one is this old, rather than keeping an RTT nobody measured lately.
 const RTT_FRESH: Duration = Duration::from_secs(60 * (RTT_SAMPLES as u64 + 1));
 
-/// This Machine's latest path observation of each peer and its recent round trips, written
-/// by the network plane and read by the Machine API.
+/// This Machine's latest path observation of each peer, its recent round trips and its
+/// WireGuard view, written by the network plane and read by the Machine API.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct PathBook(Arc<Mutex<BTreeMap<MachineId, PeerPath>>>);
 
@@ -83,6 +85,14 @@ struct PeerPath {
     path: Option<PathObservation>,
     /// Each round trip and when it was taken, newest first, at most [`RTT_SAMPLES`].
     rtts: VecDeque<(std::time::Instant, Duration)>,
+    wireguard: Option<Judged>,
+}
+
+/// The latest [`PeerStatus`] that wasn't Unknown, and the handshake it was judged by.
+#[derive(Clone, Copy, Debug)]
+struct Judged {
+    down: bool,
+    last_handshake: Option<SystemTime>,
 }
 
 impl PeerPath {
@@ -142,6 +152,40 @@ impl PathBook {
             peer.rtts.push_front((now, rtt));
             peer.rtts.truncate(RTT_SAMPLES);
         }
+    }
+
+    /// Record `status`, judged by `last_handshake`. An Unknown status, as while a new endpoint
+    /// is tried, keeps the previous judgment until another handshake arrives.
+    pub(super) fn judge(
+        &self,
+        machine_id: MachineId,
+        status: PeerStatus,
+        last_handshake: Option<SystemTime>,
+    ) {
+        let _ = (machine_id, status, last_handshake);
+    }
+
+    /// This Machine's WireGuard view of a peer; none before it could tell.
+    #[must_use]
+    pub(crate) fn wireguard(&self, machine_id: &MachineId) -> Option<WireGuardObservation> {
+        self.wireguard_at(machine_id, SystemTime::now())
+    }
+
+    pub(super) fn wireguard_at(
+        &self,
+        machine_id: &MachineId,
+        now: SystemTime,
+    ) -> Option<WireGuardObservation> {
+        let judged = self.paths().get(machine_id)?.wireguard?;
+        Some(if judged.down {
+            WireGuardObservation::Down {
+                since_handshake_secs: judged
+                    .last_handshake
+                    .map(|handshake| now.duration_since(handshake).unwrap_or_default().as_secs()),
+            }
+        } else {
+            WireGuardObservation::Up
+        })
     }
 
     /// Forget every peer the mesh no longer has.

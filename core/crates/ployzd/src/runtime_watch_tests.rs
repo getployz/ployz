@@ -403,6 +403,7 @@ fn rtt_on(machine: &Machine, statistics: RttStatistics) -> RttObservation {
         machine: None,
         statistics,
         path: None,
+        wireguard: None,
     }
 }
 
