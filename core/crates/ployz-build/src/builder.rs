@@ -440,22 +440,19 @@ impl<'a> Builder<'a> {
         if cleanup.is_err() {
             self.hold_bridge();
         }
-        // The Build returned, so only Docker can still hold the slot: the
-        // next admission retries the teardown, in this process too.
-        let disowned = if cleanup.is_err() {
-            self.lock.as_mut().expect("owned lock").disown()
-        } else {
-            Ok(())
-        };
         let stage = result
             .as_ref()
             .err()
             .map_or(crate::Stage::Cleanup, BuildError::stage);
+        // A slot left marked, by this release or by any teardown earlier in
+        // the Build such as a replaced worker's, is only Docker's to hold now
+        // the Build returned: the next admission retries, in this process too.
+        let lock = self.lock.as_mut().expect("owned lock");
         let cleared = if cleanup.is_ok() && !result.as_ref().is_err_and(|error| error.is_unknown())
         {
-            self.lock.as_mut().expect("owned lock").clear()
+            lock.clear()
         } else {
-            disowned
+            lock.disown()
         };
         self.lock.take();
         if let Err(error) = cleared {
@@ -973,7 +970,7 @@ impl Lock {
     }
 
     /// Slots that have ever been used in `directory`. Slot 0 always exists.
-    fn known_slots(directory: &std::path::Path) -> Vec<usize> {
+    pub(crate) fn known_slots(directory: &std::path::Path) -> Vec<usize> {
         (0..=usize::from(u8::MAX))
             .filter(|&slot| slot == 0 || directory.join(lock_file(slot)).exists())
             .collect()
@@ -1373,6 +1370,7 @@ impl Lock {
 
     /// Whether `slot` in `directory` carries a mark: a Build runs there, or
     /// it waits for recovery.
+    #[cfg(test)]
     pub(crate) fn marked_in(directory: &std::path::Path, slot: usize) -> bool {
         fs::metadata(directory.join(lock_file(slot))).is_ok_and(|mark| mark.len() != 0)
     }
@@ -3276,9 +3274,57 @@ exit 0
             "slot 1 was not retried"
         );
 
+        // The worker stops now: admission recovers slot 1 and admits.
         fs::remove_file(directory.join("fail-stop")).unwrap();
-        let admission = crate::Admission::try_acquire_within(&policy, one).unwrap();
-        assert_eq!(admission.slot(), 1);
+        let admission = crate::Admission::try_acquire_within(&policy, one);
+        assert!(admission.is_ok(), "{:?}", admission.err());
+        assert!(
+            fs::read(policy.state_directory.join(lock_file(1)))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    /// A slot counts from the moment admission takes it, through its upload,
+    /// before its Build marks it.
+    #[test]
+    fn a_slot_held_through_its_upload_counts_against_the_limit() {
+        let directory = host_slot();
+        let directory = directory.path();
+        let two = "2".parse::<ployz_core::BuildConcurrency>().unwrap();
+        // Slot 3's Build died, leaving its worker running, and it won't stop.
+        let policy = crashed_slot(directory);
+        fs::rename(
+            policy.state_directory.join(lock_file(0)),
+            policy.state_directory.join(lock_file(3)),
+        )
+        .unwrap();
+        fs::write(directory.join("owned"), container(&Access::Full.builder(3))).unwrap();
+        fs::write(directory.join("fail-stop"), "").unwrap();
+        fs::write(directory.join("running"), "true").unwrap();
+        // Containers Ployz did not create hold slots 0 and 1's worker names.
+        let foreign = [0, 1].map(|slot| container(&Access::Full.builder(slot)));
+        fs::write(directory.join("foreign"), foreign.join("\n")).unwrap();
+        fs::write(directory.join("names"), foreign.join("\n")).unwrap();
+
+        // A Build takes slot 2 and uploads, with no mark yet.
+        let uploading = crate::Admission::try_acquire_within(&policy, two).unwrap();
+        assert_eq!(uploading.slot(), 2);
+        assert!(!Lock::marked_in(&policy.state_directory, 2));
+
+        // The other containers go, freeing slots 0 and 1.
+        fs::remove_file(directory.join("foreign")).unwrap();
+        fs::remove_file(directory.join("names")).unwrap();
+        let third = crate::Admission::try_acquire_within(&policy, two);
+        assert!(
+            third.is_err(),
+            "a third Build started at limit 2: slot {:?}",
+            third.map(|admission| admission.slot())
+        );
+
+        // The upload ends: its slot frees and the next Build is admitted.
+        drop(uploading);
+        assert!(crate::Admission::try_acquire_within(&policy, two).is_ok());
     }
 
     /// Recovery stops a worker before removing it, and leaves one that
@@ -3404,6 +3450,67 @@ exit 0
         assert!(
             calls_since(directory, &mut seen).contains(&format!("rm --force id-{worker}")),
             "the retry did not remove the worker"
+        );
+        assert!(fs::read(directory.join(lock_file(0))).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_replaced_worker_that_will_not_stop_leaves_its_slot_to_the_next_admission() {
+        let directory = host_slot();
+        let directory = directory.path();
+        let program = directory.join("docker");
+        let environment = BTreeMap::new();
+        let docker = Docker {
+            program: &program,
+            environment: &environment,
+            working_dir: directory,
+            deadline: crate::Deadline::starting_now(crate::EXECUTION_TIMEOUT),
+            cancellation: None,
+            progress: None,
+            recorder: None,
+        };
+        let attempt = |access| {
+            Builder::acquire(
+                &docker,
+                Lock::try_acquire_in(directory).unwrap(),
+                access,
+                &crate::policy::Resources::default(),
+                None,
+                Reuse::WhenClean,
+            )
+        };
+        // A Full Build keeps its worker.
+        let full = container(&Access::Full.builder(0));
+        let kept = attempt(Access::Full).unwrap();
+        fs::write(directory.join("owned"), &full).unwrap();
+        fs::write(directory.join("worker"), format!("id-{full} true\n")).unwrap();
+        kept.take_worker().unwrap();
+        kept.finish(Ok(())).unwrap();
+
+        // A Free Build replaces it, and the Full worker will not stop.
+        fs::write(directory.join("fail-stop"), "").unwrap();
+        fs::write(directory.join("running"), "true").unwrap();
+        let error = attempt(Access::Free).err().expect("the replacement failed");
+        assert!(error.is_unknown(), "{error}");
+        let mark = fs::read_to_string(directory.join(lock_file(0))).unwrap();
+        assert!(
+            !mark.is_empty(),
+            "the slot was released with the worker running"
+        );
+        assert!(
+            !mark.lines().any(|line| line.starts_with("owner ")),
+            "the slot stays owned by a Build that returned: {mark:?}"
+        );
+
+        // Docker can stop the Full worker now: the next admission recovers.
+        fs::remove_file(directory.join("fail-stop")).unwrap();
+        let mut seen = 0;
+        calls_since(directory, &mut seen);
+        let retried = Lock::try_acquire_slot(directory, 0, &program);
+        assert!(retried.is_ok(), "{:?}", retried.err());
+        assert!(
+            calls_since(directory, &mut seen).contains(&format!("rm --force id-{full}")),
+            "the retry did not remove the Full worker"
         );
         assert!(fs::read(directory.join(lock_file(0))).unwrap().is_empty());
     }

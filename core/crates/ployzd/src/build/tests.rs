@@ -718,7 +718,8 @@ case "$1 $2" in
   'buildx version'|'buildx create'|'volume create') exit 0 ;;
   'inspect --format') printf 'Error: no such object: %s\n' "$4" >&2; exit 1 ;;
   'stop --time')
-    if [ -f "$root/fail-cleanup" ] && {{ [ -f "$root/executed" ] || [ -f "$root/checking" ]; }}; then exit 1; fi ;;
+    if [ -f "$root/fail-cleanup" ] && {{ [ -f "$root/executed" ] || [ -f "$root/checking" ]; }}; then exit 1; fi
+    if [ "$4" = worker ]; then echo stopped > "$root/worker-state"; fi ;;
   'inspect --type')
     # The worker's state by its ID, for a failed stop: running, stopped, or gone.
     if [ "$6" = worker ]; then
@@ -730,12 +731,19 @@ case "$1 $2" in
       exit 0
     fi
     case "$6" in
-      buildx_buildkit_*) printf '%s\n' '{{"Id":"worker","Config":{{"Image":"{}","Env":["PLOYZ_BUILD_OWNER={}"]}}}}' ;;
+      buildx_buildkit_*)
+        if [ "$(cat "$root/worker-state" 2>/dev/null)" = gone ]; then
+          printf 'Error: No such container: %s\n' "$6" >&2; exit 1
+        fi
+        printf '%s\n' '{{"Id":"worker","Config":{{"Image":"{}","Env":["PLOYZ_BUILD_OWNER={}"]}}}}' ;;
       *) printf 'Error: No such container: %s\n' "$6" >&2; exit 1 ;;
     esac ;;
   'rm --force')
-    if [ -f "$root/fail-cleanup" ] && {{ [ -f "$root/executed" ] || [ -f "$root/checking" ]; }}; then exit 1; fi ;;
+    if [ -f "$root/fail-cleanup" ] && {{ [ -f "$root/executed" ] || [ -f "$root/checking" ]; }}; then exit 1; fi
+    if [ "$3" = worker ]; then echo gone > "$root/worker-state"; fi ;;
   'buildx inspect')
+    # A bootstrap starts the worker again.
+    echo running > "$root/worker-state"
     if [ -f "$root/slow-check" ]; then : > "$root/checking"; exec sleep 30; fi ;;
   'buildx ls')
     printf '%s\n' '{{"Name":"{}","Nodes":[{{"Status":"running","Platforms":["linux/amd64"]}}]}}'

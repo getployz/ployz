@@ -247,6 +247,16 @@ async fn attempt(
         let installation = local.admit_installation().map_err(|error| {
             failed(Stage::Admission, ployz_core::error_chain::inline(&error)).with_work(work.clone())
         })?;
+        // Startup may still be cleaning abandoned slots: wait for it, so the
+        // slots it holds never count as busy against this Build.
+        let mut cleaned = runner.cleaned();
+        tokio::select! {
+            biased;
+            () = runner.shutdown.cancelled() => return Err(failed(Stage::Admission, "Build daemon stopped; execution was not attempted").with_work(work.clone())),
+            () = events.closed() => return Err(failed(Stage::Admission, "Build client disconnected").with_work(work.clone())),
+            () = bound.ended() => return Err(failed(Stage::Admission, BUILD_ENDED).with_work(work.clone())),
+            _ = cleaned.wait_for(|cleaned| *cleaned) => {}
+        }
         // Acceptance may have been revoked while this Build waited in the queue.
         let (machine_id, concurrency) = require_build_acceptance(&local)
             .map_err(|reason| failed(Stage::Admission, reason.to_string()).with_work(work.clone()))?;

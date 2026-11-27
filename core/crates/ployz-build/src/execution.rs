@@ -327,46 +327,44 @@ impl Admission {
         let limit = usize::from(concurrency);
         let mut quarantined = None;
         let mut foreign = None;
-        // Slots that count against the limit: running a Build, or quarantined.
-        let mut counted = Vec::new();
-        // A marked slot runs a Build or waits for recovery, whatever its number,
-        // so every one counts before a free slot is taken, and is recovered
-        // first if it can be. One that recovers stops counting.
-        let mut recovered = None;
-        for slot in 0..=usize::from(u8::MAX) {
-            if !Lock::marked_in(&policy.state_directory, slot) {
-                continue;
-            }
+        // Slots that count against the limit: held by an admission, from the
+        // moment it takes the slot through its upload and Build, or quarantined.
+        let mut held = 0;
+        let mut candidate = None;
+        // Every slot used before counts before a new one is taken, marked or
+        // not, and a marked one is recovered first if it can be. One that
+        // recovers stops counting. The first free one stays held while the
+        // rest are looked at, so two admissions cannot each miss the other.
+        let known = Lock::known_slots(&policy.state_directory);
+        for &slot in &known {
             match Self::try_acquire_slot(policy, slot) {
+                Ok(_) if candidate.is_some() => {}
+                // A slot whose worker name a container Ployz did not create
+                // holds is passed over without counting against the limit.
                 Ok(admission) => match admission.lock.foreign_holder(&policy.docker) {
-                    None => {
-                        recovered.get_or_insert(admission);
-                    }
+                    None => candidate = Some(admission),
                     Some(container) => {
                         foreign.get_or_insert(container);
                     }
                 },
-                Err(BuildError::Busy) => counted.push(slot),
+                Err(BuildError::Busy) => held += 1,
                 Err(error) if error.is_unknown() => {
-                    counted.push(slot);
+                    held += 1;
                     quarantined.get_or_insert(error);
                 }
                 Err(error) => return Err(error),
             }
         }
-        let mut held = counted.len();
         if held < limit
-            && let Some(admission) = recovered
+            && let Some(admission) = candidate
         {
             return Ok(admission);
         }
-        // A slot whose worker name a container Ployz did not create holds is
-        // passed over without counting against the limit.
         for slot in 0..=usize::from(u8::MAX) {
             if held >= limit {
                 break;
             }
-            if counted.contains(&slot) {
+            if known.contains(&slot) {
                 continue;
             }
             match Self::try_acquire_slot(policy, slot) {
