@@ -390,10 +390,11 @@ export const recordStoreGithubBuild = Effect.fn("StoreGithub.record")(function* 
 
 /**
  * Cancel a dispatched run whose record failed on the last try, once the Store proves it can never hold the build:
- * failure cleanup stops only runs the Store recorded. The Store refuses a record that would land after its caller
- * stopped waiting, but a connection lost while committing leaves the answer unknown, so the build is first passed on,
- * which refuses any later record of a run. If that pass-on is refused, the run is cancelled only when it isn't the
- * holder; if the Store doesn't answer, the run is left alone for failure cleanup.
+ * failure cleanup stops only runs the Store recorded. A record whose caller gave up may still commit at any later
+ * point, so the build is first passed on: that write waits for any record still committing, and once it commits the
+ * Store refuses every later record of a run. If the pass-on is refused, the run is cancelled only when it isn't the
+ * holder. If the Store doesn't answer, the run is left alone; should its record commit later, it holds the build only
+ * until failure cleanup, which stops the Deployment before it reads the builds to cancel.
  */
 const giveUpRun = (build: string, run: GithubRun) => Effect.gen(function* () {
   const store = yield* cloudStore;

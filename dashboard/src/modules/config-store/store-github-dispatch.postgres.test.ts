@@ -5,12 +5,13 @@ import { it } from "@effect/vitest";
 import { sql } from "drizzle-orm";
 import { Clock, Deferred, Effect, Exit, Fiber, Redacted } from "effect";
 import { TestClock } from "effect/testing";
-import { expect } from "vitest";
+import { expect, vi } from "vitest";
 import { startGithubBuilds } from "#/modules/config-store/store-deployment.inngest";
 import { recordStoreDeploymentRun, stopStoreDeploymentRun } from "#/modules/config-store/store-deployment.server";
-import { planStoreGithubBuilds, startStoreGithubBuilds, type StoreGithubTarget } from "#/modules/config-store/store-github-builds.server";
+import { planStoreGithubBuilds, recordStoreGithubBuild, startStoreGithubBuilds, type StoreGithubTarget } from "#/modules/config-store/store-github-builds.server";
 import { asTestDouble } from "#/lib/test-double";
 import { GithubObservationError } from "#/modules/github/github-observation.api";
+import type { ConfigStore } from "@ployz/sdk";
 import { RpcError } from "#/modules/runtime/ployz.server";
 import type { EffectRunner } from "#/modules/inngest/run.server";
 import type { StoreServices } from "#/modules/config-store/store-deployment.server";
@@ -302,8 +303,7 @@ it.effect.each(["committed", "late", "unanswered"] as const)(
     const clock = yield* Clock.Clock;
     const cloud = yield* provided(cloudStore);
     const recordRun = cloud.githubDispatched.bind(cloud);
-    // Every record answers unavailable. The last one either committed anyway, as when the connection drops while
-    // committing, or reaches the Store again only after the step gave up.
+    // Every record answers unavailable. The last one either committed anyway, or commits only after the step gave up.
     let writes = 0;
     cloud.githubDispatched = async (build, run) => {
       writes += 1;
@@ -330,7 +330,7 @@ it.effect.each(["committed", "late", "unanswered"] as const)(
     } else if (write === "unanswered") {
       expect(cancelled).toEqual([]);
     } else {
-      // The record reaches the Store only after the step gave up. The build was passed on first, so it is refused.
+      // The record commits only after the step gave up. The build was passed on first, so it is refused.
       const late = yield* Effect.exit(Effect.tryPromise(() => recordRun(target.build, {
         run_id: RUN, run_url: runUrl(RUN), workflow_ref: WORKFLOW, repository: "acme/web", installation_id: 7,
       })));
@@ -339,6 +339,76 @@ it.effect.each(["committed", "late", "unanswered"] as const)(
       expect(cancelled).toEqual([RUN]);
     }
     expect(dispatched).toEqual([RUN]);
+  }),
+  60_000,
+);
+
+/** Until `count` Store writes wait on a lock, as behind `holdEnvironment`. */
+const waitingOnLocks = Effect.fn(function* (provided: (program: Effect.Effect<number, unknown, Database>) => Effect.Effect<number, unknown>, count: number) {
+  const waiting = provided(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    const [row] = yield* drizzle.execute<{ waiting: number }>(
+      sql`select count(*)::int as waiting from pg_stat_activity where wait_event_type = 'Lock' and datname = current_database()`, "objects");
+    return row?.waiting ?? 0;
+  }));
+  yield* Effect.promise(() => vi.waitFor(async () => expect(await Effect.runPromise(waiting)).toBeGreaterThanOrEqual(count), { timeout: 10_000 }));
+});
+
+/** The run holding `build` now, if any. */
+const holderOf = (cloud: Pick<ConfigStore, "githubBuild">, build: string) =>
+  Effect.tryPromise(() => cloud.githubBuild(build)).pipe(
+    Effect.map((found): number | null => "held" in found ? found.held.run.run_id : null),
+    Effect.orElseSucceed(() => null),
+  );
+
+it.live("a record that commits after its caller gave up is cancelled once the Deployment fails", () =>
+  Effect.gen(function* () {
+    const cancelled: number[] = [];
+    const authority = fakeGithubAuthority({ cancelBuild: ({ runId }) => Effect.sync(() => void cancelled.push(runId)) });
+    const { provided } = yield* pinnedWeb(authority);
+    const cloud = yield* provided(cloudStore);
+    const data = { organizationId: ORGANIZATION, environmentId: ENVIRONMENT, deploymentId: DEPLOYMENT, trigger: "user" as const };
+    yield* provided(recordStoreDeploymentRun("worker-run", data));
+    // Another writer holds the Environment, so the run's record waits; its caller has stopped waiting, as the SDK does
+    // at its bound, and Cloud's give-up got no answer either, so it left the run alone. The write commits whenever the
+    // writer lets go, however late.
+    const release = yield* holdEnvironment(provided);
+    const landed = cloud.githubDispatched(target.build, {
+      run_id: RUN, run_url: runUrl(RUN), workflow_ref: WORKFLOW, repository: "acme/web", installation_id: 7,
+    }).then(() => "committed" as const, () => "refused" as const);
+    yield* waitingOnLocks(provided, 1);
+    // The function failed, and its cleanup starts while the record still waits. Then the writer lets go.
+    const cleanup = yield* provided(stopStoreDeploymentRun(ORGANIZATION, DEPLOYMENT, "worker-run")).pipe(Effect.exit, Effect.forkChild);
+    yield* waitingOnLocks(provided, 2);
+    yield* release;
+    yield* Fiber.join(cleanup);
+    expect(yield* Effect.promise(() => landed)).toBe("committed");
+    // The run the late record made the holder is cancelled with the Deployment.
+    expect(yield* holderOf(cloud, target.build)).toBe(RUN);
+    expect(cancelled).toEqual([RUN]);
+  }),
+  60_000,
+);
+
+it.live("a replay's record that waits on a late record follows the run that took the build and cancels its own", () =>
+  Effect.gen(function* () {
+    const cancelled: number[] = [];
+    const authority = fakeGithubAuthority({ cancelBuild: ({ runId }) => Effect.sync(() => void cancelled.push(runId)) });
+    const { provided } = yield* pinnedWeb(authority);
+    const cloud = yield* provided(cloudStore);
+    const run = (runId: number) => ({ run_id: runId, run_url: runUrl(runId), workflow_ref: WORKFLOW, repository: "acme/web", installation_id: 7 });
+    // The lost start's record of 9001 still waits on the Environment when the replay, which asked GitHub again, records
+    // 9002.
+    const release = yield* holdEnvironment(provided);
+    const landed = cloud.githubDispatched(target.build, run(RUN)).then(() => "committed" as const, () => "refused" as const);
+    yield* waitingOnLocks(provided, 1);
+    const replay = yield* provided(recordStoreGithubBuild({ kind: "run", build: target.build, run: run(RUN + 1), dispatched: true })).pipe(Effect.forkChild);
+    yield* waitingOnLocks(provided, 2);
+    yield* release;
+    expect(yield* Fiber.join(replay)).toEqual({ kind: "dispatched", runId: RUN });
+    expect(yield* Effect.promise(() => landed)).toBe("committed");
+    expect(yield* holderOf(cloud, target.build)).toBe(RUN);
+    expect(cancelled).toEqual([RUN + 1]);
   }),
   60_000,
 );

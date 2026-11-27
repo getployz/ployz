@@ -164,24 +164,29 @@ export const forgetStoreDeploymentRun = Effect.fn("StoreDeployment.forgetRun")(f
 });
 
 /**
- * Run `runId` stopped without finishing: its Deployment's GitHub builds stop and the Store records that it stopped (or,
- * never claimed, that it failed), each whether or not the other could, so the Deployment never reads running or
- * waits queued for nobody. Fails, to be retried, if either failed.
+ * Run `runId` stopped without finishing: the Store records that it stopped (or, never claimed, that it failed), and its
+ * Deployment's GitHub builds stop, each whether or not the other could, so the Deployment never reads running or waits
+ * queued for nobody. Fails, to be retried, if either failed.
+ *
+ * The Deployment stops first. A run's record whose caller gave up may still be committing, holding the Environment,
+ * and stopping waits for it; once stopped, the Store refuses any later record. So the builds read after it name every
+ * run that will ever hold one, and each is cancelled.
  */
 export const stopStoreDeploymentRun = Effect.fn("StoreDeployment.stopRun")(function* (
   organizationId: string, deploymentId: string, runId: string,
 ) {
   const store = yield* cloudStore;
-  const cancelled = yield* Effect.exit(cancelStoreGithubBuilds(deploymentId));
-  const stopped = yield* storeTry(async () => ({ abandoned: await store.abandonDeployment(deploymentId, storeDeploymentRunner(runId)) })).pipe(
+  const stopped = yield* Effect.exit(storeTry(async () => ({ abandoned: await store.abandonDeployment(deploymentId, storeDeploymentRunner(runId)) })).pipe(
     // It never claimed it, or another runner owns it now.
     Effect.catchIf(refusedWith("conflict"), (refused) => failUnclaimed(store, organizationId, deploymentId, runId, refused.message)),
     Effect.ensuring(released(store, organizationId)),
-  );
+  ));
+  const cancelled = yield* Effect.exit(cancelStoreGithubBuilds(deploymentId));
+  const ended = yield* stopped;
   yield* releasePlacementClaims(organizationId, deploymentId);
   yield* cancelled;
   yield* forgetStoreDeploymentRun(runId);
-  return stopped;
+  return ended;
 });
 
 /** Inngest cancelled run `runId`: stop what it ran, if it is a run of the worker. */

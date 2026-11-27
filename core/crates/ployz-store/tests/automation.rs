@@ -3021,7 +3021,6 @@ fn built_on_github(
                 repository: backend::repo_name("acme/web"),
                 installation_id: 7,
             },
-            std::time::Instant::now() + std::time::Duration::from_secs(60),
         )
         .unwrap();
     let grant = ployz_store::GithubGrant {

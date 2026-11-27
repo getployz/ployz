@@ -58,7 +58,7 @@ pub use preview::{
     observe_preview_homes, observe_signers,
 };
 pub use running::Running;
-pub use store_call::{LANDS_WITHIN, store_call};
+pub use store_call::store_call;
 pub use store_runner::{
     RetireLeft, RetireOutcome, Sources, retire_old, run_deployment, run_deployment_expecting,
 };

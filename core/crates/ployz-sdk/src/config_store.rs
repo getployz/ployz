@@ -649,9 +649,7 @@ impl ConfigStore {
         to_json(ployz::sdk::github_start(Arc::clone(&self.store), build, connections, expect).await)
     }
 
-    /// Hand a pinned build to GitHub run `run` (`GithubRun`). A write that would land
-    /// after its caller stopped waiting is refused, so on `unavailable` the run was
-    /// never recorded and never will be.
+    /// Hand a pinned build to GitHub run `run` (`GithubRun`).
     ///
     /// # Errors
     /// Returns `conflict` once the Deployment no longer wants it: cancel the run.
@@ -663,8 +661,7 @@ impl ConfigStore {
     ) -> Result<serde_json::Value> {
         let build = github_id(&build)?;
         let run = decode(run, "Expected a GitHub run")?;
-        let until = std::time::Instant::now() + ployz::sdk::LANDS_WITHIN;
-        self.run(move |store| store.github_dispatched(&build, &run, until))
+        self.run(move |store| store.github_dispatched(&build, &run))
             .await
     }
 
