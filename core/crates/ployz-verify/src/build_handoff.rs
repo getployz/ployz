@@ -322,7 +322,7 @@ enum Stop {
     Outstanding,
     /// The build it found: its `github_end` Failed "cancelled" (`ployz::sdk::github_build::github_cancel`).
     Ending,
-    /// `cancelDispatchedGithubRun` for it (`config-store.server.ts::cancelStoreGithubBuilds`).
+    /// The cancel of the run its write owes (`store-github-builds.server.ts::cancelStoreGithubBuilds`).
     Cancelling,
 }
 
@@ -335,13 +335,13 @@ enum At {
     Deployment { grant: bool, ended: bool },
     /// `cancelStoreGithubBuilds` (`store-github-builds.server.ts::checkStoreGithubBuild`).
     Stopping(Stop),
-    /// `cancelDispatchedGithubRun` past the budget (`store-github-builds.server.ts::checkStoreGithubBuild`).
+    /// The cancel the budget's settle owes (`store-github-builds.server.ts::checkStoreGithubBuild`).
     BudgetCancel,
     /// `runEnded` is next: at `store-github-builds.server.ts::checkStoreGithubBuild` without a grant, and at its later call with one.
     AskingGithub { grant: bool },
     /// `store-github-builds.server.ts::checkStoreGithubBuild::finish`, called with `look`.
     Finishing { look: GithubLook, at: Finish },
-    /// `cancelDispatchedGithubRun` after the start limit's finish (`store-github-builds.server.ts::checkStoreGithubBuild`). `waiting` is what
+    /// The cancel the start limit's settle owes (`store-github-builds.server.ts::checkStoreGithubBuild`). `waiting` is what
     /// the finish answered, which that step returns.
     LimitCancel { waiting: bool },
 }
