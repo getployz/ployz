@@ -23,20 +23,20 @@ pub(super) fn record(
     // Only the Deployment's own cancel makes the work it stopped read Cancelled,
     // and only losing its runner makes it read Interrupted.
     let by = match stored.summary.status {
-        DeploymentStatus::Cancelling => StoppedBy::CANCEL,
-        DeploymentStatus::Unknown => StoppedBy::LOST_RUNNER,
+        DeploymentStatus::Cancelling => StoppedBy::Cancel,
+        DeploymentStatus::Unknown => StoppedBy::LostRunner,
         DeploymentStatus::WaitingForCi
         | DeploymentStatus::Queued
         | DeploymentStatus::Running
         | DeploymentStatus::Applied
         | DeploymentStatus::Failed
         | DeploymentStatus::Cancelled
-        | DeploymentStatus::Superseded => StoppedBy::NOTHING,
+        | DeploymentStatus::Superseded => StoppedBy::Nothing,
     };
     for row in rows {
         let mut state = row.state.clone();
         if let RowState::Failed { stopped_by, .. } = &mut state {
-            *stopped_by = if row.stopped { by } else { StoppedBy::NOTHING };
+            *stopped_by = if row.stopped { by } else { StoppedBy::Nothing };
         }
         let state = &state;
         let started = matches!(
@@ -111,7 +111,7 @@ pub(super) fn failed_or_cancelled(
         };
         let service = row.parse(0, "Deployment row")?;
         match stopped_by {
-            StoppedBy::NOTHING => {
+            StoppedBy::Nothing => {
                 // A row the cancel stopped before it failed on its own keeps the
                 // cancel's finish time, so its own failure dates from its history.
                 let at = history(row, 4)?
@@ -130,10 +130,10 @@ pub(super) fn failed_or_cancelled(
                     },
                 ));
             }
-            StoppedBy::CANCEL => {
+            StoppedBy::Cancel => {
                 cancelled.insert(service);
             }
-            _ => {}
+            StoppedBy::LostRunner => {}
         }
     }
     failed.sort_by(|a, b| (a.0, &a.1, &a.2).cmp(&(b.0, &b.1, &b.2)));
@@ -153,7 +153,7 @@ fn failed_on_its_own(history: &[RowTransition]) -> Option<i64> {
             matches!(
                 entry.state,
                 RowState::Failed {
-                    stopped_by: StoppedBy::NOTHING,
+                    stopped_by: StoppedBy::Nothing,
                     ..
                 }
             )
@@ -375,7 +375,7 @@ pub(super) fn of_nodes(
 fn merge_mounting_row(kept: &mut ServerRow, row: &ServerRow) {
     let priority = |state: &RowState| match state {
         RowState::Failed {
-            stopped_by: StoppedBy::NOTHING,
+            stopped_by: StoppedBy::Nothing,
             ..
         } => 7,
         RowState::Unknown => 6,

@@ -86,7 +86,7 @@ pub(crate) fn service_row<'a>(
             matches!(
                 replica.state,
                 RowState::Failed {
-                    stopped_by: StoppedBy::NOTHING,
+                    stopped_by: StoppedBy::Nothing,
                     ..
                 }
             )
@@ -206,9 +206,9 @@ pub(crate) fn service_row<'a>(
         State::Pending
     } else if all(|state| matches!(state, RowState::Completed)) || switched {
         State::Completed
-    } else if any_stopped_by(StoppedBy::CANCEL) {
+    } else if any_stopped_by(StoppedBy::Cancel) {
         State::Cancelled
-    } else if any_stopped_by(StoppedBy::LOST_RUNNER) {
+    } else if any_stopped_by(StoppedBy::LostRunner) {
         State::Interrupted
     } else if replicas
         .iter()

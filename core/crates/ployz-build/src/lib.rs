@@ -38,7 +38,8 @@ pub mod remote;
 mod upload;
 
 pub use execution::{
-    Admission, BuildStep, Cancellation, HostPolicy, Progress, Stage, TargetEvidence, WorkEvidence,
+    Admission, BuildStep, Cancellation, HostPolicy, Progress, Stage, StepPhase, TargetEvidence,
+    WorkEvidence,
 };
 pub mod railpack;
 pub use railpack::Railpack;
