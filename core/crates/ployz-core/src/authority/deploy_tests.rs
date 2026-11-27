@@ -309,6 +309,10 @@ fn each_payload_field_changed_alone_is_refused() {
             with(&["container", "stop_timeout_secs"], json!(1)),
         ),
         (
+            "stop signal",
+            with(&["container", "stop_signal"], json!("SIGQUIT")),
+        ),
+        (
             "hook command",
             with(&["pre_deploy", "command"], json!(["sh", "-c", "id"])),
         ),

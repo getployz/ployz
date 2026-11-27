@@ -401,9 +401,9 @@ async fn a_flip_retires_the_replaced_copy_and_removes_a_draining_one_after_the_s
     let client = Scripted::new(vec![
         created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
         observed(Call::Inspect(machine, replaced), running()),
-        ok(Call::Remove(machine, replaced)),
         observed(Call::Inspect(machine, draining), running()),
         ok(Call::Remove(machine, draining)),
+        ok(Call::Remove(machine, replaced)),
     ])
     .with_copy(&machine, &kept, CopyRotation::In)
     .with_copy(&machine, &replaced, CopyRotation::In)
@@ -432,8 +432,8 @@ async fn a_flip_retires_the_replaced_copy_and_removes_a_draining_one_after_the_s
         [
             Move::To(new, CopyRotation::In),
             Move::To(replaced, CopyRotation::Out),
-            Move::Gone(replaced),
             Move::Gone(draining),
+            Move::Gone(replaced),
         ],
         "the draining copy is removed only after the new copy is In"
     );
@@ -997,9 +997,9 @@ async fn a_deploy_that_excludes_a_server_keeps_its_copys_anonymous_volumes() {
     let client = Scripted::new(vec![
         created(Call::Run(first, ContainerKind::ServiceContainer), &new),
         observed(Call::Inspect(first, replaced), running()),
-        ok(Call::Remove(first, replaced)),
         observed(Call::Inspect(second, removed), running()),
         ok(Call::Remove(second, removed)),
+        ok(Call::Remove(first, replaced)),
     ])
     .with_copy(&first, &replaced, CopyRotation::In)
     .with_copy(&second, &removed, CopyRotation::In);
@@ -1015,7 +1015,7 @@ async fn a_deploy_that_excludes_a_server_keeps_its_copys_anonymous_volumes() {
     );
     assert_eq!(
         *client.deleted_volumes.lock().unwrap(),
-        [(replaced, true), (removed, false)]
+        [(removed, false), (replaced, true)]
     );
     client.assert_done();
 }
@@ -1959,9 +1959,9 @@ async fn an_undialed_servers_proxy_lets_the_copies_it_never_routed_go_at_the_swi
             ),
             observed(Call::Inspect(machine, newer), running()),
             observed(Call::Inspect(other, newer_other), running()),
+            observed(Call::Inspect(machine, left), running()),
             ok(Call::Remove(machine, newer)),
             ok(Call::Remove(other, newer_other)),
-            observed(Call::Inspect(machine, left), running()),
         ])
     }
     .with_copy(&machine, &left, CopyRotation::In)
@@ -3756,4 +3756,234 @@ async fn a_service_that_switched_before_a_sibling_failed_reads_switched() {
         )
     );
     client.assert_done();
+}
+
+/// A gap proxy that still routes one old copy holds the whole group in its switch: the
+/// other old copy goes, but no row moves on to retiring while a copy is routed.
+#[tokio::test(start_paused = true)]
+async fn a_copy_a_gap_proxy_still_routes_keeps_its_group_switching() {
+    let (first, second, gap) = (machine('1'), machine('3'), machine('2'));
+    let (old_first, old_second) = (container('a'), container('b'));
+    let (new_first, new_second) = (container('c'), container('d'));
+    let plan = vec![
+        global_replacement(&first, &old_first, UpdateOrder::StartFirst),
+        global_replacement(&second, &old_second, UpdateOrder::StartFirst),
+    ];
+    let client = Scripted {
+        acks: BTreeMap::from([(gap, Ack::Never)]),
+        undialed: BTreeMap::from([(gap, "machine-2")]),
+        ..Scripted::new(vec![
+            created(
+                Call::Run(first, ContainerKind::ServiceContainer),
+                &new_first,
+            ),
+            created(
+                Call::Run(second, ContainerKind::ServiceContainer),
+                &new_second,
+            ),
+            observed(Call::Inspect(first, old_first), running()),
+            observed(Call::Inspect(second, old_second), running()),
+            ok(Call::Remove(second, old_second)),
+        ])
+    }
+    .with_copy(&first, &old_first, CopyRotation::In)
+    .with_copy(&second, &old_second, CopyRotation::In);
+    client.record(old_second, |copy| copy.in_before = false);
+    let groups = crate::deploy::planning::test_groups(&plan);
+    let plan =
+        crate::deploy::DeployPlan::for_execution_test_with_groups(plan, test_namespace(), groups)
+            .with_machine_names(&[first, second, gap]);
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+    let outcome = super::super::execute_operation_sequence(
+        &plan,
+        &run_id(),
+        &client,
+        &CancellationToken::new(),
+        Some(tx),
+    )
+    .await;
+
+    assert_eq!(
+        outcome.services(),
+        ended(&[("api", ServiceResult::Unconfirmed)])
+    );
+    assert_eq!(client.rotation(&old_first), Some(CopyRotation::In));
+    assert_eq!(client.rotation(&old_second), None);
+    client.assert_done();
+    let (mut tracker, mut steps) = (
+        ployz_core::deploy_progress::RowTracker::default(),
+        ployz_core::deploy_steps::Steps::default(),
+    );
+    let mut at = 0;
+    while let Ok(event) = rx.try_recv() {
+        if let DeployEvent::Progress { rows, .. } = event {
+            at += 1;
+            steps.rows(&tracker.changes(&rows), at);
+        }
+    }
+    let names: Vec<_> = steps
+        .take_changed()
+        .into_iter()
+        .map(|step| step.name)
+        .collect();
+    assert!(
+        names.contains(&ployz_core::deploy_steps::StepName::SwitchingTraffic),
+        "{names:?}"
+    );
+    assert!(
+        !names.contains(&ployz_core::deploy_steps::StepName::StoppingOld),
+        "the gap proxy still routes {old_first:?}, yet the group moved on to stopping_old: {names:?}"
+    );
+}
+
+/// An owner that lost its record of an old copy answers not found while a gap proxy
+/// still routes the copy, and that copy holds the group in its switch too.
+#[tokio::test(start_paused = true)]
+async fn a_copy_its_owner_lost_that_a_gap_proxy_still_routes_keeps_its_group_switching() {
+    let (first, second, gap) = (machine('1'), machine('3'), machine('2'));
+    let (old_first, old_second) = (container('a'), container('b'));
+    let (new_first, new_second) = (container('c'), container('d'));
+    let mut missing = error("not found");
+    missing.code = RpcErrorCode::NotFound;
+    let plan = vec![
+        global_replacement(&first, &old_first, UpdateOrder::StartFirst),
+        global_replacement(&second, &old_second, UpdateOrder::StartFirst),
+    ];
+    let client = Scripted {
+        acks: BTreeMap::from([(gap, Ack::Never)]),
+        undialed: BTreeMap::from([(gap, "machine-2")]),
+        ..Scripted::new(vec![
+            created(
+                Call::Run(first, ContainerKind::ServiceContainer),
+                &new_first,
+            ),
+            created(
+                Call::Run(second, ContainerKind::ServiceContainer),
+                &new_second,
+            ),
+            Step(Call::Inspect(first, old_first), Reply::Error(missing)),
+            observed(Call::Inspect(second, old_second), running()),
+            ok(Call::Remove(second, old_second)),
+        ])
+    }
+    .with_copy(&first, &old_first, CopyRotation::In)
+    .with_copy(&second, &old_second, CopyRotation::In);
+    client.record(old_second, |copy| copy.in_before = false);
+    let groups = crate::deploy::planning::test_groups(&plan);
+    let plan =
+        crate::deploy::DeployPlan::for_execution_test_with_groups(plan, test_namespace(), groups)
+            .with_machine_names(&[first, second, gap]);
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+    let outcome = super::super::execute_operation_sequence(
+        &plan,
+        &run_id(),
+        &client,
+        &CancellationToken::new(),
+        Some(tx),
+    )
+    .await;
+
+    assert_eq!(
+        outcome.services(),
+        ended(&[("api", ServiceResult::Unconfirmed)])
+    );
+    assert_eq!(client.rotation(&old_first), Some(CopyRotation::In));
+    assert_eq!(client.rotation(&old_second), None);
+    client.assert_done();
+    let (mut tracker, mut steps) = (
+        ployz_core::deploy_progress::RowTracker::default(),
+        ployz_core::deploy_steps::Steps::default(),
+    );
+    let mut at = 0;
+    while let Ok(event) = rx.try_recv() {
+        if let DeployEvent::Progress { rows, .. } = event {
+            at += 1;
+            steps.rows(&tracker.changes(&rows), at);
+        }
+    }
+    let names: Vec<_> = steps
+        .take_changed()
+        .into_iter()
+        .map(|step| step.name)
+        .collect();
+    assert!(
+        names.contains(&ployz_core::deploy_steps::StepName::SwitchingTraffic),
+        "{names:?}"
+    );
+    assert!(
+        !names.contains(&ployz_core::deploy_steps::StepName::StoppingOld),
+        "the gap proxy still routes {old_first:?}, yet the group moved on to stopping_old: {names:?}"
+    );
+}
+
+/// A copy its owner lost that no proxy routes is already gone, so the group retires.
+#[tokio::test(start_paused = true)]
+async fn a_copy_its_owner_lost_that_no_proxy_routes_lets_its_group_retire() {
+    let (first, second) = (machine('1'), machine('3'));
+    let (old_first, old_second) = (container('a'), container('b'));
+    let (new_first, new_second) = (container('c'), container('d'));
+    let mut missing = error("not found");
+    missing.code = RpcErrorCode::NotFound;
+    let plan = vec![
+        global_replacement(&first, &old_first, UpdateOrder::StartFirst),
+        global_replacement(&second, &old_second, UpdateOrder::StartFirst),
+    ];
+    let client = Scripted::new(vec![
+        created(
+            Call::Run(first, ContainerKind::ServiceContainer),
+            &new_first,
+        ),
+        created(
+            Call::Run(second, ContainerKind::ServiceContainer),
+            &new_second,
+        ),
+        Step(Call::Inspect(first, old_first), Reply::Error(missing)),
+        observed(Call::Inspect(second, old_second), running()),
+        ok(Call::Remove(second, old_second)),
+    ])
+    .with_copy(&second, &old_second, CopyRotation::In);
+    let groups = crate::deploy::planning::test_groups(&plan);
+    let plan =
+        crate::deploy::DeployPlan::for_execution_test_with_groups(plan, test_namespace(), groups)
+            .with_machine_names(&[first, second]);
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+    let outcome = super::super::execute_operation_sequence(
+        &plan,
+        &run_id(),
+        &client,
+        &CancellationToken::new(),
+        Some(tx),
+    )
+    .await;
+
+    assert_eq!(outcome.services(), ended(&[("api", ServiceResult::New)]));
+    assert_eq!(client.rotation(&old_second), None);
+    client.assert_done();
+    let (mut tracker, mut steps) = (
+        ployz_core::deploy_progress::RowTracker::default(),
+        ployz_core::deploy_steps::Steps::default(),
+    );
+    let mut at = 0;
+    while let Ok(event) = rx.try_recv() {
+        if let DeployEvent::Progress { rows, .. } = event {
+            at += 1;
+            steps.rows(&tracker.changes(&rows), at);
+        }
+    }
+    let names: Vec<_> = steps
+        .take_changed()
+        .into_iter()
+        .map(|step| step.name)
+        .collect();
+    assert!(
+        names.contains(&ployz_core::deploy_steps::StepName::SwitchingTraffic),
+        "{names:?}"
+    );
+    assert!(
+        names.contains(&ployz_core::deploy_steps::StepName::StoppingOld),
+        "no proxy routes {old_first:?}, yet the group never moved on to stopping_old: {names:?}"
+    );
 }

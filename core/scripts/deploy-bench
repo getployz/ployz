@@ -1,0 +1,225 @@
+#!/usr/bin/env python3
+"""Deploy an Environment N times and print how long each Deployment step took: the median and
+the spread across runs, and the time no step covered.
+
+  deploy-bench --env shop/bench -n 3                 redeploy the newest ended Deployment
+  deploy-bench --env shop/bench -n 3 --push ~/shop   push an empty commit from that checkout
+  deploy-bench --env shop/bench -n 3 --up ~/shop     `ployz up` that directory with a new file in it
+  deploy-bench --from runs/*.json                    summarize saved `deployment show --json`
+
+It runs `ployz` from PATH, or PLOYZ_BIN, so the Cloud it is signed in to, or PLOYZ_STORE and
+PLOYZ_CONTEXT, pick the Environment the way they do for any ployz command.
+"""
+
+import argparse
+import json
+import os
+from pathlib import Path
+import statistics
+import subprocess
+import sys
+import time
+
+ORDER = [
+    "receiving",
+    "fetching_source",
+    "preparing",
+    "uploading",
+    "starting_builder",
+    "building",
+    "planning",
+    "delivering_image",
+    "starting",
+    "health_check",
+    "switching_traffic",
+    "stopping_old",
+]
+ENDED = {"applied", "failed", "unknown", "cancelled"}
+DEPLOYMENT = "(deployment)"
+GAP = "(no step)"
+TOTAL = "(total)"
+
+
+def label(step):
+    service = step.get("service")
+    return f"{step['name']} {service}" if service else step["name"]
+
+
+def durations(view):
+    """Each ended step's milliseconds, the time inside the Deployment's steps that none of them
+    covered, their whole span, and the Deployment's own start to end, which a build without steps
+    has too."""
+    spans = sorted(
+        (step["started_at"], step["ended_at"]) for step in view.get("steps", []) if "ended_at" in step
+    )
+    out = {
+        label(step): step["ended_at"] - step["started_at"]
+        for step in view.get("steps", [])
+        if "ended_at" in step
+    }
+    if view.get("started_at") and view.get("ended_at"):
+        out[DEPLOYMENT] = (view["ended_at"] - view["started_at"]) * 1000
+    if not spans:
+        return out
+    covered, reach = 0, spans[0][0]
+    for start, end in spans:
+        covered += max(0, end - max(start, reach))
+        reach = max(reach, end)
+    out[GAP] = reach - spans[0][0] - covered
+    out[TOTAL] = reach - spans[0][0]
+    return out
+
+
+def rank(key):
+    name = key.split(" ", 1)[0]
+    if name in ORDER:
+        return (0, ORDER.index(name), key)
+    return (1, 0, key)
+
+
+def summarize(views):
+    """Per step: how many runs had it, its median and its min and max, in milliseconds."""
+    runs = [durations(view) for view in views]
+    keys = sorted({key for run in runs for key in run}, key=rank)
+    rows = []
+    for key in keys:
+        values = [run[key] for run in runs if key in run]
+        rows.append(
+            {
+                "step": key,
+                "runs": len(values),
+                "median_ms": statistics.median(values),
+                "min_ms": min(values),
+                "max_ms": max(values),
+            }
+        )
+    return rows
+
+
+def seconds(ms):
+    return f"{ms / 1000:.2f}s"
+
+
+def table(rows, runs):
+    lines = [f"{'STEP':<34} {'RUNS':>5} {'MEDIAN':>9} {'MIN':>9} {'MAX':>9}"]
+    for row in rows:
+        lines.append(
+            f"{row['step']:<34} {str(row['runs']) + '/' + str(runs):>5} "
+            f"{seconds(row['median_ms']):>9} {seconds(row['min_ms']):>9} {seconds(row['max_ms']):>9}"
+        )
+    return "\n".join(lines)
+
+
+class Ployz:
+    def __init__(self, project, env):
+        self.binary = os.environ.get("PLOYZ_BIN", "ployz")
+        self.scope = ["--project", project, "--env", env]
+
+    def __call__(self, *words, check=True, cwd=None):
+        command = [self.binary, "--json", *words, *self.scope]
+        ran = subprocess.run(command, capture_output=True, text=True, cwd=cwd)
+        if check and ran.returncode != 0:
+            sys.exit(f"{' '.join(command)} failed:\n{ran.stderr.strip()}")
+        self.stderr = ran.stderr.strip()
+        try:
+            return json.loads(ran.stdout)
+        except json.JSONDecodeError:
+            return None
+
+    def newest(self):
+        page = self("deployment", "ls", "--limit", "1")
+        deployments = page["deployments"]
+        return deployments[0] if deployments else None
+
+    def show(self, number):
+        return self("deployment", "show", str(number))
+
+
+def wait_for_new(ployz, after, timeout):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        newest = ployz.newest()
+        if newest and newest.get("number") and newest["id"] != (after or {}).get("id"):
+            return newest
+        time.sleep(1)
+    sys.exit(f"No new Deployment within {timeout}s.")
+
+
+def wait_until_ended(ployz, number, timeout):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        view = ployz.show(number)
+        if view["status"] in ENDED:
+            return view
+        time.sleep(1)
+    sys.exit(f"Deployment #{number} didn't end within {timeout}s.")
+
+
+def redeploy(ployz, timeout):
+    source = ployz.newest()
+    if not source or source["status"] not in ENDED:
+        sys.exit("Redeploying needs an ended Deployment to redeploy.")
+    ran = ployz("deployment", "redeploy", str(source["number"]), "--yes", check=False)
+    if not isinstance(ran, dict) or "number" not in ran:
+        sys.exit(f"Redeploying #{source['number']} failed:\n{ployz.stderr}")
+    return wait_until_ended(ployz, ran["number"], timeout)
+
+
+def push(ployz, checkout, attempt, timeout):
+    before = ployz.newest()
+    git = ["git", "-C", str(checkout)]
+    subprocess.run([*git, "commit", "--allow-empty", "-qm", f"deploy-bench {attempt}"], check=True)
+    subprocess.run([*git, "push", "-q"], check=True)
+    return wait_until_ended(ployz, wait_for_new(ployz, before, timeout)["number"], timeout)
+
+
+def upload(ployz, directory, timeout):
+    before = ployz.newest()
+    (directory / ".deploy-bench").write_text(f"{time.time_ns()}\n")
+    ployz("up", check=False, cwd=directory)
+    return wait_until_ended(ployz, wait_for_new(ployz, before, timeout)["number"], timeout)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--env", help="project/environment to deploy")
+    parser.add_argument("-n", type=int, default=3, help="how many Deployments to run (default 3)")
+    parser.add_argument("--push", type=Path, metavar="CHECKOUT", help="push empty commits from this checkout instead of redeploying")
+    parser.add_argument("--up", type=Path, metavar="DIRECTORY", help="`ployz up` this directory, changed each time, instead of redeploying")
+    parser.add_argument("--timeout", type=int, default=900, help="seconds to wait for each Deployment")
+    parser.add_argument("--save", type=Path, metavar="DIR", help="write each run's `deployment show --json` here")
+    parser.add_argument("--from", dest="saved", nargs="+", type=Path, metavar="FILE", help="summarize saved runs instead of deploying")
+    parser.add_argument("--json", action="store_true", help="print the summary as JSON")
+    args = parser.parse_args()
+
+    if args.saved:
+        views = [json.loads(path.read_text()) for path in args.saved]
+    else:
+        if not args.env or "/" not in args.env:
+            parser.error("--env project/environment is required")
+        project, env = args.env.split("/", 1)
+        ployz = Ployz(project, env)
+        views = []
+        for attempt in range(1, args.n + 1):
+            if args.push:
+                view = push(ployz, args.push, attempt, args.timeout)
+            elif args.up:
+                view = upload(ployz, args.up, args.timeout)
+            else:
+                view = redeploy(ployz, args.timeout)
+            status = view["status"]
+            print(f"#{view['number']} {status}", file=sys.stderr)
+            if args.save:
+                args.save.mkdir(parents=True, exist_ok=True)
+                (args.save / f"{view['number']}.json").write_text(json.dumps(view, indent=2))
+            views.append(view)
+
+    rows = summarize(views)
+    if args.json:
+        print(json.dumps({"runs": len(views), "steps": rows}, indent=2))
+    else:
+        print(table(rows, len(views)))
+
+
+if __name__ == "__main__":
+    main()

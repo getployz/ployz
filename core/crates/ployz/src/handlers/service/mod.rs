@@ -796,13 +796,12 @@ fn stop_flags(command: Command) -> Command {
         .arg(services())
         .arg(
             value("signal", None)
-                .default_value("SIGTERM")
                 .value_parser(stop_signal)
-                .help("Signal sent to stop each container"),
+                .help("Signal sent to stop each container [default: the Service's stopSignal]"),
         )
         .arg(
-            value("timeout", Some('t'))
-                .default_value("10")
-                .help("Seconds to wait after the signal before killing it"),
+            value("timeout", Some('t')).help(
+                "Seconds to wait after the signal before killing it [default: the Service's stopGracePeriod]",
+            ),
         )
 }

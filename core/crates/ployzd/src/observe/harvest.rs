@@ -22,7 +22,7 @@ use ployz_core::{
     ContainerId, MachineId, labels,
     metrics::{MarkerKind, MetricMarker},
 };
-use tokio::sync::mpsc;
+use tokio::{sync::mpsc, time::Instant};
 
 use super::{
     clock::now_nanos,
@@ -46,6 +46,41 @@ const SETTLED_LIMIT: usize = 64;
 const UNFINISHED_FOR_NANOS: i64 = 24 * 60 * 60 * NANOS_PER_SEC;
 
 type DockerEvents = Pin<Box<dyn Stream<Item = Result<EventMessage, DockerError>> + Send>>;
+
+/// Docker's event stream, open or waiting to reopen after it ended.
+enum Events {
+    Open(DockerEvents),
+    Reconnecting(Instant),
+}
+
+enum Next {
+    Event(EventMessage),
+    Lost,
+    Reopen,
+}
+
+impl Events {
+    fn reconnecting() -> Self {
+        Self::Reconnecting(Instant::now() + EVENTS_RETRY)
+    }
+
+    async fn next(&mut self) -> Next {
+        match self {
+            Self::Open(stream) => match stream.next().await {
+                Some(Ok(message)) => Next::Event(message),
+                Some(Err(error)) => {
+                    tracing::warn!(%error, "Docker events stream failed; reconnecting");
+                    Next::Lost
+                }
+                None => Next::Lost,
+            },
+            Self::Reconnecting(at) => {
+                tokio::time::sleep_until(*at).await;
+                Next::Reopen
+            }
+        }
+    }
+}
 
 enum Inspected {
     Found(Box<ContainerInspectResponse>),
@@ -88,8 +123,7 @@ impl Harvester {
     ) -> io::Result<()> {
         let (inspected, mut inspections) = mpsc::unbounded_channel();
         let mut harvester = Self::new(docker, store, inspected, data_dir, crashes);
-        let mut docker_events = Some(harvester.docker_events());
-        let mut reconnect_at = None;
+        let mut events = Events::Open(harvester.docker_events());
         harvester.rescan().await;
         harvester.finish_settlements();
         harvester.clean();
@@ -102,24 +136,15 @@ impl Harvester {
         loop {
             tokio::select! {
                 Some((id, inspected)) = inspections.recv() => harvester.on_inspected(id, inspected),
-                event = next_docker_event(&mut docker_events) => match event {
-                    Some(Ok(message)) => harvester.on_docker_event(message),
-                    Some(Err(error)) => {
-                        tracing::warn!(%error, "Docker events stream failed; reconnecting");
-                        docker_events = None;
-                        reconnect_at = Some(tokio::time::Instant::now() + EVENTS_RETRY);
-                    }
-                    None => {
-                        docker_events = None;
-                        reconnect_at = Some(tokio::time::Instant::now() + EVENTS_RETRY);
+                next = events.next() => match next {
+                    Next::Event(message) => harvester.on_docker_event(message),
+                    Next::Lost => events = Events::reconnecting(),
+                    Next::Reopen => {
+                        events = Events::Open(harvester.docker_events());
+                        harvester.rescan().await;
                     }
                 },
-                () = tokio::time::sleep_until(reconnect_at.unwrap_or_else(tokio::time::Instant::now)), if reconnect_at.is_some() => {
-                    reconnect_at = None;
-                    docker_events = Some(harvester.docker_events());
-                    harvester.rescan().await;
-                }
-                _ = maintenance.tick() => harvester.maintain(&mut docker_events).await,
+                _ = maintenance.tick() => harvester.maintain(&mut events).await,
                 _ = terminate.recv() => return Ok(()),
                 result = tokio::signal::ctrl_c() => return result,
             }
@@ -149,15 +174,17 @@ impl Harvester {
         }
     }
 
-    async fn maintain(&mut self, docker_events: &mut Option<DockerEvents>) {
+    async fn maintain(&mut self, events: &mut Events) {
         self.rescan().await;
-        self.upkeep(docker_events);
+        self.upkeep(events);
     }
 
-    fn upkeep(&mut self, docker_events: &mut Option<DockerEvents>) {
+    fn upkeep(&mut self, events: &mut Events) {
         self.finish_settlements();
-        if docker_events.is_some() && self.stream_pins_too_many_settlements() {
-            *docker_events = Some(self.docker_events());
+        if let Events::Open(stream) = events
+            && self.stream_pins_too_many_settlements()
+        {
+            *stream = self.docker_events();
         }
         self.clean();
     }
@@ -408,15 +435,6 @@ async fn inspect(docker: &Docker, id: &ContainerId) -> Inspected {
             tracing::warn!(container = %id, "Docker did not answer an inspect in time");
             Inspected::Unanswered
         }
-    }
-}
-
-async fn next_docker_event(
-    events: &mut Option<DockerEvents>,
-) -> Option<Result<EventMessage, DockerError>> {
-    match events {
-        Some(events) => events.next().await,
-        None => std::future::pending().await,
     }
 }
 
@@ -1494,7 +1512,7 @@ mod tests {
         let mut other = event("start", T0, &[service]);
         other.actor.as_mut().unwrap().id = Some("cd".repeat(32));
         running.harvester.on_docker_event(other);
-        let mut stream = Some(running.harvester.docker_events());
+        let mut stream = super::Events::Open(running.harvester.docker_events());
         for crash in 0..100 {
             let at = T0 + 1 + 2 * crash;
             running

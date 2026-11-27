@@ -27,8 +27,8 @@ async function newEnvironmentRegion(unread: Partial<RuntimeIncompleteIds>) {
   applyRuntimeSnapshot({
     collections: getRuntimeCollections("acme", scope),
     snapshot: {
-      status: "observed", error: null, machines: [founder], services: [], volumeCopies: [], certificates: [], published: [],
-      incompleteIds: { machines: [], containers: [], volumes: [], certificates: [], ...unread }, observedAt: founder.observedAt,
+      connection: { status: "observed", observedAt: founder.observedAt }, machines: [founder], services: [], volumeCopies: [],
+      certificates: [], published: [], incompleteIds: { machines: [], containers: [], volumes: [], certificates: [], ...unread },
     },
   });
   const shown = renderHook(() => useNewEnvironmentRegion("acme"));
@@ -69,8 +69,9 @@ it("reads the region names once on a cold load, after the Servers arrive", async
       applyRuntimeSnapshot({
         collections: getRuntimeCollections("acme", scope),
         snapshot: {
-          status: "observed", error: null, machines: [server("fsn-1", "fsn"), server("syd-1", "syd")], services: [], volumeCopies: [],
-          certificates: [], published: [], incompleteIds: { machines: [], containers: [], volumes: [], certificates: [] }, observedAt: null,
+          connection: { status: "observed", observedAt: "2026-11-19T00:00:00Z" }, machines: [server("fsn-1", "fsn"), server("syd-1", "syd")],
+          services: [], volumeCopies: [], certificates: [], published: [],
+          incompleteIds: { machines: [], containers: [], volumes: [], certificates: [] },
         },
       });
     });

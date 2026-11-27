@@ -718,7 +718,14 @@ pub(crate) fn view(
     let builds = build::views(tx, &stored)?;
     let rolls_back = undone(tx, &stored.summary)?;
     let untargeted = super::rows::untargeted(&stored, &by_service);
+    let mut steps = super::steps::of(tx, &stored.summary.id)?;
+    for step in &mut steps {
+        if let Some(runtime) = &step.service {
+            step.service = Some(super::record::current_service(&stored.nodes, runtime).clone());
+        }
+    }
     Ok(DeploymentView {
+        steps,
         builds,
         runtime_names,
         rolls_back,
@@ -857,7 +864,7 @@ pub(crate) fn failed_on(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<String
             matches!(
                 row.state,
                 super::RowState::Failed {
-                    stopped_by: crate::StoppedBy::NOTHING,
+                    stopped_by: crate::StoppedBy::Nothing,
                     ..
                 }
             )

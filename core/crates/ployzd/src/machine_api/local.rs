@@ -367,6 +367,7 @@ impl MachineRpc for MachineService {
                     continue;
                 };
                 rtt.path = self.paths.get(&machine.id);
+                rtt.wireguard = self.paths.wireguard(&machine.id);
                 // The mesh echo's round trip, when there is one, over Corrosion's (#3502).
                 if let Some(statistics) = self.paths.rtt(&machine.id) {
                     rtt.statistics = statistics;
@@ -411,6 +412,7 @@ impl MachineRpc for MachineService {
         finish(local.list_machines().await.map(|mut list| {
             for machine in &mut list.machines {
                 machine.path = self.paths.get(&machine.machine.id);
+                machine.wireguard = self.paths.wireguard(&machine.machine.id);
                 if let Some(rtt) = self.paths.rtt(&machine.machine.id) {
                     machine.rtt = Some(rtt);
                 }

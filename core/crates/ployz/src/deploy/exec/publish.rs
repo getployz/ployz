@@ -47,6 +47,51 @@ impl GappedPublishes {
     }
 }
 
+/// The old copies publishes took out of rotation, or that never went In. No proxy
+/// routes them, so they retire once the Deploy's Outcome is out.
+#[derive(Default)]
+pub(super) struct Retiring(std::sync::Mutex<Vec<(cleanup::Copy, AnonymousVolumes)>>);
+
+impl Retiring {
+    fn add(&self, copies: impl IntoIterator<Item = (cleanup::Copy, AnonymousVolumes)>) {
+        self.0.lock().expect("retiring lock").extend(copies);
+    }
+
+    /// Stop and remove every copy, each Machine's at once, and say when each
+    /// Service's are done. A copy that stays is a warning, never a failure: the
+    /// Outcome is already out.
+    pub(super) async fn retire<C: MachineOperations>(
+        &self,
+        client: &C,
+        progress: &Progress,
+        report: &super::report::Report<'_>,
+    ) {
+        let mut services: BTreeMap<ServiceName, Vec<(cleanup::Copy, AnonymousVolumes)>> =
+            BTreeMap::new();
+        for (copy, ask) in std::mem::take(&mut *self.0.lock().expect("retiring lock")) {
+            services
+                .entry(copy.service.name.clone())
+                .or_default()
+                .push((copy, ask));
+        }
+        join_all(services.into_iter().map(|(service, copies)| async move {
+            let removed = join_all(
+                copies
+                    .iter()
+                    .map(|(copy, ask)| cleanup::remove(client, copy, *ask)),
+            )
+            .await;
+            for ((copy, _), removed) in copies.iter().zip(removed) {
+                if let Some(left) = left_unless_done(removed.map(cleanup::Rotated::from)) {
+                    report.leave_running(progress, copy, left);
+                }
+            }
+            progress.retired(service);
+        }))
+        .await;
+    }
+}
+
 pub(super) enum Done {
     Task(usize, Result<Ran, OperationFailure>),
     /// A Rolling step's new copy is In and listed, so the next step may begin.
@@ -110,6 +155,7 @@ pub(super) async fn publish_group<C: MachineOperations>(
         .into_iter()
         .collect();
     let (mut outs, mut gone) = (Vec::new(), Vec::new());
+    let mut missing = 0;
     // What each old copy's removal asks for its anonymous Volumes: they go only with a
     // copy its Machine made to take its place that this Deploy keeps.
     let mut asks = BTreeMap::new();
@@ -128,6 +174,9 @@ pub(super) async fn publish_group<C: MachineOperations>(
                 cleanup::Copy::observed(&details.container)
             }
             Err(ExecutionError::Machine { error, .. }) if error.code == RpcErrorCode::NotFound => {
+                if unrouted(client, machine_id, service, container_id).await {
+                    missing += 1;
+                }
                 continue;
             }
             Err(error) => {
@@ -246,24 +295,62 @@ pub(super) async fn publish_group<C: MachineOperations>(
             unconfirmed.get_or_insert(error);
         }
     }
-    // Each Gone drains on its own Machine; they overlap and are all reported.
-    let removed = join_all(gone.iter().map(|copy| {
+    // The group retires only once no proxy routes any of its old copies: one left
+    // running, such as a copy a gap Server's proxy still routes, holds it switching.
+    if unconfirmed.is_none() && !gone.is_empty() && gone.len() + missing == old.len() {
+        retiring(operations, progress, &new);
+    }
+    shared.retiring.add(gone.into_iter().map(|copy| {
         let ask = asks
             .get(&copy.container_id)
             .copied()
             .unwrap_or(AnonymousVolumes::keep());
-        cleanup::remove(client, copy, ask)
-    }))
-    .await;
-    for (copy, removed) in gone.iter().zip(removed) {
-        if let Some(left) = left_unless_done(removed.map(cleanup::Rotated::from)) {
-            shared.report.leave_running(progress, copy, left);
-        }
-    }
+        (copy, ask)
+    }));
     match (unconfirmed, gapped) {
         (Some(error), _) => Published::OutUnconfirmed(error),
         (None, Some(_)) => Published::Gapped,
         (None, None) => Published::Listed,
+    }
+}
+
+/// Whether the owner's route read shows no proxy routing a copy the owner no longer
+/// knows. A Machine can lose a copy's record while a stale proxy still routes it.
+async fn unrouted<C: MachineOperations>(
+    client: &C,
+    machine_id: &MachineId,
+    service: &QualifiedService,
+    container_id: &ContainerId,
+) -> bool {
+    client
+        .read_routes(machine_id, service)
+        .await
+        .is_ok_and(|read| {
+            read.complete
+                && cleanup::still_waiting(&read, &|routed| !routed.contains(container_id))
+                    .machines
+                    .is_empty()
+        })
+}
+
+/// Move each new copy that started beside the copy it replaces on to retiring it. A
+/// stop-first copy's old one already stopped, so its row stays where it is.
+fn retiring(
+    operations: &[DeployOperation],
+    progress: &Progress,
+    new: &[(usize, MachineId, ContainerId)],
+) {
+    for (index, _, container_id) in new {
+        if let DeployOperation::ReplaceContainer(replacement) = operation_at(operations, *index)
+            && replacement.spec.update.order != UpdateOrder::StopFirst
+        {
+            progress.set_running(
+                *index,
+                ployz_core::OperationPhase::RetiringOld {
+                    container_id: *container_id,
+                },
+            );
+        }
     }
 }
 

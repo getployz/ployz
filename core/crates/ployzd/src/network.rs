@@ -150,12 +150,23 @@ impl MeshPeer {
         self.selection.selected()
     }
 
-    pub fn poll(
+    /// Record in `paths` how the peer's latest handshake reads, then move to another
+    /// endpoint when it reads down.
+    pub(crate) fn poll(
         &mut self,
+        paths: &PathBook,
         now: SystemTime,
         last_handshake: Option<SystemTime>,
         device_endpoint: Option<SocketAddr>,
     ) -> Option<SelectedEndpoint> {
+        // The kernel reports a peer that never handshook at the Unix epoch.
+        let last_handshake = last_handshake.filter(|handshake| *handshake > SystemTime::UNIX_EPOCH);
+        paths.judge(
+            self.machine_id,
+            self.selection.status(now, last_handshake),
+            last_handshake,
+            now,
+        );
         self.selection.poll(now, last_handshake, device_endpoint)
     }
 }
@@ -624,7 +635,7 @@ mod tests {
             "a candidates refresh keeps the seed"
         );
         assert_eq!(
-            peer.poll(refreshed, None, Some(seed.0)),
+            peer.poll(&PathBook::default(), refreshed, None, Some(seed.0)),
             None,
             "no handshake yet does not rotate back to the stale candidates"
         );
@@ -636,28 +647,147 @@ mod tests {
             }
         );
         assert_eq!(
-            peer.poll(refreshed, Some(start), Some(seed.0)),
+            peer.poll(&PathBook::default(), refreshed, Some(start), Some(seed.0)),
             None,
             "a handshake from before the seed proves nothing"
         );
         assert!(matches!(peer.selection.state, EndpointState::Chosen { .. }));
 
         let handshake = refreshed + Duration::from_secs(1);
-        assert_eq!(peer.poll(handshake, Some(handshake), Some(seed.0)), None);
+        assert_eq!(
+            peer.poll(
+                &PathBook::default(),
+                handshake,
+                Some(handshake),
+                Some(seed.0)
+            ),
+            None
+        );
         assert_eq!(
             peer.selection.state,
             EndpointState::Established(seed),
             "a handshake after the seed establishes it without a roam"
         );
         let quiet = handshake + PEER_DOWN_INTERVAL / 2;
-        assert_eq!(peer.poll(quiet, Some(handshake), Some(seed.0)), None);
+        assert_eq!(
+            peer.poll(&PathBook::default(), quiet, Some(handshake), Some(seed.0)),
+            None
+        );
         assert_eq!(peer.selected(), Some(seed), "a handshaking seed stays");
 
         let fresh = SocketAddr::from(([198, 51, 100, 8], 51820));
         assert_eq!(
-            peer.poll(quiet, Some(quiet), Some(fresh)),
+            peer.poll(&PathBook::default(), quiet, Some(quiet), Some(fresh)),
             Some(SelectedEndpoint(fresh)),
             "a proven roam replaces the seed"
+        );
+    }
+
+    /// The Machine API reports a peer down once its handshakes read down, and keeps saying
+    /// so while each next endpoint is tried, until a handshake arrives.
+    #[test]
+    fn a_peer_whose_handshakes_stop_reads_down_until_one_arrives() {
+        use ployz_core::WireGuardObservation;
+
+        let start = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let observer = machine(1, vec![endpoint(1)]);
+        let joiner = machine(2, vec![endpoint(2), endpoint(3)]);
+        let (mut peers, _) = attach_peer_selections(
+            peers_for(&observer.id, &[observer.clone(), joiner.clone()]),
+            Vec::new(),
+            &BTreeMap::new(),
+            start,
+        );
+        let peer = peers.first_mut().unwrap();
+        let paths = PathBook::default();
+        let mut poll = |now: SystemTime, handshake: Option<SystemTime>| {
+            peer.poll(&paths, now, handshake, None);
+            paths.wireguard_at(&joiner.id, now)
+        };
+
+        assert_eq!(poll(start, None), None, "a new peer can't tell yet");
+        let timed_out = start + ENDPOINT_CONNECTION_TIMEOUT + Duration::from_secs(1);
+        let never = Some(WireGuardObservation::Down {
+            since_handshake_secs: None,
+        });
+        assert_eq!(
+            poll(timed_out, Some(SystemTime::UNIX_EPOCH)),
+            never,
+            "the kernel's never-handshook time reads as never, not as decades ago"
+        );
+        for later in 1..=3 {
+            assert_eq!(
+                poll(timed_out + Duration::from_secs(later), None),
+                never,
+                "trying the next endpoint keeps it down"
+            );
+        }
+
+        let handshake = timed_out + Duration::from_secs(5);
+        assert_eq!(
+            poll(handshake, Some(handshake)),
+            Some(WireGuardObservation::Up)
+        );
+        let quiet = handshake + PEER_DOWN_INTERVAL + Duration::from_secs(10);
+        assert_eq!(
+            poll(quiet, Some(handshake)),
+            Some(WireGuardObservation::Down {
+                since_handshake_secs: Some(
+                    (PEER_DOWN_INTERVAL + Duration::from_secs(10)).as_secs()
+                ),
+            })
+        );
+    }
+
+    /// Choosing an endpoint again doesn't make a working link read down, and a view the
+    /// network plane stopped confirming, as when the device can't be read, says nothing.
+    #[test]
+    fn a_live_session_reads_up_while_an_endpoint_is_rechosen_and_an_unconfirmed_view_lapses() {
+        use ployz_core::WireGuardObservation;
+
+        let start = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let observer = machine(1, vec![endpoint(1)]);
+        let peer_machine = machine(2, vec![endpoint(2)]);
+        let (mut peers, _) = attach_peer_selections(
+            peers_for(&observer.id, &[observer.clone(), peer_machine.clone()]),
+            Vec::new(),
+            &BTreeMap::new(),
+            start,
+        );
+        let paths = PathBook::default();
+        let handshake = start + Duration::from_secs(1);
+        peers
+            .first_mut()
+            .unwrap()
+            .poll(&paths, handshake, Some(handshake), None);
+        assert_eq!(
+            paths.wireguard_at(&peer_machine.id, handshake),
+            Some(WireGuardObservation::Up)
+        );
+
+        let rechosen = handshake + Duration::from_secs(30);
+        choose_endpoint(
+            &mut peers,
+            peer_machine.id,
+            SelectedEndpoint(endpoint(2).0),
+            rechosen,
+        )
+        .unwrap();
+        let unproven = rechosen + ENDPOINT_CONNECTION_TIMEOUT + Duration::from_secs(1);
+        peers
+            .first_mut()
+            .unwrap()
+            .poll(&paths, unproven, Some(handshake), None);
+        assert_eq!(
+            paths.wireguard_at(&peer_machine.id, unproven),
+            Some(WireGuardObservation::Up),
+            "a session from a recent handshake still carries traffic"
+        );
+
+        assert_eq!(
+            paths.wireguard_at(&peer_machine.id, unproven + Duration::from_secs(11)),
+            None,
+            "no poll has confirmed it since"
         );
     }
 

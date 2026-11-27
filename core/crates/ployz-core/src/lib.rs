@@ -11,6 +11,7 @@ pub mod config;
 mod container_metadata;
 pub mod decode;
 pub mod deploy_progress;
+pub mod deploy_steps;
 mod dockerfile;
 pub mod domain;
 mod enrollment;

@@ -9,6 +9,8 @@ the service's requests to the new replicas. Once every server has, the old repli
 requests, finish the ones they have, and stop. An old replica with no open connection stops at
 once; one still answering a request gets up to 3 seconds. A replica that listens on no port,
 such as a worker, gets the 3 seconds whenever it holds a connection to anything outside itself.
+The deploy reads applied as soon as every server has switched. The old replicas stop after
+that, all at once, and one that won't stop is a warning, not a failed deploy.
 Your app keeps serving the whole time.
 
 ## Keep your app serving through a deploy

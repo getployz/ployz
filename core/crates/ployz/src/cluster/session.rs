@@ -43,16 +43,57 @@ pub(crate) struct Session {
     /// Shared by every clone, so a redial on any of them reaches the rest.
     channel: Arc<RwLock<Channel>>,
     endpoint: Arc<Endpoint>,
-    /// The Machine the entry described itself as when it was last confirmed.
-    pub(super) entry: Option<MachineId>,
-    /// The Machine `channel` was last confirmed to reach. Unlike `entry`, a failed redial
-    /// keeps it, so a later one can tell the endpoint now reaches another Machine.
-    pub(super) confirmed: Option<MachineId>,
+    pub(super) entry: Entry,
     /// The Cluster the dial expected and what the first dial confirmed about it; None when
     /// it expected none. Boxed so a client stays small beside the enums that carry it.
     pub(super) cluster: Option<Box<ExpectedCluster>>,
     /// Set once a redial finds the entry in another Cluster. Every clone shares it.
     refused: Refusal,
+}
+
+/// Which Machine this clone's channel reaches, as its daemon described itself.
+#[derive(Clone, Copy)]
+pub(super) enum Entry {
+    /// No dial confirmed one: the daemon didn't describe itself, or nothing dialed yet.
+    Unconfirmed,
+    /// The Machine the channel was last confirmed to reach.
+    Confirmed(MachineId),
+    /// A redial began or failed after the channel reached `last`. Kept so a later redial
+    /// can tell the endpoint now reaches another Machine.
+    Lost { last: MachineId },
+}
+
+impl Entry {
+    /// The Machine the channel reaches now, when confirmed.
+    pub(super) fn current(self) -> Option<MachineId> {
+        match self {
+            Self::Confirmed(machine) => Some(machine),
+            Self::Unconfirmed | Self::Lost { .. } => None,
+        }
+    }
+
+    /// The Machine the channel was last confirmed to reach, even if a redial lost it since.
+    fn last(self) -> Option<MachineId> {
+        match self {
+            Self::Confirmed(machine) | Self::Lost { last: machine } => Some(machine),
+            Self::Unconfirmed => None,
+        }
+    }
+
+    /// Forget the current Machine, keeping it as the last one confirmed.
+    fn lose(&mut self) {
+        if let Self::Confirmed(last) = *self {
+            *self = Self::Lost { last };
+        }
+    }
+
+    /// Record what a confirmation found: the Machine it named, else lose the current one.
+    fn confirm(&mut self, found: Option<MachineId>) {
+        match found {
+            Some(machine) => *self = Self::Confirmed(machine),
+            None => self.lose(),
+        }
+    }
 }
 
 /// The entry a redial found in another Cluster, shared by every clone of a client and
@@ -98,8 +139,7 @@ impl Session {
                 source,
                 connector,
             }),
-            entry: None,
-            confirmed: None,
+            entry: Entry::Unconfirmed,
             cluster: None,
             refused: Refusal::default(),
         }
@@ -258,16 +298,15 @@ impl Session {
     /// entry that now describes itself as another Machine, as after a reset, moves only
     /// this clone: its clones, a Deploy's among them, keep the Machine they confirmed.
     pub(super) async fn redial(&mut self) -> Result<(), ConnectError> {
-        self.entry = None;
+        self.entry.lose();
         let (channel, entry) = self.dial_confirmed().await?;
-        match (self.confirmed, entry) {
-            (Some(confirmed), Some(entry)) if confirmed != entry => {
+        match (self.entry.last(), entry) {
+            (Some(last), Some(entry)) if last != entry => {
                 self.channel = Arc::new(RwLock::new(channel));
             }
             _ => self.share(channel),
         }
-        self.confirmed = entry.or(self.confirmed);
-        self.entry = entry;
+        self.entry.confirm(entry);
         Ok(())
     }
 
@@ -281,7 +320,7 @@ impl Session {
     /// entry doesn't answer on the new channel.
     pub(super) async fn redial_shared(&self) -> Result<(), ConnectError> {
         let (channel, entry) = self.dial_confirmed().await?;
-        if let (Some(expected), Some(actual)) = (self.entry.or(self.confirmed), entry)
+        if let (Some(expected), Some(actual)) = (self.entry.last(), entry)
             && expected != actual
         {
             return Err(ConnectError::IdentityMismatch { expected, actual });
@@ -322,8 +361,7 @@ impl Session {
         &mut self,
     ) -> Result<Option<ployz_core::Sealing>, ConnectError> {
         let (entry, sealing) = self.confirmation().await?;
-        self.entry = entry;
-        self.confirmed = self.entry.or(self.confirmed);
+        self.entry.confirm(entry);
         Ok(sealing)
     }
 
@@ -384,7 +422,7 @@ impl Session {
                     Ok((Some(description.machine_id), description.sealing))
                 }
                 Err(ConnectError::Remote(_))
-                    if self.connection().machine_id().is_none() && self.confirmed.is_none() =>
+                    if self.connection().machine_id().is_none() && self.entry.last().is_none() =>
                 {
                     Ok((None, None))
                 }

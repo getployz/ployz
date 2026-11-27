@@ -281,6 +281,7 @@ pub(super) fn container_create_body(
             }),
         labels: Some(labels),
         stop_timeout: container.stop_timeout_secs,
+        stop_signal: container.stop_signal.clone(),
         host_config: Some(host_config),
         ..Default::default()
     })

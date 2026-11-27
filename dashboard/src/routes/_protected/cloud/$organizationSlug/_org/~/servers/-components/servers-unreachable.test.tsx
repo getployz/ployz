@@ -4,7 +4,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { organizationMembersQueryOptions } from "#/modules/organization/members.queries";
 import * as runtime from "#/providers/runtime-provider";
-import type { OlderServers } from "#/modules/machines/use-servers";
+import type { UnreachableReason } from "#/modules/runtime/runtime.collection";
 import { ServersUnreachable } from "./servers-unreachable";
 
 afterEach(() => {
@@ -12,7 +12,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function renderAs(role: "admin" | "member" | "support", older: OlderServers | null = null, awaitingKey = false) {
+function renderAs(role: "admin" | "member" | "support", reason: UnreachableReason | null = null) {
   vi.spyOn(runtime, "useClusterReleased").mockReturnValue(() => {});
   const queryClient = new QueryClient();
   queryClient.setQueryData(organizationMembersQueryOptions("ada").queryKey, {
@@ -21,12 +21,12 @@ function renderAs(role: "admin" | "member" | "support", older: OlderServers | nu
     mail: false,
     support: role === "support",
   });
-  render(<QueryClientProvider client={queryClient}><ServersUnreachable organizationSlug="ada" older={older} awaitingKey={awaitingKey} /></QueryClientProvider>);
+  render(<QueryClientProvider client={queryClient}><ServersUnreachable organizationSlug="ada" reason={reason} /></QueryClientProvider>);
   return screen.queryByRole("button", { name: "Forget them and start over." });
 }
 
-it("lets an admin forget the servers", () => {
-  expect(renderAs("admin")?.hasAttribute("disabled")).toBe(false);
+it.each([null, "cluster_unreachable"] as const)("lets an admin forget the servers when Cloud can't reach them (%s)", (reason) => {
+  expect(renderAs("admin", reason)?.hasAttribute("disabled")).toBe(false);
 });
 
 it("disables forgetting for a member, and says why", () => {
@@ -39,22 +39,22 @@ it("lets support forget the servers, as Cloud does", () => {
 });
 
 it.each([
-  ["relay", /runs an older Ployz that Ployz Cloud can’t reach through the relay/],
-  ["sealing", /runs a Ployz older than 0\.3\.3/],
-] as const)("points a Server on an older Ployz (%s) to its upgrade over SSH, not to Forget", (older, why) => {
-  expect(renderAs("admin", older)).toBeNull();
+  ["older_relay", /runs an older Ployz that Ployz Cloud can’t reach through the relay/],
+  ["predates_sealing", /runs a Ployz older than 0\.3\.3/],
+] as const)("points a Server on an older Ployz (%s) to its upgrade over SSH, not to Forget", (reason, why) => {
+  expect(renderAs("admin", reason)).toBeNull();
   expect(screen.getByText("Upgrade your server over SSH")).toBeTruthy();
   expect(screen.getByText(why)).toBeTruthy();
   expect(screen.getByText((_, element) => element?.tagName === "CODE" && /\bployz\b/.test(element.textContent ?? ""))).toBeTruthy();
 });
 
 it("says a Server waiting for the cluster's key is used once a key holder is back, not to Forget it", () => {
-  expect(renderAs("admin", null, true)).toBeNull();
+  expect(renderAs("admin", "awaits_key")).toBeNull();
   expect(screen.getByText("Waiting for a server that holds your cluster’s key")).toBeTruthy();
   expect(screen.getByText(/uses it once a server that holds the key is back online/)).toBeTruthy();
 });
 
 it("says an upgraded Server on 0.3.2 is used once a key holder is back", () => {
-  renderAs("admin", "sealing");
+  renderAs("admin", "predates_sealing");
   expect(screen.getByText(/Ployz Cloud uses it once a server that holds your cluster’s key is back online/)).toBeTruthy();
 });

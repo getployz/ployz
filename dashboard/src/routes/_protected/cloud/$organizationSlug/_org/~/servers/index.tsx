@@ -46,7 +46,7 @@ export const Route = createFileRoute(
 function RouteComponent() {
   const { organizationSlug } = Route.useParams();
   const { token } = Route.useSearch();
-  const { state, servers, older, awaitingKey } = useServers(organizationSlug);
+  const { state, servers, unreachableReason } = useServers(organizationSlug);
   const upgrades = useServersUpgrade(organizationSlug, servers);
   const labels = regionLabels(servers.map(({ machine }) => machine));
   const regions = useRegions(organizationSlug, labels);
@@ -93,7 +93,7 @@ function RouteComponent() {
       {page.kind === "loading" ? (
         <ServersSkeleton />
       ) : page.kind === "unreachable" ? (
-        <ServersUnreachable organizationSlug={organizationSlug} older={older} awaitingKey={awaitingKey} />
+        <ServersUnreachable organizationSlug={organizationSlug} reason={unreachableReason} />
       ) : page.kind === "first-run" ? (
         <FirstRun key={organizationSlug} organizationSlug={organizationSlug} arrived={page.intake} />
       ) : (

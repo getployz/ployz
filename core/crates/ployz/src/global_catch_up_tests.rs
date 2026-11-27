@@ -130,6 +130,87 @@ async fn unreadable_answer_asks_to_update_ployz_not_connectivity() {
     }
 }
 
+/// The joiner as `server add` meets it: the entry it entered by, whose WireGuard sees the
+/// joiner as `wireguard`, never hears its listing. The error's message.
+async fn joiner_the_entry_sees(wireguard: Option<ployz_core::WireGuardObservation>) -> String {
+    joiner_failing(
+        wireguard,
+        RpcError::unanswered_target(
+            ployz_core::RpcErrorCode::Unavailable,
+            "target Machine RPC timed out".into(),
+        ),
+    )
+    .await
+}
+
+/// [`joiner_the_entry_sees`], with the joiner's listing failing with `error`.
+async fn joiner_failing(
+    wireguard: Option<ployz_core::WireGuardObservation>,
+    error: RpcError,
+) -> String {
+    let entry = machine('f', "machine-1");
+    let joiner = machine('1', "machine-4");
+    let observed = |machine: &Machine| {
+        ployz_core::MachineObservation::new(machine.clone(), ployz_core::MembershipObservation::Up)
+    };
+    let mut seen = observed(&joiner);
+    seen.wireguard = wireguard;
+    let mut client = fake(&joiner, Vec::new());
+    client.names = ServerNames::listing([
+        (entry.id, entry.name.clone()),
+        (joiner.id, joiner.name.clone()),
+    ]);
+    client.failures = vec![ployz_core::MachineFailure {
+        machine_id: joiner.id,
+        error,
+    }];
+    client.dead_links = crate::deploy::dead_links(&[observed(&entry), seen], Some(entry.id));
+    message(catch_up(&mut client, &joiner).await.unwrap_err(), &joiner)
+}
+
+/// A joiner the entry's WireGuard has never handshaken with is named with that link and
+/// what opens it, not a generic call to restore connectivity.
+#[tokio::test(start_paused = true)]
+async fn a_joiner_the_entry_never_handshook_with_names_the_link() {
+    let message = joiner_the_entry_sees(Some(ployz_core::WireGuardObservation::Down {
+        since_handshake_secs: None,
+    }))
+    .await;
+    assert!(
+        message.contains(
+            "machine-1, the Server this command entered by, has never had a WireGuard handshake with machine-4"
+        ),
+        "{message}"
+    );
+    assert!(message.contains("UDP 51820"), "{message}");
+    assert!(!message.contains("restore peer connectivity"), "{message}");
+}
+
+/// A silent joiner the entry's WireGuard sees up, or that an older entry says nothing
+/// about, makes no claim about the link.
+#[tokio::test(start_paused = true)]
+async fn a_joiner_the_entry_sees_up_claims_no_link() {
+    for wireguard in [Some(ployz_core::WireGuardObservation::Up), None] {
+        let message = joiner_the_entry_sees(wireguard).await;
+        assert!(message.contains("restore peer connectivity"), "{message}");
+        assert!(!message.contains("WireGuard"), "{message}");
+    }
+}
+
+/// A joiner that answered with an error was heard, so a link the entry sees down
+/// doesn't explain it.
+#[tokio::test(start_paused = true)]
+async fn a_joiner_that_answered_with_an_error_is_not_blamed_on_the_link() {
+    let message = joiner_failing(
+        Some(ployz_core::WireGuardObservation::Down {
+            since_handshake_secs: None,
+        }),
+        RpcError::unavailable("Docker is not running"),
+    )
+    .await;
+    assert!(!message.contains("WireGuard"), "{message}");
+}
+
 #[tokio::test(start_paused = true)]
 async fn only_omissions_that_are_not_unarrived_block_catch_up() {
     let joiner = machine('1', "joiner");
@@ -1167,6 +1248,7 @@ struct FakeCatchUpClient {
     names: ServerNames,
     unarrived: ServerNames,
     declared: Option<ployz_core::IngressDoors>,
+    dead_links: Vec<crate::deploy::DeadLink>,
     relisted: Option<Vec<ServiceObservation>>,
     listings: u32,
     /// What the joiner's Containers show, call by call, before `target_services`.
@@ -1196,6 +1278,7 @@ fn fake(joiner: &Machine, services: Vec<ServiceObservation>) -> FakeCatchUpClien
         names: ServerNames::default(),
         unarrived: ServerNames::default(),
         declared: None,
+        dead_links: Vec::new(),
         relisted: None,
         listings: 0,
         starting: std::collections::VecDeque::new(),
@@ -1326,6 +1409,7 @@ impl CatchUpClient for FakeCatchUpClient {
             },
             unarrived: self.unarrived.clone(),
             declared: self.declared.clone(),
+            dead_links: self.dead_links.clone(),
         })
     }
 

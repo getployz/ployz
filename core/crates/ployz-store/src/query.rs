@@ -22,7 +22,8 @@ pub use crate::sealing_targets::{
     SealingService, SealingTargetsQuery, SealingTargetsView, SyncSealingTarget,
 };
 pub use crate::service::query::{
-    ServiceListing, ServiceQuery, ServiceView, ServicesQuery, ServicesView, SourceKind,
+    ServiceListing, ServiceQuery, ServiceReference, ServiceView, ServicesQuery, ServicesView,
+    SourceKind,
 };
 pub use crate::settings::query::{EnvironmentQuery, EnvironmentView, SettingRow};
 pub use crate::volume::query::{

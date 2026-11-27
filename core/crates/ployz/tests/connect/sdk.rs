@@ -369,6 +369,38 @@ async fn confirm_after_close_fails_closed() {
 }
 
 #[tokio::test]
+async fn confirm_after_the_preview_closed_does_not_claim_it_ran() {
+    let description = advertised_description();
+    let session = UnixSession::start().await;
+    let _machine = session
+        .spawn_machine(
+            description.machine_id,
+            DiscoveryService::new(description.clone()),
+        )
+        .await;
+    let client = unix_session::connect(&session.directory, description.machine_id.as_str())
+        .await
+        .unwrap();
+    let preview = client
+        .preview(DeployIntent::apply_one(
+            Namespace::parse("app").unwrap(),
+            spec("web"),
+            skip_health(),
+        ))
+        .await
+        .unwrap();
+    preview.close();
+    let Err(error) = preview.confirm() else {
+        panic!("a closed preview must not confirm");
+    };
+    assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+    assert!(
+        error.message.contains("closed") && !error.message.contains("confirmed"),
+        "{error:?}"
+    );
+}
+
+#[tokio::test]
 async fn node_smoke_covers_connect_about_preview_run_and_close() {
     let description = advertised_description();
     let session = UnixSession::start().await;

@@ -125,6 +125,7 @@ class Add(unittest.TestCase):
         with unittest.mock.patch.object(cluster.boat, "boat_json"), \
              unittest.mock.patch.object(cluster.boat, "shortfalls", return_value=[]), \
              unittest.mock.patch.object(cluster, "provision", side_effect=provision), \
+             unittest.mock.patch.object(cluster, "require_reachable"), \
              unittest.mock.patch.object(cluster, "enroll"), \
              unittest.mock.patch.object(cluster, "wait_ready"), \
              contextlib.redirect_stdout(io.StringIO()) as printed, contextlib.redirect_stderr(io.StringIO()):

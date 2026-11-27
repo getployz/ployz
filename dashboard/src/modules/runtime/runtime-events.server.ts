@@ -1,8 +1,8 @@
 import "@tanstack/react-start/server-only";
 import type { RuntimeWatchView } from "@ployz/sdk";
 import { RuntimeConnectionFailure } from "#/modules/runtime/runtime-connection-errors";
-import { AWAITS_KEY_ERROR, CLUSTER_UNREACHABLE_ERROR, OLDER_SERVERS_ERROR, PREDATES_SEALING_ERROR } from "#/modules/runtime/runtime.collection";
-import { runtimeWatchFrameForTransport } from "#/modules/runtime/runtime-watch-frame";
+import type { UnreachableReason } from "#/modules/runtime/runtime.collection";
+import { type RuntimeConnectionStatusEvent, runtimeWatchFrameForTransport } from "#/modules/runtime/runtime-watch-frame";
 import { lacksClusterKey, type PloyzProviderError, predatesSealing, speaksOlderProtocol } from "#/modules/runtime/ployz.server";
 
 export type RuntimeWatch =
@@ -21,13 +21,29 @@ export type RuntimeWatch =
 
 type RuntimeEventsSource = { request: Request } & RuntimeWatch;
 
-/** Why Cloud can't watch the Cluster: a Server that answers says why it can't be used, so it isn't read as gone. */
-function unreachableError(error: PloyzProviderError | null) {
-  if (error === null) return CLUSTER_UNREACHABLE_ERROR;
-  if (speaksOlderProtocol(error)) return OLDER_SERVERS_ERROR;
-  if (predatesSealing(error)) return PREDATES_SEALING_ERROR;
-  if (lacksClusterKey(error)) return AWAITS_KEY_ERROR;
-  return error.message || CLUSTER_UNREACHABLE_ERROR;
+/** Why Cloud can't watch the Cluster. A predated Server's refusal also reads as lacking the key, so it is checked first. */
+function unreachableReason(error: PloyzProviderError | null): UnreachableReason {
+  if (error === null) return "cluster_unreachable";
+  if (speaksOlderProtocol(error)) return "older_relay";
+  if (predatesSealing(error)) return "predates_sealing";
+  if (lacksClusterKey(error)) return "awaits_key";
+  return "cluster_unreachable";
+}
+
+/**
+ * The `error` text a tab of the build before `reason` matches exactly to pick its view. Remove it once no such
+ * tab can still be open, a release after this one.
+ */
+function legacyError(event: RuntimeConnectionStatusEvent) {
+  if (event.status === "no_connection") return null;
+  switch (event.reason) {
+    case "cluster_unreachable": return "The cluster is expected but unreachable.";
+    case "older_relay": return "A Server runs an older Ployz that Ployz Cloud can't reach through the relay.";
+    case "predates_sealing":
+      return "A Server runs a Ployz older than 0.3.3, which can't show Ployz Cloud that it belongs to your cluster.";
+    case "awaits_key":
+      return "A Server answers but doesn't hold your cluster's key yet, so Ployz Cloud can't tell it belongs to your cluster.";
+  }
 }
 
 /**
@@ -62,9 +78,9 @@ export function createRuntimeEventsResponse(input: RuntimeEventsSource) {
         }
       };
 
-      const writeStatus = (status: "no_connection" | "unreachable", error: string | null) => {
+      const writeStatus = (event: RuntimeConnectionStatusEvent) => {
         write(
-          `event: runtime.status\ndata: ${JSON.stringify({ status, error })}\n\n`,
+          `event: runtime.status\ndata: ${JSON.stringify({ ...event, error: legacyError(event) })}\n\n`,
         );
       };
 
@@ -117,13 +133,13 @@ export function createRuntimeEventsResponse(input: RuntimeEventsSource) {
       }, 25_000);
 
       if (input.status === "no_connection") {
-        writeStatus("no_connection", null);
+        writeStatus({ status: "no_connection" });
         void cleanup(true);
         return;
       }
 
       if (input.status === "unreachable") {
-        writeStatus("unreachable", unreachableError(input.error));
+        writeStatus({ status: "unreachable", reason: unreachableReason(input.error) });
         void cleanup(true);
         return;
       }

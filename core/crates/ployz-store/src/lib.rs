@@ -79,12 +79,12 @@ pub use client_sealed::SecretValue;
 pub use command::*;
 pub use deployment::loss::{VolumeLoss, docker_volume};
 pub use deployment::{
-    CiVerdict, Claimed, DeployedNode, DeploymentStatus, DeploymentSummary, DeploymentView,
-    DeploymentWarning, FailedAt, Failure, GitPush, IngressAction, IngressFailure, IngressRepair,
-    NodeOutcome, NodeStatus, Outcome, Parent, ParentQuery, ParentView, Pinned, PostedVersion,
-    RowPhase, RowState, RowTracker, RowTransition, RunEvidence, Running, RunningQuery, RunningView,
-    ServerProgress, ServerRow, StoppedBy, TagPin, Unclaimed, UploadBase, UploadedSource,
-    VersionsFields, VersionsQuery, VersionsView, WaitingService,
+    CiVerdict, Claimed, DeployedNode, DeploymentStatus, DeploymentStep, DeploymentSummary,
+    DeploymentView, DeploymentWarning, FailedAt, Failure, GitPush, IngressAction, IngressFailure,
+    IngressRepair, NodeLabel, NodeOutcome, NodeStatus, Outcome, Parent, ParentQuery, ParentView,
+    Pinned, PostedVersion, RowPhase, RowState, RowTracker, RowTransition, RunEvidence, Running,
+    RunningQuery, RunningView, ServerProgress, ServerRow, StepName, StoppedBy, TagPin, Unclaimed,
+    UploadBase, UploadedSource, VersionsFields, VersionsQuery, VersionsView, WaitingService,
 };
 pub use domain::{
     AddDomain, ClusterDomain, ClusterDomainStatus, DnsLookup, Domain, DomainAction, DomainAdded,
@@ -417,6 +417,21 @@ impl ConfigStore {
     ) -> Result<(), RpcError> {
         self.storage
             .write(|tx| build::keep_verified(tx, deployment, runner, kept))
+    }
+
+    /// Record when steps of Deployment `deployment` ran, replacing what an earlier write
+    /// said of the same step. Cloud writes the steps before a runner claims it, and the
+    /// runner the rest. In-process only.
+    ///
+    /// # Errors
+    /// Returns `not_found` for an unknown Deployment, or a storage error.
+    pub fn record_steps(
+        &self,
+        deployment: &DeploymentId,
+        steps: &[DeploymentStep],
+    ) -> Result<(), RpcError> {
+        self.storage
+            .write(|tx| deployment::steps::record(tx, deployment, steps))
     }
 
     /// Record what `runner` did with the Deployment it claimed; confirmed Node Outcomes

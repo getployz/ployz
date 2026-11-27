@@ -60,5 +60,67 @@ class OverdueDrains(unittest.TestCase):
     def test_a_retirement_forced_again_after_a_fresh_start_fails(self):
         self.assertEqual(len(self.overdue(STARTED, FORCED, STARTED, FORCED)), 1)
 
+class Underlay:
+    """A host network where only `cut` pairs of addresses drop each other's packets."""
+
+    def __init__(self, cut, without_ping=False, unreachable=()):
+        self.cut = {frozenset(pair) for pair in cut}
+        self.without_ping = without_ping
+        self.unreachable = dict(unreachable)
+
+    def exec(self, node, command, check=True, timeout=None):
+        if node["name"] in self.unreachable:
+            return subprocess.CompletedProcess(command, self.unreachable[node["name"]])
+        if self.without_ping:
+            return subprocess.CompletedProcess(command, 127)
+        silent = frozenset((node["address"], command[-1])) in self.cut
+        return subprocess.CompletedProcess(command, 1 if silent else 0)
+
+
+class Reachability(unittest.TestCase):
+    machines = [{"name": f"machine-{n}", "address": f"2001:db8:{n}::1", "ssh": f"root@198.51.100.{n}:19032"} for n in (1, 2, 3)]
+
+    def require(self, cut, nodes=None, others=None, provider="boat", without_ping=False, unreachable=()):
+        cluster.require_reachable({"provider": provider}, Underlay(cut, without_ping, unreachable),
+                                  self.machines if nodes is None else nodes, others)
+
+    def test_a_pair_that_cant_reach_each_other_fails_before_enrollment_naming_both_hosts(self):
+        with self.assertRaises(cluster.Infrastructure) as raised:
+            self.require([("2001:db8:1::1", "2001:db8:3::1")])
+        message = str(raised.exception)
+        self.assertIn("machine-1 (198.51.100.1) and machine-3 (198.51.100.3)", message)
+        self.assertNotIn("machine-2 (", message)
+
+    def test_a_cluster_whose_every_pair_answers_passes(self):
+        self.require([])
+
+    def test_an_added_machine_is_checked_only_against_the_others(self):
+        new, *rest = self.machines
+        self.require([("2001:db8:2::1", "2001:db8:3::1")], [new], rest)
+        with self.assertRaises(cluster.Infrastructure):
+            self.require([("2001:db8:1::1", "2001:db8:2::1")], [new], rest)
+
+    def test_a_lone_machine_has_no_pair_to_check(self):
+        self.require([], self.machines[:1])
+        self.require([], self.machines[:1], [])
+
+    def test_a_machine_without_ping_does_not_fail_the_run(self):
+        self.require([], without_ping=True)
+
+    def test_a_machine_ssh_cant_reach_is_not_reported_as_a_broken_pair(self):
+        with self.assertRaises(cluster.Infrastructure) as raised:
+            self.require([], unreachable={"machine-1": 255})
+        self.assertIn("couldn't run the pair check over SSH on machine-1", str(raised.exception))
+        self.assertNotIn("can't reach each other", str(raised.exception))
+
+    def test_a_check_whose_ssh_hangs_is_not_reported_as_a_broken_pair(self):
+        with self.assertRaises(cluster.Infrastructure) as raised:
+            self.require([], unreachable={"machine-1": 124})
+        self.assertIn("couldn't run the pair check over SSH on machine-1", str(raised.exception))
+
+    def test_hosts_other_than_boat_are_not_checked(self):
+        self.require([("2001:db8:1::1", "2001:db8:3::1")], provider="local")
+
+
 if __name__ == "__main__":
     unittest.main()
