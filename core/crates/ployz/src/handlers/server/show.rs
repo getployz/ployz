@@ -58,6 +58,9 @@ pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
         for observed in machines.iter().filter(|observed| observed.unarrived()) {
             ui::warn(never_joined(observed));
         }
+        for link in unasked_dead_links(&machines, entry) {
+            ui::warn(link.explained());
+        }
         let listed = machines.iter().map(observation_json).collect::<Vec<_>>();
         let mut gaps = Gaps::default()
             .named(
@@ -113,6 +116,22 @@ pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
         }
         crate::ui::finish_fanout("servers", &listed, &gaps, || ui::rows(&table))
     })
+}
+
+/// The dead links to Servers this listing didn't ask, because membership reads them down.
+/// A Server it asked that didn't answer gets its link under that warning instead.
+fn unasked_dead_links(
+    machines: &[MachineObservation],
+    entry: Option<ployz_core::MachineId>,
+) -> Vec<crate::deploy::DeadLink> {
+    crate::deploy::dead_links(machines, entry)
+        .into_iter()
+        .filter(|link| {
+            machines
+                .iter()
+                .any(|observed| observed.machine.id == link.machine && !observed.invites_rpc())
+        })
+        .collect()
 }
 
 /// A listed Server that hasn't joined. One whose join is still under way looks the same, even
@@ -354,14 +373,12 @@ async fn inspect(
                 {
                     ui::warn(dropped_path(&observed.machine.name));
                 }
-                let why = crate::deploy::dead_links(&machines, client.entry_machine())
+                let link = crate::deploy::dead_links(&machines, client.entry_machine())
                     .into_iter()
-                    .find(|link| Some(link.machine) == target)
-                    .map(|link| format!(" {}", link.explained()))
-                    .unwrap_or_default();
-                format!("Server {selector} didn't answer, so it can't be shown.{why}")
+                    .find(|link| Some(link.machine) == target);
+                unshown(selector, link.as_ref())
             } else {
-                format!("Could not show Server {}.", selector.as_str())
+                unshown(selector, None)
             };
             return Err(Error::from(crate::connect::rpc_error(error)).context(message));
         }
@@ -397,6 +414,18 @@ async fn inspect(
             }
         },
     )
+}
+
+/// Why Server `selector` can't be shown: the link the entry sees down, when there is one, and
+/// otherwise the plain failure, whose cause follows it.
+fn unshown(selector: &MachineTarget, link: Option<&crate::deploy::DeadLink>) -> String {
+    match link {
+        Some(link) => format!(
+            "Server {selector} didn't answer, so it can't be shown. {}",
+            link.explained()
+        ),
+        None => format!("Could not show Server {}.", selector.as_str()),
+    }
 }
 
 /// How long `server show` waits for the Server's kept volumes, which it measures, before
@@ -946,6 +975,57 @@ mod tests {
                 "peer = machine-4 down, no WireGuard handshake ever",
                 "peer = machine-5 0.4 ms",
             ]
+        );
+    }
+
+    /// In a 2-Server partition membership reads the peer down, so `server ls` never asks it
+    /// and has no failure to put the link under. The link is still named.
+    #[test]
+    fn a_server_membership_reads_down_still_has_its_dead_link_named() {
+        let entry = on("machine-1", None);
+        let mut peer = on("machine-2", None);
+        peer.membership = MembershipObservation::Down;
+        peer.wireguard = Some(ployz_core::WireGuardObservation::Down {
+            since_handshake_secs: Some(315),
+        });
+        let named = |peer: &MachineObservation| {
+            unasked_dead_links(&[entry.clone(), peer.clone()], Some(entry.machine.id))
+                .iter()
+                .map(crate::deploy::DeadLink::explained)
+                .collect::<Vec<_>>()
+        };
+        let [line] = named(&peer).try_into().unwrap();
+        assert!(
+            line.contains("machine-1, the Server this command entered by, has had no WireGuard handshake with machine-2 for 5m"),
+            "{line}"
+        );
+        assert!(line.contains("UDP 51820"), "{line}");
+
+        peer.membership = MembershipObservation::Up;
+        assert!(
+            named(&peer).is_empty(),
+            "a Server it asked gets the link under its own warning"
+        );
+    }
+
+    /// A Server that didn't answer while the entry's WireGuard sees it up keeps the plain
+    /// failure; only a link seen down changes the words.
+    #[test]
+    fn a_silent_server_the_entry_sees_up_keeps_the_plain_failure() {
+        let selector = MachineTarget::parse("machine-2").unwrap();
+        assert_eq!(unshown(&selector, None), "Could not show Server machine-2.");
+        let entry = on("machine-1", None);
+        let mut peer = on("machine-2", None);
+        peer.wireguard = Some(ployz_core::WireGuardObservation::Down {
+            since_handshake_secs: None,
+        });
+        let [link] = crate::deploy::dead_links(&[entry.clone(), peer], Some(entry.machine.id))
+            .try_into()
+            .unwrap();
+        assert!(
+            unshown(&selector, Some(&link)).starts_with(
+                "Server machine-2 didn't answer, so it can't be shown. machine-1, the Server this command entered by, has never had"
+            )
         );
     }
 

@@ -798,6 +798,20 @@ class Pool(unittest.TestCase):
         self.assertIn("ufw allow 80/tcp >/dev/null; ufw allow 443/tcp >/dev/null", script)
         self.assertIn("relay.ployz.dev", script, "a bare host stays off the production relay too")
 
+    def test_power_on_puts_the_relay_block_back_before_ployz_starts(self):
+        provider = self.provider("machine-1")
+        provider.wait_agent = lambda *args, **kwargs: None
+        scripts = []
+        provider.exec = lambda node, argv, **kwargs: scripts.append(argv[2])
+        provider.power_on(dict(name="machine-1"))
+        [script] = scripts
+        self.assertIn("relay.ployz.dev", script)
+        self.assertLess(script.index("relay.ployz.dev"), script.index("ployz.service"))
+        provider.run["cloud_relay"] = True
+        scripts.clear()
+        provider.power_on(dict(name="machine-1"))
+        self.assertNotIn(" -I ", scripts[0], "a run paired with Cloud keeps the relay open")
+
     def test_down_deletes_a_bare_sandbox_and_never_pools_it(self):
         provider = self.provider("machine-1")
         provider.run.update(bare=True, image=None)

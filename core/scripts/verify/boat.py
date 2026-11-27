@@ -909,7 +909,9 @@ setsid sh -c 'sleep 1; echo b > /proc/sysrq-trigger' >/dev/null 2>&1 < /dev/null
     def power_on(self, node):
         # Boot order: the volume plugin socket listens before Docker restores containers that mount `ployz` Volumes.
         self.wait_agent(node)
+        # The reboot dropped the relay's iptables rules, which nothing persists, so they go back before ployz starts.
         self.exec(node, ["bash", "-ec", f"""
+{relay_block(not self.run.get("cloud_relay"))}
 systemctl unmask {DOCKER_UNITS} >/dev/null
 observe=
 if [ -e /etc/systemd/system/ployz-observe.service ]; then observe=ployz-observe.service; fi
