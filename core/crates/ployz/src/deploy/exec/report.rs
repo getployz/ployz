@@ -15,6 +15,7 @@ use crate::deploy::progress::Progress;
 pub(super) enum Left {
     NotConfirmed(cleanup::Unconfirmed),
     Interrupted,
+    RemovalReplyInterrupted,
     /// The entry Machine could not read the routes, so no copy was seen unlisted.
     Unread(RpcError),
     /// The owner's view never listed a new copy, so it would refuse the Out.
@@ -208,6 +209,9 @@ impl<'a> Report<'a> {
                 (self.not_confirmed(&unconfirmed), unconfirmed.unanswered)
             }
             Left::Interrupted => ("interrupted".into(), Vec::new()),
+            Left::RemovalReplyInterrupted => {
+                ("removal requested but not confirmed".into(), Vec::new())
+            }
             Left::Unread(error) => (
                 format!(
                     "the routes could not be read through the Machine this Deploy connects to: {}",

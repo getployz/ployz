@@ -96,19 +96,19 @@ impl Retiring {
                 copies
                     .iter()
                     .map(|Retirement { copy, ask, running }| async {
-                        let left = if cancellation.is_cancelled() {
-                            Some(Left::Interrupted)
+                        let (left, known_running) = if cancellation.is_cancelled() {
+                            (Some(Left::Interrupted), *running)
                         } else {
                             tokio::select! {
                                 biased;
                                 removed = cleanup::remove(client, copy, *ask) => {
-                                    left_unless_done(removed.map(cleanup::Rotated::from))
+                                    (left_unless_done(removed.map(cleanup::Rotated::from)), *running)
                                 }
-                                () = cancellation.cancelled() => Some(Left::Interrupted),
+                                () = cancellation.cancelled() => (Some(Left::RemovalReplyInterrupted), false),
                             }
                         };
                         if let Some(left) = left {
-                            report.unfinished_removal(progress, copy, *running, left);
+                            report.unfinished_removal(progress, copy, known_running, left);
                         }
                     }),
             )

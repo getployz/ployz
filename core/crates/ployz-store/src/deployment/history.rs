@@ -466,7 +466,9 @@ pub(crate) fn latest_removal(
 }
 
 /// The Saved revision with the most recent recorded switch. A removal can be
-/// the last switch, in which case there is no Live revision.
+/// the last switch, in which case there is no Live revision. After the latest
+/// numbered Deployment with a timestamp, fall back to the previous Applied rule
+/// for runners without switch evidence and shutdowns that needed no runner.
 pub(crate) fn live(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
@@ -477,23 +479,37 @@ pub(crate) fn live(
     }
 
     let mut latest = None;
+    let mut newest_stamped = 0;
     for row in tx.query(
         &format!(
-            "SELECT saved_revision, run FROM config_deployment
+            "SELECT saved_revision, run, number FROM config_deployment
              WHERE environment_id = ?1 AND {NUMBERED} AND run LIKE '%\"live_at\"%'
              ORDER BY number DESC"
         ),
         &[environment.as_str().into()],
     )? {
         let switch: Switch = row.json(1, "Deployment switch")?;
-        if let Some(at) = switch.live_at
-            && latest.is_none_or(|(newest, _)| at > newest)
-        {
+        if let Some(at) = switch.live_at {
+            newest_stamped = newest_stamped.max(row.int(2)?);
+            if latest.is_some_and(|(newest, _)| at <= newest) {
+                continue;
+            }
             let saved =
                 Revision(u64::try_from(row.int(0)?).map_err(|_| error::corrupt("Saved revision"))?);
             latest = Some((at, saved));
         }
     }
+    let mut condition = format!("status = '{APPLIED}' AND number > {newest_stamped}");
+    while let Some(deployment) = latest_where(tx, environment, &condition)? {
+        if !deployment.all_waiting {
+            return Ok(Some(deployment.saved).filter(|saved| *saved != NOTHING));
+        }
+        condition = format!(
+            "status = '{APPLIED}' AND number > {newest_stamped} AND number < {}",
+            deployment.numbered()?
+        );
+    }
+
     Ok(latest
         .map(|(_, saved)| saved)
         .filter(|saved| *saved != NOTHING))

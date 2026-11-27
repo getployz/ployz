@@ -7565,6 +7565,15 @@ fn save(store: &ConfigStore, who: &Actor) -> Revision {
 }
 
 #[test]
+fn history_keeps_a_legacy_applied_revision_live_after_upgrade() {
+    let (store, who) = shop();
+    let saved = save(&store, &who);
+    apply_both(&store, &who, 1);
+    assert_eq!(summary(&store, &who, 1).live_at, None);
+    assert_eq!(marks(&store, &who).0, Some(saved));
+}
+
+#[test]
 fn history_marks_the_routed_revision_live_and_a_newest_one_that_failed() {
     let (store, who) = shop();
     let first = save(&store, &who);

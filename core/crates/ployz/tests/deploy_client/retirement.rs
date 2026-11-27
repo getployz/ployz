@@ -356,12 +356,17 @@ async fn a_cancel_after_apply_stops_waiting_for_cleanup_without_undoing_live() {
         .expect("cancel releases the removal wait without its reply")
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert_eq!(output.status.code(), Some(3), "{stderr}");
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("removal requested but not confirmed"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("left running"), "{stderr}");
     let ran = shop.show("2").await;
     assert!(
         ran.warnings.iter().any(|warning| matches!(
             warning,
-            DeploymentWarning::Deploy { warning: DeployWarning::LeftRunning { container_id, .. } }
+            DeploymentWarning::Deploy { warning: DeployWarning::CleanupUnconfirmed { container_id, .. } }
                 if *container_id == old
         )),
         "{:?}",

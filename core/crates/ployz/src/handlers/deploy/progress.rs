@@ -607,6 +607,18 @@ pub(super) fn completion(
     }
     if view.deployment.cleanup == Some(ployz_store::CleanupStatus::Unconfirmed) {
         crate::ui::warn("Could not confirm cleanup ended.");
+        if !left_a_copy_running(view)
+            && view.deployment.warnings.iter().any(|warning| {
+                matches!(
+                    warning,
+                    DeploymentWarning::Deploy {
+                        warning: DeployWarning::CleanupUnconfirmed { .. }
+                    }
+                )
+            })
+        {
+            return Err(Failure::exit(1));
+        }
         return Err(Failure::partial());
     }
     if view

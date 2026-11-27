@@ -1839,7 +1839,7 @@ fn a_deploy_that_leaves_a_blocked_service_waiting_is_applied_with_it_waiting() {
         "{:?}",
         view.deployment.outcome
     );
-    assert_eq!(live(&store, &who), None);
+    assert_eq!(live(&store, &who), Some(view.deployment.saved));
     let outcomes = outcomes(&store, &who, 1);
     for expected in [
         ("api".to_owned(), NodeStatus::Deployed),
