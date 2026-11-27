@@ -359,6 +359,8 @@ fn builds_refuse_remote_routing_before_builder_mutation() {
         r#"
 root=$(dirname "$0")
 if [ "$1 $2" = 'context show' ]; then echo "${PLOYZ_POLICY_CONTEXT:-default}"; exit 0; fi
+# Admission reads the local worker names; a read is not a mutation.
+if [ "$1" = inspect ]; then exit 0; fi
 echo "$*" >> "$root/mutations"
 "#,
     );
@@ -425,6 +427,8 @@ fn cache_clearing_refuses_remote_routing_before_builder_mutation() {
         r#"
 root=$(dirname "$0")
 if [ "$1 $2" = 'context show' ]; then echo "${PLOYZ_POLICY_CONTEXT:-default}"; exit 0; fi
+# Admission reads the local worker names; a read is not a mutation.
+if [ "$1" = inspect ]; then exit 0; fi
 echo "$*" >> "$root/mutations"
 "#,
     );

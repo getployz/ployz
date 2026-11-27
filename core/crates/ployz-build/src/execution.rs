@@ -295,17 +295,32 @@ impl Admission {
         concurrency: BuildConcurrency,
     ) -> Result<Self, BuildError> {
         let mut quarantined = None;
-        for slot in 0..usize::from(concurrency) {
+        let mut foreign = None;
+        // A slot whose worker name a container Ployz did not create holds is
+        // passed over without counting against the limit.
+        let mut counted = 0;
+        for slot in 0..=usize::from(u8::MAX) {
+            if counted == usize::from(concurrency) {
+                break;
+            }
             match Self::try_acquire_slot(policy, slot) {
-                Ok(admission) => return Ok(admission),
-                Err(BuildError::Busy) => {}
+                Ok(admission) => match admission.lock.foreign_worker(&policy.docker) {
+                    None => return Ok(admission),
+                    Some(container) => {
+                        foreign.get_or_insert(container);
+                    }
+                },
+                Err(BuildError::Busy) => counted += 1,
                 Err(error) if error.is_unknown() => {
+                    counted += 1;
                     quarantined.get_or_insert(error);
                 }
                 Err(error) => return Err(error),
             }
         }
-        Err(quarantined.unwrap_or(BuildError::Busy))
+        Err(quarantined
+            .or_else(|| foreign.map(|container| crate::builder::foreign(&container)))
+            .unwrap_or(BuildError::Busy))
     }
 
     pub(crate) fn try_acquire_slot(policy: &HostPolicy, slot: usize) -> Result<Self, BuildError> {

@@ -539,16 +539,23 @@ pub(crate) fn holder(docker: &Docker<'_>, container: &str) -> Result<Holder, Bui
         &[
             "inspect",
             "--format",
-            "{{println .Id}}{{range .Config.Env}}{{println .}}{{end}}",
+            "{{println .Id}}{{println .Config.Image}}{{range .Config.Env}}{{println .}}{{end}}",
             container,
         ],
         Streams::Captured,
     ) {
         // Docker prints an existing container's ID, so nothing names none.
-        Ok(environment) if environment.trim().is_empty() => Ok(Holder::Nobody),
-        Ok(environment) => {
+        Ok(inspected) if inspected.trim().is_empty() => Ok(Holder::Nobody),
+        Ok(inspected) => {
             let marker = format!("{OWNER}={}", owner());
-            Ok(if environment.lines().any(|line| line.trim() == marker) {
+            let lines = inspected.lines().map(str::trim).collect::<Vec<_>>();
+            // A worker an earlier Ployz made has no marker: it is the Buildx
+            // worker under this builder's name, running BuildKit's image.
+            let earlier = lines.iter().any(|line| line.starts_with("moby/buildkit"))
+                && lines
+                    .iter()
+                    .any(|line| line.starts_with("BUILDKIT_SETUP_CGROUPV2_ROOT="));
+            Ok(if earlier || lines.contains(&marker.as_str()) {
                 Holder::Ployz
             } else {
                 Holder::Other
@@ -934,6 +941,36 @@ impl Lock {
             .lock()
             .expect("parked bridges never panic")
             .push((self.parking(), parked));
+    }
+
+    /// A container Ployz did not create that holds one of this slot's worker
+    /// names. A worker this process kept is its own, so it is not asked about.
+    pub(crate) fn foreign_worker(&self, program: &std::path::Path) -> Option<String> {
+        let slot = self.parking();
+        if PARKED
+            .lock()
+            .expect("parked bridges never panic")
+            .iter()
+            .any(|(parking, parked)| *parking == slot && parked.kept.is_some())
+        {
+            return None;
+        }
+        let environment = crate::upload::environment(&self.upload_directory());
+        let docker = Docker {
+            program,
+            environment: &environment,
+            working_dir: &self.directory,
+            deadline: crate::Deadline::starting_now(crate::CLEANUP_TIMEOUT),
+            cancellation: None,
+            progress: None,
+            recorder: None,
+        };
+        // This environment names no other Docker. Docker failing to answer is
+        // reported by the attempt itself.
+        [Access::Full, Access::Free]
+            .into_iter()
+            .map(|access| container(&access.builder(self.slot)))
+            .find(|worker| holder(&docker, worker).is_ok_and(|holder| holder == Holder::Other))
     }
 
     fn marked(&self) -> Result<bool, BuildError> {
@@ -1811,6 +1848,8 @@ case "$1 $2" in
       *Env*)
         if grep -qx "$4" '{0}/owned' 2>/dev/null; then echo {OWNER}={1}
         elif grep -qx "$4" '{0}/foreign' 2>/dev/null; then echo PATH=/bin
+        elif grep -qx "$4" '{0}/earlier' 2>/dev/null; then
+          printf 'c0ffee\nmoby/buildkit:v0.26.2\nPATH=/bin\nBUILDKIT_SETUP_CGROUPV2_ROOT=1\n' 
         else echo "Error: no such object: $4" >&2; exit 1; fi ;;
       *) cat '{0}/worker' 2>/dev/null ;;
     esac ;;
@@ -1910,7 +1949,7 @@ exit 0
     fn inspect_owner(worker: &str) -> String {
         [
             "inspect --format ",
-            "{{println .Id}}{{range .Config.Env}}{{println .}}{{end}} ",
+            "{{println .Id}}{{println .Config.Image}}{{range .Config.Env}}{{println .}}{{end}} ",
             worker,
         ]
         .concat()
@@ -2140,6 +2179,91 @@ exit 0
                 && call.contains(&format!("--builder {} ", Access::Full.builder(1)))),
             "the other slot was not cleared: {calls:?}"
         );
+    }
+
+    /// An earlier Ployz crashed mid-attempt: its mark names Docker processes
+    /// now gone, and its worker, made before workers carried a marker, runs.
+    #[test]
+    fn a_worker_an_earlier_ployz_left_mid_attempt_is_recovered_and_the_slot_builds() {
+        let directory = host_slot();
+        let directory = directory.path();
+        let worker = container(&Access::Full.builder(0));
+        fs::write(directory.join("earlier"), &worker).unwrap();
+        fs::write(directory.join("worker"), "c0ffee true").unwrap();
+        let mut gone = sleeper(&[]);
+        let docker_process = crate::owner::Process::observe(gone.id()).unwrap().unwrap();
+        gone.kill().unwrap();
+        gone.wait().unwrap();
+        let state = directory.join("state");
+        fs::DirBuilder::new().mode(0o700).create(&state).unwrap();
+        fs::write(
+            state.join(lock_file(0)),
+            format!(
+                "{}{}",
+                crate::owner::named(&[]),
+                crate::owner::Mark::docker_line(docker_process, crate::owner::DEFAULT_ENDPOINT)
+            ),
+        )
+        .unwrap();
+        let policy = crate::HostPolicy {
+            state_directory: state,
+            configuration_file: directory.join("build.yaml"),
+            docker: directory.join("docker"),
+            ..Default::default()
+        };
+        let admission = crate::Admission::try_acquire_with(&policy).unwrap();
+        assert_eq!(admission.slot(), 0);
+        let program = policy.docker;
+        let environment = BTreeMap::new();
+        let docker = Docker {
+            program: &program,
+            environment: &environment,
+            working_dir: directory,
+            deadline: crate::Deadline::starting_now(crate::EXECUTION_TIMEOUT),
+            cancellation: None,
+            progress: None,
+            recorder: None,
+        };
+        let builder = Builder::acquire(
+            &docker,
+            admission.lock,
+            Access::Full,
+            &crate::policy::Resources::default(),
+            None,
+            Reuse::WhenClean,
+        )
+        .unwrap();
+        let calls = calls_since(directory, &mut 0);
+        assert!(
+            calls.contains(&format!("rm --force {worker}")),
+            "the earlier worker stayed: {calls:?}"
+        );
+        assert!(
+            calls
+                .last()
+                .is_some_and(|call| call.starts_with("buildx create")),
+            "{calls:?}"
+        );
+        drop(builder);
+    }
+
+    #[test]
+    fn a_build_passes_over_a_slot_whose_worker_name_another_container_holds() {
+        let directory = host_slot();
+        let directory = directory.path();
+        fs::write(
+            directory.join("foreign"),
+            container(&Access::Full.builder(0)),
+        )
+        .unwrap();
+        let policy = crate::HostPolicy {
+            state_directory: directory.join("state"),
+            configuration_file: directory.join("build.yaml"),
+            docker: directory.join("docker"),
+            ..Default::default()
+        };
+        let admission = crate::Admission::try_acquire_with(&policy).unwrap();
+        assert_eq!(admission.slot(), 1);
     }
 
     #[test]
