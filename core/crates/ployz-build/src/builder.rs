@@ -834,6 +834,12 @@ impl Lock {
                 .map(|access| format!("{}{suffix}", container(&access.builder(slot))))
         };
         let mut found = Self::known_slots(&policy.state_directory);
+        // A cache clear runs in the caller's environment, and another
+        // Docker's containers are not this host's workers.
+        if let Err(error) = caches.then(|| docker.require_local()).unwrap_or(Ok(())) {
+            let _ = fs::remove_dir_all(&working);
+            return (found, Err(error));
+        }
         // Act on whichever listing Docker answered, and report the other.
         let workers = docker
             .run(

@@ -115,7 +115,9 @@ esac
     ));
     let free_builder = |commands: &str| {
         commands.lines().any(|command| {
-            command.contains(&format!("ployz-free-{uid}")) && !command.starts_with("volume ls")
+            command.contains(&format!("ployz-free-{uid}"))
+                && !command.starts_with("volume ls")
+                && !command.starts_with("inspect")
         })
     };
 
