@@ -573,10 +573,9 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
 }
 
 /// Five Services of one repository, as a monorepo's web, workers and cron are: four build
-/// one Dockerfile that reads no argument, so their images are one content under four
-/// repositories, and the fifth builds a Dockerfile of its own. Cloud's runner builds each
-/// once, a redeploy of the same commit reuses every image, and only a changed build
-/// variable or commit builds again.
+/// one Dockerfile into one image, one digest under four repositories, and the fifth builds
+/// a Dockerfile of its own. Cloud's runner builds each once, a redeploy of the same commit
+/// reuses every image, and only a changed build variable or commit builds again.
 #[tokio::test]
 #[ignore = "informing: requires the privileged Ployz testkit image with Buildx"]
 async fn a_same_commit_redeploy_of_services_sharing_a_dockerfile_reuses_every_build() {
@@ -640,9 +639,12 @@ async fn redeploys_sharing_a_dockerfile(reaches_data: bool) {
         ..Trusted::default()
     };
     let checkout = tempfile::tempdir().unwrap();
+    // No step writes a layer: one that did would date its files by each build's clock,
+    // so four builds running at once would give four digests. These give one, as cached
+    // builds of a shared Dockerfile do in production.
     std::fs::write(
         checkout.path().join("Dockerfile"),
-        "FROM alpine:3.23.3\nRUN sleep 5 && echo shared > /role\nCMD [\"sleep\", \"600\"]\n",
+        "FROM alpine:3.23.3\nCMD [\"sleep\", \"600\"]\n",
     )
     .unwrap();
     std::fs::write(
@@ -824,7 +826,54 @@ async fn redeploys_sharing_a_dockerfile(reaches_data: bool) {
     // labels it Reused.
     let sent = || rpcs.swap(0, std::sync::atomic::Ordering::SeqCst);
 
+    // The image each Service's container runs on the Machine.
+    let running = || {
+        let listed = cluster
+            .machine_shell(
+                0,
+                "for c in $(docker ps --format '{{.Names}}'); do echo \"$c $(docker inspect --format '{{.Image}}' \"$c\")\"; done",
+            )
+            .unwrap();
+        listed
+            .lines()
+            .filter_map(|line| {
+                let (container, image) = line.split_once(' ')?;
+                let (service, suffix) = container.rsplit_once('-')?;
+                (names.contains(&service)
+                    && suffix.len() == 12
+                    && suffix.chars().all(|c| c.is_ascii_hexdigit()))
+                .then(|| (service.to_owned(), image.to_owned()))
+            })
+            .collect::<BTreeMap<_, _>>()
+    };
+    let reused = || {
+        names
+            .iter()
+            .map(|name| ((*name).to_owned(), BuildStatus::Reused))
+            .collect::<BTreeMap<_, _>>()
+    };
+    let statuses = |view: &ployz_store::DeploymentView| {
+        view.builds
+            .iter()
+            .map(|build| (build.service.to_string(), build.status))
+            .collect::<BTreeMap<_, _>>()
+    };
+
     let first = deploy(1, "c".repeat(40)).await;
+    let images = running();
+    eprintln!("images after the rollout: {images:?}");
+    assert_eq!(
+        images.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["ai", "queue", "reverb", "scheduler", "web"],
+        "{images:?}"
+    );
+    assert!(
+        ["web", "reverb", "scheduler"]
+            .iter()
+            .all(|name| images[*name] == images["queue"])
+            && images["ai"] != images["queue"],
+        "the four Services sharing a Dockerfile run one image, and ai its own: {images:?}"
+    );
     let rollout = sent();
     assert!(
         rollout >= 5,
@@ -837,12 +886,11 @@ async fn redeploys_sharing_a_dockerfile(reaches_data: bool) {
             0,
             "a same-commit redeploy must send no Build to a Server: {again:?}"
         );
-        assert!(
-            again
-                .builds
-                .iter()
-                .all(|build| build.status == BuildStatus::Reused),
-            "{again:?}"
+        assert_eq!(statuses(&again), reused(), "{again:?}");
+        assert_eq!(
+            running(),
+            images,
+            "a same-commit redeploy runs the same images"
         );
     }
     edit(vec![("web.env.ROLE".into(), "changed".into())]);
