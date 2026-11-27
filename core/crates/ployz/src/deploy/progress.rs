@@ -89,6 +89,10 @@ impl Progress {
     }
 
     pub(super) fn emit(&self) {
+        self.emit_switch(None);
+    }
+
+    pub(super) fn emit_switch(&self, live_at: Option<i64>) {
         let Some(tx) = &self.tx else {
             return;
         };
@@ -101,6 +105,7 @@ impl Progress {
             completed: u32::try_from(completed).unwrap_or(u32::MAX),
             total: u32::try_from(rows.len()).unwrap_or(u32::MAX),
             rows: rows.clone(),
+            live_at,
         });
     }
 

@@ -264,6 +264,18 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
     let shared = Shared::new(plan, run);
     let mut records: BTreeMap<usize, GroupRecord> = BTreeMap::new();
     let mut stop = None;
+    let mut switches: BTreeSet<_> = plan
+        .groups()
+        .iter()
+        .enumerate()
+        .filter(|(_, group)| {
+            group.publishing_service().is_some()
+                && group.steps.iter().flat_map(Stage::tasks).any(|&index| {
+                    super::schedule::creates_container(operation_at(operations, index))
+                })
+        })
+        .map(|(index, _)| index)
+        .collect();
     let mut switch_at = None;
     let mut switch_unconfirmed = false;
     let mut blocked_since: Option<Instant> = None;
@@ -432,6 +444,14 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                         }
                         ledger.schedule.apply(Event::Routed(service));
                         ledger.schedule.apply(Event::Published(group));
+                        if switches.remove(&group)
+                            && switches.is_empty()
+                            && !switch_unconfirmed
+                            && ledger.stop.is_none()
+                            && let Some(at) = switch_at
+                        {
+                            progress.emit_switch(Some(at));
+                        }
                     }
                     // Its old copies were left In beside the new ones and named.
                     Published::Gapped => {
@@ -527,7 +547,14 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
     progress.settle_unexecuted();
     let outcome = outcome_from(operations, &completed, stop, schedule.services());
     let live_at = if matches!(outcome, DeployOutcome::Success { .. }) && !switch_unconfirmed {
-        switch_at
+        switch_at.or_else(|| {
+            if completed.is_empty() {
+                return None;
+            }
+            let at = ployz_core::deploy_steps::now_ms() / 1000;
+            progress.emit_switch(Some(at));
+            Some(at)
+        })
     } else {
         None
     };

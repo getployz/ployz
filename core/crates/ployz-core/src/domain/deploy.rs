@@ -1578,12 +1578,16 @@ pub enum DeployEvent {
         completed: u32,
         total: u32,
         rows: Vec<OperationRow>,
+        /// The executor's switch timestamp. A successful Outcome confirms it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional, type = "number")]
+        live_at: Option<i64>,
     },
     /// Runtime outcome, before any remaining cleanup.
     Outcome {
         outcome: DeployOutcome<ExecutionError>,
         /// When the last Service switched traffic, in Unix seconds. Absent when
-        /// no switch ran or a guard kept a switch from being confirmed.
+        /// the plan was empty, failed, or a switch could not be confirmed.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional, type = "number")]
         live_at: Option<i64>,

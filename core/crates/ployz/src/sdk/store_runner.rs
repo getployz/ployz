@@ -185,6 +185,7 @@ pub async fn run_deployment_expecting(
         runner,
         over: Latch::new(),
         steps: std::sync::Mutex::default(),
+        pending_live_at: std::sync::Mutex::default(),
         reader: checkouts
             .as_ref()
             .ok()
@@ -558,6 +559,7 @@ struct Run {
     steps: std::sync::Mutex<Steps>,
     /// Handed to each Server with a rule's proof.
     reader: Option<ployz_core::GithubToken>,
+    pending_live_at: std::sync::Mutex<Option<i64>>,
 }
 
 /// What `read`, the store's answer to one of this run's records, says about the Deployment.
@@ -730,9 +732,15 @@ impl Run {
             Err(error) => return self.not_executed(Failure::from(&error)).await,
         };
         let outcome = self
-            .renewing(self.executing(session, &running, &scrub), || {
-                running.abort()
-            })
+            .renewing(
+                self.executing(
+                    session,
+                    &running,
+                    &scrub,
+                    prepared.preview().waits().next().is_none(),
+                ),
+                || running.abort(),
+            )
             .await;
         self.keep_verified(&issued).await;
         let recorded = match outcome {
@@ -748,10 +756,7 @@ impl Run {
                         if !deletes.is_empty() || closes.is_some() {
                             // An old copy may still mount a Volume this deletes.
                             if let Err(error) = self.retired(&running).await {
-                                if let Err(record) = self.record(RunEvidence::Abandoned).await {
-                                    tracing::warn!(%record, "couldn't record the interrupted Deployment");
-                                }
-                                return Err(error);
+                                return self.runtime_failed(error).await;
                             }
                         }
                         // Deleting is never interrupted: a half-deleted set stays accepted.
@@ -776,9 +781,29 @@ impl Run {
                 }
             },
             // The session ended mid-execution: what ran is unknown.
-            Err(_) => return self.record(RunEvidence::Abandoned).await,
+            Err(error) => return self.runtime_failed(error).await,
         };
         self.finish_retirement(&running, recorded).await
+    }
+
+    async fn runtime_failed(&self, error: RpcError) -> Result<DeploymentSummary, RpcError> {
+        if let Err(record) = self.record(RunEvidence::Abandoned).await {
+            tracing::warn!(%record, "couldn't record the interrupted Deployment");
+        }
+        Err(error)
+    }
+
+    fn pending_live_at(&self) -> std::sync::MutexGuard<'_, Option<i64>> {
+        self.pending_live_at
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    async fn record_switch(&self, live_at: Option<i64>) -> Result<DeploymentSummary, RpcError> {
+        if let Some(at) = live_at {
+            self.pending_live_at().get_or_insert(at);
+        }
+        self.record(RunEvidence::Finishing { live_at }).await
     }
 
     async fn finish_retirement(
@@ -790,9 +815,14 @@ impl Run {
         let finished = self
             .record(RunEvidence::Finished)
             .await
-            .inspect_err(|error| tracing::warn!(%error, "couldn't record the end of cleanup"))
-            .ok();
-        match (recorded, finished.or(warned)) {
+            .inspect_err(|error| tracing::warn!(%error, "couldn't record the end of cleanup"));
+        if self.pending_live_at().is_some() {
+            finished?;
+            return Err(RpcError::internal(
+                "Couldn't record the Deployment's traffic switch",
+            ));
+        }
+        match (recorded, finished.ok().or(warned)) {
             (Ok(_), Some(warned)) => Ok(warned),
             (recorded, _) => recorded,
         }
@@ -1158,6 +1188,7 @@ impl Run {
         session: &Session,
         running: &super::RunningDeploy,
         scrub: &Scrub,
+        all_services_ready: bool,
     ) -> Result<
         (
             DeployOutcome<ExecutionError>,
@@ -1186,7 +1217,8 @@ impl Run {
                 }
                 // Traffic moved: the old copies retiring after it hold up nothing.
                 ployz_core::DeployEvent::Outcome { outcome, live_at } => {
-                    if let Err(error) = self.record(RunEvidence::Finishing { live_at }).await {
+                    let live_at = if all_services_ready { live_at } else { None };
+                    if let Err(error) = self.record_switch(live_at).await {
                         tracing::warn!(%error, "couldn't record the Deployment's traffic switch or cleanup");
                     }
                     ended = Some(outcome);
@@ -1563,15 +1595,23 @@ impl Run {
     async fn record(&self, evidence: RunEvidence) -> Result<DeploymentSummary, RpcError> {
         let (deployment, runner) = (self.deployment.clone(), self.runner.clone());
         let steps = self.steps().take_changed();
-        super::store_call(&self.store, move |store| {
+        let pending_live_at = *self.pending_live_at();
+        let recorded = super::store_call(&self.store, move |store| {
             if !steps.is_empty()
                 && let Err(error) = store.record_steps(&deployment, &steps)
             {
                 tracing::warn!(%error, "couldn't record the Deployment's steps");
             }
-            store.record(&deployment, &runner, evidence)
+            store.record_with_live_at(&deployment, &runner, evidence, pending_live_at)
         })
-        .await
+        .await;
+        if let Ok(summary) = &recorded {
+            let mut pending = self.pending_live_at();
+            if *pending == summary.live_at {
+                *pending = None;
+            }
+        }
+        recorded
     }
 
     /// Renew this runner's lease on the Deployment and read what the run may do. Once a

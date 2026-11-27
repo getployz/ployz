@@ -497,7 +497,52 @@ async fn a_scale_down_retires_the_copy_it_removes_before_removing_it() {
     .with_copy(&machine, &kept, CopyRotation::In)
     .with_copy(&machine, &removed, CopyRotation::In);
 
-    let outcome = execute_groups(&plan, scale_down_groups(), &client).await;
+    let plan = crate::deploy::DeployPlan::for_execution_test_with_groups(
+        plan,
+        test_namespace(),
+        scale_down_groups(),
+    );
+    let (tx, mut events) = tokio::sync::mpsc::unbounded_channel();
+    let outcome = super::super::execute_operation_sequence(
+        &plan,
+        &run_id(),
+        &client,
+        &CancellationToken::new(),
+        Some(tx),
+    )
+    .await;
+    let events: Vec<_> = std::iter::from_fn(|| events.try_recv().ok()).collect();
+    let removal_finished = events.iter().position(|event| {
+        matches!(
+            event,
+            DeployEvent::Progress {
+                completed: 1,
+                live_at: None,
+                ..
+            }
+        )
+    });
+    let live = events.iter().position(|event| {
+        matches!(
+            event,
+            DeployEvent::Progress {
+                live_at: Some(_),
+                ..
+            }
+        )
+    });
+    assert!(
+        removal_finished
+            .zip(live)
+            .is_some_and(|(removed, live)| removed < live)
+    );
+    assert!(matches!(
+        events.last(),
+        Some(DeployEvent::Outcome {
+            live_at: Some(_),
+            ..
+        })
+    ));
 
     assert!(
         matches!(outcome, DeployOutcome::Success { .. }),
@@ -4056,7 +4101,25 @@ async fn a_scale_down_does_not_hide_a_siblings_live_switch() {
     assert_eq!(client.rotation(&started), Some(CopyRotation::In));
     assert_eq!(client.rotation(&removed), None);
     client.assert_done();
-    let recorded = std::iter::from_fn(|| events.try_recv().ok())
+    let events: Vec<_> = std::iter::from_fn(|| events.try_recv().ok()).collect();
+    let switch = events.iter().position(|event| {
+        matches!(event, DeployEvent::Progress { .. })
+            && serde_json::to_value(event)
+                .unwrap()
+                .get("live_at")
+                .is_some()
+    });
+    let removed = events
+        .iter()
+        .position(|event| matches!(event, DeployEvent::Progress { completed: 2, .. }));
+    assert!(
+        switch
+            .zip(removed)
+            .is_some_and(|(switch, removed)| switch < removed),
+        "the executor must emit the switch before the old copy is removed"
+    );
+    let recorded = events
+        .into_iter()
         .find_map(|event| {
             if let DeployEvent::Outcome { live_at, .. } = event {
                 Some(live_at)

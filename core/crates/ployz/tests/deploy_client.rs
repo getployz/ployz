@@ -730,6 +730,7 @@ async fn confirm_ignores_changed_preview_payload_and_replays_with_fresh_pending_
             rows,
             completed,
             total,
+            ..
         } = first
         else {
             panic!("expected initial progress");

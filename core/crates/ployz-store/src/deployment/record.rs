@@ -11,6 +11,7 @@ pub(crate) fn record(
     id: &DeploymentId,
     runner: &RunnerId,
     evidence: RunEvidence,
+    pending_live_at: Option<i64>,
 ) -> Result<DeploymentSummary, RpcError> {
     // What it records may follow into its Branches.
     let environment = super::load(tx, id)?.summary.environment_id;
@@ -28,6 +29,32 @@ pub(crate) fn record(
     ) {
         stored.standing.renew(now());
     }
+    let live_at = pending_live_at.or({
+        if let RunEvidence::Finishing { live_at } = &evidence {
+            *live_at
+        } else {
+            None
+        }
+    });
+    let stamped = live_at.is_some()
+        && stored.run.live_at.is_none()
+        && stored
+            .run
+            .preview
+            .as_ref()
+            .is_some_and(|preview| preview.waits().next().is_none());
+    if stamped {
+        stored.run.live_at = live_at;
+        if !matches!(
+            evidence,
+            RunEvidence::Finishing { .. } | RunEvidence::Finished
+        ) {
+            stored
+                .run
+                .cleanup_until
+                .get_or_insert_with(|| now() + LEASE);
+        }
+    }
     match evidence {
         RunEvidence::Alive => {
             if stored.summary.status == DeploymentStatus::Unknown {
@@ -40,16 +67,11 @@ pub(crate) fn record(
             save(tx, &mut stored)?;
             Ok(stored.summary)
         }
-        RunEvidence::Finishing { live_at } => {
+        RunEvidence::Finishing { .. } => {
             if stored.run.cleanup_until.is_none() {
                 running(&stored)?;
-                let Some(preview) = &stored.run.preview else {
+                if stored.run.preview.is_none() {
                     return Err(invalid_evidence("Deploy Preview"));
-                };
-                if let Some(at) = live_at
-                    && preview.waits().next().is_none()
-                {
-                    stored.run.live_at.get_or_insert(at);
                 }
             }
             stored.run.cleanup_until = Some(now() + LEASE);
@@ -57,7 +79,7 @@ pub(crate) fn record(
             Ok(stored.summary)
         }
         RunEvidence::Finished => {
-            if stored.run.cleanup_until.take().is_some() {
+            if stored.run.cleanup_until.take().is_some() || stamped {
                 save(tx, &mut stored)?;
             }
             Ok(stored.summary)

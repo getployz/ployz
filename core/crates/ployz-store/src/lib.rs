@@ -449,8 +449,22 @@ impl ConfigStore {
         runner: &RunnerId,
         evidence: RunEvidence,
     ) -> Result<DeploymentSummary, RpcError> {
+        self.record_with_live_at(deployment, runner, evidence, None)
+    }
+
+    /// Record evidence and a switch timestamp the runner has not been able to record yet.
+    ///
+    /// # Errors
+    /// Returns the same errors as [Self::record].
+    pub fn record_with_live_at(
+        &self,
+        deployment: &DeploymentId,
+        runner: &RunnerId,
+        evidence: RunEvidence,
+        pending_live_at: Option<i64>,
+    ) -> Result<DeploymentSummary, RpcError> {
         self.storage
-            .write(|tx| deployment::record(tx, deployment, runner, evidence))
+            .write(|tx| deployment::record(tx, deployment, runner, evidence, pending_live_at))
     }
 
     /// Every queued Deployment no runner claimed, admitted before `before` (Unix

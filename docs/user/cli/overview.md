@@ -676,9 +676,9 @@ and saved revision. `ployz deploy` keeps following a queued deployment. If it is
 that one. If nothing is ahead of it, the CLI says no server has started it yet and points at
 `ployz server ls`.
 
-`ployz deploy` prints **Live** when traffic has switched to the new copies and the old
-copies are out of routing. You can keep watching `stopping_old` while Ployz cleans up.
-The command returns after cleanup and exits 3 if an old container was left running.
+`ployz deploy` prints **Live** when the executor reports a successful plan with the
+traffic switch confirmed. You can keep watching `stopping_old` while Ployz retires the
+old copies. The command returns after cleanup and exits 3 if an old container was left running.
 
 To inspect per-server progress, run:
 
@@ -697,8 +697,9 @@ when you deploy again. Unchanged services have no rows because no server work ra
 
 `ployz deployment show` shows when the deployment went live, including deployments that
 reported a cleanup failure. In JSON, `live_at` is in Unix seconds. A deployment has
-no `live_at` until it confirms the switch for every Service that needs one. A waiting
-Service prevents that confirmation.
+no `live_at` until the plan succeeds and every Service that needs a switch confirms it.
+A waiting Service prevents that confirmation. The timestamp marks the last confirmed
+switch, or the last successful plan step when the plan only removes copies.
 
 The command ends with the deployment's steps and how long each took, such as
 `building api  +2.1s  41.3s`. A step the deployment stopped in reads `stopped here`. Old

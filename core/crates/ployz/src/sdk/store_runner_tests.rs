@@ -18,12 +18,20 @@ fn uploaded() -> (Run, ployz_store::Actor) {
 }
 
 fn admitted(upload: Option<ployz_store::UploadedSource>) -> (Run, ployz_store::Actor) {
-    use ployz_store::{
-        Actor, Admit, CreateProject, CreateService, Deploy, EnvironmentRef, OrganizationId,
-        ProjectId, ProjectName, SealingKey, ServiceLineageId,
-    };
+    use ployz_store::SealingKey;
     let store =
         Arc::new(ConfigStore::open("sqlite::memory:", SealingKey::new(b"test").unwrap()).unwrap());
+    admitted_in(store, upload)
+}
+
+fn admitted_in(
+    store: Arc<ConfigStore>,
+    upload: Option<ployz_store::UploadedSource>,
+) -> (Run, ployz_store::Actor) {
+    use ployz_store::{
+        Actor, Admit, CreateProject, CreateService, Deploy, EnvironmentRef, OrganizationId,
+        ProjectId, ProjectName, ServiceLineageId,
+    };
     let actor = Actor::system(OrganizationId::parse("test").unwrap());
     store
         .write(
@@ -81,6 +89,7 @@ fn admitted(upload: Option<ployz_store::UploadedSource>) -> (Run, ployz_store::A
             runner,
             over: Latch::new(),
             steps: std::sync::Mutex::default(),
+            pending_live_at: std::sync::Mutex::default(),
             reader: None,
         },
         actor,
@@ -160,6 +169,7 @@ async fn a_runner_plans_with_the_runs_its_claim_reports_ended() {
         runner: RunnerId::parse("other").unwrap(),
         over: Latch::new(),
         steps: std::sync::Mutex::default(),
+        pending_live_at: std::sync::Mutex::default(),
         reader: None,
     };
 
@@ -2063,6 +2073,7 @@ async fn a_deploy_with_a_reused_build_still_recreates_the_services_its_claim_lis
         runner: RunnerId::parse("owner").unwrap(),
         over: Latch::new(),
         steps: std::sync::Mutex::default(),
+        pending_live_at: std::sync::Mutex::default(),
         reader: None,
     };
     let claimed = run.claim(Operator::Cloud).await.unwrap();
@@ -2234,4 +2245,66 @@ async fn a_join_failure_after_live_keeps_cleanup_pending_and_returns_an_error() 
         3
     );
     assert_eq!(view.deployment.live_at, Some(at));
+}
+
+#[tokio::test]
+async fn a_join_failure_before_the_outcome_is_returned_and_marks_the_run_unknown() {
+    let (run, actor) = run();
+    prepared(&run).await;
+    let task = tokio::spawn(std::future::pending());
+    task.abort();
+    let running = crate::sdk::RunningDeploy {
+        cancel: CancellationToken::new(),
+        events: tokio::sync::Mutex::new(None),
+        join: tokio::sync::Mutex::new(Some(task)),
+    };
+    let error = running.finished().await.unwrap_err();
+
+    let reported = run.runtime_failed(error.clone()).await;
+    let summary = run
+        .store
+        .read(
+            &actor,
+            &DeploymentQuery {
+                id: run.deployment.clone(),
+            },
+        )
+        .unwrap()
+        .deployment;
+    assert_eq!(summary.status, DeploymentStatus::Unknown);
+    assert_eq!((summary.live_at, summary.cleanup), (None, None));
+    assert_eq!(reported.unwrap_err(), error);
+}
+
+#[tokio::test]
+async fn a_rejected_switch_write_is_retried_with_the_next_evidence() {
+    use ployz_store::testing::backend;
+
+    let dir = tempfile::tempdir().unwrap();
+    let url = format!("sqlite:{}", dir.path().join("store.db").display());
+    let (run, actor) = admitted_in(
+        Arc::new(ConfigStore::open(&url, backend::key()).unwrap()),
+        None,
+    );
+    prepared(&run).await;
+    backend::execute(
+        &url,
+        "CREATE TRIGGER reject_switch BEFORE UPDATE ON config_deployment         BEGIN SELECT RAISE(ABORT, 'reject first switch write'); END",
+    );
+    let at = now_ms() / 1000;
+    assert!(run.record_switch(Some(at)).await.is_err());
+    backend::execute(&url, "DROP TRIGGER reject_switch");
+
+    run.record(RunEvidence::Alive).await.unwrap();
+    let summary = run
+        .store
+        .read(
+            &actor,
+            &DeploymentQuery {
+                id: run.deployment.clone(),
+            },
+        )
+        .unwrap()
+        .deployment;
+    assert_eq!(summary.live_at, Some(at));
 }
