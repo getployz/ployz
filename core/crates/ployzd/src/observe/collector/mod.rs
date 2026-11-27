@@ -67,7 +67,8 @@ struct Inner {
     salts: Salts,
     salts_retry_at: AtomicI64,
     http: reqwest::Client,
-    state: Mutex<State>,
+    /// `None` once a Machine with no push target tore the Collector down.
+    state: Mutex<Option<State>>,
 }
 
 struct Connected {
@@ -80,7 +81,17 @@ struct State {
     inventoried: bool,
     refresh_token_at: Option<i64>,
     requests_loaded: Option<Vec<u8>>,
-    torn_down: bool,
+}
+
+impl State {
+    const fn new() -> Self {
+        Self {
+            values: SealedValues::none(),
+            inventoried: false,
+            refresh_token_at: None,
+            requests_loaded: None,
+        }
+    }
 }
 
 impl Collector {
@@ -100,13 +111,7 @@ impl Collector {
                 .timeout(SALTS_TIMEOUT)
                 .build()
                 .unwrap_or_default(),
-            state: Mutex::new(State {
-                values: SealedValues::none(),
-                inventoried: false,
-                refresh_token_at: None,
-                requests_loaded: None,
-                torn_down: false,
-            }),
+            state: Mutex::new(Some(State::new())),
         })))
     }
 
@@ -128,7 +133,9 @@ impl Collector {
             return Ok(());
         };
         tracing::warn!(error = %ployz_core::error_chain::inline(&error), "the Collector could not take a new Sealed value, so it is stopped");
-        state.inventoried = false;
+        if let Some(state) = state.as_mut() {
+            state.inventoried = false;
+        }
         inner.service().remove().await?;
         Ok(())
     }
@@ -172,14 +179,14 @@ impl Inner {
 
     async fn take_values_of(
         &self,
-        state: &mut State,
+        state: &mut Option<State>,
         container_labels: &HashMap<String, String>,
     ) -> Result<(), Error> {
         let Some(connected) = self.target() else {
             return self.tear_down(state).await;
         };
         let mut found = self.values_of(container_labels)?;
-        if !state.inventoried {
+        if !state.as_ref().is_some_and(|state| state.inventoried) {
             found.merge(self.live_values().await?);
         }
         self.converge(state, &connected, found).await
@@ -218,10 +225,11 @@ impl Inner {
             tracing::warn!(error = %ployz_core::error_chain::inline(&error), "the Collector is not converged");
             return TICK;
         }
-        state.refresh_token_at.map_or(TICK, |at| {
-            let until = u64::try_from(at - unix_seconds()).unwrap_or(0);
-            TICK.min(Duration::from_secs(until.max(1)))
-        })
+        let Some(at) = state.as_ref().and_then(|state| state.refresh_token_at) else {
+            return TICK;
+        };
+        let until = u64::try_from(at - unix_seconds()).unwrap_or(0);
+        TICK.min(Duration::from_secs(until.max(1)))
     }
 
     /// Every Sealed value of every managed container, or an error where any of them
@@ -236,17 +244,13 @@ impl Inner {
 
     /// Stopping needs no values, so a Machine with no push target tears the Collector
     /// down once, whatever a Sealed record would say.
-    async fn tear_down(&self, state: &mut State) -> Result<(), Error> {
-        if state.torn_down {
+    async fn tear_down(&self, state: &mut Option<State>) -> Result<(), Error> {
+        if state.is_none() {
             return Ok(());
         }
         self.service().remove().await?;
         remove_dir(&self.machine_root.join("run/ployz/collector"))?;
-        state.values = SealedValues::none();
-        state.inventoried = false;
-        state.refresh_token_at = None;
-        state.requests_loaded = None;
-        state.torn_down = true;
+        *state = None;
         Ok(())
     }
 
@@ -254,13 +258,13 @@ impl Inner {
     /// there is, so the mask it writes is never missing one.
     async fn converge(
         &self,
-        state: &mut State,
+        state: &mut Option<State>,
         connected: &Connected,
         found: SealedValues,
     ) -> Result<(), Error> {
         let Connected { identity, target } = connected;
         let service = self.service();
-        state.torn_down = false;
+        let state = state.get_or_insert_with(State::new);
         state.inventoried = true;
         state.values.merge(found);
         let docker_root = self.docker.docker_root().await?;
