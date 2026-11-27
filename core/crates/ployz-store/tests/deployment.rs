@@ -7566,11 +7566,42 @@ fn save(store: &ConfigStore, who: &Actor) -> Revision {
 
 #[test]
 fn history_keeps_a_legacy_applied_revision_live_after_upgrade() {
-    let (store, who) = shop();
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
     let saved = save(&store, &who);
     apply_both(&store, &who, 1);
+    // Recreate the document an older Store wrote, before it tracked switches.
+    backend::execute(
+        &url,
+        r#"UPDATE config_deployment SET run = replace(run, '"tracks_live":true,', '')"#,
+    );
     assert_eq!(summary(&store, &who, 1).live_at, None);
     assert_eq!(marks(&store, &who).0, Some(saved));
+}
+
+#[test]
+fn history_keeps_the_previous_switch_when_a_current_deploy_applies_beside_a_wait() {
+    let (store, who) = shop();
+    apply_both_with_switch(&store, &who, 1, Some(1));
+    let first = summary(&store, &who, 1).saved;
+    set_replicas(&store, &who, "api", 2);
+    let second = admit(&store, &who, 2, &[], None).unwrap().saved;
+    assert_ne!(first, second);
+    let a = runner("runner-a");
+    store.claim(&id(2), &a).unwrap();
+    store
+        .record(
+            &id(2),
+            &a,
+            RunEvidence::Prepared(preview_with_waiting(&["api"], "web")),
+        )
+        .unwrap();
+    let applied = store.record(&id(2), &a, succeeded(&["api"])).unwrap();
+    assert_eq!(applied.status, DeploymentStatus::Applied);
+    assert!(!applied.all_waiting);
+    assert_eq!(applied.live_at, None);
+    assert_eq!(marks(&store, &who).0, Some(first));
 }
 
 #[test]

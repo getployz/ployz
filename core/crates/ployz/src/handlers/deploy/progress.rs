@@ -606,19 +606,9 @@ pub(super) fn completion(
         return Err(failure(view, again, command));
     }
     if view.deployment.cleanup == Some(ployz_store::CleanupStatus::Unconfirmed) {
-        crate::ui::warn("Could not confirm cleanup ended.");
-        if !left_a_copy_running(view)
-            && view.deployment.warnings.iter().any(|warning| {
-                matches!(
-                    warning,
-                    DeploymentWarning::Deploy {
-                        warning: DeployWarning::CleanupUnconfirmed { .. }
-                    }
-                )
-            })
-        {
-            return Err(Failure::exit(1));
-        }
+        crate::ui::warn(
+            "Could not confirm cleanup ended. Any requested removals may still complete.",
+        );
         return Err(Failure::partial());
     }
     if view
@@ -2255,6 +2245,38 @@ mod tests {
         ];
         let failure = completion(&view, None, Again::Services(&[]), command).unwrap_err();
         assert_eq!(crate::ui::after_result(&failure), 3);
+    }
+
+    #[test]
+    fn unconfirmed_cleanup_reports_the_same_completion_before_and_after_its_copy_warning() {
+        let mut view = view();
+        view.deployment.status = DeploymentStatus::Applied;
+        view.deployment.cleanup = Some(ployz_store::CleanupStatus::Unconfirmed);
+        let complete = |view: &DeploymentView| {
+            let (failure, output) = crate::ui::captured(|| {
+                let failure = completion(view, None, Again::Services(&[]), command).unwrap_err();
+                crate::ui::show(&json!({})).unwrap();
+                failure
+            });
+            (crate::ui::after_result(&failure), output.unwrap())
+        };
+        let early = complete(&view);
+        view.deployment.warnings.push(DeploymentWarning::Deploy {
+            warning: DeployWarning::CleanupUnconfirmed {
+                service: "shop-production/web".parse().unwrap(),
+                container_id: ployz_core::ContainerId::parse("c".repeat(64)).unwrap(),
+                machine: "one".into(),
+                reason: "removal requested but not confirmed".into(),
+            },
+        });
+        assert_eq!(early, complete(&view));
+        assert_eq!(early.0, 3);
+        let warning = early.1["warnings"][0].as_str().unwrap();
+        assert!(
+            warning.contains("requested removals may still complete"),
+            "{warning}"
+        );
+        assert!(!warning.contains("left running"), "{warning}");
     }
 
     #[test]

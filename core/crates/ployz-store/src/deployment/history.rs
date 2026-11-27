@@ -468,7 +468,7 @@ pub(crate) fn latest_removal(
 /// The Saved revision with the most recent recorded switch. A removal can be
 /// the last switch, in which case there is no Live revision. After the latest
 /// numbered Deployment with a timestamp, fall back to the previous Applied rule
-/// for runners without switch evidence and shutdowns that needed no runner.
+/// for outcomes written before switch tracking and shutdowns without a runner.
 pub(crate) fn live(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
@@ -500,8 +500,9 @@ pub(crate) fn live(
         }
     }
     let mut condition = format!("status = '{APPLIED}' AND number > {newest_stamped}");
-    while let Some(deployment) = latest_where(tx, environment, &condition)? {
-        if !deployment.all_waiting {
+    while let Some(stored) = latest_stored_where(tx, environment, &condition)? {
+        let deployment = stored.summary;
+        if !stored.run.tracks_live && !deployment.all_waiting {
             return Ok(Some(deployment.saved).filter(|saved| *saved != NOTHING));
         }
         condition = format!(
@@ -574,6 +575,14 @@ pub(super) fn latest_where(
     environment: &EnvironmentId,
     condition: &str,
 ) -> Result<Option<DeploymentSummary>, RpcError> {
+    Ok(latest_stored_where(tx, environment, condition)?.map(|stored| stored.summary))
+}
+
+fn latest_stored_where(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    condition: &str,
+) -> Result<Option<Stored>, RpcError> {
     let columns = columns(tx);
     tx.query(
         &format!(
@@ -584,7 +593,7 @@ pub(super) fn latest_where(
         &[environment.as_str().into()],
     )?
     .first()
-    .map(|row| stored(tx, row).map(|stored| stored.summary))
+    .map(|row| stored(tx, row))
     .transpose()
 }
 

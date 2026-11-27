@@ -1139,6 +1139,9 @@ struct Run {
     outcome: Option<Outcome>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     live_at: Option<i64>,
+    /// This outcome was written by a Store that records traffic switches.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    tracks_live: bool,
     /// A digest of the Executed evidence recorded: a replay must match it.
     #[serde(default)]
     executed: Option<String>,

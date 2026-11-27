@@ -685,7 +685,7 @@ the new copies serving. Cleanup names each old copy whose removal could not be
 confirmed. The command returns after cleanup and exits 3 if an old container was
 left running, including when a later scale-down step failed. If cancellation
 interrupts a removal reply, the command reports the copy's cleanup as unconfirmed
-and exits 1 unless it knows an old copy was left running.
+and exits 3. A removal whose reply was interrupted may still complete.
 
 To inspect per-server progress, run:
 
@@ -708,7 +708,7 @@ copies must confirm its switch before the timestamp is recorded. A waiting Servi
 prevents that confirmation. A plan that only removes copies or updates them in place
 goes Live when its last step succeeds. History marks the revision with the most
 recent recorded switch as Live, even if cleanup failed. Deployments recorded by
-older runners use their Applied result. An Applied shutdown clears the Live marker.
+older Stores use their Applied result. An Applied shutdown clears the Live marker.
 
 The command ends with the deployment's steps and how long each took, such as
 `building api  +2.1s  41.3s`. A step the deployment stopped in reads `stopped here`. Old

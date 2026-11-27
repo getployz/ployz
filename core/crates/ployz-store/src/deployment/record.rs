@@ -429,6 +429,7 @@ pub(crate) fn record(
             stored.run.nodes = nodes;
             stored.run.cancelled = cancelled;
             stored.run.executed = Some(executed);
+            stored.run.tracks_live = true;
             if taken_over {
                 // Another runner owns the Environment now: the run stays Unknown and
                 // moves no Applied State. It ended when its runner says it stopped.

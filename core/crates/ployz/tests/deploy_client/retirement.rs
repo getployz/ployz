@@ -356,7 +356,7 @@ async fn a_cancel_after_apply_stops_waiting_for_cleanup_without_undoing_live() {
         .expect("cancel releases the removal wait without its reply")
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert_eq!(output.status.code(), Some(3), "{stderr}");
     assert!(
         stderr.contains("removal requested but not confirmed"),
         "{stderr}"
