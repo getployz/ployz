@@ -515,22 +515,27 @@ fn deployment_with_pending_cleanup(store: &ConfigStore, who: &Actor) -> RunnerId
 
 #[test]
 fn a_held_postgres_renewal_cannot_overwrite_unconfirmed_cleanup() {
-    if let Some(result) =
-        expire_cleanup_while_postgres_write_is_held(RunEvidence::Finishing { live_at: None })
-    {
+    if let Some(result) = expire_cleanup_while_postgres_write_is_held(HeldCleanupWrite::Renewal) {
         assert_eq!(code(result), RpcErrorCode::Conflict);
     }
 }
 
 #[test]
 fn a_held_postgres_runtime_failure_keeps_the_applied_status_after_cleanup_expires() {
-    if let Some(result) = expire_cleanup_while_postgres_write_is_held(RunEvidence::RuntimeFailed) {
+    if let Some(result) =
+        expire_cleanup_while_postgres_write_is_held(HeldCleanupWrite::RuntimeFailure)
+    {
         result.unwrap();
     }
 }
 
+enum HeldCleanupWrite {
+    Renewal,
+    RuntimeFailure,
+}
+
 fn expire_cleanup_while_postgres_write_is_held(
-    evidence: RunEvidence,
+    write: HeldCleanupWrite,
 ) -> Option<Result<DeploymentSummary, RpcError>> {
     use ployz_store::CleanupStatus;
     use std::time::{Duration, Instant};
@@ -548,10 +553,9 @@ fn expire_cleanup_while_postgres_write_is_held(
     )
     .unwrap();
     let mut database = postgres::Client::connect(&url, postgres::NoTls).unwrap();
-    let column = match evidence {
-        RunEvidence::Finishing { .. } => "cleanup_deadline",
-        RunEvidence::RuntimeFailed => "status",
-        _ => unreachable!("only cleanup-dependent writes use this fixture"),
+    let (column, evidence) = match write {
+        HeldCleanupWrite::Renewal => ("cleanup_deadline", RunEvidence::Finishing { live_at: None }),
+        HeldCleanupWrite::RuntimeFailure => ("status", RunEvidence::RuntimeFailed),
     };
     database
         .batch_execute(&format!(
