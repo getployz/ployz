@@ -33,7 +33,9 @@ const keyOf = (pin: Pin) => `${pin.organizationId}:${pin.repositoryId}@${pin.sha
 export const makeGithubSources = Effect.gen(function* () {
   const scope = yield* Effect.scope;
   const checkouts = new Map<string, Checkout>();
-  const remove = (workspace: string | null) => workspace === null ? Effect.void : Effect.promise(() => rm(workspace, { recursive: true, force: true }));
+  const remove = (workspace: string | null) => workspace === null
+    ? Effect.void
+    : Effect.tryPromise(() => rm(workspace, { recursive: true, force: true })).pipe(Effect.ignore);
   const forget = (key: string, checkout: Checkout) => Effect.suspend(() => {
     if (checkouts.get(key) === checkout) checkouts.delete(key);
     return remove(checkout.workspace);
@@ -42,9 +44,9 @@ export const makeGithubSources = Effect.gen(function* () {
     const now = yield* Clock.currentTimeMillis;
     const idle = [...checkouts].filter(([, checkout]) => checkout.idleSince !== null)
       .sort(([, a], [, b]) => (b.idleSince ?? 0) - (a.idleSince ?? 0));
-    for (const [index, [key, checkout]] of idle.entries()) {
-      if (index >= IDLE_KEPT || now - (checkout.idleSince ?? now) >= IDLE_MS) yield* forget(key, checkout);
-    }
+    const gone = idle.filter(([, checkout], index) => index >= IDLE_KEPT || now - (checkout.idleSince ?? now) >= IDLE_MS);
+    for (const [key] of gone) checkouts.delete(key);
+    yield* Effect.forEach(gone, ([, checkout]) => remove(checkout.workspace), { discard: true });
   });
   yield* Scope.addFinalizer(scope, Effect.suspend(() => Effect.forEach([...checkouts], ([key, checkout]) => forget(key, checkout), { discard: true })));
   yield* evict.pipe(Effect.repeat(Schedule.spaced("1 minute")), Effect.forkIn(scope));
@@ -63,20 +65,23 @@ export const makeGithubSources = Effect.gen(function* () {
   const ensure = Effect.fn("GithubSources.ensure")(function* (pin: Pin, hold: boolean) {
     const repository = yield* authorizeRepository(pin);
     const key = keyOf(pin);
-    const now = yield* Clock.currentTimeMillis;
     const ready = yield* Deferred.make<string, Failure>();
     const found = checkouts.get(key);
-    const checkout: Checkout = found ?? { ready, workspace: null, holders: 0, idleSince: now };
+    const checkout: Checkout = found ?? { ready, workspace: null, holders: 0, idleSince: null };
     if (hold) { checkout.holders += 1; checkout.idleSince = null; }
     if (found !== undefined) return checkout;
     checkouts.set(key, checkout);
     const services = yield* Effect.context<GithubApi>();
     yield* fetch(pin, repository, checkout).pipe(
       Effect.provideContext(services),
-      // A checkout evicted while it was fetched is removed once the fetch stops writing to it.
-      Effect.onExit((exit) => Exit.isSuccess(exit) && checkouts.get(key) === checkout ? Effect.void : forget(key, checkout)),
+      Effect.onExit((exit) => Exit.isSuccess(exit) ? Effect.void : forget(key, checkout)),
       Effect.exit,
       Effect.flatMap((exit) => Deferred.done(checkout.ready, exit)),
+      Effect.andThen(Clock.currentTimeMillis),
+      Effect.flatMap((now) => Effect.suspend(() => {
+        if (checkout.holders === 0) checkout.idleSince = now;
+        return evict;
+      })),
       Effect.forkIn(scope),
     );
     yield* evict;

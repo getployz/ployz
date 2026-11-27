@@ -34,9 +34,10 @@ const checkoutSources = Effect.fn("StoreDeployment.checkoutSources")(function* (
   const commits = new Map<string, { pin: Parameters<typeof githubSources.checkout>[0]; sources: typeof sources }>();
   for (const source of sources) {
     if (source.commit === null) return yield* new SourceUnreadable({ message: `${source.service} has no pinned commit.` });
-    const key = `${source.repository_id}@${source.commit}`;
+    const pin = { ...sourceIdentity(organizationId, source), sha: source.commit };
+    const key = `${pin.installationId}:${pin.repositoryId}@${pin.sha}`;
     const commit = commits.get(key);
-    if (commit === undefined) commits.set(key, { pin: { ...sourceIdentity(organizationId, source), sha: source.commit }, sources: [source] });
+    if (commit === undefined) commits.set(key, { pin, sources: [source] });
     else commit.sources.push(source);
   }
   const checkouts = yield* Effect.forEach(commits.values(), ({ pin, sources }) => fromGithub(githubSources.checkout(pin)).pipe(
