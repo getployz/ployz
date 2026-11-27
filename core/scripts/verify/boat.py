@@ -295,12 +295,20 @@ RELAY = "relay.ployz.dev"
 RELAY_ADDRESSES = ("5.9.85.203", "2a01:4f8:162:4cb::2")
 
 
-def relay_block(blocked=True):
+BLOCK_UNIT = "verify-relay-block.service"
+# The units that reach the network for ployz; each requires the block, so none starts without it.
+BLOCKED_UNITS = ("docker.service", "ployz.service", "ployz.socket")
+
+
+def relay_block(blocked=True, root=""):
     """A guest script that keeps a test Machine off the production relay: the name points at loopback, and new
     https connections to its addresses, resolved here at run time, are refused. Replies to connections the relay's host
     opens, such as this host's SSH when it is the same box, are not new, so they pass. A run paired with Cloud needs
     the relay to enroll, so `blocked=False` takes the block back out of a sandbox an earlier run or a bake left it in.
-    Run under `-e`, a rule that won't install stops the script before anything after it starts."""
+
+    iptables rules don't survive a reboot, and a boot starts Docker and ployz before any script here runs, so the rules
+    also go in a boot unit those services require: a rule that won't install keeps them stopped. Run under `-e`, the
+    script stops the same way. `root` moves every file it writes, for tests."""
     try:
         resolved = {info[4][0] for info in socket.getaddrinfo(RELAY, 443, proto=socket.IPPROTO_TCP)}
     except socket.gaierror:
@@ -310,13 +318,30 @@ def relay_block(blocked=True):
     rules = [(table, f"OUTPUT -d {address} -p {protocol} --dport 443 -m conntrack --ctstate NEW -j REJECT")
              for address in addresses for table in ["ip6tables" if ":" in address else "iptables"]
              for protocol in ["tcp", "udp"]]
+    hosts, units, program = f"{root}/etc/hosts", f"{root}/etc/systemd/system", f"{root}/usr/local/sbin/verify-relay-block"
+    drop_ins = [f"{units}/{unit}.d/verify-relay-block.conf" for unit in BLOCKED_UNITS]
     if not blocked:
         # /etc/hosts can be a bind mount, which a rename like sed -i's can't replace, so it is rewritten in place.
-        return (f"hosts=$(grep -v ' {RELAY}$' /etc/hosts || true); printf '%s\\n' \"$hosts\" > /etc/hosts\n" +
+        return (f"hosts=$(grep -v ' {RELAY}$' {hosts} || true); printf '%s\\n' \"$hosts\" > {hosts}\n"
+                f"systemctl disable {BLOCK_UNIT} >/dev/null 2>&1 || true\n"
+                f"rm -f {units}/{BLOCK_UNIT} {program} {' '.join(drop_ins)}\n"
+                "systemctl daemon-reload\n" +
                 "".join(f"while {table} -C {rule} 2>/dev/null; do {table} -D {rule}; done\n" for table, rule in rules))
-    return (f"grep -q ' {RELAY}$' /etc/hosts || printf '127.0.0.1 {RELAY}\\n::1 {RELAY}\\n' >> /etc/hosts\n" +
-            "".join(f"{table} -C {rule} 2>/dev/null || {table} -I {rule.replace('OUTPUT', 'OUTPUT 1', 1)}\n"
-                    for table, rule in rules))
+    insert = "".join(f"{table} -C {rule} 2>/dev/null || {table} -I {rule.replace('OUTPUT', 'OUTPUT 1', 1)}\n"
+                     for table, rule in rules)
+    unit = (f"[Unit]\nDescription=Keep this test Machine off the production relay\nDefaultDependencies=no\n"
+            f"After=local-fs.target\nBefore=network-pre.target\n\n[Service]\nType=oneshot\nRemainAfterExit=yes\n"
+            f"ExecStart={program.removeprefix(root)}\n\n[Install]\nWantedBy=multi-user.target\n")
+    requires = f"[Unit]\nRequires={BLOCK_UNIT}\nAfter={BLOCK_UNIT}\n"
+    return (f"grep -q ' {RELAY}$' {hosts} || printf '127.0.0.1 {RELAY}\\n::1 {RELAY}\\n' >> {hosts}\n"
+            f"mkdir -p {os.path.dirname(program)} {' '.join(os.path.dirname(drop_in) for drop_in in drop_ins)}\n"
+            f"cat > {program} <<'RULES'\n#!/bin/sh\nset -e\n{insert}RULES\n"
+            f"chmod 755 {program}\n"
+            f"cat > {units}/{BLOCK_UNIT} <<'UNIT'\n{unit}UNIT\n" +
+            "".join(f"cat > {drop_in} <<'UNIT'\n{requires}UNIT\n" for drop_in in drop_ins) +
+            "systemctl daemon-reload\n"
+            f"systemctl enable {BLOCK_UNIT} >/dev/null 2>&1\n"
+            f"{program}\n")
 
 
 def boat_node(address):
@@ -583,7 +608,8 @@ NORMALIZE = 1
 
 def fingerprints(image):
     """Where the first fresh clone's fingerprint of `image` lives; a new FINGERPRINT script or reading starts a new one."""
-    script = hashlib.sha256(f"{NORMALIZE}\n{FINGERPRINT}".encode()).hexdigest()[:10]
+    # The relay block's boot unit is part of every clone, so a fingerprint from before it starts over.
+    script = hashlib.sha256(f"{NORMALIZE}\n{FINGERPRINT}\n{BLOCK_UNIT}".encode()).hexdigest()[:10]
     return REGISTRY / f"{image}.{script}.fingerprint"
 
 
@@ -872,7 +898,8 @@ if [ -n "$(ss -Hlun 'sport = :51820')" ]; then echo "UDP port 51820 is taken" >&
 ufw disable >/dev/null
 {relay_block(not self.run.get("cloud_relay"))}{REOPEN_DOCKER}
 {bake}""", "boot", self.run["corrosion"], *IMAGES], timeout=600)
-        if POOL_SIZE and not reused and self.run["image"] != SNAPSHOT and not fingerprints(self.run["image"]).exists():
+        if (POOL_SIZE and not reused and self.run["image"] != SNAPSHOT and not self.run.get("cloud_relay")
+                and not fingerprints(self.run["image"]).exists()):
             # The first fresh clone of a bake records what reset must return every later sandbox to.
             captured = self.fingerprint(node)
             if "ssh" not in captured:
@@ -1072,7 +1099,9 @@ systemctl start docker ployz.service $observe
         try:
             if not expected:
                 raise RuntimeError("no fingerprint of this bake to prove it against")
-            reset = self.exec(node, ["bash", "-ec", RESET, "reset", STASH, bootstrap()], check=False, timeout=300)
+            # The pool hands sandboxes to runs not paired with Cloud too, so each one goes back blocked.
+            reset = self.exec(node, ["bash", "-ec", relay_block() + RESET, "reset", STASH, bootstrap()], check=False,
+                              timeout=300)
             if reset.returncode:
                 raise RuntimeError(f"reset exited {reset.returncode}: {reset.stderr.decode(errors='replace').strip()[-300:]}")
             self.reboot(node)
