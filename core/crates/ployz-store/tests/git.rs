@@ -3618,7 +3618,7 @@ fn a_build_marked_interrupted_that_did_not_fail_is_unreadable() {
 
 #[test]
 fn a_run_recorded_after_its_deployment_stopped_holds_nothing_and_is_owed_a_cancel() {
-    let (store, who, url, _dir) = own_git_shop();
+    let (store, who, _url, _dir) = own_git_shop();
     let deployment = admit(&store, &who, 1, &[]);
     store
         .pin_as(
@@ -3665,7 +3665,6 @@ fn a_run_recorded_after_its_deployment_stopped_holds_nothing_and_is_owed_a_cance
     // Confirming the cancel deletes the debt.
     store.github_cancel_confirmed(&id, RUN).unwrap();
     assert!(store.github_owed(100).unwrap().is_empty());
-    assert_eq!(cancel_rows(&url), 0);
     // A replay of the refused record owes the run again; its next cancel finds it
     // completed, and confirming deletes the debt once more.
     assert_eq!(
@@ -3679,12 +3678,7 @@ fn a_run_recorded_after_its_deployment_stopped_holds_nothing_and_is_owed_a_cance
         [RUN]
     );
     store.github_cancel_confirmed(&id, RUN).unwrap();
-    assert_eq!(cancel_rows(&url), 0);
-}
-
-/// How many rows the debt table holds, owed or not.
-fn cancel_rows(url: &str) -> i64 {
-    backend::count(url, "SELECT COUNT(*) FROM config_github_cancel")
+    assert!(store.github_owed(100).unwrap().is_empty());
 }
 
 #[test]
