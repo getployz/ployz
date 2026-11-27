@@ -22,9 +22,9 @@ Server is ready it reads `switching N/N` until they switch together, then
 can't start after Ployz stopped the old one, makes the row read `rolling back` while Ployz undoes
 that Server's change, such as `rolling back (1 failed)`. It counts the Servers
 whose new Container already serves, as in `rolling back 1/2`, and shows no count when none does. A row whose new Containers already serve shows a `draining old` line
-while the deploy removes Containers it no longer needs, which waits until every Server routes to the new ones. Old copies that a
-replacement leaves behind drain on each Server after the switch, and the Service shows a
-`draining old` line until they are gone. On a start-first replacement the Service already reads Deployed while they drain, after the switch. A stop-first replacement stops its old copy before the new one starts, and the Service isn't Deployed until the new one serves. A Service the deploy removes reads `waiting to remove`,
+until every Server routes to the new ones. The deploy then reads applied and removes the Containers it no longer needs. Old copies that a
+replacement leaves behind drain on each Server after the switch, so they show in
+`ployz ps`, not in the live block. A Service the deploy removes reads `waiting to remove`,
 then `stopping` and `removing`, then `removed`, and the summary counts it as removed. A Service
 the deploy keeps but only clears an old copy of reads `removing old`, then `switched`. When the
 deploy leaves old replicas running, the row reads like `switched 3/3, 2 left running` and the

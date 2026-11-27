@@ -735,44 +735,66 @@ impl Run {
             })
             .await;
         self.keep_verified(&issued).await;
-        match outcome {
-            Ok((outcome, progress, mut warnings)) => {
-                match self.standing().await {
-                    Standing::Over(Over::Lost) => {
-                        return self.interrupted(outcome, progress).await;
-                    }
-                    // The store refuses the outcome, and nothing more is deleted.
-                    Standing::Over(Over::Ended) => {
-                        return self.executed(outcome, progress, Vec::new()).await;
-                    }
-                    Standing::Keep | Standing::Cancel | Standing::Unread => {}
-                }
-                // The last chance: the store takes warnings only while the Deployment runs.
-                self.record_warnings(&mut warnings).await;
-                let removed = if matches!(outcome, DeployOutcome::Success { .. }) {
-                    // Deleting is never interrupted: a half-deleted set stays accepted.
-                    let removal = async {
-                        match &closes {
-                            Some(namespace) => session.close_preview(namespace, deletes).await,
-                            None => remove_volumes(session, deletes).await,
+        let recorded = match outcome {
+            Ok((outcome, progress, mut warnings)) => match self.standing().await {
+                Standing::Over(Over::Lost) => self.interrupted(outcome, progress).await,
+                // The store refuses the outcome, and nothing more is deleted.
+                Standing::Over(Over::Ended) => self.executed(outcome, progress, Vec::new()).await,
+                Standing::Keep | Standing::Cancel | Standing::Unread => {
+                    // The last chance: the store takes most warnings only while the
+                    // Deployment runs.
+                    self.record_warnings(&mut warnings).await;
+                    let removed = if matches!(outcome, DeployOutcome::Success { .. }) {
+                        if !deletes.is_empty() || closes.is_some() {
+                            // An old copy may still mount a Volume this deletes.
+                            self.retired(&running).await;
                         }
+                        // Deleting is never interrupted: a half-deleted set stays accepted.
+                        let removal = async {
+                            match &closes {
+                                Some(namespace) => session.close_preview(namespace, deletes).await,
+                                None => remove_volumes(session, deletes).await,
+                            }
+                        };
+                        self.renewing(removal, || ()).await
+                    } else {
+                        Vec::new()
                     };
-                    self.renewing(removal, || ()).await
-                } else {
-                    Vec::new()
-                };
-                match self.standing().await {
-                    Standing::Keep | Standing::Unread => {
-                        self.fill_ingress(session, prepared.preview.machine_names())
-                            .await;
+                    match self.standing().await {
+                        Standing::Keep | Standing::Unread => {
+                            self.fill_ingress(session, prepared.preview.machine_names())
+                                .await;
+                        }
+                        Standing::Cancel | Standing::Over(_) => {}
                     }
-                    Standing::Cancel | Standing::Over(_) => {}
+                    self.executed(outcome, progress, removed).await
                 }
-                self.executed(outcome, progress, removed).await
-            }
+            },
             // The session ended mid-execution: what ran is unknown.
-            Err(_) => self.record(RunEvidence::Abandoned).await,
+            Err(_) => return self.record(RunEvidence::Abandoned).await,
+        };
+        // The outcome is recorded once traffic moved; the old copies retire after it.
+        match (recorded, self.retired(&running).await) {
+            (Ok(_), Some(warned)) => Ok(warned),
+            (recorded, _) => recorded,
         }
+    }
+
+    /// Wait out what the Deploy does after its Outcome, retiring the old copies and
+    /// cleaning up images, recording each copy it leaves running. The summary the last
+    /// recorded warning left, if any. Waiting again returns at once.
+    async fn retired(&self, running: &super::RunningDeploy) -> Option<DeploymentSummary> {
+        let mut warnings = Vec::new();
+        let mut warned = None;
+        while let Some(event) = running.next().await {
+            if let ployz_core::DeployEvent::Warning { warning } = event {
+                warnings.push(warning);
+                warned = self.recorded_warnings(&mut warnings).await.or(warned);
+            }
+        }
+        // Its events ended, so the Deploy task ended: only a second wait errs.
+        let _ = running.finished().await;
+        self.recorded_warnings(&mut warnings).await.or(warned)
     }
 
     async fn fill_ingress(
@@ -1069,7 +1091,8 @@ impl Run {
 
     /// Wait for `running`'s outcome, recording each Service once every one of its
     /// planned operations completed: a replaced Service reads Deployed at once, and
-    /// stays so if this runner is lost before the outcome.
+    /// stays so if this runner is lost before the outcome. It returns at the Outcome,
+    /// before the old copies retire; [`Self::retired`] waits for those.
     async fn executing(
         &self,
         session: &Session,
@@ -1088,6 +1111,7 @@ impl Run {
         let mut pending = BTreeMap::new();
         let mut warnings = Vec::new();
         let mut stopped = BTreeMap::new();
+        let mut ended = None;
         while let Some(event) = running.next().await {
             let mut rows = match event {
                 ployz_core::DeployEvent::Progress { rows, .. } => rows,
@@ -1100,8 +1124,12 @@ impl Run {
                     self.record_warnings(&mut warnings).await;
                     continue;
                 }
-                ployz_core::DeployEvent::Outcome { .. }
-                | ployz_core::DeployEvent::ImagesPruned { .. } => continue,
+                // Traffic moved: the old copies retiring after it hold up nothing.
+                ployz_core::DeployEvent::Outcome { outcome } => {
+                    ended = Some(outcome);
+                    break;
+                }
+                ployz_core::DeployEvent::ImagesPruned { .. } => continue,
             };
             self.record_warnings(&mut warnings).await;
             if let Ok(client) = session.client() {
@@ -1154,7 +1182,10 @@ impl Run {
                 confirmed.extend(new);
             }
         }
-        let mut outcome = running.finished().await?;
+        let mut outcome = match ended {
+            Some(outcome) => outcome,
+            None => running.finished().await?,
+        };
         if let (DeployOutcome::Failed { failed, .. }, Ok(client)) = (&mut outcome, session.client())
         {
             let (machine, error) = match failed {
@@ -1172,18 +1203,31 @@ impl Run {
     /// Record each held warning, keeping the ones the store refused for the next try.
     /// The store keeps a warning once, so a retry after a lost reply changes nothing.
     async fn record_warnings(&self, warnings: &mut Vec<DeployWarning>) {
+        self.recorded_warnings(warnings).await;
+    }
+
+    /// [`Self::record_warnings`], returning the summary the last recorded one left.
+    async fn recorded_warnings(
+        &self,
+        warnings: &mut Vec<DeployWarning>,
+    ) -> Option<DeploymentSummary> {
         let mut unrecorded = Vec::new();
+        let mut recorded = None;
         for warning in warnings.drain(..) {
-            if let Err(error) = self.record(RunEvidence::Warned(warning.clone())).await {
-                tracing::warn!(
-                    code = error.code.as_str(),
-                    error = error.message.as_str(),
-                    "couldn't record a Deploy warning; retrying later"
-                );
-                unrecorded.push(warning);
+            match self.record(RunEvidence::Warned(warning.clone())).await {
+                Ok(summary) => recorded = Some(summary),
+                Err(error) => {
+                    tracing::warn!(
+                        code = error.code.as_str(),
+                        error = error.message.as_str(),
+                        "couldn't record a Deploy warning; retrying later"
+                    );
+                    unrecorded.push(warning);
+                }
             }
         }
         *warnings = unrecorded;
+        recorded
     }
 
     async fn connecting<T, E>(

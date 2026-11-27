@@ -88,9 +88,9 @@ async fn dispatches_the_complete_algebra() {
             name: DockerVolumeName::parse("data").unwrap(),
         })),
         observed(Call::Inspect(first, old), running()),
-        ok(Call::Remove(first, old)),
         observed(Call::Inspect(first, removed), running()),
         ok(Call::Remove(first, removed)),
+        ok(Call::Remove(first, old)),
     ]);
     let client = client.with_copy(&first, &old, CopyRotation::In).with_copy(
         &first,

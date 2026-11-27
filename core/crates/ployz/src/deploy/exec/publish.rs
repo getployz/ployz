@@ -47,6 +47,39 @@ impl GappedPublishes {
     }
 }
 
+/// The old copies publishes took out of rotation, or that never went In. No proxy
+/// routes them, so they retire once the Deploy's Outcome is out.
+#[derive(Default)]
+pub(super) struct Retiring(std::sync::Mutex<Vec<(cleanup::Copy, AnonymousVolumes)>>);
+
+impl Retiring {
+    fn add(&self, copies: impl IntoIterator<Item = (cleanup::Copy, AnonymousVolumes)>) {
+        self.0.lock().expect("retiring lock").extend(copies);
+    }
+
+    /// Stop and remove every copy, each Machine's at once. A copy that stays is a
+    /// warning, never a failure: the Outcome is already out.
+    pub(super) async fn retire<C: MachineOperations>(
+        &self,
+        client: &C,
+        progress: &Progress,
+        report: &super::report::Report<'_>,
+    ) {
+        let copies = std::mem::take(&mut *self.0.lock().expect("retiring lock"));
+        let removed = join_all(
+            copies
+                .iter()
+                .map(|(copy, ask)| cleanup::remove(client, copy, *ask)),
+        )
+        .await;
+        for ((copy, _), removed) in copies.iter().zip(removed) {
+            if let Some(left) = left_unless_done(removed.map(cleanup::Rotated::from)) {
+                report.leave_running(progress, copy, left);
+            }
+        }
+    }
+}
+
 pub(super) enum Done {
     Task(usize, Result<Ran, OperationFailure>),
     /// A Rolling step's new copy is In and listed, so the next step may begin.
@@ -255,20 +288,13 @@ pub(super) async fn publish_group<C: MachineOperations>(
     if unconfirmed.is_none() && !gone.is_empty() && gone.len() + missing == old.len() {
         retiring(operations, progress, &new);
     }
-    // Each Gone drains on its own Machine; they overlap and are all reported.
-    let removed = join_all(gone.iter().map(|copy| {
+    shared.retiring.add(gone.into_iter().map(|copy| {
         let ask = asks
             .get(&copy.container_id)
             .copied()
             .unwrap_or(AnonymousVolumes::keep());
-        cleanup::remove(client, copy, ask)
-    }))
-    .await;
-    for (copy, removed) in gone.iter().zip(removed) {
-        if let Some(left) = left_unless_done(removed.map(cleanup::Rotated::from)) {
-            shared.report.leave_running(progress, copy, left);
-        }
-    }
+        (copy, ask)
+    }));
     match (unconfirmed, gapped) {
         (Some(error), _) => Published::OutUnconfirmed(error),
         (None, Some(_)) => Published::Gapped,

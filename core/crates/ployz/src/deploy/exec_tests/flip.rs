@@ -401,9 +401,9 @@ async fn a_flip_retires_the_replaced_copy_and_removes_a_draining_one_after_the_s
     let client = Scripted::new(vec![
         created(Call::Run(machine, ContainerKind::ServiceContainer), &new),
         observed(Call::Inspect(machine, replaced), running()),
-        ok(Call::Remove(machine, replaced)),
         observed(Call::Inspect(machine, draining), running()),
         ok(Call::Remove(machine, draining)),
+        ok(Call::Remove(machine, replaced)),
     ])
     .with_copy(&machine, &kept, CopyRotation::In)
     .with_copy(&machine, &replaced, CopyRotation::In)
@@ -432,8 +432,8 @@ async fn a_flip_retires_the_replaced_copy_and_removes_a_draining_one_after_the_s
         [
             Move::To(new, CopyRotation::In),
             Move::To(replaced, CopyRotation::Out),
-            Move::Gone(replaced),
             Move::Gone(draining),
+            Move::Gone(replaced),
         ],
         "the draining copy is removed only after the new copy is In"
     );
@@ -997,9 +997,9 @@ async fn a_deploy_that_excludes_a_server_keeps_its_copys_anonymous_volumes() {
     let client = Scripted::new(vec![
         created(Call::Run(first, ContainerKind::ServiceContainer), &new),
         observed(Call::Inspect(first, replaced), running()),
-        ok(Call::Remove(first, replaced)),
         observed(Call::Inspect(second, removed), running()),
         ok(Call::Remove(second, removed)),
+        ok(Call::Remove(first, replaced)),
     ])
     .with_copy(&first, &replaced, CopyRotation::In)
     .with_copy(&second, &removed, CopyRotation::In);
@@ -1015,7 +1015,7 @@ async fn a_deploy_that_excludes_a_server_keeps_its_copys_anonymous_volumes() {
     );
     assert_eq!(
         *client.deleted_volumes.lock().unwrap(),
-        [(replaced, true), (removed, false)]
+        [(removed, false), (replaced, true)]
     );
     client.assert_done();
 }
@@ -1959,9 +1959,9 @@ async fn an_undialed_servers_proxy_lets_the_copies_it_never_routed_go_at_the_swi
             ),
             observed(Call::Inspect(machine, newer), running()),
             observed(Call::Inspect(other, newer_other), running()),
+            observed(Call::Inspect(machine, left), running()),
             ok(Call::Remove(machine, newer)),
             ok(Call::Remove(other, newer_other)),
-            observed(Call::Inspect(machine, left), running()),
         ])
     }
     .with_copy(&machine, &left, CopyRotation::In)
