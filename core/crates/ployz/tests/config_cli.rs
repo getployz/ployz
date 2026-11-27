@@ -1083,6 +1083,8 @@ fn an_agent_creates_an_image_service_and_reads_its_settings() {
                 "web.replicas",
                 "web.restartPolicy",
                 "web.startCommand",
+                "web.stopGracePeriod",
+                "web.stopSignal",
                 "web.updateOrder"
             ]))
         );
@@ -1105,7 +1107,7 @@ fn an_agent_creates_an_image_service_and_reads_its_settings() {
         let got = ok(store, &["get", "web"]);
         assert_eq!(
             got.pointer("/settings").unwrap().as_array().unwrap().len(),
-            13
+            15
         );
         // Read beside a Service, its domains show even when it has none.
         assert_eq!(got.get("domains"), Some(&json!([])));
@@ -1124,6 +1126,7 @@ fn an_agent_creates_an_image_service_and_reads_its_settings() {
                 "replicas": 3,
                 "restartPolicy": "unless-stopped",
                 "startCommand": "nginx -g 'daemon off;'",
+                "stopGracePeriod": 30,
             }))
         );
 
@@ -1156,6 +1159,40 @@ fn a_service_takes_an_update_order_and_unset_leaves_it_to_each_deploy() {
         );
         ok(store, &["unset", "web.updateOrder"]);
         assert_eq!(setting(store, "web.updateOrder"), Value::Null);
+    }
+}
+
+#[test]
+fn a_service_takes_a_stop_signal_and_grace_period() {
+    for store in &targets() {
+        shop_with_web(store);
+        let set = ok(
+            store,
+            &["set", "web.stopSignal=term", "web.stopGracePeriod=120"],
+        );
+        assert_eq!(
+            set.get("staged"),
+            Some(&json!(["web.stopSignal", "web.stopGracePeriod"]))
+        );
+        assert_eq!(setting(store, "web.stopSignal"), json!("SIGTERM"));
+        assert_eq!(setting(store, "web.stopGracePeriod"), json!(120));
+        for (assignment, message) in [
+            (
+                "web.stopSignal=SIGKILL",
+                "stopSignal: Use SIGTERM, SIGINT, SIGQUIT, SIGHUP, SIGUSR1, SIGUSR2 or SIGWINCH.",
+            ),
+            (
+                "web.stopGracePeriod=0",
+                "stopGracePeriod: Use 1 to 600 seconds.",
+            ),
+        ] {
+            let refused = error(store, &["set", assignment]);
+            assert_eq!(refused["code"], "invalid_argument", "{refused}");
+            assert_eq!(refused["message"], message);
+        }
+        ok(store, &["unset", "web.stopSignal", "web.stopGracePeriod"]);
+        assert_eq!(setting(store, "web.stopSignal"), Value::Null);
+        assert_eq!(setting(store, "web.stopGracePeriod"), json!(30));
     }
 }
 
@@ -3103,7 +3140,7 @@ fn an_agent_marks_settings_never_sync_without_servers() {
         // A node's name marks it and each of its rows, changed, unchanged or at its default.
         let whole = ok(store, &["env", "never-sync", "web", "--env", "fix-web"]);
         let whole = labels(&whole["never_synced"]);
-        assert_eq!(whole.len(), 19);
+        assert_eq!(whole.len(), 21);
         for row in ["web", "web.env.APP_ENV", "web.source", "web.startCommand"] {
             assert!(whole.contains(&row.to_owned()), "{row} in {whole:?}");
         }
@@ -4072,7 +4109,7 @@ fn get_patch_get_round_trips_and_the_environment_shows_only_what_is_set() {
                 .as_array()
                 .unwrap()
                 .len(),
-            13
+            15
         );
 
         ok(store, &["set", "web.memLimit=1GiB"]);

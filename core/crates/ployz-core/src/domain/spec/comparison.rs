@@ -12,6 +12,7 @@ pub fn compare_specs(
     if requested.container.pull_policy == PullPolicy::Always
         // A new hook runs with new Containers; it isn't serving shape, so traffic stays on the old ones meanwhile.
         || current.pre_deploy != requested.pre_deploy
+        || stop_changed(&current.container, &requested.container)
     {
         return SpecChange::NeedsRecreate;
     }
@@ -24,6 +25,21 @@ pub fn compare_specs(
     } else {
         SpecChange::NeedsRecreate
     }
+}
+
+/// Docker fixes a Container's stop signal and grace at creation. A Container created
+/// before Services had stop settings carries neither, and keeps Docker's own until it is
+/// next replaced: the defaults alone never replace every Container of every Service.
+fn stop_changed(current: &ServiceContainerSpec, requested: &ServiceContainerSpec) -> bool {
+    let stop = |spec: &ServiceContainerSpec| (spec.stop_signal.clone(), spec.stop_timeout_secs);
+    let defaults = |spec: &ServiceContainerSpec| {
+        (
+            spec.default_stop_signal().map(str::to_owned),
+            Some(i64::from(crate::config::STOP_GRACE_PERIOD_DEFAULT)),
+        )
+    };
+    stop(current) != stop(requested)
+        && !(stop(current) == (None, None) && stop(requested) == defaults(requested))
 }
 
 /// [`compare_specs`] on a Container's retained spec, recreating one that runs on another log
@@ -224,6 +240,30 @@ mod tests {
             compare_specs(&current, &candidate),
             SpecChange::NeedsRecreate
         );
+    }
+
+    #[test]
+    fn the_stop_defaults_alone_keep_a_container_from_before_them_and_a_set_stop_recreates() {
+        for command in [json!([]), json!(["php", "artisan", "horizon"])] {
+            let current: ResolvedServiceSpec = serde_json::from_value(json!({
+                "service_id": "a".repeat(32), "name": "worker",
+                "mode": {"mode": "replicated", "replicas": 1},
+                "container": {"image": "php:8-fpm", "pull_policy": "missing", "command": command}
+            }))
+            .unwrap();
+            let mut defaults = current.to_requested();
+            defaults.container.stop_timeout_secs = Some(30);
+            defaults.container.stop_signal =
+                defaults.container.default_stop_signal().map(str::to_owned);
+            assert_eq!(compare_specs(&current, &defaults), SpecChange::UpToDate);
+
+            let mut longer = defaults.clone();
+            longer.container.stop_timeout_secs = Some(120);
+            assert_eq!(compare_specs(&current, &longer), SpecChange::NeedsRecreate);
+            let mut signal = defaults.clone();
+            signal.container.stop_signal = Some("SIGINT".into());
+            assert_eq!(compare_specs(&current, &signal), SpecChange::NeedsRecreate);
+        }
     }
 
     #[test]

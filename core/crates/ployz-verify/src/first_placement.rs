@@ -254,6 +254,7 @@ fn service() -> RequestedServiceSpec {
             pid_mode: None,
             resources: ployz_core::ContainerResources::default(),
             stop_timeout_secs: None,
+            stop_signal: None,
             sysctls: BTreeMap::default(),
             network: None,
             restart: RestartPolicy::default(),

@@ -64,9 +64,10 @@ fn stop_options_are_only_read_for_stop_actions() {
         let matches = crate::cli::command()
             .try_get_matches_from(["ployz", "service", command, "api"])
             .unwrap();
+        // Unset, each container stops as its Service's stopSignal and stopGracePeriod say.
         assert_eq!(
             stop_options(leaf_matches(&matches), action).unwrap(),
-            (Some("SIGTERM".into()), Some(10))
+            (None, None)
         );
     }
 }
