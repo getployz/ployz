@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import { it } from "@effect/vitest";
 import type { ConfigCommand } from "@ployz/sdk";
 import { sql } from "drizzle-orm";
-import { Effect } from "effect";
+import { Deferred, Effect } from "effect";
 import type { StoreCall } from "./store.contract";
 import { expect, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
@@ -619,4 +619,61 @@ it.live("a Deployment's builds start in one step, read the workflow once per rep
     // started, leaves the skipped build alone, and dispatches no other.
     expect(yield* provided(startStoreGithubBuilds(ORGANIZATION, DEPLOYMENT, targets))).toEqual(started);
     expect(dispatches).toBe(2);
+  }), 60_000);
+
+it.live("one build failing to start never cuts off another GitHub already took, so the retried step dispatches it once", () =>
+  Effect.gen(function* () {
+    const dispatched: string[] = [];
+    const apiTaken = yield* Deferred.make<void>();
+    const docsFailed = yield* Deferred.make<void>();
+    let failing = true;
+    const api = fakeGithubApi({ "/repos/acme/web": { id: 42, full_name: "acme/web" } });
+    const authority = fakeGithubAuthority({
+      buildWorkflow: () => Effect.succeed(activeWorkflow),
+      dispatchBuild: ({ inputs: { build } }) => Effect.gen(function* () {
+        const run = RUN + dispatched.length;
+        dispatched.push(build);
+        // GitHub takes api's run, then answers only after docs has failed.
+        if (failing && build.endsWith(".api")) {
+          yield* Deferred.succeed(apiTaken, undefined);
+          yield* Deferred.await(docsFailed);
+        }
+        return dispatchedRun(run);
+      }),
+      cancelBuild: () => Effect.void,
+    });
+    const services = yield* storeTestCloud({ github: api.service, authority: authority.service });
+    const provided = <A, E, R>(program: Effect.Effect<A, E, R>) => program.pipe(Effect.provide(services));
+    yield* provided(seedStoreOrganization(ORGANIZATION));
+    const store = yield* provided(seedStoreGitService(ORGANIZATION, { project: PROJECT, environment: ENVIRONMENT, service: SERVICE }));
+    for (const [id, name] of [["00000000-0000-4000-8000-00000000b005", "api"], ["00000000-0000-4000-8000-00000000b006", "docs"]] as const) {
+      yield* Effect.promise(() => store.write(ORGANIZATION, {
+        command: "create_git_service", id, environment: here, name, repository: "acme/web", branch: null,
+      }, acmeWeb()));
+    }
+    yield* Effect.promise(() => store.write(ORGANIZATION, {
+      command: "admit", admit: "deploy", id: DEPLOYMENT, environment: here, services: [], version: null, accept_volume_loss: [],
+    }, acmeWeb()));
+    yield* Effect.promise(() => store.pinSources(DEPLOYMENT, { web: HEAD, api: HEAD, docs: HEAD }));
+    const cloud = yield* provided(cloudStore);
+    vi.spyOn(cloud, "githubStart").mockImplementation(async (id) => {
+      if (failing && id.endsWith(".docs")) {
+        await Effect.runPromise(Deferred.await(apiTaken));
+        Effect.runSync(Deferred.succeed(docsFailed, undefined));
+        throw new RpcError({ code: "unavailable", message: "The Config Store did not answer in time; the outcome is unknown", details: null });
+      }
+      return { kind: "dispatch", runner: "ubuntu-latest", foreign: [] };
+    });
+    const targets = ["web", "api", "docs"].map((service) =>
+      ({ build: `${DEPLOYMENT}.${service}`, service, repository: "acme/web", repositoryId: 42, installationId: 7, hasNext: true }));
+    const start = () => provided(startStoreGithubBuilds(ORGANIZATION, DEPLOYMENT, targets));
+
+    expect(yield* Effect.flip(start())).toMatchObject({ code: "unavailable" });
+    // api's run is the Store's before the step fails, so the step's retry follows it.
+    const sources = yield* Effect.promise(() => store.deploymentSources(DEPLOYMENT));
+    expect(sources.find(({ service }) => service === "api")).toMatchObject({ status: "building" });
+    failing = false;
+    expect((yield* start()).map((answer) => answer.kind)).toEqual(["dispatched", "dispatched", "dispatched"]);
+    expect(dispatched.filter((build) => build.endsWith(".api"))).toHaveLength(1);
+    expect(authority.calls.filter(({ operation }) => operation === "cancelBuild")).toHaveLength(0);
   }), 60_000);

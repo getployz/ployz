@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import type { ConfigStore, GithubBuild, GithubClaims } from "@ployz/sdk";
 import { eq } from "drizzle-orm";
-import { Effect, Schema } from "effect";
+import { Cause, Effect, Exit, Schema } from "effect";
 import { cloudStore, dialedStore, refusedWith, storeTry, withDeployDial } from "#/modules/config-store/store-sdk.server";
 import { runnerRefusal } from "#/modules/config-store/store-refusal";
 import { pinStoreSources, sourceIdentity } from "#/modules/config-store/store-sources.server";
@@ -215,7 +215,13 @@ export const startStoreGithubBuilds = Effect.fn("StoreGithub.startAll")(function
     workflow: (access, repositoryId) => workflows.get(repositoryId) ?? checkGithubBuildWorkflow(access, repositoryId),
     lacking: yield* Effect.cached(serversLackingGrants(organizationId)),
   };
-  return yield* Effect.forEach(targets, (target) => startStoreGithubBuild(organizationId, target, reads, waiting.has(target.service)), { concurrency: "unbounded" });
+  // Each start settles on its own, so one failing never cuts off another between GitHub taking its run and the Store
+  // recording it; the step fails only after every run it started is recorded.
+  const exits = yield* Effect.forEach(targets, (target) => startStoreGithubBuild(organizationId, target, reads, waiting.has(target.service)).pipe(Effect.exit), { concurrency: "unbounded" });
+  const failures = exits.filter(Exit.isFailure);
+  const [first, ...rest] = failures;
+  if (first !== undefined) return yield* Effect.failCause(rest.reduce((cause, failure) => Cause.combine(cause, failure.cause), first.cause));
+  return exits.filter(Exit.isSuccess).map((exit) => exit.value);
 });
 const done = { kind: "done" } as const;
 
