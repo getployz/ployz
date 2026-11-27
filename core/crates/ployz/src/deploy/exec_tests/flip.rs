@@ -3757,3 +3757,82 @@ async fn a_service_that_switched_before_a_sibling_failed_reads_switched() {
     );
     client.assert_done();
 }
+
+/// A gap proxy that still routes one old copy holds the whole group in its switch: the
+/// other old copy goes, but no row moves on to retiring while a copy is routed.
+#[tokio::test(start_paused = true)]
+async fn a_copy_a_gap_proxy_still_routes_keeps_its_group_switching() {
+    let (first, second, gap) = (machine('1'), machine('3'), machine('2'));
+    let (old_first, old_second) = (container('a'), container('b'));
+    let (new_first, new_second) = (container('c'), container('d'));
+    let plan = vec![
+        global_replacement(&first, &old_first, UpdateOrder::StartFirst),
+        global_replacement(&second, &old_second, UpdateOrder::StartFirst),
+    ];
+    let client = Scripted {
+        acks: BTreeMap::from([(gap, Ack::Never)]),
+        undialed: BTreeMap::from([(gap, "machine-2")]),
+        ..Scripted::new(vec![
+            created(
+                Call::Run(first, ContainerKind::ServiceContainer),
+                &new_first,
+            ),
+            created(
+                Call::Run(second, ContainerKind::ServiceContainer),
+                &new_second,
+            ),
+            observed(Call::Inspect(first, old_first), running()),
+            observed(Call::Inspect(second, old_second), running()),
+            ok(Call::Remove(second, old_second)),
+        ])
+    }
+    .with_copy(&first, &old_first, CopyRotation::In)
+    .with_copy(&second, &old_second, CopyRotation::In);
+    client.record(old_second, |copy| copy.in_before = false);
+    let groups = crate::deploy::planning::test_groups(&plan);
+    let plan =
+        crate::deploy::DeployPlan::for_execution_test_with_groups(plan, test_namespace(), groups)
+            .with_machine_names(&[first, second, gap]);
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+    let outcome = super::super::execute_operation_sequence(
+        &plan,
+        &run_id(),
+        &client,
+        &CancellationToken::new(),
+        Some(tx),
+    )
+    .await;
+
+    assert_eq!(
+        outcome.services(),
+        ended(&[("api", ServiceResult::Unconfirmed)])
+    );
+    assert_eq!(client.rotation(&old_first), Some(CopyRotation::In));
+    assert_eq!(client.rotation(&old_second), None);
+    client.assert_done();
+    let (mut tracker, mut steps) = (
+        ployz_core::deploy_progress::RowTracker::default(),
+        ployz_core::deploy_steps::Steps::default(),
+    );
+    let mut at = 0;
+    while let Ok(event) = rx.try_recv() {
+        if let DeployEvent::Progress { rows, .. } = event {
+            at += 1;
+            steps.rows(&tracker.changes(&rows), at);
+        }
+    }
+    let names: Vec<_> = steps
+        .take_changed()
+        .into_iter()
+        .map(|step| step.name)
+        .collect();
+    assert!(
+        names.contains(&ployz_core::deploy_steps::StepName::SwitchingTraffic),
+        "{names:?}"
+    );
+    assert!(
+        !names.contains(&ployz_core::deploy_steps::StepName::StoppingOld),
+        "the gap proxy still routes {old_first:?}, yet the group moved on to stopping_old: {names:?}"
+    );
+}

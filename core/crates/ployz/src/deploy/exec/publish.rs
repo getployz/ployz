@@ -110,6 +110,7 @@ pub(super) async fn publish_group<C: MachineOperations>(
         .into_iter()
         .collect();
     let (mut outs, mut gone) = (Vec::new(), Vec::new());
+    let mut missing = 0;
     // What each old copy's removal asks for its anonymous Volumes: they go only with a
     // copy its Machine made to take its place that this Deploy keeps.
     let mut asks = BTreeMap::new();
@@ -128,6 +129,7 @@ pub(super) async fn publish_group<C: MachineOperations>(
                 cleanup::Copy::observed(&details.container)
             }
             Err(ExecutionError::Machine { error, .. }) if error.code == RpcErrorCode::NotFound => {
+                missing += 1;
                 continue;
             }
             Err(error) => {
@@ -246,7 +248,9 @@ pub(super) async fn publish_group<C: MachineOperations>(
             unconfirmed.get_or_insert(error);
         }
     }
-    if unconfirmed.is_none() && !gone.is_empty() {
+    // The group retires only once no proxy routes any of its old copies: one left
+    // running, such as a copy a gap Server's proxy still routes, holds it switching.
+    if unconfirmed.is_none() && !gone.is_empty() && gone.len() + missing == old.len() {
         retiring(operations, progress, &new);
     }
     // Each Gone drains on its own Machine; they overlap and are all reported.
