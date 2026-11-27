@@ -1003,7 +1003,7 @@ mod ingress_doors {
     }
 
     async fn ensure(service: &MachineService, request: Value) -> EnsuredContainer {
-        service
+        let response = service
             .ensure_container(Request::new(
                 op::EnsureContainer::into_request(serde_json::from_value(request).unwrap())
                     .encode()
@@ -1013,9 +1013,11 @@ mod ingress_doors {
             .unwrap()
             .into_inner()
             .decode_response()
-            .unwrap()
+            .unwrap();
+        response
+            .clone()
             .decode::<op::EnsureContainer>()
-            .unwrap()
+            .unwrap_or_else(|error| panic!("{error}: {response:?}"))
     }
 
     #[track_caller]
@@ -3118,7 +3120,7 @@ mod set_volume_copy {
         });
     }
 
-    async fn requested(
+    pub(super) async fn requested(
         fake: &crate::docker::test_support::FakeDocker,
         method: http::Method,
         suffix: &str,
@@ -5643,7 +5645,7 @@ mod ensure_container {
     }
 
     async fn ensure(service: &MachineService, request: Value) -> EnsuredContainer {
-        service
+        let response = service
             .ensure_container(Request::new(
                 op::EnsureContainer::into_request(serde_json::from_value(request).unwrap())
                     .encode()
@@ -5653,9 +5655,11 @@ mod ensure_container {
             .unwrap()
             .into_inner()
             .decode_response()
-            .unwrap()
+            .unwrap();
+        response
+            .clone()
             .decode::<op::EnsureContainer>()
-            .unwrap()
+            .unwrap_or_else(|error| panic!("{error}: {response:?}"))
     }
 
     fn present(reply: &EnsuredContainer) -> &ContainerObservation {
@@ -5911,6 +5915,104 @@ mod ensure_container {
                 .all(|(method, _)| *method == Method::GET),
             "a resend of a Gone only observes"
         );
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    /// A Deploy retires its old copies together, so each stop's grace must run beside
+    /// the others, not after them.
+    #[tokio::test]
+    async fn stops_of_two_containers_on_one_machine_overlap() {
+        let (data_dir, _store, service, fake) = fake_docker_service("ployzd-ensure-overlap").await;
+        let first = present(&ensure(&service, run_new("k1", spec("example.test/api:1"))).await)
+            .container_id;
+        let second = present(&ensure(&service, run_new("k2", spec("example.test/api:1"))).await)
+            .container_id;
+        let gone = |id| json!({"want":{"state":"gone", "container":{"id":id}, "drain":0}});
+        let held = fake.stop_gate.write().await;
+
+        let (one, two, overlapped) = tokio::join!(
+            ensure(&service, gone(first)),
+            ensure(&service, gone(second)),
+            async {
+                let both = tokio::time::timeout(Duration::from_secs(3), async {
+                    for id in [first, second] {
+                        super::set_volume_copy::requested(
+                            &fake,
+                            Method::POST,
+                            &format!("/containers/{id}/stop"),
+                        )
+                        .await;
+                    }
+                })
+                .await;
+                drop(held);
+                both.is_ok()
+            }
+        );
+        assert!(overlapped, "one stop waited for the other to end");
+        for reply in [one, two] {
+            assert!(
+                matches!(
+                    reply,
+                    EnsuredContainer::Ensured {
+                        now: ContainerNow::Absent { .. },
+                        ..
+                    }
+                ),
+                "{reply:?}"
+            );
+        }
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    /// A stop that is not a Volume cut holds the turn only to send the stop, so a start
+    /// runs while the stopped copy waits out its grace.
+    #[tokio::test]
+    async fn a_start_runs_while_a_stop_waits_out_its_grace() {
+        let (data_dir, _store, service, fake) =
+            fake_docker_service("ployzd-ensure-start-after").await;
+        let kept = present(&ensure(&service, run_new("k2", spec("example.test/api:1"))).await)
+            .container_id;
+        ensure(
+            &service,
+            json!({"want":{"state":"stopped", "container":{"id":kept}, "drain":0}}),
+        )
+        .await;
+        let leaving = present(&ensure(&service, run_new("k1", spec("example.test/api:1"))).await)
+            .container_id;
+        let start = json!({"want":{"state":"running", "rotation":"pending",
+            "container":{"existing":{"id":kept}}}});
+        let held = fake.stop_gate.write().await;
+
+        let start_path = format!("/containers/{kept}/start");
+        let starts = || ends_with(&requests(&fake), Method::POST, &start_path).count();
+        let before = starts();
+        let (stopped, started) = tokio::join!(
+            ensure(
+                &service,
+                json!({"want":{"state":"stopped", "container":{"id":leaving}, "drain":0}})
+            ),
+            async {
+                super::set_volume_copy::requested(
+                    &fake,
+                    Method::POST,
+                    &format!("/containers/{leaving}/stop"),
+                )
+                .await;
+                let started = tokio::time::timeout(Duration::from_secs(3), ensure(&service, start))
+                    .await
+                    .expect("the start waited for the stop's grace");
+                assert_eq!(starts(), before + 1);
+                drop(held);
+                started
+            }
+        );
+        assert!(matches!(
+            present(&stopped).runtime,
+            ContainerRuntimeObservation::Exited { .. }
+        ));
+        assert_eq!(starts(), before + 1);
+        present(&started);
         std::fs::remove_dir_all(data_dir).unwrap();
     }
 

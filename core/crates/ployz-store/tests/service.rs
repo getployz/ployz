@@ -534,3 +534,87 @@ fn a_replayed_create_whose_scope_names_no_place_now_returns_its_first_answer() {
         first.environment.id
     );
 }
+
+#[test]
+fn a_service_lists_the_services_it_references_with_the_keys_it_reads() {
+    let (store, who) = shop();
+    let set = |path: &str, value: serde_json::Value| Change::Set {
+        path: SettingPath::parse(path).unwrap(),
+        value,
+    };
+    store
+        .write(
+            &who,
+            &Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: vec![
+                    set("worker.env.PORT", json!("80")),
+                    set("worker.env.PORT.exported", json!(true)),
+                    set(
+                        "web.env.API_URL",
+                        json!("http://${{ worker.PLOYZ_PRIVATE_DOMAIN }}:${{ worker.PORT }}"),
+                    ),
+                    set("web.env.PORT_AGAIN", json!("${{ worker.PORT }}")),
+                ],
+            },
+        )
+        .unwrap();
+    // A Config file reads too: `worker` reads `web` through the one it mounts.
+    store
+        .write(
+            &who,
+            &ployz_store::CreateConfig {
+                id: ployz_store::ConfigId::parse(uuid(9)).unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ployz_core::ConfigName::parse("sentry").unwrap(),
+                mounts: vec![ployz_store::ConfigMountAt {
+                    service: name("worker"),
+                    dir: "/etc/sentry".into(),
+                }],
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &ployz_store::PutConfigFile {
+                environment: EnvironmentRef::default(),
+                config: ployz_core::ConfigName::parse("sentry").unwrap(),
+                file: ployz_core::ConfigFileName::parse("config.yml").unwrap(),
+                content: "web: ${{ web.PLOYZ_PRIVATE_DOMAIN }}".into(),
+                mode: None,
+                uid: None,
+                gid: None,
+            },
+        )
+        .unwrap();
+
+    let references: Vec<_> = store
+        .read(&who, &ServicesQuery::default())
+        .unwrap()
+        .services
+        .into_iter()
+        .map(|listing| {
+            let read: Vec<_> = listing
+                .references
+                .into_iter()
+                .map(|reference| (reference.service.as_str().to_owned(), reference.keys))
+                .collect();
+            (listing.service.name.to_string(), read)
+        })
+        .collect();
+    assert_eq!(
+        references,
+        [
+            (
+                "web".into(),
+                vec![(uuid(4), vec!["PLOYZ_PRIVATE_DOMAIN".into(), "PORT".into()])]
+            ),
+            (
+                "worker".into(),
+                vec![(uuid(3), vec!["PLOYZ_PRIVATE_DOMAIN".into()])]
+            ),
+        ]
+    );
+}

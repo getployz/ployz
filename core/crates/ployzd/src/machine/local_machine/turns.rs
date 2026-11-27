@@ -1,8 +1,9 @@
 //! Machine admission, taken only here: the in-process turn that orders admitted work,
-//! exclusive for changes and shared for image transfers, in-place updates and policy
-//! edits, then the installation guard that keeps an upgrade or `ployzd install` out. The
-//! turn always comes first, and the switch, when work takes it, before both, as
-//! [`super::switch`] sets out, so no two callers take them in different orders.
+//! exclusive for changes and shared for image transfers, in-place updates, policy
+//! edits and the stop of a copy out of routing, then the installation guard that
+//! keeps an upgrade or `ployzd install` out. The turn always comes first, and the switch,
+//! when work takes it, before both, as [`super::switch`] sets out, so no two callers take
+//! them in different orders.
 //!
 //! Admitted work is detached from its RPC: a caller that stops waiting does not abandon
 //! it halfway, and the task holds its guards until the work ends.
@@ -13,7 +14,7 @@
 //! is refused before any effect, and one that lost only its Device slot acts as an
 //! Operator.
 
-use tokio::sync::OwnedRwLockWriteGuard;
+use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard};
 
 use super::{Checked, Error, LocalMachine};
 
@@ -32,8 +33,8 @@ impl std::ops::Deref for Admission {
 
 /// This Machine inside work that holds the installation guard and no turn, which only
 /// [`LocalMachine::finish_installed`] makes. The work takes the turns it needs itself, so
-/// a drain inside it never holds one, and takes each through [`Installed::exclusive_turn`].
-/// It reads no scope until then.
+/// a drain inside it never holds one, and takes each through [`Installed::exclusive_turn`]
+/// or [`Installed::shared_turn`]. It reads no scope until then.
 pub(crate) struct Installed(LocalMachine);
 
 /// The exclusive admission turn, held by work [`LocalMachine::finish_installed`] runs,
@@ -43,6 +44,13 @@ pub(crate) struct Installed(LocalMachine);
 pub(crate) struct ExclusiveTurn {
     local: Checked,
     _turn: OwnedRwLockWriteGuard<()>,
+}
+
+/// The shared admission turn, held by work [`LocalMachine::finish_installed`] runs beside
+/// other shared work. Only [`Installed::shared_turn`] makes one, after the same check as
+/// [`ExclusiveTurn`].
+pub(crate) struct SharedTurn {
+    _turn: OwnedRwLockReadGuard<()>,
 }
 
 impl std::ops::Deref for Installed {
@@ -73,6 +81,17 @@ impl Installed {
             local: self.0.clone().checked_under(&turn)?,
             _turn: turn,
         })
+    }
+
+    /// The shared admission turn, with the caller's access checked under it.
+    ///
+    /// # Errors
+    /// Returns [`Error::ManagementRevoked`] when this Machine no longer accepts the
+    /// caller's key.
+    pub(crate) async fn shared_turn(&self) -> Result<SharedTurn, Error> {
+        let turn = self.0.owner.admission_lock().read_owned().await;
+        self.0.clone().checked_under(&turn)?;
+        Ok(SharedTurn { _turn: turn })
     }
 }
 

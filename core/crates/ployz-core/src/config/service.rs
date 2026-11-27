@@ -460,16 +460,23 @@ pub enum ValuePart {
 }
 
 impl ValuePart {
-    /// The Service lineage this part reads, if it is a reference to one.
+    /// The Service lineage this part reads and the key it reads of it, if it is a
+    /// reference to another Service: what orders a Deploy and links Services on the canvas.
     #[must_use]
-    pub fn service_lineage(&self) -> Option<&str> {
+    pub fn service_ref(&self) -> Option<(&str, &str)> {
         match self {
             Self::Ref {
                 owner: ValuePartOwner::Service { lineage_id },
-                ..
-            } => Some(lineage_id.as_str()),
+                key,
+            } => Some((lineage_id.as_str(), key.as_str())),
             Self::Ref { .. } | Self::Text { .. } => None,
         }
+    }
+
+    /// The Service lineage this part reads, if it is a reference to one.
+    #[must_use]
+    pub fn service_lineage(&self) -> Option<&str> {
+        self.service_ref().map(|(lineage, _)| lineage)
     }
 }
 

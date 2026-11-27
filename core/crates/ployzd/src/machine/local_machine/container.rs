@@ -29,7 +29,7 @@ use ployz_core::{
 use super::super::ingress::{admit_door, admit_router, admit_unreserved};
 use super::{
     AdmittedSpec, Error, LocalMachine, Scope, SwitchGuard,
-    turns::{ExclusiveTurn, Installed},
+    turns::{ExclusiveTurn, Installed, SharedTurn},
 };
 use crate::docker::{
     ContainerCreated, ContainerRequest, ContainerRuntime, ImageIngest, RotationTurn, Withdrawal,
@@ -546,7 +546,7 @@ impl Installed {
     /// Take one running managed Container out of ingress, wait `drain`, stop it.
     ///
     /// The helper takes the exclusive turn for the Docker stop itself, so a caller
-    /// holding a turn deadlocks.
+    /// holding a turn deadlocks, and no other stop or start runs beside it.
     ///
     /// The stopping mark is set without a turn so replication tells every proxy and
     /// Internal DNS during the drain. It is set under the config lock, so a removal
@@ -583,8 +583,10 @@ impl Installed {
     }
 
     /// The rotation is read before the withdrawal, so a copy In is never taken out of
-    /// routing, and again under the turn: an In write that won the turn since the
-    /// stop was planned keeps the copy running.
+    /// routing, and again under a shared turn: an In write that won the exclusive turn
+    /// since the stop was planned keeps the copy running. Stops of other copies run beside
+    /// this one, while an In write or a start waits for the exclusive turn until the stop
+    /// is sent, then reads the copy signalled.
     async fn stop_out_of_rotation(
         &self,
         container: &ContainerId,
@@ -600,7 +602,7 @@ impl Installed {
         self.stop_checked(container, drain, stop, guard).await
     }
 
-    /// Drains before the exclusive turn, then sends the stop under it once the guard's
+    /// Drains before the guard's turn, then sends the stop under it once the guard's
     /// `check` passes. The guard's `drained` may refuse once the drain ends, so a
     /// refusal it can already see returns the copy to ingress before the turn, which
     /// other work may hold long. A refusal from `withdraw`, `drained` or `check` stops
@@ -645,7 +647,7 @@ impl Installed {
         if let Err(refused) = guard.drained().await? {
             return Ok(Err(refused));
         }
-        let turn = self.exclusive_turn().await?;
+        let turn = guard.turn(self).await?;
         let held = match guard.check().await? {
             Ok(held) => held,
             Err(refused) => return Ok(Err(refused)),
@@ -2184,14 +2186,16 @@ enum Made {
     Acted(ContainerId, Option<ContainerRefusal>),
 }
 
-/// What a stop checks around its drain and its exclusive turn.
+/// What a stop checks around its drain and its admission turn.
 trait StopGuard {
     /// Why the stop is refused.
     type Refusal;
+    /// The admission turn the stop runs under.
+    type Turn;
     /// What `check` holds through the stop.
     type Held;
 
-    /// Whether the stop holds the exclusive turn and what `check` returned until Docker
+    /// Whether the stop holds its turn and what `check` returned until Docker
     /// reports the copy stopped, rather than only while it is sent.
     const WAITS_UNDER_TURN: bool;
 
@@ -2201,6 +2205,8 @@ trait StopGuard {
     async fn withdraw(&self) -> Result<Result<Withdrawal, Self::Refusal>, Error>;
     /// Checked once the drain ends, before the turn.
     async fn drained(&self) -> Result<Result<(), Self::Refusal>, Error>;
+    /// Taken once `drained` passes and held through the stop.
+    async fn turn(&self, local: &Installed) -> Result<Self::Turn, Error>;
     /// Checked under the turn.
     async fn check(&self) -> Result<Result<Self::Held, Self::Refusal>, Error>;
 }
@@ -2215,6 +2221,7 @@ struct Fence<'a> {
 
 impl<'a> StopGuard for Fence<'a> {
     type Refusal = VolumeGen;
+    type Turn = ExclusiveTurn;
     type Held = Option<crate::docker::FloorTurn<'a>>;
 
     /// A cut reads the holder stopped once its floor lock is free, and a start ordered
@@ -2246,6 +2253,10 @@ impl<'a> StopGuard for Fence<'a> {
             .await?)
     }
 
+    async fn turn(&self, local: &Installed) -> Result<ExclusiveTurn, Error> {
+        local.exclusive_turn().await
+    }
+
     async fn check(&self) -> Result<Result<Self::Held, VolumeGen>, Error> {
         let Some((name, r#gen)) = self.fence else {
             return Ok(Ok(None));
@@ -2265,7 +2276,8 @@ struct Leaving<'a> {
 
 impl<'a> StopGuard for Leaving<'a> {
     type Refusal = ContainerRefusal;
-    type Held = RotationTurn<'a>;
+    type Turn = SharedTurn;
+    type Held = ();
 
     /// The copy is out of rotation, and its signalled mark keeps it out.
     const WAITS_UNDER_TURN: bool = false;
@@ -2284,8 +2296,14 @@ impl<'a> StopGuard for Leaving<'a> {
         Ok(Ok(()))
     }
 
-    async fn check(&self) -> Result<Result<Self::Held, ContainerRefusal>, Error> {
-        leave_rotation(self.containers, self.container, self.target).await
+    async fn turn(&self, local: &Installed) -> Result<SharedTurn, Error> {
+        local.shared_turn().await
+    }
+
+    async fn check(&self) -> Result<Result<(), ContainerRefusal>, Error> {
+        Ok(leave_rotation(self.containers, self.container, self.target)
+            .await?
+            .map(|_turn| ()))
     }
 }
 

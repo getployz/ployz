@@ -41,3 +41,29 @@ export function findPlacement(
 
   return click;
 }
+
+const NEW_NODE_GAP = 48;
+const NEW_NODE_COLUMNS = 4;
+const GRID = 24;
+const onGrid = (value: number) => Math.ceil(value / GRID) * GRID;
+
+/**
+ * Where nodes without a place go, in the order given: rows of up to four, below every placed node and lined up with the
+ * leftmost one, or from the origin on an empty canvas. It never moves a placed node, and the same input gives the same
+ * places, so two tabs placing the same nodes agree.
+ */
+export function placeNewNodes(placed: readonly NodeRect[], sizes: readonly Size[]): Position[] {
+  const left = placed.length === 0 ? 0 : onGrid(Math.min(...placed.map((node) => node.x)));
+  let top = placed.length === 0 ? 0 : onGrid(Math.max(...placed.map((node) => node.y + node.height)) + NEW_NODE_GAP);
+  const places: Position[] = [];
+  for (let start = 0; start < sizes.length; start += NEW_NODE_COLUMNS) {
+    const row = sizes.slice(start, start + NEW_NODE_COLUMNS);
+    let x = left;
+    for (const size of row) {
+      places.push({ x, y: top });
+      x = onGrid(x + size.width + NEW_NODE_GAP);
+    }
+    top = onGrid(top + Math.max(...row.map((size) => size.height)) + NEW_NODE_GAP);
+  }
+  return places;
+}
