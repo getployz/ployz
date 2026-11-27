@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import type { ConfigStore, GithubBuild, GithubClaims } from "@ployz/sdk";
 import { eq } from "drizzle-orm";
-import { Cause, Effect, Exit, Schema } from "effect";
+import { Cause, Effect, Exit, Schedule, Schema } from "effect";
 import { cloudStore, dialedStore, refusedWith, storeTry, withDeployDial } from "#/modules/config-store/store-sdk.server";
 import { runnerRefusal } from "#/modules/config-store/store-refusal";
 import { pinStoreSources, sourceIdentity } from "#/modules/config-store/store-sources.server";
@@ -248,7 +248,10 @@ export const startStoreGithubBuild = Effect.fn("StoreGithub.start")(function* (
   // committing late. Follow whichever run holds it now.
   const refused = holder.pipe(Effect.map((held) => held ?? done));
   const store = yield* cloudStore;
+  // GitHub may have taken a dispatch it never answered, so the skip is what gets retried, never the dispatch: a build
+  // left waiting would be dispatched again.
   const skip = (message: string) => storeTry(() => store.githubSkip(target.build, message)).pipe(
+    Effect.retry({ while: refusedWith("unavailable"), times: 5, schedule: Schedule.exponential("1 second") }),
     Effect.as<StoreGithubStart>(done),
     Effect.catchIf(refusedWith("conflict"), () => refused),
   );
