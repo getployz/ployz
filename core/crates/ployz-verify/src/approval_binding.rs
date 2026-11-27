@@ -74,8 +74,8 @@
 //!   (`ployzd/src/machine/local_machine.rs`), in `admit_installation`
 //!   (`ployzd/src/machine/local_machine/turns.rs`). `finish_mutation` and `finish_shared`
 //!   take their turn first and check under it; `finish_installed` checks when the call
-//!   arrives and again under each `exclusive_turn` its work takes later
-//!   (`Installed::exclusive_turn`, `checked_under`) (`Command::Machine`).
+//!   arrives and again under each turn its work takes later (`Installed::exclusive_turn`,
+//!   `Installed::shared_turn`, `checked_under`) (`Command::Machine`).
 //!
 //! Open paths, which `open_paths` adds and the shipped check leaves out: a Cancel's digest
 //! binds the Deployment and the review version, which stay put when its runner claims it,
@@ -145,10 +145,10 @@ enum Route {
     /// checks the caller's access under it.
     Turned,
     /// `finish_installed`: `admit_installation` checks the caller's access when the call
-    /// arrives, and the work takes `Installed::exclusive_turn` itself after its drain, which
-    /// checks the caller again under it: `ContainerStep::StopThenRemove` and
-    /// `ContainerStep::Remove` (`machine/local_machine/container.rs`), `stop_checked`'s
-    /// stop, and a Volume cut.
+    /// arrives, and the work takes `Installed::exclusive_turn` or, for the stop of a copy
+    /// out of routing, `Installed::shared_turn` itself after its drain, which checks the
+    /// caller again under it: `ContainerStep::StopThenRemove` and `ContainerStep::Remove`
+    /// (`machine/local_machine/container.rs`), `stop_checked`'s stop, and a Volume cut.
     Installed,
 }
 
