@@ -2120,6 +2120,41 @@ async fn a_lost_answer_outlasts_a_resend_that_never_reached_the_server() {
     );
 }
 
+/// A daemon that exits mid-call drops the connection, and tonic reports that as an
+/// Unknown "transport error" that the restart wait does not resend. A removal converges
+/// on a resend, so it is sent again to the daemon that comes back.
+#[tokio::test(start_paused = true)]
+async fn a_removal_whose_reply_a_restart_lost_is_sent_again() {
+    let machine = machine('1');
+    let dropped = crate::cluster::answered_by(
+        &machine,
+        crate::connect::ConnectError::from(tonic::Status::from_error(Box::new(
+            std::io::Error::other("transport error"),
+        ))),
+    );
+    assert!(dropped.reply_lost(), "{dropped:?}");
+    let client = Scripted::new(vec![
+        Step(Call::Remove(machine, container('a')), Reply::Error(dropped)),
+        ok(Call::Remove(machine, container('a'))),
+    ]);
+
+    let gone = crate::deploy::cleanup::gone(
+        &client,
+        &machine,
+        ContainerLocator::Id(container('a')),
+        Drain::DEFAULT,
+        AnonymousVolumes::keep(),
+        None,
+    )
+    .await;
+
+    assert!(
+        matches!(gone, Ok(crate::deploy::cleanup::Gone::Removed)),
+        "{gone:?}"
+    );
+    client.assert_done();
+}
+
 #[test]
 fn an_earlier_lost_answer_never_hides_a_silent_target() {
     let lost = crate::connect::ConnectError::from(tonic::Status::from_error(Box::new(
