@@ -61,6 +61,36 @@ pub struct BuildStep {
     pub error: Option<String>,
 }
 
+impl BuildStep {
+    /// Where the step is. An error ends it whether or not BuildKit reported its
+    /// completion, and a completion ends it whether or not BuildKit reported its start.
+    #[must_use]
+    pub const fn phase(&self) -> StepPhase {
+        if self.error.is_some() {
+            StepPhase::Failed
+        } else if self.completed.is_some() {
+            if self.cached {
+                StepPhase::Cached
+            } else {
+                StepPhase::Done
+            }
+        } else if self.started.is_some() {
+            StepPhase::Running
+        } else {
+            StepPhase::Waiting
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StepPhase {
+    Waiting,
+    Running,
+    Cached,
+    Done,
+    Failed,
+}
+
 /// What this attempt proved about one target.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum TargetEvidence {
