@@ -4,7 +4,7 @@ use crate::{
     OperationStatus, RpcError, RpcErrorCode,
 };
 
-use super::{Failure, RowPhase, RowState};
+use super::{Failure, RowPhase, RowState, StoppedBy};
 
 fn server(statuses: &[OperationStatus]) -> RowState {
     let statuses: Vec<_> = statuses.iter().map(|status| (status, true)).collect();
@@ -656,4 +656,29 @@ fn a_local_permission_error_is_not_a_registry_refusal() {
     let cause =
         "Docker responded with status code 500: open /var/lib/docker/tmp/x: permission denied";
     assert_eq!(pull_failed(cause).reason, "pull image failed");
+}
+
+#[test]
+fn a_stored_failed_row_reads_back_and_writes_the_same_bytes() {
+    let stored = [
+        (
+            r#"{"state":"failed","reason":"boom","cause":[],"step":"start","log":null}"#,
+            StoppedBy::Nothing,
+        ),
+        (
+            r#"{"state":"failed","reason":"boom","cause":["x"],"step":null,"log":null,"unanswered":true,"cancelled":true}"#,
+            StoppedBy::Cancel,
+        ),
+        (
+            r#"{"state":"failed","reason":"boom","cause":[],"step":"health","log":null,"interrupted":true}"#,
+            StoppedBy::LostRunner,
+        ),
+    ];
+    for (row, by) in stored {
+        let state: RowState = serde_json::from_str(row).unwrap();
+        assert!(matches!(state, RowState::Failed { stopped_by, .. } if stopped_by == by));
+        assert_eq!(serde_json::to_string(&state).unwrap(), row);
+    }
+    let both = r#"{"state":"failed","reason":"boom","cause":[],"step":null,"log":null,"cancelled":true,"interrupted":true}"#;
+    assert!(serde_json::from_str::<RowState>(both).is_err());
 }
