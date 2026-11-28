@@ -402,9 +402,10 @@ fn remove_inspected(path: &Path, id: (u64, u64)) -> io::Result<Removal> {
 }
 
 /// Keeps the file at `path`, inspected as `inspection`, aside under `<name>.kept-<n>` beside
-/// it, and returns where it is kept. A kept file already holding the same bytes keeps it, and
-/// `path` goes. Otherwise it takes the next free `<n>`, linked so nothing under that name is
-/// replaced, so each distinct file adds one kept file and keeping it again adds none. Callers
+/// it, and returns where it is kept. A kept file already holding the same bytes, read whole,
+/// keeps it, and `path` goes. Otherwise it takes the smallest free `<n>`, linked so nothing
+/// under that name is replaced, so each distinct file adds one kept file and keeping it again
+/// adds none. A name taken since the dir was read leaves the file where it is, logged. Callers
 /// hold the lock their store's writers take.
 ///
 /// # Errors
@@ -419,15 +420,18 @@ pub(crate) fn keep_aside(path: &Path, inspection: &Inspection) -> io::Result<Opt
         "{}.kept-",
         path.file_name().unwrap_or_default().to_string_lossy()
     );
-    let mut last = 0_u64;
+    // A file past the read cap was read only in part, so it never matches a kept one.
+    let whole = bytes.len() <= READ_CAP;
+    let mut taken = std::collections::BTreeSet::new();
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let Some(n) = kept_index(&entry.file_name(), &prefix) else {
             continue;
         };
-        last = last.max(n);
+        taken.insert(n);
         let kept = entry.path();
-        if let Inspection::File { bytes: held, .. } = inspect(&kept, None)?
+        if whole
+            && let Inspection::File { bytes: held, .. } = inspect(&kept, None)?
             && held == *bytes
         {
             remove_inspected(path, *id)?;
@@ -437,16 +441,21 @@ pub(crate) fn keep_aside(path: &Path, inspection: &Inspection) -> io::Result<Opt
     if !still(path, *id)? {
         return Ok(None);
     }
-    let mut n = last;
-    let kept = loop {
-        n = n.saturating_add(1);
-        let kept = dir.join(format!("{prefix}{n}"));
-        match fs::hard_link(path, &kept) {
-            Ok(()) => break kept,
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(error),
+    // One of 1..=taken.len() + 1 is free.
+    let n = (1..).find(|n| !taken.contains(n)).unwrap_or(1);
+    let kept = dir.join(format!("{prefix}{n}"));
+    match fs::hard_link(path, &kept) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            tracing::warn!(
+                path = %path.display(),
+                taken = %kept.display(),
+                "leaving a file Ployz did not write in place; the name to keep it under was just taken"
+            );
+            return Ok(None);
         }
-    };
+        Err(error) => return Err(error),
+    }
     fs::remove_file(path)?;
     fs::File::open(dir)?.sync_all()?;
     tracing::warn!(path = %kept.display(), "kept a file Ployz did not write aside");
@@ -460,4 +469,59 @@ pub(crate) fn kept_index(name: &std::ffi::OsStr, prefix: &str) -> Option<u64> {
         .parse()
         .ok()
         .filter(|n| *n >= 1)
+}
+
+#[cfg(test)]
+mod keep_aside_tests {
+    use std::fs;
+
+    use super::{Digest, READ_CAP, digest, inspect, keep_aside};
+
+    /// Keeps `staged` aside in a dir already holding `kept`, each as `(n, bytes)`, and returns
+    /// the dir's files as `(name, digest)`, sorted.
+    fn keep(staged: &[u8], kept: &[(u64, &[u8])]) -> Vec<(String, Digest)> {
+        let dir = tempfile::tempdir().unwrap();
+        for (n, bytes) in kept {
+            fs::write(dir.path().join(format!("staged.kept-{n}")), bytes).unwrap();
+        }
+        let path = dir.path().join("staged");
+        fs::write(&path, staged).unwrap();
+        keep_aside(&path, &inspect(&path, None).unwrap()).unwrap();
+        let mut files: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| {
+                let entry = entry.unwrap();
+                let name = entry.file_name().into_string().unwrap();
+                (name, digest(&fs::read(entry.path()).unwrap()))
+            })
+            .collect();
+        files.sort();
+        files
+    }
+
+    #[test]
+    fn a_file_past_the_read_cap_is_kept_beside_one_sharing_what_was_read() {
+        let kept = vec![b'a'; READ_CAP + 2];
+        let mut staged = kept.clone();
+        *staged.last_mut().unwrap() = b'b';
+
+        assert_eq!(
+            keep(&staged, &[(1, &kept)]),
+            [
+                ("staged.kept-1".to_owned(), digest(&kept)),
+                ("staged.kept-2".to_owned(), digest(&staged)),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_kept_file_at_the_largest_index_leaves_a_smaller_one_free() {
+        assert_eq!(
+            keep(b"other notes", &[(u64::MAX, b"notes")]),
+            [
+                ("staged.kept-1".to_owned(), digest(b"other notes")),
+                (format!("staged.kept-{}", u64::MAX), digest(b"notes")),
+            ]
+        );
+    }
 }
