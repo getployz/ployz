@@ -444,7 +444,7 @@ mod tests {
             let docker = root.path().join("docker");
             fs::write(
                 &docker,
-                format!(
+                crate::tests::as_ployz(&format!(
                     r#"#!/bin/sh
 case "$1 $2" in
   'context show') echo default ;;
@@ -455,7 +455,7 @@ esac
 exit 0
 "#,
                     crate::builder_name()
-                ),
+                )),
             )
             .unwrap();
             fs::set_permissions(&docker, fs::Permissions::from_mode(0o700)).unwrap();

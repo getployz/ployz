@@ -25,6 +25,17 @@ fn policy(root: &Path) -> HostPolicy {
     }
 }
 
+/// A script line through which Docker reports the BuildKit worker as the one
+/// Buildx started for this host user's Ployz.
+fn worker_started() -> String {
+    format!(
+        r#"[ "$1 $2" = 'inspect --type' ] && case "$6" in buildx_buildkit_*) printf '%s\n' '{{"Id":"worker","Config":{{"Image":"{}","Env":["PLOYZ_BUILD_OWNER={}"]}}}}'; exit 0 ;; esac
+"#,
+        ployz_build::BUILDKIT_IMAGE,
+        rustix::process::getuid().as_raw()
+    )
+}
+
 /// Docker as a host with no builder left: `buildx rm` finds nothing to remove.
 fn docker(root: &Path) -> PathBuf {
     let docker = root.join("docker");
@@ -34,7 +45,7 @@ fn docker(root: &Path) -> PathBuf {
             r#"#!/bin/sh
 root=$(dirname "$0")
 printf '%s\n' "$*" >> "$root/calls"
-case "$1 $2" in
+{worker}case "$1 $2" in
  'context show') echo default ;;
  'info --format') echo '{{"DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]],"Architecture":"amd64","OSType":"linux","CgroupVersion":"2"}}' ;;
  'buildx ls') echo '{{"Name":"{name}","Nodes":[{{"Status":"running","Platforms":["linux/amd64"]}}]}}' ;;
@@ -43,7 +54,8 @@ case "$1 $2" in
 esac
 exit 0
 "#,
-            name = builder_name()
+            name = builder_name(),
+            worker = worker_started()
         ),
     )
     .unwrap();

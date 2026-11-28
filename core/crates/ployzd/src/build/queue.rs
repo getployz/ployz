@@ -26,6 +26,9 @@ pub(crate) struct Runner {
     waiting: Arc<Semaphore>,
     /// Builds running now, for the Machine's published observation.
     running: watch::Sender<u32>,
+    /// Whether startup's cleanup of abandoned build slots has finished. Builds
+    /// wait for it instead of counting slots it still holds as busy.
+    cleaned: watch::Sender<bool>,
     pub(super) shutdown: CancellationToken,
     /// Runs on a Build's execution thread after it said it stopped and before that thread
     /// returns, so a test can look at the Machine in between.
@@ -84,6 +87,7 @@ impl Runner {
             active: Arc::new(Semaphore::new(1)),
             slots: Arc::new(Mutex::new(Slots { size: 1, debt: 0 })),
             running: watch::Sender::new(0),
+            cleaned: watch::Sender::new(true),
             policy,
             shutdown,
             #[cfg(test)]
@@ -94,6 +98,47 @@ impl Runner {
     /// The number of Builds running now; it changes as they start and end.
     pub(crate) fn running_builds(&self) -> watch::Receiver<u32> {
         self.running.subscribe()
+    }
+
+    /// Remove abandoned build slots' leftovers in the background, so the
+    /// daemon reports ready without waiting on Docker to stop workers.
+    pub(crate) fn clean_up_abandoned(&self) {
+        self.clean_up_with(ployz_build::Admission::cleanup_abandoned);
+    }
+
+    /// Run `cleanup` in the background, with Builds waiting for it. However
+    /// it ends, a panic included, Builds go on: a slot it did not clean keeps
+    /// its mark and stays quarantined until an admission recovers it.
+    pub(crate) fn clean_up_with(
+        &self,
+        cleanup: impl FnOnce(&ployz_build::HostPolicy) -> Result<(), ployz_build::BuildError>
+        + Send
+        + 'static,
+    ) {
+        /// Lets Builds go on when dropped.
+        struct Done(watch::Sender<bool>);
+        impl Drop for Done {
+            fn drop(&mut self) {
+                self.0.send_replace(true);
+            }
+        }
+        self.cleaned.send_replace(false);
+        let done = Done(self.cleaned.clone());
+        let policy = self.policy.clone();
+        tokio::task::spawn_blocking(move || {
+            let _done = done;
+            if let Err(error) = cleanup(&policy) {
+                tracing::warn!(
+                    error = %ployz_core::error_chain::inline(&error),
+                    "abandoned Build cleanup left slots quarantined"
+                );
+            }
+        });
+    }
+
+    /// Whether startup's cleanup of abandoned build slots has finished.
+    pub(crate) fn cleaned(&self) -> watch::Receiver<bool> {
+        self.cleaned.subscribe()
     }
 
     /// Follow the Machine record's build concurrency until shutdown: the slots
@@ -136,8 +181,27 @@ impl Runner {
         slots.size = limit;
     }
 
+    /// When a request arriving now must be admitted by: one deadline for its
+    /// whole wait, the permit, the gate and any recovery.
+    pub(super) fn deadline(&self) -> Option<Instant> {
+        self.policy
+            .queue_timeout
+            .map(|timeout| Instant::now() + timeout)
+    }
+
+    #[cfg(test)]
     pub(super) fn enter(
         &self,
+    ) -> Result<
+        Entry<impl Future<Output = Result<OwnedSemaphorePermit, AcquireError>> + Send>,
+        QueueError,
+    > {
+        self.enter_by(self.deadline())
+    }
+
+    pub(super) fn enter_by(
+        &self,
+        deadline: Option<Instant>,
     ) -> Result<
         Entry<impl Future<Output = Result<OwnedSemaphorePermit, AcquireError>> + Send>,
         QueueError,
@@ -164,10 +228,7 @@ impl Runner {
                 Ok(Entry::Waiting(Waiting {
                     _capacity: capacity,
                     admission,
-                    expires: self
-                        .policy
-                        .queue_timeout
-                        .map(|timeout| Instant::now() + timeout),
+                    expires: deadline,
                 }))
             }
         }

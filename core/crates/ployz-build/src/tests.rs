@@ -28,6 +28,33 @@ fn wait_on_another_process(duration: Duration) {
     std::thread::sleep(duration);
 }
 
+/// A shell function printing, as `docker inspect --type container` would, a
+/// container named `$1` that this host user's Ployz made, with ID `id-$1`.
+pub(crate) fn made_by_ployz_sh() -> String {
+    format!(
+        r#"made_by_ployz() {{ case "$1" in buildx_buildkit_*) image='{}' ;; *-railpack) image='{}' ;; *-prepare) image='{}' ;; *-assemble) image='{}' ;; esac; printf '{{"Id":"id-%s","Config":{{"Image":"%s","Env":["{}={}"]}}}}\n' "$1" "$image"; }}
+"#,
+        crate::BUILDKIT_IMAGE,
+        crate::railpack::IMAGE,
+        crate::railpack::PREPARATION_IMAGE,
+        crate::index::REGCTL,
+        crate::builder::OWNER,
+        crate::builder::owner()
+    )
+}
+
+/// `script` with Docker reporting every container it inspects by type as
+/// one this host user's Ployz made, as once Buildx started the worker.
+pub(crate) fn as_ployz(script: &str) -> String {
+    let (shebang, rest) = script
+        .split_once('\n')
+        .expect("a script has a shebang line");
+    format!(
+        "{shebang}\n{}[ \"$1 $2\" = 'inspect --type' ] && {{ made_by_ployz \"$6\"; exit 0; }}\n{rest}",
+        made_by_ployz_sh()
+    )
+}
+
 /// Write an executable stand-in and wait until it can be executed. A
 /// concurrently forked process can briefly hold a just-written program
 /// open, which makes the exec fail until that fork execs or exits.
@@ -137,55 +164,13 @@ fn chatty_builds_deliver_the_final_diagnosis_without_a_disk_spool() {
 /// never starts.
 #[test]
 fn a_cancel_during_a_commands_setup_starts_nothing() {
-    let directory = std::env::temp_dir().join(format!("ployz-setup-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir(&directory).unwrap();
-    let program = directory.join("docker");
-    executable(
-        &program,
-        "#!/bin/sh\ncase \"$1\" in --ready) exit 0 ;; esac\nexit 0\n",
-    );
-    // Each captured stream opens a FIFO, which blocks the setup until this test reads it.
-    for stream in ["docker-output", "docker-diagnosis"] {
-        assert!(
-            Command::new("mkfifo")
-                .arg(directory.join(stream))
-                .status()
-                .unwrap()
-                .success()
-        );
-    }
+    // A command checks for a cancel before its setup, then spawns only under
+    // the lock a cancel takes, checked again there.
     let cancellation = Cancellation::default();
-    let environment = BTreeMap::new();
-    let docker = Docker {
-        program: &program,
-        environment: &environment,
-        working_dir: &directory,
-        deadline: Deadline::starting_now(Duration::from_secs(10)),
-        cancellation: Some(&cancellation),
-        progress: None,
-        recorder: None,
-    };
-    let started = std::sync::atomic::AtomicBool::new(false);
-    let ran = std::thread::scope(|scope| {
-        let running = scope.spawn(|| {
-            docker.run_started("the build", &[], Streams::Captured, || {
-                started.store(true, std::sync::atomic::Ordering::SeqCst);
-            })
-        });
-        // Opening the first stream meets the setup there, past any check it made before.
-        let output = std::fs::File::open(directory.join("docker-output")).unwrap();
-        cancellation.cancel();
-        let diagnosis = std::fs::File::open(directory.join("docker-diagnosis")).unwrap();
-        let ran = running.join().unwrap();
-        drop((output, diagnosis));
-        ran
-    });
-    assert!(matches!(ran, Err(BuildError::Cancelled)), "{ran:?}");
-    assert!(
-        !started.load(std::sync::atomic::Ordering::SeqCst),
-        "a cancelled Build started its next command"
-    );
-    std::fs::remove_dir_all(directory).unwrap();
+    cancellation.cancel();
+    let mut started = false;
+    assert!(cancellation.spawn(|| started = true).is_none());
+    assert!(!started, "a cancelled Build started its next command");
 }
 
 #[test]
@@ -243,7 +228,7 @@ fn cancellation_between_pushes_leaves_later_targets_unattempted() {
     let program = directory.join("docker");
     executable(
         &program,
-        &format!(
+        &crate::tests::as_ployz(&format!(
             r#"#!/bin/sh
 case "$1 $2" in
   'context show') echo default ;;
@@ -254,7 +239,7 @@ esac
 exit 0
 "#,
             builder_name()
-        ),
+        )),
     );
     let targets = [target("api", None), target("web", None)];
     let environment = BTreeMap::new();
@@ -320,7 +305,7 @@ fn each_loaded_image_builds_in_its_own_sequential_bake_run() {
     let program = directory.join("docker");
     executable(
         &program,
-        &format!(
+        &crate::tests::as_ployz(&format!(
             r#"#!/bin/sh
 case "$1 $2" in
   'context show') echo default ;;
@@ -341,7 +326,7 @@ esac
 exit 0
 "#,
             builder_name()
-        ),
+        )),
     );
     let targets = [target("api", None), target("web", None)];
     let environment = BTreeMap::new();
@@ -663,7 +648,7 @@ fn executing_a_build_does_not_change_process_signal_handlers() {
         let program = directory.join("docker");
         executable(
             &program,
-            &format!(
+            &crate::tests::as_ployz(&format!(
                 r#"#!/bin/sh
 case "$1 $2" in
   'context show') echo default ;;
@@ -672,7 +657,7 @@ case "$1 $2" in
 esac
 "#,
                 builder_name()
-            ),
+            )),
         );
         let environment = BTreeMap::new();
         let targets = [target("api", None)];
@@ -794,7 +779,7 @@ fn cross_platform_image_context_reaches_buildkit() {
     let program = directory.join("docker");
     executable(
         &program,
-        &format!(
+        &crate::tests::as_ployz(&format!(
             r#"#!/bin/sh
 case "$1 $2" in
   'context show') echo default ;;
@@ -805,7 +790,7 @@ esac
 exit 0
 "#,
             builder_name()
-        ),
+        )),
     );
     std::fs::write(
         directory.join("compose.yaml"),
@@ -1538,7 +1523,7 @@ fn free_build_resolving(name: &str, plan: &str) -> (Result<Vec<BuiltImage>, Buil
     let program = directory.join("docker");
     executable(
         &program,
-        &format!(
+        &crate::tests::as_ployz(&format!(
             r#"#!/bin/sh
 case "$1 $2" in
   'context show') echo default ;;
@@ -1562,7 +1547,7 @@ esac
 exit 0
 "#,
             Access::Free.builder(0)
-        ),
+        )),
     );
     let targets = [target(name, None)];
     let environment = BTreeMap::new();

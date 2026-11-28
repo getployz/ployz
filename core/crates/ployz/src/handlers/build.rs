@@ -878,17 +878,24 @@ mod tests {
             fs::create_dir_all(&tmp).unwrap();
             // The solve hangs until it is stopped; teardown succeeds, so the
             // builder's state is confirmed and not quarantined.
+            // Buildx's worker is the one this host user's Ployz made, so the
+            // build reaches Bake.
             fs::write(
                 bin.join("docker"),
-                r#"#!/bin/sh
+                format!(
+                    r#"#!/bin/sh
+    worker='{{"Id":"worker","Config":{{"Image":"{image}","Env":["PLOYZ_BUILD_OWNER='"$(id -u)"'"]}}}}'
     case "$1 $2" in
+      'inspect --type') case "$6" in buildx_buildkit_*) printf '%s\n' "$worker" ;; *) echo "Error: No such container: $6" >&2; exit 1 ;; esac ;;
       'context show') echo default ;;
-      'info --format') echo '{"DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]],"Architecture":"amd64","OSType":"linux","CgroupVersion":"2"}' ;;
-      'buildx ls') echo "{\"Name\":\"ployz-$(id -u)\",\"Nodes\":[{\"Status\":\"running\",\"Platforms\":[\"linux/amd64\"]}]}" ;;
+      'info --format') echo '{{"DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]],"Architecture":"amd64","OSType":"linux","CgroupVersion":"2"}}' ;;
+      'buildx ls') echo "{{\"Name\":\"ployz-$(id -u)\",\"Nodes\":[{{\"Status\":\"running\",\"Platforms\":[\"linux/amd64\"]}}]}}" ;;
       'buildx bake') echo $$ >> "$0.pids"; exec sleep 60 ;;
     esac
     exit 0
     "#,
+                    image = ployz_build::BUILDKIT_IMAGE,
+                ),
             )
             .unwrap();
             fs::set_permissions(bin.join("docker"), fs::Permissions::from_mode(0o700)).unwrap();

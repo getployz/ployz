@@ -90,6 +90,8 @@ pub struct Daemon {
     endpoint: iroh::Endpoint,
     observe: Option<JoinHandle<()>>,
     _socket_lock: File,
+    #[cfg(test)]
+    builds_cleaned: watch::Receiver<bool>,
 }
 
 /// Failures while starting or waiting for the daemon.
@@ -230,18 +232,6 @@ impl Daemon {
             }
         };
         let local = RecordOwner::spawn(store)?;
-        let cleanup = tokio::task::spawn_blocking({
-            let policy = build_policy.clone();
-            move || ployz_build::Admission::cleanup_abandoned(&policy)
-        })
-        .await
-        .map_err(io::Error::other)?;
-        if let Err(error) = cleanup {
-            eprintln!(
-                "WARNING: abandoned Build cleanup: {error}",
-                error = ployz_core::error_chain::inline(&error),
-            );
-        }
         let local_record = local.record();
         let local_id = local_record.id();
         let local_phase = local_record.phase();
@@ -342,6 +332,11 @@ impl Daemon {
         let builds = crate::build::Runner::new(build_policy, shutdown.clone())
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         let running_builds = builds.running_builds();
+        // Stopping workers can outlast systemd's start timeout, so it never
+        // holds back READY; Builds wait for it instead.
+        builds.clean_up_abandoned();
+        #[cfg(test)]
+        let builds_cleaned = builds.cleaned();
         builds.follow(local.watch());
         let (endpoint_chooser, endpoint_choices) = tokio::sync::mpsc::channel(8);
         let (route_publishes, published_routes) =
@@ -573,6 +568,8 @@ impl Daemon {
             endpoint,
             observe: None,
             _socket_lock: socket.lock,
+            #[cfg(test)]
+            builds_cleaned,
         })
     }
 
@@ -919,23 +916,36 @@ mod tests {
         let builder = format!("{}-{isolated_slot}", ployz_build::builder_name());
         let marker = root.0.join(format!("{builder}.lock"));
         fs::write(&marker, "termination unconfirmed\n").unwrap();
+        // Docker reports the abandoned worker as one Ployz made.
         fs::write(
             &policy.docker,
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> cleaned\n",
+            format!(
+                r#"#!/bin/sh
+printf '%s\n' "$*" >> cleaned
+[ "$1 $2" = 'inspect --type' ] && case "$6" in buildx_buildkit_*) printf '%s\n' '{{"Id":"abandoned","Config":{{"Image":"{}","Env":["PLOYZ_BUILD_OWNER={}"]}}}}' ;; esac
+exit 0
+"#,
+                ployz_build::BUILDKIT_IMAGE,
+                rustix::process::getuid().as_raw()
+            ),
         )
         .unwrap();
         fs::set_permissions(&policy.docker, fs::Permissions::from_mode(0o700)).unwrap();
         let run_dir = config.socket.parent().unwrap().to_owned();
         let claimed = MachineApiSocket::claim(&config.socket).unwrap();
-        let daemon = Daemon::start_with_build_policy(config, claimed, policy, run_dir)
+        let mut daemon = Daemon::start_with_build_policy(config, claimed, policy, run_dir)
             .await
             .unwrap();
-        let remove = format!("rm --force buildx_buildkit_{builder}0");
+        daemon
+            .builds_cleaned
+            .wait_for(|cleaned| *cleaned)
+            .await
+            .unwrap();
         assert!(
             fs::read_to_string(root.0.join("cleaned"))
                 .unwrap()
                 .lines()
-                .any(|line| line == remove)
+                .any(|line| line == "rm --force abandoned")
         );
         assert!(fs::read_to_string(marker).unwrap().is_empty());
         assert!(
@@ -943,6 +953,84 @@ mod tests {
                 .await
                 .supports(DESCRIBE_CONTRACT_CAPABILITY)
         );
+        daemon.request_stop();
+        daemon.wait().await.unwrap();
+    }
+
+    /// Workers that take long to stop never hold back the daemon's start,
+    /// and so its READY: startup cleans them up in the background.
+    #[tokio::test]
+    async fn startup_reports_ready_without_waiting_for_workers_to_stop() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = TestDir::new("ployzd-builder-slow-stop");
+        let (config, _socket) = test_config(&root.0, ContainerMode::Absent);
+        fs::set_permissions(&root.0, fs::Permissions::from_mode(0o700)).unwrap();
+        let policy = ployz_build::HostPolicy {
+            state_directory: root.0.clone(),
+            docker: root.0.join("docker"),
+            ..Default::default()
+        };
+        let builder = ployz_build::builder_name();
+        let workers = [
+            format!("buildx_buildkit_{builder}0"),
+            format!("buildx_buildkit_{builder}-10"),
+        ];
+        // Each worker takes 11s to stop while `slow` exists.
+        fs::write(root.0.join("slow"), "").unwrap();
+        fs::write(
+            &policy.docker,
+            format!(
+                r#"#!/bin/sh
+root=$(dirname "$0")
+printf '%s\n' "$*" >> "$root/calls"
+case "$1 $2" in
+  'ps --all') printf '%s\n' {first} {second} ;;
+  'inspect --type') case "$6" in {first}|{second}) printf '%s\n' '{{"Id":"id-'"$6"'","Config":{{"Image":"{image}","Env":["PLOYZ_BUILD_OWNER={uid}"]}}}}' ;; esac ;;
+  'stop --time') waited=0; while [ -f "$root/slow" ] && [ $waited -lt 110 ]; do sleep 0.1; waited=$((waited + 1)); done ;;
+esac
+exit 0
+"#,
+                first = workers[0],
+                second = workers[1],
+                image = ployz_build::BUILDKIT_IMAGE,
+                uid = rustix::process::getuid().as_raw()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&policy.docker, fs::Permissions::from_mode(0o700)).unwrap();
+        let run_dir = config.socket.parent().unwrap().to_owned();
+        let claimed = MachineApiSocket::claim(&config.socket).unwrap();
+        let started = std::time::Instant::now();
+        let mut daemon = Daemon::start_with_build_policy(config, claimed, policy, run_dir)
+            .await
+            .unwrap();
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "start waited on the workers' stop: {:?}",
+            started.elapsed()
+        );
+        assert!(!*daemon.builds_cleaned.borrow());
+        fs::remove_file(root.0.join("slow")).unwrap();
+        daemon
+            .builds_cleaned
+            .wait_for(|cleaned| *cleaned)
+            .await
+            .unwrap();
+        let calls = fs::read_to_string(root.0.join("calls")).unwrap();
+        assert_eq!(
+            calls
+                .lines()
+                .filter(|call| call.starts_with("stop "))
+                .count(),
+            2,
+            "{calls}"
+        );
+        for worker in &workers {
+            assert!(
+                calls.contains(&format!("rm --force id-{worker}")),
+                "{calls}"
+            );
+        }
         daemon.request_stop();
         daemon.wait().await.unwrap();
     }

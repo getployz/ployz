@@ -334,23 +334,9 @@ async fn execute_attempt(
         let stop = cancellation.child_token();
         let _stop_upload = stop.clone().drop_guard();
         let producer = sender.clone();
+        let runtime = tokio::runtime::Handle::current();
         let mut upload = tokio::task::spawn_blocking(move || {
-            remote::upload(inputs.root(), |frame| {
-                let mut payload = remote::encode(&frame)?;
-                loop {
-                    if stop.is_cancelled() {
-                        return Err("Build upload cancelled".into());
-                    }
-                    match producer.try_send(payload) {
-                        Ok(()) => return Ok(()),
-                        Err(mpsc::error::TrySendError::Closed(_)) => {
-                            return Err("Build upload stream closed".into());
-                        }
-                        Err(mpsc::error::TrySendError::Full(value)) => payload = value,
-                    }
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-            })
+            produce(inputs.root(), &producer, &stop, &runtime)
         });
         let mut uploaded = false;
         let mut cancelling = false;
@@ -408,6 +394,30 @@ async fn execute_attempt(
             )),
         },
         Err(failure) => Completion::Failed(failure),
+    }
+}
+
+fn produce(
+    root: &std::path::Path,
+    sender: &mpsc::Sender<ployz_core::OpaquePayload>,
+    stop: &CancellationToken,
+    runtime: &tokio::runtime::Handle,
+) -> Result<(), remote::InputError> {
+    remote::upload(root, |frame| {
+        let payload = remote::encode(&frame)?;
+        runtime.block_on(send_upload_frame(sender, stop, payload))
+    })
+}
+
+async fn send_upload_frame(
+    sender: &mpsc::Sender<ployz_core::OpaquePayload>,
+    stop: &CancellationToken,
+    payload: ployz_core::OpaquePayload,
+) -> Result<(), remote::InputError> {
+    tokio::select! {
+        biased;
+        () = stop.cancelled() => Err("Build upload cancelled".into()),
+        sent = sender.send(payload) => sent.map_err(|_| "Build upload stream closed".into()),
     }
 }
 
@@ -744,5 +754,54 @@ mod tests {
         .expect("cancellation was dropped behind queued upload frames");
         drop(receiver);
         assert!(send_cancellation(&sender).await.is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_large_file_and_many_small_files_arrive_intact_and_in_order() {
+        let capture = tempfile::tempdir().unwrap();
+        let root = capture.path().to_owned();
+        std::fs::create_dir_all(root.join("source/small")).unwrap();
+        std::fs::create_dir(root.join("private")).unwrap();
+        std::fs::write(root.join("compose.yaml"), "services: {}\n").unwrap();
+        let large = (0..5 * 1024 * 1024 + 17)
+            .map(|byte: u32| (byte % 251) as u8)
+            .collect::<Vec<_>>();
+        std::fs::write(root.join("source/large"), &large).unwrap();
+        for file in 0..2000 {
+            std::fs::write(root.join(format!("source/small/{file}")), file.to_string()).unwrap();
+        }
+        let mut sent = Vec::new();
+        remote::upload(&root, |frame| {
+            sent.push(remote::encode(&frame)?.json);
+            Ok(())
+        })
+        .unwrap();
+
+        let (sender, mut receiver) = mpsc::channel(2);
+        let runtime = tokio::runtime::Handle::current();
+        let producer = tokio::task::spawn_blocking(move || {
+            produce(&root, &sender, &CancellationToken::new(), &runtime)
+        });
+        let mut received = Vec::new();
+        while let Some(frame) = receiver.recv().await {
+            received.push(frame.json);
+        }
+        producer.await.unwrap().unwrap();
+        assert_eq!(received.len(), sent.len());
+        assert!(received == sent, "frames were lost, reordered or altered");
+    }
+
+    #[tokio::test]
+    async fn a_stopped_upload_does_not_wait_on_a_full_channel() {
+        let (sender, _receiver) = mpsc::channel(1);
+        let frame = || remote::encode(&Input::Data(vec![1])).unwrap();
+        let stop = CancellationToken::new();
+        send_upload_frame(&sender, &stop, frame()).await.unwrap();
+        let blocked = send_upload_frame(&sender, &stop, frame());
+        stop.cancel();
+        tokio::time::timeout(Duration::from_secs(1), blocked)
+            .await
+            .expect("a stopped upload stayed blocked on a full channel")
+            .unwrap_err();
     }
 }

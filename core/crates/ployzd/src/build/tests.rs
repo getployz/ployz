@@ -715,14 +715,56 @@ case "$1 $2" in
   'info --format') printf '%s\n' '{{"OSType":"linux","CgroupVersion":"2","Architecture":"x86_64","DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]]}}' ;;
   'buildx rm')
     if [ -f "$root/fail-cleanup" ] && {{ [ -f "$root/executed" ] || [ -f "$root/checking" ]; }}; then exit 1; fi ;;
-  'buildx version'|'buildx create') exit 0 ;;
+  'buildx version'|'buildx create'|'volume create') exit 0 ;;
+  'inspect --format') printf 'Error: no such object: %s\n' "$4" >&2; exit 1 ;;
+  'stop --time')
+    # A listed worker that won't stop while `fail-stop` exists.
+    case "$4" in id-*) if [ -f "$root/fail-stop" ]; then echo 'Error response from daemon: cannot stop container' >&2; exit 1; fi ;; esac
+    # A listed worker takes up to 11s to stop while `slow-stop` exists, and
+    # stops only once the test removes `hold-stop`.
+    case "$4" in id-*)
+      : > "$root/stop-started"
+      waited=0; while [ -f "$root/slow-stop" ] && [ $waited -lt 110 ]; do sleep 0.1; waited=$((waited + 1)); done
+      waited=0; while [ -f "$root/hold-stop" ] && [ $waited -lt 600 ]; do sleep 0.05; waited=$((waited + 1)); done
+      : > "$root/stop-ended" ;;
+    esac
+    if [ -f "$root/fail-cleanup" ] && {{ [ -f "$root/executed" ] || [ -f "$root/checking" ]; }}; then exit 1; fi
+    if [ "$4" = worker ]; then echo stopped > "$root/worker-state"; fi ;;
+  'inspect --type')
+    # A listed worker that won't stop still runs.
+    case "$6" in id-*) if [ -f "$root/fail-stop" ]; then echo true; exit 0; fi ;; esac
+    # The worker's state by its ID, for a failed stop: running, stopped, or gone.
+    if [ "$6" = worker ]; then
+      case "$(cat "$root/worker-state" 2>/dev/null || echo running)" in
+        running) echo true ;;
+        stopped) echo false ;;
+        *) printf 'Error: No such container: %s\n' "$6" >&2; exit 1 ;;
+      esac
+      exit 0
+    fi
+    case "$6" in
+      buildx_buildkit_*)
+        # Workers of their own, one per name, when `workers` lists them.
+        if grep -qx "$6" "$root/workers" 2>/dev/null; then
+          printf '%s\n' '{{"Id":"id-'"$6"'","Config":{{"Image":"{image}","Env":["PLOYZ_BUILD_OWNER={uid}"]}}}}'; exit 0
+        fi
+        if [ "$(cat "$root/worker-state" 2>/dev/null)" = gone ]; then
+          printf 'Error: No such container: %s\n' "$6" >&2; exit 1
+        fi
+        printf '%s\n' '{{"Id":"worker","Config":{{"Image":"{}","Env":["PLOYZ_BUILD_OWNER={}"]}}}}' ;;
+      *) printf 'Error: No such container: %s\n' "$6" >&2; exit 1 ;;
+    esac ;;
   'rm --force')
-    if [ -f "$root/fail-cleanup" ]; then exit 1; fi ;;
+    if [ -f "$root/fail-cleanup" ] && {{ [ -f "$root/executed" ] || [ -f "$root/checking" ]; }}; then exit 1; fi
+    if [ "$3" = worker ]; then echo gone > "$root/worker-state"; fi ;;
   'buildx inspect')
+    # A bootstrap starts the worker again.
+    echo running > "$root/worker-state"
     if [ -f "$root/slow-check" ]; then : > "$root/checking"; exec sleep 30; fi ;;
   'buildx ls')
     printf '%s\n' '{{"Name":"{}","Nodes":[{{"Status":"running","Platforms":["linux/amd64"]}}]}}'
-    printf '%s\n' '{{"Name":"ployz-free-{}","Nodes":[{{"Status":"running","Platforms":["linux/amd64"]}}]}}' ;;
+    printf '%s\n' '{{"Name":"ployz-free-{}","Nodes":[{{"Status":"running","Platforms":["linux/amd64"]}}]}}'
+    printf '%s\n' '{{"Name":"{builder}-1","Nodes":[{{"Status":"running","Platforms":["linux/amd64"]}}]}}' ;;
   'buildx bake')
     for arg in "$@"; do
       if [ "$arg" = --print ]; then printf '%s\n' '{{"target":{{"api":{{"context":"source"}}}}}}'; exit 0; fi
@@ -760,11 +802,16 @@ case "$1 $2" in
 esac
 "#,
         root.display(),
+        ployz_build::BUILDKIT_IMAGE,
+        rustix::process::getuid().as_raw(),
         ployz_build::builder_name(),
         rustix::process::getuid().as_raw(),
         "1".repeat(64),
         "1".repeat(64),
-        "1".repeat(64)
+        "1".repeat(64),
+        image = ployz_build::BUILDKIT_IMAGE,
+        uid = rustix::process::getuid().as_raw(),
+        builder = ployz_build::builder_name(),
     );
     fs::write(path, script).unwrap();
     fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
@@ -1669,4 +1716,252 @@ async fn a_sealed_value_this_machine_cannot_open_fails_closed_before_docker() {
         assert!(!fixture.root.join("executed").exists());
         assert!(!fixture.root.join("seen-secret").exists());
     }
+}
+
+/// Startup cleanup that takes long is a queue wait: the client hears Queued
+/// within its initial deadline, and the Build runs once cleanup ends.
+#[tokio::test]
+async fn a_build_queues_behind_startup_cleanup_and_then_runs() {
+    let fixture = Fixture::new().await;
+    // Two abandoned workers, each taking 11s to stop.
+    let builder = ployz_build::builder_name();
+    let workers = [
+        format!("buildx_buildkit_{builder}0"),
+        format!("buildx_buildkit_{builder}-10"),
+    ];
+    fs::write(fixture.root.join("workers"), workers.join("\n")).unwrap();
+    fs::write(fixture.root.join(format!("{builder}-1.lock")), "").unwrap();
+    fs::write(fixture.root.join("slow-stop"), "").unwrap();
+    fixture.service.builds.clean_up_abandoned();
+
+    let capture = fixture.capture();
+    let client = ployz::connect::connect(
+        Path::new("/missing-test-config"),
+        Some(fixture.address.as_str()),
+        None,
+    )
+    .await
+    .unwrap();
+    let (waiting, mut observed) = mpsc::channel(1);
+    let selected = fixture.machine.id;
+    let execution = tokio::spawn(async move {
+        capture
+            .execute_remote_images(&client, selected, None, Default::default(), |event| {
+                if matches!(event, Progress::Stage(Stage::Queued)) {
+                    waiting.try_send(()).unwrap();
+                }
+            })
+            .await
+    });
+    assert!(
+        observed.recv().await.is_some(),
+        "the client never heard Queued: {:?}",
+        execution.await.unwrap().err()
+    );
+    fs::remove_file(fixture.root.join("slow-stop")).unwrap();
+    let result = execution.await.unwrap();
+    assert!(result.is_ok(), "{:?}", result.err());
+}
+
+/// However startup cleanup ends, a failure or a panic, later Builds are
+/// admitted on the slots it did not leave quarantined.
+#[tokio::test]
+async fn builds_go_on_after_startup_cleanup_fails_or_panics() {
+    for panics in [false, true] {
+        let fixture = Fixture::new().await;
+        if panics {
+            fixture
+                .service
+                .builds
+                .clean_up_with(|_| panic!("startup cleanup panicked"));
+        } else {
+            // Slot 0's abandoned worker won't stop, so cleanup fails and
+            // leaves slot 0 quarantined; a Build takes slot 1.
+            let worker = format!("buildx_buildkit_{}0", ployz_build::builder_name());
+            fs::write(fixture.root.join("workers"), worker).unwrap();
+            fs::write(fixture.root.join("fail-stop"), "").unwrap();
+            fixture
+                .local
+                .update_machine(
+                    serde_json::from_value(serde_json::json!({
+                        "update": {"build_concurrency": {"action": "set", "value": 2}}
+                    }))
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+            fixture.service.builds.clean_up_abandoned();
+        }
+        let (_sender, mut response) = fixture.request(Output::Load).await;
+        let admitted = tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                match event(&mut response).await {
+                    Event::Admitted { .. } => return,
+                    Event::Progress(_) => {}
+                    other => panic!("{other:?}"),
+                }
+            }
+        })
+        .await;
+        assert!(admitted.is_ok(), "no Build was admitted (panics: {panics})");
+    }
+}
+
+/// Slot 0's Build died and left its worker, which stops only once the test
+/// removes `hold-stop`: the next admission recovers the slot.
+fn abandon_slot_zero(root: &Path) {
+    let builder = ployz_build::builder_name();
+    fs::write(root.join("workers"), format!("buildx_buildkit_{builder}0")).unwrap();
+    let boot = fs::read_to_string("/proc/sys/kernel/random/boot_id").unwrap();
+    fs::write(
+        root.join(format!("{builder}.lock")),
+        format!("termination unconfirmed\nboot {}\n", boot.trim()),
+    )
+    .unwrap();
+    fs::write(root.join("hold-stop"), "").unwrap();
+}
+
+async fn set_concurrency(fixture: &Fixture, value: u8) {
+    fixture
+        .local
+        .update_machine(
+            serde_json::from_value(serde_json::json!({
+                "update": {"build_concurrency": {"action": "set", "value": value}}
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+}
+
+async fn client(fixture: &Fixture) -> ployz::connect::Client {
+    ployz::connect::connect(
+        Path::new("/missing-test-config"),
+        Some(fixture.address.as_str()),
+        None,
+    )
+    .await
+    .unwrap()
+}
+
+/// An admission that recovers a slot waits for Docker outside the gate: a
+/// Build beside it is admitted and finishes while the worker still stops, and
+/// the recovering Build's client leaving frees the Machine.
+#[tokio::test]
+async fn an_admission_recovering_a_slot_queues_and_holds_no_one_else_back() {
+    let fixture = Fixture::new().await;
+    set_concurrency(&fixture, 2).await;
+    abandon_slot_zero(&fixture.root);
+
+    let (recovering, mut recovering_response) = fixture.request(Output::Load).await;
+    assert!(matches!(
+        event(&mut recovering_response).await,
+        Event::Progress(Progress::Stage(Stage::Queued))
+    ));
+    let started = until_fake_docker(Duration::from_secs(10), || {
+        fixture.root.join("stop-started").exists()
+    })
+    .await;
+    assert!(started.is_ok(), "the recovery never stopped the worker");
+    // The worker stops only after this Build ends: held across the stop, the
+    // gate would leave it waiting here until the timeout.
+    let capture = fixture.capture();
+    let client = client(&fixture).await;
+    let result = tokio::time::timeout(
+        Duration::from_secs(20),
+        capture.execute_remote_images(
+            &client,
+            fixture.machine.id,
+            None,
+            Default::default(),
+            |_| {},
+        ),
+    )
+    .await
+    .expect("the Build beside the recovery never finished");
+    assert!(result.is_ok(), "{:?}", result.err());
+    assert!(
+        !fixture.root.join("stop-ended").exists(),
+        "the Build finished only after the worker stopped"
+    );
+    drop(result);
+
+    drop((recovering, recovering_response));
+    let freed = until_fake_docker(Duration::from_secs(5), || {
+        fixture
+            .local
+            .owner()
+            .mutation_gate()
+            .try_installation()
+            .is_ok()
+    })
+    .await;
+    assert!(freed.is_ok(), "the left Build still holds the Machine");
+    fs::remove_file(fixture.root.join("hold-stop")).unwrap();
+}
+
+/// A slot whose recovery outlives the request that started it is about to be
+/// free, not busy: the next Build is queued, then runs once the worker stops.
+#[tokio::test]
+async fn a_build_waits_for_a_recovery_its_requester_left() {
+    let fixture = Fixture::new().await;
+    abandon_slot_zero(&fixture.root);
+    let (left, mut left_response) = fixture.request(Output::Load).await;
+    assert!(matches!(
+        event(&mut left_response).await,
+        Event::Progress(Progress::Stage(Stage::Queued))
+    ));
+    let started = until_fake_docker(Duration::from_secs(10), || {
+        fixture.root.join("stop-started").exists()
+    })
+    .await;
+    assert!(started.is_ok(), "the recovery never stopped the worker");
+    drop((left, left_response));
+
+    let capture = fixture.capture();
+    let client = client(&fixture).await;
+    let (queued, mut heard) = mpsc::channel(1);
+    let selected = fixture.machine.id;
+    let execution = tokio::spawn(async move {
+        capture
+            .execute_remote_images(&client, selected, None, Default::default(), |event| {
+                if matches!(event, Progress::Stage(Stage::Queued)) {
+                    queued.try_send(()).unwrap();
+                }
+            })
+            .await
+    });
+    assert!(
+        heard.recv().await.is_some(),
+        "the next Build was not queued: {:?}",
+        execution.await.unwrap().err()
+    );
+    fs::remove_file(fixture.root.join("hold-stop")).unwrap();
+    let result = execution.await.unwrap();
+    assert!(result.is_ok(), "{:?}", result.err());
+}
+
+/// One queue deadline covers a request's whole wait for admission, a slot's
+/// recovery included.
+#[tokio::test]
+async fn the_queue_timeout_covers_a_recovery_wait() {
+    let fixture = Fixture::with_policy(|policy| {
+        policy.queue_timeout = Some(Duration::from_millis(250));
+    })
+    .await;
+    abandon_slot_zero(&fixture.root);
+    let sent = tokio::time::Instant::now();
+    let (_sender, mut response) = fixture.request(Output::Load).await;
+    assert!(matches!(
+        event(&mut response).await,
+        Event::Progress(Progress::Stage(Stage::Queued))
+    ));
+    let outcome = terminal(&mut response).await;
+    let waited = sent.elapsed();
+    assert!(
+        matches!(&outcome, Outcome::Failed { stage: Stage::Queued, message, .. } if message.contains("queue timeout expired")),
+        "{outcome:?}"
+    );
+    assert!(waited < Duration::from_secs(2), "{waited:?}");
+    fs::remove_file(fixture.root.join("hold-stop")).unwrap();
 }

@@ -12,6 +12,17 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// A script line through which Docker reports the BuildKit worker as the one
+/// Buildx started for this host user's Ployz.
+fn worker_started() -> String {
+    format!(
+        r#"[ "$1 $2" = 'inspect --type' ] && case "$6" in buildx_buildkit_*) printf '%s\n' '{{"Id":"worker","Config":{{"Image":"{}","Env":["PLOYZ_BUILD_OWNER={}"]}}}}'; exit 0 ;; esac
+"#,
+        ployz_build::BUILDKIT_IMAGE,
+        rustix::process::getuid().as_raw()
+    )
+}
+
 struct Host {
     policy: HostPolicy,
 }
@@ -52,19 +63,21 @@ impl Drop for Host {
 
 #[test]
 fn cache_clearing_and_builds_share_exclusive_ownership_and_quarantine() {
-    let host = Host::new(
-        r#"
+    // Once removals are refused, a retry of the teardown fails too.
+    let host = Host::new(&format!(
+        r#"{}
 root=$(dirname "$0")
 if [ "$1 $2" = 'context show' ]; then echo default; exit 0; fi
 if [ "$1 $2" = 'buildx prune' ]; then
     touch "$root/clearing"
     while [ ! -f "$root/release" ]; do sleep 0.02; done
 fi
-if [ "$1 $2" = 'buildx rm' ] && [ -f "$root/refuse-cleanup" ]; then
+if {{ [ "$1 $2" = 'buildx rm' ] || [ "$1 $2" = 'rm --force' ]; }} && [ -f "$root/refuse-cleanup" ]; then
     echo 'injected removal failure' >&2; exit 1
 fi
 "#,
-    );
+        worker_started()
+    ));
     let admission = Admission::try_acquire_with(&host.policy).unwrap();
     assert!(matches!(clear_cache(&host.policy), Err(BuildError::Busy)));
     assert!(!host.file("clearing").exists());
@@ -115,7 +128,9 @@ esac
     ));
     let free_builder = |commands: &str| {
         commands.lines().any(|command| {
-            command.contains(&format!("ployz-free-{uid}")) && !command.starts_with("volume ls")
+            command.contains(&format!("ployz-free-{uid}"))
+                && !command.starts_with("volume ls")
+                && !command.starts_with("inspect")
         })
     };
 
@@ -163,7 +178,7 @@ fn admitted_limits_cover_worker_and_railpack_preparation_despite_later_policy_ed
     // This stand-in checks the upstream launch contract. Real workload
     // enforcement is exercised separately at rung 4.
     let host = Host::new(&format!(
-        r#"
+        r#"{}
 case "$1 $2" in
  'context show') echo default ;;
  'info --format') echo '{{"DriverStatus":[["driver-type","io.containerd.snapshotter.v1"]],"Architecture":"amd64","OSType":"linux","CgroupVersion":"2","CpuCfsPeriod":true,"CpuCfsQuota":true,"MemoryLimit":true,"SwapLimit":true}}' ;;
@@ -177,7 +192,8 @@ case "$1 $2" in
             case " $* " in *" $expected "*) ;; *) echo 'preparation limits missing' >&2; exit 1 ;; esac
         done
         touch preparation-created ;;
-    esac ;;
+    esac
+    echo helper ;;
  'buildx prune')
     for expected in '--max-used-space 536870912' '--min-free-space 2147483648'; do
         case " $* " in *" $expected "*) ;; *) echo 'GC targets missing' >&2; exit 1 ;; esac
@@ -188,6 +204,7 @@ if [ "$1" = cp ]; then
 fi
 exit 0
 "#,
+        worker_started(),
         ployz_build::builder_name()
     ));
     host.configure("cpu_cores: 0.5\nmemory_bytes: 536870912\ncache_bytes: 1073741824\nmin_free_bytes: 2147483648");
@@ -357,6 +374,8 @@ fn builds_refuse_remote_routing_before_builder_mutation() {
         r#"
 root=$(dirname "$0")
 if [ "$1 $2" = 'context show' ]; then echo "${PLOYZ_POLICY_CONTEXT:-default}"; exit 0; fi
+# Admission reads the local worker names; a read is not a mutation.
+case "$1" in inspect|ps) exit 0 ;; esac
 echo "$*" >> "$root/mutations"
 "#,
     );
@@ -416,6 +435,8 @@ fn cache_clearing_refuses_remote_routing_before_builder_mutation() {
         };
         let error = clear_cache(&policy).unwrap_err();
         assert!(error.to_string().contains("local Docker"), "{error}");
+        // The clear asked Docker nothing; admission then reads local names.
+        assert!(!root.join("reads").exists());
         assert!(Admission::try_acquire_with(&policy).is_ok());
         return;
     }
@@ -423,6 +444,7 @@ fn cache_clearing_refuses_remote_routing_before_builder_mutation() {
         r#"
 root=$(dirname "$0")
 if [ "$1 $2" = 'context show' ]; then echo "${PLOYZ_POLICY_CONTEXT:-default}"; exit 0; fi
+case "$1" in inspect|ps) echo "$*" >> "$root/reads"; exit 0 ;; esac
 echo "$*" >> "$root/mutations"
 "#,
     );
@@ -432,6 +454,7 @@ echo "$*" >> "$root/mutations"
         ("DOCKER_CONTEXT", "remote"),
         ("PLOYZ_POLICY_CONTEXT", "remote"),
     ] {
+        let _ = fs::remove_file(host.file("reads"));
         let status = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
@@ -503,8 +526,11 @@ exit 0
 
 #[test]
 fn opened_values_are_private_files_for_the_solve_and_vanish_when_it_fails() {
-    let host =
-        Host::new(&RECORDING_FAILING_DOCKER.replace("$BUILDER", &ployz_build::builder_name()));
+    let host = Host::new(&format!(
+        "{}{}",
+        worker_started(),
+        RECORDING_FAILING_DOCKER.replace("$BUILDER", &ployz_build::builder_name())
+    ));
     let capture = sealed_capture(&host);
     let admission = Admission::try_acquire_with(&host.policy).unwrap();
     let mut upload = admission.upload().unwrap();
@@ -541,9 +567,9 @@ fn opened_values_vanish_from_a_retained_unknown_root() {
         .replace("$BUILDER", &ployz_build::builder_name())
         .replace(
             " 'buildx bake')",
-            " 'buildx rm') [ -f \"$root/seen-secret\" ] && { echo 'injected removal failure' >&2; exit 1; } ;;\n 'buildx bake')",
+            " 'buildx rm'|'rm --force') [ -f \"$root/seen-secret\" ] && { echo 'injected removal failure' >&2; exit 1; } ;;\n 'buildx bake')",
         );
-    let host = Host::new(&docker);
+    let host = Host::new(&format!("{}{docker}", worker_started()));
     let capture = sealed_capture(&host);
     let admission = Admission::try_acquire_with(&host.policy).unwrap();
     let mut upload = admission.upload().unwrap();

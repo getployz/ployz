@@ -3,7 +3,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    io::{self, Read as _},
+    io::{self, Read as _, Write as _},
     os::unix::fs::{DirBuilderExt as _, PermissionsExt as _, symlink},
     path::{Path, PathBuf},
 };
@@ -87,7 +87,7 @@ impl BuildInputs {
         }
     }
 
-    /// Copy a source once, rejecting edits observed during the copy.
+    /// Copy a source once. [`Self::verify`] rejects any edit made after the copy read it.
     ///
     /// # Errors
     /// Rejects unreadable, unstable, recursive, or unsupported filesystem inputs.
@@ -150,20 +150,17 @@ impl BuildInputs {
             return Err(Error::Invalid("Dockerfile must be a regular file".into()));
         }
         let selection = input.selection()?;
-        let before = fingerprint(source, selection.as_ref()).map_err(input_error)?;
-        copy(source, &target, source, selection.as_ref()).map_err(input_error)?;
-        if before != input.fingerprint()?
-            || before != fingerprint(&target, selection.as_ref()).map_err(input_error)?
-        {
-            return Err(Error::Invalid(
-                "build inputs changed during capture; retry when the source is stable".into(),
-            ));
-        }
+        let fingerprint = copy(source, &target, selection.as_ref()).map_err(|error| {
+            // A failed capture may be retried, and the retry copies to this same path.
+            let _ = make_removable(&target);
+            let _ = fs::remove_dir_all(&target).or_else(|_| fs::remove_file(&target));
+            input_error(error)
+        })?;
         self.captures.insert(
             input,
             CapturedInput {
                 path: target.clone(),
-                fingerprint: before,
+                fingerprint,
             },
         );
         Ok(target)
@@ -297,8 +294,22 @@ fn entries(path: &Path, root: &Path, selection: Option<&Selection>) -> io::Resul
 }
 
 fn fingerprint(path: &Path, selection: Option<&Selection>) -> io::Result<Vec<u8>> {
+    walk_digest(path, None, selection)
+}
+
+/// Copy `source` to `target`, returning the fingerprint of exactly the bytes copied.
+fn copy(source: &Path, target: &Path, selection: Option<&Selection>) -> io::Result<Vec<u8>> {
+    walk_digest(source, Some(target), selection)
+}
+
+fn walk_digest(
+    path: &Path,
+    target: Option<&Path>,
+    selection: Option<&Selection>,
+) -> io::Result<Vec<u8>> {
     fn visit(
         path: &Path,
+        target: Option<&Path>,
         root: &Path,
         selection: Option<&Selection>,
         digest: &mut Sha256,
@@ -306,30 +317,55 @@ fn fingerprint(path: &Path, selection: Option<&Selection>) -> io::Result<Vec<u8>
         let metadata = fs::symlink_metadata(path)?;
         digest.update(metadata.permissions().mode().to_le_bytes());
         if metadata.is_symlink() {
+            let link = fs::read_link(path)?;
             digest.update(b"link");
-            digest.update(fs::read_link(path)?.as_os_str().as_encoded_bytes());
+            digest.update(link.as_os_str().as_encoded_bytes());
+            if let Some(target) = target {
+                validate_link(path, root, selection)?;
+                symlink(link, target)?;
+            }
         } else if metadata.is_dir() {
             digest.update(b"directory");
+            if let Some(target) = target {
+                fs::create_dir(target)?;
+            }
             for entry in entries(path, root, selection)? {
-                let name = entry
-                    .file_name()
-                    .expect("directory entry")
-                    .as_encoded_bytes();
-                digest.update(name.len().to_le_bytes());
-                digest.update(name);
-                visit(&entry, root, selection, digest)?;
+                let name = entry.file_name().expect("directory entry");
+                let encoded = name.as_encoded_bytes();
+                digest.update(encoded.len().to_le_bytes());
+                digest.update(encoded);
+                let child = target.map(|target| target.join(name));
+                visit(&entry, child.as_deref(), root, selection, digest)?;
+            }
+            if let Some(target) = target {
+                fs::set_permissions(target, metadata.permissions())?;
             }
         } else if metadata.is_file() {
             digest.update(b"file");
             digest.update(metadata.len().to_le_bytes());
             let mut file = source_file(path, root)?;
+            let mut output = target
+                .map(|target| {
+                    fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(target)
+                })
+                .transpose()?;
             let mut buffer = [0_u8; 64 * 1024];
             loop {
                 let read = file.read(&mut buffer)?;
                 if read == 0 {
                     break;
                 }
-                digest.update(buffer.get(..read).expect("read fits the supplied buffer"));
+                let bytes = buffer.get(..read).expect("read fits the supplied buffer");
+                digest.update(bytes);
+                if let Some(output) = &mut output {
+                    output.write_all(bytes)?;
+                }
+            }
+            if let Some(target) = target {
+                fs::set_permissions(target, metadata.permissions())?;
             }
         } else {
             return Err(special_file(path, root));
@@ -341,42 +377,8 @@ fn fingerprint(path: &Path, selection: Option<&Selection>) -> io::Result<Vec<u8>
         digest.update(selection.ignore.len().to_le_bytes());
         digest.update(&selection.ignore);
     }
-    visit(path, path, selection, &mut digest)?;
+    visit(path, target, path, selection, &mut digest)?;
     Ok(digest.finalize().to_vec())
-}
-
-fn copy(
-    source: &Path,
-    target: &Path,
-    root: &Path,
-    selection: Option<&Selection>,
-) -> io::Result<()> {
-    let metadata = fs::symlink_metadata(source)?;
-    if metadata.is_symlink() {
-        validate_link(source, root, selection)?;
-        symlink(fs::read_link(source)?, target)
-    } else if metadata.is_dir() {
-        fs::create_dir(target)?;
-        for entry in entries(source, root, selection)? {
-            copy(
-                &entry,
-                &target.join(entry.file_name().expect("directory entry")),
-                root,
-                selection,
-            )?;
-        }
-        fs::set_permissions(target, metadata.permissions())
-    } else if metadata.is_file() {
-        let mut input = source_file(source, root)?;
-        let mut output = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(target)?;
-        io::copy(&mut input, &mut output)?;
-        fs::set_permissions(target, metadata.permissions())
-    } else {
-        Err(special_file(source, root))
-    }
 }
 
 fn special_file(path: &Path, root: &Path) -> io::Error {

@@ -1,6 +1,9 @@
 //! Admission and connection-scoped cancellation for the shared host executor.
 
-use crate::{BuildError, Deadline, EXECUTION_TIMEOUT, builder::Lock};
+use crate::{
+    BuildError, Deadline, EXECUTION_TIMEOUT,
+    builder::{Gate, Lock},
+};
 use ployz_core::BuildConcurrency;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -282,6 +285,7 @@ pub struct Admission {
     pub(crate) resources: crate::policy::Resources,
     pub(crate) fence: Option<crate::FenceInstaller>,
     pub(crate) access: crate::Access,
+    pub(crate) reuse: crate::builder::Reuse,
     /// This attempt's own directory in its slot's upload staging, never another's.
     attempt: String,
     pub(crate) staging: crate::SealedStaging,
@@ -323,31 +327,158 @@ impl Admission {
         policy: &HostPolicy,
         concurrency: BuildConcurrency,
     ) -> Result<Self, BuildError> {
+        Self::try_acquire_waiting(policy, concurrency, &Cancellation::default(), || {})
+    }
+
+    /// [`Self::try_acquire_within`], calling `waiting` once before the first
+    /// wait: for another admission to leave the gate, for Docker to clean a
+    /// slot this admission recovers, or for one another admission recovers.
+    /// A slot being recovered is about to be free, so admission waits for it
+    /// rather than refusing, until `cancellation`.
+    /// # Errors
+    /// As [`Self::try_acquire_within`], and [`BuildError::Cancelled`].
+    pub fn try_acquire_waiting(
+        policy: &HostPolicy,
+        concurrency: BuildConcurrency,
+        cancellation: &Cancellation,
+        waiting: impl FnOnce(),
+    ) -> Result<Self, BuildError> {
+        let limit = usize::from(concurrency);
+        policy.validate()?;
+        let resources = crate::policy::Resources::load(&policy.configuration_file)?;
+        let directory = &policy.state_directory;
+        let mut waiting = Some(waiting);
+        let mut wait = || {
+            if let Some(waiting) = waiting.take() {
+                waiting();
+            }
+        };
+        // Slots whose recovery failed in this admission: they stay counted.
+        let mut failed = Vec::new();
         let mut quarantined = None;
-        for slot in 0..usize::from(concurrency) {
-            match Self::try_acquire_slot(policy, slot) {
-                Ok(admission) => return Ok(admission),
-                Err(BuildError::Busy) => {}
-                Err(error) if error.is_unknown() => {
-                    quarantined.get_or_insert(error);
+        // Slots whose worker name a container Ployz did not create holds:
+        // passed over without counting against the limit.
+        let mut passed = Vec::new();
+        let mut foreign: Option<String> = None;
+        loop {
+            if cancellation.is_cancelled() {
+                return Err(BuildError::Cancelled);
+            }
+            // Counting the slots and taking one is one critical section, of
+            // file work only: no other admission takes a slot between the
+            // count and the take, and none waits on Docker for it.
+            let gate = Gate::enter_or(directory, &mut wait)?;
+            // Slots that count against the limit: held by an admission, from
+            // the moment it takes the slot through its upload and Build, or
+            // marked. The first free one stays held while the rest are looked
+            // at, so two admissions cannot each miss the other.
+            let mut held = 0;
+            // Whether a slot that counts is another admission's recovery.
+            let mut recovering = false;
+            let mut recover = Vec::new();
+            let mut candidate = None;
+            let known = Lock::known_slots(directory);
+            for &slot in &known {
+                match Lock::open_locked(&gate, directory, slot) {
+                    // A slot passed over counts once another admission holds it.
+                    Err(BuildError::Busy) => {
+                        held += 1;
+                        recovering |= Lock::recovering_in(directory, slot);
+                    }
+                    Err(error) => return Err(error),
+                    Ok(lock) if lock.marked()? => {
+                        held += 1;
+                        if !failed.contains(&slot) {
+                            recover.push(lock);
+                        }
+                    }
+                    Ok(_) if passed.contains(&slot) => {}
+                    Ok(lock) => {
+                        candidate.get_or_insert(lock);
+                    }
                 }
-                Err(error) => return Err(error),
+            }
+            if !recover.is_empty() {
+                // Recover after the gate, holding only those slots' locks, and
+                // count again: a slot that recovers is free.
+                drop((gate, candidate));
+                wait();
+                for mut lock in recover {
+                    match lock.recover_leaving_mark(&policy.docker, false) {
+                        // The slot goes clean under the gate: an admission
+                        // looking at it sees it recovering or free.
+                        Ok(()) => {
+                            let _gate = Gate::enter(directory)?;
+                            lock.clear()?;
+                            drop(lock);
+                        }
+                        Err(error) if error.is_unknown() => {
+                            failed.push(lock.slot());
+                            quarantined.get_or_insert(error);
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
+                continue;
+            }
+            if candidate.is_none() {
+                for slot in 0..=usize::from(u8::MAX) {
+                    if held >= limit {
+                        break;
+                    }
+                    if known.contains(&slot) || passed.contains(&slot) {
+                        continue;
+                    }
+                    match Lock::open_locked(&gate, directory, slot) {
+                        Err(BuildError::Busy) => held += 1,
+                        Err(error) => return Err(error),
+                        Ok(lock) => {
+                            candidate = Some(lock);
+                            break;
+                        }
+                    }
+                }
+            }
+            #[cfg(test)]
+            inside_gate(directory);
+            drop(gate);
+            let Some(lock) = candidate.filter(|_| held < limit) else {
+                if recovering {
+                    // A slot frees once its recovery ends; look again soon.
+                    wait();
+                    std::thread::sleep(RECOVERY_POLL);
+                    continue;
+                }
+                return Err(quarantined
+                    .or_else(|| foreign.map(|container| crate::builder::foreign(&container)))
+                    .unwrap_or(BuildError::Busy));
+            };
+            match lock.foreign_holder(&policy.docker) {
+                None => return Ok(Self::owning_slot(policy, lock, resources)),
+                Some(container) => {
+                    passed.push(lock.slot());
+                    foreign.get_or_insert(container);
+                }
             }
         }
-        Err(quarantined.unwrap_or(BuildError::Busy))
     }
 
     pub(crate) fn try_acquire_slot(policy: &HostPolicy, slot: usize) -> Result<Self, BuildError> {
         policy.validate()?;
         let resources = crate::policy::Resources::load(&policy.configuration_file)?;
         let lock = Lock::try_acquire_slot(&policy.state_directory, slot, &policy.docker)?;
-        Ok(Self::owning(
+        Ok(Self::owning_slot(policy, lock, resources))
+    }
+
+    fn owning_slot(policy: &HostPolicy, lock: Lock, resources: crate::policy::Resources) -> Self {
+        Self::owning(
             lock,
             resources,
             Deadline::starting_now(policy.active_timeout),
             Cancellation::default(),
             policy.fence,
-        ))
+            crate::builder::Reuse::WhenClean,
+        )
     }
     pub(crate) fn wait(docker: &Path, cancellation: &Cancellation) -> Result<Self, BuildError> {
         let lock = Lock::acquire(docker, cancellation)?;
@@ -358,6 +489,7 @@ impl Admission {
             Deadline::starting_now(EXECUTION_TIMEOUT),
             cancellation.clone(),
             None,
+            crate::builder::Reuse::Never,
         ))
     }
     fn owning(
@@ -366,6 +498,7 @@ impl Admission {
         deadline: Deadline,
         cancellation: Cancellation,
         fence: Option<crate::FenceInstaller>,
+        reuse: crate::builder::Reuse,
     ) -> Self {
         let attempt = uuid::Uuid::new_v4().to_string();
         let staging = crate::SealedStaging::under(&lock.upload_directory().join(&attempt));
@@ -376,6 +509,7 @@ impl Admission {
             resources,
             fence,
             access: crate::Access::Full,
+            reuse,
             attempt,
             staging,
         }
@@ -426,6 +560,31 @@ impl Admission {
     }
 }
 
+/// How often an admission waiting on another's recovery looks again.
+const RECOVERY_POLL: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Runs once inside the next admission's critical section in a directory.
+#[cfg(test)]
+pub(crate) static INSIDE_GATE: std::sync::Mutex<Vec<(std::path::PathBuf, Hook)>> =
+    std::sync::Mutex::new(Vec::new());
+
+#[cfg(test)]
+pub(crate) type Hook = Box<dyn FnOnce() + Send>;
+
+#[cfg(test)]
+fn inside_gate(directory: &Path) {
+    let hook = {
+        let mut hooks = INSIDE_GATE.lock().unwrap();
+        hooks
+            .iter()
+            .position(|(hooked, _)| hooked == directory)
+            .map(|index| hooks.remove(index).1)
+    };
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -444,10 +603,10 @@ mod tests {
         };
         crate::tests::executable(
             &policy.docker,
-            &format!(
-                "#!/bin/sh\n[ \"$1\" = --ready ] && exit 0\nprintf cleaned > '{}/cleaned'\n",
+            &crate::tests::as_ployz(&format!(
+                "#!/bin/sh\n[ \"$1\" = --ready ] && exit 0\n[ \"$1\" = rm ] && printf cleaned > '{}/cleaned'\nexit 0\n",
                 root.display()
-            ),
+            )),
         );
         std::fs::create_dir(root.join("build-upload")).unwrap();
         std::fs::write(root.join("build-upload/abandoned"), "private old capture").unwrap();
@@ -456,6 +615,8 @@ mod tests {
             !root.join("build-upload").exists(),
             "startup left abandoned inputs"
         );
+        // Startup removed the worker Docker reported as Ployz's.
+        std::fs::remove_file(root.join("cleaned")).unwrap();
         let admission = Admission::try_acquire_with(&policy).unwrap();
         let upload = admission.upload().unwrap();
         assert!(!root.join("build-upload/abandoned").exists());

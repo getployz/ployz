@@ -52,7 +52,7 @@ pub use solve::PlainRenderer;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::{Path, PathBuf},
+    path::Path,
     process::{Child, Command, ExitStatus, Stdio},
     time::{Duration, Instant},
 };
@@ -142,7 +142,7 @@ impl Access {
 pub fn is_builder_cache(volume: &str) -> bool {
     let digits = |part: &str| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit());
     // Exactly as `builder_name` and `slot_name` write them: no leading zero, a uid's range,
-    // and a slot within `known_slots`.
+    // and a slot within `Lock::slots`.
     let uid = |part: &str| {
         part.parse::<u32>()
             .is_ok_and(|uid| uid != u32::MAX && uid.to_string() == part)
@@ -618,6 +618,7 @@ fn execute_produce(
         admission.access,
         &admission.resources,
         fence,
+        admission.reuse,
     )
     .map_err(|error| error.at(Stage::Preparation))?;
     let mut preparation = None;
@@ -1177,6 +1178,7 @@ impl<'a> Docker<'a> {
     }
 
     /// Run work with a private helper container, confirming its absence afterwards.
+    /// The work and the removal act on the container's ID, never its name.
     ///
     /// # Errors
     /// Preserves the work's failure unless container removal cannot be confirmed.
@@ -1186,26 +1188,44 @@ impl<'a> Docker<'a> {
         arguments: &[&str],
         work: impl FnOnce(&str) -> Result<T, BuildError>,
     ) -> Result<T, BuildError> {
-        self.remove_container(name)?;
-        // A failed or interrupted create may still have reached Docker. Always
-        // confirm absence, including when no successful create was observed.
-        let mut create = vec!["create", "--name", name];
+        // A container Ployz did not create under this name is never removed.
+        match crate::builder::holder(self, name)? {
+            crate::builder::Holder::Other => {
+                return Err(crate::builder::foreign(name).at(Stage::Preparation));
+            }
+            crate::builder::Holder::Ployz(id) => self.remove_container(&id)?,
+            crate::builder::Holder::Nobody => {}
+        }
+        let marker = format!("{}={}", crate::builder::OWNER, crate::builder::owner());
+        let mut create = vec!["create", "--name", name, "--env", &marker];
         create.extend_from_slice(arguments);
-        let result = self
+        // A create that failed reports no ID, so nothing is removed: another
+        // container may hold the name. One that reached Docker anyway left a
+        // marked helper, which its next use or recovery removes by ID.
+        let id = self
             .run("create build helper", &create, Streams::Captured)
-            .map_err(|error| error.at(Stage::Preparation))
-            .and_then(|_| work(name));
-        match (result, self.remove_container(name)) {
+            .map_err(|error| error.at(Stage::Preparation))?
+            .trim()
+            .to_owned();
+        if id.is_empty() {
+            return Err(BuildError::Prerequisite(format!(
+                "Docker created the build helper {name} without reporting its ID"
+            ))
+            .at(Stage::Preparation));
+        }
+        let result = work(&id);
+        match (result, self.remove_container(&id)) {
             (result, Ok(())) => result,
             (Ok(_), Err(cleanup)) => Err(cleanup),
             (Err(error), Err(cleanup)) => Err(error.with_later_failure(cleanup)),
         }
     }
 
-    fn remove_container(&self, name: &str) -> Result<(), BuildError> {
+    /// Remove the container with ID `id`.
+    fn remove_container(&self, id: &str) -> Result<(), BuildError> {
         match self.releasing().run(
             "remove build helper",
-            &["rm", "--force", name],
+            &["rm", "--force", id],
             Streams::Captured,
         ) {
             Ok(_) => Ok(()),
@@ -1258,17 +1278,21 @@ impl<'a> Docker<'a> {
         }
         // Captured output goes to files rather than pipes: nothing reads a
         // pipe until the child exits, so a chatty command would fill one and
-        // block until its deadline.
-        let output = self.working_dir.join("docker-output");
-        let diagnosis = self.working_dir.join("docker-diagnosis");
+        // block until its deadline. Each call's files are its own and unlinked,
+        // so concurrent calls sharing a working directory never read each other's.
+        let mut output = None;
+        let mut diagnosis = None;
         if streams != Streams::Inherited {
-            command
-                .stdout(match streams {
-                    Streams::Captured => Stdio::from(self.create(action, &output)?),
-                    Streams::Discarded => Stdio::null(),
-                    Streams::Inherited => unreachable!(),
-                })
-                .stderr(self.create(action, &diagnosis)?);
+            if streams == Streams::Captured {
+                let file = self.private_file(action)?;
+                command.stdout(self.duplicate(action, &file)?);
+                output = Some(file);
+            } else {
+                command.stdout(Stdio::null());
+            }
+            let file = self.private_file(action)?;
+            command.stderr(self.duplicate(action, &file)?);
+            diagnosis = Some(file);
         }
         let mut progress_reader = if streams == Streams::Inherited && self.progress.is_some() {
             // The pipe applies backpressure instead of retaining an unbounded
@@ -1337,14 +1361,12 @@ impl<'a> Docker<'a> {
         let status = status?;
         if !status.success() {
             // Only a captured command has a diagnosis this side can read back.
-            // Inherited output already reached the operator, and the file
-            // still holds whatever the previous captured command wrote.
-            let diagnostic = match streams {
-                Streams::Captured | Streams::Discarded => {
-                    std::fs::read_to_string(&diagnosis).unwrap_or_default()
-                }
-                Streams::Inherited => String::new(),
-            };
+            // Inherited output already reached the operator.
+            let diagnostic = diagnosis
+                .map(read_back)
+                .transpose()
+                .unwrap_or_default()
+                .unwrap_or_default();
             let diagnostic = diagnostic.trim();
             return Err(BuildError::Docker {
                 action,
@@ -1355,23 +1377,56 @@ impl<'a> Docker<'a> {
                 },
             });
         }
-        match streams {
-            Streams::Captured => {
-                std::fs::read_to_string(&output).map_err(|error| BuildError::Docker {
-                    action,
-                    diagnostic: error.to_string(),
-                })
-            }
-            Streams::Inherited | Streams::Discarded => Ok(String::new()),
-        }
+        // An unreadable output is an error, never an empty answer.
+        output
+            .map(read_back)
+            .transpose()
+            .map(Option::unwrap_or_default)
+            .map_err(|error| BuildError::Docker {
+                action,
+                diagnostic: error.to_string(),
+            })
     }
 
-    fn create(&self, action: &'static str, path: &PathBuf) -> Result<std::fs::File, BuildError> {
-        std::fs::File::create(path).map_err(|error| BuildError::Docker {
+    /// A new file only this call holds: created under a unique name, then
+    /// unlinked, so no other call can open it.
+    fn private_file(&self, action: &'static str) -> Result<std::fs::File, BuildError> {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let failed = |error: std::io::Error| BuildError::Docker {
             action,
             diagnostic: error.to_string(),
-        })
+        };
+        let path = self
+            .working_dir
+            .join(format!("docker-{}", uuid::Uuid::new_v4().simple()));
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+            .map_err(failed)?;
+        std::fs::remove_file(&path).map_err(failed)?;
+        Ok(file)
     }
+
+    fn duplicate(&self, action: &'static str, file: &std::fs::File) -> Result<Stdio, BuildError> {
+        file.try_clone()
+            .map(Stdio::from)
+            .map_err(|error| BuildError::Docker {
+                action,
+                diagnostic: error.to_string(),
+            })
+    }
+}
+
+/// What a command wrote to its private file.
+fn read_back(mut file: std::fs::File) -> std::io::Result<String> {
+    use std::io::{Read as _, Seek as _};
+    let mut text = String::new();
+    file.rewind()?;
+    file.read_to_string(&mut text)?;
+    Ok(text)
 }
 
 /// Polling is bounded even after kill: inability to observe termination must
