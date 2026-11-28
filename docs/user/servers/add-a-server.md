@@ -207,34 +207,40 @@ sudo ployz key add pk1_…
 The uninstaller uses up the first key too. To add a server you removed or reinstalled, run `sudo ployz key add` with the key from a
 new install command at the server's terminal, then join it again.
 
-`ployz server add USER@HOST --reset` can't make such a server found a cluster through Ployz Cloud,
-since no line names its key. Run `ployz server add --command` instead, and run the line it prints
-at the server's terminal. With `--json`, `ployz key add` never asks, so it changes nothing there.
+A cluster always trusts a key from the start, so a server with no first key, or one it already
+used, never founds one through Ployz Cloud:
+
+```text
+error: This Server has no First Key to trust, so a token alone can't make it found a Cluster. Ployz Cloud let go of this founding attempt. Nothing was founded.
+next: run ployz server add --command, then run the line it prints at a terminal on the Server
+```
+
+`ployz server add USER@HOST`, signed in to Ployz Cloud, gives a server with no first key your
+computer's device as its first key over SSH, so a cluster it founds trusts your computer. Run
+`ployz server add --command` for a server you can't reach over SSH, and run the line it prints at
+the server's terminal. With `--json`, `ployz key add` never asks, so it changes nothing there.
 
 ## Add a standalone server
 
-To start a Cluster outside Ployz Cloud, run this on the Linux server:
-
-```sh
-sudo ployz server add --standalone --context NAME
-```
-
-From your computer, give the server's SSH destination instead:
+To start a Cluster outside Ployz Cloud, run this from your computer with the server's SSH
+destination:
 
 ```sh
 ployz server add --standalone root@HOST --context NAME
 ```
 
 No Cloud sign-in or enrollment token is needed. A new or empty context gets its first
-Server and becomes the current context. To add another Server to a context that already
-has connections, use the SSH form. It joins the existing Cluster.
+Server and becomes the current context, and the server trusts this computer's device. To add
+another Server to a context that already has connections, run the same command with its
+destination. It joins the existing Cluster.
 
-Run on the server, it approves no device: a device made there would be root's on that server, ride
-into every server you add later, and stay trusted after the server is gone. It prints the command
-that gives the server its first key from your computer:
+Run on the server itself, `sudo ployz server add --standalone` starts nothing. A device made there
+would be root's on that server, ride into every server you add later, and stay trusted after the
+server is gone, and without one the cluster would trust no key:
 
-```sh
-ployz device approve --this-device --connect ssh://root@HOST
+```text
+error: A Cluster started on its own Server would trust no key. Start it from your computer, which approves your device on it:
+  ployz server add --standalone root@HOST
 ```
 
 ## Your first server's first key
@@ -312,10 +318,9 @@ The server then joins and trusts the same devices and passkeys as your other ser
 
 ### The key on the dashboard's line
 
-Add a passkey in **Account** before you make the first install command, and the line carries it:
-your first server trusts that passkey. With no passkey, the line carries no key, the first server
-trusts none, and you approve a device on it as in
-[Your first server's first key](#your-first-servers-first-key).
+Add a passkey in **Account** before your first server: the line carries it, and your first
+server trusts that passkey. With no passkey, the card shows no install line. It says to add a
+passkey first, with a link to **Account**, since a cluster never starts without a key.
 
 For a later server, the line carries your passkey once every server trusts it. The server takes
 only that passkey's approval, so `ployz device approve --join` doesn't work for it.

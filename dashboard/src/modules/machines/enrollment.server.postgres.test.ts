@@ -945,7 +945,14 @@ describe("organization enrollment coordinator", () => {
       await expectReleased(fake, attempt);
     });
 
-    it.each([["laptop"], ["cli-other-organization"], ["device-other-organization"]])(
+    it("publishes a founder that trusts the Device its First Key named", async () => {
+      const fake = fakeSession(harness.database);
+      const attempt = await pendingFounder(fake);
+      fake.cluster.managementClients = ["cloud", "device-first-key"];
+      expect(await fake.coordinator.publish({ ...attempt, capability })).toMatchObject({ success: { machineId: attempt.machineId } });
+    });
+
+    it.each([["laptop"], ["cli-other-organization"]])(
       "refuses a first publication while the Server holds a %s management client", async (label) => {
         const fake = fakeSession(harness.database);
         const attempt = await pendingFounder(fake);

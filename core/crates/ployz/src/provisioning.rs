@@ -110,6 +110,11 @@ pub enum ProvisionError {
     /// The local installer exited unsuccessfully, and this was the last line it wrote.
     #[error("{reason}")]
     InstallRefused { reason: String },
+    /// The Server's First Key could not be armed with this computer's key.
+    #[error(
+        "Could not give the Server this computer's key: ployzd arm-first-key exited with {status}. Upgrade ployz on the Server, or run ployz server add --command and the line it prints there."
+    )]
+    FirstKeyFailed { status: std::process::ExitStatus },
     /// Remote bootstrap cleanup could not be run.
     #[error("Could not remove the remote bootstrap.")]
     Cleanup(#[source] io::Error),
@@ -168,6 +173,7 @@ impl Coded for ProvisionError {
             | ProvisionError::Install(_)
             | ProvisionError::InstallFailed { .. }
             | ProvisionError::InstallRefused { .. }
+            | ProvisionError::FirstKeyFailed { .. }
             | ProvisionError::Cleanup(_)
             | ProvisionError::CleanupFailed { .. } => RpcErrorCode::Internal,
         }
@@ -619,6 +625,36 @@ pub(crate) async fn provision_target(
     remote
         .install_bootstrap(&host, &bootstrap, version, storage)
         .await
+}
+
+/// Arm `line` as the First Key of the remote Server `target` names, unless its disk already
+/// holds one, so a Cluster it founds through Ployz Cloud trusts this computer's key.
+///
+/// # Errors
+///
+/// Returns a [`ProvisionError`] when the SSH target or privilege preflight is invalid, or the
+/// Server's `ployzd` can't arm it.
+pub(crate) async fn arm_first_key(
+    target: &RemoteTarget,
+    line: &ployz_core::first_key::LineKey,
+) -> Result<(), ProvisionError> {
+    let remote = Remote::from_target(target)?;
+    let host = remote.preflight().await?;
+    let sudo = if host.user == "root" { "" } else { "sudo " };
+    let mut command = remote.ssh();
+    command.arg(format!(
+        "{sudo}/usr/local/bin/ployzd arm-first-key {}",
+        shell::quote(&line.to_string())
+    ));
+    let status = tokio::process::Command::from(command)
+        .status()
+        .await
+        .map_err(ProvisionError::Install)?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(ProvisionError::FirstKeyFailed { status })
+    }
 }
 
 /// Install and start local `ployzd` through a verified temporary daemon.

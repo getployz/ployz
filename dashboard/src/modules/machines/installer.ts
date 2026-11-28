@@ -29,9 +29,9 @@ export type InstallTarget = {
  * out of shell history and `ps`. cloud-init has no terminal, so it exports the token first. `key` is the passkey the new
  * Server trusts to found or approve its join; it is public, so both lines carry it as it is.
  */
-export function installLines({ cloudOrigin, ployzVersion, token, ingressClosed }: InstallTarget, key: string | null): InstallLines {
+export function installLines({ cloudOrigin, ployzVersion, token, ingressClosed }: InstallTarget, key: string): InstallLines {
   const cloud = cloudOrigin === PLOYZ_ORIGIN ? "" : ` --cloud-url '${cloudOrigin}'`;
-  const keyed = key === null ? "" : ` --key ${key}`;
+  const keyed = ` --key ${key}`;
   const closed = ingressClosed ? " --ingress-closed" : "";
   const shell = `curl -fsSL ${INSTALL_ORIGIN} | sh -s -- ${ployzVersion} && sudo --preserve-env=${ENROLL_TOKEN_ENV} ployz server add${cloud}${keyed}${closed}`;
   return {

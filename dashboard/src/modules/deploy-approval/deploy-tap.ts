@@ -88,7 +88,7 @@ export function admission(input: {
 }): Admission {
   const { plan, servers, source, covered, rule } = input;
   const open = (plan.unsigned ?? []).filter((entry) => !covered.has(entry.service) && !underRule(entry));
-  // A rule swapped or changed after the tap would be kept, so it is refused whatever the Servers enforce.
+  // A rule swapped or changed after the tap would be kept, so it is refused.
   if (rule.kind === "signed" && rule.sourced === null) {
     return { kind: "refused", reason: "This deploy's automatic deploy rule isn't the one your passkey signed. Approve it again.", unreached: false };
   }

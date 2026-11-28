@@ -452,3 +452,41 @@ fn an_enrolled_disk_leaves_no_first_key_waiting_after_a_crash_or_a_reset() {
     store.complete_reset().unwrap();
     assert!(spent());
 }
+
+/// A Cloud founding trusts the key its install line armed, and with none it founds nothing:
+/// otherwise Cloud alone could start a Cluster that trusts no key.
+#[test]
+fn a_cloud_founding_trusts_its_first_key_and_refuses_without_one() {
+    let founding = || ployz_core::EnrollRequest {
+        role: ployz_core::EnrollAs::Founder {
+            initial_policy: Default::default(),
+            name: ployz_core::MachineName::parse("first").unwrap(),
+            cluster_network: "10.210.0.0/16".parse().unwrap(),
+            public_ip: None,
+            advertised_endpoints: vec![ployz_core::AdvertisedEndpoint(
+                "192.0.2.1:51820".parse().unwrap(),
+            )],
+            grant: Some(ployz_core::FoundingGrant::Claim {
+                claim: ployz_core::FoundingClaim::of_pairing("ppair_fake"),
+            }),
+        },
+        wireguard_mtu: None,
+        pinned: Default::default(),
+    };
+    let (dir, mut store) = fresh();
+    let refused = store.enroll(founding());
+    assert!(
+        matches!(refused, Err(StoreError::NoFirstKey)),
+        "{refused:?}"
+    );
+    assert_eq!(store.record().phase(), LocalMachinePhase::Uninitialized);
+
+    let device = ApprovingCluster::new(1).device();
+    FirstKeyFile::beside(&dir.path().join("data"))
+        .lock()
+        .unwrap()
+        .arm(&LineKey::Device { key: device })
+        .unwrap();
+    store.enroll(founding()).unwrap();
+    assert!(store.record().devices().any(|trusted| trusted == device));
+}

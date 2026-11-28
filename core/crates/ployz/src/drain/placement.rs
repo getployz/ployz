@@ -648,11 +648,11 @@ fn destination(
     }
 }
 
-/// Whether converging `service` on `snapshot` could start a copy on a Server that enforces
-/// Device approval: such a Server is among the ones a move of it may pick. That copy needs
-/// a signed version whatever it reaches, since a move copies its image in under pull policy
-/// never, and such a Server runs an unsigned spec only from an image it pulled itself. A
-/// copy that only waits Out, is held, or has nowhere to go starts nothing.
+/// Whether converging `service` on `snapshot` could start a copy on another Server: some
+/// Server is among the ones a move of it may pick. That copy needs a signed version whatever
+/// it reaches, since a move copies its image in under pull policy never, and a Server runs
+/// an unsigned spec only from an image it pulled itself. A copy that only waits Out, is
+/// held, or has nowhere to go starts nothing.
 pub(crate) fn needs_version(snapshot: &DeploySnapshot, service: &QualifiedService) -> bool {
     let stranded = movable(snapshot, service);
     if refusal(snapshot, service, &stranded).is_some() {
@@ -668,11 +668,7 @@ pub(crate) fn needs_version(snapshot: &DeploySnapshot, service: &QualifiedServic
             snapshot,
             &PlanOptions::default(),
         )
-        .is_ok_and(|machines| {
-            machines
-                .iter()
-                .any(|machine| machine.machine.runtime.device_enforcement == Some(true))
-        })
+        .is_ok_and(|machines| !machines.is_empty())
     })
 }
 

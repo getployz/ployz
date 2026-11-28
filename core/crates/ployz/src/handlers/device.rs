@@ -186,7 +186,7 @@ pub(crate) async fn approve_own(client: &Client, config: &Path) -> Result<Device
 }
 
 /// This computer's Device key beside `config`, made now if it has none.
-pub(in crate::handlers) fn own_key(config: &Path) -> Result<DeviceKey, Error> {
+pub(crate) fn own_key(config: &Path) -> Result<DeviceKey, Error> {
     let path = key::path(config);
     let secret = match key::load(&path)? {
         Some(secret) => secret,
