@@ -449,3 +449,34 @@ fn a_preview_of_settings_its_rule_does_not_cover_is_not_deployed() {
         }),
     );
 }
+
+/// A member's Deploy pins no commit approval, so the preview's build follows the pull
+/// request's own push run, which its Server checks against the rule's pushers, rather
+/// than a run Cloud dispatches on a branch the rule never names.
+#[test]
+fn a_members_preview_builds_on_its_pull_requests_push_run() {
+    let (store, who) = shop();
+    sign_previews(&store, &who);
+    store
+        .system(
+            &who.organization,
+            &SystemEvent::PullRequest(opened(5)),
+            &cloud(),
+        )
+        .unwrap();
+    let ada = Actor {
+        principal: Some(ployz_store::Principal::parse("ada").unwrap()),
+        ..who
+    };
+    let permitted = Trusted {
+        permissions: Some(ployz_store::Permission::ALL.iter().copied().collect()),
+        ..cloud()
+    };
+    let automated = store.write_trusted(&ada, &asked(5), &permitted).unwrap();
+    let deployment = &automated.admitted.first().unwrap().deployment.id;
+    let web = ployz_store::GithubBuildId::parse(&format!("{deployment}.web")).unwrap();
+    assert!(matches!(
+        store.github_rule(&web).unwrap(),
+        Some(ployz_store::GithubRule::Push(_))
+    ));
+}

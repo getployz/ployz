@@ -1073,6 +1073,11 @@ pub(crate) fn rule_of(
     if rule.ended {
         return Ok(None);
     }
+    // A member's Deploy of a preview builds on its pull request's own push run, which
+    // the Server checks against the rule's pushers.
+    if rule.preview.is_some() {
+        return Ok(Some(GithubRule::Push(signed)));
+    }
     let saved = deployment::held_revision(tx, stored)?;
     let lowered = deployment::lowered(tx, stored, &saved)?;
     let approved =
