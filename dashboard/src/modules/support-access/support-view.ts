@@ -168,6 +168,8 @@ function viewRedactions(shows: SupportShows): ViewRedactions {
     uploads: same,
     pr_plans: same,
     open_previews: same,
+    // The signed preview rule, as the rule view shows it, and each pull request's preview.
+    previews: same,
     // Signed statements name a digest and a signer, never a value.
     versions: same,
     // Support reads where an Environment runs, never the specs its parents ran, which carry settings.

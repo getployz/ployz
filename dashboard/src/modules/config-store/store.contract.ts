@@ -35,10 +35,10 @@ export const MAX_SHOWN_VIEWS = 16;
 
 /**
  * The Environment a command names, the one its write queue is of; a Batch names one for all. A removal names its
- * Environment within the Project it removes from, and moves no views of one.
+ * Environment within the Project it removes from, and moves no views of one; so does closing a preview.
  */
 export function commandEnvironment(command: ConfigCommand): StoreEnvironmentRef | null {
-  if (command.command === "remove" || command.command === "cancel_removal") return null;
+  if (command.command === "remove" || command.command === "cancel_removal" || command.command === "close_preview") return null;
   return "environment" in command && command.environment ? command.environment : null;
 }
 

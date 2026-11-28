@@ -36,7 +36,7 @@ export const readStore = <Q extends ConfigQuery>(organizationId: string, query: 
   );
 
 /** The commands that admit Deployments: Cloud's worker runs them, and the Store refuses one nothing could run. */
-const ADMITS: ReadonlySet<ConfigCommand["command"]> = new Set(["admit", "start", "remove", "approve_pull_request"]);
+const ADMITS: ReadonlySet<ConfigCommand["command"]> = new Set(["admit", "start", "remove", "approve_pull_request", "deploy_preview"]);
 
 /**
  * Hand an admitted or started Deployment to Cloud's worker. A replayed admission sends the same event, which Inngest
@@ -158,9 +158,12 @@ export const gatherTrusted = Effect.fn("ConfigStore.gatherTrusted")(function* (
   const servers = admits ? yield* countOrganizationMachines(organizationId) : undefined;
   // An approval leaves a pull request trusted only while its author is a member or a bot opened it from the repository.
   const approves = call.operation === "write" && call.command.command === "approve_pull_request";
-  const members = approves ? yield* githubMembers(organizationId) : undefined;
-  // An approval can open the pull request's preview, on a Server that can hold one.
-  const homes = approves ? yield* gatherPreviewHomes(organizationId, read) : undefined;
+  // A preview deploys only a member's pull request, on a Server that can hold one. The previews view names the
+  // members too, but asks no Server: it refreshes as the Store changes.
+  const deploysPreview = call.operation === "write" && call.command.command === "deploy_preview";
+  const listsPreviews = call.operation === "read" && call.query.query === "previews";
+  const members = approves || deploysPreview || listsPreviews ? yield* githubMembers(organizationId) : undefined;
+  const homes = deploysPreview ? yield* gatherPreviewHomes(organizationId, read) : undefined;
   // A preview rule is kept only once a key the Servers trust signed it.
   const signs = call.operation === "write" && call.command.command === "set_pr_plan" && call.command.preview_rule != null;
   const signers = signs ? yield* gatherSigners(organizationId) : undefined;
@@ -197,6 +200,7 @@ const afterWrite = Effect.fn("ConfigStore.afterWrite")(function* (
   // after it, as is the removal a Sync's close marked: no worker will ask for that sweep, so ask now.
   const removed = written.written === "deployment" ? written.remove && written.status === "applied"
     : written.written === "removal" ? written.removal === "removing" && written.left.some((left) => left.deployment?.status === "applied")
+    : written.written === "automated" ? written.closing.length > 0
     : written.written === "synced" && written.closing;
   if (removed) yield* sendInngestEvent(configSweepRequested.create({ organizationId }));
   yield* requestChecks(organizationId, written.checks);
