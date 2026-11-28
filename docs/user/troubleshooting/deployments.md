@@ -633,7 +633,7 @@ this release. Stop the command and deploy again.
   **Deployments** if it's stuck.
 - It's building on GitHub Actions, and the run hasn't started or finished. The service's build
   card on the deployment's page shows where it is.
-- The bottom bar shows **Add servers**: your organization has no server yet.
+- The bottom bar shows **Add server**: your organization has no server yet.
   [Add one](../servers/add-a-server.md). **Deploy now** says
   `This Organization has no servers yet, so nothing deployed. Add one, then deploy again.`
 - Nothing else is running: click **Deploy now** on the deployment's page.

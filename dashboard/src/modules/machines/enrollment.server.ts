@@ -18,7 +18,7 @@ import { requireAccess, requireAccessById } from "#/modules/organization/access.
 import { Ployz, type PloyzProviderError, type PloyzSdkError, type PloyzSession, predatesSealing, RpcError } from "#/modules/runtime/ployz.server";
 import { ClusterOutOfTime, clusterRead, OrganizationRuntime, SESSION_CLOSE_CLUSTER_MS, withClusterBudget } from "#/modules/runtime/organization-runtime.server";
 import { PostHog } from "#/modules/analytics/posthog.server";
-import { ENROLLMENT_TOKEN_TTL_MS, JoinApprovalRequired, MANAGEMENT_CAPABILITY_LENGTH, registerRequestFromEnrollmentIdentity, setupReportAccepted, setupReportProperties, type SetupReport, waitForFounder, waitForJoinSlot, type EnrollmentIdentity, type EnrollmentCallback, type EnrollmentCallbackSealing, type CliMintMachineEnrollmentInput, type CliResetPendingEnrollmentInput, type EnrollResponse, type ReadMachineEnrollmentInput, type ResetPendingEnrollmentInput } from "#/modules/machines/enrollment";
+import { ENROLLMENT_TOKEN_TTL_MS, JoinApprovalRequired, MANAGEMENT_CAPABILITY_LENGTH, registerRequestFromEnrollmentIdentity, setupReportAccepted, setupReportProperties, type SetupReport, waitForFounder, waitForJoinSlot, type EnrollmentIdentity, type EnrollmentCallback, type EnrollmentCallbackSealing, type CliMintMachineEnrollmentInput, type MintMachineEnrollmentInput, type CliResetPendingEnrollmentInput, type EnrollResponse, type ReadMachineEnrollmentInput, type ResetPendingEnrollmentInput } from "#/modules/machines/enrollment";
 import { rustMachineIdSchema } from "#/lib/schema";
 import { joinCode } from "#/modules/machines/join-code.server";
 import { readOrganizationSealingKey, recordFirstRecoveryBackup, recordReportedSealingPublicKey } from "#/modules/sealing/sealing-key.server";
@@ -30,9 +30,6 @@ import { observePushTargetRequested } from "#/modules/observe-ingest/observe.eve
 import { sealingKeyEnsureRequested } from "#/modules/sealing/sealing.events";
 import { requestClusterDomainSync } from "#/modules/cluster-domain/sync-request.server";
 import { configFirstServerJoined } from "#/modules/config-store/config-store.events";
-import { createServerEnrollmentCompletedEvent } from "#/modules/machines/waiting/server-enrollment.events";
-import type { EnrollmentRole } from "#/modules/machines/waiting/enrollment-states";
-import { serverEnrollment, waitingServer } from "#/modules/machines/waiting/tables";
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound, Unauthorized, Unavailable, Validation } from "#/server/public-error";
 import { revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
@@ -114,7 +111,8 @@ export const insertEnrollmentToken = Effect.fn("MachineEnrollment.insertToken")(
   function* (input: {
     readonly organizationId: string;
     readonly userId: string;
-    readonly attempt?: { readonly role: EnrollmentRole; readonly serverEnrollmentId: string };
+    /** The first Server it enrolls founds the Cluster with ports 80 and 443 closed. */
+    readonly ingressClosed?: boolean;
   }) {
     const { drizzle } = yield* Database;
     const token = yield* Effect.sync(() => randomSecret(TOKEN_PREFIX));
@@ -123,8 +121,7 @@ export const insertEnrollmentToken = Effect.fn("MachineEnrollment.insertToken")(
       createdByUserId: input.userId,
       tokenHash: hashEnrollmentToken(token),
       expiresAt: sql`now() + make_interval(secs => ${ENROLLMENT_TOKEN_TTL_MS / 1000})`,
-      enrollmentRole: input.attempt?.role ?? null,
-      serverEnrollmentId: input.attempt?.serverEnrollmentId ?? null,
+      ingressClosed: input.ingressClosed ?? false,
     }).returning({ id: schemaMachineEnrollmentToken.id, expiresAt: schemaMachineEnrollmentToken.expiresAt });
     if (!issued) return yield* Effect.die("Enrollment token insert returned no row");
     return { id: issued.id, token, expiresAt: issued.expiresAt };
@@ -132,26 +129,35 @@ export const insertEnrollmentToken = Effect.fn("MachineEnrollment.insertToken")(
 );
 
 const issueEnrollmentToken = Effect.fn("MachineEnrollment.issue")(
-  function* (actor: Actor, named: OrganizationRef) {
+  function* (actor: Actor, named: OrganizationRef, source: "cli" | "dashboard", ingressClosed = false) {
     const authorization = yield* authorizeEnrollmentOrganization(actor, named);
     const issued = yield* insertEnrollmentToken({
       organizationId: authorization.organization.id,
       userId: authorization.userId,
+      ingressClosed,
     });
     yield* (yield* PostHog).capture({
       userId: authorization.userId,
       organizationId: authorization.organization.id,
       event: "server_enrollment_started",
-      properties: { source: "cli" },
+      properties: { source },
     });
     return issued;
+  },
+);
+
+/** The dashboard's install line: one token for one Server, which joins only under its own approval. */
+export const mintMachineEnrollment = Effect.fn("MachineEnrollment.mint")(
+  function* (actor: Actor, input: MintMachineEnrollmentInput) {
+    const { token, expiresAt } = yield* issueEnrollmentToken(actor, input, "dashboard", input.ingressClosed);
+    return { token, expiresAt: expiresAt.toISOString(), ingressClosed: input.ingressClosed };
   },
 );
 
 /** The CLI builds its own pasted command, pinned to its own release. */
 export const mintCliMachineEnrollment = Effect.fn("MachineEnrollment.mintForCli")(
   function* (actor: Actor, input: CliMintMachineEnrollmentInput) {
-    const { id, token, expiresAt } = yield* issueEnrollmentToken(actor, input);
+    const { id, token, expiresAt } = yield* issueEnrollmentToken(actor, input, "cli");
     return { id, token, expiresAt: expiresAt.toISOString() };
   },
 );
@@ -262,8 +268,6 @@ const loadEnrollmentToken = Effect.fn("MachineEnrollment.loadToken")(
         claimedPublicKey: schemaMachineEnrollmentToken.claimedPublicKey,
         claimedName: schemaMachineEnrollmentToken.claimedName,
         joinedMachineId: schemaMachineEnrollmentToken.joinedMachineId,
-        enrollmentRole: schemaMachineEnrollmentToken.enrollmentRole,
-        serverEnrollmentId: schemaMachineEnrollmentToken.serverEnrollmentId,
       })
       .from(schemaMachineEnrollmentToken)
       .where(and(
@@ -292,7 +296,6 @@ const requireTokenClaimedBy = Effect.fn("MachineEnrollment.requireTokenClaim")(
       claimedPublicKey: row.claimedPublicKey,
       claimedName: row.claimedName,
       spent: row.joinedMachineId !== null,
-      serverEnrollmentId: row.serverEnrollmentId,
     };
   },
 );
@@ -477,38 +480,6 @@ const queueForJoinSlot = Effect.fn("MachineEnrollment.queueForJoinSlot")(
   },
 );
 
-/**
- * Where each attempt waiting in an Organization's join line stands, keyed by attempt: the joins that must finish
- * before it goes, counted the way {@link queueForJoinSlot} answers it, and 0 once a slot is free for its next ask.
- */
-export const readJoinStatus = Effect.fn("MachineEnrollment.readJoinStatus")(function* (organizationId: string) {
-  const { drizzle } = yield* Database;
-  const joinSlots = yield* JoinSlots;
-  const [pairing] = yield* drizzle.select({ founderMachineId: schemaOrganizationPairing.founderMachineId })
-    .from(schemaOrganizationPairing).where(eq(schemaOrganizationPairing.organizationId, organizationId));
-  const line = new Map<string, number>();
-  const founder = pairing?.founderMachineId ?? null;
-  if (founder === null) return { ahead: line, joining: 0 };
-  const tokens = schemaMachineEnrollmentToken;
-  const holding = sql`coalesce(${claimHoldsSlot}, false)`;
-  const waiter = sql`not ${holding} and ${tokens.queuedAt} is not null and ${tokens.updatedAt} > ${checkedNow()} - ${QUEUED_LIVE}`;
-  const rows = yield* drizzle.select({
-    serverEnrollmentId: tokens.serverEnrollmentId,
-    waiter: sql<boolean>`${waiter}`,
-    joining: sql<boolean>`${holding} and ${tokens.claimedMachineId} <> ${founder}`,
-    before: sql<number>`rank() over (partition by ${waiter} order by ${tokens.queuedAt}) - 1`.mapWith(Number),
-  }).from(tokens).where(and(
-    eq(tokens.organizationId, organizationId),
-    isNull(tokens.joinedMachineId),
-    gt(tokens.expiresAt, checkedNow()),
-  ));
-  const joining = rows.filter((row) => row.joining).length;
-  for (const row of rows) {
-    if (row.waiter && row.serverEnrollmentId !== null) line.set(row.serverEnrollmentId, Math.max(0, joining + row.before - joinSlots + 1));
-  }
-  return { ahead: line, joining };
-});
-
 const renewJoinSlot = Effect.fn("MachineEnrollment.renewJoinSlot")(function* (token: string) {
   const { drizzle } = yield* Database;
   const renewed = yield* drizzle.update(schemaMachineEnrollmentToken)
@@ -545,15 +516,6 @@ const releaseUnsentJoinSlot = (token: string, machineId: MachineId, organization
       ));
   }));
 }).pipe(Effect.ignoreCause({ log: true, message: "Join slot not released" }));
-
-/** A Waiting Server asking for its slot is checking in, so its run does not read it as silent. */
-const recordQueuedCheckIn = Effect.fn("MachineEnrollment.recordQueuedCheckIn")(function* (serverEnrollmentId: string) {
-  const { drizzle } = yield* Database;
-  yield* drizzle.update(waitingServer).set({ lastCheckInAt: sql`now()` }).where(eq(
-    waitingServer.id,
-    drizzle.select({ id: serverEnrollment.waitingServerId }).from(serverEnrollment).where(eq(serverEnrollment.id, serverEnrollmentId)),
-  ));
-});
 
 /** The early answer for a joiner that would only be queued, read without the Organization's lock. */
 const queueBeforeLocking = Effect.fn("MachineEnrollment.queueBeforeLocking")(
@@ -596,18 +558,16 @@ const claimOrLoadEnrollment = Effect.fn("MachineEnrollment.claimOrLoad")(
     publicKey: string;
     machineId: MachineId;
     name: MachineName;
-    role: EnrollmentRole | null;
     recoverySupport: 1 | undefined;
   }) {
     const database = yield* Database;
     const encryption = yield* SecretEncryption;
     const secret = randomSecret("ppair_");
-    const joiner = input.role === "joiner";
     return yield* database.transaction(
       Effect.gen(function* () {
         yield* lockOrganizationEnrollment(input.organizationId);
         const { drizzle } = yield* Database;
-        const [claimed] = joiner ? [] : yield* drizzle
+        const [claimed] = yield* drizzle
           .insert(schemaOrganizationPairing)
           .values({
             organizationId: input.organizationId,
@@ -637,10 +597,7 @@ const claimOrLoadEnrollment = Effect.fn("MachineEnrollment.claimOrLoad")(
             eq(schemaOrganizationPairing.organizationId, input.organizationId),
           )
           .for("update");
-        if (!current) {
-          if (joiner) return { kind: "pending" as const, fresh: true };
-          return yield* Effect.die("Organization enrollment disappeared");
-        }
+        if (!current) return yield* Effect.die("Organization enrollment disappeared");
         if (current.removalStartedAt !== null) {
           return yield* new Conflict({ message: "Cloud access removal is pending. Confirm endpoint revocation before enrolling again." });
         }
@@ -648,7 +605,7 @@ const claimOrLoadEnrollment = Effect.fn("MachineEnrollment.claimOrLoad")(
           secret: yield* decryptPairingSecret(current.encryptedPairingSecret),
         };
         // A founder that Cloud dropped since it founded was forgotten: it joins again like any other Server.
-        if (!joiner && current.founderPublicKey === input.publicKey && current.founderClaimMachineId === input.machineId
+        if (current.founderPublicKey === input.publicKey && current.founderClaimMachineId === input.machineId
           && (current.founderMachineId === null || (yield* enrolledInPairing(input.organizationId, current.founderMachineId, pairing.secret)))) {
           yield* claimEnrollmentToken(input.token, input);
           return {
@@ -664,7 +621,7 @@ const claimOrLoadEnrollment = Effect.fn("MachineEnrollment.claimOrLoad")(
           yield* claimEnrollmentToken(input.token, input);
           return { kind: "ready" as const, pairing };
         }
-        return { kind: "pending" as const, fresh: joiner || foundingClaimFresh(current) };
+        return { kind: "pending" as const, fresh: foundingClaimFresh(current) };
       }),
     );
   },
@@ -697,7 +654,6 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
       publicKey: input.identity.publicKey,
       machineId: input.identity.machineId,
       name: input.identity.name,
-      role: token.enrollmentRole,
       recoverySupport: input.identity.recoverySupport,
     };
     const early = yield* queueBeforeLocking(claim);
@@ -714,12 +670,7 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
     }
     // Another Server is founding: wait while it may still finish; an old claim may be a founder that was deleted.
     if (state.kind === "pending") return state.fresh ? waitForFounder() : yield* unreachable();
-    if (state.kind === "queued") {
-      if (token.serverEnrollmentId !== null) {
-        yield* recordQueuedCheckIn(token.serverEnrollmentId).pipe(Effect.ignoreCause({ log: true, message: "Queued check-in not recorded" }));
-      }
-      return state.material;
-    }
+    if (state.kind === "queued") return state.material;
 
     const { pairing } = state;
     // Everything up to dispatch: a failure here means the join was never sent.
@@ -1201,7 +1152,6 @@ export const completeMachineEnrollment = Effect.fn(
         yield* recordSealing(token.organizationId, hashEnrollmentToken(pairing.secret), machineId, input.sealing);
       }));
       yield* recordJoined(input.token, machineId, { founder: false });
-      yield* reportAttemptCompleted(token.serverEnrollmentId);
       return { machineId };
     }
     // Past this, `machineId` is the founder (a retried completion may have founded it already).
@@ -1220,7 +1170,6 @@ export const completeMachineEnrollment = Effect.fn(
     yield* sendInngestEvent(configFirstServerJoined.create({ organizationId: token.organizationId, machineId })).pipe(
       Effect.catch((error) => Effect.logWarning("Deploying to the first Server was not requested; its Deploy button does it.", error)),
     );
-    yield* reportAttemptCompleted(token.serverEnrollmentId);
     return { machineId, recoveryBackupDigest };
   },
 );
@@ -1247,15 +1196,6 @@ const recordSealing = Effect.fn("MachineEnrollment.recordSealing")(function* (
     }))),
   );
 });
-
-const reportAttemptCompleted = Effect.fn("MachineEnrollment.reportAttemptCompleted")(
-  function* (serverEnrollmentId: string | null) {
-    if (serverEnrollmentId === null) return;
-    yield* sendInngestEvent(createServerEnrollmentCompletedEvent(serverEnrollmentId)).pipe(
-      Effect.catch((error) => Effect.logWarning("Server Enrollment completion was not sent; its run reads the token.", error)),
-    );
-  },
-);
 
 /**
  * Makes `machineId` the Organization's founder, once, while the founding attempt it confirms is still current.
@@ -1305,5 +1245,16 @@ const resetPendingEnrollment = Effect.fn("MachineEnrollment.resetPendingState")(
         : "Cloud access is disabled, but Cloud couldn't reach the first server to confirm. Try again, or use Forget Servers.",
       userFacing: true,
     });
+  },
+);
+
+/** Whether the Organization's first Server has founded its Cluster: the pairing names its founder. */
+export const readClusterFounded = Effect.fn("MachineEnrollment.readFounded")(
+  function* (actor: Actor, input: { readonly organizationSlug: string }) {
+    const { organization } = yield* requireAccess(actor, input.organizationSlug, "servers:read");
+    const { drizzle } = yield* Database;
+    const [pairing] = yield* drizzle.select({ founderMachineId: schemaOrganizationPairing.founderMachineId })
+      .from(schemaOrganizationPairing).where(eq(schemaOrganizationPairing.organizationId, organization.id));
+    return { founded: pairing !== undefined && pairing.founderMachineId !== null };
   },
 );

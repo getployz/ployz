@@ -7,7 +7,8 @@ import type { OperationAsked } from "#/modules/operations/asked";
 import { loadClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
 import { doorsOpenOn, publicSpecifiedAnywhere } from "#/modules/ingress/door-frames";
 import { loadCloudflareSetup } from "#/modules/ingress/cloudflare.source.server";
-import { serverEnrollment } from "#/modules/machines/waiting/tables";
+import { machineEnrollmentToken } from "#/modules/machines/tables";
+import { organizationPairing } from "#/modules/runtime/tables";
 import { callStore, readStore } from "#/modules/config-store/config-store.server";
 import { publishedOf } from "#/modules/runtime/published-hostnames";
 import { owners } from "#/modules/config-store/store-lookup.server";
@@ -89,16 +90,16 @@ const latestChange = Effect.fn("IngressDoors.latest")(function* (organizationId:
 });
 
 /**
- * Whether the newest founder was told to start the Cluster with every Door closed. Read from the instruction, not the
- * enrollment's end: the Machine founds as told before the enrollment's own run marks it joined, and one that failed
- * late may have founded all the same.
+ * Whether the Cluster's founder took a token minted with Cloudflare Tunnel chosen, so its line founded with every Door
+ * closed. Read from the founding claim, not the founder's completion: the Machine founds as its line says before Cloud
+ * hears it finished, and one that failed late may have founded all the same.
  */
 const foundedClosed = Effect.fn("IngressDoors.foundedClosed")(function* (organizationId: string) {
   const { drizzle } = yield* Database;
-  const [founder] = yield* drizzle.select({ closed: sql<boolean>`coalesce((${serverEnrollment.instruction}->>'ingressClosed')::boolean, false)` })
-    .from(serverEnrollment)
-    .where(and(eq(serverEnrollment.organizationId, organizationId), eq(serverEnrollment.role, "founder")))
-    .orderBy(desc(serverEnrollment.requestedAt))
+  const [founder] = yield* drizzle.select({ closed: machineEnrollmentToken.ingressClosed })
+    .from(organizationPairing)
+    .innerJoin(machineEnrollmentToken, eq(machineEnrollmentToken.tokenHash, organizationPairing.founderClaimTokenHash))
+    .where(eq(organizationPairing.organizationId, organizationId))
     .limit(1);
   return founder?.closed ?? false;
 });

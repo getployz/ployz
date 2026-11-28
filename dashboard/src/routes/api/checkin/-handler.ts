@@ -1,18 +1,15 @@
-import { Effect } from "effect";
-import { CHECKIN_MAX_BYTES } from "#/modules/machines/waiting/checkin-wire";
-import { checkIn, CheckinRefused } from "#/modules/machines/waiting/checkin.server";
-import { readCappedBody } from "#/server/capped-body";
-import { machineErrorResponse, machineRefusal, Unauthorized } from "#/server/public-error";
+/**
+ * Ployz Cloud no longer takes Fleet Tokens. A host still running the check-in loop of an older `ployz` gets this stop,
+ * which ends its loop and disables its `ployz-checkin` unit, with the words it logs on how to add the Server instead.
+ * Every caller gets the same answer, whatever it sends: the answer admits nothing and names nothing of any Organization.
+ */
+export const CHECKIN_ENDED = "Ployz Cloud no longer adds Servers from a Fleet Token, so this check-in stopped. To add this "
+  + "server, run `ployz server add --command` where you're signed in, or choose Add server on the Servers page in Ployz "
+  + "Cloud, and run the line it prints on this server.";
 
-const noStore = { "cache-control": "no-store" };
-
-export const handleCheckin = Effect.fn("Checkin.handle")(function* (request: Request, observedIp: string) {
-  const body = yield* Effect.tryPromise(() => readCappedBody(request, CHECKIN_MAX_BYTES)).pipe(Effect.orElseSucceed(() => new Uint8Array(0)));
-  if (body === null) return machineRefusal(413, "Check-in is over 64 KiB.");
-  return yield* checkIn({ headers: request.headers, body, observedIp }).pipe(
-    Effect.map((answer) => Response.json(answer, { headers: noStore })),
-    Effect.catchTag("CheckinRefused", (error: CheckinRefused) =>
-      Effect.succeed(machineRefusal(error.status, error.message, error.status === 429 ? { "retry-after": "1" } : {}))),
-    Effect.catchTag("Unauthorized", (error: Unauthorized) => Effect.succeed(machineErrorResponse(error))),
+export function handleCheckin() {
+  return Response.json(
+    { kind: "stop", reason: "token_revoked", message: CHECKIN_ENDED },
+    { headers: { "cache-control": "no-store" } },
   );
-});
+}

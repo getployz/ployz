@@ -13,30 +13,30 @@ import { clusterNameProblem } from "#/modules/cluster-name/cluster-name";
 import type { ClusterNameControl } from "#/modules/cluster-name/cluster-name.hooks";
 import { normalizeZone, zoneProblem } from "#/modules/ingress/cloudflare.zone";
 import { checkCloudflareServerFn, listCloudflareZonesServerFn } from "#/modules/ingress/doors.functions";
-import { cliLifetimeLabel } from "#/modules/machines/installer";
 import { useRoleGate } from "#/modules/organization/members.queries";
 import { InstallTabs } from "./copy-block";
 import { holdCloudflare } from "#/modules/ingress/cloudflare-setup";
 import { abandonCloudflare, type CardCloudflare, installGate } from "./cloudflare-choice";
-import { ADD_SERVERS_REFUSED, type useMintFleetToken } from "#/modules/machines/waiting/use-waiting";
+import { ADD_SERVERS_REFUSED, type useMintInstallLine } from "./use-install-line";
 
-const STEPS = ["Run the command", "Review", "Enroll"] as const;
+const STEPS = ["Run the command", "Paste the token", "It joins"] as const;
 
 /**
- * The first server's install line, with the Cluster's choices tucked under it: its name, and Cloudflare Tunnel instead
- * of public ports. The Servers page's first-run card and the canvas's Add servers dialog both show it.
+ * One Server's install line. Before the first Server, `cluster` tucks the Cluster's choices under it: its name, and
+ * Cloudflare Tunnel instead of public ports. Every later Server joins under its own approval, so its line says how.
  */
-export function ClusterSetup({ organizationSlug, cluster, mint, steps = true }: {
+export function InstallCommand({ organizationSlug, cluster, mint, steps = true }: {
   organizationSlug: string;
-  cluster: ClusterNameControl;
+  /** The Cluster's choices, for the line that founds it. Null once a Server is in. */
+  cluster: ClusterNameControl | null;
   /** The caller's, so the line it minted outlives this card. */
-  mint: ReturnType<typeof useMintFleetToken>;
+  mint: ReturnType<typeof useMintInstallLine>;
   /** The three steps under the line. The dialog leaves them out. */
   steps?: boolean;
 }) {
   const gate = useRoleGate(organizationSlug, "servers:add", ADD_SERVERS_REFUSED);
   const operate = useRoleGate(organizationSlug, "servers:operate");
-  const saved = cluster.view.name ?? "";
+  const saved = cluster?.view.name ?? "";
   const [name, setName] = useState(saved);
   const [open, setOpen] = useState(false);
   const [cloudflare, setCloudflare] = useState<CardCloudflare>({ at: "off", abandoned: false });
@@ -59,9 +59,9 @@ export function ClusterSetup({ organizationSlug, cluster, mint, steps = true }: 
   }, [minted, organizationSlug]);
 
   const getLine = () => {
-    if (name !== saved && nameProblem === null) cluster.rename(name);
+    if (cluster !== null && name !== saved && nameProblem === null) cluster.rename(name);
     asked.current = cloudflare.at === "ready" ? { token, zone: cloudflare.zone } : null;
-    mint.mutate({ name: null, expiresIn: "1d", autoEnroll: null, foundsClosed: install.foundsClosed });
+    mint.mutate({ ingressClosed: install.foundsClosed });
   };
 
   const line = gate.reason === ADD_SERVERS_REFUSED ? (
@@ -71,7 +71,7 @@ export function ClusterSetup({ organizationSlug, cluster, mint, steps = true }: 
       <Button
         variant="ink"
         className="w-fit"
-        disabled={!gate.allowed || mint.isPending || !install.allowed || nameProblem !== null}
+        disabled={!gate.allowed || mint.isPending || !install.allowed || (cluster !== null && nameProblem !== null)}
         title={gate.reason}
         onClick={getLine}
       >
@@ -83,11 +83,18 @@ export function ClusterSetup({ organizationSlug, cluster, mint, steps = true }: 
   ) : (
     <div className="flex flex-col gap-3">
       <InstallTabs organizationSlug={organizationSlug} target={mint.data} />
-      <p className="text-sm text-warning">Shown once. Expires in {cliLifetimeLabel("1d")}.</p>
-      <div className="flex items-center gap-2 text-sm text-muted-foreground">
-        <Spinner />
-        Listening for servers…
-      </div>
+      <p className="text-sm text-warning">Shown once. Works for one server, for 24 hours.</p>
+      {cluster === null ? (
+        <p className="text-sm text-muted-foreground">
+          The server waits for your approval to join: approve it under Waiting for approval on the Servers page, then
+          run the line again.
+        </p>
+      ) : (
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Spinner />
+          Waiting for your server…
+        </div>
+      )}
       {cloudflare.at === "ready" ? (
         <p className="text-sm text-muted-foreground">Keep this tab open until your server joins. Cloudflare Tunnel is set up then.</p>
       ) : null}
@@ -97,7 +104,7 @@ export function ClusterSetup({ organizationSlug, cluster, mint, steps = true }: 
   return (
     <div className="flex flex-col gap-4">
       {line}
-      {mint.data === undefined && gate.reason !== ADD_SERVERS_REFUSED ? (
+      {cluster !== null && mint.data === undefined && gate.reason !== ADD_SERVERS_REFUSED ? (
         <Collapsible
           open={open}
           onOpenChange={(next) => {

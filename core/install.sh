@@ -8,30 +8,14 @@ PLOYZ_FALLBACK_URL=${PLOYZ_FALLBACK_URL:-https://ployz.sh}
 PLOYZ_CHANNEL_URL=${PLOYZ_CHANNEL_URL:-https://ployz.sh}
 ENROLL=
 VERSION_ARG=
-# The key the Server trusts first, from the install command: passed to ployz, which checks it.
-FIRST_KEY=
-FIRST_KEY_NEXT=
 for arg do
-    if [ -n "$FIRST_KEY_NEXT" ]; then
-        FIRST_KEY=$arg
-        FIRST_KEY_NEXT=
-        continue
-    fi
     case "$arg" in
         --enroll) ENROLL=1 ;;
-        --key) FIRST_KEY_NEXT=1 ;;
-        --key=*) FIRST_KEY=${arg#--key=} ;;
         *) VERSION_ARG=${VERSION_ARG:-$arg} ;;
     esac
 done
 PLOYZ_VERSION=${PLOYZ_VERSION:-${VERSION_ARG:-stable}}
 INSTALL_BIN_DIR=${INSTALL_BIN_DIR:-/usr/local/bin}
-FLEET_TOKEN_FILE=${PLOYZ_TEST_ROOT:-}/etc/ployz/fleet-token
-# Unset first, so a name exported by the caller doesn't carry the token into ployz's or stty's environment.
-unset FLEET_TOKEN TTY token
-TTY=${PLOYZ_TEST_ROOT:-}/dev/tty
-FLEET_TOKEN=${PLOYZ_FLEET_TOKEN:-}
-unset PLOYZ_FLEET_TOKEN
 # crates/ployz-core/release.pub; checksums.txt is signed with its secret key.
 PLOYZ_RELEASE_PUBLIC_KEY=${PLOYZ_RELEASE_PUBLIC_KEY:-RWTNGOGCZ4e3WGAYER3C3IPgx1GyuYNe1zMivQNzjvDmN23dZ6gYmyGt}
 # Same grammar as scripts/release-tag.sh; this file is fetched alone, so it cannot source it.
@@ -230,86 +214,11 @@ install_cli() {
     echo "Installed ployz to $INSTALL_BIN_DIR/ployz"
 }
 
-# The same shape ployz checks, spelled out so no locale widens the range.
-is_fleet_token() {
-    case "$1" in pflt_*) ;; *) return 1 ;; esac
-    set -- "${1#pflt_}"
-    [ "${#1}" -eq 43 ] || return 1
-    case "$1" in
-        *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-]*) return 1 ;;
-    esac
-}
-
-# Whether this shell has a controlling terminal whose foreground process group is another one. Without /proc, no.
-in_background() {
-    stat=$(cat "/proc/$$/stat" 2>/dev/null) || return 1
-    # The fields after the command name: state, ppid, pgrp, session, tty_nr, tpgid; tpgid is -1 with no terminal
-    # and 0 when the terminal has no foreground process group.
-    # shellcheck disable=SC2086
-    set -- ${stat##*) }
-    [ "$6" -gt 0 ] && [ "$3" != "$6" ]
-}
-
-# The script itself arrives on stdin, so the token is read from the terminal, never echoed.
-read_fleet_token() {
-    tty_mode=$(stty -g 2>/dev/null < "$TTY") ||
-        error "No terminal to read the Fleet Token from. Set PLOYZ_FLEET_TOKEN in the root environment instead, as cloud-init does."
-    # `curl | sudo sh` starts this shell in the background of sudo's own terminal, where the terminal stops whatever
-    # changes or reads it. sudo then hands the terminal over and resumes the stopped shell, but sudo-rs resumes only
-    # the shell, never its children, so the shell stops itself before it starts any.
-    if in_background; then
-        kill -TTOU "$$"
-        ! in_background ||
-            error "Another process holds the terminal, so the Fleet Token can't be read from it. Set PLOYZ_FLEET_TOKEN in the root environment instead, as cloud-init does."
-    fi
-    # A signal that lands just before a read of the terminal waits for Enter, but one during `wait` ends it.
-    # So a child reads the token and hands it back on a pipe whose name is gone before the prompt shows.
-    pipe_dir=$(mktemp -d)
-    mkfifo "$pipe_dir/token"
-    exec 3<> "$pipe_dir/token"
-    rm -r "$pipe_dir"
-    trap 'kill "${!:-}" 2>/dev/null || :; stty "$tty_mode" < "$TTY"' EXIT
-    trap 'exit 130' HUP INT TERM
-    stty -echo < "$TTY" || error "Could not turn off echo on the terminal, so the Fleet Token isn't read from it."
-    # The prompt waits until echo is off: a token pasted the moment it shows must not echo.
-    printf 'Fleet Token (from Servers in Ployz Cloud): ' >> "$TTY"
-    # The child also turns echo back on. bash 5.2 can spin forever on a SIGINT that lands as it starts waiting for a
-    # command, so this shell starts no second wait after the token is read.
-    { read -r token < "$TTY" || token=; printf '%s\n' "$token" >&3; exec stty "$tty_mode" < "$TTY"; } &
-    wait "$!"
-    read -r FLEET_TOKEN <&3
-    exec 3<&-
-    trap - EXIT HUP INT TERM
-    printf '\n' >> "$TTY"
-}
-
-check_in() {
-    echo "Installs Docker and Ployz."
-    [ "$(uname -s)" = Linux ] || error "A Fleet Token needs a Linux server."
-    [ "$(id -u)" = 0 ] || error "Run it as root: curl -fsSL https://ployz.sh | sudo sh -s -- ${VERSION_ARG:+$VERSION_ARG }--enroll"
-    command -v systemctl >/dev/null 2>&1 || error "A Fleet Token needs a server that runs systemd."
-    [ -n "$FLEET_TOKEN" ] || read_fleet_token
-    if ! is_fleet_token "$FLEET_TOKEN"; then
-        # Say only its length: the token is a secret.
-        if [ "${#FLEET_TOKEN}" -eq 48 ]; then
-            why="this one has other characters"
-        else
-            why="this one is ${#FLEET_TOKEN} characters"
-        fi
-        error "A Fleet Token is pflt_ and 43 more letters, digits, - or _; $why. Copy it again."
-    fi
-    install_cli
-    # printf is a builtin, so the token reaches ployz on stdin without entering any process's argv.
-    printf '%s\n' "$FLEET_TOKEN" |
-        "$INSTALL_BIN_DIR/ployz" server checkin --install --token-file "$FLEET_TOKEN_FILE" --token-stdin ${FIRST_KEY:+--key "$FIRST_KEY"}
-}
-
-[ -z "$FIRST_KEY_NEXT" ] || error "--key needs the key from your install command after it."
-if [ -n "$ENROLL$FLEET_TOKEN" ]; then
-    check_in
-else
-    case "${PLOYZ_ENROLL_TOKEN:-}" in
-        pflt_*) error "PLOYZ_ENROLL_TOKEN holds a Fleet Token. Set PLOYZ_FLEET_TOKEN instead; PLOYZ_ENROLL_TOKEN is the token ployz server add reads." ;;
-    esac
-    install_cli
-fi
+# An old install line passes --enroll or PLOYZ_FLEET_TOKEN. Refuse it before installing anything, so it doesn't
+# look like it worked.
+FLEET_TOKEN_GONE="Ployz Cloud no longer adds Servers from a Fleet Token. Run \`ployz server add --command\` where you're signed in, or choose Add server in Ployz Cloud, and run the line it prints on this server."
+[ -z "$ENROLL${PLOYZ_FLEET_TOKEN:-}" ] || error "$FLEET_TOKEN_GONE"
+case "${PLOYZ_ENROLL_TOKEN:-}" in
+    pflt_*) error "PLOYZ_ENROLL_TOKEN holds a Fleet Token. $FLEET_TOKEN_GONE" ;;
+esac
+install_cli

@@ -102,21 +102,9 @@ _Avoid_: Invitation email, join code, share link
 A Cloud-owned bearer (`PLOYZ_TOKEN`) made by a member with `ployz token new`. It acts as that member in the one Organization it was made in, until it expires, is revoked, or the member leaves. Only its hash is stored; the secret is shown once.
 _Avoid_: API key, personal access token, CLI token
 
-**Fleet Token**:
-A `pflt_` secret a signed-in member makes for one Organization so many hosts can carry it and ask to join; an Organization Token can't make or revoke one. It has a two-word name such as `amber-falcon`, unique among the Organization's unrevoked tokens, and lasts 1, 7 or 30 days or until revoked. Only its hash is stored; the secret is shown once. It is not membership: a host carrying it is not a Server until it enrolls. One made on the first-run card with Cloudflare Tunnel chosen founds closed: the first Server it enrolls starts the Cluster with every Door shut, and Cloud sends that only to a host whose `ployz` lists it in its check-in. The tab that chose it holds the Cloudflare API token, never Cloud, and sets the tunnel up once that Server joins.
-_Avoid_: Enrollment token, join token, bootstrap token
-
-**Waiting Server**:
-A host that checked in with a Fleet Token and waits to be enrolled. Cloud keeps one row per Check-in Key in an Organization, holding the host's own report and the address the check-in came from; it is not a Server and holds no Management Identity. Revoking or expiring its token removes it, unless a Server Enrollment is open on it. Rejecting it leaves a tombstone that tells the same key to stop until a different token brings it back. A Server Enrollment whose join Cloud knows is committed (its recorded stage, or a joining or publishing stage the host reported on its row for that attempt without a failure) finishes instead; a reject that lands before Cloud hears of the commit still cancels it. Its status (waiting, preparing, blocked, offline) is read from the report and the last check-in, never stored.
-_Avoid_: Pending server, candidate, unenrolled machine
-
-**Check-in Key**:
-The Ed25519 key a waiting host makes for itself and signs each check-in with, alongside its Fleet Token. It names the host while it waits; enrollment issues the Management Identity separately. Cloud also keeps each (Fleet Token, Check-in Key) pair that ever had a Server Enrollment, after the Waiting Server is gone, so a token enrolls a host on arrival at most once.
-_Avoid_: Host key, machine key, enrollment key
-
-**Server Enrollment**:
-One attempt to turn a Waiting Server into a Server, with its role (founder or joiner), name, storage and policy, and its own single-use enrollment token, held encrypted until the host takes it. A host has at most one open attempt, and an Organization at most one open founder. Cloud answers the instruction on a check-in only once the host is ready for its storage, and a joiner waits until the founder joins. It ends joined, failed or cancelled; failed and cancelled send the host back to Waiting. Cloud can answer the plan an Enroll would carry out, with founder, names, storage and skips, without starting it. An attempt waiting for a join slot counts the joins ahead of it, read from the slot queue and never stored.
-_Avoid_: Join request, enrollment job, admission
+**Install Line**:
+The one command that adds one Server: `ployz server add`, pinned to this Cloud's release, with a single-use enrollment token that works for 24 hours and the passkey or Device the Server trusts to found its Cluster or approve its join. The dashboard's **Get install command** and `ployz server add --command` print the same line. Every Server after the first joins only under its own approval, which Cloud relays and never signs. A line minted with Cloudflare Tunnel chosen founds the Cluster with every Door closed.
+_Avoid_: Fleet Token, join token, bootstrap token, Waiting Server
 
 **Signed-in Device**:
 A `ployz` CLI session a member approved in the browser. It acts in its own active Organization, which `ployz org use` moves among the member's Organizations and `ployz org new` moves into one it makes; the member's other sessions stay put. Logout or `ployz token rm` ends it at once.

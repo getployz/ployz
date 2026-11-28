@@ -48,7 +48,7 @@ The address goes live on your first deploy.
 
 ## Add a server
 
-While you have no server, the bottom bar shows **Add servers** where **Deploy** would be. Add
+While you have no server, the bottom bar shows **Add server** where **Deploy** would be. Add
 this first server from your terminal, so it joins and can take the deploy.
 
 1. [Install the CLI](../cli/overview.md#install-the-cli) and sign in:
@@ -68,16 +68,12 @@ this first server from your terminal, so it joins and can take the deploy.
 The command installs Ployz and adds the server to your organization. If your provider puts a
 firewall in front of it, open [these ports](../servers/add-a-server.md#open-the-firewall).
 
-**Add servers** in the bottom bar opens the same card as the **Servers** page instead, with its
-Fleet Token install line. Under it, **Use Cloudflare Tunnel instead of public ports** names the
-Cluster and can start your first server with ports 80 and 443 closed; see
-[Choose a name and Cloudflare Tunnel first](../servers/add-a-server.md#choose-a-name-and-cloudflare-tunnel-first).
-A server that runs its install line shows up under **Waiting to join** on the **Servers** page. Select it and click **Enroll** to
-choose its storage and name. See [Add many servers](../servers/add-many-servers.md) for the full flow.
-
-Starting servers from a script or from cloud-init user data? Install them with a
-[Fleet Token](../servers/add-a-server.md#install-with-a-fleet-token). Each one installs
-Docker and Ployz, then waits until you say it can join.
+**Add server** in the bottom bar gives you the same install line from the dashboard instead:
+click **Get install command**, run the line on the server and paste the token when it asks. Under
+it, **Use Cloudflare Tunnel instead of public ports** names the Cluster and can start your first
+server with ports 80 and 443 closed; see
+[Add a server from the dashboard](../servers/add-a-server.md#add-a-server-from-the-dashboard).
+Starting the server from cloud-init user data? Take the line from the **cloud-init** tab.
 
 ## Deploy
 

@@ -123,20 +123,18 @@ function cluster(take: (doors: readonly string[]) => readonly string[] = (doors)
   return { sets, runtime };
 }
 
-/** The first Server joined on an instruction founding the Cluster with every Door closed, as the card asks for Cloudflare. */
-const foundedClosed = (state: "running" | "joined" = "joined") => harness.pool.query(`
+/** The first Server founded with a line minted for Cloudflare, so with every Door closed. */
+const foundedClosed = () => harness.pool.query(`
   with person as (
     insert into "user" (id, name, email) values (gen_random_uuid(), 'Ada', gen_random_uuid() || '@example.com') returning id
-  ), fleet as (
-    insert into fleet_token (organization_id, name, token_hash, expires_at, founds_closed, created_by_user_id)
-    select $1, 'fleet', 'hash', now() + interval '1 day', true, id from person returning id
-  ), server as (
-    insert into waiting_server (organization_id, fleet_token_id, checkin_key, report, observed_ip)
-    select $1, id, 'key', '{}'::jsonb, '203.0.113.9' from fleet returning id, fleet_token_id
+  ), token as (
+    insert into machine_enrollment_token (organization_id, created_by_user_id, token_hash, expires_at, ingress_closed)
+    select $1, id, repeat('c', 64), now() + interval '1 day', true from person returning token_hash
   )
-  insert into server_enrollment (organization_id, waiting_server_id, fleet_token_id, role, instruction, enroll_token_id, state)
-  select $1, id, fleet_token_id, 'founder', '{"ingressClosed": true}'::jsonb, gen_random_uuid(), $2 from server
-`, [ORG, state]);
+  insert into organization_pairing (organization_id, encrypted_pairing_secret, founder_public_key, founder_claim_machine_id, founder_claim_token_hash)
+  select $1, '{}'::jsonb, 'founder-key', repeat('f', 32), token_hash from token
+  on conflict (organization_id) do update set founder_claim_token_hash = excluded.founder_claim_token_hash
+`, [ORG]);
 
 const setUp = (zone: string, http: CloudflareHttp, runtime: OrganizationRuntime["Service"]) =>
   harness.runEffect(setUpCloudflare(ORG, { token: Redacted.make(API_TOKEN), zone }).pipe(
@@ -295,7 +293,7 @@ it.each(["set_up", "active"] as const)("lets a Cluster founded after a removal o
     yield* database.transaction(endClusterIngress(ORG));
   }));
   expect(await setupRows()).toEqual([]);
-  await foundedClosed("running");
+  await foundedClosed();
   const { runtime, sets } = cluster((doors) => doors, CLOSED_FRAME);
   expect(await harness.runEffect(openPublicPorts(ORG).pipe(Effect.provideService(OrganizationRuntime, runtime)))).toEqual({ opened: true });
   expect(sets.map(({ doors }) => doors)).toEqual([["public"]]);
@@ -303,14 +301,14 @@ it.each(["set_up", "active"] as const)("lets a Cluster founded after a removal o
 });
 
 it("opens only the tunnel while the founder's enrollment hasn't yet been marked joined, as the Machine founded closed already", async () => {
-  await foundedClosed("running");
+  await foundedClosed();
   const { runtime, sets } = cluster((doors) => doors, CLOSED_FRAME);
   expect(await setUp("example.com", cloudflare().http, runtime)).toMatchObject({ state: "set_up" });
   expect(sets.map(({ doors }) => doors)).toEqual([["tunnel"]]);
 });
 
 it("refuses on a Cluster founded closed until a Server taking web traffic shows, opening no Door", async () => {
-  await foundedClosed("running");
+  await foundedClosed();
   const { runtime, sets } = cluster((doors) => doors, NO_SERVER_FRAME);
   await expect(setUp("example.com", cloudflare().http, runtime)).rejects.toMatchObject({ message: expect.stringMatching(/^Your servers aren't answering/) });
   expect(sets).toEqual([]);

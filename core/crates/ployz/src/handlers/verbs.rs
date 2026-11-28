@@ -596,14 +596,6 @@ pub(crate) const SERVER_ADD: Verb = Verb::cloud(
 .stdin(&[("--token-stdin", Stdin::Only)])
 .keeps_running(KeepsRunning::With("--wait"))
 .docs("servers/add-a-server.md");
-pub(crate) const SERVER_ENROLL: Verb = Verb::cloud(
-    "server enroll",
-    Depends,
-    server::enroll::waiting_command,
-    server::enroll::enroll_waiting,
-)
-.keeps_running(KeepsRunning::With("--status"))
-.docs("servers/manage-servers.md");
 pub(crate) const SERVER_BUILD_CACHE_CLEAR: Verb = Verb::local(
     "server build-cache-clear",
     Never,
@@ -611,16 +603,6 @@ pub(crate) const SERVER_BUILD_CACHE_CLEAR: Verb = Verb::local(
     server::clear_build_cache,
 )
 .docs("builds/build-resources-and-cache.md");
-pub(crate) const SERVER_CHECKIN: Verb = Verb::local(
-    "server checkin",
-    Never,
-    server::checkin::command,
-    server::checkin::checkin,
-)
-.stdin(&[("--token-stdin", Stdin::Only)])
-.refuses_json()
-.keeps_running(KeepsRunning::Always)
-.docs("troubleshooting/servers.md");
 pub(crate) const SERVER_CLEAN: Verb = Verb::cloud(
     "server clean",
     Depends,
@@ -652,13 +634,6 @@ pub(crate) const SERVER_LOGS: Verb = Verb::cloud(
 pub(crate) const SERVER_LS: Verb =
     Verb::cloud("server ls", Never, server::list_command, server::list)
         .docs("servers/manage-servers.md");
-pub(crate) const SERVER_REJECT: Verb = Verb::cloud(
-    "server reject",
-    Always,
-    server::reject::command,
-    server::reject::reject,
-)
-.docs("servers/manage-servers.md");
 pub(crate) const SERVER_RM: Verb =
     Verb::cloud("server rm", Always, server::remove_command, server::remove)
         .docs("servers/manage-servers.md");
@@ -689,27 +664,6 @@ pub(crate) const SERVER_UPGRADE_POLICY_SET: Verb = Verb::cloud(
     server::upgrade_policy::set,
 )
 .docs("servers/manage-servers.md");
-pub(crate) const SERVER_TOKEN_CREATE: Verb = Verb::cloud(
-    "server token create",
-    Always,
-    server::token::create_command,
-    server::token::create,
-)
-.docs("servers/add-a-server.md");
-pub(crate) const SERVER_TOKEN_LS: Verb = Verb::cloud(
-    "server token ls",
-    Never,
-    server::token::ls_command,
-    server::token::ls,
-)
-.docs("servers/add-a-server.md");
-pub(crate) const SERVER_TOKEN_REVOKE: Verb = Verb::cloud(
-    "server token revoke",
-    Always,
-    server::token::revoke_command,
-    server::token::revoke,
-)
-.docs("servers/add-a-server.md");
 pub(crate) const SERVICE_ADD: Verb = Verb::cloud(
     "service add",
     Never,
@@ -1027,20 +981,14 @@ pub(crate) const VERBS: &[Verb] = &[
     SCHEMA,
     SERVER_ADD,
     SERVER_BUILD_CACHE_CLEAR,
-    SERVER_CHECKIN,
     SERVER_CLEAN,
     SERVER_DRAIN,
-    SERVER_ENROLL,
     SERVER_FORGET,
     SERVER_LOGS,
     SERVER_LS,
-    SERVER_REJECT,
     SERVER_RM,
     SERVER_SET,
     SERVER_SHOW,
-    SERVER_TOKEN_CREATE,
-    SERVER_TOKEN_LS,
-    SERVER_TOKEN_REVOKE,
     SERVER_UPGRADE,
     SERVER_UPGRADE_POLICY_SET,
     SERVER_VOLUMES,
@@ -1149,10 +1097,6 @@ const GROUPS: &[Group] = &[
     Group {
         path: "server upgrade-policy",
         command: server::upgrade_policy::group,
-    },
-    Group {
-        path: "server token",
-        command: server::token::group,
     },
     Group {
         path: "service",

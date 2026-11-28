@@ -109,9 +109,8 @@ export const removeOrganizationAsMember = Effect.fn("Organization.removeAsMember
 });
 
 /**
- * Cloud's own rows of an Organization whose pairing is gone; returns its Cluster Domain, if any, to release. The
- * cascade follows the Organization enrollment lock order: it locks the rows check-in, Reject and revoke take before it
- * deletes them, and ends open attempts, with their runs' cancel events, before it deletes their tokens.
+ * Cloud's own rows of an Organization whose pairing is gone; returns its Cluster Domain, if any, to release. It takes
+ * the Organization enrollment lock first, so no enrollment token appears while it deletes them.
  */
 const dropOrganizationRows = Effect.fn("Organization.dropRows")(function* <E>(organizationId: string, deleting: Deleting<E>) {
   const { drizzle } = yield* Database;

@@ -15,8 +15,6 @@ import { organization } from "#/modules/organization/tables";
 
 import { type DataLossIdentity } from "#/modules/runtime/data-loss-identity";
 
-import type { EnrollmentRole } from "#/modules/machines/waiting/enrollment-states";
-
 import { sql } from "drizzle-orm";
 
 import { boolean, check, foreignKey, index, jsonb, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
@@ -397,8 +395,8 @@ export const machineEnrollmentToken = pgTable(
     claimedAt: timestamp("claimed_at", { mode: "date", withTimezone: true }),
     /** When this token first waited for a join slot: its place in the Organization's line. */
     queuedAt: timestamp("queued_at", { mode: "date", withTimezone: true }),
-    enrollmentRole: text("enrollment_role").$type<EnrollmentRole>(),
-    serverEnrollmentId: uuid("server_enrollment_id"),
+    /** Minted with Cloudflare Tunnel chosen: a Server that founds with it starts the Cluster with ports 80 and 443 closed. */
+    ingressClosed: boolean("ingress_closed").default(false).notNull(),
     createdAt,
     updatedAt,
   },

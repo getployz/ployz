@@ -37,129 +37,6 @@ can't run ZFS, and holds plain Docker volumes only. See
 If the page shows **Can't reach your servers right now**, see
 [Troubleshooting servers](../troubleshooting/servers.md#cant-reach-your-servers-right-now).
 
-## Servers waiting to join
-
-A server you installed with a Fleet Token checks in with Ployz Cloud and waits for you to enroll
-it. [Add many servers](add-many-servers.md) shows how in the dashboard. From the CLI, list the
-ones waiting:
-
-```sh
-ployz server ls --waiting
-```
-
-Each row shows the start of the server's id, its name, its provider, the IP address Ployz Cloud saw
-it check in from, its status and how long ago it first checked in. **Installing Docker** and
-**Building ZFS** mean it is still getting ready. You can enroll it already, and the enrollment
-waits until it is ready for its storage. **Ready** means preparation has finished. **Docker install failed**
-means Ployz couldn't install Docker there. **Blocked** means something on the server stops Ployz
-from using it, and **Offline** means it stopped checking in.
-
-To see one in full, with its CPU, memory, disks, Docker, the storage it would get and anything
-blocking it:
-
-```sh
-ployz server show web-3
-```
-
-`ployz server show` shows a server that has joined the same way, so one command covers both: its
-OS, versions, addresses, storage, CPU, memory and disk, and how long a round trip to each other
-server takes over the mesh, the median of its last few minutes. Add `--json` for everything it knows, such as the features its daemon supports. It
-also takes a waiting server's id, or the start of one at least 8 characters long, such as the
-start the list prints. If two waiting servers share a name or the start you typed, it lists their
-ids instead.
-
-To enroll waiting servers, select their names or hostnames with a quoted glob:
-
-```sh
-ployz server enroll 'host-*' --name 'web-{n}' --status
-```
-
-Ployz Cloud plans the names, the first server and storage. The CLI prints that plan, source IPs
-and anything skipped, then asks before starting. When your organization has no servers yet, the
-oldest selected server goes first. Use `--first host-a` with a name glob or `--all` to choose
-another selected server. Put the glob before `--first`.
-Bare `--first` enrolls only the oldest match. `--all` selects every waiting server and prints
-how many came from each provider, including **Unknown**.
-
-`--name 'web-{n}'` numbers the planned names. Without it, each server is named after its
-hostname, lowercased with other characters turned into hyphens (`MY-SERVER` becomes `my-server`).
-Selection takes names or hostnames, never IDs. `--storage zfs` is the default. It uses a spare
-disk when available and falls back to Docker volumes where ZFS cannot run. Add
-`--no-spare-disk` to keep ZFS on the main disk, or `--no-fallback` to skip servers that cannot
-use ZFS. `--storage none` uses Docker volumes. Each enrolled server runs services, takes web
-traffic and runs builds.
-
-Each server starts in the `default` region. `--region fsn` puts every server of this enrollment
-in `fsn` instead, as the Enroll sheet's region picker does for each server. A `ployz` older than
-this option can't pass it: it enrolls every server in `default`, and you can move one later
-([Set a server's region](#set-a-servers-region)).
-
-Add `--yes` to accept the printed plan without a prompt. Without a terminal or with `--json`,
-Ployz requires `--yes` and otherwise returns the plan with `confirmation_required`.
-To enroll every waiting server without a prompt, for example in a script:
-
-```sh
-ployz server enroll --all --yes --json
-```
-
-A command that skips any servers exits 3 and includes the reasons in its JSON result.
-If Cloud starts different names or roles, or omits a planned server, the CLI reports the
-changes and exits 3. Enrollment continues in Cloud.
-
-`--status` follows each attempt and prints a line when its stage changes. **Queued** means
-the server is still preparing its storage. **In line · 3 servers ahead** means it is waiting
-for a join slot. If Cloud cannot see a current position, the CLI says **Join position unknown**.
-A failed attempt prints the server's error. Ctrl-C stops following while enrollment continues.
-With a selection, `--status` starts matching servers that are not already enrolling after
-confirmation, then follows both existing and new attempts. Bare `--first --status` stays
-limited to the oldest matching server. An unknown state makes the command exit 3 once the
-other attempts end.
-Resume open attempts without starting new ones:
-
-```sh
-ployz server enroll --status
-ployz server enroll --status --json
-```
-
-To turn away servers you don't want, name them, give a pattern or give one server's id. The start
-of an id works too, at least 8 characters long and matching only one server. A name rejects every
-waiting server with that name. Patterns match names only, and case matters. An exact id wins over
-a server whose name is that id, a server named exactly what you typed wins over an id that starts
-that way, and either wins over the pattern it spells, so `db[1]` means that name. Ployz lists what
-matches with each one's id and asks before it does anything:
-
-```sh
-ployz server reject 'web-*'
-```
-
-Answer `y` and it prints `2 rejected. They won't come back under the same Fleet Token.` A rejected
-server stops checking in, and asking again with the same Fleet Token gets it turned away. To keep
-out every server that holds a Fleet Token, revoke the token. If one left the list before Ployz
-Cloud got to it, the count says so, as in `1 of 2 rejected; the rest had already left the list.`
-Add `--yes` to skip the question, for example in a script. Without `--yes` outside a terminal it
-fails with `confirmation_required` and rejects nothing.
-
-A server whose enrollment has started has left the waiting list, but `ployz server reject` still
-matches it by its planned name or its id. Rejecting it cancels the enrollment and turns the server
-away under its Fleet Token, where Cancel in the dashboard returns it to Waiting. Once Ployz Cloud has sent its join, the server may already be in the Cluster, so Ployz
-doesn't reject it. It prints `web-1 may already be in the Cluster: Cloud sent its join` and rejects
-the rest. Once that server has joined, remove it with `ployz server rm`. `--json` lists the
-enrollments it cancels under `enrolling` and the ones it left alone under `joining`.
-
-`ployz server reject` sends servers to Ployz Cloud in batches of 1000. If Cloud refuses the first
-batch, for example with a 403 because you are not a member, the reject fails with that error and
-nothing was rejected. If a timeout, a dropped connection or a Cloud error stops a batch, the reject
-stops with exit code 3 and prints how many went through, how many may or may not have been rejected
-and how many were not. This includes a timeout on the first batch, which leaves that whole batch
-uncertain. `--json` lists those ids under `uncertain` and `not_rejected`. Run the same reject again
-to finish. If Cloud refuses a later batch, the reject also stops with exit code 3, and that batch
-and the rest count as not rejected.
-
-A name with characters a terminal would act on, such as color codes, prints with `�` in their place.
-Copying it back from the screen won't match, so take the id or the exact name from
-`ployz server ls --waiting --json`. A command Ployz suggests for such a name quotes it as `$'...'`,
-which bash and zsh read but other shells may not.
-
 ## See what runs on a server
 
 Click a server. Its page shows its status and public IP address, then:
@@ -921,7 +798,7 @@ reached. `PLOYZ_CHANNEL_URL` replaces `https://ployz.sh` where `stable` and `bet
 `https://` URLs, and must hold no credentials: the server passes them to its upgrade process on
 the command line. Set them in `/etc/default/ployz` on the server and run
 `sudo systemctl restart ployz` for `ployz server upgrade`, and in your shell for
-`ployz server add --ssh` or `ployz server checkin --install`. The server still checks the
+`ployz server add --ssh`. The server still checks the
 release's signature.
 
 `ployz server upgrade` works the same way whether automatic upgrades are on or off: your apps keep
@@ -1179,7 +1056,7 @@ services whose volume was on it (see
 [When a server goes down](../services/scaling.md#when-a-server-goes-down)).
 
 Removing your last server sends it nothing: Ployz Cloud lets go of your cluster and drops its keys.
-Your projects and settings stay, and the bottom bar shows **Add servers** until you
+Your projects and settings stay, and the bottom bar shows **Add server** until you
 [add one](add-a-server.md). The server keeps running its containers, so `ployz server rm` and the
 dashboard say so: run `sudo ployz-uninstall` on it to stop them, or `ployz server add --reset` to
 use it again. With `--json`, `still_running` is `true`.
@@ -1233,8 +1110,7 @@ Cloud.
 
 Ployz stays installed on a removed server, and its containers keep running. To stop them and remove
 Ployz itself, run `sudo ployz-uninstall` on the server. Docker, your images and your volume data
-stay on the disk. It also removes the server's Fleet Token and its check-in identity, so
-installing it again with a Fleet Token checks it in as a new host, as on any other server. If it says `Ployz mutation or installation is active; retry uninstall`,
+stay on the disk. If it says `Ployz mutation or installation is active; retry uninstall`,
 wait for the upgrade or install to finish and run it again. Nothing was removed.
 
 ## Forget a server that is gone

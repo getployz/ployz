@@ -66,8 +66,8 @@ ployz server add --command --region fsn
 The printed line keeps `--region`. A region is made of letters, digits, hyphens, underscores and
 dots, such as `fsn` or `eu_west.1`. Capitals are lowered, so `FSN` joins `fsn`. `--label-add
 region=fsn` does the same. Give both with different regions and the command stops before anything
-starts, saying to keep `--region`. From the dashboard, you pick each server's region when you
-enroll it; see [Enroll the selection](add-many-servers.md#enroll-the-selection).
+starts, saying to keep `--region`. The dashboard's line joins the `default` region; set the
+region afterwards, as in [Set a server's region](manage-servers.md#set-a-servers-region).
 
 Run the command again for a server that already joined and it keeps its region, or stays without
 one if it joined before regions. Name a different region and the command stops and says which
@@ -100,7 +100,8 @@ server under **Waiting for approval**, with its join code. Choose **Approve with
 answer your passkey's prompt. Approve a server only if you added it. Your passkey signs the join
 for that one server, and Ployz Cloud only passes the approval on. The prompt offers only the
 passkey the line carried. When that passkey belongs to someone else, the dashboard says so and
-offers no button: ask them to approve it.
+offers no button: ask them to approve it. Once it's approved, run the same line again on the
+server.
 
 With the line from `ployz server add --command`, approve from the computer whose device the line
 carries. The join command on the server prints a 20-character code. On that computer, run:
@@ -111,9 +112,8 @@ ployz device approve --join CODE
 
 The code carries 100 bits of the server's identity and key fingerprint. Check the name, subnet
 and endpoints the CLI shows before it signs. It also lists the devices the server will trust, and
-the passkeys, if your cluster has any, with what a passkey can do. Then enroll the server again:
-choose **Enroll** for it in the dashboard, or run the same join command on the server again, with
-its token and options. A new admission needs an approval less than 15 minutes old. If the reply
+the passkeys, if your cluster has any, with what a passkey can do. Then run the same join command
+on the server again, with its token and options. A new admission needs an approval less than 15 minutes old. If the reply
 is lost, run the same command again to recover the stored capsule, even after the approval expires.
 
 On a computer whose device isn't the one the line carries, the command stops before it signs and
@@ -124,7 +124,8 @@ Server web-2 trusts only passkey tbpigkmhxf, not this computer's device vgu6xrfg
 ```
 
 If a join was approved with another key anyway, the server refuses it and the join stays open
-until the server joins. Approve it again with the key the server waits for, then enroll it again.
+until the server joins. Approve it again with the key the server waits for, then run the join
+command again.
 
 A new server refuses to join without an approval. If the approval goes missing on the way, the
 join stops and says the join approval carries no signature. Nothing changes on the server, so
@@ -259,23 +260,70 @@ approve one on the server itself, it refuses deploys and the other changes that
 `ployz server add --standalone root@HOST` approves this computer's device on the new server for
 you. Servers you add later trust the same devices and passkeys as the server that admits them.
 
-## Add servers from the dashboard
+## Add a server from the dashboard
 
-Before your first server, the **Servers** page shows one card instead of a list. Click
-**Get install command** and it makes a token that works for 24 hours and shows the install line
-with the token under it, then **Shown once. Expires in 24h.** Copy the token now: Ployz can't show
-it again. Paste the line in a shell on the server, as root or as a user with `sudo`, and paste the
-token when it asks. The card then says **Listening for servers…** until the first one checks in.
+Each install line adds one server. Before your first server, the **Servers** page shows the card
+**Add your first server**. While you have no server, the bottom bar of an environment offers the
+same card under **Add server**; you can skip it and build your project first. Once you have a
+server, click **Add server** on the **Servers** page, which opens **Add a server**.
+
+1. Click **Get install command**. It makes a token for one server and shows the install line on
+   the **Shell** tab, with the token under it and **Shown once. Works for one server, for 24
+   hours.** Copy the token now: Ployz can't show it again.
+2. Open a shell on the server, as root or as a user with `sudo`, and paste the line. Not on Ubuntu,
+   Debian or Amazon Linux, or can't run ZFS? See [Start without ZFS](#start-without-zfs).
+3. Paste the token when it asks. The prompt doesn't show what you paste.
+
+The line is the same one `ployz server add --command` prints:
+
+```sh
+curl -fsSL https://ployz.sh | sh -s -- VERSION && sudo --preserve-env=PLOYZ_ENROLL_TOKEN ployz server add --key pk1_…
+```
+
+To start the server from user data, take the **cloud-init** tab instead. It sets the token before
+the same line, so nothing asks for it:
+
+```yaml
+#cloud-config
+runcmd:
+  - export PLOYZ_ENROLL_TOKEN=pmet_…; curl -fsSL https://ployz.sh | sh -s -- VERSION && sudo --preserve-env=PLOYZ_ENROLL_TOKEN ployz server add --key pk1_…
+```
+
+Any process on the server, containers included, can read user data from the provider's metadata
+service for as long as the server runs. The token in it works for one server, for 24 hours.
+
+The server joins the `default` region. To put it in another, see
+[Set a server's region](manage-servers.md#set-a-servers-region), or add the server with
+`ployz server add --command --region NAME` instead. For the next server, click **Get install
+command** again: each token adds one server.
+
+### Your first server
+
+Your first server starts your cluster as soon as its line runs. The card says **Waiting for your
+server…** until the server shows in the list.
+
+### Every server after the first
+
+A later server waits for your approval to join, and the dialog says so: **The server waits for your
+approval to join: approve it under Waiting for approval on the Servers page, then run the line
+again.**
+
+1. Run the line on the server. It stops and prints a join code.
+2. On the **Servers** page, find the server under **Waiting for approval** and choose **Approve
+   with passkey**. See [Approve a join](#approve-a-join).
+3. Run the same line again on the server. The token still works, for 24 hours from when you made
+   it.
+
+The server then joins and trusts the same devices and passkeys as your other servers.
+
+### The key on the dashboard's line
 
 Add a passkey in **Account** before your first server: the line carries it, and your first
 server trusts that passkey. With no passkey, the card shows no install line. It says to add a
 passkey first, with a link to **Account**, since a cluster never starts without a key.
 
-For a second server, the install line carries your passkey once every server trusts it. When the
-server checks in, approve its join under **Waiting for approval** with **Approve with passkey**.
-The server takes only that passkey's approval, so `ployz device approve --join` doesn't work for
-it. Then choose **Enroll** for the server again. It trusts the same devices and passkeys as your
-first server.
+For a later server, the line carries your passkey once every server trusts it. The server takes
+only that passkey's approval, so `ployz device approve --join` doesn't work for it.
 
 When your servers trust no passkey of yours, the dashboard shows no install line. It names the
 people whose passkey your servers trust, who can add the server instead, and the command that
@@ -287,15 +335,15 @@ sudo ployz key add pk1_…
 
 Run it as root on each server. It changes only the server you run it on.
 
-Only an owner or admin, or [Ployz support](../account/organizations.md#let-ployz-support-in), can make a token. For a member, **Get install command** and **Add servers**
-say so instead.
+Only an owner or admin, or [Ployz support](../account/organizations.md#let-ployz-support-in), can
+get an install command. For a member, **Add server** and **Get install command** say so instead.
 
 ### Choose a name and Cloudflare Tunnel first
 
-Under **Get install command**, **Use Cloudflare Tunnel instead of public ports** opens two
-choices for the Cluster your first server starts. Leave it closed and the first server starts as
-it always did: ports 80 and 443 open, and your apps get addresses under your organization's free
-domain.
+On the **Add your first server** card, under **Get install command**, **Use Cloudflare Tunnel
+instead of public ports** opens two choices for the Cluster your first server starts. Leave it
+closed and the first server starts with ports 80 and 443 open, and your apps get addresses under
+your organization's free domain.
 
 - **Cluster name** is the name your services' private addresses end in, like
   `.acme.ployz.internal`. It starts as your organization's slug. Change it here, or later in
@@ -323,7 +371,7 @@ If setup stops, the Servers page says why. **Try again** runs it with the same t
 public ports instead** opens ports 80 and 443. A setup that fails once it has reached your server
 opens the ports instead, so your apps answer, and says so. If you closed the tab before the server joined, the
 Servers page says your apps aren't reachable yet: paste the token again to finish, or open the
-ports. A server whose `ployz` predates this can't start closed, and enrolling it says to update
+ports. A server whose `ployz` predates this can't start closed, and adding it says to update
 `ployz` or get an install command without Cloudflare Tunnel.
 
 A Cluster remembers the doors you chose: `ployz server add --ingress-closed` and `ployz ingress use`
@@ -335,113 +383,12 @@ as it did: new servers copy the doors the servers already run. So does one whose
 older `ployz`, when no server of the Cluster can record doors. When one can, `ployz ingress use` run
 through the older server records the doors on that one and goes on.
 
-The bottom bar of an environment offers the same card under **Add servers** while you have no
-server. You can skip it and build your project first.
-
 Once a server has joined, the card is gone. Rename the Cluster and switch between public ports
 and Cloudflare Tunnel in **Organization → Network**; see [Cloudflare Tunnel](../services/cloudflare-tunnel.md).
 
-Once you have a server, or one is waiting, make more tokens with **Add servers**:
-
-1. Go to **Servers** and click **Add servers**. While you have no server, the bottom bar of your
-   environment offers it too.
-2. Name the token, or leave the name blank and Ployz picks one. Choose how long it works: 1 day,
-   7 days or 30 days.
-3. Click **Create**. The **Shell** tab shows the install line and the token under it, then
-   **Shown once. Expires in 24h.** Copy the token now: Ployz can't show it again.
-4. Open a shell on the server, as root or as a user with `sudo`, and paste the line. When it asks
-   for the Fleet Token, paste the token. The prompt doesn't show what you paste, so the token stays
-   out of shell history and the process list. To put it in user data instead, take it from the
-   **cloud-init** tab; it holds the same token. Not on Ubuntu, Debian or Amazon
-   Linux, or can't run ZFS? See [Start without ZFS](#start-without-zfs).
-
-![The Add servers dialog with its install line and the token to paste](../images/add-servers-dialog.png)
-
-Run the same line, and paste the same token, on as many servers as you like while the token
-works. Each one installs Docker and Ployz and shows up under **Waiting to join** on the **Servers** page within seconds, in a tray
-above your other servers. The tray shows only while a server waits or enrolls. Its header counts
-the servers that are ready, preparing, blocked and offline, with a bar for the mix. New ones go
-to the bottom of the list, and the list never reorders while you look at it. When your very first
-server arrives ready, the tray names it and offers **Enroll** and **Reject** right in the header.
-
-Select a waiting server and click **Enroll** to choose its region, name, storage and what it runs.
-Each server starts in the **Default** region unless you pick another. Two servers can't each
-make a new region from names that give one key, such as `Sydney` and `SYDNEY`: the sheet asks
-for one name. If the new region's name can't be saved after the servers enroll, a message says
-so, and the region shows its key until you [rename it](manage-servers.md#list-and-rename-regions).
-You can enroll while it prepares. Only an owner or admin, or [Ployz support](../account/organizations.md#let-ployz-support-in), can enroll or reject servers. For a member,
-**Enroll** and **Reject** are disabled and say so. Follow [Add many servers](add-many-servers.md) for the full
-review and enrollment flow.
-
-Each row shows the server's name and operating system, the IP address Ployz Cloud saw it check in
-from and its provider, its CPU, memory and main disk size, and its status. **Installing Docker** means it is
-still getting ready, and **Ready** means Docker is in place. **Building ZFS** under **Ready** means
-its ZFS build is still running, and an enrollment with ZFS volumes waits for it. **Blocked** rows say what
-is wrong with the server, in the server's own words, such as `Disk is 20 GiB. Ployz needs 30 GiB.`
-A server that still belongs to another organization is blocked until you run `ployz server rm` for it there. A server
-where another program holds UDP port 51820, which Ployz needs for WireGuard, is blocked and names that program, for
-example `UDP port 51820 is in use by avahi-daemon (pid 812).` Free the port and the block clears on its next
-check-in.
-**Offline** means it stopped checking in. You can't select a blocked server. Once more than ten
-servers wait, filter the list by readiness, provider and token, or search by name or IP address.
-
-Servers you enroll move to **Enrolling** in the same tray, with the step each one is on, until
-they join.
-
-Above your servers, **Fleet** counts how many are online, building, offline and unknown, and how
-many need an upgrade.
-
-Click a waiting row to see the server in full, with its CPU, memory, disks, Docker, the storage it would
-get, its open ports and anything blocking it. **Reject** there turns the server away: it stops
-checking in, and asking again with the same token gets it turned away.
-
-### Your tokens
-
-**Tokens** on the **Servers** page lists your Fleet Tokens with how many servers wait on each and
-how many joined, when each expires and when it was last used. **Revoke** asks you to confirm,
-then stops a token at once and drops the servers still waiting on it; the message after says how
-many. Servers that already joined stay.
-
-## Add many servers with a Fleet Token
-
-A Fleet Token lets servers register under **Waiting** for you to review and enroll together.
-See [Add many servers](add-many-servers.md). You can also make a token from your computer:
-
-```sh
-ployz server token create --expires 7d
-```
-
-It prints the token once, and an install line for the release of the `ployz` CLI you ran. Run
-that line on each server and paste the token when it asks:
-
-```sh
-curl -fsSL https://ployz.sh | sudo sh -s -- VERSION --enroll
-```
-
-Keep the version it names. Without one, the script installs the stable release, which may not
-match your Ployz Cloud. With `--json`, the token is in `fleet_token.token` and the line in
-`install`.
-
-- **Servers wait for you.** A server that runs the line checks in under **Waiting** until you enroll it from **Servers**.
-- **It lasts 24 hours by default.** `--expires` takes `1d`, `7d` or `30d`.
-- **Expiry and revoke stop servers that haven't joined.** Revoke drops waiting servers at once. After expiry, each waiting server is dropped when it next checks in. Enrollments already started finish, and servers already in stay.
-- **Only your login makes or revokes one.** An organization token can't.
-
-List your tokens, and revoke one by name:
-
-```sh
-ployz server token ls
-ployz server token revoke amber-falcon
-```
-
-The [Tokens](#your-tokens) page on **Servers** shows the same list. Revoking also drops the servers
-still waiting on that token. The prompt keeps the token out of shell history, sudo logs and the
-server's process list. See [Install with a Fleet Token](#install-with-a-fleet-token) for cloud-init
-and rerun outcomes.
-
 ## Use an empty spare disk for volumes
 
-To put managed volumes on a spare disk, name it when you enroll the server:
+To put managed volumes on a spare disk, name it when you add the server:
 
 ```sh
 sudo ployz server add --storage zfs:/dev/disk/by-id/virtio-data
@@ -479,105 +426,13 @@ On Ubuntu, ZFS comes ready-made. On Debian and Amazon Linux, the server builds i
 takes longer: 15–20 minutes on a 2-vCPU Amazon Linux Server, a few minutes on Debian. The build
 tools stay installed, so ZFS can be rebuilt when the kernel updates.
 
-If your server can't run ZFS, put `PLOYZ_SKIP_ZFS=1` after `sudo` in the install line, as in
-`curl -fsSL https://ployz.sh | sudo PLOYZ_SKIP_ZFS=1 sh -s -- VERSION --enroll`. With
-`ployz server add`, add `--storage none`.
+If your server can't run ZFS, add `--storage none` to the end of the install line, or run
+`ployz server add --command --storage none` and the line it prints keeps it.
 
 The server then shows **Docker only**. If none of your servers has managed volumes, every new volume,
 a database's included, fails to deploy until you open it and tick **Use a plain Docker volume
 (not recommended)** under **Advanced**; see
 [When your servers show Docker only](../services/volumes.md#when-your-servers-show-docker-only).
-
-## Install with a Fleet Token
-
-A Fleet Token starts with `pflt_`. Give it to the install script and the server asks to join
-instead of joining. Use the version from the install line **Add servers** or
-`ployz server token create` shows:
-
-```sh
-curl -fsSL https://ployz.sh | sudo sh -s -- VERSION --enroll
-```
-
-The script prints `Installs Docker and Ployz.` and asks for the
-token at a `Fleet Token (from Servers in Ployz Cloud):` prompt that doesn't show what you paste. The token never appears on a
-command line, so it stays out of `sudo`'s log, shell history and `ps`. The script checks that the
-token looks like one before it changes anything. It installs the CLI and runs
-`ployz server checkin --install`, which checks in with the token and only once Cloud has answered
-writes it to `/etc/ployz/fleet-token`, readable by root only. That ends with
-`Waiting for approval`, within seconds: Docker installs and ZFS builds in the background while the
-server waits, and the server shows on the **Servers** page at once. Two first installs end without
-it and still exit cleanly, with the service set up and checking in:
-
-- **Cloud can't be reached.** Connection errors, timeouts and server errors print the reason and
-  `The check-in service keeps trying.` The install writes the token without Cloud having answered
-  it, and the server checks in every minute until Cloud does.
-- **Cloud holds the check-in back.** Cloud's own message follows `Cloud held this check-in back:`,
-  for example `This Fleet Token already has 5 waiting servers.` The server isn't on the
-  **Servers** page yet. It asks again when Cloud says to.
-
-When Cloud already has an enrollment ready for the server, as Enroll on arrival can on a rerun, the
-install ends with `Cloud is ready to enroll this server. The check-in loop runs it.` instead. On a
-server that already joined with that token, it ends `Already joined`. On a server that can't join
-yet, it ends with a `Blocked.` line for each reason `ployz status` lists, such as `Blocked. Already
-in another cluster. Remove it there first: ployz server rm web-1`. When the install starts
-Docker's install again, an earlier failed Docker install is not one of them.
-
-- **Without ZFS.** Put `PLOYZ_SKIP_ZFS=1` after `sudo`, as
-  `curl -fsSL https://ployz.sh | sudo PLOYZ_SKIP_ZFS=1 sh -s -- VERSION --enroll`. It does what
-  `--storage none` does for `ployz server add`.
-- **From user data.** cloud-init runs user data as root with no terminal to prompt at, so pass the
-  token in `PLOYZ_FLEET_TOKEN` instead:
-
-  ```yaml
-  #cloud-config
-  runcmd:
-    - curl -fsSL https://ployz.sh | PLOYZ_FLEET_TOKEN=pflt_… sh -s -- VERSION
-  ```
-
-  Any process on the server, containers included, can read user data from the provider's
-  metadata service for as long as the server runs. Give a token you put there a short expiry.
-- **Run it again.** The same line on the same server updates its token and keeps it one server.
-  The server keeps `/etc/ployz/fleet-token` until Cloud takes the new token, even when that file
-  doesn't hold a token. If Cloud can't be reached, is busy, or the probe fails, a rerun with a
-  different token ends with `Until Cloud takes the new Fleet Token, this install keeps
-  /etc/ployz/fleet-token and changes nothing else. Run the install again.` and an error. If the
-  new token already has as many waiting servers as it allows, the rerun ends with `Cloud didn't
-  take the new Fleet Token, so this install keeps /etc/ployz/fleet-token and changes nothing
-  else.` and an error. Two installs at once take turns writing the file, so a token Cloud didn't
-  take never replaces one it took. A rerun with the same token keeps trying, as a first install
-  does.
-- **A token file it can't read.** If `/etc/ployz/fleet-token` exists but can't be read, the
-  install ends with `Could not read /etc/ployz/fleet-token` and an error before it writes
-  anything. Fix or remove that file and run the install again.
-- **An expired token** prints `Token expired.`, Cloud's reason, and `Run the install again with a
-  new token.`, and the script exits with an error. A revoked one says so the same way.
-- **A token Cloud doesn't know**, or a missing `PLOYZ_CLOUD_URL` when you
-  [run your own Cloud](../self-hosting.md), ends the install with
-  `Cloud at … refused this Fleet Token.` and an error. It says to check `PLOYZ_CLOUD_URL` only
-  when you set it.
-- **Something other than Ployz Cloud answers**, such as a 404 or a web page from a wrong
-  `PLOYZ_CLOUD_URL`, a proxy or a firewall, the install ends with an error that names the URL it
-  reached and says it `isn't how Ployz Cloud answers. A proxy or firewall in between may have
-  answered instead`. It says to check `PLOYZ_CLOUD_URL` only when you set it.
-
-When the install ends with an error because the token isn't shaped like one, Cloud refused it,
-the clock is off, Cloud didn't answer or take a new token on a rerun, the token file couldn't be
-read, or something other than Cloud answered, it has installed only the `ployz` CLI and started nothing. On a first install no
-check-in service is set up and preparation never starts. On a server that already checks in, the
-running service keeps its old token and goes on as before.
-
-An error after Cloud has answered the token, such as systemd failing to start the service, leaves
-a partial install. The new token is already in `/etc/ployz/fleet-token`, and the service files
-and preparation may be set up. Fix the cause and run the install again.
-
-Without `--enroll`, the script checks in only when `PLOYZ_FLEET_TOKEN` is set, and ends with
-`A Fleet Token is pflt_ and 43 more letters, digits, - or _` when it holds anything else, followed
-by how long the value was, or, at the right length, that it has other characters. It never prints
-the value. It leaves `PLOYZ_ENROLL_TOKEN` to
-`ployz server add`, and refuses a Fleet Token in it, which older install lines put there; use
-`PLOYZ_FLEET_TOKEN` instead. If the server
-waits longer than you expect, see
-[A server waits for approval](../troubleshooting/servers.md#a-server-waits-for-approval-and-never-shows-up).
 
 ## Open the firewall
 

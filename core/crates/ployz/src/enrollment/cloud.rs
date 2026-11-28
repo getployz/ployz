@@ -1,5 +1,4 @@
-//! Cloud enrollment: what `ployz server add` with a token and the check-in loop's enroll
-//! instruction both run.
+//! Cloud enrollment: what `ployz server add` with a token runs.
 
 use crate::cloud;
 use crate::cluster::{Call, Deadline, Wait};
@@ -15,8 +14,7 @@ use ployz_core::{
 use super::recovery::{KEEP_THE_CODE, RECOVERY_CODE_NOT_SAVED, wrap_sealing_key};
 use super::{AskedPolicy, EnrollPlan, founding, machine};
 use crate::cloud::enroll::{
-    CloudPairing, Command as EnrollCommand, EnrollIdentity, EnrollStage, Initialize,
-    InitializeMode, Join, Outcome, Recovery,
+    CloudPairing, EnrollIdentity, EnrollStage, Initialize, InitializeMode, Join, Outcome, Recovery,
 };
 use crate::cloud::origin::CloudOrigin;
 use crate::connect::{Client, ConnectError};
@@ -35,22 +33,13 @@ pub(crate) struct Enrolled {
     pub(crate) follow_up: Option<Error>,
 }
 
-/// Who reads this enrollment's output. Only a person can keep a recovery code.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Reader {
-    Person,
-    Fleet,
-}
-
-/// One Cloud enrollment: the command it runs as, what it asks, the token Cloud issued, and
+/// One Cloud enrollment: what it asks, the token Cloud issued, and
 /// `install`, which installs this CLI's daemon version on the enrolling host.
 pub(crate) struct Enrollment<'a, Install> {
-    pub(crate) command: EnrollCommand,
     pub(crate) plan: &'a EnrollPlan,
     pub(crate) token: &'a CloudEnrollToken,
     pub(crate) cloud_url: &'a str,
     pub(crate) install: &'a Install,
-    pub(crate) reader: Reader,
     pub(crate) progress: &'a dyn Fn(EnrollStage),
 }
 
@@ -163,7 +152,7 @@ where
         requested_storage: StorageChoice,
         asked: &AskedPolicy,
     ) -> Result<(Identified, Outcome), Error> {
-        let (command, plan, token, progress) = (self.command, self.plan, self.token, self.progress);
+        let (plan, token, progress) = (self.plan, self.token, self.progress);
         let url = CloudOrigin::new(self.cloud_url).enroll_url();
         let (details, machine_token) = machine::inspect_token(client, token_request).await?;
         let initial_policy =
@@ -178,7 +167,7 @@ where
             recovery_supported,
         );
         progress(EnrollStage::Enrolling);
-        let outcome = match cloud::enroll::enroll(command, &url, token, &identity, progress).await {
+        let outcome = match cloud::enroll::enroll(&url, token, &identity, progress).await {
             Err(error)
                 if error.capability().as_deref() == Some(ployz_core::JOIN_APPROVAL_CAPABILITY) =>
             {
@@ -209,7 +198,7 @@ where
                         JoinEntry::relayed(&config).await?
                     };
                     if device::sign_waiting_join(&mut entry, &config, &expected, from).await? {
-                        cloud::enroll::enroll(command, &url, token, &identity, progress).await?
+                        cloud::enroll::enroll(&url, token, &identity, progress).await?
                     } else {
                         return Err(error.into());
                     }
@@ -247,7 +236,7 @@ where
         pinned: PinnedAddresses,
         report: &mut SetupReport,
     ) -> Result<Enrolled, Error> {
-        let (command, plan, token, progress) = (self.command, self.plan, self.token, self.progress);
+        let (plan, token, progress) = (self.plan, self.token, self.progress);
         let Identified {
             details,
             initial_policy,
@@ -315,7 +304,6 @@ where
         if relays {
             let confirmation = confirmation.ok_or_else(machine::confirmation_missing)?;
             let answered = cloud::enroll::enroll(
-                command,
                 &enroll_url,
                 token,
                 &identity.confirming(confirmation),
@@ -364,7 +352,6 @@ where
         // Cloud may use the replacement after publication, revoking this key.
         // A committed join remains enrolled even when Global catch-up needs a separate retry.
         cloud::enroll::publish(
-            command,
             &callback_url,
             token,
             assigned.id,
@@ -373,7 +360,6 @@ where
         )
         .await?;
         cloud::enroll::callback(
-            command,
             &callback_url,
             token,
             assigned.id,
@@ -408,7 +394,7 @@ where
         initialize: Initialize,
         report: &mut SetupReport,
     ) -> Result<Enrolled, Error> {
-        let (command, plan, token, progress) = (self.command, self.plan, self.token, self.progress);
+        let (plan, token, progress) = (self.plan, self.token, self.progress);
         let cloud_url = self.cloud_url;
         let Identified {
             details,
@@ -541,7 +527,6 @@ where
             // does not hold back publication, as a joiner's catch-up failure does not.
             let elsewhere = error.only_elsewhere(&machine.id);
             let error = ingress_incomplete(
-                command,
                 plan,
                 super::output::ingress_hints(error.into(), |args| plan.reach().rerun(args)),
             );
@@ -557,7 +542,11 @@ where
             }
         }
         let sealing = sealing(&mut ready).await?;
-        let shown = shows_code(plan, self.reader, ui::json(), ui::stdout_is_terminal());
+        let shown = super::recovery::shows_code(
+            plan.shows_recovery_code(),
+            ui::json(),
+            ui::stdout_is_terminal(),
+        );
         let code = match recovery {
             Some(Recovery::BackUp) if shown => Some(RecoveryCode::generate()),
             Some(Recovery::BackUp) => {
@@ -581,12 +570,11 @@ where
             .map_err(|error| {
                 error.context(format!(
                     "Server initialized; Cloud Pairing publication incomplete. {}.",
-                    command.again()
+                    cloud::enroll::AGAIN
                 ))
             })?;
         let callback_url = CloudOrigin::new(cloud_url).callback_url();
         cloud::enroll::publish(
-            command,
             &callback_url,
             token,
             machine.id,
@@ -595,7 +583,6 @@ where
         )
         .await?;
         let reply = cloud::enroll::callback(
-            command,
             &callback_url,
             token,
             machine.id,
@@ -819,11 +806,6 @@ enum FounderLocalState {
     Resume { machine: Box<Machine> },
 }
 
-fn shows_code(plan: &EnrollPlan, reader: Reader, json: bool, stdout_is_terminal: bool) -> bool {
-    reader == Reader::Person
-        && super::recovery::shows_code(plan.shows_recovery_code(), json, stdout_is_terminal)
-}
-
 /// Whether the enrolled Machine holds its Cluster's Sealing Key, for Cloud to record at completion.
 async fn sealing(client: &mut Client) -> Result<Option<ployz_core::Sealing>, Error> {
     Ok(client
@@ -836,20 +818,13 @@ async fn sealing(client: &mut Client) -> Result<Option<ployz_core::Sealing>, Err
 }
 
 /// The first Server is enrolled but its Ingress Proxy deploy failed. `server add` finishes
-/// when run again without `--reset`; the check-in loop has no command line to name.
-pub(crate) fn ingress_incomplete(command: EnrollCommand, plan: &EnrollPlan, error: Error) -> Error {
-    match plan.reach().again() {
-        Some(again) => super::output::ingress_incomplete(
-            "Server initialized",
-            error,
-            again.without("reset").into(),
-        ),
-        None => super::output::ingress_incomplete(
-            "Server initialized",
-            error,
-            Hint::Next(command.retry().to_owned()),
-        ),
-    }
+/// when run again without `--reset`.
+pub(crate) fn ingress_incomplete(plan: &EnrollPlan, error: Error) -> Error {
+    super::output::ingress_incomplete(
+        "Server initialized",
+        error,
+        plan.reach().again().without("reset").into(),
+    )
 }
 
 /// The first Server's result. Founding it, Cloud deploys the Organization's saved
@@ -1112,10 +1087,7 @@ async fn ensure_uninitialized(plan: &EnrollPlan, mut client: Client) -> Result<C
         ));
     }
     machine::confirm(
-        plan.reach()
-            .again()
-            .filter(|_| !plan.shaping().yes())
-            .map(|again| again.switch("yes")),
+        (!plan.shaping().yes()).then(|| plan.reach().again().switch("yes")),
         "Reset this Server before joining the Cluster?",
     )?;
     machine::leave(&mut client, &details).await?;

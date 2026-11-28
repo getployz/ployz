@@ -70,7 +70,8 @@ pub const PUSH_SIGNATURE: &[u8] = b"ployz-push-v1\0";
 /// the token's payload segment as sent.
 pub const OTLP_TOKEN_SIGNATURE: &[u8] = b"ployz-otlp-v1\0";
 
-/// Signature prefix of a Machine's check-in with Cloud.
+/// Signature prefix of a waiting host's check-in with Cloud, which releases before Fleet Tokens
+/// were removed still send. Reserved, so no new signature can pass for one.
 pub const CHECKIN_SIGNATURE: &[u8] = b"ployz-checkin-v1\0";
 
 /// Digest prefix of a build's cache scope.

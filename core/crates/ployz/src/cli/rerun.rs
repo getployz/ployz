@@ -92,14 +92,6 @@ impl Rerun {
         rerun
     }
 
-    /// `words` with `config`, on this host's daemon at `connect`, as the check-in loop
-    /// names a command: it has no command line of its own to carry.
-    pub(crate) fn for_this_host(config: &std::path::Path, connect: &str, words: &[&str]) -> Self {
-        let config = config.to_string_lossy();
-        let carried = ["--ployz-config", config.as_ref(), "--connect", connect];
-        Self::parsed(super::command(), &[&carried[..], words].concat())
-    }
-
     /// `words` alone, as a command line with nothing of its own to carry.
     #[cfg(test)]
     pub(crate) fn plain(words: &[&str]) -> Self {
@@ -603,7 +595,7 @@ fn typed_parsers() -> [(TypeId, Parse); 13] {
 /// id means different things in different commands, every type it may be. Any other text
 /// argument, such as a message, a reason, a command, a key, a URL or a pattern, shows as
 /// its placeholder.
-const PARSED: [(&str, Parse); 59] = [
+const PARSED: [(&str, Parse); 60] = [
     ("accept-volume-loss", named::<VolumeName>),
     ("approval", minted),
     ("build-concurrency", parsed::<u32>),
@@ -642,6 +634,11 @@ const PARSED: [(&str, Parse); 59] = [
                 pair(typed, "=", parsed::<ServiceName>, image)
             }],
         )
+    }),
+    ("key", |typed| {
+        ployz_core::first_key::LineKey::parse(typed)
+            .ok()
+            .map(|key| Shown::of(&key))
     }),
     ("label-add", |typed| {
         pair(typed, "=", parsed::<MachineLabelKey>, label)
