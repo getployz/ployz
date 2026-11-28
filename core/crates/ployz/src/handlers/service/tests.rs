@@ -368,6 +368,7 @@ fn action_result_keeps_machine_failures_apart_from_container_failures() {
         }],
         partial: true,
         interrupted: false,
+        untouched: 0,
     };
     assert_eq!(
         serde_json::to_value(outcome.result(&live)).unwrap(),
@@ -378,6 +379,7 @@ fn action_result_keeps_machine_failures_apart_from_container_failures() {
                 "container_id": container_id,
                 "error": error,
             }],
+            "untouched": [],
             "failures": [{ "machine_id": failed_id, "error": error }],
             "omitted": [],
         })
@@ -440,6 +442,7 @@ fn changed(partial: bool) -> ServiceActionOutcome {
         container_failures: Vec::new(),
         partial,
         interrupted: false,
+        untouched: 0,
     }
 }
 
@@ -487,27 +490,44 @@ fn cancelled_exit(outcome: &ServiceActionOutcome) -> u8 {
     crate::ui::after_result(&outcome.finish().unwrap_err())
 }
 
-/// `apply_service_action` marks a step partial for each copy it could not restart,
-/// or left Held or unrouted. One such step among later successes still exits partial.
-#[tokio::test]
-async fn a_restart_that_fails_a_copy_exits_partial() {
+/// Restart three copies where the copy at `failing` does not come back: the copies
+/// after it are never restarted and count as untouched, and the command exits partial.
+async fn restart_failing_copy(failing: usize) {
     let failed = || ServiceActionOutcome {
         container_failures: vec![ContainerFailure {
             machine_id: MachineId::parse("a".repeat(32)).unwrap(),
             container_id: ContainerId::parse("c".repeat(64)).unwrap(),
-            error: RpcError::conflict("Container c is left Held and not routed"),
+            error: RpcError::unavailable("The Container's healthcheck did not pass."),
         }],
         ..changed(true)
     };
-    let mut steps = vec![failed(), changed(false), changed(false)].into_iter();
-    let outcome = run_batches(&[(), (), ()], &CancellationToken::new(), |()| {
-        let step = steps.next().unwrap();
+    let mut restarted = Vec::new();
+    let outcome = run_batches(&[0, 1, 2], &CancellationToken::new(), |copy| {
+        restarted.push(*copy);
+        let step = if *copy == failing {
+            failed()
+        } else {
+            changed(false)
+        };
         async { Ok(step) }
     })
     .await
     .unwrap();
+    assert_eq!(restarted, (0..=failing).collect::<Vec<_>>());
+    assert_eq!(outcome.untouched, 2 - failing);
+    assert_eq!(outcome.container_failures.len(), 1);
     let error = outcome.finish().unwrap_err();
     assert_eq!(error.printed_exit(), Some(crate::ui::PARTIAL_EXIT));
+}
+
+#[tokio::test]
+async fn a_restart_stops_at_a_first_copy_that_does_not_come_back() {
+    restart_failing_copy(0).await;
+}
+
+#[tokio::test]
+async fn a_restart_stops_at_a_middle_copy_that_does_not_come_back() {
+    restart_failing_copy(1).await;
 }
 
 #[test]
