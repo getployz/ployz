@@ -48,7 +48,7 @@ pub(super) fn add_command(command: Command) -> Command {
 
 pub(super) fn set_command(command: Command) -> Command {
     storage_flags(store::scoped(command.about(
-        "Change a Volume's storage before its first deployment, resize a deployed one (Ployz Cloud), or turn its shared writes off",
+        "Change a Volume's storage before its first deployment, resize a deployed one (Ployz Cloud), or whether it allows shared writes",
     )))
     .arg(positional("volume", true).help("Volume name"))
     .arg(shared_writes_flag())
@@ -151,15 +151,14 @@ fn no_managed_host(matches: &ArgMatches) -> bool {
     })
 }
 
-/// `--shared-writes[=true|false]`: let more than one container write the Volume. On
-/// is paused, so the Store refuses it.
+/// `--shared-writes[=true|false]`: let more than one container write the Volume.
 fn shared_writes_flag() -> clap::Arg {
     value("shared-writes", None)
         .num_args(0..=1)
         .require_equals(true)
         .default_missing_value("true")
         .value_parser(clap::value_parser!(bool))
-        .help("Shared writes are paused for now; =false turns them off")
+        .help("Let more than one container write it: replicas of one Service, or several Services. =false refuses a second writer")
 }
 
 fn storage_flags(command: Command) -> Command {

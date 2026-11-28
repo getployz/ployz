@@ -4,7 +4,7 @@ mod wire;
 use wire::{RequestedServiceSpecWire, ResolvedServiceSpecWire, ServiceStorageSpecWire};
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fmt,
     net::IpAddr,
     num::{NonZeroU16, NonZeroU32},
@@ -22,7 +22,7 @@ use super::{
 use crate::{
     ContainerHostname, ContainerLabels, ContainerPath, EnvValue, ExtraHost, IngressHost,
     MachinePath, PidMode, RestartPolicy, SealedIdentity, ServiceId, ServiceMount, ServiceName,
-    ServiceVolume, ValueError,
+    ServiceVolume, ServiceVolumeReference, ValueError,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -533,6 +533,12 @@ pub struct ServiceContainerSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub network: Option<ServiceNetwork>,
+    /// The Volumes this Container may write beside another running Service Container
+    /// on one Server: those with Shared Writes on when its Deploy was admitted. Fixed at
+    /// create, so turning Shared Writes off reaches a Server with its next Deploy.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    #[ts(optional, as = "Option<Vec<ServiceVolumeReference>>")]
+    pub shared_writes: BTreeSet<ServiceVolumeReference>,
 }
 
 impl ServiceContainerSpec {

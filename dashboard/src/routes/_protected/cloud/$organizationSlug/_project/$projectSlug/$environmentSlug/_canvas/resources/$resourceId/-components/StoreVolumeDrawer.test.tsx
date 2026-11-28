@@ -123,17 +123,9 @@ it("locks a Volume's mounts while a Service they name is renaming, so Unmount ne
   await waitFor(() => expect(actions().closest("[inert]")).toBeNull());
 });
 
-it("never turns shared writes on, since they are paused", async () => {
-  await openDrawer("/cloud/acme/shop/production/resources/vol?tab=settings", {});
-  const write = vi.spyOn(functions, "writeStoreServerFn");
-  fireEvent.click(screen.getByRole("switch", { name: "Shared writes" }));
-  expect(screen.getByRole("switch", { name: "Shared writes" }).getAttribute("aria-checked")).toBe("false");
-  expect(write).not.toHaveBeenCalled();
-});
-
 it.each([
   ["the Docker volume switch", "switch", "Use a plain Docker volume (not recommended)", "false", {}],
-  ["the shared writes switch", "switch", "Shared writes", "false", { shared_writes: true }],
+  ["the shared writes switch", "switch", "Allow shared writes", "true", {}],
 ] as const)("holds %s at the submitted value while its write runs", async (_, role, name, submitted, volume) => {
   await openDrawer("/cloud/acme/shop/production/resources/vol?tab=settings", volume);
   let answer!: (result: StoreResult<ConfigWritten>) => void;

@@ -149,6 +149,8 @@ impl ServingShape {
             sysctls,
             restart,
             network,
+            // Who else may write a Volume doesn't change what this Container serves.
+            shared_writes: _,
         } = container;
         let mut payload = serde_json::json!({
             "name": name,

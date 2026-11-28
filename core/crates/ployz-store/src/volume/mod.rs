@@ -217,11 +217,31 @@ pub(crate) fn set_shared_writes(
 ) -> Result<VolumeStaged, RpcError> {
     let mut environment = scope::lock(tx, who, &set.environment)?;
     let before = environment.working.clone();
-    environment.volume_mut(&set.volume)?.shared_writes = set.shared_writes;
+    let volume = environment.volume_mut(&set.volume)?;
+    let turned_off = volume.shared_writes && !set.shared_writes;
+    volume.shared_writes = set.shared_writes;
+    let id = volume.resource_id.clone();
     if environment.working != before {
         scope::save_working(tx, &mut environment, trusted)?;
     }
-    // It applies at once: nothing waits for a Deploy.
+    // Servers learn it from the next Deploy, which would start a writer without it
+    // beside the shared ones it hasn't stopped yet: they leave first, in a Deploy of
+    // their own.
+    if turned_off {
+        let head = crate::deployment::head(tx, &environment)?;
+        let running = crate::rules::replicas_writing(&head.intent, &id);
+        if running > 1 {
+            return Err(error::conflict(
+                format!(
+                    "{} still has {running} writers deployed; deploy it with one Service at 1 replica first, then turn shared writes off",
+                    set.volume
+                ),
+                crate::followup::FollowUp::Deploy { no_prune: false }
+                    .within(json!({ "volume": set.volume, "writers": running })),
+            ));
+        }
+    }
+    // It applies at once in the Store; Servers take it from the next Deploy.
     staged(environment, &set.volume, false)
 }
 

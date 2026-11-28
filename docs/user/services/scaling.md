@@ -144,8 +144,8 @@ To bring services back:
 
 ## Good to know
 
-- **A service with a volume runs one replica**, on the volume's server, while
-  [shared writes are paused](volumes.md#share-a-volume).
+- **A service with a volume runs one replica**, on the volume's server, unless the volume
+  [allows shared writes](volumes.md#share-a-volume).
 - **Nothing scales on its own.** There's no autoscaling: you choose the number of replicas.
 - **Preview environments run one replica** of each service, whatever you set here. A service
   with a count for each region runs it in the region with the most replicas.

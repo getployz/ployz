@@ -260,6 +260,7 @@ fn holder_container(image: String) -> ServiceContainerSpec {
 
 pub(crate) fn caddy_container(image: String) -> ServiceContainerSpec {
     ServiceContainerSpec {
+        shared_writes: Default::default(),
         image,
         command: caddy_ingress_command(),
         entrypoint: Vec::new(),
