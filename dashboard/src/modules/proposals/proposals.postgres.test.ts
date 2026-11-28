@@ -699,16 +699,15 @@ it.live("a CLI that signs with its device key gets no link for a Pending value o
     expect(yield* provided(pendingProposals(ORGANIZATION))).toEqual([]);
   }));
 
-it.live("approving with no signature refuses a Deploy whose Servers now need one, and admits nothing", () =>
+it.live("a Deploy a Server on Ployz 0.3 would refuse unsigned gets no link, and nothing waits for approval", () =>
   Effect.gen(function* () {
     const shopped = yield* deployable();
-    const { cluster, provided, owner, agent, approve, admitted, enforce } = shopped;
+    const { cluster, provided, agent } = shopped;
     yield* withCache(shopped);
-    const id = linkedId(yield* cluster(linkDeploy(agent, admitDeploy(production, ASKED))));
-    enforce(true);
-    expect(yield* cluster(decideProposal(owner, id, approve))).toMatchObject({ ok: false });
-    expect(yield* admitted(id)).toBe(0);
-    expect(yield* provided(deployStep(id))).toMatchObject({ status: "presented" });
+    expect(yield* cluster(linkDeploy(agent, admitDeploy(production, ASKED)))).toMatchObject({
+      refused: { code: "conflict", message: expect.stringContaining("Upgrade machine-2 first.") },
+    });
+    expect(yield* provided(pendingProposals(ORGANIZATION))).toEqual([]);
   }));
 
 it.live("an agent token revoked before the tap gets nothing run, though its owner is still a member", () =>
