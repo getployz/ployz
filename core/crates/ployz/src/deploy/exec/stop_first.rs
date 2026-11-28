@@ -288,8 +288,8 @@ pub(super) async fn remove_container<C: MachineOperations>(
     shared: &Shared<'_>,
     cancellation: &CancellationToken,
 ) -> Result<Ran, OperationFailure> {
-    let copy = match inspect(client, machine_id, container_id).await {
-        Ok(details) => cleanup::Copy::observed(&details.container),
+    let observed = match inspect(client, machine_id, container_id).await {
+        Ok(details) => details.container,
         Err(ExecutionError::Machine { error, .. }) if error.code == RpcErrorCode::NotFound => {
             return Ok(Ran::default());
         }
@@ -311,6 +311,8 @@ pub(super) async fn remove_container<C: MachineOperations>(
             return Err(error.into());
         }
     };
+    let running = crate::deploy::is_active_runtime(&observed.runtime);
+    let copy = cleanup::Copy::observed(&observed);
     let gapped = copy
         .drains()
         .then(|| shared.gapped.get(&copy.service))
@@ -368,13 +370,15 @@ pub(super) async fn remove_container<C: MachineOperations>(
             let (left, error) = shared
                 .report
                 .failed(failure, MachineAction::RemoveContainer);
-            shared.report.leave_running(progress, &copy, left);
+            shared
+                .report
+                .unfinished_removal(progress, &copy, running, left);
             Err(error.into())
         }
         Err(error) => {
             shared
                 .report
-                .leave_running(progress, &copy, Left::Failed(error.clone()));
+                .unfinished_removal(progress, &copy, running, Left::Failed(error.clone()));
             Err(machine_error(MachineAction::RemoveContainer, error).into())
         }
     }

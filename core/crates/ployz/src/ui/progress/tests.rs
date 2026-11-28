@@ -337,6 +337,44 @@ fn each_animation_frame_is_written_once_at_the_driver_cadence() {
 }
 
 #[test]
+fn live_announcement_never_redraws_the_switching_frame() {
+    let terminal = InMemoryTerm::new(20, 90);
+    let initial = frame(State::Running(RowPhase::WaitingForSwitch));
+    let mut cleanup = initial.clone();
+    cleanup.title = "Deployment #2 stopping_old".into();
+    cleanup.rows.first_mut().unwrap().state = State::Completed;
+    let backend = Backend::new(
+        Mode::Interactive,
+        ProgressDrawTarget::term_like(Box::new(terminal.clone())),
+        room,
+    );
+    drive(
+        Script {
+            now: Duration::ZERO,
+            events: VecDeque::from([
+                (
+                    REDRAW,
+                    Message::Announce("Deployment #2 Live.".into(), cleanup),
+                ),
+                (REDRAW * 2, Message::Abandon),
+            ]),
+        },
+        initial,
+        backend,
+        &mut TerminalWriter(terminal.clone()),
+        false,
+    );
+    let writes = terminal.moves_since_last_check();
+    let (_, after_live) = writes.split_once("Deployment #2 Live.").unwrap();
+    assert!(!after_live.contains("Deploying shop"), "{writes}");
+    assert!(!after_live.contains("switching"), "{writes}");
+    assert!(
+        after_live.contains("Deployment #2 stopping_old"),
+        "{writes}"
+    );
+}
+
+#[test]
 fn interactive_finish_retains_full_frame_once_and_preserves_earlier_output() {
     let terminal = InMemoryTerm::new(20, 90);
     terminal.write_line("Earlier command output").unwrap();

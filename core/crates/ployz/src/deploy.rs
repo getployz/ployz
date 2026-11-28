@@ -50,6 +50,13 @@ pub(crate) use progress::pending_rows;
 #[cfg(test)]
 pub(crate) use schedule::depths;
 
+/// The Store's decision on a requested traffic switch.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum SwitchDecision {
+    Committed,
+    Refused,
+}
+
 pub(crate) fn is_active_runtime(runtime: &ContainerRuntimeObservation) -> bool {
     matches!(
         runtime,

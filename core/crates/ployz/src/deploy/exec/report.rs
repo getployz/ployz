@@ -15,6 +15,7 @@ use crate::deploy::progress::Progress;
 pub(super) enum Left {
     NotConfirmed(cleanup::Unconfirmed),
     Interrupted,
+    RemovalReplyInterrupted,
     /// The entry Machine could not read the routes, so no copy was seen unlisted.
     Unread(RpcError),
     /// The owner's view never listed a new copy, so it would refuse the Out.
@@ -163,6 +164,28 @@ impl<'a> Report<'a> {
         }
     }
 
+    /// Name a withdrawn copy whose removal wasn't confirmed, based on its last
+    /// observed runtime state.
+    pub(super) fn unfinished_removal(
+        &self,
+        progress: &Progress,
+        copy: &cleanup::Copy,
+        running: bool,
+        left: Left,
+    ) {
+        if running {
+            self.leave_running(progress, copy, left);
+        } else {
+            let (reason, _) = self.explain(copy, left);
+            progress.warn(DeployWarning::CleanupUnconfirmed {
+                service: copy.service.clone(),
+                container_id: copy.container_id,
+                machine: self.machine_name(&copy.machine_id),
+                reason,
+            });
+        }
+    }
+
     /// A Machine that was cut off or powered off can route the copy again once
     /// it is back, so the report names each one.
     pub(super) fn leave_running(&self, progress: &Progress, copy: &cleanup::Copy, left: Left) {
@@ -186,6 +209,9 @@ impl<'a> Report<'a> {
                 (self.not_confirmed(&unconfirmed), unconfirmed.unanswered)
             }
             Left::Interrupted => ("interrupted".into(), Vec::new()),
+            Left::RemovalReplyInterrupted => {
+                ("removal requested but not confirmed".into(), Vec::new())
+            }
             Left::Unread(error) => (
                 format!(
                     "the routes could not be read through the Machine this Deploy connects to: {}",

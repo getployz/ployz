@@ -7,6 +7,7 @@
 pub(crate) mod admit;
 pub(crate) mod applied;
 mod claim;
+pub(crate) mod cleanup;
 mod history;
 mod landing;
 mod lifecycle;
@@ -212,6 +213,14 @@ pub struct DeploymentSummary {
     /// When its runner claimed it, in Unix seconds.
     #[ts(type = "number | null")]
     pub started_at: Option<i64>,
+    /// When the Deploy confirmed its traffic switch, in Unix seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub live_at: Option<i64>,
+    /// Cleanup can keep running after this Deployment releases its Environment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub cleanup: Option<CleanupStatus>,
     /// When it left flight, in Unix seconds; none while it waits for CI, is queued, or
     /// is claimed and its runner lease holds. Its runner recording an outcome, or a
     /// cancel, sets it then. A newer admission superseding it sets it then too, though
@@ -415,8 +424,8 @@ pub(crate) fn clipped(text: &str) -> String {
     text.chars().take(MESSAGE_MAX).collect()
 }
 
-/// How long a runner holds a claimed Deployment without recording anything. Every
-/// record renews it; once it lapses the runner is gone and the outcome is unknown.
+/// How long a runner holds a claimed Deployment without renewing its lease. Once
+/// it lapses the runner is gone and the outcome is unknown.
 pub(crate) const LEASE: i64 = 10 * 60;
 
 /// The frozen credentials a Store from before sealed logins reads: none, so it still
@@ -463,6 +472,14 @@ pub struct UploadBase {
     pub commit: CommitSha,
     /// Whether the directory held changes the commit doesn't.
     pub changed: bool,
+}
+
+/// The runner reported its runtime outcome and has yet to confirm cleanup ended.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum CleanupStatus {
+    Pending,
+    Unconfirmed,
 }
 
 /// A Deployment with its recorded Deploy Preview and every Node Outcome.
@@ -658,6 +675,11 @@ pub enum Outcome {
 pub enum RunEvidence {
     /// The Deploy Preview preparation produced, recorded before it is confirmed.
     Prepared(DeployPreview),
+    /// Record the traffic switch when present. Renew the window in which followers
+    /// wait for cleanup while the runner is still present.
+    Finishing { live_at: Option<i64> },
+    /// The runner finished cleanup. Record its warnings before clearing the cleanup lease.
+    Finished { warnings: Vec<DeployWarning> },
     /// These runtime Services completed every planned operation while execution
     /// still runs: each reads Deployed (or Removed) and enters Applied State now,
     /// whatever happens to the runner later.
@@ -679,6 +701,8 @@ pub enum RunEvidence {
     /// The runner stopped without knowing whether it executed: the outcome is unknown
     /// once it recorded a Deploy Preview, and nothing executed before that.
     Abandoned,
+    /// The runtime task failed. Preserve known evidence and make the Deployment Unknown.
+    RuntimeFailed,
     /// The build receipts preparation produced, by runtime Service name. Each replaces
     /// that Service's latest receipt in the Environment.
     Built(BTreeMap<ServiceName, Value>),
@@ -705,6 +729,8 @@ pub enum RunEvidence {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Claimed {
     pub deployment: DeploymentSummary,
+    /// When the runner's acknowledged lease expires, in Unix seconds.
+    pub lease_until: i64,
     /// Services without a source of their own are left out; each builds from its
     /// upload in `uploads` through the SDK's preparation of `input`.
     pub intent: DeployIntent,
@@ -1111,6 +1137,11 @@ struct Run {
     /// Parsed and redacted once, when recorded.
     preview: Option<DeployPreview>,
     outcome: Option<Outcome>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    live_at: Option<i64>,
+    /// This outcome was written by a Store that records traffic switches.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    tracks_live: bool,
     /// A digest of the Executed evidence recorded: a replay must match it.
     #[serde(default)]
     executed: Option<String>,
@@ -1166,7 +1197,10 @@ pub(crate) struct Stored {
     cluster_domain: Option<Hostname>,
     pub(crate) nodes: Vec<TargetNode>,
     run: Run,
+    cleanup: cleanup::Cleanup,
     standing: Standing,
+    /// Last saved claim lease, even when an evidence write proposes a renewal.
+    recorded_runner_lease: i64,
     /// When `stored` read it, in Unix seconds: the moment its summary judges a
     /// runner lease by, so the status it shows holds for the whole transaction.
     read_at: i64,
@@ -1286,6 +1320,15 @@ static COLUMNS: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
          END, listed, service_uploads"
     )
 });
+
+fn columns(tx: &dyn Tx) -> String {
+    let clock = tx.backend().wall_clock();
+    format!(
+        "{}, cleanup_status, cleanup_deadline, CAST(CASE
+         WHEN cleanup_status = 'pending' AND cleanup_deadline < {clock} THEN 1 ELSE 0 END AS BIGINT)",
+        COLUMNS.as_str()
+    )
+}
 
 /// Whether a claimed Deployment's runner is gone at `now`: its runner lease lapsed,
 /// so what ran is unknown. Every read shows a lapsed one as `unknown`
@@ -1815,6 +1858,23 @@ impl Standing {
         }
     }
 
+    fn runtime_failed(self, now: i64) -> Self {
+        let mut standing = self.lose_runner(now);
+        match &mut standing {
+            Self::Ended(ended) => ended.end = End::Unknown,
+            Self::Raw(raw) if raw.runner.is_some() => {
+                raw.status = DeploymentStatus::Unknown;
+                raw.ended.get_or_insert(now);
+            }
+            Self::Waiting(_)
+            | Self::Queued(_)
+            | Self::Claimed(_)
+            | Self::Superseded { .. }
+            | Self::Raw(_) => {}
+        }
+        standing
+    }
+
     /// Its runner said at `now` that it stopped, when it ended Unknown. Any other
     /// stands as it was.
     const fn restamp(&mut self, now: i64) {
@@ -1956,12 +2016,12 @@ fn free_namespace(
 
 /// Deployment `id` of `who`'s Organization.
 pub(crate) fn owned(tx: &mut dyn Tx, who: &Actor, id: &DeploymentId) -> Result<Stored, RpcError> {
-    let columns = COLUMNS.as_str();
+    let columns = columns(tx);
     let rows = tx.query(
         &format!("SELECT {columns} FROM config_deployment WHERE id = ?1 AND organization_id = ?2"),
         &[id.as_str().into(), who.organization.as_str().into()],
     )?;
-    stored(rows.first().ok_or_else(|| missing(id))?)
+    stored(tx, rows.first().ok_or_else(|| missing(id))?)
 }
 
 /// Load a Deployment with its Environment locked, so admissions, claims and records
@@ -1974,12 +2034,12 @@ pub(crate) fn locked(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Stored, RpcEr
 
 /// Load a Deployment of any Organization: in-process runner calls only.
 pub(crate) fn load(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Stored, RpcError> {
-    let columns = COLUMNS.as_str();
+    let columns = columns(tx);
     let rows = tx.query(
         &format!("SELECT {columns} FROM config_deployment WHERE id = ?1"),
         &[id.as_str().into()],
     )?;
-    stored(rows.first().ok_or_else(|| missing(id))?)
+    stored(tx, rows.first().ok_or_else(|| missing(id))?)
 }
 
 /// Every Deployment `condition` selects from `config_deployment`, as [`load`] reads
@@ -1989,17 +2049,17 @@ fn load_where(
     condition: &str,
     params: &[crate::storage::Param<'_>],
 ) -> Result<Vec<Stored>, RpcError> {
-    let columns = COLUMNS.as_str();
+    let columns = columns(tx);
     tx.query(
         &format!("SELECT {columns} FROM config_deployment WHERE {condition}"),
         params,
     )?
     .iter()
-    .map(stored)
+    .map(|row| stored(tx, row))
     .collect()
 }
 
-fn stored(row: &Row) -> Result<Stored, RpcError> {
+fn stored(tx: &mut dyn Tx, row: &Row) -> Result<Stored, RpcError> {
     let read_at = now();
     let number = row
         .optional_int(2)?
@@ -2044,9 +2104,14 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
     let held = push.is_some() && nodes.is_empty();
     let service_uploads: Option<uploads::ServiceUploads> =
         row.optional_json(23, "Deployment uploads")?;
+    let id = row.parse(0, "identity")?;
+    let cleanup = cleanup::Cleanup::decode(row, 24, 25)?;
+    if row.int(26)? != 0 {
+        tx.observe_expired_cleanup(&id);
+    }
     Ok(Stored {
         summary: DeploymentSummary {
-            id: row.parse(0, "identity")?,
+            id,
             environment_id: row.parse(1, "identity")?,
             number,
             status,
@@ -2063,6 +2128,8 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
             admitted_by: row.parse_optional(13, "identity")?,
             admitted_at,
             started_at,
+            live_at: run.live_at,
+            cleanup: cleanup.status(),
             ended_at,
             message: row.optional_text(17)?.map(str::to_owned),
             push,
@@ -2082,7 +2149,9 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
         nodes,
         namespace: row.parse::<Namespace>(7, "Namespace")?,
         run,
+        cleanup,
         cluster_domain: row.parse_optional(10, "identity")?,
+        recorded_runner_lease: standing.lease(),
         standing,
         read_at,
         listed: row.int(22)?,
@@ -2137,6 +2206,8 @@ impl Stored {
         self.summary.runner = runner;
         self.summary.started_at = started_at;
         self.summary.ended_at = ended_at;
+        self.summary.live_at = self.run.live_at;
+        self.summary.cleanup = self.cleanup.status();
         self.summary.in_flight = status.in_flight();
         self.summary.chooses_upload_at_start =
             chooses_upload_at_start(status, self.service_uploads.as_ref());
@@ -2163,16 +2234,41 @@ impl Stored {
 ///   report on it any more ([`running`]). One out of flight that shows no end,
 ///   waiting for CI or a [`Raw`] row with no `ended`, leaves its builds as they are.
 fn save(tx: &mut dyn Tx, stored: &mut Stored) -> Result<(), RpcError> {
+    if save_when(tx, stored, SaveWhen::Always)? {
+        Ok(())
+    } else {
+        Err(error::conflict(
+            "A Deployment that went Live cannot end Cancelled",
+            json!({ "deployment": stored.summary.id }),
+        ))
+    }
+}
+
+enum SaveWhen {
+    Always,
+    ActiveCleanup,
+}
+
+fn save_when(tx: &mut dyn Tx, stored: &mut Stored, when: SaveWhen) -> Result<bool, RpcError> {
     stored.show();
+    stored.recorded_runner_lease = stored.standing.lease();
     let standing = &stored.standing;
     let number = standing
         .number()
         .map(i64::try_from)
         .transpose()
         .map_err(|_| error::corrupt("Deployment number"))?;
-    tx.execute(
-        "UPDATE config_deployment SET status = ?1, run = ?2, runner = ?4, lease = ?5, \
-         started = ?6, ended = ?7, number = ?8 WHERE id = ?3",
+    let guard = match when {
+        SaveWhen::Always => String::new(),
+        SaveWhen::ActiveCleanup => format!(" AND {}", cleanup::pending_in_time(tx)),
+    };
+    // The Environment lock keeps the loaded switch evidence stable through this write.
+    let changed = tx.execute(
+        &format!(
+            "UPDATE config_deployment SET status = ?1, run = ?2, runner = ?4, lease = ?5, \
+             started = ?6, ended = ?7, number = ?8 WHERE id = ?3{guard} \
+             AND (?1 <> 'cancelled' OR CAST(?9 AS BIGINT) IS NULL)"
+        ),
         &[
             name_of(standing.kept()).as_str().into(),
             json_text(&stored.run).as_str().into(),
@@ -2182,15 +2278,19 @@ fn save(tx: &mut dyn Tx, stored: &mut Stored) -> Result<(), RpcError> {
             standing.started().into(),
             standing.ended().into(),
             number.into(),
+            stored.run.live_at.into(),
         ],
     )?;
+    if changed == 0 {
+        return Ok(false);
+    }
     if !stored.summary.in_flight {
         crate::seal_scrub::history::scrub_sealed(tx, &stored.summary.environment_id)?;
         if let Some(ended) = stored.summary.ended_at {
             crate::build::settle(tx, &stored.summary.id, ended)?;
         }
     }
-    Ok(())
+    Ok(true)
 }
 
 /// The status Deployment `stored`'s row keeps, for a stop of GitHub builds: never one a

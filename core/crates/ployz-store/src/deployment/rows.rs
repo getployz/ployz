@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::config::{SavedEnvironmentIntent, SavedServiceIntent};
 use ployz_core::deploy_progress::{
-    Failure, RowState, RowTransition, ServerProgress, ServerRow, StoppedBy, entered,
+    Failure, RowPhase, RowState, RowTransition, ServerProgress, ServerRow, StoppedBy, entered,
 };
 use ployz_core::{MachineId, RpcError, ServiceName};
 
@@ -248,7 +248,18 @@ pub(super) fn by_service(
     );
     let mut by_service: BTreeMap<ServiceName, BTreeMap<MachineId, ServerRow>> = BTreeMap::new();
     for row in &found {
-        let state: RowState = row.json(2, "Deployment row")?;
+        let mut state: RowState = row.json(2, "Deployment row")?;
+        if stored.summary.live_at.is_some()
+            && matches!(
+                state,
+                RowState::Running {
+                    phase: RowPhase::WaitingForSwitch,
+                    ..
+                }
+            )
+        {
+            state = RowState::Completed;
+        }
         let machine_id: MachineId = row.parse(5, "Deployment row Machine")?;
         by_service
             .entry(row.parse(0, "Deployment row")?)

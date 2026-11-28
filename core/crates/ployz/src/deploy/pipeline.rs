@@ -25,8 +25,7 @@ use crate::{
 
 use super::{
     Approvals, Approved, DeployEvent, DeployIntent, DeployOutcome, DeployPlan, DeployPreview,
-    DeploySnapshot, DeployWarning, ExecutionError, PlanError, exec::execute_operation_sequence,
-    plan_deploy, planning,
+    DeploySnapshot, DeployWarning, ExecutionError, PlanError, plan_deploy, planning,
 };
 
 /// Snapshot or planning failure before a Deploy executes.
@@ -197,7 +196,7 @@ impl Client {
         progress: Option<tokio::sync::mpsc::UnboundedSender<DeployEvent>>,
     ) -> DeployOutcome<ExecutionError> {
         Approved::new(self.clone(), Approvals::default())
-            .confirm(preview, None, cancellation, progress)
+            .confirm(preview, None, cancellation, progress, None)
             .await
     }
 
@@ -227,9 +226,18 @@ impl Approved {
         run: Option<DeploymentLogId>,
         cancellation: &CancellationToken,
         progress: Option<tokio::sync::mpsc::UnboundedSender<DeployEvent>>,
+        switch_commit: Option<tokio::sync::oneshot::Receiver<crate::deploy::SwitchDecision>>,
     ) -> DeployOutcome<ExecutionError> {
         let run = run.unwrap_or_else(super::cleanup::fresh_run);
-        execute_operation_sequence(preview, &run, self, cancellation, progress).await
+        super::exec::execute_with_switch_commit(
+            preview,
+            &run,
+            self,
+            cancellation,
+            progress,
+            switch_commit,
+        )
+        .await
     }
 }
 

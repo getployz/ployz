@@ -25,7 +25,11 @@ use std::time::{Duration, UNIX_EPOCH};
 pub(super) fn frame(view: &DeploymentView) -> Frame {
     let mut rows = Vec::new();
     let mut held_back = ployz_core::RegionWait::default();
-    let pulling = pulling(view);
+    let pulling = if view.deployment.live_at.is_some() {
+        None
+    } else {
+        pulling(view)
+    };
     for (index, node) in view.nodes.iter().enumerate() {
         let DeployedNode::Service { name, .. } = &node.node else {
             rows.push(Row {
@@ -113,14 +117,34 @@ pub(super) fn frame(view: &DeploymentView) -> Frame {
             timing: Timing::Unavailable,
         });
     }
-    Frame {
-        run: Run::Stored(view.deployment.id.clone()),
-        title: format!(
-            "Deploying {} of {}/{}",
-            view.deployment.label(),
+    let deployment = &view.deployment;
+    let title = if deployment.cleanup == Some(ployz_store::CleanupStatus::Pending)
+        && deployment.live_at.is_some()
+    {
+        let cleanup = if view.steps.iter().any(|step| {
+            step.name == ployz_core::deploy_steps::StepName::StoppingOld && step.ended_at.is_none()
+        }) {
+            "stopping_old"
+        } else {
+            "cleaning up"
+        };
+        format!("Deployment {} {cleanup}", deployment.label())
+    } else {
+        let action = if deployment.live_at.is_some() {
+            "Deployment"
+        } else {
+            "Deploying"
+        };
+        format!(
+            "{action} {} of {}/{}",
+            deployment.label(),
             view.environment.project,
             view.environment.name
-        ),
+        )
+    };
+    Frame {
+        run: Run::Stored(deployment.id.clone()),
+        title,
         rows,
         notices: notices(view),
         held_back,
@@ -572,8 +596,20 @@ pub(super) fn completion(
     if view.deployment.status == DeploymentStatus::Superseded {
         return Err(superseded(view, successor, command));
     }
+    if view.deployment.status == DeploymentStatus::Failed
+        && view.deployment.live_at.is_some()
+        && left_a_copy_running(view)
+    {
+        return Err(failure(view, again, command).partial_outcome());
+    }
     if view.deployment.status != DeploymentStatus::Applied {
         return Err(failure(view, again, command));
+    }
+    if view.deployment.cleanup == Some(ployz_store::CleanupStatus::Unconfirmed) {
+        crate::ui::warn(
+            "Could not confirm cleanup ended. Any requested removals may still complete.",
+        );
+        return Err(Failure::partial());
     }
     if view
         .preview
@@ -985,6 +1021,101 @@ mod tests {
                 {"type": "volume", "id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", "name": "data", "outcome": "not_attempted", "rows": []}
             ]
         })).unwrap()
+    }
+
+    #[test]
+    fn a_live_deployment_renders_a_saved_switching_row_as_switched() {
+        use ployz_store::testing::{backend, shop};
+        use ployz_store::{
+            Admit, ConfigStore, DeploymentId, DeploymentQuery, RunEvidence, RunnerId,
+            ServerProgress,
+        };
+
+        let directory = tempfile::tempdir().unwrap();
+        let url = format!("sqlite:{}", directory.path().join("store.db").display());
+        let store = ConfigStore::open(&url, backend::key()).unwrap();
+        let (store, actor) = shop::shop_on(store);
+        let id = DeploymentId::parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
+        let runner = RunnerId::parse("owner").unwrap();
+        let web = ServiceName::parse("web").unwrap();
+        let request = serde_json::from_value(json!({ "id": id, "services": [web] })).unwrap();
+        store
+            .write_trusted(
+                &actor,
+                &Admit::Deploy(request),
+                &ployz_store::Trusted::default(),
+            )
+            .unwrap();
+        let claimed = store.claim(&id, &runner).unwrap();
+        let query = DeploymentQuery { id: id.clone() };
+        let runtime = store
+            .read(&actor, &query)
+            .unwrap()
+            .runtime_names
+            .get(&web)
+            .cloned()
+            .unwrap_or_else(|| web.clone());
+        let preview = serde_json::from_value(json!({
+            "namespace": claimed.intent.namespace,
+            "operations": [], "warnings": [], "would_remove": [], "preserved_volumes": [],
+        }))
+        .unwrap();
+        store
+            .record(&id, &runner, RunEvidence::Prepared(preview))
+            .unwrap();
+        let waiting = RowState::Running {
+            phase: ployz_store::RowPhase::WaitingForSwitch,
+            serving: false,
+        };
+        let row = ServerProgress {
+            service: runtime,
+            machine: ployz_core::MachineId::parse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap(),
+            server: "edge".into(),
+            state: waiting,
+            stopped: false,
+        };
+        store
+            .record(&id, &runner, RunEvidence::Progress(vec![row.clone()]))
+            .unwrap();
+        backend::execute(
+            &url,
+            "CREATE TRIGGER reject_completed_row BEFORE UPDATE ON config_deployment_row \
+             WHEN NEW.finished IS NOT NULL BEGIN SELECT RAISE(ABORT, 'reject completed row'); END",
+        );
+        assert!(
+            store
+                .record(
+                    &id,
+                    &runner,
+                    RunEvidence::Progress(vec![ServerProgress {
+                        state: RowState::Completed,
+                        ..row
+                    }]),
+                )
+                .is_err()
+        );
+        store
+            .record(&id, &runner, RunEvidence::Finishing { live_at: Some(2) })
+            .unwrap();
+        store
+            .record(&id, &runner, RunEvidence::RuntimeFailed)
+            .unwrap();
+        let view = store.read(&actor, &query).unwrap();
+        assert_eq!(view.deployment.status, DeploymentStatus::Unknown);
+        assert_eq!(view.deployment.live_at, Some(2));
+        let index = view
+            .nodes
+            .iter()
+            .position(
+                |node| matches!(&node.node, DeployedNode::Service { name, .. } if *name == web),
+            )
+            .unwrap();
+        let node = view.nodes.get(index).unwrap();
+        assert_eq!(node.rows.first().unwrap().state, RowState::Completed);
+        assert_eq!(
+            frame(&view).rows.get(index).unwrap().state,
+            State::Completed
+        );
     }
 
     #[test]
@@ -2112,6 +2243,62 @@ mod tests {
                 },
             },
         ];
+        let failure = completion(&view, None, Again::Services(&[]), command).unwrap_err();
+        assert_eq!(crate::ui::after_result(&failure), 3);
+    }
+
+    #[test]
+    fn unconfirmed_cleanup_reports_the_same_completion_before_and_after_its_copy_warning() {
+        let mut view = view();
+        view.deployment.status = DeploymentStatus::Applied;
+        view.deployment.cleanup = Some(ployz_store::CleanupStatus::Unconfirmed);
+        let complete = |view: &DeploymentView| {
+            let (failure, output) = crate::ui::captured(|| {
+                let failure = completion(view, None, Again::Services(&[]), command).unwrap_err();
+                crate::ui::show(&json!({})).unwrap();
+                failure
+            });
+            (crate::ui::after_result(&failure), output.unwrap())
+        };
+        let early = complete(&view);
+        view.deployment.warnings.push(DeploymentWarning::Deploy {
+            warning: DeployWarning::CleanupUnconfirmed {
+                service: "shop-production/web".parse().unwrap(),
+                container_id: ployz_core::ContainerId::parse("c".repeat(64)).unwrap(),
+                machine: "one".into(),
+                reason: "removal requested but not confirmed".into(),
+            },
+        });
+        assert_eq!(early, complete(&view));
+        assert_eq!(early.0, 3);
+        let warning = early
+            .1
+            .get("warnings")
+            .unwrap()
+            .get(0)
+            .unwrap()
+            .as_str()
+            .unwrap();
+        assert!(
+            warning.contains("requested removals may still complete"),
+            "{warning}"
+        );
+        assert!(!warning.contains("left running"), "{warning}");
+    }
+
+    #[test]
+    fn a_live_failed_deploy_that_left_a_copy_running_exits_partial() {
+        let mut view = view();
+        view.deployment.status = DeploymentStatus::Failed;
+        view.deployment.live_at = Some(1);
+        view.deployment.warnings.push(DeploymentWarning::Deploy {
+            warning: ployz_core::DeployWarning::LeftRunning {
+                service: "shop-production/web".parse().unwrap(),
+                container_id: ployz_core::ContainerId::parse("c".repeat(64)).unwrap(),
+                machine: "one".into(),
+                reason: "scale-down removal failed".into(),
+            },
+        });
         let failure = completion(&view, None, Again::Services(&[]), command).unwrap_err();
         assert_eq!(crate::ui::after_result(&failure), 3);
     }

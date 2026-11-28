@@ -2456,9 +2456,23 @@ mod stopped_on_request {
         fixture.finish();
     }
 
+    /// The daemon exits once `close_when_idle` returns, so a retired copy that was
+    /// stopping when shutdown began is removed by then, not left Exited.
     #[tokio::test]
-    async fn shutdown_waits_for_a_removal_in_its_stop_grace() {
+    async fn shutdown_mid_retirement_waits_for_the_removal() {
         let fixture = Fixture::start().await;
+        let sent = |wanted: axum::http::Method, suffix: &'static str| {
+            let requests = fixture.fake.requests.clone();
+            move || {
+                requests
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|(method, path)| *method == wanted && path.contains(suffix))
+            }
+        };
+        let stop_sent = sent(axum::http::Method::POST, "/stop");
+        let delete_sent = sent(axum::http::Method::DELETE, "/containers/");
         let grace = fixture.fake.stop_gate.clone().write_owned().await;
         let removal = tokio::spawn({
             let local = fixture.local.clone();
@@ -2474,16 +2488,7 @@ mod stopped_on_request {
             }
         });
         tokio::time::timeout(Duration::from_secs(10), async {
-            while !fixture
-                .fake
-                .requests
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|(method, path)| {
-                    *method == axum::http::Method::POST && path.ends_with("/stop")
-                })
-            {
+            while !stop_sent() {
                 // real-wait: the stop reaches the fake Docker over its TCP socket, which
                 // emits no event.
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -2492,27 +2497,20 @@ mod stopped_on_request {
         .await
         .expect("the stop is sent");
 
-        let mut closing = tokio::spawn({
+        let closing = tokio::spawn({
             let local = fixture.local.clone();
             async move { local.close_when_idle(Duration::from_secs(10)).await }
         });
-        // real-wait: a shutdown that skips the stop closes the record at once.
-        let early = tokio::time::timeout(Duration::from_millis(200), &mut closing).await;
-        assert!(early.is_err(), "shutdown closed the record mid-stop");
-
+        // real-wait: let shutdown queue behind the stop before the stop ends.
+        tokio::time::sleep(Duration::from_millis(100)).await;
         drop(grace);
-        let reply = removal.await.unwrap().unwrap();
-        assert!(
-            matches!(
-                reply,
-                EnsuredContainer::Ensured {
-                    now: ContainerNow::Absent { .. },
-                    ..
-                }
-            ),
-            "expected the container gone, got {reply:?}"
-        );
+
         assert!(matches!(closing.await.unwrap(), Some(Ok(()))));
+        assert!(
+            delete_sent(),
+            "shutdown released the record before the stopped copy was removed"
+        );
+        removal.await.unwrap().unwrap();
         fixture.finish();
     }
 

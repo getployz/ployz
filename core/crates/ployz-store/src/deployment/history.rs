@@ -9,7 +9,7 @@ pub(crate) fn history(
     environment: &EnvironmentId,
     limit: i64,
 ) -> Result<Vec<DeploymentSummary>, RpcError> {
-    let columns = COLUMNS.as_str();
+    let columns = columns(tx);
     tx.query(
         &format!(
             "SELECT {columns} FROM config_deployment \
@@ -20,7 +20,7 @@ pub(crate) fn history(
         &[environment.as_str().into(), limit.into()],
     )?
     .iter()
-    .map(|row| stored(row).map(|stored| stored.summary))
+    .map(|row| stored(tx, row).map(|stored| stored.summary))
     .collect()
 }
 
@@ -465,27 +465,55 @@ pub(crate) fn latest_removal(
         .filter(|latest| latest.remove))
 }
 
-/// The Saved revision `environment`'s latest applied Deployment that deployed or
-/// removed a Service shipped: what its Servers run. One that left all it had to
-/// do waiting changed nothing they run. None before one applied, or once a
-/// removal applied.
+/// The Saved revision with the most recent recorded switch. A removal can be
+/// the last switch, in which case there is no Live revision. After the latest
+/// numbered Deployment with a timestamp, fall back to the previous Applied rule
+/// for outcomes written before switch tracking and shutdowns without a runner.
 pub(crate) fn live(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
 ) -> Result<Option<Revision>, RpcError> {
-    let mut condition = format!("status = '{APPLIED}'");
-    loop {
-        let Some(deployment) = latest_where(tx, environment, &condition)? else {
-            return Ok(None);
-        };
-        if !deployment.all_waiting {
+    #[derive(Deserialize)]
+    struct Switch {
+        live_at: Option<i64>,
+    }
+
+    let mut latest = None;
+    let mut newest_stamped = 0;
+    for row in tx.query(
+        &format!(
+            "SELECT saved_revision, run, number FROM config_deployment
+             WHERE environment_id = ?1 AND {NUMBERED} AND run LIKE '%\"live_at\"%'
+             ORDER BY number DESC"
+        ),
+        &[environment.as_str().into()],
+    )? {
+        let switch: Switch = row.json(1, "Deployment switch")?;
+        if let Some(at) = switch.live_at {
+            newest_stamped = newest_stamped.max(row.int(2)?);
+            if latest.is_some_and(|(newest, _)| at <= newest) {
+                continue;
+            }
+            let saved =
+                Revision(u64::try_from(row.int(0)?).map_err(|_| error::corrupt("Saved revision"))?);
+            latest = Some((at, saved));
+        }
+    }
+    let mut condition = format!("status = '{APPLIED}' AND number > {newest_stamped}");
+    while let Some(stored) = latest_stored_where(tx, environment, &condition)? {
+        let deployment = stored.summary;
+        if !stored.run.tracks_live && !deployment.all_waiting {
             return Ok(Some(deployment.saved).filter(|saved| *saved != NOTHING));
         }
         condition = format!(
-            "status = '{APPLIED}' AND number < {}",
+            "status = '{APPLIED}' AND number > {newest_stamped} AND number < {}",
             deployment.numbered()?
         );
     }
+
+    Ok(latest
+        .map(|(_, saved)| saved)
+        .filter(|saved| *saved != NOTHING))
 }
 
 /// Whether the latest Deployment of Saved `revision` failed. Any later attempt
@@ -547,7 +575,15 @@ pub(super) fn latest_where(
     environment: &EnvironmentId,
     condition: &str,
 ) -> Result<Option<DeploymentSummary>, RpcError> {
-    let columns = COLUMNS.as_str();
+    Ok(latest_stored_where(tx, environment, condition)?.map(|stored| stored.summary))
+}
+
+fn latest_stored_where(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    condition: &str,
+) -> Result<Option<Stored>, RpcError> {
+    let columns = columns(tx);
     tx.query(
         &format!(
             "SELECT {columns} FROM config_deployment \
@@ -557,7 +593,7 @@ pub(super) fn latest_where(
         &[environment.as_str().into()],
     )?
     .first()
-    .map(|row| stored(row).map(|stored| stored.summary))
+    .map(|row| stored(tx, row))
     .transpose()
 }
 
@@ -783,7 +819,7 @@ pub(crate) fn page(
     limit: usize,
     after: Option<&Cursor>,
 ) -> Result<(Vec<DeploymentSummary>, Option<Cursor>), RpcError> {
-    let columns = COLUMNS.as_str();
+    let columns = columns(tx);
     let mut params: Vec<crate::storage::Param<'_>> = vec![
         environment.as_str().into(),
         i64::try_from(limit + 1).unwrap_or(i64::MAX).into(),
@@ -804,7 +840,7 @@ pub(crate) fn page(
     )?;
     let mut page = rows
         .iter()
-        .map(|row| stored(row).map(|stored| (stored.summary, Cursor(stored.listed))))
+        .map(|row| stored(tx, row).map(|stored| (stored.summary, Cursor(stored.listed))))
         .collect::<Result<Vec<_>, _>>()?;
     let next = (page.len() > limit).then(|| {
         page.truncate(limit);
@@ -820,7 +856,7 @@ pub(crate) fn latest_numbered(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
 ) -> Result<Option<DeploymentSummary>, RpcError> {
-    let columns = COLUMNS.as_str();
+    let columns = columns(tx);
     let rows = tx.query(
         &format!(
             "SELECT {columns} FROM config_deployment \
@@ -829,7 +865,7 @@ pub(crate) fn latest_numbered(
         &[environment.as_str().into()],
     )?;
     rows.first()
-        .map(|row| stored(row).map(|stored| stored.summary))
+        .map(|row| stored(tx, row).map(|stored| stored.summary))
         .transpose()
 }
 
@@ -839,7 +875,7 @@ pub(crate) fn all_in_flight(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
 ) -> Result<Vec<DeploymentSummary>, RpcError> {
-    let columns = COLUMNS.as_str();
+    let columns = columns(tx);
     let in_flight = in_flight_sql();
     let rows = tx.query(
         &format!(
@@ -849,7 +885,7 @@ pub(crate) fn all_in_flight(
         &[environment.as_str().into()],
     )?;
     rows.iter()
-        .map(|row| stored(row).map(|stored| stored.summary))
+        .map(|row| stored(tx, row).map(|stored| stored.summary))
         .collect()
 }
 

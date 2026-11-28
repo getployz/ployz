@@ -380,6 +380,11 @@ impl Progress {
         }
     }
 
+    pub(crate) fn announce(&mut self, line: String, frame: Frame) {
+        let _ = self.sender.send(Message::Announce(line, frame.clone()));
+        self.previous = frame;
+    }
+
     /// Retain final evidence and join the worker before the caller emits its result.
     pub(crate) fn finish(mut self, frame: Frame, disposition: Disposition) {
         let _ = self.sender.send(Message::Finish(frame, disposition));
@@ -404,6 +409,7 @@ impl Drop for Progress {
 
 enum Message {
     Update(Frame),
+    Announce(String, Frame),
     Finish(Frame, Disposition),
     Abandon,
 }
@@ -537,6 +543,13 @@ fn drive(
                     deadline = inbox.now() + interval;
                     backend.draw(&frame, tick, color);
                 }
+            }
+            Ok(Message::Announce(line, next)) => {
+                backend.clear();
+                let _ = writeln!(writer, "{line}");
+                let _ = writer.flush();
+                pending = Some(Message::Update(next));
+                continue;
             }
             Ok(Message::Finish(final_frame, disposition)) => {
                 let terminal_width = match &backend {
@@ -767,6 +780,7 @@ fn unchecked(row: &Row, frame: &Frame, left: &BTreeMap<&ContainerId, &str>) -> B
             | DeployWarning::ObserverRelativeHostnameConflict
             | DeployWarning::SkippedDependencyHealth { .. }
             | DeployWarning::ImagePortMismatch { .. }
+            | DeployWarning::CleanupUnconfirmed { .. }
             | DeployWarning::MixedAfterReturn { .. }
             | DeployWarning::NotInStore { .. } => None,
         })
@@ -1221,6 +1235,7 @@ fn notices(frame: &Frame, settled: bool, printed: &NoticeHistory) -> Vec<String>
                     | DeployWarning::SkippedDependencyHealth { .. }
                     | DeployWarning::ImagePortMismatch { .. }
                     | DeployWarning::LeftRunning { .. }
+                    | DeployWarning::CleanupUnconfirmed { .. }
                     | DeployWarning::MixedAfterReturn { .. }
                     | DeployWarning::NotInStore { .. } => None,
                 })

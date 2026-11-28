@@ -286,7 +286,7 @@ pub(crate) fn forget(
         .map(|node| (node.id().to_owned(), NodeStatus::Unknown))
         .collect();
     applied::forget(tx, &stored.summary.environment_id)?;
-    end(tx, stored, outcome, End::Applied)
+    end(tx, stored, outcome, End::Applied).map(|(summary, _)| summary)
 }
 
 /// Add to `nodes` the teardown of each Service `environment`'s queued Deployment
@@ -701,11 +701,21 @@ pub(crate) fn cancel(
         DeploymentStatus::WaitingForCi | DeploymentStatus::Queued => stored.standing.cancel(now()),
         DeploymentStatus::Running => stored.standing.cancelling(),
         DeploymentStatus::Cancelling | DeploymentStatus::Cancelled => return Ok(stored.summary),
+        DeploymentStatus::Applied | DeploymentStatus::Failed
+            if stored.summary.live_at.is_some()
+                && matches!(stored.cleanup, super::cleanup::Cleanup::Pending(_)) =>
+        {
+            stored.summary.cleanup = super::cleanup::interrupt(tx, id)?.status();
+            return Ok(stored.summary);
+        }
         DeploymentStatus::Superseded
         | DeploymentStatus::Applied
         | DeploymentStatus::Failed
         | DeploymentStatus::Unknown => return Err(ended(id)),
     };
+    if stored.summary.live_at.is_some() {
+        stored.cleanup = super::cleanup::interrupt(tx, id)?;
+    }
     save(tx, &mut stored)?;
     // Its GitHub builds stop in the same write, each run Cloud dispatched owed a cancel.
     crate::build::end_github_builds(tx, id)?;
@@ -732,7 +742,12 @@ pub(crate) fn cancel_in_flight(
     for row in rows {
         let id = row.parse::<DeploymentId>(0, "Deployment")?;
         let mut stored = load(tx, &id)?;
-        stored.standing = stored.standing.cancel(now());
+        if stored.run.live_at.is_some() {
+            stored.cleanup = super::cleanup::interrupt(tx, &id)?;
+            stored.standing = stored.standing.end(End::Applied, now());
+        } else {
+            stored.standing = stored.standing.cancel(now());
+        }
         save(tx, &mut stored)?;
         crate::build::end_github_builds(tx, &id)?;
         cancelled.push(id);

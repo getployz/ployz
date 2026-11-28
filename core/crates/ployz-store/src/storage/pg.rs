@@ -153,6 +153,10 @@ fn finish<T>(
 struct PostgresTx<'a, 'tx>(&'a mut postgres::Transaction<'tx>);
 
 impl Tx for PostgresTx<'_, '_> {
+    fn backend(&self) -> super::Backend {
+        super::Backend::Postgres
+    }
+
     fn execute(&mut self, sql: &str, params: &[Param<'_>]) -> Result<usize, RpcError> {
         let changed = self
             .0

@@ -1839,7 +1839,7 @@ fn a_deploy_that_leaves_a_blocked_service_waiting_is_applied_with_it_waiting() {
         "{:?}",
         view.deployment.outcome
     );
-    assert_eq!(live(&store, &who), Some(view.deployment.saved));
+    assert_eq!(live(&store, &who), None);
     let outcomes = outcomes(&store, &who, 1);
     for expected in [
         ("api".to_owned(), NodeStatus::Deployed),
@@ -1896,7 +1896,18 @@ fn a_deploy_whose_only_change_waits_beside_an_unchanged_service_deployed_nothing
 fn a_deploy_that_starts_nothing_while_a_replica_stays_on_the_old_version_deployed_nothing() {
     let (store, who) = shop();
     admit(&store, &who, 1, &[], None).unwrap();
-    run(&store, 1, Vec::new());
+    let claimed = prepare(&store, 1, &["web"]);
+    let runner = RunnerId::parse("runner").unwrap();
+    store
+        .record(
+            &id(1),
+            &runner,
+            RunEvidence::Finishing {
+                live_at: claimed.deployment.started_at,
+            },
+        )
+        .unwrap();
+    execute(&store, 1, Vec::new());
     let ran = live(&store, &who);
     edit(
         &store,

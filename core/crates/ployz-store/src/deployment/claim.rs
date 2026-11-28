@@ -269,6 +269,7 @@ fn take(tx: &mut dyn Tx, mut stored: Stored, runner: &RunnerId) -> Result<Taken,
     )?;
     let closes = closes(tx, &stored)?;
     Ok(Taken::Claimed(Box::new(Claimed {
+        lease_until: stored.standing.lease(),
         deployment: stored.summary,
         intent,
         sealed_names,

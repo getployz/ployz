@@ -370,8 +370,32 @@ const MIGRATIONS: &[(&str, Step)] = &[
         Step::Sql(include_str!("migrations/0058_deployment_step.sql")),
     ),
     (
-        "0059_github_stop",
-        Step::Sql(include_str!("migrations/0059_github_stop.sql")),
+        "0059_deployment_cleanup",
+        Step::Rust(|tx, _| {
+            tx.batch(include_str!("migrations/0059_deployment_cleanup.sql"))?;
+            #[derive(serde::Deserialize)]
+            struct LegacyCleanup {
+                cleanup_until: Option<i64>,
+            }
+            for row in tx.query(
+                "SELECT id, run FROM config_deployment WHERE run LIKE '%\"cleanup_until\"%'",
+                &[],
+            )? {
+                let legacy: LegacyCleanup = row.json(1, "Deployment cleanup deadline")?;
+                if let Some(deadline) = legacy.cleanup_until {
+                    tx.execute(
+                        "UPDATE config_deployment SET cleanup_status = 'pending', cleanup_deadline = ?2
+                         WHERE id = ?1 AND cleanup_status IS NULL",
+                        &[row.text(0)?.into(), deadline.into()],
+                    )?;
+                }
+            }
+            Ok(None)
+        }),
+    ),
+    (
+        "0060_github_stop",
+        Step::Sql(include_str!("migrations/0060_github_stop.sql")),
     ),
 ];
 
@@ -385,9 +409,25 @@ enum Step {
 
 /// Which database a migration runs on.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Backend {
+pub(crate) enum Backend {
     Sqlite,
     Postgres,
+}
+
+impl Backend {
+    pub(crate) const fn wall_clock(self) -> &'static str {
+        match self {
+            Self::Sqlite => "unixepoch('subsec')",
+            Self::Postgres => "EXTRACT(EPOCH FROM clock_timestamp())",
+        }
+    }
+
+    pub(crate) const fn wall_seconds(self) -> &'static str {
+        match self {
+            Self::Sqlite => "unixepoch()",
+            Self::Postgres => "CAST(FLOOR(EXTRACT(EPOCH FROM clock_timestamp())) AS BIGINT)",
+        }
+    }
 }
 
 pub(crate) enum Storage {
@@ -560,6 +600,12 @@ pub(crate) fn name_of(variant: impl serde::Serialize) -> String {
 
 /// A statement runner inside one open transaction.
 pub(crate) trait Tx {
+    fn backend(&self) -> Backend {
+        Backend::Sqlite
+    }
+
+    fn observe_expired_cleanup(&mut self, _id: &crate::DeploymentId) {}
+
     /// Run a statement and return how many rows it changed.
     fn execute(&mut self, sql: &str, params: &[Param<'_>]) -> Result<usize, RpcError>;
     /// Run a query and return every row.
