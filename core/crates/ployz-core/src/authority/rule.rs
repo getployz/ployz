@@ -162,7 +162,7 @@ pub struct Builder {
 /// The commit of `getployz/build` whose reusable workflow a rule approved from the CLI
 /// pins by default. It must be in `getployz/build`'s own history: GitHub won't start a
 /// run that calls a commit only a fork holds. Cloud's rule template pins the same.
-pub const BUILDER_SHA: &str = "39e1f488e492c0641e520777e481e8f5b266985b";
+pub const BUILDER_SHA: &str = "6f3b5a76ad939acfb605ba4070916e827a13cf2a";
 
 /// The `getployz/build` commits whose workflow installs a `ployz` that no Ployz release built,
 /// a lab build without the checks a rule build relies on. A Server refuses a build they ran,
