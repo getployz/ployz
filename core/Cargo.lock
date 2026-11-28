@@ -3978,7 +3978,7 @@ dependencies = [
 
 [[package]]
 name = "ployz"
-version = "0.4.0-beta.2"
+version = "0.4.0-beta.3"
 dependencies = [
  "anstream",
  "anstyle",
@@ -4045,7 +4045,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-agent-tools"
-version = "0.4.0-beta.2"
+version = "0.4.0-beta.3"
 dependencies = [
  "base64 0.22.1",
  "hex",
@@ -4064,7 +4064,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-build"
-version = "0.4.0-beta.2"
+version = "0.4.0-beta.3"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -4085,7 +4085,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-config-wasm"
-version = "0.4.0-beta.2"
+version = "0.4.0-beta.3"
 dependencies = [
  "ployz-core",
  "serde",
@@ -4095,7 +4095,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-core"
-version = "0.4.0-beta.2"
+version = "0.4.0-beta.3"
 dependencies = [
  "base64 0.22.1",
  "chacha20poly1305",
@@ -4129,7 +4129,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-decide"
-version = "0.4.0-beta.2"
+version = "0.4.0-beta.3"
 dependencies = [
  "ployz-core",
  "serde",
@@ -4138,7 +4138,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-sdk"
-version = "0.4.0-beta.2"
+version = "0.4.0-beta.3"
 dependencies = [
  "napi",
  "napi-build",
@@ -4156,7 +4156,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-store"
-version = "0.4.0-beta.2"
+version = "0.4.0-beta.3"
 dependencies = [
  "base64 0.22.1",
  "hex",
@@ -4181,7 +4181,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-testkit"
-version = "0.4.0-beta.2"
+version = "0.4.0-beta.3"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -4206,7 +4206,7 @@ dependencies = [
 
 [[package]]
 name = "ployz-verify"
-version = "0.4.0-beta.2"
+version = "0.4.0-beta.3"
 dependencies = [
  "ployz",
  "ployz-core",
@@ -4218,7 +4218,7 @@ dependencies = [
 
 [[package]]
 name = "ployzd"
-version = "0.4.0-beta.2"
+version = "0.4.0-beta.3"
 dependencies = [
  "async-trait",
  "axum",
@@ -5539,7 +5539,7 @@ dependencies = [
 
 [[package]]
 name = "sqlite-probe"
-version = "0.4.0-beta.2"
+version = "0.4.0-beta.3"
 dependencies = [
  "rusqlite",
  "thiserror 2.0.20",

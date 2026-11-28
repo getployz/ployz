@@ -149,3 +149,6 @@ before they return. A container that fails its healthcheck, or doesn't pass it b
 deadline, is reported, and the command exits 3. So is a container a failed deploy left behind:
 restart and start run it, but never route it, because no deploy finished bringing it in. Deploy
 again to replace it.
+
+`ployz service restart` goes one container at a time, as **Restart** does. When a container fails
+or isn't routed, the restart stops there, names the containers it left untouched, and exits 3.
