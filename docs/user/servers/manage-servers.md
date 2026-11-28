@@ -240,14 +240,15 @@ an older CLI. Run `ployz device request` again with this version to get the full
 For your first device, approve it over SSH on a server. Run `ployz login` there first, then the
 same `ployz device approve`. A request lasts 24 hours.
 
-To approve your computer's own device, run this on your computer with one `--connect` per
-server:
+To approve your computer's own device, run this on your computer, connecting to any one of your
+servers:
 
 ```sh
 ployz device approve --this-device --connect ssh://root@HOST
 ```
 
-It makes the device key if your computer has none and adds it to each server it reaches. With
+It makes the device key if your computer has none and adds it to every server it reaches through
+that one. With
 `--connect`, the server's first key trusts only your computer and the server's SSH. Run on a
 server's own terminal, it refuses: a device made there would stay trusted after the server is
 gone.
