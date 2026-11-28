@@ -25,7 +25,7 @@ import type { PreviewRuleView, PreviewSettings, PreviewsView } from "#/modules/p
 import { invalidatePreviews, usePreviewRule, usePreviews } from "#/modules/previews/previews.queries";
 import { PreviewSignRefused, signPreviewEnd, signPreviewRule } from "#/modules/previews/preview-signing";
 import { writeFailure } from "#/modules/previews/preview-writes";
-import { isUp, PreviewsRefused, useServerName } from "./preview-parts";
+import { PreviewsRefused, useServerName } from "./preview-parts";
 import { startFromChoices } from "./start-from";
 
 /** What Preview settings set: where previews copy from, the Servers they run on and how many are live at once. */
@@ -60,8 +60,7 @@ function Settings({ view, params, repositoryId, edit }: { view: PreviewsView; pa
   const serverName = useServerName(params.organizationSlug);
   const navigate = useNavigate();
   const environments = useStoreView(params.organizationSlug, environmentsQuery(params.projectSlug));
-  const previewEnvironments = new Set(view.pull_requests.flatMap((row) => isUp(row.preview) ? [row.preview.environment] : []));
-  const choices = startFromChoices(environments.ok ? environments.value.environments : [], previewEnvironments);
+  const choices = startFromChoices(environments.ok ? environments.value.environments : []);
   const settings = view.settings;
   const opening = (): Draft => settings
     ? { startFrom: settings.start_from, servers: settings.servers, limit: settings.limit }
@@ -106,7 +105,9 @@ function Settings({ view, params, repositoryId, edit }: { view: PreviewsView; pa
         </SettingsSection>
       ) : null}
       <SettingsSection id="start-from" title="Each preview is a copy of">
-        <SettingsRow label="Start from" hint="Never production or a Protected environment: pull request code nobody has reviewed runs with its secrets."
+        {choices.every((choice) => choice.never !== null) ? (
+          <SettingsEmpty title="No environment to copy">Create one that isn't production or Protected, like staging.</SettingsEmpty>
+        ) : <SettingsRow label="Start from" hint="Never production or a Protected environment: pull request code nobody has reviewed runs with its secrets."
           commit="form" control={
             <Select value={shown.startFrom} disabled={draft === null} onValueChange={(next) => { if (next) update({ startFrom: next, servers: null }); }}>
               <SelectTrigger aria-label="Each preview is a copy of"><SelectValue placeholder="Pick an environment">{shown.startFrom}</SelectValue></SelectTrigger>
@@ -120,7 +121,7 @@ function Settings({ view, params, repositoryId, edit }: { view: PreviewsView; pa
                 </SelectGroup>
               </SelectContent>
             </Select>
-          } />
+          } />}
       </SettingsSection>
       <SettingsSection id="limit" title="Limit">
         <SettingsRow label="Live previews at once" hint="At the limit, a new deploy waits until someone closes a preview. Previews close when their pull request closes."
@@ -148,7 +149,7 @@ function Settings({ view, params, repositoryId, edit }: { view: PreviewsView; pa
         </SettingsList>
       </SettingsSection>
       <SettingsSection id="servers" title="Where previews run">
-        <Servers organizationSlug={params.organizationSlug} rule={rule} ruleView={ruleView} picked={servers} editing={draft !== null} onPick={(next) => update({ servers: next })} />
+        <Servers organizationSlug={params.organizationSlug} startFrom={shown.startFrom} rule={rule} ruleView={ruleView} picked={servers} editing={draft !== null} onPick={(next) => update({ servers: next })} />
       </SettingsSection>
       {draft !== null && changes.length > 0 ? (
         <SettingsSection id="changes" title="What changes" description="Live previews pick this up at their next deploy.">
@@ -203,8 +204,9 @@ function Summary({ organizationName, organizationSlug, repository, startFrom, se
   );
 }
 
-function Servers({ organizationSlug, rule, ruleView, picked, editing, onPick }: {
+function Servers({ organizationSlug, startFrom, rule, ruleView, picked, editing, onPick }: {
   organizationSlug: string;
+  startFrom: string | null;
   rule: ReturnType<typeof usePreviewRule>;
   ruleView: PreviewRuleView | null;
   picked: readonly MachineId[];
@@ -212,7 +214,8 @@ function Servers({ organizationSlug, rule, ruleView, picked, editing, onPick }: 
   onPick: (servers: readonly MachineId[]) => void;
 }) {
   const name = useServerName(organizationSlug);
-  if (rule.data !== undefined && !rule.data.ok) return <SettingsEmpty title="Couldn't read your servers">{rule.data.refusal.message}</SettingsEmpty>;
+  if (startFrom === null) return <SettingsEmpty title="Pick an environment to copy first" />;
+  if (rule.data !== undefined && !rule.data.ok) return <SettingsEmpty title={`Can't copy ${startFrom}`}>{rule.data.refusal.message}</SettingsEmpty>;
   if (rule.isError) return <SettingsEmpty title="Couldn't read your servers" actions={<Button variant="outline" onClick={() => void rule.refetch()}>Retry</Button>} />;
   if (ruleView === null) {
     return (
@@ -221,7 +224,7 @@ function Servers({ organizationSlug, rule, ruleView, picked, editing, onPick }: 
       </div>
     );
   }
-  if (ruleView.servers.length === 0) return <SettingsEmpty title="No servers yet">Add a server to run previews on.</SettingsEmpty>;
+  if (ruleView.servers.length === 0) return <SettingsEmpty title="No server can hold a preview">Add a server, or upgrade yours.</SettingsEmpty>;
   return (
     <SettingsList label="Where previews run">
       {ruleView.servers.map((server) => {
