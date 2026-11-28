@@ -3,10 +3,10 @@ use std::time::Duration;
 use tokio::time::timeout;
 
 /// The last Server is forgotten with its Cluster: nothing is sent to it, and the output says
-/// it still runs its containers and how to stop them. A failed context cleanup comes after
-/// the removal, which already went through.
+/// nothing about it after. A failed context cleanup comes after the removal, which already
+/// went through.
 #[tokio::test]
-async fn removing_the_last_server_sends_it_nothing_and_says_it_still_runs() {
+async fn removing_the_last_server_sends_it_nothing_and_says_nothing_about_it() {
     for invalid_config in [false, true] {
         let service = DiscoveryService::new(test_description());
         let resets = service.reset_machines.clone();
@@ -52,12 +52,7 @@ async fn removing_the_last_server_sends_it_nothing_and_says_it_still_runs() {
             stdout.contains("Volume data was only on one; the Cluster no longer has it."),
             "{stdout}"
         );
-        assert!(
-            stdout.contains(
-                "Server one still runs its containers. To stop them, run sudo ployz-uninstall on it, or ployz server add --reset to use it again."
-            ),
-            "{stdout}"
-        );
+        assert!(!stdout.contains("ployz-uninstall"), "{stdout}");
         if invalid_config {
             assert!(
                 stderr.contains("error: Server removed; local context cleanup failed."),

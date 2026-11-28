@@ -555,12 +555,6 @@ fn report(
         );
     }
     let still_running = chosen.last() && !chosen.dead();
-    if still_running {
-        crate::ui::stream(format_args!(
-            "Server {name} still runs its containers. To stop them, run sudo ployz-uninstall on it, or ployz server add --reset to use it again.",
-            name = selected.name
-        ));
-    }
     if cloud_released == Some(true) {
         crate::ui::hint(&Hint::Next("ployz server add".into()));
     }

@@ -69,8 +69,8 @@ export function RemoveServerSection({ machine, organizationSlug, last, offline, 
         : <ForgetServerRow machine={machine} organizationSlug={organizationSlug} gate={gate} /> : <SettingsDanger
         label={`Remove ${machine.name}`}
         hint={last
-          ? "Takes it out of the cluster. It's your only server, so nothing deploys until you add another."
-          : "Takes it out of the cluster and revokes its keys."}
+          ? "Remove your only server. Nothing deploys until you add another."
+          : "Remove this server from your cluster."}
         action={
           <Button variant="destructive" disabled={!gate.allowed} title={gate.reason} onClick={() => onOpenChange(true)}>
             <Trash2Icon data-icon="inline-start" />
@@ -88,9 +88,10 @@ export function RemoveServerSection({ machine, organizationSlug, last, offline, 
         place={machine.name}
         confirmLabel="Remove"
         pendingLabel="Removing"
-        sentence={<>
-          Volumes only this server holds <span className="text-destructive">are lost</span>.
-          {last ? " It keeps running its containers: run sudo ployz-uninstall on it to stop them, or ployz server add --reset to use it again." : null}
+        sentence={(items) => <>
+          {machine.name} will be removed from your cluster.
+          {items.length === 0 ? null : <> These volumes are only on {machine.name} and <span className="text-destructive">will be lost</span>:</>}
+          {last ? " Nothing deploys until you add another server." : null}
         </>}
         callbacks={{
           load: async () => {
@@ -135,7 +136,7 @@ function ForgetLastServerRow({ machine, organizationSlug, gate }: { machine: Run
     <>
       <SettingsDanger
         label={`Forget ${machine.name}`}
-        hint="It's gone, and it's your only server. Your projects and settings stay; its volumes can't be recovered."
+        hint="Remove your only server. Your projects and settings stay."
         action={
           <Button variant="destructive" disabled={!gate.allowed} title={gate.reason} onClick={() => setOpen(true)}>
             <UnplugIcon data-icon="inline-start" />
@@ -150,8 +151,7 @@ function ForgetLastServerRow({ machine, organizationSlug, gate }: { machine: Run
 
 /**
  * Forgetting takes a Server that is gone for good out of the cluster, then waits on the removal.
- * A Server that doesn't answer can't list its volumes, so the list is often empty; the sentence still says which come
- * back from a mirror and which are lost.
+ * A Server that doesn't answer can't always list its volumes, so an empty list still says some may be lost.
  */
 function ForgetServerRow({ machine, organizationSlug, gate }: { machine: RuntimeMachineRecord; organizationSlug: string; gate: RoleGate }) {
   const navigate = useNavigate();
@@ -180,7 +180,7 @@ function ForgetServerRow({ machine, organizationSlug, gate }: { machine: Runtime
     <>
       <SettingsDanger
         label={`Forget ${machine.name}`}
-        hint="It's gone. Ployz stops waiting for it. Its volumes come back only where another server holds a mirror."
+        hint="Remove this offline server from your cluster."
         action={
           <Button variant="destructive" disabled={!gate.allowed} title={gate.reason} onClick={() => setOpen(true)}>
             <UnplugIcon data-icon="inline-start" />
@@ -195,9 +195,12 @@ function ForgetServerRow({ machine, organizationSlug, gate }: { machine: Runtime
         place={machine.name}
         confirmLabel="Forget"
         pendingLabel="Forgetting"
-        sentence={<>Ployz takes it out of the cluster without reaching it. A volume with a mirror on another server comes
-          back from it: open the volume's Copies, click Use mirror, then deploy. Volumes with no copy elsewhere{" "}
-          <span className="text-destructive">are lost</span>.</>}
+        sentence={(items) => <>
+          {machine.name} will be removed from your cluster.{" "}
+          {items.length === 0
+            ? <>Any volumes only on {machine.name} <span className="text-destructive">will be lost</span>.</>
+            : <>These volumes are only on {machine.name} and <span className="text-destructive">will be lost</span>:</>}
+        </>}
         callbacks={{ load, confirm: forget }}
       />
     </>

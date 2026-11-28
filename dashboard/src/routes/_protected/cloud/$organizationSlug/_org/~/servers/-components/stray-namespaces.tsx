@@ -55,7 +55,7 @@ export function StrayNamespaces({ organizationSlug, server, servers }: { organiz
         title={`Remove ${removing ?? ""}?`}
         place={removing ?? ""}
         confirmLabel="Remove"
-        sentence={<>No Project owns <span className="font-medium">{removing}</span>. Removing it from every server deletes:</>}
+        sentence={() => <>No Project owns <span className="font-medium">{removing}</span>. Removing it from every server deletes:</>}
         items={removing === null ? [] : services(removing)}
         callbacks={{
           load: async () => {
