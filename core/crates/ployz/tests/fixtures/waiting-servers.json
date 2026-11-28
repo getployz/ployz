@@ -1,0 +1,125 @@
+{
+  "list": {
+    "waiting_servers": [
+      {
+        "id": "6b0f3c1e-0000-4000-8000-000000000001",
+        "name": "web-1",
+        "status": "offline",
+        "observed_ip": "203.0.113.9",
+        "fleet_token": "amber-falcon",
+        "report": {
+          "hostname": "web-1",
+          "os": {
+            "id": "ubuntu",
+            "version": "24.04"
+          },
+          "provider": "hetzner",
+          "cpuCount": 4,
+          "memoryTotalBytes": 8000000000,
+          "prep": {
+            "zfs": "off",
+            "docker": "ready"
+          },
+          "blockers": [
+            {
+              "code": "ports",
+              "message": "Port 443 is in use."
+            }
+          ],
+          "disks": [
+            {
+              "role": "root",
+              "sizeBytes": 40000000000
+            },
+            {
+              "role": "empty",
+              "sizeBytes": 100000000000
+            }
+          ],
+          "zfs": {
+            "kind": "eligible",
+            "buildMinutes": 6
+          }
+        },
+        "first_seen_at": "2026-10-16T00:00:00.000Z",
+        "last_check_in_at": "2026-10-16T00:05:00.000Z"
+      }
+    ]
+  },
+  "detail": {
+    "waiting_server": {
+      "id": "6b0f3c1e-0000-4000-8000-000000000001",
+      "name": "web-1",
+      "status": "offline",
+      "observed_ip": "203.0.113.9",
+      "fleet_token": "amber-falcon",
+      "report": {
+        "os": {
+          "id": "ubuntu",
+          "version": "24.04"
+        },
+        "zfs": {
+          "kind": "eligible",
+          "targets": [
+            {
+              "kind": "main_disk"
+            },
+            {
+              "byId": "/dev/disk/by-id/scsi-0HC_Volume_1",
+              "kind": "disk"
+            }
+          ],
+          "buildMinutes": 6
+        },
+        "arch": "x86_64",
+        "prep": {
+          "zfs": "off",
+          "docker": "ready"
+        },
+        "virt": "kvm",
+        "disks": [
+          {
+            "path": "/dev/sda",
+            "role": "root",
+            "sizeBytes": 40000000000,
+            "availableBytes": 30000000000
+          },
+          {
+            "byId": "/dev/disk/by-id/scsi-0HC_Volume_1",
+            "path": "/dev/sdb",
+            "role": "empty",
+            "sizeBytes": 100000000000
+          }
+        ],
+        "cgroup": "v2",
+        "docker": {
+          "api": "1.47",
+          "kind": "present",
+          "version": "27.3.1",
+          "compatible": true
+        },
+        "kernel": "6.8.0",
+        "blockers": [
+          {
+            "code": "ports",
+            "message": "Port 443 is in use."
+          }
+        ],
+        "cpuCount": 4,
+        "hostname": "web-1",
+        "provider": "hetzner",
+        "publicIp": "198.51.100.4",
+        "warnings": [
+          {
+            "code": "swap",
+            "message": "Swap is on."
+          }
+        ],
+        "cliVersion": "0.3.0",
+        "memoryTotalBytes": 8000000000
+      },
+      "first_seen_at": "2026-10-16T00:00:00.000Z",
+      "last_check_in_at": "2026-10-16T00:05:00.000Z"
+    }
+  }
+}
