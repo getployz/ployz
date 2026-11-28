@@ -399,40 +399,6 @@ impl ConfigStore {
         .await
     }
 
-    /// Retire the old copies the Organization's Deployment `deployment` left running,
-    /// on one of `connections` (`Connection[]`): each copy its Deploy reported left
-    /// running, of a Service it deployed or removed. A copy already gone counts as
-    /// retired, so a retry is safe. Resolves to the copies still running
-    /// (`RetireOutcome`), each with its Machine and why. Only Cloud's worker calls this.
-    /// `expect` is as `runDeployment`'s, and `foreign` as `observeCopies`'.
-    ///
-    /// # Errors
-    /// Returns `not_found` for a Deployment of another Organization, the connection's
-    /// error when no Server can be reached, or a storage error.
-    #[napi(ts_return_type = "Promise<RetireOutcome & { foreign: string[] }>")]
-    pub async fn retire_old(
-        &self,
-        organization: String,
-        deployment: String,
-        #[napi(ts_arg_type = "Connections")] connections: serde_json::Value,
-        #[napi(ts_arg_type = "ExpectedCluster | null")] expect: Option<serde_json::Value>,
-    ) -> Result<serde_json::Value> {
-        let who = actor(organization, None)?;
-        let deployment = DeploymentId::parse(deployment).map_err(rpc_to_napi)?;
-        let connections = parse_connections(connections)?;
-        let expect = parse_expect(expect)?;
-        to_json(
-            ployz::sdk::retire_old(
-                Arc::clone(&self.store),
-                who,
-                deployment,
-                connections,
-                expect,
-            )
-            .await,
-        )
-    }
-
     /// Close, on each Server of the Cluster `connections` (`Connection[]`) reach, every
     /// preview it holds open that the Store doesn't report open for the Organization:
     /// one whose Close never reached its Server, or that a Server holds from before.

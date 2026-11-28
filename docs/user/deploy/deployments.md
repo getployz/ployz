@@ -572,23 +572,18 @@ its new containers printed. A failed deployment opens on the card that failed.
 
 If a deployment fails, see [My deploy failed partway](../troubleshooting/deployments.md#my-deploy-failed-partway).
 
-### Cleanup
+### Old replicas left running
 
-After a deployment from the dashboard or GitHub ran, a **Cleanup** card appears after its last
-service. It stops the old replicas the deployment couldn't stop while it ran, for example because
-a server was cut off. Click it to see each old replica that is still running and why.
+A deployment stops the old replicas it replaced while it runs. When it can't stop one, for example
+because its server was cut off, it leaves that replica running and stops trying. The deployment's
+page names each one, the server it runs on and why, such as
+`web copy 3f9c1e2a7b04 left running on web-2 (web-2 did not answer). The next full deploy cleans it up.`
+A service that failed to deploy keeps its old replica too, since that may be the one serving.
 
-| Cleanup | What it means |
-| --- | --- |
-| **Waiting** | Retrying the old replicas still running. The card updates without a reload. |
-| **Done** | Every old replica stopped |
-| **Left running on server-3** | After three tries over a few minutes, these old replicas still run. A server cut off before or during the deployment shows here too, since an old replica may still run on it. So does a service that failed to deploy: cleanup leaves its old replica, which may be the one serving. Cleanup names those at once, since trying again changes nothing. |
-| **A newer Deployment took over** | You deployed again before cleanup finished. The newer deployment's own cleanup takes over. |
-| **Failed** | Cleanup itself hit an error, shown on the card. A cleanup Cloud lost track of also ends here, after about an hour, and lists the old replicas it last saw running. |
-
-A replica left running keeps serving alongside the new ones once its server is back. Deploy again
-to stop it. CLI deployments clean up while they run, report a replica left running at the end, and
-show no **Cleanup** card.
+A replica left running keeps serving alongside the new ones once its server is back. To remove it,
+wait until the server shows online on the **Servers** page, then deploy the whole environment
+again: click **Redeploy** on the newest deployment, or run `ployz deploy`. The CLI reports the same
+replicas at the end of `ployz deploy` and exits 3.
 
 Work your cancel stopped reads **Cancelled**. Work that failed on its own reads Failed, even in a
 cancelled deployment. So does work Ployz stopped for another reason, such as another service
