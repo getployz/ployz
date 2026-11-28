@@ -1,206 +1,132 @@
 ---
 title: Preview environments
-description: Give every pull request a temporary copy of your app at its own https address.
+description: Deploy any pull request as a copy of staging, at its own https address.
 ---
 
-Each pull request gets a temporary copy of your app at its own https address. A member's pushes
-redeploy it. Anyone else's pull request waits for a member to approve it. When the pull request merges, the environment that deploys its target
-branch, usually production, deploys the merge with the setting changes the preview made, and the copy and its data are deleted.
-Closing the pull request without merging deletes it too.
+A preview is a copy of one of your environments, usually staging, running a pull request's code
+at its own https address. Nothing deploys until someone asks: each pull request gets a
+**Deploy as a preview** link, and one click from a member of your organization makes the copy.
+After that, every push to the pull request redeploys it. When the pull request closes, the
+preview and its data are deleted.
 
-The dashboard calls these PR environments.
+A pull request's preview is either **Live**, with its address, or **Not deployed**, with the
+reason and what to do about it. There's nothing in between.
 
-In this version of Ployz a preview's deployment doesn't run; see
-[Previews don't deploy in this version](#previews-dont-deploy-in-this-version).
-
-## Turn on preview environments
+## Set up previews
 
 Previews work for services that [deploy from GitHub](../deploy/github.md) through the Ployz
-GitHub App. Until one does, **Settings → Project** has no **PR environments** section. (The
-quick start's example deploys without the app, so connect GitHub and
-[deploy your own app](../deploy/github.md) first.) The app
-also needs **Pull requests: read** and **Checks: write** on the repository: if your repository
-shows **Needs permissions approved on GitHub**, open it, click **Approve on GitHub**, and have the
-installation's owner approve them.
+GitHub App, and they need a [passkey](../servers/manage-servers.md#add-a-passkey) your servers
+trust. Your project also needs a Protected environment, usually production, so Ployz knows which
+one previews must never copy.
 
-1. Open **Settings → Project**, and under **PR environments** click your repository.
-2. Click **Enable PR environments**. Under **Start from**, pick the environment each pull request
-   starts from, usually production.
-3. Under **Services**, click each service a pull request should get its own copy of, like
-   `postgres`. Services that deploy from this repository always run the **PR's code**.
-4. If pull requests get a new, empty database, add a **Setup command** to seed it, like
-   `pnpm db:seed`.
+1. Open any environment of the project and click **Pull requests** in the left rail, then
+   **Preview settings**.
+2. Under **Each preview is a copy of**, pick the environment previews copy, like `staging`.
+   Production and other Protected environments are never offered: a pull request's code that
+   nobody has reviewed yet runs with this environment's secrets. Branches aren't offered either,
+   so make the environment with **New environment**, not as a branch of production. A pull
+   request into the Git branch that environment deploys gets no preview and reads
+   **Not deployed: it merges into staging's own branch**, so have it deploy another branch, like
+   `dev` while pull requests go into `main`.
+3. Under **Where previews run**, check the servers previews may use. Each preview runs on one of
+   them.
+4. Under **Live previews at once**, pick how many previews can be live together, from 2 to 12.
+5. Click **Turn on with passkey**. The sheet lists what you're approving: who can deploy, which
+   environment's secrets each preview gets, by name, where previews run and how many, and which
+   services copy. Your passkey confirms it once, and your servers check it themselves.
 
-<!-- screenshot: the PR environments panel over production's canvas, Start from set, web on PR's code and postgres Separate -->
+<!-- screenshot: Preview settings with staging, two servers and Up to 5 -->
 
-The panel saves as you go. Pull requests already open get a preview on their next push.
+Every open pull request of the repository now has a **Deploy as a preview** link.
 
-> [!WARNING]
-> A service you don't copy, usually a database, is shared with production and shows
-> **production's** in amber with a warning sign. Every pull request's code reads and writes that data. Click it and choose
-> **Separate postgres** unless that's what you want.
+To change a setting later, click **Edit**. Before you sign again, the sheet shows what changes,
+like `Up to 5 → 8 live previews`. Live previews pick up the change at their next deploy.
 
-Two more switches sit in the panel. **Delete when the PR closes** is on by default. **Enable bot
-PR environments** is off: turn it on to preview pull requests from Dependabot, Renovate and other
-bots.
+To stop, click **Turn off** and confirm with your passkey. Every live preview closes, its data is
+deleted, and the **Deploy as a preview** links go away. The pull requests stay open.
 
-## Who deploys automatically
+## Deploy a pull request
 
-A preview runs the pull request's code next to your services, with any secrets you set in it. So Ployz deploys
-a pull request on its own only when a member of your Ployz organization wrote it, from a branch
-of the repository itself. A pull request from a fork, or from someone outside your organization,
-reads **Needs approval** under **Open now**, with its commit like `a1b2c3d`. Until a member
-approves it, nothing builds and no preview exists.
+Ployz posts one comment on each open pull request: **Deploy as a preview**. The link opens a page
+in Ployz that shows what will deploy before anything does:
 
-Ployz knows a member by the GitHub account they signed in with. A member who signed in some other
-way has their pull requests wait too. Ployz checks again each time it picks a new commit from Git
-to deploy, so once the author leaves your organization or unlinks GitHub, their pull request reads
-**Needs approval** from the next push, CI result, or deploy that picks a new commit from a Service's
-branch in your organization, and its new commits wait for a member to approve them. A deploy that
-reuses commits already picked, such as a retry, doesn't check. If the author comes back, their pull
-request deploys on its own again from its next push.
+- the pull request and its latest commit
+- the environment it copies, like `staging`, with its services
+- the server it runs on, which Ployz picks when it deploys
+- **Its databases start empty**
 
-To deploy it, read the pull request's changes on GitHub, then click **Approve deploy** beside it.
-From the CLI, run `ployz env pr approve 142`. The approval covers that one commit. A new push
-reads **Needs approval** again, with the new commit, and the preview keeps running the commit you
-approved until you approve the new one. If someone pushed after you loaded the page, Approve deploy
-is refused with **This pull request has a newer commit. Approve that one.**
+Click **Deploy**. The preview builds and starts, and the comment on GitHub changes to **Open
+preview** with its address. The same page, and **Pull requests** in Ployz, show it as
+**Deploying**, then **Live at** its address.
 
-If the approval couldn't make the preview, for example because your organization has no servers
-yet, the pull request stays under **Open now**. Fix the cause, then approve it again.
+You can also deploy from **Pull requests** in Ployz: each row has a **Deploy** button.
 
-Bots' pull requests from the repository itself count as a member's once **Enable bot PR
-environments** is on. A bot's pull request from a fork still needs approval.
+Every push to the pull request redeploys its live preview.
 
-`ployz env pr` lists each open pull request with where it stands, like `#142 needs approval
-a1b2c3d` or `#140 deploys`.
+Each push to a pull request starts a **Ployz build** run on GitHub. While the pull request has no
+live preview, Ployz has nothing for that run to build, and GitHub marks the run failed. Deploying
+the preview runs it again.
 
-## Previews don't deploy in this version
+If someone pushed after you opened the page, Deploy is refused with
+**This pull request has a newer commit. Reload to deploy it.**
 
-A preview builds from a pull request, and your servers refuse a build Ployz Cloud starts unless
-an [automatic deploy rule](../deploy/github.md#approve-a-rule-for-deploys-on-push) covers it.
-A rule covers one branch, never a pull request, and this version of Ployz has no rule for
-previews. So a pull request still gets its environment, its settings and its check, but the
-preview's deployment fails at its build with
-`This server runs only builds an approved device starts.` and nothing starts.
+### Who can deploy
 
-A preview whose services all run from an image doesn't build, and its deployment fails the
-same way a dashboard deploy does: see
-[Deploy from the dashboard](../deploy/deployments.md#deploy-from-the-dashboard).
+Any member of your Ployz organization can deploy a pull request that a member opened from a
+branch of the repository itself. Ployz knows a member by the GitHub account they signed in with,
+so to let a contributor's pull requests deploy, [invite them](../account/members.md) to your
+organization.
 
-## What each pull request gets
+A pull request from a fork, or from someone outside your organization, reads
+**Not deployed: rdev0x isn't in your organization on Ployz**. Invite them, or deploy it from a
+branch of your own.
 
-When a pull request opens, Ployz deploys its preview, named like `pr-142`:
+## What each preview gets
 
-- Your repository's services run the pull request's code. Every service in the preview runs one
-  replica.
-- Each copied service with a generated address gets its own. If production's `web` is
-  `web.acme-x7q2.ployz.app`, the preview's is `web-pr-142.acme-x7q2.ployz.app`. Custom domains
-  aren't copied.
-- A push deploys the new commit, even if production doesn't deploy on push, once the pull request
-  [deploys automatically](#who-deploys-automatically) or a member approves that commit. **Wait
-  for CI** and **Watch paths** still apply.
-- Secrets don't carry into a preview: by design, a branch never gets its parent's secret
-  values. Each sealed variable starts **Not set**, and the preview deploys without it. See
-  [Set a preview's secrets](#set-a-previews-secrets).
-- A [generated value](../services/variables.md#generate-a-value) gets a new value in each
-  preview that copies its service. A database's sealed password does too, but your browser makes
-  it, so the preview waits for its first **Deploy** from the dashboard: its automatic deploy is
-  refused until then, naming the password. See [Databases](../services/databases.md#add-a-database).
+A preview is a copy of the environment you picked, as it was last saved:
 
-Open previews are listed under **Open now** in the panel, and in the environment switcher under
-the environment they start from. Each one is a [branch](environments.md) of that environment, so
-you change, sync and close it like any other branch.
+- **Your repository's services run the pull request's code.** Every other service runs as the
+  environment you copied does, from the same image.
+- **The copied environment's secrets.** Each service gets the same variables and secret values as
+  in staging, as they were when you set up previews.
+- **Empty databases.** Each volume starts new and empty, and nothing is copied or seeded into it.
+  Your app has to cope with an empty database, for example by running its migrations at start.
+- **One replica** of each service, and no custom domains.
+- **Its own address.** Each service with a generated address gets its own, named after the pull
+  request, like `web-3-pr-12.acme.ployz.app`. The comment and **Pull requests** link to it.
 
-## Set a preview's secrets
+A preview can't reach your other environments' services or data, or another preview's.
 
-A preview's first deploy runs without your secrets, so code that needs a `DATABASE_URL` or an API
-key may fail until you set them. The **Ployz · ready to merge** check on the pull request lists
-them under **Not set in pr-142**, and each service's card on the preview's canvas reads like
-`1 not set`.
+## The limit
 
-Open the preview, open the service's **Variables**, and choose **Set value** on each. Then deploy
-the preview again, or push. A value you set here stays in the preview: the merge doesn't bring it
-to production.
+When as many previews are live as **Live previews at once** allows, a new deploy is refused with
+**Not deployed: 5 of 5 previews are live**. Nothing waits in line, and nothing deploys later on
+its own.
 
-## Config changes in a pull request
+- **Close one** lists the live previews by their last push, each with a **Close** button. Close
+  one, then deploy again.
+- **Raise the limit** opens Preview settings, where a higher limit takes one passkey signature.
 
-Code reaches production through Git, and so do the preview's setting changes, like a new variable
-or a new service: when the pull request merges on GitHub, every change the preview made since it
-started lands in the environment that deploys the branch the pull request merges into. That is
-production, for a pull request into production's branch. Environments below it that deploy the
-same branch get the code, not the settings.
+The limit counts every live preview of the repository, on all the servers previews run on.
 
-To see what will land, open the preview and click **On merge · 3** at the top right of the canvas.
-The list reads `#142 → production`, one row per change: the service, the setting, then
-production's value → the preview's, like `CACHE_TTL 30 → 60`. In a row's ⋯ menu:
+## Close a preview
 
-- **Edit** sets the value production gets instead of the preview's. The row shows **Edited** and
-  the preview's own value under it; **Reset** in the ⋯ menu goes back to the preview's.
-- **Exclude** keeps the change in the preview only. The row stays in the list, greyed, marked
-  **Excluded**; click **Include** to put it back.
+A preview closes on its own when its pull request merges or closes, and the comment on GitHub
+changes to **Preview closed**.
 
-A setting production changed after the preview started reads `production 45 → 60`: the preview's
-value wins when it merges. A secret the preview added that production has no value for reads
-**Not set in production**. Set it in production, or with **Edit**, before you merge; otherwise
-production's deploy skips it, and any variable that references it, and warns. For a service
-that's new to production, set its sealed values after the merge. Removed variables
-and settings ride too. Replicas, CPU and memory limits, and custom domains never do.
+To close one sooner, open it from **Pull requests** and click **Close preview**. Its copy and
+databases are deleted. The pull request stays open, so you can deploy it again later, and it
+starts with empty databases.
 
-A service or config the preview removed reads **Removes db**. If production changed it since the
-preview started, the row adds **Changed there**; the merge removes it anyway. If a production
-service still mounts a removed config, the row reads **In use** with what mounts it, and the merge
-leaves it in production while the rest lands. A reference never holds a removal: a variable in
-production that references `db` becomes a **Broken reference** once `db` is gone. A removed volume reads
-**Kept**: the merge never removes a volume or its data, and production's services keep their mounts
-on it unless the preview removed the service too. Remove it in production yourself when
-you're sure. Only what the preview copied can be removed this way; a service the preview never
-had stays in production untouched.
+## What previews don't cover
 
-Ployz posts a **Ployz · ready to merge** check on the pull request that mirrors the list, like
-`3 config changes · TOKEN not set`. It's green, or neutral when a secret is Not set, production
-changed the same setting, or a removal production still uses reads **In use**. It never fails, so it never blocks a merge. Its **Details** link opens
-the list. A pull request into a branch no Environment deploys from reads **Nothing deploys from
-release**: its changes stay in the preview.
+When you turn previews on, you approve your services as they're set up in the environment
+previews copy, secrets included. A preview always runs those settings: settings you change in a
+preview itself don't deploy.
 
-When the pull request merges, production gets one saved version, **Merged #142**, and the merge
-commit's push deploys it with the code. To take it back, open its **⋮** in production's
-**Versions** and choose **Undo these 3 changes**.
-
-The merge deploys every service it changed: one whose own settings changed, one that mounts a
-changed config, and one that reads a changed variable. It does so even for a service with
-auto-deploy off or one that doesn't build from the branch, which redeploys with the code it last
-built. An edit you staged in production but didn't save stays staged.
-
-A removal deploys too: the service's containers stop and go away, and its volumes stay on the
-server with their data. The merge opens no approval, because it never deletes volume data.
-**Undo** in production's **Versions** brings the service or config back whole, and the next
-deploy starts it on the same volumes. Its secrets come back **Not set**: choose **Set value** on
-each before that deploy. If another service took its
-name since, Undo is refused with **api exists. Rename it first.**
-
-If the merge couldn't land in production, or landed but couldn't deploy, the check says so, like
-**Didn't land in production** or **Saved in production, not deployed**, with the reason. A preview
-whose changes didn't land stays open, so nothing it held is lost.
-
-To take the changes before the merge, click **Sync · 3**, check each change as for any
-[sync](environments.md#sync-the-change-to-production), and click **Sync 3 changes**. They become
-production's changes to deploy now, and leave the On merge list. From the CLI, `ployz env sync --to
-production` from the preview does the same.
-
-## Shut down a preview
-
-A preview you're not testing can come off your servers and keep its settings.
-
-1. Open the preview and open the Sync button's ▾ menu.
-2. Click **Shut down until the next push**. If it has data, type `my-app/pr-142` to confirm. A
-   preview with no data shuts down without asking.
-
-Its services stop and its own data is deleted. Its settings, synced changes and pull request stay.
-The next push brings it back, once it [deploys](#who-deploys-automatically), or click **Deploy pr-142**. It starts fresh: its databases start
-empty and setup commands run again.
-
-To delete it instead, open the ▾ menu, then **Close pr-142…**, type `my-app/pr-142` and click **Close
-branch**. If the pull request is still open, its next push makes a new one.
+If you later change the copied environment, like a variable, a secret, an image or a new
+service, new deploys read **Not deployed: changes web's settings, which the policy doesn't
+cover**. Live previews keep running. Open **Preview settings**, click **Edit**, and save with
+your passkey to cover the new settings.
 
 **Next:** [get ready for production](../production-checklist.md).
