@@ -1125,38 +1125,10 @@ mod tests {
         );
     }
 
+    /// On the Server itself no key could be trusted, so a standalone founding there starts
+    /// nothing and names the command to run from a computer.
     #[test]
-    fn local_machine_init_requires_root_to_install() {
-        if crate::checkin::process_is_root() {
-            return;
-        }
-        let mut command = command();
-        let matches = command
-            .clone()
-            .try_get_matches_from([
-                "ployz",
-                "server",
-                "add",
-                "--standalone",
-                "--yes",
-                "--storage",
-                "none",
-                "--accepts-ingress=false",
-                "--context",
-                "local-init",
-            ])
-            .unwrap();
-        assert_eq!(
-            dispatch(&matches, &mut command).unwrap_err().to_string(),
-            "run this command with sudo",
-        );
-    }
-
-    #[test]
-    fn local_machine_init_without_install_dials_the_unix_socket() {
-        if ployz_core::MachineLayout::production().socket().exists() {
-            return;
-        }
+    fn a_standalone_founding_on_the_server_itself_is_refused() {
         let mut command = command();
         let matches = command
             .clone()
@@ -1171,21 +1143,14 @@ mod tests {
                 "none",
                 "--accepts-ingress=false",
                 "--context",
-                "local-init-no-install",
+                "local-init",
             ])
             .unwrap();
-        assert_eq!(
-            dispatch(&matches, &mut command)
-                .unwrap_err()
-                .causes()
-                .get(..2),
-            Some(
-                &[
-                    "Couldn't open a connection to the Server.",
-                    "transport error"
-                ]
-                .map(String::from)[..]
-            ),
+        let refused = dispatch(&matches, &mut command).unwrap_err().to_string();
+        assert!(
+            refused.contains("would trust no key")
+                && refused.contains("ployz server add --standalone root@HOST"),
+            "{refused}"
         );
     }
 

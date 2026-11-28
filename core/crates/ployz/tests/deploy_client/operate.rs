@@ -891,7 +891,7 @@ async fn context_config_empty_context_deploy_names_add_servers_before_a_volume_c
     );
     assert_eq!(
         json["error"]["details"]["next"],
-        "ployz server add --standalone root@HOST --context verify",
+        "ployz server add --standalone '<DESTINATION>' --context verify",
         "{json}"
     );
 }

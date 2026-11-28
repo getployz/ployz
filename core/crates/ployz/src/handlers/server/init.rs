@@ -5,7 +5,7 @@ use super::super::runtime;
 use super::{ConnectionOptions, helpers};
 use crate::enrollment::machine;
 use crate::{
-    context::Context,
+    context::{Context, Transport},
     handlers::{Error, leaf_matches},
 };
 use serde_json::json;
@@ -36,15 +36,21 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
     // On the Server's own socket the person is root there: a Device made there would be root's
     // on that Server, ride into every later join approval, and outlive the Server. With none,
     // the Cluster would trust no key, so founding takes a computer that holds one.
-    let Some(destination) = matches.get_one::<String>("destination") else {
-        return Err(Error::usage(
+    let on_server = || {
+        Error::usage(
             "A Cluster started on its own Server would trust no key. Start it from your computer, which approves your device on it:\n  ployz server add --standalone root@HOST",
-        ));
+        )
     };
+    let destination = matches
+        .get_one::<String>("destination")
+        .ok_or_else(on_server)?;
     let connection = helpers::configure_ssh_key(
         destination.parse()?,
         matches.get_one::<String>("ssh-key").map(String::as_str),
     )?;
+    if matches!(connection.transport(), Transport::Unix(_)) {
+        return Err(on_server());
+    }
     let requested_name = helpers::requested_name(matches)?;
     let cluster_name = founding_name(root)?;
     let token_request = helpers::token_request(matches)?;

@@ -1186,9 +1186,9 @@ reinstall it first. A server cut off from the rest when you removed it learns of
 reaches them again.
 
 If a standalone context has no Servers left, runtime commands say which context is empty
-and print `ployz server add --standalone root@HOST --context NAME` as the next step. This
-starts a new standalone Cluster in that empty context without signing in to Cloud. Run it from
-your computer with the server's SSH destination. See
+and print `ployz server add --standalone '<DESTINATION>' --context NAME` as the next step.
+This starts a new standalone Cluster in that empty context without signing in to Cloud. Run it
+from your computer with the server's SSH destination, such as `root@HOST`. See
 [Add a standalone server](add-a-server.md#add-a-standalone-server).
 
 On a server that joined from a Fleet Token, `sudo ployz status` then says
