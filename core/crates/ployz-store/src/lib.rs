@@ -107,7 +107,8 @@ pub use pull_request::{
     ApprovePullRequest, ClosePreview, DeployPullRequestPreview, MergeRow, NotDeployed, OnMerge,
     OnMergeCheck, OnMergeConclusion, OnMergeQuery, OpenPreviewsQuery, OpenPreviewsView,
     OpenPullRequest, PrPlansQuery, PrPlansView, PreviewLink, PreviewOutcome, PreviewPlan,
-    PreviewRow, PreviewSettings, PreviewsQuery, PreviewsView, PullRequest, PullRequestQuery,
+    PreviewRow, PreviewRuleQuery, PreviewRuleView, PreviewServer, PreviewSettings, PreviewsQuery,
+    PreviewsView, PullRequest, PullRequestQuery,
     PullRequestRef, PullRequestView, Ride, SetMergeValue, SetPrPlan, Standing, Sweep,
 };
 pub use query::*;

@@ -6,7 +6,7 @@ use ployz_core::config::{SavedEnvironmentIntent, canonicalize_environment_intent
 use ployz_core::{Region, RequestedServiceSpec, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU8;
 use ts_rs::TS;
 
@@ -15,7 +15,7 @@ use crate::deployment::loss::{VolumeLoss, removed};
 use crate::deployment::{self, DeploymentSummary, DeploymentView};
 use crate::error;
 use crate::followup::{FollowUp, Place};
-use crate::id::{DeploymentId, Hostname};
+use crate::id::{DeploymentId, EnvironmentId, Hostname};
 use crate::review::{self, NodeChange};
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
 use crate::storage::Tx;
@@ -368,6 +368,7 @@ pub(crate) fn plan(
         unresolved.push(Unresolved::VolumeData);
     }
     let landing = deployment::Landing::of(&review.head);
+    let opening = deployment::Opening::of(tx, &environment.summary.id, &namespace)?;
     let frozen = deployment::freeze(
         &environment.summary.id,
         &who.organization,
@@ -376,6 +377,7 @@ pub(crate) fn plan(
         deployment::Scope::of(&query.services, &removed),
         namespace.clone(),
         None,
+        opening.as_ref(),
     )?;
     let (lowered, volumes, unsigned, sources) = match query.target {
         true => {
@@ -499,6 +501,34 @@ fn redeploy_plan(
         unsigned: Vec::new(),
         sources: Vec::new(),
     })
+}
+
+/// `saved`, `environment`'s latest Saved revision, lowered as a full Deploy of a preview of
+/// it in `preview` would be, its generated domains under the Cluster Domain of the Parent's
+/// last Deploy as a preview's are: what a preview rule approves, less each built image.
+pub(crate) fn preview_target(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    (environment, saved): (&EnvironmentId, &SavedEnvironmentIntent),
+    preview: &ployz_core::PreviewNamespace,
+) -> Result<Vec<RequestedServiceSpec>, RpcError> {
+    let ships = deployment::Ships {
+        targeting: deployment::Targeting::Full { prune: false },
+        removals: deployment::ServiceRemovals::default(),
+    };
+    let cluster_domain = deployment::cluster_domain(tx, environment)?;
+    let opening = deployment::Opening::sample(environment.clone(), saved.clone(), preview.clone());
+    deployment::lower(
+        environment,
+        saved,
+        (&BTreeSet::new(), &BTreeMap::new(), &BTreeMap::new()),
+        &ships,
+        (preview.namespace().clone(), cluster_domain.as_ref()),
+        &crate::branch::Lowering::default(),
+        &who.organization,
+        Some(&opening),
+    )
+    .map(|lowered| lowered.created(false))
 }
 
 /// `target` lowered as a claim of a Deploy of it would, narrowed to `services` unless
