@@ -21,9 +21,9 @@ export type InstallTarget = { readonly cloudOrigin: string; readonly ployzVersio
  * terminal, so it passes the token in PLOYZ_FLEET_TOKEN. `key` is the passkey the new Server trusts to found or join
  * the Cluster; it is public, so both lines carry it as it is.
  */
-export function installLines({ cloudOrigin, ployzVersion, token }: InstallTarget, key: string | null): InstallLines {
+export function installLines({ cloudOrigin, ployzVersion, token }: InstallTarget, key: string): InstallLines {
   const cloud = cloudOrigin === PLOYZ_ORIGIN ? "" : `PLOYZ_CLOUD_URL='${cloudOrigin}' `;
-  const keyed = key === null ? "" : ` --key ${key}`;
+  const keyed = ` --key ${key}`;
   return {
     shell: `curl -fsSL ${INSTALL_ORIGIN} | sudo ${cloud}sh -s -- ${ployzVersion} --enroll${keyed}`,
     cloudInit: `#cloud-config\nruncmd:\n  - curl -fsSL ${INSTALL_ORIGIN} | ${cloud}PLOYZ_FLEET_TOKEN=${token} sh -s -- ${ployzVersion}${keyed}`,

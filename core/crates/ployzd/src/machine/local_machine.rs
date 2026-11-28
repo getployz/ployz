@@ -233,6 +233,10 @@ pub enum Error {
     /// without an approval of its auth key.
     #[error("This Server joins a tailnet only with your approval: {0}")]
     PrivateAccessRefused(ployz_core::authority::AuthorityRefusal),
+    /// Device enforcement refused an Operator's `RestoreTrash` or `EmptyTrash` without a
+    /// person's approval of those entries on this Server.
+    #[error("This Server restores or empties its Trash only with your approval: {0}")]
+    TrashRefused(ployz_core::authority::AuthorityRefusal),
     #[error("ployz.machine.join.device-approval.v1 needs a signed join approval: {0}")]
     JoinRefused(ployz_core::authority::AuthorityRefusal),
     #[error("could not keep the record of join approvals")]

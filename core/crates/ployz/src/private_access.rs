@@ -155,8 +155,8 @@ pub(crate) fn seal_key(
 #[serde(deny_unknown_fields)]
 pub struct PrivateAccessOn {
     pub sealed_auth_key: Ciphertext,
-    /// Absent when no Server enforces Device approval, so a person with no passkey can
-    /// still turn Private Access on. A Server that enforces refuses the key without it.
+    /// Absent when this CLI holds no device key and reaches the Servers as a Full caller,
+    /// over SSH or their own socket. A Server refuses the key from any other caller without it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub approval: Option<KeyApproval>,

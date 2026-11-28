@@ -188,6 +188,10 @@ pub enum MismatchField {
     RestorePoint,
     /// A Copy step's new Volume.
     CopyDestination,
+    /// The entries a Trash approval names.
+    TrashEntries,
+    /// What a Trash approval lets the Machine do.
+    TrashAction,
 }
 
 impl MismatchField {
@@ -281,6 +285,8 @@ impl MismatchField {
             Self::CopySource => "the Volume to copy",
             Self::RestorePoint => "a restore point",
             Self::CopyDestination => "the new Volume",
+            Self::TrashEntries => "the Trash entries",
+            Self::TrashAction => "a Trash action",
         }
     }
 
@@ -394,7 +400,9 @@ impl MismatchField {
             | Self::SealedTrust
             | Self::CopySource
             | Self::RestorePoint
-            | Self::CopyDestination => return None,
+            | Self::CopyDestination
+            | Self::TrashEntries
+            | Self::TrashAction => return None,
         })
     }
 
@@ -510,7 +518,9 @@ impl MismatchField {
             | Self::SealedTrust
             | Self::CopySource
             | Self::RestorePoint
-            | Self::CopyDestination => return None,
+            | Self::CopyDestination
+            | Self::TrashEntries
+            | Self::TrashAction => return None,
         })
     }
 }

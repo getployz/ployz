@@ -5,7 +5,8 @@
 use ployz_core::OperationId;
 use ployz_core::authority::{
     AutoDeployRule, JoinApproval, Passkey, PreviewBasis, PrivateAccessApproval, PrivateAccessTerms,
-    RuleBasis, RuleTerms, SignerKey, Timestamp, version_draft, version_draft::VersionsAsked,
+    RuleBasis, RuleTerms, SignerKey, Timestamp, TrashApproval, TrashTerms, version_draft,
+    version_draft::VersionsAsked,
 };
 use ployz_core::config::{ConfigError, Generator, parse_env_file, parse_service_setting};
 use ployz_core::first_key::LineKey;
@@ -157,6 +158,19 @@ pub fn private_access_approval_body(input: &str) -> Result<String, JsError> {
     let terms: PrivateAccessTerms =
         serde_json::from_str(input).map_err(|error| JsError::new(&error.to_string()))?;
     ployz_core::authority::canonical::to_canonical(&PrivateAccessApproval::drafted(&terms))
+        .map_err(|error| JsError::new(&error.to_string()))
+}
+
+/// The Trash approval a passkey answers for `terms`, in canonical form, its entries sorted
+/// and each once, by the ployz-core code the Servers run.
+///
+/// # Errors
+/// Rejects malformed terms.
+#[wasm_bindgen]
+pub fn trash_approval_body(input: &str) -> Result<String, JsError> {
+    let terms: TrashTerms =
+        serde_json::from_str(input).map_err(|error| JsError::new(&error.to_string()))?;
+    ployz_core::authority::canonical::to_canonical(&TrashApproval::drafted(&terms))
         .map_err(|error| JsError::new(&error.to_string()))
 }
 

@@ -1162,7 +1162,7 @@ fn context_config_selection_works_before_between_and_after_commands() {
                 .as_str()
                 .unwrap(),
             format!(
-                "ployz --ployz-config {} server add --standalone --context verify",
+                "ployz --ployz-config {} server add --standalone '<DESTINATION>' --context verify",
                 path.display()
             ),
             "{json}"
@@ -1252,7 +1252,7 @@ fn context_config_empty_context_names_the_next_step_for_runtime_commands() {
         );
         assert!(
             stderr.contains("next: ployz")
-                && stderr.contains("server add --standalone --context verify"),
+                && stderr.contains("server add --standalone '<DESTINATION>' --context verify"),
             "{stderr}"
         );
         assert!(!stderr.contains("no connections found"), "{stderr}");

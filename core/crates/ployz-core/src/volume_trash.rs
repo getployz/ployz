@@ -1,11 +1,16 @@
 //! A Server's Trash: the data its Pool kept from each Volume copy it deleted, and the three
-//! routes that list, restore and empty it.
+//! routes that list, restore and empty it. An Operator lists it; it restores or empties only
+//! with a person's [`TrashApproval`] of those entries on that Server.
 
 use std::{fmt, str::FromStr};
 
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
-use crate::{DockerVolumeName, ValueError, VolumeOrigin, WriterEpoch};
+use crate::{
+    DockerVolumeName, ValueError, VolumeOrigin, WriterEpoch,
+    authority::{Signed, TrashApproval},
+};
 
 /// How many hourly sweeps a Trash entry waits before the sweep destroys it: 7 days of
 /// hours the Server ran.
@@ -17,8 +22,9 @@ const ID_LEN: usize = 26;
 
 /// One Trash entry's name under `<pool>/ployz-trash`: 16 random bytes in base32. The Server
 /// that made the entry minted it and never reuses one.
-#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
 #[serde(try_from = "String", into = "String")]
+#[ts(type = "string")]
 pub struct TrashId([u8; ID_LEN]);
 
 impl TrashId {
@@ -100,7 +106,7 @@ impl From<TrashId> for String {
 }
 
 /// Which copy of a Volume an entry was before its delete.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum TrashPlace {
     /// The Writer's root.
@@ -139,7 +145,7 @@ impl FromStr for TrashPlace {
 pub struct ListTrashRequest {}
 
 /// What this Server's Trash holds.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct TrashList {
     #[serde(default)]
     pub entries: Vec<TrashEntry>,
@@ -149,7 +155,7 @@ pub struct TrashList {
     pub unreadable: Vec<UnreadableTrash>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct TrashEntry {
     pub id: TrashId,
     pub place: TrashPlace,
@@ -158,10 +164,13 @@ pub struct TrashEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<VolumeOrigin>,
     /// Unix seconds by this Server's clock when the delete moved it here.
+    #[ts(type = "number")]
     pub trashed_at: i64,
     /// Unix seconds when the sweep is expected to destroy it: an estimate from the hours
     /// it has left, which only advance while the Server runs.
+    #[ts(type = "number")]
     pub expires_at: i64,
+    #[ts(type = "number")]
     pub used_bytes: u64,
     /// A restore pinned it: it waits to become the Volume's data, and `expires_at` counts
     /// from the restore's last attempt.
@@ -169,9 +178,10 @@ pub struct TrashEntry {
     pub restoring: bool,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct UnreadableTrash {
     pub id: TrashId,
+    #[ts(type = "number")]
     pub used_bytes: u64,
     pub reason: String,
 }
@@ -179,16 +189,20 @@ pub struct UnreadableTrash {
 /// A deleted root comes back in two calls: the first pins it, so it waits in the Trash for
 /// the restore, and the second, once every Server showed it holds no copy, makes it the
 /// Volume's data. A mirror or old copy lands as an old copy in the first.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RestoreTrashRequest {
     pub id: TrashId,
     /// Make the pinned root the Volume's data, at the epoch its pin holds.
     #[serde(default)]
     pub promote: bool,
+    /// A person's approval of restoring `id` on this Machine, which an Operator's restore
+    /// needs and a Full caller's doesn't.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval: Option<Signed<TrashApproval>>,
 }
 
 /// Where a restore of `id` stands, under the entry's Docker Volume name.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct TrashRestored {
     pub id: TrashId,
     pub name: DockerVolumeName,
@@ -196,7 +210,7 @@ pub struct TrashRestored {
     pub state: TrashRestore,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TrashRestore {
     /// The root waits in the Trash for a promote at `epoch`.
@@ -214,11 +228,15 @@ pub struct EmptyTrashRequest {
     /// Emptying the whole Trash: entries a restore pinned stay. Named alone, they go.
     #[serde(default)]
     pub bulk: bool,
+    /// A person's approval of emptying exactly `ids` on this Machine, which an Operator's
+    /// empty needs and a Full caller's doesn't.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval: Option<Signed<TrashApproval>>,
 }
 
 /// Each named entry destroyed, or why not. A named entry the Trash doesn't hold is
 /// `missing`, not a failure.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct TrashEmptied {
     #[serde(default)]
     pub emptied: Vec<TrashId>,
@@ -231,7 +249,7 @@ pub struct TrashEmptied {
     pub restoring: Vec<TrashId>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct TrashFailure {
     pub id: TrashId,
     pub reason: String,

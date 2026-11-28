@@ -22,8 +22,8 @@ use ployz_core::{
     cluster_sealing_key, op,
 };
 use ployz_store::{
-    EnvironmentRef, Parent, ParentQuery, PlanQuery, PlanView, PostedVersion, RulePrior, RuleQuery,
-    SavedRule, TagPin,
+    EnvironmentRef, Parent, ParentQuery, PlanQuery, PostedVersion, RulePrior, RuleQuery, SavedRule,
+    TagPin,
 };
 use serde_json::json;
 
@@ -84,10 +84,9 @@ pub(in crate::handlers) fn keyed(matches: &ArgMatches) -> bool {
 /// How long `ployz deploy` waits to learn whether a Server enforces Device approval.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// Sign the versions a Deploy ships, when this CLI holds a key and a Server of the
-/// Cluster enforces Device approval. None otherwise: the Deploy runs as before, and a
-/// Server that enforces refuses what nobody approved. The Servers are asked while the
-/// Store plans, so a Cluster that doesn't enforce waits for neither.
+/// Sign the versions a Deploy ships, when this CLI holds a key. None otherwise: Cloud holds
+/// the Deploy for a person to approve, and a Server refuses what nobody approved. The
+/// Servers are asked while the Store plans.
 ///
 /// A CI or agent key in `PLOYZ_KEY` always signs, and so does `--yes`: each signs with no
 /// person to ask, only an edit of the last version a person approved, as
@@ -98,8 +97,8 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 /// Refuses before admission when the person declines the lines it shows, or no terminal
 /// can ask, when a Service it ships builds from source and no automatic deploy rule
 /// builds it, when a tag image can't be pinned
-/// (its registry wants credentials, can't be reached, or has no such tag), when a Server
-/// enforces but none reports the Cluster's key or can't check what this CLI signs, and
+/// (its registry wants credentials, can't be reached, or has no such tag), when no Server
+/// answers or reports the Cluster's key, when a Server can't check what this CLI signs, and
 /// when the Store can't lower the plan; returns the plan's or the key's error.
 ///
 /// [`silent::sign`]: super::silent::sign
@@ -122,18 +121,6 @@ pub(in crate::handlers) fn sign(
         return silent::sign(matches, store, (environment, plan), edits, &key).map(Some);
     }
     let silent = silent::silent(matches);
-    // A silent deploy that goes unsigned only because its Servers didn't answer still
-    // ships only image edits. Servers that don't enforce approval sign nothing.
-    let unsigned = |plan: Result<PlanView, Error>| -> Result<Option<DeviceApproval>, Error> {
-        if silent {
-            let plan = plan?;
-            silent::pending(&plan.changes, edits)
-                .map_err(|refused| refused.error(matches, store.again()))?;
-            silent::moves(&plan.regions)
-                .map_err(|refused| refused.error(matches, store.again()))?;
-        }
-        Ok(None)
-    };
     let key = crate::device::key::path(&super::super::config_path(matches)?);
     let Ok(Some(signing)) = DeviceSigning::load(&key) else {
         return Ok(None);
@@ -153,29 +140,22 @@ pub(in crate::handlers) fn sign(
         (probe.join().unwrap_or(Probe::Unknown), evidence, plan)
     });
     let enforcing = match probe {
-        Probe::Off => return Ok(None),
-        Probe::Unknown if flag(matches, "forget-older") => {
+        Probe::Unknown => {
             return Err(Error::coded(
                 RpcErrorCode::Unavailable,
-                "Couldn't ask your servers whether they enforce device approval, so \
-                 --forget-older can't sign the deploy. Nothing deployed.",
-            ));
-        }
-        Probe::Unknown => {
-            crate::ui::warn(
-                "Couldn't ask your servers whether they enforce device approval, so this \
-                 deploy isn't signed. Servers that enforce will refuse it.",
-            );
-            return unsigned(plan);
+                "Couldn't reach your servers, so this device can't sign the deploy. \
+                 Nothing deployed.",
+            )
+            .hint(Hint::Inspect(super::super::rerun(matches, &["status"]))));
         }
         Probe::NoClusterKey => {
             return Err(Error::coded(
                 RpcErrorCode::Unavailable,
-                "Your servers enforce device approval, but none reported the cluster's key, \
-                 so this device can't sign the deploy. Run ployz status, then deploy again.",
+                "None of your servers reported the cluster's key, so this device can't sign \
+                 the deploy. Run ployz status, then deploy again.",
             ));
         }
-        Probe::Enforcing(enforcing) => enforcing,
+        Probe::Signing(enforcing) => enforcing,
     };
     let capability = needs.named();
     if !enforcing.behind.outdated.is_empty() {
@@ -848,13 +828,11 @@ fn pin_tags(
         .collect()
 }
 
-/// What the Servers say about Device approval.
+/// What the Servers say about checking what this device signs.
 #[derive(Debug, PartialEq)]
 pub(in crate::handlers) enum Probe {
-    /// None enforces.
-    Off,
-    Enforcing(Enforcing),
-    /// One enforces, and none reported the Cluster's Sealing key.
+    Signing(Enforcing),
+    /// None reported the Cluster's Sealing key.
     NoClusterKey,
     /// No Server answered in time.
     Unknown,
@@ -863,12 +841,10 @@ pub(in crate::handlers) enum Probe {
 /// What a deploy's signature needs of the Servers.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(in crate::handlers) enum Needs {
-    /// A person's: each Server that enforces checks a signed version.
+    /// A person's: each Server checks a signed version.
     Person,
     /// One with no person to ask, which signs an edit of the last version a person
-    /// approved: every Server, enforcing or not, must report whether it enforces and hold
-    /// every capability an edit needs. One that reports both and doesn't enforce passes:
-    /// it signs nothing and refuses nothing.
+    /// approved: each Server must hold every capability an edit needs.
     Silent,
 }
 
@@ -891,19 +867,10 @@ impl Needs {
             Self::Silent => PARENT_VERSIONS_CAPABILITY,
         }
     }
-
-    /// Whether `machine` must hold every capability: under [`Needs::Silent`] each Server
-    /// does, enforcing or not, since one that starts enforcing must already admit the edit.
-    fn checks(self, machine: &ployz_core::Machine) -> bool {
-        match self {
-            Self::Person => machine.runtime.device_enforcement == Some(true),
-            Self::Silent => true,
-        }
-    }
 }
 
-/// What the Servers say about Device approval, each `needs` checks asked for each
-/// capability it needs.
+/// What the Servers say about checking what this device signs, each asked for each
+/// capability `needs` names.
 pub(in crate::handlers) fn probe(matches: &ArgMatches, needs: Needs) -> Probe {
     let context = matches
         .try_get_one::<String>("context")
@@ -930,18 +897,17 @@ pub(in crate::handlers) fn probe(matches: &ArgMatches, needs: Needs) -> Probe {
     })
 }
 
-/// Each Server `needs` checks that was seen with no capabilities. An empty list claims
-/// nothing: an older entry relays a newer peer's record without one.
+/// Each Server seen with no capabilities. An empty list claims nothing: an older entry
+/// relays a newer peer's record without one.
 fn unclaimed(observed: &[MachineObservation], needs: Needs) -> BTreeSet<MachineId> {
     observed
         .iter()
         .map(|observed| &observed.machine)
         .filter(|machine| {
-            needs.checks(machine)
-                && needs
-                    .capabilities()
-                    .iter()
-                    .any(|needed| machine.runtime.claim(needed) == Claim::Unclaimed)
+            needs
+                .capabilities()
+                .iter()
+                .any(|needed| machine.runtime.claim(needed) == Claim::Unclaimed)
         })
         .map(|machine| machine.id)
         .collect()
@@ -970,20 +936,15 @@ async fn asked(
         .collect()
 }
 
-/// What `observed` says about Device approval, with `answered` saying, for each Server
-/// seen with no capabilities that was asked and answered, whether it has every
-/// capability `needs` asks for.
+/// What `observed` says about checking what this device signs, with `answered` saying,
+/// for each Server seen with no capabilities that was asked and answered, whether it has
+/// every capability `needs` asks for. A Server that says it doesn't enforce runs a Ployz
+/// from before every Server checked signatures, so it is behind.
 fn enforced(
     observed: &[MachineObservation],
     answered: &BTreeMap<MachineId, bool>,
     needs: Needs,
 ) -> Probe {
-    if !observed
-        .iter()
-        .any(|observed| observed.machine.runtime.device_enforcement == Some(true))
-    {
-        return Probe::Off;
-    }
     let Some(cluster) = cluster_sealing_key(observed.iter().map(|observed| &observed.machine))
     else {
         return Probe::NoClusterKey;
@@ -1000,12 +961,16 @@ fn enforced(
         .collect();
     let mut behind = Behind::default();
     for machine in observed.iter().map(|observed| &observed.machine) {
-        if !needs.checks(machine) {
-            continue;
-        }
-        if machine.runtime.device_enforcement.is_none() {
-            behind.unverified.push(machine.name.to_string());
-            continue;
+        match machine.runtime.device_enforcement {
+            None => {
+                behind.unverified.push(machine.name.to_string());
+                continue;
+            }
+            Some(false) => {
+                behind.outdated.push(machine.name.to_string());
+                continue;
+            }
+            Some(true) => {}
         }
         let claims: Vec<Claim> = needs
             .capabilities()
@@ -1029,7 +994,7 @@ fn enforced(
         names.sort_unstable();
         names.dedup();
     }
-    Probe::Enforcing(Enforcing {
+    Probe::Signing(Enforcing {
         cluster,
         machines,
         names,
@@ -1045,8 +1010,8 @@ fn listed(servers: &[String]) -> String {
     }
 }
 
-/// The refusal for Servers that enforce and lack `capability`, which what this CLI signs
-/// needs, before anything is signed or admitted.
+/// The refusal for Servers that lack `capability`, which what this CLI signs needs, before
+/// anything is signed or admitted: a Server on Ployz 0.3 among them.
 pub(super) fn outdated(matches: &ArgMatches, servers: &[String], capability: &str) -> Error {
     let named = listed(servers);
     // This CLI's own channel, which carries a ployz that checks what it signs.
@@ -1059,9 +1024,9 @@ pub(super) fn outdated(matches: &ArgMatches, servers: &[String], capability: &st
     Error::detailed(
         RpcErrorCode::Unsupported,
         format!(
-            "Upgrade {named} first: {each} enforces device approval with an older ployz that \
-             can't check this device's signature, so {each} would refuse this deploy. Nothing \
-             signed or deployed.",
+            "Upgrade {named} first: {each} runs an older ployz that can't check this \
+             device's signature, so {each} would refuse this deploy. Nothing signed or \
+             deployed.",
             each = if servers.len() == 1 { "it" } else { "each" },
         ),
         json!({
@@ -1072,14 +1037,14 @@ pub(super) fn outdated(matches: &ArgMatches, servers: &[String], capability: &st
     .hint(Hint::Next(super::super::rerun(matches, &upgrade)))
 }
 
-/// The refusal for Servers that enforce and didn't say whether they have `capability`,
-/// before anything is signed or admitted.
+/// The refusal for Servers that didn't say whether they have `capability`, before anything
+/// is signed or admitted.
 pub(super) fn unverified(matches: &ArgMatches, servers: &[String], capability: &str) -> Error {
     Error::detailed(
         RpcErrorCode::Unavailable,
         format!(
-            "Couldn't confirm {} can check this device's signature: {} enforces device \
-             approval and didn't answer. Nothing signed or deployed.",
+            "Couldn't confirm {} can check this device's signature: {} didn't answer. \
+             Nothing signed or deployed.",
             listed(servers),
             if servers.len() == 1 { "it" } else { "each" },
         ),

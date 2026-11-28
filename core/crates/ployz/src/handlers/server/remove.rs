@@ -78,13 +78,9 @@ pub(super) fn forget(root: &ArgMatches) -> Result<(), Error> {
     leave(root, Removal::Forget)
 }
 
-fn enforces(observation: &ployz_core::MachineObservation) -> bool {
-    observation.machine.runtime.device_enforcement == Some(true)
-}
-
-/// Refuse, before anything is asked or sent, a removal an enforcing entry would refuse:
-/// the Forget goes to the entry, and needs this CLI there as an approved Device, over
-/// SSH, or on the local socket.
+/// Refuse, before anything is asked or sent, a removal the entry would refuse: the
+/// Forget goes to the entry, and needs this CLI there as an approved Device, over SSH, or
+/// on the local socket.
 fn refuse_without_device(
     client: &Client,
     machines: &[ployz_core::MachineObservation],
@@ -97,9 +93,7 @@ fn refuse_without_device(
     let Some(unreached) = (entry != selected.id)
         .then_some(entry)
         .and_then(|id| machines.iter().find(|observed| observed.machine.id == id))
-        .filter(|observed| {
-            enforces(observed) && !client.reaches_full(&observed.machine.id, device)
-        })
+        .filter(|observed| !client.reaches_full(&observed.machine.id, device))
     else {
         return Ok(());
     };
@@ -203,10 +197,10 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
             .call::<op::DescribeContract>(DescribeContractRequest {}, Call::read())
             .await?
             .machine_id;
-        // An enforcing Server forgets another only for a Full caller, so the CLI drives
-        // the removal itself as a Device.
-        let by_device = machines.len() > 1 && machines.iter().any(enforces);
-        let mut switched = selected.id == current && machines.len() > 1;
+        // A Server forgets another only for a Full caller, so the CLI drives the removal
+        // itself as a Device.
+        let by_device = machines.len() > 1;
+        let mut switched = false;
         if by_device {
             (client, current, switched) = super::super::route::connect_full_avoiding(
                 matches,
@@ -215,10 +209,6 @@ fn leave(root: &ArgMatches, removal: Removal) -> Result<(), Error> {
             )
             .await?;
             refuse_without_device(&client, &machines, &selected, current, removal, matches)?;
-        } else if switched {
-            (client, current) =
-                super::super::route::connect_avoiding(matches, options.context(), &selected)
-                    .await?;
         }
         let hold = refuse_last_managed(&client, &machines, selected.id).await?;
         let reply = client.reply(observation).await?;

@@ -256,19 +256,6 @@ async fn direct_client(
         .map_err(|error| signed_out_unless_configured(error, signed_out))
 }
 
-/// [`connect`] through any Server but `leaving`, and the Server it entered by.
-pub(super) async fn connect_avoiding(
-    matches: &ArgMatches,
-    context: Option<&str>,
-    leaving: &Machine,
-) -> Result<(Client, ployz_core::MachineId), Error> {
-    let mut selected = entries(matches, context).await?;
-    selected
-        .connections
-        .retain(|connection| connection.machine_id() != Some(&leaving.id));
-    enter_avoiding(matches, selected, None, leaving).await
-}
-
 /// [`connect_full`], entered through a Server other than `leaving` while another one is
 /// listed, so the entry can carry the removal. The client keeps every connection, the
 /// leaving Server's too, so a Leave still dials it directly. Also returns the entry and

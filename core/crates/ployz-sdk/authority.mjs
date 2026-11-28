@@ -1,4 +1,4 @@
-import { auto_deploy_rule_end_body, install_key, passkey_join_step, preview_rule_body, private_access_approval_body, source_need, version_steps } from './generated/config-wasm.mjs';
+import { auto_deploy_rule_end_body, install_key, passkey_join_step, preview_rule_body, private_access_approval_body, source_need, trash_approval_body, version_steps } from './generated/config-wasm.mjs';
 
 export function autoDeployRuleEndBody(view, terms) {
   return JSON.parse(auto_deploy_rule_end_body(JSON.stringify({ view, issued_at: terms.issued_at, signer: terms.signer })));
@@ -14,6 +14,10 @@ export function previewRuleEndBody(view, terms) {
 
 export function privateAccessApprovalBody(terms) {
   return private_access_approval_body(JSON.stringify(terms));
+}
+
+export function trashApprovalBody(terms) {
+  return trash_approval_body(JSON.stringify(terms));
 }
 
 export function passkeyJoinStep(join, operation, issuedAt, expiresAt) {

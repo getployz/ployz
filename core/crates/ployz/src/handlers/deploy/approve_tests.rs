@@ -405,16 +405,25 @@ fn base64(bytes: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
+/// A Server that says it doesn't enforce runs Ployz 0.3, which refuses every signed
+/// Service, so the deploy names it to upgrade before anything is signed, even when it
+/// lists every capability.
 #[test]
-fn servers_that_do_not_enforce_leave_the_deploy_unsigned() {
-    assert_eq!(
-        enforced(
-            &[server(1, None, Some(9)), server(2, Some(false), Some(9))],
-            &BTreeMap::new(),
-            SIGNED,
-        ),
-        Probe::Off
-    );
+fn a_server_that_does_not_enforce_is_named_to_upgrade() {
+    let Probe::Signing(signing) = enforced(
+        &[
+            server(1, Some(true), Some(9)),
+            serving(
+                server(2, Some(false), Some(9)),
+                &[ployz_core::SIGNED_VERSION_CAPABILITY],
+            ),
+        ],
+        &BTreeMap::new(),
+        SIGNED,
+    ) else {
+        panic!("expected signing");
+    };
+    assert_eq!(signing.behind.outdated, ["machine-2"]);
 }
 
 #[test]
@@ -427,7 +436,7 @@ fn an_enforcing_cluster_with_no_reported_key_is_named() {
 
 #[test]
 fn an_enforcing_cluster_signs_for_every_server_listed() {
-    let Probe::Enforcing(Enforcing {
+    let Probe::Signing(Enforcing {
         cluster, machines, ..
     }) = enforced(
         &[server(2, Some(true), None), server(1, Some(false), Some(9))],
@@ -435,7 +444,7 @@ fn an_enforcing_cluster_signs_for_every_server_listed() {
         SIGNED,
     )
     else {
-        panic!("expected enforcing");
+        panic!("expected signing");
     };
     assert_eq!(cluster, ployz_core::SealingPublicKey::from_bytes([9; 32]));
     assert_eq!(machines.len(), 2);
@@ -452,10 +461,10 @@ fn serving(
     observation
 }
 
-/// A Server that enforces and serves a list without signed versions refuses every signed
-/// Service, so the deploy names it to upgrade before anything is signed. One seen with an
-/// empty list, as through a relay, is asked itself: its answer counts, and no answer leaves
-/// it unverified, which refuses too. A Server that doesn't enforce takes any creation.
+/// A Server that serves a list without signed versions refuses every signed Service, so the
+/// deploy names it to upgrade before anything is signed. One seen with an empty list, as
+/// through a relay, is asked itself: its answer counts, and no answer leaves it unverified,
+/// which refuses too.
 #[test]
 fn an_enforcing_server_without_signed_versions_is_named_to_upgrade() {
     let old = ["ployz.container.deploy-approval.v1"];
@@ -463,7 +472,7 @@ fn an_enforcing_server_without_signed_versions_is_named_to_upgrade() {
         (server(5, None, None).machine.id, true),
         (server(6, None, None).machine.id, false),
     ]);
-    let Probe::Enforcing(enforcing) = enforced(
+    let Probe::Signing(enforcing) = enforced(
         &[
             serving(server(1, Some(true), Some(9)), &old),
             serving(
@@ -478,12 +487,12 @@ fn an_enforcing_server_without_signed_versions_is_named_to_upgrade() {
         &answered,
         SIGNED,
     ) else {
-        panic!("expected enforcing");
+        panic!("expected signing");
     };
     assert_eq!(
         enforcing.behind,
         Behind {
-            outdated: vec!["machine-1".into(), "machine-6".into()],
+            outdated: vec!["machine-1".into(), "machine-4".into(), "machine-6".into()],
             unverified: vec!["machine-3".into()],
         }
     );
@@ -578,9 +587,8 @@ fn no_terminal_refuses_before_signing() {
 }
 
 /// A silent deploy signs an edit only a Server with scoped keys and parent versions
-/// admits, so every Server without them is named before anything is signed, enforcing or
-/// not, and one that doesn't say whether it enforces. One that doesn't enforce and holds
-/// them all passes.
+/// admits, so every Server without them is named before anything is signed, and one that
+/// doesn't say whether it enforces. One that doesn't enforce is named whatever it holds.
 #[test]
 fn a_silent_deploy_names_every_server_that_cant_admit_an_edit() {
     let signed = [ployz_core::SIGNED_VERSION_CAPABILITY];
@@ -597,17 +605,27 @@ fn a_silent_deploy_names_every_server_that_cant_admit_an_edit() {
         serving(server(5, Some(false), Some(9)), &all),
     ];
 
-    let Probe::Enforcing(interactive) = enforced(&servers, &BTreeMap::new(), SIGNED) else {
-        panic!("expected enforcing");
+    let Probe::Signing(interactive) = enforced(&servers, &BTreeMap::new(), SIGNED) else {
+        panic!("expected signing");
     };
-    assert_eq!(interactive.behind, Behind::default());
-    let Probe::Enforcing(silent) = enforced(&servers, &BTreeMap::new(), Needs::Silent) else {
-        panic!("expected enforcing");
+    assert_eq!(
+        interactive.behind,
+        Behind {
+            outdated: vec!["machine-3".to_owned(), "machine-5".to_owned()],
+            unverified: vec!["machine-4".to_owned()],
+        }
+    );
+    let Probe::Signing(silent) = enforced(&servers, &BTreeMap::new(), Needs::Silent) else {
+        panic!("expected signing");
     };
     assert_eq!(
         silent.behind,
         Behind {
-            outdated: vec!["machine-1".to_owned(), "machine-3".to_owned()],
+            outdated: vec![
+                "machine-1".to_owned(),
+                "machine-3".to_owned(),
+                "machine-5".to_owned(),
+            ],
             unverified: vec!["machine-4".to_owned()],
         }
     );

@@ -112,6 +112,15 @@ where
         }
         let mut client = connect_machine(plan, self.install).await?;
         client = synchronize_daemon(plan, client, self.install).await?;
+        if let Some(remote) = plan.remote_target() {
+            // A Cluster this founds trusts this computer's Device from the start. A Server
+            // whose disk already holds a key keeps it. After the dial, which already
+            // accepted the Server's host key.
+            let line = ployz_core::first_key::LineKey::Device {
+                key: crate::handlers::device::own_key(&plan.reach().config())?,
+            };
+            crate::provisioning::arm_first_key(remote, &line).await?;
+        }
         if plan.shaping().reset() {
             client = ensure_uninitialized(plan, client).await?;
         }
@@ -495,10 +504,13 @@ where
                     Some(Recovery::BackUp) | None => machine::enroll(&mut client, request).await,
                 };
                 let machine = match enrolled {
-                    Err(error) if first_key_spent(&error) => {
+                    Err(error) if let Some(unkeyed) = unkeyed(&error) => {
                         // The storage it set up stands; the enroll is what was refused.
                         progress(EnrollStage::Enrolling);
-                        return Err(refuse_spent(cloud_url, token, details.id, &pairing).await);
+                        return Err(refuse_unkeyed(
+                            unkeyed, cloud_url, token, details.id, &pairing,
+                        )
+                        .await);
                     }
                     enrolled => enrolled?,
                 };
@@ -761,31 +773,44 @@ async fn release_founding(
     }
 }
 
-/// Whether the Server refused to found because it already used its First Key.
-fn first_key_spent(error: &Error) -> bool {
-    matches!(
-        error.connect_error(),
-        Some(ConnectError::Remote(remote))
-            if remote.gate().and_then(|gate| gate.reason)
-                == Some(ployz_core::GateReason::FirstKeySpent)
-    )
+/// Why the Server refused to found with no key to trust: it already used its First Key, or
+/// it never had one.
+fn unkeyed(error: &Error) -> Option<ployz_core::GateReason> {
+    match error.connect_error() {
+        Some(ConnectError::Remote(remote)) => {
+            remote.gate().and_then(|gate| gate.reason).filter(|reason| {
+                matches!(
+                    reason,
+                    ployz_core::GateReason::FirstKeySpent | ployz_core::GateReason::NoFirstKey
+                )
+            })
+        }
+        _ => None,
+    }
 }
 
-/// Refuse a founding on a Server that already used its First Key, as a reset Server has. A
-/// token alone can't found there, or Cloud could steer a reset disk into a Cluster of its own,
-/// so the way on is a line that names the key, confirmed at the Server's terminal.
-async fn refuse_spent(
+/// Refuse a founding on a Server with no key to trust. A token alone can't found there, or
+/// Cloud could start a Cluster that trusts nobody, or steer a reset disk into a Cluster of its
+/// own, so the way on is a line that names the key, confirmed at the Server's terminal.
+async fn refuse_unkeyed(
+    reason: ployz_core::GateReason,
     cloud_url: &str,
     token: &CloudEnrollToken,
     machine_id: ployz_core::MachineId,
     pairing: &CloudPairing,
 ) -> Error {
     let next = release_founding(cloud_url, token, machine_id, pairing).await;
+    let why = if reason == ployz_core::GateReason::FirstKeySpent {
+        "This Server already used its First Key"
+    } else {
+        "This Server has no First Key to trust"
+    };
     Error::conflict(format!(
-        "This Server already used its First Key, so a token alone can't make it found a Cluster. {next}. Nothing was founded."
+        "{why}, so a token alone can't make it found a Cluster. {next}. Nothing was founded."
     ))
     .hint(Hint::Next(
-        "run ployz server add --command, then run the line it prints at a terminal on the Server".into(),
+        "run ployz server add --command, then run the line it prints at a terminal on the Server"
+            .into(),
     ))
 }
 
