@@ -595,7 +595,7 @@ fn typed_parsers() -> [(TypeId, Parse); 13] {
 /// id means different things in different commands, every type it may be. Any other text
 /// argument, such as a message, a reason, a command, a key, a URL or a pattern, shows as
 /// its placeholder.
-const PARSED: [(&str, Parse); 59] = [
+const PARSED: [(&str, Parse); 60] = [
     ("accept-volume-loss", named::<VolumeName>),
     ("approval", minted),
     ("build-concurrency", parsed::<u32>),
@@ -634,6 +634,11 @@ const PARSED: [(&str, Parse); 59] = [
                 pair(typed, "=", parsed::<ServiceName>, image)
             }],
         )
+    }),
+    ("key", |typed| {
+        ployz_core::first_key::LineKey::parse(typed)
+            .ok()
+            .map(|key| Shown::of(&key))
     }),
     ("label-add", |typed| {
         pair(typed, "=", parsed::<MachineLabelKey>, label)
