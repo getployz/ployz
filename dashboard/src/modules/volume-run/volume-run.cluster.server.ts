@@ -839,10 +839,10 @@ const boundOf = (volumes: readonly DockerVolume[], machineId: MachineId, dockerV
   return storage?.kind === "provisioned" ? storage.bound_bytes : null;
 };
 
-/** A slot no step marked, as an older daemon made it, is a mirror. */
-const lastMirror = (volumes: readonly DockerVolume[], machineId: MachineId, dockerVolume: string) => {
+/** A copy that isn't a slot is a root, writable or read-only in a cut; an unset role is a writer. */
+const lastRoot = (volumes: readonly DockerVolume[], machineId: MachineId, dockerVolume: string) => {
   const storage = storageOf(volumes, machineId, dockerVolume);
-  return storage?.kind === "provisioned" && storage.role === "slot" && (storage.slot_role ?? "mirror") === "mirror";
+  return storage?.kind === "provisioned" && storage.role !== "slot";
 };
 
 /**
@@ -905,7 +905,7 @@ export const observeVolumeMembers = Effect.fn("VolumeRun.observeMembers")(functi
     );
   }, { concurrency: "unbounded" });
   return [...listed, ...stateless, ...unlisted].map((member): Member =>
-    !member.answered && lastMirror(frame.volumes, member.machine.id, dockerVolume) ? { ...member, lastMirror: true } : member);
+    !member.answered && lastRoot(frame.volumes, member.machine.id, dockerVolume) ? { ...member, lastRoot: true } : member);
 }, Effect.scoped);
 
 const lackSentence = Effect.fn("VolumeRun.lackSentence")(function* (

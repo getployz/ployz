@@ -26,8 +26,13 @@ export type ObservedPlacement = {
   readonly unanswered: readonly MachineRef[];
   /** The unanswered Servers whose report is on its way. */
   readonly waiting: readonly MachineRef[];
-  /** Of `unanswered`, the Servers that are up but lack a capability to report their copy. */
-  readonly lacking: readonly MachineRef[];
+  /**
+   * Every Server whose own report says it holds the primary: the one that answers with it, and each unanswered one whose
+   * last report was a root.
+   */
+  readonly claims: readonly MachineRef[];
+  /** The one Server that claims the primary, or null when none does or several do: then nobody can tell who holds it. */
+  readonly holder: MachineRef | null;
   /** Every Server in the cluster, answering or not. */
   readonly members: readonly MachineId[];
 };
@@ -127,12 +132,17 @@ export function observePlacement(members: readonly Member[]): ObservedPlacement 
     const newest = toDate(copy.newest?.created_unix_seconds);
     return [copy.kind === "slot" ? { server: member.machine, kind: "slot", role: slotRole(copy), newest } : { server: member.machine, kind: "root", newest }];
   });
+  const claims = [
+    ...primary === null ? [] : [primary.machine],
+    ...members.flatMap((member) => !member.answered && member.lastRoot === true ? [member.machine] : []),
+  ];
   return {
     primary: primary?.machine ?? null,
     copies,
     unanswered: members.filter((member) => !member.answered).map((member) => member.machine),
     waiting: members.filter((member) => heardFrom(member) === "waiting").map((member) => member.machine),
-    lacking: members.filter((member) => ["lacks", "outdated"].includes(heardFrom(member))).map((member) => member.machine),
+    claims,
+    holder: claims.length === 1 ? claims[0] ?? null : null,
     members: members.map((member) => member.machine.id),
   };
 }
@@ -163,33 +173,13 @@ export function oldCopies(observed: ObservedPlacement, row: PlacementRow | null)
 }
 
 /**
- * The Server presumed to hold the primary: the one that reports it, else, with none answering, one that didn't. A
- * Server the Volume records as a mirror comes last, as it holds a mirror, unless it is the staged primary, which an
- * unfinished move to it leaves recorded. Before it, one whose report is on its way
- * comes first, though the observer lists it last, then one that is up but lacks a capability, then a silent one: each
- * before it may still hold the writer. Among those, the staged primary comes first, since a failed move returns there,
- * else the first listed. Copies names it under Live and the recovery alert reads it. Staging never reads it: an edit,
- * a move and a restore keep main's holder, so what is staged doesn't turn on whose report arrived first.
- */
-export function presumedPrimary(observed: ObservedPlacement, row: PlacementRow | null): MachineRef | null {
-  if (observed.primary !== null) return observed.primary;
-  const mirrors = appliedMirrors(observed, row);
-  const holding = (servers: readonly MachineRef[]) =>
-    servers.filter((server) => server.id === row?.staged?.primary || !mirrors.includes(server.id));
-  const pool = [holding(observed.waiting), holding(observed.lacking), holding(observed.unanswered), observed.unanswered]
-    .find((servers) => servers.length > 0) ?? [];
-  return pool.find((server) => server.id === row?.staged?.primary) ?? pool[0] ?? null;
-}
-
-/**
- * What the next Deploy aims for: the staged placement, else what is applied. With no primary answering, the silent
- * Server is presumed to hold it. Null when no Server holds the Volume.
+ * What the next Deploy aims for: the staged placement, else what is applied. Null when no Server holds the Volume, or
+ * when no single Server claims it: an edit staged then would name a guess as the primary, and so move the Volume.
  */
 export function targetPlacement(observed: ObservedPlacement, row: PlacementRow | null): Placement | null {
   if (row?.staged != null) return stagedPlacement(observed, row.staged);
-  const primary = observed.primary ?? observed.unanswered[0] ?? null;
-  if (primary === null) return null;
-  return { primary: primary.id, mirrors: appliedMirrors(observed, row), deletes: [] };
+  if (observed.holder === null) return null;
+  return { primary: observed.holder.id, mirrors: appliedMirrors(observed, row), deletes: [] };
 }
 
 export type PlacementEdit =
@@ -239,9 +229,9 @@ export function placementChanges(volume: PlacementVolume, members: readonly Memb
   // A move to a mirror is unfinished while the row still lists that mirror, as only the move's last run takes it out:
   // once the target writes it holds the root, yet the next Deploy must finish the same move.
   const handing = observed.primary?.id === staged.primary && (row.mirrors ?? []).includes(staged.primary);
-  // With no primary answering, a silent Server presumed to hold the Volume is no move: the staged one when it is silent,
-  // since a failed move returns there, else the first, as targetPlacement presumes.
-  const holder = observed.primary ?? observed.unanswered.find((server) => server.id === staged.primary) ?? observed.unanswered[0] ?? null;
+  // With no primary answering, only a silent Server whose last report claims the primary holds it. With none, or several,
+  // the move stays, so no Deploy settles it as done.
+  const holder = observed.primary ?? observed.holder;
   const moving = holder?.id !== staged.primary || handing;
   // A mirror its answering Server no longer holds is already removed: a cancelled Deploy's late run took it.
   const gone = (id: MachineId) => copyOn(id) === undefined && members.some((member) => member.machine.id === id && member.answered);
@@ -253,7 +243,7 @@ export function placementChanges(volume: PlacementVolume, members: readonly Memb
     const how: MoveHow = target !== undefined && observed.primary === null ? "restore" : handing || applied.includes(staged.primary) ? "promote" : "copy";
     const from = handing
       ? observed.copies.find((copy) => copy.kind === "slot" && copy.server.id !== staged.primary)?.server ?? null
-      : observed.primary ?? (how === "restore" ? observed.unanswered[0] ?? null : null);
+      : observed.primary ?? (how === "restore" ? observed.holder : null);
     changes.push({
       kind: "move",
       volume,
@@ -354,7 +344,7 @@ export type Recovery =
   | { readonly kind: "forget"; readonly down: readonly MachineRef[]; readonly mirror: MachineRef; readonly lostAfter: Date | null }
   /** A member's report is incomplete: not silence, so nothing to forget yet and nothing to stage. */
   | { readonly kind: "wait"; readonly mirror: MachineRef; readonly lostAfter: Date | null }
-  /** The presumed primary's Server answered without reporting its copy: it is up, so neither Forget nor a restore. */
+  /** The Server whose last report claims the primary answered without reporting its copy: it is up, so neither Forget nor a restore. */
   | {
     readonly kind: "unreported";
     readonly server: MachineRef;
@@ -384,22 +374,16 @@ export function recovery(
   const copy = observed.copies.find((each) => each.kind === "slot" && applied.includes(each.server.id));
   if (copy === undefined) return null;
   const { server: mirror, newest: lostAfter } = copy;
-  // While any report is on its way, it may come from the writer, whichever Server is presumed primary: wait. Then what
-  // was heard from the presumed primary decides, as Live shows it. Silent: Forget, naming every silent Server, since
-  // each holds the stage back. Lacking a capability: it is up, so say what it lacks.
+  // While any report is on its way, it may come from the writer: wait. Then a holder that is up but can't report its
+  // copy says what it lacks. Otherwise any silent Server holds the stage back, the holder or not: Forget, naming each.
   if (observed.waiting.length > 0) return { kind: "wait", mirror, lostAfter };
-  const presumed = presumedPrimary(observed, row);
-  const primary = members.find((member) => member.machine.id === presumed?.id);
-  if (primary !== undefined && !primary.answered) {
-    const heard = heardFrom(primary);
-    if (heard === "silent") {
-      const down = members.filter((member) => heardFrom(member) === "silent").map((member) => member.machine);
-      return { kind: "forget", down, mirror, lostAfter };
-    }
-    if ((heard === "lacks" || heard === "outdated") && primary.lack !== undefined) {
-      return { kind: "unreported", server: primary.machine, heard, lack: primary.lack, mirror, lostAfter };
-    }
+  const holder = members.find((member) => member.machine.id === observed.holder?.id);
+  if (holder !== undefined && !holder.answered && holder.lack !== undefined) {
+    const heard = heardFrom(holder);
+    if (heard === "lacks" || heard === "outdated") return { kind: "unreported", server: holder.machine, heard, lack: holder.lack, mirror, lostAfter };
   }
+  const down = members.filter((member) => heardFrom(member) === "silent").map((member) => member.machine);
+  if (down.length > 0) return { kind: "forget", down, mirror, lostAfter };
   if (row?.staged?.primary === mirror.id) return null;
   return { kind: "restore", mirror, lostAfter, stage: restoreStage(volume, members, mirror, applied, accepting, owed, floorless) };
 }
@@ -563,7 +547,7 @@ export function undoPlacement(volume: PlacementVolume, members: readonly Member[
  * next Deploy. A change the Servers no longer show landed despite the failure: deletes whose copy is gone go, the rest
  * stays, and the row drops once nothing is left to change. A move the Servers handed over stays whole, since only
  * finishing it brings the Volume back. One whose primary isn't answering goes
- * back to the Server the move left, else the silent Server presumed to hold the Volume, or drops the row when there is none.
+ * back to the Server the move left, else the one whose last report claims the primary, or drops the row when there is none.
  */
 export function dropChange(volume: PlacementVolume, members: readonly Member[], row: PlacementRow, key: ChangeKey): Placement | null {
   const change = placementChanges(volume, members, row).find((one) => sameChange(changeKey(one), key));
@@ -578,7 +562,7 @@ export function dropChange(volume: PlacementVolume, members: readonly Member[], 
     const observed = observePlacement(members);
     if (observed.primary?.id === row.staged?.primary) return row.staged;
     const left = observed.unanswered.find((server) => server.id === key.from);
-    const from = observed.primary ?? left ?? observed.unanswered[0] ?? null;
+    const from = observed.primary ?? left ?? observed.holder;
     if (from === null || from.id === change.to.id) return null;
     return undoPlacement(volume, members, row, { ...change, from });
   }
