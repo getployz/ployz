@@ -291,7 +291,7 @@ and running `off` again finishes the removal.
   anything that must be walled off in its own organization, on its own servers.
 - **Servers must reach each other on UDP port 51820.** Without it, services on different
   servers can't reach each other.
-- **`ping` and raw sockets don't work inside a service,** even as root, unless the service runs
-  privileged. This covers healthchecks too, so a check like `ping -c1 db` never passes. To
-  check that another service answers, connect to its port, for example with `curl` or `nc -z`.
-  A service deployed before your servers upgraded keeps `ping` until its next deploy.
+- **`ping` and raw sockets don't work inside a service,** even as root, and there's no setting
+  to turn them back on. Healthchecks too: `ping -c1 db` never passes. To check that another
+  service answers, connect to its port, for example with `curl` or `nc -z`. A service deployed
+  before your servers upgraded keeps `ping` until its next deploy.

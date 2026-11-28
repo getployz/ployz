@@ -88,23 +88,8 @@ can't be reached, the collector resumes where it stopped and sends the lines it 
 more than 30 MB were written in the meantime. A hard power cut on the server can lose one log
 record, the one the collector hadn't saved yet.
 
-Hiding secrets is best effort. A line can still show:
-
-- a secret that isn't a Sealed value, since Ployz can't know it's secret;
-- a Sealed value shorter than 6 bytes;
-- a copy of a Sealed value that your app changed, such as base64 or a URL-encoded form;
-- a Sealed value inside a line longer than 16 KiB, which Docker splits into pieces;
-- a Sealed value of a container that is gone, when another container logged it earlier.
-
-If a container's Sealed value can't be opened, for example after the server's Sealing Key
-changed, the collector can't learn the new list. It keeps running with the list it has, and it
-isn't started or changed until that container is gone or redeployed. A deploy that adds a Sealed
-value stops the collector first, so the new container's output waits in its own log file.
-
-Don't print secrets from your app. A deploy that adds a Sealed value waits for the collector to
-learn it before the new container starts, so the container's first line is already hidden. The
-collector keeps the list of your Sealed values in a file only root can read under `/run/ployz`,
-which a reboot clears.
+Ployz hides your Sealed values before a line leaves the server. See
+[Secrets in logs](#secrets-in-logs) for what it can miss.
 
 ## When logs are off
 
@@ -129,14 +114,25 @@ a server sent while connected, so a service that never sent logs has none to sho
 
 ## Secrets in logs
 
-Your servers keep no copy of what a container printed beyond Docker's own log files, which hold
-the line as your app wrote it, secrets included. `ployz logs` hides each Sealed value on the
-server before the line leaves it, and the dashboard and an agent read the lines Cloud stored
-already hidden. A value shorter than 6 bytes is hidden only where its name labels it, as in
-`PIN=4821`. A multiline Sealed value with a line of 1 to 5 bytes can't be hidden, so a deploy
-that uses one is refused. Hiding is best effort; see the list above for what can still show.
+Ployz replaces each [Sealed](../services/variables.md) value with `[secret NAME]` on your server,
+before the line reaches Ployz Cloud or your terminal. The Logs page, `ployz logs` and agents all
+see it hidden. Docker's own log files on the server keep each line as your app wrote it.
 
-Don't print secrets from your app.
+Hiding is best effort. These can still reach Cloud's log history as your app printed them:
+
+- a secret you didn't seal, since Ployz can't know it's secret;
+- a Sealed value shorter than 6 bytes, unless its name labels it, as in `PIN=4821`;
+- a Sealed value your app changed before printing it, such as base64 or a URL-encoded form;
+- a Sealed value in a line longer than 16 KiB, which Docker splits into pieces;
+- a Sealed value of a removed container, when another container printed it.
+
+> [!WARNING]
+> Don't print secrets from your app. If one shows up in your logs, rotate it.
+
+A multiline Sealed value with a line of 1 to 5 bytes can't be hidden, so a deploy that uses one
+fails. If a server can't open a container's Sealed values, for example after its Sealing Key
+changed, it keeps hiding the ones it knows. A deploy that adds a Sealed value then pauses that
+server's logs to Cloud until you redeploy or remove that container. The lines wait on the server.
 
 ## Good to know
 
