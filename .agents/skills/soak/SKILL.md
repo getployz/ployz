@@ -34,6 +34,7 @@ Each kind proves one thing. A PASS of one kind proves nothing about another, so 
 - **Fault injection** proves behaviour under the faults driven, in the state window each check acted in. Follow verify-server's [Faults and the ack probe](../verify-server/SKILL.md#faults-and-the-ack-probe); [Fault scripts](../verify-server/SKILL.md#fault-scripts) has faults that release daemons take too.
 - **Healthy-mesh watch** leaves a mesh unfaulted and must stay quiet: no warnings, lowered routes or new journal causes. It proves there are no false positives, not that detection works.
 - **Gap sweep** (step 6 above) proves every caller of a shared path works, not depth on any one.
+- **Feature-map slices** split verification of every user-visible feature into one-Cluster sessions; see [the feature map](../../feature-map/README.md) and its [slices](../../feature-map/slices.md).
 - **Promise audit** is a rotating row each release that drives one guarantee in `docs/user/` under faults, for example Volumes while their holder Server is Down. Diff-focused rows find only regressions; this finds a promise that was never kept.
 
 ## Release phases
