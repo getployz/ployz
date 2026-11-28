@@ -111,11 +111,13 @@ To bring services back:
    list doesn't arrive: only the services with a volume on it aren't attempted, where before the
    whole deploy failed. Any service fails before it changes anything when the deploy
    can't read which replicas that server runs.
-   A server the others still count as online but that doesn't answer fails the deploy. From 0.3.8,
-   one whose silence is explained, because
-   [large packets to it are dropped](../troubleshooting/servers.md#large-packets-to-a-server-are-dropped),
-   is skipped the same way instead. From 0.3.12, so is one the deploy can't connect to because
-   Ployz is stopped there: its replicas start on your other servers, and a service that
+   A server the others still count as online is skipped the same way when it doesn't answer
+   within 10 seconds: Ployz is stopped or frozen there, it is overloaded, or
+   [large packets to it are dropped](../troubleshooting/servers.md#large-packets-to-a-server-are-dropped).
+   A server that answers within 10 seconds, however slowly, is deployed as usual. Before 0.4 a
+   deploy skipped only a server with dropped large packets (from 0.3.8) or with Ployz stopped
+   (from 0.3.12), and any other silence failed it with `Machine web-3 did not answer`. A skipped
+   server's replicas start on your other servers, and a service that
    references another, such as a cache running on a different server, no longer fails with
    `Dependency … failed its health gate`. Its proxy keeps sending requests to the replicas it
    knew, so the deploy doesn't wait for it to confirm the switch. Instead the replicas the switch
