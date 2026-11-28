@@ -24,11 +24,19 @@ type WebhookInput = {
   repository?: string; number?: number; head_branch?: string; target_branch?: string; merged?: boolean;
   ref?: string; head_sha?: string; conclusion?: string; run_id?: number;
 };
+/** A pull request's comment; `app` when the App wrote it. */
+type Comment = { id: number; body: string; app: boolean; created_at: string };
+type CheckRun = {
+  id: number; name: string; external_id: string; status: string; conclusion: string | null; details_url: string | null;
+  output: { title?: string; summary?: string };
+};
 type Run = { repository: string; head_sha: string; event: string; status: "in_progress" | "completed"; conclusion: string | null };
 /** `users` reach the installation; on an Organization only `admins` own it, the rest collaborate on a repository. */
 type Installation = {
   id: number;
   account: { id: number; login: string; type: "User" | "Organization" };
+  /** What the installation accepted: a token asking for more is refused with 422, as on GitHub. */
+  permissions?: Record<string, "read" | "write">;
   users: string[];
   admins?: string[];
   repositories: Repository[];
@@ -42,6 +50,8 @@ type Fixture = {
 const FIXTURE_PATH = ".verify/github.json";
 const BUILD_WORKFLOW = ".github/workflows/ployz-build.yml";
 const GITHUB_ACTIONS_APP = { id: 15368, slug: "github-actions" };
+const APP_ID = Number(process.env["GITHUB_APP_ID"] ?? 1);
+const PERMISSIONS = { metadata: "read", contents: "read", pull_requests: "write", checks: "write", actions: "write" } as const;
 const SUSPENDED = { status: 403, json: { message: "This installation has been suspended" } } as const;
 const site = {
   "Dockerfile": "FROM nginx:1.27-alpine\nCOPY index.html /usr/share/nginx/html/index.html\n",
@@ -103,6 +113,10 @@ export async function run() {
   const removedInstallations = new Set<number>();
   const hidden = new Set(fixture.installations.flatMap((i) => i.repositories.filter((r) => r.awaitsGrant).map((r) => r.id)));
   const installationTokens = new Map<string, number>();
+  const tokenPermissions = new Map<string, Record<string, string>>();
+  const comments = new Map<string, Comment[]>();
+  const checkRuns = new Map<string, CheckRun[]>();
+  let commentId = 70001;
   const userTokens = new Map<string, User>();
   const codes = new Map<string, User>();
   let origin = "";
@@ -154,7 +168,7 @@ export async function run() {
     html_url: i.account.type === "Organization"
       ? `${origin}/organizations/${i.account.login}/settings/installations/${i.id}`
       : `${origin}/settings/installations/${i.id}`,
-    permissions: { metadata: "read", contents: "read", pull_requests: "read", checks: "write", actions: "write" },
+    permissions: i.permissions ?? PERMISSIONS,
     repository_selection: "selected",
     ...suspension(i),
   });
@@ -172,11 +186,87 @@ export async function run() {
     html_url: `${origin}/${fullName(i, r)}/pull/${p.number}`,
   });
 
-  type Caller = { installationId?: number; user?: User };
+  type Caller = { installationId?: number; user?: User; permissions?: Record<string, string> };
   const caller = (request: IncomingMessage): Caller => {
     const bearer = /^(?:Bearer|token) (.+)$/.exec(request.headers.authorization ?? "")?.[1] ?? "";
-    return { installationId: installationTokens.get(bearer), user: userTokens.get(bearer) };
+    return { installationId: installationTokens.get(bearer), user: userTokens.get(bearer), permissions: tokenPermissions.get(bearer) };
   };
+  const canWrite = (who: Caller, permission: string) => who.permissions?.[permission] === "write";
+  const FORBIDDEN: Reply = { status: 403, json: { message: "Resource not accessible by integration" } };
+
+  const commentJson = (c: Comment) => ({
+    id: c.id, body: c.body, created_at: c.created_at, updated_at: c.created_at,
+    user: c.app ? { login: `${fixture.app.slug}[bot]`, type: "Bot" } : { login: "ada", type: "User" },
+    performed_via_github_app: c.app ? { id: APP_ID, slug: fixture.app.slug } : null,
+  });
+  /** A pull request's conversation: GET lists it, POST adds to it. Pull requests: write writes, as on GitHub. */
+  function pullComments(who: Caller, r: Repository, number: number, method: string, body: string): Reply {
+    if (!pulls.has(pullKey(r, number))) return notFound;
+    const list = comments.get(pullKey(r, number)) ?? [];
+    comments.set(pullKey(r, number), list);
+    if (method === "GET") return { status: 200, json: list.map(commentJson) };
+    if (method !== "POST") return notFound;
+    if (!canWrite(who, "pull_requests")) return FORBIDDEN;
+    const made: Comment = { id: commentId++, body: (JSON.parse(body || "{}") as { body?: string }).body ?? "", app: true, created_at: new Date().toISOString() };
+    list.push(made);
+    return { status: 201, json: commentJson(made) };
+  }
+  function editComment(who: Caller, r: Repository, id: number, method: string, body: string): Reply {
+    const [key, list] = [...comments].find(([k, each]) => k.startsWith(`${r.id}#`) && each.some((c) => c.id === id)) ?? [];
+    const found = list?.find((c) => c.id === id);
+    if (!key || !list || !found) return notFound;
+    if (!canWrite(who, "pull_requests")) return FORBIDDEN;
+    if (method === "DELETE") {
+      comments.set(key, list.filter((c) => c.id !== id));
+      return { status: 204 };
+    }
+    if (method !== "PATCH") return notFound;
+    found.body = (JSON.parse(body || "{}") as { body?: string }).body ?? found.body;
+    return { status: 200, json: commentJson(found) };
+  }
+  const checkRunJson = (run: CheckRun) => ({ ...run, app: { id: APP_ID, slug: fixture.app.slug } });
+  /** The App's check runs on a commit, kept so a later post updates in place and the pull request page shows them. */
+  function checkRunRoute(who: Caller, r: Repository, rest: string, url: URL, method: string, body: string): Reply | undefined {
+    let n: RegExpExecArray | null;
+    if ((n = /^\/commits\/([0-9a-f]{40})\/check-runs$/.exec(rest))) {
+      const name = url.searchParams.get("check_name");
+      const listed = (checkRuns.get(`${r.id}:${n[1]}`) ?? []).filter((run) => name === null || run.name === name);
+      return { status: 200, json: { total_count: listed.length, check_runs: listed.map(checkRunJson) } };
+    }
+    if (!(n = /^\/check-runs(?:\/(\d+))?$/.exec(rest)) || method === "GET") return undefined;
+    if (!canWrite(who, "checks")) return FORBIDDEN;
+    const sent = JSON.parse(body || "{}") as Partial<CheckRun> & { head_sha?: string };
+    const fields = {
+      name: sent.name ?? "", external_id: sent.external_id ?? "", status: sent.status ?? "completed", conclusion: sent.conclusion ?? null,
+      details_url: sent.details_url ?? null, output: sent.output ?? {},
+    };
+    if (n[1] === undefined) {
+      const run: CheckRun = { id: checkRunId++, ...fields };
+      const key = `${r.id}:${sent.head_sha ?? ""}`;
+      checkRuns.set(key, [...(checkRuns.get(key) ?? []), run]);
+      return { status: 201, json: checkRunJson(run) };
+    }
+    const run = [...checkRuns].filter(([key]) => key.startsWith(`${r.id}:`)).flatMap(([, runs]) => runs).find((each) => each.id === Number(n?.[1]));
+    if (!run) return notFound;
+    Object.assign(run, fields);
+    return { status: 200, json: checkRunJson(run) };
+  }
+  /** Markdown links in a comment or check summary as HTML, everything else as text. */
+  const linked = (text: string) => text
+    .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
+    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a href="$2">$1</a>').replaceAll("\n", "<br>");
+  /** The pull request as a person sees it on GitHub: its checks, then its conversation. */
+  function pullPage(i: Installation, r: Repository, p: PullRequest) {
+    const runs = checkRuns.get(`${r.id}:${p.head_sha}`) ?? [];
+    const checks = runs.map((run) => `<li><b>${linked(run.name)}</b> ${run.conclusion ?? run.status}: ${linked(run.output.title ?? "")}`
+      + `${run.details_url ? ` <a href="${run.details_url}">Details</a>` : ""}<div style="color:#555">${linked(run.output.summary ?? "")}</div></li>`).join("");
+    const conversation = (comments.get(pullKey(r, p.number)) ?? []).map((c) => `<li style="margin:1rem 0;padding:1rem;border:1px solid #ddd;border-radius:6px">`
+      + `<b>${c.app ? `${fixture.app.slug}[bot]` : "ada"}</b><div>${linked(c.body.replace(/^<!--[^]*?-->\n?/, ""))}</div></li>`).join("");
+    return `<!doctype html><meta charset="utf-8"><title>${p.title} · ${fullName(i, r)}#${p.number}</title><body style="font-family:system-ui;margin:3rem;max-width:56rem">`
+      + `<h1>${p.title} <span style="color:#888">#${p.number}</span></h1><p>${p.state} · ${p.author} wants to merge ${p.head_branch} into ${p.base_branch} · ${p.head_sha.slice(0, 7)}</p>`
+      + `<h2>Conversation</h2><ul style="list-style:none;padding:0">${conversation || "<li>No comments</li>"}</ul>`
+      + `<h2>Checks</h2><ul>${checks || "<li>No checks</li>"}</ul></body>`;
+  }
   const granted = (i: Installation, r: Repository) => installation(i.id) !== undefined && !hidden.has(r.id);
   const readable = (who: Caller, i: Installation, r: Repository) =>
     !r.private || (granted(i, r)
@@ -475,11 +565,15 @@ export async function run() {
       if (!i) return notFound;
       if (!m[2]) return { status: 200, json: installationJson(i) };
       if (suspended.has(i.id)) return SUSPENDED;
-      const minted = token("ghs");
-      installationTokens.set(minted, i.id);
+      const accepted: Record<string, string> = installationJson(i).permissions;
       // GitHub answers with what the token can do: the permissions the request named, or all the installation's.
       const requested = (JSON.parse(body || "{}") as { permissions?: Record<string, string> }).permissions;
-      return { status: 201, json: { token: minted, expires_at: new Date(Date.now() + 3600_000).toISOString(), permissions: requested ?? installationJson(i).permissions } };
+      const beyond = Object.entries(requested ?? {}).some(([name, level]) => accepted[name] !== level && !(level === "read" && accepted[name] === "write"));
+      if (beyond) return { status: 422, json: { message: "The permissions requested are not granted to this installation." } };
+      const minted = token("ghs");
+      installationTokens.set(minted, i.id);
+      tokenPermissions.set(minted, requested ?? accepted);
+      return { status: 201, json: { token: minted, expires_at: new Date(Date.now() + 3600_000).toISOString(), permissions: requested ?? accepted } };
     }
     if (path === "/installation/repositories") {
       const i = who.installationId === undefined ? undefined : installation(who.installationId);
@@ -588,14 +682,23 @@ export async function run() {
       if (!found) return notFound;
       const rest = m[2] ?? "";
       if (rest === "") return { status: 200, json: repositoryJson(found.installation, found.repository) };
-      if (/^\/commits\/[0-9a-f]{40}\/check-runs$/.test(rest)) return { status: 200, json: { total_count: 0, check_runs: [] } };
-      if (/^\/check-runs(\/\d+)?$/.test(rest) && method !== "GET") return { status: 200, json: { id: checkRunId++ } };
+      const checked = checkRunRoute(who, found.repository, rest, url, method, body);
+      if (checked) return checked;
+      let c: RegExpExecArray | null;
+      if ((c = /^\/issues\/(\d+)\/comments$/.exec(rest))) return pullComments(who, found.repository, Number(c[1]), method, body);
+      if ((c = /^\/issues\/comments\/(\d+)$/.exec(rest))) return editComment(who, found.repository, Number(c[1]), method, body);
       return repositoryRoute(found, rest, url, method, body, request.headers.accept ?? "");
     }
     if ((m = /^\/repos\/([^/]+)\/([^/]+)(\/.*)?$/.exec(path))) {
       const found = byName(who, m[1] ?? "", m[2] ?? "");
       if (!found) return notFound;
       return repositoryRoute(found, m[3] ?? "", url, method, body, request.headers.accept ?? "");
+    }
+    if ((m = /^\/([^/]+)\/([^/]+)\/pull\/(\d+)$/.exec(path))) {
+      const found = located.find(({ installation: i, repository: r }) => i.account.login === m?.[1] && r.name === m[2]);
+      const p = found && pulls.get(pullKey(found.repository, Number(m[3])));
+      if (!found || !p) return notFound;
+      return { status: 200, html: pullPage(found.installation, found.repository, p) };
     }
     if ((m = /^\/([^/]+)\/([^/]+)\/legacy\.tar\.gz\/([0-9a-f]{40})$/.exec(path))) {
       const sha = m[3] ?? "";
