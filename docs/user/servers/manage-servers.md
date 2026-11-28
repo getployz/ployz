@@ -377,9 +377,9 @@ with no terminal and no device. Make one from your approved device:
 ployz key add --ci --env production --name github-actions
 ```
 
-- `--ci` or `--agent` says who holds it. An agent key needs at least one `--env`. A CI key with
-  no `--env` can deploy to every environment.
-- `--env` names an environment the key can deploy to. Repeat it for more.
+- `--ci` or `--agent` says who holds it.
+- `--env` names an environment the key can deploy to. Every key needs at least one; repeat it for
+  more. A key deploys only to the environments it names, never to every environment.
 - `--service web` limits the key to that one service, in the one `--env` you name.
 - `--volume db/data` lets the key's deploys mount the `data` volume of `db`, in each `--env`, by
   the name `ployz volume ls` shows. `db` needs a deploy a person approved first.
@@ -393,6 +393,11 @@ connection: with `--connect`, name every server. It prints
 
 `ployz key ls` lists each key with its kind, name, where it can deploy, its volumes and the
 servers that trust it.
+
+A CI key made with no `--env`, before every key had to name its environments, no longer deploys
+anywhere. Servers refuse its deploys, `ployz key ls` shows it deploying nowhere, and it can't be
+rotated. Make a new key with `--env`, put its `PLOYZ_KEY` in CI, then remove the old one with
+`ployz key rm <code>`.
 
 To change where a key can deploy, run `ployz key scope` with its code and the new flags:
 

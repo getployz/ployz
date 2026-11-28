@@ -634,7 +634,8 @@ impl TrustedKeys {
     /// # Errors
     /// Returns [`AuthorityRefusal::UnknownKey`] or [`AuthorityRefusal::UnknownPasskey`]
     /// when `by` is no key on this list, [`AuthorityRefusal::OutOfScope`] when its kind or
-    /// scope doesn't reach, and [`AuthorityRefusal::VolumeNotGranted`] for a Volume its
+    /// scope doesn't reach, [`AuthorityRefusal::Unscoped`] for a CI key that names no
+    /// places, and [`AuthorityRefusal::VolumeNotGranted`] for a Volume its
     /// grant doesn't name.
     pub fn covers(&self, by: &Approver, ask: Ask<'_>) -> Result<(), AuthorityRefusal> {
         let key = self.of(by).ok_or(match by {
@@ -657,6 +658,7 @@ impl TrustedKeys {
                 kind: key.kind(),
                 volume,
             },
+            Denied::Unscoped => AuthorityRefusal::Unscoped { code: key.code() },
         })
     }
 

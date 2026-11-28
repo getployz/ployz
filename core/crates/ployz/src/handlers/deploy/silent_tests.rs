@@ -125,7 +125,7 @@ fn sign(
     Ok(posted(children, &signing, Timestamp::from_millis(300_000).unwrap()).unwrap())
 }
 
-/// A Server trusting the person's Device, and the CI key for every Service.
+/// A Server trusting the person's Device, and the CI key for every Service in app.
 fn server_trust() -> TrustedKeys {
     TrustedKeys::new(
         [DeviceKey::from(person().public())],
@@ -136,7 +136,11 @@ fn server_trust() -> TrustedKeys {
                 kind: GrantKind::Ci,
                 scope: KeyScope {
                     caps: CapSet::of(&[Cap::Spec]),
-                    places: KeyPlaces::Cluster,
+                    places: KeyPlaces::Only(vec![ployz_core::authority::KeyPlace {
+                        environment: uuid::Uuid::nil(),
+                        namespace: ployz_core::Namespace::parse("app").unwrap(),
+                        service: None,
+                    }]),
                 },
                 volumes: Vec::new(),
                 issued_at: Timestamp::from_millis(1).unwrap(),
