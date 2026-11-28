@@ -1,10 +1,19 @@
-import { runWorker } from "#/worker/worker.server";
+import { openStore, runWorker } from "#/worker/worker.server";
 import { exitOnBadConfig } from "#/server/config.server";
 
 exitOnBadConfig();
-try {
-  await runWorker();
-} catch (error) {
-  console.error("Inngest worker failed.", error);
-  process.exitCode = 1;
+if (process.argv.includes("--open-store")) {
+  try {
+    await openStore();
+  } catch (error) {
+    console.error("Opening the Config Store failed.", error);
+    process.exitCode = 1;
+  }
+} else {
+  try {
+    await runWorker();
+  } catch (error) {
+    console.error("Inngest worker failed.", error);
+    process.exitCode = 1;
+  }
 }
