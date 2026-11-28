@@ -110,16 +110,17 @@ where
             )
             .await?;
         }
+        let mut client = connect_machine(plan, self.install).await?;
+        client = synchronize_daemon(plan, client, self.install).await?;
         if let Some(remote) = plan.remote_target() {
             // A Cluster this founds trusts this computer's Device from the start. A Server
-            // whose disk already holds a key keeps it.
+            // whose disk already holds a key keeps it. After the dial, which already
+            // accepted the Server's host key.
             let line = ployz_core::first_key::LineKey::Device {
                 key: crate::handlers::device::own_key(&plan.reach().config())?,
             };
             crate::provisioning::arm_first_key(remote, &line).await?;
         }
-        let mut client = connect_machine(plan, self.install).await?;
-        client = synchronize_daemon(plan, client, self.install).await?;
         if plan.shaping().reset() {
             client = ensure_uninitialized(plan, client).await?;
         }

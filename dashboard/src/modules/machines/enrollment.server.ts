@@ -865,8 +865,9 @@ const readCluster = Effect.fn("MachineEnrollment.readCluster")(function* (sessio
 const isFreshCluster = (
   { details, snapshot }: Effect.Success<ReturnType<typeof readCluster>>, machineId: MachineId, connected: boolean,
 ) => {
-  // A Server's own operator can approve a `device-` slot too; on a Server that is its Cluster's only Machine, that's theirs to do.
-  const cloudFilled = (label: string) => label === "cloud" || (connected && (label.startsWith("cli-") || label.startsWith("device-")));
+  // A founder trusts the Device its First Key names as a `device-` slot from its founding, and its own operator can approve
+  // another; on a Server that is its Cluster's only Machine, that's theirs to do.
+  const cloudFilled = (label: string) => label === "cloud" || label.startsWith("device-") || (connected && label.startsWith("cli-"));
   return details.id === machineId
     && details.management_clients.every(cloudFilled)
     && snapshot.machines.every((machine) => machine.id === machineId);
