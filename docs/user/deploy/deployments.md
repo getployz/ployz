@@ -227,7 +227,8 @@ a new volume.
 `ployz deploy` reads your servers' keys and containers over a route whose server answers for
 itself: `--connect`, a context, or the local daemon. Through Ployz Cloud alone it can't, so it
 warns, every mount prints in full and asks, and a volume from before this version is refused.
-Retry with `--connect ssh://<server>`.
+Retry with `--connect ssh://<server>`. See
+[Volumes from before 0.4](#volumes-from-before-04).
 
 The signature doesn't cover where a service runs, how many replicas it runs, its
 [count for each region](../services/regions.md#run-a-service-in-more-than-one-region), the order a
@@ -454,6 +455,28 @@ Upgrading from 0.4.0-beta.2 or earlier, upgrade every server first, then deploy 
 once with your passkey or `ployz deploy`. That deploy restarts each service once, including ones
 that hold a volume. Until then, names from before the upgrade aren't
 [kept signed](../services/private-networking.md#good-to-know).
+
+### Volumes from before 0.4
+
+A volume made before your servers ran 0.4 needs one deploy over SSH. Once your servers are on
+0.4, run this once in each environment that has one, at a terminal:
+
+```sh
+ployz deploy --connect ssh://root@<server>
+```
+
+It asks `Use the data marked above?` for each of those volumes, then `Approve …?`. Answer `y` to
+both. That signed deploy is the version later deploys compare with, so afterwards:
+
+- Deploys from CI with a key work through Ployz Cloud.
+- **Deploy** in the dashboard works.
+- `ployz deploy` of a service without a volume, like `ployz deploy web`, works through Ployz
+  Cloud.
+
+A `ployz deploy` of a service with one of those volumes, or of the whole environment, still stops
+through Ployz Cloud with `data from before Ployz recorded where data began`. Your laptop can't
+check the data through Ployz Cloud alone. Keep adding `--connect ssh://root@<server>` to those
+deploys.
 
 ### Deploy from the dashboard
 
