@@ -163,6 +163,7 @@ const COMMAND_FILES = {
   "modules/ingress/cloudflare-setup.ts": "setting up the tunnel creates it in Cloudflare and runs on the first Server, so the card waits for the result",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/first-tunnel.tsx": "setting up the tunnel creates it in Cloudflare and runs on the first Server, so the card waits for the result",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/remove-server-section.tsx": "removing a server is destructive and waits on the runtime",
+  "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/server-trash-section.tsx": "a Trash restore or empty waits on the person's passkey and then on the one Server, which checks the approval before anything changes",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/stray-namespaces.tsx": "removing a Namespace no Project owns deletes its Volumes' data: it reads what goes before the user confirms, then waits on the Servers",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/store-teardown-section.tsx": "deleting an Environment or Project is destructive: it reads what goes before the user confirms, then shows what the Store still has to take off",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/StoreDeploymentPage.tsx": "retry starts runtime work and opens the new Deployment",

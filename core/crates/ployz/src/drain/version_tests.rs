@@ -105,29 +105,15 @@ fn unsigned(snapshot: DeploySnapshot) -> Result<Vec<String>, String> {
 }
 
 #[test]
-fn a_copy_moving_to_an_enforcing_server_needs_its_signed_version() {
+fn a_copy_moving_to_another_server_needs_its_signed_version() {
     // Even one that reaches no data: the move copies its image in under pull policy
-    // never, which such a Server runs only under a signature.
+    // never, which a Server runs only under a signature.
     let snapshot = DeploySnapshot {
         machines: vec![server('a', true, true), server('b', true, false)],
         containers: vec![copy('1', 'b', None, plain())],
         ..DeploySnapshot::default()
     };
     assert_eq!(unsigned(snapshot), Ok(vec!["app/api".to_owned()]));
-}
-
-#[test]
-fn a_move_only_a_server_that_does_not_enforce_can_take_needs_nothing() {
-    let snapshot = DeploySnapshot {
-        machines: vec![
-            server('a', false, true),
-            server('b', true, false),
-            server('c', true, false),
-        ],
-        containers: vec![copy('1', 'b', None, sealed())],
-        ..DeploySnapshot::default()
-    };
-    assert_eq!(unsigned(snapshot), Ok(Vec::new()));
 }
 
 #[test]

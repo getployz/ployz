@@ -125,10 +125,11 @@ async fn an_unpinnable_add_refuses_before_register() {
     assert_eq!(target.join_attempts(), 0);
 }
 
-/// Founding on the Server itself makes no Device for root there: one would ride into every
-/// later join approval as a Full Device, and outlive the Server.
+/// Founding on the Server itself is refused: a Device made for root there would ride into
+/// every later join approval as a Full Device and outlive the Server, and without one the
+/// Cluster would trust no key.
 #[tokio::test]
-async fn a_cluster_founded_on_its_server_approves_no_device_of_the_servers_own() {
+async fn a_cluster_is_never_founded_on_its_servers_own_socket() {
     let events = EventLog::default();
     let daemon = JoinDaemon::new(registration()).with_events(events.clone());
     let (socket, path, _) = serve_local_machine(daemon).await;
@@ -161,16 +162,12 @@ async fn a_cluster_founded_on_its_server_approves_no_device_of_the_servers_own()
     let minted = config.with_file_name("device.key").exists();
     let _ = std::fs::remove_dir_all(&root);
     let _ = std::fs::remove_file(path);
-    assert!(output.status.success(), "{output:?}");
+    assert!(!output.status.success(), "{output:?}");
     assert!(!minted, "no Device key is made for the Server's root");
-    assert!(
-        !events.entries().contains(&"set_device"),
-        "{:?}",
-        events.entries()
-    );
+    assert!(events.entries().is_empty(), "{:?}", events.entries());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("ployz device approve --this-device"),
+        stderr.contains("ployz server add --standalone root@HOST"),
         "{stderr}"
     );
 }

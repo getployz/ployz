@@ -210,6 +210,7 @@ fn the_retry_of_a_refused_empty_still_keeps_entries_being_restored() {
             ployz_core::EmptyTrashRequest {
                 ids: ids.to_vec(),
                 bulk: true,
+                approval: None,
             },
             "the retry of `{typed}` must still keep pinned entries"
         );

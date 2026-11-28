@@ -1332,6 +1332,14 @@ async fn a_founding_keeps_what_granted_it_across_reopens() {
         (None, ployz_core::Founding::Unrecorded),
     ] {
         let dir = TestDir::new("ployzd-founding-grant");
+        // A Cloud founding trusts only the key its install line armed.
+        ployz_core::first_key::FirstKeyFile::beside(&dir.0)
+            .lock()
+            .unwrap()
+            .arm(&ployz_core::first_key::LineKey::Device {
+                key: ployz_core::DeviceKey::from_bytes([7; 32]),
+            })
+            .unwrap();
         let local = LocalMachine::new(
             RecordOwner::spawn(LocalMachineStore::open(&dir.0).unwrap()).unwrap(),
         );

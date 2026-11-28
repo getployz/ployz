@@ -1659,8 +1659,10 @@ fn display_data_directory(path: &Path) -> String {
 }
 
 /// The keys a founding trusts: on a Cloud founding, the Waiting First Key its install line
-/// armed. A Spent First Key refuses a Cloud founding, so a reset disk can't be steered into a
-/// Cluster of someone else's. Other foundings never read the First Key.
+/// armed. A Cloud founding with no Waiting First Key is refused, so no Cluster Cloud starts
+/// trusts nobody, and a reset disk can't be steered into a Cluster of someone else's. Other
+/// foundings never read the First Key: `ployz server add --standalone` approves its Device over
+/// the SSH connection it founds through.
 fn founding_keys(
     grant: Option<&ployz_core::FoundingGrant>,
     first_key: Option<&FirstKey>,
@@ -1671,7 +1673,7 @@ fn founding_keys(
     match first_key {
         Some(FirstKey::Waiting { key }) => Ok(key.trusted()),
         Some(FirstKey::Spent { .. }) => Err(StoreError::FirstKeySpent),
-        None => Ok(ployz_core::authority::TrustedKeys::default()),
+        None => Err(StoreError::NoFirstKey),
     }
 }
 
@@ -1823,6 +1825,10 @@ pub enum StoreError {
         "This Server's disk already started or joined a Cluster, so an install line can't name its first key again."
     )]
     FirstKeySpent,
+    #[error(
+        "This Server has no first key, so it can't found a Cluster through Ployz Cloud: a Cluster must trust a key from the start."
+    )]
+    NoFirstKey,
     #[error(
         "This Server has no key to check its join approval against: its install line named none, or its disk already used one."
     )]

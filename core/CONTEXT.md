@@ -497,11 +497,11 @@ A read-only point-in-time copy of a Provisioned Volume held in a hidden slot on 
 _Avoid_: replica, standby, backup, secondary
 
 **Trash**:
-Where a Machine keeps every copy of a Provisioned Volume it deletes, on the same Machine Pool, for 168 hourly sweeps it ran (7 days while it runs). A delete moves the copy there and frees no space; the sweep, or a person with Full access emptying it, destroys it. The Machine never empties it to make room. Plain and anonymous Docker volumes are not kept.
+Where a Machine keeps every copy of a Provisioned Volume it deletes, on the same Machine Pool, for 168 hourly sweeps it ran (7 days while it runs). A delete moves the copy there and frees no space; the sweep, or a person emptying it with Full access or a passkey approval of those entries on that Machine, destroys it. The Machine never empties it to make room. Plain and anonymous Docker volumes are not kept.
 _Avoid_: recycle bin, soft delete, retention, backup
 
 **Trash entry**:
-One deleted copy in a Machine's Trash: a root, a slot or a slot's copy, with its Docker Volume name, the place it came from, the origin of the data it holds and the sweep hour it was deleted at. A person with Full access restores it where its Volume has no copy, never a slot a restore was still filling.
+One deleted copy in a Machine's Trash: a root, a slot or a slot's copy, with its Docker Volume name, the place it came from, the origin of the data it holds and the sweep hour it was deleted at. A person with Full access, or with a passkey approval of that entry on that Machine, restores it where its Volume has no copy, never a slot a restore was still filling.
 _Avoid_: deleted volume, backup, snapshot
 
 **Lease**:

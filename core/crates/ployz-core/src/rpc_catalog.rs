@@ -100,9 +100,9 @@ macro_rules! rpc_catalog {
                 SeedCopy: (seed_copy, SeedCopyRequest, VolumeCopyView, SEED_COPY_CAPABILITY, "ployz.volume.seed-copy.v1", Container, Operator),
                 SetVolumeCopy: (set_volume_copy, SetVolumeCopyRequest, SetVolumeCopyReply, SET_VOLUME_COPY_CAPABILITY, "ployz.volume.copy.set.v1", Container, Operator),
                 SetVolumeSize: (set_volume_size, SetVolumeSizeRequest, SetVolumeSizeReply, SET_VOLUME_SIZE_CAPABILITY, "ployz.volume.size.set.v1", Container, Operator),
-                ListTrash: (list_trash, ListTrashRequest, TrashList, LIST_TRASH_CAPABILITY, "ployz.volume.trash.v1", Container, Full),
-                RestoreTrash: (restore_trash, RestoreTrashRequest, TrashRestored, RESTORE_TRASH_CAPABILITY, "ployz.volume.trash-restore.v1", Container, Full),
-                EmptyTrash: (empty_trash, EmptyTrashRequest, TrashEmptied, EMPTY_TRASH_CAPABILITY, "ployz.volume.trash-empty.v1", Container, Full),
+                ListTrash: (list_trash, ListTrashRequest, TrashList, LIST_TRASH_CAPABILITY, "ployz.volume.trash.v1", Container, Operator),
+                RestoreTrash: (restore_trash, RestoreTrashRequest, TrashRestored, RESTORE_TRASH_CAPABILITY, "ployz.volume.trash-restore.v1", Container, Operator),
+                EmptyTrash: (empty_trash, EmptyTrashRequest, TrashEmptied, EMPTY_TRASH_CAPABILITY, "ployz.volume.trash-empty.v1", Container, Operator),
                 ClosePreview: (close_preview, ClosePreviewRequest, PreviewClosed, CLOSE_PREVIEW_CAPABILITY, "ployz.preview.close.v1", Container, Operator),
                 ListPreviews: (list_previews, ListPreviewsRequest, PreviewsHeld, LIST_PREVIEWS_CAPABILITY, "ployz.preview.list.v1", Container, Operator),
                 ListImages: (list_images, ListImagesRequest, MachineImages, LIST_IMAGES_CAPABILITY, "ployz.image.list.v1", Container, Operator),
@@ -173,6 +173,8 @@ macro_rules! rpc_catalog {
                 SET_INGRESS_TUNNEL_CAPABILITY: ("ployz.ingress.tunnel.v1", Cluster),
                 /// `SetPrivateAccess` takes a person's approval of its sealed auth key and turns Private Access on for an Operator only with one.
                 PRIVATE_ACCESS_APPROVAL_CAPABILITY: ("ployz.private-access.approval.v1", Cluster),
+                /// `ListTrash` serves an Operator, and `RestoreTrash` and `EmptyTrash` take a person's approval of the entries they name on this Machine and serve an Operator only with one.
+                TRASH_APPROVAL_CAPABILITY: ("ployz.volume.trash.approval.v1", Container),
                 /// `EnsureContainer` takes signed versions and creates an Operator's Container only when one signs its spec's digest.
                 SIGNED_VERSION_CAPABILITY: ("ployz.container.signed-version.v1", Always),
                 /// A signed version may be an unsigned step of a signed proposal bundle that rides in its envelope.

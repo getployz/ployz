@@ -697,6 +697,63 @@ impl Client {
         to_json(&changed)
     }
 
+    /// `machine`'s Trash as it lists it now.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] JSON payload when the session is closed, `machine`
+    /// is not visible, its Ployz shows its Trash only on the Server, or it doesn't answer.
+    #[napi(ts_return_type = "Promise<TrashList>")]
+    pub async fn list_trash(&self, machine: String) -> Result<serde_json::Value> {
+        let trash = self.inner.list_trash(&machine).await.map_err(rpc_to_napi)?;
+        to_json(&trash)
+    }
+
+    /// Restore each entry `approval` names on `machine`, with the person's approval of
+    /// exactly those entries there.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] JSON payload when `approval` is not a signed
+    /// restore, the session is closed, or `machine` is not visible. Each entry the Server
+    /// refuses is one of the result's failures.
+    #[napi(ts_return_type = "Promise<TrashRestores>")]
+    pub async fn restore_trash(
+        &self,
+        machine: String,
+        #[napi(ts_arg_type = "Signed")] approval: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let approval = from_js(approval).map_err(invalid_argument)?;
+        let restored = self
+            .inner
+            .restore_trash(&machine, approval)
+            .await
+            .map_err(rpc_to_napi)?;
+        to_json(&restored)
+    }
+
+    /// Empty exactly the entries `approval` names on `machine`, with the person's approval
+    /// of exactly those entries there.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] JSON payload when `approval` is not a signed empty,
+    /// the session is closed, or the Server refuses it or doesn't answer.
+    #[napi(ts_return_type = "Promise<TrashEmptied>")]
+    pub async fn empty_trash(
+        &self,
+        machine: String,
+        #[napi(ts_arg_type = "Signed")] approval: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let approval = from_js(approval).map_err(invalid_argument)?;
+        let emptied = self
+            .inner
+            .empty_trash(&machine, approval)
+            .await
+            .map_err(rpc_to_napi)?;
+        to_json(&emptied)
+    }
+
     /// Stop and remove the Ingress Proxy on `machine` once its ingress role is off.
     #[napi]
     pub async fn stop_ingress(&self, machine: String) -> Result<()> {

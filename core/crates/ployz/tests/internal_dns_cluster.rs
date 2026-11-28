@@ -6,7 +6,7 @@ mod containers;
 use ployz_core::{
     ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation,
     HealthObservation, Machine, MachineId, MembershipObservation, Namespace, ResolvedServiceSpec,
-    ServiceId, ServiceSelector, select_service,
+    ServiceId, ServiceSelector, StopOptions, select_service,
 };
 use ployz_testkit::{Cluster, ClusterPlan, poll_until};
 
@@ -53,7 +53,7 @@ async fn internal_dns_tracks_healthy_replicated_containers() {
     .unwrap();
     let mut created = Vec::new();
     for machine in &machines {
-        let container = containers::run(
+        let container = containers::run_routed(
             &client,
             machine.id,
             ContainerKind::ServiceContainer,
@@ -146,7 +146,7 @@ async fn internal_dns_survives_daemon_restart() {
     .unwrap();
     let mut created = Vec::new();
     for machine in [&first_machine, &second_machine] {
-        let container = containers::run(
+        let container = containers::run_routed(
             &client,
             machine.id,
             ContainerKind::ServiceContainer,
@@ -432,7 +432,7 @@ async fn assert_internal_selectors(
             "dns-api.internal from a Caller Namespace should answer {address}: {namespace_relative}"
         );
     }
-    probe.assert_addresses(&format!("{service_id}.id.lookup.internal"), expected);
+    probe.assert_addresses(&format!("{service_id}.id.lookup.internal"), &[]);
     for machine in machines {
         probe.assert_addresses(
             &format!("dns-api.app.{}.machine.internal", machine.id),
@@ -499,15 +499,13 @@ async fn assert_projection_changes(
             &format!("docker exec {second_container} rm /tmp/healthy"),
         )
         .unwrap();
-    wait_for_health(client, second_container, HealthObservation::Unhealthy).await;
+    wait_for_health(client, second_container, HealthObservation::Failing).await;
+    probe.assert_addresses("dns-api.app.internal", expected);
     let without_second = expected
         .iter()
         .copied()
         .filter(|address| *address != second_address)
         .collect::<Vec<_>>();
-    probe
-        .wait_addresses("dns-api.app.internal", &without_second)
-        .await;
     probe
         .cluster
         .machine_shell(
@@ -741,7 +739,7 @@ async fn start_container(
     machine_id: MachineId,
     container_id: ContainerId,
 ) {
-    containers::start(client, machine_id, container_id)
+    containers::start_routed(client, machine_id, container_id)
         .await
         .unwrap();
 }
@@ -751,7 +749,7 @@ async fn stop_container(
     machine_id: MachineId,
     container_id: ContainerId,
 ) {
-    containers::stop(client, machine_id, container_id)
+    containers::stop_routed(client, machine_id, container_id, StopOptions::default())
         .await
         .unwrap();
 }

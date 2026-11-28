@@ -78,7 +78,8 @@ pub async fn serve_local_machine(daemon: JoinDaemon) -> (String, PathBuf, Arc<At
     (format!("unix://{}", socket.display()), socket, connections)
 }
 
-// A fake ssh that pipes `ployzd dial-stdio` to the fake daemon's TCP port.
+// A fake ssh that pipes `ployzd dial-stdio` to the fake daemon's TCP port, and answers
+// the preflight and `ployzd arm-first-key` a Cloud founding runs after the dial.
 pub fn cli() -> tokio::process::Command {
     use std::os::unix::fs::PermissionsExt;
     static SSH: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
@@ -91,6 +92,15 @@ pub fn cli() -> tokio::process::Command {
 import os, socket, sys, threading
 args = sys.argv[1:]
 if args[-1] == 'true':
+    sys.exit(0)
+if args[-1] == 'whoami':
+    print('root')
+    sys.exit(0)
+if args[-1] == 'uname -s; uname -m':
+    print('Linux')
+    print('x86_64')
+    sys.exit(0)
+if ' arm-first-key ' in args[-1]:
     sys.exit(0)
 assert args[-2:] == ['ployzd', 'dial-stdio'], args
 port = int(args[args.index('-p') + 1])
