@@ -411,8 +411,10 @@ const prepareStoreGithubBuild = Effect.fn("StoreGithub.prepare")(function* (
     }
     if (start.kind === "approved") {
       // A person's Deploy under a rule builds on the rule's workflow, on its branch, at the commit it pinned; the grant
-      // Machine builds it only while it is that branch's head.
-      return { ...ask, kind: "approved", branch: start.branch, workflow: start.workflow, commit: start.commit, workflowRef: start.workflow_ref } satisfies GithubAsk;
+      // Machine builds it only while it is that branch's head. A preview rule names no branch: a commit a person approved
+      // builds on the default branch, which holds the workflow, and the grant Machine checks the approval instead.
+      const branch = start.branch ?? workflow.defaultBranch;
+      return { ...ask, kind: "approved", branch, workflow: start.workflow, commit: start.commit, workflowRef: start.workflow_ref } satisfies GithubAsk;
     }
     if (start.kind !== "dispatch") return done;
     // A rule build runs the rule's own template, whose builder the grant Machine checks. Through the minter, Cloud

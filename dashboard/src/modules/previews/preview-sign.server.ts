@@ -9,7 +9,7 @@ import { readClusterSealing } from "#/modules/sealing/cluster-sealing.server";
 const PREVIEW_RULE_NEEDS = ["ployz.container.deploy-rule.v1", "ployz.container.preview-rule.v1"];
 
 /**
- * What signing Preview settings needs: the Cluster's key the rule names and the person's passkeys every enforcing
+ * What signing Preview settings, or a commit a preview deploys, needs: the Cluster's key the rule names and the person's passkeys every enforcing
  * Server trusts (null when none enforces, so any passkey answers). Anything else is why it can't, in words the sheet
  * shows.
  */
@@ -23,7 +23,7 @@ export const preparePreviewSigning = Effect.fn("PreviewSigning.prepare")(functio
   readonly namespace: string;
 }) {
   const access = yield* requireAccess(actor, input.organizationSlug, "changes:deploy");
-  if (access.kind !== "member") return { kind: "refused", message: "Ask a member to change Preview settings." } satisfies PreviewSigning;
+  if (access.kind !== "member") return { kind: "refused", message: "Ask a member of your organization to approve this." } satisfies PreviewSigning;
   const tap = yield* gate(actor.userId, access.organization.id, [], {
     namespace: input.namespace, parents: Effect.succeed({}), needs: PREVIEW_RULE_NEEDS,
   });

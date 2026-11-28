@@ -12,13 +12,13 @@ import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from "
 import { Spinner } from "#/components/ui/spinner";
 import { PREVIEW_SETTINGS_ROUTE_TO, PREVIEWS_ROUTE_TO, type PreviewRouteParams } from "#/lib/environment-routes";
 import { listNames } from "#/lib/plural";
-import { useOrganizationName } from "#/modules/organization/organization-state.queries";
 import { ruleBody } from "#/modules/previews/previews.contract";
 import { usePreviews } from "#/modules/previews/previews.queries";
 import { usePreviewWrites, writeFailure } from "#/modules/previews/preview-writes";
+import { PreviewSignRefused, signCommitApproval } from "#/modules/previews/preview-signing";
 import {
-  addressHref, authorLine, CloseOneList, deployable, isUp, outcomeLine, PreviewsRefused, PreviewStatus, RaiseLimit, shortCommit,
-  useClosePreview, useServerName,
+  addressHref, authorLine, CloseOneList, deployable, isUp, needsApproval, outcomeLine, PreviewsRefused, PreviewStatus, RaiseLimit,
+  shortCommit, useClosePreview, useServerName,
 } from "./preview-parts";
 
 /**
@@ -50,7 +50,6 @@ export function PreviewPage({ params, repository, number }: { params: PreviewRou
 }
 
 function Preview({ view, row, params }: { view: PreviewsView; row: PreviewRow; params: PreviewRouteParams }) {
-  const organizationName = useOrganizationName(params.organizationSlug);
   const outcome = row.preview;
   const settings = view.settings;
   const live = outcome.state === "live" && outcome.address ? outcome.address : null;
@@ -61,10 +60,10 @@ function Preview({ view, row, params }: { view: PreviewsView; row: PreviewRow; p
         <p className="text-sm text-muted-foreground">
           {authorLine(row)}{row.head ? <>, latest commit <span className="font-mono">{shortCommit(row.head)}</span></> : null}, <RelativeTime date={new Date(row.updated)} />
         </p>
-        <PreviewStatus line={outcomeLine(row, view, organizationName)} />
+        <PreviewStatus line={outcomeLine(row, view)} />
       </div>
       {settings === null ? <Off params={params} repository={view.repository} />
-        : isUp(outcome) ? <Up row={row} settings={settings} params={params} />
+        : isUp(outcome) ? <Up view={view} row={row} settings={settings} params={params} />
         : outcome.state === "not_deployed" && outcome.why?.kind === "full" && row.open && view.live >= view.limit
           ? <Full view={view} row={row} params={params} />
           : <Confirm view={view} row={row} settings={settings} params={params} />}
@@ -94,28 +93,46 @@ function servicesOf(settings: PreviewSettings) {
   return { built, pinned: [...pinned] };
 }
 
-/** What one Deploy runs, and the Deploy. */
-function Confirm({ view, row, settings, params }: { view: PreviewsView; row: PreviewRow; settings: PreviewSettings; params: PreviewRouteParams }) {
+/**
+ * Deploying the row's head as the person asked: at once for a member's own pull request, else once their passkey
+ * approves exactly that commit for the preview the Store named.
+ */
+function useDeployHead(view: PreviewsView, row: PreviewRow, settings: PreviewSettings, params: PreviewRouteParams) {
   const writes = usePreviewWrites(params.organizationSlug);
-  const serverName = useServerName(params.organizationSlug);
   const [deploying, setDeploying] = useState(false);
   const [refused, setRefused] = useState<string | null>(null);
-  const { built, pinned } = servicesOf(settings);
-  const head = row.head;
-  const ready = deployable(row, view) && head !== null;
   const deploy = async () => {
+    const head = row.head;
     if (head === null) return;
     setDeploying(true);
     setRefused(null);
     try {
-      await writes.deploy({ repository_id: view.repository_id, number: row.number, head });
+      const approval = row.namespace === undefined ? undefined : await signCommitApproval({
+        organizationSlug: params.organizationSlug, settings, repositoryId: view.repository_id, commit: head, namespace: row.namespace,
+      });
+      await writes.deploy({ repository_id: view.repository_id, number: row.number, head, approval });
       toast.success(`Deploying #${row.number}`);
     } catch (error) {
-      setRefused(writeFailure(error));
+      setRefused(error instanceof PreviewSignRefused ? error.message : writeFailure(error));
     } finally {
       setDeploying(false);
     }
   };
+  const button = (
+    <Button disabled={deploying || row.head === null || !deployable(row, view)} onClick={() => void deploy()}>
+      {deploying ? <Spinner data-icon="inline-start" /> : null}
+      {needsApproval(row) ? "Deploy with passkey" : "Deploy"}
+    </Button>
+  );
+  return { button, refused };
+}
+
+/** What one Deploy runs, and the Deploy. */
+function Confirm({ view, row, settings, params }: { view: PreviewsView; row: PreviewRow; settings: PreviewSettings; params: PreviewRouteParams }) {
+  const serverName = useServerName(params.organizationSlug);
+  const { button, refused } = useDeployHead(view, row, settings, params);
+  const { built, pinned } = servicesOf(settings);
+  const head = row.head;
   return (
     <SettingsSection id="deploys" title="What deploys">
       <Fact label="Pull request">#{row.number} {row.title}, by {authorLine(row)}</Fact>
@@ -126,12 +143,20 @@ function Confirm({ view, row, settings, params }: { view: PreviewsView; row: Pre
           .filter(Boolean).join("; ") || "As in " + settings.start_from}
       </Fact>
       <Fact label="Server">{settings.servers.length === 1 ? serverName(settings.servers[0] ?? "") : `One of ${listNames(settings.servers.map(serverName))}`}</Fact>
-      <SettingsRow label="Its databases start empty" hint={refused ?? undefined} commit="none" control={
-        <Button disabled={!ready || deploying} onClick={() => void deploy()}>
-          {deploying ? <Spinner data-icon="inline-start" /> : null}
-          Deploy
-        </Button>
-      } />
+      <SettingsRow label="Its databases start empty"
+        hint={refused ?? (needsApproval(row) ? "Your passkey approves this commit only." : undefined)}
+        commit="none" control={button} />
+    </SettingsSection>
+  );
+}
+
+/** A preview whose pull request moved past what it runs, and which waits for a person: deploy the new head. */
+function DeployAgain({ view, row, settings, params }: { view: PreviewsView; row: PreviewRow; settings: PreviewSettings; params: PreviewRouteParams }) {
+  const { button, refused } = useDeployHead(view, row, settings, params);
+  return (
+    <SettingsSection id="again" title="New commits">
+      <SettingsRow label={<>Latest commit <span className="font-mono">{row.head ? shortCommit(row.head) : ""}</span></>}
+        hint={refused ?? "Your passkey approves this commit only."} commit="none" control={button} />
     </SettingsSection>
   );
 }
@@ -157,7 +182,7 @@ function Full({ view, row, params }: { view: PreviewsView; row: PreviewRow; para
 }
 
 /** A live or deploying preview: what it is, and closing it. */
-function Up({ row, settings, params }: { row: PreviewRow; settings: PreviewSettings; params: PreviewRouteParams }) {
+function Up({ view, row, settings, params }: { view: PreviewsView; row: PreviewRow; settings: PreviewSettings; params: PreviewRouteParams }) {
   const serverName = useServerName(params.organizationSlug);
   const close = useClosePreview(params.organizationSlug, params.projectSlug);
   const outcome = row.preview;
@@ -188,6 +213,7 @@ function Up({ row, settings, params }: { row: PreviewRow; settings: PreviewSetti
           </CollapsibleContent>
         </Collapsible>
       </SettingsSection>
+      {newer && needsApproval(row) ? <DeployAgain view={view} row={row} settings={settings} params={params} /> : null}
       <SettingsSection id="close" title="Close preview">
         <SettingsDanger label="Close preview" hint="Deletes the copy and its databases. It also closes when the pull request closes."
           action={<Button variant="destructive" onClick={() => close.ask(row)}>Close preview</Button>} />

@@ -530,11 +530,12 @@ it.live("a record whose first try commits under its retry follows that one run, 
 it.live("a rule build follows its push, and an approved build dispatches, under the rule's own workflow file", () =>
   Effect.gen(function* () {
     // The rule's branch holds the rule template, which the minter dispatches with only the commit.
-    const ruleTemplate = { ...activeWorkflow, template: "rule" as const, dispatchable: true };
+    let dispatched = 0;
+    const ruleTemplate = { ...activeWorkflow, defaultBranch: "trunk", template: "rule" as const, dispatchable: true };
     const authority = fakeGithubAuthority({
       buildWorkflow: () => Effect.succeed(ruleTemplate),
       buildRuns: () => Effect.succeed([{ id: RUN, url: dispatchedRun(RUN).runUrl, headSha: HEAD, event: "push", status: "in_progress", conclusion: null }]),
-      dispatchApprovedBuild: () => Effect.succeed({ runId: RUN + 1, runUrl: dispatchedRun(RUN + 1).runUrl }),
+      dispatchApprovedBuild: () => { dispatched += 1; return Effect.succeed({ runId: RUN + dispatched, runUrl: dispatchedRun(RUN + dispatched).runUrl }); },
     });
     const services = yield* storeTestCloud({ github: fakeGithubApi().service, authority: authority.service });
     const provided = <A, E, R>(program: Effect.Effect<A, E, R>) => program.pipe(Effect.provide(services));
@@ -563,6 +564,14 @@ it.live("a rule build follows its push, and an approved build dispatches, under 
     expect(authority.calls.filter((call) => call.operation === "dispatchApprovedBuild").map((call) => call.input))
       .toEqual([{ installationId: 7, repositoryId: 42, branch: "main", commit: HEAD }]);
     expect(authority.calls.some((call) => call.operation === "dispatchBuild")).toBe(false);
+
+    // A commit a person approved for a preview names no branch: it builds on the repository's default branch.
+    const preview = "00000000-0000-4000-8000-00000000b1e2";
+    yield* admitted(preview);
+    started.mockResolvedValueOnce({ kind: "approved", workflow: ".github/workflows/ployz-build.yml", workflow_ref: WORKFLOW, commit: HEAD, foreign: [] });
+    expect(yield* provided(startStoreGithubBuild(ORGANIZATION, target(preview)))).toEqual({ kind: "dispatched", runId: RUN + 2 });
+    expect(authority.calls.filter((call) => call.operation === "dispatchApprovedBuild").map((call) => call.input).at(-1))
+      .toEqual({ installationId: 7, repositoryId: 42, branch: "trunk", commit: HEAD });
   }), 60_000);
 
 it.live("a Deployment's builds start in one step, read the workflow once per repository, and a run resumed after a Cloud deploy dispatches nothing twice", () =>
