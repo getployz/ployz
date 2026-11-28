@@ -634,8 +634,10 @@ fn names_the_second(error: &RpcError) {
     );
 }
 
+/// A frozen daemon takes the call and never replies while its Corrosion keeps it Up, so
+/// membership never explains its silence: the read's deadline does.
 #[tokio::test(start_paused = true)]
-async fn an_up_machine_that_never_lists_fails_the_service_by_name() {
+async fn an_up_machine_that_never_lists_does_not_stop_a_run_on_a_live_one() {
     let ensured = std::sync::Arc::default();
     let (client, server) = live_and_second(
         std::sync::Arc::clone(&ensured),
@@ -647,11 +649,27 @@ async fn an_up_machine_that_never_lists_fails_the_service_by_name() {
     .await;
     let plan = vec![run(&machine('1'), spec(None, None, None), true)];
 
-    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+    let (outcome, warnings) = execute_named(plan, &client).await;
 
-    let error = failed_listing(&outcome).unwrap_or_else(|| panic!("{outcome:?}"));
-    names_the_second(error);
-    assert!(ensured.lock().unwrap().is_empty(), "no copy starts");
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    let above = Gen::new(STORED_GEN + 1);
+    assert_eq!(
+        *ensured.lock().unwrap(),
+        [(machine('1'), above), (machine('1'), above)],
+        "the copy starts on the live Machine only, above the silent Machine's stored copy"
+    );
+    let gaps: Vec<_> = warnings
+        .iter()
+        .filter_map(DeployWarning::observation_gap)
+        .map(|(machine_id, gap)| (machine_id, gap.reason))
+        .collect();
+    assert_eq!(
+        gaps,
+        [(machine('2'), ployz_core::ObservationGapReason::Failed)]
+    );
     server.abort();
 }
 
@@ -893,28 +911,25 @@ async fn a_dependency_check_names_an_up_machine_the_entry_couldnt_dial_as_an_obs
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_dependency_check_fails_by_name_on_an_up_machine_that_never_lists() {
+async fn a_dependency_check_names_an_up_machine_that_never_lists_as_an_observation_gap() {
     let (pair, plan) = dependency_check(MembershipObservation::Up);
     let (client, server) = live_and_second(std::sync::Arc::default(), pair).await;
 
-    let outcome = execute_with(&plan, &client, &CancellationToken::new()).await;
+    let (outcome, warnings) = execute_named(plan, &client).await;
 
-    let DeployOutcome::Failed {
-        failed:
-            FailedOperation::Operation {
-                error:
-                    ExecutionError::DependencyHealth {
-                        failure: DependencyHealthFailure::Observation { error },
-                        ..
-                    },
-                ..
-            },
-        ..
-    } = &outcome
-    else {
-        panic!("{outcome:?}");
-    };
-    names_the_second(error);
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
+    let gaps: Vec<_> = warnings
+        .iter()
+        .filter_map(DeployWarning::observation_gap)
+        .map(|(machine_id, gap)| (machine_id, gap.reason))
+        .collect();
+    assert_eq!(
+        gaps,
+        [(machine('2'), ployz_core::ObservationGapReason::Failed)]
+    );
     server.abort();
 }
 

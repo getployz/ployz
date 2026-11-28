@@ -647,27 +647,39 @@ async fn assert_start_first_gap(
         .unwrap();
     let replacement = requested(&machines[0], "final");
     assert_eq!(deploy(client, &replacement).await, service_id);
-    let final_address = wait_running(client, &service_id, 1)
+    // The frozen Server is skipped once its listing outlasts the read's deadline. Its
+    // proxy never confirmed the switch, so the copy it routes to is left running beside
+    // the new one.
+    let final_address = wait_running(client, &service_id, 2)
         .await
         .into_iter()
-        .next()
-        .unwrap()
-        .address
+        .filter_map(|copy| copy.address)
+        .find(|address| *address != new_address)
         .unwrap();
     let delayed = cluster
         .machine_shell(2, "cat /var/lib/ployz/ingress/caddy/Caddyfile")
         .unwrap();
     assert!(delayed.contains(&format!("{}:8081", new_address.0)));
     assert!(!delayed.contains(&format!("{}:8081", final_address.0)));
-    assert!(
+    assert_eq!(
         cluster
             .machine_shell(2, "curl -fsS -H 'Host: switch.test' http://127.0.0.1",)
-            .is_err()
+            .unwrap()
+            .trim(),
+        "new"
     );
 
     cluster
         .machine_shell(2, "kill -CONT $(cat /run/ployzd.pid)")
         .unwrap();
+    // Back, the Server catches up on the route it missed, and the next deploy retires the
+    // copy the skip left running.
+    wait_config(cluster, 2, |config| {
+        config.contains(&format!("{}:8081", final_address.0))
+    })
+    .await;
+    apply(client, &replacement).await;
+    wait_running(client, &service_id, 1).await;
     wait_config(cluster, 2, |config| {
         config.contains(&format!("{}:8081", final_address.0))
             && !config.contains(&format!("{}:8081", new_address.0))
@@ -686,6 +698,17 @@ async fn deploy(
     client: &mut ployz::connect::Client,
     requested: &RequestedServiceSpec,
 ) -> ServiceId {
+    apply(client, requested)
+        .await
+        .expect("deployed operations carry a Service ID")
+}
+
+/// Deploy `requested`, returning the Service ID its run or replace operations carry,
+/// none when the plan only retires copies.
+async fn apply(
+    client: &mut ployz::connect::Client,
+    requested: &RequestedServiceSpec,
+) -> Option<ServiceId> {
     let machines = client
         .call::<op::ListMachines>(ListMachinesRequest {}, Call::read())
         .await
@@ -722,23 +745,20 @@ async fn deploy(
         matches!(outcome, ployz::deploy::DeployOutcome::Success { .. }),
         "{outcome:?}"
     );
-    plan.operations
-        .iter()
-        .find_map(|row| match &row.operation {
-            ployz::deploy::DeployOperation::RunContainer { spec, .. }
-            | ployz::deploy::DeployOperation::RunHook { spec, .. } => Some(spec.service_id),
-            ployz::deploy::DeployOperation::ReplaceContainer(replacement) => {
-                Some(replacement.spec.service_id)
-            }
-            ployz::deploy::DeployOperation::UpdateContainer(update) => Some(update.spec.service_id),
-            ployz::deploy::DeployOperation::PrepareVolumes { .. }
-            | ployz::deploy::DeployOperation::WaitHealthy { .. }
-            | ployz::deploy::DeployOperation::StopContainer { .. }
-            | ployz::deploy::DeployOperation::RemoveContainer { .. }
-            | ployz::deploy::DeployOperation::StopHook { .. }
-            | ployz::deploy::DeployOperation::RemoveVolume { .. } => None,
-        })
-        .expect("deployed operations carry a Service ID")
+    plan.operations.iter().find_map(|row| match &row.operation {
+        ployz::deploy::DeployOperation::RunContainer { spec, .. }
+        | ployz::deploy::DeployOperation::RunHook { spec, .. } => Some(spec.service_id),
+        ployz::deploy::DeployOperation::ReplaceContainer(replacement) => {
+            Some(replacement.spec.service_id)
+        }
+        ployz::deploy::DeployOperation::UpdateContainer(update) => Some(update.spec.service_id),
+        ployz::deploy::DeployOperation::PrepareVolumes { .. }
+        | ployz::deploy::DeployOperation::WaitHealthy { .. }
+        | ployz::deploy::DeployOperation::StopContainer { .. }
+        | ployz::deploy::DeployOperation::RemoveContainer { .. }
+        | ployz::deploy::DeployOperation::StopHook { .. }
+        | ployz::deploy::DeployOperation::RemoveVolume { .. } => None,
+    })
 }
 
 async fn wait_down(cluster: &Cluster, machine: &Machine) {

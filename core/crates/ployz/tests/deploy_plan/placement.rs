@@ -1147,17 +1147,17 @@ fn constraints_name_each_excluded_machine_under_the_first_reason_that_applies_to
                 names: vec![MachineName::parse("down").unwrap()],
             },
             EliminatingConstraint::Unanswered {
-                names: vec![MachineName::parse("slow").unwrap()],
-            },
-            EliminatingConstraint::WorkNotAccepted {
                 names: vec![
-                    MachineName::parse("refusing").unwrap(),
+                    MachineName::parse("slow").unwrap(),
                     MachineName::parse("both").unwrap(),
                 ],
             },
+            EliminatingConstraint::WorkNotAccepted {
+                names: vec![MachineName::parse("refusing").unwrap()],
+            },
         ],
         &[
-            "Machine 'down' is down; Machine 'slow' did not answer when this Deploy listed its containers; Machines 'refusing', 'both' do not accept this work",
+            "Machine 'down' is down; Machines 'slow', 'both' did not answer when this Deploy listed its containers; Machine 'refusing' do not accept this work",
         ],
     );
 }
@@ -3733,68 +3733,45 @@ fn a_signed_deploy_replaces_a_copy_its_machine_admitted_unsigned() {
     assert!(!replaced(Some(ployz_core::Admission::Signed), &signing));
 }
 
+/// Suspect, or Up with a daemon that took the call and never replied, as a frozen one
+/// does: either way the read's deadline ran out and nothing new starts there.
 #[test]
-fn a_suspect_machine_that_did_not_answer_its_listing_gets_no_new_copy() {
+fn a_machine_that_did_not_answer_its_listing_gets_no_new_copy() {
     let requested = requested(ServiceMode::Replicated {
         replicas: NonZeroU32::new(2).unwrap(),
     });
-    let mut silent = machine('2', "silent");
-    silent.membership = MembershipObservation::Suspect;
-    let snapshot = DeploySnapshot {
-        machines: vec![machine('1', "live"), silent],
-        container_failures: vec![ployz_core::MachineFailure {
-            machine_id: machine_id('2'),
-            error: ployz_core::RpcError::unanswered_target(
-                ployz_core::RpcErrorCode::Unavailable,
-                "target Machine RPC timed out".into(),
-            ),
-        }],
-        ..Default::default()
-    };
+    for membership in [MembershipObservation::Suspect, MembershipObservation::Up] {
+        let mut silent = machine('2', "silent");
+        silent.membership = membership.clone();
+        let snapshot = DeploySnapshot {
+            machines: vec![machine('1', "live"), silent],
+            container_failures: vec![ployz_core::MachineFailure {
+                machine_id: machine_id('2'),
+                error: ployz_core::RpcError::unanswered_target(
+                    ployz_core::RpcErrorCode::Unavailable,
+                    "target Machine RPC timed out".into(),
+                ),
+            }],
+            ..Default::default()
+        };
 
-    let plan = plan_deploy([&requested], &snapshot, PlanOptions::default()).unwrap();
+        let plan = plan_deploy([&requested], &snapshot, PlanOptions::default()).unwrap();
 
-    let targets = operations(&plan)
-        .iter()
-        .filter_map(|operation| {
-            let DeployOperation::RunContainer { machine_id, .. } = operation else {
-                return None;
-            };
-            Some(*machine_id)
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(targets, [machine_id('1'), machine_id('1')]);
-}
-
-#[test]
-fn an_up_machine_that_did_not_answer_its_listing_still_gets_its_copy() {
-    let requested = requested(ServiceMode::Replicated {
-        replicas: NonZeroU32::new(2).unwrap(),
-    });
-    let snapshot = DeploySnapshot {
-        machines: vec![machine('1', "live"), machine('2', "hung")],
-        container_failures: vec![ployz_core::MachineFailure {
-            machine_id: machine_id('2'),
-            error: ployz_core::RpcError::unanswered_target(
-                ployz_core::RpcErrorCode::Unavailable,
-                "target Machine RPC timed out".into(),
-            ),
-        }],
-        ..Default::default()
-    };
-
-    let plan = plan_deploy([&requested], &snapshot, PlanOptions::default()).unwrap();
-
-    let targets = operations(&plan)
-        .iter()
-        .filter_map(|operation| {
-            let DeployOperation::RunContainer { machine_id, .. } = operation else {
-                return None;
-            };
-            Some(*machine_id)
-        })
-        .collect::<BTreeSet<_>>();
-    assert_eq!(targets, BTreeSet::from([machine_id('1'), machine_id('2')]));
+        let targets = operations(&plan)
+            .iter()
+            .filter_map(|operation| {
+                let DeployOperation::RunContainer { machine_id, .. } = operation else {
+                    return None;
+                };
+                Some(*machine_id)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            targets,
+            [machine_id('1'), machine_id('1')],
+            "{membership:?}"
+        );
+    }
 }
 
 #[test]
@@ -3809,11 +3786,12 @@ fn a_docker_volume_is_not_placed_while_a_silent_machine_may_hold_it() {
             "target Machine RPC timed out".into(),
         )
     };
-    // A Suspect Machine that never answered, and an Up one whose daemon the entry
-    // couldn't dial (#3396).
+    // A Suspect Machine that never answered, an Up one whose daemon the entry couldn't
+    // dial (#3396), and an Up one whose daemon never replied.
     for (membership, error) in [
         (MembershipObservation::Suspect, unanswered()),
         (MembershipObservation::Up, unanswered().undialed_target()),
+        (MembershipObservation::Up, unanswered()),
     ] {
         let mut silent = machine('2', "silent");
         silent.membership = membership;

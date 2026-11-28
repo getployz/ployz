@@ -41,8 +41,9 @@ pub(crate) struct Unanswered {
     pub(crate) failure: MachineFailure<RpcError>,
     /// The failure as planning words it too, so their notices are one.
     pub(crate) message: String,
-    /// It reads Up but the entry's router couldn't dial it, as while its daemon is
-    /// stopped: its proxy keeps serving its last routes and nothing writes its ack.
+    /// It reads Up but its daemon didn't answer, as while it is stopped or frozen, and
+    /// no path dropping large packets explains that: its proxy keeps serving its last
+    /// routes and nothing writes its ack.
     pub(crate) acks_unwritten: bool,
 }
 
@@ -254,20 +255,14 @@ impl CopyLifecycle for Client {
                 .iter()
                 .find(|machine| machine.machine.id == failure.machine_id)
             {
-                Some(machine) if crate::deploy::listing_gap(machine, &failure.error) => {
+                Some(machine) if crate::deploy::listing_gap(&failure.error) => {
                     unanswered.push(Unanswered {
                         name: machine.machine.name.clone(),
                         message: crate::deploy::unanswered_message(machine, &failure.error),
                         acks_unwritten: machine.membership == MembershipObservation::Up
-                            && failure.error.undialed(),
+                            && !crate::deploy::dropped_large_packets(machine, &failure.error),
                         failure,
                     });
-                }
-                Some(machine) if failure.error.target_unanswered() => {
-                    return Err(naming_machine(
-                        crate::cluster::unanswered_by(&machine.machine.name, failure.error),
-                        &failure.machine_id,
-                    ));
                 }
                 Some(_) | None => return Err(failure.error),
             }

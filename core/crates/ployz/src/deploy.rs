@@ -7,7 +7,7 @@ use std::{
 use ployz_core::{
     BridgeEndpointCapacity, ContainerObservation, ContainerRuntimeObservation, DockerVolume,
     DockerVolumeId, DockerVolumeName, IngressHost, MachineFailure, MachineId, MachineName,
-    MachineObservation, MembershipObservation, Namespace, PartialResult, PlacementConstraint,
+    MachineObservation, Namespace, PartialResult, PlacementConstraint,
     ProvisionedVolumeMaximumBytes, QualifiedService, Region, RpcError, RpcErrorCode, ServiceName,
     ServiceObservation, VolumeInventory, VolumeObservationFailure, derive_services,
 };
@@ -321,16 +321,14 @@ pub enum HeldIngress<'snapshot> {
     Restarting(&'snapshot ContainerObservation),
 }
 
-/// A Machine that left a Container listing unanswered is an observation gap a Deploy
-/// goes on without when its silence is explained: it is Suspect, the entry couldn't dial
-/// it, as while its daemon is stopped (#3396), or the entry's path probes find large
-/// packets to it dropped, so no listing's reply comes back (#3510). An Up Machine's
-/// silence after a dial that worked stays an error, as does any answer.
-pub(crate) fn listing_gap(machine: &MachineObservation, error: &RpcError) -> bool {
+/// A Machine that left a Container listing unanswered within the read's deadline
+/// ([`crate::connect::target_read_timeout`]) is an observation gap a Deploy goes on
+/// without, whatever its membership reads: Suspect, undialed while its daemon is stopped
+/// (#3396), behind a path dropping large packets (#3510), or Up with a daemon that took
+/// the call and never replied, as a frozen one does while its Corrosion keeps it Up. A
+/// Machine that answers within the deadline, even with an error, is no gap.
+pub(crate) fn listing_gap(error: &RpcError) -> bool {
     error.target_unanswered()
-        && (machine.membership == MembershipObservation::Suspect
-            || error.undialed()
-            || dropped_large_packets(machine, error))
 }
 
 /// Whether `machine` left a call unanswered with `error` because the entry's path probes
@@ -610,7 +608,7 @@ impl DeploySnapshot {
             ListingGap {
                 machine: failure.machine_id,
                 kind: ListingGapKind::Failed(&failure.error),
-                silent: machine.is_some_and(|machine| listing_gap(machine, &failure.error)),
+                silent: machine.is_some() && listing_gap(&failure.error),
                 large_packets: machine
                     .is_some_and(|machine| dropped_large_packets(machine, &failure.error)),
             }

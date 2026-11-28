@@ -337,15 +337,17 @@ mod tests {
     }
 
     #[test]
-    fn a_silent_server_is_a_listing_gap_only_when_its_silence_is_explained() {
+    fn a_silent_server_is_a_listing_gap_whatever_its_membership_and_an_answer_never_is() {
         let dropped = Some(PathObservation {
             mtu: 1420,
             large_packets: LargePackets::Dropped,
             lowered: false,
         });
-        let observed = |membership, path| {
-            let mut machine =
-                MachineObservation::new(crate::global_fixtures::machine('a', "web-2"), membership);
+        let observed = |path| {
+            let mut machine = MachineObservation::new(
+                crate::global_fixtures::machine('a', "web-2"),
+                MembershipObservation::Up,
+            );
             machine.path = path;
             machine
         };
@@ -356,40 +358,16 @@ mod tests {
             )
         };
         let gap = crate::deploy::listing_gap;
-        assert!(gap(
-            &observed(MembershipObservation::Suspect, None),
-            &silent()
-        ));
-        assert!(gap(
-            &observed(MembershipObservation::Up, dropped),
-            &silent()
-        ));
-        assert!(!gap(&observed(MembershipObservation::Up, None), &silent()));
-        // A router that couldn't dial it explains the silence, as while its daemon is
-        // stopped (#3396).
+        // An Up Server whose daemon took the call and never replied, as a frozen one does.
+        assert!(gap(&silent()));
         let undialed = silent().undialed_target();
-        assert!(gap(&observed(MembershipObservation::Up, None), &undialed));
-        assert!(gap(
-            &observed(MembershipObservation::Up, dropped),
-            &undialed
-        ));
-        assert!(gap(
-            &observed(MembershipObservation::Suspect, dropped),
-            &undialed
-        ));
+        assert!(gap(&undialed));
         assert_eq!(
-            crate::deploy::unanswered_message(
-                &observed(MembershipObservation::Up, dropped),
-                &undialed
-            ),
+            crate::deploy::unanswered_message(&observed(dropped), &undialed),
             "target Machine RPC timed out",
-            "nor does its notice blame large packets"
+            "a failed dial's notice doesn't blame large packets"
         );
-        let refused = RpcError::conflict("refused");
-        assert!(!gap(
-            &observed(MembershipObservation::Up, dropped),
-            &refused
-        ));
+        assert!(!gap(&RpcError::conflict("refused")));
     }
 
     /// Only a listing left unanswered over a path the entry finds dropping large packets
