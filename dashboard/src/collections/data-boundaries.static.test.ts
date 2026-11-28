@@ -34,6 +34,9 @@ const SPINNER_FILES = {
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/store-automatic-deploys.tsx": "a rule's passkey prompt and its save in flight",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/resources/$resourceId/-components/StoreVolumeCopies.tsx": "a Volume run under way or a requested Refresh now",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/new-branch/StoreNewBranchPanel.tsx": "creating a Branch in the Config Store",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/previews/PreviewPage.tsx": "a preview's Deploy in flight",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/previews/ClosePreviewPage.tsx": "a Close, then the Deploy it made room for, in flight",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/previews/PreviewSettingsPage.tsx": "the preview rule's passkey prompt and its save in flight",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/MirrorNode.tsx": "a copy being made or refreshed",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/VolumeTray.tsx": "a Volume run under way",
   "components/ui/spinner.tsx": "the primitive",
@@ -137,6 +140,8 @@ const HOOK_FILES_NOT_COMMANDS = {
 
 /** UI that waits for the server, and why. Everything else applies writes optimistically. */
 const COMMAND_FILES = {
+  "modules/previews/preview-writes.ts": "a preview's Deploy is refused at the limit or for a newer commit, and a Close deletes the preview's data, so the page shows only what the Store answers",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/previews/PreviewSettingsPage.tsx": "turning previews on or changing where they start signs the preview rule with a passkey first; the sheet stays open to show a refusal and sign again",
   "modules/deploy-approval/approve-deploy.tsx": "an approval page plans the Deploy again and waits on the passkey prompt before it decides; what shows next is the Store's and the Servers' answer, which can't be guessed",
   "modules/deploy-approval/deploy-sheet.tsx": "a Deploy its Servers run only signed waits for its own passkey prompt before it is sent; the sheet stays open to show a refusal and sign again, and a caller opens the Deployment only once the Store has it",
   "modules/deploy-approval/save-sheet.tsx": "a Save that signs the automatic deploy rule waits for its own passkey prompt before it is sent; the sheet stays open to show a refusal and sign again, and a Volume-loss retry carries the same answer",
