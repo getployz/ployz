@@ -108,8 +108,8 @@ pub use pull_request::{
     OnMergeCheck, OnMergeConclusion, OnMergeQuery, OpenPreviewsQuery, OpenPreviewsView,
     OpenPullRequest, PrPlansQuery, PrPlansView, PreviewLink, PreviewOutcome, PreviewPlan,
     PreviewRow, PreviewRuleQuery, PreviewRuleView, PreviewServer, PreviewSettings, PreviewsQuery,
-    PreviewsView, PullRequest, PullRequestQuery,
-    PullRequestRef, PullRequestView, Ride, SetMergeValue, SetPrPlan, Standing, Sweep,
+    PreviewsView, PullRequest, PullRequestQuery, PullRequestRef, PullRequestView, Ride,
+    SetMergeValue, SetPrPlan, Standing, Sweep,
 };
 pub use query::*;
 pub use region::{

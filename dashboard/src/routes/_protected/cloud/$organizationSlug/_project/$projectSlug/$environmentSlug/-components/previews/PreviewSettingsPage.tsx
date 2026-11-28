@@ -124,7 +124,7 @@ function Settings({ view, params, repositoryId, edit }: { view: PreviewsView; pa
           } />}
       </SettingsSection>
       <SettingsSection id="limit" title="Limit">
-        <SettingsRow label="Live previews at once" hint="At the limit, a new deploy waits until someone closes a preview. Previews close when their pull request closes."
+        <SettingsRow label="Live previews at once" hint="At the limit, a new deploy doesn't happen until someone closes a preview. Previews close when their pull request closes."
           commit="form" control={
             <Select value={String(shown.limit)} disabled={draft === null} onValueChange={(next) => { if (next) update({ limit: Number(next) }); }}>
               <SelectTrigger aria-label="Live previews at once"><SelectValue>Up to {shown.limit}</SelectValue></SelectTrigger>

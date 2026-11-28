@@ -170,6 +170,8 @@ function viewRedactions(shows: SupportShows): ViewRedactions {
     open_previews: same,
     // The signed preview rule, as the rule view shows it, and each pull request's preview.
     previews: same,
+    // A preview rule's draft carries each Service's spec, which holds settings: support reads the rest.
+    preview_rule: (view) => ({ ...view, target: [] }),
     // Signed statements name a digest and a signer, never a value.
     versions: same,
     // Support reads where an Environment runs, never the specs its parents ran, which carry settings.

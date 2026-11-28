@@ -2330,7 +2330,10 @@ fn registry_proofs(claimed: &Claimed, proofs: &mut crate::deploy::RuleProofs) {
         for pinned in &preview.pinned {
             let runs = (claimed.intent.target.iter()).any(|spec| spec.name == pinned.name);
             if runs && !proofs.contains(&pinned.name) {
-                proofs.insert(pinned.name.clone(), kept(RuleEvidence::Pinned, &pinned.name));
+                proofs.insert(
+                    pinned.name.clone(),
+                    kept(RuleEvidence::Pinned, &pinned.name),
+                );
             }
         }
         return;
