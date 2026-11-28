@@ -144,18 +144,6 @@ pub(crate) enum RotationFailure {
     Cancelled,
 }
 
-impl RotationFailure {
-    /// Why the copy this rotation didn't finish was left, as a left copy's warning says
-    /// it, naming each Machine by `name`.
-    pub(crate) fn left_reason(self, name: impl Fn(&MachineId) -> String) -> String {
-        match self {
-            Self::Refused(refusal) => refusal.message,
-            Self::NotConfirmed(unconfirmed) => unconfirmed.left_reason(name),
-            Self::Cancelled => "interrupted".into(),
-        }
-    }
-}
-
 impl Unconfirmed {
     /// Why a copy these proxies didn't confirm was left, naming each Machine by `name`.
     pub(crate) fn left_reason(&self, name: impl Fn(&MachineId) -> String) -> String {

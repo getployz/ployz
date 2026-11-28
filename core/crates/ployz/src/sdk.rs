@@ -60,9 +60,7 @@ pub use preview::{
 pub use running::Running;
 pub use store_call::store_call;
 pub(crate) use store_runner::RunLease;
-pub use store_runner::{
-    RetireLeft, RetireOutcome, Sources, retire_old, run_deployment, run_deployment_expecting,
-};
+pub use store_runner::{Sources, run_deployment, run_deployment_expecting};
 pub use volume_start::{VolumeStartFields, VolumeStartProof, VolumeStartQuery, volume_start_proof};
 
 /// Cancellable preparation whose progress is retained until read, within a byte budget.
