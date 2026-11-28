@@ -2,7 +2,6 @@
 //! Cluster they expect, as a Deploy's does, name the Machines they left, and dial any
 //! entry without one.
 
-use super::runner_cancellation::{CutCleanup, cut_cleanup};
 use super::support::*;
 use ployz::connect::ClusterExpectation;
 use ployz::context::Connection;
@@ -20,7 +19,6 @@ use ployz_store::{
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::time::Duration;
 
 fn key(byte: u8) -> SealingPublicKey {
     SealingPublicKey::from_bytes([byte; 32])
@@ -64,57 +62,6 @@ async fn observing_copies_keeps_only_an_entry_of_the_expected_cluster() {
 
     other_server.abort();
     own_server.abort();
-}
-
-#[tokio::test]
-async fn retiring_old_copies_keeps_only_an_entry_of_the_expected_cluster() {
-    let CutCleanup {
-        store,
-        actor,
-        id,
-        server,
-        ..
-    } = cut_cleanup().await;
-    server.abort();
-    // The Deployment left a copy on `entry`; its daemon now answers with no copy there.
-    let entry = DeployService::new(machine('a', "entry")).sealed_with(key(7));
-    let mutations = entry.mutating_rpcs();
-    let (address, server) = listening(entry).await;
-    let other = DeployService::new(machine('b', "other")).sealed_with(key(9));
-    let other_mutations = other.mutating_rpcs();
-    let (other_address, other_server) = listening(other).await;
-    let (entry, other) = (Connection::tcp(address), Connection::tcp(other_address));
-    let retire = |connections, expect| {
-        let retiring = ployz::sdk::retire_old(
-            Arc::clone(&store),
-            actor.clone(),
-            id.clone(),
-            connections,
-            expect,
-        );
-        async {
-            tokio::time::timeout(Duration::from_secs(10), retiring)
-                .await
-                .expect("retiring ends")
-        }
-    };
-
-    refused_for_another_cluster(retire(vec![entry.clone()], expecting(9)).await);
-    assert_eq!(mutations.load(Ordering::SeqCst), 0);
-    let raced = retire(vec![other, entry.clone()], expecting(7))
-        .await
-        .expect("the race leaves the other Cluster's entry for its own");
-    assert_eq!(raced.outcome, ployz::sdk::RetireOutcome::default());
-    assert_eq!(raced.foreign, [machine('b', "other").machine.id]);
-    assert_eq!(other_mutations.load(Ordering::SeqCst), 0);
-    let unexpected = retire(vec![entry], None)
-        .await
-        .expect("without an expectation any entry retires, as before");
-    assert_eq!(unexpected.outcome, ployz::sdk::RetireOutcome::default());
-    assert!(unexpected.foreign.is_empty());
-
-    server.abort();
-    other_server.abort();
 }
 
 const RUN: u64 = 555;

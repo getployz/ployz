@@ -707,7 +707,7 @@ One key a Machine trusts, read from its own record as one list: a Device reads a
 _Avoid_: approver list, roster, key role
 
 **Key Scope**:
-What a Trusted Key may do and where: its caps (Spec, HostReach, Exec, Key, Join) within its kind's ceiling, and its places, the whole Cluster or a list of an Environment's UUID and Namespace with an optional Service by authored ID and name. A person's and a full CLI key always hold their ceiling over the whole Cluster. A CI or agent key holds at most Spec, and an agent key never the whole Cluster.
+What a Trusted Key may do and where: its caps (Spec, HostReach, Exec, Key, Join) within its kind's ceiling, and its places, a non-empty list of an Environment's UUID and Namespace with an optional Service by authored ID and name. A person's and a full CLI key carry no Key Scope and hold their ceiling over the whole Cluster. A CI or agent key holds at most Spec, and only in the places it names: no CI or agent key reaches every Environment. A CI key made before that rule reads as naming no place, and a Machine refuses everything it signs until a person makes a new key with its Environments.
 _Avoid_: permission, role, ACL
 
 **Grant**:

@@ -89,7 +89,6 @@ const setup = Effect.fn(function* () {
           { id: "delete-orphan-mirrors", handler: () => null },
         ]
         : [],
-      { id: "retire-old", handler: () => ({ ids: [] }) },
     ],
   }).execute());
   const backfill = createUptimeMaintenanceFunctions(new Inngest({ id: "uptime-backfill-test" }), (program) =>

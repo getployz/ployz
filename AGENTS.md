@@ -24,7 +24,7 @@
 # Cloud security bar
 
 - In scope: a breach of Ployz Cloud must not let the attacker mass-leak customer secrets or volume and database data, or add a Server or Device. Secrets and volume data reach only containers whose spec a user signed: with a passkey, the full-access CLI, or a verified branch build.
-- Accepted: a compromised Cloud that swaps or reorders what runs without getting data, and a tampered approval page shown to people approving during the breach. Name these once as residuals in the PR body and move on, without review rounds or fixes.
+- Accepted: a compromised Cloud that swaps or reorders what runs without getting data, a tampered approval page shown to people approving during the breach, and Sealed values that log masking misses on their way to Cloud's log history: encoded copies, values under 6 bytes, and values cut by Docker's 16 KiB line split. Name these once as residuals in the PR body and move on, without review rounds or fixes.
 - A security hole is a way to get secrets or volume data out, or to add a Server or Device, from Cloud alone. Point reviewers and swarm testers at this bar, and judge their findings by it.
 
 Draw a diagram where one picture compresses many words: how systems relate, flows, forks. Show UI with screenshots or prototypes, never ASCII.

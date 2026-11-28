@@ -1,6 +1,5 @@
 import type { BuildStatus, BuildView, DeploymentView, FailedAt, NodeOutcome, NodeStatus, RowPhase, ServerRow } from "@ployz/sdk";
 import { buildInterrupted, buildNodeId, nodeLight, shownNodeStatus, type NodeLight, type ShownNodeStatus } from "#/modules/config-store/store-deployments";
-import type { DeploymentCleanupState, DeploymentCleanupView } from "#/modules/config-store/tables";
 import type { RunSearch } from "./run-search";
 
 /** Unix seconds over a node's rows; `finished` stays null until every row finished. */
@@ -12,18 +11,16 @@ export type BuildRunNode = RunNodeBase & { type: "build"; build: BuildView };
 export type OutcomeRunNode = RunNodeBase & { type: NodeOutcome["type"]; node: NodeOutcome };
 /** A runtime Service the Deployment removed that its Environment doesn't hold, so no node of its own targets it. */
 export type UntargetedRunNode = RunNodeBase & { type: "untargeted"; status: ShownNodeStatus; rows: ServerRow[] };
-/** Cloud retiring the old copies the Deployment replaced, after its Services. */
-export type CleanupRunNode = RunNodeBase & { type: "cleanup"; cleanup: DeploymentCleanupView };
 /**
  * One entry of a Deployment as it reports it: a build, a Service, Volume or Config node, or a Service it removed that
- * its Environment doesn't hold; then Cloud's cleanup.
+ * its Environment doesn't hold.
  */
-export type RunNode = BuildRunNode | OutcomeRunNode | UntargetedRunNode | CleanupRunNode;
+export type RunNode = BuildRunNode | OutcomeRunNode | UntargetedRunNode;
 
 /** A build to its Service, or a Service to one depending on it; `animated` while the target runs. */
 export type RunEdge = { id: string; source: string; target: string; animated: boolean };
 
-/** `done` of `total` counts the Deployment's own steps, never Cloud's cleanup, which joins only once the run ended. */
+/** `done` of `total` counts the Deployment's steps. */
 export type RunGraph = { nodes: RunNode[]; edges: RunEdge[]; done: number; total: number };
 
 const buildStatusLabels = {
@@ -130,13 +127,7 @@ export function orderRows(nodes: Placeable[], edges: Pick<RunEdge, "source" | "t
   return rows;
 }
 
-const columnRanks = { build: 0, volume: 1, config: 2, service: 3, untargeted: 4, cleanup: 5 } satisfies Record<RunNode["type"], number>;
-
-const CLEANUP_NODE_ID = "cleanup";
-
-const cleanupLights = {
-  waiting: "deploying", done: "deployed", left_running: "unknown", cancelled: "not_applied", failed: "failed",
-} satisfies Record<DeploymentCleanupState, NodeLight>;
+const columnRanks = { build: 0, volume: 1, config: 2, service: 3, untargeted: 4 } satisfies Record<RunNode["type"], number>;
 
 /** How removing a Service no node targets went, read from its rows since the Store records no outcome for it. */
 function untargetedStatus(rows: ServerRow[]): ShownNodeStatus {
@@ -147,26 +138,14 @@ function untargetedStatus(rows: ServerRow[]): ShownNodeStatus {
   return rows.every((row) => row.state === "completed") ? "removed" : "not_attempted";
 }
 
-export function cleanupLabel(cleanup: DeploymentCleanupView): string {
-  switch (cleanup.state) {
-    case "waiting": return "Waiting";
-    case "done": return "Done";
-    case "left_running": return `Left running on ${[...new Set(cleanup.left.map((left) => left.machine))].join(", ")}`;
-    case "cancelled": return "A newer Deployment took over";
-    case "failed": return "Failed";
-    default:
-      return cleanup.state satisfies never;
-  }
-}
-
 /**
  * A Deployment's Services at their preview depth, each build in the column just before its Service, and Volumes and
  * Configs in the first column, since nothing says which Service mounts them. Edges run from each build to its Service
  * and along the preview's dependencies. A deployed Service reads as running while any of its rows runs, old copies
  * stopping included, and an edge animates while its Service runs. Each Service it removed that its Environment doesn't
- * hold sits unlinked at its own preview depth. Cloud's `cleanup`, when it ran one, follows last.
+ * hold sits unlinked at its own preview depth.
  */
-export function makeRunGraph(deployment: DeploymentView, cleanup: DeploymentCleanupView | null = null): RunGraph {
+export function makeRunGraph(deployment: DeploymentView): RunGraph {
   const runtime = (name: string) => deployment.runtime_names[name] ?? name;
   const runs = (node: NodeOutcome) =>
     node.type === "service" && deployment.in_flight && node.rows.some((row) => row.state === "running");
@@ -191,12 +170,6 @@ export function makeRunGraph(deployment: DeploymentView, cleanup: DeploymentClea
       };
     }),
   ];
-  if (cleanup !== null) {
-    unplaced.push({
-      type: "cleanup", id: CLEANUP_NODE_ID, name: "Cleanup", cleanup, row: 0, light: cleanupLights[cleanup.state],
-      column: Math.max(-1, ...unplaced.map((node) => node.column)) + 1,
-    });
-  }
   const links = [
     ...deployment.builds.map((build) => [buildNodeId(build.service), services.get(runtime(build.service))] as const),
     ...(deployment.preview?.dependencies ?? []).map(([dependency, dependent]) => [services.get(dependency)?.id, services.get(dependent)] as const),
@@ -213,8 +186,7 @@ export function makeRunGraph(deployment: DeploymentView, cleanup: DeploymentClea
     [...edges.values()],
   );
   const nodes = unplaced.map((node) => ({ ...node, row: rows.get(node.id) ?? 0 }));
-  const steps = nodes.filter((node) => node.type !== "cleanup");
-  return { nodes, edges: [...edges.values()], done: steps.filter((node) => node.light === "deployed").length, total: steps.length };
+  return { nodes, edges: [...edges.values()], done: nodes.filter((node) => node.light === "deployed").length, total: nodes.length };
 }
 
 /**

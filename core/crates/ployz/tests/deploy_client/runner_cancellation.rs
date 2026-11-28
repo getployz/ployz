@@ -330,16 +330,16 @@ async fn cancel_during_a_create_records_the_work_it_stopped_cancelled_not_failed
 
 /// A Deployment whose new copy serves on `entry`, cancelled while its cleanup waited
 /// on `edge`'s proxy, so it left `entry`'s old copy running.
-pub(super) struct CutCleanup {
-    pub(super) store: Arc<ConfigStore>,
-    pub(super) actor: Actor,
-    pub(super) id: DeploymentId,
-    pub(super) old_id: ployz_core::ContainerId,
-    pub(super) summary: ployz_store::DeploymentSummary,
-    pub(super) server: tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+struct CutCleanup {
+    store: Arc<ConfigStore>,
+    actor: Actor,
+    id: DeploymentId,
+    old_id: ployz_core::ContainerId,
+    summary: ployz_store::DeploymentSummary,
+    server: tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
 }
 
-pub(super) async fn cut_cleanup() -> CutCleanup {
+async fn cut_cleanup() -> CutCleanup {
     let (store, actor, id) = deployment();
     let (entry, edge) = (machine('a', "entry"), machine('b', "edge"));
     let earlier = serde_json::from_value(serde_json::json!({

@@ -47,10 +47,8 @@ release_notes() {
 \`\`\`sh
 curl -fsSL https://ployz.sh | sh
 curl -fsSL https://ployz.sh | sh -s $version
-brew install getployz/ployz/ployz
+curl -fsSL https://ployz.sh | sh -s beta
 \`\`\`
-
-Homebrew tracks stable only. Beta: \`curl -fsSL https://ployz.sh | sh -s beta\`.
 EOF
 }
 

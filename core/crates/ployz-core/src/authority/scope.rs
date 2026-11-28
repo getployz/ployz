@@ -142,11 +142,14 @@ impl fmt::Display for KeyKind {
     }
 }
 
-/// Where a key's caps hold.
+/// Where a key's caps hold: the Environments, or Services in them, it names.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum KeyPlaces {
-    Cluster,
+    /// A CI key made before every key named its Environments. It reaches none, and a
+    /// Machine refuses everything it signs until a person makes a new key in its place.
+    #[serde(rename = "cluster")]
+    Unscoped,
     /// Never empty.
     Only(#[serde(deserialize_with = "some_places")] Vec<KeyPlace>),
 }
@@ -192,12 +195,11 @@ pub struct KeyScope {
 }
 
 impl KeyScope {
-    /// Whether a key of `kind` may hold this scope: caps within its ceiling, and for an
-    /// agent key, never the whole Cluster.
+    /// Whether a key of `kind` may hold this scope: caps within its ceiling, and the
+    /// places it names.
     #[must_use]
     pub fn fits(&self, kind: KeyKind) -> bool {
-        self.caps.within(kind.ceiling())
-            && !(kind == KeyKind::Agent && self.places == KeyPlaces::Cluster)
+        self.caps.within(kind.ceiling()) && self.places != KeyPlaces::Unscoped
     }
 }
 
@@ -261,30 +263,6 @@ impl Ask<'_> {
             Self::Join | Self::PrivateAccess => CapSet::bit(Cap::Join),
         })
     }
-
-    /// Whether a CI or agent key may sign it at all.
-    const fn scoped(self) -> bool {
-        matches!(self, Self::Version { forgets: false, .. })
-    }
-}
-
-impl KeyPlaces {
-    /// Whether one of these places holds what `ask` reaches: a version's Service with
-    /// every one of `values`, or the whole Cluster for every other statement.
-    fn hold(&self, ask: Ask<'_>, values: &[ValueReach]) -> bool {
-        match (self, ask) {
-            (Self::Cluster, _) => true,
-            (
-                Self::Only(places),
-                Ask::Version {
-                    namespace, service, ..
-                },
-            ) => places
-                .iter()
-                .any(|place| place.holds(namespace, service, values)),
-            (Self::Only(_), _) => false,
-        }
-    }
 }
 
 impl KeyPlace {
@@ -315,38 +293,52 @@ pub(super) enum Denied {
     Values,
     /// The key's grant names no entry for a Volume the spec mounts.
     Volume(DockerVolumeName),
+    /// The key's grant names no places.
+    Unscoped,
 }
 
 /// Whether a key of `kind` may approve `ask`. `grant` is its grant, `None` for a Device or
-/// passkey, which holds its kind's ceiling over the whole Cluster and every Volume.
+/// passkey, which holds its kind's ceiling over the whole Cluster and every Volume. A grant
+/// signs only a version that forgets nothing, of a Service one of its places holds.
 pub(super) fn allows(kind: KeyKind, grant: Option<&Grant>, ask: Ask<'_>) -> Result<(), Denied> {
-    let (caps, places) = match grant {
-        Some(grant) => (grant.scope.caps, &grant.scope.places),
-        None => (CapSet::ALL, &KeyPlaces::Cluster),
-    };
-    let reaches = (kind.whole_cluster() || ask.scoped())
-        && ask.caps().within(caps)
-        && ask.caps().within(kind.ceiling())
-        && !(kind == KeyKind::Agent && *places == KeyPlaces::Cluster)
-        && places.hold(ask, &[]);
-    if !reaches {
+    if !ask.caps().within(kind.ceiling()) {
         return Err(Denied::Out);
     }
-    let Ask::Version { reach, .. } = ask else {
+    let Some(grant) = grant else {
         return Ok(());
     };
-    if !places.hold(ask, &reach.values) {
+    let KeyPlaces::Only(places) = &grant.scope.places else {
+        return Err(Denied::Unscoped);
+    };
+    let Ask::Version {
+        namespace,
+        service,
+        forgets: false,
+        reach,
+        ..
+    } = ask
+    else {
+        return Err(Denied::Out);
+    };
+    let holds = |values: &[ValueReach]| {
+        places
+            .iter()
+            .any(|place| place.holds(namespace, service, values))
+    };
+    if !ask.caps().within(grant.scope.caps) || !holds(&[]) {
+        return Err(Denied::Out);
+    }
+    if !holds(&reach.values) {
         return Err(Denied::Values);
     }
-    if let Some(grant) = grant
-        && let Some(missing) = reach
-            .volumes
-            .iter()
-            .find(|volume| !grant.volumes.contains(volume))
+    match reach
+        .volumes
+        .iter()
+        .find(|volume| !grant.volumes.contains(volume))
     {
-        return Err(Denied::Volume(missing.name.clone()));
+        Some(missing) => Err(Denied::Volume(missing.name.clone())),
+        None => Ok(()),
     }
-    Ok(())
 }
 
 /// One Sealed part a Container opens: the Environment it was sealed in, and whether it

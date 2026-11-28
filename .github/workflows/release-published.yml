@@ -8,7 +8,7 @@ permissions:
   contents: write
   actions: write
 
-# Pointers and Homebrew must see one Publish at a time.
+# Pointers must see one Publish at a time.
 concurrency:
   group: promote-release
   cancel-in-progress: false
@@ -29,4 +29,3 @@ jobs:
           TAG: ${{ github.event.release.tag_name }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}

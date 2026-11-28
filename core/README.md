@@ -9,8 +9,6 @@ of Docker Machines. Ployz Cloud lives in [dashboard/](../dashboard/README.md).
 curl -fsSL https://ployz.sh | sh
 ```
 
-Or with Homebrew: `brew install getployz/ployz/ployz`.
-
 Releases and channels: [docs/RELEASE.md](docs/RELEASE.md). What a daemon keeps
 working across from 0.3.0 on: [DESIGN.md](DESIGN.md#stable-promise).
 
