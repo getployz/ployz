@@ -1374,6 +1374,30 @@ fn a_build_of_a_trusted_pull_request_pins_only_while_its_author_is_a_member() {
 }
 
 #[test]
+fn an_outranked_pin_leaves_the_pull_request_trusted_for_the_newer_attempt() {
+    let (store, who) = shop();
+    publish(&store, &who);
+    let opened = open_pull_request(&store, &who);
+    backend::run(&store, &opened.admitted[0].deployment.id);
+    let id = deploy_pr_5(&store, &who, 1);
+    let web =
+        std::collections::BTreeMap::from([(ServiceName::parse("web").unwrap(), backend::sha(H3))]);
+    store.github_begin(&id, "older").unwrap();
+    store.github_begin(&id, "newer").unwrap();
+
+    // The older attempt read the members while the author was briefly away.
+    let refused = store.pin(&id, &web, &ada_left(), "older").unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Conflict);
+    assert_eq!(
+        standings(&store, &who),
+        [(5, ployz_store::Standing::Trusted)]
+    );
+
+    let pinned = store.pin(&id, &web, &backend::members(), "newer").unwrap();
+    assert_eq!(pinned[0].commit, Some(backend::sha(H3)));
+}
+
+#[test]
 fn a_bots_pull_request_stays_trusted_whoever_the_members_are() {
     let (store, who) = shop();
     publish(&store, &who);

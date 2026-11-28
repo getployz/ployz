@@ -519,11 +519,15 @@ impl ConfigStore {
         trusted: &Trusted,
         attempt: &str,
     ) -> Result<Vec<GitSource>, RpcError> {
-        // A transaction of its own, before the pin's: a refused pin undoes its writes.
+        // A transaction of its own, before the pin's: a pin refused for a commit its pull
+        // request no longer admits keeps the trust it withdrew. Only the attempt that owns
+        // the Deployment withdraws trust: an outranked pin's refusal rolls it back, so it
+        // writes nothing. The pull request locks come before the Environment's.
         self.storage.write(|tx| {
             deployment::load(tx, deployment)?;
             let who = Actor::system(deployment::organization(tx, deployment)?);
-            pull_request::withdraw_trust(tx, &who, trusted)
+            pull_request::withdraw_trust(tx, &who, trusted)?;
+            build::pinner(tx, deployment, attempt).map(drop)
         })?;
         self.storage.write(|tx| {
             build::pin(tx, deployment, commits, trusted, attempt)?;

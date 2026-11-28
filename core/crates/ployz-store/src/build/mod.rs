@@ -21,7 +21,9 @@ pub(crate) use github::{
 pub use proof::{ImageToken, VerifiedClaim};
 pub(crate) use proof::{image_tokens, keep_verified, verified, verified_proof};
 pub use sources::GitSource;
-pub(crate) use sources::{pin, pin_admitted, pin_running, retried, routed, sources, uploads_of};
+pub(crate) use sources::{
+    pin, pin_admitted, pin_running, pinner, retried, routed, sources, uploads_of,
+};
 
 use ployz_core::{RpcError, ServiceName};
 use serde::{Deserialize, Serialize};

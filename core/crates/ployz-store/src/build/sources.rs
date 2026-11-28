@@ -62,6 +62,18 @@ pub(crate) fn pin(
     trusted: &crate::Trusted,
     attempt: &str,
 ) -> Result<(), RpcError> {
+    let stored = pinner(tx, id, attempt)?;
+    pin_stored(tx, &stored, commits, trusted)
+}
+
+/// Deployment `id`, locked, when worker attempt `attempt` may pin its commits: it is in
+/// flight and `attempt` owns it. Otherwise the refusal a pin from `attempt` gets, before
+/// the pin commits anything.
+pub(crate) fn pinner(
+    tx: &mut dyn Tx,
+    id: &DeploymentId,
+    attempt: &str,
+) -> Result<Stored, RpcError> {
     let stored = deployment::locked(tx, id)?;
     if !stored.summary.status.in_flight() {
         return Err(error::conflict(
@@ -72,7 +84,7 @@ pub(crate) fn pin(
     if !super::github::owns(tx, &stored, attempt)? {
         return Err(super::github::newer_attempt(id));
     }
-    pin_stored(tx, &stored, commits, trusted)
+    Ok(stored)
 }
 
 /// Pin the commits of `commits` for Deployment `id` in the write that admits it, before
