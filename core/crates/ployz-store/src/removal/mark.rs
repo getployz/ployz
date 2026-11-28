@@ -46,6 +46,8 @@ pub(crate) enum Closed {
     Synced,
     /// A preview whose Server left: its pull request opens a new one on another.
     Moved,
+    /// A preview someone closed, or one whose deploy failed and was deployed again.
+    Person,
 }
 
 /// What Cloud saw when it last admitted this member: a re-admission needs

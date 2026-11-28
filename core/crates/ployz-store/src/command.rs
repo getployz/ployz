@@ -578,6 +578,16 @@ commands! {
         needs ChangesDeploy
         agent none "A member approves a pull request's code to run with an Environment's secrets."
         => crate::pull_request::approve(tx, who, c, trusted);
+    /// Deploy a member's pull request as a preview now.
+    DeployPreview(crate::DeployPullRequestPreview) -> Automated(crate::Automated)
+        needs ChangesDeploy
+        agent none "No tool deploys previews yet."
+        => crate::pull_request::deploy_preview(tx, who, c, trusted);
+    /// Close one live preview, freeing its place under the cap.
+    ClosePreview(crate::ClosePreview) -> Automated(crate::Automated)
+        needs ChangesDeploy
+        agent none "No tool closes previews yet."
+        => crate::pull_request::close_preview(tx, who, c);
     /// Writes of one Environment applied together, all or none.
     Batch(Batch) -> Batch(Batched)
         needs ChangesStage

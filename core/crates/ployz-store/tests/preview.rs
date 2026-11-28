@@ -1,6 +1,7 @@
 //! Previews under a PR plan's preview rule, on SQLite and on Postgres (see `backend`): a
-//! Parent that can't be production, the cap and its waiting pull requests, the one Server
-//! each preview names, and which previews Cloud closes on a Server.
+//! Parent that can't be production, a deploy on demand refused past the cap, the one
+//! Server each preview names, which previews Cloud closes on a Server, and what each
+//! pull request's preview shows.
 
 use ployz_core::authority::rule::{Builder, GithubSource, RuleEvent, RuleSource, Runner};
 use ployz_core::authority::{AutoDeployRule, PreviewTerms, RuleId, Signed, Signer, SignerKey};
@@ -10,11 +11,12 @@ use ployz_core::{
 };
 use ployz_store::testing::backend;
 use ployz_store::{
-    Actor, Admit, AdmitRemoval, AuthorizedRepository, Automated, ConfigStore, CreateBranch,
-    CreateGitService, CreateProject, DeploymentId, EnvironmentId, EnvironmentName, EnvironmentRef,
-    OpenPreviewsQuery, OrganizationId, PrPlansQuery, ProjectId, ProjectName, PullRequest,
-    RuleQuery, RunEvidence, RunnerId, SealingRecipient, ServiceLineageId, SetEnvironmentProtected,
-    SetPrPlan, ShutDown, Signers, Sweep, SystemEvent, Trusted, Written,
+    Actor, Admit, AdmitRemoval, AuthorizedRepository, Automated, BranchHead, ClosePreview,
+    ConfigStore, CreateBranch, CreateGitService, CreateProject, DeployPullRequestPreview,
+    DeploymentId, EnvironmentId, EnvironmentName, EnvironmentRef, OpenPreviewsQuery,
+    OrganizationId, PrPlansQuery, ProjectId, ProjectName, PullRequest, RuleQuery, RunEvidence,
+    RunnerId, SealingRecipient, ServiceLineageId, SetEnvironmentProtected, SetPrPlan, ShutDown,
+    Signers, Sweep, SystemEvent, Trusted, Written,
 };
 
 const HEAD: &str = "1111111111111111111111111111111111111111";
@@ -287,6 +289,37 @@ fn pull(store: &ConfigStore, who: &Actor, event: PullRequest, trusted: &Trusted)
     observe(store, who, SystemEvent::PullRequest(event), trusted)
 }
 
+/// Deploy pull request `number`'s head [`HEAD`] as a preview, as a member asks.
+fn deploy(
+    store: &ConfigStore,
+    who: &Actor,
+    number: u64,
+    trusted: &Trusted,
+) -> Result<Automated, ployz_core::RpcError> {
+    let asked = DeployPullRequestPreview {
+        repository_id: backend::repo_id(11),
+        number: backend::pr_number(number),
+        head: backend::sha(HEAD),
+    };
+    store.write_trusted(who, &asked, trusted)
+}
+
+/// News of pull request `number` into `target`, then a member's deploy of it.
+fn opened(
+    store: &ConfigStore,
+    who: &Actor,
+    (number, target): (u64, &str),
+    trusted: &Trusted,
+) -> Automated {
+    pull(
+        store,
+        who,
+        facts(number, true, target, "2026-01-01T00:00:00Z"),
+        trusted,
+    );
+    deploy(store, who, number, trusted).unwrap()
+}
+
 /// The preview pull request `number` has now, if any.
 fn preview_of(store: &ConfigStore, who: &Actor, number: u64) -> Option<PreviewNamespace> {
     let name = format!("pr-{number}");
@@ -430,48 +463,52 @@ fn a_preview_rule_is_kept_only_for_a_parent_that_cannot_be_production() {
 fn a_pull_request_into_its_parent_gets_no_preview() {
     let (store, who) = shop();
     previews(&store, &who, 5);
+    let trusted = homes(&['a']);
     let into_parent = facts(5, true, "staging", "2026-01-01T00:00:00Z");
-    let automated = pull(&store, &who, into_parent, &homes(&['a']));
-    assert!(automated.admitted.is_empty());
+    pull(&store, &who, into_parent, &trusted);
+    let refused = deploy(&store, &who, 5, &trusted).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Conflict, "{refused:?}");
     assert_eq!(
-        skipped(&automated),
-        [
-            "This pull request merges into the Environment previews start from, so it gets no preview"
-        ]
+        refused.message,
+        "This pull request merges into the Environment previews start from, so it gets no preview"
     );
     assert_eq!(preview_of(&store, &who, 5), None);
 }
 
 #[test]
-fn previews_past_the_cap_wait_and_the_oldest_opens_when_one_closes() {
+fn nothing_deploys_until_a_member_asks_and_a_deploy_past_the_cap_is_refused() {
     let (store, who) = shop();
     previews(&store, &who, 2);
     let trusted = homes(&['a']);
-    for number in [5, 6, 7, 8] {
-        pull(
+    for number in [5, 6, 7] {
+        let news = pull(
             &store,
             &who,
             facts(number, true, "main", "2026-01-01T00:00:00Z"),
             &trusted,
         );
+        assert!(news.admitted.is_empty(), "{news:?}");
     }
-    let open = |numbers: [u64; 4]| numbers.map(|number| preview_of(&store, &who, number).is_some());
-    assert_eq!(open([5, 6, 7, 8]), [true, true, false, false]);
+    let open = |numbers: [u64; 3]| numbers.map(|number| preview_of(&store, &who, number).is_some());
+    assert_eq!(open([5, 6, 7]), [false, false, false]);
+
+    for number in [5, 6] {
+        let deployed = deploy(&store, &who, number, &trusted).unwrap();
+        assert_eq!(deployed.admitted.len(), 1, "{deployed:?}");
+    }
     let first = preview_of(&store, &who, 5).unwrap();
     assert!(first.homed_on(&machine('a')));
     assert_eq!(
         first.namespace().as_str().get(..19),
         Some("pv-0909090909090909")
     );
+    let again = deploy(&store, &who, 5, &trusted).unwrap();
+    assert!(again.admitted.is_empty(), "a live preview opens once");
 
-    // A push to a waiting pull request still waits.
-    let pushed = pull(
-        &store,
-        &who,
-        facts(8, true, "main", "2026-01-02T00:00:00Z"),
-        &trusted,
-    );
-    assert_eq!(skipped(&pushed), ["Waiting for a preview slot"]);
+    let full = deploy(&store, &who, 7, &trusted).unwrap_err();
+    assert_eq!(full.code, RpcErrorCode::Conflict, "{full:?}");
+    assert_eq!(full.message, "Not deployed: 2 of 2 previews are live");
+    assert_eq!(full.details, serde_json::json!({ "live": 2, "limit": 2 }));
 
     let closed = pull(
         &store,
@@ -479,12 +516,10 @@ fn previews_past_the_cap_wait_and_the_oldest_opens_when_one_closes() {
         facts(5, false, "main", "2026-01-02T00:00:00Z"),
         &trusted,
     );
-    assert_eq!(
-        closed.admitted.len(),
-        1,
-        "the oldest waiting pull request opens"
-    );
-    assert_eq!(open([5, 6, 7, 8]), [false, true, true, false]);
+    assert!(closed.admitted.is_empty(), "a freed place stays free");
+    assert_eq!(open([5, 6, 7]), [false, true, false]);
+    let deployed = deploy(&store, &who, 7, &trusted).unwrap();
+    assert_eq!(deployed.admitted.len(), 1, "{deployed:?}");
 }
 
 #[test]
@@ -492,18 +527,8 @@ fn a_preview_opens_on_the_emptiest_server_and_again_elsewhere_once_its_server_le
     let (store, who) = shop();
     previews(&store, &who, 5);
     let both = homes(&['a', 'b']);
-    pull(
-        &store,
-        &who,
-        facts(5, true, "main", "2026-01-01T00:00:00Z"),
-        &both,
-    );
-    pull(
-        &store,
-        &who,
-        facts(6, true, "main", "2026-01-01T00:00:00Z"),
-        &both,
-    );
+    opened(&store, &who, (5, "main"), &both);
+    opened(&store, &who, (6, "main"), &both);
     let first = preview_of(&store, &who, 5).unwrap();
     assert!(first.homed_on(&machine('a')));
     assert!(preview_of(&store, &who, 6).unwrap().homed_on(&machine('b')));
@@ -560,18 +585,8 @@ fn cloud_learns_which_of_a_servers_previews_are_still_open() {
         "a plan keeps previews"
     );
     let trusted = homes(&['a']);
-    pull(
-        &store,
-        &who,
-        facts(5, true, "main", "2026-01-01T00:00:00Z"),
-        &trusted,
-    );
-    pull(
-        &store,
-        &who,
-        facts(6, true, "main", "2026-01-01T00:00:00Z"),
-        &trusted,
-    );
+    opened(&store, &who, (5, "main"), &trusted);
+    opened(&store, &who, (6, "main"), &trusted);
     let open = preview_of(&store, &who, 5).unwrap().namespace().clone();
     let closed = preview_of(&store, &who, 6).unwrap().namespace().clone();
     pull(
@@ -667,12 +682,7 @@ fn only_a_preview_s_removal_closes_it_on_its_server() {
     previews(&store, &who, 5);
     let trusted = homes(&['a']);
     for number in [5, 6] {
-        let opened = pull(
-            &store,
-            &who,
-            facts(number, true, "main", "2026-01-01T00:00:00Z"),
-            &trusted,
-        );
+        let opened = opened(&store, &who, (number, "main"), &trusted);
         run(&store, &opened.admitted.first().unwrap().deployment.id);
     }
     let fresh = || DeploymentId::parse(uuid::Uuid::new_v4().to_string()).unwrap();
@@ -785,12 +795,7 @@ fn turning_previews_on_keeps_how_an_open_environment_closes() {
 fn a_sweep_that_cannot_reopen_a_member_s_preview_leaves_it_on_its_server() {
     let (store, who) = shop();
     previews(&store, &who, 1);
-    pull(
-        &store,
-        &who,
-        facts(5, true, "main", "2026-01-01T00:00:00Z"),
-        &homes(&['a']),
-    );
+    opened(&store, &who, (5, "main"), &homes(&['a']));
     let first = preview_of(&store, &who, 5).unwrap().namespace().clone();
     // A sweep that says which Servers can hold a preview but not who the members are
     // couldn't open the member's preview again elsewhere.
@@ -809,43 +814,17 @@ fn a_sweep_that_cannot_reopen_a_member_s_preview_leaves_it_on_its_server() {
 }
 
 #[test]
-fn a_freed_slot_passes_over_a_pull_request_that_gets_no_preview() {
+fn a_pull_request_retargeted_into_its_parent_closes_its_preview_and_frees_its_place() {
     let (store, who) = shop();
     previews(&store, &who, 1);
     let trusted = homes(&['a']);
-    for (number, target) in [(5, "main"), (6, "staging"), (7, "main")] {
-        pull(
-            &store,
-            &who,
-            facts(number, true, target, "2026-01-01T00:00:00Z"),
-            &trusted,
-        );
-    }
-
-    let closed = pull(
+    opened(&store, &who, (5, "main"), &trusted);
+    pull(
         &store,
         &who,
-        facts(5, false, "main", "2026-01-02T00:00:00Z"),
+        facts(6, true, "main", "2026-01-01T00:00:00Z"),
         &trusted,
     );
-
-    assert_eq!(closed.admitted.len(), 1, "{:?}", skipped(&closed));
-    assert!(preview_of(&store, &who, 7).is_some());
-}
-
-#[test]
-fn a_pull_request_retargeted_into_its_parent_closes_its_preview_and_frees_the_slot() {
-    let (store, who) = shop();
-    previews(&store, &who, 1);
-    let trusted = homes(&['a']);
-    for number in [5, 6] {
-        pull(
-            &store,
-            &who,
-            facts(number, true, "main", "2026-01-01T00:00:00Z"),
-            &trusted,
-        );
-    }
     let first = preview_of(&store, &who, 5).unwrap().namespace().clone();
 
     let retargeted = pull(
@@ -859,11 +838,9 @@ fn a_pull_request_retargeted_into_its_parent_closes_its_preview_and_frees_the_sl
         namespaces: vec![first],
     };
     assert!(store.read(&who, &asked).unwrap().open.is_empty());
-    assert_eq!(retargeted.admitted.len(), 1, "{:?}", skipped(&retargeted));
-    assert!(
-        preview_of(&store, &who, 6).is_some(),
-        "the waiting one opens"
-    );
+    assert!(retargeted.admitted.is_empty(), "{retargeted:?}");
+    let deployed = deploy(&store, &who, 6, &trusted).unwrap();
+    assert_eq!(deployed.admitted.len(), 1, "{deployed:?}");
 }
 
 #[test]
@@ -871,12 +848,7 @@ fn a_preview_a_sweep_may_have_closed_never_opens_again() {
     let (store, who) = shop();
     previews(&store, &who, 5);
     let trusted = homes(&['a']);
-    let opened = pull(
-        &store,
-        &who,
-        facts(5, true, "main", "2026-01-01T00:00:00Z"),
-        &trusted,
-    );
+    let opened = opened(&store, &who, (5, "main"), &trusted);
     run(&store, &opened.admitted.first().unwrap().deployment.id);
     let asked = OpenPreviewsQuery {
         namespaces: vec![preview_of(&store, &who, 5).unwrap().namespace().clone()],
@@ -929,7 +901,9 @@ fn a_preview_a_sweep_may_have_closed_never_opens_again() {
         facts(5, true, "main", "2026-01-03T00:00:00Z"),
         &trusted,
     );
-    assert_eq!(reopened.admitted.len(), 1, "{:?}", skipped(&reopened));
+    assert!(reopened.admitted.is_empty(), "{reopened:?}");
+    let deployed = deploy(&store, &who, 5, &trusted).unwrap();
+    assert_eq!(deployed.admitted.len(), 1, "{deployed:?}");
     assert!(store.read(&who, &asked).unwrap().open.is_empty());
 }
 
@@ -943,12 +917,7 @@ fn a_close_and_a_retarget_in_one_observation_close_the_preview_once() {
     };
     store.write(&who, &removes).unwrap();
     let trusted = homes(&['a']);
-    pull(
-        &store,
-        &who,
-        facts(5, true, "main", "2026-01-01T00:00:00Z"),
-        &trusted,
-    );
+    opened(&store, &who, (5, "main"), &trusted);
 
     let both = SystemEvent::PullRequest(facts(5, false, "staging", "2026-01-02T00:00:00Z"));
     store
@@ -959,38 +928,37 @@ fn a_close_and_a_retarget_in_one_observation_close_the_preview_once() {
 }
 
 #[test]
-fn a_server_that_returns_a_sweep_later_takes_the_waiting_preview() {
+fn a_preview_no_server_could_take_deploys_again_once_one_returns() {
     let (store, who) = shop();
     previews(&store, &who, 1);
-    pull(
-        &store,
-        &who,
-        facts(5, true, "main", "2026-01-01T00:00:00Z"),
-        &homes(&['a']),
-    );
+    opened(&store, &who, (5, "main"), &homes(&['a']));
     let sweep = || SystemEvent::Sweep(Sweep { now: 0 });
     let none = observe(&store, &who, sweep(), &homes(&[]));
     assert!(none.admitted.is_empty(), "no Server can take it");
+    assert_eq!(
+        skipped(&none),
+        ["No Server can hold a preview: upgrade one, or let one take Services"]
+    );
 
     let back = observe(&store, &who, sweep(), &homes(&['b']));
+    assert!(back.admitted.is_empty(), "nothing opens on its own");
 
-    assert_eq!(back.admitted.len(), 1, "{:?}", skipped(&back));
+    let deployed = deploy(&store, &who, 5, &homes(&['b'])).unwrap();
+    assert_eq!(deployed.admitted.len(), 1, "{deployed:?}");
 }
 
 #[test]
-fn a_merge_into_a_branch_nothing_deploys_closes_the_preview_and_frees_its_slot() {
+fn a_merge_into_a_branch_nothing_deploys_closes_the_preview_and_frees_its_place() {
     let (store, who) = shop();
     previews(&store, &who, 1);
     let trusted = homes(&['a']);
-    for number in [5, 6] {
-        let target = if number == 5 { "feature" } else { "main" };
-        pull(
-            &store,
-            &who,
-            facts(number, true, target, "2026-01-01T00:00:00Z"),
-            &trusted,
-        );
-    }
+    opened(&store, &who, (5, "feature"), &trusted);
+    pull(
+        &store,
+        &who,
+        facts(6, true, "main", "2026-01-01T00:00:00Z"),
+        &trusted,
+    );
     let asked = OpenPreviewsQuery {
         namespaces: vec![preview_of(&store, &who, 5).unwrap().namespace().clone()],
     };
@@ -1000,11 +968,9 @@ fn a_merge_into_a_branch_nothing_deploys_closes_the_preview_and_frees_its_slot()
     let landed = pull(&store, &who, merged, &trusted);
 
     assert!(store.read(&who, &asked).unwrap().open.is_empty());
-    assert_eq!(landed.admitted.len(), 1, "{:?}", skipped(&landed));
-    assert!(
-        preview_of(&store, &who, 6).is_some(),
-        "the waiting one opens"
-    );
+    assert!(landed.admitted.is_empty(), "{landed:?}");
+    let deployed = deploy(&store, &who, 6, &trusted).unwrap();
+    assert_eq!(deployed.admitted.len(), 1, "{deployed:?}");
 }
 
 #[test]
@@ -1012,12 +978,7 @@ fn a_retarget_closes_a_preview_by_the_parent_its_branch_was_made_from() {
     let (store, who) = shop();
     previews(&store, &who, 1);
     let trusted = homes(&['a']);
-    pull(
-        &store,
-        &who,
-        facts(5, true, "main", "2026-01-01T00:00:00Z"),
-        &trusted,
-    );
+    opened(&store, &who, (5, "main"), &trusted);
     let first = preview_of(&store, &who, 5).unwrap().namespace().clone();
     // The plan now starts elsewhere; the preview was made from staging.
     store.write(&who, &plan("production")).unwrap();
@@ -1089,23 +1050,38 @@ fn a_preview_rule_naming_another_signer_than_the_one_who_signed_it_is_refused() 
 }
 
 #[test]
-fn approving_a_stranger_s_pull_request_opens_its_preview() {
+fn only_a_member_s_pull_request_from_the_repository_deploys_as_a_preview() {
     let (store, who) = shop();
     previews(&store, &who, 2);
     let trusted = homes(&['a']);
     let mut stranger = facts(5, true, "main", "2026-01-01T00:00:00Z");
+    stranger.author = "mallory".into();
     stranger.author_id = Some(ployz_store::GithubUserId::parse(999_999).unwrap());
     pull(&store, &who, stranger, &trusted);
-    assert_eq!(preview_of(&store, &who, 5), None, "it waits for a member");
+    let mut fork = facts(6, true, "main", "2026-01-01T00:00:00Z");
+    fork.head_repository_id = Some(backend::repo_id(12));
+    pull(&store, &who, fork, &trusted);
 
+    for (number, author) in [(5, "mallory"), (6, "ada")] {
+        let refused = deploy(&store, &who, number, &trusted).unwrap_err();
+        assert_eq!(refused.code, RpcErrorCode::Conflict, "{refused:?}");
+        assert_eq!(
+            refused.message,
+            format!("Not deployed: {author} isn't in your organization on Ployz")
+        );
+    }
     let approve = ployz_store::ApprovePullRequest {
         repository_id: backend::repo_id(11),
         number: backend::pr_number(5),
         head: backend::sha(HEAD),
     };
     store.write_trusted(&who, &approve, &trusted).unwrap();
-
-    assert!(preview_of(&store, &who, 5).is_some());
+    assert_eq!(
+        preview_of(&store, &who, 5),
+        None,
+        "an approval opens no preview"
+    );
+    assert_eq!(preview_of(&store, &who, 6), None);
 }
 
 /// Set `path` to `value` in `environment`.
@@ -1126,12 +1102,7 @@ fn a_preview_holding_what_its_merge_left_to_land_stays_open_and_gets_no_close() 
     let (store, who) = shop();
     previews(&store, &who, 1);
     let trusted = homes(&['a']);
-    pull(
-        &store,
-        &who,
-        facts(5, true, "feature", "2026-01-01T00:00:00Z"),
-        &trusted,
-    );
+    opened(&store, &who, (5, "feature"), &trusted);
     let opened = preview_of(&store, &who, 5).unwrap().namespace().clone();
     set(&store, &who, "pr-5", "web.env.A", "2");
     // Nothing deploys `feature`, so the change stays for its Parent to take.
@@ -1156,33 +1127,35 @@ fn a_preview_holding_what_its_merge_left_to_land_stays_open_and_gets_no_close() 
 }
 
 #[test]
-fn a_full_cap_costs_the_same_however_many_pull_requests_wait() {
+fn a_deploy_refused_at_a_full_cap_costs_the_same_however_many_pull_requests_are_open() {
     let (store, who) = shop();
     previews(&store, &who, 1);
     let trusted = homes(&['a']);
-    let opened = |number: u64| facts(number, true, "main", "2026-01-01T00:00:00Z");
-    // What news of one more pull request costs once `waiting` wait behind the full cap.
+    let news = |number: u64| {
+        let event = facts(number, true, "main", "2026-01-01T00:00:00Z");
+        pull(&store, &who, event, &trusted)
+    };
+    // What a deploy refused at the full cap costs once `waiting` more pull requests are open.
     let cost = |first: u64, waiting: u64| {
-        for number in first..first + waiting {
-            pull(&store, &who, opened(number), &trusted);
+        for number in first..=first + waiting {
+            news(number);
         }
-        let (asked, statements) =
-            backend::statements(|| pull(&store, &who, opened(first + waiting), &trusted));
-        assert_eq!(skipped(&asked).len(), 1, "it waits: {asked:?}");
+        let (refused, statements) =
+            backend::statements(|| deploy(&store, &who, first + waiting, &trusted));
+        assert_eq!(refused.unwrap_err().code, RpcErrorCode::Conflict);
         statements
     };
-    pull(&store, &who, opened(1), &trusted);
-    assert!(preview_of(&store, &who, 1).is_some());
+    opened(&store, &who, (1, "main"), &trusted);
 
     let few = cost(2, 2);
     let many = cost(10, 40);
 
-    assert_eq!(few, many, "news of a pull request reads each one waiting");
+    assert_eq!(few, many, "a deploy reads no other pull request");
 }
 
-/// Two writes that each close preview `pr-5` as its Server leaves and open the oldest
-/// waiting pull request in its place, queued behind a third holding the plan's
-/// start-from, both finish and keep the cap:
+/// Two writes that each close preview `pr-5` as its Server leaves and open it again on
+/// another, queued behind a third holding the plan's start-from, both finish and keep
+/// the cap:
 /// each takes the plan's previews in the same order. Postgres only: SQLite writers
 /// never overlap.
 #[test]
@@ -1193,14 +1166,13 @@ fn a_sweep_and_news_of_a_pull_request_both_moving_a_preview_both_finish() {
     let url = backend::fresh_url(&tempfile::tempdir().unwrap());
     let (store, who) = shop_in(ConfigStore::open(&url, backend::key()).unwrap());
     previews(&store, &who, 1);
-    for number in [5, 6] {
-        pull(
-            &store,
-            &who,
-            facts(number, true, "main", "2026-01-01T00:00:00Z"),
-            &homes(&['a']),
-        );
-    }
+    opened(&store, &who, (5, "main"), &homes(&['a']));
+    pull(
+        &store,
+        &who,
+        facts(6, true, "main", "2026-01-01T00:00:00Z"),
+        &homes(&['a']),
+    );
     let five = preview_of(&store, &who, 5).unwrap().namespace().clone();
     let mut other = postgres::Client::connect(&url, postgres::NoTls).unwrap();
     let mut held = other.transaction().unwrap();
@@ -1237,7 +1209,7 @@ fn a_sweep_and_news_of_a_pull_request_both_moving_a_preview_both_finish() {
         namespaces: vec![five.clone()],
     };
     assert!(store.read(&who, &asked).unwrap().open.is_empty());
-    // The oldest waiting pull request, 5 again, takes the one slot, on b.
+    // 5 opens again, on b; 6, which nobody deployed, doesn't.
     let reopened = store
         .read(&who, &ployz_store::EnvironmentsQuery::default())
         .unwrap()
@@ -1292,9 +1264,6 @@ fn hold_parent(client: &mut postgres::Client) -> postgres::Transaction<'_> {
     held
 }
 
-/// With a cap of one, news of a second pull request that queued behind a change of the
-/// plan's Parent, while the first's preview was being made, still waits: both lock the
-/// plan, not the Parent the change moves.
 #[test]
 fn a_parent_changed_while_a_preview_opens_lets_no_second_past_the_cap() {
     let Some((store, who, url)) = shop_on_postgres() else {
@@ -1305,6 +1274,11 @@ fn a_parent_changed_while_a_preview_opens_lets_no_second_past_the_cap() {
         preview_rule: Some(rule(&store, &who, (77, "stage2"))),
         ..plan("stage2")
     };
+    let trusted = homes(&['a']);
+    for number in [5, 6] {
+        let event = facts(number, true, "feature", "2026-01-01T00:00:00Z");
+        pull(&store, &who, event, &trusted);
+    }
     let mut gate = postgres::Client::connect(&url, postgres::NoTls).unwrap();
     gate.batch_execute(
         "CREATE FUNCTION pause_pr_5() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN \
@@ -1315,16 +1289,14 @@ fn a_parent_changed_while_a_preview_opens_lets_no_second_past_the_cap() {
          SELECT pg_advisory_lock(54321)",
     )
     .unwrap();
-    let trusted = homes(&['a']);
-    let opened = |number| facts(number, true, "feature", "2026-01-01T00:00:00Z");
 
     let (first, moving, second) = std::thread::scope(|threads| {
-        let first = threads.spawn(|| pull(&store, &who, opened(5), &trusted));
+        let first = threads.spawn(|| deploy(&store, &who, 5, &trusted));
         queued(&url, 1);
         // Each either queues behind the first or finishes before it.
         let moving = threads.spawn(|| save(&store, &who, &moved));
         settled(&url, 2, || moving.is_finished());
-        let second = threads.spawn(|| pull(&store, &who, opened(6), &trusted));
+        let second = threads.spawn(|| deploy(&store, &who, 6, &trusted));
         settled(&url, 3, || second.is_finished());
         gate.batch_execute("SELECT pg_advisory_unlock(54321)")
             .unwrap();
@@ -1335,16 +1307,15 @@ fn a_parent_changed_while_a_preview_opens_lets_no_second_past_the_cap() {
         )
     });
 
-    assert_eq!(first.admitted.len(), 1, "{:?}", skipped(&first));
+    assert_eq!(first.unwrap().admitted.len(), 1);
     moving.unwrap();
-    assert!(second.admitted.is_empty(), "{second:?}");
+    let refused = second.unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Conflict, "{refused:?}");
     assert_eq!(preview_of(&store, &who, 6), None, "the cap holds");
 }
 
-/// A rename of a waiting pull request's branch, queued behind a sweep that opens its
-/// preview from the old name, retracks that preview once the sweep is done.
 #[test]
-fn a_rename_queued_behind_the_sweep_that_opened_its_preview_retracks_it() {
+fn a_rename_queued_behind_the_deploy_that_opened_its_preview_retracks_it() {
     let Some((store, who, url)) = shop_on_postgres() else {
         return;
     };
@@ -1354,25 +1325,24 @@ fn a_rename_queued_behind_the_sweep_that_opened_its_preview_retracks_it() {
         &store,
         &who,
         facts(5, true, "feature", "2026-01-01T00:00:00Z"),
-        &homes(&[]),
+        &trusted,
     );
     let mut renamed = facts(5, true, "feature", "2026-01-03T00:00:00Z");
     renamed.head_branch = backend::git_branch("renamed");
     let mut gate = postgres::Client::connect(&url, postgres::NoTls).unwrap();
     let held = hold_parent(&mut gate);
-    let sweep = SystemEvent::Sweep(Sweep { now: 0 });
     let news = SystemEvent::PullRequest(renamed);
 
-    let (swept, news) = std::thread::scope(|threads| {
-        let swept = threads.spawn(|| store.system(&who.organization, &sweep, &trusted));
+    let (deployed, news) = std::thread::scope(|threads| {
+        let deployed = threads.spawn(|| deploy(&store, &who, 5, &trusted));
         queued(&url, 1);
         let news = threads.spawn(|| store.system(&who.organization, &news, &trusted));
         queued(&url, 2);
         held.rollback().unwrap();
-        (swept.join().unwrap(), news.join().unwrap())
+        (deployed.join().unwrap(), news.join().unwrap())
     });
 
-    assert!(swept.is_ok() && news.is_ok(), "{swept:?} {news:?}");
+    assert!(deployed.is_ok() && news.is_ok(), "{deployed:?} {news:?}");
     assert!(preview_of(&store, &who, 5).is_some());
     let tracking = |branch: &str| {
         backend::count(
@@ -1395,12 +1365,7 @@ fn a_merge_and_the_sweep_settling_its_closed_preview_both_finish() {
     };
     previews(&store, &who, 1);
     let trusted = homes(&['a']);
-    let opened = pull(
-        &store,
-        &who,
-        facts(5, true, "feature", "2026-01-01T00:00:00Z"),
-        &trusted,
-    );
+    let opened = opened(&store, &who, (5, "feature"), &trusted);
     run(&store, &opened.admitted.first().unwrap().deployment.id);
     pull(
         &store,
@@ -1427,22 +1392,13 @@ fn a_merge_and_the_sweep_settling_its_closed_preview_both_finish() {
     assert!(swept.is_ok() && news.is_ok(), "{swept:?} {news:?}");
 }
 
-/// A preview closed for idleness gives its slot to the pull requests waiting, and its
-/// own waits for activity: a title alone isn't any, a push is. It then waits behind
-/// those that waited before it came back, and ahead of any opened after.
 #[test]
-fn a_preview_closed_for_idleness_gives_its_slot_away_until_its_pull_request_moves() {
+fn a_live_preview_never_closes_for_sitting_idle_and_redeploys_on_each_push() {
     let (store, who) = shop();
     previews(&store, &who, 1);
     let trusted = homes(&['a']);
-    let news = |number, open, updated: &str| {
-        pull(&store, &who, facts(number, open, "main", updated), &trusted)
-    };
-    let first = news(5, true, "2026-01-01T00:00:00Z");
+    let first = opened(&store, &who, (5, "main"), &trusted);
     run(&store, &first.admitted.first().unwrap().deployment.id);
-    news(6, true, "2026-01-01T00:00:00Z");
-    news(7, true, "2026-01-01T00:00:00Z");
-    let open = |numbers: [u64; 4]| numbers.map(|number| previewing(&store, &who, number));
 
     let idle = observe(
         &store,
@@ -1451,30 +1407,28 @@ fn a_preview_closed_for_idleness_gives_its_slot_away_until_its_pull_request_move
         &trusted,
     );
 
-    assert_eq!(idle.admitted.len(), 1, "{:?}", skipped(&idle));
-    assert_eq!(open([5, 6, 7, 8]), [false, true, false, false]);
-    let retitled = news(5, true, "2026-01-02T00:00:00Z");
-    assert_eq!(
-        skipped(&retitled),
-        ["Its preview closed while idle: push to it or reopen it to get one again"]
+    assert!(idle.closing.is_empty(), "{idle:?}");
+    assert!(previewing(&store, &who, 5));
+    let next = "2222222222222222222222222222222222222222";
+    let pushed = observe(
+        &store,
+        &who,
+        SystemEvent::BranchHead(BranchHead {
+            repository_id: backend::repo_id(11),
+            branch: backend::git_branch("search-5"),
+            base: None,
+            head: Some(backend::sha(next)),
+            changed: None,
+        }),
+        &trusted,
     );
-    let mut pushed = facts(5, true, "main", "2026-01-03T00:00:00Z");
-    pushed.head = backend::sha("2222222222222222222222222222222222222222");
-    let pushed = pull(&store, &who, pushed, &trusted);
-    assert_eq!(skipped(&pushed), ["Waiting for a preview slot"]);
-    news(8, true, "2026-01-03T00:00:00Z");
-
-    news(6, false, "2026-01-04T00:00:00Z");
+    let redeployed = pushed.admitted.first().map(|admitted| &admitted.deployment);
     assert_eq!(
-        open([5, 6, 7, 8]),
-        [false, false, true, false],
-        "7 waited first"
-    );
-    news(7, false, "2026-01-04T00:00:00Z");
-    assert_eq!(
-        open([5, 6, 7, 8]),
-        [true, false, false, false],
-        "8 opened after"
+        redeployed
+            .and_then(|deployment| deployment.push.as_ref())
+            .map(|push| push.head.as_str()),
+        Some(next),
+        "{pushed:?}"
     );
 }
 
@@ -1530,12 +1484,7 @@ fn a_sweep_deleting_a_project_and_a_change_to_its_plan_both_finish() {
     };
     previews(&store, &who, 1);
     let trusted = homes(&['a']);
-    let opened = pull(
-        &store,
-        &who,
-        facts(5, true, "feature", "2026-01-01T00:00:00Z"),
-        &trusted,
-    );
+    let opened = opened(&store, &who, (5, "feature"), &trusted);
     run(&store, &opened.admitted.first().unwrap().deployment.id);
     let remove = |version: Option<String>| ployz_store::Remove {
         project: ProjectName::parse("shop").unwrap(),
@@ -1648,12 +1597,7 @@ fn cancelling_a_project_removal_s_deployment_and_the_sweep_both_finish() {
     };
     previews(&store, &who, 1);
     let trusted = homes(&['a']);
-    let opened = pull(
-        &store,
-        &who,
-        facts(5, true, "feature", "2026-01-01T00:00:00Z"),
-        &trusted,
-    );
+    let opened = opened(&store, &who, (5, "feature"), &trusted);
     run(&store, &opened.admitted.first().unwrap().deployment.id);
     let remove = |version: Option<String>| ployz_store::Remove {
         project: ProjectName::parse("shop").unwrap(),
@@ -1709,4 +1653,95 @@ fn cancelling_a_project_removal_s_deployment_and_the_sweep_both_finish() {
         cancelled.is_ok() && swept.is_ok(),
         "{cancelled:?} {swept:?}"
     );
+}
+
+#[test]
+fn a_deploy_of_a_head_the_pull_request_moved_past_is_refused() {
+    let (store, who) = shop();
+    previews(&store, &who, 1);
+    let trusted = homes(&['a']);
+    let mut pushed = facts(5, true, "main", "2026-01-01T00:00:00Z");
+    pushed.head = backend::sha("2222222222222222222222222222222222222222");
+    pull(&store, &who, pushed, &trusted);
+
+    let refused = deploy(&store, &who, 5, &trusted).unwrap_err();
+
+    assert_eq!(refused.code, RpcErrorCode::Conflict, "{refused:?}");
+    assert_eq!(
+        refused.message,
+        "This pull request has a newer commit. Reload to deploy it."
+    );
+    assert_eq!(preview_of(&store, &who, 5), None);
+}
+
+#[test]
+fn closing_a_preview_frees_its_place_and_its_pull_request_can_deploy_again() {
+    let (store, who) = shop();
+    previews(&store, &who, 1);
+    let trusted = homes(&['a']);
+    let first = opened(&store, &who, (5, "main"), &trusted);
+    run(&store, &first.admitted.first().unwrap().deployment.id);
+    let was = preview_of(&store, &who, 5).unwrap();
+    pull(
+        &store,
+        &who,
+        facts(6, true, "main", "2026-01-01T00:00:00Z"),
+        &trusted,
+    );
+    assert!(
+        deploy(&store, &who, 6, &trusted).is_err(),
+        "the cap is full"
+    );
+
+    let close = ClosePreview {
+        project: None,
+        environment: EnvironmentName::parse("pr-5").unwrap(),
+    };
+    store.write(&who, &close).unwrap();
+
+    let closed = OpenPreviewsQuery {
+        namespaces: vec![was.namespace().clone()],
+    };
+    assert!(store.read(&who, &closed).unwrap().open.is_empty());
+    let swept = observe(&store, &who, SystemEvent::Sweep(Sweep { now: 0 }), &trusted);
+    assert!(
+        swept
+            .closing
+            .iter()
+            .any(|closing| closing.name.as_str() == "pr-5"),
+        "Cloud takes it off its Server: {swept:?}"
+    );
+    assert_eq!(deploy(&store, &who, 6, &trusted).unwrap().admitted.len(), 1);
+    let close_six = ClosePreview {
+        environment: EnvironmentName::parse("pr-6").unwrap(),
+        ..close
+    };
+    store.write(&who, &close_six).unwrap();
+    let again = deploy(&store, &who, 5, &trusted).unwrap();
+    assert_eq!(again.admitted.len(), 1, "{again:?}");
+    assert!(previewing(&store, &who, 5));
+}
+
+#[test]
+fn a_preview_whose_deploy_failed_deploys_again_as_a_new_one() {
+    let (store, who) = shop();
+    previews(&store, &who, 1);
+    let trusted = homes(&['a']);
+    let failed = opened(&store, &who, (5, "main"), &trusted);
+    let id = &failed.admitted.first().unwrap().deployment.id;
+    let runner = RunnerId::parse("runner").unwrap();
+    store.claim(id, &runner).unwrap();
+    store
+        .record(id, &runner, RunEvidence::NotExecuted("no Servers".into()))
+        .unwrap();
+    let was = preview_of(&store, &who, 5).unwrap();
+
+    let again = deploy(&store, &who, 5, &trusted).unwrap();
+
+    assert_eq!(again.admitted.len(), 1, "{again:?}");
+    let closed = OpenPreviewsQuery {
+        namespaces: vec![was.namespace().clone()],
+    };
+    assert!(store.read(&who, &closed).unwrap().open.is_empty());
+    assert!(previewing(&store, &who, 5));
 }

@@ -991,6 +991,7 @@ pub(crate) fn listed(
                     Closed::Idle => RemovedBecause::Idle,
                     Closed::Synced => RemovedBecause::Synced,
                     Closed::Moved => RemovedBecause::Moved,
+                    Closed::Person => RemovedBecause::Removed,
                 },
                 _ => RemovedBecause::Removed,
             },

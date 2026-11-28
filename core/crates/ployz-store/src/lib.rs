@@ -104,10 +104,10 @@ pub use permission::Permission;
 /// A Sync view row's id, as Sync, Take, Never sync and Hold name it.
 pub use ployz_core::config::RowId;
 pub use pull_request::{
-    ApprovePullRequest, MergeRow, OnMerge, OnMergeCheck, OnMergeConclusion, OnMergeQuery,
-    OpenPreviewsQuery, OpenPreviewsView, OpenPullRequest, PrPlansQuery, PrPlansView, PreviewPlan,
-    PullRequest, PullRequestQuery, PullRequestRef, PullRequestView, Ride, SetMergeValue, SetPrPlan,
-    Standing, Sweep,
+    ApprovePullRequest, ClosePreview, DeployPullRequestPreview, MergeRow, OnMerge, OnMergeCheck,
+    OnMergeConclusion, OnMergeQuery, OpenPreviewsQuery, OpenPreviewsView, OpenPullRequest,
+    PrPlansQuery, PrPlansView, PreviewPlan, PullRequest, PullRequestQuery, PullRequestRef,
+    PullRequestView, Ride, SetMergeValue, SetPrPlan, Standing, Sweep,
 };
 pub use query::*;
 pub use region::{

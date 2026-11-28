@@ -1,9 +1,11 @@
-//! Previews: a PR plan's preview rule, which a Device or a passkey signed, gives each pull
-//! request a preview of the plan's start-from Environment, its Parent, in a preview
-//! Namespace naming the one Server it runs on. The Store keeps the rule only for a Parent
-//! that can't be production, opens at most the plan's cap of previews and holds the rest
-//! until one closes, and opens a preview again on another Server once its own leaves.
-//! Every Server checks the rule and the Namespace itself; nothing here admits a Container.
+//! Previews: a PR plan's preview rule, which a Device or a passkey signed, lets a member
+//! deploy a pull request as a preview of the plan's start-from Environment, its Parent, in
+//! a preview Namespace naming the one Server it runs on. Nothing opens until someone asks
+//! ([`DeployPullRequestPreview`]). The Store keeps the rule only for a Parent that can't be
+//! production, refuses a deploy past the plan's cap, and opens a preview again on another
+//! Server once its own leaves. A preview closes when its pull request closes or someone
+//! closes it ([`ClosePreview`]), never for sitting idle. Every Server checks the rule and
+//! the Namespace itself; nothing here admits a Container.
 
 use std::num::NonZeroU8;
 
@@ -15,11 +17,31 @@ use super::*;
 /// The most previews a plan keeps open at once until someone sets another.
 pub(crate) const DEFAULT_CAP: NonZeroU8 = NonZeroU8::new(5).expect("5 is not 0");
 
-/// Why an admitted pull request has no preview yet.
-pub(crate) const WAITING: &str = "Waiting for a preview slot";
+/// Why a deploy found no preview rule to open one under.
+pub(crate) const OFF: &str = "Previews are off for this repository";
 
-/// Why a pull request whose preview closed for idleness got none.
-const RESTING: &str = "Its preview closed while idle: push to it or reopen it to get one again";
+/// Deploy a pull request as a preview now, in each Project whose plan keeps a preview rule
+/// for its repository: only a member's, from the repository itself.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct DeployPullRequestPreview {
+    pub repository_id: RepositoryId,
+    pub number: PullRequestNumber,
+    /// The head the person saw: refused once the pull request moved on.
+    pub head: CommitSha,
+}
+
+/// Close one live preview, freeing its place under the cap. Its pull request can deploy
+/// again later, as a new preview with empty databases.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ClosePreview {
+    /// The Project; omitted means the Organization's only Project.
+    #[serde(default)]
+    pub project: Option<ProjectName>,
+    /// The preview's Environment.
+    pub environment: EnvironmentName,
+}
 
 /// A plan's preview rule as stored, with its cap.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -182,8 +204,8 @@ pub(super) fn fit(
 }
 
 /// The preview `event` opens under the rule `terms`, on the Server with the fewest of
-/// the `live` previews among the ones `trusted` says can hold one. Refused, so the pull
-/// request waits, while it merges into the plan's Parent or no Server can hold it.
+/// the `live` previews among the ones `trusted` says can hold one. Refused while it
+/// merges into the plan's Parent or no Server can hold it.
 fn slot(
     tx: &mut dyn Tx,
     (project, plan, terms): (&crate::id::ProjectId, &Stored, &AutoDeployRule),
@@ -348,44 +370,282 @@ impl Locked {
 /// Bring the previews `locked` holds to what the recorded facts say. Each one that no
 /// longer fits closes once: its pull request closed with nothing a merge holds open, it
 /// now merges into the Parent its Branch was made from, or `trusted` no longer lists its
-/// home. Then each plan whose start-from is held opens its waiting pull requests, oldest
-/// first, while the cap leaves room and a home can take one. Why `asked`, the pull
-/// request the caller is about, got no preview goes in `automated`. Every change to a
-/// pull request's facts or to the Servers ends here. A preview or plan that appeared
-/// after `locked` was read waits for the next one.
+/// home. One that closed for its home opens again on another Server, as it would on its
+/// member's deploy; nothing else opens here, and a freed place stays free until someone
+/// deploys. Every change to a pull request's facts or to the Servers ends here. A
+/// preview or plan that appeared after `locked` was read waits for the next one.
 pub(super) fn reconcile(
     tx: &mut dyn Tx,
     who: &Actor,
     locked: &Locked,
-    asked: Option<PullRequestNumber>,
     trusted: &Trusted,
     automated: &mut Automated,
 ) -> Result<(), RpcError> {
+    let mut moved = Vec::new();
     for open in live(tx, who)? {
         if !locked.previews.contains(&open.environment) {
             continue;
         }
-        if let Some(because) = unfit(tx, who, &open, trusted)? {
-            crate::removal::close(tx, who, &open.environment, because, automated)?;
+        let Some(because) = unfit(tx, who, &open, trusted)? else {
+            continue;
+        };
+        // Read first: a close of one that never ran deletes it at once.
+        let pr = crate::pr_environment::of(tx, &open.environment)?;
+        crate::removal::close(tx, who, &open.environment, because, automated)?;
+        if let (crate::removal::mark::Closed::Moved, Some(pr)) = (because, pr) {
+            moved.push((open.project, pr));
         }
     }
+    if moved.is_empty() {
+        return Ok(());
+    }
     let mut live = live(tx, who)?;
-    for (project, repository_id, plan) in plans(tx, who, locked.plans.repository)? {
-        let held = locked
-            .plans
-            .keys
-            .contains(&(project.clone(), repository_id));
-        if held
-            && plan
-                .start_from
-                .as_ref()
-                .is_some_and(|start| locked.start_froms.contains(start))
+    for (project, repository_id, plan) in held(tx, who, locked)? {
+        for (_, pr) in moved
+            .iter()
+            .filter(|(has, pr)| *has == project && pr.repository_id == repository_id)
         {
-            let at = (&project, repository_id, &plan);
-            fill(tx, who, at, &mut live, asked, trusted, automated)?;
+            let Some(event) = record(tx, who, repository_id, pr.number)?.map(|r| r.facts()) else {
+                continue;
+            };
+            let opened = match trusts(&event, trusted.members.as_deref()) {
+                true => {
+                    let at = (&project, repository_id, &plan);
+                    open_one(tx, who, at, (&mut live, &event), trusted, automated)
+                }
+                false => Err(not_member(&event.author)),
+            };
+            let Err(refused) = opened else {
+                continue;
+            };
+            let Some(start) = &plan.start_from else {
+                return Err(refused);
+            };
+            automation::record(start, Err(refused), automated)?;
         }
     }
     Ok(())
+}
+
+/// Each plan of `locked` it holds the lock of, with its start-from.
+fn held(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    locked: &Locked,
+) -> Result<Vec<(crate::id::ProjectId, RepositoryId, Stored)>, RpcError> {
+    Ok(plans(tx, who, locked.plans.repository)?
+        .into_iter()
+        .filter(|(project, repository_id, plan)| {
+            locked
+                .plans
+                .keys
+                .contains(&(project.clone(), *repository_id))
+                && plan
+                    .start_from
+                    .as_ref()
+                    .is_some_and(|start| locked.start_froms.contains(start))
+        })
+        .collect())
+}
+
+/// Open `event`'s preview now in each Project whose plan `locked` holds keeps a preview
+/// rule, as a member asked. Refused, opening none, while previews are off, it isn't a
+/// member's pull request from the repository itself, or a plan's cap is full.
+pub(super) fn deploy(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    locked: &Locked,
+    event: &PullRequest,
+    trusted: &Trusted,
+    automated: &mut Automated,
+) -> Result<(), RpcError> {
+    let planned: Vec<_> = held(tx, who, locked)?
+        .into_iter()
+        .filter(|(_, _, plan)| plan.preview.is_some())
+        .collect();
+    if planned.is_empty() {
+        return Err(error::conflict(OFF, json!({})));
+    }
+    if !trusts(event, trusted.members.as_deref()) {
+        return Err(not_member(&event.author));
+    }
+    let mut live = live(tx, who)?;
+    for (project, repository_id, plan) in &planned {
+        let at = (project, *repository_id, plan);
+        open_one(tx, who, at, (&mut live, event), trusted, automated)?;
+    }
+    Ok(())
+}
+
+/// Why a pull request by `author` gets no preview: a member's, from the repository
+/// itself, deploys.
+fn not_member(author: &str) -> RpcError {
+    error::conflict(
+        format!("Not deployed: {author} isn't in your organization on Ployz"),
+        json!({ "author": author }),
+    )
+}
+
+/// Open `event`'s preview under `plan` and admit its first Deployment, unless one is open
+/// there. One whose last deploy failed with nothing live closes, and a new one opens in
+/// its place. Refused while previews are off, the cap is full counting the `live`
+/// previews that hold a place, or no Server can hold it.
+fn open_one(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    (project, repository_id, plan): (&crate::id::ProjectId, RepositoryId, &Stored),
+    (live, event): (&mut Vec<Live>, &PullRequest),
+    trusted: &Trusted,
+    automated: &mut Automated,
+) -> Result<(), RpcError> {
+    let off = || error::conflict(OFF, json!({}));
+    let Some(preview) = plan.preview.as_ref() else {
+        return Err(off());
+    };
+    let terms = fit(tx, who, (project, plan, repository_id), &preview.rule)?;
+    if terms.ended {
+        return Err(off());
+    }
+    let Some(start) = plan
+        .start_from
+        .as_ref()
+        .map(|id| start_from(tx, id))
+        .transpose()?
+        .flatten()
+    else {
+        return Err(off());
+    };
+    let mut holding = 0;
+    for open in live
+        .iter()
+        .filter(|open| open.project == *project && open.repository_id == repository_id)
+    {
+        let shown = shown(tx, &open.environment)?;
+        let theirs = crate::pr_environment::of(tx, &open.environment)?
+            .is_some_and(|pr| pr.number == event.number);
+        match (theirs, shown) {
+            (true, Shown::Failed(_)) => {
+                let because = crate::removal::mark::Closed::Person;
+                crate::removal::close(tx, who, &open.environment, because, automated)?;
+            }
+            (true, Shown::Deploying(..) | Shown::Live) => return Ok(()),
+            (false, Shown::Failed(_)) => {}
+            (false, Shown::Deploying(..) | Shown::Live) => holding += 1,
+        }
+    }
+    let limit = usize::from(preview.cap.get());
+    if holding >= limit {
+        return Err(error::conflict(
+            format!("Not deployed: {holding} of {limit} previews are live"),
+            json!({ "live": holding, "limit": limit }),
+        ));
+    }
+    trusted.runnable()?;
+    let deployed = crate::storage::attempt(tx, |tx| {
+        let namespace = slot(tx, (project, plan, &terms), event, (live, trusted))?;
+        create(tx, who, &start, plan, (event, trusted, Some(&namespace)))
+    })?;
+    *live = self::live(tx, who)?;
+    automation::record(&start.summary.id, Ok(deployed), automated)?;
+    Ok(())
+}
+
+/// What a preview shows: what its Deployments came to.
+pub(super) enum Shown {
+    /// Its latest Deployment hasn't ended: it, with the head it deploys when a push
+    /// admitted it.
+    Deploying(crate::DeploymentId, Option<CommitSha>),
+    /// One of its latest Deployments applied, and the latest ended.
+    Live,
+    /// None of its latest Deployments applied, and the latest ended: why.
+    Failed(String),
+}
+
+/// What preview `environment` shows. Only a deploying or live one holds a place under the
+/// cap: one whose deploy failed runs nothing.
+pub(super) fn shown(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<Shown, RpcError> {
+    let latest = deployment::history(tx, environment, 20)?;
+    let applied = latest
+        .iter()
+        .any(|deployment| deployment.status == deployment::DeploymentStatus::Applied);
+    let Some(latest) = latest.into_iter().next() else {
+        // Its first Deployment may still wait for its commit's CI.
+        let rows = tx.query(
+            &format!(
+                "SELECT id, push_head FROM config_deployment \
+                 WHERE environment_id = ?1 AND status = '{}' ORDER BY admitted DESC LIMIT 1",
+                deployment::DeploymentStatus::WaitingForCi.as_str()
+            ),
+            &[environment.as_str().into()],
+        )?;
+        return Ok(match rows.first() {
+            Some(row) => Shown::Deploying(
+                row.parse(0, "Deployment ID")?,
+                row.optional_text(1)?.map(CommitSha::parse).transpose()?,
+            ),
+            None => Shown::Failed(DIDNT_FINISH.to_owned()),
+        });
+    };
+    if !latest.status.ended() {
+        return Ok(Shown::Deploying(
+            latest.id,
+            latest.push.map(|push| push.head),
+        ));
+    }
+    if applied {
+        return Ok(Shown::Live);
+    }
+    Ok(Shown::Failed(match latest.outcome {
+        Some(
+            deployment::Outcome::Executed {
+                reason: Some(reason),
+                ..
+            }
+            | deployment::Outcome::NotExecuted { reason, .. },
+        ) => reason,
+        _ => DIDNT_FINISH.to_owned(),
+    }))
+}
+
+/// Why a preview whose deploy ended without a reason runs nothing.
+const DIDNT_FINISH: &str = "The deploy didn't finish";
+
+/// Close preview `asked` as the person asked: it comes off its Server, and its pull
+/// request can deploy again. Locks its pull request's row, then the repository's plans,
+/// then the preview, as a deploy of it does.
+pub(crate) fn close(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    asked: &ClosePreview,
+) -> Result<Automated, RpcError> {
+    let at = EnvironmentRef {
+        project: asked.project.clone(),
+        environment: Some(asked.environment.clone()),
+    };
+    let id = scope::environment(tx, who, &at)?.summary.id;
+    let not_one = || {
+        error::invalid(
+            format!("{} isn't a preview", asked.environment),
+            json!({ "environment": asked.environment }),
+        )
+    };
+    if of(tx, &id)?.is_none() {
+        return Err(not_one());
+    }
+    let Some(pr) = crate::pr_environment::of(tx, &id)? else {
+        return Err(not_one());
+    };
+    lock(tx, who, pr.repository_id, pr.number)?;
+    let plans = lock_plans(tx, who, Some(pr.repository_id))?;
+    let locked = Locked::of(tx, who, plans)?;
+    scope::lock_all(tx, locked.ids().chain([id.clone()]))?;
+    let mut automated = Automated::default();
+    if live(tx, who)?.iter().any(|open| open.environment == id) {
+        let because = crate::removal::mark::Closed::Person;
+        crate::removal::close(tx, who, &id, because, &mut automated)?;
+    }
+    automated.checks.push(pr);
+    Ok(automated)
 }
 
 /// `who`'s PR plans, of `repository` alone when it names one.
@@ -441,124 +701,6 @@ fn unfit(
         return Ok(Some(Closed::Moved));
     }
     Ok(None)
-}
-
-/// Open previews under `plan` for its open pull requests that have none, oldest first and
-/// each back from rest where it came back ([`Rest::Back`]), while its cap leaves room among
-/// the `live` previews. The cap and the rule are read once, so a full cap costs nothing per
-/// waiting pull request. One that needs approval, a bot's the plan leaves out, or one at
-/// rest since its preview closed for idleness, waits for news of it.
-fn fill(
-    tx: &mut dyn Tx,
-    who: &Actor,
-    (project, repository_id, plan): (&crate::id::ProjectId, RepositoryId, &Stored),
-    live: &mut Vec<Live>,
-    asked: Option<PullRequestNumber>,
-    trusted: &Trusted,
-    automated: &mut Automated,
-) -> Result<(), RpcError> {
-    let Some(preview) = plan.preview.as_ref().filter(|_| plan.enabled) else {
-        return Ok(());
-    };
-    let held = live
-        .iter()
-        .filter(|open| open.project == *project && open.repository_id == repository_id)
-        .count();
-    let mut free = usize::from(preview.cap.get()).saturating_sub(held);
-    if free == 0 && asked.is_none() {
-        return Ok(());
-    }
-    let Some(start) = plan
-        .start_from
-        .as_ref()
-        .map(|id| start_from(tx, id))
-        .transpose()?
-        .flatten()
-    else {
-        return Ok(());
-    };
-    let mut terms = None;
-    let rows = tx.query(
-        &format!(
-            "SELECT number, {RECORD} FROM config_pull_request \
-             WHERE organization_id = ?1 AND repository_id = ?2 AND updated <> '' \
-             AND merged IS NULL ORDER BY number"
-        ),
-        &[who.organization.as_str().into(), repository_id.into()],
-    )?;
-    let mut queue = Vec::new();
-    for row in rows {
-        let number: PullRequestNumber = row.number(0, "pull request")?;
-        if free == 0 && asked != Some(number) {
-            continue;
-        }
-        let record = Record::read(&row, 1)?;
-        let place = match record.phase.rest() {
-            Some(Rest::Back { after, since }) => (after, true, since, number),
-            Some(Rest::Idle) | None => (number, false, 0, number),
-        };
-        queue.push((place, record));
-    }
-    queue.sort_by_key(|(place, _)| *place);
-    for ((.., number), record) in queue {
-        let event = record.facts();
-        if !matches!(record.phase, Phase::Open { .. })
-            || (event.bot && !plan.include_bots)
-            || current(tx, who, repository_id, number, false)?
-                .iter()
-                .any(|(_, has)| has == project)
-        {
-            continue;
-        }
-        let deployed =
-            if !record
-                .phase
-                .admits(&event.head, &record.facts, trusted.members.as_deref())
-            {
-                Ok(Some(automation::Deploy::NeedsApproval))
-            } else if trusted.runnable().is_err() {
-                Ok(Some(automation::Deploy::NoServers))
-            } else if record.phase.rest() == Some(Rest::Idle) {
-                Err(error::conflict(RESTING, json!({})))
-            } else if free == 0 {
-                Err(error::conflict(WAITING, json!({})))
-            } else {
-                let terms = match &terms {
-                    Some(terms) => terms,
-                    None => terms.insert(
-                        fit(tx, who, (project, plan, repository_id), &preview.rule).and_then(
-                            |terms| match terms.ended {
-                                true => Err(error::conflict(
-                                    "Previews are off for this repository",
-                                    json!({}),
-                                )),
-                                false => Ok(terms),
-                            },
-                        ),
-                    ),
-                };
-                terms.clone().and_then(|terms| {
-                    crate::storage::attempt(tx, |tx| {
-                        let at = (project, plan, &terms);
-                        let namespace = slot(tx, at, &event, (live, trusted))?;
-                        create(tx, who, &start, plan, (&event, trusted, Some(&namespace)))
-                    })
-                })
-            };
-        let opened = matches!(deployed, Ok(Some(automation::Deploy::Admitted(_))));
-        if opened {
-            free -= 1;
-            *live = self::live(tx, who)?;
-        }
-        if opened || asked == Some(number) {
-            automation::record(&start.summary.id, deployed, automated)?;
-        } else if let Err(error) = deployed
-            && !error::skippable(&error)
-        {
-            return Err(error);
-        }
-    }
-    Ok(())
 }
 
 /// `environment`'s preview, when it opened as one: what it closes as, whatever its plan
