@@ -180,15 +180,6 @@ async fn remove_cloud_server(
     leave_cloud_server("rm", service, server, env, extra).await
 }
 
-async fn forget_cloud_server(
-    service: DiscoveryService,
-    server: &str,
-    env: &[(&str, &str)],
-    extra: &[&str],
-) -> (std::process::Output, DiscoveryService) {
-    leave_cloud_server("forget", service, server, env, extra).await
-}
-
 async fn leave_cloud_server(
     verb: &str,
     service: DiscoveryService,
