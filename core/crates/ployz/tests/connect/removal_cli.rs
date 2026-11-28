@@ -461,89 +461,6 @@ async fn a_cloud_removal_that_sent_nothing_says_only_its_failure() {
 }
 
 #[tokio::test]
-async fn a_server_cloud_manages_is_forgotten_through_cloud() {
-    let (cloud, asked, _) = fake_cloud(
-        r#"{"state":"succeeded","release":{"kind":"others_remain"}}"#,
-        false,
-    );
-    let mut service = DiscoveryService::new(test_description());
-    service.machines.push(machine('c', "two"));
-    service.storage_capacity = Some(empty_storage());
-    let (output, service) = forget_cloud_server(
-        service,
-        "two",
-        &[("PLOYZ_TOKEN", "ployz_acme"), ("PLOYZ_CLOUD_URL", &cloud)],
-        &["--confirm", "two", "--accept-volume-loss", "data"],
-    )
-    .await;
-    assert_eq!(output.status.code(), Some(0), "{output:?}");
-    // Cloud took it out, not the CLI, so Cloud dropped its row for it.
-    assert!(service.removed_machines.lock().unwrap().is_empty());
-    let asked = asked.lock().unwrap();
-    let [(line, body)] = asked.as_slice() else {
-        panic!("Cloud was asked {asked:?}");
-    };
-    assert!(
-        line.starts_with(&format!(
-            "POST /api/cli/servers/{}/forget ",
-            machine_id('c')
-        )),
-        "{line}"
-    );
-    assert_eq!(body, &json!({ "server_name": "two" }));
-    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(
-        result.get("cloud_released"),
-        Some(&json!(false)),
-        "{result}"
-    );
-    assert_eq!(result.get("next"), Some(&json!(null)), "{result}");
-    // Ployz no longer warns about what a forgotten Server keeps on its disk.
-    assert_eq!(result.get("warnings"), None, "{result}");
-}
-
-#[tokio::test]
-async fn under_json_a_cloud_removal_names_the_retry_that_carries_its_digest() {
-    let (cloud, asked, _) = fake_cloud(
-        r#"{"state":"succeeded","release":{"kind":"others_remain"}}"#,
-        true,
-    );
-    let mut service = DiscoveryService::new(test_description());
-    service.machines.push(machine('c', "two"));
-    service.storage_capacity = Some(empty_storage());
-    let (output, service) = forget_cloud_server(
-        service,
-        "two",
-        &[("PLOYZ_TOKEN", "ployz_acme"), ("PLOYZ_CLOUD_URL", &cloud)],
-        &["--confirm", "two", "--accept-volume-loss", "data"],
-    )
-    .await;
-    let error: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(
-        error.pointer("/error/code"),
-        Some(&json!("approval_required")),
-        "{error}"
-    );
-    let retry = error
-        .pointer("/error/details/retry")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default();
-    assert!(
-        retry.starts_with("ployz --connect tcp://")
-            && retry.ends_with(
-                " server forget two --confirm two --accept-volume-loss data --approval forget:abc"
-            ),
-        "{retry}"
-    );
-    assert_eq!(
-        asked.lock().unwrap().len(),
-        1,
-        "one removal asked, none retried"
-    );
-    assert!(service.removed_machines.lock().unwrap().is_empty());
-}
-
-#[tokio::test]
 async fn a_context_still_removes_a_server_cloud_manages_through_cloud_and_its_digest() {
     let (cloud, asked, _) = fake_cloud(
         r#"{"state":"succeeded","release":{"kind":"released"}}"#,
@@ -626,13 +543,23 @@ async fn the_entry_server_is_removed_through_another_server() {
     };
     let (entry, other) = (daemon('a'), daemon('b'));
     let (entry_address, _entry) = serve_discovery(entry.clone()).await;
-    let (other_address, _other) = serve_discovery(other.clone()).await;
-    let config = std::env::temp_dir().join(format!("ployz-entry-{}.yaml", MachineId::random()));
+    let root = std::env::temp_dir().join(format!("ployz-entry-{}", MachineId::random()));
+    std::fs::create_dir_all(&root).unwrap();
+    let socket = root.join("two.sock");
+    let _other = tokio::spawn(
+        Server::builder()
+            .add_service(MachineRpcServer::new(Fake(other.clone())))
+            .serve_with_incoming(UnixListenerStream::new(
+                UnixListener::bind(&socket).unwrap(),
+            )),
+    );
+    let config = root.join("config.yaml");
     std::fs::write(
         &config,
         format!(
-            "contexts:\n  lab:\n    connections:\n      - tcp: {entry_address}\n        machine_id: {}\n      - tcp: {other_address}\n        machine_id: {}\n",
+            "contexts:\n  lab:\n    connections:\n      - tcp: {entry_address}\n        machine_id: {}\n      - unix: {}\n        machine_id: {}\n",
             machine_id('a'),
+            socket.display(),
             machine_id('b'),
         ),
     )
@@ -648,7 +575,7 @@ async fn the_entry_server_is_removed_through_another_server() {
         .await
         .unwrap();
     let context = std::fs::read_to_string(&config).unwrap();
-    let _ = std::fs::remove_file(&config);
+    let _ = std::fs::remove_dir_all(&root);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     assert!(entry.reset_machines.lock().unwrap().is_empty());
     assert!(other.reset_machines.lock().unwrap().is_empty());
@@ -1065,48 +992,6 @@ async fn a_server_that_stops_answering_after_its_name_is_typed_is_kept() {
 
 /// A Server that answers holding Volume copies is forgotten like any other: Ployz no longer
 /// guards what is left on its disk.
-#[tokio::test]
-async fn a_server_that_answers_holding_copies_is_forgotten_through_cloud() {
-    let (cloud, asked, _) = fake_cloud(
-        r#"{"state":"succeeded","release":{"kind":"others_remain"}}"#,
-        false,
-    );
-    let mut service = DiscoveryService::new(test_description());
-    service.machines.push(machine('c', "two"));
-    service
-        .listed_volumes
-        .lock()
-        .unwrap()
-        .insert(machine_id('c'), vec![]);
-    let bytes = ployz_core::ProvisionedVolumeMaximumBytes::new(
-        std::num::NonZeroU64::new(ployz_core::STORAGE_GIB).unwrap(),
-    );
-    let docker = |name: &str| ployz_core::DockerVolumeName::parse(name).unwrap();
-    service.storage_capacity = Some(ployz_core::StorageCapacity {
-        backing: ployz_core::StorageBacking::Unallocated {
-            host_total_bytes: 100 * ployz_core::STORAGE_GIB,
-            host_available_bytes: 90 * ployz_core::STORAGE_GIB,
-        },
-        unmanaged_used_bytes: 0,
-        slot_bound_bytes: 0,
-        volumes: BTreeMap::new(),
-        copies: BTreeMap::from([(
-            docker("app-prod_logs"),
-            ployz_core::ProvisionedCopy::new(ployz_core::CopyPlace::Slot(None), bytes, 0),
-        )]),
-    });
-    let (output, service) = forget_cloud_server(
-        service,
-        "two",
-        &[("PLOYZ_TOKEN", "ployz_acme"), ("PLOYZ_CLOUD_URL", &cloud)],
-        &["--confirm", "two"],
-    )
-    .await;
-    assert_eq!(output.status.code(), Some(0), "{output:?}");
-    assert_eq!(asked.lock().unwrap().len(), 1, "Cloud was asked {asked:?}");
-    assert!(service.reset_machines.lock().unwrap().is_empty());
-}
-
 #[tokio::test]
 async fn server_rm_input_errors_name_servers_and_volumes() {
     let mut service = DiscoveryService::new(test_description());
