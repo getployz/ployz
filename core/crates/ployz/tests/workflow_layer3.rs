@@ -1,3 +1,6 @@
+#[path = "support/big_stack.rs"]
+mod big_stack;
+
 use ployz::connect::Call;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -15,13 +18,18 @@ use ployz_core::{DeployIntent, DeployOutcome, ListMachinesRequest, op};
 use ployz_testkit::{Cluster, ClusterPlan, SERVICE_CONTAINER_IMAGE, poll_until};
 
 /// L3-009..L3-010, L3-014, and L3-045..L3-046.
-#[tokio::test]
+#[test]
 #[ignore = "informing: requires the privileged Ployz testkit image"]
-async fn deploy_scale_and_rename_execute_through_the_sdk_and_cli() {
+fn deploy_scale_and_rename_execute_through_the_sdk_and_cli() {
+    big_stack::run(deploy_scale_and_rename);
+}
+
+async fn deploy_scale_and_rename() {
     let plan = ClusterPlan::new(&format!("l3-workflows-{}", std::process::id()), 2).unwrap();
     let cluster = Cluster::create(plan).unwrap();
     cluster.initialize_two().await.unwrap();
     let address = cluster.api_socket_address(0).unwrap();
+    let cli = Cli::new(address);
 
     let mut client = connect_selected_with(
         SelectedConnections {
@@ -75,7 +83,7 @@ async fn deploy_scale_and_rename_execute_through_the_sdk_and_cli() {
             .iter()
             .all(|container| &container.as_observation().machine_id == machine_1)
     );
-    assert_machine_rename_preserves_containers(address, &mut client, machine_1, &initial_run).await;
+    assert_machine_rename_preserves_containers(&cli, &mut client, machine_1, &initial_run).await;
 
     let blocked = session
         .run(intent("blocked", &on_machine_1, Some("exit 17")), None)
@@ -104,17 +112,15 @@ async fn machine_rm_warns_when_replicated_services_are_left_under_replicated() {
         let cluster = Cluster::create(plan).unwrap();
         cluster.initialize_two().await.unwrap();
         let address = cluster.api_socket_address(0).unwrap();
+        let cli = Cli::new(address);
 
-        assert_success(ployz(
-            address,
-            [
-                "server",
-                "set",
-                "machine-2",
-                "--label-add",
-                "fixture=machine-2",
-            ],
-        ));
+        assert_success(cli.run(&[
+            "server",
+            "set",
+            "machine-2",
+            "--label-add",
+            "fixture=machine-2",
+        ]));
         // The label reaches machine-1's Deploy Snapshot asynchronously.
         let mut client = connect_selected_with(
             SelectedConnections {
@@ -147,14 +153,7 @@ async fn machine_rm_warns_when_replicated_services_are_left_under_replicated() {
         );
         session.close().await;
 
-        let server = |args: &[&str]| {
-            Command::new(env!("CARGO_BIN_EXE_ployz"))
-                .arg("--why=test")
-                .args(["--connect", &format!("tcp://{address}"), "server", verb])
-                .args(args)
-                .output()
-                .unwrap()
-        };
+        let server = |args: &[&str]| cli.run(&[&["server", verb], args].concat());
         let asked = server(&["machine-2"]);
         let stderr = String::from_utf8_lossy(&asked.stderr);
         assert!(!asked.status.success(), "{stderr}");
@@ -233,7 +232,7 @@ fn intent(name: &str, constraint: &str, pre_deploy: Option<&str>) -> DeployInten
 }
 
 async fn assert_machine_rename_preserves_containers(
-    address: std::net::SocketAddr,
+    cli: &Cli,
     client: &mut ployz::connect::Client,
     machine_id: &ployz_core::MachineId,
     initial: &ployz_core::LiveServices<ployz_core::RpcError>,
@@ -245,14 +244,11 @@ async fn assert_machine_rename_preserves_containers(
         .map(|container| container.as_observation().container_id)
         .collect::<BTreeSet<_>>();
     assert!(
-        !ployz(address, ["server", "set", "machine-1", "--name", ""])
+        !cli.run(&["server", "set", "machine-1", "--name", ""])
             .status
             .success()
     );
-    assert_success(ployz(
-        address,
-        ["server", "set", "machine-1", "--name", "workflow-renamed"],
-    ));
+    assert_success(cli.run(&["server", "set", "machine-1", "--name", "workflow-renamed"]));
     wait_for_machine_name(client, machine_id, "workflow-renamed").await;
     let after_rename = wait_for_services(client, &["scaled-workflow"], 2).await;
     assert_eq!(
@@ -264,10 +260,7 @@ async fn assert_machine_rename_preserves_containers(
             .collect::<BTreeSet<_>>(),
         initial_ids
     );
-    assert_success(ployz(
-        address,
-        ["server", "set", machine_id.as_str(), "--name", "machine-1"],
-    ));
+    assert_success(cli.run(&["server", "set", machine_id.as_str(), "--name", "machine-1"]));
     wait_for_machine_name(client, machine_id, "machine-1").await;
 }
 
@@ -366,13 +359,29 @@ async fn wait_for_live<T>(
     .unwrap()
 }
 
-fn ployz<const N: usize>(address: std::net::SocketAddr, args: [&str; N]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_ployz"))
-        .arg("--why=test")
-        .args(["--connect", &format!("tcp://{address}")])
-        .args(args)
-        .output()
-        .unwrap()
+/// The ployz CLI on a Ployz config of its own, so no device key of this computer's signs.
+struct Cli {
+    address: std::net::SocketAddr,
+    home: tempfile::TempDir,
+}
+
+impl Cli {
+    fn new(address: std::net::SocketAddr) -> Self {
+        Self {
+            address,
+            home: tempfile::tempdir().unwrap(),
+        }
+    }
+
+    fn run(&self, args: &[&str]) -> std::process::Output {
+        Command::new(env!("CARGO_BIN_EXE_ployz"))
+            .arg("--why=test")
+            .args(["--connect", &format!("tcp://{}", self.address)])
+            .args(args)
+            .env("PLOYZ_CONFIG", self.home.path().join("config.yaml"))
+            .output()
+            .unwrap()
+    }
 }
 
 fn assert_success(output: std::process::Output) {
