@@ -78,6 +78,7 @@ pub(super) fn requested(mode: ServiceMode) -> RequestedServiceSpec {
         name: ServiceName::parse("api").unwrap(),
         mode,
         container: ServiceContainerSpec {
+            shared_writes: Default::default(),
             image: "ghcr.io/getployz/api:1".into(),
             command: Vec::new(),
             entrypoint: Vec::new(),

@@ -118,24 +118,31 @@ ployz exec web -- df -h /app/uploads
 
 ## Share a volume
 
-Shared writes are paused for now. One container writes to a volume: a service with a volume runs
-one replica, and no other service can mount it. The **Shared writes** switch only turns off.
-
-A volume that still has it on doesn't deploy, and the deploy names it. Turn it off in the volume's
-**Settings** tab, under **Space**, or from the CLI:
+By default, only one container writes to a volume. A service with a volume runs one replica, and no
+other service can mount it. To run more replicas, or to mount it in several services, turn on
+**Allow shared writes** in the volume's **Settings** tab, under **Space**. From the CLI:
 
 ```sh
-ployz volume set uploads --shared-writes=false
+ployz volume set uploads --shared-writes
 ```
 
-It applies at once. While several replicas or services still write to the volume, Ployz refuses:
-set the service to 1 replica and unmount the volume from the other services first.
+Do this only if your app copes with several writers at once; a database's data directory
+doesn't. Everything that mounts the volume still runs on its server.
 
-A redeploy, rollback or Git deploy of a version saved with shared writes on is refused too, even
-after you turn them off: that version can't change. Turn them off, then deploy again.
+The setting saves at once, without a deploy. Servers take it from the next deploy, which tells
+each server which volumes its containers may share and replaces the containers that mount the
+volume. Turning it off reaches them the same way.
 
-A server also won't start a container on a managed volume while another container still runs on
-it there. The deploy fails and names the service still running and where it mounts the volume.
+To turn it off, first leave one writer: set the service to 1 replica, unmount the volume from the
+other services, and deploy. Ployz refuses to turn it off while several replicas or services still
+write to the volume, in your changes or in what's deployed. Then turn it off and deploy again.
+
+A server older than this release doesn't know about sharing, so it refuses every container that
+mounts a volume with shared writes on, and the deploy fails on that server. Update the server, then
+deploy again.
+
+A server also won't start a container on a managed volume without shared writes while another
+container still runs on it there. The deploy fails and names the service still running and where it mounts the volume.
 Deploy again, or stop that service first. A deploy that unmounts the volume from one service and
 mounts it on another starts the new one after the old one's container is gone, so it doesn't fail
 this way. If the old one can't deploy, the new one isn't started either. Two services can't swap
