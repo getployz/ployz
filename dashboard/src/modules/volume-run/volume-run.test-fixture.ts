@@ -24,7 +24,8 @@ export const COPIES = {
   failed: { kind: "slot", slot: "1", readonly: true, newest: older, resume_token: null, pull: { target: snapshot.name, failure: "no space" }, role: "mirror" },
 } satisfies Record<string, VolumeCopy>;
 
-export type Copy = keyof typeof COPIES | "empty" | "unanswered";
+/** `unanswered` is a silent Server; `lastWriter` is one whose last report in the Runtime Watch held the primary. */
+export type Copy = keyof typeof COPIES | "empty" | "unanswered" | "lastWriter";
 
 /**
  * One Machine's answer for the Volume, named by its Server. `epoch` numbers a root's run of writes. `id` prefixes the
@@ -33,6 +34,7 @@ export type Copy = keyof typeof COPIES | "empty" | "unanswered";
 export function member(server: string, copy: Copy, options: { epoch?: number; id?: string; slot?: string; bound?: number } = {}): Member {
   const machine = { id: (options.id ?? server).padEnd(32, "0") as MachineId, name: server };
   if (copy === "unanswered") return { machine, answered: false };
+  if (copy === "lastWriter") return { machine, answered: false, lastRoot: true };
   const answer: VolumeCopy | null = copy === "empty" ? null : COPIES[copy];
   const view = {
     copy: answer?.kind === "root" && options.epoch !== undefined ? { ...answer, epoch: options.epoch }
@@ -42,6 +44,9 @@ export function member(server: string, copy: Copy, options: { epoch?: number; id
   const answered: Member = { machine, address: "fdcc::1", answered: true, view, keepsWritten: true };
   return options.bound === undefined ? answered : { ...answered, boundBytes: options.bound };
 }
+
+/** `unheard` as a Server whose last report in the Runtime Watch held the primary. */
+export const claiming = (unheard: Member): Member => (unheard.answered ? unheard : { ...unheard, lastRoot: true });
 
 export const run = (kind: VolumeRunView["kind"], args: VolumeRunView["args"], state: VolumeRunView["state"]): VolumeRunView => ({
   id: `${kind}-${state}`, volume_id: "v1", volume_name: "data", kind, args, orphan: false, state, epoch: 1, message: null,

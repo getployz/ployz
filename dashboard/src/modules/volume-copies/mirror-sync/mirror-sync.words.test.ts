@@ -7,12 +7,12 @@ const now = new Date("2026-10-12T16:00:00Z");
 const minutesAgo = (minutes: number) => new Date(now.getTime() - minutes * 60_000);
 const mirror = (refreshedAt: Date | null, extra: Partial<MirrorCopy> = {}): MirrorCopy => ({
   kind: "mirror", id: "web-2", server: { id: "web-2".padEnd(32, "0") as MachineId, name: "web-2" }, name: "pg-data-web-2",
-  refreshedAt, skipped: null, lastReported: false, staged: null, busy: null, ...extra,
+  refreshedAt, failed: false, staged: null, busy: null, ...extra,
 });
 
 describe("mirrorLast", () => {
   it("spins on what runs now, whatever the age", () => {
-    expect(mirrorLast(mirror(minutesAgo(200), { busy: "Refreshing", skipped: "silent" }), now))
+    expect(mirrorLast(mirror(minutesAgo(200), { busy: "Refreshing", failed: true }), now))
       .toEqual({ spin: true, words: "Refreshing", stale: false });
   });
 
@@ -32,52 +32,16 @@ describe("mirrorLast", () => {
 });
 
 describe("skippedWords", () => {
-  it("says the mirror is not answering and how many writes a failover loses", () => {
-    expect(skippedWords(mirror(minutesAgo(135), { skipped: "silent" }), now)).toMatch(/^web-2 is not answering\..*loses 2 hours of writes\.$/);
-    expect(skippedWords(mirror(minutesAgo(61), { skipped: "silent" }), now)).toMatch(/loses 1 hour of writes\.$/);
-    expect(skippedWords(mirror(minutesAgo(3 * 1440), { skipped: "silent" }), now)).toMatch(/loses 3 days of writes\.$/);
-  });
-
-  it("says the last refresh failed when the mirror's Server answers", () => {
-    const words = skippedWords(mirror(minutesAgo(135), { skipped: "failed" }), now);
-    expect(words).toMatch(/loses 2 hours of writes\.$/);
-    expect(words).not.toContain("web-2");
-  });
-
-  it("says a mirror whose report hasn't arrived waits for it, naming no Server as silent", () => {
-    const words = skippedWords(mirror(minutesAgo(135), { skipped: "waiting" }), now);
-    expect(words).toMatch(/loses 2 hours of writes\.$/);
-    expect(words).not.toContain("web-2");
-  });
-
-  it("says a mirror waits for its server's report before any round matched it, or while it is still fresh", () => {
-    expect(skippedWords(mirror(null, { skipped: "waiting" }), now)).toBe("Waiting for its server's report.");
-    expect(skippedWords(mirror(minutesAgo(20), { skipped: "waiting" }), now)).toBe("Waiting for its server's report.");
-    expect(skippedWords(mirror(null, { skipped: "waiting", busy: "Refreshing" }), now)).toBeNull();
-  });
-
-  it("says a mirror's Server needs a newer Ployz only when its release is behind, else that it can't report the copy", () => {
-    expect(skippedWords(mirror(minutesAgo(135), { skipped: "outdated" }), now)).toMatch(/^web-2 needs a newer Ployz\. Ployz retries/);
-    expect(skippedWords(mirror(minutesAgo(135), { skipped: "lacks" }), now)).toMatch(/^web-2 can't report this copy\. Ployz retries/);
-  });
-
-  it("says a mirror's Server isn't answering however fresh the mirror, with no loss before it is behind", () => {
-    expect(skippedWords(mirror(minutesAgo(9), { skipped: "silent" }), now)).toBe("web-2 is not answering.");
-    expect(skippedWords(mirror(null, { skipped: "silent" }), now)).toBe("web-2 is not answering.");
-    expect(skippedWords(mirror(minutesAgo(9), { skipped: "lacks" }), now)).toBe("web-2 can't report this copy.");
-  });
-
-  it("names no time when rounds skipped the Volume before its Server went silent", () => {
-    const at = new Date("2026-10-12T14:35:00Z");
-    const words = skippedWords(mirror(at, { skipped: "silent" }), new Date("2026-10-12T15:38:49Z"));
-    expect(words).toMatch(/loses 1 hour of writes\.$/);
-    expect(words).not.toMatch(/\d\d:\d\d/);
+  it("says the last refresh failed and how many writes a failover loses, once the mirror is behind", () => {
+    expect(skippedWords(mirror(minutesAgo(135), { failed: true }), now)).toMatch(/^The last refresh failed\..*loses 2 hours of writes\.$/);
+    expect(skippedWords(mirror(minutesAgo(61), { failed: true }), now)).toMatch(/loses 1 hour of writes\.$/);
+    expect(skippedWords(mirror(minutesAgo(3 * 1440), { failed: true }), now)).toMatch(/loses 3 days of writes\.$/);
   });
 
   it("says nothing while rounds land, a fresh refresh failed, or a round runs", () => {
     expect(skippedWords(mirror(minutesAgo(135)), now)).toBeNull();
-    expect(skippedWords(mirror(minutesAgo(20), { skipped: "failed" }), now)).toBeNull();
-    expect(skippedWords(mirror(minutesAgo(135), { skipped: "silent", busy: "Refreshing" }), now)).toBeNull();
-    expect(skippedWords(mirror(null, { skipped: "failed" }), now)).toBeNull();
+    expect(skippedWords(mirror(minutesAgo(20), { failed: true }), now)).toBeNull();
+    expect(skippedWords(mirror(minutesAgo(135), { failed: true, busy: "Refreshing" }), now)).toBeNull();
+    expect(skippedWords(mirror(null, { failed: true }), now)).toBeNull();
   });
 });

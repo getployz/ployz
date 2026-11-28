@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { MachineId } from "@ployz/sdk";
 import {
-  cardLine, hangingCopies, type MirrorCopy, type OldCopy, traySpeech, unheardReason,
+  cardLine, elsewhereLine, hangingCopies, type MirrorCopy, type OldCopy, traySpeech,
   type VolumeCopies,
 } from "./volume-copies";
 
@@ -9,7 +9,7 @@ const today = (time: string) => new Date(`2026-10-12T${time}:00Z`);
 const server = (name: string) => ({ id: name.padEnd(32, "0") as MachineId, name });
 
 const mirror = (refreshedAt: Date, extra: Partial<MirrorCopy> = {}): MirrorCopy => ({
-  kind: "mirror", id: "web-2", server: server("web-2"), name: "pg-data-web-2", refreshedAt, skipped: null, lastReported: false, staged: null, busy: null, ...extra,
+  kind: "mirror", id: "web-2", server: server("web-2"), name: "pg-data-web-2", refreshedAt, failed: false, staged: null, busy: null, ...extra,
 });
 const old: OldCopy = { kind: "old", id: "web-3", server: server("web-3"), name: "pg-data-old", since: null, bytes: 900e6, staged: null, busy: null };
 
@@ -47,17 +47,6 @@ describe("protected", () => {
     expect(cardLine(mirror(today("14:00"), { staged: "removing" }), now).words).toBe("");
   });
 
-  it("words a mirror known only from its Server's last report as last reported, staged or not", () => {
-    expect(cardLine(mirror(today("14:00"), { lastReported: true }), now).words).toBe("Last reported");
-    expect(cardLine(mirror(today("14:00"), { lastReported: true, staged: "primary" }), now).words).toBe("Last reported");
-    expect(cardLine(mirror(today("14:00"), { lastReported: true, staged: "removing" }), now).words).toBe("");
-  });
-
-  it("gives a last-reported mirror no age, never Not yet, since nothing says when its Server reported it", () => {
-    expect(cardLine(mirror(today("14:00"), { lastReported: true, refreshedAt: null, skipped: "silent" }), now))
-      .toEqual({ spin: false, words: "Last reported", age: null, stale: false });
-  });
-
   it("speaks a staged move on the tray", () => {
     expect(traySpeech(pgData([mirror(today("14:00"), { staged: "primary" })], { moveTo: server("web-2") })))
       .toEqual({ tone: "staged", words: "Moving to web-2" });
@@ -66,7 +55,7 @@ describe("protected", () => {
 
 describe("stale mirror", () => {
   const now = today("14:04");
-  const behind = mirror(today("11:02"), { skipped: "failed" });
+  const behind = mirror(today("11:02"), { failed: true });
 
   it("marks the mirror card stale", () => {
     expect(cardLine(behind, now)).toEqual({ spin: false, words: "Mirror", age: "3 hours ago", stale: true });
@@ -77,22 +66,17 @@ describe("stale mirror", () => {
   });
 });
 
-describe("unheard mirror", () => {
-  const now = today("14:04");
+describe("elsewhereLine", () => {
+  const silent = { ...server("web-2"), heard: "silent" as const };
 
-  it("says why a mirror's Server didn't report it however fresh its age, which stays the last match", () => {
-    const silent = mirror(today("13:55"), { skipped: "silent" });
-    expect(unheardReason(silent)).toBe("Not answering");
-    expect(cardLine(silent, now)).toMatchObject({ age: "9 minutes ago", stale: false });
-    expect(unheardReason(mirror(today("13:55"), { skipped: "waiting" }))).toBe("Waiting for its report");
-    expect(unheardReason(mirror(today("13:55"), { skipped: "lacks" }))).toBe("Can't report this copy");
-    expect(unheardReason(mirror(today("13:55"), { skipped: "outdated" }))).toBe("Needs a newer Ployz");
+  it("says nothing is outside Live only once every Server reported", () => {
+    expect(elsewhereLine(pgData([]))).toBe("Nothing outside web-1. If web-1 dies, pg-data goes with it.");
+    expect(elsewhereLine(pgData([mirror(today("13:55"))]))).toBeNull();
   });
 
-  it("gives no reason for a mirror whose Server answered, or while a run is on it", () => {
-    expect(unheardReason(mirror(today("13:55")))).toBeNull();
-    expect(unheardReason(mirror(today("13:55"), { skipped: "failed" }))).toBeNull();
-    expect(unheardReason(mirror(today("13:55"), { skipped: "silent", busy: "Refreshing" }))).toBeNull();
+  it("says a silent Server keeps Copies from knowing what is outside Live, listed copies or not", () => {
+    expect(elsewhereLine({ ...pgData([]), unheard: [silent] })).toBe("web-2 is not answering, so Copies can't say what is outside web-1.");
+    expect(elsewhereLine({ ...pgData([old]), unheard: [silent] })).toBe("web-2 is not answering, so a copy there won't show until it reports.");
   });
 });
 
