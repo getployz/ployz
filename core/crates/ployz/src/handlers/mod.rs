@@ -278,8 +278,8 @@ fn wants_json(args: &[std::ffi::OsString]) -> bool {
 /// A flag written before the command that takes it, `ployz --project web status`:
 /// clap would offer the nearest top-level flag, so name the command's own instead.
 /// A flag another command takes, `server show --project`, is one this command lacks,
-/// not a typo of its nearest flag, unless that flag is [`close`]: `server ls --wait`
-/// keeps clap's `--waiting`. One after `--` is an operand, and keeps clap's error.
+/// not a typo of its nearest flag, unless that flag is [`close`]: `token new --reset`
+/// keeps clap's `--preset`. One after `--` is an operand, and keeps clap's error.
 fn misplaced_flag(error: clap::Error, tree: &Command, args: &[std::ffi::OsString]) -> clap::Error {
     use clap::error::{ContextKind, ContextValue, ErrorKind};
     if error.kind() != ErrorKind::UnknownArgument {
@@ -828,18 +828,6 @@ mod tests {
                 .unwrap_err();
             misplaced_flag(error, &tree, &args).to_string()
         };
-        let error = rejected(&["server", "ls", "--wait"]);
-        assert!(
-            error.contains("tip: a similar argument exists: '--waiting'"),
-            "{error}"
-        );
-        assert!(!error.contains("takes no"), "{error}");
-        let error = rejected(&["server", "token", "create", "--expires-in", "7d"]);
-        assert!(
-            error.contains("tip: a similar argument exists: '--expires'"),
-            "{error}"
-        );
-        assert!(!error.contains("takes no"), "{error}");
         let error = rejected(&["token", "new", "ci", "--reset", "read"]);
         assert!(
             error.contains("tip: a similar argument exists: '--preset'"),
@@ -1127,7 +1115,7 @@ mod tests {
 
     #[test]
     fn local_machine_init_requires_root_to_install() {
-        if crate::checkin::process_is_root() {
+        if crate::provisioning::process_is_root() {
             return;
         }
         let mut command = command();
@@ -1305,7 +1293,7 @@ mod tests {
 
     #[test]
     fn server_add_with_a_token_and_no_daemon_requires_sudo() {
-        if crate::checkin::process_is_root() {
+        if crate::provisioning::process_is_root() {
             return;
         }
         let token = tempfile::NamedTempFile::new().unwrap();

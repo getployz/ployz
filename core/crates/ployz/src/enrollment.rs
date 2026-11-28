@@ -1,6 +1,6 @@
-//! Enrolling a Server: what `server add` asks for, the calls to its daemon, and the Cloud
-//! enrollment the check-in loop runs too. Bounded enrollment after the caller has durably saved
-//! its allocation sits here as well.
+//! Enrolling a Server: what `server add` asks for, the calls to its daemon, and its Cloud
+//! enrollment. Bounded enrollment after the caller has durably saved its allocation sits here
+//! as well.
 pub(crate) mod asked_policy;
 pub(crate) mod catch_up;
 pub(crate) mod cloud;

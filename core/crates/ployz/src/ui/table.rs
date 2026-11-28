@@ -237,6 +237,17 @@ impl Fields {
     }
 }
 
+/// How long before `now` `at` was, in its largest whole unit, such as `5m ago`.
+pub(crate) fn ago(at: chrono::DateTime<chrono::Utc>, now: chrono::DateTime<chrono::Utc>) -> String {
+    let seconds = now.signed_duration_since(at).num_seconds().max(0);
+    match seconds {
+        0..60 => format!("{seconds}s ago"),
+        60..3600 => format!("{}m ago", seconds / 60),
+        3600..86400 => format!("{}h ago", seconds / 3600),
+        _ => format!("{}d ago", seconds / 86400),
+    }
+}
+
 pub(crate) fn short_id(id: &str) -> &str {
     id.get(..12).unwrap_or(id)
 }
@@ -349,7 +360,7 @@ fn quoted_literally(word: &str) -> bool {
     !escaping
 }
 
-pub(crate) const REPLACED: char = '\u{FFFD}';
+const REPLACED: char = '\u{FFFD}';
 
 pub(crate) fn printable(text: &str) -> String {
     text.chars()

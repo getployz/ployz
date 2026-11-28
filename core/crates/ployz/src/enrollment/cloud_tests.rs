@@ -398,12 +398,10 @@ async fn assert_resumed_enrollment_waits_for_published_machine(founder: bool) {
     let mut report = SetupReport::start();
     let install = |_| async { Ok(()) };
     let enrollment = Enrollment {
-        command: EnrollCommand::ServerAdd,
         plan: matches,
         token: &token,
         cloud_url: "http://unused.invalid",
         install: &install,
-        reader: Reader::Person,
         progress: &|_| {},
     };
     let identified = identified(&machine, details, policy);
@@ -537,12 +535,10 @@ async fn unacknowledged_enroll_never_reports_committed_joining() {
         let progress = |stage| stages.borrow_mut().push(stage);
         let install = |_| async { Ok(()) };
         let enrollment = Enrollment {
-            command: EnrollCommand::ServerAdd,
             plan: matches,
             token: &token,
             cloud_url: "http://unused.invalid",
             install: &install,
-            reader: Reader::Person,
             progress: &progress,
         };
         let identified = identified(&machine, details, policy);
@@ -749,12 +745,10 @@ async fn an_add_on_another_cluster_is_refused_only_with_different_observed_keys(
         let plan = EnrollPlan::from_matches(&root);
         let token = CloudEnrollToken::parse("pmet_fake").unwrap();
         let error = Enrollment {
-            command: EnrollCommand::ServerAdd,
             plan: &plan,
             token: &token,
             cloud_url: "http://127.0.0.1:9",
             install: &|_| async { Ok(()) },
-            reader: Reader::Person,
             progress: &|_| {},
         }
         .join(
@@ -826,25 +820,4 @@ fn a_rerun_resumes_a_join_already_under_way_for_the_assigned_machine() {
         ),
         None
     );
-}
-
-#[test]
-fn only_a_person_sees_the_recovery_code() {
-    for show in [false, true] {
-        let mut arguments = vec!["ployz", "server", "add", "--yes"];
-        if show {
-            arguments.push("--show-recovery-code");
-        }
-        let root = crate::cli::command()
-            .try_get_matches_from(arguments)
-            .unwrap();
-        let matches = &EnrollPlan::from_matches(&root);
-        for json in [false, true] {
-            for terminal in [false, true] {
-                assert!(!shows_code(matches, Reader::Fleet, json, terminal));
-                let shown = if json { show } else { terminal };
-                assert_eq!(shows_code(matches, Reader::Person, json, terminal), shown);
-            }
-        }
-    }
 }

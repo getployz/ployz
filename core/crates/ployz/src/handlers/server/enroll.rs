@@ -24,17 +24,12 @@ use crate::cloud::enroll::EnrollStage;
 use crate::cloud::login::{CredentialStore, LoginError, Organization};
 use crate::cloud::origin::{CloudOrigin, DEFAULT_CLOUD};
 use crate::enrollment::EnrollPlan;
-use crate::enrollment::cloud::Reader;
 use crate::enrollment::plan::Shaping;
 use crate::env;
 use crate::provisioning::Installation;
 
 const INSTALLER_URL: &str = "https://ployz.sh/";
 const JOIN_POLL: Duration = Duration::from_secs(2);
-
-#[path = "enroll_waiting.rs"]
-mod waiting;
-pub(crate) use waiting::{command as waiting_command, enroll as enroll_waiting};
 
 pub(crate) fn command(command: Command) -> Command {
     super::provisioning_flags(
@@ -216,12 +211,10 @@ where
     InstallFuture: Future<Output = Result<(), Error>>,
 {
     let enrollment = crate::enrollment::cloud::Enrollment {
-        command: cloud::enroll::Command::ServerAdd,
         plan,
         token,
         cloud_url,
         install,
-        reader: Reader::Person,
         progress: &|stage| {
             if stage == EnrollStage::Enrolling && !crate::ui::json() {
                 crate::ui::note("Asking Cloud to enroll this Server…");
@@ -292,10 +285,7 @@ fn enroll_token(matches: &ArgMatches) -> Result<Option<CloudEnrollToken>, Error>
 
 /// Tokens Cloud mints for other jobs, by prefix, and where each belongs.
 const OTHER_TOKENS: [(&str, &str); 3] = [
-    (
-        "pflt_",
-        "a Fleet Token. Set PLOYZ_FLEET_TOKEN instead: the installer reads it there",
-    ),
+    ("pflt_", "a Fleet Token, which Ployz Cloud no longer takes"),
     (
         "ployz_",
         "an Organization Token. Set PLOYZ_TOKEN instead: Cloud commands read it there",

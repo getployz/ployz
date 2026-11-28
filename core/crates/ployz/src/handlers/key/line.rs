@@ -20,7 +20,7 @@ pub(super) fn add(line: &str) -> Result<(), Error> {
     let line = first_key_line::parse(line)?;
     let layout = MachineLayout::production();
     if !first_key_line::enrolled(layout.data_dir())? {
-        if !crate::checkin::process_is_root() {
+        if !crate::provisioning::process_is_root() {
             return Err(Error::coded(
                 RpcErrorCode::Unauthenticated,
                 "Run it as root: sudo ployz key add …",

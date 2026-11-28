@@ -6,25 +6,20 @@ use ployz_core::{
     Hint, InspectRequest, KeptVolume, LargePackets, ListKeptVolumesRequest, Machine,
     MachineDetails, MachineName, MachineObservation, MachineRuntime, MachineStorageObservation,
     MachineTarget, MachineUpgradeAttempt, MachineUpgradeOutcome, MembershipObservation,
-    RpcErrorCode, TelemetryObservation, op,
+    TelemetryObservation, op,
 };
 use serde_json::{Value, json};
 
-use super::super::route::{connect_or_none, has_no_servers, signed_in};
-use super::waiting;
+use super::super::route::connect_or_none;
 use crate::handlers::shared::disk::{full_disks, size};
 use crate::{
     cluster::StorageGaps,
     connect::{ConnectError, TARGET_RPC_TIMEOUT},
-    context::ContextError,
     handlers::{Error, leaf_matches, runtime},
     ui::{self, Cell, Fields, Gaps, Table, Tone, printable},
 };
 
 pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
-    if leaf_matches(root).get_flag("waiting") {
-        return waiting::list(leaf_matches(root));
-    }
     let leaf = leaf_matches(root);
     let context = leaf.get_one::<String>("context").map(String::as_str);
     runtime()?.block_on(async {
@@ -248,94 +243,24 @@ fn format_storage(storage: Option<MachineStorageObservation>) -> String {
     }
 }
 
-/// Show a Server, or else a server waiting to join under that name or id.
+/// Print fresh targeted Machine telemetry, its round-trip times to peers, and its
+/// latest upgrade attempt; list/watch request only storage evidence.
 pub(in crate::handlers) fn show(root: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(root);
     let selector = leaf
         .get_one::<String>("server")
         .ok_or_else(|| Error::usage("server is required"))?;
-    let (error, unconnected) = match server(root, selector) {
-        Ok(()) => return Ok(()),
-        Err(Unshown::Unconnected(error)) => (error, true),
-        Err(Unshown::Failed(error)) => (error, false),
-    };
-    let report = error.report();
-    let missing = report.code == RpcErrorCode::NotFound || has_no_servers(&error);
-    let unreachable = super::super::route::servers_unanswered(&error);
-    // An inherited PLOYZ_CONNECT or PLOYZ_CONTEXT that reached no daemon was never asked.
-    let unasked = unconnected && waiting::inherits_a_connection(leaf);
-    if !(missing || unreachable || unasked) || waiting::points_elsewhere(leaf) {
-        return Err(error);
-    }
-    let runtime = runtime()?;
-    let Ok(Some(credential)) = signed_in(&runtime, leaf) else {
-        return Err(error);
-    };
-    let listed = match runtime.block_on(waiting::fetch(&credential)) {
-        Ok(listed) => listed,
-        Err(fetch) => {
-            ui::warn_cause("The servers waiting to join could not be read", &fetch);
-            return Err(error);
-        }
-    };
-    match waiting::named(&listed, selector)?.as_slice() {
-        [] => Err(error.hint(waiting::copied_hint(selector))),
-        [host] => waiting::show(&runtime.block_on(waiting::detail(&credential, &host.row.id))?),
-        hosts => Err(waiting::ambiguous(
-            format!(
-                "{} waiting servers are named {}. Show one by its id",
-                hosts.len(),
-                ui::printable(selector)
-            ),
-            hosts,
-        )),
-    }
-}
-
-/// Print fresh targeted Machine telemetry, its round-trip times to peers, and its
-/// latest upgrade attempt; list/watch request only storage evidence.
-fn server(root: &ArgMatches, selector: &str) -> Result<(), Unshown> {
-    let selector = MachineTarget::parse(selector).map_err(|error| Unshown::Failed(error.into()))?;
-    let leaf = leaf_matches(root);
+    let selector = MachineTarget::parse(selector)?;
     let context = leaf.get_one::<String>("context").map(String::as_str);
-    runtime().map_err(Unshown::Failed)?.block_on(async {
-        let (mut client, held) = super::super::route::connect_held(leaf, context)
-            .await
-            .map_err(Unshown::of)?;
+    runtime()?.block_on(async {
+        let (mut client, held) = super::super::route::connect_held(leaf, context).await?;
         let direct = Direct {
             leaf,
             context,
             held: held.as_deref(),
         };
-        inspect(&direct, &mut client, &selector)
-            .await
-            .map_err(Unshown::Failed)
+        inspect(&direct, &mut client, &selector).await
     })
-}
-
-/// Why a Server was not shown: no connection reached a daemon, or a daemon answered.
-enum Unshown {
-    Unconnected(Error),
-    Failed(Error),
-}
-
-impl Unshown {
-    /// A connection that a daemon refused, or whose identity or protocol it contradicted,
-    /// was answered: only selection, dial and transport failures leave it unconnected.
-    fn of(error: Error) -> Self {
-        let source = std::error::Error::source(&error);
-        let unreached = source
-            .and_then(|source| source.downcast_ref::<ConnectError>())
-            .map_or_else(
-                || source.is_some_and(|source| source.is::<ContextError>()),
-                ConnectError::unreached,
-            );
-        if unreached {
-            Self::Unconnected(error)
-        } else {
-            Self::Failed(error)
-        }
-    }
 }
 
 async fn inspect(

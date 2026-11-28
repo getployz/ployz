@@ -3,7 +3,6 @@ use std::{
     env,
     ffi::OsString,
     io,
-    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
@@ -13,7 +12,6 @@ use serde_json::Value;
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::checkin::process_is_root;
 use crate::coded::Coded;
 use crate::context::{Connection, ConnectionError, SshDestination, Transport};
 
@@ -22,6 +20,11 @@ mod bootstrap;
 mod setup_tests;
 
 use bootstrap::Bootstrap;
+
+/// Whether this process runs as root.
+pub(crate) fn process_is_root() -> bool {
+    rustix::process::geteuid().is_root()
+}
 
 /// A failure while preparing a Machine through the shared daemon installer.
 #[derive(Debug, Error)]
@@ -674,30 +677,6 @@ async fn install_local(
     run_installer(bootstrap.daemon(), version, preparation).await
 }
 
-/// Carry out `installation` with the daemon already at `daemon`, without downloading it.
-/// The caller verifies its version. Installer stderr is forwarded and its last non-empty
-/// line is included when it exits unsuccessfully.
-///
-/// # Errors
-///
-/// Returns [`ProvisionError::NotRoot`] without root, or the installer's spawn or exit failure.
-pub(crate) async fn install_with(
-    daemon: &Path,
-    installation: Installation,
-) -> Result<(), ProvisionError> {
-    if !process_is_root() {
-        return Err(ProvisionError::NotRoot);
-    }
-    let preparation = match &installation {
-        Installation::Host(storage) => Preparation::Host {
-            storage,
-            group_user: None,
-        },
-        Installation::Daemon => Preparation::SoftwareOnly,
-    };
-    run_installer(daemon, env!("CARGO_PKG_VERSION"), preparation).await
-}
-
 async fn run_installer(
     daemon: &Path,
     version: &str,
@@ -742,39 +721,10 @@ async fn run_installer(
     }
 }
 
-pub(crate) async fn fetch_daemon(path: &Path) -> Result<(), ProvisionError> {
-    if env::consts::OS != "linux" {
-        return Err(ProvisionError::UnsupportedOs);
-    }
-    let bootstrap = Bootstrap::acquire(env::consts::ARCH).await?;
-    bootstrap.verify_local_version().await?;
-    let io = |stage| move |source| ProvisionError::BootstrapIo { stage, source };
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(io("create the daemon directory"))?;
-    }
-    let staged = path.with_extension("new");
-    std::fs::copy(bootstrap.daemon(), &staged).map_err(io("copy the daemon"))?;
-    std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755))
-        .map_err(io("make the daemon executable"))?;
-    std::fs::rename(&staged, path).map_err(io("install the daemon"))
-}
-
-/// Whether the daemon at `path` reports exactly this CLI's version.
-pub(crate) async fn daemon_is_current(path: &Path) -> bool {
-    let mut command = Command::new(path);
-    command.arg("version");
-    bootstrap::verify_command_version(
-        "check the daemon version",
-        command,
-        bootstrap::VERSION_TIMEOUT,
-    )
-    .await
-    .is_ok()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn root_is_what_id_reports() {
@@ -812,20 +762,6 @@ mod tests {
             ),
             "env 'PLOYZ_FALLBACK_URL=https://fallback.test' '/tmp/b/ployzd' 'install' '--version' '0.3.4'"
         );
-    }
-
-    #[tokio::test]
-    async fn only_a_daemon_reporting_this_version_is_current() {
-        let dir = tempfile::tempdir().unwrap();
-        let daemon = |name: &str, version: &str| {
-            let path = dir.path().join(name);
-            std::fs::write(&path, format!("#!/bin/sh\necho {version}\n")).unwrap();
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-            path
-        };
-        assert!(daemon_is_current(&daemon("current", env!("CARGO_PKG_VERSION"))).await);
-        assert!(!daemon_is_current(&daemon("older", "0.0.1")).await);
-        assert!(!daemon_is_current(&dir.path().join("missing")).await);
     }
 
     #[tokio::test]

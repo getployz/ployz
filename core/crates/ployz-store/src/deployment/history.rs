@@ -673,7 +673,7 @@ pub(crate) fn held_services(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<St
 pub(crate) fn unclaimed(tx: &mut dyn Tx, before: i64) -> Result<Vec<Unclaimed>, RpcError> {
     tx.query(
         &format!(
-            "SELECT organization_id, environment_id, id, admitted, number FROM config_deployment \
+            "SELECT organization_id, environment_id, id, admitted FROM config_deployment \
          WHERE status = '{QUEUED}' AND runner IS NULL AND admitted < ?1 ORDER BY admitted, id"
         ),
         &[before.into()],
@@ -685,7 +685,6 @@ pub(crate) fn unclaimed(tx: &mut dyn Tx, before: i64) -> Result<Vec<Unclaimed>, 
             environment: row.parse(1, "identity")?,
             deployment: row.parse(2, "identity")?,
             admitted_at: row.int(3)?,
-            number: row.number(4, "Deployment number")?,
         })
     })
     .collect()

@@ -201,7 +201,8 @@ fn lock(paths: &InstallPaths, wait: Wait) -> Result<Option<File>, Error> {
     Ok(Some(file))
 }
 
-/// Marks the preparation lock `held` as held by a run, so check-in can tell one runs: a
+/// Marks the preparation lock `held` as held by a run, so the check-in loop that releases before
+/// Fleet Tokens were removed left on waiting hosts can tell one runs: a
 /// whole-file write lock on the same open file, an open file description lock, which the kernel
 /// keeps for exactly as long as the flock, through the build children that inherit it. Best
 /// effort: the flock alone still keeps runs from overlapping.

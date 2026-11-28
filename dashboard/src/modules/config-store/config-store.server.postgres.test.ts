@@ -921,7 +921,7 @@ it.live(
         const event = {
           id: "config-deployment-admitted-00000000-0000-4000-8000-000000000101",
           name: "config/deployment.admitted",
-          data: { organizationId: expect.any(String), environmentId: ENVIRONMENT, deploymentId: admit.id, number: 1, trigger: "user" },
+          data: { organizationId: expect.any(String), environmentId: ENVIRONMENT, deploymentId: admit.id, trigger: "user" },
         };
         expect(sent).toEqual([event, event]);
 
@@ -937,7 +937,7 @@ it.live(
         assert.strictEqual((yield* request("write", alice, start)).status, 200);
         expect(sent.at(-1)).toEqual({
           name: "config/deployment.admitted",
-          data: { organizationId: expect.any(String), environmentId: ENVIRONMENT, deploymentId: start.deployment, number: 2, trigger: "user" },
+          data: { organizationId: expect.any(String), environmentId: ENVIRONMENT, deploymentId: start.deployment, trigger: "user" },
         });
         const superseded = yield* request("write", alice, { ...start, deployment: admit.id });
         assert.strictEqual(superseded.status, 409);

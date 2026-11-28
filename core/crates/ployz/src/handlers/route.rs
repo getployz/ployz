@@ -651,11 +651,6 @@ pub(super) fn no_servers() -> Error {
         .with_connect_failure(ConnectFailure::NoServers)
 }
 
-/// Whether `error` is [`no_servers`]: Cloud knows no Server to look in.
-pub(super) fn has_no_servers(error: &Error) -> bool {
-    error.connect_failure() == Some(&ConnectFailure::NoServers)
-}
-
 /// No Server of `access` gave this command access: the `unanswered` ones it held a
 /// connection to and those Cloud couldn't reach didn't answer, and Cloud says why each
 /// refused one couldn't. Only with no refusal does it read as [`no_reachable_server`].
@@ -892,12 +887,13 @@ mod tests {
     #[test]
     fn why_no_server_carried_a_command_is_a_value_not_a_sentence() {
         let none = no_servers();
-        assert!(has_no_servers(&none));
+        assert_eq!(none.connect_failure(), Some(&ConnectFailure::NoServers));
         assert!(!servers_unanswered(&none) && !refused(&none));
         assert_eq!(none.report().message, "this Organization has no Servers");
-        assert!(!has_no_servers(&Error::conflict(
-            "this Organization has no Servers"
-        )));
+        assert_eq!(
+            Error::conflict("this Organization has no Servers").connect_failure(),
+            None
+        );
     }
 
     #[tokio::test]

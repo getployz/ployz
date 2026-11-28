@@ -246,38 +246,6 @@ fn ployz_with(home: &std::path::Path, args: &[&str], env: &[(&str, String)]) -> 
         .unwrap()
 }
 
-/// A Cloud that answers each path in `routes` with its JSON body, and anything else 404.
-fn json_cloud(routes: &'static [(&'static str, &'static str)]) -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
-    std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            let Ok(mut stream) = stream else { break };
-            let mut request = Vec::new();
-            let mut buffer = [0; 4096];
-            while !text(&request).contains("\r\n\r\n") {
-                let read = stream.read(&mut buffer).unwrap_or(0);
-                if read == 0 {
-                    break;
-                }
-                request.extend_from_slice(buffer.get(..read).unwrap_or_default());
-            }
-            let request = text(&request);
-            let path = request.split(' ').nth(1).unwrap_or_default();
-            let (status, body) = routes
-                .iter()
-                .find(|(route, _)| *route == path)
-                .map_or(("404 Not Found", "{}"), |(_, body)| ("200 OK", *body));
-            let _ = write!(
-                stream,
-                "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-                body.len()
-            );
-        }
-    });
-    url
-}
-
 /// A credential typed where a command takes something else never reaches output: not an
 /// error, a hint, `--help`, or what ssh said. Each row types `SENTINEL` into a value that
 /// refuses it, or one an error repeats, and no part of stdout, stderr or `--json` shows it.
@@ -289,14 +257,6 @@ fn no_output_repeats_a_credential_typed_where_it_does_not_parse() {
         "current_context: lab\ncontexts:\n  lab:\n    connections:\n      - tcp: 127.0.0.1:1\n",
     )
     .unwrap();
-    let cloud = json_cloud(&[
-        ("/api/cli/waiting-servers", r#"{"waiting_servers":[]}"#),
-        ("/api/cli/enrollments", r#"{"enrollments":[]}"#),
-    ]);
-    let signed_in = [
-        ("PLOYZ_TOKEN", "ployz_test_token".to_owned()),
-        ("PLOYZ_CLOUD_URL", cloud),
-    ];
     // An ssh whose stderr names its user alone, as a session token used as the user would.
     let bin = tempfile::tempdir().unwrap();
     let ssh = bin.path().join("ssh");
@@ -321,18 +281,6 @@ fn no_output_repeats_a_credential_typed_where_it_does_not_parse() {
                 "status",
             ],
             vec![],
-        ),
-        (
-            [
-                &why[..],
-                &["server", "reject", "https://u:SENTINEL@x.example", "--yes"],
-            ]
-            .concat(),
-            signed_in.to_vec(),
-        ),
-        (
-            [&why[..], &["server", "reject", "[SENTINEL", "--yes"]].concat(),
-            signed_in.to_vec(),
         ),
         (
             [
@@ -477,14 +425,6 @@ fn version_help_completion_and_internal_verbs_need_no_reason_from_an_agent() {
     let completion = ployz(home.path(), "some-agent", &["completion", "bash"]);
     assert!(completion.status.success(), "{}", text(&completion.stderr));
     assert!(text(&completion.stdout).contains("_clap_complete_ployz"));
-
-    // `install.sh` runs `server checkin` where no agent can add `--why`.
-    let checkin = ployz(home.path(), "some-agent", &["server", "checkin"]);
-    assert!(
-        !text(&checkin.stderr).contains(REASON_REQUIRED),
-        "{}",
-        text(&checkin.stderr)
-    );
 
     // `ployz build` is Ployz running itself on a build runner: it fails on its own
     // arguments, not on a missing reason.
