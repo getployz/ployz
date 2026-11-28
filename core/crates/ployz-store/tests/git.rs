@@ -1381,7 +1381,7 @@ fn a_build_a_github_run_held_at_upgrade_stays_building_through_its_first_begin()
     let id = GithubBuildId::parse(&format!("{deployment}.web")).unwrap();
     store.github_dispatched(&id, &github_run(RUN)).unwrap();
     drop(store);
-    // The schema and rows of a Store from before 0059: no attempts, no debts, and a
+    // The schema and rows of a Store from before 0060: no attempts, no debts, and a
     // held run that names neither its attempt nor whose it is.
     for sql in [
         "UPDATE config_build SET github = \
@@ -1390,7 +1390,7 @@ fn a_build_a_github_run_held_at_upgrade_stays_building_through_its_first_begin()
         "DROP TABLE config_github_attempt",
         "ALTER TABLE config_build DROP COLUMN attempt",
         "ALTER TABLE config_build DROP COLUMN reservable",
-        "DELETE FROM config_migration WHERE name = '0059_github_stop'",
+        "DELETE FROM config_migration WHERE name = '0060_github_stop'",
     ] {
         backend::execute(&url, sql);
     }

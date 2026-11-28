@@ -523,7 +523,7 @@ pub(super) fn newer_attempt(deployment: &DeploymentId) -> RpcError {
     )
 }
 
-/// The attempt migration `0059_github_stop` gave each build a GitHub run held when the
+/// The attempt migration `0060_github_stop` gave each build a GitHub run held when the
 /// Store upgraded. It is no runner ID, so no worker names it.
 const UPGRADED_ATTEMPT: &str = "(held at upgrade)";
 
