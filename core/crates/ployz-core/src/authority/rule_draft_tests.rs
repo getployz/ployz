@@ -35,7 +35,7 @@ fn settings_of(spec: &RequestedServiceSpec) -> Vec<Shown> {
 const SEALED_A: &str = "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQQ==";
 
 /// The digest of the body [`golden`] drafts.
-const GOLDEN: &str = "820cfcdda3b2f3d7455a10ba99ec03028861f1eb3a3b63bdd812dded47aa97f7";
+const GOLDEN: &str = "cd69be831f291ed7ebc13c5d8818ea7db014617f027364de6fe1234f8f8ac2e7";
 
 /// The rule view a Save's tap drafts from: one Git Service and one image
 /// Service, as the Store's `rule` view writes them.

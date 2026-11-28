@@ -70,7 +70,7 @@ jobs:
   build:
     runs-on: ${{ inputs.runner }}
     steps:
-      - uses: getployz/build@39e1f488e492c0641e520777e481e8f5b266985b
+      - uses: getployz/build@6f3b5a76ad939acfb605ba4070916e827a13cf2a
         with:
           build: ${{ inputs.build }}
           cloud: ${{ inputs.cloud }}

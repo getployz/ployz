@@ -10,7 +10,7 @@ export const GITHUB_BUILD_WORKFLOW_PATH = `.github/workflows/${GITHUB_BUILD_WORK
  * The `getployz/build` commit every build runs, its action or its reusable workflow. A tag can move; a commit can't.
  * Each Server checks a rule build ran this commit's reusable workflow, so it is also ployz-core's `BUILDER_SHA`.
  */
-export const GITHUB_BUILDER_COMMIT = "39e1f488e492c0641e520777e481e8f5b266985b";
+export const GITHUB_BUILDER_COMMIT = "6f3b5a76ad939acfb605ba4070916e827a13cf2a";
 
 /**
  * The workflow Ployz offers. Cloud dispatches `build`, `cloud` and `runner`, and the run's `GITHUB_TOKEN` only reads.
