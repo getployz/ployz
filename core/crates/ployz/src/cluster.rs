@@ -1353,8 +1353,9 @@ fn cloud_holds_last(machine: MachineId) -> RpcError {
 
 /// Refuse removing the last Machine while a Management Client other than Cloud still
 /// holds a key: that holder would be left managing a Cluster that no longer exists.
-/// Cloud's own hold (`cloud` and the `cli-*` device keys it provisions) goes with the
-/// Machine when Cloud removes it, so it only shows in the returned [`CloudHold`].
+/// Cloud's own hold (`cloud`, the `cli-*` keys it provisions, and the `device-` keys its
+/// founding arms) goes with the Machine when Cloud removes it, so it only shows in the
+/// returned [`CloudHold`].
 /// Holders that can't be read refuse too: they may be anyone's.
 ///
 /// # Errors
@@ -1396,7 +1397,9 @@ pub(crate) async fn refuse_last_managed(
             !cloud
                 || !matches!(
                     label.kind(),
-                    ployz_core::ManagementClientKind::Cloud | ployz_core::ManagementClientKind::Cli
+                    ployz_core::ManagementClientKind::Cloud
+                        | ployz_core::ManagementClientKind::Cli
+                        | ployz_core::ManagementClientKind::Device
                 )
         })
         .map(|label| format!("`{label}`"))
